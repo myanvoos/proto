@@ -76,7 +76,7 @@ describe("StatusLineComponent", () => {
 	it("renders Prewalk annotation when prewalk is armed", () => {
 		const statusLine = new StatusLineComponent(makeSessionWithLastMessage(null, true) as unknown as AgentSession);
 
-		// The default preset puts `mode` in the footline's capability group.
+		// The default layout puts `mode` in the footline's capability group.
 		const line = statusLine.renderQuietLine(100);
 		expect(line).not.toBeNull();
 		// SGR codes might be included, so we check if the stripped content contains "Prewalk"

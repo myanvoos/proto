@@ -1,9 +1,9 @@
-import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
+import type { StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { GitStatusSummary } from "../../../utils/git";
 
-export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { StatusLineSegmentId, StatusLineSeparatorStyle };
 
 export interface StatusLineSegmentOptions {
 	model?: {
@@ -17,7 +17,6 @@ export interface StatusLineSegmentOptions {
 }
 
 export interface StatusLineSettings {
-	preset?: StatusLinePreset;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	/**
@@ -149,14 +148,4 @@ export interface RenderedSegment {
 export interface StatusLineSegment {
 	id: StatusLineSegmentId;
 	render(ctx: SegmentContext): RenderedSegment;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Preset Definition
-// ═══════════════════════════════════════════════════════════════════════════
-
-export interface PresetDef {
-	leftSegments: StatusLineSegmentId[];
-	rightSegments: StatusLineSegmentId[];
-	segmentOptions?: StatusLineSegmentOptions;
 }

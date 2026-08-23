@@ -15,7 +15,6 @@ import { sanitizeStatusText } from "../../shared";
 import { withIcon } from "../../theme/icon-label";
 import { theme } from "../../theme/theme";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
-import { getPreset } from "./presets";
 import { focusExitBadge, renderSegment, type SegmentContext } from "./segments";
 import { segmentSeparator, stateSeparator } from "./state-grammar";
 import { calculateTokensPerSecond } from "./token-rate";
@@ -362,7 +361,6 @@ export class StatusLineComponent implements Component {
 
 	constructor(private session: AgentSession) {
 		this.#settings = {
-			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
 			rightSegments: settings.get("statusLine.rightSegments"),
 			separator: settings.get("statusLine.separator"),
@@ -1121,34 +1119,17 @@ export class StatusLineComponent implements Component {
 	}
 
 	#computeEffectiveSettings(): EffectiveStatusLineSettings {
-		const preset = this.#settings.preset ?? "default";
-		const presetDef = getPreset(preset);
-		const useCustomSegments = preset === "custom";
 		const mergedSegmentOptions: StatusLineSettings["segmentOptions"] = {};
-
-		for (const [segment, options] of Object.entries(presetDef.segmentOptions ?? {})) {
+		for (const [segment, options] of Object.entries(this.#settings.segmentOptions ?? {})) {
 			mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] = { ...(options as Record<string, unknown>) };
 		}
 
-		for (const [segment, options] of Object.entries(this.#settings.segmentOptions ?? {})) {
-			const current = mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] ?? {};
-			mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] = {
-				...(current as Record<string, unknown>),
-				...(options as Record<string, unknown>),
-			};
-		}
-
-		const leftSegments = useCustomSegments
-			? (this.#settings.leftSegments ?? presetDef.leftSegments)
-			: presetDef.leftSegments;
-		const rightSegments = useCustomSegments
-			? (this.#settings.rightSegments ?? presetDef.rightSegments)
-			: presetDef.rightSegments;
-
 		return {
 			...this.#settings,
-			leftSegments,
-			rightSegments,
+			// Partial `updateSettings` payloads (previews) omit the segment lists;
+			// fall back to the configured defaults instead of an empty line.
+			leftSegments: this.#settings.leftSegments ?? settings.get("statusLine.leftSegments"),
+			rightSegments: this.#settings.rightSegments ?? settings.get("statusLine.rightSegments"),
 			segmentOptions: mergedSegmentOptions,
 		};
 	}

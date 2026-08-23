@@ -154,7 +154,7 @@ describe("theme auto-detection", () => {
 		const observerSpy = vi.spyOn(nativesModule.MacAppearanceObserver, "start");
 
 		themeModule.onTerminalAppearanceChange("dark");
-		await themeModule.initTheme(true, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(true, undefined, "dark", "light");
 
 		expect(themeModule.getCurrentThemeName()).toBe("dark");
 		expect(detectSpy).not.toHaveBeenCalled();
@@ -166,7 +166,7 @@ describe("theme auto-detection", () => {
 		const observer = mockMacAppearanceObserver();
 		vi.spyOn(nativesModule, "detectMacOSAppearance").mockReturnValue(MacOSAppearance.Light);
 
-		await themeModule.initTheme(true, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(true, undefined, "dark", "light");
 
 		expect(observer.start).toHaveBeenCalledTimes(1);
 		expect(themeModule.getCurrentThemeName()).toBe("light");

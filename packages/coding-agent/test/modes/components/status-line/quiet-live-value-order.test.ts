@@ -59,19 +59,29 @@ function footline(settings: Record<string, unknown>, width = 120): string {
 	return stripAnsi(line);
 }
 
+/** Former named layouts, spelled out now that presets are gone. */
+const FOOTLINE_MINIMAL = {
+	leftSegments: ["account", "path", "git"],
+	rightSegments: ["session_name", "mode", "context_pct"],
+};
+const FOOTLINE_COMPACT = {
+	leftSegments: ["model", "account", "mode", "git", "pr"],
+	rightSegments: ["session_name", "cost", "context_pct"],
+};
+
 /** The gauge's own glyph: the one part of the line that is unmistakably the gauge. */
 const GAUGE = "▰";
 
 describe("a gauge configured on the left", () => {
-	it("renders after the session name in the default preset", () => {
-		const line = footline({ preset: "default" });
+	it("renders after the session name in the default layout", () => {
+		const line = footline({});
 
 		expect(line).toContain(GAUGE);
 		expect(line.indexOf("parser-rewrite")).toBeLessThan(line.indexOf(GAUGE));
 	});
 
 	it("renders after every standing segment, not just the session name", () => {
-		const line = footline({ preset: "default" });
+		const line = footline({});
 
 		for (const standing of ["gpt-5", "parser-rewrite"]) {
 			expect(line.indexOf(standing), standing).toBeLessThan(line.indexOf(GAUGE));
@@ -79,7 +89,7 @@ describe("a gauge configured on the left", () => {
 	});
 
 	it("is the last segment on the line", () => {
-		const line = footline({ preset: "default" }).trimEnd();
+		const line = footline({}).trimEnd();
 		const afterGauge = line.slice(line.indexOf(GAUGE));
 
 		expect(afterGauge).not.toContain("·");
@@ -87,7 +97,6 @@ describe("a gauge configured on the left", () => {
 
 	it("holds for any left-configured gauge, whatever else is on the right", () => {
 		const line = footline({
-			preset: "custom",
 			leftSegments: ["model", "context_pct"],
 			rightSegments: ["session_name"],
 		});
@@ -99,7 +108,6 @@ describe("a gauge configured on the left", () => {
 describe("a gauge configured on the right", () => {
 	it("keeps the position it was given, even before the session name", () => {
 		const line = footline({
-			preset: "custom",
 			leftSegments: ["model"],
 			rightSegments: ["context_pct", "session_name"],
 		});
@@ -108,16 +116,16 @@ describe("a gauge configured on the right", () => {
 	});
 });
 
-describe("the presets that already read correctly", () => {
+describe("the layouts that already read correctly", () => {
 	it("minimal still ends with the gauge", () => {
-		const line = footline({ preset: "minimal" }).trimEnd();
+		const line = footline(FOOTLINE_MINIMAL).trimEnd();
 
 		expect(line.indexOf("parser-rewrite")).toBeLessThan(line.indexOf(GAUGE));
 		expect(line.slice(line.indexOf(GAUGE))).not.toContain("·");
 	});
 
 	it("compact keeps cost before the gauge and the session name before both", () => {
-		const line = footline({ preset: "compact" });
+		const line = footline(FOOTLINE_COMPACT);
 
 		expect(line.indexOf("parser-rewrite")).toBeLessThan(line.indexOf("$0.42"));
 		expect(line.indexOf("$0.42")).toBeLessThan(line.indexOf(GAUGE));
@@ -126,7 +134,7 @@ describe("the presets that already read correctly", () => {
 	it("default and minimal agree on where the gauge goes", () => {
 		const isLast = (line: string) => !line.trimEnd().slice(line.indexOf(GAUGE)).includes("·");
 
-		expect(isLast(footline({ preset: "default" }))).toBe(true);
-		expect(isLast(footline({ preset: "minimal" }))).toBe(true);
+		expect(isLast(footline({}))).toBe(true);
+		expect(isLast(footline(FOOTLINE_MINIMAL))).toBe(true);
 	});
 });

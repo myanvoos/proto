@@ -44,7 +44,6 @@ describe("selector setting side effects", () => {
 
 		expect(updateSettings).toHaveBeenCalledWith(
 			expect.objectContaining({
-				preset: Settings.instance.get("statusLine.preset"),
 				leftSegments: Settings.instance.get("statusLine.leftSegments"),
 				rightSegments: Settings.instance.get("statusLine.rightSegments"),
 			}),

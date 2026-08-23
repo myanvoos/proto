@@ -61,7 +61,6 @@ function fakeGaugeSession(tokens: number): AgentSession {
 function renderFootlineVariant(tokens: number, width: number): string {
 	const component = new StatusLineComponent(fakeGaugeSession(tokens));
 	component.updateSettings({
-		preset: "custom",
 		leftSegments: ["model", "mode", "path", "git", "context_pct"],
 		rightSegments: ["session_name"],
 		sessionAccent: false,

@@ -710,28 +710,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Status line
-	"statusLine.preset": {
-		type: "enum",
-		values: ["default", "minimal", "compact", "full", "nerd", "ascii", "custom"] as const,
-		default: "default",
-		ui: {
-			tab: "appearance",
-			group: "Status Line",
-			label: "Status Line Preset",
-			description: "Pre-built status line configurations",
-			options: [
-				{ value: "default", label: "Default", description: "Model, path, git, context, tokens, cost" },
-				{ value: "minimal", label: "Minimal", description: "Path and git only" },
-				{ value: "compact", label: "Compact", description: "Model, git, cost, context" },
-				{ value: "full", label: "Full", description: "All segments including time" },
-				{ value: "nerd", label: "Nerd", description: "Maximum info with Nerd Font icons" },
-				{ value: "ascii", label: "ASCII", description: "No special characters" },
-				{ value: "custom", label: "Custom", description: "User-defined segments" },
-			],
-		},
-	},
-
 	"statusLine.enabled": {
 		type: "boolean",
 		default: true,
@@ -924,9 +902,12 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"statusLine.leftSegments": { type: "array", default: [] as StatusLineSegmentId[] },
+	"statusLine.leftSegments": {
+		type: "array",
+		default: ["model", "account", "mode", "path", "git", "context_pct"] as StatusLineSegmentId[],
+	},
 
-	"statusLine.rightSegments": { type: "array", default: [] as StatusLineSegmentId[] },
+	"statusLine.rightSegments": { type: "array", default: ["session_name"] as StatusLineSegmentId[] },
 
 	"statusLine.segmentOptions": { type: "record", default: {} as Record<string, unknown> },
 
@@ -5594,9 +5575,6 @@ export function getEnumValues(path: SettingPath): readonly string[] | undefined 
 // Derived Types from Schema
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Status line preset - derived from schema */
-export type StatusLinePreset = SettingValue<"statusLine.preset">;
-
 /** Status line separator style - derived from schema */
 export type StatusLineSeparatorStyle = SettingValue<"statusLine.separator">;
 
@@ -5725,7 +5703,6 @@ export interface ExaSettings {
 }
 
 export interface StatusLineSettings {
-	preset: StatusLinePreset;
 	enabled: boolean;
 	showAccount: boolean;
 	separator: StatusLineSeparatorStyle;

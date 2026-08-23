@@ -7,7 +7,6 @@ import {
 	fuzzyRank,
 	getKeybindings,
 	getSettingItemFilterText,
-	type ImageBudget,
 	Input,
 	matchesKey,
 	replaceTabs,
@@ -25,7 +24,6 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import {
 	getDefault,
 	getType,
@@ -34,12 +32,7 @@ import {
 	settings,
 	validateProviderMaxInFlightRequests,
 } from "../../config/settings";
-import type {
-	SettingTab,
-	StatusLinePreset,
-	StatusLineSegmentId,
-	StatusLineSeparatorStyle,
-} from "../../config/settings-schema";
+import type { SettingTab, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { getTabBarTheme } from "../shared";
@@ -48,8 +41,6 @@ import { getComposerShapeOptions } from "./composer-shape-registry";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
-import { SnapcompactShapePreview } from "./snapcompact-shape-preview";
-import { getPreset } from "./status-line/presets";
 
 /**
  * A submenu component for selecting from a list of options.
@@ -182,7 +173,7 @@ class SelectSubmenu extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
 
-		// Footer (e.g. the snapcompact shape preview) below the interactive rows,
+		// Footer (e.g. the composer shape preview) below the interactive rows,
 		// so the list never shifts while browsing.
 		if (footer) {
 			this.addChild(new Spacer(1));
@@ -550,10 +541,6 @@ export interface SettingsRuntimeContext {
 	providers: string[];
 	/** Working directory for plugins tab */
 	cwd: string;
-	/** Active model (api + id); resolves what the snapcompact `auto` shape maps to. */
-	model?: ShapeTarget;
-	/** Shared TUI image budget (graphics ids + transmit-once) for image previews. */
-	imageBudget?: ImageBudget;
 	/** Schedules a re-render after async preview work completes. */
 	requestRender?: () => void;
 	/** Live status renderer for composer-shape previews (the session's status line). */
@@ -562,7 +549,6 @@ export interface SettingsRuntimeContext {
 
 /** Status line settings subset for preview */
 export interface StatusLinePreviewSettings {
-	preset?: StatusLinePreset;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
@@ -1090,26 +1076,6 @@ export class SettingsSelectorComponent implements Component {
 			onPreviewCancel = () => {
 				this.callbacks.onThemePreview?.(activeThemeBeforePreview);
 			};
-		} else if (def.path === "statusLine.preset") {
-			onPreview = value => {
-				const presetDef = getPreset(
-					value as "default" | "minimal" | "compact" | "full" | "nerd" | "ascii" | "custom",
-				);
-				this.callbacks.onStatusLinePreview?.({
-					preset: value as StatusLinePreset,
-					leftSegments: presetDef.leftSegments,
-					rightSegments: presetDef.rightSegments,
-				});
-			};
-			onPreviewCancel = () => {
-				const currentPreset = settings.get("statusLine.preset");
-				const presetDef = getPreset(currentPreset);
-				this.callbacks.onStatusLinePreview?.({
-					preset: currentPreset,
-					leftSegments: presetDef.leftSegments,
-					rightSegments: presetDef.rightSegments,
-				});
-			};
 		} else if (def.path === "statusLine.separator") {
 			onPreview = value => {
 				this.callbacks.onStatusLinePreview?.({ separator: value as StatusLineSeparatorStyle });
@@ -1118,14 +1084,6 @@ export class SettingsSelectorComponent implements Component {
 				const separator = settings.get("statusLine.separator");
 				this.callbacks.onStatusLinePreview?.({ separator });
 			};
-		} else if (def.path === "snapcompact.shape") {
-			const shapePreview = new SnapcompactShapePreview(currentValue, {
-				model: this.context.model,
-				imageBudget: this.context.imageBudget,
-				requestRender: this.context.requestRender,
-			});
-			onPreview = value => shapePreview.setValue(value);
-			footer = shapePreview;
 		} else if (def.path === "composer.shape") {
 			const shapePreview = new ComposerShapePreview(String(currentValue ?? "box"), {
 				requestRender: this.context.requestRender,
@@ -1380,7 +1338,6 @@ export class SettingsSelectorComponent implements Component {
 	 */
 	#triggerStatusLinePreview(): void {
 		const statusLineSettings: StatusLinePreviewSettings = {
-			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
 			rightSegments: settings.get("statusLine.rightSegments"),
 			separator: settings.get("statusLine.separator"),
