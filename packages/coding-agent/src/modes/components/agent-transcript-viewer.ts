@@ -1,7 +1,7 @@
 /**
  * Fullscreen transcript viewer.
  *
- * `AgentHubOverlayComponent.openChat` mounts this as a `fullscreen` overlay
+ * `AgentFleetOverlayComponent.openChat` mounts this as a `fullscreen` overlay
  * (`ui.showOverlay(..., { fullscreen: true })`), so it borrows the terminal's
  * alternate screen buffer (the vim/less idiom) and paints the whole screen — no
  * compositing into the live transcript's scrollback. It renders a parked
@@ -46,13 +46,13 @@ export interface AgentTranscriptViewerDeps {
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	expandKeys: KeyId[];
-	/** Keys that toggle the whole hub closed (app.agents.hub + app.session.observe). */
-	hubKeys: KeyId[];
+	/** Keys that toggle the whole fleet closed (app.agents.fleet + app.session.observe). */
+	fleetKeys: KeyId[];
 	requestRender: () => void;
-	/** Close just this viewer (Esc), returning to the hub table. */
+	/** Close just this viewer (Esc), returning to the fleet table. */
 	onClose: () => void;
-	/** Close this viewer AND the hub (hub-toggle keys). */
-	onHubClose: () => void;
+	/** Close this viewer AND the fleet (fleet-toggle keys). */
+	onFleetClose: () => void;
 }
 
 /** How often to re-stat a file-backed transcript for growth (advisor/live tail). */
@@ -369,11 +369,11 @@ export class AgentTranscriptViewer implements Component {
 			return;
 		}
 
-		// The hub/observe toggle keys close the whole hub (matches the table view's
+		// The fleet/observe toggle keys close the whole fleet (matches the table view's
 		// toggle semantics), not just this viewer.
-		for (const key of this.deps.hubKeys) {
+		for (const key of this.deps.fleetKeys) {
 			if (matchesKey(data, key)) {
-				this.deps.onHubClose();
+				this.deps.onFleetClose();
 				return;
 			}
 		}
@@ -503,7 +503,7 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#headerLines(status: AgentStatus | undefined, kind: string | undefined, parentId: string | undefined): string[] {
-		const lines = [theme.fg("accent", `Agent Hub ${theme.sep.dot} ${this.deps.agentId}`)];
+		const lines = [theme.fg("accent", `Agent Fleet ${theme.sep.dot} ${this.deps.agentId}`)];
 		if (status && kind) {
 			const kindTag = theme.fg("dim", ` ${parentId ? `${kind} ${theme.sep.dot} of ${parentId}` : kind}`);
 			const modelLabel = this.#model ? theme.fg("muted", `${theme.sep.dot}${this.#model}`) : "";
@@ -531,7 +531,7 @@ export class AgentTranscriptViewer implements Component {
 		if (progress.contextTokens && progress.contextTokens > 0) {
 			stats.push(
 				progress.contextWindow && progress.contextWindow > 0
-					? formatContextUsage((progress.contextTokens / progress.contextWindow) * 100, progress.contextWindow)
+					? formatContextUsage(progress.contextTokens, progress.contextWindow)
 					: formatNumber(progress.contextTokens),
 			);
 		}

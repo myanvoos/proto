@@ -139,9 +139,6 @@ export const BUILTIN_COMPOSER_SHAPES = [
 /** Built-in composer ids used by tests and non-runtime consumers. */
 export const COMPOSER_SHAPE_VALUES = BUILTIN_COMPOSER_SHAPES.map(shape => shape.value);
 
-export type ContextLineMode = "off" | "percentage" | "annotated" | "embedded";
-export const CONTEXT_LINE_MODE_VALUES = ["off", "percentage", "annotated", "embedded"] as const;
-
 export type SettingTab =
 	| "appearance"
 	| "model"
@@ -181,7 +178,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 	files: { label: "Files", icon: "tab.files" },
 	shell: { label: "Shell", icon: "tab.shell" },
 	tools: { label: "Tools", icon: "tab.tools" },
-	tasks: { label: "Tasks", icon: "tab.tasks" },
+	tasks: { label: "Workers", icon: "tab.tasks" },
 	providers: { label: "Providers", icon: "tab.providers" },
 };
 
@@ -220,7 +217,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Extensions",
 		"Developer",
 	],
-	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
+	tasks: ["Modes", "Workers", "Isolation", "Commands & Skills"],
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
@@ -228,6 +225,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 export type StatusLineSegmentId =
 	| "pi"
 	| "model"
+	| "account"
 	| "mode"
 	| "path"
 	| "git"
@@ -389,7 +387,7 @@ const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
-const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["hub"];
+const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["fleet"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
@@ -437,22 +435,22 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 	{
 		pattern: "^\\s*nohup\\s+|(?<!&)\\&\\s*$",
-		tool: "hub",
+		tool: "fleet",
 		message:
-			'Use the `hub` tool (`op:"start"`) instead of nohup or background shell syntax so the process stays observable and managed.',
+			'Use the `fleet` tool (`op:"start"`) instead of nohup or background shell syntax so the process stays observable and managed.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
-		tool: "hub",
+		tool: "fleet",
 		message:
-			'Use the `hub` tool (`op:"start"`) for services, watchers, and debuggers so other omp instances can observe and control them.',
+			'Use the `fleet` tool (`op:"start"`) for services, watchers, and debuggers so other omp instances can observe and control them.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?\\S+|cargo\\s+watch|watchexec|pytest|vitest|jest|tsc)(?:.|\\n)*(?:--watch|-w)(?:\\s|$)",
-		tool: "hub",
-		message: 'Use the `hub` tool (`op:"start"`) for watch mode so its output, input, and lifecycle stay managed.',
+		tool: "fleet",
+		message: 'Use the `fleet` tool (`op:"start"`) for watch mode so its output, input, and lifecycle stay managed.',
 	},
 ];
 
@@ -752,6 +750,27 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"statusLine.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Status Line",
+			label: "Composer Footline",
+			description: "The quiet metadata row under the composer (model, mode, path, git, the context gauge).",
+		},
+	},
+
+	"statusLine.showAccount": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Status Line",
+			label: "Show Serving Account",
+			description: "Name which stored account is serving the active provider (multi-account providers only)",
+		},
+	},
 	"statusLine.separator": {
 		type: "enum",
 		values: ["powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"] as const,
@@ -769,36 +788,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "block", label: "Block", description: "Solid blocks" },
 				{ value: "none", label: "None", description: "Space only" },
 				{ value: "ascii", label: "ASCII", description: "Greater-than signs" },
-			],
-		},
-	},
-
-	"statusLine.contextLine": {
-		type: "enum",
-		values: CONTEXT_LINE_MODE_VALUES,
-		default: "embedded",
-		ui: {
-			tab: "appearance",
-			group: "Status Line",
-			label: "Context-Reactive Line",
-			description: "How the line between the left and right segments reflects context usage (box composer only)",
-			options: [
-				{ value: "off", label: "Off", description: "Solid accent line, no context feedback" },
-				{
-					value: "percentage",
-					label: "Percentage",
-					description: "Used portion in accent color, remainder dimmed",
-				},
-				{
-					value: "annotated",
-					label: "Annotated",
-					description: "Percentage plus ticks at the speculative and auto-compaction boundaries",
-				},
-				{
-					value: "embedded",
-					label: "Embedded",
-					description: "Annotated line with the context percentage and window embedded in the gauge",
-				},
 			],
 		},
 	},
@@ -1733,7 +1722,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Sampling",
 			label: "Service Tier — Subagent",
 			description:
-				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
+				"Service Tier for spawned worker/eval subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
@@ -2160,7 +2149,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Magic Keywords",
 			label: "Magic Keywords",
-			description: "Enable hidden notices for standalone ultrathink, orchestrate, and workflowz keywords",
+			description: "Enable hidden notices for standalone ultrathink and workflowz keywords",
 		},
 	},
 
@@ -2172,17 +2161,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Magic Keywords",
 			label: "Ultrathink Keyword",
 			description: "Let standalone ultrathink request maximum automatic thinking and append its hidden notice",
-		},
-	},
-
-	"magicKeywords.orchestrate": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "interaction",
-			group: "Magic Keywords",
-			label: "Orchestrate Keyword",
-			description: "Let standalone orchestrate append its hidden multi-agent orchestration notice",
 		},
 	},
 
@@ -4389,7 +4367,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Execution",
 			label: "Async Execution",
-			description: "Enable async bash commands and background task execution",
+			description: "Enable async bash commands and background worker execution",
 		},
 	},
 
@@ -4407,7 +4385,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "Max Poll Time",
 			description:
-				"How long a `hub` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
+				"How long a `fleet` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
 			options: [
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
@@ -4427,7 +4405,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "IRC Timeout",
 			description:
-				"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
+				"Default timeout for fleet message waits (and send await:true) in milliseconds; 0 disables the timeout",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "30000", label: "30 seconds" },
@@ -4536,7 +4514,7 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// ────────────────────────────────────────────────────────────────────────
-	// Tasks
+	// Orchestration
 	// ────────────────────────────────────────────────────────────────────────
 
 	// Plan mode
@@ -4608,7 +4586,7 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Delegation
-	"task.isolation.mode": {
+	"orchestrator.isolation.mode": {
 		type: "enum",
 		values: [
 			"none",
@@ -4628,7 +4606,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Isolation Mode",
 			description:
-				'Isolation backend for subagents. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
+				'Isolation backend for workers. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
 			options: [
 				{ value: "none", label: "None", description: "No isolation" },
 				{ value: "auto", label: "Auto", description: "Let the PAL pick the best available backend" },
@@ -4656,7 +4634,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.isolation.apply": {
+	"orchestrator.isolation.apply": {
 		type: "boolean",
 		default: true,
 		ui: {
@@ -4664,11 +4642,11 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Apply Isolated Changes",
 			description:
-				"Automatically apply successful isolated task changes to the parent checkout; disable to retain patch or branch artifacts",
+				"Automatically apply successful isolated worker changes to the parent checkout; disable to retain patch or branch artifacts",
 		},
 	},
 
-	"task.isolation.merge": {
+	"orchestrator.isolation.merge": {
 		type: "enum",
 		values: ["patch", "branch"] as const,
 		default: "patch",
@@ -4676,15 +4654,15 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Isolation",
 			label: "Isolation Merge Strategy",
-			description: "How isolated task changes are integrated (patch apply or branch merge)",
+			description: "How isolated worker changes are integrated (patch apply or branch merge)",
 			options: [
 				{ value: "patch", label: "Patch", description: "Combine diffs and git apply" },
-				{ value: "branch", label: "Branch", description: "Commit per task, merge with --no-ff" },
+				{ value: "branch", label: "Branch", description: "Commit per worker, merge with --no-ff" },
 			],
 		},
 	},
 
-	"task.isolation.commits": {
+	"orchestrator.isolation.commits": {
 		type: "enum",
 		values: ["generic", "ai"] as const,
 		default: "generic",
@@ -4708,92 +4686,51 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Worktree Base Directory",
 			description:
-				"Base directory for agent-managed worktrees — task-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
+				"Base directory for agent-managed worktrees — worker-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
 		},
 	},
 
-	"task.eager": {
-		type: "enum",
-		values: ["default", "preferred", "always"] as const,
-		default: "default",
-		ui: {
-			tab: "tasks",
-			group: "Subagents",
-			label: "Prefer Task Delegation",
-			description: "How strongly to push delegating work to subagents",
-			options: [
-				{ value: "default", label: "Default", description: "Model decides when to delegate" },
-				{ value: "preferred", label: "Preferred", description: "Adds delegation guidance to the system prompt" },
-				{ value: "always", label: "Always", description: "Prompt guidance plus a first-turn delegation reminder" },
-			],
-		},
-	},
-
-	"task.batch": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tasks",
-			group: "Subagents",
-			label: "Batch Task Calls",
-			description:
-				"Switch the task tool to its batch shape: one call carries { context, tasks[] } — one subagent per item, with an optional per-item agent (defaulting to the session spawn-policy agent), per-item isolation, and a required shared context prepended to every assignment. With async.enabled=true, each spawn runs as an independent background agent with the normal idle/parked lifecycle; otherwise the call blocks for merged results. Disable to restore the flat single-spawn schema.",
-		},
-	},
-
-	"task.enableEffort": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tasks",
-			group: "Subagents",
-			label: "Per-Task Effort",
-			description:
-				"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level",
-		},
-	},
-
-	"task.maxConcurrency": {
+	"orchestrator.maxConcurrency": {
 		type: "number",
 		default: 32,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Concurrent Tasks",
-			description: "Maximum number of subagents running concurrently",
+			group: "Workers",
+			label: "Max Concurrent Worker Turns",
+			description: "Maximum number of workers running concurrently",
 			options: [
 				{ value: "0", label: "Unlimited" },
-				{ value: "1", label: "1 task" },
-				{ value: "2", label: "2 tasks" },
-				{ value: "4", label: "4 tasks" },
-				{ value: "8", label: "8 tasks" },
-				{ value: "16", label: "16 tasks" },
-				{ value: "32", label: "32 tasks" },
-				{ value: "64", label: "64 tasks" },
+				{ value: "1", label: "1 worker" },
+				{ value: "2", label: "2 workers" },
+				{ value: "4", label: "4 workers" },
+				{ value: "8", label: "8 workers" },
+				{ value: "16", label: "16 workers" },
+				{ value: "32", label: "32 workers" },
+				{ value: "64", label: "64 workers" },
 			],
 		},
 	},
 
-	"task.enableLsp": {
+	"orchestrator.enableLsp": {
 		type: "boolean",
 		default: false,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "LSP in Subagents",
+			group: "Workers",
+			label: "LSP in Workers",
 			description:
-				"Allow subagents spawned via the task tool to use the lsp tool. Off by default to keep subagents cheap; enable when LSP-aware delegation is worth the extra tokens.",
+				"Allow workers spawned via orchestrate_spawn to use the lsp tool. Off by default to keep workers cheap; enable when LSP-aware delegation is worth the extra tokens.",
 		},
 	},
 
-	"task.maxRecursionDepth": {
+	"orchestrator.maxRecursionDepth": {
 		type: "number",
 		default: 2,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Task Recursion",
-			description: "How many levels deep subagents can spawn their own subagents",
+			group: "Workers",
+			label: "Max Worker Recursion",
+			description: "How many levels deep workers can spawn their own workers",
 			options: [
 				{ value: "-1", label: "Unlimited" },
 				{ value: "0", label: "None" },
@@ -4804,15 +4741,15 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.maxRuntimeMs": {
+	"orchestrator.maxRuntimeMs": {
 		type: "number",
 		default: 0,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Subagent Runtime",
+			group: "Workers",
+			label: "Max Worker Runtime",
 			description:
-				"Hard wall-clock limit per subagent (ms). 0 disables it. Defense-in-depth against provider-side stream hangs that escape the inference-layer watchdog; triggers a normal subagent abort with a 'timed out' reason.",
+				"Hard wall-clock limit per worker (ms). 0 disables it. Defense-in-depth against provider-side stream hangs that escape the inference-layer watchdog; triggers a normal worker abort with a 'timed out' reason.",
 			options: [
 				{ value: "0", label: "Unlimited", description: "Default" },
 				{ value: "300000", label: "5 minutes" },
@@ -4823,27 +4760,27 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.agentIdleTtlMs": {
+	"orchestrator.agentIdleTtlMs": {
 		type: "number",
 		default: 420_000,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
+			group: "Workers",
 			label: "Agent Idle TTL",
 			description:
-				"How long an idle subagent stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
+				"How long an idle worker stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
 		},
 	},
 
-	"task.softRequestBudget": {
+	"orchestrator.softRequestBudget": {
 		type: "number",
 		default: 200,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Soft Subagent Request Budget",
+			group: "Workers",
+			label: "Soft Worker Request Budget",
 			description:
-				"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents cap out at a lower built-in budget, so a value below that cap still applies to them.",
+				"Soft per-worker request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see orchestrator.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/lightbot agents cap out at a lower built-in budget, so a value below that cap still applies to them.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "90", label: "90 requests" },
@@ -4853,58 +4790,58 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.softRequestBudgetNotice": {
+	"orchestrator.softRequestBudgetNotice": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
+			group: "Workers",
 			label: "Soft Request Budget Notice",
 			description:
-				"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
+				"Inject one steering notice when a worker crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
 		},
 	},
 
-	"task.maxEffort": {
+	"orchestrator.maxEffort": {
 		type: "enum",
 		values: THINKING_EFFORTS,
 		default: "max",
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
+			group: "Workers",
 			label: "Maximum Per-Spawn Effort",
 			description:
-				"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.",
+				"Maximum reasoning effort allowed for the orchestrate_spawn per-worker effort hint. Lower values prevent callers from escalating workers above this ceiling; the default preserves the model's full range.",
 			options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 		},
 	},
 
-	"task.disabledAgents": {
+	"orchestrator.disabledAgents": {
 		type: "array",
 		default: [] as string[],
 	},
 
-	"task.agentModelOverrides": {
+	"orchestrator.agentModelOverrides": {
 		type: "record",
 		default: DEFAULT_AGENT_MODEL_OVERRIDES,
 	},
-	"task.agentPrewalk": {
+	"orchestrator.agentPrewalk": {
 		type: "record",
 		default: {} as Record<string, string>,
 	},
-	"task.agentAdvisor": {
+	"orchestrator.agentAdvisor": {
 		type: "record",
 		default: {} as Record<string, string>,
 	},
-	"task.prewalk": {
+	"orchestrator.prewalk": {
 		type: "boolean",
 		default: false,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Generic Task Prewalk",
+			group: "Workers",
+			label: "Generic Worker Prewalk",
 			description:
-				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
+				"Arm prewalk for the bundled generic `worker` agent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (orchestrator.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
 		},
 	},
 
@@ -4928,14 +4865,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"task.showResolvedModelBadge": {
+	"orchestrator.showResolvedModelBadge": {
 		type: "boolean",
 		default: false,
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Show Resolved Model Badge",
-			description: "Display the actual model ID used by each subagent in the task widget status line",
+			description: "Display the actual model ID used by each worker in the worker widget status line",
 		},
 	},
 
@@ -5042,8 +4979,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: "Services",
 			label: "Ollama Cloud Max Concurrency",
-			description:
-				"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit",
+			description: "Maximum concurrent Ollama Cloud worker runs per process; 0 disables the provider-specific limit",
 		},
 	},
 	"providers.webSearchOrder": {
@@ -5955,6 +5891,8 @@ export interface ExaSettings {
 
 export interface StatusLineSettings {
 	preset: StatusLinePreset;
+	enabled: boolean;
+	showAccount: boolean;
 	separator: StatusLineSeparatorStyle;
 	showHookStatus: boolean;
 	leftSegments: StatusLineSegmentId[];

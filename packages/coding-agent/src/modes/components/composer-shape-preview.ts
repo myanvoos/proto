@@ -10,7 +10,6 @@
 import {
 	type Component,
 	type ComposerChromeContext,
-	type EditorTopBorder,
 	getComposerStyle,
 	padding,
 	truncateToWidth,
@@ -21,16 +20,12 @@ import { theme } from "../theme/theme";
 
 /**
  * Real status renderer the preview borrows rows from — structurally satisfied
- * by {@link StatusLineComponent}. Layout is parameterized so a preview can
- * render a candidate shape's placement instead of the active one.
+ * by {@link StatusLineComponent}. The composer footline renders below every
+ * shape; `previewTitle` stands in for an unnamed session's name chip.
  */
 export interface ComposerPreviewStatusSource {
-	/** Powerline bar with the context gauge (box top border content). */
-	getTopBorder(width: number, previewTitle?: string): { content: string; width: number };
-	/** Plain right-group chip (claude top rule content). */
-	getStandaloneTopBorder(width: number, previewTitle?: string): { content: string; width: number };
-	/** Plain standalone bottom bar carrying the given segment groups. */
-	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string): string;
+	/** The quiet footline row, or null when nothing renders. */
+	renderQuietLine(width: number, extras?: { previewTitle?: string }): string | null;
 }
 
 export interface ComposerShapePreviewOptions {
@@ -51,15 +46,6 @@ export function renderComposerShapePreview(
 	const paddingX = style.defaultPaddingX(undefined);
 	const chromeWidth = style.sideChromeWidth(paddingX);
 
-	let topBorder: EditorTopBorder | undefined;
-	if (status) {
-		if (style.statusAttachment === "top-border") {
-			topBorder = status.getTopBorder(Math.max(1, previewWidth - chromeWidth * 2), PREVIEW_TITLE);
-		} else if (style.statusAttachment === "top-rule-chip") {
-			topBorder = status.getStandaloneTopBorder(previewWidth, PREVIEW_TITLE);
-		}
-	}
-
 	const ctx: ComposerChromeContext = {
 		width: previewWidth,
 		paddingX,
@@ -67,7 +53,6 @@ export function renderComposerShapePreview(
 		accentColor: (str: string) => theme.fg("accent", str),
 		surfaceColor: (str: string) => theme.bgFill("userMessageBg", str),
 		box: theme.boxRound,
-		topBorder,
 	};
 
 	const gutter = style.defaultPromptGutter ?? "";
@@ -95,12 +80,9 @@ export function renderComposerShapePreview(
 	const bottom = style.renderBottom(ctx);
 	if (bottom !== undefined) lines.push(bottom);
 
-	if (style.bottomBar !== "none" && status) {
-		const bar = status.renderBottomBar(previewWidth, style.bottomBar, PREVIEW_TITLE);
-		if (bar) {
-			if (style.bottomBarGap) lines.push("");
-			lines.push(bar);
-		}
+	if (status) {
+		const footline = status.renderQuietLine(previewWidth, { previewTitle: PREVIEW_TITLE });
+		if (footline) lines.push(footline);
 	}
 	return lines;
 }

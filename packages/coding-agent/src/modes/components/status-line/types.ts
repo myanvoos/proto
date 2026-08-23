@@ -1,19 +1,18 @@
-import type {
-	ContextLineMode,
-	StatusLinePreset,
-	StatusLineSegmentId,
-	StatusLineSeparatorStyle,
-} from "../../../config/settings-schema";
+import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
-import type { LoopLimitRuntime } from "../../loop-limit";
+import type { GitStatusSummary } from "../../../utils/git";
 
-export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
 export interface StatusLineSegmentOptions {
-	model?: { showThinkingLevel?: boolean };
+	model?: {
+		showThinkingLevel?: boolean;
+		/** Quiet zones: a wide gap between the model name and the effort tail. */
+		roomy?: boolean;
+	};
 	path?: { abbreviate?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
-	git?: { showBranch?: boolean; showStaged?: boolean; showUnstaged?: boolean; showUntracked?: boolean };
+	git?: { showBranch?: boolean };
 	time?: { format?: "12h" | "24h"; showSeconds?: boolean };
 }
 
@@ -21,24 +20,27 @@ export interface StatusLineSettings {
 	preset?: StatusLinePreset;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
+	/**
+	 * DEAD since the top-border removal: nothing renders a separator any more.
+	 * The composer footline joins segments with its own fixed separator. The
+	 * field survives only because the settings selector still passes it.
+	 */
 	separator?: StatusLineSeparatorStyle;
 	segmentOptions?: StatusLineSegmentOptions;
 	showHookStatus?: boolean;
 	sessionAccent?: boolean;
-	/** Drop the theme's `statusLineBg` fill and powerline caps so the bar
-	 *  inherits the terminal's default background. */
+	/**
+	 * DEAD since the top-border removal: there is no filled bar to make
+	 * transparent. Same blocker as `separator` above.
+	 */
 	transparent?: boolean;
 	/** Replace the model-segment icon with the thinking-level glyph and drop the
 	 *  " · <level>" suffix, so the thinking level reads as a single compact icon. */
 	compactThinkingLevel?: boolean;
-	/** How the gap line between the left and right groups reacts to context
-	 *  usage. `embedded` moves configured context segments into the annotated
-	 *  gauge as percentage and window labels. Box composer only. */
-	contextLine?: ContextLineMode;
 }
 
 export type EffectiveStatusLineSettings = Required<
-	Pick<StatusLineSettings, "leftSegments" | "rightSegments" | "separator" | "segmentOptions">
+	Pick<StatusLineSettings, "leftSegments" | "rightSegments" | "segmentOptions">
 > &
 	StatusLineSettings;
 
@@ -52,8 +54,6 @@ export interface SegmentContext {
 	session: AgentSession;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
-	/** Effective `statusLine.sessionAccent`; `false` disables hash-derived accent colors, while `true` or omission enables them. */
-	sessionAccent?: boolean;
 	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
 	previewTitle?: string;
 	activeRepo: ActiveRepoContext | null;
@@ -69,15 +69,11 @@ export interface SegmentContext {
 		enabled: boolean;
 	} | null;
 	loopMode: {
-		state: "waiting" | "running" | "paused";
-		limit?: LoopLimitRuntime;
+		enabled: boolean;
 	} | null;
 	goalMode: {
 		enabled: boolean;
 		paused: boolean;
-	} | null;
-	vibeMode: {
-		enabled: boolean;
 	} | null;
 	// Cached values for performance (computed once per render)
 	usageStats: {
@@ -93,15 +89,22 @@ export interface SegmentContext {
 		cost: number;
 		tokensPerSecond: number | null;
 	};
-	/** Context usage percent, or null when unknown (e.g. right after compaction). */
+	/**
+	 * Percent of {@link contextLimit} used, or null when unknown (e.g. right
+	 * after compaction). Percent of the LIMIT, not of the window — with
+	 * auto-compaction on those differ.
+	 */
 	contextPercent: number | null;
-	contextTokens: number;
+	/** The model's real context window. Always the window, never the trigger. */
 	contextWindow: number;
+	/**
+	 * Where the context actually runs out: the auto-compaction fire point when
+	 * auto-compaction is on, otherwise {@link contextWindow}. This is what the
+	 * gauge measures against, and {@link contextLimitKind} says which it is.
+	 */
+	contextLimit: number;
+	contextLimitKind: "window" | "compaction";
 	autoCompactEnabled: boolean;
-	/** Background speculative-compaction state (async compaction). */
-	compactionSpeculation: "idle" | "running" | "armed";
-	/** Blink phase for the running-speculation pulse; toggled by the component's timer. */
-	speculationBlinkOn: boolean;
 	subagentCount: number;
 	/**
 	 * Active processing time accumulated this session, in ms — the union of
@@ -113,7 +116,7 @@ export interface SegmentContext {
 	activeMs: number;
 	git: {
 		branch: string | null;
-		status: { staged: number; unstaged: number; untracked: number } | null;
+		status: GitStatusSummary | null;
 		pr: { number: number; url: string } | null;
 	};
 	/**
@@ -123,11 +126,18 @@ export interface SegmentContext {
 	 * the worktree/branch is already shown by the git segment.
 	 */
 	worktree: { projectName: string; worktreeName: string } | null;
+	/**
+	 * The credential serving the active provider, and how many that provider stores.
+	 *
+	 * Null when no provider is resolved or it stores nothing. `storedCount` is carried rather than
+	 * pre-applied because whether one account is worth naming is a DISPLAY decision, and the
+	 * segment owns it.
+	 */
+	account: { label: string; storedCount: number; isPrediction: boolean } | null;
 	usage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
-		monthly?: { percent: number; resetHours?: number };
 	} | null;
 }
 
@@ -142,26 +152,11 @@ export interface StatusLineSegment {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Separator Definition
-// ═══════════════════════════════════════════════════════════════════════════
-
-export interface SeparatorDef {
-	left: string; // Character for left→right segments
-	right: string; // Character for right→left segments (reversed)
-	endCaps?: {
-		left: string; // Cap for right segments (points left)
-		right: string; // Cap for left segments (points right)
-		useBgAsFg: boolean;
-	};
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Preset Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface PresetDef {
 	leftSegments: StatusLineSegmentId[];
 	rightSegments: StatusLineSegmentId[];
-	separator: StatusLineSeparatorStyle;
 	segmentOptions?: StatusLineSegmentOptions;
 }

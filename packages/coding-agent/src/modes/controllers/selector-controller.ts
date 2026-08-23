@@ -77,7 +77,7 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
-import { AgentHubOverlayComponent } from "../components/agent-hub";
+import { AgentFleetOverlayComponent } from "../components/agent-fleet";
 import { AgentsHubComponent } from "../components/agents-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import { CopySelectorComponent } from "../components/copy-selector";
@@ -108,7 +108,7 @@ export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
 	/**
 	 * Mount a primary fullscreen menu through the one polished modal path shared
-	 * by Settings, Model Hub, and Agent Hub.
+	 * by Settings, Model Hub, and Agent Fleet.
 	 */
 	#showFullscreenMenu(component: Component): OverlayHandle {
 		const handle = this.ctx.ui.showOverlay(component, {
@@ -222,16 +222,14 @@ export class SelectorController {
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-							contextLine: settings.get("statusLine.contextLine"),
 							...previewSettings,
 						});
 						this.ctx.ui.requestRender();
 					},
 					getStatusLinePreview: () => {
-						// The bar exactly as the active composer shape renders it (box top
-						// border, claude rule + chip, or the plain standalone bottom bar).
-						const availableWidth = this.ctx.editor.getTopBorderAvailableWidth(this.ctx.ui.terminal.columns);
-						return this.ctx.statusLine.getPreviewLines(availableWidth).join("\n");
+						const width = this.ctx.editor.getTopBorderAvailableWidth(this.ctx.ui.terminal.columns);
+						const { locationLine, capabilityLine } = this.ctx.statusLine.renderQuietLines(width);
+						return [locationLine, capabilityLine].filter(line => line !== null).join("\n");
 					},
 					onPluginsChanged: async () => {
 						const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());
@@ -253,7 +251,6 @@ export class SelectorController {
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-							contextLine: settings.get("statusLine.contextLine"),
 						});
 						this.ctx.ui.requestRender();
 					},
@@ -2072,12 +2069,12 @@ export class SelectorController {
 		});
 	}
 
-	showAgentHub(
+	showAgentFleet(
 		observers: SessionObserverRegistry,
 		options?: { requireContent?: boolean; armCloseTap?: boolean },
 	): void {
-		const hubKeys = [
-			...this.ctx.keybindings.getKeys("app.agents.hub"),
+		const fleetKeys = [
+			...this.ctx.keybindings.getKeys("app.agents.fleet"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
 		];
 		let overlayHandle: OverlayHandle | undefined;
@@ -2086,18 +2083,18 @@ export class SelectorController {
 		const done = () => {
 			if (closed) return;
 			closed = true;
-			hub.dispose();
+			fleet.dispose();
 			overlayHandle?.hide();
-			// A gated empty Hub may never have been mounted. Restoring editor
+			// A gated empty fleet may never have been mounted. Restoring editor
 			// focus in that case would steal focus from a menu opened meanwhile.
 			if (overlayHandle) this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 
-		const hub = new AgentHubOverlayComponent({
+		const fleet = new AgentFleetOverlayComponent({
 			observers,
 			settings: this.ctx.settings,
-			hubKeys,
+			fleetKeys,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
 			onDone: done,
 			requestRender: () => this.ctx.ui.requestRender(),
@@ -2112,25 +2109,25 @@ export class SelectorController {
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
 		});
 
-		const showReadyHub = () => {
+		const showReadyFleet = () => {
 			if (closed) return;
 			// The double-← gesture stays inert when neither live nor persisted
 			// subagents are available, so wait for discovery before making the gate.
-			if (options?.requireContent && hub.isEmpty) {
+			if (options?.requireContent && fleet.isEmpty) {
 				done();
 				return;
 			}
 
 			// Prime the detector before the first frame when the editor's double-←
-			// gesture opened the hub, so the next single ← dismisses it.
-			if (options?.armCloseTap) hub.armCloseTap();
-			overlayHandle = this.#showFullscreenMenu(hub);
+			// gesture opened the fleet, so the next single ← dismisses it.
+			if (options?.armCloseTap) fleet.armCloseTap();
+			overlayHandle = this.#showFullscreenMenu(fleet);
 		};
 
-		if (options?.requireContent && hub.isEmpty) {
-			void hub.persistedSubagentsReady.then(showReadyHub);
+		if (options?.requireContent && fleet.isEmpty) {
+			void fleet.persistedSubagentsReady.then(showReadyFleet);
 		} else {
-			showReadyHub();
+			showReadyFleet();
 		}
 	}
 }

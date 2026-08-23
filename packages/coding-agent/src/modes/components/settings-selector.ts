@@ -35,7 +35,6 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../../config/settings";
 import type {
-	ContextLineMode,
 	SettingTab,
 	StatusLinePreset,
 	StatusLineSegmentId,
@@ -564,7 +563,6 @@ export interface SettingsRuntimeContext {
 /** Status line settings subset for preview */
 export interface StatusLinePreviewSettings {
 	preset?: StatusLinePreset;
-	contextLine?: ContextLineMode;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
@@ -1101,7 +1099,6 @@ export class SettingsSelectorComponent implements Component {
 					preset: value as StatusLinePreset,
 					leftSegments: presetDef.leftSegments,
 					rightSegments: presetDef.rightSegments,
-					separator: presetDef.separator,
 				});
 			};
 			onPreviewCancel = () => {
@@ -1111,7 +1108,6 @@ export class SettingsSelectorComponent implements Component {
 					preset: currentPreset,
 					leftSegments: presetDef.leftSegments,
 					rightSegments: presetDef.rightSegments,
-					separator: presetDef.separator,
 				});
 			};
 		} else if (def.path === "statusLine.separator") {
@@ -1121,13 +1117,6 @@ export class SettingsSelectorComponent implements Component {
 			onPreviewCancel = () => {
 				const separator = settings.get("statusLine.separator");
 				this.callbacks.onStatusLinePreview?.({ separator });
-			};
-		} else if (def.path === "statusLine.contextLine") {
-			onPreview = value => {
-				this.callbacks.onStatusLinePreview?.({ contextLine: value as ContextLineMode });
-			};
-			onPreviewCancel = () => {
-				this.callbacks.onStatusLinePreview?.({ contextLine: settings.get("statusLine.contextLine") });
 			};
 		} else if (def.path === "snapcompact.shape") {
 			const shapePreview = new SnapcompactShapePreview(currentValue, {

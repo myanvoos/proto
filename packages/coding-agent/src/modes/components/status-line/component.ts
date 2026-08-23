@@ -1,31 +1,24 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type CompactionSettings, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
-import {
-	type Component,
-	type ComposerStyle,
-	claudeComposerStyle,
-	padding,
-	truncateToWidth,
-	visibleWidth,
-} from "@oh-my-pi/pi-tui";
-import { adjustHsv, formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
+import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import * as git from "../../../utils/git";
-import * as jj from "../../../utils/jj";
-import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
-import { calculateTokensPerSecond } from "../../../utils/token-rate";
 import { sanitizeStatusText } from "../../shared";
+import { withIcon } from "../../theme/icon-label";
 import { theme } from "../../theme/theme";
-import { type CompactionBoundaries, computeCompactionBoundaries } from "../../utils/context-usage";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { getPreset } from "./presets";
-import { renderSegment, type SegmentContext } from "./segments";
-import { getSeparator } from "./separators";
+import { focusExitBadge, renderSegment, type SegmentContext } from "./segments";
+import { segmentSeparator, stateSeparator } from "./state-grammar";
+import { calculateTokensPerSecond } from "./token-rate";
 import type {
 	EffectiveStatusLineSettings,
 	StatusLineSegmentId,
@@ -33,74 +26,67 @@ import type {
 	StatusLineSettings,
 } from "./types";
 
-/** The active Codex account fields retained between status refreshes. */
-export interface CodexResetUsageSnapshot {
-	/** When this usage report was observed, if supplied by the provider. */
-	observedAt?: number;
-	/** Weekly usage, its quota identity, and its previously scheduled reset deadline. */
-	sevenDay?: { percent: number; resetsAt?: number; tier?: string; plan?: string };
-	savedResets?: number;
-}
-
-const JJ_REFRESH_TTL_MS = 5000;
-const WATCHER_FAILURE_POLL_TTL_MS = 5000;
-
-/** A displayable limit after provider, account, model, and window filtering. */
-interface UsageWindowCandidate {
-	id?: string;
-	windowClass: "5h" | "7d" | "monthly";
-	fraction: number;
-	resetsAt?: number;
-}
-
-/** Limits sharing one model/tier scope, ranked as an indivisible display unit. */
-interface UsageScopeGroup {
-	priority: number;
-	tier?: string;
-	candidates: UsageWindowCandidate[];
-}
-
-function normalizeUsageScopeValue(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
-}
+/**
+ * Gap between the location group and the total-elapsed clock. Deliberately
+ * wider than the standard separator and dot-free, so the clock reads as its
+ * own quiet zone at the end of the line rather than one more segment.
+ */
+const SESSION_CLOCK_GAP = "      ";
 
 /**
- * Snapshot matching is stricter than the status display's fallback matching:
- * every known credential identifier must be present and equal or a workspace
- * sibling can mutate this account's baseline.
+ * One quiet-footline part: the segment id it came from plus its rendered
+ * content. Ids are StatusLineSegmentId values, or the synthetic "badges"
+ * (the animated badge slot) / "location_right" (owner-pinned right content).
  */
-function codexReportMatchesExactIdentity(report: UsageReport, identity: OAuthAccountIdentity | undefined): boolean {
-	if (!identity) return false;
-	const accountId = normalizeUsageScopeValue(identity.accountId);
-	const email = normalizeUsageScopeValue(identity.email);
-	const projectId = normalizeUsageScopeValue(identity.projectId);
-	const orgId = normalizeUsageScopeValue(identity.orgId);
-	if (!accountId && !email && !projectId && !orgId) return false;
+type QuietPart = { id: string; content: string };
 
-	const metadata = report.metadata ?? {};
-	const reportAccountId =
-		normalizeUsageScopeValue(metadata.accountId) ?? normalizeUsageScopeValue(metadata.account_id);
-	const reportProjectId =
-		normalizeUsageScopeValue(metadata.projectId) ?? normalizeUsageScopeValue(metadata.project_id);
-	if (accountId && reportAccountId !== accountId) return false;
-	if (email && normalizeUsageScopeValue(metadata.email) !== email) return false;
-	if (projectId && reportProjectId !== projectId) return false;
-	if (orgId && normalizeUsageScopeValue(metadata.orgId) !== orgId) return false;
-	return true;
+/**
+ * Shed order for the right group, as a rank rather than a boolean. Higher survives longer;
+ * everything unlisted ranks 0 and sheds first, right to left, which is the ordinary case.
+ *
+ * `subagents` (4) is the persistent running count — the last thing standing.
+ * `location_right` (3) is the owner-supplied zone; it is pushed LAST so without a rank it
+ * would always be the first casualty. `mode` (2) says which mode is live. `context_pct` (1)
+ * is the footline's one live value and reads as a whole thought after the others are gone.
+ */
+const RIGHT_PART_SHED_RANK: Record<string, number> = {
+	context_pct: 1,
+	mode: 2,
+	location_right: 3,
+	subagents: 4,
+};
+
+/** One segment's slot on the rendered quiet footline (0-based columns, end exclusive). */
+export interface QuietSegmentBounds {
+	id: string;
+	start: number;
+	end: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Context-usage memo
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Cheap structural fingerprint of a message's tokenizable content. O(blocks) —
- * only reads string `.length` and primitives, never copies or serializes.
- * Detects in-place growth of the streaming tail (and other in-place mutations)
- * so the cached `getContextUsage()` result is recomputed when — and only when —
- * the numbers it depends on change.
- */
-function messageFingerprint(msg: AgentMessage): string {
+function structuralTextSize(value: unknown): number {
+	if (typeof value === "string") return value.length;
+	if (typeof value === "number" || typeof value === "bigint") return 8;
+	if (typeof value === "boolean" || value === null || value === undefined) return 1;
+	if (Array.isArray(value)) {
+		let sum = 2;
+		for (const item of value) sum += 1 + structuralTextSize(item);
+		return sum;
+	}
+	if (typeof value === "object") {
+		let sum = 2;
+		for (const key in value as Record<string, unknown>) {
+			sum += key.length + 1 + structuralTextSize((value as Record<string, unknown>)[key]);
+		}
+		return sum;
+	}
+	return 1;
+}
+
+export function messageFingerprint(msg: AgentMessage): string {
 	const role = (msg as { role?: string }).role ?? "";
 	const ts = (msg as { timestamp?: number }).timestamp ?? 0;
 	let textLen = 0;
@@ -181,13 +167,7 @@ function messageFingerprint(msg: AgentMessage): string {
 				} else if (b.type === "toolCall") {
 					if (typeof b.name === "string") textLen += b.name.length;
 					if (b.arguments !== undefined) {
-						try {
-							textLen += JSON.stringify(b.arguments, (_key, value) =>
-								typeof value === "bigint" ? value.toString() : value,
-							).length;
-						} catch {
-							textLen += String(b.arguments).length;
-						}
+						textLen += structuralTextSize(b.arguments);
 					}
 				}
 			}
@@ -219,11 +199,11 @@ interface ContextUsageMemo {
 	lastFingerprint: string | undefined;
 	modelContextWindow: number;
 	contextUsageRevision: number;
-	usedTokens: number;
+	usedTokens: number | null;
 	contextWindow: number;
 	systemPromptRef: readonly string[] | undefined;
-	toolsRef: readonly any[] | undefined;
-	skillsRef: readonly any[] | undefined;
+	toolsRef: readonly unknown[] | undefined;
+	skillsRef: readonly unknown[] | undefined;
 }
 
 interface ActiveRepoCache {
@@ -234,17 +214,6 @@ interface ActiveRepoCache {
 	worktree: WorktreeContext | null;
 }
 
-interface BranchResolveRequest {
-	id: number;
-	cwd: string;
-	controller: AbortController;
-}
-
-interface JjResolveRequest {
-	id: number;
-	controller: AbortController;
-}
-
 interface WorktreeContext {
 	/** Primary-checkout (project) name shown by the path segment. */
 	projectName: string;
@@ -252,11 +221,6 @@ interface WorktreeContext {
 	worktreeName: string;
 }
 
-/**
- * Project + worktree-dir names when `cwd` is a linked git worktree, else null.
- * The project name comes from the shared primary checkout; bare-repo worktrees
- * resolve to the shared `foo.git` dir, so a trailing `.git` is stripped.
- */
 function resolveWorktreeContext(cwd: string): WorktreeContext | null {
 	const worktree = git.repo.linkedWorktreeSync(cwd);
 	if (!worktree) return null;
@@ -266,26 +230,12 @@ function resolveWorktreeContext(cwd: string): WorktreeContext | null {
 	return { projectName, worktreeName: path.basename(worktree.root) };
 }
 
-/**
- * Per-{@link AgentSession} active-processing meter for the `time_spent`
- * segment. `activeMs` is the union of every completed `agent_start`→
- * `agent_end` window; `activeStartedAt` is the start timestamp of the
- * currently-running window, or `null` when idle.
- *
- * `sessionFile` snapshots the loaded session-file path at meter-creation
- * time. `AgentSession.switchSession` (/resume, /move, ACP fork, RPC
- * `switch_session`, extension `switchSession`) mutates the loaded file
- * under the same {@link AgentSession} ref, so the WeakMap key alone
- * cannot tell two conversations apart. `#meter()` compares this snapshot
- * against the live `session.sessionFile`, and a real-to-real change
- * starts the meter fresh instead of crediting the new conversation with
- * the previous one's accumulated active time. The undefined → real
- * first-save transition does not reset, since the session identity has
- * not changed.
- */
 interface ActiveMeter {
 	activeMs: number;
 	activeStartedAt: number | null;
+	/** Duration of the most recently COMPLETED run window — what the location
+	 * line's stopped clock (`✓ 0:21`) shows once the agent yields. */
+	lastRunMs: number;
 	sessionFile: string | undefined;
 }
 
@@ -293,36 +243,8 @@ const EMPTY_MESSAGES: readonly AgentMessage[] = [];
 const STATUS_USAGE_START_DELAY_MS = 0;
 const STATUS_USAGE_REFRESH_TIMEOUT_MS = 2_000;
 
-function isContextSegment(segment: StatusLineSegmentId): boolean {
-	return segment === "context_pct" || segment === "context_total";
-}
-
 function hasContextSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("context_pct") || segments.includes("context_total");
-}
-
-function hasNonContextSegment(segments: readonly StatusLineSegmentId[]): boolean {
-	for (const segment of segments) {
-		if (!isContextSegment(segment)) return true;
-	}
-	return false;
-}
-
-function removeContextSegments(parts: string[], segments: StatusLineSegmentId[]): void {
-	let writeIndex = 0;
-	for (let readIndex = 0; readIndex < segments.length; readIndex++) {
-		const segment = segments[readIndex];
-		if (isContextSegment(segment)) continue;
-		parts[writeIndex] = parts[readIndex];
-		segments[writeIndex] = segment;
-		writeIndex++;
-	}
-	parts.length = writeIndex;
-	segments.length = writeIndex;
-}
-
-function formatEmbeddedContextPercent(percent: number): string {
-	return `${percent > 0 && percent < 1 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
 function hasGitSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("git");
@@ -339,106 +261,72 @@ function hasGitBackedSegment(segments: readonly StatusLineSegmentId[]): boolean 
 	return hasGitSegment(segments) || hasPrSegment(segments);
 }
 
+function scopedTimeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(new Error(`scoped timeout after ${ms}ms`)), ms);
+	return {
+		signal: controller.signal,
+		cancel: () => clearTimeout(timer),
+	};
+}
+
+function withScopedTimeoutSignal<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+	const { signal, cancel } = scopedTimeoutSignal(ms);
+	return fn(signal).finally(cancel);
+}
+
+function formatClock(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const seconds = totalSeconds % 60;
+	const minutes = Math.floor(totalSeconds / 60) % 60;
+	const hours = Math.floor(totalSeconds / 3600);
+	if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+	return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+type ResolvedContextLimit = { tokens: number; kind: "window" | "compaction" };
+
+function resolveContextLimit(contextWindow: number, compaction: CompactionSettings): ResolvedContextLimit {
+	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return { tokens: 0, kind: "window" };
+	if (!compaction.enabled || compaction.strategy === ("off" as CompactionSettings["strategy"])) {
+		return { tokens: contextWindow, kind: "window" };
+	}
+	const threshold = resolveThresholdTokens(contextWindow, compaction);
+	// A non-positive threshold means no usable fire point was configured.
+	if (!(threshold > 0)) return { tokens: contextWindow, kind: "window" };
+	return { tokens: Math.min(threshold, contextWindow), kind: "compaction" };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // StatusLineComponent
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class StatusLineComponent implements Component {
-	#standalone: false | "full" | "left-only" = false;
-	#standaloneGap = false;
-	#autocompleteActiveProbe: (() => boolean) | undefined;
-	#widthEpochRevision = 0;
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
+	#cachedPrBranch: string | null = null;
 	#cachedBranchRepoId: string | null | undefined = undefined;
 	#cachedBranchCwd: string | undefined = undefined;
-	#cachedBranchHasGitRepository = false;
-	// In-flight reftable resolve slot. Ownership is the launch id, not the cwd:
-	// two live resolves can share a cwd string across an invalidation, and a
-	// stale one must never free (or poison) a slot it no longer owns.
-	#branchResolveSeq = 0;
-	#branchResolveActive: BranchResolveRequest | undefined = undefined;
-	// Bumped on every branch-cache reset (#invalidateGitCaches — a HEAD move or
-	// repo-context change). An in-flight reftable resolve captures this at
-	// launch; a mismatch on resolve means the cache was invalidated underneath
-	// it (a newer resolve superseded it), so its result is stale and must be
-	// dropped rather than overwrite the value the newer resolve committed.
-	// Mirrors #jjCacheGeneration / #getJjBranch in this file.
-	// Timestamp of the latest branch read; only bounds cache freshness when the
-	// HEAD watcher could not be installed.
-	#branchLastFetch: number | undefined = undefined;
-	// Bumped on every branch-cache reset (invalidateGitCaches — a HEAD move or
-	// repo-context change). An in-flight reftable resolve captures this at
-	// launch; a mismatch on resolve means the cache was invalidated underneath
-	// it (a newer resolve superseded it), so its result is stale and must be
-	// dropped rather than overwrite the value the newer resolve committed.
-	// Mirrors #jjCacheGeneration / #getJjBranch in this file.
-	#branchCacheGeneration = 0;
-	#gitUnwatch: (() => void) | null = null;
-	#gitWatcherUnavailable = false;
+	#gitWatcher: fs.FSWatcher | null = null;
 	#onBranchChange: (() => void) | null = null;
 	#disposed = false;
 	#autoCompactEnabled: boolean = true;
-	/** Pulse timer for the running-speculation indicator; live only while speculation runs. */
-	#speculationBlinkTimer: NodeJS.Timeout | undefined;
-	#speculationBlinkOn = true;
 	#hookStatuses: Map<string, string> = new Map();
 	#subagentCount: number = 0;
-	/**
-	 * Active-processing accounting for the `time_spent` segment, keyed per
-	 * {@link AgentSession} so the focus-controller mid-turn attach path
-	 * cannot leak an unmatched synthesized `agent_start` from a subagent
-	 * into the main session's meter.
-	 *
-	 * Each meter is `{ activeMs, activeStartedAt }`: `activeMs` is the union
-	 * of every completed `agent_start`→`agent_end` window since
-	 * {@link resetActiveTime} last reset it; `activeStartedAt` is the start
-	 * timestamp of the currently-running window (or `null` when idle).
-	 * `getActiveMs()` returns `activeMs + (now - activeStartedAt)` for the
-	 * currently-attached session, so the counter ticks live during a turn
-	 * and freezes the instant the agent yields.
-	 *
-	 * WeakMap so meters die with their session (e.g. a parked subagent
-	 * dropped from the registry); the main session's meter survives focus
-	 * round-trips because the same {@link AgentSession} ref is reused.
-	 */
 	#activeMeters: WeakMap<AgentSession, ActiveMeter> = new WeakMap();
 	#planModeStatus: { enabled: boolean; paused: boolean } | null = null;
-	#loopModeStatus: SegmentContext["loopMode"] = null;
+	#loopModeStatus: { enabled: boolean } | null = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
-	#vibeModeStatus: { enabled: boolean } | null = null;
-	/**
-	 * Injected aggregator that returns the aggregate tok/s of this session's
-	 * live vibe worker sessions, or null when no workers are streaming. Kept as
-	 * a callback so the render layer doesn't import the heavy vibe/task
-	 * dependency graph; interactive-mode wires it to VibeSessionRegistry.
-	 */
-	#vibeWorkerTokenRate: (() => number | null) | null = null;
 	#focusedAgentId: string | undefined;
+	#previewTitle: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
 	// Git status caching (1s TTL)
-	#cachedGitStatus: { staged: number; unstaged: number; untracked: number } | null = null;
+	#cachedGitStatus: git.GitStatusSummary | null = null;
 	#cachedGitStatusCwd: string | undefined = undefined;
 	#gitStatusLastFetch = 0;
 	#gitStatusInFlightCwd: string | undefined = undefined;
-	#jjRoot: string | null | undefined = undefined;
-	#jjRootCwd: string | undefined = undefined;
-	#cachedJjBranch: string | null = null;
-	#jjBranchLastFetch = 0;
-	#jjResolveSeq = 0;
-	#jjBranchActive: JjResolveRequest | undefined = undefined;
-	#cachedJjStatus: { staged: number; unstaged: number; untracked: number } | null = null;
-	#jjStatusLastFetch = 0;
-	#jjStatusActive: JjResolveRequest | undefined = undefined;
-	// Bumped on every jj-cache reset — a cwd switch (#jjRootFor) or a HEAD /
-	// bookmark move (#invalidateGitCaches). An in-flight jj query captures this
-	// at launch; a mismatch on resolve means the caches were reset underneath it
-	// (including a reset that re-resolves to the SAME root, which a root-equality
-	// check cannot detect), so the result is stale and must be dropped rather
-	// than poison the fresh cache or advance its throttle.
-	#jjCacheGeneration = 0;
 
 	// PR lookup caching (invalidated on branch/repo context changes)
 	#cachedPr: { number: number; url: string } | null | undefined = undefined;
@@ -454,22 +342,19 @@ export class StatusLineComponent implements Component {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
-		monthly?: { percent: number; resetHours?: number };
 	} | null = null;
 	#cachedUsageContextKey: string | null = null;
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
 	#usageStartTimer: Timer | null = null;
-	// A timed-out request may still resolve. Its result remains eligible only
-	// until a newer request has applied.
-	#usageRefreshSequence = 0;
-	#latestAppliedUsageRefreshSequence = 0;
-	#codexResetSnapshots = new Map<string, CodexResetUsageSnapshot>();
+
+	// Serving-account memo keyed on the cheap facts that can change the answer.
+	#cachedServingAccount: {
+		key: string;
+		value: { label: string; storedCount: number; isPrediction: boolean } | null;
+	} | null = null;
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
-	// `getContextUsage()` anchors on the last assistant's real prompt-token
-	// count (matching the provider and the `/context` panel), so a stable
-	// message list + model window yields a stable result we can return verbatim.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
 	constructor(private session: AgentSession) {
@@ -483,10 +368,8 @@ export class StatusLineComponent implements Component {
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-			contextLine: settings.get("statusLine.contextLine"),
 		};
 	}
-
 	#gitEnabled(): boolean {
 		return settings.get("git.enabled");
 	}
@@ -498,7 +381,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	#resolveActiveRepoCache(): ActiveRepoCache {
-		const projectDir = getProjectDir();
+		const projectDir = this.session.sessionManager?.getCwd?.() ?? getProjectDir();
 		if (this.#activeRepoCache?.projectDir === projectDir) {
 			return this.#activeRepoCache;
 		}
@@ -528,16 +411,6 @@ export class StatusLineComponent implements Component {
 		this.invalidate();
 	}
 
-	/**
-	 * Drop a meter's in-flight window when the newly-attached session is no
-	 * longer streaming. Handles the case where the focus controller
-	 * synthesized an `agent_start` on a mid-turn attach but the matching
-	 * real `agent_end` never reached us — the user detached before it
-	 * fired, and re-focusing later (after the agent finished) would
-	 * otherwise tick over the entire detached gap. Crediting that gap to
-	 * `activeMs` would be wrong (the agent finished at some point we never
-	 * observed), so the window is dropped rather than folded in.
-	 */
 	#closeStaleActiveWindow(): void {
 		const meter = this.#meter();
 		if (meter.activeStartedAt === null) return;
@@ -545,8 +418,8 @@ export class StatusLineComponent implements Component {
 		meter.activeStartedAt = null;
 	}
 
-	updateSettings(settings: StatusLineSettings): void {
-		this.#settings = settings;
+	updateSettings(settingsUpdate: StatusLineSettings): void {
+		this.#settings = settingsUpdate;
 		this.#effectiveSettings = undefined;
 		if (this.#onBranchChange) this.#setupGitWatcher();
 	}
@@ -560,81 +433,50 @@ export class StatusLineComponent implements Component {
 	}
 
 	setSubagentCount(count: number): void {
-		this.#subagentCount = count;
+		this.#subagentCount = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
 	}
 
-	/**
-	 * Compatibility shim for callers predating the simplified subagent badge.
-	 * The status line now intentionally shows only the active count.
-	 */
-	setSubagentHubHint(_hint: string | undefined): void {}
-
-	/** Active subagent count as currently displayed. */
+	/** Currently executing subagents shown on every interactive status surface. */
 	get subagentCount(): number {
 		return this.#subagentCount;
 	}
 
-	/**
-	 * Reset the currently-attached session's active-time accumulators so
-	 * the `time_spent` segment starts from zero. Called from `/clear`,
-	 * fresh-session paths; both the completed
-	 * accumulator and any in-flight window are dropped, so a reset
-	 * mid-turn ignores the running window (the matching `markActivityEnd`
-	 * will see an idle meter and no-op).
-	 */
 	resetActiveTime(): void {
 		const meter = this.#meter();
 		meter.activeMs = 0;
 		meter.activeStartedAt = null;
+		meter.lastRunMs = 0;
 	}
 
-	/**
-	 * Mark the currently-attached session as having started a unit of
-	 * active processing. Idempotent: a second start while a window is
-	 * already open is a no-op, so reentrant `agent_start` events (e.g.
-	 * nested auto-compaction loops, focus-controller mid-turn attach onto
-	 * an already-running window) do not double-count.
-	 */
 	markActivityStart(): void {
 		const meter = this.#meter();
 		if (meter.activeStartedAt !== null) return;
 		meter.activeStartedAt = Date.now();
 	}
 
-	/**
-	 * Close the currently-attached session's open active-processing
-	 * window, folding its elapsed time into the accumulator. Idempotent
-	 * when the meter is already idle so callers can fire it on every
-	 * `agent_end` without guarding.
-	 */
 	markActivityEnd(): void {
 		const meter = this.#meter();
 		if (meter.activeStartedAt === null) return;
-		meter.activeMs += Math.max(0, Date.now() - meter.activeStartedAt);
+		const windowMs = Math.max(0, Date.now() - meter.activeStartedAt);
+		meter.activeMs += windowMs;
+		meter.lastRunMs = windowMs;
 		meter.activeStartedAt = null;
 	}
 
-	/**
-	 * Snapshot of total active-processing time for the currently-attached
-	 * session, including any in-flight window. Exposed for the segment
-	 * context builder; tests assert against this too.
-	 */
+	getRunClock(): { runningMs: number | null; lastRunMs: number } {
+		const meter = this.#meter();
+		return {
+			runningMs: meter.activeStartedAt === null ? null : Math.max(0, Date.now() - meter.activeStartedAt),
+			lastRunMs: meter.lastRunMs,
+		};
+	}
+
 	getActiveMs(): number {
 		const meter = this.#meter();
 		if (meter.activeStartedAt === null) return meter.activeMs;
 		return meter.activeMs + Math.max(0, Date.now() - meter.activeStartedAt);
 	}
 
-	/**
-	 * Return (lazily creating) the meter for the currently-attached
-	 * session. Detects an in-place session-file swap under the same
-	 * {@link AgentSession} ref (`switchSession` paths: `/resume`, `/move`,
-	 * ACP fork/load, RPC `switch_session`, extension `switchSession`):
-	 * a real-to-real change starts the meter fresh so the new
-	 * conversation does not inherit the previous one's accumulated active
-	 * time. The undefined → real first-save transition only refreshes the
-	 * snapshot — the conversation identity has not changed.
-	 */
 	#meter(): ActiveMeter {
 		const currentFile = this.session.sessionFile;
 		let meter = this.#activeMeters.get(this.session);
@@ -648,7 +490,7 @@ export class StatusLineComponent implements Component {
 			}
 		}
 		if (!meter) {
-			meter = { activeMs: 0, activeStartedAt: null, sessionFile: currentFile };
+			meter = { activeMs: 0, activeStartedAt: null, lastRunMs: 0, sessionFile: currentFile };
 			this.#activeMeters.set(this.session, meter);
 		}
 		return meter;
@@ -658,27 +500,12 @@ export class StatusLineComponent implements Component {
 		this.#planModeStatus = status ?? null;
 	}
 
-	setLoopModeStatus(status: NonNullable<SegmentContext["loopMode"]> | undefined): void {
+	setLoopModeStatus(status: { enabled: boolean } | undefined): void {
 		this.#loopModeStatus = status ?? null;
 	}
 
 	setGoalModeStatus(status: { enabled: boolean; paused: boolean } | undefined): void {
 		this.#goalModeStatus = status ?? null;
-	}
-
-	setVibeModeStatus(status: { enabled: boolean } | undefined): void {
-		this.#vibeModeStatus = status ?? null;
-	}
-
-	/**
-	 * Inject the aggregator that returns the aggregate tok/s of this session's
-	 * live vibe worker sessions (null when no workers are streaming). Wired by
-	 * interactive-mode, which owns the VibeSessionRegistry coupling, so the
-	 * render layer stays off the heavy vibe/task dependency graph. Pass
-	 * `undefined` to clear.
-	 */
-	setVibeWorkerTokenRateProvider(provider: (() => number | null) | undefined): void {
-		this.#vibeWorkerTokenRate = provider ?? null;
 	}
 
 	setHookStatus(key: string, text: string | undefined): void {
@@ -695,84 +522,45 @@ export class StatusLineComponent implements Component {
 	}
 
 	#setupGitWatcher(): void {
-		this.#retireGitWatcher();
-		this.#gitWatcherUnavailable = false;
+		if (this.#gitWatcher) {
+			this.#gitWatcher.close();
+			this.#gitWatcher = null;
+		}
 
 		if (!this.#gitEnabled() || !this.#hasGitBackedSegment()) {
-			this.invalidateGitCaches();
+			this.#invalidateGitCaches();
 			return;
 		}
 
 		const { effectiveGitCwd } = this.#resolveActiveRepoCache();
 		const repository = git.repo.resolveSync(effectiveGitCwd);
-		if (!repository) {
-			// There is no path to watch yet. Cache the negative result only for the
-			// fallback poll interval so a later `git init` becomes visible without
-			// generic invalidations or a render-path probe on every paint.
-			this.#gitWatcherUnavailable = true;
-			return;
-		}
+		if (!repository) return;
 
-		// git swaps HEAD via `HEAD.lock` + atomic rename. That both unlinks the
-		// HEAD inode (freezing a file-bound `fs.watch` after the first switch —
-		// issue #8412) and, on Bun/Linux, permanently wedges an inotify-backed
-		// directory watch after the first rename event (oven-sh/bun#24875).
-		// `git.head.watch` stat-polls the HEAD path (or the reftable dir), which
-		// survives inode swaps on every platform. A vanished repo surfaces as a
-		// stat change too, so there is no separate watcher error path.
+		const watchPath = git.repo.isReftableSync(repository)
+			? path.join(repository.gitDir, "reftable")
+			: repository.headPath;
+
 		try {
-			const unwatch = git.head.watch(repository, () => {
-				if (this.#disposed || this.#gitUnwatch !== unwatch) return;
-				this.invalidateGitCaches();
-				this.#onBranchChange?.();
+			this.#gitWatcher = fs.watch(watchPath, () => {
+				if (this.#disposed) return;
+				this.#invalidateGitCaches();
+				if (this.#onBranchChange) {
+					this.#onBranchChange();
+				}
 			});
-			this.#gitUnwatch = unwatch;
 		} catch {
-			this.#gitWatcherUnavailable = true;
+			this.#invalidateGitCaches();
 		}
-	}
-
-	#retireGitWatcher(): void {
-		const unwatch = this.#gitUnwatch;
-		this.#gitUnwatch = null;
-		unwatch?.();
 	}
 
 	dispose(): void {
 		this.#disposed = true;
-		this.#branchResolveActive?.controller.abort();
-		this.#branchResolveActive = undefined;
-		this.#resetJjRequests();
 		this.#onBranchChange = null;
-		this.#stopSpeculationBlink();
 		this.#clearUsageStartTimer();
-		this.#codexResetSnapshots.clear();
-		this.#retireGitWatcher();
-	}
-
-	/**
-	 * Drive the context segment's pulse while a background speculative
-	 * compaction runs: a slow toggle that invalidates and repaints through the
-	 * same host callback async git/PR resolves use. Stops (and resets phase)
-	 * the first render after speculation leaves the running state.
-	 */
-	#syncSpeculationBlink(state: "idle" | "running" | "armed"): void {
-		if (state === "running" && !this.#disposed) {
-			this.#speculationBlinkTimer ??= setInterval(() => {
-				this.#speculationBlinkOn = !this.#speculationBlinkOn;
-				this.invalidate();
-				this.#onBranchChange?.();
-			}, 600);
-			return;
+		if (this.#gitWatcher) {
+			this.#gitWatcher.close();
+			this.#gitWatcher = null;
 		}
-		this.#stopSpeculationBlink();
-	}
-
-	#stopSpeculationBlink(): void {
-		if (!this.#speculationBlinkTimer) return;
-		clearInterval(this.#speculationBlinkTimer);
-		this.#speculationBlinkTimer = undefined;
-		this.#speculationBlinkOn = true;
 	}
 
 	#clearUsageStartTimer(): void {
@@ -782,19 +570,23 @@ export class StatusLineComponent implements Component {
 	}
 
 	invalidate(): void {
-		this.#widthEpochRevision++;
-		// Generic repaint invalidation (theme change, message event, model
-		// switch, …). Must NOT abort or restart a live reftable HEAD/PR resolve:
-		// the render path self-invalidates via cwd/context cache-miss checks, so
-		// a generic paint only needs to re-render — not tear down in-flight VCS
-		// work. Aborting here would fan out a new git subprocess on every agent
-		// event, re-introducing the render-path spawn churn the async resolve
-		// was designed to avoid. Explicit Git/repository invalidation (watcher
-		// HEAD-move, cwd/repo switch) goes through {@link invalidateGitCaches}.
-		// A tool may open, close, or merge a PR without moving HEAD. Expire the
-		// settled PR context on ordinary activity while leaving HEAD work intact.
-		this.#cachedPrContext = undefined;
+		this.#invalidateGitCaches();
 	}
+
+	/**
+	 * Repo/cwd switch: drop every cached answer derived from the working
+	 * directory and re-arm the git watcher. Called by
+	 * `InteractiveMode.applyCwdChange`; generic repaints use {@link invalidate}.
+	 */
+	applyCwdChange(): void {
+		this.#activeRepoCache = undefined;
+		this.#cachedGitStatus = null;
+		this.#cachedGitStatusCwd = undefined;
+		this.#gitStatusLastFetch = 0;
+		this.#invalidateGitCaches();
+		this.#setupGitWatcher();
+	}
+
 	#invalidateSessionCaches(): void {
 		this.#clearUsageStartTimer();
 		this.#cachedUsage = null;
@@ -805,143 +597,33 @@ export class StatusLineComponent implements Component {
 		this.#lastTokensPerSecondTimestamp = null;
 	}
 
-	/**
-	 * Explicit Git/repository cache invalidation. Aborts any in-flight
-	 * reftable HEAD/PR resolve, bumps the stale-result generation, and drops
-	 * the branch/PR/jj caches so the next render refetches from disk. Called
-	 * by the git watcher on a HEAD move and by {@link applyCwdChange} on a
-	 * repo/cwd switch. Generic repaints use {@link invalidate} instead and
-	 * must never reach this path.
-	 */
-	invalidateGitCaches(): void {
+	#invalidateGitCaches(): void {
 		this.#cachedBranch = undefined;
 		this.#cachedBranchRepoId = undefined;
 		this.#cachedBranchCwd = undefined;
-		this.#cachedBranchHasGitRepository = false;
-		// Abort before releasing the in-flight slot. Releasing alone would allow
-		// repeated invalidations to fan out still-running git subprocesses.
-		this.#branchResolveActive?.controller.abort();
-		this.#branchResolveActive = undefined;
-		this.#branchLastFetch = undefined;
-		this.#branchCacheGeneration++;
 		this.#cachedPrContext = undefined;
-		// jj label/status share the git segment's lifecycle: a HEAD move (e.g. a
-		// colocated `jj new`/bookmark move) must drop the throttled jj caches too,
-		// mirroring #jjRootFor's per-cwd reset so the next render refetches.
-		this.#resetJjRequests();
-		this.#jjRoot = undefined;
-		this.#jjRootCwd = undefined;
-		this.#cachedJjBranch = null;
-		this.#jjBranchLastFetch = 0;
-		this.#cachedJjStatus = null;
-		this.#jjStatusLastFetch = 0;
-		this.#jjCacheGeneration++;
-	}
-
-	/**
-	 * Re-point the status line's VCS watcher and caches at a new cwd/repository.
-	 * Atomically retires the old watcher/listeners, invalidates VCS caches and
-	 * in-flight controllers, then runs watcher setup for the new cwd and requests
-	 * a repaint. Called by {@link InteractiveMode.applyCwdChange} after the
-	 * SessionManager's cwd has moved — the watcher ownership always follows the
-	 * effective cwd/repo, so a stale watcher for the previous repo can never
-	 * invalidate the new one. Generic repaints use {@link invalidate} and must
-	 * never retire the watcher or abort a live resolve.
-	 */
-	applyCwdChange(): void {
-		this.#retireGitWatcher();
-		this.invalidateGitCaches();
-		this.#setupGitWatcher();
-		this.#onBranchChange?.();
-	}
-
-	#resetJjRequests(): void {
-		this.#jjBranchActive?.controller.abort();
-		this.#jjBranchActive = undefined;
-		this.#jjStatusActive?.controller.abort();
-		this.#jjStatusActive = undefined;
 	}
 	#getCurrentBranch(effectiveGitCwd?: string): string | null {
 		if (!this.#gitEnabled()) return null;
 
 		const gitCwd = effectiveGitCwd ?? this.#resolveActiveRepoCache().effectiveGitCwd;
-		const fallbackCacheExpired =
-			this.#gitWatcherUnavailable &&
-			(this.#branchLastFetch === undefined || Date.now() - this.#branchLastFetch >= WATCHER_FAILURE_POLL_TTL_MS);
-		if (this.#cachedBranch !== undefined && this.#cachedBranchCwd === gitCwd && !fallbackCacheExpired) {
+		if (this.#cachedBranch !== undefined && this.#cachedBranchCwd === gitCwd) {
 			return this.#cachedBranch;
 		}
 
-		// A reftable repo resolves HEAD by spawning `git symbolic-ref` +
-		// `git rev-parse` — the unbounded spawn that froze the render path (F7).
-		// A non-reftable repo resolves HEAD with cheap sync filesystem reads, so
-		// only the reftable branch moves off the render path, mirroring
-		// #getGitStatus and #getJjBranch in this file.
-		const repository = git.repo.resolveSync(gitCwd);
-		if (repository && git.repo.isReftableSync(repository)) {
-			if (this.#branchResolveActive !== undefined) {
-				return this.#branchResolveActive.cwd === gitCwd && this.#cachedBranchCwd === gitCwd
-					? (this.#cachedBranch ?? null)
-					: null;
-			}
-			const request: BranchResolveRequest = {
-				id: ++this.#branchResolveSeq,
-				cwd: gitCwd,
-				controller: new AbortController(),
-			};
-			this.#branchResolveActive = request;
-			// Capture the cache generation at launch. invalidateGitCaches bumps it
-			// on a HEAD move and clears the in-flight slot, so a fresher resolve can
-			// start while this one is still pending. Without a generation check the
-			// older resolve would finish later, install its stale HEAD, and clear the
-			// slot — dropping the fresh result and freezing the status line on the
-			// pre-change branch. Mirrors #jjCacheGeneration / #getJjBranch.
-			const generation = this.#branchCacheGeneration;
-			(async () => {
-				let next: string | null = null;
-				let repoId: string | null = null;
-				try {
-					const headState = await git.head.resolve(gitCwd, request.controller.signal);
-					repoId = headState?.headPath ?? null;
-					next = !headState
-						? null
-						: headState.kind === "ref"
-							? (headState.branchName ?? headState.ref)
-							: "detached";
-				} catch {
-					next = null;
-				} finally {
-					// Release the slot only if this resolve still owns it: after an
-					// invalidation a fresher resolve may hold it, and freeing that
-					// slot here would let a third same-generation resolve launch and
-					// race the fresh one to the cache commit.
-					if (this.#branchResolveActive?.id === request.id) this.#branchResolveActive = undefined;
-				}
-				// Only the latest generation may update the cache; a mismatch means a
-				// newer resolve superseded this one (or the component disposed).
-				if (this.#branchCacheGeneration !== generation || this.#disposed) return;
-				const prev = this.#cachedBranchCwd === gitCwd ? this.#cachedBranch : undefined;
-				this.#cachedBranchCwd = gitCwd;
-				this.#cachedBranchRepoId = repoId;
-				this.#cachedBranchHasGitRepository = next === null;
-				this.#cachedBranch = next;
-				this.#branchLastFetch = Date.now();
-				if (prev !== next && this.#onBranchChange) this.#onBranchChange();
-			})();
-			return this.#cachedBranchCwd === gitCwd ? (this.#cachedBranch ?? null) : null;
-		}
-
-		// Non-reftable: cheap sync filesystem read, safe on the render path.
 		const head = git.head.resolveSync(gitCwd);
-		const gitHeadPath = head?.headPath ?? null;
+		const headPath = head?.headPath ?? null;
 		this.#cachedBranchCwd = gitCwd;
-		this.#cachedBranchRepoId = gitHeadPath;
-		this.#branchLastFetch = Date.now();
-		if (!head) {
+		this.#cachedBranchRepoId = headPath;
+		if (head?.kind !== "ref") {
 			this.#cachedBranch = null;
+			this.#cachedPrBranch = null;
 			return null;
 		}
-		this.#cachedBranch = head.kind === "ref" ? (head.branchName ?? head.ref) : "detached";
+
+		this.#cachedBranch = head.branchName ?? head.ref ?? null;
+		this.#cachedPrBranch = head.branchName;
+
 		return this.#cachedBranch ?? null;
 	}
 
@@ -968,7 +650,7 @@ export class StatusLineComponent implements Component {
 		return branch === this.#defaultBranch;
 	}
 
-	#getGitStatus(effectiveGitCwd?: string): { staged: number; unstaged: number; untracked: number } | null {
+	#getGitStatus(effectiveGitCwd?: string): git.GitStatusSummary | null {
 		if (!this.#gitEnabled()) return null;
 
 		const gitCwd = effectiveGitCwd ?? this.#resolveActiveRepoCache().effectiveGitCwd;
@@ -982,117 +664,22 @@ export class StatusLineComponent implements Component {
 		this.#gitStatusInFlightCwd = gitCwd;
 
 		(async () => {
-			let nextStatus: { staged: number; unstaged: number; untracked: number } | null = null;
+			let nextStatus: git.GitStatusSummary | null = null;
 			try {
 				nextStatus = await git.status.summary(gitCwd);
 			} catch {
 				nextStatus = null;
 			} finally {
 				if (this.#gitStatusInFlightCwd === gitCwd) {
-					const prev = this.#cachedGitStatusCwd === gitCwd ? this.#cachedGitStatus : null;
 					this.#cachedGitStatus = nextStatus;
 					this.#cachedGitStatusCwd = gitCwd;
 					this.#gitStatusLastFetch = Date.now();
 					this.#gitStatusInFlightCwd = undefined;
-					if (!this.#disposed && this.#onBranchChange && JSON.stringify(prev) !== JSON.stringify(nextStatus)) {
-						this.#onBranchChange();
-					}
 				}
 			}
 		})();
 
 		return this.#cachedGitStatusCwd === gitCwd ? this.#cachedGitStatus : null;
-	}
-
-	// Resolve (and cache per cwd) the jj workspace root, resetting both jj caches
-	// on a cwd change so a directory switch refetches label + status.
-	#jjRootFor(cwd: string): string | null {
-		if (this.#jjRoot === undefined || this.#jjRootCwd !== cwd) {
-			this.#jjRootCwd = cwd;
-			this.#jjRoot = jj.repo.rootSync(cwd);
-			this.#cachedJjBranch = null;
-			this.#jjBranchLastFetch = 0;
-			this.#cachedJjStatus = null;
-			this.#jjStatusLastFetch = 0;
-			this.#jjCacheGeneration++;
-		}
-		return this.#jjRoot;
-	}
-
-	// jj working-copy bookmark label (nearest bookmark, change-id fallback), shown
-	// in the `git` segment where git HEAD is detached/absent under jj. Throttled,
-	// cached, and repaints on resolve.
-	#getJjBranch(effectiveGitCwd?: string): string | null {
-		const cwd = effectiveGitCwd ?? this.#resolveActiveRepoCache().effectiveGitCwd;
-		const root = this.#jjRootFor(cwd);
-		if (!root) return null;
-		if (this.#jjBranchActive || Date.now() - this.#jjBranchLastFetch < JJ_REFRESH_TTL_MS) {
-			return this.#cachedJjBranch;
-		}
-		const request: JjResolveRequest = {
-			id: ++this.#jjResolveSeq,
-			controller: new AbortController(),
-		};
-		this.#jjBranchActive = request;
-		const generation = this.#jjCacheGeneration;
-		(async () => {
-			let next: string | null = null;
-			try {
-				next = await jj.workingCopy.label(root, {
-					signal: request.controller.signal,
-					timeoutMs: jj.JJ_COMMAND_TIMEOUT_MS,
-				});
-			} finally {
-				if (this.#jjBranchActive?.id === request.id) this.#jjBranchActive = undefined;
-				// Advance the throttle only if no reset raced this query; a reset
-				// leaves LastFetch at 0 so the current root refetches instead of
-				// being throttled on a superseded result.
-				if (this.#jjCacheGeneration === generation) this.#jjBranchLastFetch = Date.now();
-			}
-			// Drop a result whose caches were reset mid-flight — a repo switch OR a
-			// same-root HEAD/bookmark move — so a superseded label never lands in
-			// the live cache.
-			if (this.#jjCacheGeneration !== generation || this.#disposed) return;
-			const changed = next !== this.#cachedJjBranch;
-			this.#cachedJjBranch = next;
-			if (changed) this.#onBranchChange?.();
-		})();
-		return this.#cachedJjBranch;
-	}
-
-	// jj working-copy status counts (`@` vs its parent), used in place of git
-	// status in a jj repo where `git status` has no `.git` to read. Throttled,
-	// cached, and repaints on resolve like #getJjBranch.
-	#getJjStatus(effectiveGitCwd?: string): { staged: number; unstaged: number; untracked: number } | null {
-		const cwd = effectiveGitCwd ?? this.#resolveActiveRepoCache().effectiveGitCwd;
-		const root = this.#jjRootFor(cwd);
-		if (!root) return null;
-		if (this.#jjStatusActive || Date.now() - this.#jjStatusLastFetch < JJ_REFRESH_TTL_MS) {
-			return this.#cachedJjStatus;
-		}
-		const request: JjResolveRequest = {
-			id: ++this.#jjResolveSeq,
-			controller: new AbortController(),
-		};
-		this.#jjStatusActive = request;
-		const generation = this.#jjCacheGeneration;
-		(async () => {
-			let next: { staged: number; unstaged: number; untracked: number } | null = null;
-			try {
-				next = await jj.status.summary(root, {
-					signal: request.controller.signal,
-					timeoutMs: jj.JJ_COMMAND_TIMEOUT_MS,
-				});
-			} finally {
-				if (this.#jjStatusActive?.id === request.id) this.#jjStatusActive = undefined;
-				if (this.#jjCacheGeneration === generation) this.#jjStatusLastFetch = Date.now();
-			}
-			if (this.#jjCacheGeneration !== generation || this.#disposed) return;
-			const prev = this.#cachedJjStatus;
-			this.#cachedJjStatus = next;
-			if (JSON.stringify(prev) !== JSON.stringify(next)) this.#onBranchChange?.();
-		})();
-		return this.#cachedJjStatus;
 	}
 
 	#lookupPr(effectiveGitCwd?: string): { number: number; url: string } | null {
@@ -1114,8 +701,10 @@ export class StatusLineComponent implements Component {
 			return null;
 		}
 
-		// Don't look up if detached, default branch, or already in flight.
-		if (branch === "detached" || this.#isDefaultBranch(branch, gitCwd) || this.#prLookupInFlight) {
+		// Don't look up without a plain branch to look up BY (detached), on the
+		// default branch, or with one in flight.
+		const lookupBranch = this.#cachedPrBranch;
+		if (!lookupBranch || this.#isDefaultBranch(lookupBranch, gitCwd) || this.#prLookupInFlight) {
 			return stalePr ?? null;
 		}
 
@@ -1123,7 +712,6 @@ export class StatusLineComponent implements Component {
 		const lookupContext = currentContext;
 		const lookupCwd = gitCwd;
 
-		// Fire async lookup, keep stale value visible until resolved
 		(async () => {
 			// Helper: only write cache if branch/repo context hasn't changed since launch
 			const setCachedPr = (value: { number: number; url: string } | null) => {
@@ -1137,15 +725,8 @@ export class StatusLineComponent implements Component {
 				}
 			};
 			try {
-				// Route through the shared `gh` helper so the child inherits
-				// `GH_NON_INTERACTIVE_ENV` (disables terminal/keychain prompts) and
-				// hard-terminates on the git command deadline instead of stalling
-				// the status-line indefinitely (#4234). Requires `gh repo set-default`;
-				// non-zero exit still falls through to the null cache below.
-				const result = await git.github.run(
-					lookupCwd,
-					["pr", "view", "--json", "number,url"],
-					AbortSignal.timeout(git.GIT_COMMAND_TIMEOUT_MS),
+				const result = await withScopedTimeoutSignal(git.GIT_COMMAND_TIMEOUT_MS, signal =>
+					git.github.run(lookupCwd, ["pr", "view", "--json", "number,url"], signal),
 				);
 				if (this.#disposed) return;
 				if (result.exitCode !== 0) {
@@ -1173,31 +754,6 @@ export class StatusLineComponent implements Component {
 	}
 
 	#getTokensPerSecond(): number | null {
-		// Aggregate tok/s across the main session AND every live vibe worker.
-		// In vibe mode the director is often idle while workers stream, so the
-		// main session's own rate alone would show a stale/zero value while
-		// parallel work is actively generating tokens.
-		const workerRate = this.#getVibeWorkerTokensPerSecond();
-		if (workerRate !== null) {
-			// At least one worker is streaming — add the director's live rate
-			// only when it is itself streaming (a finalized last-turn rate would
-			// double-count and overstate throughput).
-			const mainRate = this.session.isStreaming ? calculateTokensPerSecond(this.session.state.messages, true) : 0;
-			return (mainRate ?? 0) + workerRate;
-		}
-
-		// No workers streaming — fall back to the main session's own rate with
-		// its sticky per-assistant-message cache so the badge doesn't flicker
-		// off in the brief gap between stream end and the finalized message.
-		return this.#getMainSessionTokensPerSecond();
-	}
-
-	/**
-	 * Main session's tok/s with sticky caching keyed on the last assistant
-	 * message timestamp. Preserves the pre-aggregation behavior when no vibe
-	 * workers are active.
-	 */
-	#getMainSessionTokensPerSecond(): number | null {
 		let lastAssistantTimestamp: number | null = null;
 		for (let i = this.session.state.messages.length - 1; i >= 0; i--) {
 			const message = this.session.state.messages[i];
@@ -1227,22 +783,12 @@ export class StatusLineComponent implements Component {
 		return null;
 	}
 
-	/**
-	 * Aggregate tok/s across every live vibe worker session owned by this
-	 * session. Returns null when no workers are streaming (so the main
-	 * session's own rate shines through unchanged). The aggregation itself is
-	 * injected via {@link setVibeWorkerTokenRateProvider} to keep this render
-	 * layer off the heavy vibe/task dependency graph.
-	 */
-	#getVibeWorkerTokensPerSecond(): number | null {
-		return this.#vibeWorkerTokenRate?.() ?? null;
-	}
-
-	#formatUsageContextKey(activeProvider: string | undefined, identity: OAuthAccountIdentity | undefined): string {
+	#getUsageContextKey(session: AgentSession): string {
+		const activeProvider = session.state.model?.provider ?? session.model?.provider ?? "";
 		if (!activeProvider) return "";
+		const identity = session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId);
 		// orgId is part of the key: rotating between two same-email Anthropic
-		// subscriptions must invalidate the cached usage immediately instead of
-		// showing the previous org's quota for the rest of the cache TTL.
+		// subscriptions must invalidate the cached usage immediately.
 		return [
 			activeProvider,
 			identity?.accountId ?? "",
@@ -1252,23 +798,30 @@ export class StatusLineComponent implements Component {
 		].join("\0");
 	}
 
-	#getUsageContextKey(session: AgentSession): string {
+	/**
+	 * Which stored credential is serving the active provider, and how many it stores.
+	 *
+	 * Proto's auth storage keeps one identity per provider; the label comes from
+	 * that identity's email/account, and there is no routing prediction to name.
+	 */
+	#servingAccount(session: AgentSession): { label: string; storedCount: number; isPrediction: boolean } | null {
+		if (!settings.get("statusLine.showAccount")) return null;
 		const activeProvider = session.state.model?.provider ?? session.model?.provider;
-		const identity = activeProvider
-			? session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId)
-			: undefined;
-		// Model id is part of the invalidation key (but not the account-scoped
-		// snapshot key): normalized usage now selects a model-scoped window group,
-		// so switching models must drop the previous model's cached scope instead
-		// of showing it for the rest of the TTL.
-		const activeModelId = session.state.model?.id ?? session.model?.id ?? "";
-		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${activeModelId}`;
+		const authStorage = session.modelRegistry?.authStorage;
+		if (!activeProvider || !authStorage) return null;
+		const stored = authStorage.listStoredCredentials(activeProvider);
+		if (stored.length === 0) return null;
+		const identity = authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId);
+		const label = identity?.email ?? identity?.accountId ?? String(stored[0]?.id ?? "");
+		if (!label) return null;
+		const key = [activeProvider, label, stored.length].join("\0");
+		const cached = this.#cachedServingAccount;
+		if (cached?.key === key) return cached.value;
+		const value = { label, storedCount: stored.length, isPrediction: false };
+		this.#cachedServingAccount = { key, value };
+		return value;
 	}
 
-	/**
-	 * Startup redraws only arm a short-delayed task; timeout releases the render
-	 * cadence while a late successful fetch can still refresh the cached segment.
-	 */
 	refreshUsageInBackground(): void {
 		const now = Date.now();
 		const session = this.session;
@@ -1294,67 +847,41 @@ export class StatusLineComponent implements Component {
 			this.#usageInFlight = false;
 			return;
 		}
-		const sequence = ++this.#usageRefreshSequence;
-		const signal = AbortSignal.timeout(STATUS_USAGE_REFRESH_TIMEOUT_MS);
+		const { signal, cancel } = scopedTimeoutSignal(STATUS_USAGE_REFRESH_TIMEOUT_MS);
 		let reportsPromise: Promise<unknown> | undefined;
 		try {
 			reportsPromise = fetcher.call(session, signal);
-			this.#applyUsageRefreshReports(
-				session,
-				await this.#raceUsageRefreshWithSignal(reportsPromise, signal),
-				sequence,
-			);
+			this.#applyUsageRefreshReports(session, await this.#raceUsageRefreshWithSignal(reportsPromise, signal));
 		} catch {
 			if (this.session !== session) return;
 			this.#usageFetchedAt = Date.now();
 			if (signal.aborted && reportsPromise) {
-				this.#observeLateUsageRefresh(session, reportsPromise, sequence);
+				this.#observeLateUsageRefresh(session, reportsPromise);
 			}
 		} finally {
+			cancel();
 			if (this.session === session) this.#usageInFlight = false;
 		}
 	}
 
-	#applyUsageRefreshReports(session: AgentSession, reports: unknown, sequence: number): void {
-		if (this.#disposed || this.session !== session || sequence < this.#latestAppliedUsageRefreshSequence) {
-			return;
-		}
-		this.#latestAppliedUsageRefreshSequence = sequence;
+	#applyUsageRefreshReports(session: AgentSession, reports: unknown): void {
+		if (this.#disposed || this.session !== session) return;
 		const activeProvider = session.state.model?.provider ?? session.model?.provider;
-		const activeModelId = session.state.model?.id ?? session.model?.id;
 		const activeIdentity =
 			activeProvider && session.modelRegistry?.authStorage
 				? session.modelRegistry.authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId)
 				: undefined;
-		const normalized = this.#normalizeUsageReports(reports, {
-			provider: activeProvider,
-			modelId: activeModelId,
-			identity: activeIdentity,
-		});
-		const resetSnapshot =
-			activeProvider === "openai-codex" ? this.#normalizeCodexResetSnapshot(reports, activeIdentity) : null;
-		const usageChanged = this.#cachedUsage !== normalized;
-		this.#cachedUsage = normalized;
+		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
 		this.#usageFetchedAt = Date.now();
-		// Usage fetch is async; without a repaint the top border stays blank until
-		// some unrelated event (git resolve, keystroke, …) rebuilds it.
-		if (usageChanged) this.#onBranchChange?.();
-		if (!resetSnapshot) return;
-		const contextKey = this.#formatUsageContextKey(activeProvider, activeIdentity);
-		const previous = this.#codexResetSnapshots.get(contextKey);
-		this.#codexResetSnapshots.set(contextKey, resetSnapshot);
-		if (!previous) return;
 	}
 
-	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>, sequence: number): void {
+	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>): void {
 		void reportsPromise
 			.then(reports => {
-				this.#applyUsageRefreshReports(session, reports, sequence);
+				this.#applyUsageRefreshReports(session, reports);
 			})
 			.catch(() => {
-				if (this.#disposed || this.session !== session || sequence < this.#latestAppliedUsageRefreshSequence) {
-					return;
-				}
+				if (this.#disposed || this.session !== session) return;
 				this.#usageFetchedAt = Date.now();
 			});
 	}
@@ -1371,236 +898,81 @@ export class StatusLineComponent implements Component {
 		}
 	}
 
-	#normalizeCodexResetSnapshot(
-		reports: unknown,
-		activeIdentity: OAuthAccountIdentity | undefined,
-	): CodexResetUsageSnapshot | null {
-		if (!Array.isArray(reports)) return null;
-		let matchingReport: UsageReport | undefined;
-		for (const report of reports) {
-			if (!report || typeof report !== "object") continue;
-			if (
-				!("provider" in report) ||
-				report.provider !== "openai-codex" ||
-				!("limits" in report) ||
-				!Array.isArray(report.limits)
-			) {
-				continue;
-			}
-			// The report boundary above validates the fields this extractor iterates;
-			// optional metadata and credit fields are narrowed again before use.
-			const usageReport = report as UsageReport;
-			if (!codexReportMatchesExactIdentity(usageReport, activeIdentity)) continue;
-			matchingReport = usageReport;
-			break;
-		}
-		if (!matchingReport) return null;
-
-		const plan =
-			typeof matchingReport.metadata?.planType === "string" && matchingReport.metadata.planType
-				? matchingReport.metadata.planType
-				: undefined;
-		let sevenDay: CodexResetUsageSnapshot["sevenDay"];
-		let sevenDayTier: string | undefined;
-		for (const limit of matchingReport.limits) {
-			if (!limit || typeof limit !== "object") continue;
-			const candidate = limit as {
-				scope?: { windowId?: string; tier?: string };
-				window?: { resetsAt?: number };
-				amount?: { usedFraction?: number };
-			};
-			const fraction = candidate.amount?.usedFraction;
-			if (candidate.scope?.windowId !== "7d" || typeof fraction !== "number" || !Number.isFinite(fraction)) {
-				continue;
-			}
-			const tier =
-				typeof candidate.scope?.tier === "string" && candidate.scope.tier ? candidate.scope.tier : undefined;
-			if (sevenDay && (sevenDayTier === undefined || tier)) continue;
-			const resetsAt = candidate.window?.resetsAt;
-			sevenDay = {
-				percent: fraction * 100,
-				resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) ? resetsAt : undefined,
-				tier,
-				plan,
-			};
-			sevenDayTier = tier;
-		}
-
-		const fetchedAt = matchingReport.fetchedAt;
-		const availableCount = matchingReport.resetCredits?.availableCount;
-		const observedAt = typeof fetchedAt === "number" && Number.isFinite(fetchedAt) ? fetchedAt : undefined;
-		const savedResets =
-			typeof availableCount === "number" && Number.isFinite(availableCount)
-				? Math.max(0, Math.trunc(availableCount))
-				: undefined;
-		if (!sevenDay && savedResets === undefined) return null;
-		return { observedAt, sevenDay, savedResets };
-	}
-
 	#normalizeUsageReports(
 		reports: unknown,
-		context: { provider?: string; modelId?: string; identity?: OAuthAccountIdentity },
+		activeProvider?: string,
+		activeIdentity?: OAuthAccountIdentity,
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
-		monthly?: { percent: number; resetHours?: number };
 	} | null {
 		if (!Array.isArray(reports)) return null;
+		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
+		let sevenDay: { percent: number; resetHours?: number } | undefined;
+		let fiveHourTier: string | undefined;
+		let sevenDayTier: string | undefined;
 		const now = Date.now();
-		const activeModelId = normalizeUsageScopeValue(context.modelId);
-		const scopeGroups = new Map<string, UsageScopeGroup>();
 		for (const report of reports) {
 			if (!report || typeof report !== "object") continue;
-			const provider = "provider" in report ? report.provider : undefined;
-			if (context.provider && provider !== context.provider) continue;
-			const limits = "limits" in report ? report.limits : undefined;
+			const provider = (report as { provider?: unknown }).provider;
+			if (activeProvider && provider !== activeProvider) continue;
+			const limits = (report as { limits?: unknown }).limits;
 			if (!Array.isArray(limits)) continue;
-			// fetchUsageReports supplies normalized rows; the guards above protect
-			// the unknown session boundary before the account matcher reads metadata.
-			const usageReport = report as UsageReport;
 			for (const limit of limits) {
+				if (!limit || typeof limit !== "object") continue;
 				if (
-					!limit ||
-					typeof limit !== "object" ||
-					!("scope" in limit) ||
-					!limit.scope ||
-					typeof limit.scope !== "object" ||
-					!("amount" in limit) ||
-					!limit.amount ||
-					typeof limit.amount !== "object"
+					activeIdentity &&
+					!limitMatchesActiveAccount(report as UsageReport, limit as UsageLimit, activeIdentity)
 				) {
 					continue;
 				}
-				const scope = limit.scope;
-				const amount = limit.amount;
-				// The matcher only reads scope identity fields, whose object boundary
-				// is validated above; other required UsageLimit fields are irrelevant.
-				const usageLimit = limit as UsageLimit;
-				if (context.identity && !limitMatchesActiveAccount(usageReport, usageLimit, context.identity)) continue;
-
-				const fraction = "usedFraction" in amount ? amount.usedFraction : undefined;
+				const l = limit as {
+					scope?: { windowId?: string; tier?: string };
+					window?: { resetsAt?: number };
+					amount?: { usedFraction?: number };
+				};
+				const fraction = l.amount?.usedFraction;
 				if (typeof fraction !== "number") continue;
-				const window =
-					"window" in limit && limit.window && typeof limit.window === "object" ? limit.window : undefined;
-				const windowId = "windowId" in scope ? scope.windowId : undefined;
-				const durationValue = window && "durationMs" in window ? window.durationMs : undefined;
-				const durationMs = typeof durationValue === "number" ? durationValue : undefined;
-				const subscriptionWindow =
-					windowId === "5h" || windowId === "7d"
-						? windowId
-						: durationMs !== undefined && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
-							? "5h"
-							: durationMs !== undefined && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
-								? "7d"
-								: undefined;
-				const windowClass =
-					subscriptionWindow ??
-					((context.provider === "cursor" || context.provider === "opencode-go") &&
-					(windowId === "monthly" || windowId === "30d")
-						? "monthly"
-						: undefined);
-				if (!windowClass) continue;
-
-				const modelId = normalizeUsageScopeValue("modelId" in scope ? scope.modelId : undefined);
-				if (modelId && modelId !== activeModelId) continue;
-				const rawTier = "tier" in scope ? scope.tier : undefined;
-				const tier = typeof rawTier === "string" && rawTier.trim() ? rawTier.trim() : undefined;
-				const normalizedTier = normalizeUsageScopeValue(tier);
-				const scopeKey = `${modelId ?? ""}\0${normalizedTier ?? ""}`;
-				// Exact-model groups outrank provider-wide groups; within either
-				// specificity, untiered limits preserve the historical preference.
-				const priority = modelId ? (normalizedTier ? 1 : 0) : normalizedTier ? 3 : 2;
-				const id = "id" in limit && typeof limit.id === "string" ? limit.id : undefined;
-				const resetValue = window && "resetsAt" in window ? window.resetsAt : undefined;
-				const displayCandidate: UsageWindowCandidate = {
-					id,
-					windowClass,
-					fraction,
-					resetsAt: typeof resetValue === "number" ? resetValue : undefined,
-				};
-				const group = scopeGroups.get(scopeKey);
-				if (group) {
-					group.candidates.push(displayCandidate);
-				} else {
-					scopeGroups.set(scopeKey, { priority, tier, candidates: [displayCandidate] });
-				}
-			}
-		}
-
-		let selectedGroup: UsageScopeGroup | undefined;
-		for (const group of scopeGroups.values()) {
-			if (!selectedGroup || group.priority < selectedGroup.priority) selectedGroup = group;
-		}
-		if (!selectedGroup) return null;
-
-		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
-		let sevenDay: { percent: number; resetHours?: number } | undefined;
-		let monthly: { percent: number; resetHours?: number } | undefined;
-		let monthlyPriority = Number.POSITIVE_INFINITY;
-		const cursorMonthlyPriority = (limitId: unknown): number => {
-			// When /auth/usage and /api/usage-summary are merged, prefer the personal
-			// dashboard rails over legacy per-model request fractions.
-			if (limitId === "cursor:usd:individual-auto") return 0;
-			if (limitId === "cursor:usd:individual-plan" || limitId === "cursor:usd:individual-overall") return 1;
-			if (typeof limitId === "string" && limitId.startsWith("cursor:usd:individual-")) return 2;
-			return 3;
-		};
-		for (const candidate of selectedGroup.candidates) {
-			if (candidate.windowClass === "5h" && !fiveHour) {
-				fiveHour = {
-					percent: candidate.fraction * 100,
-					resetMinutes:
-						typeof candidate.resetsAt === "number"
-							? Math.max(0, Math.round((candidate.resetsAt - now) / 60_000))
-							: undefined,
-				};
-			}
-			if (candidate.windowClass === "7d" && !sevenDay) {
-				sevenDay = {
-					percent: candidate.fraction * 100,
-					resetHours:
-						typeof candidate.resetsAt === "number"
-							? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
-							: undefined,
-				};
-			}
-			if (candidate.windowClass === "monthly") {
-				const priority = cursorMonthlyPriority(candidate.id);
-				if (priority < monthlyPriority) {
-					monthly = {
-						percent: candidate.fraction * 100,
-						resetHours:
-							typeof candidate.resetsAt === "number"
-								? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
-								: undefined,
+				const windowId = l.scope?.windowId;
+				const tier = l.scope?.tier;
+				const resetsAt = l.window?.resetsAt;
+				// Accept tiered limits, but prefer untiered (backward compat).
+				if (windowId === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
+					fiveHour = {
+						percent: fraction * 100,
+						resetMinutes:
+							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
 					};
-					monthlyPriority = priority;
+					fiveHourTier = tier || undefined;
+				}
+				if (windowId === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
+					sevenDay = {
+						percent: fraction * 100,
+						resetHours:
+							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
+					};
+					sevenDayTier = tier || undefined;
 				}
 			}
 		}
-		if (!fiveHour && !sevenDay && !monthly) return null;
-		return { tier: selectedGroup.tier, fiveHour, sevenDay, monthly };
+		if (!fiveHour && !sevenDay) return null;
+		const effectiveTier = fiveHourTier ?? sevenDayTier;
+		return { tier: effectiveTier, fiveHour, sevenDay };
 	}
 
 	/**
-	 * Used-tokens / context-window totals for the status-line context% segment,
-	 * memoized so the per-event redraw stays O(1) when nothing changed.
-	 *
-	 * The numerator comes from `session.getContextUsage()`, which anchors on the
-	 * last assistant's real prompt-token count — so the bar matches the provider
-	 * and the `/context` panel — and reports `null` while that count is unknown
-	 * (right after compaction, before the next response). Exposed (non-private)
-	 * for unit tests.
+	 * Used-tokens / context-window totals for the context% segment, memoized so
+	 * the per-event redraw stays O(1) when nothing changed. The numerator comes
+	 * from `session.getContextUsage()`, which anchors on the last assistant's
+	 * real prompt-token count, and reports `null` while that count is unknown.
 	 */
-	getCachedContextBreakdown(): { usedTokens: number; contextWindow: number } {
+	getCachedContextBreakdown(): { usedTokens: number | null; contextWindow: number } {
 		const messages = this.session.messages ?? EMPTY_MESSAGES;
 		const modelContextWindow = this.session.model?.contextWindow ?? 0;
 		const length = messages.length;
 		const lastFingerprint = length > 0 ? messageFingerprint(messages[length - 1]!) : undefined;
-		// Bumps when the in-flight pending snapshot is set/cleared. Without it a
-		// value computed mid-turn (estimate of the active tail) would survive after
-		// the turn ends/aborts, since clearing the snapshot touches no message.
+		// Bumps when the in-flight pending snapshot is set/cleared.
 		const contextUsageRevision = this.session.contextUsageRevision ?? 0;
 
 		const systemPrompt = this.session.systemPrompt;
@@ -1622,8 +994,10 @@ export class StatusLineComponent implements Component {
 			return { usedTokens: cache.usedTokens, contextWindow: cache.contextWindow };
 		}
 
-		const usage = typeof this.session.getContextUsage === "function" ? this.session.getContextUsage() : undefined;
-		const usedTokens = usage?.tokens ?? 0;
+		const usage = this.session.getContextUsage();
+		// `undefined` from the session means "no anchor yet", which is a different fact
+		// from zero tokens and is carried as `null` rather than flattened into a number.
+		const usedTokens = usage?.tokens ?? null;
 		const contextWindow = usage?.contextWindow ?? modelContextWindow;
 		this.#contextUsageCache = {
 			messagesRef: messages,
@@ -1644,16 +1018,15 @@ export class StatusLineComponent implements Component {
 		width: number,
 		segmentOptions: StatusLineSettings["segmentOptions"],
 		includePath: boolean,
+		includeContext: boolean,
 		includeGit: boolean,
 		includePr: boolean,
-		previewTitle?: string,
 	): SegmentContext {
 		const state = this.session.state;
 
 		// Trigger background fetch (5-min TTL); render uses cached value
 		this.refreshUsageInBackground();
 
-		// Get usage statistics
 		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? {
 			input: 0,
 			output: 0,
@@ -1672,40 +1045,41 @@ export class StatusLineComponent implements Component {
 		};
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
-		const breakdown = this.getCachedContextBreakdown();
-		const contextTokens = breakdown.usedTokens;
-		contextWindow = breakdown.contextWindow || contextWindow;
-		const contextPercent: number | null = contextWindow > 0 ? (breakdown.usedTokens / contextWindow) * 100 : null;
+		let contextLimit = contextWindow;
+		let contextLimitKind: "window" | "compaction" = "window";
+		let contextPercent: number | null = 0;
+		if (includeContext) {
+			const breakdown = this.getCachedContextBreakdown();
+			contextWindow = breakdown.contextWindow || contextWindow;
+			contextLimit = contextWindow;
+			// Measure against the auto-compact fire point, not the raw model
+			// window. The window itself stays intact in `contextWindow`.
+			const compaction = this.session.settings?.getGroup?.("compaction");
+			if (this.#autoCompactEnabled && compaction) {
+				const limit = resolveContextLimit(contextWindow, compaction);
+				contextLimit = limit.tokens;
+				contextLimitKind = limit.kind;
+			}
+			contextPercent =
+				breakdown.usedTokens === null
+					? null
+					: contextLimit > 0
+						? (breakdown.usedTokens / contextLimit) * 100
+						: null;
+		}
+
 		const shouldResolveActiveRepo = this.#gitEnabled() && (includePath || includeGit || includePr);
-		const projectDir = getProjectDir();
+		const projectDir = this.session.sessionManager?.getCwd?.() ?? getProjectDir();
 		const activeRepoCache = shouldResolveActiveRepo
 			? this.#resolveActiveRepoCache()
 			: { projectDir, activeRepo: null, effectiveGitCwd: projectDir, worktree: null };
-		let gitBranch = includeGit || includePr ? this.#getCurrentBranch(activeRepoCache.effectiveGitCwd) : null;
-		// A jj repo has no git branch to read: git HEAD is detached (colocated) or
-		// absent. A pending reftable resolve owns this cwd as an explicit Git repo,
-		// so it must not be mistaken for an absent Git checkout and fall through to
-		// an ancestor jj workspace.
-		const gitHeadResolvePending = this.#branchResolveActive?.cwd === activeRepoCache.effectiveGitCwd;
-		const gitHeadIsJjLike =
-			!this.#cachedBranchHasGitRepository &&
-			!gitHeadResolvePending &&
-			(gitBranch === "detached" || gitBranch === null);
-		if (includeGit && gitHeadIsJjLike) {
-			gitBranch = this.#getJjBranch(activeRepoCache.effectiveGitCwd) ?? gitBranch;
-		}
-		const gitStatus = includeGit
-			? ((gitHeadIsJjLike ? this.#getJjStatus(activeRepoCache.effectiveGitCwd) : null) ??
-				this.#getGitStatus(activeRepoCache.effectiveGitCwd))
-			: null;
+		const gitBranch = includeGit || includePr ? this.#getCurrentBranch(activeRepoCache.effectiveGitCwd) : null;
+		const gitStatus = includeGit ? this.#getGitStatus(activeRepoCache.effectiveGitCwd) : null;
 		const gitPr = includePr ? this.#lookupPr(activeRepoCache.effectiveGitCwd) : null;
-		const compactionSpeculation = this.session.compactionSpeculation ?? "idle";
-		this.#syncSpeculationBlink(compactionSpeculation);
 		return {
 			session: this.session,
 			focusedAgentId: this.#focusedAgentId,
-			sessionAccent: this.#resolveSettings().sessionAccent !== false,
-			previewTitle,
+			previewTitle: this.#previewTitle,
 			activeRepo: activeRepoCache.activeRepo,
 			width,
 			options: segmentOptions ?? {},
@@ -1717,14 +1091,12 @@ export class StatusLineComponent implements Component {
 					? { enabled: true }
 					: null,
 			goalMode: this.#goalModeStatus,
-			vibeMode: this.#vibeModeStatus,
 			usageStats,
 			contextPercent,
-			contextTokens,
 			contextWindow,
+			contextLimit,
+			contextLimitKind,
 			autoCompactEnabled: this.#autoCompactEnabled,
-			compactionSpeculation,
-			speculationBlinkOn: this.#speculationBlinkOn,
 			subagentCount: this.#subagentCount,
 			activeMs: this.getActiveMs(),
 			git: {
@@ -1733,6 +1105,7 @@ export class StatusLineComponent implements Component {
 				pr: gitPr,
 			},
 			worktree: activeRepoCache.worktree,
+			account: this.#servingAccount(this.session),
 			usage: this.#cachedUsage,
 		};
 	}
@@ -1773,517 +1146,321 @@ export class StatusLineComponent implements Component {
 			...this.#settings,
 			leftSegments,
 			rightSegments,
-			separator: this.#settings.separator ?? presetDef.separator,
 			segmentOptions: mergedSegmentOptions,
 		};
 	}
 
-	#subagentBadgeText(): string | undefined {
-		if (this.#subagentCount === 0) return undefined;
-		const noun = this.#subagentCount === 1 ? "agent" : "agents";
-		return theme.fg("statusLineSubagents", `${theme.icon.agents} ${this.#subagentCount} ${noun}`);
+	#subagentBadgeText(): string {
+		return theme.fg("statusLineSubagents", withIcon(theme.icon.agents, `${this.#subagentCount}`));
 	}
 
 	/**
-	 * Build the status bar for one of four layouts:
-	 * - `box`: powerline groups joined by the context-reactive gauge line
-	 *   (embedded in the editor's top border).
-	 * - `plain-full`: no background, no powerline caps, dot separators, gap is
-	 *   plain spaces — the standalone bottom bar for pi/borderless composers.
-	 * - `plain-left`: left segments only (claude composer; the right group
-	 *   lives in the editor's top rule).
-	 * - `plain-right`: right segments only (claude composer's top rule).
-	 *
-	 * `previewTitle` is a stand-in session title for composer previews; the
-	 * `session_name` segment renders it when the session is unnamed.
+	 * Running background jobs the SUBAGENT badge does not already stand for.
+	 * Async bash, debug and launch jobs are real background work with no
+	 * subagent behind them; worker jobs count as subagents elsewhere.
 	 */
-	#buildStatusLine(
-		width: number,
-		layout: "box" | "plain-full" | "plain-left" | "plain-right" = "box",
-		previewTitle?: string,
-	): string {
+	#backgroundJobBadgeCount(): number {
+		const running = this.session.getAsyncJobSnapshot()?.running;
+		if (!running) return 0;
+		return running.reduce((count, job) => (job.type === "worker" ? count : count + 1), 0);
+	}
+
+	/**
+	 * Gather the quiet-zone segments into their three groups: location (path ·
+	 * git · pr), capability-left (model · mode …), and capability-right
+	 * (context, badges). ONE owner for the grouping logic — both the two-line
+	 * selector layout ({@link renderQuietLines}) and the composer's single
+	 * footline ({@link renderQuietLine}) read from here.
+	 */
+	#gatherQuietSegments(width: number): { location: QuietPart[]; capLeft: QuietPart[]; capRight: QuietPart[] } {
 		const effectiveSettings = this.#resolveSettings();
-		const plain = layout !== "box";
-		const includePath =
-			hasPathSegment(effectiveSettings.leftSegments) || hasPathSegment(effectiveSettings.rightSegments);
 		const gitEnabled = this.#gitEnabled();
-		const includeGit =
-			gitEnabled &&
-			(hasGitSegment(effectiveSettings.leftSegments) || hasGitSegment(effectiveSettings.rightSegments));
-		const includePr =
-			gitEnabled && (hasPrSegment(effectiveSettings.leftSegments) || hasPrSegment(effectiveSettings.rightSegments));
-		const ctx = this.#buildSegmentContext(
-			width,
-			effectiveSettings.segmentOptions,
-			includePath,
-			includeGit,
-			includePr,
-			previewTitle,
-		);
-		const separatorDef = plain
-			? { left: "·", right: "·" }
-			: getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
-
-		// `transparent` reuses the empty-string sentinel (`\x1b[49m`) so the bar
-		// inherits the terminal's default background, matching custom themes that
-		// set `statusLineBg: ""`. Powerline end caps need a contrasting fill to
-		// bridge the bar into the surrounding terminal; without one they read as
-		// stray glyphs, so the cap renderer drops them when the fill is empty.
-		const TRANSPARENT_BG_ANSI = "\x1b[49m";
-		const themeBgAnsi = theme.getBgAnsi("statusLineBg");
-		// Plain bottom bars drop the background entirely; the claude top-rule
-		// chip (`plain-right`) keeps it so the group reads as a chip on the rule.
-		const transparentLayout = layout === "plain-full" || layout === "plain-left";
-		const bgAnsi = transparentLayout || effectiveSettings.transparent ? TRANSPARENT_BG_ANSI : themeBgAnsi;
-		const transparentBg = bgAnsi === TRANSPARENT_BG_ANSI;
-		const fgAnsi = theme.getFgAnsi("text");
-		const sepAnsi = theme.getFgAnsi("statusLineSep");
+		const leftCfg = effectiveSettings.leftSegments;
+		const rightCfg = effectiveSettings.rightSegments;
+		const includePath = hasPathSegment(leftCfg) || hasPathSegment(rightCfg);
+		const includeContext = hasContextSegment(leftCfg) || hasContextSegment(rightCfg);
+		const includeGit = gitEnabled && (hasGitSegment(leftCfg) || hasGitSegment(rightCfg));
+		const includePr = gitEnabled && (hasPrSegment(leftCfg) || hasPrSegment(rightCfg));
+		const quietOptions = {
+			...effectiveSettings.segmentOptions,
+			path: {
+				...effectiveSettings.segmentOptions?.path,
+				maxLength: effectiveSettings.segmentOptions?.path?.maxLength ?? 30,
+			},
+			model: { ...effectiveSettings.segmentOptions?.model, roomy: true },
+		};
+		const ctx = this.#buildSegmentContext(width, quietOptions, includePath, includeContext, includeGit, includePr);
+		const LOCATION_IDS: Record<string, true> = { path: true, git: true, pr: true };
+		const CONTEXT_IDS: Record<string, true> = { context_pct: true, context_total: true };
 		const subagentBadge = this.#subagentBadgeText();
-
-		// Collect visible segment contents
-		const leftParts: string[] = [];
-		const leftSegIds: StatusLineSegmentId[] = [];
-		const leftSegmentIds = layout === "plain-right" ? [] : effectiveSettings.leftSegments;
-		for (const segId of leftSegmentIds) {
-			if (subagentBadge && segId === "subagents") continue;
-			const rendered = renderSegment(segId, ctx);
-			if (rendered.visible && rendered.content) {
-				leftParts.push(rendered.content);
-				leftSegIds.push(segId);
-			}
-		}
-
-		const rightParts: string[] = [];
-		const rightSegIds: StatusLineSegmentId[] = [];
-		const rightSegmentIds = layout === "plain-left" ? [] : effectiveSettings.rightSegments;
-		for (const segId of rightSegmentIds) {
-			if (subagentBadge && segId === "subagents") continue;
-			const rendered = renderSegment(segId, ctx);
-			if (rendered.visible && rendered.content) {
-				rightParts.push(rendered.content);
-				rightSegIds.push(segId);
-			}
-		}
-
-		const embedContext =
-			!plain &&
-			effectiveSettings.contextLine === "embedded" &&
-			ctx.contextPercent !== null &&
-			ctx.contextPercent !== undefined &&
-			ctx.contextWindow > 0 &&
-			(hasContextSegment(leftSegIds) || hasContextSegment(rightSegIds)) &&
-			(hasNonContextSegment(leftSegIds) || hasNonContextSegment(rightSegIds));
-		if (embedContext) {
-			removeContextSegments(leftParts, leftSegIds);
-			removeContextSegments(rightParts, rightSegIds);
-		}
-
-		if (layout !== "plain-left") {
-			const runningBackgroundJobs = this.session.getAsyncJobSnapshot()?.running.length ?? 0;
-			if (runningBackgroundJobs > 0) {
-				rightParts.unshift(theme.fg("statusLineSubagents", `${theme.icon.job} ${runningBackgroundJobs}`));
-			}
-			if (subagentBadge) {
-				rightParts.unshift(subagentBadge);
-			}
-		}
-		const topFillWidth = Math.max(0, width);
-		const left = [...leftParts];
-		const right = [...rightParts];
-
-		const leftSepWidth = visibleWidth(separatorDef.left);
-		const rightSepWidth = visibleWidth(separatorDef.right);
-		// Transparent mode drops powerline caps (they need a bg fill to bridge),
-		// so the width budget excludes them too.
-		const leftCapWidth = separatorDef.endCaps && !transparentBg ? visibleWidth(separatorDef.endCaps.right) : 0;
-		const rightCapWidth = separatorDef.endCaps && !transparentBg ? visibleWidth(separatorDef.endCaps.left) : 0;
-
-		const groupWidth = (parts: string[], capWidth: number, sepWidth: number): number => {
-			if (parts.length === 0) return 0;
-			const partsWidth = parts.reduce((sum, part) => sum + visibleWidth(part), 0);
-			const sepTotal = Math.max(0, parts.length - 1) * (sepWidth + 2);
-			return partsWidth + sepTotal + 2 + capWidth;
+		const location: QuietPart[] = [];
+		const capLeft: QuietPart[] = [];
+		const capRight: QuietPart[] = [];
+		const push = (id: StatusLineSegmentId, out: QuietPart[]) => {
+			if (id === "subagents") return;
+			const rendered = renderSegment(id, ctx);
+			if (rendered.visible && rendered.content) out.push({ id, content: rendered.content });
 		};
-
-		let leftWidth = groupWidth(left, leftCapWidth, leftSepWidth);
-		let rightWidth = groupWidth(right, rightCapWidth, rightSepWidth);
-		const totalWidth = () => leftWidth + rightWidth + (left.length > 0 && right.length > 0 ? 1 : 0);
-
-		if (topFillWidth > 0) {
-			// Truncate the session-name segment before dropping right segments —
-			// the title is the only elastic one on the right, and dropping it
-			// wholesale left narrow bars (and the ≤76-col composer previews)
-			// without any title.
-			const nameSegIdx = rightSegIds.indexOf("session_name");
-			if (nameSegIdx >= 0 && totalWidth() > topFillWidth) {
-				// Badge/job parts were unshifted ahead of the tracked segment ids.
-				const nameIdx = nameSegIdx + (right.length - rightSegIds.length);
-				const currentNameVW = visibleWidth(right[nameIdx]);
-				const minNameVW = 8;
-				const shrinkBy = Math.min(Math.max(0, currentNameVW - minNameVW), totalWidth() - topFillWidth);
-				if (shrinkBy > 0) {
-					right[nameIdx] = truncateToWidth(right[nameIdx], currentNameVW - shrinkBy);
-					rightWidth = groupWidth(right, rightCapWidth, rightSepWidth);
-				}
-			}
-			while (totalWidth() > topFillWidth && right.length > 0) {
-				right.pop();
-				rightWidth = groupWidth(right, rightCapWidth, rightSepWidth);
-			}
-			// Shrink path before dropping left segments — path is the only elastic segment
-			const pathIdx = leftSegIds.indexOf("path");
-			if (pathIdx >= 0 && totalWidth() > topFillWidth) {
-				const overflow = totalWidth() - topFillWidth;
-				const currentPathVW = visibleWidth(left[pathIdx]);
-				const minPathVW = 8; // icon + ellipsis + a few chars
-				const shrinkable = currentPathVW - minPathVW;
-				if (shrinkable > 0) {
-					const shrinkBy = Math.min(shrinkable, overflow);
-					const currentMaxLen = ctx.options.path?.maxLength ?? 40;
-					let newMaxLen = Math.max(4, Math.min(currentMaxLen, currentPathVW) - shrinkBy);
-					const pathCtx = (maxLen: number): SegmentContext => ({
-						...ctx,
-						options: { ...ctx.options, path: { ...ctx.options.path, maxLength: maxLen } },
-					});
-					let reRendered = renderSegment("path", pathCtx(newMaxLen));
-					if (reRendered.visible && reRendered.content) {
-						// maxLength governs path text, not icon prefix; iterate to compensate
-						for (let i = 0; i < 8; i++) {
-							const saved = currentPathVW - visibleWidth(reRendered.content);
-							if (saved >= shrinkBy) break;
-							const nextMaxLen = Math.max(4, newMaxLen - (shrinkBy - saved));
-							if (nextMaxLen >= newMaxLen) break; // no progress or hit floor
-							newMaxLen = nextMaxLen;
-							const adjusted = renderSegment("path", pathCtx(newMaxLen));
-							if (!adjusted.visible || !adjusted.content) break;
-							reRendered = adjusted;
-						}
-						left[pathIdx] = reRendered.content;
-						leftWidth = groupWidth(left, leftCapWidth, leftSepWidth);
-					}
-				}
-			}
-			const leftOverflowDropIndex = (): number => {
-				// Preserve the current working directory as long as possible. The
-				// previous right-to-left pop could collapse a normal-width bar to
-				// just the model segment, hiding the path before less-critical left
-				// segments such as model/mode were removed.
-				for (let i = leftSegIds.length - 1; i >= 0; i--) {
-					if (leftSegIds[i] !== "path") return i;
-				}
-				return left.length - 1;
-			};
-
-			while (totalWidth() > topFillWidth && left.length > 0) {
-				const dropIdx = leftOverflowDropIndex();
-				left.splice(dropIdx, 1);
-				leftSegIds.splice(dropIdx, 1);
-				leftWidth = groupWidth(left, leftCapWidth, leftSepWidth);
-			}
+		// The context gauge is the footline's one LIVE value; held aside and
+		// appended after the right group so it reads as the line's last word.
+		const contextFromLeft: QuietPart[] = [];
+		for (const id of leftCfg) {
+			if (LOCATION_IDS[id]) push(id, location);
+			else if (CONTEXT_IDS[id]) push(id, contextFromLeft);
+			else push(id, capLeft);
 		}
-
-		const renderGroup = (parts: string[], direction: "left" | "right"): string => {
-			if (parts.length === 0) return "";
-			const sep = direction === "left" ? separatorDef.left : separatorDef.right;
-			const cap =
-				separatorDef.endCaps && !transparentBg
-					? direction === "left"
-						? separatorDef.endCaps.right
-						: separatorDef.endCaps.left
-					: "";
-			const capPrefix = separatorDef.endCaps?.useBgAsFg ? bgAnsi.replace("\x1b[48;", "\x1b[38;") : bgAnsi + sepAnsi;
-			const capText = cap ? `${capPrefix}${this.#focusedAgentId ? "\x1b[22m" : ""}${cap}\x1b[0m` : "";
-
-			let content = bgAnsi + fgAnsi;
-			content += ` ${parts.join(` ${sepAnsi}${sep}${fgAnsi} `)} `;
-			content += "\x1b[0m";
-
-			if (capText) {
-				return direction === "right" ? capText + content : content + capText;
-			}
-			return content;
-		};
-
-		const leftGroup = renderGroup(left, "left");
-		const rightGroup = renderGroup(right, "right");
-		if (!leftGroup && !rightGroup) return "";
-
-		if (topFillWidth === 0 || (plain && (left.length === 0 || right.length === 0))) {
-			return leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup;
+		for (const id of rightCfg) {
+			if (LOCATION_IDS[id]) push(id, location);
+			else push(id, capRight);
 		}
-
-		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth);
-		if (plain) {
-			// Standalone composers: no gauge line between the groups, just air.
-			return leftGroup + padding(gapWidth) + rightGroup;
+		capRight.push(...contextFromLeft);
+		const runningBackgroundJobs = this.#backgroundJobBadgeCount();
+		const badgeParts: string[] = [];
+		if (runningBackgroundJobs > 0) {
+			badgeParts.push(theme.fg("statusLineSubagents", withIcon(theme.icon.job, `${runningBackgroundJobs}`)));
 		}
-		// Box layout: with one group absent (an unnamed session hides
-		// `session_name`, emptying the default preset's right group) the gauge
-		// runs to the border edge instead of disappearing, so embedded context
-		// labels don't fall back to a context chip until the session is titled.
-		return leftGroup + this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) + rightGroup;
+		const badgeSlot = this.#animatedBadgeSlot(badgeParts);
+		if (badgeSlot !== null) capRight.unshift({ id: "badges", content: badgeSlot });
+		capRight.unshift({ id: "subagents", content: subagentBadge });
+		return { location, capLeft, capRight };
+	}
+
+	// Layout of the last rendered quiet footline, for click hit-testing
+	// (quietSegmentAt). Rewritten on every renderQuietLine call.
+	#quietLineBounds: QuietSegmentBounds[] = [];
+
+	// Background-job badge animation state. Jobs ease in/out over BADGE_ANIM_MS
+	// so a start or finish reads as an intentional merge instead of the right
+	// group jumping sideways.
+	#badgeSlotFromWidth = 0;
+	#badgeSlotTargetWidth = 0;
+	#badgeSlotAnimStartMs = 0;
+	#badgeSlotText = "";
+	static readonly #BADGE_ANIM_MS = 240;
+
+	#animatedBadgeSlot(badgeParts: string[]): string | null {
+		const targetWidth = badgeParts.length > 0 ? visibleWidth(badgeParts.join(stateSeparator())) : 0;
+		if (targetWidth !== this.#badgeSlotTargetWidth) {
+			this.#badgeSlotFromWidth = this.#badgeSlotCurrentWidth();
+			this.#badgeSlotTargetWidth = targetWidth;
+			this.#badgeSlotAnimStartMs = Date.now();
+			if (targetWidth > 0) this.#badgeSlotText = badgeParts.join(stateSeparator());
+		}
+		const width = this.#badgeSlotCurrentWidth();
+		if (width === 0) return null;
+		const clipped = truncateToWidth(this.#badgeSlotText, width);
+		const clippedWidth = visibleWidth(clipped);
+		return clippedWidth >= width ? clipped : clipped + " ".repeat(width - clippedWidth);
+	}
+
+	#badgeSlotCurrentWidth(): number {
+		const elapsed = Date.now() - this.#badgeSlotAnimStartMs;
+		if (elapsed >= StatusLineComponent.#BADGE_ANIM_MS) return this.#badgeSlotTargetWidth;
+		const t = elapsed / StatusLineComponent.#BADGE_ANIM_MS;
+		const eased = t * t * (3 - 2 * t);
+		return Math.round(this.#badgeSlotFromWidth + (this.#badgeSlotTargetWidth - this.#badgeSlotFromWidth) * eased);
 	}
 
 	/**
-	 * The gauge line bridging the left and right groups in box layout. Driven
-	 * by `statusLine.contextLine`:
-	 * - `off`: solid accent line (no context feedback).
-	 * - `percentage`: used portion in accent, remainder in the border color.
-	 * - `annotated` : percentage plus preset-aware markers where
-	 *   speculative compaction starts and where auto-compaction fires.
-	 * - `embedded` (default): annotated markers plus percentage/window labels absorbed
-	 *   from configured context segments.
+	 * Join the location group and append the MODEL RUN clock with a roomy gap.
+	 * While the agent runs it ticks the current run (`0:42`); once the run
+	 * finishes it freezes as a quiet receipt of the completed run (`✓ 0:21`).
+	 * Dim; degrades first on tight widths.
 	 */
-	#buildContextGaugeFill(
-		gapWidth: number,
-		ctx: SegmentContext,
-		effectiveSettings: EffectiveStatusLineSettings,
-		embedContext: boolean,
-	): string {
-		const sessionName =
-			effectiveSettings.sessionAccent !== false ? this.session.sessionManager?.getSessionName() : undefined;
-		const accentHex = sessionName
-			? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
-			: undefined;
-		const usedColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("borderAccent");
-		const horizontal = theme.boxRound.horizontal;
-		const mode = effectiveSettings.contextLine ?? "embedded";
-		const pct = ctx.contextPercent;
-		if (mode === "off" || pct === null || pct === undefined) {
-			return `\x1b[49m${usedColor}${horizontal.repeat(gapWidth)}\x1b[39m`;
-		}
-
-		const clampedPct = Math.min(100, Math.max(0, pct));
-		let percentLabel = "";
-		let windowLabel = "";
-		let percentStart = -1;
-		let windowStart = -1;
-		let scaleWidth = gapWidth;
-		// >100%: usage anchored past the active window (e.g. model switch to a
-		// smaller window). The bar clamps full, but the embedded label breaks
-		// past the window label — `──200K─120%` with the percent in error color.
-		const percentOverflow = pct > 100;
-		if (embedContext) {
-			const candidatePercent = formatEmbeddedContextPercent(percentOverflow ? pct : clampedPct);
-			const candidateWindow = formatNumber(ctx.contextWindow);
-			if (gapWidth >= candidatePercent.length + candidateWindow.length + 4) {
-				percentLabel = candidatePercent;
-				windowLabel = candidateWindow;
-				if (percentOverflow) {
-					percentStart = gapWidth - percentLabel.length;
-					windowStart = percentStart - 1 - windowLabel.length;
-				} else {
-					windowStart = gapWidth - windowLabel.length - 1;
-				}
-				scaleWidth = windowStart;
-			}
-		}
-
-		// At least one accent cell: a fresh session still shows the session-accent
-		// line starting at the left instead of a fully dim bar.
-		const usedCount = Math.min(scaleWidth, Math.max(1, Math.round((clampedPct / 100) * scaleWidth)));
-		const unusedColor = theme.getFgAnsi("border");
-
-		// Boundary markers are only meaningful when auto-compaction can fire and
-		// the line is long enough for the markers to read as positions.
-		let speculationIdx = -1;
-		let thresholdIdx = -1;
-		if ((mode === "annotated" || mode === "embedded") && ctx.autoCompactEnabled && gapWidth >= 8) {
-			const boundaries = this.#compactionBoundaries(ctx.contextWindow);
-			if (boundaries) {
-				const cellFor = (percent: number) =>
-					Math.min(scaleWidth - 1, Math.max(0, Math.round((percent / 100) * scaleWidth)));
-				thresholdIdx = cellFor(boundaries.thresholdPercent);
-				// null = no background speculation will run (async disabled or the
-				// first available method is local/instant) — no tick to show.
-				if (boundaries.speculationPercent !== null) speculationIdx = cellFor(boundaries.speculationPercent);
-				if (speculationIdx === thresholdIdx) speculationIdx = -1; // threshold wins the cell
-			}
-		}
-
-		if (percentLabel && percentStart < 0) {
-			const maxStart = scaleWidth - percentLabel.length - 1;
-			const preferredStart = Math.min(maxStart, Math.max(1, usedCount));
-			const overlapsBoundary = (start: number): boolean => {
-				const end = start + percentLabel.length;
-				return (speculationIdx >= start && speculationIdx < end) || (thresholdIdx >= start && thresholdIdx < end);
-			};
-			for (let distance = 0; distance <= maxStart; distance++) {
-				const left = preferredStart - distance;
-				if (left >= 1 && !overlapsBoundary(left)) {
-					percentStart = left;
-					break;
-				}
-				if (distance === 0) continue;
-				const right = preferredStart + distance;
-				if (right <= maxStart && !overlapsBoundary(right)) {
-					percentStart = right;
-					break;
-				}
-			}
-		}
-
-		const speculationGlyph = theme.symbol("context.speculation");
-		const thresholdGlyph = theme.symbol("context.compaction");
-		const speculationColor = theme.getFgAnsi("muted");
-		const overflowColor = theme.getFgAnsi("error");
-		const rawAccentHex = accentHex ?? theme.getColorHex("borderAccent");
-		const dimmedAccentHex = adjustHsv(rawAccentHex, { s: 0.7, v: 0.75 });
-		const thresholdColor = getSessionAccentAnsi(dimmedAccentHex) ?? usedColor;
-
-		let out = "\x1b[49m";
-		let activeColor = "";
-		for (let i = 0; i < gapWidth; i++) {
-			let color = i < usedCount ? usedColor : unusedColor;
-			let glyph = horizontal;
-			if (percentStart >= 0 && i >= percentStart && i < percentStart + percentLabel.length) {
-				color = percentOverflow ? overflowColor : usedColor;
-				glyph = percentLabel.charAt(i - percentStart);
-			} else if (i === thresholdIdx) {
-				color = thresholdColor;
-				glyph = thresholdGlyph;
-			} else if (i === speculationIdx) {
-				color = speculationColor;
-				glyph = speculationGlyph;
-			} else if (windowStart >= 0 && i >= windowStart && i < windowStart + windowLabel.length) {
-				color = thresholdColor;
-				glyph = windowLabel.charAt(i - windowStart);
-			}
-			if (color !== activeColor) {
-				out += color;
-				activeColor = color;
-			}
-			out += glyph;
-		}
-		return `${out}\x1b[39m`;
-	}
-
-	/** Auto-compaction boundary percents, or null when unavailable (disabled, no window). */
-	#compactionBoundaries(contextWindow: number): CompactionBoundaries | null {
-		// Test mocks have no session-scoped settings;
-		// the global store carries the same compaction knobs.
-		const source = typeof this.session.settings?.getGroup === "function" ? this.session.settings : settings;
-		// The active model gates which compaction method a real pass would run
-		// (and therefore whether a speculation tick is meaningful).
-		const model = this.session.state?.model ?? this.session.model;
-		try {
-			return computeCompactionBoundaries(source, contextWindow, model);
-		} catch {
-			return null;
-		}
-	}
-
-	getTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		let content = this.#buildStatusLine(width, "box", previewTitle);
-		if (this.#focusedAgentId && content) {
-			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
-			// `\x1b[0m` resets that would cancel faint mid-bar, so re-open it after each.
-			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
-		}
-		return {
-			content,
-			width: visibleWidth(content),
-			revision: this.#widthEpochRevision,
-		};
-	}
-	/**
-	 * Standalone bar placement derived from the composer style. `bottomBar`
-	 * `"full"` renders both groups on the bottom bar (pi/borderless/field/rail);
-	 * `"left"` renders just the left group there — the right group attaches to
-	 * the editor's top rule via {@link getStandaloneTopBorder} (claude/rule);
-	 * `"none"` returns the bar to the box composer's embedded top border.
-	 * `bottomBarGap` inserts a blank spacer row above the bar for styles whose
-	 * editor has no bottom chrome.
-	 */
-	setComposerStyle(style: Pick<ComposerStyle, "bottomBar" | "bottomBarGap">): void {
-		this.#standalone = style.bottomBar === "none" ? false : style.bottomBar === "left" ? "left-only" : "full";
-		this.#standaloneGap = style.bottomBarGap;
-	}
-
-	/** While true, the standalone bar yields its row to the editor's autocomplete menu. */
-	setAutocompleteActiveProbe(probe: (() => boolean) | undefined): void {
-		this.#autocompleteActiveProbe = probe;
-	}
-
-	/** Plain right-group content for the claude composer's top rule. */
-	getStandaloneTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		let content = this.#buildStatusLine(width, "plain-right", previewTitle);
-		if (this.#focusedAgentId && content) {
-			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
-		}
-		return {
-			content,
-			width: visibleWidth(content),
-			revision: this.#widthEpochRevision,
-		};
+	#locationWithRunClock(location: string[], sep: string, gap: string = SESSION_CLOCK_GAP): string {
+		const left = location.join(sep);
+		if (!left) return left;
+		const { runningMs, lastRunMs } = this.getRunClock();
+		const readout = runningMs !== null ? formatClock(runningMs) : lastRunMs > 0 ? `✓ ${formatClock(lastRunMs)}` : "";
+		if (!readout) return left;
+		return `${left}${gap}${theme.fg("dim", readout)}`;
 	}
 
 	/**
-	 * The plain standalone bottom bar through the real segment/gauge pipeline —
-	 * `groups` picks which segment groups it carries. Used by the live render
-	 * loop and by composer previews (which inject a candidate layout instead of
-	 * the active one).
+	 * The focus badge on its own, with no segments: the footline row rendered
+	 * while `statusLine.enabled` is off. Null when nothing is proxied.
 	 */
-	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string): string {
-		let content = this.#buildStatusLine(width, groups === "left" ? "plain-left" : "plain-full", previewTitle);
-		if (this.#focusedAgentId && content) {
-			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
-		}
-		return content;
+	renderFocusBadge(width: number): string | null {
+		this.#quietLineBounds = [];
+		if (!this.#focusedAgentId) return null;
+		return truncateToWidth(focusExitBadge(this.#focusedAgentId), Math.max(1, width));
 	}
+
+	renderQuietLine(width: number, extras?: { locationRight?: string | null; previewTitle?: string }): string | null {
+		this.#previewTitle = extras?.previewTitle;
+		const rawBadge = this.#focusedAgentId ? focusExitBadge(this.#focusedAgentId) : "";
+		const badge = rawBadge === "" ? "" : truncateToWidth(rawBadge, Math.max(1, width));
+		const badgeWidth = visibleWidth(badge);
+		const { location, capLeft, capRight } = this.#gatherQuietSegments(Math.max(0, width - badgeWidth));
+		const sep = segmentSeparator();
+		// One cell of right margin, always — nothing kisses the terminal edge.
+		const budget = Math.max(0, width - 1 - badgeWidth);
+		if (budget === 0) {
+			this.#quietLineBounds = [];
+			return badge === "" ? null : badge;
+		}
+		const locationContents = location.map(part => part.content);
+		let left = this.#locationWithRunClock(locationContents, sep);
+		const rightParts = [...capLeft, ...capRight];
+		if (extras?.locationRight) rightParts.push({ id: "location_right", content: extras.locationRight });
+		let right = rightParts.map(part => part.content).join(sep);
+		// The run clock is comfort chrome; the capability segments are operating
+		// data. On a tight width the clock degrades FIRST, then ranked parts shed.
+		let clockStage = 0;
+		let locationShortened = false;
+		while (rightParts.length > 0 && visibleWidth(left) + visibleWidth(right) + (left && right ? 2 : 0) > budget) {
+			if (clockStage === 0) {
+				clockStage = 1;
+				left = this.#locationWithRunClock(locationContents, sep, "  ");
+				continue;
+			}
+			if (clockStage === 1) {
+				clockStage = 2;
+				left = locationContents.join(sep);
+				continue;
+			}
+			let dropIndex = -1;
+			let dropRank = Number.POSITIVE_INFINITY;
+			for (let i = rightParts.length - 1; i >= 0; i--) {
+				const rank = RIGHT_PART_SHED_RANK[rightParts[i]?.id ?? ""] ?? 0;
+				if (rank < dropRank) {
+					dropRank = rank;
+					dropIndex = i;
+				}
+			}
+			if (dropRank === 0 && dropIndex >= 0) {
+				rightParts.splice(dropIndex, 1);
+				right = rightParts.map(part => part.content).join(sep);
+				continue;
+			}
+			// Only ranked parts are left. Shorten the location before touching any
+			// of them: a clipped path still says where you are.
+			if (!locationShortened) {
+				locationShortened = true;
+				const leftBudget = Math.max(0, budget - visibleWidth(right) - (right ? 2 : 0));
+				left = truncateToWidth(locationContents.join(sep), leftBudget);
+				continue;
+			}
+			if (rightParts.length > 1 && dropIndex >= 0) {
+				rightParts.splice(dropIndex, 1);
+				right = rightParts.map(part => part.content).join(sep);
+				continue;
+			}
+			break;
+		}
+		if (!left && !right) {
+			this.#quietLineBounds = [];
+			return badge === "" ? null : badge;
+		}
+		const sepWidth = visibleWidth(sep);
+		const bounds: QuietSegmentBounds[] = [];
+		if (left) {
+			let col = 0;
+			for (const part of location) {
+				const partWidth = visibleWidth(part.content);
+				bounds.push({ id: part.id, start: col, end: col + partWidth });
+				col += partWidth + sepWidth;
+			}
+		}
+		const rightStart = left && right ? budget - visibleWidth(right) : 0;
+		if (right) {
+			let col = rightStart;
+			for (const part of rightParts) {
+				const partWidth = visibleWidth(part.content);
+				bounds.push({ id: part.id, start: col, end: col + partWidth });
+				col += partWidth + sepWidth;
+			}
+		}
+		this.#quietLineBounds = bounds
+			.filter(entry => entry.start < budget)
+			.map(entry => ({
+				...entry,
+				start: entry.start + badgeWidth,
+				end: Math.min(entry.end, budget) + badgeWidth,
+			}));
+		if (left && right) {
+			return badge + left + padding(budget - visibleWidth(left) - visibleWidth(right)) + right;
+		}
+		return badge + truncateToWidth(left || right, budget);
+	}
+
 	/**
-	 * Status bar lines for a composer layout, rendered through the real
-	 * pipeline — the single source for the /settings appearance preview.
-	 * `style` overrides the layout (candidate composer shape); omitted, the
-	 * active layout is used. Ignores the autocomplete probe: previews always
-	 * render.
+	 * Resolve a 0-based column of the LAST rendered quiet footline to the id of
+	 * the segment occupying it, or null for gaps/padding. The footline records
+	 * its layout as it renders, so the answer is always in sync with what is on
+	 * screen. Non-segment chrome reports synthetic ids ("badges",
+	 * "location_right"); the run clock is unaddressable chrome.
 	 */
-	getPreviewLines(width: number, style?: Pick<ComposerStyle, "statusAttachment" | "bottomBar">): string[] {
-		const attachment =
-			style?.statusAttachment ??
-			(this.#standalone === false ? "top-border" : this.#standalone === "left-only" ? "top-rule-chip" : "none");
-		const bottomBar =
-			style?.bottomBar ?? (this.#standalone === false ? "none" : this.#standalone === "left-only" ? "left" : "full");
-		const lines: string[] = [];
-		if (attachment === "top-border") {
-			const border = this.getTopBorder(width);
-			if (border.content) lines.push(border.content);
-		} else if (attachment === "top-rule-chip") {
-			// Render the chip on its rule exactly as the claude composer does.
-			const rule = claudeComposerStyle.renderTop({
-				width,
-				paddingX: 0,
-				borderColor: str => theme.fg("border", str),
-				accentColor: str => theme.fg("accent", str),
-				surfaceColor: str => theme.bgFill("userMessageBg", str),
-				box: theme.boxRound,
-				topBorder: this.getStandaloneTopBorder(width),
-			});
-			if (rule !== undefined) lines.push(rule);
+	quietSegmentAt(col: number): string | null {
+		for (const entry of this.#quietLineBounds) {
+			if (col >= entry.start && col < entry.end) return entry.id;
 		}
-		if (bottomBar !== "none") {
-			const main = this.renderBottomBar(width, bottomBar);
-			if (main) lines.push(main);
+		return null;
+	}
+
+	/** Last rendered quiet-footline layout, for tests and debugging. */
+	getQuietSegmentBounds(): readonly QuietSegmentBounds[] {
+		return this.#quietLineBounds;
+	}
+
+	renderQuietLines(
+		width: number,
+		extras?: { locationRight?: string | null; previewTitle?: string },
+	): { locationLine: string | null; capabilityLine: string | null } {
+		this.#previewTitle = extras?.previewTitle;
+		const gathered = this.#gatherQuietSegments(width);
+		const location = gathered.location.map(part => part.content);
+		const capLeft = gathered.capLeft.map(part => part.content);
+		const capRight = gathered.capRight.map(part => part.content);
+		const sep = segmentSeparator();
+		// One cell of right margin, always — nothing kisses the terminal edge.
+		const budget = Math.max(1, width - 1);
+		let locationLine: string | null = null;
+		if (location.length > 0) {
+			const left = this.#locationWithRunClock(location, sep);
+			const right = extras?.locationRight ?? null;
+			if (right && visibleWidth(left) + visibleWidth(right) + 2 <= budget) {
+				locationLine = left + padding(budget - visibleWidth(left) - visibleWidth(right)) + right;
+			} else {
+				locationLine = truncateToWidth(left, budget);
+			}
 		}
-		return lines;
+		let capabilityLine: string | null = null;
+		if (capLeft.length > 0 || capRight.length > 0) {
+			const left = capLeft.join(sep);
+			const rightParts = [...capRight];
+			let right = rightParts.join(sep);
+			while (rightParts.length > 0 && visibleWidth(left) + visibleWidth(right) + 2 > budget) {
+				rightParts.pop();
+				right = rightParts.join(sep);
+			}
+			if (left && right) {
+				capabilityLine = left + padding(budget - visibleWidth(left) - visibleWidth(right)) + right;
+			} else {
+				capabilityLine = truncateToWidth(left || right, budget);
+			}
+		}
+		return { locationLine, capabilityLine };
 	}
 
 	render(width: number): readonly string[] {
-		const lines: string[] = [];
-		if (this.#standalone && !this.#autocompleteActiveProbe?.()) {
-			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
-			if (content) {
-				if (this.#standaloneGap) lines.push("");
-				lines.push(content);
-			}
-		}
+		const rows: string[] = [];
 		const showHooks = this.#settings.showHookStatus ?? true;
 		if (showHooks && this.#hookStatuses.size > 0) {
-			const hookLines = Array.from(this.#hookStatuses.entries())
+			const sortedStatuses = Array.from(this.#hookStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
-			lines.push(...hookLines);
+				.map(([, text]) => sanitizeStatusText(text));
+			rows.push(truncateToWidth(sortedStatuses.join(" "), width));
 		}
-		return lines;
+		// Read per render rather than captured at construction: toggling the row
+		// in `/settings` lands on the next frame with no re-mount.
+		if (settings.get("statusLine.enabled")) {
+			const footline = this.renderQuietLine(width);
+			if (footline) rows.push(footline);
+		} else {
+			const badge = this.renderFocusBadge(width);
+			if (badge) rows.push(badge);
+		}
+		return rows;
 	}
 }

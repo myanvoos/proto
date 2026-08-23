@@ -12,6 +12,9 @@ export const SERVICE_TIER_OPENAI_VALUES = ["none", "auto", "default", "flex", "s
 export const SERVICE_TIER_ANTHROPIC_VALUES = ["none", "priority"] as const;
 export const SERVICE_TIER_GOOGLE_VALUES = ["none", "flex", "priority"] as const;
 
+/** The one word the status-line chip and `/fast` both name the priority tier with. */
+export const PRIORITY_TIER_LABEL = "priority";
+
 export type ServiceTierOpenAISettingValue = (typeof SERVICE_TIER_OPENAI_VALUES)[number];
 export type ServiceTierAnthropicSettingValue = (typeof SERVICE_TIER_ANTHROPIC_VALUES)[number];
 export type ServiceTierGoogleSettingValue = (typeof SERVICE_TIER_GOOGLE_VALUES)[number];

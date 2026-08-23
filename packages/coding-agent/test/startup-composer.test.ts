@@ -447,9 +447,7 @@ describe("Composer prepaint", () => {
 			);
 			lease.adopt();
 			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-			const realTopBorder = vi
-				.spyOn(mode.statusLine, "getTopBorder")
-				.mockReturnValue({ content: "real status bar", width: 15, revision: 1 });
+			const realQuietLine = vi.spyOn(mode.statusLine, "renderQuietLine").mockReturnValue("real status bar");
 			terminal.sendInput(" between");
 			expect(mode.editor.getExpandedText()).toBe("draft message between");
 			await terminal.waitForRender();
@@ -464,7 +462,7 @@ describe("Composer prepaint", () => {
 				.join("\n");
 			const modelName = testSession.session.model?.name ?? "";
 			expect(output).toContain(modelName);
-			realTopBorder.mockReturnValue({ content: "real status bar *18 ?5", width: 21, revision: 2 });
+			realQuietLine.mockReturnValue("real status bar *18 ?5");
 			mode.ui.requestRender();
 			await terminal.waitForRender(() =>
 				terminal.getViewport().some(row => Bun.stripANSI(row).includes("real status bar *18 ?5")),
