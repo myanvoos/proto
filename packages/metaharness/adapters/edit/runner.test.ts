@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { formatSessionDumpText, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { generateReport } from "./report";
 import { buildBenchmarkResult, type TaskRunResult, writeConversationDump } from "./runner";
@@ -402,8 +402,7 @@ describe("writeConversationDump", () => {
 		expect(dumpPath).toBe(path.join(dumpRoot.absolute(), "task_weird", "run-1.md"));
 
 		const dumpText = await Bun.file(dumpPath).text();
-		const expectedBody = formatSessionDumpText({ messages: [userMessage] });
-		expect(dumpText.trim()).toBe(expectedBody.trim());
+		expect(dumpText).toBe(`\`\`\`json\n${JSON.stringify([userMessage], null, 2)}\n\`\`\`\n`);
 
 		const copiedArtifactPath = path.join(dumpPath.slice(0, -3), path.basename(sourceArtifactPath));
 		expect(await Bun.file(copiedArtifactPath).text()).toBe("artifact contents");

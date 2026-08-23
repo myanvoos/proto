@@ -13,9 +13,8 @@ import {
 	InMemorySnapshotStore,
 	Tokenizer as HashlineTokenizer,
 } from "@oh-my-pi/hashline";
-import type { AgentMessage, ResolvedThinkingLevel, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Model, ToolExample } from "@oh-my-pi/pi-ai";
-import { formatSessionDumpText, RpcClient } from "@oh-my-pi/pi-coding-agent";
+import type { AgentMessage, ResolvedThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { RpcClient } from "@oh-my-pi/pi-coding-agent";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { diffLines } from "diff";
 import { formatDirectory } from "@oh-my-pi/typescript-edit-benchmark/formatter";
@@ -47,9 +46,6 @@ function formatLogPath(logFile: string): string {
 type ConversationDumpSessionState = {
 	sessionFile?: string;
 	systemPrompt?: string[];
-	model?: Model;
-	thinkingLevel?: ThinkingLevel | undefined;
-	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 };
 
 /** Common interface for both RPC and in-process clients */
@@ -119,10 +115,6 @@ export interface BenchmarkConfig {
 type ConversationDumpSnapshot = {
 	messages: AgentMessage[];
 	sourceSessionFile?: string;
-	systemPrompt?: string[];
-	model?: Model;
-	thinkingLevel?: ThinkingLevel | undefined;
-	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 };
 
 function sanitizeDumpPathSegment(value: string): string {
@@ -166,14 +158,7 @@ export async function writeConversationDump(params: {
 }): Promise<string> {
 	const dumpPath = getConversationDumpPath(params.dumpDir, params.taskId, params.runIndex);
 	await fs.promises.mkdir(path.dirname(dumpPath), { recursive: true });
-	const body = formatSessionDumpText({
-		messages: params.snapshot.messages,
-		systemPrompt: params.snapshot.systemPrompt,
-		model: params.snapshot.model,
-		thinkingLevel: params.snapshot.thinkingLevel,
-		tools: params.snapshot.dumpTools,
-	});
-	await Bun.write(dumpPath, `${body}\n`);
+	await Bun.write(dumpPath, `\`\`\`json\n${JSON.stringify(params.snapshot.messages, null, 2)}\n\`\`\`\n`);
 	if (params.snapshot.sourceSessionFile) {
 		await copyConversationArtifacts(params.snapshot.sourceSessionFile, dumpPath);
 	}
@@ -185,10 +170,6 @@ async function snapshotConversationDump(client: BenchmarkClient): Promise<Conver
 	return {
 		messages,
 		sourceSessionFile: state.sessionFile,
-		systemPrompt: state.systemPrompt,
-		model: state.model,
-		thinkingLevel: state.thinkingLevel,
-		dumpTools: state.dumpTools,
 	};
 }
 
