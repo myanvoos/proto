@@ -52,11 +52,7 @@ function thinkingGlyph(display: string): string {
 }
 
 function stripDisplayRoot(pwd: string): string {
-	for (const root of [
-		path.join(os.homedir(), "code"),
-		path.join(os.homedir(), "research"),
-		path.join(os.homedir(), "inference"),
-	]) {
+	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
 		const relative = relativePathWithinRoot(root, pwd);
 		if (relative) return relative;
 	}
@@ -363,7 +359,9 @@ const gitSegment: StatusLineSegment = {
 			content = withIcon(theme.icon.branch, branch);
 		}
 
-		if (isDirty) content += "*";
+		// Branch plus one bare dirty marker; the star carries its own hue so it
+		// reads against the branch label.
+		if (isDirty) content = `${content} ${theme.fg("statusLineDirty", "*")}`;
 
 		const colorName = isDirty ? "statusLineGitDirty" : "statusLineGitClean";
 		return { content: theme.fg(colorName, content), visible: true };

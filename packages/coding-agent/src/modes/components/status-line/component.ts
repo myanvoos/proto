@@ -44,7 +44,9 @@ type QuietPart = { id: string; content: string };
  * Shed order for the right group, as a rank rather than a boolean. Higher survives longer;
  * everything unlisted ranks 0 and sheds first, right to left, which is the ordinary case.
  *
- * `subagents` (4) is the persistent running count — the last thing standing.
+ * `model` (5) is who is serving — on small screens it outranks everything else and
+ * sheds last, because a footline that cannot name the model has nothing left to say.
+ * `subagents` (4) is the persistent running count.
  * `location_right` (3) is the owner-supplied zone; it is pushed LAST so without a rank it
  * would always be the first casualty. `mode` (2) says which mode is live. `context_pct` (1)
  * is the footline's one live value and reads as a whole thought after the others are gone.
@@ -54,6 +56,7 @@ const RIGHT_PART_SHED_RANK: Record<string, number> = {
 	mode: 2,
 	location_right: 3,
 	subagents: 4,
+	model: 5,
 };
 
 /** One segment's slot on the rendered quiet footline (0-based columns, end exclusive). */

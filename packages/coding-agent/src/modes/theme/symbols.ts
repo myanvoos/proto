@@ -261,7 +261,6 @@ export type SymbolKey =
 	| "tool.mcp"
 	| "tool.job"
 	| "tool.launch"
-	| "tool.task"
 	| "tool.todo"
 	| "tool.memory"
 	| "tool.ask"
@@ -452,7 +451,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.package": "📦",
 	"icon.warning": "⚠",
 	"icon.rewind": "↶",
-	"icon.auto": "⟲",
+	"icon.auto": "∞",
 	"icon.fast": "⚡",
 	"icon.extensionSkill": "✦",
 	"icon.extensionTool": "🛠",
@@ -605,7 +604,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.mcp": "🔌",
 	"tool.job": "⚙",
 	"tool.launch": "🚀",
-	"tool.task": "⇶",
 	"tool.todo": "☑",
 	"tool.memory": "🧠",
 	"tool.ask": "?",
@@ -1024,7 +1022,6 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.mcp": "\uEB2D",
 	"tool.job": "\uEBA2",
 	"tool.launch": "\uF135",
-	"tool.task": "\uf4a0",
 	"tool.todo": "\uEAB3",
 	"tool.memory": "\uEACE",
 	"tool.ask": "\uEAC7",
@@ -1287,7 +1284,6 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.mcp": "<>",
 	"tool.job": "job",
 	"tool.launch": "run",
-	"tool.task": ">>>",
 	"tool.todo": "[x]",
 	"tool.memory": "mem",
 	"tool.ask": "[?]",
