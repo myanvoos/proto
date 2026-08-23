@@ -279,9 +279,9 @@ describe("issue #3939 — stt downloads keep the worker referenced", () => {
 			const download = client.downloadModel("turbo");
 
 			expect(downloadRequestId).not.toBe("");
-			worker.emit({ type: "error", id: downloadRequestId, error: "Error: Hub returned 403" });
+			worker.emit({ type: "error", id: downloadRequestId, error: "Error: Fleet returned 403" });
 
-			expect(await download).toEqual({ ok: false, error: "Error: Hub returned 403" });
+			expect(await download).toEqual({ ok: false, error: "Error: Fleet returned 403" });
 			expect(worker.unrefCalls).toBe(1);
 		} finally {
 			await client.terminate();

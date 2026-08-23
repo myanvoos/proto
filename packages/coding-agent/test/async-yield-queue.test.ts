@@ -9,7 +9,7 @@ import { type AsyncJob, AsyncJobManager, type AsyncJobType } from "@oh-my-pi/pi-
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { YieldQueue } from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { type CoordinationDetails, HubTool } from "../src/tools/hub";
+import { type CoordinationDetails, FleetTool } from "../src/tools/fleet";
 
 type AsyncEntry = {
 	jobId: string;
@@ -128,7 +128,7 @@ describe("async result yield queue delivery", () => {
 		await harness.manager.waitForAll();
 		expect(await harness.manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);
 
-		const tool = new HubTool(createToolSession(harness.manager));
+		const tool = new FleetTool(createToolSession(harness.manager));
 		const result = await tool.execute("tool-call", { op: "wait", ids: [jobId] });
 		expect((result.details as CoordinationDetails)?.jobs?.find(job => job.id === jobId)?.status).toBe("completed");
 
@@ -140,7 +140,7 @@ describe("async result yield queue delivery", () => {
 	test("multiple completions in one yield window become one follow-up", async () => {
 		const harness = createHarness(true);
 		const firstJobId = harness.manager.register("bash", "first", async () => "first result");
-		const secondJobId = harness.manager.register("task", "second", async () => "second result");
+		const secondJobId = harness.manager.register("worker", "second", async () => "second result");
 
 		await harness.manager.waitForAll();
 		expect(await harness.manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);

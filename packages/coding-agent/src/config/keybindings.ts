@@ -38,7 +38,7 @@ interface AppKeybindings {
 	"app.clipboard.pasteTextRaw": true;
 	"app.clipboard.copyLine": true;
 	"app.clipboard.copyPrompt": true;
-	"app.agents.hub": true;
+	"app.agents.fleet": true;
 	"app.session.new": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
@@ -182,13 +182,13 @@ export const KEYBINDINGS = {
 		defaultKeys: [],
 		description: "Resume session",
 	},
-	"app.agents.hub": {
+	"app.agents.fleet": {
 		defaultKeys: "alt+a",
-		description: "Open the agent hub",
+		description: "Open the agent fleet",
 	},
 	"app.session.observe": {
 		defaultKeys: "ctrl+s",
-		description: "Open the agent hub",
+		description: "Open the agent fleet",
 	},
 	"app.session.togglePath": {
 		defaultKeys: "ctrl+p",

@@ -75,7 +75,7 @@ describe("AgentSession concurrent disposal", () => {
 		const started = Promise.withResolvers<void>();
 		let abortReason: unknown;
 		owned.register(
-			"task",
+			"worker",
 			"running subagent",
 			async ({ signal }) => {
 				const aborted = Promise.withResolvers<void>();
@@ -111,7 +111,7 @@ describe("AgentSession concurrent disposal", () => {
 		const started = Promise.withResolvers<void>();
 		let abortReason: unknown;
 		shared.register(
-			"task",
+			"worker",
 			"nested child",
 			async ({ signal }) => {
 				const aborted = Promise.withResolvers<void>();

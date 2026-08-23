@@ -23,8 +23,8 @@ _No files to review._
 
 ### Distribution Guidelines
 
-Use the `task` tool with `agent: "reviewer"` and a `tasks` array.
-{{#when agentCount "==" 1}}Create exactly **1 reviewer task**.{{else}}Spawn **{{agentCount}} reviewer agents** in parallel.{{/when}}
+Use one `orchestrate_spawn` call per reviewer with `agent: "reviewer"`; issue parallel calls in one message.
+{{#when agentCount "==" 1}}Create exactly **1 reviewer worker**.{{else}}Spawn **{{agentCount}} reviewer workers** in parallel.{{/when}}
 {{#if multiAgent}}
 Group files by locality, e.g.:
 - Same directory/module → same agent

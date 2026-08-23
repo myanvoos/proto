@@ -1,5 +1,5 @@
 /**
- * Shared types for the hub tool — the merged agent-coordination surface
+ * Shared types for the fleet tool — the merged agent-coordination surface
  * covering peer messaging (IRC bus), background-job control, and supervised
  * long-running processes (launch).
  */
@@ -10,11 +10,11 @@ import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 /**
- * Hub operations: messaging (`send`/`wait`/`inbox`/`list`), jobs
+ * Fleet operations: messaging (`send`/`wait`/`inbox`/`list`), jobs
  * (`wait`/`cancel`/`jobs`), and process supervision (`start`/`ps`/`logs`/
  * `stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`).
  */
-export type HubOp =
+export type FleetOp =
 	| "send"
 	| "wait"
 	| "inbox"
@@ -29,7 +29,7 @@ export type HubOp =
 	| "describe";
 
 /** Peer row surfaced by `op:"list"`. */
-export interface HubPeerInfo {
+export interface FleetPeerInfo {
 	id: string;
 	displayName: string;
 	kind: string;
@@ -64,8 +64,8 @@ export interface CancelOutcome {
 /**
  * A live subagent from the AgentRegistry that has no backing job in the
  * AsyncJobManager — e.g. an idle agent woken (or a parked agent revived) via
- * a hub message, or a spawn owned by another agent. Surfaced by `jobs` and
- * empty-wait snapshots so the hub's picture matches the UI's running-agent
+ * a fleet message, or a spawn owned by another agent. Surfaced by `jobs` and
+ * empty-wait snapshots so the fleet's picture matches the UI's running-agent
  * count.
  */
 export interface AgentActivitySnapshot {
@@ -78,32 +78,32 @@ export interface AgentActivitySnapshot {
 	/**
 	 * Whether an attached session corroborates the `running` claim. False marks
 	 * a ref that says `running` with no turn in flight — either a spawn still
-	 * wiring up or a stale registration that `hub cancel <id>` clears (#8634).
+	 * wiring up or a stale registration that `fleet cancel <id>` clears (#8634).
 	 */
 	live: boolean;
 }
 
 /** Result details for messaging and job ops; fields are disjoint per op. */
 export interface CoordinationDetails {
-	op: HubOp;
+	op: FleetOp;
 	from?: string;
 	to?: string;
 	receipts?: IrcDeliveryReceipt[];
 	/** Message consumed by `wait` / `send await:true`; null when the wait timed out. */
 	waited?: IrcMessage | null;
 	inbox?: IrcMessage[];
-	peers?: HubPeerInfo[];
+	peers?: FleetPeerInfo[];
 	jobs?: JobSnapshot[];
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
 }
 
-/** Hub result details: coordination snapshots or launch (process) state. */
-export type HubDetails = CoordinationDetails | LaunchToolDetails;
+/** Fleet result details: coordination snapshots or launch (process) state. */
+export type FleetDetails = CoordinationDetails | LaunchToolDetails;
 
-/** Partially-streamed hub call arguments, as seen by the renderers. */
-export type HubRenderArgs = {
+/** Partially-streamed fleet call arguments, as seen by the renderers. */
+export type FleetRenderArgs = {
 	op?: string;
 	to?: string;
 	message?: string;
@@ -115,7 +115,7 @@ export type HubRenderArgs = {
 	ids?: string[];
 } & Partial<Omit<LaunchParams, "op">>;
 
-export function hubErrorResult(text: string, details: CoordinationDetails): AgentToolResult<HubDetails> {
+export function fleetErrorResult(text: string, details: CoordinationDetails): AgentToolResult<FleetDetails> {
 	return {
 		content: [{ type: "text", text }],
 		details,

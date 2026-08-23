@@ -1,13 +1,13 @@
 /**
- * Repeated `hub` waits must not stack "waiting on N jobs" frames in the
+ * Repeated `fleet` waits must not stack "waiting on N jobs" frames in the
  * transcript: a wait whose watched jobs are all still running stays live
- * (displaceable) and the next `hub` call replaces it — one persistent wait.
+ * (displaceable) and the next `fleet` call replaces it — one persistent wait.
  *
  * Contracts under test:
  *  - ToolExecutionComponent: a waiting-poll result keeps the block
  *    un-finalized and displaceable; a settled/cancelled/error result
  *    finalizes normally; seal() always freezes.
- *  - EventController: a follow-up `hub` call removes the tracked waiting
+ *  - EventController: a follow-up `fleet` call removes the tracked waiting
  *    poll from the transcript; any other tool seals it in place.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
@@ -87,7 +87,7 @@ describe("hub waiting-poll block lifecycle", () => {
 	function makeJobComponent() {
 		return trackComponent(
 			created,
-			new ToolExecutionComponent("hub", { op: "wait", ids: ["j0", "j1"] }, {}, undefined, uiStub),
+			new ToolExecutionComponent("fleet", { op: "wait", ids: ["j0", "j1"] }, {}, undefined, uiStub),
 		);
 	}
 
@@ -188,7 +188,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId,
-			toolName: "hub",
+			toolName: "fleet",
 			args: { op: "wait", ids: ["j0"] },
 		});
 		const component = children[children.length - 1] as ToolExecutionComponent;
@@ -196,7 +196,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId,
-			toolName: "hub",
+			toolName: "fleet",
 			result: pollResult(["running", "running"]),
 			isError: false,
 		});
@@ -377,14 +377,14 @@ describe("EventController displaces consecutive waiting polls", () => {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId: "t1",
-			toolName: "hub",
+			toolName: "fleet",
 			args: { op: "wait", ids: ["j0"] },
 		});
 		const settled = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "t1",
-			toolName: "hub",
+			toolName: "fleet",
 			result: pollResult(["completed", "running"]),
 			isError: false,
 		});

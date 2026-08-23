@@ -58,7 +58,6 @@ export interface SessionToolsHost {
 
 interface SessionToolsOptions {
 	toolRegistry?: Map<string, AgentTool>;
-	createVibeTools?: () => AgentTool[];
 	createComputerTool?: () => Promise<AgentTool | null>;
 	/** Creates the private `think` scratchpad tool for runtime setting changes. */
 	createThinkTool?: () => Promise<AgentTool | null>;
@@ -66,6 +65,7 @@ interface SessionToolsOptions {
 	createInspectImageTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
+	requiredToolNames?: ReadonlySet<string>;
 	/** MCP tool names whose current registry entries came from the manager snapshot. */
 	mcpManagerToolNames?: Iterable<string>;
 	ensureWriteRegistered?: () => Promise<boolean>;
@@ -175,11 +175,9 @@ interface XdevMountNoticeDetails {
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#toolRegistry: Map<string, AgentTool>;
-	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#createInspectImageTool: SessionToolsOptions["createInspectImageTool"];
-	#installedVibeToolNames = new Set<string>();
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
@@ -195,6 +193,7 @@ export class SessionTools {
 	#announcedMounts = new Set<string>();
 	#announcedMountsSeeded = false;
 	#presentationPinnedToolNames: ReadonlySet<string> | undefined;
+	#requiredToolNames: ReadonlySet<string>;
 	#runtimeSelectedToolNames: ReadonlySet<string> | undefined;
 	#baseSystemPrompt: string[];
 	/**
@@ -238,7 +237,6 @@ export class SessionTools {
 	constructor(host: SessionToolsHost, options: SessionToolsOptions) {
 		this.#host = host;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
-		this.#createVibeTools = options.createVibeTools;
 		this.#createComputerTool = options.createComputerTool;
 		this.#createThinkTool = options.createThinkTool;
 		this.#createInspectImageTool = options.createInspectImageTool;
@@ -255,6 +253,7 @@ export class SessionTools {
 			}
 		}
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
+		this.#requiredToolNames = options.requiredToolNames ?? new Set();
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
@@ -500,57 +499,6 @@ export class SessionTools {
 		return extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped;
 	}
 
-	/** Installs and activates the ephemeral vibe tool set. */
-	activateVibeTools(baseToolNames: string[]): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			const createVibeTools = this.#createVibeTools;
-			if (!createVibeTools) {
-				throw new Error("Vibe tools are unavailable in this session.");
-			}
-
-			const tools = createVibeTools();
-			const vibeToolNames = tools.map(tool => tool.name);
-			if (new Set(vibeToolNames).size !== vibeToolNames.length) {
-				throw new Error("Vibe tool names must be unique.");
-			}
-
-			for (const tool of tools) {
-				if (this.#toolRegistry.has(tool.name)) continue;
-				this.#toolRegistry.set(tool.name, this.#wrapRuntimeTool(tool));
-				this.#builtInToolNames.add(tool.name);
-				this.#installedVibeToolNames.add(tool.name);
-			}
-
-			await this.#applyActiveToolsByName([...new Set([...baseToolNames, ...vibeToolNames])]);
-		});
-	}
-
-	/** Uninstalls vibe tools and activates the replacement set. */
-	deactivateVibeTools(nextToolNames: string[]): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			this.#uninstallVibeTools();
-			await this.#applyActiveToolsByName(nextToolNames);
-		});
-	}
-
-	/** Removes vibe tools without restoring a source-session snapshot. */
-	removeVibeToolsPreservingActive(): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			const removed = new Set(this.#installedVibeToolNames);
-			this.#uninstallVibeTools();
-			const nextEnabled = this.getEnabledToolNames().filter(name => !removed.has(name));
-			await this.#applyActiveToolsByName(nextEnabled);
-		});
-	}
-
-	#uninstallVibeTools(): void {
-		for (const name of this.#installedVibeToolNames) {
-			this.#toolRegistry.delete(name);
-			this.#builtInToolNames.delete(name);
-		}
-		this.#installedVibeToolNames.clear();
-	}
-
 	#getEditModeSession() {
 		return {
 			settings: this.#host.settings,
@@ -674,7 +622,7 @@ export class SessionTools {
 
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
-		toolNames = normalizeToolNames(toolNames);
+		toolNames = normalizeToolNames([...toolNames, ...this.#requiredToolNames]);
 		const codeMode = resolveCodeMode({
 			provider: this.#host.model()?.provider ?? "",
 			toolMode: this.#host.model()?.toolMode,
@@ -745,6 +693,7 @@ export class SessionTools {
 		let appliedNames = validToolNames;
 		let nextCodeModeNamespacesInfo: ToolNamespacesInfo | undefined;
 		if (codeMode.active) {
+			for (const name of this.#requiredToolNames) codeMode.directToolNames.add(name);
 			// The write tool survives demotion only when plan mode or a deferrable
 			// tool still needs it as the staging transport.
 			if (transportNeeded && validToolNames.includes("write")) codeMode.directToolNames.add("write");
@@ -1430,7 +1379,7 @@ export class SessionTools {
 	 *      A server upgrade can change instructions while keeping tools identical.
 	 *
 	 * Settings-driven tool metadata is covered automatically: built-in tools that
-	 * depend on settings expose `description`/`label` via getters (see `TaskTool`,
+	 * depend on settings expose `description`/`label` via getters (see orchestration tools,
 	 * `SearchToolBm25Tool`, `EditTool`), and the signature reads them live on every
 	 * call - so a settings flip that mutates the rendered string differs the signature
 	 * the next time {@link applyActiveToolsByName} runs. Do not refactor `describeTool`
@@ -1438,7 +1387,7 @@ export class SessionTools {
 	 *
 	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
 	 * and SDK-init-time closure constants in `sdk.ts` (`inlineToolDescriptors`,
-	 * `eagerTasks`, `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
+	 * `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
 	 * closure-captured ones cannot change at runtime regardless of skip behavior.
 	 * For everything else, callers must explicitly call {@link refreshBaseSystemPrompt}
 	 * after side-effecting changes; see the memory hooks and {@link syncAfterModelChange}.

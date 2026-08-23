@@ -11,7 +11,7 @@ import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { type CoordinationDetails, HubTool } from "../src/tools/hub";
+import { type CoordinationDetails, FleetTool } from "../src/tools/fleet";
 
 const managers: AsyncJobManager[] = [];
 
@@ -67,7 +67,7 @@ afterEach(async () => {
 
 describe("hub jobs snapshot", () => {
 	test("empty jobs snapshot reports 'no jobs' instead of empty output", async () => {
-		const tool = new HubTool(createToolSession({ manager: createManager(), agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "jobs" });
 
@@ -82,7 +82,7 @@ describe("hub jobs snapshot", () => {
 		registry.setStatus("Idler", "idle");
 		registry.register({ id: "advisor", displayName: "advisor", kind: "advisor", session: null });
 		registry.register({ id: "Main", displayName: "Main", kind: "main", session: null });
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "jobs" });
 
@@ -97,39 +97,42 @@ describe("hub jobs snapshot", () => {
 		const manager = createManager();
 		const registry = new AgentRegistry();
 		// Task-style spawn: job id == agent id.
-		manager.register("task", "AgentA", runsUntilAborted, {
+		manager.register("worker", "AgentA", runsUntilAborted, {
 			id: "AgentA",
 			agentId: "AgentA",
 			ownerId: "Main",
 		});
 		registerRunningSub(registry, "AgentA");
-		// Vibe-style turn job: job id differs from the agent id; linkage via agentId.
-		manager.register("task", "vibe turn", runsUntilAborted, {
-			id: "vibe-1-t1",
-			agentId: "vibe-1",
+		// Orchestrator-style turn job: job id differs from the agent id; linkage via agentId.
+		manager.register("worker", "worker turn", runsUntilAborted, {
+			id: "worker-1-t1",
+			agentId: "worker-1",
 			ownerId: "Main",
 		});
-		registerRunningSub(registry, "vibe-1");
+		registerRunningSub(registry, "worker-1");
 		// Woken via irc: running agent with no job at all.
 		registerRunningSub(registry, "Loner");
-		const tool = new HubTool(createToolSession({ manager, registry, agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager, registry, agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "jobs" });
 
-		expect((result.details as CoordinationDetails)?.jobs?.map(job => job.id).sort()).toEqual(["AgentA", "vibe-1-t1"]);
+		expect((result.details as CoordinationDetails)?.jobs?.map(job => job.id).sort()).toEqual([
+			"AgentA",
+			"worker-1-t1",
+		]);
 		expect((result.details as CoordinationDetails)?.agents?.map(agent => agent.id)).toEqual(["Loner"]);
 		manager.cancel("AgentA");
-		manager.cancel("vibe-1-t1");
+		manager.cancel("worker-1-t1");
 	});
 
 	test("a settled job in retention does not hide its re-woken agent", async () => {
 		const manager = createManager();
 		const registry = new AgentRegistry();
-		manager.register("task", "AgentB", async () => "done", { id: "AgentB", agentId: "AgentB", ownerId: "Main" });
+		manager.register("worker", "AgentB", async () => "done", { id: "AgentB", agentId: "AgentB", ownerId: "Main" });
 		await manager.waitForAll();
 		// The agent was re-woken (e.g. via irc) after its job completed.
 		registerRunningSub(registry, "AgentB");
-		const tool = new HubTool(createToolSession({ manager, registry, agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager, registry, agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "jobs" });
 
@@ -140,7 +143,7 @@ describe("hub jobs snapshot", () => {
 
 describe("hub wait with no matching jobs", () => {
 	test("bare wait with nothing running stays a useless no-op message", async () => {
-		const tool = new HubTool(createToolSession({ manager: createManager(), agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "wait" });
 
@@ -151,7 +154,7 @@ describe("hub wait with no matching jobs", () => {
 	test("bare wait reports running agents outside job control", async () => {
 		const registry = new AgentRegistry();
 		registerRunningSub(registry, "Worker");
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry }));
 
 		const result = await tool.execute("call", { op: "wait" });
 
@@ -165,7 +168,7 @@ describe("hub wait with no matching jobs", () => {
 	test("waiting on an agent id that has no job explains the agent's state", async () => {
 		const registry = new AgentRegistry();
 		registerRunningSub(registry, "Worker");
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main" }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main" }));
 
 		const result = await tool.execute("call", { op: "wait", ids: ["Worker"] });
 
@@ -204,7 +207,7 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 			status: "idle",
 		});
 		lifecycle.adopt("Zombie", { idleTtlMs: 0 });
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["Zombie"] });
 
@@ -229,7 +232,7 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 			status: "running",
 		});
 		lifecycle.adopt("Runner", { idleTtlMs: 0 });
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["Runner"] });
 
@@ -251,7 +254,7 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 			session: fake.session as never,
 			status: "idle",
 		});
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["OtherKid"] });
 
@@ -263,7 +266,7 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 	test("cancel of a truly unknown id still reports not_found", async () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
-		const tool = new HubTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager: createManager(), registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["Ghost"] });
 
@@ -275,9 +278,9 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 		const lifecycle = new AgentLifecycleManager(registry);
 		const fake = fakeSession();
 		const manager = createManager();
-		// Job id == agent id for task spawns; the settled row survives ~5 min
+		// Job id == agent id for worker spawns; the settled row survives ~5 min
 		// after the budget abort while the keep-alive registration lives on.
-		manager.register("task", "Zombie", async () => "done", { id: "Zombie", agentId: "Zombie", ownerId: "Main" });
+		manager.register("worker", "Zombie", async () => "done", { id: "Zombie", agentId: "Zombie", ownerId: "Main" });
 		await manager.waitForAll();
 		registry.register({
 			id: "Zombie",
@@ -288,7 +291,7 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 			status: "idle",
 		});
 		lifecycle.adopt("Zombie", { idleTtlMs: 0 });
-		const tool = new HubTool(createToolSession({ manager, registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager, registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["Zombie"] });
 
@@ -302,9 +305,9 @@ describe("hub cancel of a non-job-backed agent registration (#6315)", () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
 		const manager = createManager();
-		manager.register("task", "DoneJob", async () => "done", { id: "DoneJob", agentId: "DoneJob", ownerId: "Main" });
+		manager.register("worker", "DoneJob", async () => "done", { id: "DoneJob", agentId: "DoneJob", ownerId: "Main" });
 		await manager.waitForAll();
-		const tool = new HubTool(createToolSession({ manager, registry, agentId: "Main", lifecycle }));
+		const tool = new FleetTool(createToolSession({ manager, registry, agentId: "Main", lifecycle }));
 
 		const result = await tool.execute("call", { op: "cancel", ids: ["DoneJob"] });
 

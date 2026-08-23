@@ -85,7 +85,7 @@ it("overlaps registry refresh with session-file opening and session setup", asyn
 	const run = runSubprocess({
 		cwd: tempDir.path(),
 		artifactsDir: tempDir.path(),
-		agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+		agent: { name: "worker", description: "test", systemPrompt: "test", source: "bundled" },
 		task: "test",
 		index: 0,
 		id: "task-launch-overlap",

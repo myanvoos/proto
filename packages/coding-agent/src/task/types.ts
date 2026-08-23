@@ -1,10 +1,8 @@
-import { type BaseType, type } from "@oh-my-pi/omptype";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
 
-import type { TaskEffort } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
@@ -58,15 +56,15 @@ export const MAX_OUTPUT_BYTES = parseNumber($env.PI_TASK_MAX_OUTPUT_BYTES, 500_0
 export const MAX_OUTPUT_LINES = parseNumber($env.PI_TASK_MAX_OUTPUT_LINES, 5000);
 
 /** EventBus channel for raw subagent events */
-export const TASK_SUBAGENT_EVENT_CHANNEL = "task:subagent:event";
+export const WORKER_SUBAGENT_EVENT_CHANNEL = "worker:subagent:event";
 
 /** EventBus channel for aggregated subagent progress */
-export const TASK_SUBAGENT_PROGRESS_CHANNEL = "task:subagent:progress";
+export const WORKER_SUBAGENT_PROGRESS_CHANNEL = "worker:subagent:progress";
 
 /** EventBus channel for subagent lifecycle (start/end) */
-export const TASK_SUBAGENT_LIFECYCLE_CHANNEL = "task:subagent:lifecycle";
+export const WORKER_SUBAGENT_LIFECYCLE_CHANNEL = "worker:subagent:lifecycle";
 
-/** Payload emitted on TASK_SUBAGENT_PROGRESS_CHANNEL */
+/** Payload emitted on WORKER_SUBAGENT_PROGRESS_CHANNEL */
 export interface SubagentProgressPayload {
 	index: number;
 	agent: string;
@@ -80,13 +78,13 @@ export interface SubagentProgressPayload {
 	detached?: boolean;
 }
 
-/** Payload emitted on TASK_SUBAGENT_EVENT_CHANNEL */
+/** Payload emitted on WORKER_SUBAGENT_EVENT_CHANNEL */
 export interface SubagentEventPayload {
 	id: string;
 	event: AgentSessionEvent;
 }
 
-/** Payload emitted on TASK_SUBAGENT_LIFECYCLE_CHANNEL */
+/** Payload emitted on WORKER_SUBAGENT_LIFECYCLE_CHANNEL */
 export interface SubagentLifecyclePayload {
 	id: string;
 	agent: string;
@@ -98,7 +96,7 @@ export interface SubagentLifecyclePayload {
 	index: number;
 	/**
 	 * Spawn runs as a detached background job: the parent turn keeps working
-	 * while this agent runs. Sync task spawns (parent blocked on the call) and
+	 * while this agent runs. Sync worker spawns (parent blocked on the call) and
 	 * eval `agent()` bridge spawns (rendered inside their eval cell) leave this
 	 * unset — surfaces like the subagent HUD only list detached spawns.
 	 */
@@ -107,204 +105,6 @@ export interface SubagentLifecyclePayload {
 
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
 export const LABEL_MAX = 80;
-
-// Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
-const outputSchemaInputSchema = type("object | boolean | string | null");
-// Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
-const effortRule = '"lo" | "med" | "hi"' as const;
-
-export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"+": "delete",
-});
-const taskItemSchemaIsolated = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"isolated?": "boolean",
-	"+": "delete",
-});
-
-/** Single task item. Fields are optional defensively: args stream in token by token. */
-export interface TaskItem {
-	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
-	name?: string;
-	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
-	agent?: string;
-	/** The work; required by the schema. */
-	task?: string;
-	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
-	effort?: TaskEffort;
-	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
-	outputSchema?: unknown;
-	/** Validation behavior for a caller-provided or inherited output schema. */
-	schemaMode?: "permissive" | "strict";
-	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
-	isolated?: boolean;
-}
-
-export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"isolated?": "boolean",
-	"+": "delete",
-});
-const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"+": "delete",
-});
-const taskSchemaBatch = type({
-	context: "string",
-	tasks: taskItemSchemaIsolated.array(),
-	"+": "delete",
-});
-const taskSchemaBatchNoIsolation = type({
-	context: "string",
-	tasks: taskItemSchema.array(),
-	"+": "delete",
-});
-const ALL_TASK_SCHEMAS = [taskSchema, taskSchemaNoIsolation, taskSchemaBatch, taskSchemaBatchNoIsolation] as const;
-
-type DynamicTaskSchema = (typeof ALL_TASK_SCHEMAS)[number];
-export type TaskSchema = typeof taskSchema;
-/** Active task tool parameter schema for the current isolation / batch flags */
-export type TaskToolSchemaInstance = DynamicTaskSchema | BaseType;
-
-const TASK_AGENT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
-const taskSchemaCache = new Map<string, BaseType>();
-
-function taskAgentSchemaRule(defaultAgent: string): string {
-	const trimmed = defaultAgent.trim();
-	if (TASK_AGENT_NAME_PATTERN.test(trimmed)) {
-		return `string = '${trimmed}'`;
-	}
-	return "string";
-}
-
-function createTaskSchema(options: {
-	isolationEnabled: boolean;
-	batchEnabled: boolean;
-	defaultAgent: string;
-	effortEnabled: boolean;
-}): BaseType {
-	const agent = taskAgentSchemaRule(options.defaultAgent);
-	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
-	if (options.batchEnabled) {
-		if (options.isolationEnabled) {
-			const item = type.raw({
-				"name?": "string",
-				agent,
-				task: "string",
-				...effortField,
-				"outputSchema?": outputSchemaInputSchema,
-				"schemaMode?": '"permissive" | "strict"',
-				"isolated?": "boolean",
-				"+": "delete",
-			});
-			return type.raw({
-				context: "string",
-				tasks: item.array(),
-				"+": "delete",
-			});
-		}
-		const item = type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			...effortField,
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			"+": "delete",
-		});
-		return type.raw({
-			context: "string",
-			tasks: item.array(),
-			"+": "delete",
-		});
-	}
-	if (options.isolationEnabled) {
-		return type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			...effortField,
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			"isolated?": "boolean",
-			"+": "delete",
-		});
-	}
-	return type.raw({
-		"name?": "string",
-		agent,
-		task: "string",
-		...effortField,
-		"outputSchema?": outputSchemaInputSchema,
-		"schemaMode?": '"permissive" | "strict"',
-		"+": "delete",
-	});
-}
-
-/** Build the task wire schema for the current settings and spawn policy. */
-export function getTaskSchema(options: {
-	isolationEnabled: boolean;
-	batchEnabled: boolean;
-	effortEnabled?: boolean;
-	defaultAgent?: string;
-}): TaskToolSchemaInstance {
-	const defaultAgent = options.defaultAgent ?? "task";
-	const effortEnabled = options.effortEnabled ?? false;
-	if (defaultAgent === "task" && !effortEnabled) {
-		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
-		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
-	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${defaultAgent}`;
-	const cached = taskSchemaCache.get(key);
-	if (cached) return cached;
-	const schema = createTaskSchema({ ...options, effortEnabled, defaultAgent });
-	taskSchemaCache.set(key, schema);
-	return schema;
-}
-
-/**
- * Runtime params union over both wire shapes. The model sees exactly one shape
- * (`{ context, tasks[] }` when `task.batch` is on, `{ name?, agent?, task }`
- * otherwise); runtime stays permissive so internal callers and stale
- * transcripts using the flat form keep working under either setting.
- */
-export interface TaskParams {
-	/** Stable agent name (flat form). */
-	name?: string;
-	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
-	agent?: string;
-	/** The work (flat form). */
-	task?: string;
-	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
-	effort?: TaskEffort;
-	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
-	outputSchema?: unknown;
-	/** Validation behavior for a caller-provided or inherited output schema. */
-	schemaMode?: "permissive" | "strict";
-	/** Batch form (`task.batch`): one subagent per item. */
-	tasks?: TaskItem[];
-	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
-	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
-	isolated?: boolean;
-}
 
 /**
  * One-line, length-capped label safe for a single roster line, a registry
@@ -326,11 +126,11 @@ export function oneLineLabel(text: string, max = LABEL_MAX): string {
 
 /**
  * Whether an agent at `taskDepth` may still spawn children — i.e. it currently
- * holds the `task` tool. Mirrors the task-tool availability gate;
+ * may receive recursive orchestration tools. Mirrors the orchestration availability gate;
  * `maxRecursionDepth < 0` disables the cap entirely.
  */
 export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): boolean {
-	return maxRecursionDepth < 0 || taskDepth < maxRecursionDepth;
+	return maxRecursionDepth < 0 || taskDepth === 0 || taskDepth <= maxRecursionDepth;
 }
 
 /** A code review finding reported by the reviewer agent */
@@ -367,7 +167,6 @@ export interface AgentDefinition {
 	model?: string[];
 	thinkingLevel?: ThinkingLevel;
 	output?: unknown;
-	blocking?: boolean;
 	autoloadSkills?: string[];
 	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;
@@ -434,14 +233,14 @@ export interface AgentProgress {
 	modelRole?: string;
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;
-	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (Agent Hub rows with no live session) flag the fallback and keep the provider. */
+	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (Agent Fleet rows with no live session) flag the fallback and keep the provider. */
 	resolvedModelIsFallback?: boolean;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
 	 * Auto-retry state when the subagent is sleeping between provider retries
 	 * (e.g. 429 rate-limit with retry-after). Cleared when the retry resolves
-	 * or fails. Surfacing this to the parent prevents the task tool from
+	 * or fails. Surfacing this to the parent prevents the worker monitor from
 	 * looking indefinitely "in progress" when a child is actually blocked on
 	 * provider quota.
 	 */
@@ -462,14 +261,6 @@ export interface AgentProgress {
 		attempt: number;
 		errorMessage: string;
 	};
-	/**
-	 * Snapshot of the most recent `task` tool call's in-flight `TaskToolDetails`,
-	 * captured from `tool_execution_update`. Lets the parent UI surface live
-	 * nested-subagent progress while this agent is still inside its own `task`
-	 * call. Cleared when the call ends — finalized data lives in
-	 * `extractedToolData.task` after that.
-	 */
-	inflightTaskDetails?: TaskToolDetails;
 }
 
 /** Result from a single agent execution */
@@ -531,7 +322,7 @@ export interface SingleResult {
 	/**
 	 * Terminal retry failure, when the subagent exited because the auto-retry
 	 * loop gave up (retry-after exceeded the cap, or all attempts exhausted).
-	 * Lets the parent task tool surface a "blocked: rate-limited" outcome
+	 * Lets the parent worker monitor surface a "blocked: rate-limited" outcome
 	 * instead of a generic failure.
 	 */
 	retryFailure?: {
@@ -540,20 +331,4 @@ export interface SingleResult {
 	};
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
-}
-
-/** Tool details for TUI rendering */
-export interface TaskToolDetails {
-	projectAgentsDir: string | null;
-	results: SingleResult[];
-	totalDurationMs: number;
-	/** Aggregated usage across all subagents. */
-	usage?: Usage;
-	outputPaths?: string[];
-	progress?: AgentProgress[];
-	async?: {
-		state: "running" | "completed" | "failed";
-		jobId: string;
-		type: "task";
-	};
 }

@@ -167,39 +167,9 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("pins the live vibe_wait wall and releases it after the final result", () => {
+	it("pins a pending fleet wait before the first progress snapshot arrives", () => {
 		const component = new ToolExecutionComponent(
-			"vibe_wait",
-			{},
-			{},
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		const transcript = new TranscriptContainer();
-		transcript.addChild(component);
-
-		try {
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-
-			component.updateResult(
-				{
-					content: [{ type: "text", text: "No turns in flight to wait for." }],
-					details: { op: "wait", screens: [] },
-				},
-				false,
-			);
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(false);
-		} finally {
-			component.stopAnimation();
-		}
-	});
-
-	it("pins a pending hub wait before the first progress snapshot arrives", () => {
-		const component = new ToolExecutionComponent(
-			"hub",
+			"fleet",
 			{ op: "wait" },
 			{},
 			undefined,
@@ -218,9 +188,9 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("pins the displaceable hub waiting poll and releases it once jobs settle", () => {
+	it("pins the displaceable fleet waiting poll and releases it once jobs settle", () => {
 		const component = new ToolExecutionComponent(
-			"hub",
+			"fleet",
 			{ op: "wait" },
 			{},
 			undefined,

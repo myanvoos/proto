@@ -145,7 +145,7 @@ function createContext(overrides?: {
 	const ctx = {
 		session,
 		sessionManager,
-		settings: Settings.isolated({ "task.enableLsp": true }),
+		settings: Settings.isolated({ "orchestrator.enableLsp": true }),
 		showStatus: vi.fn(),
 		showWarning: vi.fn(),
 		showError: vi.fn(),
@@ -356,7 +356,7 @@ describe("TanCommandController", () => {
 		expect(opts?.providerSessionId).toMatch(/^parent-session:tan:/);
 	});
 
-	it("parks the finished tan in the registry so it stays visible in the Agent Hub", async () => {
+	it("parks the finished tan in the registry so it stays visible in the Agent Fleet", async () => {
 		const harness = createContext();
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const appendSessionInit = vi.fn();

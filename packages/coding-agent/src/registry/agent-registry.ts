@@ -3,7 +3,7 @@
  * every subagent), keyed by stable id.
  *
  * Tracks each agent's status and (when live) its AgentSession so peers can be
- * addressed by id (`hub`, `task resume`, `history://`). Sessions are
+ * addressed by id (`fleet`, `task resume`, `history://`). Sessions are
  * registered explicitly at creation; finished agents stay registered as
  * `idle` (live) or `parked` (session disposed, ref + sessionFile retained for
  * revival) and are only removed on explicit release/teardown.
@@ -33,10 +33,10 @@ export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 /** Provenance of a displayed duration: active runtime, transcript span, or unavailable. */
 type AgentDurationKind = "active" | "span" | "unknown";
 /**
- * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
+ * - `main`/`sub`: the user-facing agent tree (driving agent + workers).
  * - `advisor`: a passive review transcript persisted like a subagent for usage
- *   attribution and Agent Hub observability, but never a peer — hidden from
- *   agent-facing rosters (`hub`, `history://`) and not messageable/revivable.
+ *   attribution and Agent Fleet observability, but never a peer — hidden from
+ *   agent-facing rosters (`fleet`, `history://`) and not messageable/revivable.
  */
 export type AgentKind = "main" | "sub" | "advisor";
 

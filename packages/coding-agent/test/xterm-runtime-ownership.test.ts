@@ -39,8 +39,8 @@ describe("launch vterm runtime ownership", () => {
 		expect(result.modules, JSON.stringify(result)).toBe(0);
 	});
 
-	test("static Hub import evaluates no vterm module", async () => {
-		const result = await runProbe(fixture("xterm-cache-hub-probe.ts"));
+	test("static Fleet import evaluates no vterm module", async () => {
+		const result = await runProbe(fixture("xterm-cache-fleet-probe.ts"));
 		expect(result.modules, JSON.stringify(result)).toBe(0);
 	});
 

@@ -46,13 +46,13 @@ function modelChange(id: string, parentId: string, model: string, role: string, 
 function transcriptHead(): string[] {
 	return [
 		JSON.stringify({ type: "session", id: "s0", parentId: null, timestamp: "2026-08-07T10:34:37.300Z" }),
-		modelChange("m1", "s0", "anthropic/claude-sonnet-5", "task", false),
+		modelChange("m1", "s0", "anthropic/claude-sonnet-5", "worker", false),
 		JSON.stringify({
 			type: "session_init",
 			id: "si",
 			parentId: "m1",
 			timestamp: "2026-08-07T10:34:38.000Z",
-			agent: "task",
+			agent: "worker",
 			task: "build the thing",
 		}),
 	];
@@ -83,7 +83,7 @@ describe("persisted agent model attribution", () => {
 		expect(history?.resolvedModel).toBe("anthropic/claude-sonnet-5");
 		expect(history?.resolvedModelIsFallback).toBe(false);
 		// The role label survives the ephemeral fallback transition on top of it.
-		expect(history?.modelRole).toBe("task");
+		expect(history?.modelRole).toBe("worker");
 		// Every assistant turn still counts toward the row's telemetry.
 		expect(history?.metrics?.requests).toBe(3);
 	});

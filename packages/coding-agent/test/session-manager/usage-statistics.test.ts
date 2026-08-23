@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 describe("SessionManager usage statistics", () => {
-	it("accumulates premium requests from assistant messages and task tool results", () => {
+	it("counts only the parent assistant usage", () => {
 		const session = SessionManager.inMemory();
 
 		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -24,30 +24,10 @@ describe("SessionManager usage statistics", () => {
 			stopReason: "stop",
 			timestamp: 2,
 		});
-		session.appendMessage({
-			role: "toolResult",
-			toolCallId: "task_1",
-			toolName: "task",
-			content: [{ type: "text", text: "task output" }],
-			details: {
-				usage: {
-					input: 2,
-					output: 3,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 5,
-					premiumRequests: 2,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-			},
-			isError: false,
-			timestamp: 3,
-		});
-
 		const usage = session.getUsageStatistics();
-		expect(usage.input).toBe(12);
-		expect(usage.output).toBe(8);
-		expect(usage.premiumRequests).toBe(3);
+		expect(usage.input).toBe(10);
+		expect(usage.output).toBe(5);
+		expect(usage.premiumRequests).toBe(1);
 	});
 
 	it("keeps orchestration usage out of ordinary input while preserving total tokens", () => {
@@ -103,28 +83,8 @@ describe("SessionManager usage statistics", () => {
 			stopReason: "stop",
 			timestamp: 2,
 		});
-		session.appendMessage({
-			role: "toolResult",
-			toolCallId: "task_1",
-			toolName: "task",
-			content: [{ type: "text", text: "task output" }],
-			details: {
-				usage: {
-					input: 2,
-					output: 3,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 5,
-					premiumRequests: 3,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-			},
-			isError: false,
-			timestamp: 3,
-		});
-
 		const usage = session.getUsageStatistics();
-		expect(usage.premiumRequests).toBeCloseTo(3.33, 8);
+		expect(usage.premiumRequests).toBeCloseTo(0.33, 8);
 	});
 	it("defaults premium requests to zero when usage payload omits the field", () => {
 		const session = SessionManager.inMemory();

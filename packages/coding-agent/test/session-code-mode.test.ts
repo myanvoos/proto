@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -433,16 +433,6 @@ describe("Code Mode session reconciliation", () => {
 		expect(session.getActiveToolNames()).toEqual(["eval"]);
 	});
 
-	test("Vibe teardown preserves bridge-enabled Code Mode tools", async () => {
-		const { session } = createSession(Settings.isolated({ "providers.openai-codex.codeMode": "auto" }));
-		await session.setActiveToolsByName(["eval", "read"]);
-
-		await session.removeVibeToolsPreservingActive();
-
-		expect(session.getEnabledToolNames()).toEqual(["eval", "read"]);
-		expect(session.getToolForEvalBridge("read")?.name).toBe("read");
-	});
-
 	test("prompt rebuilds retain safety gates for bridge-enabled tools", async () => {
 		const promptToolSets: string[][] = [];
 		const { session } = createSession(
@@ -462,42 +452,6 @@ describe("Code Mode session reconciliation", () => {
 
 		await session.setActiveToolsByName(["eval"]);
 		expect(promptToolSets.at(-1)).toEqual(["eval"]);
-	});
-
-	test("bridge-enabled task retains eager delegation", async () => {
-		const settings = Settings.isolated({
-			"providers.openai-codex.codeMode": "auto",
-			"task.eager": "always",
-			"todo.enabled": false,
-		});
-		const { session } = createSession(settings, undefined, undefined, [tool("task")]);
-		await session.setActiveToolsByName(["eval", "task"]);
-		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
-
-		await session.prompt("implement the parser");
-
-		const messages = promptSpy.mock.calls[0]?.[0] as unknown as Array<{ customType?: string }>;
-		expect(session.getActiveToolNames()).toEqual(["eval"]);
-		expect(messages.some(message => message.customType === "eager-task-prelude")).toBe(true);
-	});
-
-	test("bridge-enabled task retains orchestration notices", async () => {
-		const { session } = createSession(
-			Settings.isolated({ "providers.openai-codex.codeMode": "auto" }),
-			undefined,
-			undefined,
-			[tool("task")],
-		);
-		await session.setActiveToolsByName(["eval", "task"]);
-		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
-
-		await session.prompt("please orchestrate and workflowz this");
-
-		const messages = promptSpy.mock.calls[0]?.[0] as unknown as Array<{ customType?: string }>;
-		expect(messages.map(message => message.customType).filter(Boolean)).toEqual([
-			"orchestrate-notice",
-			"workflow-notice",
-		]);
 	});
 
 	test("prompt refresh preserves the full Code Mode tool predicate", async () => {

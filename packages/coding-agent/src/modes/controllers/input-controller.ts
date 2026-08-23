@@ -145,7 +145,7 @@ const TINY_TITLE_PROGRESS_DONE_TTL_MS = 3_000;
 // events for seconds. Only reveal the bar once a still-incomplete event arrives after
 // this grace window, so an already-downloaded model never flashes the bar.
 const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
-// Double-tap ← on an empty editor opens the Agent Hub (and, in a focused
+// Double-tap ← on an empty editor opens the Agent Fleet (and, in a focused
 // subagent view, ←← returns to the main session). The second tap must land
 // inside this window. The lower bound rejects terminal-synthesized arrow-key
 // bursts: "click to move cursor" / pointer features in iTerm2, WezTerm, kitty,
@@ -300,7 +300,7 @@ export class InputController {
 			// preview. It must fire regardless of focus so a truncated edit stays
 			// expandable while an approval prompt / select dialog holds keyboard
 			// focus (#7837). Defers when the main transcript is not the active
-			// surface (a fullscreen/anchored overlay — agent hub, transcript
+			// surface (a fullscreen/anchored overlay — agent fleet, transcript
 			// viewer, log viewer, model picker) or when the focused component
 			// rebinds Ctrl+O for its own use (the tree selector's filter cycle).
 			this.ctx.ui.addInputListener(data => {
@@ -549,14 +549,14 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
 		const hubKeys = new Set([
-			...this.ctx.keybindings.getKeys("app.agents.hub"),
+			...this.ctx.keybindings.getKeys("app.agents.fleet"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
 		]);
 		for (const key of hubKeys) {
-			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentHub());
+			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentFleet());
 		}
 
-		// Double-tap left arrow on an empty editor: opens the agent hub from the
+		// Double-tap left arrow on an empty editor: opens the agent fleet from the
 		// main session, or returns the focused subagent view to the main session.
 		// Focused ←← intentionally matches Esc. From the main session the gesture
 		// stays inert when there are no subagents (requireContent); the explicit
@@ -569,7 +569,7 @@ export class InputController {
 				return;
 			}
 			if (this.#detectLeftDoubleTap()) {
-				this.ctx.showAgentHub({ requireContent: true, armCloseTap: true });
+				this.ctx.showAgentFleet({ requireContent: true, armCloseTap: true });
 			}
 		};
 
@@ -613,7 +613,7 @@ export class InputController {
 	 * (`[LEFT_DOUBLE_TAP_MIN_GAP_MS, LEFT_DOUBLE_TAP_MAX_GAP_MS)`). Taps closer
 	 * than the lower bound, or any third-and-later tap before a quiet gap, are a
 	 * burst and never fire — so a stray click that makes the terminal emit a run
-	 * of ← keys can no longer pop the Agent Hub.
+	 * of ← keys can no longer pop the Agent Fleet.
 	 */
 	#detectLeftDoubleTap(): boolean {
 		const now = Date.now();
@@ -750,11 +750,7 @@ export class InputController {
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
 			const submittedMode = parseSlashCommand(text)?.name;
-			const draftDetached =
-				submittedMode === "plan" ||
-				submittedMode === "vibe" ||
-				submittedMode === "goal" ||
-				submittedMode === "guided-goal";
+			const draftDetached = submittedMode === "plan" || submittedMode === "goal" || submittedMode === "guided-goal";
 			if (
 				draftDetached &&
 				submittedImages?.length &&

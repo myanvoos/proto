@@ -59,7 +59,7 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("uses the default fallback chain for a configured task role with no task chain", async () => {
+	it("uses the default fallback chain for a configured worker role with no task chain", async () => {
 		const primary = requireModel("anthropic", "claude-sonnet-4-5");
 		const fallback = requireModel("openai", "gpt-4o-mini");
 		const requestedModels: string[] = [];
@@ -85,11 +85,11 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": { default: [`${fallback.provider}/${fallback.id}`] },
 		});
-		settings.setModelRole("task", `${primary.provider}/${primary.id}`);
+		settings.setModelRole("worker", `${primary.provider}/${primary.id}`);
 
 		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
 
-		await session.prompt("Task role should inherit the default fallback chain");
+		await session.prompt("Worker role should inherit the default fallback chain");
 		await session.waitForIdle();
 
 		expect(requestedModels).toEqual([`${primary.provider}/${primary.id}`, `${fallback.provider}/${fallback.id}`]);

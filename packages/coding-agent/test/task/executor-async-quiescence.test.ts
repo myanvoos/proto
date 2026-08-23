@@ -17,7 +17,7 @@ import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
-const baseAgent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+const baseAgent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 
 function assistantStopMessage(text: string, totalTokens = 0): AssistantMessage {
 	return {
@@ -329,7 +329,7 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 				},
 				dispose: async () => {
 					lateJobId = manager.register(
-						"task",
+						"worker",
 						"shutdown-time job",
 						async () => {
 							await lateJobGate.promise;

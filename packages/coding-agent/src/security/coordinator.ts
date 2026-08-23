@@ -40,7 +40,19 @@ import {
 import { createSecurityPublicationTool } from "./publication";
 import { SecurityStore, writeSecurityBundleToDirectory } from "./store";
 
-const SECURITY_SESSION_TOOLS = ["read", "grep", "glob", "lsp", "ast_grep", "task", "security_publish"];
+const SECURITY_SESSION_TOOLS = [
+	"read",
+	"grep",
+	"glob",
+	"lsp",
+	"ast_grep",
+	"orchestrate_spawn",
+	"orchestrate_send",
+	"orchestrate_wait",
+	"orchestrate_kill",
+	"orchestrate_list",
+	"security_publish",
+];
 const SECURITY_WORKFLOW_FINGERPRINT = createSecurityWorkflowFingerprint([
 	securityCoordinatorPrompt,
 	securityRequestPrompt,
@@ -229,12 +241,12 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 	scanSettings.override("retry.modelFallback", false);
 	scanSettings.override("retry.usageAwareFallback", false);
 	scanSettings.override("retry.fallbackChains", {});
-	scanSettings.override("task.agentModelOverrides", {
-		...scanSettings.get("task.agentModelOverrides"),
+	scanSettings.override("orchestrator.agentModelOverrides", {
+		...scanSettings.get("orchestrator.agentModelOverrides"),
 		"security-reviewer": modelSelector,
 	});
-	scanSettings.override("task.agentPrewalk", {
-		...scanSettings.get("task.agentPrewalk"),
+	scanSettings.override("orchestrator.agentPrewalk", {
+		...scanSettings.get("orchestrator.agentPrewalk"),
 		"security-reviewer": "off",
 	});
 	const { session } = await createAgentSession({
@@ -482,7 +494,7 @@ export class SecurityCoordinator {
 		const manager = this.#host.asyncJobManager;
 		if (manager) {
 			const jobId = manager.register(
-				"task",
+				"worker",
 				`Security scan ${scanId}`,
 				async ({ signal, reportProgress }) => {
 					await run(signal, text => reportProgress(text, { operationId, scanId, phase: record.snapshot.phase }));

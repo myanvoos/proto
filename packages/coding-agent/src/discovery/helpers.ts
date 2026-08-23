@@ -242,7 +242,6 @@ export interface ParsedAgentFields {
 	thinkingLevel?: ThinkingLevel;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
-	blocking?: boolean;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
@@ -284,11 +283,6 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		spawns = parseArrayOrCSV(frontmatter.spawns);
 	}
 
-	// Backward compat: infer spawns: "*" when tools includes "task"
-	if (spawns === undefined && tools?.includes("task")) {
-		spawns = "*";
-	}
-
 	const output = frontmatter.output !== undefined ? frontmatter.output : undefined;
 	const rawThinkingLevel =
 		typeof frontmatter.thinkingLevel === "string"
@@ -299,7 +293,6 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 
 	const thinkingLevel = parseThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
-	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
 	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
@@ -324,7 +317,6 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		model,
 		output,
 		thinkingLevel,
-		blocking,
 		autoloadSkills,
 		readSummarize,
 		prewalk,

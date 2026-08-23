@@ -12,7 +12,7 @@ import type { Context, FetchImpl, Model, TextContent, ThinkingContent, Tool, Too
 import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { INTENT_FIELD } from "@oh-my-pi/pi-utils"
+import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 
 interface SseToolCallDelta {
 	index: number;

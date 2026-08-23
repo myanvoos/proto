@@ -1,4 +1,4 @@
-Run one step of code in a persistent kernel. State persists across calls and `task` subagents.
+Run one step of code in a persistent kernel. State persists across calls and workers.
 {{#if spawns}}Eval `agent()` children use independent kernels.{{/if}}
 
 Work incrementally: imports → define → test → use, each its own cell. Re-run setup ONLY after `reset`, kernel crash.

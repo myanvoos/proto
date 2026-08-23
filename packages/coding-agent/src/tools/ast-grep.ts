@@ -153,7 +153,7 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 	get description(): string {
 		return prompt.render(astGrepDescription, {
 			scoutAvailable: isScoutSpawnable(
-				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.settings.get("orchestrator.disabledAgents") as string[] | undefined,
 				this.session.getSessionSpawns?.() ?? "*",
 			),
 		});

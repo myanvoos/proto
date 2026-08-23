@@ -219,25 +219,25 @@ describe("ACP event mapper", () => {
 		expect(update.content).toContainEqual({ type: "content", content: { type: "text", text: "$ npm run check" } });
 	});
 
-	it("keeps internal Hub traffic off the ACP session stream", () => {
+	it("keeps internal Fleet traffic off the ACP session stream", () => {
 		const events: AgentSessionEvent[] = [
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-hub-send",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "send", to: "Scout", message: "Private coordination" },
 			},
 			{
 				type: "tool_execution_update",
 				toolCallId: "tc-hub-send",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "send", to: "Scout", message: "Private coordination" },
 				partialResult: { content: [{ type: "text", text: "delivering" }] },
 			},
 			{
 				type: "tool_execution_end",
 				toolCallId: "tc-hub-send",
-				toolName: "hub",
+				toolName: "fleet",
 				isError: false,
 				result: { content: [{ type: "text", text: "delivered" }] },
 			},
@@ -252,9 +252,9 @@ describe("ACP event mapper", () => {
 		expect(updates).toEqual([]);
 	});
 
-	it("keeps xd-routed Hub traffic off the ACP session stream", () => {
+	it("keeps xd-routed Fleet traffic off the ACP session stream", () => {
 		const args = {
-			path: "xd://hub",
+			path: "xd://fleet",
 			content: JSON.stringify({ op: "inbox", from: "Scout" }),
 		};
 		const events = [
@@ -282,12 +282,12 @@ describe("ACP event mapper", () => {
 		expect(updates).toEqual([]);
 	});
 
-	it("keeps Hub process control visible over ACP", () => {
+	it("keeps Fleet process control visible over ACP", () => {
 		const updates = mapAgentSessionEventToAcpSessionUpdates(
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-hub-process-send",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "send", name: "server", text: "ping" },
 			},
 			"session-1",
@@ -307,13 +307,13 @@ describe("ACP event mapper", () => {
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-hub-job-wait",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "wait", ids: ["bash_a1b2c3"] },
 			},
 			{
 				type: "tool_execution_end",
 				toolCallId: "tc-hub-job-wait",
-				toolName: "hub",
+				toolName: "fleet",
 				isError: false,
 				result: { content: [{ type: "text", text: "job output" }] },
 			},
@@ -328,12 +328,12 @@ describe("ACP event mapper", () => {
 		expect(updates.map(update => update.update.sessionUpdate)).toEqual(["tool_call", "tool_call_update"]);
 	});
 
-	it("keeps a bare Hub wait visible so job deliveries reach ACP", () => {
+	it("keeps a bare Fleet wait visible so job deliveries reach ACP", () => {
 		const updates = mapAgentSessionEventToAcpSessionUpdates(
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-hub-bare-wait",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "wait" },
 			},
 			"session-1",
@@ -343,12 +343,12 @@ describe("ACP event mapper", () => {
 		expect(updates[0]?.update.sessionUpdate).toBe("tool_call");
 	});
 
-	it("hides a peer-scoped Hub wait from ACP", () => {
+	it("hides a peer-scoped Fleet wait from ACP", () => {
 		const updates = mapAgentSessionEventToAcpSessionUpdates(
 			{
 				type: "tool_execution_start",
 				toolCallId: "tc-hub-peer-wait",
-				toolName: "hub",
+				toolName: "fleet",
 				args: { op: "wait", from: "Scout" },
 			},
 			"session-1",

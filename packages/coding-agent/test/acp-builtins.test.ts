@@ -413,7 +413,9 @@ describe("ACP builtin slash commands", () => {
 		const { output, runtime } = createRuntime();
 		runtime.session.getAsyncJobSnapshot = () => ({
 			running: [{ id: "j1", type: "bash", status: "running", label: "npm install", startTime: Date.now() - 5000 }],
-			recent: [{ id: "j2", type: "task", status: "completed", label: "build done", startTime: Date.now() - 60_000 }],
+			recent: [
+				{ id: "j2", type: "worker", status: "completed", label: "build done", startTime: Date.now() - 60_000 },
+			],
 			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
 		});
 

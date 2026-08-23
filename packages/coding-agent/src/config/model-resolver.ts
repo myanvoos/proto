@@ -988,8 +988,8 @@ function isSessionInheritedAgentPattern(value: string): boolean {
 		value === formatModelRoleAlias(DEFAULT_MODEL_ROLE) ||
 		value === DEFAULT_MODEL_ROLE_ALIAS ||
 		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}${DEFAULT_MODEL_ROLE}` ||
-		value === formatModelRoleAlias("task") ||
-		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}task`
+		value === formatModelRoleAlias("worker") ||
+		value === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}worker`
 	);
 }
 
@@ -1153,8 +1153,8 @@ function resolveEffectiveAgentModelSelection(
 	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
 	if (configuredAgentPatterns.length > 0) {
 		if (
-			singleAgentPattern === formatModelRoleAlias("task") ||
-			singleAgentPattern === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}task`
+			singleAgentPattern === formatModelRoleAlias("worker") ||
+			singleAgentPattern === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}worker`
 		) {
 			return { source: agentModel, patterns: configuredAgentPatterns };
 		}
@@ -1170,7 +1170,7 @@ function resolveEffectiveAgentModelSelection(
 export interface AgentModelSelection {
 	/** Expanded model patterns to spawn with. */
 	patterns: string[];
-	/** Role alias the patterns came from (`@task` -> `task`), when the source named one. */
+	/** Role alias the patterns came from (`@worker` -> `worker`), when the source named one. */
 	role: string | undefined;
 }
 
@@ -1194,7 +1194,7 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 export const DEFAULT_PREWALK_TARGET = "@smol";
 
 export interface AgentPrewalkResolutionOptions {
-	/** `task.agentPrewalk` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
+	/** `orchestrator.agentPrewalk` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
 	settingsOverride?: string;
 	/** Agent definition `prewalk` frontmatter: `true` = default target, string = custom target pattern. */
 	agentPrewalk?: boolean | string;
@@ -1223,7 +1223,7 @@ export function resolveAgentPrewalkPattern(options: AgentPrewalkResolutionOption
 }
 
 export interface AgentAdvisorResolutionOptions {
-	/** `task.agentAdvisor` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
+	/** `orchestrator.agentAdvisor` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
 	settingsOverride?: string;
 	/** Agent definition `advisor` frontmatter: `true` = default advisor-role model, string = custom model pattern. */
 	agentAdvisor?: boolean | string;

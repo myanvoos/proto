@@ -77,7 +77,7 @@ describe("worktree isolation helpers", () => {
 
 	// Regression for #8939: baseline capture buffered every untracked byte into
 	// one in-memory string, so a multi-GB working tree OOM'd and trapped the
-	// whole host at isolated-task spawn. captureRepoBaseline now stats untracked
+	// whole host at isolated-worker spawn. captureRepoBaseline now stats untracked
 	// size up front and refuses over-budget trees with a typed, actionable error
 	// before any content is buffered. Sparse files give a large logical size at
 	// ~zero disk cost, so the guard trips deterministically without writing GBs.
@@ -104,7 +104,7 @@ describe("worktree isolation helpers", () => {
 		expect((error as IsolationBaselineTooLargeError).contentBytes).toBeGreaterThan(
 			ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 		);
-		expect((error as Error).message).toContain("task.isolation.mode: none");
+		expect((error as Error).message).toContain("orchestrator.isolation.mode: none");
 	});
 
 	it("sizes an untracked symlink itself rather than its target", async () => {

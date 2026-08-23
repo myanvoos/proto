@@ -154,7 +154,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					...(parsed.handle ? { retainArtifacts: true } : {}),
 					keepAlive: false,
 					// `maxRuntimeMs` is intentionally omitted: the executor then inherits
-					// `task.maxRuntimeMs`, matching the task tool. Pinning it to 0 here
+					// `orchestrator.maxRuntimeMs`, matching orchestrate_spawn. Pinning it to 0 here
 					// silently overrode the user's wall-clock cap for eval fan-outs.
 					shareEvalSession: false,
 					...(options.signal !== undefined ? { signal: options.signal } : {}),

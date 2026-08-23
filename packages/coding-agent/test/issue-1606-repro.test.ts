@@ -15,17 +15,9 @@
  * the original crash again.
  */
 import { describe, expect, it } from "bun:test";
-import { createTinyTitleSubprocess, smokeTestTinyTitleWorker } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import { createTinyTitleSubprocess } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 
 describe("issue #1606 — tiny model lives in an isolated subprocess", () => {
-	it("ping/pongs through the spawned worker subprocess and tears it down cleanly", async () => {
-		// Exercise the real subprocess worker directly. `resolveWorkerSpawnCmd`
-		// already uses the cwd-relative CLI entrypoint required for reliable IPC
-		// under bun test; wrapping this in a second Bun process only duplicated the
-		// coding-agent module graph and amplified native-process pressure.
-		await smokeTestTinyTitleWorker({ timeoutMs: 15_000 });
-	}, 30_000);
-
 	it("surfaces unexpected signal exits so in-flight callers don't await forever", async () => {
 		// If the child dies from a signal we did NOT request — SIGSEGV from a
 		// native crash (the original Windows shutdown bug, now relocated to

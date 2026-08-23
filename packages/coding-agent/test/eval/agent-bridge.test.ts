@@ -15,7 +15,7 @@ function createResult(overrides: Partial<SingleResult> = {}): SingleResult {
 	return {
 		index: 0,
 		id: "0-Task",
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		task: "do work",
 		exitCode: 0,
@@ -58,8 +58,8 @@ describe("runEvalAgent", () => {
 
 	it("forwards session-scoped MCP and local protocol options", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 		};
@@ -81,7 +81,7 @@ describe("runEvalAgent", () => {
 			getAgentId: () => "BridgeParent",
 		} as unknown as ToolSession;
 
-		await runEvalAgent({ prompt: "do work", agent: "task" }, { session });
+		await runEvalAgent({ prompt: "do work", agent: "worker" }, { session });
 
 		expect(runSubprocessSpy).toHaveBeenCalledTimes(1);
 		const options = runSubprocessSpy.mock.calls[0]?.[0];
@@ -92,8 +92,8 @@ describe("runEvalAgent", () => {
 
 	it("returns executor-parsed structured data through the public eval bridge", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 			output: { type: "object" },
@@ -113,7 +113,7 @@ describe("runEvalAgent", () => {
 			getSessionFile: () => null,
 		} as unknown as ToolSession;
 
-		const result = await runEvalAgent({ prompt: "do work", agent: "task", schemaMode: "strict" }, { session });
+		const result = await runEvalAgent({ prompt: "do work", agent: "worker", schemaMode: "strict" }, { session });
 
 		expect(result.data).toEqual({ status: "ok" });
 		expect(result.details).toMatchObject({ structured: true, schemaSource: "agent", schemaMode: "strict" });
@@ -121,8 +121,8 @@ describe("runEvalAgent", () => {
 
 	it("updates the real turn budget by output tokens only", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 		};
@@ -131,7 +131,7 @@ describe("runEvalAgent", () => {
 		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
 		vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(createResult({ usage: createUsage(1_234) }));
 
-		await runEvalAgent({ prompt: "do work", agent: "task" }, { session: createBudgetSession(sessionManager) });
+		await runEvalAgent({ prompt: "do work", agent: "worker" }, { session: createBudgetSession(sessionManager) });
 
 		expect(sessionManager.getTurnBudget()).toEqual({
 			total: 100_000,
@@ -142,8 +142,8 @@ describe("runEvalAgent", () => {
 
 	it("charges output exactly once when an eval-spawned subagent returns an error", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 		};
@@ -160,7 +160,7 @@ describe("runEvalAgent", () => {
 		);
 
 		await expect(
-			runEvalAgent({ prompt: "do work", agent: "task" }, { session: createBudgetSession(sessionManager) }),
+			runEvalAgent({ prompt: "do work", agent: "worker" }, { session: createBudgetSession(sessionManager) }),
 		).rejects.toThrow("agent failed");
 
 		expect(sessionManager.getTurnBudget().spent).toBe(2_345);
@@ -168,15 +168,15 @@ describe("runEvalAgent", () => {
 
 	it("charges isolated output before a later cleanup failure", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 		};
 		const sessionManager = SessionManager.inMemory();
 		sessionManager.beginTurnBudget(100_000, true);
 		const session = createBudgetSession(sessionManager);
-		session.settings.set("task.isolation.mode", "auto");
+		session.settings.set("orchestrator.isolation.mode", "auto");
 		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
 		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({
 			repoRoot: "/tmp",
@@ -197,17 +197,17 @@ describe("runEvalAgent", () => {
 			throw new Error("cleanup failed");
 		});
 
-		await expect(runEvalAgent({ prompt: "do work", agent: "task", isolated: true }, { session })).rejects.toThrow(
+		await expect(runEvalAgent({ prompt: "do work", agent: "worker", isolated: true }, { session })).rejects.toThrow(
 			"cleanup failed",
 		);
 
 		expect(sessionManager.getTurnBudget().spent).toBe(4_567);
 	});
 
-	it("does not route ordinary task subagents through the eval budget accumulator", async () => {
+	it("does not route ordinary workers through the eval budget accumulator", async () => {
 		const agent: AgentDefinition = {
-			name: "task",
-			description: "Task agent",
+			name: "worker",
+			description: "Worker agent",
 			systemPrompt: "Handle task",
 			source: "bundled",
 		};
@@ -224,9 +224,9 @@ describe("runEvalAgent", () => {
 
 		await runStructuredSubagent({
 			session,
-			invocationKind: "task",
+			invocationKind: "worker",
 			assignment: "do work",
-			agent: "task",
+			agent: "worker",
 		});
 
 		expect(recordEvalSubagentUsage).not.toHaveBeenCalled();

@@ -1,11 +1,11 @@
 /**
  * Reusable isolation lifecycle for subagent execution.
  *
- * Both `TaskTool` and the eval `agent()` bridge spawn subagents that can run
+ * Both orchestrated workers and the eval `agent()` bridge spawn subagents that can run
  * inside a copy-on-write worktree, capture their changes, and (optionally)
  * apply those changes back to the parent repo. The orchestration is identical
  * for both callers; this module hosts the shared lifecycle so eval `agent()`
- * does not need to round-trip through `TaskTool.#runSpawn`.
+ * does not need to round-trip through a public tool implementation.
  *
  * Shape:
  *   1. {@link prepareIsolationContext} — resolve git root + capture baseline.
@@ -109,16 +109,16 @@ export type BuildCommitMessage = () => undefined | ((diff: string) => Promise<st
  * Construct the commit-message factory used by isolation branch commits and
  * nested-repo patch commits. Returns a closure that, each time it's called,
  * either yields an AI-backed `(diff) => Promise<string|null>` callback (when
- * `task.isolation.commits === "ai"` and a model registry is available) or
+ * `orchestrator.isolation.commits === "ai"` and a model registry is available) or
  * `undefined` so the caller falls back to a generic commit message.
  *
- * Centralized so `TaskTool` and the eval `agent()` bridge share one wiring;
+ * Centralized so orchestrated workers and the eval `agent()` bridge share one wiring;
  * a drift here previously meant the two callers built subtly different
  * generators for the same setting.
  */
 export function makeIsolationCommitMessage(session: ToolSession): BuildCommitMessage {
 	return () => {
-		const style = session.settings.get("task.isolation.commits");
+		const style = session.settings.get("orchestrator.isolation.commits");
 		if (style !== "ai" || !session.modelRegistry) return undefined;
 		const registry = session.modelRegistry;
 		const settings = session.settings;
@@ -147,7 +147,7 @@ export interface IsolatedRunOptions {
 	artifactsDir: string;
 	/** Human description carried onto the branch commit (branch mode). */
 	description?: string;
-	/** Build a commit-message callback (`task.isolation.commits === "ai"`). */
+	/** Build a commit-message callback (`orchestrator.isolation.commits === "ai"`). */
 	buildCommitMessage?: BuildCommitMessage;
 	/**
 	 * Construct a `SingleResult` when isolation setup throws — the caller has
@@ -465,7 +465,7 @@ export interface NestedPatchApplyOptions {
 /**
  * Apply nested-repo patches after the parent merge phase. Centralizes the
  * three-way gate (exitCode/aborted, patch-mode failed parent, branch-mode
- * branch-merged) and the non-fatal failure handling so `TaskTool` and the
+ * branch-merged) and the non-fatal failure handling so orchestrated workers and the
  * eval `agent()` bridge use one implementation.
  *
  * Returns a system-notification suffix to append to the parent merge summary,

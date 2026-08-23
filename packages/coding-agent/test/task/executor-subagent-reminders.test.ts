@@ -105,7 +105,7 @@ describe("runSubprocess yield reminders", () => {
 	});
 
 	const baseAgent: AgentDefinition = {
-		name: "task",
+		name: "worker",
 		description: "test",
 		systemPrompt: "test",
 		source: "bundled",

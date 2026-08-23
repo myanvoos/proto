@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import type { DaemonRpcResult } from "../../src/launch/protocol";
-import { renderLaunchLogTerminalRows } from "../../src/tools/hub/launch";
+import { renderLaunchLogTerminalRows } from "../../src/tools/fleet/launch";
 
 const result: Extract<DaemonRpcResult, { op: "logs" }> = {
 	op: "logs",

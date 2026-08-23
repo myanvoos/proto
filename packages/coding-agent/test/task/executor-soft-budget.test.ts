@@ -160,7 +160,7 @@ function mockCreateAgentSession(session: AgentSession) {
 	} satisfies CreateAgentSessionResult);
 }
 // Use a bundled scout so these runSubprocess tests exercise the built-in
-// ceiling together with a lower task.softRequestBudget setting.
+// ceiling together with a lower orchestrator.softRequestBudget setting.
 const baseAgent: AgentDefinition = {
 	name: "scout",
 	description: "test",
@@ -192,7 +192,7 @@ describe("runSubprocess soft request budget", () => {
 			task: "inventory the api surface",
 			index: 0,
 			id,
-			settings: Settings.isolated({ "task.softRequestBudget": 2 }),
+			settings: Settings.isolated({ "orchestrator.softRequestBudget": 2 }),
 			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
 			enableLsp: false,
 			artifactsDir: tempDir.path(),
@@ -439,7 +439,7 @@ describe("runSubprocess soft request budget", () => {
 		const manager = new AsyncJobManager({ maxRunningJobs: 1 });
 		AsyncJobManager.setInstance(manager);
 		manager.register(
-			"task",
+			"worker",
 			"shutdown regression",
 			async ({ signal }) => {
 				const result = await runSubprocess({ ...baseOptions(id), signal });
@@ -488,16 +488,16 @@ describe("runSubprocess soft request budget", () => {
 describe("resolveSoftRequestBudget", () => {
 	it("lets a configured budget lower a bundled agent's ceiling", () => {
 		expect(resolveSoftRequestBudget("scout", 20)).toBe(20);
-		expect(resolveSoftRequestBudget("sonic", 20)).toBe(20);
+		expect(resolveSoftRequestBudget("lightbot", 20)).toBe(20);
 	});
 
 	it("keeps the bundled ceiling when the configured budget is higher", () => {
 		expect(resolveSoftRequestBudget("scout", 200)).toBe(100);
-		expect(resolveSoftRequestBudget("sonic", 200)).toBe(100);
+		expect(resolveSoftRequestBudget("lightbot", 200)).toBe(100);
 	});
 
 	it("uses the configured budget for agents without a bundled entry", () => {
-		expect(resolveSoftRequestBudget("task", 20)).toBe(20);
+		expect(resolveSoftRequestBudget("worker", 20)).toBe(20);
 	});
 
 	it("keeps 0 disabled and normalizes negative or fractional budgets", () => {

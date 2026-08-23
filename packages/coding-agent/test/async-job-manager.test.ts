@@ -51,7 +51,7 @@ describe("AsyncJobManager", () => {
 		});
 
 		const jobId = manager.register(
-			"task",
+			"worker",
 			"agent task",
 			async ({ reportProgress }) => {
 				await reportProgress("subagent started");
@@ -126,7 +126,7 @@ describe("AsyncJobManager", () => {
 		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
 		const release = Promise.withResolvers<void>();
 		const jobId = manager.register(
-			"task",
+			"worker",
 			"ignores abort",
 			async () => {
 				await release.promise;
@@ -178,7 +178,7 @@ describe("AsyncJobManager", () => {
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const queuedJobId = manager.register(
-			"task",
+			"worker",
 			"queued",
 			async ({ markRunning }) => {
 				await gate.promise;
@@ -215,7 +215,7 @@ describe("AsyncJobManager", () => {
 			onJobComplete: async () => {},
 		});
 
-		const jobId = manager.register("task", "short", async () => "done");
+		const jobId = manager.register("worker", "short", async () => "done");
 		await manager.waitForAll();
 		await manager.drainDeliveries({ timeoutMs: 2_000 });
 
@@ -234,7 +234,7 @@ describe("AsyncJobManager", () => {
 			},
 		});
 
-		completedJobId = manager.register("task", "completed", async () => "done");
+		completedJobId = manager.register("worker", "completed", async () => "done");
 		const runningJobId = manager.register("bash", "running", async ({ signal }) => {
 			await new Promise<void>(resolve => {
 				signal.addEventListener("abort", () => resolve(), { once: true });
@@ -272,7 +272,7 @@ describe("AsyncJobManager", () => {
 			},
 		});
 
-		failedJobId = manager.register("task", "awaited-job", async () => "done");
+		failedJobId = manager.register("worker", "awaited-job", async () => "done");
 		await manager.waitForAll();
 
 		await firstAttempt.promise;
@@ -287,7 +287,7 @@ describe("AsyncJobManager", () => {
 		expect(manager.hasPendingDeliveries()).toBe(false);
 
 		const attemptsAfterAck = attempts;
-		manager.register("task", "sentinel-job", async () => "sentinel");
+		manager.register("worker", "sentinel-job", async () => "sentinel");
 		await manager.waitForAll();
 		await sentinelDelivered.promise;
 		expect(attempts).toBe(attemptsAfterAck);
@@ -348,8 +348,8 @@ describe("AsyncJobManager", () => {
 			subagentCompletions.push({ jobId, text });
 		});
 
-		mainJobId = manager.register("task", "main job", async () => "main result", { ownerId: "0-Main" });
-		const targetJobId = manager.register("task", "subagent job", async () => "subagent result", {
+		mainJobId = manager.register("worker", "main job", async () => "main result", { ownerId: "0-Main" });
+		const targetJobId = manager.register("worker", "subagent job", async () => "subagent result", {
 			ownerId: "3-AuthLoader",
 		});
 		await manager.waitForAll();
@@ -399,8 +399,8 @@ describe("AsyncJobManager", () => {
 			completions.push(jobId);
 		});
 
-		manager.register("task", "main job", async () => "main result", { ownerId: "0-Main" });
-		targetJobId = manager.register("task", "subagent job", async () => "subagent result", {
+		manager.register("worker", "main job", async () => "main result", { ownerId: "0-Main" });
+		targetJobId = manager.register("worker", "subagent job", async () => "subagent result", {
 			ownerId: "3-AuthLoader",
 		});
 		await manager.waitForAll();

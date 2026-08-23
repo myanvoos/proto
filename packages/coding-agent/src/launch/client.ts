@@ -1,6 +1,5 @@
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
-import * as os from "node:os";
 import * as path from "node:path";
 import { getGlobalDaemonRuntimeDir, isEexist, isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
@@ -502,25 +501,4 @@ export async function closeDaemonClients(): Promise<void> {
 	for (const client of await Promise.all(pending)) client.close();
 	cancelExitCleanup?.();
 	cancelExitCleanup = undefined;
-}
-
-/** Exercise worker-host broker startup and authenticated RPC for distribution smoke tests. */
-export async function smokeTestDaemonBroker(): Promise<void> {
-	// Keep the broker's runtime dir under a private parent this process owns, so
-	// the broker's dead-scope sweep (pruneDeadDaemonRuntimeDirs, fired on startup)
-	// can only ever reclaim siblings inside it — never unrelated neighbours in
-	// os.tmpdir() such as tmux/ssh sockets or build trees (issue #8721).
-	const smokeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-smoke-"));
-	const projectDir = path.join(smokeRoot, "project");
-	const runtimeDir = path.join(smokeRoot, "run");
-	await fs.mkdir(projectDir, { recursive: true });
-	const client = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
-	try {
-		const ping = await client.request({ op: "ping" });
-		if (ping.op !== "ping" || ping.projectDir !== client.projectDir) throw new Error("daemon broker ping mismatch");
-		await client.request({ op: "shutdown" });
-	} finally {
-		client.close();
-		await fs.rm(smokeRoot, { recursive: true, force: true });
-	}
 }

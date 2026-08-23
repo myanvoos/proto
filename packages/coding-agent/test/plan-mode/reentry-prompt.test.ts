@@ -10,7 +10,7 @@ const BASE = {
 	isHashlineEditMode: false,
 	iterative: false,
 	askAvailable: true,
-	taskAvailable: true,
+	workerAvailable: true,
 	scoutAvailable: true,
 	reentry: false,
 	planExists: true,
@@ -56,10 +56,10 @@ describe("plan-mode-active tool availability", () => {
 	});
 
 	it("omits scout-via-task dispatch when the task tool is unavailable", () => {
-		const withoutTask = render({ taskAvailable: false, scoutAvailable: true });
-		expect(withoutTask).not.toContain("(via `task`)");
+		const withoutWorker = render({ workerAvailable: false, scoutAvailable: true });
+		expect(withoutWorker).not.toContain("(via `task`)");
 
-		const withTask = render({ taskAvailable: true, scoutAvailable: true });
-		expect(withTask).toContain("(via `task`)");
+		const withWorker = render({ workerAvailable: true, scoutAvailable: true });
+		expect(withWorker).toContain("(via `task`)");
 	});
 });

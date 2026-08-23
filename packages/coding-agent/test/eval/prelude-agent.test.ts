@@ -30,7 +30,7 @@ describe("eval js agent() handle", () => {
 		const sandbox = loadPrelude(async (name, args) => {
 			seenName = name;
 			seenArgs = args as Record<string, unknown>;
-			return { text: "hello world", details: { agent: "task", id: "abc123", model: "m", structured: false } };
+			return { text: "hello world", details: { agent: "worker", id: "abc123", model: "m", structured: false } };
 		});
 		const node = await (sandbox.agent as AgentHelper)("say hi", { handle: true });
 		expect(seenName).toBe("__agent__");
@@ -40,14 +40,14 @@ describe("eval js agent() handle", () => {
 			output: "hello world",
 			handle: "agent://abc123",
 			id: "abc123",
-			agent: "task",
+			agent: "worker",
 		});
 	});
 
 	it("returns bare text by default (backward compatible)", async () => {
 		const sandbox = loadPrelude(async () => ({
 			text: "hello world",
-			details: { agent: "task", id: "abc123", structured: false },
+			details: { agent: "worker", id: "abc123", structured: false },
 		}));
 		const out = await (sandbox.agent as AgentHelper)("say hi");
 		expect(out).toBe("hello world");
@@ -57,7 +57,7 @@ describe("eval js agent() handle", () => {
 		let seenArgs: Record<string, unknown> | undefined;
 		const sandbox = loadPrelude(async (_name, args) => {
 			seenArgs = args as Record<string, unknown>;
-			return { text: '{"ok":true}', details: { agent: "task", id: "legacy", structured: false } };
+			return { text: '{"ok":true}', details: { agent: "worker", id: "legacy", structured: false } };
 		});
 		const positionalAgent = sandbox.agent as (
 			prompt: string,
@@ -85,7 +85,7 @@ describe("eval js agent() handle", () => {
 		const payload = JSON.stringify({ k: 1 });
 		const sandbox = loadPrelude(async () => ({
 			text: payload,
-			details: { agent: "task", id: "id-9", structured: true },
+			details: { agent: "worker", id: "id-9", structured: true },
 		}));
 		const node = (await (sandbox.agent as AgentHelper)("emit", {
 			schema: { type: "object" },
@@ -107,7 +107,7 @@ describe("eval js agent() handle", () => {
 		const sandbox = loadPrelude(async () => ({
 			text: payload,
 			details: {
-				agent: "task",
+				agent: "worker",
 				id: "iso-1",
 				structured: true,
 				isolated: true,

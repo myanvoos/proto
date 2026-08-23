@@ -1,5 +1,5 @@
 /**
- * Hub tool — the single agent-coordination surface: peer messaging over the
+ * Fleet tool — the single agent-coordination surface: peer messaging over the
  * IrcBus, lifecycle control for async background jobs, and supervision of
  * project-scoped long-running processes (launch).
  *
@@ -23,7 +23,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
-import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
+import fleetDescription from "../../prompts/tools/fleet.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
 import type { ToolSession } from "..";
 import {
@@ -57,17 +57,17 @@ import {
 	messagingRenderResult,
 	normalizeIrcTimeoutMs,
 } from "./messaging";
-import { type HubDetails, type HubRenderArgs, hubErrorResult } from "./types";
+import { type FleetDetails, type FleetRenderArgs, fleetErrorResult } from "./types";
 
 export { isWaitingPollDetails } from "./jobs";
 export type { LaunchParams, LaunchToolDetails } from "./launch";
 export { createIrcMessageCard, isIrcEnabled } from "./messaging";
 export * from "./types";
 
-const hubSchema = type({
+const fleetSchema = type({
 	op: type(
 		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
-	).describe("hub operation"),
+	).describe("fleet operation"),
 	"to?": type("string").describe('send: recipient agent id or "all"'),
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
@@ -109,7 +109,7 @@ const hubSchema = type({
 	"timeout?": type("number > 0").describe("logs/stop/wait with name: max seconds; default 30 (stop: 5)"),
 });
 
-type HubParams = typeof hubSchema.infer;
+type FleetParams = typeof fleetSchema.infer;
 
 interface MessagingDeps {
 	registry: AgentRegistry;
@@ -119,20 +119,20 @@ interface MessagingDeps {
 
 const PROGRESS_INTERVAL_MS = 500;
 
-export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
-	readonly name = "hub";
-	readonly label = "Hub";
+export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
+	readonly name = "fleet";
+	readonly label = "Fleet";
 	readonly summary = "Message peer agents, control background jobs, and supervise long-running processes";
 	readonly description: string;
-	readonly parameters = hubSchema;
+	readonly parameters = fleetSchema;
 	readonly strict = true;
-	readonly interruptible = (params: Partial<HubParams>): boolean => {
+	readonly interruptible = (params: Partial<FleetParams>): boolean => {
 		if (params.op === "wait") return true;
 		return params.op === "logs" && params.follow === true;
 	};
 	readonly loadMode = "essential";
 
-	readonly examples: readonly ToolExample<typeof hubSchema.infer>[] = [
+	readonly examples: readonly ToolExample<typeof fleetSchema.infer>[] = [
 		{
 			caption: "List peers",
 			call: { op: "list" },
@@ -199,7 +199,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 	];
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(hubDescription);
+		this.description = prompt.render(fleetDescription);
 	}
 
 	/** Messaging deps when this session can address peers; null otherwise. */
@@ -212,33 +212,33 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 
 	async execute(
 		_toolCallId: string,
-		params: HubParams,
+		params: FleetParams,
 		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<HubDetails>,
+		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<HubDetails>> {
+	): Promise<AgentToolResult<FleetDetails>> {
 		switch (params.op) {
 			case "list": {
 				const messaging = this.#messaging();
-				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "list" });
+				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "list" });
 				return executeList(messaging.registry, messaging.senderId);
 			}
 			case "send": {
 				const toPeer = params.to?.trim();
 				const toProcess = params.name?.trim();
 				if (toPeer && toProcess) {
-					return hubErrorResult('`to` (peer) and `name` (process) are mutually exclusive for op="send".', {
+					return fleetErrorResult('`to` (peer) and `name` (process) are mutually exclusive for op="send".', {
 						op: "send",
 					});
 				}
 				if (toProcess) return this.#launch(params, "send", signal);
 				const messaging = this.#messaging();
-				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "send" });
+				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "send" });
 				return executeSend(messaging, params, signal);
 			}
 			case "inbox": {
 				const messaging = this.#messaging();
-				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });
+				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });
 				return executeInbox(messaging.registry, messaging.senderId, params.peek);
 			}
 			case "wait":
@@ -248,7 +248,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				const manager = this.session.asyncJobManager;
 				if (!manager) return this.#asyncDisabled("cancel");
 				if (!params.ids?.length) {
-					return hubErrorResult('`ids` is required for op="cancel".', { op: "cancel", jobs: [] });
+					return fleetErrorResult('`ids` is required for op="cancel".', { op: "cancel", jobs: [] });
 				}
 				return await executeCancel(this.session, manager, this.#ownerId(), params.ids);
 			}
@@ -265,7 +265,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			case "describe":
 				return this.#launch(params, params.op === "ps" ? "list" : params.op, signal);
 			default:
-				return hubErrorResult("Unknown hub op.", { op: params.op });
+				return fleetErrorResult("Unknown fleet op.", { op: params.op });
 		}
 	}
 
@@ -274,7 +274,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		return this.session.getAgentId?.() ?? undefined;
 	}
 
-	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<HubDetails> {
+	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<FleetDetails> {
 		return {
 			content: [{ type: "text", text: "Async execution is disabled; no background jobs are available." }],
 			details: { op, jobs: [] },
@@ -283,14 +283,14 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 
 	/** Route a process-supervision op to the launch broker, honoring `launch.enabled`. */
 	async #launch(
-		params: HubParams,
+		params: FleetParams,
 		op: LaunchParams["op"],
 		signal?: AbortSignal,
-	): Promise<AgentToolResult<HubDetails>> {
+	): Promise<AgentToolResult<FleetDetails>> {
 		if (!this.session.settings.get("launch.enabled")) {
-			return hubErrorResult("Process supervision is disabled (launch.enabled=false).", { op: params.op });
+			return fleetErrorResult("Process supervision is disabled (launch.enabled=false).", { op: params.op });
 		}
-		const { op: _hubOp, ...rest } = params;
+		const { op: _fleetOp, ...rest } = params;
 		return executeLaunch(this.session, { ...rest, op }, signal);
 	}
 
@@ -302,10 +302,10 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 	 * message wait; with no messaging it is exactly the old job poll.
 	 */
 	async #executeWait(
-		params: HubParams,
+		params: FleetParams,
 		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<HubDetails>,
-	): Promise<AgentToolResult<HubDetails>> {
+		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
+	): Promise<AgentToolResult<FleetDetails>> {
 		const messaging = this.#messaging();
 		const manager = this.session.asyncJobManager;
 		const ownerId = this.#ownerId();
@@ -342,7 +342,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			// drained above, and only `executeMessageWait` below ever reads it. A
 			// peer that sends and then stops running leaves its message queued
 			// there, so without this take the liveness gate would answer "nothing
-			// to wait for" while `hub inbox` hands back the very message being
+			// to wait for" while `fleet inbox` hands back the very message being
 			// waited on. Single atomic take: the rest of the backlog stays queued.
 			const queued = IrcBus.global().take(messaging.senderId, from);
 			if (queued) return messageResult(messaging.senderId, queued);
@@ -371,7 +371,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		// Message leg: park a bus waiter with no timeout of its own — the race
 		// window governs. Cancelled via sentinel so late losers do not reject.
 		const busAbort = messaging ? new AbortController() : undefined;
-		const busCancelled = new Error("hub wait settled");
+		const busCancelled = new Error("fleet wait settled");
 		let removeBusAbortListener: (() => void) | undefined;
 		const busLeg =
 			messaging && busAbort
@@ -389,10 +389,10 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		if (busLeg) racePromises.push(busLeg);
 		if (busAbort && signal) {
 			if (signal.aborted) {
-				busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("hub wait aborted"));
+				busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("fleet wait aborted"));
 			} else {
 				const onAbort = (): void => {
-					busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("hub wait aborted"));
+					busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("fleet wait aborted"));
 				};
 				signal.addEventListener("abort", onAbort, { once: true });
 				removeBusAbortListener = () => signal.removeEventListener("abort", onAbort);
@@ -469,14 +469,14 @@ const LAUNCH_OPS: Record<string, true> = {
 };
 
 /** Launch-style call: an explicit process op, or `send`/`wait` targeting a process `name`. */
-function isLaunchStyleArgs(args: HubRenderArgs | undefined): boolean {
+function isLaunchStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	if (!args?.op) return false;
 	if (LAUNCH_OPS[args.op]) return true;
 	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to && !args.from;
 }
 
 /** Job-style call: job ops, or a `wait` that does not target a peer or process. */
-function isJobStyleArgs(args: HubRenderArgs | undefined): boolean {
+function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	switch (args?.op) {
 		case "jobs":
 		case "cancel":
@@ -489,7 +489,7 @@ function isJobStyleArgs(args: HubRenderArgs | undefined): boolean {
 }
 
 /** Launch details carry process/broker state; coordination details never define these keys. */
-function isLaunchDetails(details: HubDetails): details is LaunchToolDetails {
+function isLaunchDetails(details: FleetDetails): details is LaunchToolDetails {
 	// `state`/`cursor` cover logs results, which may carry neither a daemon
 	// snapshot nor terminal rows; coordination details never define these keys.
 	return (
@@ -502,21 +502,21 @@ function isLaunchDetails(details: HubDetails): details is LaunchToolDetails {
 	);
 }
 
-/** Hub args → launch renderer args: `ps` is the broker's `list`; everything else is verbatim. */
-function toLaunchArgs(args: HubRenderArgs | undefined): LaunchRenderArgs {
+/** Fleet args → launch renderer args: `ps` is the broker's `list`; everything else is verbatim. */
+function toLaunchArgs(args: FleetRenderArgs | undefined): LaunchRenderArgs {
 	if (!args) return {};
 	const { op, ...rest } = args;
 	return { ...rest, op: op === "ps" ? "list" : op };
 }
 
-export const hubToolRenderer = {
+export const fleetToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
 	// Only launch pending frames consume the spinner (broker RPC in flight);
 	// messaging/job pending frames are static, exactly as before the merge.
-	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as HubRenderArgs | undefined),
+	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as FleetRenderArgs | undefined),
 
-	renderCall(args: HubRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+	renderCall(args: FleetRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		if (isLaunchStyleArgs(args)) return launchRenderCall(toLaunchArgs(args), options, uiTheme);
 		return isJobStyleArgs(args)
 			? jobsRenderCall(args, options, uiTheme)
@@ -524,10 +524,10 @@ export const hubToolRenderer = {
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: HubDetails; isError?: boolean },
+		result: { content: Array<{ type: string; text?: string }>; details?: FleetDetails; isError?: boolean },
 		options: RenderResultOptions,
 		uiTheme: Theme,
-		args?: HubRenderArgs,
+		args?: FleetRenderArgs,
 	): Component {
 		// Results dispatch on what actually happened, falling back to the call
 		// shape when details are absent (framework-generated errors).

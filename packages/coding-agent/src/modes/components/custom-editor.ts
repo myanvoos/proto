@@ -977,7 +977,7 @@ export class CustomEditor extends Editor {
 		const parsedKey = parseKey(data);
 		const canonical = parsedKey !== undefined ? canonicalKeyId(parsedKey) : undefined;
 
-		// Left-arrow on an empty editor: surface for the agent-hub double-tap
+		// Left-arrow on an empty editor: surface for the agent-fleet double-tap
 		// gesture. Plain "left" only — modified arrows and any in-text cursor
 		// movement fall through to normal handling.
 		if (canonical === "left" && this.onLeftAtStart && this.getText().trim() === "") {
@@ -1144,7 +1144,7 @@ export class CustomEditor extends Editor {
 
 	/**
 	 * Route a keystroke through the base text-editor pipeline only, skipping the
-	 * app-level shortcut interception in {@link handleInput} (Agent Hub, model
+	 * app-level shortcut interception in {@link handleInput} (Agent Fleet, model
 	 * selector, history search, external editor, …). Used when the editor is
 	 * mounted for draft editing beneath another focused surface — e.g. an Ask
 	 * dialog opened over a non-empty prompt — so finishing or submitting the

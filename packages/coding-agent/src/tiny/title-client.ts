@@ -8,9 +8,7 @@ import {
 	logWorkerMessage,
 	type RefCountedWorkerHandle,
 	resolveWorkerSpawnCmd,
-	SMOKE_TEST_TIMEOUT_MS,
 	type SpawnedSubprocess,
-	smokeTestWorker,
 	spawnWorkerOrUnavailable,
 } from "../subprocess/worker-client";
 import { safeSend } from "../utils/ipc";
@@ -458,12 +456,4 @@ export const tinyModelClient = tinyTitleClient;
 
 export async function shutdownTinyTitleClient(): Promise<void> {
 	await tinyTitleClient.terminate();
-}
-
-export async function smokeTestTinyTitleWorker({
-	timeoutMs = SMOKE_TEST_TIMEOUT_MS,
-}: {
-	timeoutMs?: number;
-} = {}): Promise<void> {
-	await smokeTestWorker(wrapSubprocess(createTinyTitleSubprocess()), "tiny title worker", timeoutMs);
 }

@@ -397,8 +397,8 @@ export class UiHelpers {
 			pendingReadUsageCallIds = undefined;
 		};
 		// Rebuild-time mirror of the event controller's displaceable-poll
-		// bookkeeping: a `hub` wait that found every watched job still running is
-		// superseded by the next `hub` call, so a rebuilt transcript collapses a
+		// bookkeeping: a `fleet` wait that found every watched job still running is
+		// superseded by the next `fleet` call, so a rebuilt transcript collapses a
 		// repeated-poll run to its final snapshot instead of replaying the spam.
 		let waitingPoll: ToolExecutionComponent | null = null;
 		const resolveWaitingPoll = (nextToolName?: string) => {
@@ -406,7 +406,7 @@ export class UiHelpers {
 			if (!previous) return;
 			waitingPoll = null;
 			if (
-				nextToolName === "hub" &&
+				nextToolName === "fleet" &&
 				previous.isDisplaceableBlock() &&
 				this.ctx.chatContainer.isBlockUncommitted(previous)
 			) {
@@ -651,7 +651,7 @@ export class UiHelpers {
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					if (
-						message.toolName === "hub" &&
+						message.toolName === "fleet" &&
 						component instanceof ToolExecutionComponent &&
 						component.isDisplaceableBlock()
 					) {

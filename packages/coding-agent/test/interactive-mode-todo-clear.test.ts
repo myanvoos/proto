@@ -8,7 +8,7 @@ import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
+import { WORKER_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
@@ -188,10 +188,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 		// Subagent lifecycle changes coalesce behind a 100ms observer UI sync
 		// timer before todo reconciliation runs; flush it deterministically.
 		vi.useFakeTimers();
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "ReviewFixer",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			description: "Fix review comments",
 			status: "completed",
 			detached: true,
@@ -218,10 +218,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		await mode.init();
 		vi.useFakeTimers();
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "ReviewFixer",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			description: "Fix review comments",
 			status: "completed",
 			detached: true,

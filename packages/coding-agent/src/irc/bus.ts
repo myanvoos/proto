@@ -10,7 +10,7 @@
  * the recipient, observed via `wait` — with one exception: when the sender
  * awaits a reply and the recipient cannot run a real reply turn in time
  * (mid-turn with async execution disabled — possibly blocked in a
- * synchronous task spawn whose batch includes the sender — or idle in plan
+ * synchronous worker spawn whose batch includes the sender — or idle in plan
  * mode, where autonomous wake turns are suppressed), the recipient session
  * generates an ephemeral side-channel auto-reply.
  */
@@ -89,7 +89,7 @@ export class IrcBus {
 	 * `opts.expectsReply` marks sends whose caller is blocked on an answer
 	 * (`send await:true`). It is forwarded to the recipient session so a
 	 * mid-turn recipient that cannot reach a step boundary (async execution
-	 * disabled — e.g. blocked in a synchronous task spawn awaiting the
+	 * disabled — e.g. blocked in a synchronous worker spawn awaiting the
 	 * sender's own batch) can generate an ephemeral side-channel auto-reply
 	 * instead of stranding the sender until timeout.
 	 *

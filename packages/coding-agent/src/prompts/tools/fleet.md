@@ -16,7 +16,7 @@ Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`
 - Job rows are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `send`, `agent://<id>`, or `history://<id>`.
 - `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
 - NEVER use shell tools, grep, or read other sessions' files to figure out what a peer is doing. Message them directly.
-- NEVER use hub messaging for something a tool can answer (e.g., grepping codebase, running a build).
+- NEVER use fleet messaging for something a tool can answer (e.g., grepping codebase, running a build).
 
 # Processes
 

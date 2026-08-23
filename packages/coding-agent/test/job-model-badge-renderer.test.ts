@@ -3,8 +3,8 @@ import { AsyncJobManager } from "../src/async/job-manager";
 import { Settings, settings } from "../src/config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "../src/modes/theme/theme";
 import type { ToolSession } from "../src/tools";
-import { jobsRenderResult, snapshotJobs } from "../src/tools/hub/jobs";
-import type { CoordinationDetails } from "../src/tools/hub/types";
+import { jobsRenderResult, snapshotJobs } from "../src/tools/fleet/jobs";
+import type { CoordinationDetails } from "../src/tools/fleet/types";
 
 const ansiPattern = /\x1b\[[0-9;]*m/g;
 const hyperlinkPattern = /\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)/g;
@@ -35,23 +35,23 @@ describe("hub jobs task model badges", () => {
 	});
 
 	beforeEach(() => {
-		priorShowResolvedModelBadge = settings.get("task.showResolvedModelBadge");
+		priorShowResolvedModelBadge = settings.get("orchestrator.showResolvedModelBadge");
 	});
 
 	afterEach(() => {
-		settings.override("task.showResolvedModelBadge", priorShowResolvedModelBadge);
-		settings.clearOverride("task.showResolvedModelBadge");
+		settings.override("orchestrator.showResolvedModelBadge", priorShowResolvedModelBadge);
+		settings.clearOverride("orchestrator.showResolvedModelBadge");
 		vi.restoreAllMocks();
 	});
 
 	it("renders a task job's resolved model selector with its explicit reasoning suffix exactly once when enabled", () => {
-		settings.override("task.showResolvedModelBadge", true);
+		settings.override("orchestrator.showResolvedModelBadge", true);
 		const selector = "anthropic/claude-sonnet-4-20250514:high";
 		const text = renderJobText({
 			jobs: [
 				{
 					id: "Architect",
-					type: "task",
+					type: "worker",
 					status: "completed",
 					label: "Architect",
 					durationMs: 1_234,
@@ -66,13 +66,13 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("renders the latest runtime selector from a running task job snapshot", async () => {
-		settings.override("task.showResolvedModelBadge", true);
+		settings.override("orchestrator.showResolvedModelBadge", true);
 		const selector = "openai-codex/gpt-5.6-luna:max";
 		const reported = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<string>();
 		const manager = new AsyncJobManager({ onJobComplete: () => {} });
 		const id = manager.register(
-			"task",
+			"worker",
 			"Architect",
 			async ({ reportProgress }) => {
 				await reportProgress("running", {
@@ -96,13 +96,13 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("hides a task job's resolved model selector when the badge setting is disabled", () => {
-		settings.override("task.showResolvedModelBadge", false);
+		settings.override("orchestrator.showResolvedModelBadge", false);
 		const selector = "anthropic/claude-sonnet-4-20250514:high";
 		const text = renderJobText({
 			jobs: [
 				{
 					id: "Architect",
-					type: "task",
+					type: "worker",
 					status: "completed",
 					label: "Architect",
 					durationMs: 1_234,
@@ -117,7 +117,7 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("does not render resolved model metadata on bash job rows", () => {
-		settings.override("task.showResolvedModelBadge", true);
+		settings.override("orchestrator.showResolvedModelBadge", true);
 		const selector = "anthropic/claude-sonnet-4-20250514:high";
 		const text = renderJobText({
 			jobs: [
@@ -139,13 +139,13 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("renders task rows with missing or malformed resolved model metadata without leaking bogus badges", () => {
-		settings.override("task.showResolvedModelBadge", true);
+		settings.override("orchestrator.showResolvedModelBadge", true);
 		const text = renderJobText(
 			{
 				jobs: [
 					{
 						id: "NoModel",
-						type: "task",
+						type: "worker",
 						status: "completed",
 						label: "missing model metadata",
 						durationMs: 0,
@@ -153,7 +153,7 @@ describe("hub jobs task model badges", () => {
 					},
 					{
 						id: "NumericModel",
-						type: "task",
+						type: "worker",
 						status: "completed",
 						label: "numeric model metadata",
 						durationMs: 0,
@@ -162,7 +162,7 @@ describe("hub jobs task model badges", () => {
 					},
 					{
 						id: "ObjectModel",
-						type: "task",
+						type: "worker",
 						status: "completed",
 						label: "object model metadata",
 						durationMs: 0,

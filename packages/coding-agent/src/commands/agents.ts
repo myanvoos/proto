@@ -1,5 +1,5 @@
 /**
- * Manage bundled task agents.
+ * Manage bundled worker agents.
  */
 
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";

@@ -412,7 +412,7 @@ describe("AgentSession eager todo enforcement", () => {
 	});
 
 	it("refreshes todo-init titles for a subagent focusable in an interactive host", async () => {
-		// A live subagent selected from the Agent Hub renders its session name in
+		// A live subagent selected from the Agent Fleet renders its session name in
 		// the status line, so the interactive host must keep the replan refresh the
 		// user enabled — only headless hosts skip it (issue #5910 review follow-up).
 		const previousInteractiveHost = setInteractiveHost(true);

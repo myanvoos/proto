@@ -13,10 +13,10 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-const mockTaskTool: AgentTool = {
-	name: "task",
-	label: "Task",
-	description: "Mock task tool",
+const mockOrchestrateTool: AgentTool = {
+	name: "orchestrate_spawn",
+	label: "Orchestrate",
+	description: "Mock orchestration tool",
 	parameters: type({}),
 	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 };
@@ -31,7 +31,7 @@ const mockEvalTool: AgentTool = {
 
 async function createMagicKeywordSession(
 	modelRegistry: ModelRegistry,
-	tools: AgentTool[] = [mockTaskTool, mockEvalTool],
+	tools: AgentTool[] = [mockOrchestrateTool, mockEvalTool],
 ): Promise<{
 	session: AgentSession;
 	settings: Settings;
@@ -93,14 +93,13 @@ describe("AgentSession magic keyword settings", () => {
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
 	});
 
-	it("honors non-ultrathink per-keyword notice toggles", async () => {
+	it("honors the workflow per-keyword notice toggle", async () => {
 		const created = await createMagicKeywordSession(modelRegistry);
 		session = created.session;
-		created.settings.set("magicKeywords.orchestrate", false);
 		created.settings.set("magicKeywords.workflow", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please orchestrate and workflowz this");
+		await session.prompt("please workflowz this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
@@ -111,19 +110,15 @@ describe("AgentSession magic keyword settings", () => {
 		session = created.session;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please orchestrate and workflowz this");
+		await session.prompt("please workflowz this");
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
-		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([
-			"orchestrate-notice",
-			"workflow-notice",
-		]);
+		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual(["workflow-notice"]);
 	});
 
 	it("renders the eval-specific workflowz notice", async () => {
 		const created = await createMagicKeywordSession(modelRegistry);
 		session = created.session;
-		created.settings.set("task.batch", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
 		await session.prompt("please workflowz this");
@@ -143,7 +138,7 @@ describe("AgentSession magic keyword settings", () => {
 	it("updates the workflowz notice when scout is disabled during the session", async () => {
 		const created = await createMagicKeywordSession(modelRegistry);
 		session = created.session;
-		created.settings.set("task.disabledAgents", ["scout"]);
+		created.settings.set("orchestrator.disabledAgents", ["scout"]);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
 		await session.prompt("please workflowz this");
@@ -177,7 +172,7 @@ describe("AgentSession magic keyword settings", () => {
 	});
 
 	it("skips workflowz notice when the eval tool is inactive", async () => {
-		const created = await createMagicKeywordSession(modelRegistry, [mockTaskTool]);
+		const created = await createMagicKeywordSession(modelRegistry, [mockOrchestrateTool]);
 		session = created.session;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 

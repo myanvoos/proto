@@ -102,7 +102,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		const settings = Settings.isolated({
 			"retry.fallbackChains": {
 				default: ["global/inherited-model"],
@@ -152,7 +152,7 @@ describe("subagent runtime model resolution", () => {
 		// The incident shape: the primary does all the work, a transient error
 		// routes the child onto a chain candidate, and that candidate errors on its
 		// first request. Crediting the run to it reports 0 tokens of its output as
-		// the whole run — to the Agent Hub row and, via the hub job snapshot, to
+		// the whole run — to the Agent Fleet row and, via the hub job snapshot, to
 		// the parent model.
 		const primary = model("primary", "bad-runtime-model");
 		const fallback = model("fallback", "working-model");
@@ -164,7 +164,7 @@ describe("subagent runtime model resolution", () => {
 			} as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		const settings = Settings.isolated({});
 		settings.setModelRole("default", "primary/bad-runtime-model");
 		const result = await runSubprocess({
@@ -201,7 +201,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -278,7 +278,7 @@ describe("subagent runtime model resolution", () => {
 	});
 
 	it("inherits the aliased role's chain when the spawn path pre-expands the alias", async () => {
-		// The real task flow (structured-subagent) resolves `@task` to a concrete
+		// The real task flow (structured-subagent) resolves `@worker` to a concrete
 		// selector before calling the executor and carries the role identity in
 		// `modelRole`. Re-deriving the role from the expanded patterns yields
 		// nothing, so the child must route off `modelRole`, not `default`.
@@ -292,11 +292,11 @@ describe("subagent runtime model resolution", () => {
 		});
 
 		const agent: AgentDefinition = {
-			name: "task",
+			name: "worker",
 			description: "test",
 			systemPrompt: "test",
 			source: "bundled",
-			model: ["@task"],
+			model: ["@worker"],
 		};
 		await runSubprocess({
 			cwd: "/tmp",
@@ -305,7 +305,7 @@ describe("subagent runtime model resolution", () => {
 			index: 0,
 			id: "pre-expanded-role",
 			modelOverride: ["task-provider/sonnet"],
-			modelRole: "task",
+			modelRole: "worker",
 			settings: Settings.isolated({
 				modelRoles: { default: "default-provider/opus", task: "task-provider/sonnet" },
 				"retry.fallbackChains": {
@@ -380,7 +380,7 @@ describe("subagent runtime model resolution", () => {
 			},
 		});
 		settings.setModelRole("default", "openai-codex/gpt-5.6-sol");
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -413,7 +413,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -445,7 +445,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -477,7 +477,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -507,7 +507,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
@@ -544,7 +544,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = { name: "worker", description: "test", systemPrompt: "test", source: "bundled" };
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,

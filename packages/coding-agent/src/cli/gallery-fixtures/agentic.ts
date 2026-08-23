@@ -1,150 +1,52 @@
-// Gallery fixtures for the agentic orchestration tools (task, hub, goal).
-import type { Usage } from "@oh-my-pi/pi-ai";
-import type { TaskToolDetails } from "../../task/types";
-import type { HubDetails } from "../../tools/hub";
+// Gallery fixtures for orchestration, fleet, and goal tools.
+
+import type { FleetDetails } from "../../tools/fleet";
+import type { OrchestrateToolDetails } from "../../tools/orchestrate";
 import type { GalleryFixture } from "./types";
 
 /** Message/activity timestamps are offsets from load time so gallery ages stay plausible. */
 const FIXTURE_NOW = Date.now();
 
-/** Plausible cumulative usage for a fixture subagent run. */
-const fixtureUsage = (tokens: { input: number; output: number }, costTotal: number): Usage => ({
-	input: tokens.input,
-	output: tokens.output,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: tokens.input + tokens.output,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costTotal },
-});
-
 export const agenticFixtures: Record<string, GalleryFixture> = {
-	task: {
-		label: "Task",
+	orchestrate_spawn: {
+		label: "Orchestrate spawn",
 		customRendered: true,
-		// Streaming: agent chosen, assignment still landing.
 		streamingArgs: {
-			agent: "task",
-			id: "AuthLoader",
-			description: "Load auth middleware",
-			assignment: "Read packages/server/src/auth/*.ts and summarize the session-cookie",
+			agent: "worker",
+			name: "AuthLoader",
+			prompt: "Inspect packages/server/src/auth/session.ts",
 		},
 		args: {
-			agent: "task",
-			id: "AuthLoader",
-			description: "Load auth middleware",
-			assignment:
-				"Read packages/server/src/auth/session.ts and middleware.ts, then document the session-cookie validation flow and any TODOs.",
+			agent: "worker",
+			name: "AuthLoader",
+			prompt: "Inspect the session-cookie validation flow and report gaps.",
 		},
 		result: {
-			content: [
-				{
-					type: "text",
-					text: "Agent AuthLoader completed.",
-				},
-			],
+			content: [{ type: "text", text: "Spawned worker `AuthLoader`." }],
 			details: {
-				projectAgentsDir: null,
-				totalDurationMs: 48_200,
-				usage: fixtureUsage({ input: 52_600, output: 8_800 }, 0.12),
-				progress: [
+				op: "spawn",
+				spawned: { id: "AuthLoader", agent: "worker", jobId: "AuthLoader-t1" },
+				screens: [
 					{
-						index: 0,
 						id: "AuthLoader",
-						agent: "task",
-						agentSource: "bundled",
-						status: "completed",
-						task: "Read packages/server/src/auth/session.ts and middleware.ts",
-						description: "Load auth middleware",
-						lastIntent: "Documenting session-cookie flow",
-						recentTools: [
-							{ tool: "read", args: "packages/server/src/auth/session.ts", endMs: 1_749_200_040_000 },
-							{ tool: "read", args: "packages/server/src/auth/middleware.ts", endMs: 1_749_200_052_000 },
-						],
-						recentOutput: ["Session validation runs in middleware.ts:42 via verifySessionCookie()."],
-						toolCount: 9,
-						requests: 6,
-						tokens: 61_400,
-						contextTokens: 23_100,
-						contextWindow: 200_000,
-						cost: 0.12,
-						durationMs: 41_900,
-						resolvedModel: "anthropic/claude-sonnet",
+						agent: "worker",
+						state: "running",
+						turns: 1,
+						queued: 0,
+						turnStartedAt: FIXTURE_NOW - 3_000,
+						turnMessage: "Inspect the session-cookie validation flow",
+						trace: ["read(packages/server/src/auth/session.ts)"],
+						outputTail: ["Tracing cookie verification…"],
+						lastActivityAt: FIXTURE_NOW,
 					},
 				],
-				results: [
-					{
-						index: 0,
-						id: "AuthLoader",
-						agent: "task",
-						agentSource: "bundled",
-						description: "Load auth middleware",
-						task: "Read packages/server/src/auth/session.ts and middleware.ts",
-						assignment:
-							"Read packages/server/src/auth/session.ts and middleware.ts, then document the session-cookie validation flow and any TODOs.",
-						exitCode: 0,
-						output: [
-							"Session validation runs in middleware.ts:42 via verifySessionCookie().",
-							"Cookies are HMAC-signed (SHA-256) and checked against the session store.",
-							"TODO at session.ts:88 — sliding-expiration refresh is stubbed.",
-						].join("\n"),
-						stderr: "",
-						truncated: false,
-						durationMs: 41_900,
-						tokens: 61_400,
-						requests: 6,
-						contextTokens: 23_100,
-						contextWindow: 200_000,
-						resolvedModel: "anthropic/claude-sonnet",
-						usage: fixtureUsage({ input: 52_600, output: 8_800 }, 0.12),
-						outputMeta: { lineCount: 3, charCount: 214 },
-					},
-				],
-			} satisfies TaskToolDetails,
-		},
-		errorResult: {
-			isError: true,
-			content: [
-				{
-					type: "text",
-					text: "Agent RateLimiter failed.",
-				},
-			],
-			details: {
-				projectAgentsDir: null,
-				totalDurationMs: 9_800,
-				usage: fixtureUsage({ input: 10_900, output: 1_400 }, 0.1),
-				results: [
-					{
-						index: 0,
-						id: "RateLimiter",
-						agent: "task",
-						agentSource: "bundled",
-						description: "Audit rate limiter",
-						task: "Inspect packages/server/src/auth/rate-limit.ts",
-						assignment:
-							"Inspect packages/server/src/auth/rate-limit.ts. Confirm the 429 path sets Retry-After and report gaps.",
-						exitCode: 1,
-						output: "",
-						stderr: "ENOENT: packages/server/src/auth/rate-limit.ts",
-						truncated: false,
-						durationMs: 9_800,
-						tokens: 12_300,
-						requests: 3,
-						contextTokens: 6_400,
-						contextWindow: 200_000,
-						resolvedModel: "anthropic/claude-sonnet",
-						usage: fixtureUsage({ input: 10_900, output: 1_400 }, 0.1),
-						error: "Subagent exited 1: target file packages/server/src/auth/rate-limit.ts does not exist.",
-						outputMeta: { lineCount: 0, charCount: 0 },
-					},
-				],
-			} satisfies TaskToolDetails,
+			} satisfies OrchestrateToolDetails,
 		},
 	},
 
-	hub_send: {
-		label: "Hub send",
-		renderer: "hub",
+	fleet_send: {
+		label: "Fleet send",
+		renderer: "fleet",
 		// Streaming: recipient known; the message body still arriving.
 		streamingArgs: { op: "send", to: "AuthLoader", message: "Are you still touching" },
 		args: {
@@ -179,7 +81,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					ts: FIXTURE_NOW - 5_000,
 					replyTo: "7181122334455667788",
 				},
-			} satisfies HubDetails,
+			} satisfies FleetDetails,
 		},
 		errorResult: {
 			isError: true,
@@ -194,14 +96,14 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				from: "Main",
 				to: "RateLimiter",
 				receipts: [{ to: "RateLimiter", outcome: "failed", error: 'unknown agent "RateLimiter"' }],
-			} satisfies HubDetails,
+			} satisfies FleetDetails,
 		},
 	},
 
-	hub_wait: {
-		label: "Hub wait",
+	fleet_wait: {
+		label: "Fleet wait",
 		customRendered: true,
-		renderer: "hub",
+		renderer: "fleet",
 		streamingArgs: { op: "wait", from: "AuthLoader" },
 		args: { op: "wait", from: "AuthLoader", timeoutMs: 60_000 },
 		result: {
@@ -221,14 +123,14 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					body: "session-store rename is merged; auth.ts is yours.",
 					ts: FIXTURE_NOW - 30_000,
 				},
-			} satisfies HubDetails,
+			} satisfies FleetDetails,
 		},
 	},
 
-	hub_inbox: {
-		label: "Hub inbox",
+	fleet_inbox: {
+		label: "Fleet inbox",
 		customRendered: true,
-		renderer: "hub",
+		renderer: "fleet",
 		streamingArgs: { op: "inbox" },
 		args: { op: "inbox", peek: true },
 		result: {
@@ -237,7 +139,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					type: "text",
 					text: [
 						"2 unread message(s):",
-						"- [7181122334455667791] AuthLoader: hub table reads unreadCount — ping me when the bus lands.",
+						"- [7181122334455667791] AuthLoader: fleet table reads unreadCount — ping me when the bus lands.",
 						"- [7181122334455667792] RateLimiter (reply to 7181122334455667791): bus is in; receipts carry outcome.",
 					].join("\n"),
 				},
@@ -250,7 +152,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 						id: "7181122334455667791",
 						from: "AuthLoader",
 						to: "Main",
-						body: "hub table reads unreadCount — ping me when the bus lands.",
+						body: "fleet table reads unreadCount — ping me when the bus lands.",
 						ts: FIXTURE_NOW - 4 * 60_000,
 					},
 					{
@@ -262,19 +164,19 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 						replyTo: "7181122334455667791",
 					},
 				],
-			} satisfies HubDetails,
+			} satisfies FleetDetails,
 		},
 		errorResult: {
 			isError: true,
 			content: [{ type: "text", text: "IRC inbox failed: message store unavailable." }],
-			details: { op: "inbox" } satisfies HubDetails,
+			details: { op: "inbox" } satisfies FleetDetails,
 		},
 	},
 
-	hub_list: {
-		label: "Hub peers",
+	fleet_list: {
+		label: "Fleet peers",
 		customRendered: true,
-		renderer: "hub",
+		renderer: "fleet",
 		streamingArgs: { op: "list" },
 		args: { op: "list" },
 		result: {
@@ -283,8 +185,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					type: "text",
 					text: [
 						"2 peer(s):",
-						"- AuthLoader [task · sub · idle] — parent Main, active 2m ago",
-						"- RateLimiter [task · sub · parked] — unread 2, parent Main, active 12m ago",
+						"- AuthLoader [worker · sub · idle] — parent Main, active 2m ago",
+						"- RateLimiter [worker · sub · parked] — unread 2, parent Main, active 12m ago",
 						"",
 						"Parked agents are revived automatically when you message them.",
 					].join("\n"),
@@ -296,7 +198,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				peers: [
 					{
 						id: "AuthLoader",
-						displayName: "task",
+						displayName: "worker",
 						kind: "sub",
 						status: "idle",
 						parentId: "Main",
@@ -305,7 +207,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					},
 					{
 						id: "RateLimiter",
-						displayName: "task",
+						displayName: "worker",
 						kind: "sub",
 						status: "parked",
 						parentId: "Main",
@@ -313,12 +215,12 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 						lastActivity: FIXTURE_NOW - 12 * 60_000,
 					},
 				],
-			} satisfies HubDetails,
+			} satisfies FleetDetails,
 		},
 		errorResult: {
 			isError: true,
-			content: [{ type: "text", text: "IRC list failed: agent hub is unavailable." }],
-			details: { op: "list" } satisfies HubDetails,
+			content: [{ type: "text", text: "IRC list failed: agent fleet is unavailable." }],
+			details: { op: "list" } satisfies FleetDetails,
 		},
 	},
 
@@ -377,9 +279,9 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	hub_jobs: {
-		label: "Hub jobs",
-		renderer: "hub",
+	fleet_jobs: {
+		label: "Fleet jobs",
+		renderer: "fleet",
 		// Streaming: waiting on a single job id; the second id is still arriving.
 		streamingArgs: { op: "wait", ids: ["job_a1"] },
 		args: { op: "wait", ids: ["job_a1", "job_b2", "job_c3"] },
@@ -398,7 +300,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					},
 					{
 						id: "job_b2",
-						type: "task",
+						type: "worker",
 						status: "completed",
 						label: "Migrate rate limiter to a sliding window",
 						durationMs: 96_700,
@@ -423,7 +325,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				jobs: [
 					{
 						id: "job_d4",
-						type: "task",
+						type: "worker",
 						status: "failed",
 						label: "Refactor the session store to Redis",
 						durationMs: 52_300,

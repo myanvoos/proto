@@ -910,7 +910,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 			IS_HL_MODE: displayMode.hashLines,
 			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
 			scoutAvailable: isScoutSpawnable(
-				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.settings.get("orchestrator.disabledAgents") as string[] | undefined,
 				this.session.getSessionSpawns?.() ?? "*",
 			),
 		});

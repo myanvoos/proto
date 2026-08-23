@@ -978,13 +978,13 @@ describe("resolveAgentModelPatterns", () => {
 		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined });
 	});
 
-	test("falls back to the active session model when @task is unset", () => {
+	test("falls back to the active session model when @worker is unset", () => {
 		const settings = Settings.isolated({
 			modelRoles: { default: "anthropic/claude-sonnet-4-5" },
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "@task",
+			agentModel: "@worker",
 			settings,
 			activeModelPattern: "openai/gpt-4o",
 		});
@@ -992,7 +992,7 @@ describe("resolveAgentModelPatterns", () => {
 		expect(result).toEqual(["openai/gpt-4o"]);
 	});
 
-	test("uses the configured task role before falling back to the session model", () => {
+	test("uses the configured worker role before falling back to the session model", () => {
 		const settings = Settings.isolated({
 			modelRoles: {
 				default: "openai/gpt-4o",
@@ -1001,7 +1001,7 @@ describe("resolveAgentModelPatterns", () => {
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "@task",
+			agentModel: "@worker",
 			settings,
 			activeModelPattern: "openai/gpt-4o",
 		});
@@ -1009,7 +1009,7 @@ describe("resolveAgentModelPatterns", () => {
 		expect(result).toEqual(["anthropic/claude-sonnet-4-5:high"]);
 	});
 
-	test("accepts YAML list values for configured task role patterns", () => {
+	test("accepts YAML list values for configured worker role patterns", () => {
 		const settings = Settings.isolated({
 			modelRoles: {
 				task: ["anthropic/claude-sonnet-4-6", "zai/glm-5.2:high"],
@@ -1017,7 +1017,7 @@ describe("resolveAgentModelPatterns", () => {
 		});
 
 		const result = resolveAgentModelPatterns({
-			agentModel: "@task",
+			agentModel: "@worker",
 			settings,
 		});
 
@@ -1189,11 +1189,11 @@ describe("resolveCliModel", () => {
 	test("resolves bare configured role names from --model", () => {
 		const registry = { getAll: () => allModels, getAvailable: () => allModels };
 		const settings = Settings.isolated({
-			modelRoles: { task: "openai/gpt-4o" },
+			modelRoles: { worker: "openai/gpt-4o" },
 		});
 
 		const result = resolveCliModel({
-			cliModel: "task",
+			cliModel: "worker",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1206,11 +1206,11 @@ describe("resolveCliModel", () => {
 	test("resolves bare configured role names with thinking suffixes", () => {
 		const registry = { getAll: () => allModels, getAvailable: () => allModels };
 		const settings = Settings.isolated({
-			modelRoles: { task: "anthropic/claude-sonnet-4-5" },
+			modelRoles: { worker: "anthropic/claude-sonnet-4-5" },
 		});
 
 		const result = resolveCliModel({
-			cliModel: "task:high",
+			cliModel: "worker:high",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1230,7 +1230,7 @@ describe("resolveCliModel", () => {
 		});
 
 		const result = resolveCliModel({
-			cliModel: "task",
+			cliModel: "worker",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1247,7 +1247,7 @@ describe("resolveCliModel", () => {
 		});
 
 		const result = resolveCliModel({
-			cliModel: "task",
+			cliModel: "worker",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1288,7 +1288,7 @@ describe("resolveCliModel", () => {
 
 	test("prefers an exact model name over a same-named configured role", () => {
 		const exactModel = buildModel({
-			id: "task",
+			id: "worker",
 			name: "Task",
 			api: "anthropic-messages",
 			provider: "openai",
@@ -1301,11 +1301,11 @@ describe("resolveCliModel", () => {
 		});
 		const registry = { getAll: () => [...allModels, exactModel], getAvailable: () => [...allModels, exactModel] };
 		const settings = Settings.isolated({
-			modelRoles: { task: "anthropic/claude-sonnet-4-5" },
+			modelRoles: { worker: "anthropic/claude-sonnet-4-5" },
 		});
 
 		const result = resolveCliModel({
-			cliModel: "task",
+			cliModel: "worker",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1313,7 +1313,7 @@ describe("resolveCliModel", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.model).toBe(exactModel);
 		const suffixed = resolveCliModel({
-			cliModel: "task:high",
+			cliModel: "worker:high",
 			modelRegistry: registry,
 			settings,
 		});
@@ -1821,7 +1821,7 @@ describe("resolveExplicitModelRole", () => {
 			},
 		});
 
-		expect(resolveExplicitModelRole("@task", settings)).toBe("task");
+		expect(resolveExplicitModelRole("@worker", settings)).toBe("worker");
 		expect(resolveExplicitModelRole("pi/reviewer:high", settings)).toBe("reviewer");
 		expect(resolveExplicitModelRole("@reviewer:xhigh", settings)).toBe("reviewer");
 		expect(resolveExplicitModelRole("*:low", settings)).toBe("default");

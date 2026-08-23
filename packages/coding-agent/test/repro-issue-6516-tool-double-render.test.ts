@@ -216,7 +216,7 @@ describe("issue #6516 — tool output appears twice", () => {
 	});
 
 	it("keeps a still-running background task's live handle across a rebuild", () => {
-		const runningDetails = { async: { state: "running", jobId: "job-1", type: "task" } };
+		const runningDetails = { async: { state: "running", jobId: "job-1", type: "worker" } };
 		const entries: SessionEntry[] = [
 			{
 				type: "message",
@@ -232,9 +232,7 @@ describe("issue #6516 — tool output appears twice", () => {
 				timestamp: Date.now(),
 				message: {
 					role: "assistant",
-					content: [
-						{ type: "toolCall", id: "call-1", name: "task", arguments: { description: "run", prompt: "go" } },
-					],
+					content: [{ type: "toolCall", id: "call-1", name: "orchestrate_spawn", arguments: { prompt: "go" } }],
 					api: "anthropic-messages",
 					provider: "anthropic",
 					model: "claude-sonnet-4-5",
@@ -251,7 +249,7 @@ describe("issue #6516 — tool output appears twice", () => {
 				message: {
 					role: "toolResult",
 					toolCallId: "call-1",
-					toolName: "task",
+					toolName: "worker",
 					content: [{ type: "text", text: "running…" }],
 					details: runningDetails,
 					isError: false,
@@ -266,7 +264,7 @@ describe("issue #6516 — tool output appears twice", () => {
 		);
 
 		const live = new ToolExecutionComponent(
-			"task",
+			"worker",
 			{ description: "run", prompt: "go" },
 			{},
 			undefined,

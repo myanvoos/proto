@@ -45,7 +45,7 @@ const groupedReadTargets = [
 ];
 
 const groupedReadDelimitedPath = groupedReadTargets.join(",");
-const groupedReadRepeatedFile = "packages/coding-agent/src/task/render.ts";
+const groupedReadRepeatedFile = "packages/coding-agent/src/task/executor.ts";
 const groupedReadRepeatedRanges = `${groupedReadRepeatedFile}:507-605,1070-1194,1210-1240,1270-1274`;
 
 const GROUPED_READ_USAGE: Usage = {

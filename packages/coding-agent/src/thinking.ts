@@ -171,11 +171,11 @@ export function parseCliThinkingLevel(value: string | null | undefined): Thinkin
 	return level === ThinkingLevel.Inherit ? undefined : level;
 }
 
-/** Coarse per-spawn effort selectors accepted by the task tool. */
-export const TASK_EFFORTS = ["lo", "med", "hi"] as const;
+/** Coarse per-spawn effort selectors accepted by orchestrate_spawn. */
+export const WORKER_EFFORTS = ["lo", "med", "hi"] as const;
 
 /** Coarse task-spawn effort: the lowest, middle, or highest thinking level the target model supports. */
-export type TaskEffort = (typeof TASK_EFFORTS)[number];
+export type WorkerEffort = (typeof WORKER_EFFORTS)[number];
 
 /**
  * Maps a coarse task effort onto the model's supported thinking range:
@@ -186,9 +186,9 @@ export type TaskEffort = (typeof TASK_EFFORTS)[number];
  * callers fall back to their default selector (e.g. `auto`). Throws when the
  * configured ceiling is below the model's lowest supported effort.
  */
-export function resolveTaskEffortLevel(
+export function resolveWorkerEffortLevel(
 	model: Model | undefined,
-	effort: TaskEffort,
+	effort: WorkerEffort,
 	maxEffort?: Effort,
 ): Effort | undefined {
 	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
@@ -210,14 +210,16 @@ export function resolveTaskEffortLevel(
 	const ceiling = supported.findLast(candidate => THINKING_EFFORTS.indexOf(candidate) <= maxIndex);
 	if (ceiling === undefined) {
 		const modelName = model ? `${model.provider}/${model.id}` : "Selected model";
-		throw new RangeError(`${modelName} has no supported thinking effort at or below task.maxEffort=${maxEffort}`);
+		throw new RangeError(
+			`${modelName} has no supported thinking effort at or below orchestrator.maxEffort=${maxEffort}`,
+		);
 	}
 	return THINKING_EFFORTS.indexOf(resolved) > THINKING_EFFORTS.indexOf(ceiling) ? ceiling : resolved;
 }
 
 /**
  * Clamps a concrete thinking selector to a per-session effort ceiling (e.g. a
- * task spawn's `task.maxEffort`-capped effort hint). `off`/`inherit`/
+ * worker spawn's `orchestrator.maxEffort`-capped effort hint). `off`/`inherit`/
  * `undefined` pass through, as do levels already at or below the ceiling.
  * Levels above it snap to the highest model-supported effort at or below the
  * ceiling. A model whose floor exceeds the ceiling has nothing valid to snap

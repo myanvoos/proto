@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { type CoordinationDetails, hubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { type CoordinationDetails, fleetToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/fleet";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 async function theme() {
@@ -22,11 +22,11 @@ const msg = (overrides: Partial<IrcMessage>): IrcMessage => ({
 	...overrides,
 });
 
-describe("hubToolRenderer send", () => {
+describe("fleetToolRenderer send", () => {
 	it("folds a single delivery outcome into the header and shows the awaited reply", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -51,7 +51,7 @@ describe("hubToolRenderer send", () => {
 	it("lists per-recipient outcomes with error text when a broadcast partially fails", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -81,7 +81,7 @@ describe("hubToolRenderer send", () => {
 	it("flags an awaited send whose reply timed out", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -104,7 +104,7 @@ describe("hubToolRenderer send", () => {
 	it("surfaces pre-delivery validation failures as an error detail", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: '`to` is required for op="send".' }],
 					details: { op: "send", from: "Main" } satisfies CoordinationDetails,
@@ -119,11 +119,11 @@ describe("hubToolRenderer send", () => {
 	});
 });
 
-describe("hubToolRenderer wait", () => {
+describe("fleetToolRenderer wait", () => {
 	it("renders the consumed message under a sender header", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: { op: "wait", from: "Main", waited: msg({}) } satisfies CoordinationDetails,
@@ -140,7 +140,7 @@ describe("hubToolRenderer wait", () => {
 	it("marks a timed-out wait without inventing a message", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "No message from AuthLoader within 2m." }],
 					details: { op: "wait", from: "Main", waited: null } satisfies CoordinationDetails,
@@ -155,11 +155,11 @@ describe("hubToolRenderer wait", () => {
 	});
 });
 
-describe("hubToolRenderer inbox", () => {
+describe("fleetToolRenderer inbox", () => {
 	it("lists each message with sender and body preview", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -184,11 +184,11 @@ describe("hubToolRenderer inbox", () => {
 	});
 });
 
-describe("hubToolRenderer list", () => {
+describe("fleetToolRenderer list", () => {
 	it("summarizes status counts and flags unread peers", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -235,7 +235,7 @@ describe("hubToolRenderer list", () => {
 	it("renders a peer's role displayName and current activity in the row", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
-			hubToolRenderer.renderResult(
+			fleetToolRenderer.renderResult(
 				{
 					content: [{ type: "text", text: "" }],
 					details: {
@@ -267,7 +267,7 @@ describe("hubToolRenderer list", () => {
 	});
 });
 
-describe("hubToolRenderer body truncation", () => {
+describe("fleetToolRenderer body truncation", () => {
 	it("collapses long bodies with an elision counter and expands on demand", async () => {
 		const uiTheme = await theme();
 		const body = Array.from({ length: 6 }, (_, i) => `reply line ${i + 1}`).join("\n");
@@ -275,14 +275,14 @@ describe("hubToolRenderer body truncation", () => {
 		const result = { content: [{ type: "text", text: "" }], details };
 
 		const collapsed = lines(
-			hubToolRenderer.renderResult(result, { expanded: false, isPartial: false }, uiTheme, { op: "wait" }),
+			fleetToolRenderer.renderResult(result, { expanded: false, isPartial: false }, uiTheme, { op: "wait" }),
 		);
 		expect(collapsed.some(line => line.includes("reply line 2"))).toBe(true);
 		expect(collapsed.some(line => line.includes("reply line 3"))).toBe(false);
 		expect(collapsed.some(line => line.includes("+4 more lines"))).toBe(true);
 
 		const expanded = lines(
-			hubToolRenderer.renderResult(result, { expanded: true, isPartial: false }, uiTheme, { op: "wait" }),
+			fleetToolRenderer.renderResult(result, { expanded: true, isPartial: false }, uiTheme, { op: "wait" }),
 		);
 		expect(expanded.some(line => line.includes("reply line 6"))).toBe(true);
 		expect(expanded.some(line => line.includes("more lines"))).toBe(false);

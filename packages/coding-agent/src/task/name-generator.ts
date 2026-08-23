@@ -1534,7 +1534,7 @@ let usedNames = new Set<string>();
  * Generate a unique two-word identifier (e.g., "SwiftFalcon").
  * Falls back to numeric suffix if all combinations exhausted.
  */
-export function generateTaskName(): string {
+export function generateWorkerName(): string {
 	// Try random combinations first (50 attempts)
 	for (let attempt = 0; attempt < 50; attempt++) {
 		const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];

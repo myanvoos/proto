@@ -21,8 +21,6 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 // the delegate-via-tasks / phased-todo guidance. The post-compaction auto-continuation
 // turn must carry the gated reminders again (reminder-only — never a forced tool_choice).
 
-const TASK_DELEGATION_MARKER = "Task delegation enabled";
-
 type ObservedPromptCall = {
 	callIndex: number;
 	toolChoice: string | undefined;
@@ -177,7 +175,6 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 			"compaction.asyncEnabled": false,
 			"compaction.autoContinue": true,
 			"compaction.methodOrder": ["soft"],
-			"task.eager": "always",
 			"todo.enabled": false,
 			"todo.eager": "default",
 			"todo.reminders": false,
@@ -185,10 +182,10 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		});
 		const sessionManager = SessionManager.inMemory(tempDir.path());
 
-		const mockTaskTool: AgentTool = {
-			name: "task",
-			label: "Task",
-			description: "Mock task tool",
+		const mockOrchestrateTool: AgentTool = {
+			name: "orchestrate_spawn",
+			label: "Orchestrate",
+			description: "Mock orchestration tool",
 			parameters: type({}),
 			execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 		};
@@ -209,8 +206,8 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		};
 		const todoTool = todoEnabled ? new TodoTool(toolSession) : undefined;
 		const tools: AgentTool[] = todoTool
-			? [todoTool as unknown as AgentTool, mockTaskTool, mockBashTool]
-			: [mockTaskTool, mockBashTool];
+			? [todoTool as unknown as AgentTool, mockOrchestrateTool, mockBashTool]
+			: [mockOrchestrateTool, mockBashTool];
 
 		let session: AgentSession;
 		const agent = new Agent({
@@ -243,7 +240,7 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		});
 
 		const toolRegistry = new Map<string, AgentTool>([
-			[mockTaskTool.name, mockTaskTool],
+			[mockOrchestrateTool.name, mockOrchestrateTool],
 			[mockBashTool.name, mockBashTool],
 		]);
 		if (todoTool) toolRegistry.set(todoTool.name, todoTool as unknown as AgentTool);
@@ -295,55 +292,8 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		return waitForCall(call => call.callIndex > 0);
 	}
 
-	it("re-injects the eager task reminder on the auto-continuation turn (task.eager always)", async () => {
-		const { session, waitForCall } = await createHarness();
-		stubCompaction();
-
-		const continuation = await runToContinuation(session, waitForCall);
-
-		const reminder = continuation.messageTexts.find(text => text.includes(TASK_DELEGATION_MARKER));
-		expect(reminder).toBeDefined();
-		expect(reminder).toContain("`task`");
-		// Reminder-only: the post-compaction nudge never forces a tool on the resumed turn.
-		expect(continuation.toolChoice).toBeUndefined();
-	});
-	it("does not re-inject the eager task reminder when task.eager is default", async () => {
-		const { session, waitForCall } = await createHarness({ "task.eager": "default" });
-		stubCompaction();
-
-		const continuation = await runToContinuation(session, waitForCall);
-
-		expect(continuation.messageTexts.some(text => text.includes(TASK_DELEGATION_MARKER))).toBe(false);
-	});
-	it("does not re-inject the eager task reminder when task.eager is preferred", async () => {
-		const { session, waitForCall } = await createHarness({ "task.eager": "preferred" });
-		stubCompaction();
-
-		const continuation = await runToContinuation(session, waitForCall);
-
-		expect(continuation.messageTexts.some(text => text.includes(TASK_DELEGATION_MARKER))).toBe(false);
-	});
-	it("does not re-inject the eager task reminder for subagent sessions", async () => {
-		const { session, waitForCall } = await createHarness({}, { agentId: "SubAgent", agentKind: "sub" });
-		stubCompaction();
-
-		const continuation = await runToContinuation(session, waitForCall);
-
-		expect(continuation.messageTexts.some(text => text.includes(TASK_DELEGATION_MARKER))).toBe(false);
-	});
-	it("does not re-inject the eager task reminder in plan mode", async () => {
-		const { session, waitForCall } = await createHarness();
-		session.setPlanModeState({ enabled: true, planFilePath: path.join(tempDir.path(), "plan.md") });
-		stubCompaction();
-
-		const continuation = await runToContinuation(session, waitForCall);
-
-		expect(continuation.messageTexts.some(text => text.includes(TASK_DELEGATION_MARKER))).toBe(false);
-	});
-
 	it("re-injects the eager todo reminder on the auto-continuation turn (todo.eager preferred)", async () => {
 		const { session, waitForCall } = await createHarness({
-			"task.eager": "default",
 			"todo.enabled": true,
 			"todo.eager": "preferred",
 		});
@@ -357,7 +307,6 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 
 	it("re-injects the eager todo reminder reminder-only for todo.eager always (no forced tool)", async () => {
 		const { session, waitForCall } = await createHarness({
-			"task.eager": "default",
 			"todo.enabled": true,
 			"todo.eager": "always",
 		});
@@ -373,7 +322,6 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 
 	it("does not re-inject the eager todo reminder when todos survived compaction", async () => {
 		const { session, sessionManager, waitForCall } = await createHarness({
-			"task.eager": "default",
 			"todo.enabled": true,
 			"todo.eager": "preferred",
 		});

@@ -257,24 +257,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "vibe",
-		icon: "wave",
-		description: "Toggle vibe mode (direct persistent fast/good worker sessions; read-only toolset)",
-		inlineHint: "[prompt]",
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => {
-			if (runtime.ctx.vibeModeEnabled) return "Vibe: on";
-			if (runtime.ctx.planModeEnabled) return "Vibe: blocked by plan mode";
-			if (runtime.ctx.goalModeEnabled) return "Vibe: blocked by goal mode";
-			return "Vibe: off";
-		},
-		handleTui: async (command, runtime) => {
-			await runWithDetachedModeDraft(command, runtime, () =>
-				runtime.ctx.handleVibeModeCommand(command.args || undefined, runtime.input),
-			);
-		},
-	},
-	{
 		name: "goal",
 		icon: "goal",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",

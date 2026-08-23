@@ -9,7 +9,7 @@ const DEFAULT_MAX_RUNNING_JOBS = 15;
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
 /**
- * Adaptive ("smart") `hub` poll-wait ladder (ms). A tight poll loop climbs
+ * Adaptive ("smart") `fleet` poll-wait ladder (ms). A tight poll loop climbs
  * these rungs so each immediate re-poll backs off and stops spending turns on
  * "still running" frames; the floor (first rung) is the shortest wait and the
  * top rung is the longest a smart poll will ever block. Only used when
@@ -30,7 +30,7 @@ interface PollEscalationState {
 }
 
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
-export type AsyncJobType = "bash" | "task" | "eval";
+export type AsyncJobType = "bash" | "worker" | "eval";
 
 export interface AsyncJob {
 	id: string;
@@ -52,9 +52,9 @@ export interface AsyncJob {
 	 */
 	ownerId?: string;
 	/**
-	 * Registry id of the subagent this job runs (task/tan/vibe jobs). Lets
+	 * Registry id of the subagent this job runs (worker/tan jobs). Lets
 	 * job-view code link a job row to its AgentRegistry ref even when the job
-	 * id differs from the agent id (vibe turn jobs, tan clones).
+	 * id differs from the agent id (worker turn jobs, tan clones).
 	 */
 	agentId?: string;
 	/**
@@ -355,7 +355,7 @@ export class AsyncJobManager {
 	}
 
 	/**
-	 * Compute the next adaptive ("smart") wait (ms) for a blocking `hub` wait by
+	 * Compute the next adaptive ("smart") wait (ms) for a blocking `fleet` wait by
 	 * the given owner. Consecutive polls — those starting within
 	 * POLL_ESCALATION_RESET_MS of the previous poll returning — climb
 	 * POLL_WAIT_LADDER_MS so a tight wait loop backs off; a longer gap means the
@@ -488,7 +488,7 @@ export class AsyncJobManager {
 	 * awaited too. Returns false when `timeoutMs` elapses first.
 	 *
 	 * `excludeSuppressed` skips jobs whose delivery is suppressed (acknowledged
-	 * or `hub`-watched): those can never re-wake a run, so quiescence barriers
+	 * or `fleet`-watched): those can never re-wake a run, so quiescence barriers
 	 * pass it to share one contract with the pending-async-wake predicate.
 	 * Teardown reaps omit it — worktree safety concerns every owner process.
 	 */

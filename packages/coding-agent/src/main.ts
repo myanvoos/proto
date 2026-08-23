@@ -134,18 +134,16 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 // Todo settings are caller-controlled in protocol modes. Do not host-default them:
 // embedders need project-level opt-outs for reminder/prelude prompt injection.
 const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
-	"task.isolation.mode",
-	"task.isolation.apply",
-	"task.isolation.merge",
-	"task.isolation.commits",
-	"task.eager",
-	"task.batch",
-	"task.maxConcurrency",
-	"task.maxRecursionDepth",
-	"task.disabledAgents",
-	"task.agentModelOverrides",
-	"task.agentPrewalk",
-	"task.agentAdvisor",
+	"orchestrator.isolation.mode",
+	"orchestrator.isolation.apply",
+	"orchestrator.isolation.merge",
+	"orchestrator.isolation.commits",
+	"orchestrator.maxConcurrency",
+	"orchestrator.maxRecursionDepth",
+	"orchestrator.disabledAgents",
+	"orchestrator.agentModelOverrides",
+	"orchestrator.agentPrewalk",
+	"orchestrator.agentAdvisor",
 	// Memory subsystems are off-by-default for RPC/ACP hosts; embedders that want
 	// memory should opt in explicitly through their own settings layer.
 	"memory.backend",
@@ -1373,7 +1371,7 @@ export async function runRootCommand(
 		const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
 		const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 		const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
-		// Only the interactive host renders a focusable Agent Hub / subagent session
+		// Only the interactive host renders a focusable Agent Fleet / subagent session
 		// tree; declare it so headless subagent optimizations (e.g. skipping replan
 		// title refresh) can tell a focusable process from a print/RPC/eval one.
 		setInteractiveHost(isInteractive);
@@ -1828,7 +1826,7 @@ export async function runRootCommand(
 				throw error;
 			}
 
-			// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
+			// Cold-revive support: a `parked` subagent ref restored from disk (Agent Fleet
 			// scan or a resumed process) has a sessionFile but no in-memory
 			// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
 			// factory — bound to THIS top-level session — that rebuilds the subagent from
@@ -1844,7 +1842,7 @@ export async function runRootCommand(
 					enableLsp: sessionOptions.enableLsp ?? true,
 					eventBus,
 				}),
-				Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+				Math.trunc(Number(settingsInstance.get("orchestrator.agentIdleTtlMs") ?? 420_000) || 0),
 			);
 			if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 				authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);

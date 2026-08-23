@@ -1,7 +1,6 @@
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
 import { withTimeout } from "@oh-my-pi/pi-utils/async";
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
 import { workerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
 import type { ToolSession } from "../index";
 import { ToolAbortError, ToolError } from "../tool-errors";
@@ -17,7 +16,6 @@ import {
 const START_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 1_500;
 const GRACE_MS = 750;
-const SMOKE_TIMEOUT_MS = 5_000;
 const RESTART_MESSAGE = "computer worker restarted; captures and ax refs were reset";
 
 /** Runs desktop scripts and owns their persistent worker session. */
@@ -373,37 +371,4 @@ export async function releaseComputerSessionsForOwner(ownerId: string | undefine
 	if (!controllers) return;
 	ownedSupervisors.delete(ownerId);
 	await Promise.allSettled(Array.from(controllers, controller => controller.close()));
-}
-
-/** Verifies computer worker startup, messaging, and bounded shutdown. */
-export async function smokeTestComputerWorker(
-	timeoutMs = SMOKE_TIMEOUT_MS,
-	createWorker: ComputerWorkerFactory = spawnComputerWorker,
-): Promise<void> {
-	const worker = createWorker();
-	const waitFor = async (expected: ComputerWorkerOutbound["type"], failureMessage: string): Promise<void> => {
-		const response = Promise.withResolvers<void>();
-		const unsubscribeMessage = worker.onMessage(received => {
-			if (received.type === expected) response.resolve();
-			else if (received.type === "result" && !received.ok) response.reject(errorFromPayload(received.error));
-		});
-		const unsubscribeError = worker.onError(error => response.reject(error));
-		try {
-			await withTimeout(response.promise, timeoutMs, failureMessage);
-		} finally {
-			unsubscribeMessage();
-			unsubscribeError();
-		}
-	};
-
-	try {
-		const pong = waitFor("pong", "Computer worker smoke ping timed out");
-		worker.send({ type: "ping", id: `computer-smoke-${Snowflake.next()}` });
-		await pong;
-		const closed = waitFor("closed", "Computer worker smoke close timed out");
-		worker.send({ type: "close" });
-		await closed;
-	} finally {
-		await worker.terminate();
-	}
 }

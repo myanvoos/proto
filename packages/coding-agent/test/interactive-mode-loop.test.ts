@@ -58,7 +58,6 @@ describe("InteractiveMode loop auto-submit", () => {
 		}
 		await pendingInput;
 		pendingInput = undefined;
-		mode.vibeModeEnabled = false;
 		Reflect.deleteProperty(session, "isCompacting");
 		Reflect.deleteProperty(session, "isStreaming");
 		Reflect.deleteProperty(session, "hasPostPromptWork");
@@ -154,26 +153,6 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		expect(resolved).toHaveLength(1);
 		expect(resolved[0].text).toBe("deliver this");
-	});
-
-	it("disables reset loops when vibe blocks the session transition", async () => {
-		vi.useFakeTimers();
-		settings.set("loop.mode", "reset");
-		mode.vibeModeEnabled = true;
-		mode.loopModeEnabled = true;
-		mode.loopPrompt = "do not resubmit";
-		const showStatus = vi.spyOn(mode, "showStatus");
-		const resolved: SubmittedUserInput[] = [];
-		pendingInput = mode.getUserInput();
-		void pendingInput.then(input => resolved.push(input));
-
-		vi.advanceTimersByTime(800);
-		await flushMicrotasks();
-
-		expect(resolved).toHaveLength(0);
-		expect(mode.loopModeEnabled).toBe(false);
-		expect(mode.loopPrompt).toBeUndefined();
-		expect(showStatus).toHaveBeenCalledWith("Exit vibe mode before using reset loops. Loop mode disabled.");
 	});
 
 	it("reports waiting, running, paused, resumed, and disabled loop states", async () => {

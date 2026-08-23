@@ -29,8 +29,8 @@ import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
-import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
+import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
 import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
@@ -47,10 +47,10 @@ import { ComputerTool } from "./computer";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
+import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
-import { HubTool, isIrcEnabled } from "./hub";
 import { InspectImageTool } from "./inspect-image";
 import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
@@ -58,6 +58,13 @@ import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
+import {
+	OrchestrateKillTool,
+	OrchestrateListTool,
+	OrchestrateSendTool,
+	OrchestrateSpawnTool,
+	OrchestrateWaitTool,
+} from "./orchestrate";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
@@ -87,10 +94,10 @@ export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
 export * from "./file-write-fallback";
+export * from "./fleet";
 export * from "./gh";
 export * from "./glob";
 export * from "./grep";
-export * from "./hub";
 export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./learn";
@@ -99,6 +106,7 @@ export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
+export * from "./orchestrate";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
@@ -107,7 +115,6 @@ export * from "./security-scan";
 export * from "./think";
 export * from "./todo";
 export * from "./tts";
-export * from "./vibe";
 export * from "./write";
 export * from "./xdev";
 export * from "./yield";
@@ -165,13 +172,6 @@ export interface ToolSession {
 	canPromptUser?: boolean;
 	/** Whether this session has begun disposal. */
 	isDisposed?: () => boolean;
-	/**
-	 * Suppress the spawn specialization/coordination advisory appended to `task`
-	 * results. Set by internal/programmatic callers (e.g. the commit agent's
-	 * file-analysis fan-out) whose results are consumed by code — not by a model
-	 * orchestrating further spawns — so the nudge would only be noise.
-	 */
-	suppressSpawnAdvisory?: boolean;
 	/** Optional fetch implementation injected into the URL read pipeline (tests, proxies). Defaults to global fetch. */
 	fetch?: FetchImpl;
 	/** Provider credential resolver forwarded unchanged to restricted child sessions. */
@@ -232,7 +232,7 @@ export interface ToolSession {
 	 * required yield tool). Suppresses automatic tool-set expansion.
 	 */
 	restrictToolNames?: boolean;
-	/** Task recursion depth (0 = top-level, 1 = first child, etc.) */
+	/** Worker recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
@@ -445,8 +445,12 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	computer: s => new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
-	task: s => TaskTool.create(s),
-	hub: s => new HubTool(s),
+	orchestrate_spawn: OrchestrateSpawnTool.create,
+	orchestrate_send: s => new OrchestrateSendTool(s),
+	orchestrate_wait: s => new OrchestrateWaitTool(s),
+	orchestrate_kill: s => new OrchestrateKillTool(s),
+	orchestrate_list: s => new OrchestrateListTool(s),
+	fleet: s => new FleetTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
@@ -634,7 +638,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "hub") {
+		if (name === "fleet") {
 			return (
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
 			);
@@ -655,8 +659,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
 			);
 		}
-		if (name === "task") {
-			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);
+		if (name.startsWith("orchestrate_")) {
+			const depth = session.taskDepth ?? 0;
+			if (depth === 0) return true;
+			return (
+				resolveSpawnPolicy(session.getSessionSpawns()).enabled &&
+				canSpawnAtDepth(session.settings.get("orchestrator.maxRecursionDepth") ?? 2, depth)
+			);
 		}
 		return true;
 	};

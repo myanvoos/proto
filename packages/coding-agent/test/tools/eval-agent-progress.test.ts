@@ -58,7 +58,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		const event: EvalStatusEvent = {
 			op: "agent",
 			id: "0-Scout",
-			agent: "task",
+			agent: "worker",
 			status: "running",
 			currentTool: "read",
 			currentToolArgs: "config.ts",
@@ -94,7 +94,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		const event: EvalStatusEvent = {
 			op: "agent",
 			id: "0-Scout",
-			agent: "task",
+			agent: "worker",
 			status: "completed",
 			toolCount: 7,
 			contextTokens: 8000,
@@ -116,9 +116,9 @@ describe("eval renderer: agent() progress below the cell box", () => {
 
 	it("renders one line per subagent for a parallel fan-out", () => {
 		const events: EvalStatusEvent[] = [
-			{ op: "agent", id: "0-Alpha", agent: "task", status: "running", lastIntent: "scanning" },
-			{ op: "agent", id: "1-Beta", agent: "task", status: "completed", toolCount: 3, durationMs: 900 },
-			{ op: "agent", id: "2-Gamma", agent: "task", status: "running", currentTool: "search" },
+			{ op: "agent", id: "0-Alpha", agent: "worker", status: "running", lastIntent: "scanning" },
+			{ op: "agent", id: "1-Beta", agent: "worker", status: "completed", toolCount: 3, durationMs: 900 },
+			{ op: "agent", id: "2-Gamma", agent: "worker", status: "running", currentTool: "search" },
 		];
 
 		const lines = render(events);
@@ -131,7 +131,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 	it("still folds non-agent status events into the box Status section", () => {
 		const events: EvalStatusEvent[] = [
 			{ op: "read", path: "/tmp/file.ts", chars: 1200 },
-			{ op: "agent", id: "0-Scout", agent: "task", status: "running", lastIntent: "thinking" },
+			{ op: "agent", id: "0-Scout", agent: "worker", status: "running", lastIntent: "thinking" },
 		];
 
 		const lines = render(events);

@@ -46,7 +46,7 @@ async function persistAgentTombstone(sessionFile: string): Promise<void> {
 }
 
 /**
- * Builds a reviver for a `parked` ref restored from disk (Agent Hub scan,
+ * Builds a reviver for a `parked` ref restored from disk (Agent Fleet scan,
  * or a resumed process) that carries a sessionFile but no in-memory
  * adoption. Returns undefined when the ref cannot be faithfully rebuilt (no
  * persisted session contract, or its workspace is gone). Injected from the
@@ -137,7 +137,7 @@ export class AgentLifecycleManager {
 
 	/**
 	 * Install the factory used to cold-revive `parked` refs restored from disk
-	 * (Agent Hub scan or a resumed process) — they carry a sessionFile
+	 * (Agent Fleet scan or a resumed process) — they carry a sessionFile
 	 * but no adoption. Set by the top-level session, which owns the ambient deps
 	 * (auth, models, MCP, artifacts) the factory needs at revive time.
 	 */
@@ -409,7 +409,7 @@ export class AgentLifecycleManager {
 	 * By default the ref is unregistered (teardown / one-shot removal). Pass
 	 * `tombstone: true` for an explicit kill: the ref is kept registered as a
 	 * terminal `aborted` row (session detached) instead of being removed, so a
-	 * later persisted-subagent scan (e.g. Agent Hub reopen) skips it via its
+	 * later persisted-subagent scan (e.g. Agent Fleet reopen) skips it via its
 	 * `if (!registry.get(id))` guard rather than re-adopting the surviving
 	 * on-disk transcript as a fresh `parked` row. Mirrors
 	 * `finalizeSubagentLifecycle`'s genuine-kill path.

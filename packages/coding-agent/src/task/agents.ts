@@ -13,7 +13,7 @@ import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
-import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import workerMd from "../prompts/agents/worker.md" with { type: "text" };
 
 import type { AgentDefinition, AgentSource } from "./types";
 
@@ -24,7 +24,6 @@ interface AgentFrontmatter {
 	spawns?: string;
 	model?: string | string[];
 	thinkingLevel?: string;
-	blocking?: boolean;
 	prewalk?: boolean | string;
 	advisor?: boolean | string;
 }
@@ -48,24 +47,24 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "security-reviewer.md", template: securityReviewerMd },
 	{ fileName: "librarian.md", template: librarianMd },
 	{
-		fileName: "task.md",
+		fileName: "worker.md",
 		frontmatter: {
-			name: "task",
-			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
+			name: "worker",
+			description: "General-purpose worker with full capabilities for delegated multi-step tasks",
 			spawns: "*",
-			model: "@task",
+			model: "@worker",
 		},
-		template: taskMd,
+		template: workerMd,
 	},
 	{
-		fileName: "sonic.md",
+		fileName: "lightbot.md",
 		frontmatter: {
-			name: "sonic",
-			description: "Low-reasoning agent for strictly mechanical updates or data collection only",
+			name: "lightbot",
+			description: "Low-reasoning fast agent for strictly mechanical updates or data collection only",
 			model: "@smol",
 			thinkingLevel: Effort.Medium,
 		},
-		template: taskMd,
+		template: workerMd,
 	},
 ];
 
@@ -160,6 +159,3 @@ export function getBundledAgentsMap(): Map<string, AgentDefinition> {
 export function clearBundledAgentsCache(): void {
 	bundledAgentsCache = null;
 }
-
-// Re-export for backward compatibility
-export const BUNDLED_AGENTS = loadBundledAgents;

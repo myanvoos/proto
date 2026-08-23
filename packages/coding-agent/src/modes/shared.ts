@@ -19,7 +19,7 @@ export function sanitizeStatusText(text: string): string {
 // Tab Bar Theme
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Shared tab bar theme used by fullscreen overlays (settings, agent hub). */
+/** Shared tab bar theme used by fullscreen overlays (settings, agent fleet). */
 export function getTabBarTheme(): TabBarTheme {
 	return {
 		label: (text: string) => theme.bold(theme.fg("accent", text)),

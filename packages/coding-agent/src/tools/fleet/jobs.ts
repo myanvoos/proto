@@ -1,5 +1,5 @@
 /**
- * Hub jobs half — lifecycle control for async background jobs (bash scripts,
+ * Fleet jobs half — lifecycle control for async background jobs (bash scripts,
  * subagents) owned by the calling agent: wait/cancel/snapshot plus the
  * running-agents roster for activity with no job entry.
  */
@@ -26,7 +26,7 @@ import {
 	type ToolUIColor,
 	type ToolUIStatus,
 } from "../render-utils";
-import type { AgentActivitySnapshot, CancelOutcome, CoordinationDetails, HubRenderArgs, JobSnapshot } from "./types";
+import type { AgentActivitySnapshot, CancelOutcome, CoordinationDetails, FleetRenderArgs, JobSnapshot } from "./types";
 
 const WAIT_DURATION_MS: Record<string, number> = {
 	"5s": 5_000,
@@ -39,7 +39,7 @@ const WAIT_DURATION_MS: Record<string, number> = {
 /**
  * A wait snapshot where every watched job is still running and nothing was
  * cancelled — pure "still waiting" noise once a newer wait exists. The TUI
- * keeps such a block un-finalized (displaceable) so a follow-up `hub` call
+ * keeps such a block un-finalized (displaceable) so a follow-up `fleet` call
  * replaces it instead of stacking another waiting frame in the transcript.
  */
 export function isWaitingPollDetails(details: unknown): boolean {
@@ -66,7 +66,7 @@ export function resolvePollWindow(
 /**
  * Resolve a list of job ids to job records visible to the calling agent.
  * Drops missing ids and ids owned by other agents, so cross-agent inspection
- * via the hub is impossible.
+ * via the fleet is impossible.
  */
 export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: string | undefined): AsyncJob[] {
 	const out: AsyncJob[] = [];
@@ -81,7 +81,7 @@ export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: st
 
 /**
  * Running subagents from the registry that are not covered by one of the
- * caller's running jobs. Agents woken via hub messaging (idle wake / park
+ * caller's running jobs. Agents woken via fleet messaging (idle wake / park
  * revival) and spawns owned by another agent run with no AsyncJobManager
  * entry, yet the UI's agent badge counts them — a snapshot must account for
  * that activity instead of implying the system is quiet. Existence is
@@ -100,7 +100,7 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 	const selfId = session.getAgentId?.() ?? undefined;
 	// Cover = the caller's RUNNING jobs only. A settled job still sitting in
 	// delivery retention must not hide its agent if that agent was re-woken
-	// (e.g. via a hub message) and is running again without a job.
+	// (e.g. via a fleet message) and is running again without a job.
 	const covered = new Set<string>();
 	const manager = session.asyncJobManager;
 	if (manager) {
@@ -134,10 +134,10 @@ function describeAgents(agents: AgentActivitySnapshot[]): string[] {
 		const stale = agent.live ? "" : " — no turn in flight (stale registration?)";
 		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}${stale}`);
 	}
-	lines.push("", "These agents have no job entry; message them via `hub` send, transcripts at `history://<id>`.");
+	lines.push("", "These agents have no job entry; message peers with `fleet` send, transcripts at `history://<id>`.");
 	if (agents.some(agent => !agent.live)) {
 		lines.push(
-			"An agent with no turn in flight cannot answer a message and never satisfies a bare `wait`; clear it with `hub` cancel.",
+			"An agent with no turn in flight cannot answer a message and never satisfies a bare `wait`; clear it with `fleet` cancel.",
 		);
 	}
 	return lines;
@@ -160,7 +160,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 		const current = session.asyncJobManager?.getJob(j.id);
 		const latest = current ?? j;
 		let resolvedModel: string | undefined;
-		if (latest.type === "task") {
+		if (latest.type === "worker") {
 			const progressValue = latest.latestDetails?.progress;
 			if (Array.isArray(progressValue)) {
 				let progressRecord: Record<string, unknown> | undefined;
@@ -275,9 +275,9 @@ export function buildJobResult(
 /** `wait` with explicit ids that matched nothing visible: correct the caller, surface live agents. */
 export function noMatchingJobsResult(session: ToolSession, ids: string[]): AgentToolResult<CoordinationDetails> {
 	// Zero pollable jobs is not necessarily "nothing running": agents woken
-	// via hub messages or owned by another agent run with no job entry.
+	// via fleet messages or owned by another agent run with no job entry.
 	// Report them so the snapshot matches the UI's running-agent count
-	// (task job ids are agent ids, so a stale id often names one).
+	// (worker job ids are agent ids, so a stale id often names one).
 	const agents = runningAgentsOutsideJobs(session);
 	const lines: string[] = [`No matching jobs found for IDs: ${ids.join(", ")}`];
 	const registry = session.agentRegistry;
@@ -286,7 +286,7 @@ export function noMatchingJobsResult(session: ToolSession, ids: string[]): Agent
 		if (!ref) continue;
 		lines.push(
 			ref.status === "running"
-				? `- \`${id}\` is a running agent with no job entry — message it via \`hub\` send; transcript at history://${id}`
+				? `- \`${id}\` is a running agent with no job entry — message it via \`fleet\` send; transcript at history://${id}`
 				: `- \`${id}\` is a ${ref.status} agent (its job is gone) — transcript at history://${id}`,
 		);
 	}
@@ -428,8 +428,8 @@ interface JobRenderArgs {
 	list?: boolean;
 }
 
-/** Hub args → legacy job-renderer arg shape, preserving the exact frame titles. */
-function toJobRenderArgs(args: HubRenderArgs | undefined): JobRenderArgs | undefined {
+/** Fleet args → legacy job-renderer arg shape, preserving the exact frame titles. */
+function toJobRenderArgs(args: FleetRenderArgs | undefined): JobRenderArgs | undefined {
 	if (!args) return undefined;
 	switch (args.op) {
 		case "wait":
@@ -479,13 +479,13 @@ function statusToColor(status: JobSnapshot["status"]): ToolUIColor {
 }
 
 /**
- * Task job results are delivered in the model-facing `<task-result>` envelope
- * (prompts/tools/task-summary.md) so the parent agent can parse status and the
+ * Worker job results are delivered in the model-facing `<worker-result>` envelope
+ * (prompts/tools/worker-summary.md) so the parent agent can parse status and the
  * `agent://` pointer. The wrapper markup is noise to a human — preview the
  * inner <output>/<preview> body instead.
  */
 function stripTaskResultEnvelope(text: string): string {
-	if (!text.startsWith("<task-result")) return text;
+	if (!text.startsWith("<worker-result")) return text;
 	const body = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text)?.[2];
 	return body?.trim() || text;
 }
@@ -518,7 +518,7 @@ function describeTarget(args: JobRenderArgs | undefined): string {
 }
 
 /** Pending-call frame for job ops (wait/cancel/jobs). */
-export function jobsRenderCall(args: HubRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
+export function jobsRenderCall(args: FleetRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 	const text = renderStatusLine({ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || "Job" }, uiTheme);
 	return new Text(text, 0, 0);
 }
@@ -528,7 +528,7 @@ export function jobsRenderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
 	options: RenderResultOptions,
 	uiTheme: Theme,
-	hubArgs?: HubRenderArgs,
+	hubArgs?: FleetRenderArgs,
 ): Component {
 	const args = toJobRenderArgs(hubArgs);
 	let jobs = result.details?.jobs ?? [];
@@ -629,7 +629,7 @@ export function jobsRenderResult(
 							job.status === "running" ? options.spinnerFrame : undefined,
 						);
 						const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
-						// Task jobs label themselves with their agent id, which is also
+						// Worker jobs label themselves with their agent id, which is also
 						// the job id — drop the id column instead of stuttering it twice.
 						const idPart = job.label.trim() === job.id ? "" : ` ${uiTheme.fg("muted", job.id)}`;
 						const rawLabelLines = (job.label || "(no label)").split(/\r?\n/);
@@ -643,10 +643,10 @@ export function jobsRenderResult(
 						}
 						const durationText = uiTheme.fg("dim", formatDuration(job.durationMs));
 						const modelText =
-							job.type === "task" &&
+							job.type === "worker" &&
 							typeof job.resolvedModel === "string" &&
 							job.resolvedModel.trim() &&
-							settings.get("task.showResolvedModelBadge")
+							settings.get("orchestrator.showResolvedModelBadge")
 								? `${uiTheme.sep.dot}${uiTheme.fg(
 										"dim",
 										truncateToWidth(

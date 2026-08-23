@@ -10,7 +10,6 @@ function createHarness(
 ) {
 	const oldImage: ImageContent = { type: "image", data: "b2xk", mimeType: "image/png" };
 	const handlePlanModeCommand = vi.fn(async (_prompt?: string, _input?: Attachments) => true);
-	const handleVibeModeCommand = vi.fn(async (_prompt?: string, _input?: Attachments) => true);
 	const handleGoalModeCommand = vi.fn(async (_prompt?: string, _input?: Attachments) => true);
 	const handleGuidedGoalCommand = vi.fn(async (_prompt?: string, _input?: Attachments) => true);
 	let editorText = "";
@@ -40,7 +39,6 @@ function createHarness(
 		editor,
 		planModeEnabled: false,
 		planModePaused: false,
-		vibeModeEnabled: false,
 		goalModeEnabled: false,
 		goalModePaused: false,
 		skillCommands: new Map(),
@@ -68,7 +66,6 @@ function createHarness(
 		showWarning: vi.fn(),
 		showError,
 		handlePlanModeCommand,
-		handleVibeModeCommand,
 		handleGoalModeCommand,
 		handleGuidedGoalCommand,
 	} as unknown as InteractiveModeContext;
@@ -78,7 +75,6 @@ function createHarness(
 		editor,
 		showError,
 		handlePlanModeCommand,
-		handleVibeModeCommand,
 		handleGoalModeCommand,
 		handleGuidedGoalCommand,
 	};
@@ -111,9 +107,9 @@ describe("mode command attachments", () => {
 	it("preserves source links when an extension leaves attachments unchanged", async () => {
 		const harness = createHarness({});
 
-		await harness.editor.onSubmit?.("/vibe inspect this [Image #1]");
+		await harness.editor.onSubmit?.("/plan inspect this [Image #1]");
 
-		expect(harness.handleVibeModeCommand).toHaveBeenCalledWith(
+		expect(harness.handlePlanModeCommand).toHaveBeenCalledWith(
 			"inspect this [Image #1]",
 			expect.objectContaining({ imageLinks: ["file:///old.png"] }),
 		);
@@ -179,21 +175,21 @@ describe("mode command attachments", () => {
 		expect(failedPlan.editor.pendingImageLinks).toEqual(["file:///old.png"]);
 		expect(failedPlan.showError).toHaveBeenCalledWith("plan setup failed");
 
-		const failedVibe = createHarness({});
+		const failedMode = createHarness({});
 		const laterImage: ImageContent = { type: "image", data: "bmV3", mimeType: "image/png" };
-		failedVibe.handleVibeModeCommand.mockImplementationOnce(async () => {
-			failedVibe.editor.setText("later draft");
-			failedVibe.editor.pendingImages = [laterImage];
-			failedVibe.editor.pendingImageLinks = ["file:///later.png"];
-			throw new Error("vibe setup failed");
+		failedMode.handlePlanModeCommand.mockImplementationOnce(async () => {
+			failedMode.editor.setText("later draft");
+			failedMode.editor.pendingImages = [laterImage];
+			failedMode.editor.pendingImageLinks = ["file:///later.png"];
+			throw new Error("mode setup failed");
 		});
-		const vibeSubmission = failedVibe.editor.onSubmit?.("/vibe inspect this [Image #1]");
-		if (!vibeSubmission) throw new Error("expected editor submit handler");
+		const modeSubmission = failedMode.editor.onSubmit?.("/plan inspect this [Image #1]");
+		if (!modeSubmission) throw new Error("expected editor submit handler");
 
-		await vibeSubmission;
-		expect(failedVibe.editor.getText()).toBe("later draft");
-		expect(failedVibe.editor.pendingImages).toEqual([laterImage]);
-		expect(failedVibe.editor.pendingImageLinks).toEqual(["file:///later.png"]);
-		expect(failedVibe.showError).toHaveBeenCalledWith("vibe setup failed");
+		await modeSubmission;
+		expect(failedMode.editor.getText()).toBe("later draft");
+		expect(failedMode.editor.pendingImages).toEqual([laterImage]);
+		expect(failedMode.editor.pendingImageLinks).toEqual(["file:///later.png"]);
+		expect(failedMode.showError).toHaveBeenCalledWith("mode setup failed");
 	});
 });

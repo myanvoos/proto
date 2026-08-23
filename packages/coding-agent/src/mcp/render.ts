@@ -2,7 +2,7 @@
  * TUI rendering for MCP tools.
  *
  * Provides structured display of MCP tool calls and results,
- * showing args and output in JSON tree format similar to task tool.
+ * showing args and output in JSON tree format similar to structured tools.
  */
 import { type Component, Markdown } from "@oh-my-pi/pi-tui";
 import { settings } from "../config/settings";

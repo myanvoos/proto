@@ -701,7 +701,7 @@ export class TranscriptContainer
 		// session exits first). Left unpinned, its rows commit only when the
 		// window scrolls past them; the seal pass above then finalizes it and
 		// the next matching call stacks a fresh card instead of retracting.
-		// Tail pins and non-displaceable pins (vibe_wait wall, live task,
+		// Tail pins and non-displaceable pins (orchestrate_wait wall,
 		// pending hub wait) keep the hard ceiling: their self-replacing
 		// frames stay out of history entirely.
 		if (pinCandidates) {

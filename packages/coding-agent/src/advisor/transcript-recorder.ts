@@ -8,7 +8,7 @@ import { SessionManager } from "../session/session-manager";
 
 /**
  * Reserved transcript stem for advisor session files. Chosen so it cannot
- * collide with a task subagent's `<id>.jsonl` (task ids are reserved against
+ * collide with a worker's `<id>.jsonl` (task ids are reserved against
  * this exact stem in {@link AgentOutputManager}).
  */
 export const ADVISOR_TRANSCRIPT_STEM = "__advisor";
@@ -95,7 +95,7 @@ export async function loadAdvisorTranscriptCosts(sessionFile: string | undefined
  * artifacts dir (`<session>/__advisor.jsonl`, `<session>/<SubId>/__advisor.jsonl`
  * for subagent advisors). That single file gives the advisor model proper usage
  * attribution in `omp stats` (the stats parser scans the session dir
- * recursively) and a read-only transcript in the Agent Hub, without making the
+ * recursively) and a read-only transcript in the Agent Fleet, without making the
  * advisor a registered, messageable peer.
  *
  * The target is derived from the *session file* (`getSessionFile()`), never
@@ -140,7 +140,7 @@ export class AdvisorTranscriptRecorder {
 
 	/**
 	 * Persist one finalized advisor message. Assistant turns carry the usage the
-	 * stats parser reads; tool results round out the Hub transcript; user deltas
+	 * stats parser reads; tool results round out the Fleet transcript; user deltas
 	 * (the advisor's "session update" prompts) are persisted but flagged
 	 * `synthetic`/agent-attributed so they never inflate user-message metrics.
 	 * Non-conversational message kinds are skipped.

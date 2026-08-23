@@ -247,20 +247,6 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(promptSpy).toHaveBeenCalledWith(text, { streamingBehavior: "steer", images });
 	});
 
-	it("steers vibe prompt attachments while streaming", async () => {
-		vi.spyOn(harness.session, "activateVibeTools").mockResolvedValue();
-		Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
-		const sendVibeModeContext = vi.spyOn(harness.session, "sendVibeModeContext").mockResolvedValue();
-		const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
-		const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
-		const text = "[Image #1, 10x10] Delegate this";
-
-		expect(await harness.mode.handleVibeModeCommand(text, { images, imageLinks: ["file:///shot.png"] })).toBe(true);
-
-		expect(sendVibeModeContext).toHaveBeenCalledWith({ deliverAs: "steer" });
-		expect(promptSpy).toHaveBeenCalledWith(text, { streamingBehavior: "steer", images });
-	});
-
 	const attachmentCases: Array<{
 		name: string;
 		text: string;
@@ -285,15 +271,6 @@ describe("InteractiveMode goal mode integration", () => {
 			text: "[Image #1, 10x10] plan this",
 			submit: (mode: InteractiveMode, input: Pick<SubmittedUserInput, "images" | "imageLinks">) =>
 				mode.handlePlanModeCommand("[Image #1, 10x10] plan this", input),
-		},
-		{
-			name: "/vibe",
-			text: "[Image #1, 10x10] delegate this",
-			prepare: async mode => {
-				vi.spyOn(mode.session, "activateVibeTools").mockResolvedValue();
-			},
-			submit: (mode: InteractiveMode, input: Pick<SubmittedUserInput, "images" | "imageLinks">) =>
-				mode.handleVibeModeCommand("[Image #1, 10x10] delegate this", input),
 		},
 	];
 

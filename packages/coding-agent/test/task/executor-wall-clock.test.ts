@@ -11,7 +11,7 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
 /**
- * Contract: when `task.maxRuntimeMs` is set, a subagent whose inference call
+ * Contract: when `orchestrator.maxRuntimeMs` is set, a subagent whose inference call
  * never resolves (provider stream hang the watchdog couldn't catch) MUST be
  * aborted within ~maxRuntimeMs and surface a clear "runtime limit exceeded"
  * reason — not a generic "Cancelled by caller" — so on-call engineers don't
@@ -72,14 +72,14 @@ function mockCreateAgentSession(session: AgentSession) {
 	} satisfies CreateAgentSessionResult);
 }
 
-describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
+describe("runSubprocess wall clock (orchestrator.maxRuntimeMs)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		AgentRegistry.resetGlobalForTests();
 	});
 
 	const baseAgent: AgentDefinition = {
-		name: "task",
+		name: "worker",
 		description: "test",
 		systemPrompt: "test",
 		source: "bundled",
@@ -96,7 +96,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 	};
 
 	it("aborts a stalled subagent and surfaces a runtime-limit reason", async () => {
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 50 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 50 });
 		const handle = createHangingSession();
 		mockCreateAgentSession(handle.session);
 
@@ -111,7 +111,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		expect(result.aborted).toBe(true);
 		expect(result.exitCode).toBe(1);
 		expect(result.abortReason).toContain("runtime limit exceeded");
-		expect(result.abortReason).toContain("task.maxRuntimeMs=50");
+		expect(result.abortReason).toContain("orchestrator.maxRuntimeMs=50");
 		expect(handle.abortCalls()).toBeGreaterThanOrEqual(1);
 		// Sanity: must finish in roughly the configured window (allow generous slack
 		// for CI; the contract is "doesn't hang for hours", not "exactly 50 ms").
@@ -121,7 +121,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 	it("does not abort early when the runtime budget is unlimited", async () => {
 		// Stub session resolves immediately to a no-op yield so we don't actually
 		// hang; we only need to assert that NO timeout fires when maxRuntimeMs=0.
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 0 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 0 });
 		const fastSession: Partial<AgentSession> = {
 			setIrcWakeTurnObserver: () => {},
 			subscribeRunState: () => () => {},
@@ -172,7 +172,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// timer fires while the executor is still doing async setup, well before
 		// it ever calls session.prompt(). The fix must observe abortSignal
 		// immediately before prompting and return the runtime-limit result.
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 30 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 30 });
 		const handle = createHangingSession();
 		let promptCalls = 0;
 		const originalPrompt = handle.session.prompt;
@@ -199,7 +199,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		expect(result.aborted).toBe(true);
 		expect(result.exitCode).toBe(1);
 		expect(result.abortReason).toContain("runtime limit exceeded");
-		expect(result.abortReason).toContain("task.maxRuntimeMs=30");
+		expect(result.abortReason).toContain("orchestrator.maxRuntimeMs=30");
 		// The whole point: we never reached session.prompt(), because the abort
 		// was observed before issuing the model call.
 		expect(promptCalls).toBe(0);
@@ -242,7 +242,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		const run = runSubprocess({
 			...baseOptions,
 			id: "late-generation",
-			settings: Settings.isolated({ "task.maxRuntimeMs": 0 }),
+			settings: Settings.isolated({ "orchestrator.maxRuntimeMs": 0 }),
 			signal: abortController.signal,
 		});
 		const creationOptions = await creationStarted.promise;
@@ -277,7 +277,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// the timer has already aborted). Without the fix, `hasYield=true` would
 		// make finalizeSubprocessOutput zero the exit code and `wasAborted`
 		// would resolve to false — silently masking the runtime-limit breach.
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 30 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 30 });
 		const { promise: hang, resolve: releaseHang } = Promise.withResolvers<void>();
 		let listenerRef: ((event: AgentSessionEvent) => void) | undefined;
 		let abortCount = 0;
@@ -339,7 +339,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 	});
 
 	it("commits a yield tool call before the soft request budget aborts the turn", async () => {
-		const settings = Settings.isolated({ "task.softRequestBudget": 1 });
+		const settings = Settings.isolated({ "orchestrator.softRequestBudget": 1 });
 		const firstAssistantMessage = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "finishing the task" }],
@@ -422,7 +422,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 	});
 
 	it("does not finalize rejected yield arguments after crossing the soft request budget", async () => {
-		const settings = Settings.isolated({ "task.softRequestBudget": 1 });
+		const settings = Settings.isolated({ "orchestrator.softRequestBudget": 1 });
 		const firstAssistantMessage = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "finishing the task" }],
@@ -562,7 +562,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 	});
 
 	it("resumes the hard budget guard after an incremental yield commits", async () => {
-		const settings = Settings.isolated({ "task.softRequestBudget": 1 });
+		const settings = Settings.isolated({ "orchestrator.softRequestBudget": 1 });
 		const firstAssistantMessage = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "still working" }],
@@ -679,7 +679,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// `singleResult.contextWindow` onto AgentProgress. This test pins the
 		// upstream contract: when an assistant message_end carries totalTokens,
 		// executor must surface it on SingleResult.contextTokens.
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 0 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 0 });
 		const fastSession: Partial<AgentSession> = {
 			setIrcWakeTurnObserver: () => {},
 			subscribeRunState: () => () => {},
@@ -741,7 +741,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// t~0. maxRuntimeMs=400 then fires while the budget abort's teardown is
 		// still in flight (abort() holds the run open past the deadline). The
 		// wall-clock timer must not rewrite the already-committed budget outcome.
-		const settings = Settings.isolated({ "task.softRequestBudget": 1, "task.maxRuntimeMs": 400 });
+		const settings = Settings.isolated({ "orchestrator.softRequestBudget": 1, "orchestrator.maxRuntimeMs": 400 });
 		const { promise: hang, resolve: releaseHang } = Promise.withResolvers<void>();
 		let listenerRef: ((event: AgentSessionEvent) => void) | undefined;
 		let abortCount = 0;
@@ -799,7 +799,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		// The child yields a full report at t~0, well inside the 400ms budget.
 		// Post-yield teardown then runs past the deadline; a timer that fires
 		// after the outcome is committed must be a no-op — the run succeeded.
-		const settings = Settings.isolated({ "task.maxRuntimeMs": 400 });
+		const settings = Settings.isolated({ "orchestrator.maxRuntimeMs": 400 });
 		let listenerRef: ((event: AgentSessionEvent) => void) | undefined;
 		let abortCount = 0;
 		const session: Partial<AgentSession> = {

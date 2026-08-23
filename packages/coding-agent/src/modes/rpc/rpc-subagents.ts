@@ -7,9 +7,9 @@ import {
 	type SubagentEventPayload,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
-	TASK_SUBAGENT_EVENT_CHANNEL,
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	WORKER_SUBAGENT_EVENT_CHANNEL,
+	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
+	WORKER_SUBAGENT_PROGRESS_CHANNEL,
 } from "../../task";
 import type { EventBus } from "../../utils/event-bus";
 import type {
@@ -115,13 +115,13 @@ export class RpcSubagentRegistry {
 	constructor(eventBus: EventBus, output: RpcSubagentOutput) {
 		this.#output = output;
 		this.#unsubscribers.push(
-			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+			eventBus.on(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				this.handleLifecycle(data as SubagentLifecyclePayload);
 			}),
-			eventBus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+			eventBus.on(WORKER_SUBAGENT_PROGRESS_CHANNEL, data => {
 				this.handleProgress(data as SubagentProgressPayload);
 			}),
-			eventBus.on(TASK_SUBAGENT_EVENT_CHANNEL, data => {
+			eventBus.on(WORKER_SUBAGENT_EVENT_CHANNEL, data => {
 				this.handleEvent(data as SubagentEventPayload);
 			}),
 		);

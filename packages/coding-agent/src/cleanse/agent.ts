@@ -100,7 +100,6 @@ export async function createCleanseAgentRuntime(options: {
 	const toolSession: ToolSession = {
 		cwd,
 		hasUI: false,
-		suppressSpawnAdvisory: true,
 		enableLsp: true,
 		enableIrc: true,
 		enableMCP: false,
@@ -110,7 +109,7 @@ export async function createCleanseAgentRuntime(options: {
 		getArtifactsDir: () => sessionManager.getArtifactsDir(),
 		getArtifactManager: () => sessionManager.getArtifactManager(),
 		getAgentId: () => MAIN_AGENT_ID,
-		getSessionSpawns: () => "sonic,task",
+		getSessionSpawns: () => "lightbot,worker",
 		getModelString: () => modelSelector,
 		getActiveModelString: () => modelSelector,
 		getActiveModel: () => resolved.model,
@@ -130,9 +129,9 @@ export async function createCleanseAgentRuntime(options: {
 			sessionManager.appendCustomEntry("cleanse_discovery", { request });
 			const result = await runStructuredSubagent({
 				session: toolSession,
-				invocationKind: "task",
+				invocationKind: "worker",
 				assignment: prompt.render(discoveryPrompt, { request }),
-				agent: "task",
+				agent: "worker",
 				model: modelSelector,
 				outputSchema: DISCOVERY_SCHEMA,
 				identity: { label: "CleanseDiscovery" },
@@ -164,9 +163,9 @@ export async function createCleanseAgentRuntime(options: {
 			try {
 				const result = await runStructuredSubagent({
 					session: toolSession,
-					invocationKind: "task",
+					invocationKind: "worker",
 					assignment: renderAssignment(assignment, context.peers, context.worker, context.checkers),
-					agent: "sonic",
+					agent: "lightbot",
 					model: modelSelector,
 					identity: { id: agentId, label: name },
 					index: assignment.index,

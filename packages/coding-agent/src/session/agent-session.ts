@@ -153,7 +153,6 @@ import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
-import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
@@ -174,7 +173,6 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 };
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
-import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -211,7 +209,6 @@ import type { InspectImageMode } from "../utils/inspect-image-mode";
 import { resumeCommand } from "../utils/resume-command";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
-import type { VibeModeState } from "../vibe/state";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import type {
 	AgentSessionConfig,
@@ -504,7 +501,6 @@ export class AgentSession {
 	#planModeState: PlanModeState | undefined;
 	/** Session-scoped `/vision` override; undefined = follow persisted `inspect_image.mode`. */
 	#inspectImageModeOverride: InspectImageMode | undefined;
-	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
@@ -1283,7 +1279,7 @@ export class AgentSession {
 		// Background-job completions / late diagnostics are pulled into the run at
 		// each step boundary as non-interrupting asides. Peer IRCs share the aside
 		// injection boundary, but also expose a non-consuming interrupt peek so
-		// `hub` waits can return early before the boundary drains them.
+		// `fleet` waits can return early before the boundary drains them.
 		this.agent.hasIrcInterrupts = () => this.#irc.hasInterrupts();
 		this.agent.setAsideMessageProvider(() => {
 			const thunks: AsideMessage[] = this.#irc.drainPending().map(record => () => record);
@@ -1324,13 +1320,13 @@ export class AgentSession {
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
-			createVibeTools: config.createVibeTools,
 			createComputerTool: config.createComputerTool,
 			createThinkTool: config.createThinkTool,
 			createInspectImageTool: config.createInspectImageTool,
 			builtInToolNames: config.builtInToolNames,
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
+			requiredToolNames: config.requiredToolNames,
 			ensureWriteRegistered: config.ensureWriteRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getMcpServerInstructions: config.getMcpServerInstructions,
@@ -1753,16 +1749,26 @@ export class AgentSession {
 		this.#planProposalHandler = handler ?? undefined;
 	}
 
-	#sessionBeforeSwitchReconciler: (() => Promise<void>) | undefined;
+	readonly #sessionBeforeSwitchReconcilers = new Set<() => Promise<void>>();
 
 	setSessionBeforeSwitchReconciler(reconciler: (() => Promise<void>) | null): void {
-		this.#sessionBeforeSwitchReconciler = reconciler ?? undefined;
+		if (reconciler) this.#sessionBeforeSwitchReconcilers.add(reconciler);
+		else this.#sessionBeforeSwitchReconcilers.clear();
 	}
 
-	#sessionSwitchReconciler: (() => Promise<void>) | undefined;
+	readonly #sessionSwitchReconcilers = new Set<() => Promise<void>>();
 
 	setSessionSwitchReconciler(reconciler: (() => Promise<void>) | null): void {
-		this.#sessionSwitchReconciler = reconciler ?? undefined;
+		if (reconciler) this.#sessionSwitchReconcilers.add(reconciler);
+		else this.#sessionSwitchReconcilers.clear();
+	}
+
+	async #beforeSessionSwitch(): Promise<void> {
+		for (const reconcile of this.#sessionBeforeSwitchReconcilers) await reconcile();
+	}
+
+	async #afterSessionSwitch(): Promise<void> {
+		for (const reconcile of this.#sessionSwitchReconcilers) await reconcile();
 	}
 
 	/** Provider-scoped mutable state store for transport/session caches. */
@@ -1882,7 +1888,7 @@ export class AgentSession {
 	 * so a settle observed now is a scheduling pause rather than a terminal stop:
 	 * stop-time passes (todo reminder, session_stop hooks) defer to the settle
 	 * reached once the session is fully idle. Suppressed deliveries
-	 * (acknowledged, or watched by an in-flight `hub` wait) never wake the loop,
+	 * (acknowledged, or watched by an in-flight `fleet` wait) never wake the loop,
 	 * so they don't count.
 	 */
 	#hasPendingAsyncWake(): boolean {
@@ -4625,21 +4631,6 @@ export class AgentSession {
 		return this.#tools.getAllToolInfos();
 	}
 
-	/** Installs and activates the ephemeral vibe tool set. */
-	activateVibeTools(baseToolNames: string[]): Promise<void> {
-		return this.#tools.activateVibeTools(baseToolNames);
-	}
-
-	/** Uninstalls vibe tools and activates the replacement set. */
-	deactivateVibeTools(nextToolNames: string[]): Promise<void> {
-		return this.#tools.deactivateVibeTools(nextToolNames);
-	}
-
-	/** Removes vibe tools without restoring a source-session snapshot. */
-	removeVibeToolsPreservingActive(): Promise<void> {
-		return this.#tools.removeVibeToolsPreservingActive();
-	}
-
 	#resolveActiveEditMode(): EditMode {
 		return this.#tools.resolveActiveEditMode();
 	}
@@ -4982,20 +4973,6 @@ export class AgentSession {
 		this.#goalModeState = state;
 	}
 
-	getVibeModeState(): VibeModeState | undefined {
-		return this.#vibeModeState;
-	}
-
-	setVibeModeState(state: VibeModeState | undefined): void {
-		this.#vibeModeState = state;
-	}
-
-	#assertVibeSessionTransitionAllowed(action: string): void {
-		if (this.#vibeModeState?.enabled) {
-			throw new Error(`Cannot ${action} while vibe mode is active. Exit vibe mode first.`);
-		}
-	}
-
 	get goalRuntime(): GoalRuntime {
 		return this.#goalRuntime;
 	}
@@ -5128,21 +5105,6 @@ export class AgentSession {
 		);
 	}
 
-	async sendVibeModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
-		const message = this.#buildVibeModeMessage();
-		if (!message) return;
-		await this.sendCustomMessage(
-			{
-				customType: message.customType,
-				content: message.content,
-				display: message.display,
-				details: message.details,
-				attribution: message.attribution,
-			},
-			options ? { deliverAs: options.deliverAs } : undefined,
-		);
-	}
-
 	resolveRoleModel(role: string): Model | undefined {
 		return this.#models.resolveRoleModel(role);
 	}
@@ -5233,7 +5195,7 @@ export class AgentSession {
 	}
 
 	#isScoutAvailable(): boolean {
-		const disabledAgents = this.settings.get("task.disabledAgents") as string[] | undefined;
+		const disabledAgents = this.settings.get("orchestrator.disabledAgents") as string[] | undefined;
 		return this.#scoutAllowedBySpawnPolicy && !disabledAgents?.includes("scout");
 	}
 
@@ -5252,7 +5214,7 @@ export class AgentSession {
 
 		const planExists = fs.existsSync(resolvedPlanPath);
 		// Capability gates, not the visible surface: a Code Mode partition keeps
-		// `task` and `ask` callable through the eval bridge after demoting them.
+		// orchestration and `ask` callable through the eval bridge after demoting them.
 		const capableToolNames = this.getEnabledToolNames();
 		const content = prompt.render(planModeActivePrompt, {
 			planFilePath: displayPlanPath,
@@ -5261,7 +5223,7 @@ export class AgentSession {
 			writeToolName: "write",
 			editToolName: "edit",
 			askAvailable: capableToolNames.includes("ask"),
-			taskAvailable: capableToolNames.includes("task"),
+			workerAvailable: capableToolNames.includes("orchestrate_spawn"),
 			isHashlineEditMode: this.#resolveActiveEditMode() === "hashline",
 			reentry: state.reentry ?? false,
 			iterative: state.workflow === "iterative",
@@ -5286,20 +5248,6 @@ export class AgentSession {
 			role: "custom",
 			customType: "goal-mode-context",
 			content: prompt.render(goalModeContextPrompt, { goalContext: content, todoContext }),
-			display: false,
-			attribution: "agent",
-			timestamp: Date.now(),
-		};
-	}
-
-	#buildVibeModeMessage(): CustomMessage | null {
-		if (!this.#vibeModeState?.enabled) return null;
-		return {
-			role: "custom",
-			customType: "vibe-mode-context",
-			content: prompt.render(vibeModeActivePrompt, {
-				todoAvailable: this.getActiveToolNames().includes("todo"),
-			}),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -5362,7 +5310,7 @@ export class AgentSession {
 		return this.#providerBoundary.normalizeAgentMessageImages(message);
 	}
 
-	#magicKeywordEnabled(keyword: "orchestrate" | "ultrathink" | "workflow"): boolean {
+	#magicKeywordEnabled(keyword: "ultrathink" | "workflow"): boolean {
 		return this.settings.get("magicKeywords.enabled") && this.settings.get(`magicKeywords.${keyword}`);
 	}
 
@@ -5381,29 +5329,13 @@ export class AgentSession {
 				timestamp,
 			});
 		}
-		if (this.#magicKeywordEnabled("orchestrate") && containsOrchestrate(text)) {
-			const enabledToolNames = this.getEnabledToolNames();
-			// The contract is entirely about `task` subagent dispatch; without the
-			// task tool the notice would demand an unavailable capability.
-			if (enabledToolNames.includes("task")) {
-				keywordNotices.push({
-					role: "custom",
-					customType: "orchestrate-notice",
-					content: renderOrchestrateNotice({ tools: enabledToolNames }),
-					display: false,
-					attribution: "user",
-					timestamp,
-				});
-			}
-		}
 		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
 			const enabledToolNames = this.getEnabledToolNames();
-			if (enabledToolNames.includes("task") && enabledToolNames.includes("eval")) {
+			if (enabledToolNames.includes("orchestrate_spawn") && enabledToolNames.includes("eval")) {
 				keywordNotices.push({
 					role: "custom",
 					customType: "workflow-notice",
 					content: renderWorkflowNotice({
-						taskBatch: this.settings.get("task.batch"),
 						scoutAvailable: this.#isScoutAvailable(),
 					}),
 					display: false,
@@ -5469,7 +5401,7 @@ export class AgentSession {
 		// Expand file-based prompt templates if requested
 		const expandedText = expandPromptTemplates ? expandPromptTemplate(text, [...this.#promptTemplates]) : text;
 
-		// Magic keywords ("ultrathink", "orchestrate"): append hidden system notices after the
+		// Magic keywords append hidden system notices after the
 		// user's message that steer this turn. User-authored prompts only — synthetic /
 		// agent-initiated turns never trigger them.
 		const keywordNotices = options?.synthetic ? [] : this.#createMagicKeywordNotices(expandedText);
@@ -5517,8 +5449,6 @@ export class AgentSession {
 				: undefined;
 		const eagerTodoPrelude =
 			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTodoPrelude(expandedText) : undefined;
-		const eagerTaskPrelude =
-			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTaskPrelude(expandedText) : undefined;
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -5550,9 +5480,6 @@ export class AgentSession {
 				});
 			}
 			preludeMessages.push(eagerTodoPrelude.message);
-		}
-		if (eagerTaskPrelude) {
-			preludeMessages.push(eagerTaskPrelude);
 		}
 
 		let dispatched = false;
@@ -5725,10 +5652,6 @@ export class AgentSession {
 			const goalModeMessage = this.#buildGoalModeMessage();
 			if (goalModeMessage) {
 				messages.push(goalModeMessage);
-			}
-			const vibeModeMessage = this.#buildVibeModeMessage();
-			if (vibeModeMessage) {
-				messages.push(vibeModeMessage);
 			}
 			if (options?.prependMessages) {
 				messages.push(...options.prependMessages);
@@ -6635,7 +6558,7 @@ export class AgentSession {
 		// Headless subagent sessions have no operator-visible title, so a todo-init
 		// replan refresh only burns a tiny-model call whose result lands in JSONL
 		// and is never shown (issue #5910). In an interactive host the operator can
-		// focus a live subagent from the Agent Hub, where the status line renders
+		// focus a live subagent from the Agent Fleet, where the status line renders
 		// its session name — so keep the refresh there and only skip subagents when
 		// no focusable UI exists (print/RPC/ACP/eval/SDK/CI).
 		if (this.#agentKind === "sub" && !isInteractiveHost()) return;
@@ -6873,7 +6796,6 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
-		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
@@ -6888,6 +6810,7 @@ export class AgentSession {
 			}
 		}
 
+		await this.#beforeSessionSwitch();
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
 		await this.abort();
@@ -6896,6 +6819,7 @@ export class AgentSession {
 		await this.#bash.flushPending();
 		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: options?.drop !== true });
 		let sessionTransitioned = false;
+		let sessionReconciled = false;
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
@@ -6946,6 +6870,8 @@ export class AgentSession {
 			this.#advisors.resetSessionState();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
+			sessionReconciled = true;
+			await this.#afterSessionSwitch();
 			// Drop the process-lifetime context-file cache so the rebuild re-reads
 			// AGENTS.md and friends from disk: the user may have edited them since
 			// the previous session started, and refreshBaseSystemPrompt() re-runs
@@ -6967,6 +6893,7 @@ export class AgentSession {
 
 			return true;
 		} finally {
+			if (!sessionReconciled) await this.#afterSessionSwitch();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();
@@ -6989,7 +6916,6 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook or not persisting
 	 */
 	async fork(): Promise<boolean> {
-		this.#assertVibeSessionTransitionAllowed("fork the session");
 		const previousSessionFile = this.sessionFile;
 		const previousSessionId = this.sessionManager.getSessionId();
 
@@ -7005,10 +6931,12 @@ export class AgentSession {
 			}
 		}
 
+		await this.#beforeSessionSwitch();
 		await this.#bash.flushPending();
 		// Flush current session to ensure all entries are written
 		await this.sessionManager.flush();
 		let advisorRecordersDetached = false;
+		let sessionReconciled = false;
 		try {
 			advisorRecordersDetached = true;
 			// Fork keeps the conversation, but still needs a quiet artifact boundary:
@@ -7026,6 +6954,8 @@ export class AgentSession {
 			}
 			if (!forkResult) {
 				this.#bash.finishSessionTransition(bashTransition, false);
+				sessionReconciled = true;
+				await this.#afterSessionSwitch();
 				return false;
 			}
 			this.#bash.markSessionTransition(bashTransition);
@@ -7044,6 +6974,8 @@ export class AgentSession {
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
 			await this.#memory.resetContextForNewTranscript();
+			sessionReconciled = true;
+			await this.#afterSessionSwitch();
 
 			// Emit session_switch event with reason "fork" to hooks
 			if (this.#extensionRunner) {
@@ -7056,14 +6988,19 @@ export class AgentSession {
 
 			return true;
 		} finally {
+			if (!sessionReconciled) await this.#afterSessionSwitch();
 			if (advisorRecordersDetached) this.#advisors.reattachRecorderFeeds();
 		}
 	}
 
-	/** Move the active session and artifacts after enforcing mode transition invariants. */
+	/** Move the active session and artifacts. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
-		this.#assertVibeSessionTransitionAllowed("move the session");
-		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		await this.#beforeSessionSwitch();
+		try {
+			await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		} finally {
+			await this.#afterSessionSwitch();
+		}
 	}
 
 	// =========================================================================
@@ -7962,7 +7899,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
-		await this.#sessionBeforeSwitchReconciler?.();
+		await this.#beforeSessionSwitch();
 
 		await this.#bash.flushPending();
 		// Flush pending writes before switching so restore snapshots reflect committed state.
@@ -8133,7 +8070,7 @@ export class AgentSession {
 			}
 			this.#reconnectToAgent();
 			try {
-				await this.#sessionSwitchReconciler?.();
+				await this.#afterSessionSwitch();
 			} catch (error) {
 				logger.warn("Failed to reconcile session mode after switch", {
 					targetSessionFile: sessionPath,
@@ -8213,7 +8150,7 @@ export class AgentSession {
 			this.#advisors.reattachRecorderFeeds();
 			this.#reconnectToAgent();
 			try {
-				await this.#sessionSwitchReconciler?.();
+				await this.#afterSessionSwitch();
 			} catch (reconcileError) {
 				logger.warn("Failed to reconcile session mode after switch rollback", {
 					targetSessionFile: sessionPath,
@@ -9486,7 +9423,7 @@ export class AgentSession {
 	/**
 	 * Whether a live advisor agent is attached to this session. True only when
 	 * `advisor.enabled` is set for this session (subagents opt in per agent via
-	 * frontmatter `advisor` / `task.agentAdvisor`) AND a model resolved for the
+	 * frontmatter `advisor` / `orchestrator.agentAdvisor`) AND a model resolved for the
 	 * `advisor` role — i.e. the actual runtime exists, not merely the setting.
 	 * Drives the status-line badge and `/dump advisor`.
 	 */

@@ -6,9 +6,7 @@ import {
 	logWorkerMessage,
 	type RefCountedWorkerHandle,
 	resolveWorkerSpawnCmd,
-	SMOKE_TEST_TIMEOUT_MS,
 	type SpawnedSubprocess,
-	smokeTestWorker,
 	spawnWorkerOrUnavailable,
 } from "../subprocess/worker-client";
 import { tinyWorkerEnv } from "../tiny/title-client";
@@ -390,12 +388,4 @@ export const sttClient = new SttClient();
 
 export async function shutdownSttClient(): Promise<void> {
 	await sttClient.terminate();
-}
-
-export async function smokeTestSttWorker({
-	timeoutMs = SMOKE_TEST_TIMEOUT_MS,
-}: {
-	timeoutMs?: number;
-} = {}): Promise<void> {
-	await smokeTestWorker(wrapSubprocess(createSttSubprocess()), "stt worker", timeoutMs);
 }

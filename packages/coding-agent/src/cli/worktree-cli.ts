@@ -25,7 +25,7 @@ import * as git from "../utils/git";
 
 type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
 
-const TASK_ISOLATION_MOUNT_DIRS = ["m", "merged"] as const;
+const WORKER_ISOLATION_MOUNT_DIRS = ["m", "merged"] as const;
 
 export interface WorktreeEntry {
 	/** Absolute path to the worktree dir (or stray container) under `~/.omp/wt/`. */
@@ -221,7 +221,7 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 	// during the window between marker creation and mount materialisation.
 	let isIsolation = await Bun.file(path.join(dir, ISOLATION_OWNER_FILE)).exists();
 	if (!isIsolation) {
-		for (const mountDir of TASK_ISOLATION_MOUNT_DIRS) {
+		for (const mountDir of WORKER_ISOLATION_MOUNT_DIRS) {
 			const mountStat = await fs.stat(path.join(dir, mountDir)).catch(() => null);
 			if (mountStat?.isDirectory()) {
 				isIsolation = true;

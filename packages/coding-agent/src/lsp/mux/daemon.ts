@@ -10,14 +10,12 @@
  * back to a process-local spawn.
  */
 import * as net from "node:net";
-import * as os from "node:os";
-import * as path from "node:path";
-import { logger, ptree } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../../jsonrpc/message-framing";
 import { daemonClientForProject } from "../../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../../launch/ensure";
 import { daemonRuntimeDir } from "../../launch/paths";
-import { resolveWorkerSpawnCmd, SMOKE_TEST_TIMEOUT_MS, workerEnvFromParent } from "../../subprocess/worker-client";
+import { resolveWorkerSpawnCmd } from "../../subprocess/worker-client";
 import type { LspJsonRpcRequest, LspJsonRpcResponse, LspTransport, LspWriteSink } from "../types";
 import {
 	LSP_MUX_DAEMON_NAME,
@@ -310,39 +308,5 @@ export async function connectSharedLspTransport(opts: {
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return null;
-	}
-}
-
-/** Exercise worker-host mux startup and the ping handshake for distribution smoke tests. */
-export async function smokeTestLspMux(): Promise<void> {
-	const endpoint =
-		process.platform === "win32"
-			? `\\\\.\\pipe\\omp-lsp-mux-smoke-${process.pid.toString(16)}`
-			: path.join(os.tmpdir(), `omp-lsp-mux-smoke-${process.pid.toString(36)}.sock`);
-	const spawn = resolveWorkerSpawnCmd(LSP_MUX_WORKER_ARG);
-	const proc = ptree.spawn(spawn.cmd, {
-		cwd: spawn.cwd,
-		env: workerEnvFromParent({
-			[LSP_MUX_SOCKET_ENV]: endpoint,
-			[LSP_MUX_PROJECT_DIR_ENV]: process.cwd(),
-		}),
-	});
-	try {
-		const deadline = Date.now() + SMOKE_TEST_TIMEOUT_MS;
-		let alive = false;
-		while (Date.now() < deadline) {
-			if (proc.exitCode !== null) break;
-			if (await probeMux(endpoint)) {
-				alive = true;
-				break;
-			}
-			await Bun.sleep(200);
-		}
-		if (!alive) {
-			throw new Error(`lsp mux smoke failed: no ping response (${proc.peekStderr().slice(-500) || "no stderr"})`);
-		}
-	} finally {
-		proc.kill();
-		await proc.exited.catch(() => {});
 	}
 }

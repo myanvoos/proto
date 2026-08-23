@@ -2,7 +2,7 @@
  * Contract: the anchored subagent HUD (rendered above the editor, next to the
  * Todos block) lists exactly the running *detached* subagents as
  * `Id: description` rows and yields no output once nothing qualifies, so the
- * block self-clears. Sync task spawns and eval `agent()` spawns are excluded:
+ * block self-clears. Sync worker spawns and eval `agent()` spawns are excluded:
  * their progress is already rendered inline (tool block / eval cell).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
@@ -23,8 +23,8 @@ import {
 	type AgentProgress,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
+	WORKER_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -43,7 +43,7 @@ function makeSession(overrides: Partial<ObservableSession> & { id: string }): Ob
 function makeProgress(overrides: Partial<AgentProgress> & { id: string }): AgentProgress {
 	return {
 		index: 0,
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		status: "running",
 		task: "",
@@ -62,7 +62,7 @@ function makeLifecycle(id: string, index: number, description: string, detached?
 	return {
 		id,
 		index,
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		description,
 		status: "started",
@@ -79,7 +79,7 @@ function makeProgressPayload(
 ): SubagentProgressPayload {
 	return {
 		index,
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		task: description,
 		parentToolCallId: "tool-call",
@@ -152,7 +152,7 @@ describe("subagent HUD lines", () => {
 		expect(mixedCase).not.toContain("AuthLoader-3: authloader");
 
 		const defaultWorker = render([
-			makeSession({ id: "SchemaMigrator", agent: "task", description: "Migrate users" }),
+			makeSession({ id: "SchemaMigrator", agent: "worker", description: "Migrate users" }),
 		]);
 		expect(defaultWorker).toContain("SchemaMigrator: Migrate users");
 		expect(defaultWorker).not.toMatch(/SchemaMigrator.*task/);
@@ -210,7 +210,7 @@ describe("subagent HUD lines", () => {
 		expect(multiLineDesc).not.toContain("\nSecond line");
 	});
 	it("hides non-detached spawns: sync task calls and eval agent() helpers", () => {
-		// Sync task spawn (parent blocked on the call) and eval `agent()` spawn
+		// Sync worker spawn (parent blocked on the call) and eval `agent()` spawn
 		// (no detached flag at all) both stay off the HUD.
 		const sessions = [
 			makeSession({ id: "SyncSpawn", description: "inline task work", detached: false }),
@@ -229,9 +229,9 @@ describe("subagent HUD lines", () => {
 		const registry = new SessionObserverRegistry();
 		registry.subscribeToEventBus(eventBus);
 
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Detached", 0, "background work", true));
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Inline", 1, "sync work"));
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("FromProgress", 2, "background work", true));
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Detached", 0, "background work", true));
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Inline", 1, "sync work"));
+		eventBus.emit(WORKER_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("FromProgress", 2, "background work", true));
 
 		const out = render(registry.getSessions());
 		expect(out).toContain("Detached: background work");
@@ -259,26 +259,26 @@ describe("subagent HUD lines", () => {
 				.map(session => session.id);
 
 		eventBus.emit(
-			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
 			makeLifecycle("BlastRadius", 1, "Survey id-keyed downstream consumers"),
 		);
 		eventBus.emit(
-			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
 			makeLifecycle("SelectorSurfaces", 0, "Map model-selector resolution surfaces"),
 		);
 		eventBus.emit(
-			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
 			makeLifecycle("VariantsSurvey", 2, "Survey tier-variant ids across catalog"),
 		);
 
 		expect(activeIds()).toEqual(["SelectorSurfaces", "BlastRadius", "VariantsSurvey"]);
 
 		eventBus.emit(
-			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			WORKER_SUBAGENT_PROGRESS_CHANNEL,
 			makeProgressPayload("VariantsSurvey", 2, "Survey tier-variant ids across catalog"),
 		);
 		eventBus.emit(
-			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			WORKER_SUBAGENT_PROGRESS_CHANNEL,
 			makeProgressPayload("BlastRadius", 1, "Survey id-keyed downstream consumers"),
 		);
 
@@ -364,7 +364,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 
 		for (let index = 0; index < 6; index++) {
 			eventBus.emit(
-				TASK_SUBAGENT_PROGRESS_CHANNEL,
+				WORKER_SUBAGENT_PROGRESS_CHANNEL,
 				makeProgressPayload(`BurstAgent${index}`, index, `Burst job ${index}`, true),
 			);
 		}

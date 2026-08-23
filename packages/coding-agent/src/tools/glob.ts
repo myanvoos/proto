@@ -120,7 +120,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	get description(): string {
 		return prompt.render(globDescription, {
 			scoutAvailable: isScoutSpawnable(
-				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.settings.get("orchestrator.disabledAgents") as string[] | undefined,
 				this.session.getSessionSpawns?.() ?? "*",
 			),
 		});

@@ -19,11 +19,11 @@ describe("bundled agent parsing", () => {
 		expect(reviewer?.thinkingLevel).toBeUndefined();
 	});
 
-	it("lets the task agent inherit its role's thinking effort", () => {
-		const task = getBundledAgent("task");
+	it("lets the worker agent inherit its role's thinking effort", () => {
+		const task = getBundledAgent("worker");
 
 		expect(task).toBeDefined();
-		expect(task?.model).toEqual(["@task"]);
+		expect(task?.model).toEqual(["@worker"]);
 		expect(task?.thinkingLevel).toBeUndefined();
 	});
 
@@ -77,8 +77,8 @@ describe("bundled agent parsing", () => {
 		});
 
 		for (const [name, role, model] of [
-			["task", "task", "anthropic/sonnet"],
-			["sonic", "smol", "fast/hy3"],
+			["worker", "worker", "anthropic/sonnet"],
+			["lightbot", "smol", "fast/hy3"],
 			["scout", "smol", "fast/hy3"],
 			["reviewer", "slow", "codex/sol"],
 			["designer", "designer", "anthropic/opus"],

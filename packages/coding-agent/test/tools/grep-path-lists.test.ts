@@ -307,7 +307,7 @@ describe("tool path arrays", () => {
 
 		expect((component as Text).getText()).toContain("in folder with spaces/");
 	});
-	it("agent hub chat renders a single-string grep path summary", async () => {
+	it("agent fleet chat renders a single-string grep path summary", async () => {
 		const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "search-path-lists-"));
 		const sessionFile = await makeJsonlSessionFile(tmp, [
 			{ type: "session", version: 3, id: "search-overlay-session", timestamp: new Date().toISOString() },
@@ -376,10 +376,10 @@ describe("tool path arrays", () => {
 			ui: { requestRender: () => {}, requestComponentRender: () => {} } as never,
 			cwd: tmp,
 			expandKeys: ["ctrl+o"],
-			hubKeys: ["ctrl+s"],
+			fleetKeys: ["ctrl+s"],
 			requestRender: () => {},
 			onClose: () => {},
-			onHubClose: () => {},
+			onFleetClose: () => {},
 		});
 		const rendered = Bun.stripANSI(viewer.render(120).join("\n"));
 		viewer.dispose();

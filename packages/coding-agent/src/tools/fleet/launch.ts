@@ -1,7 +1,7 @@
 /**
- * Hub launch half — supervision of project-scoped long-running processes
+ * Fleet launch half — supervision of project-scoped long-running processes
  * (dev servers, watchers, debuggers, REPLs) through the shared daemon broker.
- * Hub ops map 1:1 onto broker operations; the hub's `ps` op is the broker's
+ * Fleet ops map 1:1 onto broker operations; the fleet's `ps` op is the broker's
  * `list`, and `send`/`wait` route here when they carry a process `name`.
  */
 
@@ -110,7 +110,7 @@ function registerCompletionSink(
 	};
 }
 
-/** Broker-facing launch parameters; the hub adapts its `ps` op to `list` before calling in. */
+/** Broker-facing launch parameters; the fleet adapts its `ps` op to `list` before calling in. */
 export interface LaunchParams {
 	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe";
 	name?: string;

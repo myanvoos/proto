@@ -10,7 +10,7 @@ import { keywordInProse } from "./markdown-prose";
  * Typing the standalone word in the input editor paints it with a warm
  * amber→green gradient ({@link highlightWorkflow}); submitting a message that
  * mentions it appends a hidden workflow notice that steers the model to author
- * a deterministic multi-subagent workflow through the active task schema.
+ * a deterministic multi-worker workflow through the shared subagent backend.
  * Matching is prose-delimited and case-sensitive (lowercase only) —
  * "workflowz" triggers, but "workflowzed", "Workflowz", and "workflowz.ts"
  * never do.
@@ -19,18 +19,12 @@ import { keywordInProse } from "./markdown-prose";
 // Detection: lowercase keyword flanked by prose punctuation, whitespace, or a string edge.
 const WORKFLOW_WORD = magicKeywordRegex("workflowz");
 
-/** WORKFLOW_NOTICE is the default hidden notice for sessions with batched task calls enabled. */
-export const WORKFLOW_NOTICE: string = renderWorkflowNotice({ taskBatch: true });
+/** Default hidden workflow notice. */
+export const WORKFLOW_NOTICE: string = renderWorkflowNotice();
 
-/** renderWorkflowNotice renders the workflow notice for the active task schema. */
-export function renderWorkflowNotice({
-	taskBatch,
-	scoutAvailable,
-}: {
-	taskBatch: boolean;
-	scoutAvailable?: boolean;
-}): string {
-	return prompt.render(workflowNoticeTemplate, { taskBatch, scoutAvailable: scoutAvailable ?? true }).trim();
+/** Render the workflow notice. */
+export function renderWorkflowNotice(options?: { scoutAvailable?: boolean }): string {
+	return prompt.render(workflowNoticeTemplate, { scoutAvailable: options?.scoutAvailable ?? true }).trim();
 }
 
 /**

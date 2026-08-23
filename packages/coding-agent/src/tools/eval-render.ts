@@ -142,7 +142,7 @@ function agentEventStatus(value: unknown): AgentEventStatus {
 	}
 }
 
-/** Append the toolCount · context · cost · model stat run, mirroring the task tool. */
+/** Append the toolCount · context · cost · model stat run, mirroring worker results. */
 function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 	let line = "";
 	const toolCount = eventNumber(event.toolCount);
@@ -152,10 +152,7 @@ function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 	const contextTokens = eventNumber(event.contextTokens);
 	if (contextTokens > 0) {
 		const contextWindow = eventNumber(event.contextWindow);
-		const ctx =
-			contextWindow > 0
-				? formatContextUsage((contextTokens / contextWindow) * 100, contextWindow)
-				: formatNumber(contextTokens);
+		const ctx = contextWindow > 0 ? formatContextUsage(contextTokens, contextWindow) : formatNumber(contextTokens);
 		line += `${theme.sep.dot}${theme.fg("dim", ctx)}`;
 	}
 	const cost = eventNumber(event.cost);
@@ -163,7 +160,7 @@ function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 		line += `${theme.sep.dot}${theme.fg("statusLineCost", `$${cost.toFixed(2)}`)}`;
 	}
 	const model = eventString(event.model);
-	if (model && settings.get("task.showResolvedModelBadge")) {
+	if (model && settings.get("orchestrator.showResolvedModelBadge")) {
 		line += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(replaceTabs(model), 30))}`;
 	}
 	return line;

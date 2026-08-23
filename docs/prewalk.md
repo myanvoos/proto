@@ -57,4 +57,4 @@ Run the slash command to arm prewalk without restarting OMP or enabling it in co
 
 ## Subagent prewalk
 
-Task subagents have separate prewalk controls: agent frontmatter, `task.prewalk`, and per-agent `task.agentPrewalk` overrides. See [Task agent discovery](./task-agent-discovery.md) for their precedence and target selection.
+Workers have separate prewalk controls: agent frontmatter, `orchestrator.prewalk`, and per-agent `orchestrator.agentPrewalk` overrides. See [Worker agent discovery](./worker-agent-discovery.md) for their precedence and target selection.

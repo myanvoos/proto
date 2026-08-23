@@ -4511,7 +4511,7 @@ describe("AgentSession retry fallback", () => {
 			settings,
 			modelRegistry,
 			thinkingLevel: Effort.Low,
-			// Per-spawn cap (task.maxEffort resolved at spawn time): no recovery
+			// Per-spawn cap (orchestrator.maxEffort resolved at spawn time): no recovery
 			// path may raise effective effort above it.
 			thinkingLevelCeiling: Effort.Low,
 		});
@@ -4901,7 +4901,7 @@ describe("AgentSession retry fallback", () => {
 		expect(getLastAssistantMessage(session).stopReason).toBe("stop");
 	});
 
-	// `session.servingModel` is what the Agent Hub row reads for a live or
+	// `session.servingModel` is what the Agent Fleet row reads for a live or
 	// parked agent. A fallback that errors on its first request produced none of
 	// the session's work, so announcing it credits the primary's output to it.
 	it("withholds the fallback selector until the target has served a turn", async () => {

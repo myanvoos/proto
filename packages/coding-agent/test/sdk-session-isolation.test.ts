@@ -8,6 +8,7 @@ import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LocalProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
+import { OrchestratorRuntime } from "@oh-my-pi/pi-coding-agent/orchestrator/runtime";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -15,7 +16,6 @@ import * as secrets from "@oh-my-pi/pi-coding-agent/secrets";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
 import { getSessionsDir, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getConfigRootDir, setProfile } from "@oh-my-pi/pi-utils/dirs";
 
@@ -336,9 +336,9 @@ describe("createAgentSession session storage isolation", () => {
 		expect(registry.get("revived-worker")).toBeUndefined();
 	});
 
-	it("suspends the exact Vibe owner scope before global lifecycle teardown", async () => {
-		VibeSessionRegistry.resetGlobalForTests();
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-vibe-dispose-${Snowflake.next()}-`));
+	it("suspends the exact orchestrator owner scope before global lifecycle teardown", async () => {
+		OrchestratorRuntime.resetGlobalForTests();
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-orchestrator-dispose-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);
 		const cwd = path.join(tempDir, "project");
 		fs.mkdirSync(cwd, { recursive: true });
@@ -355,8 +355,8 @@ describe("createAgentSession session storage isolation", () => {
 			enableMCP: false,
 			enableLsp: false,
 		});
-		const vibeRegistry = VibeSessionRegistry.global();
-		const suspend = vi.spyOn(vibeRegistry, "suspendScope");
+		const orchestrator = OrchestratorRuntime.global();
+		const suspend = vi.spyOn(orchestrator, "suspendScope");
 		const lifecycleDispose = vi.spyOn(AgentLifecycleManager.global(), "dispose");
 		const parentSessionId = session.sessionManager.getSessionId();
 		const parentSessionFile = session.sessionManager.getSessionFile();

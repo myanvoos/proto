@@ -78,7 +78,7 @@ describe("autoloadSkills in executor", () => {
 	});
 
 	const baseAgent: AgentDefinition = {
-		name: "task",
+		name: "worker",
 		description: "test",
 		systemPrompt: "test",
 		source: "bundled",

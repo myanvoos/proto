@@ -2,8 +2,7 @@
  * Review-finding shapes and priority helpers.
  *
  * The `report_finding` tool was removed; reviewers now record findings through
- * incremental `yield` sections (`type: ["findings"]`). These parsers and
- * priority-display helpers back the reviewer render path in `task/render.ts`.
+ * incremental `yield` sections (`type: ["findings"]`). These parsers and priority helpers support reviewer findings.
  */
 // ─────────────────────────────────────────────────────────────────────────────
 

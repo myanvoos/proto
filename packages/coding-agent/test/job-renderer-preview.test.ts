@@ -1,6 +1,6 @@
 /**
- * The job tool's TUI preview must not leak the model-facing `<task-result>`
- * envelope (prompts/tools/task-summary.md): a settled task job previews the
+ * The job tool's TUI preview must not leak the model-facing `<worker-result>`
+ * envelope (prompts/tools/worker-summary.md): a settled worker job previews the
  * inner <output>/<preview> body, while non-envelope result text (bash jobs)
  * passes through unchanged.
  */
@@ -8,8 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
-import taskSummaryTemplate from "../src/prompts/tools/task-summary.md" with { type: "text" };
-import { hubToolRenderer } from "../src/tools/hub";
+import taskSummaryTemplate from "../src/prompts/tools/worker-summary.md" with { type: "text" };
+import { fleetToolRenderer } from "../src/tools/fleet";
 
 function renderLines(resultText: string): string {
 	const result = {
@@ -19,7 +19,7 @@ function renderLines(resultText: string): string {
 			jobs: [
 				{
 					id: "SpawnProbe",
-					type: "task" as const,
+					type: "worker" as const,
 					status: "completed" as const,
 					label: "SpawnProbe",
 					durationMs: 8_700,
@@ -28,15 +28,15 @@ function renderLines(resultText: string): string {
 			],
 		},
 	};
-	const component = hubToolRenderer.renderResult(
+	const component = fleetToolRenderer.renderResult(
 		result,
-		{ expanded: true } as Parameters<typeof hubToolRenderer.renderResult>[1],
+		{ expanded: true } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 		theme,
 	);
 	return (component.render(120) as readonly string[]).join("\n");
 }
 
-describe("job renderer task-result preview", () => {
+describe("job renderer worker-result preview", () => {
 	beforeAll(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
@@ -49,7 +49,7 @@ describe("job renderer task-result preview", () => {
 
 	it("previews the envelope body, not the wrapper markup", () => {
 		const summary = prompt.render(taskSummaryTemplate, {
-			agentName: "sonic",
+			agentName: "lightbot",
 			id: "SpawnProbe",
 			status: "completed",
 			duration: "8.7s",
@@ -62,13 +62,13 @@ describe("job renderer task-result preview", () => {
 
 		const output = renderLines(deliveryText);
 		expect(output).toContain("Probe finished: spawned worker, ping ok.");
-		expect(output).not.toContain("<task-result");
+		expect(output).not.toContain("<worker-result");
 		expect(output).not.toContain("<output>");
 	});
 
 	it("previews the truncated <preview> body the same way", () => {
 		const summary = prompt.render(taskSummaryTemplate, {
-			agentName: "task",
+			agentName: "worker",
 			id: "BigOne",
 			status: "completed",
 			duration: "2m",
@@ -79,12 +79,12 @@ describe("job renderer task-result preview", () => {
 
 		const output = renderLines(summary);
 		expect(output).toContain("first line of long output");
-		expect(output).not.toContain("<task-result");
+		expect(output).not.toContain("<worker-result");
 	});
 
 	it("flattens a pretty-printed JSON body instead of previewing a lone brace", () => {
 		const summary = prompt.render(taskSummaryTemplate, {
-			agentName: "sonic",
+			agentName: "lightbot",
 			id: "EchoAlpha",
 			status: "completed",
 			duration: "11.6s",
@@ -116,14 +116,14 @@ describe("job renderer task-result preview", () => {
 		const jobsData = [
 			{
 				id: "Job1",
-				type: "task" as const,
+				type: "worker" as const,
 				status: "running" as const,
 				label: "Job1 running",
 				durationMs: 1200,
 			},
 			{
 				id: "Job2",
-				type: "task" as const,
+				type: "worker" as const,
 				status: "completed" as const,
 				label: "Job2 completed",
 				durationMs: 3400,
@@ -131,7 +131,7 @@ describe("job renderer task-result preview", () => {
 			},
 			{
 				id: "Job3",
-				type: "task" as const,
+				type: "worker" as const,
 				status: "running" as const,
 				label: "Job3 running",
 				durationMs: 500,
@@ -143,9 +143,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "wait" as const, jobs: jobsData },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: true } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: true } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "wait", ids: [] },
 			);
@@ -161,9 +161,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "wait" as const, jobs: jobsData },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "wait", ids: [] },
 			);
@@ -178,7 +178,7 @@ describe("job renderer task-result preview", () => {
 			const runningJobsOnly = [
 				{
 					id: "Job1",
-					type: "task" as const,
+					type: "worker" as const,
 					status: "running" as const,
 					label: "Job1 running",
 					durationMs: 1200,
@@ -188,9 +188,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "wait" as const, jobs: runningJobsOnly },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "wait", ids: [] },
 			);
@@ -203,9 +203,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "jobs" as const, jobs: jobsData },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "jobs" },
 			);
@@ -221,9 +221,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "" }],
 				details: { op: "cancel" as const, jobs: jobsData },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "cancel", ids: ["Job1"] },
 			);
@@ -243,9 +243,9 @@ describe("job renderer task-result preview", () => {
 					agents: [{ id: "Worker", parentId: "Main", activity: "grepping the tree", ageMs: 65_000, live: true }],
 				},
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "jobs" },
 			);
@@ -260,9 +260,9 @@ describe("job renderer task-result preview", () => {
 				content: [{ type: "text" as const, text: "No running background jobs to wait for." }],
 				details: { op: "wait" as const, jobs: [], agents: [{ id: "Worker", ageMs: 1_000, live: false }] },
 			};
-			const component = hubToolRenderer.renderResult(
+			const component = fleetToolRenderer.renderResult(
 				result,
-				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				{ expanded: true, isPartial: false } as Parameters<typeof fleetToolRenderer.renderResult>[1],
 				theme,
 				{ op: "wait", ids: [] },
 			);

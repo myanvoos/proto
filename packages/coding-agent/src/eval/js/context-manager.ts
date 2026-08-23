@@ -237,36 +237,6 @@ export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
 	);
 }
 
-/**
- * Smoke probe: spawn the JS evaluator through the worker-host entry and prove
- * it answers the `init` handshake in a real isolated subprocess (not the inline
- * fallback). Catches silent process-load and init-message regressions
- * that otherwise strand every cell on the init timeout in a distribution build —
- * the failure mode that motivated `installWorkerInbox`. Wired into
- * `omp --smoke-test` so binary / source / tarball installs all exercise it.
- */
-export async function smokeTestJsEvalWorker(): Promise<void> {
-	const worker = spawnJsWorker();
-	const session: JsSession = {
-		sessionKey: "smoke",
-		sessionId: "smoke",
-		cwd: process.cwd(),
-		worker,
-		state: "alive",
-		pending: new Map(),
-		ownerIds: new Set(),
-		hasFallbackOwner: false,
-	};
-	try {
-		await initWorker(session, { cwd: process.cwd(), sessionId: "smoke" }, WORKER_INIT_TIMEOUT_MS);
-		if (worker.mode !== "process") {
-			throw new Error("JS eval worker smoke fell back from the isolated subprocess");
-		}
-	} finally {
-		await worker.terminate().catch(() => undefined);
-	}
-}
-
 async function runOnce(
 	session: JsSession,
 	options: {

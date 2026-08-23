@@ -60,11 +60,11 @@ import { bottomBorder, dividerSplit, row, splitBodyWidth, splitRow, topBorderSpl
 /** One agent with its per-agent settings overrides resolved for display. */
 interface HubAgent extends AgentDefinition {
 	disabled: boolean;
-	/** `task.agentModelOverrides[name]` as a comma-joined pattern list. */
+	/** `orchestrator.agentModelOverrides[name]` as a comma-joined pattern list. */
 	overrideModel?: string;
-	/** `task.agentPrewalk[name]`: "on", "off", or a model pattern. */
+	/** `orchestrator.agentPrewalk[name]`: "on", "off", or a model pattern. */
 	prewalkOverride?: string;
-	/** `task.agentAdvisor[name]`: "on", "off", or a model pattern. */
+	/** `orchestrator.agentAdvisor[name]`: "on", "off", or a model pattern. */
 	advisorOverride?: string;
 }
 
@@ -289,10 +289,10 @@ export class AgentsHubComponent implements Component {
 		try {
 			const selectedName = this.#selectedAgent()?.name;
 			const { agents } = await discoverAgents(this.#cwd);
-			const disabled = new Set(this.#settings.get("task.disabledAgents") ?? []);
-			const overrides = this.#settings.get("task.agentModelOverrides") ?? {};
-			const prewalkOverrides = this.#settings.get("task.agentPrewalk") ?? {};
-			const advisorOverrides = this.#settings.get("task.agentAdvisor") ?? {};
+			const disabled = new Set(this.#settings.get("orchestrator.disabledAgents") ?? []);
+			const overrides = this.#settings.get("orchestrator.agentModelOverrides") ?? {};
+			const prewalkOverrides = this.#settings.get("orchestrator.agentPrewalk") ?? {};
+			const advisorOverrides = this.#settings.get("orchestrator.agentAdvisor") ?? {};
 			this.#allAgents = agents
 				.slice()
 				.sort((a, b) => {
@@ -399,7 +399,7 @@ export class AgentsHubComponent implements Component {
 	#effectivePrewalkPattern(agent: HubAgent): string | undefined {
 		return resolveAgentPrewalkPattern({
 			settingsOverride: agent.prewalkOverride,
-			agentPrewalk: resolveAgentPrewalkDefault(agent, this.#settings.get("task.prewalk") ?? false),
+			agentPrewalk: resolveAgentPrewalkDefault(agent, this.#settings.get("orchestrator.prewalk") ?? false),
 		});
 	}
 
@@ -421,7 +421,7 @@ export class AgentsHubComponent implements Component {
 			.filter(entry => entry.disabled)
 			.map(entry => entry.name)
 			.sort((a, b) => a.localeCompare(b));
-		this.#settings.set("task.disabledAgents", disabled);
+		this.#settings.set("orchestrator.disabledAgents", disabled);
 		this.#notice = `${agent.name} ${agent.disabled ? "disabled" : "enabled"}`;
 		this.#tui.requestRender();
 	}
@@ -434,10 +434,10 @@ export class AgentsHubComponent implements Component {
 		}
 		const key =
 			property === "model"
-				? "task.agentModelOverrides"
+				? "orchestrator.agentModelOverrides"
 				: property === "prewalk"
-					? "task.agentPrewalk"
-					: "task.agentAdvisor";
+					? "orchestrator.agentPrewalk"
+					: "orchestrator.agentAdvisor";
 		this.#settings.set(key, overrides);
 	}
 

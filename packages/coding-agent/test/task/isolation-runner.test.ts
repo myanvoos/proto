@@ -20,7 +20,7 @@ function result(overrides: Partial<SingleResult> = {}): SingleResult {
 	return {
 		index: 0,
 		id: "NestedOnly",
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		task: "Do nested work",
 		assignment: "Do nested work",
@@ -125,8 +125,8 @@ describe("runIsolatedSubprocess", () => {
 			baseOptions: {
 				cwd: repoRoot,
 				agent: {
-					name: "task",
-					description: "Task agent",
+					name: "worker",
+					description: "Worker agent",
 					systemPrompt: "test",
 					source: "bundled",
 				},
@@ -202,8 +202,8 @@ describe("runIsolatedSubprocess", () => {
 			baseOptions: {
 				cwd: repoRoot,
 				agent: {
-					name: "task",
-					description: "Task agent",
+					name: "worker",
+					description: "Worker agent",
 					systemPrompt: "test",
 					source: "bundled",
 				},
@@ -246,8 +246,8 @@ describe("runIsolatedSubprocess", () => {
 			baseOptions: {
 				cwd: "/repo",
 				agent: {
-					name: "task",
-					description: "Task agent",
+					name: "worker",
+					description: "Worker agent",
 					systemPrompt: "test",
 					source: "bundled",
 				},
@@ -317,8 +317,8 @@ describe("runIsolatedSubprocess", () => {
 				baseOptions: {
 					cwd: "/repo",
 					agent: {
-						name: "task",
-						description: "Task agent",
+						name: "worker",
+						description: "Worker agent",
 						systemPrompt: "test",
 						source: "bundled",
 					},

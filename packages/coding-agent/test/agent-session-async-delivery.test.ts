@@ -162,12 +162,12 @@ describe("AgentSession owner-routed async delivery", () => {
 			ownedAsyncJobManager: manager,
 		});
 
-		const completedJobId = manager.register("task", "prior session", async () => "done", {
+		const completedJobId = manager.register("worker", "prior session", async () => "done", {
 			id: "prior-session-job",
 			ownerId: "Main",
 		});
 		const failedJobId = manager.register(
-			"task",
+			"worker",
 			"failed prior session",
 			async () => {
 				throw new Error("prior session failure");
@@ -177,7 +177,7 @@ describe("AgentSession owner-routed async delivery", () => {
 				ownerId: "Main",
 			},
 		);
-		const otherOwnerJobId = manager.register("task", "other session", async () => "done", {
+		const otherOwnerJobId = manager.register("worker", "other session", async () => "done", {
 			id: "other-session-job",
 			ownerId: "Other",
 		});
@@ -218,7 +218,7 @@ describe("AgentSession owner-routed async delivery", () => {
 
 		// Complete a job and push its result all the way onto the yield queue, so a
 		// follow-up turn is pending injection into the (soon-to-be-replaced) session.
-		manager.register("task", "prior session", async () => "STALE ASYNC RESULT", {
+		manager.register("worker", "prior session", async () => "STALE ASYNC RESULT", {
 			id: "prior-session-job",
 			ownerId: "Main",
 		});

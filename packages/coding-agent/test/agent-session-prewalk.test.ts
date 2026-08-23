@@ -756,7 +756,7 @@ describe("AgentSession prewalk", () => {
 	it("effort-only prewalk on the same model downgrades the thinking level instead of silently skipping", async () => {
 		// Regression (#6659): the switch guard compared model identity only, so a
 		// same-model target at a cheaper thinking level (a legitimate effort
-		// downgrade, common with role aliases like `prewalk: "@task"`) was dropped
+		// downgrade, common with role aliases like `prewalk: "@worker"`) was dropped
 		// as a no-op. On a reasoning model the effort is the bulk of the cost, so
 		// this must still switch.
 		const model = modelOrThrow("claude-sonnet-4-5");

@@ -16,9 +16,9 @@ import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
-import type { TaskEffort } from "../thinking";
+import type { WorkerEffort } from "../thinking";
 import type { ToolSession } from "../tools";
-import { isIrcEnabled } from "../tools/hub";
+import { isIrcEnabled } from "../tools/fleet";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
@@ -31,7 +31,7 @@ import {
 	prepareIsolationContext,
 	runIsolatedSubprocess,
 } from "./isolation-runner";
-import { generateTaskName } from "./name-generator";
+import { generateWorkerName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -81,7 +81,7 @@ export interface StructuredSubagentIdentity {
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
 	session: ToolSession;
-	invocationKind: "task" | "eval";
+	invocationKind: "worker" | "eval";
 	assignment: string;
 	context?: string;
 	agent?: string;
@@ -90,7 +90,7 @@ export interface StructuredSubagentRequest {
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
 	/** Per-spawn thinking effort mapped onto the resolved model's supported range; overrides the agent's default selector. */
-	effort?: TaskEffort;
+	effort?: WorkerEffort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -104,7 +104,7 @@ export interface StructuredSubagentRequest {
 	retainArtifacts?: boolean;
 	/** Task UI agents keep live registry references; eval one-shots normally do not. */
 	keepAlive?: boolean;
-	/** Task subagents share their parent's eval kernel; eval bridge children must not. */
+	/** Workers share their parent's eval kernel; eval bridge children must not. */
 	shareEvalSession?: boolean;
 	/** Task frontends may inherit LSP; eval frontends normally set this false. */
 	enableLsp?: boolean;
@@ -214,7 +214,7 @@ function assertPlanControlsAllowed(request: StructuredSubagentRequest, planMode:
 
 function assertDepthAndSpawnAllowed(request: StructuredSubagentRequest, agentName: string): void {
 	const taskDepth = request.session.taskDepth ?? 0;
-	const maxDepth = request.session.settings.get("task.maxRecursionDepth") ?? 2;
+	const maxDepth = request.session.settings.get("orchestrator.maxRecursionDepth") ?? 2;
 	if (!canSpawnAtDepth(maxDepth, taskDepth)) {
 		throw new StructuredSubagentError(
 			"preflight",
@@ -258,7 +258,7 @@ export async function resolveEffectiveSubagentPolicy(
 		const available = discovery.agents.map(candidate => candidate.name).join(", ") || "none";
 		throw new StructuredSubagentError("preflight", `Unknown agent "${agentName}". Available: ${available}`);
 	}
-	const disabledAgents = request.session.settings.get("task.disabledAgents") as string[];
+	const disabledAgents = request.session.settings.get("orchestrator.disabledAgents") as string[];
 	if (disabledAgents.includes(agentName)) {
 		const enabled = discovery.agents
 			.filter(candidate => !disabledAgents.includes(candidate.name))
@@ -279,7 +279,7 @@ export async function resolveEffectiveSubagentPolicy(
 			throw new StructuredSubagentError("preflight", `Invalid ${scope} output schema: ${error}`);
 		}
 	}
-	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
+	const agentModelOverrides = request.session.settings.get("orchestrator.agentModelOverrides");
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const modelResolution = {
 		requestModel: request.model,
@@ -293,12 +293,12 @@ export async function resolveEffectiveSubagentPolicy(
 	// from different sources: the expansion below discards the alias, and the
 	// child's inherited retry-fallback chain is keyed off the role.
 	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
-	const isolationMode = request.session.settings.get("task.isolation.mode");
+	const isolationMode = request.session.settings.get("orchestrator.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && isolationMode === "none") {
 		throw new StructuredSubagentError(
 			"preflight",
-			`Subagent isolated execution requires task.isolation.mode to be set; current mode is "none".`,
+			`Subagent isolated execution requires orchestrator.isolation.mode to be set; current mode is "none".`,
 		);
 	}
 	return {
@@ -312,13 +312,14 @@ export async function resolveEffectiveSubagentPolicy(
 		schema,
 		planMode,
 		isIsolated,
-		mergeMode: request.isolation?.merge ?? request.session.settings.get("task.isolation.merge"),
+		mergeMode: request.isolation?.merge ?? request.session.settings.get("orchestrator.isolation.merge"),
 		applyChanges:
 			request.isolation?.apply ??
-			(request.invocationKind === "task" ? request.session.settings.get("task.isolation.apply") : true),
+			(request.invocationKind === "worker" ? request.session.settings.get("orchestrator.isolation.apply") : true),
 		enableLsp:
 			!planMode &&
-			(request.enableLsp ?? ((request.session.enableLsp ?? true) && request.session.settings.get("task.enableLsp"))),
+			(request.enableLsp ??
+				((request.session.enableLsp ?? true) && request.session.settings.get("orchestrator.enableLsp"))),
 		enableIrc:
 			!planMode &&
 			(request.enableIrc ??
@@ -335,7 +336,7 @@ export async function reserveStructuredSubagentId(
 	if (identity?.id) return identity.id;
 	const manager = session.agentOutputManager ?? new AgentOutputManager(session.getArtifactsDir ?? (() => null));
 	session.agentOutputManager ??= manager;
-	return manager.allocate(sanitizeAgentId(identity?.label) ?? generateTaskName());
+	return manager.allocate(sanitizeAgentId(identity?.label) ?? generateWorkerName());
 }
 
 interface ArtifactLease {
@@ -357,7 +358,7 @@ async function leaseArtifacts(
 	}
 	const artifactsDir = path.join(
 		os.tmpdir(),
-		`${invocationKind === "eval" ? "omp-eval-agent" : "omp-task"}-${Snowflake.next()}`,
+		`${invocationKind === "eval" ? "omp-eval-agent" : "omp-worker"}-${Snowflake.next()}`,
 	);
 	await fs.mkdir(artifactsDir, { recursive: true });
 	return { sessionFile: null, artifactsDir, temporary: true, unregister: registerArtifactsDir(artifactsDir) };
@@ -590,7 +591,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			result = await runIsolatedSubprocess({
 				baseOptions,
 				context: isolationContext,
-				preferredBackend: parseIsolationMode(request.session.settings.get("task.isolation.mode")),
+				preferredBackend: parseIsolationMode(request.session.settings.get("orchestrator.isolation.mode")),
 				agentId: id,
 				mergeMode: policy.mergeMode,
 				artifactsDir: lease.artifactsDir,

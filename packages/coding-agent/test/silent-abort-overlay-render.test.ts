@@ -1,5 +1,5 @@
 /**
- * Regression: the agent-hub chat transcript must not render SILENT_ABORT_MARKER verbatim.
+ * Regression: the agent-fleet chat transcript must not render SILENT_ABORT_MARKER verbatim.
  *
  * Codex review flagged that the old observer overlay rendered `errorMessage`
  * without filtering the silent-abort sentinel; the hub chat view now renders
@@ -59,14 +59,14 @@ function makeViewer(sessionFile: string, observed: ObservableSession[]): AgentTr
 		ui,
 		cwd: path.dirname(sessionFile),
 		expandKeys: ["ctrl+o"],
-		hubKeys: ["ctrl+s"],
+		fleetKeys: ["ctrl+s"],
 		requestRender: () => {},
 		onClose: () => {},
-		onHubClose: () => {},
+		onFleetClose: () => {},
 	});
 }
 
-describe("Agent hub silent-abort regression", () => {
+describe("Agent fleet silent-abort regression", () => {
 	let tmpDir: string;
 
 	beforeAll(() => {

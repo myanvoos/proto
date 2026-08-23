@@ -29,7 +29,7 @@ export interface GalleryFixture {
 	) => readonly string[] | Promise<readonly string[]>;
 	/**
 	 * Set for tools whose real `AgentTool` attaches `renderCall`/`renderResult`
-	 * directly on the instance (e.g. `task`). The harness then attaches
+	 * directly on the instance (e.g. `fleet`). The harness then attaches
 	 * the registry renderer onto the fake tool so the component routes through
 	 * the custom-tool branch — the same path production takes — instead of the
 	 * built-in registry branch. The two branches can diverge, so exercising the
@@ -38,7 +38,7 @@ export interface GalleryFixture {
 	customRendered?: boolean;
 	/**
 	 * Renderer-registry key to use when the fixture key is a variant of a tool
-	 * (e.g. `hub_wait` → `hub`). Defaults to the fixture key.
+	 * (e.g. `fleet_wait` → `fleet`). Defaults to the fixture key.
 	 */
 	renderer?: string;
 	/**

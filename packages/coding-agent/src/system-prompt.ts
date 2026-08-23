@@ -34,7 +34,6 @@ import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" w
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
-import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -605,16 +604,10 @@ export interface BuildSystemPromptOptions {
 	rules?: Array<{ name: string; description?: string; path: string; globs?: string[] }>;
 	/** Intent field name injected into every tool schema. If set, explains the field in the prompt. */
 	intentField?: string;
-	/** Encourage the agent to delegate via tasks unless changes are trivial. */
-	eagerTasks?: boolean;
-	/** When true, the Eager Tasks section uses the hard MUST/ONLY wording (`task.eager: always`) rather than the softer `preferred` nudge. */
-	eagerTasksAlways?: boolean;
-	/** Whether `task.batch` is enabled; selects the centralized delegation guidance's call shape. */
-	taskBatch?: boolean;
-	/** Effective task concurrency limit displayed in centralized delegation guidance. Zero means unlimited. */
-	taskMaxConcurrency?: number;
-	/** Whether IRC-backed parallel coordination can be included in delegation policy. */
-	taskIrcEnabled?: boolean;
+	/** Effective worker concurrency limit displayed in the orchestration contract. Zero means unlimited. */
+	orchestratorMaxConcurrency?: number;
+	/** Whether fleet peer messaging can be included in the orchestration contract. */
+	fleetEnabled?: boolean;
 	/** Whether the read-only `scout` subagent is spawnable (not disabled, allowed by spawn policy). Defaults to true. */
 	scoutAvailable?: boolean;
 
@@ -686,11 +679,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		rules,
 		alwaysApplyRules,
 		intentField,
-		eagerTasks = false,
-		eagerTasksAlways = false,
-		taskBatch = true,
-		taskMaxConcurrency = 0,
-		taskIrcEnabled = false,
+		orchestratorMaxConcurrency = 0,
+		fleetEnabled = false,
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		scoutAvailable = true,
@@ -977,16 +967,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd: promptCwd,
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
-		useCodexTaskPrompt: usesCodexTaskPrompt(model),
 		personality: personalityBlock,
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
-		eagerTasks,
-		eagerTasksAlways,
-		taskBatch,
-		MAX_CONCURRENCY: normalizeConcurrencyLimit(taskMaxConcurrency),
+		MAX_CONCURRENCY: normalizeConcurrencyLimit(orchestratorMaxConcurrency),
 		scoutAvailable,
-		taskIrcEnabled,
+		fleetEnabled,
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
 		securityEnabled,

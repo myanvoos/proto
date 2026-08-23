@@ -1,7 +1,7 @@
 /**
  * Agent discovery from filesystem.
  *
- * Discovers agent definitions from OMP-native task-agent roots:
+ * Discovers agent definitions from OMP-native worker-agent roots:
  *   - ~/.omp/agent/agents/*.md (user-level)
  *   - .omp/agents/*.md (project-level)
  *   - <ext>/agents/*.md for every OMP extension package wired through
@@ -13,7 +13,7 @@
  * Claude Code marketplace plugin agents are discovered separately via the
  * claude-plugins provider. Direct cross-harness roots such as .claude/agents
  * are intentionally skipped because their frontmatter schema is not the OMP
- * task-agent contract.
+ * worker-agent contract.
  *
  * Agent files use markdown with YAML frontmatter.
  */
@@ -28,7 +28,7 @@ import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
 import { loadBundledAgents, parseAgent } from "./agents";
 import type { AgentDefinition, AgentSource } from "./types";
 
-const TASK_AGENT_CONFIG_SOURCE = ".omp";
+const AGENT_CONFIG_SOURCE = ".omp";
 
 /** Result of agent discovery */
 export interface DiscoveryResult {
@@ -71,14 +71,14 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	const resolvedCwd = path.resolve(cwd);
 
 	const userDirs = getConfigDirs("agents", { project: false })
-		.filter(entry => entry.source === TASK_AGENT_CONFIG_SOURCE)
+		.filter(entry => entry.source === AGENT_CONFIG_SOURCE)
 		.map(entry => ({
 			...entry,
 			path: path.resolve(entry.path),
 		}));
 
 	const projectDirs = findAllNearestProjectConfigDirs("agents", resolvedCwd)
-		.filter(entry => entry.source === TASK_AGENT_CONFIG_SOURCE)
+		.filter(entry => entry.source === AGENT_CONFIG_SOURCE)
 		.map(entry => ({
 			...entry,
 			path: path.resolve(entry.path),
@@ -94,7 +94,7 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	// source-precedence order (CLI > project `extensions:` settings > user
 	// `extensions:` settings > installed npm/link plugins, with marketplace
 	// installs already excluded by realpath) — consume that order verbatim so the
-	// `task` agent surface dedups identically to the sibling skills/hooks/tools
+	// worker discovery surface dedups identically to the sibling skills/hooks/tools
 	// surface in `discovery/omp-plugins.ts`. Gate on `omp-plugins` so
 	// disabledProviders suppresses the whole extension-package surface.
 	const extensionRoots = isProviderEnabled("omp-plugins")

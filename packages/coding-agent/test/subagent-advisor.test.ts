@@ -24,34 +24,34 @@ describe("per-agent settings migrations", () => {
 		return await Settings.loadReadOnly({ agentDir, cwd: agentDir });
 	};
 
-	it("migrates nested advisor.subagents=true to task.agentAdvisor task=on", async () => {
+	it("migrates nested advisor.subagents=true to orchestrator.agentAdvisor task=on", async () => {
 		const settings = await load("advisor:\n  subagents: true\n");
-		expect(settings.get("task.agentAdvisor")).toEqual({ task: "on" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ task: "on" });
 	});
 
 	it("migrates flat advisor.subagents=true", async () => {
 		const settings = await load('"advisor.subagents": true\n');
-		expect(settings.get("task.agentAdvisor")).toEqual({ task: "on" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ task: "on" });
 	});
 
 	it("migrates advisor.subagents=false to task=off so a lower layer keeps overriding", async () => {
 		// Migration runs per config file: a project-level `false` must survive as
 		// an explicit "off" or a migrated global `true` would win the merge.
 		const settings = await load("advisor:\n  subagents: false\n");
-		expect(settings.get("task.agentAdvisor")).toEqual({ task: "off" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ task: "off" });
 	});
 
-	it("keeps an explicit task.agentAdvisor entry over the legacy toggle", async () => {
+	it("keeps an explicit orchestrator.agentAdvisor entry over the legacy toggle", async () => {
 		const settings = await load('advisor:\n  subagents: true\ntask:\n  agentAdvisor:\n    task: "off"\n');
-		expect(settings.get("task.agentAdvisor")).toEqual({ task: "off" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ task: "off" });
 	});
 
 	it("normalizes boolean per-agent prewalk and advisor overrides", async () => {
 		const settings = await load(
 			"task:\n  agentPrewalk:\n    librarian: true\n    task: false\n  agentAdvisor:\n    librarian: false\n    task: true\n",
 		);
-		expect(settings.get("task.agentPrewalk")).toEqual({ librarian: "on", task: "off" });
-		expect(settings.get("task.agentAdvisor")).toEqual({ librarian: "off", task: "on" });
+		expect(settings.get("orchestrator.agentPrewalk")).toEqual({ librarian: "on", task: "off" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ librarian: "off", task: "on" });
 	});
 });
 

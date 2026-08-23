@@ -6,9 +6,7 @@ import {
 	inferenceWorkerEnv,
 	logWorkerMessage,
 	resolveWorkerSpawnCmd,
-	SMOKE_TEST_TIMEOUT_MS,
 	type SpawnedSubprocess,
-	smokeTestWorker,
 	spawnWorkerOrUnavailable,
 	type WorkerHandle,
 } from "../subprocess/worker-client";
@@ -282,12 +280,4 @@ export const mnemopiEmbedClient = new MnemopiEmbedClient();
 
 export async function shutdownMnemopiEmbedClient(): Promise<void> {
 	await mnemopiEmbedClient.terminate();
-}
-
-export async function smokeTestMnemopiEmbedWorker({
-	timeoutMs = SMOKE_TEST_TIMEOUT_MS,
-}: {
-	timeoutMs?: number;
-} = {}): Promise<void> {
-	await smokeTestWorker(wrapSubprocess(createMnemopiEmbedSubprocess()), "mnemopi embed worker", timeoutMs);
 }

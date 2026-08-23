@@ -2,7 +2,7 @@
 
 Mode: headless review request.
 
-Distribution: Use `task` with `agent: "reviewer"` and a `tasks` array; create exactly **1 reviewer task** for recent code changes.
+Distribution: Use `orchestrate_spawn` with `agent: "reviewer"`; create exactly **1 reviewer worker** for recent code changes.
 
 {{#if focus}}
 Focus: {{focus}}

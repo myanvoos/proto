@@ -21,8 +21,6 @@ import type {
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "@oh-my-pi/pi-coding-agent/stt/models";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	DEFAULT_TTS_LOCAL_MODEL_KEY,
 	DEFAULT_TTS_VOICE,
@@ -80,16 +78,6 @@ const TEST_MODELS: Model[] = [
 		maxTokens: 8_192,
 	}),
 ];
-
-function createTaskSession(cwd: string): ToolSession {
-	return {
-		cwd,
-		hasUI: false,
-		settings: Settings.isolated({}),
-		getSessionFile: () => null,
-		getSessionSpawns: () => "*",
-	} as unknown as ToolSession;
-}
 
 function makeAssistantMessage(text: string, thinking?: string) {
 	const content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }> = [
@@ -1470,7 +1458,7 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
-	it("does not replay internal Hub messages to ACP clients", async () => {
+	it("does not replay internal Fleet messages to ACP clients", async () => {
 		const harness = await createHarness();
 		const stored = new FakeAgentSession(harness.cwdA);
 		harness.sessions.push(stored);
@@ -1481,7 +1469,7 @@ describe("ACP agent", () => {
 				{
 					type: "toolCall",
 					id: "toolu_hub_replay",
-					name: "hub",
+					name: "fleet",
 					arguments: { op: "send", to: "Scout", message: "Private coordination" },
 				},
 			],
@@ -1490,7 +1478,7 @@ describe("ACP agent", () => {
 		stored.sessionManager.appendMessage({
 			role: "toolResult",
 			toolCallId: "toolu_hub_replay",
-			toolName: "hub",
+			toolName: "fleet",
 			content: [{ type: "text", text: "Private reply" }],
 			isError: false,
 			timestamp: Date.now(),
@@ -1713,34 +1701,6 @@ describe("ACP agent", () => {
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
-	});
-
-	it("refreshes task agent descriptions on ACP /reload-plugins", async () => {
-		const harness = await createHarness();
-		const agentDir = path.join(harness.cwdA, ".omp", "agents");
-		const agentFile = path.join(agentDir, "acp-reload-agent.md");
-		await fs.promises.mkdir(agentDir, { recursive: true });
-		await fs.promises.writeFile(
-			agentFile,
-			"---\nname: acp-reload-agent\ndescription: VERSION_ONE\n---\nACP reload agent.\n",
-		);
-		const taskTool = await TaskTool.create(createTaskSession(harness.cwdA));
-		expect(taskTool.description).toContain("VERSION_ONE");
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-
-		await fs.promises.writeFile(
-			agentFile,
-			"---\nname: acp-reload-agent\ndescription: VERSION_TWO\n---\nACP reload agent.\n",
-		);
-		await harness.agent.prompt({
-			sessionId: created.sessionId,
-			messageId: "00000000-0000-4000-8000-000000000006",
-			prompt: [{ type: "text", text: "/reload-plugins" }],
-		} as PromptRequest);
-
-		expect(taskTool.description).toContain("VERSION_TWO");
-		expect(taskTool.description).not.toContain("VERSION_ONE");
-		harness.abortController.abort();
 	});
 
 	it("advertises ACP-safe builtins and skill commands", async () => {

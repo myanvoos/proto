@@ -11,9 +11,9 @@ import { mapWithConcurrencyLimit } from "./parallel";
 
 const { IsoBackendKind } = natives;
 
-const TASK_ISOLATION_DIR_PREFIX = "t";
-const TASK_ISOLATION_DIR_DIGEST_CHARS = 9;
-const TASK_ISOLATION_MOUNT_DIR = "m";
+const WORKER_ISOLATION_DIR_PREFIX = "t";
+const WORKER_ISOLATION_DIR_DIGEST_CHARS = 9;
+const WORKER_ISOLATION_MOUNT_DIR = "m";
 type IsoBackendKind = natives.IsoBackendKind;
 
 /** Baseline state for a single git repository. */
@@ -39,14 +39,14 @@ export async function getRepoRoot(cwd: string): Promise<string> {
 	// mutating the surrounding Git tree behind jj's back.
 	if (await jj.isPureJjRepo(cwd)) {
 		throw new Error(
-			"Isolated task execution requires a Git checkout, but this workspace is pure Jujutsu (`.jj/` without a colocated `.git/`). Run `jj git init --colocate` to add a Git checkout, or set `task.isolation.mode: none` to disable task isolation.",
+			"Isolated worker execution requires a Git checkout, but this workspace is pure Jujutsu (`.jj/` without a colocated `.git/`). Run `jj git init --colocate` to add a Git checkout, or set `orchestrator.isolation.mode: none` to disable worker isolation.",
 		);
 	}
 
 	const repoRoot = await git.repo.root(cwd);
 	if (repoRoot) return repoRoot;
 
-	throw new Error("Git repository not found for isolated task execution.");
+	throw new Error("Git repository not found for isolated worker execution.");
 }
 
 const GIT_NO_INDEX_NULL_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -123,7 +123,7 @@ export class IsolationBaselineTooLargeError extends Error {
 				`over the ${formatBytes(ISOLATION_BASELINE_MAX_CONTENT_BYTES)} isolation-snapshot budget. ` +
 				`Isolated task snapshots buffer this content in memory, so proceeding would exhaust the host. ` +
 				`Commit or gitignore the bulk (untracked files that aren't ignored are the usual culprit), ` +
-				`or set \`task.isolation.mode: none\` to run tasks without isolation.`,
+				`or set \`orchestrator.isolation.mode: none\` to run tasks without isolation.`,
 		);
 		this.name = "IsolationBaselineTooLargeError";
 	}
@@ -370,7 +370,7 @@ export async function applyNestedPatches(
 				if (touchedFiles.length === 0) {
 					throw new Error(`Nested repo patch for ${relativePath} did not include stageable file paths.`);
 				}
-				const msg = (await commitMessage?.(combinedDiff)) ?? "changes from isolated task(s)";
+				const msg = (await commitMessage?.(combinedDiff)) ?? "changes from isolated worker(s)";
 				await git.stage.files(nestedDir, touchedFiles);
 				await git.commit(nestedDir, msg);
 			}
@@ -397,12 +397,12 @@ export async function applyNestedPatches(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * User-facing isolation mode names exposed by the `task.isolation.mode`
+ * User-facing isolation mode names exposed by the `orchestrator.isolation.mode`
  * setting. Mapped to a backend-kind hint via {@link parseIsolationMode};
  * the PAL's `iso_resolve` then falls back through the kind order
  * whenever the hint isn't available on the current host.
  */
-export type TaskIsolationMode =
+export type WorkerIsolationMode =
 	| "none"
 	| "auto"
 	| "apfs"
@@ -419,12 +419,12 @@ export type TaskIsolationMode =
 	| "fuse-projfs";
 
 /**
- * Translate a {@link TaskIsolationMode} string to an [`IsoBackendKind`]
+ * Translate a {@link WorkerIsolationMode} string to an [`IsoBackendKind`]
  * the PAL can act on. `"none"` returns `null` (caller skips isolation
  * entirely); `"auto"` returns `undefined` (no hint — let the resolver
  * pick). Anything else returns the matching kind.
  */
-export function parseIsolationMode(mode: TaskIsolationMode): IsoBackendKind | undefined {
+export function parseIsolationMode(mode: WorkerIsolationMode): IsoBackendKind | undefined {
 	switch (mode) {
 		case "none":
 		case "auto":
@@ -475,8 +475,8 @@ function errorMessage(err: unknown): string {
 
 function getTaskIsolationSegment(repoRoot: string, id: string): string {
 	const key = `${path.resolve(repoRoot)}\0${id}`;
-	const digest = Bun.hash(key).toString(16).padStart(16, "0").slice(-TASK_ISOLATION_DIR_DIGEST_CHARS);
-	return `${TASK_ISOLATION_DIR_PREFIX}${digest}`;
+	const digest = Bun.hash(key).toString(16).padStart(16, "0").slice(-WORKER_ISOLATION_DIR_DIGEST_CHARS);
+	return `${WORKER_ISOLATION_DIR_PREFIX}${digest}`;
 }
 
 export async function ensureIsolation(
@@ -488,7 +488,7 @@ export async function ensureIsolation(
 	const repository = await git.repo.resolve(repoRoot);
 	const sourceCommonDir = repository?.commonDir ?? path.join(repoRoot, ".git");
 	const baseDir = getWorktreeDir(getTaskIsolationSegment(repoRoot, id));
-	const mergedDir = path.join(baseDir, TASK_ISOLATION_MOUNT_DIR);
+	const mergedDir = path.join(baseDir, WORKER_ISOLATION_MOUNT_DIR);
 	const resolution = natives.isoResolve(preferred ?? null);
 	const candidates = resolution.candidates.length > 0 ? resolution.candidates : [resolution.kind];
 	let fallbackReason = resolution.reason ?? null;
@@ -938,7 +938,7 @@ export async function mergeTaskBranches(
 
 		// Stash dirty working tree so cherry-pick can operate on a clean HEAD.
 		// Without this, cherry-pick refuses to run when uncommitted changes exist.
-		const didStash = await git.stash.push(repoRoot, "omp-task-merge");
+		const didStash = await git.stash.push(repoRoot, "omp-worker-merge");
 
 		let conflictResult: MergeBranchResult | undefined;
 
@@ -1003,7 +1003,7 @@ export async function mergeTaskBranches(
 					// cherry-picked HEAD (and reset-cleans up if a rarer conflict slips
 					// past). The merged branches DID land — surface a stash-restore
 					// warning without claiming the merge failed.
-					logger.warn("Failed to restore stashed changes after task merge; stash entry preserved");
+					logger.warn("Failed to restore stashed changes after worker merge; stash entry preserved");
 					const stashConflict =
 						"stash pop: cherry-picked changes conflict with uncommitted edits. The merged commits are on HEAD; run `git stash pop` and resolve manually.";
 					if (conflictResult) {

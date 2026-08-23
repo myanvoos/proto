@@ -3,12 +3,12 @@ import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { resolveExplicitModelRole } from "../config/model-resolver";
+import { persistedOrchestratorWorkerIds } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { loadBundledAgents } from "../task/agents";
 import { isReadOnlyAgent } from "../task/read-only-policy";
-import { persistedVibeChildIds } from "../vibe/runtime";
 import {
 	type AgentHistorySummary,
 	type AgentMetricsSummary,
@@ -72,8 +72,8 @@ function inferBundledAgent(systemPrompt: string): { agent?: string; modelRole?: 
 		const rolePrompt = agent.systemPrompt.trim();
 		return rolePrompt.length > 0 && systemPrompt.includes(rolePrompt);
 	});
-	// `task` and `sonic` intentionally share a prompt body. Ambiguous historical
-	// prompts stay unlabelled rather than inventing provenance.
+	// `worker` and `lightbot` share a prompt body, so prompt-only provenance is
+	// intentionally left unknown when both match.
 	if (matches.length !== 1) return {};
 	const [agent] = matches;
 	return {
@@ -233,7 +233,7 @@ async function readPersistedAgentHistory(
 }
 
 /**
- * Read only the small session prefix needed by the Hub. A subagent's first
+ * Read only the small session prefix needed by the Fleet. A subagent's first
  * `session_init` is written before its conversation, so this never walks a
  * multi-megabyte historical transcript just to populate one roster row.
  */
@@ -308,13 +308,16 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 	};
 }
 
-async function readPersistedVibeChildIds(sessionFile: string, shouldContinue: () => boolean): Promise<Set<string>> {
+async function readPersistedOrchestratorWorkerIds(
+	sessionFile: string,
+	shouldContinue: () => boolean,
+): Promise<Set<string>> {
 	const ids = new Set<string>();
 	try {
 		await visitEntriesFromFileStream(
 			sessionFile,
 			entry => {
-				for (const id of persistedVibeChildIds([entry])) ids.add(id);
+				for (const id of persistedOrchestratorWorkerIds([entry])) ids.add(id);
 			},
 			{ shouldContinue },
 		);
@@ -333,11 +336,18 @@ export async function registerPersistedSubagents(
 	if (!sessionFile?.endsWith(".jsonl")) return;
 	const shouldContinue = options.shouldContinue ?? (() => true);
 	if (!shouldContinue()) return;
-	const vibeOwnedIds = await readPersistedVibeChildIds(sessionFile, shouldContinue);
+	const orchestratorOwnedIds = await readPersistedOrchestratorWorkerIds(sessionFile, shouldContinue);
 	if (!shouldContinue()) return;
 	const root = sessionFile.slice(0, -6);
 	const transcripts: PersistedTranscript[] = [];
-	await registerPersistedSubagentsFromDir(registry, root, undefined, vibeOwnedIds, transcripts, shouldContinue);
+	await registerPersistedSubagentsFromDir(
+		registry,
+		root,
+		undefined,
+		orchestratorOwnedIds,
+		transcripts,
+		shouldContinue,
+	);
 	if (!shouldContinue()) return;
 	let nextTranscript = 0;
 	const workers = Array.from({ length: Math.min(4, transcripts.length) }, async () => {
@@ -358,7 +368,7 @@ async function registerPersistedSubagentsFromDir(
 	registry: AgentRegistry,
 	dir: string,
 	parentId: string | undefined,
-	vibeOwnedIds: ReadonlySet<string>,
+	orchestratorOwnedIds: ReadonlySet<string>,
 	transcripts: PersistedTranscript[],
 	shouldContinue: () => boolean,
 ): Promise<void> {
@@ -381,7 +391,7 @@ async function registerPersistedSubagentsFromDir(
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
 		const sessionFile = path.join(dir, entry.name);
 		// The advisor transcript is observability-only: register it as a non-peer
-		// `advisor` kind under its owning session so the Hub can show its read-only
+		// `advisor` kind under its owning session so the Fleet can show its read-only
 		// transcript, but it never joins agent-facing rosters and is not revivable.
 		if (isAdvisorTranscriptName(entry.name)) {
 			const owner = parentId ?? MAIN_AGENT_ID;
@@ -423,7 +433,7 @@ async function registerPersistedSubagentsFromDir(
 			continue;
 		}
 		const id = entry.name.slice(0, -6);
-		if (vibeOwnedIds.has(id) && registry.get(id)?.sessionFile !== sessionFile) continue;
+		if (orchestratorOwnedIds.has(id) && registry.get(id)?.sessionFile !== sessionFile) continue;
 		let tombstoned = false;
 		try {
 			await fs.promises.access(getAgentTombstonePath(sessionFile));
@@ -470,7 +480,7 @@ async function registerPersistedSubagentsFromDir(
 			registry,
 			path.join(dir, id),
 			id,
-			vibeOwnedIds,
+			orchestratorOwnedIds,
 			transcripts,
 			shouldContinue,
 		);

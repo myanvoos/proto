@@ -45,11 +45,11 @@ function session(
 		hasUI: false,
 		outputSchema: options.outputSchema,
 		settings: Settings.isolated({
-			"task.maxRecursionDepth": options.maxDepth ?? 2,
-			"task.isolation.mode": options.isolationMode ?? "none",
-			"task.enableLsp": true,
+			"orchestrator.maxRecursionDepth": options.maxDepth ?? 2,
+			"orchestrator.isolation.mode": options.isolationMode ?? "none",
+			"orchestrator.enableLsp": true,
 			...(options.modelRoles ? { modelRoles: options.modelRoles } : {}),
-			...(options.isolationApply !== undefined ? { "task.isolation.apply": options.isolationApply } : {}),
+			...(options.isolationApply !== undefined ? { "orchestrator.isolation.apply": options.isolationApply } : {}),
 		}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
@@ -60,7 +60,7 @@ function session(
 function request(overrides: Partial<StructuredSubagentRequest> = {}): StructuredSubagentRequest {
 	return {
 		session: session(),
-		invocationKind: "task",
+		invocationKind: "worker",
 		assignment: "Inspect the target.",
 		agent: "worker",
 		...overrides,
@@ -252,7 +252,7 @@ describe("structured subagent primitive", () => {
 				definition: "openai/gpt-4o",
 			},
 		});
-		roleSession.settings.override("task.agentModelOverrides", { worker: "@override" });
+		roleSession.settings.override("orchestrator.agentModelOverrides", { worker: "@override" });
 
 		const requestPolicy = await resolveEffectiveSubagentPolicy(request({ session: roleSession, model: "@request" }));
 		expect(requestPolicy.modelRole).toBe("request");
@@ -266,7 +266,7 @@ describe("structured subagent primitive", () => {
 				definition: "openai/gpt-4o",
 			},
 		});
-		concreteOverrideSession.settings.override("task.agentModelOverrides", { worker: "openai/gpt-4o" });
+		concreteOverrideSession.settings.override("orchestrator.agentModelOverrides", { worker: "openai/gpt-4o" });
 		const concreteOverridePolicy = await resolveEffectiveSubagentPolicy(
 			request({ session: concreteOverrideSession }),
 		);
@@ -292,7 +292,7 @@ describe("structured subagent primitive", () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { definition: "openai/gpt-4o" } });
-		childSession.settings.override("task.agentModelOverrides", { worker: "" });
+		childSession.settings.override("orchestrator.agentModelOverrides", { worker: "" });
 
 		const policy = await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 
@@ -303,7 +303,7 @@ describe("structured subagent primitive", () => {
 		const customAgent = { ...AGENT, model: ["@definition"] };
 		mockDiscovery(customAgent);
 		const childSession = session({ modelRoles: { empty: "", definition: "openai/gpt-4o" } });
-		childSession.settings.override("task.agentModelOverrides", { worker: "@empty" });
+		childSession.settings.override("orchestrator.agentModelOverrides", { worker: "@empty" });
 
 		const policy = await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 
@@ -348,7 +348,7 @@ describe("structured subagent primitive", () => {
 			mode: "permissive",
 			data: { ok: true },
 		});
-		expect(path.basename(settled.artifactsDir)).toStartWith("omp-task-");
+		expect(path.basename(settled.artifactsDir)).toStartWith("omp-worker-");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 	it("uses identical non-plan LSP and IRC policy for task and eval invocations", async () => {
@@ -588,7 +588,7 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("defaults task isolation to auto-apply and lets config retain artifacts", async () => {
+	it("defaults worker isolation to auto-apply and lets config retain artifacts", async () => {
 		mockDiscovery();
 		const defaultPolicy = await resolveEffectiveSubagentPolicy(
 			request({ session: session({ isolationMode: "worktree" }), isolation: { requested: true } }),

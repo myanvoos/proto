@@ -11,7 +11,6 @@ import {
 } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { createVibeTools } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 
 interface ToolSchemaEntry {
 	name: string;
@@ -59,13 +58,6 @@ const toolSchemasPromise: Promise<ToolSchemaEntry[]> = (async () => {
 		}
 	}
 
-	for (const tool of createVibeTools(session)) {
-		const schema = toolWireSchema(tool);
-		if (asSchemaObject(schema)) {
-			byToolName.set(tool.name, schema);
-		}
-	}
-
 	return [...byToolName.entries()]
 		.sort(([left], [right]) => left.localeCompare(right))
 		.map(([name, schema]) => ({ name, schema }));
@@ -86,19 +78,63 @@ function formatCompatibilityIssues(
 }
 
 describe("builtin tool schemas provider compatibility", () => {
-	it("keeps todo strict and marks task non-strict for free-form output schemas", async () => {
+	it("exposes the five strict orchestration schemas alongside ordinary tools", async () => {
 		const tools = await builtinToolsPromise;
-		const task = tools.find(tool => tool.name === "task");
-		const todo = tools.find(tool => tool.name === "todo");
-		expect(task).toBeDefined();
-		expect(todo).toBeDefined();
-		if (!task || !todo) {
-			return;
+		const names = tools.map(tool => tool.name);
+		expect(names).toContain("read");
+		expect(names.filter(name => name.startsWith("orchestrate_"))).toEqual([
+			"orchestrate_spawn",
+			"orchestrate_send",
+			"orchestrate_wait",
+			"orchestrate_kill",
+			"orchestrate_list",
+		]);
+		for (const tool of tools.filter(tool => tool.name.startsWith("orchestrate_"))) {
+			expect(tool.strict).toBe(true);
 		}
+		const spawn = tools.find(tool => tool.name === "orchestrate_spawn");
+		if (!spawn) throw new Error("Expected orchestrate_spawn");
+		const schema = toolWireSchema(spawn) as { properties?: Record<string, unknown> };
+		expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+			"agent",
+			"effort",
+			"isolated",
+			"name",
+			"outputSchema",
+			"prompt",
+			"schemaMode",
+		]);
+	});
 
-		expect(task.strict).toBe(false);
-		expect(adaptSchemaForStrict(toolWireSchema(task), task.strict !== false).strict).toBe(false);
-		expect(adaptSchemaForStrict(toolWireSchema(todo), todo.strict !== false).strict).toBe(true);
+	it("keeps top-level orchestration available when recursive spawning is disabled", async () => {
+		const topSession: ToolSession = {
+			...createTestSession(),
+			getSessionSpawns: () => "",
+			settings: Settings.isolated({ "orchestrator.maxRecursionDepth": 0 }),
+		};
+		const names = (await createTools(topSession)).map(tool => tool.name);
+		expect(names.filter(name => name.startsWith("orchestrate_"))).toHaveLength(5);
+	});
+
+	it("allows one recursive worker level when configured", async () => {
+		const recursiveSession: ToolSession = {
+			...createTestSession(),
+			taskDepth: 1,
+			settings: Settings.isolated({ "orchestrator.maxRecursionDepth": 1 }),
+		};
+		const names = (await createTools(recursiveSession)).map(tool => tool.name);
+		expect(names.filter(name => name.startsWith("orchestrate_"))).toHaveLength(5);
+	});
+
+	it("removes recursive orchestration tools at the configured depth cap", async () => {
+		const cappedSession: ToolSession = {
+			...createTestSession(),
+			taskDepth: 1,
+			settings: Settings.isolated({ "orchestrator.maxRecursionDepth": 0 }),
+		};
+		const names = (await createTools(cappedSession)).map(tool => tool.name);
+		expect(names.some(name => name.startsWith("orchestrate_"))).toBe(false);
+		expect(names).toContain("read");
 	});
 
 	it("keeps all builtin and hidden tool schemas valid after provider enforcement", async () => {

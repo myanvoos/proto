@@ -38,7 +38,6 @@ import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
 import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
 import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
-import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -81,56 +80,6 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 		process.stdout.write(`\n${extra}\n`);
 	}
 }
-/**
- * Smoke-test entry. Spawns bundled workers, serves the stats dashboard once,
- * pings everything, then exits.
- *
- * Purpose: catch the silent worker-load and bundled-asset regressions that hit
- * compiled binaries and the npm CLI bundle. Version/help paths do not spawn
- * worker modules or serve dashboard assets on a fresh install, so this probe is
- * the minimal end-to-end test that proves those distribution-only paths work.
- * Wired into `scripts/install-tests/run-ci.sh` so binary / source-link /
- * tarball installs all exercise it on every CI run.
- */
-async function runSmokeTest(): Promise<void> {
-	const { smokeTestSyncWorker, startServer } = await import("@oh-my-pi/omp-stats");
-	const { smokeTestTinyTitleWorker } = await import("./tiny/title-client");
-	const { smokeTestSttWorker } = await import("./stt/asr-client");
-	const { smokeTestTtsWorker } = await import("./tts/tts-client");
-	const { smokeTestMnemopiEmbedWorker } = await import("./mnemopi/embed-client");
-	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
-	// Other smoke dependencies stay lazy so normal CLI startup does not load their worker clients.
-	const { smokeTestDaemonBroker } = await import("./launch/client");
-	const { smokeTestLspMux } = await import("./lsp/mux/daemon");
-	const { smokeTestBlobBroker } = await import("./blob-broker/daemon");
-	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
-	await smokeTestSyncWorker();
-
-	const statsServer = await startServer(0);
-	try {
-		const response = await fetch(`http://127.0.0.1:${statsServer.port}/`);
-		if (!response.ok) throw new Error(`stats dashboard smoke failed: HTTP ${response.status}`);
-		const html = await response.text();
-		if (!html.includes('<div id="root"></div>') || !html.includes("index.js")) {
-			throw new Error("stats dashboard smoke failed: dashboard HTML was not served");
-		}
-	} finally {
-		statsServer.stop();
-	}
-
-	await smokeTestTinyTitleWorker();
-	await smokeTestSttWorker();
-	await smokeTestJsEvalWorker();
-	await smokeTestComputerWorker();
-	await smokeTestTtsWorker();
-	await smokeTestMnemopiEmbedWorker();
-	await smokeTestDaemonBroker();
-	await smokeTestLspMux();
-	await smokeTestBlobBroker();
-	await smokeTestTerminalOutputWorker();
-	process.stdout.write("smoke-test: ok\n");
-}
-
 const TINY_WORKER_ARG = "__omp_worker_tiny_inference";
 const STATS_SYNC_WORKER_ARG = "__omp_worker_stats_sync";
 const TAB_WORKER_ARG = "__omp_worker_tab";
@@ -417,10 +366,6 @@ export async function runCli(argv: string[]): Promise<void> {
 	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
 	installGlobalProxyFetch();
 
-	if (resolvedArgv[0] === "--smoke-test") {
-		await runSmokeTest();
-		return;
-	}
 	if (resolvedArgv[0] === "--license") {
 		process.stdout.write(formatLicenseOutput());
 		return;

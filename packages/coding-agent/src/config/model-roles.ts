@@ -28,7 +28,7 @@ export type ModelRole =
 	| "designer"
 	| "commit"
 	| "tiny"
-	| "task"
+	| "worker"
 	| "advisor";
 
 export interface ModelRoleInfo {
@@ -48,7 +48,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	designer: { tag: "DESIGNER", name: "Designer", color: "muted" },
 	commit: { tag: "COMMIT", name: "Commit", color: "dim" },
 	tiny: { tag: "TINY", name: "Tiny", color: "dim" },
-	task: { tag: "TASK", name: "Subtask", color: "muted" },
+	worker: { tag: "WORKER", name: "Worker", color: "muted" },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
 };
 
@@ -61,7 +61,7 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"designer",
 	"commit",
 	"tiny",
-	"task",
+	"worker",
 	"advisor",
 ];
 

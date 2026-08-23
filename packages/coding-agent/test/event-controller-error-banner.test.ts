@@ -469,11 +469,11 @@ describe("EventController working loader reconciliation", () => {
 		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(1);
 	});
 
-	it("self-heals missing working loader when a task subagent finishes mid-turn (#3858)", async () => {
-		// `task` subagents run inside the parent's streaming turn. While the task is
+	it("self-heals missing working loader when a worker finishes mid-turn (#3858)", async () => {
+		// workers run inside the parent's streaming turn. While the worker is
 		// running a transient overlay (auto-compaction / auto-retry) can drop the
 		// working loader by clearing the status container, and the overlay's end
-		// handler is the only restorer keyed off the missing loader. If the task
+		// handler is the only restorer keyed off the missing loader. If the worker
 		// finishes between the overlay's start and end (or any other branch where
 		// the loader was nulled without a follow-up overlay-end), `tool_execution_end`
 		// is the next streaming event that lands and must heal the loader, mirroring
@@ -485,8 +485,8 @@ describe("EventController working loader reconciliation", () => {
 
 		await controller.handleEvent({
 			type: "tool_execution_end",
-			toolCallId: "task-1",
-			toolName: "task",
+			toolCallId: "worker-1",
+			toolName: "orchestrate_spawn",
 			isError: false,
 			result: { content: [{ type: "text", text: "ok" }], details: {} },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
@@ -501,8 +501,8 @@ describe("EventController working loader reconciliation", () => {
 
 		await controller.handleEvent({
 			type: "tool_execution_end",
-			toolCallId: "task-2",
-			toolName: "task",
+			toolCallId: "worker-2",
+			toolName: "orchestrate_spawn",
 			isError: false,
 			result: { content: [{ type: "text", text: "ok" }], details: {} },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);

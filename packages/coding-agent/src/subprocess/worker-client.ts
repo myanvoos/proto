@@ -100,13 +100,6 @@ export interface WorkerSpawnCommand {
 }
 
 /**
- * Cold-starting a worker from a compiled binary (decompress + module graph
- * load) is slow on contended CI runners; the probe only proves the worker
- * spawns and ponges, so a generous bound removes flakes without weakening it.
- */
-export const SMOKE_TEST_TIMEOUT_MS = 30_000;
-
-/**
  * Resolve the command used to relaunch the agent CLI into worker mode. In a
  * compiled binary the entry point is the binary itself; otherwise re-enter the
  * declared worker-host entry by absolute path. Workers deliberately spawn
@@ -487,37 +480,4 @@ export function logWorkerMessage(message: WorkerLogMessage): void {
 	if (message.level === "debug") logger.debug(message.msg, message.meta);
 	else if (message.level === "warn") logger.warn(message.msg, message.meta);
 	else logger.error(message.msg, message.meta);
-}
-
-/**
- * Drive the ping/pong readiness probe wired into `omp --smoke-test`: send one
- * `ping`, resolve on the first `pong` (ignoring `log` chatter), and reject on
- * any other message, a worker error, or the timeout. Always tears the handle
- * down on the way out. `label` prefixes the failure messages.
- */
-export async function smokeTestWorker<Inbound extends { type: string; id: string }, Outbound extends { type: string }>(
-	handle: WorkerHandle<Inbound, Outbound>,
-	label: string,
-	timeoutMs: number,
-): Promise<void> {
-	const { promise, resolve, reject } = Promise.withResolvers<void>();
-	const timer = setTimeout(() => reject(new Error(`${label} did not pong within ${timeoutMs}ms`)), timeoutMs);
-	const unsubscribeMessage = handle.onMessage(message => {
-		if (message.type === "pong") {
-			resolve();
-			return;
-		}
-		if (message.type === "log") return;
-		reject(new Error(`${label}: expected pong, got ${JSON.stringify(message)}`));
-	});
-	const unsubscribeError = handle.onError(reject);
-	try {
-		handle.send({ type: "ping", id: "smoke" } as Inbound);
-		await promise;
-	} finally {
-		clearTimeout(timer);
-		unsubscribeMessage();
-		unsubscribeError();
-		await handle.terminate();
-	}
 }

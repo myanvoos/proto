@@ -4,10 +4,10 @@
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
-import taskLabelSystemPrompt from "../prompts/system/task-label.md" with { type: "text" };
+import workerLabelSystemPrompt from "../prompts/system/worker-label.md" with { type: "text" };
 import { generateSessionTitle } from "../utils/title-generator";
 
-const TASK_LABEL_SYSTEM_PROMPT = prompt.render(taskLabelSystemPrompt);
+const WORKER_LABEL_SYSTEM_PROMPT = prompt.render(workerLabelSystemPrompt);
 
 /** True when a generated label is just the spawn handle, including `Name-2`. */
 export function labelEchoesHandle(handle: string | undefined, label: string): boolean {
@@ -38,13 +38,13 @@ export async function generateTaskLabel(
 			sessionId,
 			undefined,
 			undefined,
-			TASK_LABEL_SYSTEM_PROMPT,
+			WORKER_LABEL_SYSTEM_PROMPT,
 			signal,
 		);
 		if (!label || labelEchoesHandle(sessionId, label)) return null;
 		return label;
 	} catch (err) {
-		logger.debug("task-label: generation failed", {
+		logger.debug("worker-label: generation failed", {
 			sessionId,
 			error: err instanceof Error ? err.message : String(err),
 		});

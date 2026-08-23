@@ -81,7 +81,6 @@ export class EventController {
 	#lastVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
-	#backgroundTaskCallIds = new Set<string>();
 	/** Tool calls that drove the title into `attention` (the `ask` question);
 	 *  cleared at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
@@ -153,8 +152,8 @@ export class EventController {
 	// Insertion-ordered IRC cards not yet retired; values are the transcript
 	// components each card contributed (see #retireIrcCard for the guard).
 	#liveIrcCards = new Map<string, Component[]>();
-	// Most recent `hub` tool block whose result still had every watched job
-	// running. Kept un-finalized (live) so the next `hub` call displaces it —
+	// Most recent `fleet` tool block whose result still had every watched job
+	// running. Kept un-finalized (live) so the next `fleet` call displaces it —
 	// one persistent poll instead of a stack of "waiting on N jobs" frames —
 	// and sealed in place the moment anything else lands below it.
 	#displaceablePollComponent: ToolExecutionComponent | undefined = undefined;
@@ -610,7 +609,6 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#backgroundTaskCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
@@ -889,7 +887,7 @@ export class EventController {
 
 	/**
 	 * Resolve the pending displaceable poll block before the next block lands.
-	 * A follow-up `hub` call displaces it — the stale "waiting on N jobs" frame
+	 * A follow-up `fleet` call displaces it — the stale "waiting on N jobs" frame
 	 * is removed so repeated polls read as one persistent poll — while anything
 	 * else seals it in place as final history. Removal is gated on none of the
 	 * block's rows having entered native scrollback: rows already on the tape
@@ -901,7 +899,7 @@ export class EventController {
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
 		if (
-			nextToolName === "hub" &&
+			nextToolName === "fleet" &&
 			previous.isDisplaceableBlock() &&
 			this.ctx.chatContainer.isBlockUncommitted(previous)
 		) {
@@ -1235,7 +1233,6 @@ export class EventController {
 					this.ctx.streamingMessage.stopReason === "aborted" && this.ctx.viewSession.isTtsrAbortPending;
 				if (supersededByRewind) {
 					for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
-						if (this.#backgroundTaskCallIds.has(toolCallId)) continue;
 						if (
 							!(component instanceof ToolExecutionComponent) &&
 							!(component instanceof ReadToolGroupComponent)
@@ -1408,22 +1405,7 @@ export class EventController {
 		const component = this.ctx.pendingTools.get(event.toolCallId);
 		if (component) {
 			const asyncState = (event.partialResult.details as { async?: { state?: string } } | undefined)?.async?.state;
-			const isFinalAsyncState = asyncState === "completed" || asyncState === "failed";
-			// A final async snapshot is terminal only for a parked background
-			// block (the call already returned and was kept alive for its jobs).
-			// While the call is still executing — a mixed blocking+async task
-			// call whose jobs settle before its blocking subset — treat it as a
-			// partial frame: `tool_execution_end` still owns the terminal result.
-			const isTerminal = isFinalAsyncState && this.#backgroundTaskCallIds.has(event.toolCallId);
-			component.updateResult(
-				{ ...event.partialResult, isError: asyncState === "failed" },
-				!isTerminal,
-				event.toolCallId,
-			);
-			if (isTerminal) {
-				this.ctx.pendingTools.delete(event.toolCallId);
-				this.#backgroundTaskCallIds.delete(event.toolCallId);
-			}
+			component.updateResult({ ...event.partialResult, isError: asyncState === "failed" }, true, event.toolCallId);
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -1488,7 +1470,7 @@ export class EventController {
 		// A transient overlay (auto-compaction / auto-retry / handoff) that ran
 		// between this tool's start and end could have detached the working
 		// loader. `tool_execution_update` already reconciles this so the spinner
-		// reappears mid-tool; mirror it here so subagent (`task`) completions —
+		// reappears mid-tool; mirror it here so worker completions —
 		// which only fire `tool_execution_end`, never `_update` — do not leave
 		// the UI looking idle while the session keeps streaming (#3857).
 		this.#ensureWorkingLoaderWhileStreaming();
@@ -1542,18 +1524,11 @@ export class EventController {
 		} else {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
-				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
-				const isBackgroundTask = event.toolName === "task" && asyncState === "running";
-				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundTask, event.toolCallId);
-				if (isBackgroundTask) {
-					this.#backgroundTaskCallIds.add(event.toolCallId);
-				} else {
-					this.ctx.pendingTools.delete(event.toolCallId);
-					this.#backgroundTaskCallIds.delete(event.toolCallId);
-				}
+				component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+				this.ctx.pendingTools.delete(event.toolCallId);
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
-					if (event.toolName === "hub" && component.canBeDisplacedBy("hub")) {
-						// Remember the waiting poll so the next `hub` call can displace it.
+					if (event.toolName === "fleet" && component.canBeDisplacedBy("fleet")) {
+						// Remember the waiting poll so the next `fleet` call can displace it.
 						this.#displaceablePollComponent = component;
 					} else if (event.toolName === "todo" && component.canBeDisplacedBy("todo")) {
 						// Successful todo update supersedes the prior live snapshot. A failed
@@ -1665,7 +1640,7 @@ export class EventController {
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		if (this.ctx.session.isStreaming) return;
 		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not the
-		// end of the run: an unsuppressed async job (a `/vibe` worker turn, a bash
+		// end of the run: an unsuppressed async job (an orchestrator worker turn, a bash
 		// `async` job, etc.) will re-wake the loop when its result is delivered.
 		// `AgentSession` tags this on the deferred event (see `#hasPendingAsyncWake`
 		// in agent-session.ts). Skip the idle title/loader teardown so the tab keeps
@@ -1706,23 +1681,14 @@ export class EventController {
 		}
 		await this.ctx.flushPendingModelSwitch();
 		for (const toolCallId of Array.from(this.ctx.pendingTools.keys())) {
-			if (!this.#backgroundTaskCallIds.has(toolCallId)) {
-				// A foreground tool still pending at turn end never delivered a result;
-				// seal it so it freezes (and stops animating) rather than lingering in
-				// the transcript live region as a streaming preview until the next thaw.
-				const component = this.ctx.pendingTools.get(toolCallId);
-				// A foreground read still pending at turn end shares a group component
-				// keyed by every read's id; seal it too so a never-delivered read does
-				// not keep the group live (and pinning the live region) indefinitely.
-				if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
-					component.seal();
-				}
-				this.ctx.pendingTools.delete(toolCallId);
+			// A tool still pending at turn end never delivered a result; seal it so
+			// it freezes rather than lingering as a streaming preview.
+			const component = this.ctx.pendingTools.get(toolCallId);
+			if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
+				component.seal();
 			}
+			this.ctx.pendingTools.delete(toolCallId);
 		}
-		this.#backgroundTaskCallIds = new Set(
-			Array.from(this.#backgroundTaskCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
-		);
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();

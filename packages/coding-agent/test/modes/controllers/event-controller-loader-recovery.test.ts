@@ -120,10 +120,10 @@ const RETRY_START = {
 	delayMs: 1000,
 	errorMessage: "overloaded",
 } as unknown as AgentSessionEvent;
-const TASK_TOOL_EXECUTION_END = {
+const WORKER_TOOL_EXECUTION_END = {
 	type: "tool_execution_end",
-	toolCallId: "call-task-1",
-	toolName: "task",
+	toolCallId: "call-worker-1",
+	toolName: "orchestrate_spawn",
 	args: {},
 	result: { content: [], details: {} },
 	isError: false,
@@ -216,7 +216,7 @@ describe("EventController loader recovery after overflow maintenance", () => {
 		ctx.loadingAnimation = undefined;
 		statusContainer.clear();
 
-		await controller.handleEvent(TASK_TOOL_EXECUTION_END);
+		await controller.handleEvent(WORKER_TOOL_EXECUTION_END);
 
 		expect(ctx.loadingAnimation).toBeDefined();
 		expect(statusContainer.children).toContain(ctx.loadingAnimation);
@@ -233,7 +233,7 @@ describe("EventController loader recovery after overflow maintenance", () => {
 		statusContainer.clear();
 		streamState.isStreaming = false;
 
-		await controller.handleEvent(TASK_TOOL_EXECUTION_END);
+		await controller.handleEvent(WORKER_TOOL_EXECUTION_END);
 
 		// No streaming → reconciler must stay a no-op; the spinner is not the
 		// post-turn idle state.

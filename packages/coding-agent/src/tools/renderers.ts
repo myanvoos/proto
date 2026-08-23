@@ -9,7 +9,6 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { goalToolRenderer } from "../goals/tools/goal-tool";
 import { lspToolRenderer } from "../lsp/render";
 import type { Theme } from "../modes/theme/theme";
-import { taskToolRenderer } from "../task/renderer";
 import { webSearchToolRenderer } from "../web/search/render";
 import { askToolRenderer } from "./ask";
 import { astEditToolRenderer } from "./ast-edit";
@@ -19,17 +18,17 @@ import { browserToolRenderer } from "./browser/render";
 import { computerToolRenderer } from "./computer-renderer";
 import { debugToolRenderer } from "./debug";
 import { evalToolRenderer } from "./eval-render";
+import { fleetToolRenderer } from "./fleet";
 import { githubToolRenderer } from "./gh-renderer";
 import { globToolRenderer } from "./glob";
 import { grepToolRenderer } from "./grep";
-import { hubToolRenderer } from "./hub";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
+import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
 import { readToolRenderer } from "./read";
 import { resolveRenderer } from "./resolve";
 import { thinkToolRenderer } from "./think";
 import { todoToolRenderer } from "./todo";
-import { createVibeToolRenderer } from "./vibe";
 import { writeToolRenderer } from "./write";
 import { setXdevRendererLookup } from "./xdev";
 
@@ -93,12 +92,12 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	grep: grepToolRenderer as ToolRenderer,
 	lsp: lspToolRenderer as ToolRenderer,
 	inspect_image: inspectImageToolRenderer as ToolRenderer,
-	// Lazy getter: `hubToolRenderer` lives in a module whose deps (messaging →
-	// persisted-agents → vibe/runtime → task/executor → sdk) close an import
-	// cycle back here, so reading it at init order-dependently hits its
+	// Lazy getter: `fleetToolRenderer` lives in a module whose deps (messaging →
+	// persisted-agents → orchestrator/runtime → task/executor → sdk) close an
+	// import cycle back here, so reading it at init order-dependently hits its
 	// temporal dead zone. Deferring the read to first access sidesteps it.
-	get hub(): ToolRenderer {
-		return hubToolRenderer as ToolRenderer;
+	get fleet(): ToolRenderer {
+		return fleetToolRenderer as ToolRenderer;
 	},
 	read: readToolRenderer as ToolRenderer,
 	// Keyed by xd:// resolution-device names: the write dispatch delegates here
@@ -109,23 +108,16 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	retain: retainToolRenderer as ToolRenderer,
 	recall: recallToolRenderer as ToolRenderer,
 	reflect: reflectToolRenderer as ToolRenderer,
-	// Lazy getter: `taskToolRenderer` lives in a module that closes an import
-	// cycle back here (task/renderer → task/render → … → tools/renderers), so
-	// reading it at init order-dependently hits its temporal dead zone. Deferring
-	// the read to first access (render time) sidesteps the cycle entirely.
-	get task(): ToolRenderer {
-		return taskToolRenderer as ToolRenderer;
-	},
 	think: thinkToolRenderer as ToolRenderer,
 	todo: todoToolRenderer as ToolRenderer,
 	github: githubToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
-	vibe_spawn: createVibeToolRenderer("spawn") as ToolRenderer,
-	vibe_send: createVibeToolRenderer("send") as ToolRenderer,
-	vibe_wait: createVibeToolRenderer("wait") as ToolRenderer,
-	vibe_kill: createVibeToolRenderer("kill") as ToolRenderer,
-	vibe_list: createVibeToolRenderer("list") as ToolRenderer,
+	...(Object.fromEntries(
+		(
+			["orchestrate_spawn", "orchestrate_send", "orchestrate_wait", "orchestrate_kill", "orchestrate_list"] as const
+		).map(name => [name, createOrchestrateToolRenderer(name.split("_")[1] as OrchestrateOp) as ToolRenderer]),
+	) as Record<string, ToolRenderer>),
 	write: writeToolRenderer as ToolRenderer,
 };
 

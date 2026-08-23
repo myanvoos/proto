@@ -7,8 +7,7 @@ import type { ModelRegistry } from "../../../config/model-registry";
 import type { Settings } from "../../../config/settings";
 import type { CustomTool, CustomToolContext } from "../../../extensibility/custom-tools/types";
 import type { AuthStorage } from "../../../session/auth-storage";
-import { TaskTool } from "../../../task";
-import type { TaskParams } from "../../../task/types";
+import { runStructuredSubagent } from "../../../task/structured-subagent";
 import type { ToolSession } from "../../../tools";
 import { getFilePriority } from "./git-file-diff";
 
@@ -40,13 +39,12 @@ function buildToolSession(
 		hasUI: false,
 		// Programmatic fan-out: results feed the commit agent's evidence, not a
 		// model choosing further spawns, so the specialization nudge is noise here.
-		suppressSpawnAdvisory: true,
 		getSessionFile: () => ctx.sessionManager.getSessionFile() ?? null,
 		getSessionSpawns: () => options.spawns,
 		settings: options.settings,
 		authStorage: options.authStorage,
 		modelRegistry: options.modelRegistry,
-		// The task tool no longer takes a per-call schema; the inherited session
+		// The orchestration tools no longer takes a per-call schema; the inherited session
 		// schema drives structured output for every spawn from this session.
 		outputSchema: analyzeFileOutputSchema,
 	};
@@ -63,15 +61,10 @@ export function createAnalyzeFileTool(options: {
 	return {
 		name: "analyze_files",
 		label: "Analyze Files",
-		description: "Spawn sonic agents to analyze files.",
+		description: "Spawn lightbot agents to analyze files.",
 		parameters: analyzeFileSchema,
 		async execute(toolCallId, params, _onUpdate, ctx, signal) {
 			const toolSession = buildToolSession(ctx, options);
-			// The hand-built ToolSession carries no asyncJobManager, so every
-			// execute() below takes the task tool's sync fallback and resolves
-			// with the subagent's result inline — exactly what this flow needs.
-			// The tool's session semaphore bounds the parallel fan-out.
-			const taskTool = await TaskTool.create(toolSession);
 			const numstat = options.state.overview?.numstat ?? [];
 
 			const analyses = await Promise.all(
@@ -82,25 +75,27 @@ export function createAnalyzeFileTool(options: {
 						goal: params.goal,
 						related_files: relatedFiles,
 					});
-					const taskParams: TaskParams = {
-						name: `AnalyzeFile${index + 1}`,
-						agent: "sonic",
-						task: assignment,
-					};
-					return taskTool.execute(`${toolCallId}-${index + 1}`, taskParams, signal);
+					return runStructuredSubagent({
+						session: toolSession,
+						invocationKind: "worker",
+						assignment,
+						agent: "lightbot",
+						identity: { label: `AnalyzeFile${index + 1}` },
+						parentToolCallId: `${toolCallId}-${index + 1}`,
+						signal,
+					});
 				}),
 			);
-			const results = analyses.flatMap(analysis => analysis.details?.results ?? []);
+			const results = analyses.map(analysis => analysis.result);
 			const text = analyses
-				.map(analysis => analysis.content.find(part => part.type === "text")?.text ?? "")
-				.filter(Boolean)
+				.map(analysis => analysis.result.output.trim() || analysis.result.stderr.trim() || "(no output)")
 				.join("\n\n");
 			return {
-				content: [{ type: "text", text: text || "(no output)" }],
+				content: [{ type: "text", text }],
 				details: {
 					projectAgentsDir: null,
 					results,
-					totalDurationMs: analyses.reduce((sum, analysis) => sum + (analysis.details?.totalDurationMs ?? 0), 0),
+					totalDurationMs: analyses.reduce((sum, analysis) => sum + (analysis.result.durationMs ?? 0), 0),
 				},
 			};
 		},

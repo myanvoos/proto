@@ -23,12 +23,12 @@ import type { AgentDefinition, AgentProgress, SingleResult, StructuredSubagentOu
 import type { ToolSession } from "../../src/tools";
 
 const taskAgent = {
-	name: "task",
-	description: "Task agent",
+	name: "worker",
+	description: "Worker agent",
 	systemPrompt: "Run the task.",
 	source: "bundled",
 	spawns: "*",
-	model: ["@task"],
+	model: ["@worker"],
 } satisfies AgentDefinition;
 
 const reviewerAgent = {
@@ -59,8 +59,8 @@ function makeSession(options: SessionOptions = {}): ToolSession {
 		options.settings ??
 		Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
-			"task.enableLsp": true,
+			"orchestrator.isolation.mode": "none",
+			"orchestrator.enableLsp": true,
 		});
 	const artifactsDir = options.artifactsDir ?? null;
 	return {
@@ -164,7 +164,7 @@ describe("runEvalAgent", () => {
 		resetRegisteredArtifactDirsForTests();
 	});
 
-	it("resolves the default task agent and agent overrides", async () => {
+	it("resolves the default worker agent and agent overrides", async () => {
 		mockAgents();
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options =>
 			singleResult(options, {
@@ -176,9 +176,9 @@ describe("runEvalAgent", () => {
 		const defaultResult = await runEvalAgent({ prompt: "hello" }, { session });
 		const overrideResult = await runEvalAgent({ prompt: "hello", agent: "reviewer" }, { session });
 
-		expect(defaultResult.text).toBe("task");
+		expect(defaultResult.text).toBe("worker");
 		expect(overrideResult.text).toBe("reviewer");
-		expect(runSpy.mock.calls[0]?.[0].agent.name).toBe("task");
+		expect(runSpy.mock.calls[0]?.[0].agent.name).toBe("worker");
 		expect(runSpy.mock.calls[1]?.[0].agent.name).toBe("reviewer");
 	});
 
@@ -199,7 +199,7 @@ describe("runEvalAgent", () => {
 			"spawns disabled",
 		);
 		await expect(
-			runEvalAgent({ prompt: "hello", agent: "task" }, { session: makeSession({ spawns: "reviewer" }) }),
+			runEvalAgent({ prompt: "hello", agent: "worker" }, { session: makeSession({ spawns: "reviewer" }) }),
 		).rejects.toThrow("Allowed: reviewer");
 		expect(runSpy).not.toHaveBeenCalled();
 	});
@@ -218,7 +218,7 @@ describe("runEvalAgent", () => {
 		expect(runSpy.mock.calls[0]?.[0].agent.name).toBe("reviewer");
 	});
 
-	it("honors task.maxRecursionDepth without an eval-specific ceiling", async () => {
+	it("honors orchestrator.maxRecursionDepth without an eval-specific ceiling", async () => {
 		mockAgents();
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
 
@@ -229,8 +229,8 @@ describe("runEvalAgent", () => {
 					session: makeSession({
 						settings: Settings.isolated({
 							"async.enabled": false,
-							"task.isolation.mode": "none",
-							"task.maxRecursionDepth": 0,
+							"orchestrator.isolation.mode": "none",
+							"orchestrator.maxRecursionDepth": 0,
 						}),
 					}),
 				},
@@ -244,8 +244,8 @@ describe("runEvalAgent", () => {
 					depth: 3,
 					settings: Settings.isolated({
 						"async.enabled": false,
-						"task.isolation.mode": "none",
-						"task.maxRecursionDepth": -1,
+						"orchestrator.isolation.mode": "none",
+						"orchestrator.maxRecursionDepth": -1,
 					}),
 				}),
 			},
@@ -282,11 +282,11 @@ describe("runEvalAgent", () => {
 			modelString: "p/fallback",
 			settings: Settings.isolated({
 				"async.enabled": false,
-				"task.isolation.mode": "none",
-				"task.enableLsp": true,
-				// Default task.maxRecursionDepth is 2, which would now (correctly)
+				"orchestrator.isolation.mode": "none",
+				"orchestrator.enableLsp": true,
+				// Default orchestrator.maxRecursionDepth is 2, which would now (correctly)
 				// block depth=2 — widen it so the test still exercises depth=2.
-				"task.maxRecursionDepth": -1,
+				"orchestrator.maxRecursionDepth": -1,
 			}),
 		});
 
@@ -371,7 +371,7 @@ describe("runEvalAgent", () => {
 	it("keeps bridge kernels independent while inheriting non-plan LSP and IRC policy", async () => {
 		mockAgents();
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
-		// makeSession() defaults to enableLsp: true and task.enableLsp: true.
+		// makeSession() defaults to enableLsp: true and orchestrator.enableLsp: true.
 		const session = makeSession();
 
 		await runEvalAgent({ prompt: "hello" }, { session });
@@ -461,7 +461,7 @@ describe("runEvalAgent", () => {
 		const result = await runEvalAgent({ prompt: "hello" }, { session: makeSession() });
 		expect(result).toEqual({
 			text: "done",
-			details: { agent: "task", id: "0-EvalAgent", model: "p/model", structured: false },
+			details: { agent: "worker", id: "0-EvalAgent", model: "p/model", structured: false },
 		});
 		await expect(runEvalAgent({ prompt: "fail" }, { session: makeSession() })).rejects.toThrow("boom");
 	});
@@ -481,7 +481,7 @@ describe("runEvalAgent", () => {
 				stderr: "",
 				error: undefined,
 				aborted: true,
-				abortReason: "Subagent runtime limit exceeded (task.maxRuntimeMs=900000)",
+				abortReason: "Subagent runtime limit exceeded (orchestrator.maxRuntimeMs=900000)",
 			}),
 		);
 		runSpy.mockImplementationOnce(async options =>
@@ -504,7 +504,7 @@ describe("runEvalAgent", () => {
 		);
 
 		await expect(runEvalAgent({ prompt: "slow" }, { session: makeSession() })).rejects.toThrow(
-			"Subagent runtime limit exceeded (task.maxRuntimeMs=900000)",
+			"Subagent runtime limit exceeded (orchestrator.maxRuntimeMs=900000)",
 		);
 		// Whitespace-only stderr/error must not mask abortReason either.
 		await expect(runEvalAgent({ prompt: "cancelled" }, { session: makeSession() })).rejects.toThrow(
@@ -570,13 +570,13 @@ describe("agent() through eval runtimes", () => {
 		expect(output.node.handle).toBe(`agent://${output.node.id}`);
 	});
 
-	it("bounds JavaScript parallel() by the task.maxConcurrency setting while preserving order", async () => {
+	it("bounds JavaScript parallel() by the orchestrator.maxConcurrency setting while preserving order", async () => {
 		using tempDir = TempDir.createSync("@omp-eval-agent-js-parallel-");
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
-			"task.enableLsp": true,
-			"task.maxConcurrency": 2,
+			"orchestrator.isolation.mode": "none",
+			"orchestrator.enableLsp": true,
+			"orchestrator.maxConcurrency": 2,
 		});
 		const { session, sessionFile } = makeEvalSession(tempDir, "js-agent-parallel", settings);
 		mockAgents();
@@ -659,13 +659,13 @@ describe("agent() through eval runtimes", () => {
 		expect(node.handle).toBe(`agent://${node.id}`);
 	});
 
-	it("bounds Python parallel() by the task.maxConcurrency setting while preserving order", async () => {
+	it("bounds Python parallel() by the orchestrator.maxConcurrency setting while preserving order", async () => {
 		using tempDir = TempDir.createSync("@omp-eval-agent-py-parallel-");
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
-			"task.enableLsp": true,
-			"task.maxConcurrency": 2,
+			"orchestrator.isolation.mode": "none",
+			"orchestrator.enableLsp": true,
+			"orchestrator.maxConcurrency": 2,
 		});
 		const { session, sessionFile, sessionId } = makeEvalSession(tempDir, "py-agent-parallel", settings);
 		mockAgents();
@@ -690,9 +690,9 @@ describe("agent() through eval runtimes", () => {
 		using tempDir = TempDir.createSync("@omp-eval-agent-py-interrupt-");
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
-			"task.enableLsp": true,
-			"task.maxConcurrency": 6,
+			"orchestrator.isolation.mode": "none",
+			"orchestrator.enableLsp": true,
+			"orchestrator.maxConcurrency": 6,
 		});
 		const { session, sessionFile, sessionId } = makeEvalSession(tempDir, "py-agent-interrupt", settings);
 		mockAgents();
@@ -712,7 +712,7 @@ describe("agent() through eval runtimes", () => {
 		// signal aborts. Nothing releases these agents, so the only way the cell
 		// can settle is the abort actually reaching them.
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			// task.maxConcurrency=6 → six bridge calls block at once; signal then.
+			// orchestrator.maxConcurrency=6 → six bridge calls block at once; signal then.
 			if (++inFlight >= 6) markSaturated?.();
 			const aborted = Promise.withResolvers<never>();
 			const onAbort = () => aborted.reject(new Error("subagent aborted"));
@@ -883,7 +883,7 @@ describe("agent() through eval runtimes", () => {
 		const { session } = makeEvalSession(
 			tempDir,
 			"js-agent-timeout-pause",
-			Settings.isolated({ "task.maxRuntimeMs": 1 }),
+			Settings.isolated({ "orchestrator.maxRuntimeMs": 1 }),
 		);
 		mockAgents();
 
@@ -927,7 +927,7 @@ describe("agent() through eval runtimes", () => {
 		// The bridge paused the watchdog; the subprocess is now blocked in flight.
 		await inFlight;
 		// `agent()` must not pin the wall-clock cap: leaving it unset lets the
-		// executor inherit `task.maxRuntimeMs` exactly like the task tool does.
+		// executor inherit `orchestrator.maxRuntimeMs` exactly like the task tool does.
 		expect(observedMaxRuntimeMs).toBeUndefined();
 		// Burn far more than the 20ms budget while paused: the watchdog stays armed-off.
 		vi.advanceTimersByTime(1_000);
@@ -1092,8 +1092,8 @@ describe("runEvalAgent isolation", () => {
 		return makeSession({
 			settings: Settings.isolated({
 				"async.enabled": false,
-				"task.isolation.mode": "auto",
-				"task.isolation.merge": "patch",
+				"orchestrator.isolation.mode": "auto",
+				"orchestrator.isolation.merge": "patch",
 				...overrides,
 			}),
 		});
@@ -1111,7 +1111,7 @@ describe("runEvalAgent isolation", () => {
 		return { repoRoot };
 	}
 
-	it("rejects isolated=true when task.isolation.mode is 'none'", async () => {
+	it("rejects isolated=true when orchestrator.isolation.mode is 'none'", async () => {
 		mockAgents();
 		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
 		const prepSpy = vi.spyOn(isolationRunner, "prepareIsolationContext");
@@ -1119,13 +1119,13 @@ describe("runEvalAgent isolation", () => {
 		const session = makeSession(); // default settings: isolation.mode === "none"
 
 		await expect(runEvalAgent({ prompt: "do work", isolated: true }, { session })).rejects.toThrow(
-			'task.isolation.mode to be set; current mode is "none"',
+			'orchestrator.isolation.mode to be set; current mode is "none"',
 		);
 		expect(prepSpy).not.toHaveBeenCalled();
 		expect(runSpy).not.toHaveBeenCalled();
 	});
 
-	it("stays non-isolated by default even when task.isolation.mode is set; isolated=true opts in", async () => {
+	it("stays non-isolated by default even when orchestrator.isolation.mode is set; isolated=true opts in", async () => {
 		mockAgents();
 		mockIsolationContext();
 		const isolatedSpy = vi
@@ -1187,7 +1187,7 @@ describe("runEvalAgent isolation", () => {
 		});
 
 		// Branch is the configured merge mode, but `merge: false` must demote to patch.
-		const session = isolatedSession({ "task.isolation.merge": "branch" });
+		const session = isolatedSession({ "orchestrator.isolation.merge": "branch" });
 		const result = await runEvalAgent({ prompt: "migration", isolated: true, merge: false }, { session });
 
 		expect(isolatedSpy).toHaveBeenCalledTimes(1);
@@ -1365,7 +1365,7 @@ describe("runEvalAgent isolation", () => {
 		);
 		const mergeSpy = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
 
-		const session = isolatedSession({ "task.isolation.merge": "branch" });
+		const session = isolatedSession({ "orchestrator.isolation.merge": "branch" });
 		await expect(runEvalAgent({ prompt: "scout", isolated: true }, { session })).rejects.toThrow(
 			/Merge failed.*garbage at end of loose object.*Captured patch preserved at \/artifacts\//s,
 		);
@@ -1388,7 +1388,7 @@ describe("runEvalAgent isolation", () => {
 			mergedBranchForNestedPatches: false,
 		});
 
-		const session = isolatedSession({ "task.isolation.merge": "branch" });
+		const session = isolatedSession({ "orchestrator.isolation.merge": "branch" });
 		await expect(runEvalAgent({ prompt: "scout", isolated: true }, { session })).rejects.toThrow(
 			/isolated apply failed.*Branch merge failed.*Captured branch preserved as omp\/task\//s,
 		);
@@ -1502,7 +1502,7 @@ describe("runEvalAgent isolation", () => {
 		);
 		const mergeSpy = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
 
-		const session = isolatedSession({ "task.isolation.merge": "branch" });
+		const session = isolatedSession({ "orchestrator.isolation.merge": "branch" });
 		const result = await runEvalAgent({ prompt: "scout", isolated: true, apply: false }, { session });
 
 		expect(mergeSpy).not.toHaveBeenCalled();
@@ -1522,7 +1522,7 @@ describe("runEvalAgent isolation", () => {
 		);
 		const mergeSpy = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
 
-		const session = isolatedSession({ "task.isolation.merge": "branch" });
+		const session = isolatedSession({ "orchestrator.isolation.merge": "branch" });
 		const result = await runEvalAgent({ prompt: "scout", isolated: true, apply: false }, { session });
 
 		expect(mergeSpy).not.toHaveBeenCalled();

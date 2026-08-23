@@ -92,7 +92,7 @@ describe("gallery harness", () => {
 	it("renders curated failed states as failures", async () => {
 		const cases = [
 			["hub_inbox", "IRC inbox failed: message store unavailable.", "IRC inbox empty"],
-			["hub_list", "IRC list failed: agent hub is unavailable.", "no other agents"],
+			["hub_list", "IRC list failed: agent fleet is unavailable.", "no other agents"],
 			["hub_jobs", "Subagent exited 1: Redis connection string is missing.", "cancelled"],
 		] as const;
 
@@ -110,7 +110,7 @@ describe("gallery harness", () => {
 
 		expect(success).toContain("Read (4)");
 		expect(renderPathMatches).toHaveLength(1);
-		expect(success).toContain("packages/coding-agent/src/task/render.ts:507-605,1070-1194,…,1270-1274");
+		expect(success).toContain("packages/coding-agent/src/task/executor.ts:507-605,1070-1194,…,1270-1274");
 		expect(success).not.toContain("1210-1240");
 		expect(success).not.toContain("full file");
 	});

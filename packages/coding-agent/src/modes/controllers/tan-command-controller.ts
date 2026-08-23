@@ -99,7 +99,7 @@ export class TanCommandController {
 		const sessionDir = parentFile.slice(0, -6);
 		const settings = createSubagentSettings(this.ctx.settings);
 		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
-		const enableLsp = this.ctx.settings.get("task.enableLsp") !== false;
+		const enableLsp = this.ctx.settings.get("orchestrator.enableLsp") !== false;
 		const agentRegistry = AgentRegistry.global();
 		const cloneId = `Tan-${Snowflake.next()}`;
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
@@ -117,7 +117,7 @@ export class TanCommandController {
 			});
 
 			jobId = manager.register(
-				"task",
+				"worker",
 				label,
 				async ({ signal }) => {
 					if (signal.aborted) throw new Error("Aborted before execution");
@@ -197,7 +197,7 @@ export class TanCommandController {
 							signal.removeEventListener("abort", abortClone);
 						}
 					} finally {
-						// Keep the finished tan in the Agent Hub instead of unregistering it:
+						// Keep the finished tan in the Agent Fleet instead of unregistering it:
 						// flip the ref to parked BEFORE dispose so the sdk dispose wrapper
 						// skips its unregister, then null the disposed session so the hub
 						// treats it as a transcript-only parked agent. An aborted tan is

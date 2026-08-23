@@ -8,13 +8,11 @@
  * failure returns `null` so callers fall back to an in-process backend.
  */
 
-import * as os from "node:os";
-import * as path from "node:path";
-import { logger, ptree } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
 import { daemonClientForProject } from "../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../launch/ensure";
 import { daemonRuntimeDir } from "../launch/paths";
-import { resolveWorkerSpawnCmd, SMOKE_TEST_TIMEOUT_MS, workerEnvFromParent } from "../subprocess/worker-client";
+import { resolveWorkerSpawnCmd } from "../subprocess/worker-client";
 import type { BlobBackend } from "./broker";
 import {
 	BLOB_BROKER_CONFIG_ENV,
@@ -285,62 +283,5 @@ export async function connectDaemonBlobBackend(
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return null;
-	}
-}
-
-/** Exercise worker-host blob daemon startup and the /info probe for distribution smoke tests. */
-export async function smokeTestBlobBroker(): Promise<void> {
-	const socket = path.join(os.tmpdir(), `omp-blob-smoke-${process.pid.toString(36)}.sock`);
-	const config: BlobBrokerWorkerConfig = {
-		kind: "direct",
-		options: {},
-		credentials: {},
-		bindHost: "127.0.0.1",
-	};
-	const spawn = resolveWorkerSpawnCmd(BLOB_BROKER_WORKER_ARG);
-	const proc = ptree.spawn(spawn.cmd, {
-		cwd: spawn.cwd,
-		env: workerEnvFromParent({
-			[BLOB_BROKER_SOCKET_ENV]: socket,
-			[BLOB_BROKER_CONFIG_ENV]: JSON.stringify(config),
-		}),
-	});
-	try {
-		const deadline = Date.now() + SMOKE_TEST_TIMEOUT_MS;
-		let info: DaemonInfo | null = null;
-		while (Date.now() < deadline) {
-			if (proc.exitCode !== null) break;
-			info = await probeDaemon(socket);
-			if (info) break;
-			await Bun.sleep(200);
-		}
-		if (!info) {
-			throw new Error(
-				`blob broker smoke failed: no /info response (${proc.peekStderr().slice(-500) || "no stderr"})`,
-			);
-		}
-		const { publication } = await fetchUnix<EnsureBlobResponse>(socket, "/blob", {
-			method: "POST",
-			body: JSON.stringify({
-				key: "smoke",
-				mimeType: "image/png",
-				data: Buffer.from("smoke-test").toString("base64"),
-			}),
-		});
-		if (!publication) throw new Error("blob broker smoke failed: ensure returned no publication");
-		if (publication.destination !== "direct" || publication.bytes !== 10) {
-			throw new Error("blob broker smoke failed: ensure returned incomplete publication metadata");
-		}
-		const served = await fetch(publication.url);
-		if (!served.ok || (await served.text()) !== "smoke-test") {
-			throw new Error(`blob broker smoke failed: blob roundtrip returned ${served.status}`);
-		}
-		const status = await fetchUnix<BlobBrokerStatus>(socket, "/status");
-		if (status.metrics.activeBlobs !== 1 || status.metrics.hits !== 1 || status.metrics.bytesServed !== 10) {
-			throw new Error("blob broker smoke failed: status metrics did not roundtrip");
-		}
-	} finally {
-		proc.kill();
-		await proc.exited.catch(() => {});
 	}
 }

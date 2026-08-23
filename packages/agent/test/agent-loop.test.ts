@@ -20,7 +20,7 @@ import { ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD } from "@oh-my-pi/pi-agent-
 import type { AssistantMessage, AssistantMessageEvent, Context, Message, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import { INTENT_FIELD } from "@oh-my-pi/pi-utils"
+import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage, createUserMessage } from "./helpers";
 
 declare module "@oh-my-pi/pi-agent-core/types" {

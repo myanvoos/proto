@@ -22,7 +22,7 @@ import type { SlashCommandSpec } from "./types";
 
 /**
  * Reload the interactive session's plugin runtime: invalidate fs/plugin-root
- * caches, rediscover skills, file slash commands, and task agents, reset the
+ * caches, rediscover skills, file slash commands, and worker agents, reset the
  * capability cache, and reconnect MCP servers (rebinding the session's MCP
  * tools). Shared by `/reload-plugins`'s TUI handler and the `handle`-adapter's
  * `reloadPlugins` hook so both honor the command's documented reload scope.

@@ -56,10 +56,10 @@ import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/mess
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 
-import { prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
+import { prewalkWouldBeNoop, resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
-import { isIrcEnabled } from "../tools/hub";
+import { isIrcEnabled } from "../tools/fleet";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";
@@ -81,10 +81,9 @@ import {
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
 	type StructuredSubagentSchemaSource,
-	TASK_SUBAGENT_EVENT_CHANNEL,
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	TASK_SUBAGENT_PROGRESS_CHANNEL,
-	type TaskToolDetails,
+	WORKER_SUBAGENT_EVENT_CHANNEL,
+	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
+	WORKER_SUBAGENT_PROGRESS_CHANNEL,
 	type YieldItem,
 } from "./types";
 import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
@@ -92,29 +91,29 @@ import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 export type { YieldItem } from "./types";
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
-const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
+const WORKER_ABORT_CLEANUP_GRACE_MS = 10_000;
 
 /**
  * Soft per-agent request budgets (assistant requests per run). Crossing the
- * budget injects a wrap-up steering notice (`task.softRequestBudgetNotice`,
+ * budget injects a wrap-up steering notice (`orchestrator.softRequestBudgetNotice`,
  * on by default). At 1.5x the budget the free-running turn is stopped and the
  * agent is driven to one forced final `yield` so partial findings come back
  * as a real report; only if it still refuses to yield within
  * {@link BUDGET_STOP_GRACE_REQUESTS} more requests is the run hard-aborted.
  * Entries are ceilings, not fixed values: the `default` key applies to agents
- * without an explicit entry, and the `task.softRequestBudget` setting can only
+ * without an explicit entry, and the `orchestrator.softRequestBudget` setting can only
  * lower an agent's budget, never raise it above its bundled entry (0 disables
  * the guard entirely).
  */
 export const SOFT_REQUEST_BUDGET: Record<string, number> = {
 	scout: 100,
-	sonic: 100,
+	lightbot: 100,
 	default: 200,
 };
 
 /**
  * Resolves the effective soft request budget for an agent. The configured
- * `task.softRequestBudget` and the agent's bundled entry are both upper
+ * `orchestrator.softRequestBudget` and the agent's bundled entry are both upper
  * bounds, so the tighter one wins; a configured budget of 0 disables the
  * guard regardless of the bundled entry.
  */
@@ -200,7 +199,7 @@ function resolveSubagentRetryFallbackCandidates(
  * fallbacks of their own. The child is pinned to a `subagent:<id>` role whose
  * chain shadows every configured role chain (see
  * {@link installSubagentRetryFallbackChain}), so a role-alias request (`@smol`,
- * the bundled `task` agent's `@task`) MUST inherit that role's chain —
+ * the bundled `worker` agent's `@worker`) MUST inherit that role's chain —
  * otherwise the pin silently re-routes the child onto the `default` role's
  * chain. Explicit model selectors keep inheriting `default`: they carry no role
  * identity, and a role that happens to be assigned the same model must not
@@ -355,7 +354,7 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
-	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
+	/** Shared background rendered into the subagent's system prompt. */
 	context?: string;
 	/**
 	 * The session's active overall plan, handed off so subagents spawned during
@@ -385,7 +384,7 @@ export interface ExecutorOptions {
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ThinkingLevel;
 	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
-	effort?: TaskEffort;
+	effort?: WorkerEffort;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -397,10 +396,10 @@ export interface ExecutorOptions {
 	 * Eval `agent(..., schema=...)` sets this so built-in agents ignore stale yield labels.
 	 */
 	outputSchemaOverridesAgent?: boolean;
-	/** Parent task recursion depth (0 = top-level, 1 = first child, etc.) */
+	/** Parent worker recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
 	/**
-	 * Override the `task.maxRuntimeMs` wall-clock cap for this run. When provided
+	 * Override the `orchestrator.maxRuntimeMs` wall-clock cap for this run. When provided
 	 * it wins over the settings value; `0` disables the per-subagent wall-clock
 	 * limit entirely. Used by the eval `agent()` bridge, whose parent cell
 	 * watchdog is already suspended for the call's duration.
@@ -905,7 +904,7 @@ export function createSubagentSettings(
 			// Subagents run headless — there is no UI to confirm prompts against, so
 			// the parent task approval is the authorization boundary. Use yolo mode
 			// Subagents run unadvised by default; runSubprocess opts a spawn back in
-			// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
+			// per agent (frontmatter `advisor` / `orchestrator.agentAdvisor`) via overrides.
 			"advisor.enabled": false,
 			...overrides,
 		},
@@ -1206,7 +1205,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	// Wall-clock hard limit. Defense-in-depth for the case where a provider stream
 	// hang escapes the inference-layer watchdog (see openai-completions
 	// `isOpenAICompletionsProgressChunk`). Disabled by default; set
-	// `task.maxRuntimeMs > 0` to cap each subagent's lifetime.
+	// `orchestrator.maxRuntimeMs > 0` to cap each subagent's lifetime.
 	let runtimeTimeoutId: NodeJS.Timeout | undefined;
 	if (maxRuntimeMs > 0) {
 		runtimeTimeoutId = setTimeout(() => {
@@ -1235,7 +1234,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 	const resolveAbortReasonText = (): string => {
 		if (runtimeLimitExceeded) {
-			return `Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`;
+			return `Subagent runtime limit exceeded (orchestrator.maxRuntimeMs=${maxRuntimeMs})`;
 		}
 		if (budgetLimitExceeded) {
 			return `Soft request budget exceeded (${progress.requests} requests; budget ${softRequestBudget}) — agent did not yield when force-stopped`;
@@ -1271,7 +1270,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);
 		if (activityGist) AgentRegistry.global().setActivity(id, activityGist);
 		if (args.eventBus) {
-			args.eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			args.eventBus.emit(WORKER_SUBAGENT_PROGRESS_CHANNEL, {
 				index,
 				agent: agent.name,
 				agentSource: agent.source,
@@ -1382,7 +1381,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 	const emitSubagentEvent = (event: AgentSessionEvent) => {
 		if (!args.eventBus) return;
-		args.eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
+		args.eventBus.emit(WORKER_SUBAGENT_EVENT_CHANNEL, {
 			id,
 			event,
 		});
@@ -1440,11 +1439,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				if (event.toolName === "yield" && !yieldCalled) {
 					yieldCallPending = true;
 				}
-				// Reset any prior in-flight task snapshot so we don't show stale
-				// nested progress when the agent enters a fresh `task` call.
-				if (event.toolName === "task") {
-					progress.inflightTaskDetails = undefined;
-				}
 				break;
 			}
 
@@ -1463,13 +1457,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.currentTool = undefined;
 				progress.currentToolArgs = undefined;
 				progress.currentToolStartMs = undefined;
-				// The finalized TaskToolDetails will be captured below into
-				// `extractedToolData.task`; drop the in-flight snapshot so the
-				// renderer doesn't double-count it against the final entry.
-				if (event.toolName === "task") {
-					progress.inflightTaskDetails = undefined;
-				}
-
 				// Check for registered subagent tool handler
 				const handler = subprocessToolRegistry.getHandler(event.toolName);
 				const eventRecord: unknown = event;
@@ -1548,22 +1535,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				break;
 			}
 
-			case "tool_execution_update": {
-				// Surface nested-subagent progress mid-flight. The child task
-				// tool emits incremental `onUpdate` calls carrying its current
-				// `TaskToolDetails` (results + progress); we stash the latest
-				// snapshot so the parent UI can render the in-flight subtree
-				// without waiting for the call to finish.
-				if (event.toolName === "task") {
-					const partial = (event as { partialResult?: { details?: unknown } }).partialResult;
-					const details = partial && typeof partial === "object" ? partial.details : undefined;
-					if (details && typeof details === "object" && "results" in (details as TaskToolDetails)) {
-						progress.inflightTaskDetails = details as TaskToolDetails;
-						flushProgress = true;
-					}
-				}
+			case "tool_execution_update":
 				break;
-			}
 
 			case "message_update": {
 				if (event.message?.role !== "assistant") break;
@@ -2000,11 +1973,11 @@ async function driveSessionToYield(
 		// pending owner work left is terminal — the isolation runner captures
 		// and destroys the worktree right after this run resolves, so no
 		// owner job that could still re-wake the session may outlive it.
-		// Suppressed (acknowledged / hub-watched) jobs never re-wake the run
+		// Suppressed (acknowledged / fleet-watched) jobs never re-wake the run
 		// and are reaped at teardown.
 		//
 		// Before blocking on running jobs, tell the model ONCE what it is
-		// waiting on so it can `hub` wait/cancel instead of sitting silent
+		// waiting on so it can `fleet` wait/cancel instead of sitting silent
 		// until the jobs (or the runtime limit) expire. Runs that never yield
 		// (ladder exhausted / terminal model error) skip the barrier — more
 		// injected turns just multiply the failure noise; the teardown reap
@@ -2245,7 +2218,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 
 	// Emit lifecycle end event after finalization so yield status is reflected
 	if (args.eventBus) {
-		args.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		args.eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
 			parentToolCallId: args.parentToolCallId,
@@ -2357,7 +2330,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		});
 
 		if (options.eventBus) {
-			options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			options.eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 				id,
 				agent: agent.name,
 				parentToolCallId: options.parentToolCallId,
@@ -2603,7 +2576,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	});
 
 	if (options.eventBus) {
-		options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		options.eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
 			parentToolCallId: options.parentToolCallId,
@@ -2674,7 +2647,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		signal,
 		onProgress,
 	} = options;
-	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
+	const cleanupGraceMs = options.cleanupGraceMs ?? WORKER_ABORT_CLEANUP_GRACE_MS;
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
@@ -2713,13 +2686,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 	const settings = options.settings ?? Settings.isolated();
 	// Per-agent advisor: the agent definition's `advisor` frontmatter or the
-	// `task.agentAdvisor` settings override (agent name → "on"/"off"/model
+	// `orchestrator.agentAdvisor` settings override (agent name → "on"/"off"/model
 	// pattern) pairs the spawned session with an advisor. Subagents default to
 	// no advisor (createSubagentSettings forces `advisor.enabled` off); an
 	// explicit model pattern lands on the child's `modelRoles.advisor` so role
 	// aliases and `:level` suffixes resolve inside the spawned session.
 	const advisorSelection = resolveAgentAdvisorSelection({
-		settingsOverride: settings.get("task.agentAdvisor")[agent.name],
+		settingsOverride: settings.get("orchestrator.agentAdvisor")[agent.name],
 		agentAdvisor: agent.advisor,
 	});
 	const subagentSettings = createSubagentSettings(
@@ -2735,42 +2708,47 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		},
 		options.parentServiceTier,
 	);
-	const maxRecursionDepth = settings.get("task.maxRecursionDepth") ?? 2;
+	const maxRecursionDepth = settings.get("orchestrator.maxRecursionDepth") ?? 2;
 	const maxRuntimeMs = Math.max(
 		0,
-		Math.trunc(Number(options.maxRuntimeMs ?? settings.get("task.maxRuntimeMs") ?? 0) || 0),
+		Math.trunc(Number(options.maxRuntimeMs ?? settings.get("orchestrator.maxRuntimeMs") ?? 0) || 0),
 	);
 	// TTL before an adopted idle subagent is parked by the lifecycle manager.
 	// <= 0 disables parking (the session stays live until process teardown).
-	const agentIdleTtlMs = Math.trunc(Number(settings.get("task.agentIdleTtlMs") ?? 420_000) || 0);
+	const agentIdleTtlMs = Math.trunc(Number(settings.get("orchestrator.agentIdleTtlMs") ?? 420_000) || 0);
 	const configuredDefaultBudget = Math.max(
 		0,
-		Math.trunc(Number(settings.get("task.softRequestBudget") ?? SOFT_REQUEST_BUDGET.default) || 0),
+		Math.trunc(Number(settings.get("orchestrator.softRequestBudget") ?? SOFT_REQUEST_BUDGET.default) || 0),
 	);
 	const softRequestBudget = resolveSoftRequestBudget(agent.name, configuredDefaultBudget);
-	const softRequestBudgetNotice = settings.get("task.softRequestBudgetNotice") ?? false;
+	const softRequestBudgetNotice = settings.get("orchestrator.softRequestBudgetNotice") ?? false;
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
-	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
+	const atMaxDepth = maxRecursionDepth >= 0 && childDepth > maxRecursionDepth;
 	const ircEnabled = options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth);
 
-	// Add tools if specified
+	const orchestrationTools = [
+		"orchestrate_spawn",
+		"orchestrate_send",
+		"orchestrate_wait",
+		"orchestrate_kill",
+		"orchestrate_list",
+	];
 	let toolNames: string[] | undefined;
 	if (agent.tools && agent.tools.length > 0) {
 		toolNames = agent.tools;
-		// Auto-include task tool if spawns defined but task not in tools
-		if (agent.spawns !== undefined && !toolNames.includes("task") && !atMaxDepth) {
-			toolNames = [...toolNames, "task"];
+		if (agent.spawns !== undefined && !atMaxDepth) {
+			toolNames = [...new Set([...toolNames, ...orchestrationTools])];
 		}
 	}
 
-	if (atMaxDepth && toolNames?.includes("task")) {
-		toolNames = toolNames.filter(name => name !== "task");
+	if (atMaxDepth && toolNames) {
+		toolNames = toolNames.filter(name => !orchestrationTools.includes(name));
 	}
-	// Ordinary agents retain the host's always-on collaboration capability.
-	// Restricted sessions must not widen their explicit host tool list with hub.
-	if (toolNames && !options.restrictToolNames && !toolNames.includes("hub")) {
-		toolNames = [...toolNames, "hub"];
+	// Ordinary agents retain the host's collaboration capability.
+	// Restricted sessions must not widen their explicit host tool list with fleet.
+	if (toolNames && !options.restrictToolNames && !toolNames.includes("fleet")) {
+		toolNames = [...toolNames, "fleet"];
 	}
 	if (toolNames?.includes("exec")) {
 		const backends = resolveEvalBackends({ settings } as ToolSession);
@@ -2962,10 +2940,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// through to the normal selectors below.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? settings.get("task.maxEffort") : undefined;
+			const spawnEffortCeiling = options.effort !== undefined ? settings.get("orchestrator.maxEffort") : undefined;
 			const effortLevel =
 				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+					? resolveWorkerEffortLevel(model, options.effort, spawnEffortCeiling)
 					: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
@@ -2991,15 +2969,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// Observe rejection immediately while preserving it for the later await.
 			sessionManagerPromise.catch(() => {});
 			// Per-agent prewalk: the agent definition's `prewalk` frontmatter or the
-			// `task.agentPrewalk` settings override hands the subagent off to a
+			// `orchestrator.agentPrewalk` settings override hands the subagent off to a
 			// fast/cheap target at its first edit/write — the same mechanism as the
-			// session-level --prewalk. The bundled generic `task` agent has no
-			// frontmatter default; the `task.prewalk` toggle (default off) arms it.
+			// session-level --prewalk. The bundled generic `worker` agent has no
+			// frontmatter default; the `orchestrator.prewalk` toggle (default off) arms it.
 			// Resolution failures skip prewalk instead of failing the spawn.
 			let prewalk: Prewalk | undefined;
 			const prewalkPattern = resolveAgentPrewalkPattern({
-				settingsOverride: settings.get("task.agentPrewalk")[agent.name],
-				agentPrewalk: resolveAgentPrewalkDefault(agent, settings.get("task.prewalk")),
+				settingsOverride: settings.get("orchestrator.agentPrewalk")[agent.name],
+				agentPrewalk: resolveAgentPrewalkDefault(agent, settings.get("orchestrator.prewalk")),
 			});
 			if (prewalkPattern) {
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
@@ -3199,7 +3177,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			// Emit lifecycle start event
 			if (options.eventBus) {
-				options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				options.eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 					id,
 					agent: agent.name,
 					parentToolCallId: options.parentToolCallId,

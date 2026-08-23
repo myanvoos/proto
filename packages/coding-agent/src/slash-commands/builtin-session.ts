@@ -266,7 +266,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const snapshot = runtime.session.getAsyncJobSnapshot({ recentLimit: 5 });
 			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) {
 				await runtime.output(
-					"No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or task subagents that would otherwise tie up a turn. They appear here while alive and for ~5 minutes after.)",
+					"No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or worker turns that would otherwise tie up a turn. They appear here while alive and for ~5 minutes after.)",
 				);
 				return commandConsumed();
 			}

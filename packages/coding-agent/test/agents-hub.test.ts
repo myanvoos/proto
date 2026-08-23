@@ -47,7 +47,7 @@ function mockAgents(): void {
 		agents: [
 			{ name: "dev", description: "Development agent", systemPrompt: "", source: "project" },
 			{ name: "scout", description: "Read-only research", systemPrompt: "", source: "bundled" },
-			{ name: "task", description: "Generic task agent", systemPrompt: "", source: "bundled" },
+			{ name: "worker", description: "Generic worker agent", systemPrompt: "", source: "bundled" },
 		],
 	});
 }
@@ -139,12 +139,12 @@ describe("AgentsHub configuration strips", () => {
 		const settings = Settings.isolated();
 		const { hub } = await createHub(settings);
 		hub.handleInput(" ");
-		expect(settings.get("task.disabledAgents")).toEqual(["dev"]);
+		expect(settings.get("orchestrator.disabledAgents")).toEqual(["dev"]);
 		hub.handleInput(" ");
-		expect(settings.get("task.disabledAgents")).toEqual([]);
+		expect(settings.get("orchestrator.disabledAgents")).toEqual([]);
 	});
 
-	test("Enter opens the property strip; advisor → on persists task.agentAdvisor", async () => {
+	test("Enter opens the property strip; advisor → on persists orchestrator.agentAdvisor", async () => {
 		mockAgents();
 		const settings = Settings.isolated();
 		const { hub, strip } = await createHub(settings);
@@ -156,14 +156,14 @@ describe("AgentsHub configuration strips", () => {
 		expect(strip()).toContain("dev · advisor →");
 		hub.handleInput("\x1b[C"); // agent default → on
 		hub.handleInput("\r");
-		expect(settings.get("task.agentAdvisor")).toEqual({ dev: "on" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ dev: "on" });
 		expect(strip()).toContain("dev advisor: on (@advisor)");
 	});
 
 	test("pattern… commits a custom advisor pattern and empty submit clears it", async () => {
 		mockAgents();
 		const settings = Settings.isolated();
-		settings.set("task.agentAdvisor", { dev: "on" });
+		settings.set("orchestrator.agentAdvisor", { dev: "on" });
 		const { hub, type } = await createHub(settings);
 		hub.handleInput("\r");
 		hub.handleInput("\x1b[C");
@@ -175,7 +175,7 @@ describe("AgentsHub configuration strips", () => {
 		type("\x7f\x7f"); // clear the prefill
 		type("moonshot/k3:high");
 		hub.handleInput("\r");
-		expect(settings.get("task.agentAdvisor")).toEqual({ dev: "moonshot/k3:high" });
+		expect(settings.get("orchestrator.agentAdvisor")).toEqual({ dev: "moonshot/k3:high" });
 	});
 
 	test("pick model… dives into the model browser and persists the model override", async () => {
@@ -189,7 +189,7 @@ describe("AgentsHub configuration strips", () => {
 		expect(strip()).toContain("Picking model override for dev");
 		expect(strip()).toContain("claude-sonnet-4-5");
 		hub.handleInput("\r"); // pick the only model
-		expect(settings.get("task.agentModelOverrides")).toEqual({ dev: "anthropic/claude-sonnet-4-5" });
+		expect(settings.get("orchestrator.agentModelOverrides")).toEqual({ dev: "anthropic/claude-sonnet-4-5" });
 		// Back on the list with the override reflected.
 		expect(strip()).toContain("anthropic/claude-sonnet-4-5");
 	});
@@ -197,7 +197,7 @@ describe("AgentsHub configuration strips", () => {
 	test("clear override chip removes an existing model override", async () => {
 		mockAgents();
 		const settings = Settings.isolated();
-		settings.set("task.agentModelOverrides", { dev: "anthropic/claude-sonnet-4-5" });
+		settings.set("orchestrator.agentModelOverrides", { dev: "anthropic/claude-sonnet-4-5" });
 		const { hub, strip } = await createHub(settings);
 		hub.handleInput("\r"); // agent strip
 		hub.handleInput("\r"); // model value strip
@@ -205,7 +205,7 @@ describe("AgentsHub configuration strips", () => {
 		hub.handleInput("\x1b[C"); // pick model… → pattern…
 		hub.handleInput("\x1b[C"); // pattern… → clear override
 		hub.handleInput("\r");
-		expect(settings.get("task.agentModelOverrides")).toEqual({});
+		expect(settings.get("orchestrator.agentModelOverrides")).toEqual({});
 	});
 
 	test("Esc steps back from a value strip to the agent strip before closing", async () => {

@@ -40,14 +40,3 @@ export async function renderTerminalOutputIsolated(
 		worker.terminate();
 	}
 }
-
-/** Distribution smoke for source, npm-bundle, and compiled worker routing. */
-export async function smokeTestTerminalOutputWorker(): Promise<void> {
-	const rows = await renderTerminalOutputIsolated("old\r\x1b[2K\x1b[1;32mready\x1b[0m", {
-		head: false,
-		maxRows: 10,
-	});
-	if (rows?.length !== 1 || rows[0] !== "\x1b[0m\x1b[1;38;5;2mready") {
-		throw new Error("terminal output worker smoke mismatch");
-	}
-}

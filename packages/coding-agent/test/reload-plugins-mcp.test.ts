@@ -1,35 +1,18 @@
 /**
  * Regressions for `/reload-plugins` runtime surfaces that must update without a
- * process restart: MCP reconnect/rebinding (#7189) and task-agent descriptions
+ * process restart: MCP reconnect/rebinding (#7189) and worker-agent descriptions
  * published to existing tools (#7940).
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import type { TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 
 const originalProjectDir = getProjectDir();
-
-function agentDefinition(description: string): string {
-	return `---\nname: reload-agent\ndescription: ${description}\n---\nReload agent.\n`;
-}
-
-function createTaskSession(cwd: string): ToolSession {
-	return {
-		cwd,
-		hasUI: false,
-		settings: Settings.isolated({}),
-		getSessionFile: () => null,
-		getSessionSpawns: () => "*",
-	} as unknown as ToolSession;
-}
 
 function createFakeCtx(cwd: string, settingsValues: Record<string, unknown> = {}) {
 	const mcpTools = [{ name: "mcp__srv_do" }];
@@ -93,22 +76,5 @@ describe("/reload-plugins runtime refresh", () => {
 		expect(mcpManager.discoverAndConnect).toHaveBeenCalledWith(
 			expect.objectContaining({ enableProjectConfig: false }),
 		);
-	});
-
-	test("republishes edited agents to an existing task tool", async () => {
-		const agentDir = path.join(projectDir, ".omp", "agents");
-		const agentFile = path.join(agentDir, "reload-agent.md");
-		await fs.mkdir(agentDir, { recursive: true });
-		await Bun.write(agentFile, agentDefinition("VERSION_ONE"));
-		const taskTool = await TaskTool.create(createTaskSession(projectDir));
-		expect(taskTool.description).toContain("VERSION_ONE");
-
-		await Bun.write(agentFile, agentDefinition("VERSION_TWO"));
-		const { ctx } = createFakeCtx(projectDir);
-		const runtime: TuiSlashCommandRuntime = { ctx };
-		await executeBuiltinSlashCommand("/reload-plugins", runtime);
-
-		expect(taskTool.description).toContain("VERSION_TWO");
-		expect(taskTool.description).not.toContain("VERSION_ONE");
 	});
 });

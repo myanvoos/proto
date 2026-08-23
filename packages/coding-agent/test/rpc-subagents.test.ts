@@ -17,9 +17,9 @@ import {
 	type SubagentEventPayload,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
-	TASK_SUBAGENT_EVENT_CHANNEL,
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	WORKER_SUBAGENT_EVENT_CHANNEL,
+	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
+	WORKER_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
@@ -36,7 +36,7 @@ function createProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 	return {
 		index: 0,
 		id: "SubagentA",
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		status: "running",
 		task: "Do work",
@@ -56,10 +56,10 @@ function createProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 function createRegistryWithSnapshot(): RpcSubagentRegistry {
 	const eventBus = new EventBus();
 	const registry = new RpcSubagentRegistry(eventBus, () => {});
-	eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+	eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 		id: "SubagentA",
 		index: 0,
-		agent: "task",
+		agent: "worker",
 		agentSource: "bundled",
 		status: "started",
 		sessionFile: "/tmp/subagent.jsonl",
@@ -91,7 +91,7 @@ describe("RPC subagent registry", () => {
 		const lifecycle: SubagentLifecyclePayload = {
 			id: "SubagentA",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			description: "Worker",
 			status: "started",
@@ -100,7 +100,7 @@ describe("RPC subagent registry", () => {
 		};
 		const progressPayload: SubagentProgressPayload = {
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			task: "Do work",
 			assignment: "Implement work",
@@ -114,9 +114,9 @@ describe("RPC subagent registry", () => {
 		};
 
 		expect(registry.getSubscriptionLevel()).toBe("off");
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, lifecycle);
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload);
-		eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, eventPayload);
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, lifecycle);
+		eventBus.emit(WORKER_SUBAGENT_PROGRESS_CHANNEL, progressPayload);
+		eventBus.emit(WORKER_SUBAGENT_EVENT_CHANNEL, eventPayload);
 
 		expect(frames).toHaveLength(0);
 		expect(registry.getSubagents()).toMatchObject([
@@ -137,7 +137,7 @@ describe("RPC subagent registry", () => {
 		const lifecycle: SubagentLifecyclePayload = {
 			id: "SubagentA",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			description: "Worker",
 			status: "started",
@@ -146,7 +146,7 @@ describe("RPC subagent registry", () => {
 		};
 		const progressPayload: SubagentProgressPayload = {
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			task: "Do work",
 			assignment: "Implement work",
@@ -155,8 +155,8 @@ describe("RPC subagent registry", () => {
 			progress: createProgress(),
 		};
 
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, lifecycle);
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload);
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, lifecycle);
+		eventBus.emit(WORKER_SUBAGENT_PROGRESS_CHANNEL, progressPayload);
 
 		expect(frames.map(frame => frame.type)).toEqual(["subagent_lifecycle", "subagent_progress"]);
 		expect(registry.getSubagents()).toMatchObject([
@@ -176,10 +176,10 @@ describe("RPC subagent registry", () => {
 	test("clears stale snapshots when the active RPC session changes", () => {
 		const eventBus = new EventBus();
 		const registry = new RpcSubagentRegistry(eventBus, () => {});
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "SubagentA",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			status: "started",
 			sessionFile: "/tmp/subagent.jsonl",
@@ -274,20 +274,20 @@ describe("RPC subagent registry", () => {
 		const eventBus = new EventBus();
 		const registry = new RpcSubagentRegistry(eventBus, () => {});
 		const sessionFile = "/tmp/subagent.jsonl";
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "SubagentA",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			status: "started",
 			sessionFile,
 		} satisfies SubagentLifecyclePayload);
 
 		expect(registry.getSubagents()).toHaveLength(1);
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		eventBus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "SubagentA",
 			index: 0,
-			agent: "task",
+			agent: "worker",
 			agentSource: "bundled",
 			status: "completed",
 			sessionFile,
@@ -308,11 +308,11 @@ describe("RPC subagent registry", () => {
 			event: { type: "agent_start" },
 		};
 
-		eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, eventPayload);
+		eventBus.emit(WORKER_SUBAGENT_EVENT_CHANNEL, eventPayload);
 		expect(frames).toHaveLength(0);
 
 		registry.setSubscriptionLevel("events");
-		eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, eventPayload);
+		eventBus.emit(WORKER_SUBAGENT_EVENT_CHANNEL, eventPayload);
 
 		expect(frames).toHaveLength(1);
 		expect(frames[0]).toEqual({ type: "subagent_event", payload: eventPayload });
@@ -375,7 +375,7 @@ function write(frame) {
 const progress = {
 	index: 0,
 	id: "SubagentA",
-	agent: "task",
+	agent: "worker",
 	agentSource: "bundled",
 	status: "running",
 	task: "Do work",
@@ -404,7 +404,7 @@ function handle(frame) {
 		return;
 	}
 	if (frame.type === "get_subagents") {
-		write({ id: frame.id, type: "response", command: "get_subagents", success: true, data: { subagents: [{ id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "running", lastUpdate: 1 }] } });
+		write({ id: frame.id, type: "response", command: "get_subagents", success: true, data: { subagents: [{ id: "SubagentA", index: 0, agent: "worker", agentSource: "bundled", status: "running", lastUpdate: 1 }] } });
 		return;
 	}
 	if (frame.type === "get_subagent_messages") {
@@ -414,8 +414,8 @@ function handle(frame) {
 	if (frame.type === "prompt") {
 		write({ id: frame.id, type: "response", command: "prompt", success: true });
 		write({ type: "notice", level: "info", message: "subagent test" });
-		write({ type: "subagent_lifecycle", payload: { id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "started", sessionFile: "/tmp/subagent.jsonl" } });
-		write({ type: "subagent_progress", payload: { index: 0, agent: "task", agentSource: "bundled", task: "Do work", assignment: "Implement work", sessionFile: "/tmp/subagent.jsonl", progress } });
+		write({ type: "subagent_lifecycle", payload: { id: "SubagentA", index: 0, agent: "worker", agentSource: "bundled", status: "started", sessionFile: "/tmp/subagent.jsonl" } });
+		write({ type: "subagent_progress", payload: { index: 0, agent: "worker", agentSource: "bundled", task: "Do work", assignment: "Implement work", sessionFile: "/tmp/subagent.jsonl", progress } });
 		write({ type: "subagent_event", payload: { id: "SubagentA", event: { type: "agent_start" } } });
 		write({ type: "agent_end", messages: [] });
 	}

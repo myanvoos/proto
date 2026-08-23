@@ -273,7 +273,7 @@ describe("selector setting side effects", () => {
 			hub.dispose();
 		}
 	});
-	it("keeps a concrete thinking level on the task role without changing the active session", async () => {
+	it("keeps a concrete thinking level on the worker role without changing the active session", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");
 		setThemeInstance(testTheme);
@@ -290,7 +290,7 @@ describe("selector setting side effects", () => {
 			defaultThinkingLevel: ThinkingLevel.High,
 			modelRoles: { default: activeSelector },
 		});
-		settings.setProjectModelRole("task", taskSelector);
+		settings.setProjectModelRole("worker", taskSelector);
 		const setModel = vi.fn(async () => ({ switched: true }));
 		const setThinkingLevel = vi.fn();
 		const assignmentApplied = Promise.withResolvers<void>();
@@ -353,7 +353,7 @@ describe("selector setting side effects", () => {
 			hub.handleInput("\n");
 			await assignmentApplied.promise;
 
-			expect(settings.getModelRole("task")).toBe(`${taskSelector}:max`);
+			expect(settings.getModelRole("worker")).toBe(`${taskSelector}:max`);
 			expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.High);
 			expect(setThinkingLevel).not.toHaveBeenCalled();
 			const lines = hub.render(220).map(line => stripVTControlCharacters(line));

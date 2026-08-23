@@ -713,7 +713,6 @@ export interface RenderResultOptions {
  */
 export type ToolLoadMode = "essential" | "discoverable";
 
-
 /**
  * Context passed to tool execution.
  * Apps can extend via declaration merging.
@@ -802,8 +801,6 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * returns `undefined` (or empty) to fall back to the combined hooks.
 	 */
 	matcherEntries?: (args: unknown) => readonly { path: string; digest: string }[] | undefined;
-
-
 
 	/** The main execution callback for this tool. */
 	execute: AgentToolExecFn<TParameters, TDetails, TTheme>;

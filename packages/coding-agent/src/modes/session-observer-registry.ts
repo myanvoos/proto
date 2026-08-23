@@ -1,5 +1,5 @@
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
-import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import { WORKER_SUBAGENT_LIFECYCLE_CHANNEL, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
 
 export interface ObservableSession {
@@ -13,7 +13,7 @@ export interface ObservableSession {
 	parentToolCallId?: string;
 	/**
 	 * Spawn runs as a detached background job (parent turn not blocked on it).
-	 * The anchored subagent HUD only lists detached spawns: sync task spawns
+	 * The anchored subagent HUD only lists detached spawns: sync worker spawns
 	 * and eval `agent()` spawns are already rendered live by their own inline
 	 * tool block / eval cell.
 	 */
@@ -148,7 +148,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers = [];
 
 		this.#eventBusUnsubscribers.push(
-			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+			eventBus.on(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				const payload = data as SubagentLifecyclePayload;
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
@@ -184,7 +184,7 @@ export class SessionObserverRegistry {
 		);
 
 		this.#eventBusUnsubscribers.push(
-			eventBus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+			eventBus.on(WORKER_SUBAGENT_PROGRESS_CHANNEL, data => {
 				const payload = data as SubagentProgressPayload;
 				const progress = payload.progress;
 				const id = progress.id;

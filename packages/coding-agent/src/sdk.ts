@@ -134,6 +134,7 @@ import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } fr
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
 import type { MnemopiSessionState } from "./mnemopi/state";
+import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
@@ -194,7 +195,6 @@ import {
 	BashTool,
 	BUILTIN_TOOLS,
 	createTools,
-	createVibeTools,
 	type DeferredDiagnosticsEntry,
 	defaultLoadModeForToolName,
 	discoverStartupLspServers,
@@ -207,6 +207,7 @@ import {
 	isMountableUnderXdev,
 	type LspStartupServerInfo,
 	listXdevTools,
+	ORCHESTRATE_TOOL_NAMES,
 	ReadTool,
 	releaseComputerSessionsForOwner,
 	resolveMountedXdevExecutable,
@@ -221,7 +222,7 @@ import {
 } from "./tools";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
-import { isIrcEnabled } from "./tools/hub";
+import { isIrcEnabled } from "./tools/fleet";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
@@ -234,7 +235,6 @@ import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { buildNamedToolChoice } from "./utils/tool-choice";
-import { VibeSessionRegistry } from "./vibe/runtime";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type McpNotificationEntry = {
@@ -389,7 +389,7 @@ export interface CreateAgentSessionOptions {
 	modelPatternDefaultFallbackChain?: string[];
 	/** Thinking selector. Default: from settings, else unset */
 	thinkingLevel?: ThinkingLevel;
-	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
+	/** Hard ceiling on the session's thinking effort (for example, a worker's `orchestrator.maxEffort`-capped hint); retry fallback re-clamps to it. */
 	thinkingLevelCeiling?: Effort;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
 	openAIServiceTier?: ServiceTier | null;
@@ -520,7 +520,7 @@ export interface CreateAgentSessionOptions {
 	outputSchemaMode?: StructuredSubagentSchemaMode;
 	/** Whether to include the yield tool by default */
 	requireYieldTool?: boolean;
-	/** Task recursion depth (for subagent sessions). Default: 0 */
+	/** Worker recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
 	/** Parent Hindsight state to alias for subagent memory tools. */
 	parentHindsightSessionState?: HindsightSessionState;
@@ -1618,7 +1618,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// (set below), and any additional top-level session spun up in-process
 	// (e.g. the agent-creation architect in `agents-hub.ts`) must share
 	// the live singleton — otherwise its dispose path would clobber the
-	// owning session's manager and break the `task`/`bash` async paths
+	// owning session's manager and break the worker/bash async paths
 	// (issue #1923). The `instance()` guard means later sessions also skip
 	// constructing an orphaned manager that nothing would ever route to.
 	// Delivery is owner-routed: every AgentSession registers its own sink
@@ -1842,8 +1842,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			options.parentTaskPrefix ? { parentPrefix: options.parentTaskPrefix } : undefined,
 		);
 
+		// Top-level agents are always orchestrators, including when a caller
+		// supplies an explicit ordinary-tool list. Restricted children retain
+		// their exact host grant.
+		const effectiveToolNames =
+			!restrictToolNames && agentKind === "main" && options.toolNames
+				? [...new Set([...options.toolNames, ...ORCHESTRATE_TOOL_NAMES])]
+				: options.toolNames;
+
 		// Create built-in tools (already wrapped with meta notice formatting)
-		await logger.time("createAllTools", createTools, toolSession, options.toolNames);
+		await logger.time("createAllTools", createTools, toolSession, effectiveToolNames);
 
 		// Restricted sessions cannot inherit or discover MCP capabilities.
 		const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
@@ -2796,8 +2804,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// like the rest of the prune machinery this is fixed for the session, so a
 		// mid-session model switch keeps the start-time decision.
 		const inlineToolDescriptors = shouldInlineToolDescriptors(settings.get("inlineToolDescriptors"), model?.id);
-		const eagerTasks = settings.get("task.eager") !== "default";
-		const eagerTasksAlways = settings.get("task.eager") === "always";
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
 		const includeWorkspaceTree = settings.get("includeWorkspaceTree") ?? false;
 		const rebuildSystemPrompt = async (
@@ -2904,15 +2910,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				inlineToolDescriptors,
 				nativeTools,
 				intentField,
-				eagerTasks,
-				eagerTasksAlways,
-				taskBatch: settings.get("task.batch"),
-				taskMaxConcurrency: settings.get("task.maxConcurrency"),
+				orchestratorMaxConcurrency: settings.get("orchestrator.maxConcurrency"),
 				scoutAvailable: isScoutSpawnable(
-					settings.get("task.disabledAgents") as string[] | undefined,
+					settings.get("orchestrator.disabledAgents") as string[] | undefined,
 					options.spawns ?? "*",
 				),
-				taskIrcEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
+				fleetEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
@@ -2939,7 +2942,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		};
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
-		const explicitlyRequestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
+		const explicitlyRequestedToolNames = effectiveToolNames ? normalizeToolNames(effectiveToolNames) : undefined;
 		// When `requireYieldTool` is set, the subagent's prompts and idle-reminders demand a
 		// `yield` call to terminate. The tool registry already includes `yield` (see
 		// `createTools`), but an explicit `toolNames` list would otherwise drop it from the
@@ -3438,10 +3441,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			createInspectImageTool: restrictToolNames
 				? undefined
 				: async () => (await BUILTIN_TOOLS.inspect_image(toolSession)) ?? null,
-			createVibeTools:
-				(options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
-					? () => createVibeTools(toolSession)
-					: undefined,
 			builtInToolNames: builtInRegistryToolNames,
 			mcpManagerToolNames: initialMcpManagerToolNames,
 			transformContext,
@@ -3456,6 +3455,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getXdevToolEntries: () => (toolSession.xdev ? xdevEntries(toolSession.xdev) : []),
 			xdev: toolSession.xdev,
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
+			requiredToolNames: !restrictToolNames && agentKind === "main" ? new Set(ORCHESTRATE_TOOL_NAMES) : undefined,
 			setActiveToolNames: setSessionActiveToolNames,
 			ensureWriteRegistered,
 			getMcpServerInstructions: mcpManager
@@ -3498,6 +3498,26 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
+		if (agentKind === "main") {
+			const orchestratorParent = (): OrchestratorParent => ({
+				cwd: sessionManager.getCwd(),
+				getAgentId: () => resolvedAgentId,
+				getSessionId: () => sessionManager.getSessionId(),
+				getSessionFile: () => sessionManager.getSessionFile() ?? null,
+				sessionManager,
+				asyncJobManager: scopedAsyncJobManager,
+				settings,
+				getActiveModelString,
+			});
+			session.setSessionBeforeSwitchReconciler(async () => {
+				const runtime = OrchestratorRuntime.global();
+				const parent = orchestratorParent();
+				await runtime.suspendScope(runtime.ownerScope(parent), scopedAsyncJobManager);
+			});
+			session.setSessionSwitchReconciler(async () => {
+				await OrchestratorRuntime.global().rehydrate(orchestratorParent());
+			});
+		}
 		// Extension factories normally register tools before session construction,
 		// but Pi-compatible extensions may discover them asynchronously from a
 		// session_start handler. Install those late registrations into the live
@@ -3630,6 +3650,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
+		if (agentKind === "main") {
+			await OrchestratorRuntime.global().rehydrate({
+				cwd: sessionManager.getCwd(),
+				getAgentId: () => resolvedAgentId,
+				getSessionId: () => sessionManager.getSessionId(),
+				getSessionFile: () => sessionManager.getSessionFile() ?? null,
+				sessionManager,
+				asyncJobManager: scopedAsyncJobManager,
+				settings,
+				getActiveModelString,
+			});
+		}
 		// MCP notification bridge cleanup — assigned when the bridge is wired below,
 		// invoked from the dispose wrapper AND registered as a postmortem so both
 		// explicit-dispose (SDK embedders that reuse the process across sessions) and
@@ -3648,12 +3680,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
 					if (agentKind === "main") {
-						// Top-level teardown owns the global agent lifecycle: park timers,
-						// adopted subagent sessions, revivers. Tear it down while shared
-						// resources (kernels, MCP, LSP) are still live. Subagent disposal
-						// must NOT touch the global lifecycle.
-						const vibeRegistry = VibeSessionRegistry.global();
-						const vibeParentSession = {
+						// Top-level teardown owns persistent workers and the global lifecycle.
+						const orchestrator = OrchestratorRuntime.global();
+						const parentSession = {
 							getAgentId: () => resolvedAgentId,
 							getSessionId: () => sessionManager.getSessionId(),
 							getSessionFile: () => sessionManager.getSessionFile() ?? null,
@@ -3662,7 +3691,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							settings,
 							getActiveModelString,
 						};
-						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
+						await orchestrator.suspendScope(orchestrator.ownerScope(parentSession), scopedAsyncJobManager);
 						await AgentLifecycleManager.global().dispose();
 					}
 					await originalDispose();

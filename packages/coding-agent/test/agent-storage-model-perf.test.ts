@@ -60,7 +60,7 @@ describe("AgentStorage model perf aggregates", () => {
 		expect(stats?.ttftMs).toBeCloseTo(750, 5);
 	});
 
-	it("records task subagent samples in the shared model performance aggregate", async () => {
+	it("records worker samples in the shared model performance aggregate", async () => {
 		tempDir = TempDir.createSync("@omp-subagent-perf-");
 		const parent = await Settings.loadIsolated({ cwd: tempDir.path(), agentDir: tempDir.path() });
 		const subagent = createSubagentSettings(parent);

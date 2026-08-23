@@ -25,7 +25,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 import { logger, removeSyncWithRetries, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 
 const toolActivationExtension: ExtensionFactory = pi => {
@@ -1697,6 +1696,30 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
+	it("keeps orchestration tools active across top-level tool selections", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			toolNames: ["read"],
+		});
+
+		try {
+			const expected = [
+				"orchestrate_spawn",
+				"orchestrate_send",
+				"orchestrate_wait",
+				"orchestrate_kill",
+				"orchestrate_list",
+			];
+			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", ...expected]));
+			await session.setActiveToolsByName(["read"]);
+			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", ...expected]));
+			expect(session.getActiveToolNames()).not.toContain("task");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("does not activate write merely because plan mode is available", async () => {
 		const tempDir = makeTempDir();
 		const { session } = await createAgentSession({
@@ -1727,47 +1750,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await session.dispose();
 		}
 	});
-	it("registers vibe tools only during explicit vibe activation and exposes parent Todo bookkeeping", async () => {
-		const tempDir = makeTempDir();
-		const { session } = await createAgentSession(baseOptions(tempDir));
-		const previousActiveToolNames = session.getActiveToolNames();
-
-		try {
-			for (const name of VIBE_TOOL_NAMES) {
-				expect(session.getToolByName(name)).toBeUndefined();
-			}
-
-			await session.activateVibeTools(["read", "todo"]);
-			const todo = session.getToolByName("todo");
-			if (!todo) throw new Error("Expected real Todo tool");
-			expect(session.getActiveToolNames()).toContain("todo");
-			for (const name of VIBE_TOOL_NAMES) {
-				expect(session.getToolByName(name)).toBeDefined();
-				expect(session.getActiveToolNames()).toContain(name);
-			}
-
-			await todo.execute("vibe-todo-init", {
-				op: "init",
-				list: [{ phase: "Work", items: ["Worker change"] }],
-			});
-			await todo.execute("vibe-todo-done", { op: "done", task: "Worker change" });
-			expect(session.getTodoPhases()).toMatchObject([
-				{
-					name: "Work",
-					tasks: [{ content: "Worker change", status: "completed" }],
-				},
-			]);
-
-			await session.deactivateVibeTools(previousActiveToolNames);
-			for (const name of VIBE_TOOL_NAMES) {
-				expect(session.getToolByName(name)).toBeUndefined();
-			}
-			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
-		} finally {
-			await session.dispose();
-		}
-	});
-
 	it("rehydrates completed parent Todo work from persisted session history", async () => {
 		const tempDir = makeTempDir();
 		const sessionManager = SessionManager.create(tempDir, tempDir);
@@ -1777,17 +1759,16 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 
 		try {
-			await session.activateVibeTools(["read", "todo"]);
 			const todo = session.getToolByName("todo");
 			if (!todo) throw new Error("Expected real Todo tool");
-			const init = await todo.execute("vibe-todo-init", {
+			const init = await todo.execute("worker-todo-init", {
 				op: "init",
 				list: [{ phase: "Worker flow", items: ["Reconcile worker result"] }],
 			});
-			const done = await todo.execute("vibe-todo-done", { op: "done", task: "Reconcile worker result" });
+			const done = await todo.execute("worker-todo-done", { op: "done", task: "Reconcile worker result" });
 			for (const [toolCallId, result] of [
-				["vibe-todo-init", init],
-				["vibe-todo-done", done],
+				["worker-todo-init", init],
+				["worker-todo-done", done],
 			] as const) {
 				sessionManager.appendMessage({
 					role: "toolResult",
@@ -1921,7 +1902,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			settings: configuredSettings(),
 			extensions: [toolActivationExtension, restrictedLateExtension],
 			customTools: [sdkCustomTool],
-			toolNames: ["read", "lsp", "hub"],
+			toolNames: ["read", "lsp", "fleet"],
 			requireYieldTool: true,
 			restrictToolNames: true,
 			enableMCP: true,
@@ -1949,7 +1930,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"default_inactive_tool",
 				"sdk_custom_tool",
 				"restricted_late_extension_tool",
-				"hub",
+				"fleet",
 			]) {
 				expect(restricted.getToolByName(name)).toBeUndefined();
 			}

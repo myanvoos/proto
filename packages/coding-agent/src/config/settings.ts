@@ -1588,18 +1588,14 @@ export class Settings {
 			delete isolationObj.enabled;
 		}
 
-		// task.simple: removed — the task tool no longer accepts a per-call
-		// schema (workflows drive structured output via eval agent()) and the
-		// batch/context shape is gated by task.batch instead.
+		// Legacy task.simple is removed; structured output now belongs to
+		// orchestrate_spawn or the eval agent() bridge.
 		if (taskObj && "simple" in taskObj) {
 			delete taskObj.simple;
 		}
 
-		// task.eager / todo.eager: boolean -> enum (default | preferred | always).
+		// todo.eager: boolean -> enum (default | preferred | always).
 		// `true` reproduced the previous "on" behavior, which is now `always`.
-		if (taskObj && typeof taskObj.eager === "boolean") {
-			taskObj.eager = taskObj.eager ? "always" : "default";
-		}
 		const todoObj = raw.todo as Record<string, unknown> | undefined;
 		if (todoObj && typeof todoObj.eager === "boolean") {
 			todoObj.eager = todoObj.eager ? "always" : "default";

@@ -56,9 +56,9 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	hub_start: {
-		label: "Hub start",
-		renderer: "hub",
+	fleet_start: {
+		label: "Fleet start",
+		renderer: "fleet",
 		streamingArgs: { op: "start", name: "web" },
 		args: {
 			op: "start",
@@ -100,9 +100,9 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	hub_logs: {
-		label: "Hub logs",
-		renderer: "hub",
+	fleet_logs: {
+		label: "Fleet logs",
+		renderer: "fleet",
 		args: { op: "logs", name: "comp-debug", lines: 100, follow: true, cursor: 233_512, timeout: 30 },
 		result: {
 			content: [

@@ -487,7 +487,7 @@ if "__omp_prelude_loaded__" not in globals():
     def agent(
         prompt,
         *,
-        agent="task",
+        agent="worker",
         label=None,
         schema=None,
         schema_mode=None,
@@ -556,7 +556,7 @@ if "__omp_prelude_loaded__" not in globals():
         return node
 
     def _concurrency_limit():
-        """Worker-pool ceiling from the host ``task.maxConcurrency`` setting.
+        """Worker-pool ceiling from the host ``orchestrator.maxConcurrency`` setting.
 
         An eval fan-out runs as wide as a ``task`` batch would. Returns ``0`` for
         unbounded (run every item at once); falls back to ``0`` if the host
@@ -584,7 +584,7 @@ if "__omp_prelude_loaded__" not in globals():
         lowest-index exception if any task failed. Each task runs inside a copy
         of the submitting thread's context so the ``_CURRENT_RID`` ContextVar
         propagates and bridge calls (agent(), tool.*, etc.) keep working. The
-        pool width tracks ``task.maxConcurrency`` (0 = run every item at once).
+        pool width tracks ``orchestrator.maxConcurrency`` (0 = run every item at once).
         """
         import concurrent.futures, contextvars
 
@@ -614,7 +614,7 @@ if "__omp_prelude_loaded__" not in globals():
         """Run zero-arg callables through a bounded pool, preserving input order.
 
         Barriers until all finish; re-raises the lowest-index exception if any
-        thunk raised. Pool width tracks the task tool's ``task.maxConcurrency``.
+        thunk raised. Pool width tracks the task tool's ``orchestrator.maxConcurrency``.
         """
         thunks = list(thunks)
         for t in thunks:
@@ -627,7 +627,7 @@ if "__omp_prelude_loaded__" not in globals():
 
         Every item clears stage N before any item enters stage N+1 (barrier per
         stage). Stage 1 receives the original item; later stages receive the
-        previous stage's result. Pool width tracks ``task.maxConcurrency``.
+        previous stage's result. Pool width tracks ``orchestrator.maxConcurrency``.
         """
         current = _AwaitableList(items)
         for stage in stages:

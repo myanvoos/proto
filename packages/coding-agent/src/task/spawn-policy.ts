@@ -1,5 +1,5 @@
 /** Default agent used when a session has unrestricted spawning. */
-export const DEFAULT_SPAWN_AGENT = "task";
+export const DEFAULT_SPAWN_AGENT = "worker";
 
 /** Spawn policy derived from a parent agent's `spawns` frontmatter. */
 export interface ResolvedSpawnPolicy {
@@ -59,7 +59,7 @@ export function resolveSpawnPolicy(parentSpawns: string | boolean | null | undef
 
 /**
  * Whether the `scout` agent is spawnable in a session: not disabled via
- * `task.disabledAgents`, and permitted by the session spawn policy.
+ * `orchestrator.disabledAgents`, and permitted by the session spawn policy.
  */
 export function isScoutSpawnable(
 	disabledAgents: readonly string[] | undefined,

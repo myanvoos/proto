@@ -132,7 +132,7 @@ describe("ExtensionUiController editor UI", () => {
 	it("does not fire editor-slot shortcuts that would orphan the ask dialog (#6738)", () => {
 		const harness = makeHarness();
 		harness.editor.setText("draft in progress");
-		// Simulate an editor-slot shortcut like the Agent Hub binding, whose
+		// Simulate an editor-slot shortcut like the Agent Fleet binding, whose
 		// handler clears editorContainer and would strand the pending ask.
 		let hubOpened = false;
 		harness.editor.setCustomKeyHandler("ctrl+s", () => {

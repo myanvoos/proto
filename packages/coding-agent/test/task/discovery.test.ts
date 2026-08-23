@@ -16,7 +16,7 @@ const OMP_AGENT_MD = [
 	"name: omp-test-agent",
 	"description: OMP-native test agent.",
 	"---",
-	"You are an OMP task agent.",
+	"You are an OMP worker agent.",
 ].join("\n");
 
 const OMP_PLUGIN_AGENT_MD = [
@@ -62,7 +62,7 @@ describe("discoverAgents", () => {
 	let projectDir: string;
 
 	beforeEach(async () => {
-		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-task-agent-discovery-"));
+		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worker-agent-discovery-"));
 		projectDir = path.join(tempHome, "project");
 		await fs.mkdir(projectDir, { recursive: true });
 	});

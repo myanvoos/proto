@@ -11,7 +11,7 @@ import {
  * Regression test for #985.
  *
  * Reporter screenshot showed parent session on DeepSeek V4 Pro dispatching a
- * task subagent that resolved to `qwen3.6-plus-free` — an opencode-zen model
+ * worker that resolved to `qwen3.6-plus-free` — an opencode-zen model
  * the user has no working credentials for. The dispatch hit a provider that
  * could not serve the model and surfaced a confusing API rejection instead of
  * silently using the parent's already-authenticated model.

@@ -17,9 +17,9 @@ import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { $which, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { openArchive, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
+import { FleetTool } from "../src/tools/fleet";
 import { GlobTool } from "../src/tools/glob";
 import { DEFAULT_FILE_LIMIT, GrepTool, MULTI_FILE_PER_FILE_MATCHES } from "../src/tools/grep";
-import { HubTool } from "../src/tools/hub";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -2453,7 +2453,7 @@ function b() {
 		});
 	});
 
-	describe("HubTool", () => {
+	describe("FleetTool", () => {
 		it("should wait for jobs and acknowledge deliveries to prevent race conditions", async () => {
 			const manager = new AsyncJobManager({
 				onJobComplete: async () => {},
@@ -2461,7 +2461,7 @@ function b() {
 			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {
 				asyncJobManager: manager,
 			});
-			const jobTool = new HubTool(session);
+			const jobTool = new FleetTool(session);
 
 			const jobId = manager.register("bash", "test job", async () => "success");
 
@@ -2486,7 +2486,7 @@ function b() {
 			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {
 				asyncJobManager: manager,
 			});
-			const jobTool = new HubTool(session);
+			const jobTool = new FleetTool(session);
 			const gate = Promise.withResolvers<string>();
 			const jobId = manager.register("bash", "long job", () => gate.promise);
 

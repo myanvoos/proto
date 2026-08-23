@@ -1,5 +1,5 @@
 /**
- * Hub messaging half — agent-to-agent messaging over the process-global IrcBus.
+ * Fleet messaging half — agent-to-agent messaging over the process-global IrcBus.
  *
  * `send` is fire-and-forget: the bus routes the message to the recipient
  * (waking idle agents with a real turn, reviving parked ones via the
@@ -18,7 +18,6 @@ import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus"
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
-import { canSpawnAtDepth } from "../../task/types";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import {
 	createCachedComponent,
@@ -29,22 +28,16 @@ import {
 	replaceTabs,
 	type ToolUIColor,
 } from "../render-utils";
-import { type CoordinationDetails, type HubRenderArgs, hubErrorResult } from "./types";
+import { type CoordinationDetails, type FleetRenderArgs, fleetErrorResult } from "./types";
 
 export const DEFAULT_IRC_TIMEOUT_MS = 120_000;
 
 /**
- * Messaging availability: there must be someone to chat with. True for every
- * subagent (it always has a parent, and possibly siblings) and for any
- * session that can still spawn subagents through the task tool. Only a
- * top-level session with task spawning unavailable has no peers.
+ * Messaging is always available to the top-level orchestrator. Workers keep
+ * it while their depth permits the shared subagent collaboration surface.
  */
-export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
-	if (taskDepth > 0) return true;
-	// Top-level session: peers exist only if it can still spawn subagents — the
-	// same capacity gate the task tool uses, reused here to avoid drift.
-	const maxDepth = settings.get("task.maxRecursionDepth") ?? 2;
-	return canSpawnAtDepth(maxDepth, taskDepth);
+export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
+	return true;
 }
 
 export function formatIncoming(msg: IrcMessage): string {
@@ -134,7 +127,7 @@ export async function executeList(
 	};
 }
 
-export interface HubSendParams {
+export interface FleetSendParams {
 	to?: string;
 	message?: string;
 	replyTo?: string;
@@ -144,24 +137,24 @@ export interface HubSendParams {
 
 export async function executeSend(
 	deps: { registry: AgentRegistry; senderId: string; settings: Settings },
-	params: HubSendParams,
+	params: FleetSendParams,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const { registry, senderId, settings } = deps;
 	const to = params.to?.trim();
 	const message = params.message?.trim();
 	if (!to) {
-		return hubErrorResult('`to` is required for op="send".', { op: "send", from: senderId });
+		return fleetErrorResult('`to` is required for op="send".', { op: "send", from: senderId });
 	}
 	if (!message) {
-		return hubErrorResult('`message` is required for op="send".', { op: "send", from: senderId });
+		return fleetErrorResult('`message` is required for op="send".', { op: "send", from: senderId });
 	}
 	if (to === senderId) {
-		return hubErrorResult("Cannot send a message to yourself.", { op: "send", from: senderId, to });
+		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", from: senderId, to });
 	}
 	const isBroadcast = to === "all";
 	if (isBroadcast && params.await) {
-		return hubErrorResult('`await` is invalid with to:"all" — broadcasts have no single replier.', {
+		return fleetErrorResult('`await` is invalid with to:"all" — broadcasts have no single replier.', {
 			op: "send",
 			from: senderId,
 			to,
@@ -317,7 +310,7 @@ export async function executeMessageWait(
 		if (signal?.aborted) {
 			throw error;
 		}
-		return hubErrorResult(error instanceof Error ? error.message : String(error), { op: "wait", from: senderId });
+		return fleetErrorResult(error instanceof Error ? error.message : String(error), { op: "wait", from: senderId });
 	}
 }
 
@@ -374,7 +367,7 @@ function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
 	}
 }
 
-/** Glyph + status word, matching the agent-hub status conventions. */
+/** Glyph + status word, matching the agent roster status conventions. */
 function peerStatusBadge(status: string, theme: Theme): string {
 	switch (status) {
 		case "running":
@@ -423,7 +416,7 @@ function bodyLines(
 }
 
 /** Header title carrying the op direction: `IRC ➤ peer` out, `IRC ⟵ peer` in. */
-function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
+function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
 			return `IRC ${theme.nav.selected} ${args.to?.trim() || "…"}`;
@@ -434,11 +427,11 @@ function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 		case "list":
 			return "IRC peers";
 		default:
-			return "Hub";
+			return "Fleet";
 	}
 }
 
-function callMeta(args: HubRenderArgs | undefined): string[] {
+function callMeta(args: FleetRenderArgs | undefined): string[] {
 	const meta: string[] = [];
 	if (args?.op === "send") {
 		if (args.to === "all") meta.push("broadcast");
@@ -452,7 +445,7 @@ function callMeta(args: HubRenderArgs | undefined): string[] {
 
 function renderErrorResult(
 	result: { content: Array<{ type: string; text?: string }> },
-	args: HubRenderArgs | undefined,
+	args: FleetRenderArgs | undefined,
 	theme: Theme,
 ): string[] {
 	const text = textContent(result) || "IRC call failed.";
@@ -467,7 +460,7 @@ function renderErrorResult(
  * delivered to this session, `irc:autoreply` side-channel replies sent on
  * this session's behalf, and `irc:relay` observations of agent↔agent
  * traffic. Shares the tool renderer's glyph + quote-border conventions so
- * cards and hub messaging output look identical in the transcript.
+ * cards and fleet messaging output look identical in the transcript.
  */
 export function createIrcMessageCard(
 	card: {
@@ -510,7 +503,7 @@ export function createIrcMessageCard(
 function renderSendResult(
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	details: Partial<CoordinationDetails>,
-	args: HubRenderArgs | undefined,
+	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
@@ -590,7 +583,7 @@ function renderSendResult(
 function renderWaitResult(
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	details: Partial<CoordinationDetails>,
-	args: HubRenderArgs | undefined,
+	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
@@ -615,7 +608,7 @@ function renderWaitResult(
 
 function renderInboxResult(
 	details: Partial<CoordinationDetails>,
-	args: HubRenderArgs | undefined,
+	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
@@ -681,7 +674,7 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 function buildResultLines(
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	details: Partial<CoordinationDetails>,
-	args: HubRenderArgs | undefined,
+	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
@@ -697,7 +690,7 @@ function buildResultLines(
 		case "list":
 			return result.isError ? renderErrorResult(result, args, theme) : renderListResult(details, expanded, theme);
 		default: {
-			const text = textContent(result) || (result.isError ? "Hub call failed." : "Done.");
+			const text = textContent(result) || (result.isError ? "Fleet call failed." : "Done.");
 			return [
 				renderStatusLine({ icon: result.isError ? "error" : "success", title: callTitle(args, theme) }, theme),
 				result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
@@ -707,7 +700,7 @@ function buildResultLines(
 }
 
 /** Pending-call frame for messaging ops (send/wait-from/inbox/list). */
-export function messagingRenderCall(args: HubRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
+export function messagingRenderCall(args: FleetRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 	const lines = [
 		renderStatusLine({ icon: "pending", title: callTitle(args, uiTheme), meta: callMeta(args) }, uiTheme),
 	];
@@ -722,7 +715,7 @@ export function messagingRenderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
 	options: RenderResultOptions,
 	uiTheme: Theme,
-	args?: HubRenderArgs,
+	args?: FleetRenderArgs,
 ): Component {
 	const details: Partial<CoordinationDetails> = result.details ?? {};
 	return createCachedComponent(
