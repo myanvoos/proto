@@ -110,7 +110,6 @@ export const themeJsonSchema = type({
 		"infoBg?": "string | number",
 	},
 	"symbols?": {
-		"preset?": "'unicode' | 'nerd' | 'ascii'",
 		"overrides?": { "[string]": "string" },
 		"spinnerFrames?": spinnerFramesSchema,
 	},

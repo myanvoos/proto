@@ -51,7 +51,7 @@ function renderStripped(tree: SessionTreeNode[], leafId: string, width = 120): s
 // its logical depth without reviving the terminal gutter or drifting right.
 describe("issue #7332: terminal branch chains keep compact alignment", () => {
 	beforeAll(async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	it("aligns chain rows with their branch heads and terminates last-sibling gutters", () => {
@@ -109,7 +109,7 @@ describe("issue #7332: terminal branch chains keep compact alignment", () => {
 // own descendants must nest one level in rather than collapsing back.
 describe("issue #7332: single-child roots stay nested under the virtual root", () => {
 	beforeAll(async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	it("indents linear descendants of a root past the shared column-0 roots", () => {

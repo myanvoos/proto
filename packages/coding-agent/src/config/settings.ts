@@ -36,7 +36,7 @@ import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
-import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
+import { isLightTheme, setAutoThemeMapping, setColorBlindMode } from "../modes/theme/theme";
 import { AgentStorage } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
@@ -1640,7 +1640,7 @@ export class Settings {
 		// compaction.strategy / compaction.remoteEnabled → compaction.methodOrder.
 		// The old single strategy could not express a capability-dependent fallback
 		// chain. Preserve explicit legacy intent while new installs use the
-		// server → snapcompact → handoff → shake → soft default.
+		// server → handoff → shake → soft default.
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
 		const configuredMethodOrder = compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
 		const legacyStrategy = compactionObj?.strategy ?? raw["compaction.strategy"];
@@ -1658,9 +1658,6 @@ export class Settings {
 					break;
 				case "shake":
 					methodOrder = remoteEnabled ? ["shake", "remote", "soft"] : ["shake", "soft"];
-					break;
-				case "snapcompact":
-					methodOrder = remoteEnabled ? ["snapcompact", "remote", "soft"] : ["snapcompact", "soft"];
 					break;
 				case "off":
 					methodOrder = [];
@@ -1687,15 +1684,6 @@ export class Settings {
 		delete raw["compaction.strategy"];
 		delete raw["compaction.remoteEnabled"];
 		delete raw["compaction.methodOrder"];
-
-		// snapcompact.systemPrompt: boolean -> scoped enum.
-		const snapcompactObj = raw.snapcompact as Record<string, unknown> | undefined;
-		if (snapcompactObj && typeof snapcompactObj.systemPrompt === "boolean") {
-			snapcompactObj.systemPrompt = snapcompactObj.systemPrompt ? "all" : "none";
-		}
-		if (typeof raw["snapcompact.systemPrompt"] === "boolean") {
-			raw["snapcompact.systemPrompt"] = raw["snapcompact.systemPrompt"] ? "all" : "none";
-		}
 
 		// inlineToolDescriptors: boolean -> enum (auto | on | off). The old
 		// `true`/`false` mapped directly onto inline-on/inline-off, so preserve
@@ -2509,13 +2497,6 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"theme.light": value => {
 		if (typeof value === "string") {
 			setAutoThemeMapping("light", value);
-		}
-	},
-	symbolPreset: value => {
-		if (typeof value === "string" && (value === "unicode" || value === "nerd" || value === "ascii")) {
-			setSymbolPreset(value).catch(err => {
-				logger.warn("Settings: symbolPreset hook failed", { preset: value, error: String(err) });
-			});
 		}
 	},
 	colorBlindMode: value => {

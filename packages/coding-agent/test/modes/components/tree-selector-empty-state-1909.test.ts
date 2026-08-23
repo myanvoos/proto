@@ -4,7 +4,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
 beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 });
 
 function freshSessionTree(): SessionTreeNode[] {

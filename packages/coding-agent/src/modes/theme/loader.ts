@@ -137,7 +137,6 @@ export function loadThemeJsonSync(name: string): ThemeJson {
 
 export interface CreateThemeOptions {
 	mode?: ColorMode;
-	symbolPresetOverride?: SymbolPreset;
 	colorBlindMode?: boolean;
 }
 
@@ -145,7 +144,7 @@ export interface CreateThemeOptions {
 const COLORBLIND_ADJUSTMENT = { h: 60, s: 0.71 };
 
 export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Theme {
-	const { mode, symbolPresetOverride, colorBlindMode } = options;
+	const { mode, colorBlindMode } = options;
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
 
@@ -174,8 +173,8 @@ export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = 
 			fgColors[key as ThemeColor] = value;
 		}
 	}
-	// Extract symbol configuration - settings override takes precedence over theme
-	const symbolPreset: SymbolPreset = symbolPresetOverride ?? themeJson.symbols?.preset ?? "unicode";
+	// One glyph vocabulary: unicode everywhere.
+	const symbolPreset: SymbolPreset = "unicode";
 	const symbolOverrides = themeJson.symbols?.overrides ?? {};
 	const spinnerFramesOverrides = normalizeSpinnerFramesOverride(themeJson.symbols?.spinnerFrames);
 	return new Theme(fgColors, bgColors, colorMode, symbolPreset, symbolOverrides, spinnerFramesOverrides);

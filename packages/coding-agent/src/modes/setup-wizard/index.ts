@@ -2,7 +2,6 @@ import type { Settings } from "../../config/settings";
 import { CURRENT_SETUP_VERSION } from "../setup-version";
 import type { InteractiveModeContext } from "../types";
 import { composerSetupScene } from "./scenes/composer";
-import { glyphSetupScene } from "./scenes/glyph";
 import { modelSetupScene } from "./scenes/model";
 import { providersSetupScene } from "./scenes/providers";
 import { themeSetupScene } from "./scenes/theme";
@@ -16,7 +15,6 @@ export { CURRENT_SETUP_VERSION };
 export const ALL_SCENES = [
 	providersSetupScene,
 	modelSetupScene,
-	glyphSetupScene,
 	composerSetupScene,
 	themeSetupScene,
 ] as const satisfies readonly SetupScene[];

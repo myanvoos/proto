@@ -14,9 +14,7 @@ import {
 	getSelectListTheme,
 	isLightTheme,
 	previewTheme,
-	type SymbolPreset,
 	setColorBlindMode,
-	setSymbolPreset,
 	theme,
 } from "../../theme/theme";
 import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
@@ -100,11 +98,9 @@ class ThemeSceneController implements SetupSceneController {
 	/** Render line where the select list began, or -1 while it is not shown. */
 	#listRowStart = -1;
 	readonly #originalTheme = getCurrentThemeName();
-	readonly #originalSymbolPreset: SymbolPreset;
 	readonly #originalColorBlindMode: boolean;
 
 	constructor(private readonly host: SetupSceneHost) {
-		this.#originalSymbolPreset = host.ctx.settings.get("symbolPreset");
 		this.#originalColorBlindMode = host.ctx.settings.get("colorBlindMode");
 		this.#selectList = this.#createSelectList(CURATED_ITEMS, this.#currentCuratedIndex());
 	}
@@ -242,25 +238,24 @@ class ThemeSceneController implements SetupSceneController {
 		if (value === "auto") {
 			this.host.ctx.settings.set("theme.dark", "titanium");
 			this.host.ctx.settings.set("theme.light", "light");
-			await this.#applyPreviewPresentation(this.#originalSymbolPreset, this.#originalColorBlindMode);
+			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			enableAutoTheme();
 			return;
 		}
 		if (value === "colorblind") {
 			this.host.ctx.settings.set("colorBlindMode", true);
-			await this.#applyPreviewPresentation(this.#originalSymbolPreset, true);
+			await this.#applyPreviewPresentation(true);
 			return;
 		}
 		if (value === "ansi") {
-			this.host.ctx.settings.set("symbolPreset", "ascii");
 			this.host.ctx.settings.set("theme.dark", "dark-terminal");
-			await this.#applyPreviewPresentation("ascii", this.#originalColorBlindMode);
+			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			enableAutoTheme();
 			return;
 		}
 		const themeName = this.#themeNameFromValue(value);
 		if (!themeName) return;
-		await this.#applyPreviewPresentation(this.#originalSymbolPreset, this.#originalColorBlindMode);
+		await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 		if (isLightTheme(themeName)) {
 			this.host.ctx.settings.set("theme.light", themeName);
 		} else {
@@ -279,17 +274,17 @@ class ThemeSceneController implements SetupSceneController {
 
 		let result: { success: boolean; error?: string } = { success: true };
 		if (value === "auto") {
-			await this.#applyPreviewPresentation(this.#originalSymbolPreset, this.#originalColorBlindMode);
+			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			enableAutoTheme({ ephemeral: true });
 		} else if (value === "colorblind") {
-			await this.#applyPreviewPresentation(this.#originalSymbolPreset, true);
+			await this.#applyPreviewPresentation(true);
 		} else if (value === "ansi") {
-			await this.#applyPreviewPresentation("ascii", this.#originalColorBlindMode);
+			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			result = await previewTheme("dark-terminal");
 		} else {
 			const themeName = this.#themeNameFromValue(value);
 			if (themeName) {
-				await this.#applyPreviewPresentation(this.#originalSymbolPreset, this.#originalColorBlindMode);
+				await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 				result = await previewTheme(themeName);
 			}
 		}
@@ -301,14 +296,13 @@ class ThemeSceneController implements SetupSceneController {
 		this.host.requestRender();
 	}
 
-	async #applyPreviewPresentation(symbolPreset: SymbolPreset, colorBlindMode: boolean): Promise<void> {
-		await setSymbolPreset(symbolPreset);
+	async #applyPreviewPresentation(colorBlindMode: boolean): Promise<void> {
 		await setColorBlindMode(colorBlindMode);
 	}
 
 	#restorePreview(): void {
 		void (async () => {
-			await this.#applyPreviewPresentation(this.#originalSymbolPreset, this.#originalColorBlindMode);
+			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			if (this.#originalTheme) {
 				await previewTheme(this.#originalTheme);
 			}

@@ -24,7 +24,7 @@ import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-
 import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 });
 
 const originalImageProtocol = TERMINAL.imageProtocol;

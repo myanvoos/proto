@@ -62,19 +62,6 @@ describe("SessionSelectorComponent status labels", () => {
 		expect(rendered).toContain(`${theme.status.pending} pending`);
 	});
 
-	it("draws the glyph from the active symbol preset (nerdfont / unicode / ascii)", async () => {
-		const sessions = [createSession("complete", "complete")];
-		const glyphs = new Set<string>();
-		for (const preset of ["unicode", "nerd", "ascii"] as const) {
-			await initTheme(false, preset);
-			// The rendered glyph tracks whatever the active preset resolves.
-			expect(renderPlain(sessions)).toContain(`${theme.status.success} done`);
-			glyphs.add(theme.status.success);
-		}
-		// Each preset maps to a distinct glyph, so the status is genuinely
-		// preset-aware rather than a hardcoded symbol.
-		expect(glyphs.size).toBe(3);
-	});
 
 	it("omits the status segment when status is unknown or unset", () => {
 		const rendered = renderPlain([createSession("a", "unknown"), createSession("b", undefined)]);

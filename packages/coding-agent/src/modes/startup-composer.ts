@@ -80,7 +80,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 				lspServers: [],
 			};
 	const theme = { ...cached.theme, ...options.theme };
-	initThemeSync(theme.symbolPreset, theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
+	initThemeSync(theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
 	const preferences = { ...COMPOSER_DEFAULTS, ...cached.preferences, ...options.preferences };
 	const welcome: ComposerWelcomeUpdate = {
 		version: options.version ?? "",

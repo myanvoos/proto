@@ -6,7 +6,6 @@ import { colorLuma, getCustomThemesDir, logger } from "@oh-my-pi/pi-utils";
 import { ansi256ToHex, resolveThemeColors, resolveVarRefs } from "./color";
 import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeJson, loadThemeSync } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
-import type { SymbolPreset } from "./symbols";
 import type { Theme } from "./theme-class";
 
 export { getLanguageFromPath, isMarkdownPath } from "../../utils/lang-from-path";
@@ -94,7 +93,6 @@ export interface ThemeChangeEvent {
 	ephemeral?: boolean;
 }
 
-var currentSymbolPresetOverride: SymbolPreset | undefined;
 var currentColorBlindMode: boolean = false;
 var themeWatcher: fs.FSWatcher | undefined;
 var themeReloadTimer: NodeJS.Timeout | undefined;
@@ -108,12 +106,10 @@ let themeEpoch = 0;
 
 function getCurrentThemeOptions(): CreateThemeOptions {
 	return {
-		symbolPresetOverride: currentSymbolPresetOverride,
 		colorBlindMode: currentColorBlindMode,
 	};
 }
 function configureTheme(
-	symbolPreset?: SymbolPreset,
 	colorBlindMode?: boolean,
 	darkTheme?: string,
 	lightTheme?: string,
@@ -121,23 +117,19 @@ function configureTheme(
 	autoDetectedTheme = true;
 	autoDarkTheme = darkTheme ?? "dark";
 	autoLightTheme = lightTheme ?? "light";
-	currentSymbolPresetOverride = symbolPreset;
 	currentColorBlindMode = colorBlindMode ?? false;
 	const name = getDefaultTheme();
 	currentThemeName = name;
 	return name;
 }
-
 /** Initialize the active theme synchronously before the first terminal paint. */
 export function initThemeSync(
-	symbolPreset?: SymbolPreset,
 	colorBlindMode?: boolean,
 	darkTheme?: string,
 	lightTheme?: string,
 ): void {
-	const name = configureTheme(symbolPreset, colorBlindMode, darkTheme, lightTheme);
+	const name = configureTheme(colorBlindMode, darkTheme, lightTheme);
 	const options: CreateThemeOptions = {
-		symbolPresetOverride: currentSymbolPresetOverride,
 		colorBlindMode: currentColorBlindMode,
 	};
 	try {
@@ -157,12 +149,11 @@ export async function ensureTheme(): Promise<void> {
 
 export async function initTheme(
 	enableWatcher: boolean = false,
-	symbolPreset?: SymbolPreset,
 	colorBlindMode?: boolean,
 	darkTheme?: string,
 	lightTheme?: string,
 ): Promise<void> {
-	const name = configureTheme(symbolPreset, colorBlindMode, darkTheme, lightTheme);
+	const name = configureTheme(colorBlindMode, darkTheme, lightTheme);
 	try {
 		theme = await loadTheme(name, getCurrentThemeOptions());
 		if (enableWatcher) {
@@ -278,33 +269,6 @@ export function setThemeInstance(themeInstance: Theme): void {
 	notifyThemeChange({ ephemeral: true });
 }
 
-/**
- * Set the symbol preset override, recreating the theme with the new preset.
- */
-export async function setSymbolPreset(preset: SymbolPreset): Promise<void> {
-	currentSymbolPresetOverride = preset;
-	if (!currentThemeName) return;
-
-	const requestId = ++themeLoadRequestId;
-	try {
-		const loadedTheme = await loadTheme(currentThemeName, getCurrentThemeOptions());
-		if (requestId !== themeLoadRequestId) return;
-		theme = loadedTheme;
-	} catch {
-		if (requestId !== themeLoadRequestId) return;
-		// Fall back to dark theme with new preset
-		theme = await loadTheme("dark", getCurrentThemeOptions());
-		if (requestId !== themeLoadRequestId) return;
-	}
-	notifyThemeChange({ ephemeral: true });
-}
-
-/**
- * Get the current symbol preset override.
- */
-export function getSymbolPresetOverride(): SymbolPreset | undefined {
-	return currentSymbolPresetOverride;
-}
 
 /**
  * Set color blind mode, recreating the theme with the new setting.

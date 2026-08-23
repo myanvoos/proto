@@ -233,7 +233,6 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	if (args.screenshot) process.env.COLORTERM = "truecolor";
 	await initTheme(
 		false,
-		settingsInstance.get("symbolPreset"),
 		settingsInstance.get("colorBlindMode"),
 		settingsInstance.get("theme.dark"),
 		settingsInstance.get("theme.light"),

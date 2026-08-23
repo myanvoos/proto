@@ -56,7 +56,7 @@ function selectorWithOnSelect(
 
 describe("tree selector Shift+Enter fallback (issue #8821)", () => {
 	beforeAll(async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	it("treats a bare LF as Shift+Enter (summarize-and-switch)", () => {

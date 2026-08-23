@@ -39,7 +39,7 @@ function renderStripped(tree: SessionTreeNode[], leafId: string, width = 120): s
 
 describe("issue #7332: linear branch continuations stay compact", () => {
 	beforeAll(async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	// Linear continuations should align with their branch head. Indenting them

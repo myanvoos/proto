@@ -24,7 +24,6 @@ describe("composer startup cache", () => {
 			const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
 			await Promise.all([
 				writeComposerUiCache(cwd, preferences, {
-					symbolPreset: "ascii",
 					colorBlindMode: true,
 					darkTheme: "dark",
 					lightTheme: "light",
@@ -37,7 +36,6 @@ describe("composer startup cache", () => {
 			expect(readComposerStartupCache(cwd)).toEqual({
 				preferences,
 				theme: {
-					symbolPreset: "ascii",
 					colorBlindMode: true,
 					darkTheme: "dark",
 					lightTheme: "light",

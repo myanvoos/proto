@@ -162,11 +162,7 @@ export class WelcomeComponent implements Component {
 	) {}
 	get tip(): string | undefined {
 		if (this.#selectedTip === undefined) {
-			if (theme.getSymbolPreset() === "unicode" && Math.random() < 0.1) {
-				this.#selectedTip = "Please use nerdfont 😭.";
-			} else {
-				this.#selectedTip = pickWeightedTip(TIPS, Math.random());
-			}
+			this.#selectedTip = pickWeightedTip(TIPS, Math.random());
 		}
 		return this.#selectedTip || undefined;
 	}

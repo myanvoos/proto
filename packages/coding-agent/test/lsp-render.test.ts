@@ -3,7 +3,7 @@ import { renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 
 beforeAll(async () => {
-	await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+	await themeModule.initTheme(false, undefined, "dark", "light");
 });
 
 afterEach(() => {

@@ -124,7 +124,7 @@ export function getSymbolTheme(): SymbolTheme {
 
 	return {
 		cursor: theme.nav.cursor,
-		inputCursor: preset === "ascii" ? "|" : "▏",
+		inputCursor: "▏",
 		boxRound: theme.boxRound,
 		boxSharp: theme.boxSharp,
 		table: theme.boxSharp,
@@ -235,12 +235,10 @@ export function getSelectListTheme(): SelectListTheme {
 }
 /**
  * Resolve the autocomplete type-indicator glyph for a slash command.
- * Returns `undefined` when no theme is initialized or the active preset is
- * ASCII (shared `icon.*` glyphs have ASCII forms, but a partially lettered
- * icon column reads as noise), which collapses the column entirely.
+ * Returns `undefined` when no theme is initialized.
  */
 export function getSlashCommandTypeIcon(name: SlashCommandIconName): string | undefined {
-	if (typeof theme === "undefined" || theme.getSymbolPreset() === "ascii") return undefined;
+	if (typeof theme === "undefined") return undefined;
 	const icon = theme.cmd[name];
 	return icon.length > 0 ? icon : undefined;
 }

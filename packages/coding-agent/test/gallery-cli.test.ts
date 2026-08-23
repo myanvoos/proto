@@ -13,7 +13,7 @@ import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 });
 
 describe("gallery harness", () => {

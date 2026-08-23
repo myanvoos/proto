@@ -142,7 +142,7 @@ describe("theme auto-detection", () => {
 		using _globals = withThemeTestGlobals({ zellij: "1", colorfgbg: "15;0" });
 		const detectSpy = vi.spyOn(nativesModule, "detectMacOSAppearance").mockReturnValue(MacOSAppearance.Light);
 
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 
 		expect(themeModule.getCurrentThemeName()).toBe("dark");
 		expect(detectSpy).not.toHaveBeenCalled();
@@ -183,7 +183,7 @@ describe("theme auto-detection", () => {
 		const detectSpy = vi.spyOn(nativesModule, "detectMacOSAppearance").mockReturnValue(MacOSAppearance.Light);
 
 		themeModule.onTerminalAppearanceChange("dark");
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 
 		expect(themeModule.getCurrentThemeName()).toBe("dark");
 		expect(detectSpy).not.toHaveBeenCalled();
@@ -194,7 +194,7 @@ describe("theme auto-detection", () => {
 		const detectSpy = vi.spyOn(nativesModule, "detectMacOSAppearance").mockReturnValue(MacOSAppearance.Light);
 
 		themeModule.onTerminalAppearanceChange("light");
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 
 		expect(themeModule.getCurrentThemeName()).toBe("light");
 		expect(detectSpy).not.toHaveBeenCalled();
@@ -243,7 +243,7 @@ describe("theme auto-detection", () => {
 
 		it("switches provisionally, reprobes at every contracted delay, then reconciles unchanged terminal state", async () => {
 			using _globals = withThemeTestGlobals();
-			await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+			await themeModule.initTheme(false, undefined, "dark", "light");
 			const observer = mockMacAppearanceObserver();
 			const terminal = new FakeAppearanceTerminal("dark");
 			const dispose = themeModule.startMacOSAppearanceReprobeFallback(terminal);
@@ -294,7 +294,7 @@ describe("theme auto-detection", () => {
 
 		it("keeps the provisional native theme when every OSC probe times out", async () => {
 			using _globals = withThemeTestGlobals();
-			await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+			await themeModule.initTheme(false, undefined, "dark", "light");
 			const observer = mockMacAppearanceObserver();
 			const terminal = new FakeAppearanceTerminal("dark");
 			const dispose = themeModule.startMacOSAppearanceReprobeFallback(terminal);
@@ -319,7 +319,7 @@ describe("theme auto-detection", () => {
 
 		it("cancels the previous probes and reconciliation when a newer native event starts a fresh sequence", async () => {
 			using _globals = withThemeTestGlobals();
-			await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+			await themeModule.initTheme(false, undefined, "dark", "light");
 			const observer = mockMacAppearanceObserver();
 			const terminal = new FakeAppearanceTerminal("dark");
 			const dispose = themeModule.startMacOSAppearanceReprobeFallback(terminal);
@@ -354,7 +354,7 @@ describe("theme auto-detection", () => {
 
 		it("keeps a genuinely changed terminal appearance authoritative and cancels reconciliation", async () => {
 			using _globals = withThemeTestGlobals();
-			await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+			await themeModule.initTheme(false, undefined, "dark", "light");
 			const observer = mockMacAppearanceObserver();
 			const terminal = new FakeAppearanceTerminal("dark");
 			const dispose = themeModule.startMacOSAppearanceReprobeFallback(terminal);
@@ -400,7 +400,7 @@ describe("theme auto-detection", () => {
 
 		it("disposer stops the observer, cancels timers, and guards retained callbacks", async () => {
 			using _globals = withThemeTestGlobals();
-			await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+			await themeModule.initTheme(false, undefined, "dark", "light");
 			const observer = mockMacAppearanceObserver();
 			const terminal = new FakeAppearanceTerminal("dark");
 			const dispose = themeModule.startMacOSAppearanceReprobeFallback(terminal);

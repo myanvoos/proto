@@ -65,7 +65,7 @@ function visibleRows(selector: TreeSelectorComponent): string[] {
 
 describe("tree selector entry labels", () => {
 	beforeAll(async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	it("never renders a row as a bare bullet", () => {

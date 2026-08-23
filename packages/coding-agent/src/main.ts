@@ -1456,7 +1456,6 @@ export async function runRootCommand(
 			"initTheme:final",
 			initTheme,
 			isInteractive,
-			settingsInstance.get("symbolPreset"),
 			settingsInstance.get("colorBlindMode"),
 			settingsInstance.get("theme.dark"),
 			settingsInstance.get("theme.light"),
@@ -1475,7 +1474,6 @@ export async function runRootCommand(
 			spellingAutocomplete: settingsInstance.get("spelling.autocomplete"),
 			spellingAutocorrect: settingsInstance.get("spelling.autocorrect"),
 			theme: {
-				symbolPreset: settingsInstance.get("symbolPreset"),
 				colorBlindMode: settingsInstance.get("colorBlindMode"),
 				darkTheme: settingsInstance.get("theme.dark"),
 				lightTheme: settingsInstance.get("theme.light"),

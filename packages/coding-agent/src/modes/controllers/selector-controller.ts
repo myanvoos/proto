@@ -36,7 +36,6 @@ import {
 	previewTheme,
 	setColorBlindMode,
 	setMarkdownMermaidRendering,
-	setSymbolPreset,
 	setTheme,
 	theme,
 } from "../../modes/theme/theme";
@@ -196,8 +195,6 @@ export class SelectorController {
 						(a, b) => a.localeCompare(b),
 					),
 					cwd: getProjectDir(),
-					model: this.ctx.session.model,
-					imageBudget: this.ctx.ui.imageBudget,
 					requestRender: () => this.ctx.ui.requestRender(),
 					composerPreviewStatus: this.ctx.statusLine,
 				},
@@ -606,14 +603,6 @@ export class SelectorController {
 					if (!result.success) {
 						this.ctx.showError(`Failed to load theme "${value}": ${result.error}\nFell back to dark theme.`);
 					}
-				});
-				break;
-			}
-			case "symbolPreset": {
-				setSymbolPreset(value as "unicode" | "nerd" | "ascii").then(() => {
-					this.ctx.statusLine.invalidate();
-					this.ctx.ui.requestRender();
-					this.ctx.ui.invalidate();
 				});
 				break;
 			}

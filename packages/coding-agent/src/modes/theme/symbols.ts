@@ -2,7 +2,7 @@
 // Symbol Presets
 // ============================================================================
 
-export type SymbolPreset = "unicode" | "ascii";
+export type SymbolPreset = "unicode";
 
 /**
  * All available symbol keys organized by category.
@@ -616,10 +616,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.move": "➜",
 };
 
-export const SYMBOL_PRESETS: Record<SymbolPreset, SymbolMap> = {
+export const SYMBOL_PRESETS = {
 	unicode: UNICODE_SYMBOLS,
-	ascii: ASCII_SYMBOLS,
-};
+} as const;
 
 export type SpinnerType = "status" | "activity";
 
@@ -627,10 +626,6 @@ export const SPINNER_FRAMES: Record<SymbolPreset, Record<SpinnerType, string[]>>
 	unicode: {
 		status: ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
 		activity: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-	},
-	ascii: {
-		status: ["|", "/", "-", "\\"],
-		activity: ["-", "\\", "|", "/"],
 	},
 };
 
@@ -657,12 +652,12 @@ export function normalizeSpinnerFramesOverride(
  * Get available symbol presets.
  */
 export function getAvailableSymbolPresets(): SymbolPreset[] {
-	return ["unicode", "ascii"];
+	return ["unicode"];
 }
 
 /**
  * Check if a string is a valid symbol preset.
  */
 export function isValidSymbolPreset(preset: string): preset is SymbolPreset {
-	return preset === "unicode" || preset === "ascii";
+	return preset === "unicode";
 }

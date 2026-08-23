@@ -23,7 +23,7 @@ describe("ReadToolGroupComponent", () => {
 	beforeAll(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 	});
 
 	afterEach(() => {

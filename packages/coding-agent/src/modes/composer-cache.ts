@@ -8,7 +8,6 @@ import type { SymbolPreset } from "./theme/theme";
 const CACHE_VERSION = 1;
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
 export interface ComposerThemePreferences {
-	readonly symbolPreset?: SymbolPreset;
 	readonly colorBlindMode?: boolean;
 	readonly darkTheme?: string;
 	readonly lightTheme?: string;
@@ -164,15 +163,10 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	) {
 		return undefined;
 	}
-	const symbolPreset = field(rawTheme, "symbolPreset");
 	const colorBlindMode = field(rawTheme, "colorBlindMode");
 	const darkTheme = field(rawTheme, "darkTheme");
 	const lightTheme = field(rawTheme, "lightTheme");
 	if (
-		(symbolPreset !== undefined &&
-			symbolPreset !== "unicode" &&
-			symbolPreset !== "nerd" &&
-			symbolPreset !== "ascii") ||
 		(colorBlindMode !== undefined && typeof colorBlindMode !== "boolean") ||
 		(darkTheme !== undefined && typeof darkTheme !== "string") ||
 		(lightTheme !== undefined && typeof lightTheme !== "string")
@@ -193,7 +187,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			spellingAutocomplete,
 			spellingAutocorrect,
 		},
-		theme: { symbolPreset, colorBlindMode, darkTheme, lightTheme },
+		theme: { colorBlindMode, darkTheme, lightTheme },
 	};
 }
 

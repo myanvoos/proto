@@ -1,5 +1,4 @@
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
-import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import {
 	type BlobDestinationId,
 	type BlobDestinationMetadata,
@@ -685,22 +684,6 @@ export const SETTINGS_SCHEMA = {
 			label: "Light Theme",
 			description: "Theme used when the terminal has a light background",
 			options: "runtime",
-		},
-	},
-
-	symbolPreset: {
-		type: "enum",
-		values: ["unicode", "ascii"] as const,
-		default: "unicode",
-		ui: {
-			tab: "appearance",
-			group: "Theme",
-			label: "Symbol Preset",
-			description: "Glyph set for icons and symbols (Unicode or ASCII)",
-			options: [
-				{ value: "unicode", label: "Unicode", description: "Standard symbols (default)" },
-				{ value: "ascii", label: "ASCII", description: "Maximum compatibility" },
-			],
 		},
 	},
 
@@ -2540,45 +2523,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Experimental: snapcompact inline imaging (transient, per-request; never persisted)
-	"snapcompact.systemPrompt": {
-		type: "enum",
-		values: ["none", "agents-md", "all"] as const,
-		default: "none",
-		ui: {
-			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact System Prompt",
-			description:
-				"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.",
-			options: [
-				{ value: "none", label: "None", description: "Keep the system prompt as text." },
-				{
-					value: "agents-md",
-					label: "AGENTS.md",
-					description: "Only move loaded context-file instructions to images, when that saves tokens.",
-				},
-				{
-					value: "all",
-					label: "All",
-					description: "Move the full system prompt to images, when that saves tokens.",
-				},
-			],
-		},
-	},
-
-	"snapcompact.toolResults": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Tool Results",
-			description:
-				"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.",
-		},
-	},
-
 	"tools.format": {
 		type: "enum",
 		values: [
@@ -2621,114 +2565,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "gemini", label: "Gemini", description: "Use the Gemini owned dialect." },
 				{ value: "gemma", label: "Gemma", description: "Use the Gemma owned dialect." },
 				{ value: "minimax", label: "MiniMax", description: "Use the MiniMax owned dialect." },
-			],
-		},
-	},
-
-	"snapcompact.shape": {
-		type: "enum",
-		values: ["auto", ...SHAPE_VARIANT_NAMES] as const,
-		default: "auto",
-		ui: {
-			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Shape",
-			description:
-				"Frame shape snapcompact prints text with (compaction archive and inline imaging). Auto picks a shape tuned for the current model.",
-			options: [
-				{
-					value: "auto",
-					label: "Auto",
-					description: "Picks a shape tuned for the current model, falling back to its provider family.",
-				},
-				{
-					value: "8x8r-bw",
-					label: "8x8 repeated, black",
-					description:
-						"unscii square cell, black ink, every line printed twice with the copy on a pale highlight band.",
-				},
-				{
-					value: "8x8r-sent",
-					label: "8x8 repeated, sentence hues",
-					description: "Repeated grid with ink cycling six hues at sentence boundaries.",
-				},
-				{
-					value: "8x8u-bw",
-					label: "8x8, black",
-					description: "Plain unscii square cell, single-printed lines, black ink.",
-				},
-				{
-					value: "8x8u-sent",
-					label: "8x8, sentence hues",
-					description: "Plain unscii square cell with sentence-hue ink.",
-				},
-				{
-					value: "6x6u-bw",
-					label: "6x6 dense, black",
-					description: "unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.",
-				},
-				{
-					value: "6x6u-sent",
-					label: "6x6 dense, sentence hues",
-					description: "Densest cell with sentence-hue ink.",
-				},
-				{
-					value: "5x8-bw",
-					label: "5x8 legacy, black",
-					description: "Original X.org 5x8 glyphs on the 2576px frame, black ink.",
-				},
-				{
-					value: "5x8-sent",
-					label: "5x8 legacy, sentence hues",
-					description: "The original snapcompact shape (pre-shape-table sessions rendered this).",
-				},
-				{
-					value: "6x12-dim",
-					label: "6x12, dimmed stopwords",
-					description: "X.org 6x12 glyphs, black ink, function words dimmed gray.",
-				},
-				{
-					value: "8x13-bw",
-					label: "8x13, black",
-					description: "X.org 8x13 glyphs, black ink.",
-				},
-				{
-					value: "8on16-bw",
-					label: "8x13 on 16px pitch, black",
-					description: "8x13 glyphs on an 8x16 cell (extra leading), black ink.",
-				},
-				{
-					value: "8on22-bw",
-					label: "8x13 on 22px pitch (leading), black",
-					description:
-						"8x13 glyphs on an 8x22 cell — extra line spacing so rows don't crowd. Default for OpenAI/Google.",
-				},
-				{
-					value: "11on16-bw",
-					label: "8x13 on 11px advance (tracking), black",
-					description:
-						"8x13 glyphs on an 11x16 cell — extra letter spacing so characters don't merge. Default for Anthropic.",
-				},
-				{
-					value: "silver16-bw",
-					label: "Silver 16, CJK",
-					description: "Embedded Silver TrueType font on a 16px grid for CJK and other non-Latin text.",
-				},
-				{
-					value: "doc-8on16-bw",
-					label: "Doc 8on16, black",
-					description: "Two word-wrapped newspaper columns of 8x13 glyphs on a 16px pitch, black ink.",
-				},
-				{
-					value: "doc-8on16-sent",
-					label: "Doc 8on16, sentence hues",
-					description: "Two-column doc layout with sentence-hue ink.",
-				},
-				{
-					value: "doc-8on16-sent-dim",
-					label: "Doc 8on16, sentence hues + dimmed stopwords",
-					description: "Two-column doc layout, sentence-hue ink, function words dimmed gray.",
-				},
 			],
 		},
 	},
