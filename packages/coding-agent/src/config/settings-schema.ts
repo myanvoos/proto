@@ -690,16 +690,15 @@ export const SETTINGS_SCHEMA = {
 
 	symbolPreset: {
 		type: "enum",
-		values: ["unicode", "nerd", "ascii"] as const,
+		values: ["unicode", "ascii"] as const,
 		default: "unicode",
 		ui: {
 			tab: "appearance",
 			group: "Theme",
 			label: "Symbol Preset",
-			description: "Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)",
+			description: "Glyph set for icons and symbols (Unicode or ASCII)",
 			options: [
 				{ value: "unicode", label: "Unicode", description: "Standard symbols (default)" },
-				{ value: "nerd", label: "Nerd Font", description: "Requires Nerd Font" },
 				{ value: "ascii", label: "ASCII", description: "Maximum compatibility" },
 			],
 		},

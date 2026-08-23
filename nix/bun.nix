@@ -686,14 +686,12 @@
   "@oh-my-pi/pi-ai" = copyPathToStore ../packages/ai;
   "@oh-my-pi/pi-catalog" = copyPathToStore ../packages/catalog;
   "@oh-my-pi/pi-coding-agent" = copyPathToStore ../packages/coding-agent;
-  "@oh-my-pi/pi-metaharness" = copyPathToStore ../packages/metaharness;
   "@oh-my-pi/pi-mnemopi" = copyPathToStore ../packages/mnemopi;
   "@oh-my-pi/pi-natives" = copyPathToStore ../packages/natives;
   "@oh-my-pi/pi-tui" = copyPathToStore ../packages/tui;
   "@oh-my-pi/pi-utils" = copyPathToStore ../packages/utils;
   "@oh-my-pi/pi-wire" = copyPathToStore ../packages/wire;
   "@oh-my-pi/snapcompact" = copyPathToStore ../packages/snapcompact;
-  "@oh-my-pi/typescript-edit-benchmark" = copyPathToStore ../packages/typescript-edit-benchmark;
   "@opentelemetry/api-logs@0.220.0" = fetchurl {
     url = "https://registry.npmjs.org/@opentelemetry/api-logs/-/api-logs-0.220.0.tgz";
     hash = "sha512-CmVa4ImJ+ynfrPMNaAXHET6Bhb44SwzmfyVJFq9ni2jgXJR/l7C6gfVFddNmHP+ZOkP9cf4f9DBe68qVLTHc9w==";
