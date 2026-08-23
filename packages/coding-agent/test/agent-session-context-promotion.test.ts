@@ -29,8 +29,8 @@ describe("AgentSession context promotion", () => {
 		// gpt-5.4 is a same-window no-op the runtime rejects), so pin
 		// gpt-5.5 (272k) -> gpt-5.6-sol (372k) via modelOverrides — the same
 		// mechanism users configure promotion pairs with. gpt-5.4-mini is pinned
-		// text-only so the snapcompact-fallback case has a codex model on which
-		// snapcompact (vision-based) cannot run.
+		// text-only so the fallback case has a codex model on which vision-gated
+		// methods cannot run.
 		tempDir = TempDir.createSync("@pi-context-promotion-");
 		const modelsConfigPath = path.join(tempDir.path(), "models.json");
 		await Bun.write(

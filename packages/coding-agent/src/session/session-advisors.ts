@@ -1455,11 +1455,6 @@ export class SessionAdvisors {
 			? ThinkingLevel.Off
 			: agent.state.thinkingLevel;
 
-		// Advisor state is in-memory-only, so snapcompact's frame archive has no
-		// stable SessionEntry preserveData slot to carry across future advisor
-		// maintenance runs. Use an LLM summary even when the primary session is
-		// configured for snapcompact.
-
 		let compactResult: CompactionResult | undefined;
 		let lastError: unknown;
 		let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;

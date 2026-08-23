@@ -34,9 +34,9 @@ it("clamps a reserve exceeding the window for small-window threshold recovery ba
  * When the most-recent kept turn alone exceeds the compaction threshold,
  * `prepareCompaction` keeps it verbatim (findCutPoint never cuts at tool
  * results), so a "successful" compaction leaves context still above threshold.
- * The snapcompact strategy makes this visible: it projects over budget, falls
- * back to a context-full summary ("could not bring the context under the
- * limit"), and the success tail used to schedule the auto-continue regardless —
+ * A summarizer that projects over budget falls back to a context-full summary
+ * ("could not bring the context under the limit"), and the success tail used to
+ * schedule the auto-continue regardless —
  * the next agent_end re-entered #checkCompaction over the same oversized tail and
  * re-fired forever.
  *
@@ -212,6 +212,14 @@ describe("AgentSession auto-compaction progress guard", () => {
 			if (event.type === "auto_compaction_start") starts++;
 		});
 		return () => starts;
+	}
+
+	function compactionStartActions(): string[] {
+		const actions: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_start") actions.push(event.action);
+		});
+		return actions;
 	}
 
 	it("pauses (no continuation, single warning) when compaction creates no headroom", async () => {
@@ -1252,7 +1260,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 205000, contextWindow: 200000, percent: 102.5 });
 
 		const notices = collectNotices();
-		const startCount = countCompactionStarts();
+		const startActions = compactionStartActions();
 
 		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
 		session.subscribe(event => {
@@ -1266,7 +1274,12 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(startCount()).toBe(1);
+		// Post-removal overflow order: shake runs first (emitting its own
+		// lifecycle pair), cannot clear the window, and falls back to the soft
+		// summarizer — whose recovery guard then pauses maintenance once.
+		expect(startActions[0]).toBe("shake");
+		expect(startActions[1]).toBe("context-full");
+		expect(startActions).toHaveLength(2);
 		expect(continueSpy).not.toHaveBeenCalled();
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(1);

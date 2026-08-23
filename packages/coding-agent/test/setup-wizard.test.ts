@@ -414,7 +414,6 @@ describe("setup wizard short terminals", () => {
 	});
 });
 
-
 describe("setup wizard web search tab", () => {
 	it("exposes every web-search provider preference in the shared TUI list", () => {
 		expect(SEARCH_PROVIDER_OPTIONS[0]?.value).toBe("auto");

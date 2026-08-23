@@ -3615,31 +3615,4 @@ describe("deobfuscateAgentMessages (display restore)", () => {
 		// survives byte-identical (same reference) rather than being turned into the secret.
 		expect(restored[0]).toBe(userMsg);
 	});
-
-	it("restores compactionSummary block text while leaving snapcompact image bytes intact", () => {
-		const secret = "BLOCKS_SECRET_TOKEN_456";
-		const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
-		const placeholder = obfuscator.obfuscate(secret);
-		const imageData = `frame${secret}bytes==`;
-		const message: AgentMessage = {
-			role: "compactionSummary",
-			summary: `summary ${placeholder}`,
-			tokensBefore: 0,
-			blocks: [
-				{ type: "text", text: `archived ${placeholder}` },
-				{ type: "image", data: imageData, mimeType: "image/png" },
-			],
-			timestamp: 1,
-		};
-
-		const restored = deobfuscateAgentMessages(obfuscator, [message])[0];
-		if (restored?.role !== "compactionSummary") throw new Error("expected restored compaction summary");
-		const blocks = restored.blocks ?? [];
-		const text = blocks[0];
-		const image = blocks[1];
-		// Archived text is restored to the real secret...
-		expect(text.type === "text" && text.text).toBe(`archived ${secret}`);
-		// ...while the snapcompact image bytes pass through untouched.
-		expect(image.type === "image" && image.data).toBe(imageData);
-	});
 });

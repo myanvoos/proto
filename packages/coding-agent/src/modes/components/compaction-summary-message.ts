@@ -8,7 +8,6 @@ const COMPACTION_METHOD_LABELS: Record<string, string> = {
 	remote: "remote-compacted",
 	soft: "soft-compacted",
 	handoff: "handed-off",
-	snapcompact: "snap-compacted",
 	shake: "shaken",
 };
 
@@ -94,8 +93,8 @@ class SummaryDividerComponent implements Component {
  *
  *   ──────── 📷 remote-compacted · 256K→20K · ctrl+o ────────
  *
- * The label names the maintenance method that fired (remote/soft/handoff/
- * snapcompact; "compacted" for legacy or extension-provided entries) and the
+ * The label names the maintenance method that fired (remote/soft/handoff;
+ * "compacted" for legacy or extension-provided entries) and the
  * before → after context amounts when the entry recorded them. The
  * conversation above the divider stays visible (display transcript keeps
  * full history); only the LLM context was reset. Expanding (ctrl+o) reveals
@@ -143,11 +142,8 @@ export class CompactionSummaryMessageComponent implements Component {
 				: this.message.tokensAfter !== undefined
 					? `Compacted to ${this.message.tokensAfter.toLocaleString()} tokens`
 					: "Compacted context";
-		const frameCount = this.message.images?.length ?? 0;
-		const frameNote =
-			frameCount > 0 ? `\n\n_${frameCount} snapcompact frame${frameCount === 1 ? "" : "s"} attached_` : "";
 		const warningNote = this.message.warning ? `\n\n${theme.icon.warning} **Warning:** ${this.message.warning}` : "";
-		return `**${tokenLine}**${warningNote}\n\n${this.message.summary}${frameNote}`;
+		return `**${tokenLine}**${warningNote}\n\n${this.message.summary}`;
 	}
 }
 

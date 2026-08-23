@@ -109,11 +109,7 @@ function getCurrentThemeOptions(): CreateThemeOptions {
 		colorBlindMode: currentColorBlindMode,
 	};
 }
-function configureTheme(
-	colorBlindMode?: boolean,
-	darkTheme?: string,
-	lightTheme?: string,
-): string {
+function configureTheme(colorBlindMode?: boolean, darkTheme?: string, lightTheme?: string): string {
 	autoDetectedTheme = true;
 	autoDarkTheme = darkTheme ?? "dark";
 	autoLightTheme = lightTheme ?? "light";
@@ -123,11 +119,7 @@ function configureTheme(
 	return name;
 }
 /** Initialize the active theme synchronously before the first terminal paint. */
-export function initThemeSync(
-	colorBlindMode?: boolean,
-	darkTheme?: string,
-	lightTheme?: string,
-): void {
+export function initThemeSync(colorBlindMode?: boolean, darkTheme?: string, lightTheme?: string): void {
 	const name = configureTheme(colorBlindMode, darkTheme, lightTheme);
 	const options: CreateThemeOptions = {
 		colorBlindMode: currentColorBlindMode,
@@ -268,7 +260,6 @@ export function setThemeInstance(themeInstance: Theme): void {
 	stopThemeWatcher();
 	notifyThemeChange({ ephemeral: true });
 }
-
 
 /**
  * Set color blind mode, recreating the theme with the new setting.

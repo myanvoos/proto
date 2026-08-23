@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { LspServerInfo, RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
-import type { SymbolPreset } from "./theme/theme";
 
 const CACHE_VERSION = 1;
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */

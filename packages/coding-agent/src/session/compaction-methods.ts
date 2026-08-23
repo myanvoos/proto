@@ -15,11 +15,6 @@ export const COMPACTION_METHOD_CHOICES = [
 		description: "Use provider-native OpenAI-compatible server compaction when the active route supports it",
 	},
 	{
-		value: "snapcompact",
-		label: "Snapcompact",
-		description: "Archive history onto dense bitmap images the active vision model reads back; no LLM call",
-	},
-	{
 		value: "handoff",
 		label: "Handoff",
 		description: "Generate a handoff document and continue from it as the compaction summary",
@@ -40,17 +35,10 @@ export const COMPACTION_METHOD_CHOICES = [
 export type CompactionMethod = (typeof COMPACTION_METHOD_CHOICES)[number]["value"];
 
 /** Default fallback order: server-native first, portable summary last. */
-export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = [
-	"remote",
-	"snapcompact",
-	"handoff",
-	"shake",
-	"soft",
-];
+export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote", "handoff", "shake", "soft"];
 
 const COMPACTION_METHODS: Record<CompactionMethod, true> = {
 	remote: true,
-	snapcompact: true,
 	handoff: true,
 	soft: true,
 	shake: true,
@@ -75,9 +63,8 @@ export function resolveCompactionMethodOrder(value: unknown): CompactionMethod[]
 	return methods;
 }
 
-const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full" | "handoff" | "shake" | "snapcompact"> = {
+const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full" | "handoff" | "shake"> = {
 	remote: "context-full",
-	snapcompact: "snapcompact",
 	handoff: "handoff",
 	soft: "context-full",
 	shake: "shake",
@@ -109,9 +96,9 @@ export function canUseRemoteCompaction(model: Model | null | undefined, settings
 
 /**
  * First configured method a threshold pass would run, or undefined when it is
- * local (snapcompact/shake) — local methods are effectively instant, so there
- * is nothing to speculate. Shared by the maintenance loop's speculation gate
- * and the status line's annotated context gauge (speculation marker).
+ * local (shake) — local methods are effectively instant, so there is nothing
+ * to speculate. Shared by the maintenance loop's speculation gate and the
+ * status line's annotated context gauge (speculation marker).
  */
 export function resolveSpeculationMethod(
 	model: Model | null | undefined,
@@ -119,11 +106,7 @@ export function resolveSpeculationMethod(
 ): "remote" | "handoff" | "soft" | undefined {
 	for (const candidate of resolveCompactionMethodOrder(settings.methodOrder)) {
 		const available =
-			candidate === "remote"
-				? canUseRemoteCompaction(model, resolveMethodSettings(settings, candidate))
-				: candidate === "snapcompact"
-					? model?.input?.includes("image") === true
-					: true;
+			candidate === "remote" ? canUseRemoteCompaction(model, resolveMethodSettings(settings, candidate)) : true;
 		if (!available) continue;
 		return candidate === "remote" || candidate === "handoff" || candidate === "soft" ? candidate : undefined;
 	}

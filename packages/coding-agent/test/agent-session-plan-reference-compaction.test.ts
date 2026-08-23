@@ -140,7 +140,7 @@ describe("AgentSession approved-plan reference re-injection after compaction (is
 		fixtureDir.removeSync();
 	});
 
-	async function createHarness(method: "soft" | "snapcompact" = "soft"): Promise<Harness> {
+	async function createHarness(): Promise<Harness> {
 		const observedCalls: ObservedPromptCall[] = [];
 		const waiters: Array<{
 			predicate: (call: ObservedPromptCall) => boolean;
@@ -161,7 +161,7 @@ describe("AgentSession approved-plan reference re-injection after compaction (is
 			// grace band from deferring it.
 			"compaction.asyncEnabled": false,
 			"compaction.autoContinue": true,
-			"compaction.methodOrder": method === "snapcompact" ? ["snapcompact", "soft"] : ["soft"],
+			"compaction.methodOrder": ["soft"],
 			"todo.enabled": false,
 			"todo.eager": "default",
 			"todo.reminders": false,
@@ -271,29 +271,6 @@ describe("AgentSession approved-plan reference re-injection after compaction (is
 		const continuation = await waitForCall(call => call.callIndex > 0);
 
 		// The post-compaction continuation MUST carry the durable plan reference again.
-		expect(continuation.messageTexts.some(text => text.includes(planMarker))).toBe(false);
-		expect(continuation.messageTexts.some(text => text.includes(planUrl))).toBe(true);
-		expect(continuation.messageTexts.some(text => text.includes(`MUST read \`${planUrl}\``))).toBe(true);
-	});
-
-	it("re-injects the approved plan reference after snapcompact auto-compaction", async () => {
-		const { session, sessionManager, observedCalls, waitForCall } = await createHarness("snapcompact");
-
-		const planUrl = "local://approved-snapcompact-plan.md";
-		const planMarker = "SNAPCOMPACT-PLAN-REINJECTION-MARKER";
-		writePlanFile(sessionManager, planUrl, `# Approved Snapcompact Plan\n\n${planMarker}\n`);
-
-		session.setPlanReferencePath(planUrl);
-		session.markPlanReferenceSent();
-		activateOngoingGoal(session, "plan-ref-snapcompact");
-		await session.prompt("continue executing the approved snapcompact plan");
-		const firstCall = observedCalls[0];
-		expect(firstCall).toBeDefined();
-		expect(firstCall.messageTexts.some(text => text.includes(planMarker))).toBe(false);
-
-		emitHighUsageTurn(session);
-		const continuation = await waitForCall(call => call.callIndex > 0);
-
 		expect(continuation.messageTexts.some(text => text.includes(planMarker))).toBe(false);
 		expect(continuation.messageTexts.some(text => text.includes(planUrl))).toBe(true);
 		expect(continuation.messageTexts.some(text => text.includes(`MUST read \`${planUrl}\``))).toBe(true);

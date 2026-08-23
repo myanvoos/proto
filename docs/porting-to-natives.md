@@ -137,7 +137,7 @@ napi-rs enum declarations alone do not supply the root's literal runtime object.
 
 ### Wrong sync/async assumption
 
-Use `native/index.d.ts` as authority. For example, `renderSnapcompactPng` returns `Promise<string>`, while `snapcompactSupportedChars` is synchronous. A port that changes call style requires an intentional consumer migration.
+Use `native/index.d.ts` as authority. For example, `readImageFromClipboard` returns `Promise<ClipboardImage | undefined | null>`, while `encodeSixel` is synchronous. A port that changes call style requires an intentional consumer migration.
 
 ## Completion criteria
 

@@ -3,8 +3,7 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
-import { isRecord, logger } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
@@ -102,18 +101,12 @@ export class SessionProviderBoundary {
 		return this.#host.obfuscator.obfuscate(text);
 	}
 
-	/** Obfuscates summaries and snapcompact plaintext carried into compaction. */
+	/** Obfuscates summary plaintext carried into compaction. */
 	obfuscateCompactionPreparation(preparation: CompactionPreparation): CompactionPreparation {
 		if (!this.#host.obfuscator?.hasSecrets()) return preparation;
 		const previousSummary = this.obfuscateText(preparation.previousSummary);
-		const previousPreserveData = this.#obfuscatePreservedArchiveText(preparation.previousPreserveData);
-		if (
-			previousSummary === preparation.previousSummary &&
-			previousPreserveData === preparation.previousPreserveData
-		) {
-			return preparation;
-		}
-		return { ...preparation, previousSummary, previousPreserveData };
+		if (previousSummary === preparation.previousSummary) return preparation;
+		return { ...preparation, previousSummary };
 	}
 
 	/** Deobfuscates provider text before exposing it to the session. */
@@ -285,31 +278,5 @@ export class SessionProviderBoundary {
 		if (!normalizedImages) return content;
 		let imageIndex = 0;
 		return content.map(part => (part.type === "image" ? normalizedImages[imageIndex++]! : part));
-	}
-
-	#obfuscatePreservedArchiveText(
-		preserveData: Record<string, unknown> | undefined,
-	): Record<string, unknown> | undefined {
-		const obfuscator = this.#host.obfuscator;
-		const slot = preserveData?.[snapcompact.PRESERVE_KEY];
-		if (
-			!obfuscator?.hasSecrets() ||
-			!preserveData ||
-			!isRecord(slot) ||
-			!snapcompact.getPreservedArchive(preserveData)
-		) {
-			return preserveData;
-		}
-		const obfuscated: Record<string, unknown> = { ...slot };
-		let changed = false;
-		for (const key of ["text", "textHead", "textTail"] as const) {
-			const value = slot[key];
-			if (typeof value !== "string" || value.length === 0) continue;
-			const next = obfuscator.obfuscate(value);
-			if (next === value) continue;
-			obfuscated[key] = next;
-			changed = true;
-		}
-		return changed ? { ...preserveData, [snapcompact.PRESERVE_KEY]: obfuscated } : preserveData;
 	}
 }

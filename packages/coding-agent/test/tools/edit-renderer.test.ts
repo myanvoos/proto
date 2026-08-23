@@ -23,7 +23,7 @@ let uiThemePromise: Promise<themeModule.Theme> | undefined;
 
 function getUiTheme(): Promise<themeModule.Theme> {
 	uiThemePromise ??= (async () => {
-		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		await themeModule.initTheme(false, undefined, "dark", "light");
 		const theme = await themeModule.getThemeByName("dark");
 		expect(theme).toBeDefined();
 		return theme!;

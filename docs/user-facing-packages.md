@@ -56,18 +56,6 @@ Sources: [`packages/browser-relay/README.md`](../packages/browser-relay/README.m
 - Security/limits: it binds loopback; use `--token` when local processes are untrusted. Chrome
   internal pages, DevTools, Web Store, extension pages, and tabs with DevTools open cannot attach.
 
-### `packages/snapcompact` — bitmap context-compression API
-
-Sources: [`packages/snapcompact/README.md`](../packages/snapcompact/README.md), [`packages/snapcompact/package.json`](../packages/snapcompact/package.json), [`packages/snapcompact/src/index.ts`](../packages/snapcompact/src/index.ts).
-
-- Package: public `@oh-my-pi/snapcompact`; install with `bun add @oh-my-pi/snapcompact`; requires
-  Bun 1.3.14 or newer.
-- Feature: deterministic local serialization and PNG rendering of discarded conversation history
-  for vision-model context compaction; no model call or API key is required.
-- Public entrypoint includes `compact`, `render`, `renderMany`, `frames`, shape selection, text
-  normalization/serialization, image budgets, and file-operation helpers.
-- Runtime constraint: rasterization and PNG encoding require `@oh-my-pi/pi-natives`.
-
 ### `packages/mnemopi` — standalone local-memory CLI
 
 Sources: [`packages/mnemopi/README.md`](../packages/mnemopi/README.md), [`packages/mnemopi/package.json`](../packages/mnemopi/package.json), [`packages/mnemopi/src/cli.ts`](../packages/mnemopi/src/cli.ts), and the coding-agent [Mnemopi memory backend guide](./mnemosyne-memory-backend.md).

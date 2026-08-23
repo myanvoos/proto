@@ -27,7 +27,6 @@
         "@oh-my-pi/pi-catalog": "catalog:",
         "@oh-my-pi/pi-natives": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
-        "@oh-my-pi/snapcompact": "catalog:",
         "@opentelemetry/api": "catalog:",
       },
       "devDependencies": {
@@ -87,7 +86,6 @@
         "@oh-my-pi/pi-natives": "catalog:",
         "@oh-my-pi/pi-tui": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
-        "@oh-my-pi/snapcompact": "catalog:",
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/api-logs": "catalog:",
         "@opentelemetry/context-async-hooks": "catalog:",
@@ -172,19 +170,6 @@
         "@types/bun": "catalog:",
         "arkregex": "0.0.8",
         "arktype": "2.2.3",
-      },
-    },
-    "packages/snapcompact": {
-      "name": "@oh-my-pi/snapcompact",
-      "version": "18.0.0",
-      "dependencies": {
-        "@oh-my-pi/pi-ai": "catalog:",
-        "@oh-my-pi/pi-catalog": "catalog:",
-        "@oh-my-pi/pi-natives": "catalog:",
-        "@oh-my-pi/pi-utils": "catalog:",
-      },
-      "devDependencies": {
-        "@types/bun": "catalog:",
       },
     },
     "packages/stats": {
@@ -275,7 +260,6 @@
     "@oh-my-pi/pi-natives": "18.0.0",
     "@oh-my-pi/pi-tui": "18.0.0",
     "@oh-my-pi/pi-utils": "18.0.0",
-    "@oh-my-pi/snapcompact": "18.0.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.220.0",
     "@opentelemetry/context-async-hooks": "^2.9.0",
@@ -654,8 +638,6 @@
     "@oh-my-pi/pi-tui": ["@oh-my-pi/pi-tui@workspace:packages/tui"],
 
     "@oh-my-pi/pi-utils": ["@oh-my-pi/pi-utils@workspace:packages/utils"],
-
-    "@oh-my-pi/snapcompact": ["@oh-my-pi/snapcompact@workspace:packages/snapcompact"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 

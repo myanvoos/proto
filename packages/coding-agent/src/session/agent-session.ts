@@ -7908,12 +7908,11 @@ export class AgentSession {
 		const bashTransition = this.#bash.beginSessionTransition();
 		// Only same-session reloads compare against the prior context to detect
 		// rollback edits (`#didSessionMessagesChange` below). Building it for a
-		// different-session switch is a pure waste — and on huge pre-fix sessions
-		// it materializes every persisted snapcompact frame plus the
-		// `openaiRemoteCompaction.replacementHistory` payload into messages,
-		// blowing the heap before the new session even loads (issue #3846). The
-		// error-recovery path rebuilds the context on demand from the restored
-		// state instead.
+		// different-session switch is a pure waste — on huge pre-fix sessions it
+		// materializes the `openaiRemoteCompaction.replacementHistory` payload
+		// into messages, blowing the heap before the new session even loads
+		// (issue #3846). The error-recovery path rebuilds the context on demand
+		// from the restored state instead.
 		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
 		// switchSession replaces these arrays wholesale during load/rollback, so retaining
 		// the existing message objects is sufficient and avoids structured-clone failures for

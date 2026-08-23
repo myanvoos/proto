@@ -5,12 +5,6 @@ describe("compact mode registry", () => {
 	it("maps each mode to the method order the engine executes", () => {
 		expect(findCompactMode("soft")?.overrides).toEqual({ methodOrder: ["soft"] });
 		expect(findCompactMode("remote")?.overrides).toEqual({ methodOrder: ["remote", "soft"] });
-		expect(findCompactMode("snapcompact")?.overrides).toEqual({ methodOrder: ["snapcompact"] });
-	});
-
-	it("flags snapcompact as focus-rejecting", () => {
-		expect(findCompactMode("snapcompact")?.rejectsFocus).toBe(true);
-		expect(findCompactMode("soft")?.rejectsFocus).toBeUndefined();
 	});
 
 	it("resolves mode names case-insensitively and rejects unknowns", () => {
@@ -30,7 +24,6 @@ describe("parseCompactArgs", () => {
 	it("detects a leading mode token", () => {
 		expect(parseCompactArgs("soft")).toEqual({ mode: "soft" });
 		expect(parseCompactArgs("remote")).toEqual({ mode: "remote" });
-		expect(parseCompactArgs("snapcompact")).toEqual({ mode: "snapcompact" });
 	});
 
 	it("splits a mode from its trailing focus instructions", () => {
@@ -48,13 +41,5 @@ describe("parseCompactArgs", () => {
 		expect(parseCompactArgs("summarize the auth flow")).toEqual({ instructions: "summarize the auth flow" });
 		// A bare word that is not a mode is still focus text, not an error.
 		expect(parseCompactArgs("everything")).toEqual({ instructions: "everything" });
-	});
-
-	it("rejects focus instructions for modes that produce no summary", () => {
-		const result = parseCompactArgs("snapcompact keep the diffs");
-		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("snapcompact");
-		// Bare snapcompact is fine.
-		expect(parseCompactArgs("snapcompact")).toEqual({ mode: "snapcompact" });
 	});
 });

@@ -44,12 +44,11 @@ export function deobfuscateAgentMessages(obfuscator: SecretObfuscator, messages:
 			case "compactionSummary": {
 				const summary = deob(message.summary);
 				const shortSummary = message.shortSummary === undefined ? undefined : deob(message.shortSummary);
-				const blocks = message.blocks === undefined ? undefined : deobfuscateTextBlocks(obfuscator, message.blocks);
-				if (summary === message.summary && shortSummary === message.shortSummary && blocks === message.blocks) {
+				if (summary === message.summary && shortSummary === message.shortSummary) {
 					return message;
 				}
 				changed = true;
-				return { ...message, summary, shortSummary, blocks };
+				return { ...message, summary, shortSummary };
 			}
 			default:
 				return message;
@@ -131,22 +130,6 @@ function obfuscateTextBlocks(
 	const result = content.map((block): TextContent | ImageContent => {
 		if (block.type !== "text") return block;
 		const text = obfuscator.obfuscate(block.text, sharedRegexSecretValues);
-		if (text === block.text) return block;
-		changed = true;
-		return { ...block, text };
-	});
-	return changed ? result : content;
-}
-
-/** Restore placeholders in `text` blocks of a content array; image and other blocks pass through. */
-function deobfuscateTextBlocks(
-	obfuscator: SecretObfuscator,
-	content: (TextContent | ImageContent)[],
-): (TextContent | ImageContent)[] {
-	let changed = false;
-	const result = content.map((block): TextContent | ImageContent => {
-		if (block.type !== "text") return block;
-		const text = obfuscator.deobfuscate(block.text);
 		if (text === block.text) return block;
 		changed = true;
 		return { ...block, text };

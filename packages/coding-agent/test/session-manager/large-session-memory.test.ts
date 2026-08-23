@@ -7,7 +7,6 @@ import { listSessions } from "@oh-my-pi/pi-coding-agent/session/session-listing"
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 
 class CountingMemorySessionStorage extends MemorySessionStorage {
 	writeTextSyncCalls = 0;
@@ -68,19 +67,11 @@ describe("large session memory guards", () => {
 
 		const firstSummary = `first-${"x".repeat(4096)}`;
 		const secondSummary = `second-${"y".repeat(4096)}`;
-		const archivedFrame = btoa("archived frame");
 		const replacementHistory = [
 			{ type: "message", role: "user", content: [{ type: "input_text", text: "Preserved user" }] },
 		];
 		const firstPreserve = {
 			openaiRemoteCompaction: { provider: "openai", replacementHistory },
-			[snapcompact.PRESERVE_KEY]: {
-				frames: [{ data: archivedFrame, mimeType: "image/png", cols: 10, rows: 10, chars: 14 }],
-				totalChars: 14,
-				truncatedChars: 0,
-				textHead: "archived",
-				textTail: "frame",
-			},
 		};
 		const firstCompactionId = session.appendCompaction(firstSummary, undefined, firstKeptEntryId, 1000, {
 			preserveData: firstPreserve,
@@ -100,7 +91,6 @@ describe("large session memory guards", () => {
 		const supersededDisplay = transcriptCompactions[0];
 		if (supersededDisplay?.role !== "compactionSummary") throw new Error("Expected superseded transcript compaction");
 		expect(supersededDisplay.summary).toContain("Superseded compaction");
-		expect((supersededDisplay.blocks ?? []).some(block => block.type === "image")).toBeFalse();
 
 		session.branch(rewindId);
 		const rewoundSummary = session.buildSessionContext().messages[0];
@@ -111,13 +101,11 @@ describe("large session memory guards", () => {
 			provider: "openai",
 			items: replacementHistory,
 		});
-		expect(rewoundSummary.blocks?.find(block => block.type === "image")).toMatchObject({ data: archivedFrame });
 
 		const sessionFile = session.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 		const persisted = await storage.readText(sessionFile);
 		expect(persisted).toContain(firstSummary);
-		expect(persisted).toContain(archivedFrame);
 		expect(persisted).toContain(secondSummary);
 	});
 

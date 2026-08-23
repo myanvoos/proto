@@ -9,7 +9,7 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 }, 15_000);
 
 const SKIP_TEXT =

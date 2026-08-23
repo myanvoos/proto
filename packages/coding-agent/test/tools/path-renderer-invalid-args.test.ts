@@ -18,7 +18,7 @@ const invalidPathCases: readonly InvalidPathCase[] = [
 let uiTheme: Theme;
 
 beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 	const theme = await getThemeByName("dark");
 	if (!theme) throw new Error("dark theme missing");
 	uiTheme = theme;

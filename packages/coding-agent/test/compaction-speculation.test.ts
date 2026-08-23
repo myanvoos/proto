@@ -9,7 +9,6 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionMethod } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
 import { SessionMaintenance, type SessionMaintenanceHost } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import * as snapcompactModule from "@oh-my-pi/snapcompact";
 
 const CONTEXT_WINDOW = 100_000;
 const THRESHOLD = 50_000;
@@ -57,8 +56,6 @@ describe("async speculative compaction", () => {
 		sessionManager.appendMessage(assistantMessage("final response", model));
 	}
 
-	let maintenanceSettings: Settings;
-
 	function createMaintenance(
 		options: { asyncEnabled?: boolean; methodOrder?: CompactionMethod[] } = {},
 	): SessionMaintenance {
@@ -73,7 +70,6 @@ describe("async speculative compaction", () => {
 			"compaction.keepRecentTokens": 1,
 			"compaction.autoContinue": false,
 		});
-		maintenanceSettings = settings;
 		const host = {
 			agent,
 			sessionManager,
@@ -300,43 +296,16 @@ describe("async speculative compaction", () => {
 		expect(compactSpy).not.toHaveBeenCalled();
 	});
 
-	it("does not speculate when snapcompact leads the configured methods", () => {
-		// Snapcompact is local and effectively instant — there is no
+	it("does not speculate when a local method leads the configured methods", () => {
+		// Shake is local and effectively instant — there is no
 		// summarization latency to hide, so no background run may start.
 		const compactSpy = vi.spyOn(compactionModule, "compact");
-		maintenance = createMaintenance({ methodOrder: ["snapcompact", "soft"] });
+		maintenance = createMaintenance({ methodOrder: ["shake", "soft"] });
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 
 		expect(maintenance.speculationState).toBe("idle");
 		expect(compactSpy).not.toHaveBeenCalled();
-	});
-
-	it("discards an armed summary when the real pass resolves to snapcompact", async () => {
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
-			summary: "armed summary",
-			firstKeptEntryId: preparation.firstKeptEntryId,
-			tokensBefore: preparation.tokensBefore,
-			details: {},
-		}));
-		const snapSpy = vi.spyOn(snapcompactModule, "compact").mockImplementation(async preparation => ({
-			summary: "snapcompact archive",
-			firstKeptEntryId: preparation.firstKeptEntryId,
-			tokensBefore: preparation.tokensBefore,
-		}));
-		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
-		await waitForState("armed");
-		// Method order changed after arming: the real pass now runs the instant
-		// local method, and the stale LLM summary must not override it.
-		maintenanceSettings.override("compaction.methodOrder", ["snapcompact"]);
-
-		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
-
-		expect(snapSpy).toHaveBeenCalledTimes(1);
-		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
-		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("snapcompact archive");
-		// Exactly the speculation's summarizer call — the pass never re-summarized.
-		expect(compactSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("clears an armed speculation when manual compaction starts", async () => {
@@ -397,8 +366,8 @@ describe("async speculative compaction", () => {
 		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1, CONTEXT_WINDOW)).toBe(false);
 		expect(maintenance.speculationState).toBe("idle");
 
-		// Snapcompact is local and effectively instant — blocking on it is fine.
-		maintenance = createMaintenance({ methodOrder: ["snapcompact", "soft"] });
+		// Shake is local and effectively instant — blocking on it is fine.
+		maintenance = createMaintenance({ methodOrder: ["shake", "soft"] });
 		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1, CONTEXT_WINDOW)).toBe(false);
 		expect(maintenance.speculationState).toBe("idle");
 	});

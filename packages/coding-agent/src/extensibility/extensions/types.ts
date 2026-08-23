@@ -395,8 +395,8 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 	/**
 	 * Force a one-off compaction mode for this invocation, replacing the
-	 * configured `compaction.methodOrder` (`/compact soft`, `remote`, or
-	 * `snapcompact`). Omitted = configured preference order.
+	 * configured `compaction.methodOrder` (`/compact soft` or `remote`).
+	 * Omitted = configured preference order.
 	 */
 	mode?: CompactMode;
 	/**

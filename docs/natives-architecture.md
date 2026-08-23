@@ -36,7 +36,7 @@ Current root capabilities include:
 
 - search, globbing, workspace scans, AST matching/editing, code summaries, syntax highlighting, text layout, token counting, and structured diffs;
 - shell, PTY, process, file-lock, isolation, and work-profile primitives;
-- desktop capture/input/accessibility, clipboard, audio capture/playback, live WebRTC, device-check, SIXEL, snapcompact rendering, and vector ranking.
+- desktop capture/input/accessibility, clipboard, audio capture/playback, live WebRTC, device-check, SIXEL, and vector ranking.
 
 ## Loader and distribution
 
@@ -81,7 +81,7 @@ Set `PI_DEBUG_STARTUP` to emit synchronous `[startup]` markers to stderr around 
 `crates/pi-natives/src/lib.rs` registers the current modules:
 
 - platform/runtime: `appearance`, `clipboard`, `crash_handler`, `desktop`, `devicecheck`, `file_lock`, `iofs`, `power`, `prof`, `ps`, `pty`, `shell`;
-- media/live: `audio`, `live`, `sixel`, `snapcompact`;
+- media/live: `audio`, `live`, `sixel`;
 - code/data: `ast`, `block`, `diff`, `fd`, `glob`, `glob_util`, `grep`, `highlight`, `html`, `keys`, `summary`, `text`, `tokens`, `vectors`, `workspace`;
 - isolation/task support: `iso`, `task`, crate-private `utils`, and test-only `testing`;
 - language metadata re-exported from `pi_ast::language`.

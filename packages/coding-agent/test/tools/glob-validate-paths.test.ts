@@ -17,7 +17,7 @@ import { globToolRenderer } from "../../src/tools/glob";
 let uiTheme: Theme;
 
 beforeAll(async () => {
-	await initTheme(false, undefined, undefined, "dark", "light");
+	await initTheme(false, undefined, "dark", "light");
 	const theme = await getThemeByName("dark");
 	if (!theme) throw new Error("Missing dark theme");
 	uiTheme = theme;

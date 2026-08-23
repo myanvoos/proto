@@ -120,8 +120,6 @@ export function getSymbolTheme(): SymbolTheme {
 			spinnerFrames: ["-", "\\", "|", "/"],
 		};
 	}
-	const preset = theme.getSymbolPreset();
-
 	return {
 		cursor: theme.nav.cursor,
 		inputCursor: "▏",

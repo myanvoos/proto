@@ -13,8 +13,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 /**
  * Regression for issue #3846: in-TUI `/resume` rebuilt the *previous*
  * session's display context before switching files. That call expands persisted
- * snapcompact archives and `openaiRemoteCompaction.replacementHistory` payloads
- * into messages, which can OOM on huge pre-fix sessions even though the loader
+ * `openaiRemoteCompaction.replacementHistory` payloads into messages, which can OOM on huge pre-fix sessions even though the loader
  * itself streams. The previous context is only needed for same-session reloads
  * (where `#didSessionMessagesChange` compares against the freshly rebuilt one);
  * different-session switches MUST skip that work.

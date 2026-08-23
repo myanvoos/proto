@@ -1266,9 +1266,7 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 		case "user":
 		case "developer":
 		case "toolResult": {
-			// Core roles share one transformer with agent-core —
-			// duplicating them here is how snapcompact frames once
-			// silently fell off the provider request.
+			// Core roles share one transformer with agent-core.
 			const converted = convertMessageToLlm(m);
 			return converted ? [converted] : [];
 		}

@@ -11,7 +11,6 @@
 import * as path from "node:path";
 import type { Context, ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { getBlobsDir, logger } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { Settings } from "../config/settings";
 import { type BlobBackend, LocalBlobBackend } from "./broker";
 import {
@@ -31,15 +30,6 @@ import type { BlobPublication } from "./publication";
 import { BlobBrokerSavingsJournal, type BlobBrokerSavingsRecord, blobBrokerSavingsJournalPath } from "./savings";
 import type { LazyBlobFetcher } from "./store";
 import type { DestinationOptionValue } from "./uploader-runtime";
-
-/**
- * Render-on-fetch hook handed to the snapcompact inline transformer: returns
- * URL-bearing placeholder frames for `text`, or `null` when lazy frames are
- * unavailable (no backend, uploader mode) and the caller must render eagerly.
- */
-export interface SnapcompactFrameSink {
-	framesFor(text: string, shape: snapcompact.Shape, maxFrames?: number): Promise<ImageContent[] | null>;
-}
 
 function contentHash(data: string, mimeType: string): string {
 	return new Bun.CryptoHasher("sha256").update(mimeType).update("\n").update(data).digest("hex");
@@ -381,62 +371,6 @@ export class ImageUrlService {
 			}),
 		);
 		return urlByBlock.size === 0 ? context : decorateContextImages(context, block => urlByBlock.get(block));
-	}
-
-	/**
-	 * Lazy snapcompact frames: URL-bearing placeholders whose PNG renders only
-	 * when a provider fetches them. `null` in uploader mode or when no backend
-	 * is reachable — the transformer then renders eagerly as before.
-	 */
-	get frameSink(): SnapcompactFrameSink {
-		return {
-			framesFor: async (text, shape, maxFrames) => {
-				// A leading provider-file source needs eager bytes so the later
-				// model-aware decoration phase can upload them natively.
-				if (this.#providerFiles && this.#providerFilePosition === 0) return null;
-				const backend = await this.#ensureBackend();
-				if (!backend?.supportsLazy) return null;
-				const total = snapcompact.frames(text, { shape });
-				const count = maxFrames === undefined ? total : Math.min(total, maxFrames);
-				if (count <= 0) return null;
-				const textHash = Bun.hash(text).toString(16);
-				const shapeHash = Bun.hash(JSON.stringify(shape)).toString(16);
-				// One render covers every frame of this text; shared lazily across
-				// the per-frame fetchers and dropped once settled frames age out of
-				// the backend's byte budget.
-				let rendered: Promise<ImageContent[]> | undefined;
-				const renderAll = (): Promise<ImageContent[]> => {
-					rendered ??= snapcompact.renderMany(text, { shape, ...(maxFrames !== undefined ? { maxFrames } : {}) });
-					return rendered;
-				};
-				const frames: ImageContent[] = [];
-				for (let index = 0; index < count; index++) {
-					const key = `sc:${textHash}:${shapeHash}:${index}`;
-					const fetcher: LazyBlobFetcher = async () => {
-						const all = await renderAll();
-						const frame = all[index];
-						return frame ? new Uint8Array(Buffer.from(frame.data, "base64")) : null;
-					};
-					const publication = await backend.ensureLazy(key, "image/png", fetcher);
-					if (!publication) return null;
-					this.#publicationByUrl.set(publication.url, publication);
-					this.#publicationSourceByUrl.set(publication.url, {
-						rangeStart: 0,
-						rangeEnd: this.#configs.length,
-						hash: key,
-					});
-					this.#producers.set(key, fetcher);
-					this.#lazyKeyByUrl.set(publication.url, key);
-					frames.push({
-						type: "image",
-						data: "",
-						mimeType: "image/png",
-						url: publication.url,
-					});
-				}
-				return frames;
-			},
-		};
 	}
 
 	/**

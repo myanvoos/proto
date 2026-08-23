@@ -19,7 +19,6 @@ packages/coding-agent/binaries/
 packages/natives/npm/
 packages/natives/native/.build/
 **/.cache/
-packages/snapcompact/research/results/
 # Host-built addons: every image that needs one compiles it from source.
 **/*.node
 

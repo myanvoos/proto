@@ -29,7 +29,6 @@ base64.workspace = true
 clap.workspace = true
 globset.workspace = true
 heapless.workspace = true
-fontdue.workspace = true
 grep-matcher.workspace = true
 futures.workspace = true
 grep-pcre2.workspace = true

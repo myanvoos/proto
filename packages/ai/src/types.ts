@@ -754,8 +754,8 @@ export interface ImageContent {
 	mimeType: string; // e.g., "image/jpeg", "image/png"
 	/**
 	 * OpenAI-only resolution hint. `"original"` preserves native resolution
-	 * (required for snapcompact frames, whose glyphs do not survive the
-	 * default `auto` downscale). Providers without a detail knob ignore it.
+	 * (for dense pixel-rendered images whose glyphs do not survive the default
+	 * `auto` downscale). Providers without a detail knob ignore it.
 	 */
 	detail?: "auto" | "low" | "high" | "original";
 	/** Provider-native file reference preferred only by its matching provider. */

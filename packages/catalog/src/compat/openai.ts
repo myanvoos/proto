@@ -737,10 +737,10 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		// to strictly match prior tool calls when building Responses inputs.
 		strictResponsesPairing: isAzure || spec.provider === "github-copilot",
 		// GitHub Copilot and first-party xAI `/v1/responses` reject
-		// `detail: "original"` (400 / 422). Every other host preserves
-		// native-resolution frames (snapcompact relies on `original`). Detect
-		// Copilot by provider id or base-URL host so a model pointed at the
-		// Copilot host under a different provider id still clamps.
+		// `detail: "original"` (400 / 422); every other host preserves
+		// native-resolution images. Detect Copilot by provider id or
+		// base-URL host so a model pointed at the Copilot host under a
+		// different provider id still clamps.
 		supportsImageDetailOriginal:
 			!isXaiHost && !modelMatchesHost({ provider: spec.provider, baseUrl }, "githubCopilot"),
 		// api.x.ai rejects `reasoning.summary` (SuperGrok and paid key alike).

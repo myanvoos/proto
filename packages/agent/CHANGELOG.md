@@ -1,4 +1,9 @@
 # Changelog
+## [Unreleased]
+
+### Breaking Changes
+
+- Removed the `snapcompact` compaction strategy and `CompactionSummaryMessage` image-frame support (`blocks`/`images`); use context-full/handoff/shake/soft or remote compaction.
 
 ## [18.0.0] - 2026-08-22
 

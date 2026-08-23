@@ -127,7 +127,7 @@ describe("tool path arrays", () => {
 	let tempDir: string;
 
 	beforeAll(async () => {
-		await initTheme(false, undefined, undefined, "dark", "light");
+		await initTheme(false, undefined, "dark", "light");
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "search-path-lists-"));

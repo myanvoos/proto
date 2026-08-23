@@ -19,7 +19,6 @@ packages/coding-agent/binaries/
 packages/natives/npm/
 packages/natives/native/
 **/.cache/
-packages/snapcompact/research/results/
 # The addon comes from PI_BASE; nothing in this context needs one.
 **/*.node
 

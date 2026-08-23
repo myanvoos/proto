@@ -128,7 +128,7 @@ describe("Composer prepaint", () => {
 		let mode: InteractiveMode | undefined;
 
 		try {
-			await initTheme(false, "ascii");
+			await initTheme(false);
 			vi.spyOn(KeybindingsManager, "create").mockReturnValue(KeybindingsManager.inMemory({ "app.clear": "ctrl+x" }));
 			mode = new InteractiveMode(
 				testSession.session,

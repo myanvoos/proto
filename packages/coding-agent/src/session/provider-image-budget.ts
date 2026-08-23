@@ -7,7 +7,32 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
-import { providerImageBudget } from "@oh-my-pi/snapcompact";
+
+/**
+ * Per-request image-count budgets by provider id. These cap how many images an
+ * entire request may carry. The values are conservative policy caps under the
+ * vendor hard limits (Anthropic 100, OpenAI 500, Gemini ~2500); unknown
+ * providers fall to a safe floor rather than sending unbounded attachments.
+ */
+const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
+	anthropic: 90,
+	"amazon-bedrock": 90,
+	openai: 200,
+	"openai-codex": 200,
+	google: 200,
+	"google-vertex": 200,
+	"google-gemini-cli": 200,
+	openrouter: 90,
+	umans: 10,
+};
+
+/** Safe floor for unknown providers (strictest mainstream measured: Groq ~5). */
+const DEFAULT_PROVIDER_IMAGE_BUDGET = 5;
+
+/** Per-request image budget for `provider`; unknown providers get the floor. */
+function providerImageBudget(provider: string | undefined): number {
+	return (provider !== undefined ? PROVIDER_IMAGE_BUDGETS[provider] : undefined) ?? DEFAULT_PROVIDER_IMAGE_BUDGET;
+}
 
 const TOOL_RESULT_IMAGE_OMISSION: TextContent = {
 	type: "text",

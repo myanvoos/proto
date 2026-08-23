@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type AgentMessage, filterProviderReplayMessages } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Message } from "@oh-my-pi/pi-ai";
 import { inferCopilotInitiator } from "@oh-my-pi/pi-ai/providers/github-copilot-headers";
 import {
 	convertToLlm,
@@ -18,38 +18,7 @@ function expectAttribution(message: Message | undefined, expected: "user" | "age
 }
 
 describe("convertToLlm compaction summary", () => {
-	it("appends snapcompact frames as image blocks after the summary text", () => {
-		// Regression: the live session uses THIS converter (not agent-core's
-		// defaultConvertToLlm). Dropping the frames here silently severs the
-		// archive from the provider request — the model sees a summary that
-		// references attached frames that never arrive.
-		const images: ImageContent[] = [
-			{ type: "image", data: "ZmFrZQ==", mimeType: "image/png" },
-			{ type: "image", data: "ZmFrZTI=", mimeType: "image/png" },
-		];
-		const messages: AgentMessage[] = [
-			{
-				role: "compactionSummary",
-				summary: "the film archive",
-				tokensBefore: 1000,
-				images,
-				timestamp: Date.now(),
-			},
-		];
-
-		const converted = convertToLlm(messages);
-
-		expect(converted).toHaveLength(1);
-		expect(converted[0]?.role).toBe("user");
-		const content = converted[0]?.content as Array<TextContent | ImageContent>;
-		expect(content).toHaveLength(3);
-		expect(content[0].type).toBe("text");
-		expect((content[0] as TextContent).text).toContain("the film archive");
-		expect(content[1]).toEqual(images[0]);
-		expect(content[2]).toEqual(images[1]);
-	});
-
-	it("emits text-only content when no frames are archived", () => {
+	it("emits text-only content for a compaction summary", () => {
 		const messages: AgentMessage[] = [
 			{ role: "compactionSummary", summary: "plain summary", tokensBefore: 1000, timestamp: Date.now() },
 		];

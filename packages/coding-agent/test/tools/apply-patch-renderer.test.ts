@@ -10,7 +10,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function getUiTheme() {
-	await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+	await themeModule.initTheme(false, undefined, "dark", "light");
 	const theme = await themeModule.getThemeByName("dark");
 	expect(theme).toBeDefined();
 	return theme!;

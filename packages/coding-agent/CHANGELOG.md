@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the snapcompact compaction method, the `snapcompact.*` inline-imaging settings (`snapcompact.systemPrompt`, `snapcompact.toolResults`, `snapcompact.shape`), and the `/compact snapcompact` mode. Configured method orders containing `snapcompact` fall back to the remaining methods; existing session entries that carry snapcompact frame archives render as their text summary only.
+
 ### Added
 
 - Top-level agents are now always Orchestrators with persistent worker control through `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, and `orchestrate_list`.

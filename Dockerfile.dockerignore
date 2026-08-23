@@ -16,7 +16,6 @@ runs/
 packages/coding-agent/binaries/
 packages/natives/npm/
 **/.cache/
-packages/snapcompact/research/results/
 
 # Per-host scratch the pi codebase uses for parallel agents / worktrees.
 .fallow/

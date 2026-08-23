@@ -56,12 +56,6 @@ export interface CompactionSummaryMessage {
 	/** Harness compaction method that produced this summary (display metadata). */
 	method?: string;
 	providerPayload?: ProviderPayload;
-	/** Runtime-only ordered archive blocks for snapcompact: old text region,
-	 *  imaged middle, then new text region. When present, `summary` is already
-	 *  the final lead-in text (no legacy wrapper applied). */
-	blocks?: (TextContent | ImageContent)[];
-	/** Snapcompact image blocks, kept for display counts / legacy consumers. */
-	images?: ImageContent[];
 	/** Post-pass dead-end warning attached to this compaction (progress guard). */
 	warning?: string;
 	timestamp: number;
@@ -119,8 +113,6 @@ export function createBranchSummaryMessage(summary: string, fromId: string, time
 export interface CompactionSummaryMessageOptions {
 	shortSummary?: string;
 	providerPayload?: ProviderPayload;
-	images?: ImageContent[];
-	blocks?: (TextContent | ImageContent)[];
 	warning?: string;
 	/** Harness compaction method that produced this summary (e.g. "remote", "soft", "handoff"). */
 	method?: string;
@@ -134,10 +126,7 @@ export function createCompactionSummaryMessage(
 	timestamp: string,
 	options: CompactionSummaryMessageOptions = {},
 ): CompactionSummaryMessage {
-	const { shortSummary, providerPayload, images, blocks, warning, method, tokensAfter } = options;
-	const imageBlocks =
-		blocks?.filter((block): block is ImageContent => block.type === "image") ??
-		(images && images.length > 0 ? images : undefined);
+	const { shortSummary, providerPayload, warning, method, tokensAfter } = options;
 	return {
 		role: "compactionSummary",
 		summary,
@@ -146,8 +135,6 @@ export function createCompactionSummaryMessage(
 		tokensAfter,
 		method,
 		providerPayload,
-		blocks: blocks && blocks.length > 0 ? blocks : undefined,
-		images: imageBlocks && imageBlocks.length > 0 ? imageBlocks : undefined,
 		warning,
 		timestamp: new Date(timestamp).getTime(),
 	};
@@ -188,8 +175,7 @@ function isCoreCompactionMessage(message: AgentMessage): message is AgentMessage
  * Single source of truth for the core roles (user/developer/assistant/
  * toolResult) and the compaction messages owned by this package. Embedders
  * with their own app messages (e.g. the coding agent) handle their custom
- * roles and delegate every core role here — duplicating these cases is how
- * snapcompact frames once silently fell off the provider request.
+ * roles and delegate every core role here instead of duplicating the conversion.
  */
 export function convertMessageToLlm(message: AgentMessage): Message | undefined {
 	if (isCoreCompactionMessage(message)) {
@@ -222,19 +208,15 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 			case "compactionSummary":
 				return {
 					role: "user",
-					content:
-						message.blocks !== undefined
-							? [{ type: "text" as const, text: message.summary }, ...message.blocks]
-							: [
-									{
-										type: "text" as const,
-										text:
-											message.method === "handoff"
-												? renderHandoffSummaryContext(message.summary)
-												: renderCompactionSummaryContext(message.summary),
-									},
-									...(message.images ?? []),
-								],
+					content: [
+						{
+							type: "text" as const,
+							text:
+								message.method === "handoff"
+									? renderHandoffSummaryContext(message.summary)
+									: renderCompactionSummaryContext(message.summary),
+						},
+					],
 					attribution: "agent",
 					providerPayload: message.providerPayload,
 					timestamp: message.timestamp,

@@ -7,6 +7,10 @@
 - Fixed the Projects dashboard folder endpoint running unrelated dashboard aggregations when loading folder statistics.
 - Fixed stats sync crashing with a NOT NULL constraint error when legacy session files carry a partially-populated usage cost.
 
+### Removed
+
+- Removed the Gain tab; it displayed only snapcompact token savings.
+
 ## [17.4.0] - 2026-08-20
 
 ### Changed

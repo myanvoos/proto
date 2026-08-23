@@ -247,7 +247,6 @@ clap = { version = "4", features = ["derive"] }
 pdf-inspector = "1"
 regex = "1"
 similar = "3.1.0"
-fontdue = { version = "0.9", default-features = false }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data Structures - Collections

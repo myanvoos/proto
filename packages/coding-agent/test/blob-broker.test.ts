@@ -5,7 +5,6 @@ import * as path from "node:path";
 import type { AssistantMessage, AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import { LocalBlobBackend } from "../src/blob-broker/broker";
 import { contextHasImageUrls, supportsRemoteImageUrls } from "../src/blob-broker/context-images";
 import { ImageUrlService } from "../src/blob-broker/service";
@@ -277,39 +276,6 @@ describe("ImageUrlService", () => {
 
 		service.quarantine("anthropic", "test");
 		expect(await service.decorateContext(context, anthropicModel)).toBe(context);
-	});
-
-	it("serves lazy snapcompact frames on fetch and materializes them for inline retries", async () => {
-		const service = makeService();
-		const shape = snapcompact.resolveShape();
-		const text = "lazy frame body\n".repeat(40);
-
-		const frames = await service.frameSink.framesFor(text, shape, 2);
-		expect(frames).not.toBeNull();
-		for (const frame of frames ?? []) {
-			expect(frame.data).toBe("");
-			expect(frame.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
-			expect(frame.mimeType).toBe("image/png");
-		}
-
-		// Fetching the URL triggers the render and yields a real PNG.
-		const served = await fetch((frames ?? [])[0].url as string);
-		expect(served.status).toBe(200);
-		const bytes = new Uint8Array(await served.arrayBuffer());
-		expect(bytes.byteLength).toBeGreaterThan(8);
-		expect([...bytes.slice(1, 4)]).toEqual([0x50, 0x4e, 0x47]); // "PNG"
-
-		// Inline retry: placeholder frames gain data and lose their urls.
-		const context: Context = {
-			messages: [{ role: "user", content: [{ type: "text", text: "ctx" }, ...(frames ?? [])], timestamp: 0 }],
-		};
-		const inlined = await service.inlineContext(context);
-		expect(contextHasImageUrls(inlined)).toBe(false);
-		const user = inlined.messages[0];
-		if (user.role !== "user" || typeof user.content === "string") throw new Error("unexpected shape");
-		const restored = user.content[1];
-		if (restored.type !== "image") throw new Error("unexpected block");
-		expect(restored.data.length).toBeGreaterThan(0);
 	});
 });
 

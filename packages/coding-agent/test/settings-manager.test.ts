@@ -603,12 +603,6 @@ describe("Settings", () => {
 			expect(settings.get("disabledProviders")).toEqual(["always-provider", "other-provider"]);
 		});
 
-		it("migrates legacy snapcompact system prompt booleans to scoped modes", () => {
-			expect(Settings.isolated({ "snapcompact.systemPrompt": true }).get("snapcompact.systemPrompt")).toBe("all");
-			const nestedLegacy = { snapcompact: { systemPrompt: false } } as Partial<Record<SettingPath, unknown>>;
-			expect(Settings.isolated(nestedLegacy).get("snapcompact.systemPrompt")).toBe("none");
-		});
-
 		it("migrates legacy inlineToolDescriptors booleans to the on/off enum", () => {
 			expect(Settings.isolated({ inlineToolDescriptors: true }).get("inlineToolDescriptors")).toBe("on");
 			expect(Settings.isolated({ inlineToolDescriptors: false }).get("inlineToolDescriptors")).toBe("off");
@@ -1020,14 +1014,8 @@ describe("Settings", () => {
 	});
 
 	describe("compaction method migration", () => {
-		it("defaults to server, snapcompact, handoff, shake, then soft compaction", () => {
-			expect(Settings.isolated().get("compaction.methodOrder")).toEqual([
-				"remote",
-				"snapcompact",
-				"handoff",
-				"shake",
-				"soft",
-			]);
+		it("defaults to server, handoff, shake, then soft compaction", () => {
+			expect(Settings.isolated().get("compaction.methodOrder")).toEqual(["remote", "handoff", "shake", "soft"]);
 		});
 
 		it("migrates a local-only legacy strategy to soft compaction", async () => {

@@ -1,15 +1,4 @@
-import {
-	Activity,
-	AlertCircle,
-	Coins,
-	Cpu,
-	Folder,
-	LayoutDashboard,
-	Plug,
-	Smile,
-	TrendingUp,
-	Wrench,
-} from "lucide-react";
+import { Activity, AlertCircle, Coins, Cpu, Folder, LayoutDashboard, Plug, Smile, Wrench } from "lucide-react";
 import type React from "react";
 
 export type DashboardSection =
@@ -21,8 +10,7 @@ export type DashboardSection =
 	| "tools"
 	| "costs"
 	| "behavior"
-	| "projects"
-	| "gain";
+	| "projects";
 
 export interface DashboardRoute {
 	id: DashboardSection;
@@ -77,10 +65,5 @@ export const routes: DashboardRoute[] = [
 		id: "projects",
 		label: "Projects",
 		icon: Folder,
-	},
-	{
-		id: "gain",
-		label: "Gain",
-		icon: TrendingUp,
 	},
 ];

@@ -43,7 +43,7 @@ describe("lazy status color re-resolves on theme switch", () => {
 	it("swaps a presented warning from dark-catppuccin to light-catppuccin color", async () => {
 		// Auto-theme resolves dark before the appearance reply arrives.
 		themeModule.onTerminalAppearanceChange("dark");
-		await themeModule.initTheme(false, undefined, undefined, "dark-catppuccin", "light-catppuccin");
+		await themeModule.initTheme(false, undefined, "dark-catppuccin", "light-catppuccin");
 		expect(themeModule.getCurrentThemeName()).toBe("dark-catppuccin");
 
 		const darkPrefix = fgPrefix("warning");
@@ -72,7 +72,7 @@ describe("lazy status color re-resolves on theme switch", () => {
 	});
 	it("recolors the presented update notification when auto-theme resolves light", async () => {
 		themeModule.onTerminalAppearanceChange("dark");
-		await themeModule.initTheme(false, undefined, undefined, "dark-catppuccin", "light-catppuccin");
+		await themeModule.initTheme(false, undefined, "dark-catppuccin", "light-catppuccin");
 
 		let presented: Component | undefined;
 		const context: Pick<InteractiveModeContext, "present"> = {

@@ -62,7 +62,6 @@ describe("SessionSelectorComponent status labels", () => {
 		expect(rendered).toContain(`${theme.status.pending} pending`);
 	});
 
-
 	it("omits the status segment when status is unknown or unset", () => {
 		const rendered = renderPlain([createSession("a", "unknown"), createSession("b", undefined)]);
 

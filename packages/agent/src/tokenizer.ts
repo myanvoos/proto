@@ -2,7 +2,6 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
 import { countTokens as countTokensNat, Encoding } from "@oh-my-pi/pi-natives";
 import { stringifyJson } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import { isEstimateCacheable, messageEstimateVersion } from "./compaction/message-cache";
 import type { AgentMessage } from "./types";
 
@@ -257,21 +256,9 @@ export class Tokenizer {
 				break;
 			}
 			case "branchSummary":
-			case "compactionSummary": {
+			case "compactionSummary":
 				fragments.push(message.summary);
-				if (message.role === "compactionSummary") {
-					if (message.blocks) {
-						for (const block of message.blocks) {
-							if (block.type === "text") fragments.push(block.text);
-							else extra += snapcompact.FRAME_TOKEN_ESTIMATE;
-						}
-					} else if (message.images) {
-						// Snapcompact frames render at ≥1568px; providers bill the downscaled cap.
-						extra += message.images.length * snapcompact.FRAME_TOKEN_ESTIMATE;
-					}
-				}
 				break;
-			}
 			default:
 				return 0;
 		}

@@ -1,12 +1,11 @@
 # Natives media + system utilities
 
-This document covers the media/system/conversion exports currently present in `@oh-my-pi/pi-natives`: audio capture/playback and live WebRTC media, terminal SIXEL and snapcompact PNG encoding, HTML conversion, clipboard access, token counting, DeviceCheck, macOS appearance/power helpers, and work profiling.
+This document covers the media/system/conversion exports currently present in `@oh-my-pi/pi-natives`: audio capture/playback and live WebRTC media, terminal SIXEL encoding, HTML conversion, clipboard access, token counting, DeviceCheck, macOS appearance/power helpers, and work profiling.
 
 ## Implementation files
 
 - `crates/pi-natives/src/audio.rs`
 - `crates/pi-natives/src/live.rs`
-- `crates/pi-natives/src/snapcompact.rs`
 - `crates/pi-natives/src/sixel.rs`
 - `crates/pi-natives/src/html.rs`
 - `crates/pi-natives/src/clipboard.rs`
@@ -18,7 +17,7 @@ This document covers the media/system/conversion exports currently present in `@
 - `crates/pi-natives/src/task.rs`
 - `packages/natives/native/index.d.ts`
 
-There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper module in the current `pi-natives` addon. General-purpose image decode/resize/encode is expected to live outside this surface; the image-specific exports here are terminal SIXEL encoding and snapcompact PNG frame rendering.
+There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper module in the current `pi-natives` addon. General-purpose image decode/resize/encode is expected to live outside this surface; the image-specific export here is terminal SIXEL encoding.
 
 ## JS API ↔ Rust export/module mapping
 
@@ -28,8 +27,6 @@ There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper mod
 | `new AudioPlayback(sampleRate)`          | `AudioPlayback`                | `audio.rs`       |
 | `new LiveWebRtcPeer(...)`                | `LiveWebRtcPeer`               | `live.rs`        |
 | `encodeSixel(bytes, width, height)`      | `encode_sixel`                 | `sixel.rs`       |
-| `renderSnapcompactPng(text, options)`    | `render_snapcompact_png`       | `snapcompact.rs` |
-| `snapcompactSupportedChars(font, chars)` | `snapcompact_supported_chars`  | `snapcompact.rs` |
 | `htmlToMarkdown(html, options?)`         | `html_to_markdown`             | `html.rs`        |
 | `copyToClipboard(text)`                  | `copy_to_clipboard`            | `clipboard.rs`   |
 | `readImageFromClipboard()`               | `read_image_from_clipboard`    | `clipboard.rs`   |
@@ -56,10 +53,6 @@ There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper mod
 - **Output boundary**: `encodeSixel(...)` returns a SIXEL escape string synchronously.
 
 Supported decode formats are whatever the compiled `image` crate supports for `ImageReader` in this build (commonly PNG/JPEG/WebP/GIF). Invalid target dimensions (`0` width or height) fail with `Target SIXEL dimensions must be greater than zero`.
-
-### Snapcompact PNG rendering
-
-`renderSnapcompactPng(text, options)` renders pre-normalized text on a bounded bitmap and asynchronously returns a **base64-encoded PNG string**. The N-API transport type is `Latin1String`, but the string contains base64 text rather than raw one-byte PNG data; base64-decode it before treating the result as PNG bytes. `options.size` is required; optional controls include `font`, `cellWidth`, `cellHeight`, `variant`, `lineRepeat`, `stretch`, and `columns`. Output height hugs used rows and overflowing input is ignored. `snapcompactSupportedChars(font, chars)` returns only characters supported by the named bundled font.
 
 ### HTML conversion (`html`)
 

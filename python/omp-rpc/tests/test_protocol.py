@@ -224,7 +224,7 @@ class ProtocolParsingTests(unittest.TestCase):
             {
                 "type": "auto_compaction_start",
                 "reason": "incomplete",
-                "action": "snapcompact",
+                "action": "handoff",
             }
         )
         end = parse_notification(
@@ -239,7 +239,7 @@ class ProtocolParsingTests(unittest.TestCase):
 
         self.assertIsInstance(start, AutoCompactionStartEvent)
         self.assertEqual(start.reason, "incomplete")
-        self.assertEqual(start.action, "snapcompact")
+        self.assertEqual(start.action, "handoff")
         self.assertIsInstance(end, AutoCompactionEndEvent)
         self.assertEqual(end.action, "shake")
 

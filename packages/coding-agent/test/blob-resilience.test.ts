@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { Context, ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type BlobBackend, LocalBlobBackend } from "../src/blob-broker/broker";
 import { probeExposureHealth } from "../src/blob-broker/exposure";
 import type { BlobBrokerWorkerConfig } from "../src/blob-broker/protocol";
@@ -296,29 +295,5 @@ describe("ImageUrlService ordered failover", () => {
 		const inline = await broker.fallbackContext(advanced, model);
 		expect(onlyImage(inline).data).toBe(IMAGE_B64);
 		expect(onlyImage(inline).url).toBeUndefined();
-	});
-
-	it("materializes a lazy frame before retrying through the following uploader", async () => {
-		const edge = startUploadEdge();
-		const broker = service([directConfig(edge.origin), cheveretoConfig(edge.origin)]);
-		const frames = await broker.frameSink.framesFor(
-			"lazy resilience frame\n".repeat(20),
-			snapcompact.resolveShape(),
-			1,
-		);
-		expect(frames).toHaveLength(1);
-		const lazyFrame = frames?.[0];
-		if (!lazyFrame) throw new Error("missing lazy frame");
-		expect(lazyFrame.data).toBe("");
-		expect(lazyFrame.url).toMatch(new RegExp(`^${edge.origin.replaceAll(".", "\\.")}/`));
-		const context: Context = {
-			messages: [{ role: "user", content: [lazyFrame], timestamp: 0 }],
-		};
-
-		const recovered = await broker.fallbackContext(context, model);
-		const recoveredImage = onlyImage(recovered);
-		expect(recoveredImage.url).toBe(`${edge.origin}/uploaded/1.png`);
-		expect(recoveredImage.data.length).toBeGreaterThan(0);
-		expect(edge.uploadSizes).toEqual([Buffer.from(recoveredImage.data, "base64").byteLength]);
 	});
 });

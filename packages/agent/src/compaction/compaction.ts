@@ -32,7 +32,6 @@ import { stripOpenAIResponsesOutputOnlyStatusesForReplay } from "@oh-my-pi/pi-ai
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
 import { Tokenizer } from "../tokenizer";
@@ -63,7 +62,6 @@ import compactionSummaryPrompt from "./prompts/compaction-summary.md" with { typ
 import compactionTurnPrefixPrompt from "./prompts/compaction-turn-prefix.md" with { type: "text" };
 import compactionUpdateSummaryPrompt from "./prompts/compaction-update-summary.md" with { type: "text" };
 import handoffDocumentPrompt from "./prompts/handoff-document.md" with { type: "text" };
-import snapcompactArchiveContextPrompt from "./prompts/snapcompact-archive-context.md" with { type: "text" };
 
 import {
 	computeFileLists,
@@ -166,7 +164,7 @@ export interface CompactionResult<T = unknown> {
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy?: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
+	strategy?: "context-full" | "handoff" | "shake" | "off";
 	thresholdPercent?: number;
 	thresholdTokens?: number;
 	midTurnEnabled?: boolean;
@@ -346,7 +344,7 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
  *
  * The provider-reported usage is normally ground truth, but a
  * `before_provider_request` payload transform — a compression extension (e.g.
- * Headroom), an obfuscator, or inline snapcompact — can shrink the request below
+ * Headroom) or an obfuscator — can shrink the request below
  * the real stored conversation. The provider then reports deflated prompt
  * tokens, so anchoring compaction purely on that usage lets the real history
  * grow unbounded until it overflows and native compaction can no longer run.
@@ -739,27 +737,6 @@ function localCodexCompaction(options: SummaryOptions | undefined) {
 		context: options?.codexCompaction,
 		implementation: "responses",
 	});
-}
-
-function formatPreviousSnapcompactArchive(archiveText: string): string {
-	return prompt.render(snapcompactArchiveContextPrompt, { archiveText });
-}
-
-function mergePreviousSummaryWithSnapcompactArchive(
-	previousSummary: string | undefined,
-	archiveText: string | undefined,
-): string | undefined {
-	if (!archiveText) return previousSummary;
-	const archiveSummary = formatPreviousSnapcompactArchive(archiveText);
-	return previousSummary ? `${previousSummary}\n\n${archiveSummary}` : archiveSummary;
-}
-
-function createSnapcompactArchiveMigrationMessage(archiveText: string): Message {
-	return {
-		role: "user",
-		content: [{ type: "text", text: formatPreviousSnapcompactArchive(archiveText) }],
-		timestamp: Date.now(),
-	};
 }
 
 /**
@@ -1552,25 +1529,8 @@ export async function compact(
 		completeImpl: options?.completeImpl,
 	};
 
-	const previousSnapcompactArchive = snapcompact.getPreservedArchive(previousPreserveData);
-	const previousSnapcompactArchiveText = previousSnapcompactArchive
-		? snapcompact.archiveSourceText(previousSnapcompactArchive)
-		: undefined;
-	const previousSummaryForCompaction = mergePreviousSummaryWithSnapcompactArchive(
-		previousSummary,
-		previousSnapcompactArchiveText,
-	);
-	const snapcompactArchiveMigrationMessage = previousSnapcompactArchiveText
-		? createSnapcompactArchiveMigrationMessage(previousSnapcompactArchiveText)
-		: undefined;
-
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
-	const remoteMessages: AgentMessage[] = [
-		...(snapcompactArchiveMigrationMessage ? [snapcompactArchiveMigrationMessage] : []),
-		...messagesToSummarize,
-		...turnPrefixMessages,
-		...recentMessages,
-	];
+	const remoteMessages: AgentMessage[] = [...messagesToSummarize, ...turnPrefixMessages, ...recentMessages];
 	let usedRemoteCompaction = false;
 	let nativeCompactionError: unknown;
 	if (
@@ -1718,7 +1678,7 @@ export async function compact(
 	} else if (isSplitTurn && turnPrefixMessages.length > 0) {
 		// Generate both summaries in parallel
 		const [historyResult, turnPrefixResult] = await Promise.all([
-			messagesToSummarize.length > 0 || previousSummaryForCompaction
+			messagesToSummarize.length > 0 || previousSummary
 				? generateSummary(
 						messagesToSummarize,
 						model,
@@ -1726,7 +1686,7 @@ export async function compact(
 						apiKey,
 						signal,
 						customInstructions,
-						previousSummaryForCompaction,
+						previousSummary,
 						summaryOptions,
 					)
 				: Promise.resolve("No prior history."),
@@ -1743,12 +1703,12 @@ export async function compact(
 			apiKey,
 			signal,
 			customInstructions,
-			previousSummaryForCompaction,
+			previousSummary,
 			summaryOptions,
 		);
-	} else if (previousSummaryForCompaction) {
+	} else if (previousSummary) {
 		// No new messages to summarize, preserve previous summary
-		summary = previousSummaryForCompaction;
+		summary = previousSummary;
 	} else {
 		// No messages and no previous summary
 		summary = "No prior history.";
@@ -1770,21 +1730,13 @@ export async function compact(
 		throw new Error("First kept entry has no ID - session may need migration");
 	}
 
-	// This LLM-summary path migrated any prior snapcompact frames into the summary
-	// text above; strip the now-stale frame archive from preserveData so it cannot
-	// re-attach to the rebuilt context. Only the legacy-frame case needs stripping —
-	// when there was no previous archive, preserveData carries no frames to drop.
-	const finalPreserveData = previousSnapcompactArchive
-		? snapcompact.stripPreservedArchive(preserveData)
-		: preserveData;
-
 	return {
 		summary,
 		shortSummary,
 		firstKeptEntryId,
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
-		preserveData: finalPreserveData,
+		preserveData,
 	};
 }
 

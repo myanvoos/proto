@@ -13,7 +13,7 @@
 import type { CompactionMethod } from "./compaction-methods";
 
 /** Subcommand selecting a one-off compaction mode for manual `/compact`. */
-export type CompactMode = "soft" | "remote" | "snapcompact";
+export type CompactMode = "soft" | "remote";
 
 /**
  * Per-invocation ordered methods merged over the configured
@@ -29,12 +29,6 @@ export interface CompactModeDef {
 	readonly description: string;
 	/** Settings overrides applied on top of `compaction.*` for this run. */
 	readonly overrides: CompactionOverride;
-	/**
-	 * When true, the mode produces no LLM summary, so trailing focus text is
-	 * meaningless and rejected by the parser (snapcompact archives history into
-	 * images without a directed summary).
-	 */
-	readonly rejectsFocus?: boolean;
 }
 
 export const COMPACT_MODES: readonly CompactModeDef[] = [
@@ -47,12 +41,6 @@ export const COMPACT_MODES: readonly CompactModeDef[] = [
 		name: "remote",
 		description: "Summarize via OpenAI-compatible server compaction, then fall back to a local summary",
 		overrides: { methodOrder: ["remote", "soft"] },
-	},
-	{
-		name: "snapcompact",
-		description: "Archive history onto dense bitmap images the model reads back (no LLM call)",
-		overrides: { methodOrder: ["snapcompact"] },
-		rejectsFocus: true,
 	},
 ];
 
@@ -88,10 +76,5 @@ export function parseCompactArgs(args: string): ParsedCompactArgs | { error: str
 	}
 
 	const focus = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim();
-	if (mode.rejectsFocus && focus) {
-		return {
-			error: `/compact ${mode.name} does not take focus instructions (it archives history without an LLM summary).`,
-		};
-	}
 	return { mode: mode.name, instructions: focus || undefined };
 }

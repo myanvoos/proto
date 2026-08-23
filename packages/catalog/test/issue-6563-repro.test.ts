@@ -1,5 +1,5 @@
 /**
- * Issue #6563 — `Snapcompact not working for anthropic/claude-opus-5`
+ * Issue #6563 — Anthropic discovery 404 shadowed fresh vision metadata
  *
  * The registry derives Anthropic's discovery base URL from an existing bundled
  * model, and most bundled Anthropic rows use `https://api.anthropic.com`
@@ -8,7 +8,7 @@
  * `https://api.anthropic.com/models` (404) instead of `/v1/models`. The failed
  * refresh then retained a stale text-only cache row, which `mergeDynamicModel`
  * treated as authoritative over fresh stencil.so vision metadata — leaving
- * `claude-opus-5` marked text-only and snapcompact refusing to run.
+ * `claude-opus-5` marked text-only.
  *
  * The fix normalizes the discovery URL to always end in `/v1` while model rows
  * keep the provider base URL.
