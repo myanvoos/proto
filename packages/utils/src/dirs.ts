@@ -19,6 +19,9 @@ import { engines, version } from "../package.json" with { type: "json" };
 /** App name (e.g. "omp") */
 export const APP_NAME: string = "omp";
 
+/** Executable name users invoke (e.g. "proto"); distinct from APP_NAME, which brands config dirs and logs. */
+export const BINARY_NAME: string = "proto";
+
 /** Config directory name (e.g. ".omp") */
 export const CONFIG_DIR_NAME: string = ".omp";
 

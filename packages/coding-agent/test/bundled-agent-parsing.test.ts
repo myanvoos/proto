@@ -8,7 +8,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 describe("bundled agent parsing", () => {
 	it("lets reviewer inherit thinking effort from its model role", () => {
@@ -20,12 +19,12 @@ describe("bundled agent parsing", () => {
 		expect(reviewer?.thinkingLevel).toBeUndefined();
 	});
 
-	it("defaults the task agent to the auto thinking selector", () => {
+	it("lets the task agent inherit its role's thinking effort", () => {
 		const task = getBundledAgent("task");
 
 		expect(task).toBeDefined();
 		expect(task?.model).toEqual(["@task"]);
-		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
+		expect(task?.thinkingLevel).toBeUndefined();
 	});
 
 	// Issue #4761: with `modelRoles.slow: ...:xhigh`, the role's explicit effort

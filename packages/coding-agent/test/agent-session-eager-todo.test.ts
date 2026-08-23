@@ -256,7 +256,7 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls[0]?.messageTexts.filter(text => text.includes("list all work trees"))).toHaveLength(1);
 		expect(observedCalls[0]?.messageTexts[0]).not.toContain("list all work trees");
 		// `always` renders the hard, forced reminder.
-		expect(session.formatSessionAsText()).not.toContain("<user-request>");
+		expect(JSON.stringify(session.messages)).not.toContain("<user-request>");
 	});
 
 	it("initializes todos once, then continues within the same user turn", async () => {

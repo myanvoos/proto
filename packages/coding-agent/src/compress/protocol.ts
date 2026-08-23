@@ -174,7 +174,6 @@ export class CompressProtocol {
 			label: "Rewrite",
 			description: rewriteDescription.trim(),
 			parameters: rewriteSchema,
-			approval: "read",
 			strict: true,
 			execute: async (_toolCallId, rawParams) => {
 				const params = rewriteSchema(rawParams);
@@ -200,7 +199,6 @@ export class CompressProtocol {
 			label: "Approve",
 			description: approveDescription.trim(),
 			parameters: approveSchema,
-			approval: "read",
 			strict: true,
 			execute: async (_toolCallId, rawParams) => {
 				const params = approveSchema(rawParams);

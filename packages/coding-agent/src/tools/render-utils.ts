@@ -956,3 +956,12 @@ export function getLspBatchRequest(toolCall: ToolCallContext | undefined): LspBa
 	const hasLaterWrites = toolCall.toolCalls.slice(toolCall.index + 1).some(call => LSP_BATCH_TOOLS.has(call.name));
 	return { id: toolCall.batchId, flush: !hasLaterWrites };
 }
+
+/** Max characters of prompt-context text (paths, code) echoed back into prompts. */
+export const DEFAULT_PROMPT_TRUNCATE_CHARS = 2000;
+
+export function truncateForPrompt(value: string, maxChars = DEFAULT_PROMPT_TRUNCATE_CHARS): string {
+	if (value.length <= maxChars) return value;
+	const omitted = value.length - maxChars;
+	return `${value.slice(0, maxChars)}[…${omitted}ch elided…]`;
+}

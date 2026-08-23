@@ -4,8 +4,8 @@
  * Tiny models copy literal noise verbatim and lose the task when only the head
  * of a long message survives. The shared pipeline strips ANSI escapes, paired
  * XML/tool envelopes, full commit hashes, and fenced code blocks, then preserves
- * both ends with an explicit omission marker. Title generation, auto-thinking,
- * and the title benchmark MUST use this same policy.
+ * both ends with an explicit omission marker. Title generation and the title
+ * benchmark MUST use this same policy.
  */
 
 /** Maximum characters emitted by {@link preprocessTinyMessage}. */

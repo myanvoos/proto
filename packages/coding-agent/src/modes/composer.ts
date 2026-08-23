@@ -67,7 +67,6 @@ export interface ComposerOptions {
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
 export interface ComposerStartOptions {
 	readonly clearScrollback?: boolean;
-	readonly playWelcomeIntro?: boolean;
 	/**
 	 * Paint without owning stdin: the tty keeps cooked-mode echo/editing so
 	 * typing stays visible while startup module loading blocks the event loop.
@@ -181,12 +180,11 @@ export class Composer {
 		return this.#started && !this.#stopped;
 	}
 
-	/** Start terminal ownership and optionally begin the welcome intro. */
+	/** Start terminal ownership. */
 	start(options: ComposerStartOptions = {}): void {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
-		if (options.playWelcomeIntro !== false) this.playWelcomeIntro();
 	}
 	/** Take raw-input ownership after a deferred-input start. Idempotent. */
 	enableInput(): void {
@@ -218,12 +216,10 @@ export class Composer {
 			autocorrect: this.#preferences.spellingAutocorrect,
 		});
 		if (this.#preferences.quiet) {
-			this.#welcome?.stopIntro();
 			this.#welcome = undefined;
 		} else {
 			this.#ensureWelcome();
 			this.#welcome?.invalidate();
-			if (wasQuiet && this.#started) this.playWelcomeIntro();
 		}
 		if (wasQuiet !== this.#preferences.quiet) this.#rebuildHeader();
 		this.ui.requestRender();
@@ -282,11 +278,6 @@ export class Composer {
 		this.ui.requestRender();
 	}
 
-	/** Play or replay the welcome intro against the stable header render target. */
-	playWelcomeIntro(): void {
-		this.#welcome?.playIntro(() => this.ui.requestComponentRender(this.#header));
-	}
-
 	/** Transfer terminal ownership to InteractiveMode without stopping the composer. */
 	transfer(): void {
 		if (!this.#started || this.#stopped || this.#transferred) {
@@ -299,7 +290,6 @@ export class Composer {
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
 		this.#stopped = true;
-		this.#welcome?.stopIntro();
 		this.ui.stop();
 	}
 
@@ -346,7 +336,6 @@ export class Composer {
 		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
 		this.#stopped = true;
-		this.#welcome?.stopIntro();
 		if (this.#started) this.ui.stop();
 		this.#exit(code);
 	}

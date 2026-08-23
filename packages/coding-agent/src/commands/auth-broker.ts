@@ -3,6 +3,7 @@
  */
 
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 import {
 	AUTH_BROKER_ACTIONS,
 	type AuthBrokerAction,
@@ -72,7 +73,7 @@ export default class AuthBroker extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(AuthBroker);
 		if (!args.action) {
-			renderCommandHelp("omp", "auth-broker", AuthBroker);
+			renderCommandHelp(BINARY_NAME, "auth-broker", AuthBroker);
 			return;
 		}
 		const action = args.action as AuthBrokerAction;

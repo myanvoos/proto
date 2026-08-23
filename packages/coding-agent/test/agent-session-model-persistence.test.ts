@@ -11,7 +11,6 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { getRestorableSessionModels } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession model persistence", () => {
@@ -411,22 +410,6 @@ describe("AgentSession model persistence", () => {
 		const result = await createStartupResumeSession(targetSessionFile, settings);
 
 		expect(result.session.model?.id).toBe(temporaryModel.id);
-	});
-
-	it("activates auto thinking on startup resume when modelRoles.default carries an explicit :auto suffix", async () => {
-		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
-		const targetSessionFile = await writeRoleModelSession(
-			modelValue(defaultModel),
-			modelValue(defaultModel),
-			"default",
-		);
-		const settings = Settings.isolated();
-		settings.setModelRole("default", `${modelValue(defaultModel)}:auto`);
-
-		const result = await createStartupResumeSession(targetSessionFile, settings);
-
-		expect(result.session.model?.id).toBe(defaultModel.id);
-		expect(result.session.configuredThinkingLevel()).toBe(AUTO_THINKING);
 	});
 
 	it("marks an incomplete process-exit transcript aborted during SDK resume without dropping history", async () => {

@@ -199,15 +199,8 @@ export class FooterComponent implements Component {
 		// Add thinking level hint when the current model advertises supported efforts
 		let rightSide = modelName;
 		if (state.model?.thinking) {
-			if (this.session.isAutoThinking) {
-				// Pending (no turn classified yet / classifying) shows a symbol-theme
-				// question-box marker; once resolved it shows `<level>`.
-				const resolved = this.session.autoResolvedThinkingLevel();
-				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
-			} else {
-				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
-				rightSide = `${modelName} • ${thinkingLevel}`;
-			}
+			const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
+			rightSide = `${modelName} • ${thinkingLevel}`;
 		}
 
 		let statsLeftWidth = visibleWidth(statsLeft);

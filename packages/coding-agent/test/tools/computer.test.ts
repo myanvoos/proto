@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type as arkType } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { ComputerTool, computerApproval } from "@oh-my-pi/pi-coding-agent/tools/computer";
+import { ComputerTool } from "@oh-my-pi/pi-coding-agent/tools/computer";
 import type {
 	ComputerSessionSnapshot,
 	ComputerWorkerInbound,
@@ -246,14 +246,6 @@ describe("computer schema and approval", () => {
 		expect(first.parameters).toBe(schema);
 		expect(second.parameters).toBe(schema);
 		await Promise.all([first.close(), second.close()]);
-	});
-
-	it("maps only literal read_only true to read approval", () => {
-		expect(computerApproval({ read_only: true })).toBe("read");
-		expect(computerApproval({})).toBe("exec");
-		expect(computerApproval({ read_only: false })).toBe("exec");
-		expect(computerApproval({ read_only: "yes" })).toBe("exec");
-		expect(computerApproval("garbage")).toBe("exec");
 	});
 });
 

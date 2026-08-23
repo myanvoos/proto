@@ -14,7 +14,6 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
@@ -78,7 +77,6 @@ import type {
 import { type Effort, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -184,17 +182,10 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import {
-	AUTO_THINKING,
-	type ConfiguredThinkingLevel,
-	parseConfiguredThinkingLevel,
-	shouldDisableReasoning,
-	toReasoningEffort,
-} from "../thinking";
+import { parseThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { ImageAttachmentEntry } from "../tools";
-import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
@@ -308,7 +299,6 @@ import {
 	type InterruptedThinkingDetails,
 	isEmptyErrorTurn,
 	isUserInterruptAbort,
-	isUserInvokedSkillPrompt,
 	logProviderTurnError,
 	normalizeCustomMessagePayload,
 	type PythonExecutionMessage,
@@ -331,7 +321,6 @@ import type { ServingModel } from "./retry-fallback-chains";
 import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./session-advisors";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
-import { formatSessionDumpText } from "./session-dump-format";
 import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
@@ -950,7 +939,7 @@ export class AgentSession {
 	/**
 	 * Arm prewalk outside the normal startup path so an explicit slash command starts immediately.
 	 */
-	armPrewalk(target: Model, thinkingLevel?: ConfiguredThinkingLevel): boolean {
+	armPrewalk(target: Model, thinkingLevel?: ThinkingLevel): boolean {
 		return this.#prewalk.arm(target, thinkingLevel);
 	}
 
@@ -1312,7 +1301,6 @@ export class AgentSession {
 			settings: this.settings,
 			modelRegistry: this.#modelRegistry,
 			extensionRunner: () => this.#extensionRunner,
-			clientBridge: () => this.#clientBridge,
 			agentKind: () => this.#agentKind,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
@@ -1335,7 +1323,6 @@ export class AgentSession {
 			},
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
-			autoApprove: config.autoApprove,
 			toolRegistry: config.toolRegistry,
 			createVibeTools: config.createVibeTools,
 			createComputerTool: config.createComputerTool,
@@ -3444,15 +3431,6 @@ export class AgentSession {
 		if (!runner?.hasHandlers("tool_call")) return undefined;
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
-		// Parity with the wrapper's pre-emit short-circuit: an already-denied
-		// call never reaches extensions. Deny is mode-independent (tool decision
-		// or user policy), so resolving under the most permissive mode is exact;
-		// the wrapper still enforces the mode-accurate gate before execution.
-		const userPolicies = (this.settings.get("tools.approval") ?? {}) as Record<string, unknown>;
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
-		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
-			return undefined;
-		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
 			: ctx.args;
@@ -4474,19 +4452,9 @@ export class AgentSession {
 		return this.#models.thinkingLevel;
 	}
 
-	/** The selector the user configured: `auto` when auto mode is active, else the effective level. */
-	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined {
+	/** The selector the user configured: the effective level. */
+	configuredThinkingLevel(): ThinkingLevel | undefined {
 		return this.#models.configuredThinkingLevel();
-	}
-
-	/** True when `auto` thinking mode is active. */
-	get isAutoThinking(): boolean {
-		return this.#models.isAutoThinking;
-	}
-
-	/** The level `auto` resolved to for the current turn (undefined until classified). */
-	autoResolvedThinkingLevel(): Effort | undefined {
-		return this.#models.autoResolvedThinkingLevel;
 	}
 
 	/** Live per-family service tiers (OpenAI / Anthropic / Google). */
@@ -5050,7 +5018,6 @@ export class AgentSession {
 
 	setClientBridge(bridge: ClientBridge | undefined): void {
 		this.#clientBridge = bridge;
-		this.#tools.refreshAcpPermissionGates();
 	}
 
 	#clearCheckpointRuntimeState(): void {
@@ -5064,7 +5031,6 @@ export class AgentSession {
 	#clearSessionScopedToolState(): void {
 		this.agent.clearDeferredToolDirectives();
 		this.#toolChoiceQueue.clear();
-		this.#tools.clearAcpPermissionDecisions();
 		this.#tools.resetAnnouncedMounts();
 	}
 
@@ -5194,7 +5160,7 @@ export class AgentSession {
 	 * Resolve the explicit thinking suffix that should apply when a temporary
 	 * picker selects a model already assigned to a configured role.
 	 */
-	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
+	resolveTemporaryModelThinkingLevel(model: Model): ThinkingLevel | undefined {
 		return this.#models.resolveTemporaryModelThinkingLevel(model);
 	}
 
@@ -5860,20 +5826,6 @@ export class AgentSession {
 				return false;
 			}
 
-			// Auto thinking: classify this real user turn and set the effective level
-			// before the model request. A user-invoked `/skill:<name>` arrives as a
-			// user-attributed skill custom message whose expanded body is the task
-			// prompt, so it counts as a user turn. Synthetic/tool-continuation turns
-			// (developer roles), agent-originated or autoloaded skill injections, and
-			// non-auto sessions are skipped. Never blocks the turn — failures fall
-			// back to a concrete level inside the helper.
-			const isUserTurn = message.role === "user" || (message.role === "custom" && isUserInvokedSkillPrompt(message));
-			if (this.isAutoThinking && isUserTurn) {
-				await this.#models.applyAutoThinkingLevel(expandedText, generation);
-				if (this.#promptGeneration !== generation) {
-					return false;
-				}
-			}
 			const xdevMountNotice = isUserQueuedMessage(message)
 				? this.#tools.takePendingXdevMountNotice(baseXdevCatalogDelivered)
 				: undefined;
@@ -6985,7 +6937,7 @@ export class AgentSession {
 			this.#queuedMessageDrainBlocked = false;
 			this.#usagePreflightReadyForNextModelCall = false;
 
-			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.configuredThinkingLevel());
+			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
@@ -7140,11 +7092,7 @@ export class AgentSession {
 	}
 
 	/** Selects a model for this session without updating persisted model settings. */
-	setModelTemporary(
-		model: Model,
-		thinkingLevel?: ConfiguredThinkingLevel,
-		options?: { ephemeral?: boolean },
-	): Promise<void> {
+	setModelTemporary(model: Model, thinkingLevel?: ThinkingLevel, options?: { ephemeral?: boolean }): Promise<void> {
 		return this.#models.setModelTemporary(model, thinkingLevel, options);
 	}
 
@@ -7177,12 +7125,12 @@ export class AgentSession {
 	}
 
 	/** Selects the session thinking level and optionally persists it as the default. */
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+	setThinkingLevel(level: ThinkingLevel | undefined, persist: boolean = false): void {
 		this.#models.setThinkingLevel(level, persist);
 	}
 
 	/** Advances through the thinking selectors supported by the active model. */
-	cycleThinkingLevel(): ConfiguredThinkingLevel | undefined {
+	cycleThinkingLevel(): ThinkingLevel | undefined {
 		return this.#models.cycleThinkingLevel();
 	}
 
@@ -8043,8 +7991,6 @@ export class AgentSession {
 		const previousUsagePreflightReadyModel = this.#usagePreflightReadyModel;
 		const previousModel = this.model;
 		const previousThinkingLevel = this.thinkingLevel;
-		const previousAutoThinking = this.isAutoThinking;
-		const previousAutoResolvedLevel = this.autoResolvedThinkingLevel();
 		const previousServiceTierByFamily = this.serviceTierByFamily;
 		const previousTools = [...this.agent.state.tools];
 		const previousBaseSystemPrompt = this.#tools.baseSystemPrompt;
@@ -8159,26 +8105,21 @@ export class AgentSession {
 			const hasServiceTierEntry = this.sessionManager
 				.getBranch()
 				.some(entry => entry.type === "service_tier_change");
-			const defaultThinkingLevel = parseConfiguredThinkingLevel(this.settings.get("defaultThinkingLevel"));
+			const defaultThinkingLevel = parseThinkingLevel(this.settings.get("defaultThinkingLevel"));
 			const configuredServiceTierByFamily = buildServiceTierByFamily(
 				this.settings.get("tier.openai"),
 				this.settings.get("tier.anthropic"),
 				this.settings.get("tier.google"),
 			);
-			// Restore the thinking selector. Each change persists the configured
-			// selector (`auto` or a concrete level), so prefer it: an `auto` session
-			// resumes in auto mode (reclassifying the next turn) instead of freezing at
-			// the last resolved level. Entries written before the `configured` field
-			// existed fall back to the concrete level (legacy pin-on-resume behavior).
+
+			// Restore thinking level from the session context. Sessions with a persisted
+			// thinking entry restore their concrete level; entries that predate the
+			// persisted-level feature fall back to the concrete level (legacy
+			// pin-on-resume behavior).
 			// With no thinking entry, fall back to the global default so fresh sessions
-			// still classify their first turn.
-			const restoredConfigured = sessionContext.configuredThinkingLevel;
-			const restoredThinkingLevel: ConfiguredThinkingLevel | undefined =
-				hasThinkingEntry || (defaultThinkingLevel === AUTO_THINKING && sessionContext.thinkingLevel !== "off")
-					? restoredConfigured === AUTO_THINKING
-						? AUTO_THINKING
-						: (sessionContext.thinkingLevel as ThinkingLevel | undefined)
-					: defaultThinkingLevel;
+			const restoredThinkingLevel = hasThinkingEntry
+				? (sessionContext.thinkingLevel as ThinkingLevel | undefined)
+				: defaultThinkingLevel;
 			this.#models.restoreThinkingLevel(restoredThinkingLevel);
 			this.#models.restoreServiceTiers(
 				hasServiceTierEntry ? (sessionContext.serviceTier ?? {}) : configuredServiceTierByFamily,
@@ -8262,7 +8203,7 @@ export class AgentSession {
 				this.agent.setModel(previousModel);
 				modelRolledBack = !modelsAreEqual(rolledBackModel, previousModel);
 			}
-			this.#models.restoreThinkingSnapshot(previousThinkingLevel, previousAutoThinking, previousAutoResolvedLevel);
+			this.#models.restoreThinkingLevel(previousThinkingLevel);
 			this.#models.restoreServiceTiers(previousServiceTierByFamily);
 			if (modelRolledBack) {
 				this.#emit({ type: "model_changed" });
@@ -9411,27 +9352,6 @@ export class AgentSession {
 			});
 	}
 
-	/**
-	 * Export session to HTML.
-	 * @param outputPath Optional output path
-	 * @param useUserThemes Bundle the dark and light TUI themes selected in settings
-	 */
-	async exportToHtml(outputPath?: string, useUserThemes = false): Promise<string> {
-		// Lazy import: the export module embeds the HTML template and pre-built
-		// tool renderers as text; only `/export` should pay that load.
-		const { exportSessionToHtml } = await import("../export/html");
-		return exportSessionToHtml(this.sessionManager, this.state, {
-			outputPath,
-			palette: useUserThemes ? "theme" : "web",
-			themeNames: useUserThemes
-				? {
-						dark: this.settings.get("theme.dark") ?? "titanium",
-						light: this.settings.get("theme.light") ?? "light",
-					}
-				: undefined,
-		});
-	}
-
 	// =========================================================================
 	// Utilities
 	// =========================================================================
@@ -9501,58 +9421,6 @@ export class AgentSession {
 		}
 
 		return undefined;
-	}
-
-	/**
-	 * Format the entire session as plain text for clipboard export: system
-	 * prompt, model/thinking config, tool inventory, and the full transcript
-	 * rendered with markdown role headings (`## User`, `## Assistant`,
-	 * `### Tool Call`/`### Tool Result`).
-	 */
-	formatSessionAsText(): string {
-		return formatSessionDumpText({
-			messages: this.messages,
-			systemPrompt: this.agent.state.systemPrompt,
-			model: this.agent.state.model,
-			thinkingLevel: this.thinkingLevel,
-			tools: this.agent.state.tools,
-			inlineToolDescriptors: this.#pruneToolDescriptions,
-		});
-	}
-
-	/**
-	 * Dump the current session's LLM-facing request context as JSON to a
-	 * auto-named file in `os.tmpdir()`. This is the synchronous
-	 * `convertToLlm`-boundary snapshot — system prompt, tools (wire schemas),
-	 * thinking/service tier, and converted messages — with no network round-trip
-	 * and no arming flag, so advisor/side requests cannot intercept it.
-	 *
-	 * The file persists on disk and may contain the same raw context/secrets
-	 * as `/dump`; treat the path accordingly.
-	 *
-	 * @returns the written file path, or `undefined` when there are no messages.
-	 */
-	async dumpLlmRequestToTmpDir(): Promise<string | undefined> {
-		const messages = this.messages;
-		if (messages.length === 0) return undefined;
-		const llmMessages = await this.convertMessagesToLlm(messages);
-		const payload = {
-			model: this.agent.state.model ?? null,
-			thinkingLevel: this.thinkingLevel ?? null,
-			serviceTier: this.#models.serviceTierEntry(),
-			systemPrompt: this.agent.state.systemPrompt,
-			tools: this.agent.state.tools.map(tool => ({
-				name: tool.name,
-				description: tool.description,
-				parameters: toolWireSchema(tool),
-				...(tool.strict !== undefined ? { strict: tool.strict } : {}),
-				...(tool.customWireName ? { customWireName: tool.customWireName } : {}),
-			})),
-			messages: llmMessages,
-		};
-		const filePath = path.join(os.tmpdir(), `omp-llm-request-${Snowflake.next()}.json`);
-		await Bun.write(filePath, `${JSON.stringify(payload, null, 2)}\n`);
-		return filePath;
 	}
 
 	/**
@@ -9638,8 +9506,7 @@ export class AgentSession {
 
 	/**
 	 * The live advisor `Agent`, or `undefined` when no advisor runtime is
-	 * attached. Surfaced for diagnostics (`/dump advisor` already serializes
-	 * its transcript via {@link formatAdvisorHistoryAsText}) and so callers can
+	 * attached. Surfaced for diagnostics so callers can
 	 * verify the advisor inherits the session's provider-shaping options
 	 * (`streamFn`, `promptCacheKey`, `providerSessionState`, ...).
 	 */
@@ -9676,16 +9543,6 @@ export class AgentSession {
 	 */
 	formatAdvisorStatus(): string {
 		return this.#advisors.formatAdvisorStatus();
-	}
-
-	/**
-	 * Format the advisor agent's own transcript (its system prompt, config,
-	 * tools, and the markdown deltas it received plus its thinking/advise/read
-	 * calls) as plain text — the advisor-side equivalent of
-	 * {@link formatSessionAsText}. Returns null when no advisor is active.
-	 */
-	formatAdvisorHistoryAsText(options?: { compact?: boolean }): string | null {
-		return this.#advisors.formatAdvisorHistoryAsText(options);
 	}
 
 	// =========================================================================

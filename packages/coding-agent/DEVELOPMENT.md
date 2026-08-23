@@ -20,11 +20,12 @@ Run from `packages/coding-agent/` (or add `--cwd=packages/coding-agent`):
 | Lint only | `bun run lint` |
 | Tests | `bun run test` |
 | Autofix: lint + format prompts | `bun run fix` |
-| Build the `dist/omp` binary | `bun run build` |
+| Build the `dist/proto` binary | `bun run build` |
 
-Never invoke `tsc`/`npx tsc` directly — `bun run check` is the typecheck gate. After
-changing the React tool renderers under `collab-web/src/tool-render/`, rebuild them
-with `bun run gen:tool-views`.
+Never invoke `tsc`/`npx tsc` directly — `bun run check` is the typecheck gate.
+
+The React tool renderers for HTML exports are a checked-in prebuilt bundle at
+`src/export/html/tool-views.generated.js`.
 
 ## Boot flow
 

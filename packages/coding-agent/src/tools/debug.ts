@@ -6,7 +6,6 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	RenderResultOptions,
-	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
@@ -43,7 +42,6 @@ import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
-import { truncateForPrompt } from "./approval";
 import type { OutputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import {
@@ -677,19 +675,6 @@ export const debugToolRenderer = {
 
 export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails> {
 	readonly name = "debug";
-	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawAction = (args as Partial<DebugParams>).action;
-		const action = typeof rawAction === "string" ? rawAction.toLowerCase() : "";
-		return DEBUG_READONLY_ACTIONS.has(action) ? "read" : "exec";
-	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<DebugParams>;
-		const lines = [`Action: ${typeof params.action === "string" ? params.action : "(missing)"}`];
-		if (typeof params.program === "string" && params.program.length > 0) {
-			lines.push(`Program: ${truncateForPrompt(params.program)}`);
-		}
-		return lines;
-	};
 	readonly label = "Debug";
 	readonly summary = "Debug a running process with DAP (debugger adapter protocol)";
 	readonly description: string;

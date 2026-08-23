@@ -8,20 +8,19 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils";
 import { gradientLogo, PI_LOGO } from "../components/welcome";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { renderSetupOutro, SETUP_OUTRO_MS } from "./scenes/outro";
-import { renderSetupSplash, SETUP_SPLASH_MS, SETUP_TICK_MS } from "./scenes/splash";
 import type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
 
-type WizardPhase = "splash" | "transition" | "scene" | "outro" | "done";
+type WizardPhase = "scene" | "outro" | "done";
 
 const SCENE_MARGIN_X = 4;
 const MIN_CONTENT_WIDTH = 20;
-/** Cross-dissolve duration from the splash into the first scene. */
-const SCENE_TRANSITION_MS = 420;
+/** Outro completion poll cadence; the outro frame itself is static. */
+const OUTRO_TICK_MS = 50;
 
 function centerLine(line: string, width: number): string {
 	const lineWidth = visibleWidth(line);
@@ -39,31 +38,9 @@ function indentLine(line: string, width: number, indent: number): string {
 	const prefix = padding(Math.min(indent, Math.max(0, width - 1)));
 	return clampLine(prefix + line, width);
 }
-/** Stable per-row jitter in [0,1) for the dissolve reveal order. */
-function rowNoise(y: number): number {
-	const h = Math.imul(y ^ 0x9e3779b9, 2654435761);
-	return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
-}
-
-/**
- * Top-biased cross-dissolve between two equal-height frames. As `progress`
- * (0..1) advances, each row flips from `from` to `to` once it crosses a per-row
- * threshold — top rows reveal first (so the scene's mark/header materializes
- * before the splash water below it), with a little jitter for an organic edge.
- */
-function dissolveFrames(from: string[], to: string[], progress: number, height: number): string[] {
-	const eased = progress * progress * (3 - 2 * progress);
-	const denom = Math.max(1, height - 1);
-	const out: string[] = [];
-	for (let y = 0; y < height; y++) {
-		const threshold = 0.78 * (y / denom) + 0.22 * rowNoise(y);
-		out.push((eased >= threshold ? to[y] : from[y]) ?? "");
-	}
-	return out;
-}
 
 export class SetupWizardComponent implements Component, OverlayFocusOwner {
-	#phase: WizardPhase = "splash";
+	#phase: WizardPhase = "scene";
 	#phaseStartedAt = performance.now();
 	#sceneIndex = 0;
 	#activeScene: SetupSceneController | undefined;
@@ -80,8 +57,11 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	) {}
 
 	run(): Promise<void> {
-		this.#phase = this.scenes.length === 0 ? "outro" : "splash";
-		this.#phaseStartedAt = performance.now();
+		if (this.scenes.length === 0) {
+			this.#beginOutro();
+		} else {
+			this.#mountSceneController("scene");
+		}
 		this.#startTimer();
 		this.ctx.ui.requestRender();
 		return this.#done.promise;
@@ -114,17 +94,6 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 			this.#beginOutro();
 			return;
 		}
-		if (this.#phase === "splash") {
-			if (
-				matchesKey(data, "enter") ||
-				matchesKey(data, "return") ||
-				matchesKey(data, "space") ||
-				matchesKey(data, "escape")
-			) {
-				this.#beginScene();
-			}
-			return;
-		}
 		if (this.#phase === "outro") {
 			if (
 				matchesKey(data, "enter") ||
@@ -146,14 +115,12 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	 * body rows start at #bodyRowStart, indented by SCENE_MARGIN_X. Scenes
 	 * that implement routeMouse get hit-tested events (wheel, hover, click);
 	 * for the rest a wheel notch falls back to an arrow key. A left click
-	 * advances the splash/outro like Enter. Raw reports never reach scene
-	 * keyboard input.
+	 * completes the outro like Enter. Raw reports never reach scene keyboard
+	 * input.
 	 */
 	#routeMouseEvent(event: SgrMouseEvent): void {
-		if (this.#phase === "splash" || this.#phase === "outro") {
-			if (!event.leftClick) return;
-			if (this.#phase === "splash") this.#beginScene();
-			else this.#complete();
+		if (this.#phase === "outro") {
+			if (event.leftClick) this.#complete();
 			return;
 		}
 		const scene = this.#activeScene;
@@ -172,19 +139,8 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		const height = Math.max(1, this.ctx.ui.terminal.rows);
 		let lines: string[];
 		switch (this.#phase) {
-			case "splash":
-				lines = renderSetupSplash(safeWidth, height, performance.now() - this.#phaseStartedAt);
-				break;
-			case "transition": {
-				const elapsed = performance.now() - this.#phaseStartedAt;
-				const progress = Math.min(1, elapsed / SCENE_TRANSITION_MS);
-				const splash = renderSetupSplash(safeWidth, height, SETUP_SPLASH_MS + elapsed);
-				const scene = this.#renderScene(safeWidth, height);
-				lines = dissolveFrames(splash, scene, progress, height);
-				break;
-			}
 			case "outro":
-				lines = renderSetupOutro(safeWidth, height, performance.now() - this.#phaseStartedAt);
+				lines = renderSetupOutro(safeWidth, height);
 				break;
 			case "scene":
 				lines = this.#renderScene(safeWidth, height);
@@ -205,7 +161,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		const header = [
 			"",
 			...logo.map(line => centerLine(line, width)),
-			centerLine(theme.bold(theme.fg("accent", APP_NAME)), width),
+			centerLine(theme.bold(theme.fg("accent", BINARY_NAME)), width),
 			centerLine(theme.fg("muted", `Setup step ${this.#sceneIndex + 1} of ${this.scenes.length}`), width),
 			"",
 			indentLine(theme.bold(title), width, SCENE_MARGIN_X),
@@ -242,19 +198,11 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		if (this.#timer) return;
 		this.#timer = setInterval(() => {
 			if (this.#disposed) return;
-			const elapsed = performance.now() - this.#phaseStartedAt;
-			if (this.#phase === "splash" && elapsed >= SETUP_SPLASH_MS) {
-				this.#beginScene();
-			} else if (this.#phase === "transition" && elapsed >= SCENE_TRANSITION_MS) {
-				this.#phase = "scene";
-				this.#phaseStartedAt = performance.now();
-				this.ctx.ui.requestRender();
-			} else if (this.#phase === "outro" && elapsed >= SETUP_OUTRO_MS) {
+			if (this.#phase === "outro" && performance.now() - this.#phaseStartedAt >= SETUP_OUTRO_MS) {
 				this.#complete();
-			} else {
-				this.ctx.ui.requestRender();
+				return;
 			}
-		}, SETUP_TICK_MS);
+		}, OUTRO_TICK_MS);
 	}
 
 	#stopTimer(): void {
@@ -263,7 +211,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		this.#timer = undefined;
 	}
 
-	#mountSceneController(targetPhase: "scene" | "transition"): void {
+	#mountSceneController(targetPhase: "scene"): void {
 		if (this.#disposed) return;
 		this.#unmountActiveScene();
 		if (this.#sceneIndex >= this.scenes.length) {
@@ -293,20 +241,11 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		this.ctx.ui.requestRender();
 	}
 
-	/** Enter the first scene through a dissolve from the splash. */
-	#beginScene(): void {
-		this.#mountSceneController("transition");
-	}
-
-	#mountCurrentScene(): void {
-		this.#mountSceneController("scene");
-	}
-
 	#finishScene(): void {
-		if (this.#phase !== "scene" && this.#phase !== "transition") return;
+		if (this.#phase !== "scene") return;
 		this.#unmountActiveScene();
 		this.#sceneIndex += 1;
-		this.#mountCurrentScene();
+		this.#mountSceneController("scene");
 	}
 
 	#unmountActiveScene(): void {

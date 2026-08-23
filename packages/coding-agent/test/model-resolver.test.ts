@@ -881,25 +881,6 @@ describe("resolveModelRoleValue", () => {
 		expect(result.thinkingLevel).toBe(Effort.Max);
 		expect(result.explicitThinkingLevel).toBe(true);
 	});
-
-	test("preserves an explicit :auto suffix as an explicit thinking selector", () => {
-		const result = resolveModelRoleValue("anthropic/claude-sonnet-4-5:auto", allModels);
-
-		expect(result.model?.provider).toBe("anthropic");
-		expect(result.model?.id).toBe("claude-sonnet-4-5");
-		expect(result.thinkingLevel).toBe("auto");
-		expect(result.explicitThinkingLevel).toBe(true);
-		expect(result.warning).toBeUndefined();
-	});
-
-	test("does not clamp :auto against the model's supported efforts", () => {
-		// claude-sonnet-4-5 caps at "high"; ensure auto isn't collapsed onto it
-		// by resolveThinkingLevelForModel.
-		const result = resolveModelRoleValue("anthropic/claude-sonnet-4-5:auto", allModels);
-
-		expect(result.thinkingLevel).toBe("auto");
-		expect(result.explicitThinkingLevel).toBe(true);
-	});
 });
 describe("resolveAgentPrewalkPattern", () => {
 	test("agent definition alone decides: true → default target, pattern → custom, false/absent → off", () => {
@@ -1794,26 +1775,6 @@ describe("parseModelString", () => {
 			expect(result).toEqual({ provider: "anthropic", id: "claude-sonnet-4-5:max" });
 		});
 
-		test("leaves :auto attached to the model id unless the caller opts in via allowAutoAlias", () => {
-			// Without allowAutoAlias, the strict suffix parser must not silently
-			// reinterpret a literal `:auto` id as an auto-thinking selector.
-			const result = parseModelString("example/runtime:auto");
-			expect(result).toEqual({ provider: "example", id: "runtime:auto" });
-		});
-
-		test("extracts auto sentinel when explicitly enabled for provider id selectors", () => {
-			const result = parseModelString("openai/gpt-5:auto", { allowAutoAlias: true });
-			expect(result).toEqual({ provider: "openai", id: "gpt-5", thinkingLevel: "auto" });
-		});
-
-		test("preserves literal :auto model ids when the caller can prove they exist", () => {
-			const result = parseModelString("example/runtime:auto", {
-				allowAutoAlias: true,
-				isLiteralModelId: (provider, id) => provider === "example" && id === "runtime:auto",
-			});
-			expect(result).toEqual({ provider: "example", id: "runtime:auto" });
-		});
-
 		test("does not strip inherited object keys as thinking suffixes", () => {
 			const result = parseModelString("anthropic/claude-sonnet-4-5:constructor");
 			expect(result).toEqual({ provider: "anthropic", id: "claude-sonnet-4-5:constructor" });
@@ -1920,13 +1881,6 @@ describe("extractExplicitThinkingSelector", () => {
 			isLiteralModelId: (provider, id) => provider === "nanogpt" && id === "coding-router:auto",
 		});
 		expect(result).toBeUndefined();
-	});
-
-	test("treats auto as an explicit selector when the model id is not literal", () => {
-		const result = extractExplicitThinkingSelector("openai/gpt-5:auto", undefined, {
-			isLiteralModelId: () => false,
-		});
-		expect(result).toBe("auto");
 	});
 });
 

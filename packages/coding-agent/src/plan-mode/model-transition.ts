@@ -12,23 +12,25 @@
  * is testable without a live session or TUI. The interactive mode performs the
  * resulting side effect.
  */
+
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
-import type { ConfiguredThinkingLevel } from "../thinking";
 
 /** The action implied by resolving the `plan` role against the active model. */
 export type PlanModelTransition =
 	/** Already on the plan model with no thinking-level change to apply. */
 	| { kind: "none" }
 	/** Same model; only the plan role's explicit thinking level differs. */
-	| { kind: "thinking"; thinkingLevel: ConfiguredThinkingLevel }
+	| { kind: "thinking"; thinkingLevel: ThinkingLevel }
 	/**
 	 * Switch to `model`. `deferred` is set when the session is mid-stream: the
 	 * switch must wait for the current turn to end (a live `setModelTemporary`
 	 * resets the provider session), so the caller queues it instead.
 	 */
-	| { kind: "apply"; model: Model; thinkingLevel: ConfiguredThinkingLevel | undefined; deferred: boolean };
+	| { kind: "apply"; model: Model; thinkingLevel: ThinkingLevel | undefined; deferred: boolean };
 
 /**
  * Decide how to reconcile the active model with the resolved `plan` role.

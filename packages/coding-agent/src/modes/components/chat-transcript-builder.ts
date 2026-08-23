@@ -2,8 +2,8 @@
  * Builds transcript components from persisted session message entries — the
  * file/remote-backed counterpart to {@link UiHelpers.addMessageToChat} (which is
  * bound to the live InteractiveModeContext). Used by the fullscreen transcript
- * viewer ({@link AgentTranscriptViewer}) to render a parked subagent / advisor /
- * collab-guest transcript that has no live session.
+ * viewer ({@link AgentTranscriptViewer}) to render a parked subagent / advisor
+ * transcript that has no live session.
  *
  * Unlike the old incremental hub sync, {@link ChatTranscriptBuilder.rebuild}
  * always discards prior components and rebuilds the whole transcript from the
@@ -15,7 +15,6 @@ import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
-import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
@@ -44,7 +43,6 @@ import { AssistantMessageComponent } from "./assistant-message";
 import { createBackgroundTanDispatchBlock } from "./background-tan-message";
 import { BashExecutionComponent } from "./bash-execution";
 import { detectCacheInvalidation } from "./cache-invalidation-marker";
-import { CollabPromptMessageComponent } from "./collab-prompt-message";
 import {
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
@@ -478,10 +476,6 @@ export class ChatTranscriptBuilder {
 			const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
 			this.#trackExpandable(component);
 			this.container.addChild(component);
-			return;
-		}
-		if (message.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
-			this.container.addChild(new CollabPromptMessageComponent(message as CustomMessage<CollabPromptDetails>));
 			return;
 		}
 		if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {

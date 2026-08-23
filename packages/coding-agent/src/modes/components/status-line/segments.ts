@@ -122,24 +122,15 @@ const modelSegment: StatusLineSegment = {
 			modelName = modelName.slice(7);
 		}
 
-		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
+		// Resolve the current thinking-level display ("◉ xhigh", "⊘ off", …)
 		// when the model supports thinking and the segment isn't hiding it.
 		let thinkingDisplay = "";
 		if (opts.showThinkingLevel !== false && state.model?.thinking) {
-			if (ctx.session.isAutoThinking) {
-				// Pending (no turn classified yet / classifying) shows a symbol-theme
-				// question-box marker; once resolved it shows `<level>`.
-				const resolved = ctx.session.autoResolvedThinkingLevel();
-				thinkingDisplay = resolved
-					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
-					: `${theme.thinking.autoPending} auto`;
-			} else {
-				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				thinkingDisplay =
-					level === ThinkingLevel.Off
-						? `${theme.status.disabled} off`
-						: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
-			}
+			const level = state.thinkingLevel ?? ThinkingLevel.Off;
+			thinkingDisplay =
+				level === ThinkingLevel.Off
+					? `${theme.status.disabled} off`
+					: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
 		}
 
 		// Compact mode swaps the model icon for the thinking-level glyph and drops
@@ -644,18 +635,6 @@ const sessionNameSegment: StatusLineSegment = {
 	},
 };
 
-const collabSegment: StatusLineSegment = {
-	id: "collab",
-	render(ctx) {
-		if (!ctx.collab) return { content: "", visible: false };
-		const label =
-			ctx.collab.role === "host"
-				? `⇄ collab:${ctx.collab.participantCount}`
-				: `⇄ collab guest:${ctx.collab.participantCount}`;
-		return { content: theme.fg("accent", label), visible: true };
-	},
-};
-
 function pickUsageColor(percent: number): "muted" | "warning" | "error" {
 	if (percent >= 80) return "error";
 	if (percent >= 50) return "warning";
@@ -752,7 +731,6 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	cache_hit: cacheHitSegment,
 	session_name: sessionNameSegment,
 	usage: usageSegment,
-	collab: collabSegment,
 };
 
 export function renderSegment(id: StatusLineSegmentId, ctx: SegmentContext): RenderedSegment {

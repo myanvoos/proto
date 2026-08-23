@@ -35,12 +35,7 @@ import chatTemplate from "../prompts/bench/chat.md" with { type: "text" };
 import generationTemplate from "../prompts/bench/generation.md" with { type: "text" };
 import prefillInstruction from "../prompts/bench/prefill-instruction.md" with { type: "text" };
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
-import {
-	concreteThinkingLevel,
-	resolveThinkingLevelForModel,
-	shouldDisableReasoning,
-	toReasoningEffort,
-} from "../thinking";
+import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import { createLiveBoard, type LiveBoardOutput } from "./live-board";
 
 const DEFAULT_PAR = 4;
@@ -988,7 +983,7 @@ function resolveBenchModels(
 		resolved.push({
 			selector,
 			model,
-			thinking: resolveThinkingLevelForModel(model, concreteThinkingLevel(result.thinkingLevel)),
+			thinking: resolveThinkingLevelForModel(model, result.thinkingLevel),
 		});
 	}
 	if (errors.length > 0) {

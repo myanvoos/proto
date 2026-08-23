@@ -54,7 +54,6 @@ function makeCtx(isStreaming = false) {
 			prompt,
 		},
 		focusedAgentId: undefined,
-		collabGuest: undefined,
 		handleHotkeysCommand: vi.fn(),
 		handleMCPCommand,
 		showStatus: vi.fn(),

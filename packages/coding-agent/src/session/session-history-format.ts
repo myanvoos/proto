@@ -1,15 +1,14 @@
 /**
  * Concise markdown transcript serializer for `history://` URLs.
  *
- * Unlike `session-dump-format.ts` (verbose `/dump` export), this emits a
+ * This emits a
  * compressed transcript: full user/assistant/developer text, tool call +
  * result pairs collapsed to single lines, thinking elided, custom messages
  * as one-liners. No system prompt, no tool catalog, no config sections.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { escapeXmlText } from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { escapeXmlText, INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import type {
 	BashExecutionMessage,
 	BranchSummaryMessage,
@@ -293,8 +292,7 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
  * Format a session's message array as a concise markdown transcript.
  *
  * `messages` is the session's in-memory message array (or the read-only
- * equivalent loaded from a session file) — the same shapes
- * `session-dump-format.ts` consumes.
+ * equivalent loaded from a session file).
  */
 export function formatSessionHistoryMarkdown(messages: unknown[], opts?: HistoryFormatOptions): string {
 	const typed = messages as AgentMessage[];

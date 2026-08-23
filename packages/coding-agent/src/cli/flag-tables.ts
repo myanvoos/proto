@@ -31,7 +31,7 @@
  */
 
 import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ThinkingLevel } from "../thinking";
 import type { Args } from "./args";
 import { CliUsageError } from "./usage-error";
 
@@ -46,7 +46,7 @@ import { CliUsageError } from "./usage-error";
  */
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
-	parseThinking: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
+	parseThinking: (value: string | null | undefined) => ThinkingLevel | undefined;
 	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
 }
@@ -203,9 +203,6 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 			});
 		}
 	},
-	"--export": (result, value) => {
-		result.export = value;
-	},
 	"--hook": (result, value) => {
 		result.hooks = result.hooks ?? [];
 		result.hooks.push(value);
@@ -222,16 +219,6 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--skills": (result, value) => {
 		result.skills = value.split(",").map(s => s.trim());
-	},
-	"--approval-mode": (result, value, deps) => {
-		if (value === "always-ask" || value === "write" || value === "yolo") {
-			result.approvalMode = value;
-		} else {
-			deps.logger.warn("Invalid value passed to --approval-mode", {
-				value,
-				validValues: ["always-ask", "write", "yolo"],
-			});
-		}
 	},
 };
 

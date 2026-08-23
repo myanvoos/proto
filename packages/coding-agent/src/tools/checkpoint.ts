@@ -52,7 +52,6 @@ export interface RewindToolDetails {
 
 export class CheckpointTool implements AgentTool<typeof checkpointSchema, CheckpointToolDetails> {
 	readonly name = "checkpoint";
-	readonly approval = "read" as const;
 	readonly label = "Checkpoint";
 	readonly summary = "Create a git-based checkpoint to save and restore session state";
 	readonly description: string;
@@ -88,7 +87,6 @@ export class CheckpointTool implements AgentTool<typeof checkpointSchema, Checkp
 
 export class RewindTool implements AgentTool<typeof rewindSchema, RewindToolDetails> {
 	readonly name = "rewind";
-	readonly approval = "read" as const;
 	readonly label = "Rewind";
 	readonly summary = "Rewind to a previously created checkpoint";
 	readonly description: string;

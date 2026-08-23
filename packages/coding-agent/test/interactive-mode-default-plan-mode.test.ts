@@ -145,7 +145,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 	it("enters plan mode at startup when the setting is enabled", async () => {
 		const created = createHarness(Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false }));
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getPlanModeState()).toMatchObject({ enabled: true, planFilePath: "local://PLAN.md" });
@@ -160,7 +160,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		const initialModel = session?.model;
 		if (!initialModel) throw new Error("Expected initial model");
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		const planModel = session?.model;
 		if (!planModel) throw new Error("Expected plan model");
@@ -193,7 +193,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 
 		expect(session?.getActiveToolNames()).not.toContain("write");
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getActiveToolNames()).toContain("write");
@@ -219,7 +219,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			},
 		);
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getActiveToolNames()).toContain("write");
@@ -235,7 +235,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			extraRegistryTools: [shadowWriteTool],
 		});
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getActiveToolNames()).not.toContain("write");
@@ -247,7 +247,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			extraRegistryTools: [writeTool],
 			builtInToolNames: ["read", "write"],
 		});
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 		expect(session?.getActiveToolNames()).toContain("write");
 
 		await created.handlePlanModeCommand();
@@ -265,7 +265,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			builtInToolNames: ["read", "write"],
 			rebuildGate,
 		});
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 		const activeBefore = session?.getActiveToolNames();
 		rebuildGate.fail = true;
 
@@ -310,7 +310,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			xdev,
 		});
 		const previousModel = session?.model;
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 		const planModel = session?.model;
 		await session!.refreshMCPTools([mountedTool]);
 		await session!.setActiveToolsByName([...session!.getEnabledToolNames(), planSelectedTool.name]);
@@ -362,7 +362,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			builtInToolNames: ["read", "write"],
 			rebuildGate,
 		});
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.peekPlanProposalHandler()).toBeDefined();
 
@@ -433,7 +433,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		created.sessionManager.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
 		created.sessionManager.appendMessage({ role: "user", content: "prior plan turn", timestamp: Date.now() });
 
-		await created.init({ suppressWelcomeIntro: true });
+		await created.init();
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.model?.id).toBe("claude-sonnet-4-5");

@@ -62,12 +62,7 @@ import {
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
-import {
-	AUTO_THINKING,
-	type ConfiguredThinkingLevel,
-	concreteThinkingLevel,
-	parseConfiguredThinkingLevel,
-} from "../../thinking";
+import { parseThinkingLevel } from "../../thinking";
 import {
 	isSearchProviderId,
 	setExcludedSearchProviders,
@@ -468,7 +463,7 @@ export class SelectorController {
 				break;
 			case "thinkingLevel":
 			case "defaultThinkingLevel":
-				this.ctx.session.setThinkingLevel(value as ConfiguredThinkingLevel, true);
+				this.ctx.session.setThinkingLevel(value as ThinkingLevel, true);
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
 				break;
@@ -867,10 +862,12 @@ export class SelectorController {
 					const defaultStatusLabel = configuredStorage === "project" ? `${scopeLabel}default` : "Default";
 					try {
 						if (role === "default") {
-							// `auto` on the default role configures the active session. Other roles
-							// persist an explicit `:auto` suffix and must not mutate the current model.
-							const isAuto = thinkingLevel === AUTO_THINKING;
-							const concreteThinking = isAuto || thinkingLevel === undefined ? undefined : thinkingLevel;
+							// The picker's level applies to the session; a role value cannot
+							// persist an explicit suffix and must not mutate the current model.
+							const concreteThinking =
+								thinkingLevel !== undefined && thinkingLevel !== ThinkingLevel.Inherit
+									? thinkingLevel
+									: undefined;
 							const effectiveProvenance = this.ctx.settings.getModelRoleProvenance("default");
 							const shadowedGlobal =
 								configuredStorage === "project" &&
@@ -888,21 +885,15 @@ export class SelectorController {
 									"default",
 									formatModelSelectorValue(selectorValue, concreteThinking),
 								);
-								if (isAuto) {
-									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
-								}
 							} else if (shadowedProject) {
 								this.ctx.settings.setProjectModelRole(
 									"default",
 									formatModelSelectorValue(selectorValue, concreteThinking),
 								);
-								if (isAuto) {
-									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
-								}
 							} else {
 								const { switched } = await this.ctx.session.setModel(model, role, {
 									selector,
-									thinkingLevel: isAuto ? ThinkingLevel.Inherit : concreteThinking,
+									thinkingLevel: concreteThinking ?? ThinkingLevel.Inherit,
 									persist: targetScope === "global",
 								});
 								if (!switched) return;
@@ -912,9 +903,7 @@ export class SelectorController {
 										formatModelSelectorValue(selectorValue, concreteThinking),
 									);
 								}
-								if (isAuto) {
-									this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
-								} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
+								if (concreteThinking) {
 									this.ctx.session.setThinkingLevel(concreteThinking);
 								}
 								this.ctx.statusLine.invalidate();
@@ -981,32 +970,17 @@ export class SelectorController {
 									settings: this.ctx.settings,
 								});
 								if (resolved.model) {
-									const fallbackModel = resolved.model;
-									const isAuto = resolved.thinkingLevel === AUTO_THINKING;
-									let concreteThinking = concreteThinkingLevel(resolved.thinkingLevel);
-									let isAutoFromDefault = false;
-									if (!resolved.explicitThinkingLevel && !concreteThinking) {
-										const defaultLevel = parseConfiguredThinkingLevel(
-											this.ctx.settings.get("defaultThinkingLevel"),
-										);
-										if (defaultLevel === AUTO_THINKING) {
-											isAutoFromDefault = true;
-										} else if (defaultLevel) {
-											concreteThinking = defaultLevel;
-										}
+									let fallbackThinking = resolved.explicitThinkingLevel ? resolved.thinkingLevel : undefined;
+									if (fallbackThinking === undefined) {
+										fallbackThinking = parseThinkingLevel(this.ctx.settings.get("defaultThinkingLevel"));
 									}
-									const effectiveIsAuto = isAuto || isAutoFromDefault;
-									const { switched } = await this.ctx.session.setModel(fallbackModel, "default", {
+									const { switched } = await this.ctx.session.setModel(resolved.model, "default", {
 										persist: false,
-										thinkingLevel: effectiveIsAuto
-											? ThinkingLevel.Inherit
-											: (concreteThinking ?? ThinkingLevel.Inherit),
+										thinkingLevel: fallbackThinking ?? ThinkingLevel.Inherit,
 									});
 									if (!switched) return;
-									if (effectiveIsAuto) {
-										this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
-									} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
-										this.ctx.session.setThinkingLevel(concreteThinking);
+									if (fallbackThinking && fallbackThinking !== ThinkingLevel.Inherit) {
+										this.ctx.session.setThinkingLevel(fallbackThinking);
 									}
 									this.ctx.statusLine.invalidate();
 									this.ctx.updateEditorBorderColor();
@@ -1496,12 +1470,11 @@ export class SelectorController {
 			if (error instanceof ToolAbortError) return undefined;
 			throw error;
 		}
-		// The rich ask dialog can race a collab guest choosing "Chat about this"
-		// (`AskTool`'s `chatRedirect` result); that's meaningful inside a live
-		// agent turn, where the model sees the redirect and starts a
-		// conversation, but this standalone re-answer has no turn to hand it
-		// to — completing the navigation with it would silently drop the
-		// user's intent to chat (roboomp review on #5895).
+		// "Chat about this" (`AskTool`'s `chatRedirect` result) only means
+		// something inside a live agent turn, where the model sees the redirect
+		// and starts a conversation; this standalone re-answer has no turn to
+		// hand it to — completing the navigation with it would silently drop
+		// the user's intent to chat (roboomp review on #5895).
 		if (result.details?.chatRedirect) {
 			this.ctx.showError(
 				"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
@@ -2128,8 +2101,6 @@ export class SelectorController {
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
 			onDone: done,
 			requestRender: () => this.ctx.ui.requestRender(),
-			registry: this.ctx.collabGuest?.agentRegistry,
-			remote: this.ctx.collabGuest?.hubRemote,
 			ui: this.ctx.ui,
 			getTool: name => this.ctx.session.getToolByName(name),
 			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),

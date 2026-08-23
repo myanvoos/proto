@@ -22,12 +22,11 @@ import {
 } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
-import { truncateForPrompt } from "./approval";
 import { parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
-import { isInternalUrlPath, resolveToolSearchScope } from "./path-utils";
+import { resolveToolSearchScope } from "./path-utils";
 import {
 	appendParseErrorsBulletList,
 	capParseErrors,
@@ -178,29 +177,6 @@ type AstEditSchemaInfer = typeof astEditSchema.infer;
 
 export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolDetails> {
 	readonly name = "ast_edit";
-	readonly approval = (args: unknown) => {
-		const paths = Array.isArray((args as Partial<AstEditSchemaInfer>).paths)
-			? ((args as Partial<AstEditSchemaInfer>).paths as string[])
-			: [];
-		return paths.length > 0 && paths.every(path => isInternalUrlPath(path)) ? "read" : "write";
-	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<AstEditSchemaInfer>;
-		const lines: string[] = [];
-		const ops = Array.isArray(params.ops) ? params.ops : [];
-		const firstOp = ops[0];
-		if (firstOp) {
-			lines.push(`Pattern: ${truncateForPrompt(firstOp.pat)}`);
-			lines.push(`Replacement: ${truncateForPrompt(firstOp.out)}`);
-			if (ops.length > 1) {
-				lines.push(`+${ops.length - 1} more op${ops.length === 2 ? "" : "s"}`);
-			}
-		}
-		if (Array.isArray(params.paths) && params.paths.length > 0) {
-			lines.push(`Paths: ${truncateForPrompt(params.paths.join(", "))}`);
-		}
-		return lines;
-	};
 	readonly label = "AST Edit";
 	readonly summary = "Perform AST-aware code edits (structural refactoring)";
 	readonly description: string;

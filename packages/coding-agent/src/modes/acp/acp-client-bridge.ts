@@ -1,24 +1,17 @@
 /**
  * ACP-side `ClientBridge` implementation. Wraps `AgentSideConnection` so the
- * `read`/`write`/`bash`/`edit` tools (and the permission gate in
- * `AgentSession`) can route through the client when it advertises the
- * relevant capabilities at `initialize` time.
+ * `read`/`write`/`bash`/`edit` tools can route through the client when it
+ * advertises the relevant capabilities at `initialize` time.
  */
 import type {
-	PermissionOption as AcpPermissionOption,
 	TerminalHandle as AcpTerminalHandle,
 	AgentSideConnection,
 	ClientCapabilities,
-	RequestPermissionRequest,
-	ToolCallUpdate,
 } from "@oh-my-pi/pi-utils/acp";
 import type {
 	ClientBridge,
 	ClientBridgeCapabilities,
 	ClientBridgeCreateTerminalParams,
-	ClientBridgePermissionOption,
-	ClientBridgePermissionOutcome,
-	ClientBridgePermissionToolCall,
 	ClientBridgeTerminalHandle,
 } from "../../session/client-bridge";
 
@@ -31,9 +24,6 @@ export function createAcpClientBridge(
 		readTextFile: clientCapabilities?.fs?.readTextFile === true,
 		writeTextFile: clientCapabilities?.fs?.writeTextFile === true,
 		terminal: clientCapabilities?.terminal === true,
-		// Permission requests are always usable on the connection; gating is
-		// the agent's policy choice rather than a client capability.
-		requestPermission: true,
 	};
 
 	const bridge: ClientBridge = { capabilities, deferAgentInitiatedTurns: true };
@@ -64,9 +54,6 @@ export function createAcpClientBridge(
 		bridge.createTerminal = (params: ClientBridgeCreateTerminalParams) =>
 			createTerminalHandle(connection, sessionId, params);
 	}
-
-	bridge.requestPermission = (toolCall, options, signal) =>
-		requestPermission(connection, sessionId, toolCall, options, signal);
 
 	return bridge;
 }
@@ -108,47 +95,5 @@ function wrapTerminalHandle(handle: AcpTerminalHandle): ClientBridgeTerminalHand
 		async release() {
 			await handle.release();
 		},
-	};
-}
-
-async function requestPermission(
-	connection: AgentSideConnection,
-	sessionId: string,
-	toolCall: ClientBridgePermissionToolCall,
-	options: ClientBridgePermissionOption[],
-	signal: AbortSignal | undefined,
-): Promise<ClientBridgePermissionOutcome> {
-	const update: ToolCallUpdate = {
-		toolCallId: toolCall.toolCallId,
-		title: toolCall.title,
-		...(toolCall.kind ? { kind: toolCall.kind as ToolCallUpdate["kind"] } : {}),
-		...(toolCall.status ? { status: toolCall.status as ToolCallUpdate["status"] } : {}),
-		...(toolCall.rawInput !== undefined ? { rawInput: toolCall.rawInput } : {}),
-		...(toolCall.content ? { content: toolCall.content as ToolCallUpdate["content"] } : {}),
-		...(toolCall.locations ? { locations: toolCall.locations } : {}),
-	};
-	const acpOptions: AcpPermissionOption[] = options.map(option => ({
-		optionId: option.optionId,
-		name: option.name,
-		kind: option.kind,
-	}));
-	const request: RequestPermissionRequest = {
-		sessionId,
-		toolCall: update,
-		options: acpOptions,
-	};
-	if (signal?.aborted) {
-		return { outcome: "cancelled" };
-	}
-	const response = await connection.requestPermission(request);
-	const outcome = response.outcome;
-	if (outcome.outcome === "cancelled") {
-		return { outcome: "cancelled" };
-	}
-	const matched = options.find(option => option.optionId === outcome.optionId);
-	return {
-		outcome: "selected",
-		optionId: outcome.optionId,
-		...(matched ? { kind: matched.kind } : {}),
 	};
 }

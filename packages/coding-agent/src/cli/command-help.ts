@@ -65,8 +65,6 @@ export const installHelp = {
 	description: "Install or link an extension package (alias of `plugin install`/`plugin link`)",
 } satisfies CommandMetadata;
 
-export const joinHelp = { description: "Join a shared collab session (same as /join)" } satisfies CommandMetadata;
-
 export const modelsHelp = { description: "List, search, and refresh available models" } satisfies CommandMetadata;
 
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
@@ -87,10 +85,6 @@ export const sayHelp = {
 } satisfies CommandMetadata;
 
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
-
-export const shareHelp = {
-	description: "Share a saved session via an encrypted link (same as /share)",
-} satisfies CommandMetadata;
 
 export const setupHelp = {
 	description: "Run onboarding setup or install dependencies for optional features",

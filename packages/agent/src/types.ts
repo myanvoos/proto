@@ -702,9 +702,6 @@ export interface RenderResultOptions {
 	spinnerFrame?: number;
 }
 
-/** Capability tier a tool exercises. Determines which approval modes auto-approve it. */
-export type ToolTier = "read" | "write" | "exec";
-
 /**
  * How an enabled tool is presented to the model. `"essential"` tools are exposed
  * as normal top-level tools. `"discoverable"` tools are removed from the top-level
@@ -716,30 +713,6 @@ export type ToolTier = "read" | "write" | "exec";
  */
 export type ToolLoadMode = "essential" | "discoverable";
 
-/**
- * Per-tool approval declaration.
- * - bare tier ("read" / "write" / "exec") — static classification.
- * - object form — adds a `reason` (shown in the prompt) and/or `override: true`
- *   (force-prompt even in modes that would otherwise auto-approve this tier).
- *   `policy: "deny"` blocks the call at the approval gate.
- * - function — dynamic, given parsed args. Returns either form above.
- *
- * Omitted approvals are treated as "exec" by callers that enforce approvals.
- */
-export type ToolApprovalDecision =
-	| ToolTier
-	| {
-			tier: ToolTier;
-			reason?: string;
-			override?: boolean;
-			policy?: "allow" | "deny" | "prompt";
-			/** User-policy key for this decision. When set, `tools.approval.<policyKey>`
-			 *  is consulted instead of `tools.approval.<tool.name>`. Lets a dispatcher
-			 *  tool (e.g. `write` for an `xd://` device call) scope user allow/deny/
-			 *  prompt policies to the tool it dispatches into. */
-			policyKey?: string;
-	  };
-export type ToolApproval = ToolApprovalDecision | ((args: unknown) => ToolApprovalDecision);
 
 /**
  * Context passed to tool execution.
@@ -830,11 +803,7 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 */
 	matcherEntries?: (args: unknown) => readonly { path: string; digest: string }[] | undefined;
 
-	/** Capability tier declaration used by approval gates. Omitted means "exec". */
-	approval?: ToolApproval;
 
-	/** Lines appended after the standard approval prompt header. */
-	formatApprovalDetails?: (args: unknown) => string | string[] | undefined;
 
 	/** The main execution callback for this tool. */
 	execute: AgentToolExecFn<TParameters, TDetails, TTheme>;

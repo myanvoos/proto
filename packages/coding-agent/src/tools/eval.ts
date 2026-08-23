@@ -21,7 +21,6 @@ import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import type { ToolSession } from ".";
-import { truncateForPrompt } from "./approval";
 import { type EvalBackendsAllowance, resolveEvalBackends } from "./eval-backends";
 import { generateCodeModeDeclarations } from "./eval-format/code-mode-declarations";
 import { upsertStatusEvent } from "./eval-render";
@@ -295,14 +294,6 @@ function formatEvalInputLanguage(value: string): string {
 
 export class EvalTool implements AgentTool<typeof evalSchema> {
 	readonly name = "eval";
-	readonly approval = "exec" as const;
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<EvalToolParams>;
-		const language =
-			typeof params.language === "string" ? formatEvalInputLanguage(params.language) : "javascript (default)";
-		const code = typeof params.code === "string" ? params.code : "";
-		return [`Language: ${language}`, `Code:\n${truncateForPrompt(code)}`];
-	};
 	get summary(): string {
 		return summarizeEvalLanguages(this.#enabledLanguages());
 	}

@@ -6,13 +6,11 @@ import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import * as autoThinkingClassifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const mockTaskTool: AgentTool = {
@@ -187,21 +185,6 @@ describe("AgentSession magic keyword settings", () => {
 
 		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
-	});
-
-	it("does not use a disabled ultrathink keyword to force auto thinking", async () => {
-		const created = await createMagicKeywordSession(modelRegistry);
-		session = created.session;
-		created.settings.set("magicKeywords.ultrathink", false);
-		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
-		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
-		session.setThinkingLevel(AUTO_THINKING);
-
-		await session.prompt("ultrathink through the unsafe refactor");
-
-		expect(classifierSpy).toHaveBeenCalledTimes(1);
-		expect(session.thinkingLevel).toBe(Effort.Low);
-		expect(session.autoResolvedThinkingLevel()).toBe(Effort.Low);
 	});
 
 	it("queues the magic-keyword notice before the user message", async () => {

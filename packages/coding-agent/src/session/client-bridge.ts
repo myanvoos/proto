@@ -5,8 +5,7 @@
  *
  * When `undefined`, tools fall back to local IO. When populated (currently
  * only by `AcpAgent`), tools route requests through the client so it can
- * surface unsaved buffer state, render terminals in the IDE, or gate
- * destructive operations behind user permission prompts.
+ * surface unsaved buffer state or render terminals in the IDE.
  */
 
 export interface ClientBridgeCapabilities {
@@ -16,32 +15,7 @@ export interface ClientBridgeCapabilities {
 	writeTextFile?: boolean;
 	/** Client implements the `terminal/*` family. */
 	terminal?: boolean;
-	/** Client implements `session/request_permission`. */
-	requestPermission?: boolean;
 }
-
-export interface ClientBridgePermissionToolCall {
-	toolCallId: string;
-	toolName: string;
-	title: string;
-	kind?: string;
-	status?: "pending" | "in_progress" | "completed" | "failed";
-	rawInput?: unknown;
-	content?: unknown[];
-	locations?: { path: string; line?: number }[];
-}
-
-export type ClientBridgePermissionOptionKind = "allow_once" | "allow_always" | "reject_once" | "reject_always";
-
-export interface ClientBridgePermissionOption {
-	optionId: string;
-	name: string;
-	kind: ClientBridgePermissionOptionKind;
-}
-
-export type ClientBridgePermissionOutcome =
-	| { outcome: "cancelled" }
-	| { outcome: "selected"; optionId: string; kind?: ClientBridgePermissionOptionKind };
 
 export interface ClientBridgeTerminalExitStatus {
 	exitCode?: number | null;
@@ -77,9 +51,4 @@ export interface ClientBridge {
 	readTextFile?(params: { path: string; line?: number; limit?: number }): Promise<string>;
 	writeTextFile?(params: { path: string; content: string }): Promise<void>;
 	createTerminal?(params: ClientBridgeCreateTerminalParams): Promise<ClientBridgeTerminalHandle>;
-	requestPermission?(
-		toolCall: ClientBridgePermissionToolCall,
-		options: ClientBridgePermissionOption[],
-		signal?: AbortSignal,
-	): Promise<ClientBridgePermissionOutcome>;
 }

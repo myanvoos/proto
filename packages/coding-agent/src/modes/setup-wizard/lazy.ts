@@ -11,6 +11,5 @@ export async function runProviderSetupWizard(ctx: InteractiveModeContext): Promi
 	}
 	await runSetupWizard(ctx, [providersScene], {
 		markComplete: false,
-		playWelcomeIntro: false,
 	});
 }

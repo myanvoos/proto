@@ -31,12 +31,7 @@ import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import {
-	AUTO_THINKING,
-	type ConfiguredThinkingLevel,
-	clampThinkingLevelToCeiling,
-	modelSupportsEffortCeiling,
-} from "../thinking";
+import { clampThinkingLevelToCeiling, modelSupportsEffortCeiling } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type {
 	InitialRetryFallbackState,
@@ -130,8 +125,8 @@ export interface TurnRecoveryHost {
 	/** Whether streamed text has already been committed to the active output sink. */
 	textOutputCommitted(): boolean;
 	thinkingLevel(): ThinkingLevel | undefined;
-	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
+	configuredThinkingLevel(): ThinkingLevel | undefined;
+	setThinkingLevel(level: ThinkingLevel | undefined): void;
 	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
 	thinkingLevelCeiling(): Effort | undefined;
 	isDisposed(): boolean;
@@ -1567,17 +1562,17 @@ export class TurnRecovery {
 		}
 		if (options?.signal?.aborted) return false;
 
-		// Capture the configured selector (auto-aware) so a fallback chain preserves
-		// `auto` instead of collapsing it to the level it resolved to this turn.
+		// Capture the current selector so a fallback chain carries it forward.
 		const currentThinkingLevel = this.#host.configuredThinkingLevel();
 		const requestedThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
 		// A fallback selector's explicit level (or the carried level after the
 		// replacement model's floor clamp) must never exceed the session's
 		// per-spawn effort ceiling.
-		const nextThinkingLevel =
-			requestedThinkingLevel === AUTO_THINKING
-				? requestedThinkingLevel
-				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
+		const nextThinkingLevel = clampThinkingLevelToCeiling(
+			candidate,
+			requestedThinkingLevel,
+			this.#host.thinkingLevelCeiling(),
+		);
 		const candidateSelector = formatModelStringWithRouting(candidate);
 		const previousModel = this.#host.model();
 		// Mark routing BEFORE the swap: `setModelWithProviderSessionReset` moves the

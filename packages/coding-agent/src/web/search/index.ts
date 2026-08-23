@@ -317,7 +317,6 @@ export async function runSearchQuery(
  */
 export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRenderDetails> {
 	readonly name = "web_search";
-	readonly approval = "read" as const;
 	readonly label = "Web Search";
 	readonly description: string;
 	readonly parameters = webSearchSchema;
@@ -357,7 +356,6 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 	description: prompt.render(webSearchDescription),
 	parameters: webSearchSchema,
 
-	approval: "read",
 	async execute(
 		toolCallId: string,
 		params: SearchToolParams,

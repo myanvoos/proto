@@ -1334,11 +1334,6 @@ export async function runRpcMode(
 				return success(id, "get_session_stats", stats);
 			}
 
-			case "export_html": {
-				const path = await session.exportToHtml(command.outputPath);
-				return success(id, "export_html", { path });
-			}
-
 			case "get_branch_messages": {
 				const messages = session.getUserMessagesForBranching();
 				return success(id, "get_branch_messages", { messages });

@@ -22,22 +22,25 @@ import { calculateTokensPerSecond } from "../../../utils/token-rate";
 import { sanitizeStatusText } from "../../shared";
 import { theme } from "../../theme/theme";
 import { type CompactionBoundaries, computeCompactionBoundaries } from "../../utils/context-usage";
-import {
-	type CodexResetFireworksEvent,
-	type CodexResetUsageSnapshot,
-	detectCodexResetFireworks,
-} from "../codex-reset-fireworks";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { getPreset } from "./presets";
 import { renderSegment, type SegmentContext } from "./segments";
 import { getSeparator } from "./separators";
 import type {
-	CollabStatus,
 	EffectiveStatusLineSettings,
 	StatusLineSegmentId,
 	StatusLineSegmentOptions,
 	StatusLineSettings,
 } from "./types";
+
+/** The active Codex account fields retained between status refreshes. */
+export interface CodexResetUsageSnapshot {
+	/** When this usage report was observed, if supplied by the provider. */
+	observedAt?: number;
+	/** Weekly usage, its quota identity, and its previously scheduled reset deadline. */
+	sevenDay?: { percent: number; resetsAt?: number; tier?: string; plan?: string };
+	savedResets?: number;
+}
 
 const JJ_REFRESH_TTL_MS = 5000;
 const WATCHER_FAILURE_POLL_TTL_MS = 5000;
@@ -62,10 +65,9 @@ function normalizeUsageScopeValue(value: unknown): string | undefined {
 }
 
 /**
- * Fireworks are stateful, so their report match must be stricter than the
- * status display's fallback matching: every known credential identifier must
- * be present and equal or a workspace sibling can mutate this account's
- * baseline.
+ * Snapshot matching is stricter than the status display's fallback matching:
+ * every known credential identifier must be present and equal or a workspace
+ * sibling can mutate this account's baseline.
  */
 function codexReportMatchesExactIdentity(report: UsageReport, identity: OAuthAccountIdentity | undefined): boolean {
 	if (!identity) return false;
@@ -413,7 +415,6 @@ export class StatusLineComponent implements Component {
 	 * dependency graph; interactive-mode wires it to VibeSessionRegistry.
 	 */
 	#vibeWorkerTokenRate: (() => number | null) | null = null;
-	#collabStatus: CollabStatus | null = null;
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -464,7 +465,6 @@ export class StatusLineComponent implements Component {
 	#usageRefreshSequence = 0;
 	#latestAppliedUsageRefreshSequence = 0;
 	#codexResetSnapshots = new Map<string, CodexResetUsageSnapshot>();
-	#onCodexResetFireworks: ((event: CodexResetFireworksEvent) => void) | undefined;
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
 	// `getContextUsage()` anchors on the last assistant's real prompt-token
@@ -569,7 +569,7 @@ export class StatusLineComponent implements Component {
 	 */
 	setSubagentHubHint(_hint: string | undefined): void {}
 
-	/** Active subagent count as currently displayed (collab state mirroring). */
+	/** Active subagent count as currently displayed. */
 	get subagentCount(): number {
 		return this.#subagentCount;
 	}
@@ -577,7 +577,7 @@ export class StatusLineComponent implements Component {
 	/**
 	 * Reset the currently-attached session's active-time accumulators so
 	 * the `time_spent` segment starts from zero. Called from `/clear`,
-	 * fresh-session, and joined-collab paths; both the completed
+	 * fresh-session paths; both the completed
 	 * accumulator and any in-flight window are dropped, so a reset
 	 * mid-turn ignores the running window (the matching `markActivityEnd`
 	 * will see an idle meter and no-op).
@@ -681,15 +681,6 @@ export class StatusLineComponent implements Component {
 		this.#vibeWorkerTokenRate = provider ?? null;
 	}
 
-	setCollabStatus(status: CollabStatus | null): void {
-		this.#collabStatus = status;
-	}
-
-	/** Set the callback that presents detected Codex reset celebrations, or clear it with `undefined`. */
-	setCodexResetFireworksHandler(handler: ((event: CodexResetFireworksEvent) => void) | undefined): void {
-		this.#onCodexResetFireworks = handler;
-	}
-
 	setHookStatus(key: string, text: string | undefined): void {
 		if (text === undefined) {
 			this.#hookStatuses.delete(key);
@@ -755,7 +746,6 @@ export class StatusLineComponent implements Component {
 		this.#onBranchChange = null;
 		this.#stopSpeculationBlink();
 		this.#clearUsageStartTimer();
-		this.#onCodexResetFireworks = undefined;
 		this.#codexResetSnapshots.clear();
 		this.#retireGitWatcher();
 	}
@@ -1268,7 +1258,7 @@ export class StatusLineComponent implements Component {
 			? session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId)
 			: undefined;
 		// Model id is part of the invalidation key (but not the account-scoped
-		// fireworks key): normalized usage now selects a model-scoped window group,
+		// snapshot key): normalized usage now selects a model-scoped window group,
 		// so switching models must drop the previous model's cached scope instead
 		// of showing it for the rest of the TTL.
 		const activeModelId = session.state.model?.id ?? session.model?.id ?? "";
@@ -1353,9 +1343,7 @@ export class StatusLineComponent implements Component {
 		const contextKey = this.#formatUsageContextKey(activeProvider, activeIdentity);
 		const previous = this.#codexResetSnapshots.get(contextKey);
 		this.#codexResetSnapshots.set(contextKey, resetSnapshot);
-		if (!previous || !settings.get("tui.codexResetFireworks")) return;
-		const event = detectCodexResetFireworks(previous, resetSnapshot);
-		if (event) this.#onCodexResetFireworks?.(event);
+		if (!previous) return;
 	}
 
 	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>, sequence: number): void {
@@ -1603,7 +1591,7 @@ export class StatusLineComponent implements Component {
 	 * last assistant's real prompt-token count — so the bar matches the provider
 	 * and the `/context` panel — and reports `null` while that count is unknown
 	 * (right after compaction, before the next response). Exposed (non-private)
-	 * for unit tests and the collab host's state broadcast.
+	 * for unit tests.
 	 */
 	getCachedContextBreakdown(): { usedTokens: number; contextWindow: number } {
 		const messages = this.session.messages ?? EMPTY_MESSAGES;
@@ -1685,18 +1673,9 @@ export class StatusLineComponent implements Component {
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
 		const breakdown = this.getCachedContextBreakdown();
-		let contextTokens = breakdown.usedTokens;
+		const contextTokens = breakdown.usedTokens;
 		contextWindow = breakdown.contextWindow || contextWindow;
-		let contextPercent: number | null = contextWindow > 0 ? (breakdown.usedTokens / contextWindow) * 100 : null;
-		// Collab guest: context comes from the host's state frames — the local
-		// replica does no accounting of its own.
-		const collabState = this.#collabStatus?.stateOverride;
-		if (collabState?.contextUsage) {
-			contextWindow = collabState.contextUsage.contextWindow || contextWindow;
-			contextTokens = collabState.contextUsage.tokens ?? contextTokens;
-			contextPercent = collabState.contextUsage.percent ?? contextPercent;
-		}
-
+		const contextPercent: number | null = contextWindow > 0 ? (breakdown.usedTokens / contextWindow) * 100 : null;
 		const shouldResolveActiveRepo = this.#gitEnabled() && (includePath || includeGit || includePr);
 		const projectDir = getProjectDir();
 		const activeRepoCache = shouldResolveActiveRepo
@@ -1739,7 +1718,6 @@ export class StatusLineComponent implements Component {
 					: null,
 			goalMode: this.#goalModeStatus,
 			vibeMode: this.#vibeModeStatus,
-			collab: this.#collabStatus,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -1989,7 +1967,7 @@ export class StatusLineComponent implements Component {
 				// Preserve the current working directory as long as possible. The
 				// previous right-to-left pop could collapse a normal-width bar to
 				// just the model segment, hiding the path before less-critical left
-				// segments such as model/mode/collab were removed.
+				// segments such as model/mode were removed.
 				for (let i = leftSegIds.length - 1; i >= 0; i--) {
 					if (leftSegIds[i] !== "path") return i;
 				}
@@ -2182,7 +2160,7 @@ export class StatusLineComponent implements Component {
 
 	/** Auto-compaction boundary percents, or null when unavailable (disabled, no window). */
 	#compactionBoundaries(contextWindow: number): CompactionBoundaries | null {
-		// Collab-guest replicas and test mocks have no session-scoped settings;
+		// Test mocks have no session-scoped settings;
 		// the global store carries the same compaction knobs.
 		const source = typeof this.session.settings?.getGroup === "function" ? this.session.settings : settings;
 		// The active model gates which compaction method a real pass would run

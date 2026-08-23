@@ -11,7 +11,7 @@ import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { type BrowserParams, BrowserTool } from "@oh-my-pi/pi-coding-agent/tools/browser";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 
 function makeSession(): ToolSession {
 	return {

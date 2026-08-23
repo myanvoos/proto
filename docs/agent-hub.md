@@ -66,7 +66,7 @@ For a normal local subagent, `Enter` or click focuses the main TUI on that agent
 
 Steering uses the normal prompt path, so the message and response are written to the subagent's persisted session history. While a subagent is focused, `Esc` returns to the main session; it does not interrupt the subagent.
 
-Contexts without a local focusable session use the Hub's full-screen transcript viewer instead. This includes collab guests and advisor rows. The viewer incrementally tails the file-backed transcript and provides an input line only when the selected agent can be messaged. Sending there has the same semantics: revive if parked, steer if running, and prompt if idle.
+Contexts without a local focusable session use the Hub's full-screen transcript viewer instead. This includes advisor rows. The viewer incrementally tails the file-backed transcript and provides an input line only when the selected agent can be messaged. Sending there has the same semantics: revive if parked, steer if running, and prompt if idle.
 
 ## Persisted agents and advisors
 
@@ -79,8 +79,6 @@ Advisor transcript files (`__advisor*.jsonl`) appear as `advisor`-kind rows unde
 - they cannot be revived;
 - they cannot be killed.
 
-These restrictions also apply to collab guests controlling the host's Hub.
-
 ## Related surfaces
 
 Agent Hub is the human-facing live session view. Adjacent commands and internal URLs serve narrower purposes:
@@ -92,4 +90,4 @@ Agent Hub is the human-facing live session view. Adjacent commands and internal 
 
 Advisor rows are intentionally excluded from the agent-facing `hub`, `history://`, and `agent://` peer workflows.
 
-See also [Task Agent Discovery and Selection](./task-agent-discovery.md), [Collaboration](./collab.md), and [Advisor, WATCHDOG.md, and WATCHDOG.yml](./advisor-watchdog.md).
+See also [Task Agent Discovery and Selection](./task-agent-discovery.md) and [Advisor, WATCHDOG.md, and WATCHDOG.yml](./advisor-watchdog.md).

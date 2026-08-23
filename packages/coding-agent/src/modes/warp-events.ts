@@ -10,7 +10,6 @@ const WARP_CLI_AGENT_SENTINEL = "warp://cli-agent";
 const WARP_ATTENTION_EVENTS: Record<string, true> = {
 	stop: true,
 	stop_failure: true,
-	permission_request: true,
 	question_asked: true,
 };
 
@@ -192,18 +191,6 @@ export function createWarpEventBridgeExtension(): ExtensionFactory {
 			}
 			activePrompt = truncateEventText(messageText(message.content));
 			emitter?.emit({ event: "prompt_submit", query: activePrompt });
-		});
-
-		api.on("tool_approval_requested", event => {
-			emitter?.emit({
-				event: "permission_request",
-				tool_name: event.toolName,
-				summary: `omp wants to run ${event.toolName}`,
-			});
-		});
-
-		api.on("tool_approval_resolved", () => {
-			emitter?.emit({ event: "permission_replied" });
 		});
 
 		api.on("tool_execution_start", event => {

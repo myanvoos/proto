@@ -18,7 +18,7 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
-import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
+import { parseThinkingLevel, type ThinkingLevel } from "../thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
@@ -239,7 +239,7 @@ export interface ParsedAgentFields {
 	spawns?: string[] | "*";
 	model?: string[];
 	output?: unknown;
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
@@ -297,7 +297,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 				? frontmatter.thinking
 				: undefined;
 
-	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
+	const thinkingLevel = parseThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);

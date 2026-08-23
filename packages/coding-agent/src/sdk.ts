@@ -35,12 +35,12 @@ import {
 	getAgentDir,
 	getModelDbPath,
 	getProjectDir,
+	INTENT_FIELD,
 	logger,
 	postmortem,
 	prompt,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import {
 	discoverAdvisorConfigs,
 	discoverWatchdogFiles,
@@ -185,12 +185,7 @@ import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency
 import { isScoutSpawnable } from "./task/spawn-policy";
 import type { StructuredSubagentSchemaMode } from "./task/types";
 import {
-	AUTO_THINKING,
-	type ConfiguredThinkingLevel,
-	concreteThinkingLevel,
-	parseConfiguredThinkingLevel,
 	parseThinkingLevel,
-	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
 	toReasoningEffort,
@@ -323,7 +318,6 @@ function createPendingMCPTool(name: string): Tool {
 			properties: {},
 			additionalProperties: true,
 		},
-		approval: "write",
 		intent: "omit",
 		mcpServerName: serverName,
 		mcpToolName,
@@ -394,7 +388,7 @@ export interface CreateAgentSessionOptions {
 	/** Validated default retry chain to install when a deferred singleton pattern resolves. */
 	modelPatternDefaultFallbackChain?: string[];
 	/** Thinking selector. Default: from settings, else unset */
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
 	thinkingLevelCeiling?: Effort;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
@@ -608,7 +602,6 @@ export interface CreateAgentSessionOptions {
 	onFirstChatDispatch?: () => void;
 
 	/** Whether to auto-approve all tool calls (--auto-approve CLI flag). Default: false */
-	autoApprove?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -966,7 +959,6 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		defaultInactive: tool.hidden === true,
 		loadMode: defaultLoadModeForToolName(tool.name, tool.loadMode),
 		deferrable: tool.deferrable,
-		approval: typeof tool.approval === "function" ? tool.approval.bind(tool) : tool.approval,
 		// Preserved through RegisteredToolAdapter so MCP-backed tools' explicit
 		// `strict: false` (#4336/#4340) survives the custom-tool → definition bridge.
 		strict: tool.strict,
@@ -1459,7 +1451,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			? getRestorableSessionModels(existingSession.models, sessionManager.getLastModelChangeRole())
 			: [];
 	let restoredSessionModelIndex = -1;
-	let restoredSessionThinkingLevel: ConfiguredThinkingLevel | undefined;
+	let restoredSessionThinkingLevel: ThinkingLevel | undefined;
 	if (!hasExplicitModel && !model && sessionModelStrings.length > 0) {
 		logger.time("restoreSessionModel", () => {
 			let failedSessionModel: string | undefined;
@@ -1467,7 +1459,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const sessionModelStr = sessionModelStrings[i];
 				const parsedModel = parseModelString(sessionModelStr, {
 					allowMaxSuffix: true,
-					allowAutoAlias: true,
 					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
 				});
 				if (!parsedModel) {
@@ -1509,11 +1500,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// model's defaultLevel → global settings default. Run again after extension
 	// role reclaim so the final model's own defaults aren't masked by an earlier
 	// fallback model's.
-	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ConfiguredThinkingLevel | undefined => {
+	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ThinkingLevel | undefined => {
 		let level = options.thinkingLevel;
 		if (level === undefined && hasExistingSession && hasThinkingEntry) {
 			level =
-				parseConfiguredThinkingLevel(existingSession.configuredThinkingLevel) ??
+				parseThinkingLevel(existingSession.configuredThinkingLevel) ??
 				parseThinkingLevel(existingSession.thinkingLevel);
 		}
 		if (level === undefined && !hasThinkingEntry && restoredSessionThinkingLevel !== undefined) {
@@ -1526,22 +1517,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			level = selectedModel.thinking.defaultLevel;
 		}
 		if (level === undefined) {
-			level = parseConfiguredThinkingLevel(settings.get("defaultThinkingLevel"));
+			level = parseThinkingLevel(settings.get("defaultThinkingLevel"));
 		}
 		return level;
 	};
+
+	// Resolve the initial thinking level for the startup model.
 	let thinkingLevel = pickInitialThinkingLevel(model);
-	let autoThinking = thinkingLevel === AUTO_THINKING;
-	// Concrete level the agent/session start with. With `auto` this is the
-	// provisional level shown until the first per-turn classification resolves;
-	// `auto` itself stays a session-only concept handled by AgentSession.
-	let effectiveThinkingLevel: ThinkingLevel | undefined = concreteThinkingLevel(thinkingLevel);
+	let effectiveThinkingLevel: ThinkingLevel | undefined = thinkingLevel;
 	if (model) {
 		const resolvedModel = model;
 		effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-			autoThinking
-				? resolveProvisionalAutoLevel(resolvedModel)
-				: resolveThinkingLevelForModel(resolvedModel, effectiveThinkingLevel),
+			resolveThinkingLevelForModel(resolvedModel, effectiveThinkingLevel),
 		);
 		// Fire-and-forget TLS+H2 handshake to the model's host so it overlaps
 		// with the rest of session setup (extension/skill load, tool registry,
@@ -2115,7 +2102,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const sessionModelStr = sessionModelStrings[i];
 				const parsedModel = parseModelString(sessionModelStr, {
 					allowMaxSuffix: true,
-					allowAutoAlias: true,
 					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
 				});
 				if (!parsedModel) continue;
@@ -2129,12 +2115,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					// model: any value derived from the earlier fallback model's
 					// `thinking.defaultLevel` must not become sticky.
 					thinkingLevel = pickInitialThinkingLevel(restoredModel);
-					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-						autoThinking
-							? resolveProvisionalAutoLevel(restoredModel)
-							: resolveThinkingLevelForModel(restoredModel, effectiveThinkingLevel),
+						resolveThinkingLevelForModel(restoredModel, effectiveThinkingLevel),
 					);
 					preconnectModelHost(restoredModel.baseUrl);
 					break;
@@ -2228,7 +2210,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						if (!chainKey) return primaryPatterns;
 						const parsedOriginal = parseModelString(originalSelector, {
 							allowMaxSuffix: true,
-							allowAutoAlias: true,
 							isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
 						});
 						const retryFallback: InitialRetryFallbackState = {
@@ -2419,12 +2400,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					restoredSessionThinkingLevel = selectedThinkingLevel;
 				}
 				thinkingLevel = pickInitialThinkingLevel(selectedModel);
-				autoThinking = thinkingLevel === AUTO_THINKING;
-				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-					autoThinking
-						? resolveProvisionalAutoLevel(selectedModel)
-						: resolveThinkingLevelForModel(selectedModel, effectiveThinkingLevel),
+					resolveThinkingLevelForModel(selectedModel, effectiveThinkingLevel),
 				);
 				preconnectModelHost(selectedModel.baseUrl);
 				break;
@@ -2471,12 +2448,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
 				// so the role's explicit selector (e.g. `:max`) now applies.
 				thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
-				autoThinking = thinkingLevel === AUTO_THINKING;
-				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-					autoThinking
-						? resolveProvisionalAutoLevel(resolvedDefaultModel)
-						: resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
+					resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
 				);
 				preconnectModelHost(resolvedDefaultModel.baseUrl);
 				return true;
@@ -2543,12 +2516,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (refreshedModel !== selectedModel) {
 				model = refreshedModel;
 				thinkingLevel = pickInitialThinkingLevel(refreshedModel);
-				autoThinking = thinkingLevel === AUTO_THINKING;
-				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
 				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-					autoThinking
-						? resolveProvisionalAutoLevel(refreshedModel)
-						: resolveThinkingLevelForModel(refreshedModel, effectiveThinkingLevel),
+					resolveThinkingLevelForModel(refreshedModel, effectiveThinkingLevel),
 				);
 			}
 		}
@@ -2582,13 +2551,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// The runner is created unconditionally — even with zero extensions loaded — because the
-		// `ExtensionToolWrapper` installed below is the only place the per-tool approval gate runs.
-		// A conditional runner means the approval system silently disappears for users with no
-		// extensions, contradicting non-yolo `tools.approvalMode` settings without feedback.
-		// (The builtin autoresearch extension is unconditionally loaded above, so this scenario
-		// is unreachable; unconditional runner construction keeps that invariant explicit and
-		// prevents future optional extensions from silently re-opening the hole.)
+		// The runner is created unconditionally so every registry tool is uniformly wrapped.
 		const extensionRunner: ExtensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,
 			extensionsResult.runtime,
@@ -2618,7 +2581,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			settings,
 			localProtocolOptions,
-			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
 		toolSession.getToolContext = () => toolContextStore.getContext();
@@ -3357,11 +3319,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (model) {
 				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
 			}
-			if (!autoThinking) {
-				// Do not write the `auto` selector before the first turn resolves; auto
-				// classification persists its concrete effort once a real user turn runs.
-				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
-			}
+			sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
 			if (options.openAIServiceTier !== undefined || Object.keys(initialServiceTierByFamily).length > 0) {
 				sessionManager.appendServiceTierChange(
 					Object.keys(initialServiceTierByFamily).length > 0 ? initialServiceTierByFamily : null,
@@ -3405,8 +3363,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 		const built = await Promise.all(advisorToolBuilds);
 		// Wrapped like every registry tool: `ExtensionToolWrapper` is where the
-		// approval mode, per-tool `tools.approval.<tool>` policies and
-		// `autoApprove` are enforced. The advisor's loop and its Cursor exec
 		// bridge both run these instances directly, so a raw one would execute a
 		// `bash`/`write` the user configured as `ask` or `deny`. Meta-notice
 		// first, matching the registry's wrap order.
@@ -3437,7 +3393,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
-			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			thinkingLevel: effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			initialRetryFallback,
 			prewalk: options.prewalk,
@@ -3446,7 +3402,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			sessionManager,
 			initialAdvisorCosts,
 			settings,
-			autoApprove: options.autoApprove,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).

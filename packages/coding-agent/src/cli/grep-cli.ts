@@ -5,7 +5,7 @@
  */
 import * as path from "node:path";
 import { GrepOutputMode, grep } from "@oh-my-pi/pi-natives";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { expandPath } from "../tools/path-utils";
 
@@ -132,10 +132,10 @@ export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
 }
 
 export function printGrepHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} grep`)} - Test grep tool
+	console.log(`${chalk.bold(`${BINARY_NAME} grep`)} - Test grep tool
 
 ${chalk.bold("Usage:")}
-  ${APP_NAME} grep <pattern> [path] [options]
+  ${BINARY_NAME} grep <pattern> [path] [options]
 
 ${chalk.bold("Arguments:")}
   pattern   Regex pattern to search for
@@ -154,8 +154,8 @@ ${chalk.bold("Environment:")}
   PI_WALK_WORKERS=N    Set filesystem walker workers (default 4, 0 = auto)
 
 ${chalk.bold("Examples:")}
-  ${APP_NAME} grep "import" src/
-  ${APP_NAME} grep "TODO" . --glob "*.ts"
-  ${APP_NAME} grep "function" --files
+  ${BINARY_NAME} grep "import" src/
+  ${BINARY_NAME} grep "TODO" . --glob "*.ts"
+  ${BINARY_NAME} grep "function" --files
 `);
 }

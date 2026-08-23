@@ -16,7 +16,6 @@ import {
 	resetProviderAutoRefreshGuard,
 } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 function normalize(lines: readonly string[]): string {
@@ -191,14 +190,14 @@ describe("ModelHub", () => {
 			expect(rendered).not.toContain("● smol");
 		});
 
-		test("roles view reflects auto thinking from defaultThinkingLevel and :auto suffixes", () => {
+		test("roles view reflects thinking from defaultThinkingLevel and :suffixes", () => {
 			const model = getBundledModel("openai", "gpt-5.5");
 			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
 			const settings = Settings.isolated({
-				defaultThinkingLevel: AUTO_THINKING,
+				defaultThinkingLevel: ThinkingLevel.High,
 				modelRoles: {
 					default: `${model.provider}/${model.id}`,
-					smol: `${model.provider}/${model.id}:auto`,
+					smol: `${model.provider}/${model.id}:low`,
 				},
 			});
 			const { hub } = createHub({ models: [model], scoped: true, settings });
@@ -208,9 +207,9 @@ describe("ModelHub", () => {
 			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
 			const defaultRow = lines.find(line => line.includes("DEFAULT"));
 			const smolRow = lines.find(line => line.includes("SMOL"));
-			expect(defaultRow).toContain("auto");
+			expect(defaultRow).toContain("high");
 			expect(defaultRow).not.toContain("inherit");
-			expect(smolRow).toContain("auto");
+			expect(smolRow).toContain("low");
 		});
 		test("thinking-only edits preserve the model and scope from the persisted role layer", () => {
 			const storedModel = makeModel("test", "global-role-model");

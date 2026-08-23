@@ -96,7 +96,7 @@ describe("issue #816 — plan mode pendingModelSwitch leak", () => {
 	});
 
 	it("discards a deferred plan-role change when the role returns to the active model", async () => {
-		await mode.init({ suppressWelcomeIntro: true });
+		await mode.init();
 		await mode.handlePlanModeCommand();
 		const activePlanModel = session.model;
 		const haiku = modelRegistry.find("anthropic", "claude-haiku-4-5");
@@ -120,7 +120,7 @@ describe("issue #816 — plan mode pendingModelSwitch leak", () => {
 	});
 
 	it("applies a plan-role reassignment to an active plan session", async () => {
-		await mode.init({ suppressWelcomeIntro: true });
+		await mode.init();
 		await mode.handlePlanModeCommand();
 		const activePlanModel = session.model;
 		const haiku = modelRegistry.find("anthropic", "claude-haiku-4-5");

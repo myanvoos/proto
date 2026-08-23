@@ -20,7 +20,7 @@ import {
 } from "../config/model-resolver";
 import inspectImageDescription from "../prompts/tools/inspect-image.md" with { type: "text" };
 import inspectImageSystemPromptTemplate from "../prompts/tools/inspect-image-system.md" with { type: "text" };
-import { concreteThinkingLevel, resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
+import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
 import {
 	ImageInputTooLargeError,
 	type LoadedImageInput,
@@ -97,7 +97,6 @@ export interface InspectImageToolDetails {
 
 export class InspectImageTool implements AgentTool<typeof inspectImageSchema, InspectImageToolDetails> {
 	readonly name = "inspect_image";
-	readonly approval = "read" as const;
 	readonly label = "InspectImage";
 	readonly loadMode = "discoverable";
 	readonly summary = "Describe or analyze an image file";
@@ -250,12 +249,10 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 		// suppressed/zero thinking budget, which thinking-only models (Gemini 3.x)
 		// reject with HTTP 400 ("Budget 0 is invalid. This model only works in
 		// thinking mode.").
-		const configuredThinking = concreteThinkingLevel(
-			extractExplicitThinkingSelector(selectedPattern, this.session.settings, {
-				isLiteralModelId: (provider, id) =>
-					availableModels.some(candidate => candidate.provider === provider && candidate.id === id),
-			}),
-		);
+		const configuredThinking = extractExplicitThinkingSelector(selectedPattern, this.session.settings, {
+			isLiteralModelId: (provider, id) =>
+				availableModels.some(candidate => candidate.provider === provider && candidate.id === id),
+		});
 		const reasoning = toReasoningEffort(resolveThinkingLevelForModel(model, configuredThinking));
 
 		let response: AssistantMessage;

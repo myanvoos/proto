@@ -46,7 +46,6 @@ import { resizeImage } from "../../utils/image-resize";
  *
  * - /login accepts three callback forms (redirect URL, query string, raw auth
  *   code) — all can contain OAuth code=/state= params.
- * - /join <link> carries a 32-byte room key and optional write token.
  * - /mcp add --token <token> carries a bearer token.
  *
  * The command name is extracted the same way as parseSlashCommand() — splitting
@@ -64,8 +63,6 @@ export function shouldSkipHistory(slashText: string): boolean {
 	// /login <anything> — parseCallbackInput() accepts redirect URLs, query
 	// strings (?code=...), and raw auth codes, all of which carry secrets.
 	if (name === "login" && hasArgs) return true;
-	// /join <link> — the link carries the 32-byte room key and write token.
-	if (name === "join" && hasArgs) return true;
 	if (name === "mcp") {
 		const args = body.slice(sep + 1).trim();
 		return args.startsWith("add") && /--token\s/.test(args);
@@ -401,15 +398,6 @@ export class InputController {
 					void this.ctx.unfocusSession();
 				}
 				return; // double-escape backtrack (/tree, /branch) stays main-only
-			}
-			if (this.ctx.collabGuest) {
-				// Guest Esc: ask the host to interrupt its agent; the local replica
-				// session is never streaming, so the native abort path below would
-				// no-op.
-				if (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation) {
-					this.ctx.collabGuest.sendAbort();
-				}
-				return;
 			}
 			if (this.ctx.loadingAnimation) {
 				if (this.ctx.cancelPendingSubmission()) {
@@ -809,33 +797,6 @@ export class InputController {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					text = slashResult;
 				}
-			}
-
-			// Collab guest: prompts execute on the host; local slash/skill/bash/
-			// python execution is host-only (builtins are gated inside
-			// executeBuiltinSlashCommand, which already consumed allowed ones).
-			if (this.ctx.collabGuest) {
-				if (text.startsWith("/")) {
-					this.ctx.showStatus(`${text.split(/\s+/, 1)[0]} is host-only during a collab session`);
-					this.ctx.editor.setText("");
-					return;
-				}
-				if (text.startsWith("!") || parsePythonCommandInput(text)) {
-					this.ctx.showStatus("Local execution is host-only during a collab session");
-					this.ctx.editor.setText("");
-					return;
-				}
-				if (this.ctx.collabGuest.readOnly) {
-					// Keep the typed text: the prompt was not consumed.
-					this.ctx.showStatus("This collab link is read-only — prompting is disabled");
-					return;
-				}
-				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.editor.clearDraft(text);
-				// No local render: the prompt comes back from the host as a
-				// collab-prompt event/entry and renders with the author badge.
-				this.ctx.collabGuest.sendPrompt(text, images);
-				return;
 			}
 
 			// Handle skill commands (/skill:name [args]). Enter ⇒ steer (matches the
@@ -1249,7 +1210,7 @@ export class InputController {
 				return false;
 			}
 			// Paint the row before the awaited dispatch so a slow preflight (memory
-			// recall, before_agent_start hooks, auto-thinking, pre-prompt compaction)
+			// recall, before_agent_start hooks, pre-prompt compaction)
 			// does not leave the submission invisible (issue #8895). A streaming
 			// submission queues instead and surfaces its chip, so only paint when the
 			// turn will run fresh.
@@ -1283,10 +1244,6 @@ export class InputController {
 	}
 
 	async handleRetry(): Promise<void> {
-		if (this.ctx.collabGuest) {
-			this.ctx.showStatus("/retry is host-only during a collab session");
-			return;
-		}
 		const didRetry = await this.ctx.viewSession.retry();
 		if (didRetry) {
 			this.ctx.editor.clearDraft();

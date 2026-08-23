@@ -21,7 +21,6 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SILENT_ABORT_MARKER, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { type OverlayHandle, type OverlayOptions, setKeybindings, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, TempDir } from "@oh-my-pi/pi-utils";
@@ -1340,7 +1339,7 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(defaultApply?.[0]?.explicitThinkingLevel).toBe(true);
 	});
 
-	it("preserves DEFAULT(auto) when plan approval restores the default tier", async () => {
+	it("preserves the configured default tier when plan approval restores it", async () => {
 		const sonnet = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		const opus = session.modelRegistry.find("anthropic", "claude-opus-4-5");
 		if (!sonnet || !opus) throw new Error("Expected sonnet + opus to exist in registry");
@@ -1348,14 +1347,14 @@ describe("InteractiveMode plan review rendering", () => {
 		session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
 		session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
 		session.settings.setModelRole("plan", "anthropic/claude-opus-4-5");
-		session.setThinkingLevel(AUTO_THINKING, true);
+		session.setThinkingLevel(ThinkingLevel.High, true);
 
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
 			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
 			getSessionId: () => session.sessionManager.getSessionId(),
 		});
-		await Bun.write(resolvedPlanPath, "# Plan\n\nPreserve the configured auto selector.");
+		await Bun.write(resolvedPlanPath, "# Plan\n\nPreserve the configured thinking selector.");
 
 		await mode.handlePlanModeCommand();
 		expect(session.model?.id).toBe(opus.id);
@@ -1377,7 +1376,7 @@ describe("InteractiveMode plan review rendering", () => {
 		await mode.handlePlanApproval({ planFilePath, planExists: true, title: "PLAN" });
 
 		expect(session.model?.id).toBe(sonnet.id);
-		expect(session.configuredThinkingLevel()).toBe(AUTO_THINKING);
+		expect(session.configuredThinkingLevel()).toBe(ThinkingLevel.High);
 	});
 
 	it("falls back to the pre-plan model when only plan is configured and the slider is hidden", async () => {

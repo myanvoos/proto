@@ -11,7 +11,6 @@ import { SetupWizardComponent } from "./wizard-overlay";
 
 export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
 
-export { runStartupSplash } from "./startup-splash";
 export { CURRENT_SETUP_VERSION };
 
 export const ALL_SCENES = [
@@ -72,7 +71,6 @@ export async function markSetupWizardComplete(
 
 export interface RunSetupWizardOptions {
 	markComplete?: boolean;
-	playWelcomeIntro?: boolean;
 }
 
 export async function runSetupWizard(
@@ -98,8 +96,5 @@ export async function runSetupWizard(
 		component.dispose();
 		ctx.ui.setFocus(component);
 		overlay.hide();
-	}
-	if (options.playWelcomeIntro !== false) {
-		ctx.playWelcomeIntro();
 	}
 }

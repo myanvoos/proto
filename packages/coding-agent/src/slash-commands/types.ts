@@ -121,8 +121,7 @@ export interface SlashCommandSpec extends BuiltinSlashCommand {
 	/**
 	 * ACP-specific override for `description`. Used by `ACP_BUILTIN_SLASH_COMMANDS`
 	 * when building `available_commands_update` payloads so the client receives
-	 * mode-appropriate copy (e.g. `/dump` advertises "Return full transcript as
-	 * plain text" in ACP rather than the TUI's clipboard-centric copy).
+	 * mode-appropriate copy rather than TUI-specific phrasing.
 	 */
 	acpDescription?: string;
 	/**

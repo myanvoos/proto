@@ -47,7 +47,7 @@ async function persistAgentTombstone(sessionFile: string): Promise<void> {
 
 /**
  * Builds a reviver for a `parked` ref restored from disk (Agent Hub scan,
- * collab mirror, resumed process) that carries a sessionFile but no in-memory
+ * or a resumed process) that carries a sessionFile but no in-memory
  * adoption. Returns undefined when the ref cannot be faithfully rebuilt (no
  * persisted session contract, or its workspace is gone). Injected from the
  * top-level session so this manager stays free of sdk/SessionManager imports.
@@ -137,7 +137,7 @@ export class AgentLifecycleManager {
 
 	/**
 	 * Install the factory used to cold-revive `parked` refs restored from disk
-	 * (Agent Hub scan, collab mirror, resumed process) — they carry a sessionFile
+	 * (Agent Hub scan or a resumed process) — they carry a sessionFile
 	 * but no adoption. Set by the top-level session, which owns the ambient deps
 	 * (auth, models, MCP, artifacts) the factory needs at revive time.
 	 */

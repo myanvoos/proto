@@ -9,7 +9,6 @@ import {
 	parseModelString,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
-import { type ConfiguredThinkingLevel, concreteThinkingLevel } from "../thinking";
 
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
@@ -47,8 +46,8 @@ export interface ActiveRetryFallbackState {
 	/** Chain key that produced this fallback: a model-role name or a model-selector key. */
 	role: string;
 	originalSelector: string;
-	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
-	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
+	originalThinkingLevel: ThinkingLevel | undefined;
+	lastAppliedFallbackThinkingLevel: ThinkingLevel | undefined;
 	pinned: boolean;
 	/**
 	 * Set once a turn on the fallback target settles successfully. Until then the
@@ -85,7 +84,6 @@ export function parseRetryFallbackSelector(
 	if (!trimmed) return undefined;
 	const parsed = parseModelString(trimmed, {
 		allowMaxSuffix: true,
-		allowAutoAlias: true,
 		isLiteralModelId: (provider, id) => modelLookup?.find(provider, id) !== undefined,
 	});
 	if (!parsed) return undefined;
@@ -93,7 +91,7 @@ export function parseRetryFallbackSelector(
 		raw: trimmed,
 		provider: parsed.provider,
 		id: parsed.id,
-		thinkingLevel: concreteThinkingLevel(parsed.thinkingLevel),
+		thinkingLevel: parsed.thinkingLevel,
 	};
 }
 

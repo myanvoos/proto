@@ -71,7 +71,7 @@ import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
 import { refreshAgentDiscovery } from "../../task";
-import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
+import { parseThinkingLevel } from "../../thinking";
 import { OTHER_OPTION } from "../../tools/ask";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
@@ -1771,7 +1771,6 @@ export class AcpAgent implements Agent {
 	#buildThinkingOptions(session: AgentSession): Array<{ value: string; name: string; description?: string }> {
 		return [
 			{ value: THINKING_OFF, name: "Off" },
-			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt" },
 			...session.getAvailableThinkingLevels().map(level => ({
 				value: level,
 				name: level,
@@ -1779,11 +1778,7 @@ export class AcpAgent implements Agent {
 		];
 	}
 	#getConfiguredThinkingLevel(session: AgentSession): string | undefined {
-		const configuredThinkingLevel = (session as { configuredThinkingLevel?: () => string | undefined })
-			.configuredThinkingLevel;
-		return typeof configuredThinkingLevel === "function"
-			? configuredThinkingLevel.call(session)
-			: session.thinkingLevel;
+		return session.configuredThinkingLevel();
 	}
 
 	#toThinkingConfigValue(value: string | undefined): string {
@@ -1799,7 +1794,7 @@ export class AcpAgent implements Agent {
 	}
 
 	#setThinkingLevelById(session: AgentSession, value: string): void {
-		const thinkingLevel = parseConfiguredThinkingLevel(value);
+		const thinkingLevel = parseThinkingLevel(value);
 		if (!thinkingLevel) {
 			throw new Error(`Unknown ACP thinking level: ${value}`);
 		}

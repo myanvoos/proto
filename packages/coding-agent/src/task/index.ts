@@ -24,7 +24,6 @@ import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "tex
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "../thinking";
-import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { formatBytes, formatDuration } from "../tools/render-utils";
 import { isReadOnlyAgent } from "./read-only-policy";
@@ -500,55 +499,6 @@ export async function refreshAgentDiscovery(cwd: string): Promise<void> {
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
 	readonly approval = "exec" as const;
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<TaskParams>;
-		const lines: string[] = [];
-		if (typeof params.agent === "string") {
-			lines.push(`Agent: ${truncateForPrompt(params.agent)}`);
-		}
-		if (typeof params.name === "string" && params.name.trim()) {
-			lines.push(`Name: ${truncateForPrompt(params.name)}`);
-		}
-		if (typeof params.task === "string") {
-			lines.push(`Task:\n${truncateForPrompt(params.task)}`);
-		}
-		if (typeof params.context === "string" && params.context.trim()) {
-			lines.push(`Context:\n${truncateForPrompt(params.context)}`);
-		}
-		const tasks: unknown[] = Array.isArray(params.tasks) ? params.tasks : [];
-		if (tasks.length > 0) {
-			const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
-			const effectiveAgent = (item: unknown): string => {
-				if (item && typeof item === "object" && "agent" in item) {
-					const agent = item.agent;
-					if (typeof agent === "string" && agent.trim()) return agent.trim();
-				}
-				return defaultAgent;
-			};
-			const agentCounts = new Map<string, number>();
-			for (const item of tasks) {
-				const agent = effectiveAgent(item);
-				agentCounts.set(agent, (agentCounts.get(agent) ?? 0) + 1);
-			}
-			const agentSummary = [...agentCounts].map(([agent, count]) => `${agent} ×${count}`).join(", ");
-			lines.push(`Batch agents: ${truncateForPrompt(agentSummary)}`);
-
-			const firstTask = tasks[0];
-			if (firstTask && typeof firstTask === "object") {
-				if ("name" in firstTask && typeof firstTask.name === "string" && firstTask.name.trim()) {
-					lines.push(`Name: ${truncateForPrompt(firstTask.name)}`);
-				}
-				lines.push(`Agent: ${truncateForPrompt(effectiveAgent(firstTask))}`);
-				if ("task" in firstTask && typeof firstTask.task === "string") {
-					lines.push(`Task:\n${truncateForPrompt(firstTask.task)}`);
-				}
-			}
-			if (tasks.length > 1) {
-				lines.push(`+${tasks.length - 1} more task${tasks.length === 2 ? "" : "s"}`);
-			}
-		}
-		return lines;
-	};
 	readonly label = "Task";
 	readonly summary = "Spawn subagents to complete delegated tasks";
 	readonly strict = false;

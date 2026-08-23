@@ -4,13 +4,7 @@ import * as path from "node:path";
 
 import { formatHashlineHeader, stripHashlinePrefixes } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import {
@@ -36,7 +30,6 @@ import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { routeWriteThroughBridge } from "./acp-bridge";
-import { resolveToolTier, truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
 import {
 	type ConflictEntry,
@@ -49,14 +42,7 @@ import {
 } from "./conflict-detect";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
-import {
-	formatPathRelativeToCwd,
-	pathTargetsSsh,
-	peelWriteUrlSelector,
-	probeLiteralPathExists,
-	resolveFileWriteApprovalTier,
-	splitPathAndSel,
-} from "./path-utils";
+import { formatPathRelativeToCwd, peelWriteUrlSelector, probeLiteralPathExists, splitPathAndSel } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
 import {
 	cachedRenderedString,
@@ -88,14 +74,7 @@ import {
 } from "./sqlite-reader";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
-import {
-	dispatchXdevTool,
-	renderXdevCall,
-	renderXdevResult,
-	resolveXdevTool,
-	type XdevDispatch,
-	xdevListing,
-} from "./xdev";
+import { dispatchXdevTool, renderXdevCall, renderXdevResult, type XdevDispatch, xdevListing } from "./xdev";
 
 const LOOSE_HASHLINE_HEADER_RE = /^\s*\[[^#\r\n]+#[^ \t\r\n]*\]\s*$/;
 const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
@@ -504,59 +483,6 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  */
 export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
 	readonly name = "write";
-	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawPath = (args as Partial<WriteParams>).path;
-		if (typeof rawPath !== "string") return "write";
-		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
-		// wrapped `[ssh://h/x#ABCD]` can't dodge scheme detection and the tier checks below.
-		const path = unwrapHashlineHeaderPath(rawPath);
-		// xd:// device writes execute the mounted tool — take its approval tier.
-		// The resolution devices (xd://resolve, xd://reject, xd://propose)
-		// finalize a staged, already-previewed action, so they stay at read tier.
-		const xdevTarget = parseXdUrl(path);
-		if (xdevTarget) {
-			if (xdevTarget.name === REPORT_ISSUE_DEVICE_NAME) return "write";
-			if (xdevTarget.name && isResolutionDeviceName(xdevTarget.name)) return "read";
-			const inst =
-				xdevTarget.name && this.session.xdev ? resolveXdevTool(this.session.xdev, xdevTarget.name) : undefined;
-			if (!inst) return "exec";
-			// Decode the device JSON payload and evaluate the mounted tool's own
-			// approval (which may be argument-dependent, e.g. ast_edit is read-tier
-			// for internal-URL paths, debug is read-tier for inspection actions).
-			// Malformed JSON, non-object payloads, missing content, and approval
-			// functions that reject schema-invalid objects stay exec so the gate
-			// fails closed — the dispatch itself rejects invalid arguments too.
-			const rawContent = (args as Partial<WriteParams>).content;
-			if (typeof rawContent !== "string") return "exec";
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(rawContent);
-			} catch {
-				return "exec";
-			}
-			if (!isRecord(parsed)) return "exec";
-			try {
-				// The tier is the mounted tool's own (argument-dependent) approval; the
-				// policyKey makes the outer gate consult `tools.approval.<device>` for
-				// this dispatch before falling back to `tools.approval.write`, so users
-				// can scope allow/deny/prompt to a single device (issue #7923).
-				return { tier: resolveToolTier(inst, parsed), policyKey: xdevTarget.name! };
-			} catch {
-				return "exec";
-			}
-		}
-		// Remote SSH writes open an outbound connection and run a remote shell —
-		// gate them like the exec-tier `ssh` tool, ahead of the handler-write
-		// logic. Substring match also covers selector-suffixed targets.
-		if (pathTargetsSsh(path)) return "exec";
-		return resolveFileWriteApprovalTier(path);
-	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<WriteParams>;
-		const targetPath = typeof params.path === "string" ? params.path : "(missing)";
-		const content = typeof params.content === "string" ? params.content : "";
-		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateForPrompt(content)}`];
-	};
 	readonly label = "Write";
 	readonly description: string;
 	readonly parameters = writeSchema;
@@ -1165,10 +1091,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 									_toolCallId,
 									signal,
 									onUpdate as AgentToolUpdateCallback,
-									// The write tool's own gate just resolved approval at this
-									// device's tier (see #approval above) — mark it so a wrapped
-									// inner tool does not prompt a second time.
-									context ? { ...context, xdevApproved: true } : undefined,
+									context,
 								);
 								xdResult = {
 									content: result.content,

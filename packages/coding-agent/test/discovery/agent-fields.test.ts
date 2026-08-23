@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 describe("parseAgentFields", () => {
 	test("parses blocking from boolean frontmatter", () => {
@@ -57,14 +56,14 @@ describe("parseAgentFields", () => {
 
 		expect(fields?.thinkingLevel).toBe(Effort.High);
 	});
-	test("accepts the auto thinking selector", () => {
+	test("treats the retired auto thinking selector as unset", () => {
 		const fields = parseAgentFields({
 			name: "worker",
 			description: "desc",
 			thinkingLevel: "auto",
 		});
 
-		expect(fields?.thinkingLevel).toBe(AUTO_THINKING);
+		expect(fields?.thinkingLevel).toBeUndefined();
 	});
 
 	test("rejects unknown thinking selectors", () => {

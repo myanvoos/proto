@@ -11,7 +11,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { AgentHubRemote } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -137,7 +136,7 @@ function messageLine(id: string, content: string): string {
 	});
 }
 
-function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
+function makeViewer(file: string, ui?: TUI) {
 	const agents = new AgentRegistry();
 	agents.register({
 		id: "Main/advisor",
@@ -145,15 +144,14 @@ function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
 		kind: "advisor",
 		parentId: "Main",
 		session: null,
-		sessionFile: remote ? undefined : file,
 		status: "parked",
+		sessionFile: file,
 	});
 	return new AgentTranscriptViewer({
 		agentId: "Main/advisor",
 		registry: agents,
 		ui: ui ?? ({ requestRender: () => {}, requestComponentRender: () => {} } as never),
 		cwd: "/tmp",
-		remote,
 		expandKeys: ["ctrl+o"],
 		hubKeys: ["ctrl+s"],
 		requestRender: () => {},
@@ -180,11 +178,6 @@ function withViewer(fn: (viewer: AgentTranscriptViewer) => void): void {
 		removeSyncWithRetries(dir);
 	}
 }
-async function settleRemoteRefresh(): Promise<void> {
-	await Promise.resolve();
-	await Promise.resolve();
-}
-
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
@@ -327,7 +320,7 @@ describe("AgentTranscriptViewer", () => {
 			requestRender: () => {},
 			requestComponentRender: () => {},
 		} as unknown as TUI;
-		const viewer = makeViewer(file, undefined, ui);
+		const viewer = makeViewer(file, ui);
 		try {
 			imageBudget.beginPass();
 			const rendered = viewer.render(80).join("\n");
@@ -445,34 +438,6 @@ describe("AgentTranscriptViewer", () => {
 		}
 	});
 
-	it("clears the remote loading placeholder after a header-only first fetch", async () => {
-		const header = `${JSON.stringify({
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: "adv",
-			timestamp: TS,
-			cwd: "/tmp",
-		})}\n`;
-		const remote: AgentHubRemote = {
-			chat: () => {},
-			kill: () => {},
-			revive: () => {},
-			readTranscript: async () => ({ text: header, newSize: Buffer.byteLength(header, "utf-8") }),
-		};
-		const viewer = makeViewer("", remote);
-		try {
-			const body = () =>
-				viewer
-					.render(80)
-					.map(l => Bun.stripANSI(l))
-					.join("\n");
-			await settleRemoteRefresh();
-			expect(body()).toContain("No messages yet.");
-		} finally {
-			viewer.dispose();
-		}
-	});
-
 	it("preserves a partial trailing line through the full rebuild so the completion lands on the next poll", async () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-view-"));
 		const file = path.join(dir, "__advisor.jsonl");
@@ -506,128 +471,6 @@ describe("AgentTranscriptViewer", () => {
 		} finally {
 			viewer.dispose();
 			fs.rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("stops polling after the host reports an oversized remote JSONL entry", async () => {
-		const calls: number[] = [];
-		const remote: AgentHubRemote = {
-			chat: () => {},
-			kill: () => {},
-			revive: () => {},
-			readTranscript: async (_id: string, fromByte: number) => {
-				calls.push(fromByte);
-				return {
-					text: "",
-					newSize: fromByte,
-					error: "transcript entry exceeds transcript fetch cap (4194304 bytes)",
-				};
-			},
-		};
-		const viewer = makeViewer("", remote);
-		try {
-			await settleRemoteRefresh();
-			vi.advanceTimersByTime(650);
-			await settleRemoteRefresh();
-			const body = viewer
-				.render(80)
-				.map(l => Bun.stripANSI(l))
-				.join("\n");
-			expect(calls.filter(offset => offset === 0).length).toBe(1);
-			expect(body).toContain("entry exceeds transcript fetch cap");
-		} finally {
-			viewer.dispose();
-		}
-	});
-
-	it("surfaces an oversized remote transcript error after existing rows", async () => {
-		const header = `${JSON.stringify({
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: "adv",
-			timestamp: TS,
-			cwd: "/tmp",
-		})}\n`;
-		const before = `${header}${messageLine("a0", "BEFORE_OVERSIZED")}\n`;
-		const beforeSize = Buffer.byteLength(before, "utf-8");
-		const error = "transcript entry exceeds transcript fetch cap (4194304 bytes)";
-		const calls: number[] = [];
-		const remote: AgentHubRemote = {
-			chat: () => {},
-			kill: () => {},
-			revive: () => {},
-			readTranscript: async (_id: string, fromByte: number) => {
-				calls.push(fromByte);
-				if (fromByte === 0) return { text: before, newSize: beforeSize };
-				return { text: "", newSize: fromByte, error };
-			},
-		};
-		const viewer = makeViewer("", remote);
-		try {
-			await settleRemoteRefresh();
-			vi.advanceTimersByTime(250);
-			await settleRemoteRefresh();
-			vi.advanceTimersByTime(400);
-			const body = viewer
-				.render(80)
-				.map(l => Bun.stripANSI(l))
-				.join("\n");
-			expect(body).toContain("BEFORE_OVERSIZED");
-			expect(body).toContain(error);
-			expect(calls.filter(offset => offset === beforeSize).length).toBe(1);
-		} finally {
-			viewer.dispose();
-		}
-	});
-
-	it("drops stale rendered rows when the host transcript rotates", async () => {
-		const header = `${JSON.stringify({
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: "adv",
-			timestamp: TS,
-			cwd: "/tmp",
-		})}\n`;
-		const before = `${header}${messageLine("a0", "BEFORE_ROTATE")}\n`;
-		const beforeSize = Buffer.byteLength(before, "utf-8");
-		const after = `${header}${messageLine("a1", "AFTER_ROTATE")}\n`;
-		const afterSize = Buffer.byteLength(after, "utf-8");
-
-		let phase: "initial" | "rotated" | "post" = "initial";
-		const remote: AgentHubRemote = {
-			chat: () => {},
-			kill: () => {},
-			revive: () => {},
-			readTranscript: async (_id: string, fromByte: number) => {
-				if (phase === "initial") {
-					phase = "rotated";
-					return { text: before, newSize: beforeSize };
-				}
-				if (phase === "rotated") {
-					phase = "post";
-					// Host has rotated: newSize is smaller than the byte cursor we sent.
-					return { text: "", newSize: 0 };
-				}
-				// Post-rotation refetch from byte 0.
-				expect(fromByte).toBe(0);
-				return { text: after, newSize: afterSize };
-			},
-		};
-		const viewer = makeViewer("", remote);
-		try {
-			const body = () =>
-				viewer
-					.render(80)
-					.map(l => Bun.stripANSI(l))
-					.join("\n");
-			await settleRemoteRefresh();
-			vi.advanceTimersByTime(250);
-			await settleRemoteRefresh();
-			expect(body()).toContain("AFTER_ROTATE");
-			// Pre-rotation rows must not stack underneath the refetched transcript.
-			expect(body()).not.toContain("BEFORE_ROTATE");
-		} finally {
-			viewer.dispose();
 		}
 	});
 

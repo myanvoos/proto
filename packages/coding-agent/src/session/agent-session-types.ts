@@ -33,7 +33,6 @@ import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
@@ -79,7 +78,7 @@ export type { ShakeMode, ShakeResult } from "./shake-types";
  */
 export interface Prewalk {
 	target: Model;
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -88,7 +87,7 @@ export interface Prewalk {
  */
 export interface PlanYolo {
 	target: Model;
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 }
 
 /** Details shown when confirming a usage-reserve-triggered model fallback. */
@@ -113,7 +112,7 @@ export interface InitialRetryFallbackState {
 	/** Configured primary selector retained for restoration when it becomes available. */
 	originalSelector: string;
 	/** Thinking selector configured for the unavailable primary. */
-	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
+	originalThinkingLevel: ThinkingLevel | undefined;
 	/** Prevent cooldown restoration when startup selected this fallback from live usage health. */
 	pinned?: boolean;
 }
@@ -127,12 +126,10 @@ export interface AgentSessionConfig {
 	settings: Settings;
 	/** Whether the session spawn policy permits the read-only `scout` subagent. Defaults to true. */
 	scoutAllowedBySpawnPolicy?: boolean;
-	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
-	autoApprove?: boolean;
 	/** Models to cycle through with Ctrl+P (from --models flag). */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
 	thinkingLevelCeiling?: Effort;
 	/** Retry chain ownership when startup selected one of its fallback entries. */
@@ -255,14 +252,6 @@ export interface AgentSessionConfig {
 	 * configured `edit.mode` and rejects the frame's `old_string`/`new_string` args.
 	 */
 	advisorCreateEditTool?(): AgentTool | undefined;
-	/**
-	 * The execute-time context the advisor's bridge tools resolve approval from.
-	 *
-	 * `ExtensionToolWrapper` reads `tools.approvalMode`, per-tool
-	 * `tools.approval.<tool>` policies and `autoApprove` only from this context;
-	 * with none it defaults to `yolo` with empty policies, so a bridge tool would
-	 * run a native frame the user configured `ask` or `deny` for.
-	 */
 	advisorGetToolContext?: () => AgentToolContext | undefined;
 	/**
 	 * The live MCP connections the advisor's Cursor resource frames answer from.
@@ -359,7 +348,7 @@ export interface RoleModelCycleResult {
 export interface ResolvedRoleModel {
 	role: string;
 	model: Model;
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	explicitThinkingLevel: boolean;
 }
 

@@ -8,11 +8,8 @@ import type {
 	AgentToolUpdateCallback,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
-import type { Settings } from "../../config/settings";
+import type { ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import type { Theme } from "../../modes/theme/theme";
-import { type ApprovalMode, formatApprovalPrompt, resolveApproval, truncateForPrompt } from "../../tools/approval";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
@@ -102,16 +99,6 @@ export function wrapRegisteredTools(registeredTools: RegisteredTool[], runner: E
 	return registeredTools.map(rt => wrapRegisteredTool(rt, runner));
 }
 
-function computerSafetyChecks(context: AgentToolContext | undefined): ComputerSafetyCheck[] {
-	const metadata = context?.toolCall?.providerMetadata;
-	return metadata?.type === "computer" ? metadata.pendingSafetyChecks : [];
-}
-
-function approvalArgs(params: unknown, context: AgentToolContext | undefined): unknown {
-	const metadata = context?.toolCall?.providerMetadata;
-	return metadata?.type === "computer" ? { actions: metadata.actions } : params;
-}
-
 function toolEventArgs(params: unknown, context: AgentToolContext | undefined): Record<string, unknown> {
 	const metadata = context?.toolCall?.providerMetadata;
 	if (metadata?.type === "computer") {
@@ -121,21 +108,6 @@ function toolEventArgs(params: unknown, context: AgentToolContext | undefined): 
 		};
 	}
 	return params as Record<string, unknown>;
-}
-
-function approvalData(value: string): string {
-	const sanitized = sanitizeText(value)
-		.replace(/[\r\n\t]+/g, " ")
-		.trim();
-	const truncated = truncateForPrompt(sanitized, 500);
-	return truncated.replace(/([\\`*_{}[\]()<>#+\-.!|])/g, "\\$1");
-}
-
-function safetyCheckLines(checks: readonly ComputerSafetyCheck[]): string[] {
-	return checks.map((check, index) => {
-		const value = check.message || check.code || check.id;
-		return `${index + 1}. ${approvalData(value)}`;
-	});
 }
 
 /**
@@ -182,27 +154,8 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		// the loop never saw — nested xd:// device dispatches and direct
 		// (non-loop) execution such as Cursor exec handlers.
 		const loopEmittedToolCall = this.runner.consumeToolCallEmitted(toolCallId, this.tool.name);
-		// Resolve approval settings up front. A `deny` on the original input short-circuits before the
-		// runner is touched — an already-denied tool never emits `tool_call` — while the full gate below
-		// re-resolves against the (possibly revised) input so a handler cannot rewrite into a denied or
-		// newly prompt-gated command and have it run unapproved.
-		const cliAutoApprove = context?.autoApprove === true;
-		const settings: Settings | undefined = context?.settings;
-		const configuredMode = (settings?.get("tools.approvalMode") ?? "yolo") as ApprovalMode;
-		const approvalMode: ApprovalMode = cliAutoApprove ? "yolo" : configuredMode;
-		const userPolicies = (settings?.get("tools.approval") ?? {}) as Record<string, unknown>;
-		const preResolved = resolveApproval(this.tool, approvalArgs(params, context), approvalMode, userPolicies);
-		if (preResolved.policy === "deny") {
-			throw new Error(
-				`Tool "${preResolved.policyKey ?? this.tool.name}" is blocked by user policy.\n` +
-					`To allow: remove "tools.approval.${preResolved.policyKey ?? this.tool.name}: deny" from config.`,
-			);
-		}
-
 		// 1. Emit tool_call event first - extensions can block execution or revise the input the tool
-		// runs with. Doing this BEFORE the approval gate means approval (below) resolves against the
-		// input that actually executes, closing the "approve one thing, run another" gap: the prompt
-		// text, policy resolution, and provider safety checks all see `effectiveParams`.
+		// runs with, so execution always sees `effectiveParams`.
 		let effectiveParams = params;
 		if (!loopEmittedToolCall && this.runner.hasHandlers("tool_call")) {
 			try {
@@ -235,113 +188,6 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 					throw err;
 				}
 				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
-			}
-		}
-
-		// 2. Full approval gate against the (possibly revised) input that will actually run — resolves
-		// policy and prompts on `effectiveParams`, so the user approves exactly what executes. A revised
-		// input that newly resolves to `deny` is caught here even though the original passed the
-		// short-circuit above.
-		const resolvedArgs = approvalArgs(effectiveParams, context);
-		const resolved = resolveApproval(this.tool, resolvedArgs, approvalMode, userPolicies);
-		context?.xdevTierResolved?.(resolved.tier);
-		if (resolved.policy === "deny") {
-			throw new Error(
-				`Tool "${resolved.policyKey ?? this.tool.name}" is blocked by user policy.\n` +
-					`To allow: remove "tools.approval.${resolved.policyKey ?? this.tool.name}: deny" from config.`,
-			);
-		}
-		const pendingSafetyChecks = computerSafetyChecks(context);
-		// An xd:// device dispatch already cleared the write tool's outer gate at
-		// this tool's tier — re-prompting would double-ask for one action. The
-		// bypass only holds while the input is exactly what that outer gate
-		// approved: a handler revision here may have raised the tier, so revised
-		// input always faces the full gate. Explicit per-tool "prompt" policies
-		// and tool-demanded overrides still prompt. Provider safety checks are
-		// stronger: yolo, per-tool allow, and xdev approval never acknowledge
-		// them on the user's behalf.
-		const explicitPrompt = resolved.override || Object.hasOwn(userPolicies, resolved.policyKey ?? this.tool.name);
-		const xdevBypass = context?.xdevApproved === true && effectiveParams === params;
-		const approvalCheck = {
-			required: pendingSafetyChecks.length > 0 || (resolved.policy === "prompt" && (explicitPrompt || !xdevBypass)),
-			reason: resolved.reason,
-		};
-
-		if (approvalCheck.required) {
-			const scheduledCall = context?.toolCall?.toolCalls[context.toolCall.index];
-			if (
-				scheduledCall?.id === toolCallId &&
-				(scheduledCall.name === this.tool.name || scheduledCall.name === this.tool.customWireName)
-			) {
-				await untilAborted(signal, () => this.runner.waitForToolApprovalPreview(toolCallId));
-			}
-
-			const hasApprovalHandlers =
-				this.runner.hasHandlers("tool_approval_requested") || this.runner.hasHandlers("tool_approval_resolved");
-			const sessionId = context?.sessionManager?.getSessionId() ?? "";
-			if (hasApprovalHandlers) {
-				await this.runner.emit({
-					type: "tool_approval_requested",
-					sessionId,
-					toolName: this.tool.name,
-					toolCallId,
-					...(approvalCheck.reason ? { reason: approvalCheck.reason } : {}),
-					approvalMode,
-				});
-			}
-
-			const emitApprovalResolved = async (approved: boolean, reason?: string) => {
-				if (!hasApprovalHandlers) return;
-				await this.runner.emit({
-					type: "tool_approval_resolved",
-					sessionId,
-					toolName: this.tool.name,
-					toolCallId,
-					approved,
-					...(reason ? { reason } : {}),
-				});
-			};
-
-			// Provider safety checks fail closed without an interactive prompt. Unlike
-			// ordinary tier approval, no setting or yolo mode may bypass this gate.
-			if (!this.runner.hasUI()) {
-				const reason = "no interactive UI available";
-				await emitApprovalResolved(false, reason);
-				if (pendingSafetyChecks.length > 0) {
-					throw new Error(
-						`Tool "${this.tool.name}" has pending provider safety checks but no interactive UI is available.`,
-					);
-				}
-				throw new Error(
-					`Tool "${this.tool.name}" requires approval but no interactive UI available.\n` +
-						`Options:\n` +
-						`  1. Set tools.approvalMode: yolo in /settings\n` +
-						`  2. Add tools.approval.${this.tool.name}: allow to config\n` +
-						`  3. Use an interactive UI to approve the tool call`,
-				);
-			}
-
-			const uiContext = this.runner.getUIContext();
-			const basePrompt = formatApprovalPrompt(this.tool, resolvedArgs, approvalCheck.reason);
-			const safetyPrompt =
-				pendingSafetyChecks.length > 0
-					? `${basePrompt}\nProvider safety checks:\n${safetyCheckLines(pendingSafetyChecks).join("\n")}`
-					: basePrompt;
-			let choice: string | undefined;
-			try {
-				choice = await uiContext.select(safetyPrompt, ["Approve", "Deny"]);
-			} catch (err) {
-				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
-				throw err;
-			}
-			const approved = choice === "Approve";
-			await emitApprovalResolved(approved, approved ? undefined : "denied by user");
-			if (!approved) {
-				throw new Error(`Tool call denied by user: ${this.tool.name}`);
-			}
-			if (pendingSafetyChecks.length > 0) {
-				if (!context) throw new Error("Provider safety approval context is unavailable");
-				context.providerSafetyApproved = true;
 			}
 		}
 

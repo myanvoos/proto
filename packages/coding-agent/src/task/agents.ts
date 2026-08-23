@@ -14,7 +14,6 @@ import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
-import { AUTO_THINKING } from "../thinking";
 
 import type { AgentDefinition, AgentSource } from "./types";
 
@@ -55,11 +54,6 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
 			spawns: "*",
 			model: "@task",
-			thinkingLevel: AUTO_THINKING,
-			// No `prewalk` frontmatter: the generic task hand-off (strong model
-			// plans, then hands off to the smol role) is armed by the
-			// `task.prewalk` setting (default off) or per agent via /agents
-			// (task.agentPrewalk).
 		},
 		template: taskMd,
 	},

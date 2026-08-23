@@ -90,7 +90,6 @@ function makeHarness(): Harness {
 		updateEditorBorderColor() {},
 		ui: { requestRender() {} },
 		showStatus() {},
-		collabGuest: undefined,
 	} as unknown as InteractiveModeContext;
 
 	const registry = new AgentRegistry();

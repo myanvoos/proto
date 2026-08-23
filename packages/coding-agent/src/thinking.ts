@@ -3,6 +3,8 @@ import { Effort, type Model, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 
+export { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+
 export { CLI_THINKING_LEVELS } from "./cli/thinking-levels";
 
 /**
@@ -130,26 +132,10 @@ export function resolveThinkingLevelForModel(
 }
 
 /**
- * Sentinel selector for the coding-agent "auto" thinking mode. Kept entirely
- * inside the coding-agent layer: it is never an {@link Effort} or
- * {@link ThinkingLevel}, so provider mapping/clamping keeps seeing concrete
- * efforts. The session resolves `auto` to a concrete effort each turn.
- */
-export const AUTO_THINKING = "auto" as const;
-
-/** A thinking selector as configured by the user — a concrete level or `auto`. */
-export type ConfiguredThinkingLevel = ThinkingLevel | typeof AUTO_THINKING;
-
-/** Maps the session-level `auto` sentinel to `undefined`; concrete levels pass through. */
-export function concreteThinkingLevel(level: ConfiguredThinkingLevel | undefined): ThinkingLevel | undefined {
-	return level === AUTO_THINKING ? undefined : level;
-}
-
-/**
  * True when a prewalk hand-off from `current`/`currentLevel` to
- * `target`/`targetLevel` would change nothing observable: same model id, same
- * auto/fixed mode, and the same model-clamped effective effort. Prewalk arms and
- * switches only when this is false.
+ * `target`/`targetLevel` would change nothing observable: same model id and the
+ * same model-clamped effective effort. Prewalk arms and switches only when this
+ * is false.
  *
  * An effort-only delta on the same model id is a legitimate cheapening hand-off
  * — on a reasoning model the effort is the bulk of the cost — so it is NOT a
@@ -157,113 +143,32 @@ export function concreteThinkingLevel(level: ConfiguredThinkingLevel | undefined
  * pattern carried no explicit `:level` suffix (no effort change requested),
  * which on the same model is a no-op.
  *
- * `auto` mode is compared before efforts: `auto` and a fixed selector that both
- * resolve to `undefined` effort (e.g. `:inherit`) are NOT interchangeable —
- * applying the fixed selector clears per-turn classification, so switching
- * auto↔fixed is always a real change even when the clamped efforts match.
- *
- * Efforts are otherwise compared AFTER model clamping, so a target the model
- * cannot honor (e.g. `:xhigh` on a model capped at `high`) — which
- * `setThinkingLevel` would clamp straight back to the active effort — is
- * recognized as a no-op instead of triggering an ephemeral reset and the
- * plan/checklist nudges for nothing.
+ * Efforts are compared AFTER model clamping, so a target the model cannot honor
+ * (e.g. `:xhigh` on a model capped at `high`) — which `setThinkingLevel` would
+ * clamp straight back to the active effort — is recognized as a no-op instead of
+ * triggering an ephemeral reset and the plan/checklist nudges for nothing.
  */
 export function prewalkWouldBeNoop(
 	current: Model | undefined,
-	currentLevel: ConfiguredThinkingLevel | undefined,
+	currentLevel: ThinkingLevel | undefined,
 	target: Model,
-	targetLevel: ConfiguredThinkingLevel | undefined,
+	targetLevel: ThinkingLevel | undefined,
 ): boolean {
 	if (!modelsAreEqual(current, target)) return false;
 	if (targetLevel === undefined) return true;
-	if ((targetLevel === AUTO_THINKING) !== (currentLevel === AUTO_THINKING)) return false;
-	return (
-		resolveThinkingLevelForModel(target, concreteThinkingLevel(targetLevel)) ===
-		resolveThinkingLevelForModel(target, concreteThinkingLevel(currentLevel))
-	);
-}
-
-/** Metadata used to render the `auto` selector value alongside concrete levels. */
-export interface ConfiguredThinkingLevelMetadata {
-	value: ConfiguredThinkingLevel;
-	label: string;
-	description: string;
-}
-
-const AUTO_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
-	value: AUTO_THINKING,
-	label: "auto",
-	description: "Auto-detect per prompt",
-};
-
-/**
- * Parses a configured thinking selector, accepting `auto` in addition to every
- * value {@link parseThinkingLevel} accepts. {@link parseThinkingLevel} itself
- * stays strict so model-suffix parsing (`model:high`) keeps rejecting `auto`.
- */
-export function parseConfiguredThinkingLevel(value: string | null | undefined): ConfiguredThinkingLevel | undefined {
-	if (value === AUTO_THINKING) return AUTO_THINKING;
-	return parseThinkingLevel(value);
-}
-
-/** Returns display metadata for a configured selector, including `auto`. */
-export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLevel): ConfiguredThinkingLevelMetadata {
-	return level === AUTO_THINKING ? AUTO_THINKING_METADATA : getThinkingLevelMetadata(level);
+	return resolveThinkingLevelForModel(target, targetLevel) === resolveThinkingLevelForModel(target, currentLevel);
 }
 
 /**
- * Parses a `--thinking` CLI value. Accepts every {@link parseConfiguredThinkingLevel}
- * selector (`off`, `auto`, `minimal`..`max`) but rejects
- * `inherit`: an explicit `inherit` on the command line would suppress the
- * settings/scoped-model fallback during startup resolution only to resolve back
- * to the provider default, which is never what the user means.
+ * Parses a `--thinking` CLI value. Accepts every {@link parseThinkingLevel}
+ * selector (`off`, `minimal`..`max`) but rejects `inherit`: an explicit
+ * `inherit` on the command line would suppress the settings/scoped-model
+ * fallback during startup resolution only to resolve back to the provider
+ * default, which is never what the user means.
  */
-export function parseCliThinkingLevel(value: string | null | undefined): ConfiguredThinkingLevel | undefined {
-	const level = parseConfiguredThinkingLevel(value);
+export function parseCliThinkingLevel(value: string | null | undefined): ThinkingLevel | undefined {
+	const level = parseThinkingLevel(value);
 	return level === ThinkingLevel.Inherit ? undefined : level;
-}
-
-/**
- * Resolves an auto-classified effort against the active model's supported
- * range. Unlike {@link clampThinkingLevelForModel}, `auto` never resolves below
- * {@link Effort.Low}: the eligible pool is the model's supported efforts at or
- * above Low (falling back to the full supported set only when the model maxes
- * out below Low). Within that pool the request snaps to the highest level not
- * exceeding it, or the pool minimum when the request is below the pool.
- * `ceiling` bounds the pool from above, so a policy ceiling survives the model
- * clamp: a sparse ladder such as `["max"]` must not snap an `xhigh` request up
- * to `max`. The Low floor is resolved against the model's own ladder *before*
- * the ceiling applies — a ceiling that hides every tier at or above Low means
- * there is nothing legal to pick (`undefined`), not a licence to fall through
- * to a sub-Low tier the model happens to expose.
- *
- * Returns `undefined` for reasoning-capable models without a controllable
- * effort surface (`thinking.efforts` empty — e.g. devin-agent models, where
- * Cascade selects effort by routing to sibling model ids). Matches
- * {@link clampThinkingLevelForModel}: with no effort to pick, `auto` must not
- * forward a concrete effort that would then trip {@link requireSupportedEffort}
- * downstream.
- */
-export function clampAutoThinkingEffort(
-	model: Model | undefined,
-	effort: Effort,
-	ceiling: Effort = Effort.Max,
-): Effort | undefined {
-	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
-	if (supported.length === 0) return undefined;
-	const lowIndex = THINKING_EFFORTS.indexOf(Effort.Low);
-	const ceilingIndex = THINKING_EFFORTS.indexOf(ceiling);
-	const atOrAboveLow = supported.filter(level => THINKING_EFFORTS.indexOf(level) >= lowIndex);
-	const floored = atOrAboveLow.length > 0 ? atOrAboveLow : supported;
-	const pool = floored.filter(level => THINKING_EFFORTS.indexOf(level) <= ceilingIndex);
-	if (pool.length === 0) return undefined;
-	const requestedIndex = THINKING_EFFORTS.indexOf(effort);
-	let chosen = pool[0];
-	for (const candidate of pool) {
-		if (THINKING_EFFORTS.indexOf(candidate) > requestedIndex) break;
-		chosen = candidate;
-	}
-	return chosen;
 }
 
 /** Coarse per-spawn effort selectors accepted by the task tool. */
@@ -354,24 +259,4 @@ export function modelSupportsEffortCeiling(model: Model, ceiling: Effort): boole
 	if (supported.length === 0) return true;
 	const maxIndex = THINKING_EFFORTS.indexOf(ceiling);
 	return supported.some(candidate => THINKING_EFFORTS.indexOf(candidate) <= maxIndex);
-}
-
-/**
- * The provisional concrete level shown while `auto` is configured but before a
- * turn has been classified, and the fallback when classification fails. Prefers
- * the model's `defaultLevel`, otherwise High, clamped into the auto range.
- *
- * Deliberately stays below {@link Effort.Max}: the placeholder must not bill the
- * top tier for a turn nobody classified, so XHigh is passed as a hard ceiling
- * rather than only capping the preferred level — otherwise a sparse `["max"]`
- * ladder would snap straight back up. A model whose ladder offers nothing at or
- * below XHigh therefore has no provisional level, and `auto` leaves the current
- * one in place. Classification itself may still resolve Max on models that
- * expose the tier when the user opts in. Returns `undefined` for non-reasoning
- * models.
- */
-export function resolveProvisionalAutoLevel(model: Model | undefined): Effort | undefined {
-	if (!model?.reasoning) return undefined;
-	const preferred = model.thinking?.defaultLevel ?? Effort.High;
-	return clampAutoThinkingEffort(model, preferred === Effort.Max ? Effort.XHigh : preferred, Effort.XHigh);
 }

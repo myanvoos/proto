@@ -29,7 +29,7 @@ export interface PersistedSubagentReviveContext {
 	/** LSP policy of the top-level session; revived subagents inherit it rather than defaulting on. */
 	enableLsp: boolean;
 	/**
-	 * Shared event bus feeding RPC/collab subagent subscriptions. Passed through
+	 * Shared event bus feeding RPC subagent subscriptions. Passed through
 	 * to the wake-turn monitor so an IRC send to a cold-revived subagent emits
 	 * the same lifecycle/progress frames a live run does.
 	 */
@@ -38,7 +38,7 @@ export interface PersistedSubagentReviveContext {
 
 /**
  * Build the factory the {@link AgentLifecycleManager} uses to cold-revive a
- * `parked` subagent ref restored from disk (Agent Hub scan, collab mirror, or a
+ * `parked` subagent ref restored from disk (Agent Hub scan or a
  * resumed process). Such a ref carries a sessionFile but no in-memory adoption —
  * the executor's live reviver closure died with the process/turn that spawned
  * it — so `ensureLive` (IRC sends, hub focus) would otherwise refuse it.

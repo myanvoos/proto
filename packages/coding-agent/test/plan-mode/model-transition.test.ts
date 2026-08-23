@@ -3,7 +3,6 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ResolvedModelRoleValue } from "../../src/config/model-resolver";
 import { resolvePlanModelTransition } from "../../src/plan-mode/model-transition";
-import { AUTO_THINKING } from "../../src/thinking";
 
 /**
  * Plan-mode model transition policy (issue #5657). The active model in plan
@@ -43,8 +42,12 @@ describe("resolvePlanModelTransition", () => {
 
 	it("only adjusts thinking when the model is unchanged but the level is explicit", () => {
 		const plan = model("anthropic", "opus");
-		const transition = resolvePlanModelTransition(plan, resolved(model("anthropic", "opus"), AUTO_THINKING), false);
-		expect(transition).toEqual({ kind: "thinking", thinkingLevel: AUTO_THINKING });
+		const transition = resolvePlanModelTransition(
+			plan,
+			resolved(model("anthropic", "opus"), ThinkingLevel.XHigh),
+			false,
+		);
+		expect(transition).toEqual({ kind: "thinking", thinkingLevel: ThinkingLevel.XHigh });
 	});
 
 	it("is a no-op when the model matches and no explicit thinking level is set", () => {

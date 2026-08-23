@@ -38,7 +38,6 @@ import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { truncateHeadBytes } from "../session/streaming-output";
-import { resolveToolTier, type ToolTier } from "./approval";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
 import { replaceTabs } from "./render-utils";
@@ -91,13 +90,6 @@ export interface XdevDispatch {
 	mode: "help" | "execute";
 	/** Validated inner args, kept for renderer delegation on result rebuilds. */
 	args?: Record<string, unknown>;
-	/**
-	 * Approval tier of the wrapped tool for {@link args} (`read` = no workspace
-	 * mutation). Absent for `help` dispatches and calls whose tier could not be
-	 * resolved. Consumed by the prewalk coordinator to skip read-only device
-	 * calls when deciding the model hand-off (issue #7312).
-	 */
-	tier?: ToolTier;
 	/** Details object returned by the wrapped tool, when executed. */
 	inner?: unknown;
 }
@@ -253,8 +245,6 @@ export interface XdevState {
 	readonly builtInNames: Set<string>;
 	/** Whether a name is active at the top level. */
 	readonly isActive: (name: string) => boolean;
-	/** Optional execution-only decorator, such as the ACP permission gate. */
-	decorateExecution?(tool: Tool): Tool;
 }
 
 /** Full-doc character budget for system-prompt mounted-device sections. */
@@ -278,7 +268,7 @@ export function resolveMountedXdevTool(state: XdevState, name: string): Tool | u
 /** Resolve a mounted tool with its execution-only permission decorator. */
 export function resolveMountedXdevExecutable(state: XdevState, name: string): Tool | undefined {
 	const tool = resolveMountedXdevTool(state, name);
-	return tool && state.decorateExecution ? state.decorateExecution(tool) : tool;
+	return tool;
 }
 /** Mounted tools in presentation order, resolved from the canonical map. */
 export function listXdevTools(state: XdevState): Tool[] {
@@ -425,18 +415,7 @@ export async function dispatchXdevTool(
 		}
 
 		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));
-		// Record the wrapped tool's approval tier so the prewalk coordinator can
-		// tell a read-only device call (e.g. `lsp` navigation) from a real
-		// workspace mutation without re-decoding the payload. Best-effort: a
-		// throwing approval leaves the tier absent (prewalk then declines to
-		// switch), unlike the write gate which fails closed to `exec`.
-		let tier: ToolTier | undefined;
-		try {
-			tier = resolveToolTier(canonical, validated);
-		} catch {
-			tier = undefined;
-		}
-		xdev = { ...xdev, args: validated, tier };
+		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
 			? partial =>
 					onUpdate({
@@ -445,16 +424,8 @@ export async function dispatchXdevTool(
 						isError: partial.isError,
 					})
 			: undefined;
-		const executable = state.decorateExecution?.(canonical) ?? canonical;
-		const executionContext = context
-			? {
-					...context,
-					xdevTierResolved: (effectiveTier: ToolTier) => {
-						xdev = { ...xdev, tier: effectiveTier };
-					},
-				}
-			: undefined;
-		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, executionContext);
+		const executable = canonical;
+		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
 		return { result, xdev: { ...xdev, inner: result.details } };
 	} catch (error) {
 		if (

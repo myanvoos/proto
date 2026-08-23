@@ -24,7 +24,6 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
-import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
@@ -691,18 +690,10 @@ export function normalizeCustomMessagePayload<T = unknown>(
 	};
 }
 
-type SteeringUserMessage =
-	| (UserMessage & { steering: true })
-	| (CustomMessage & {
-			customType: typeof COLLAB_PROMPT_MESSAGE_TYPE;
-			attribution: "user";
-	  });
+type SteeringUserMessage = UserMessage & { steering: true };
 
 function isSteeringUserMessage(message: AgentMessage | undefined): message is SteeringUserMessage {
-	if (message?.role === "user") return message.steering === true;
-	return (
-		message?.role === "custom" && message.customType === COLLAB_PROMPT_MESSAGE_TYPE && message.attribution === "user"
-	);
+	return message?.role === "user" && message.steering === true;
 }
 
 function userMessageWithoutSteering(message: UserMessage): UserMessage {
@@ -743,22 +734,14 @@ function getArrayContentImages(content: (TextContent | ImageContent)[]): ImageCo
 }
 
 function wrapSteeringUserMessage(message: SteeringUserMessage): UserMessage {
-	const userMessage: UserMessage =
-		message.role === "user"
-			? userMessageWithoutSteering(message)
-			: {
-					role: "user",
-					content: message.content,
-					attribution: "user",
-					timestamp: message.timestamp,
-				};
+	const userMessage = userMessageWithoutSteering(message);
 	if (typeof message.content === "string") {
-		if (message.content.length === 0) return message.role === "user" ? message : userMessage;
+		if (message.content.length === 0) return message;
 		return { ...userMessage, content: renderSteeringEnvelope(message.content) };
 	}
 
 	const text = getArrayContentText(message.content);
-	if (text.length === 0) return message.role === "user" ? message : userMessage;
+	if (text.length === 0) return message;
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text: renderSteeringEnvelope(text) }];
 	content.push(...getArrayContentImages(message.content));
 	return { ...userMessage, content };

@@ -34,49 +34,49 @@ const targets: BinaryTarget[] = [
 		platform: "darwin",
 		arch: "arm64",
 		target: "bun-darwin-arm64",
-		outfile: "packages/coding-agent/binaries/omp-darwin-arm64",
+		outfile: "packages/coding-agent/binaries/proto-darwin-arm64",
 	},
 	{
 		id: "darwin-x64",
 		platform: "darwin",
 		arch: "x64",
 		target: "bun-darwin-x64",
-		outfile: "packages/coding-agent/binaries/omp-darwin-x64",
+		outfile: "packages/coding-agent/binaries/proto-darwin-x64",
 	},
 	{
 		id: "linux-x64",
 		platform: "linux",
 		arch: "x64",
 		target: "bun-linux-x64-baseline",
-		outfile: "packages/coding-agent/binaries/omp-linux-x64",
+		outfile: "packages/coding-agent/binaries/proto-linux-x64",
 	},
 	{
 		id: "linux-arm64",
 		platform: "linux",
 		arch: "arm64",
 		target: "bun-linux-arm64",
-		outfile: "packages/coding-agent/binaries/omp-linux-arm64",
+		outfile: "packages/coding-agent/binaries/proto-linux-arm64",
 	},
 	{
 		id: "linux-musl-x64",
 		platform: "linux",
 		arch: "x64",
 		target: "bun-linux-x64-musl-baseline",
-		outfile: "packages/coding-agent/binaries/omp-linux-musl-x64",
+		outfile: "packages/coding-agent/binaries/proto-linux-musl-x64",
 	},
 	{
 		id: "linux-musl-arm64",
 		platform: "linux",
 		arch: "arm64",
 		target: "bun-linux-arm64-musl",
-		outfile: "packages/coding-agent/binaries/omp-linux-musl-arm64",
+		outfile: "packages/coding-agent/binaries/proto-linux-musl-arm64",
 	},
 	{
 		id: "win32-x64",
 		platform: "win32",
 		arch: "x64",
 		target: "bun-windows-x64-baseline",
-		outfile: "packages/coding-agent/binaries/omp-windows-x64.exe",
+		outfile: "packages/coding-agent/binaries/proto-windows-x64.exe",
 	},
 ];
 
@@ -157,11 +157,9 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 async function generateBundle(): Promise<void> {
 	if (isDryRun) {
 		console.log("DRY RUN bun run gen:stats");
-		console.log("DRY RUN bun --cwd=packages/collab-web run gen:tool-views");
 		return;
 	}
 	await runCommand(["bun", "run", "gen:stats"], repoRoot);
-	await runCommand(["bun", "--cwd=packages/collab-web", "run", "gen:tool-views"], repoRoot);
 }
 
 async function resetArtifacts(): Promise<void> {

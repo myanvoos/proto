@@ -146,7 +146,7 @@ describe("InteractiveMode theme scrollback refresh", () => {
 			new Composer({ terminal }),
 		);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		await mode.init({ suppressWelcomeIntro: true });
+		await mode.init();
 	});
 
 	beforeEach(async () => {

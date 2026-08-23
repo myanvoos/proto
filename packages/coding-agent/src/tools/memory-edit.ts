@@ -15,7 +15,6 @@ export type MemoryEditParams = typeof memoryEditSchema.infer;
 
 export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	readonly name = "memory_edit";
-	readonly approval = "read" as const;
 	readonly label = "Memory Edit";
 	readonly description = memoryEditDescription;
 	readonly parameters = memoryEditSchema;

@@ -98,12 +98,10 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
-import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
-import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
-import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
+import { parseThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
@@ -488,11 +486,9 @@ async function runInteractiveMode(
 	mcpManager: MCPManager | undefined,
 	resuming: boolean,
 	forceSetupWizard: boolean,
-	showStartupSplash: boolean,
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
-	joinLink?: string,
 	startupLease?: ComposerLease,
 ): Promise<void> {
 	let mode: InteractiveMode;
@@ -515,16 +511,14 @@ async function runInteractiveMode(
 
 	let setupWizard: typeof SetupWizardModule | undefined;
 	let setupScenes: SetupScene[] = [];
-	let playStartupSplash = false;
 	try {
 		// Cold-launch gate: the full setup wizard (every scene + the overlay and
 		// their TUI/OAuth/search/theme deps) is heavy, yet the common case only needs
 		// to know whether the stored setup version is current. Lazy-load the wizard
-		// barrel only when setup is stale, forced, or the explicit startup splash
-		// setting needs the shared setup splash renderer.
+		// barrel only when setup is stale or forced.
 		const storedSetupVersion = settings.get("setupVersion");
 		setupWizard =
-			forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION || showStartupSplash
+			forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION
 				? await import("./modes/setup-wizard")
 				: undefined;
 		setupScenes = setupWizard
@@ -535,10 +529,8 @@ async function runInteractiveMode(
 					force: forceSetupWizard,
 				})
 			: [];
-		playStartupSplash = showStartupSplash && setupScenes.length === 0;
 
 		await mode.init({
-			suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
 			clearInitialTerminalHistory: true,
 		});
 	} catch (error) {
@@ -546,8 +538,8 @@ async function runInteractiveMode(
 		throw error;
 	}
 
-	if (setupWizard && playStartupSplash) {
-		await setupWizard.runStartupSplash(mode);
+	if (setupWizard && setupScenes.length > 0) {
+		await setupWizard.runSetupWizard(mode, setupScenes);
 	}
 
 	if (setupWizard && setupScenes.length > 0) {
@@ -584,12 +576,6 @@ async function runInteractiveMode(
 		} else if (notify.kind === "info") {
 			mode.showStatus(notify.message);
 		}
-	}
-
-	// `omp join <link>`: dispatch through the same builtin path as a typed
-	// `/join` so collab guards and error rendering stay in one place.
-	if (joinLink !== undefined) {
-		await executeBuiltinSlashCommand(`/join ${joinLink}`, { ctx: mode });
 	}
 
 	if (initialMessage !== undefined) {
@@ -781,9 +767,7 @@ export function toSessionScopedModels(
 	activeSettings: Settings,
 ): Array<{ model: Model; thinkingLevel?: ThinkingLevel }> {
 	if (scopedModels.length === 0) return [];
-	const defaultThinkingLevel = concreteThinkingLevel(
-		parseConfiguredThinkingLevel(activeSettings.get("defaultThinkingLevel")),
-	);
+	const defaultThinkingLevel = parseThinkingLevel(activeSettings.get("defaultThinkingLevel"));
 	return scopedModels.map(scopedModel => ({
 		model: scopedModel.model,
 		thinkingLevel: scopedModel.explicitThinkingLevel
@@ -1026,7 +1010,6 @@ export async function buildSessionOptions(
 ): Promise<CreateAgentSessionOptions> {
 	const options: CreateAgentSessionOptions = {
 		cwd: parsed.cwd ?? getProjectDir(),
-		autoApprove: parsed.autoApprove ?? false,
 	};
 	const restoringSession = Boolean(parsed.continue || parsed.resume || isForeignSessionImport(parsed));
 	if (parsed.serviceTier !== undefined) {
@@ -1347,21 +1330,6 @@ export async function runRootCommand(
 			process.exit(0);
 		}
 
-		if (parsedArgs.export) {
-			let result: string;
-			try {
-				const outputPath = parsedArgs.messages.length > 0 ? parsedArgs.messages[0] : undefined;
-				const { exportFromFile } = await import("./export/html");
-				result = await exportFromFile(parsedArgs.export, outputPath);
-			} catch (error: unknown) {
-				const message = error instanceof Error ? error.message : "Failed to export session";
-				process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
-				process.exit(1);
-			}
-			writeStartupNotice(parsedArgs, `Exported to: ${result}\n`);
-			process.exit(0);
-		}
-
 		if ((parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") && parsedArgs.fileArgs.length > 0) {
 			process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
 			process.exit(1);
@@ -1427,15 +1395,6 @@ export async function runRootCommand(
 
 		const settingsInstance =
 			deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
-		if (parsedArgs.approvalMode) {
-			// Runtime override (not persisted): every settings.get("tools.approvalMode") downstream
-			// sees this value. The wrapper still honours --auto-approve / --yolo on top of it.
-			settingsInstance.override("tools.approvalMode", parsedArgs.approvalMode);
-		} else if (parsedArgs.autoApprove) {
-			// --auto-approve / --yolo without an explicit --approval-mode: reflect in settings so
-			// setup-time checks (e.g. #wrapToolForAcpPermission) also see the yolo intent.
-			settingsInstance.override("tools.approvalMode", "yolo");
-		}
 		if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
 			applyRpcDefaultSettingOverrides(settingsInstance);
 		} else if (parsedArgs.mode === "acp") {
@@ -1844,16 +1803,6 @@ export async function runRootCommand(
 				stdinContent: pipedInput,
 			});
 
-			const showStartupSplash = shouldShowStartupSplash({
-				configured: settingsInstance.get("startup.showSplash"),
-				isInteractive,
-				resuming: Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
-				quiet: settingsInstance.get("startup.quiet"),
-				timing: Boolean($env.PI_TIMING),
-				stdinIsTTY: process.stdin.isTTY,
-				stdoutIsTTY: process.stdout.isTTY,
-			});
-
 			// Startup changelog is only consumed by interactive mode below; kick the
 			// CHANGELOG.md parse off now so it overlaps session creation instead of
 			// serializing after it.
@@ -1880,7 +1829,7 @@ export async function runRootCommand(
 			}
 
 			// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
-			// scan, collab mirror, resumed process) has a sessionFile but no in-memory
+			// scan or a resumed process) has a sessionFile but no in-memory
 			// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
 			// factory — bound to THIS top-level session — that rebuilds the subagent from
 			// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
@@ -1980,11 +1929,9 @@ export async function runRootCommand(
 						mcpManager,
 						Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
 						deps.forceSetupWizard === true,
-						showStartupSplash,
 						eventBus,
 						initialMessage,
 						initialImages,
-						parsedArgs.join,
 						startupLease,
 					);
 				} finally {

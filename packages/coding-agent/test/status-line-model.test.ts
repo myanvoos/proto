@@ -29,7 +29,6 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 		prewalk: null,
 		goalMode: null,
 		vibeMode: null,
-		collab: null,
 		usageStats: {
 			input: 0,
 			output: 0,

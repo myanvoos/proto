@@ -1,4 +1,3 @@
-import type { CollabSessionState } from "../../../collab/protocol";
 import type {
 	ContextLineMode,
 	StatusLinePreset,
@@ -10,14 +9,6 @@ import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { LoopLimitRuntime } from "../../loop-limit";
 
 export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
-
-/** Collab session indicator + (guest-only) host-state override for segments. */
-export interface CollabStatus {
-	role: "host" | "guest";
-	participantCount: number;
-	/** Guest only: host footer snapshot that overrides locally computed values. */
-	stateOverride?: CollabSessionState | null;
-}
 
 export interface StatusLineSegmentOptions {
 	model?: { showThinkingLevel?: boolean };
@@ -88,7 +79,6 @@ export interface SegmentContext {
 	vibeMode: {
 		enabled: boolean;
 	} | null;
-	collab: CollabStatus | null;
 	// Cached values for performance (computed once per render)
 	usageStats: {
 		input: number;

@@ -31,7 +31,7 @@ import type { ModelRegistry } from "../../config/model-registry";
 import { type ModelRoleLookup, type ResolvedModelRoleValue, resolveModelRoleValue } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
+import { getThinkingLevelMetadata } from "../../thinking";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -83,7 +83,7 @@ export interface ModelHubCallbacks {
 	onAssign: (
 		model: Model,
 		role: string,
-		thinkingLevel: ConfiguredThinkingLevel | undefined,
+		thinkingLevel: ThinkingLevel | undefined,
 		selector: string,
 		scope?: ModelRoleSelectionScope,
 	) => void;
@@ -121,7 +121,7 @@ interface StripChip {
 	styled: string;
 	role?: string;
 	action: "assign" | "unassign" | "fallback" | "fallbackModel" | "fallbackProvider" | "scope" | "thinking";
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	scope?: ModelRoleSelectionScope;
 }
 
@@ -818,7 +818,7 @@ export class ModelHubComponent implements Component {
 		return resolveModelRoleValue(roleValue, allModels, { settings: this.#settings, roleLookup });
 	}
 
-	#thinkingLevelForScope(role: string, scope: ModelRoleSelectionScope): ConfiguredThinkingLevel {
+	#thinkingLevelForScope(role: string, scope: ModelRoleSelectionScope): ThinkingLevel {
 		const resolved = this.#roleForScope(role, scope);
 		return resolved.explicitThinkingLevel ? (resolved.thinkingLevel ?? ThinkingLevel.Inherit) : ThinkingLevel.Inherit;
 	}
@@ -831,7 +831,7 @@ export class ModelHubComponent implements Component {
 		}
 
 		const current = this.#roles[role];
-		let level: ConfiguredThinkingLevel = ThinkingLevel.Inherit;
+		let level: ThinkingLevel = ThinkingLevel.Inherit;
 		if (this.#settings.get("modelRoleStorage") === "project" && scope !== undefined) {
 			level = this.#thinkingLevelForScope(role, scope);
 		} else if (current && !current.autoSelected) {
@@ -856,8 +856,8 @@ export class ModelHubComponent implements Component {
 		this.#refreshAfterMutation();
 	}
 
-	#thinkingOptionsFor(model: Model): ConfiguredThinkingLevel[] {
-		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(model)];
+	#thinkingOptionsFor(model: Model): ThinkingLevel[] {
+		return [ThinkingLevel.Inherit, ThinkingLevel.Off, ...getSupportedEfforts(model)];
 	}
 
 	#openRoleStrip(item: ModelBrowserItem): void {
@@ -926,7 +926,7 @@ export class ModelHubComponent implements Component {
 				? this.#thinkingLevelForScope(role, scope)
 				: (this.#roles[role]?.thinkingLevel ?? ThinkingLevel.Inherit);
 		const chips: StripChip[] = options.map(level => {
-			const label = getConfiguredThinkingLevelMetadata(level).label;
+			const label = getThinkingLevelMetadata(level).label;
 			const glyph = thinkingLevelGlyph(level);
 			return {
 				label,
@@ -1855,7 +1855,7 @@ export class ModelHubComponent implements Component {
 				tagStyled = theme.fg(info.color ?? "muted", tag);
 				value = `${theme.fg("dim", `${assignment.model.provider}/`)}${selected ? theme.fg("accent", assignment.model.id) : assignment.model.id}`;
 				const glyph = thinkingLevelGlyph(assignment.thinkingLevel);
-				const label = getConfiguredThinkingLevelMetadata(assignment.thinkingLevel).label;
+				const label = getThinkingLevelMetadata(assignment.thinkingLevel).label;
 				if (assignment.thinkingLevel !== ThinkingLevel.Inherit) {
 					levelStyled = theme.fg("dim", glyph ? `${glyph} ${label}` : label);
 				}

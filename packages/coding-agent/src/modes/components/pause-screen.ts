@@ -5,7 +5,7 @@
  * agent loop in the process (main agent, in-process subagents, advisor) at its
  * next safe boundary — nothing is aborted, so a later resume continues exactly
  * where each loop parked. While engaged, this component owns the alternate
- * screen (the `runStartupSplash` idiom) and paints a large pause glyph with a
+ * screen (the fullscreen overlay idiom) and paints a large pause glyph with a
  * live hold timer; esc / enter / space / ctrl+c releases the gate.
  *
  * Use case: freeze a busy session, hand-edit the repo, resume, then explain

@@ -52,7 +52,6 @@ const SDK_TOOL: Tool = {
 	label: "SDK Custom",
 	description: "SDK-provided custom tool.",
 	parameters: { type: "object", properties: {} },
-	approval: "read",
 	async execute() {
 		return { content: [{ type: "text", text: "ok" }] };
 	},
@@ -182,7 +181,6 @@ describe("system prompt tool inventory", () => {
 			reads.set(name, counts);
 			return {
 				name,
-				approval: "read",
 				get label() {
 					counts.label += 1;
 					return `${name} label r${revision}`;
@@ -286,7 +284,6 @@ describe("system prompt tool inventory", () => {
 			reads.set(name, counts);
 			return {
 				name,
-				approval: "read",
 				get label() {
 					counts.label += 1;
 					return label;

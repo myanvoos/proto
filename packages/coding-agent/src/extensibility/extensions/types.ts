@@ -16,7 +16,6 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
-	ToolApproval,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
@@ -77,7 +76,6 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../../tools";
-import type { ApprovalMode } from "../../tools/approval";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import type { EventBus } from "../../utils/event-bus";
 import type {
@@ -619,9 +617,6 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	loadMode?: ToolLoadMode;
 	/** If true, tool may stage deferred changes that require explicit resolve/discard. */
 	deferrable?: boolean;
-	/** Tool approval tier. Defaults to `"exec"` when omitted.
-	 *  `"read"`: read-only operations. `"write"`: mutations. `"exec"`: code execution. */
-	approval?: ToolApproval;
 	/** Structured-output strict grammar opt-in/out. `false` is meaningful: OpenAI-family
 	 *  serializers preserve an explicit `strict: false` on the wire (#4336/#4340). */
 	strict?: boolean;
@@ -895,24 +890,6 @@ export interface InputEvent {
 // Tool Events
 // ============================================================================
 
-export interface ToolApprovalRequestedEvent {
-	type: "tool_approval_requested";
-	sessionId: string;
-	toolCallId: string;
-	toolName: string;
-	reason?: string;
-	approvalMode: ApprovalMode;
-}
-
-export interface ToolApprovalResolvedEvent {
-	type: "tool_approval_resolved";
-	sessionId: string;
-	toolCallId: string;
-	toolName: string;
-	approved: boolean;
-	reason?: string;
-}
-
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
@@ -1084,9 +1061,7 @@ export type ExtensionEvent =
 	| UserPythonEvent
 	| InputEvent
 	| ToolCallEvent
-	| ToolResultEvent
-	| ToolApprovalRequestedEvent
-	| ToolApprovalResolvedEvent;
+	| ToolResultEvent;
 
 // ============================================================================
 // Event Results
@@ -1269,8 +1244,6 @@ export interface ExtensionAPI {
 	on(event: "goal_updated", handler: ExtensionHandler<GoalUpdatedEvent>): void;
 	on(event: "credential_disabled", handler: ExtensionHandler<CredentialDisabledEvent>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
-	on(event: "tool_approval_requested", handler: ExtensionHandler<ToolApprovalRequestedEvent>): void;
-	on(event: "tool_approval_resolved", handler: ExtensionHandler<ToolApprovalResolvedEvent>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;

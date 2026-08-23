@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import type { AgentEvent, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type { AgentEvent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type BlockState, handleServerMessage, type ToolCallState } from "@oh-my-pi/pi-ai/providers/cursor";
 import { buildPiLsResult, piTruncation } from "@oh-my-pi/pi-ai/providers/cursor/exec-modern";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai/types";
@@ -31,7 +31,7 @@ import {
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { BUILTIN_TOOLS, GrepTool, ReadTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { GrepTool, ReadTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import type { TruncationMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -484,55 +484,6 @@ describe("bridge tool resolution beyond the model-facing registry", () => {
 		expect(result.content.map(c => (c.type === "text" ? c.text : "")).join("")).toContain("not available");
 	});
 
-	it("denies a native pi_edit frame the user's policy blocks", async () => {
-		// The bridge's `edit` is wrapped, but `ExtensionToolWrapper` reads the
-		// approval mode and per-tool policies only from the execute-time
-		// context — with none it resolves as `yolo` with empty policies and the
-		// frame edits the file regardless of what the user configured.
-		const target = path.join(cwd, "denied.txt");
-		await Bun.write(target, "alpha\nbeta\n");
-		const settings = Settings.isolated({ "tools.approval": { edit: "deny" } });
-		const session = createTestSession(cwd, { settings });
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: bridgeToolMap(new Map<string, Tool>([["edit", new EditTool(session)]]), () =>
-				createBridgeEditTool(session, passthroughRunner()),
-			),
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const result = await handlers.piEdit({
-			toolCallId: "e5",
-			args: { path: target, edits: [{ oldText: "beta", newText: "gamma" }] },
-		} as never);
-
-		expect(result.isError).toBe(true);
-		expect(await Bun.file(target).text()).toBe("alpha\nbeta\n");
-	});
-
-	it("denies a scoped pi_grep frame the user's policy blocks", async () => {
-		// Same gate on the other bridge-only tool: the per-call `grep` the
-		// factory builds for a frame carrying `context`/`limit` must answer to
-		// `tools.approval.grep` like every registry call.
-		await Bun.write(path.join(cwd, "hit.txt"), "needle\n");
-		const settings = Settings.isolated({ "tools.approval": { grep: "deny" } });
-		const session = createTestSession(cwd, { settings });
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>(),
-			createGrepTool: createBridgeGrepFactory(session, passthroughRunner()),
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const result = await handlers.piGrep({
-			toolCallId: "g2",
-			args: { pattern: "needle", path: cwd, context: 1, limit: 5 },
-		} as never);
-
-		expect(result.isError).toBe(true);
-		expect(result.content.map(c => (c.type === "text" ? c.text : "")).join("")).toContain("blocked by user policy");
-	});
-
 	it("wraps the per-call grep the real bridge factory builds", async () => {
 		// The reviewed bypass was in the factory the session hands the bridge,
 		// not in the bridge: a raw `new GrepTool(...)` there skips the approval
@@ -558,32 +509,6 @@ describe("bridge tool resolution beyond the model-facing registry", () => {
 		// reached the underlying tool.
 		expect(intercepted).toEqual(["grep"]);
 		expect((result.details as { matchCount?: number } | undefined)?.matchCount).toBe(1);
-	});
-
-	it("denies a pi_write frame the user's policy blocks when the tool came from the caller's map", async () => {
-		// The advisor hands the bridge its own tool map. Those instances are run
-		// directly by `piWrite`/`piBash`, so an unwrapped one executes whatever
-		// the frame asks regardless of `tools.approval.<tool>` — supplying
-		// `getToolContext` alone does not gate anything, because the gate lives
-		// in `ExtensionToolWrapper`, not in the bridge.
-		const settings = Settings.isolated({ "tools.approval": { write: "deny" } });
-		const session = createTestSession(cwd, { settings });
-		const writeTool = await BUILTIN_TOOLS.write(session);
-		if (!writeTool) throw new Error("expected a write tool");
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>([["write", new ExtensionToolWrapper(writeTool, passthroughRunner())]]),
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const target = path.join(cwd, "denied-write.txt");
-		const result = await handlers.piWrite({
-			toolCallId: "w1",
-			args: { path: target, content: "written" },
-		} as never);
-
-		expect(result.isError).toBe(true);
-		expect(await Bun.file(target).exists()).toBe(false);
 	});
 });
 
@@ -922,48 +847,6 @@ describe("CursorExecHandlers mounted tool bridge", () => {
 		expect(result.content).toEqual([{ type: "text", text: "reported" }]);
 	});
 
-	it("routes wrapped mounted devices through the approval gate", async () => {
-		let executed = false;
-		const device: AgentTool = {
-			name: "ast_edit",
-			label: "AST Edit",
-			description: "structural edit device",
-			parameters: type({}),
-			async execute() {
-				executed = true;
-				return { content: [{ type: "text", text: "edited" }], details: {} };
-			},
-		};
-		// The deny path throws inside resolveApproval before any handler runs;
-		// the stub only needs the loop-emission marker probe the wrapper always
-		// consults first.
-		const wrapped = new ExtensionToolWrapper(device, {
-			consumeToolCallEmitted: () => false,
-		} as unknown as ExtensionRunner);
-		const settings = Settings.isolated({ "tools.approval": { ast_edit: "deny" } });
-		const handlers = new CursorExecHandlers({
-			cwd: ".",
-			// The canonical map contains the undecorated mounted tool. The execution
-			// override must win or Cursor bypasses the approval gate.
-			tools: new Map([[device.name, device]]),
-			getExecutableTool: name => (name === device.name ? (wrapped as unknown as AgentTool) : undefined),
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const result = await handlers.mcp({
-			name: device.name,
-			providerIdentifier: "pi-agent",
-			toolName: device.name,
-			toolCallId: "call-denied",
-			args: {},
-			rawArgs: {},
-		});
-
-		expect(result.isError).toBe(true);
-		expect(executed).toBe(false);
-		expect(result.content.find(block => block.type === "text")?.text).toContain("blocked by user policy");
-	});
-
 	it("lists resources from the session's live MCP servers", async () => {
 		// The provider used to answer an empty catalog unconditionally, hiding
 		// resources the session holds live connections to. Every entry must
@@ -1282,58 +1165,6 @@ describe("CursorExecHandlers mounted tool bridge", () => {
 		// default only so a slow runner cannot claim the same verdict.
 	}, 20_000);
 
-	it("refuses a download when the session withheld file mutation or policy denies it", async () => {
-		// Download mode creates and overwrites workspace files without going
-		// through a registry tool, so nothing else enforces the session's
-		// mutation rules — the same hole the native `delete` frame had. A
-		// channel that was never granted a file-writing tool, and a `write` tier
-		// the user denied, must both stop it before the read, so a refused
-		// download does not even fetch the resource.
-		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-mcp-grant-"));
-		try {
-			let reads = 0;
-			const mcpResources = {
-				serverNames: () => ["files"],
-				getServerResources: async () => undefined,
-				readServerResource: async (_name: string, uri: string) => {
-					reads++;
-					return { contents: [{ uri, text: "payload" }] };
-				},
-			};
-
-			const ungranted = new CursorExecHandlers({
-				cwd: workspace,
-				tools: new Map(),
-				allowDirectFileMutation: false,
-				mcpResources,
-			});
-			await expect(
-				ungranted.readMcpResource({ server: "files", uri: "files://x", downloadPath: "out.txt" }),
-			).rejects.toThrow(/not available/);
-
-			const denied = new CursorExecHandlers({
-				cwd: workspace,
-				tools: new Map(),
-				mcpResources,
-				getToolContext: () =>
-					({ settings: Settings.isolated({ "tools.approval": { write: "deny" } }) }) as AgentToolContext,
-			});
-			await expect(
-				denied.readMcpResource({ server: "files", uri: "files://x", downloadPath: "out.txt" }),
-			).rejects.toThrow(/blocked by user policy/);
-
-			expect(reads).toBe(0);
-			expect(await Bun.file(path.join(workspace, "out.txt")).exists()).toBe(false);
-
-			// A read without `download_path` mutates nothing, so it is unaffected.
-			const read = await ungranted.readMcpResource({ server: "files", uri: "files://x" });
-			expect(read?.text).toBe("payload");
-			expect(reads).toBe(1);
-		} finally {
-			await removeWithRetries(workspace);
-		}
-	});
-
 	it("answers nothing when the session has no MCP manager", async () => {
 		// A host without MCP must still answer truthfully rather than throwing:
 		// an empty catalog and `not_found` are the honest responses.
@@ -1564,48 +1395,6 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 		expect(await Bun.file(originalTarget).exists()).toBe(true);
 		expect(await Bun.file(movedTarget).exists()).toBe(false);
 	});
-
-	it("refuses a native delete the user's policy blocks", async () => {
-		// `allowDirectFileMutation` answers "was a mutating tool granted", not "does
-		// policy allow this call". The frame removes the file with `fs.rmSync`
-		// instead of running a registry tool, so no approval wrapper sits in
-		// front of it — a configured `deny` still lost the file.
-		const target = path.join(cwd, "protected.txt");
-		await Bun.write(target, "keep me\n");
-		const settings = Settings.isolated({ "tools.approval": { delete: "deny" } });
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map(),
-			allowDirectFileMutation: true,
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const result = await handlers.delete(
-			create(DeleteArgsSchema, { toolCallId: "call-deny", path: "protected.txt" }),
-		);
-
-		expect(result.isError).toBe(true);
-		expect(await Bun.file(target).exists()).toBe(true);
-	});
-
-	it("refuses a native delete in always-ask mode, which has no prompt channel", async () => {
-		// The exec channel cannot raise an interactive approval, so a mode that
-		// demands one must fail closed rather than silently auto-approving.
-		const target = path.join(cwd, "asked.txt");
-		await Bun.write(target, "keep me\n");
-		const settings = Settings.isolated({ "tools.approvalMode": "always-ask" });
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map(),
-			allowDirectFileMutation: true,
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-
-		const result = await handlers.delete(create(DeleteArgsSchema, { toolCallId: "call-ask", path: "asked.txt" }));
-
-		expect(result.isError).toBe(true);
-		expect(await Bun.file(target).exists()).toBe(true);
-	});
 });
 
 // A `smart_mode_approval_only` frame asks whether an MCP call would be allowed,
@@ -1620,69 +1409,6 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 
 	afterEach(async () => {
 		await removeWithRetries(cwd);
-	});
-
-	function mcpHandlers(settings: Settings): { handlers: CursorExecHandlers; executed: () => number } {
-		let executed = 0;
-		const tool: AgentTool = {
-			name: "mcp__ops__deploy",
-			label: "deploy",
-			description: "",
-			parameters: type({}),
-			execute: async () => {
-				executed += 1;
-				return { content: [{ type: "text", text: "ran" }] };
-			},
-		} as unknown as AgentTool;
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map([[tool.name, tool]]),
-			getToolContext: () => ({ settings }) as AgentToolContext,
-		});
-		return { handlers, executed: () => executed };
-	}
-
-	const call = {
-		name: "mcp__ops__deploy",
-		toolName: "mcp__ops__deploy",
-		toolCallId: "c1",
-		providerIdentifier: "ops",
-		args: {},
-		rawArgs: {},
-	};
-
-	it("approves a call the policy allows, without running it", async () => {
-		const { handlers, executed } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "yolo" }));
-
-		expect(await handlers.mcpApprovalPreflight(call)).toBe(true);
-		// Approval is the answer; the invocation is a separate frame.
-		expect(executed()).toBe(0);
-	});
-
-	it("refuses a call the user's policy denies", async () => {
-		const { handlers, executed } = mcpHandlers(
-			Settings.isolated({ "tools.approvalMode": "yolo", "tools.approval": { mcp__ops__deploy: "deny" } }),
-		);
-
-		// Approving here would launder the deny into a server-side blessing.
-		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
-		expect(executed()).toBe(0);
-	});
-
-	it("refuses when the policy demands a prompt this frame cannot raise", async () => {
-		const { handlers } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "always-ask" }));
-
-		// The user is asked for real when the call arrives; answering yes on
-		// their behalf pre-authorizes something they never saw.
-		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
-	});
-
-	it("refuses a tool the session does not have", async () => {
-		const { handlers } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "yolo" }));
-
-		expect(
-			await handlers.mcpApprovalPreflight({ ...call, name: "mcp__ops__absent", toolName: "mcp__ops__absent" }),
-		).toBe(false);
 	});
 });
 

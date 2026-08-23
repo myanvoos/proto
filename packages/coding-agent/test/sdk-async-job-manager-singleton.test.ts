@@ -141,7 +141,6 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 				label: "Capture async job snapshot",
 				description: "Capture the session-owned async job snapshot for this test.",
 				parameters: type({}),
-				approval: "read",
 				async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 					observedSnapshot = ctx.getAsyncJobSnapshot();
 					return { content: [{ type: "text", text: "captured" }] };

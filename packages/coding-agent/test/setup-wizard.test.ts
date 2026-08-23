@@ -203,12 +203,11 @@ describe("setup wizard persistence", () => {
 		expect(settings.get("setupVersion")).toBe(CURRENT_SETUP_VERSION);
 	});
 
-	it("can run a targeted scene without setup-version or welcome-intro side effects", async () => {
+	it("can run a targeted scene without setup-version side effects", async () => {
 		const settings = Settings.isolated({ setupVersion: 0 });
 		const hideOverlay = mock(() => {});
 		const setFocus = mock((_component: unknown) => {});
 		const requestRender = mock(() => {});
-		const playWelcomeIntro = mock(() => {});
 		let component: SetupWizardComponent | undefined;
 		const scene: SetupScene = {
 			id: "providers",
@@ -223,7 +222,6 @@ describe("setup wizard persistence", () => {
 		};
 		const ctx = {
 			settings,
-			playWelcomeIntro,
 			ui: {
 				terminal: { rows: 24 },
 				showOverlay: (nextComponent: SetupWizardComponent) => {
@@ -235,13 +233,12 @@ describe("setup wizard persistence", () => {
 			},
 		} as unknown as InteractiveModeContext;
 
-		const pending = runSetupWizard(ctx, [scene], { markComplete: false, playWelcomeIntro: false });
+		const pending = runSetupWizard(ctx, [scene], { markComplete: false });
 		component?.handleInput?.("\n");
 		component?.handleInput?.("\n");
 		await pending;
 
 		expect(settings.get("setupVersion")).toBe(0);
-		expect(playWelcomeIntro).not.toHaveBeenCalled();
 		expect(hideOverlay).toHaveBeenCalledTimes(1);
 		expect(setFocus).toHaveBeenCalled();
 	});
@@ -271,7 +268,8 @@ describe("setup wizard mouse routing", () => {
 		const component = new SetupWizardComponent(ctx, [scene]);
 		try {
 			void component.run();
-			// Left click during the splash advances into the scene, like Enter.
+			// Left click inside the scene is hit-tested by scenes without routeMouse
+			// as swallowed input.
 			component.handleInput("\x1b[<0;5;5M");
 			component.handleInput("\x1b[<64;10;5M"); // wheel up
 			component.handleInput("\x1b[<65;10;5M"); // wheel down
@@ -320,8 +318,6 @@ describe("setup wizard mouse routing", () => {
 		const component = new SetupWizardComponent(ctx, [scene]);
 		try {
 			void component.run();
-			component.handleInput("\r"); // splash → scene
-			await Bun.sleep(500); // let the splash→scene dissolve (420ms) finish so the frame is the scene
 			const frame = component.render(80);
 			const row = frame.findIndex(line => line.includes("MARKER-ROW"));
 			expect(row).toBeGreaterThan(0);

@@ -1,17 +1,10 @@
 import * as fs from "node:fs";
 import path from "node:path";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import type { ToolSession } from "../tools";
-import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
@@ -151,19 +144,6 @@ async function enumerateRenamePairs(
  */
 export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Theme> {
 	readonly name = "lsp";
-	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawAction = (args as Partial<LspParams>).action;
-		const action = typeof rawAction === "string" ? rawAction.toLowerCase() : "";
-		return LSP_READONLY_ACTIONS.has(action) ? "read" : "write";
-	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const params = args as Partial<LspParams>;
-		const lines = [`Action: ${typeof params.action === "string" ? params.action : "(missing)"}`];
-		if (typeof params.file === "string" && params.file.length > 0) {
-			lines.push(`File: ${truncateForPrompt(params.file)}`);
-		}
-		return lines;
-	};
 	readonly label = "LSP";
 	readonly loadMode = "discoverable";
 	readonly summary = "Query LSP (language server) for diagnostics, hover info, and references";

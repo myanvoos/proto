@@ -70,8 +70,6 @@ describe("read PDF page screenshots", () => {
 			expect(result.details?.resolvedPath).toBe(pdfPath);
 			expect(render).toHaveBeenLastCalledWith(expect.anything(), pdfPath, page, undefined);
 		}
-		expect(tool.approval({ path: `${pdfPath}:p1-img0.png` })).toBe("exec");
-		expect(tool.approval({ path: `${pdfPath}:2-2` })).toBe("read");
 	});
 
 	it("preserves a literal filename that looks like a PDF image listing", async () => {

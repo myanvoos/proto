@@ -234,7 +234,6 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 	name: "tts",
 	label: "Speech Generation",
 	strict: false,
-	approval: "write",
 	description:
 		"Generate a speech audio file from text and write it to output_path. Two backends, selected by the providers.tts setting (auto|local|xai): " +
 		`local = on-device neural TTS (Kokoro-82M via the bundled ONNX runtime, no network, output is always WAV/PCM16; voice set by the tts.localVoice setting — ${KOKORO_VOICES.map(v => (v.id === DEFAULT_TTS_VOICE ? `${v.id} (default)` : v.id)).join(", ")}); ` +

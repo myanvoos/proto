@@ -2,8 +2,7 @@ import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
-import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getEditClipboard } from "../../edit/edit-clipboard";
@@ -25,7 +24,6 @@ import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
-import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
@@ -72,13 +70,6 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
-interface ApprovalPreviewGate {
-	promise: Promise<void>;
-	resolve(): void;
-	reject(reason?: unknown): void;
-	started: boolean;
-}
-
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	// Count of visible assistant content blocks (rendered non-empty text/thinking)
@@ -91,11 +82,9 @@ export class EventController {
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 	#backgroundTaskCallIds = new Set<string>();
-	/** Tool calls whose approval prompt drove the title into `attention`; cleared
-	 *  at their tool_execution_end so the title returns to `working`. */
+	/** Tool calls that drove the title into `attention` (the `ask` question);
+	 *  cleared at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
-	#approvalPreviewGates = new Map<string, ApprovalPreviewGate>();
-	#detachToolApprovalPreviewWaiter: (() => void) | undefined;
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
@@ -208,9 +197,6 @@ export class EventController {
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
 		// partial contexts (tests, minimal embeddings) by wiring null.
 		const session = ctx.session;
-		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
-			this.#waitForToolApprovalPreview(toolCallId),
-		);
 		vocalizer.setEnhancer(
 			session?.modelRegistry && session.agent && session.settings
 				? new SpeechEnhancer({
@@ -287,9 +273,6 @@ export class EventController {
 	}
 
 	dispose(): void {
-		this.#detachToolApprovalPreviewWaiter?.();
-		this.#detachToolApprovalPreviewWaiter = undefined;
-		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -310,36 +293,6 @@ export class EventController {
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
-	}
-	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
-		let gate = this.#approvalPreviewGates.get(toolCallId);
-		if (!gate) {
-			const deferred = Promise.withResolvers<void>();
-			gate = { ...deferred, started: false };
-			this.#approvalPreviewGates.set(toolCallId, gate);
-		}
-		return gate;
-	}
-
-	async #waitForToolApprovalPreview(toolCallId: string): Promise<void> {
-		await this.#approvalPreviewGate(toolCallId).promise;
-	}
-
-	#startToolApprovalPreview(toolCallId: string): void {
-		const gate = this.#approvalPreviewGate(toolCallId);
-		if (gate.started) return;
-		gate.started = true;
-		const component = this.ctx.pendingTools.get(toolCallId);
-		const ready = component instanceof ToolExecutionComponent ? component.whenPreviewSettled() : Promise.resolve();
-		void ready.then(() => {
-			this.ctx.ui.requestRender();
-			gate.resolve();
-		}, gate.reject);
-	}
-
-	#clearApprovalPreviewGates(): void {
-		for (const gate of this.#approvalPreviewGates.values()) gate.resolve();
-		this.#approvalPreviewGates.clear();
 	}
 
 	#getReadGroup(): ReadToolGroupComponent {
@@ -745,7 +698,6 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
-		this.#clearApprovalPreviewGates();
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
@@ -1374,7 +1326,7 @@ export class EventController {
 		if (this.#retractedToolCallIds.has(event.toolCallId)) return;
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
-		if (event.toolName === "ask" || this.#toolWillPromptForApproval(event.toolName, event.args)) {
+		if (event.toolName === "ask") {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
 			setTerminalTitleState("attention");
 		}
@@ -1391,7 +1343,6 @@ export class EventController {
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 				}
-				this.#startToolApprovalPreview(event.toolCallId);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -1448,24 +1399,6 @@ export class EventController {
 				this.ctx.ui.requestRender();
 			}
 		}
-		this.#startToolApprovalPreview(event.toolCallId);
-	}
-
-	/**
-	 * Whether this tool call will block on an approval prompt before executing.
-	 * The extension wrapper waits on `uiContext.select(...)` after emitting
-	 * `tool_execution_start`, so an approval-mode / per-tool `prompt` policy is
-	 * user-blocking — the title should read `attention`, not `working`. Mirrors
-	 * the wrapper's `resolveApproval` inputs (approvalMode + tools.approval); uses
-	 * `resolveApproval` rather than `requiresApproval` so a `deny` policy does not
-	 * throw in the render path.
-	 */
-	#toolWillPromptForApproval(toolName: string, args: unknown): boolean {
-		const tool = this.ctx.viewSession.getToolByName(toolName);
-		if (!tool) return false;
-		const mode = (settings.get("tools.approvalMode") ?? "yolo") as ApprovalMode;
-		const userPolicies = (settings.get("tools.approval") ?? {}) as Record<string, unknown>;
-		return resolveApproval(tool, args, mode, userPolicies).policy === "prompt";
 	}
 
 	async #handleToolExecutionUpdate(
@@ -1730,7 +1663,6 @@ export class EventController {
 		// the turn-end teardown now would stop the loader the live turn just created,
 		// leaving "Working…" gone while the agent keeps running. The live turn owns
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
-		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
 		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not the
 		// end of the run: an unsuppressed async job (a `/vibe` worker turn, a bash

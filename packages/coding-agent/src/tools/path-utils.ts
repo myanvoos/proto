@@ -477,13 +477,6 @@ export function isInternalUrlPath(filePath: string): boolean {
  * routing layer. Internal resources are read-tier only when their handler is
  * read-only; writable handlers such as vault:// must retain write approval.
  */
-export function resolveFileWriteApprovalTier(filePath: string): "read" | "write" {
-	const normalized = normalizeLocalScheme(expandPath(normalizeLocalScheme(filePath)));
-	if (!TOP_LEVEL_INTERNAL_URL_PREFIXES.some(prefix => normalized.startsWith(prefix))) return "write";
-	const scheme = INTERNAL_URL_SCHEME_RE.exec(normalized)?.[1]?.toLowerCase();
-	const handler = scheme ? InternalUrlRouter.instance().getHandler(scheme) : undefined;
-	return handler?.write ? "write" : "read";
-}
 
 /**
  * True when a tool path argument references the `ssh://` scheme anywhere.

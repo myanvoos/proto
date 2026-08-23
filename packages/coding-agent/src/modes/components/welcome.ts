@@ -7,7 +7,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import tipsText from "./tips.txt" with { type: "text" };
 
@@ -139,13 +139,9 @@ export interface LspServerInfo {
  * Premium welcome screen with block-based OMP logo and two-column layout.
  */
 export class WelcomeComponent implements Component {
-	#animStart: number | null = null;
-	#animTimer: Timer | null = null;
-	#requestRender: (() => void) | null = null;
 	#selectedTip: string | undefined;
 	// Render cache: the welcome box is the first transcript-area component, so
 	// returning a stable array reference keeps the whole frame prefix stable.
-	// Bypassed while the intro animation runs (every frame differs).
 	#cachedWidth = -1;
 	#cachedLines: string[] | undefined;
 	// Width-independent mutation counter for the TUI's multiplexer width-epoch
@@ -153,8 +149,8 @@ export class WelcomeComponent implements Component {
 	// child, and without a revision the engine falls back to comparing
 	// width-dependent row counts — which conflates reflow with mutation and
 	// fails resolution on every width change. Bumped by invalidate(), the funnel
-	// every content mutation (setModel/setRecentSessions/setLspServers/animation
-	// settle) already goes through.
+	// every content mutation (setModel/setRecentSessions/setLspServers) already
+	// goes through.
 	#widthEpochRevision = 0;
 
 	constructor(
@@ -185,52 +181,6 @@ export class WelcomeComponent implements Component {
 		return this.#widthEpochRevision;
 	}
 
-	/**
-	 * Play a one-shot intro that sweeps the gradient through every phase
-	 * before settling on the resting frame. Safe to call multiple times —
-	 * subsequent calls reset and replay.
-	 */
-	playIntro(requestRender: () => void): void {
-		this.#stopAnimation();
-		this.#requestRender = requestRender;
-		this.#animStart = performance.now();
-		this.#requestRender();
-		this.#animTimer = setInterval(() => {
-			const elapsed = performance.now() - (this.#animStart ?? 0);
-			if (elapsed >= INTRO_MS) {
-				this.#stopAnimation();
-			}
-			this.#requestRender?.();
-		}, INTRO_TICK_MS);
-	}
-
-	#stopAnimation(): void {
-		if (this.#animTimer != null) {
-			clearInterval(this.#animTimer);
-			this.#animTimer = null;
-		}
-		this.#animStart = null;
-		this.#requestRender = null;
-		// The settled (resting) frame differs from the last intro frame.
-		this.invalidate();
-	}
-
-	/**
-	 * Redirect a running intro's render callback to a new target when a host
-	 * remounts this component mid-animation.
-	 * Returns true while the intro is still animating; false = no-op (settled).
-	 */
-	retargetIntro(requestRender: () => void): boolean {
-		if (this.#animTimer == null) return false;
-		this.#requestRender = requestRender;
-		return true;
-	}
-
-	/** Stop the intro immediately and settle on the resting frame. Safe when idle. */
-	stopIntro(): void {
-		this.#stopAnimation();
-	}
-
 	/** Update the version embedded in the welcome border title. */
 	setVersion(version: string): void {
 		this.version = version;
@@ -254,18 +204,12 @@ export class WelcomeComponent implements Component {
 	}
 
 	render(termWidth: number): readonly string[] {
-		const animating = this.#animStart != null;
-		if (!animating && this.#cachedLines && this.#cachedWidth === termWidth) {
+		if (this.#cachedLines && this.#cachedWidth === termWidth) {
 			return this.#cachedLines;
 		}
 		const lines = this.#renderLines(termWidth);
-		if (animating) {
-			this.#cachedLines = undefined;
-			this.#cachedWidth = -1;
-		} else {
-			this.#cachedLines = lines;
-			this.#cachedWidth = termWidth;
-		}
+		this.#cachedLines = lines;
+		this.#cachedWidth = termWidth;
 		return lines;
 	}
 
@@ -298,7 +242,7 @@ export class WelcomeComponent implements Component {
 		const rightCol = showRightColumn ? dualRightCol : 0;
 
 		// Logo: pick a frame from the intro animation if active, else the resting frame.
-		const logoColored = this.#currentLogoFrame();
+		const logoColored = REST_FRAME;
 
 		// Left column - centered content
 		const leftLines = [
@@ -392,7 +336,7 @@ export class WelcomeComponent implements Component {
 		const lines: string[] = [];
 
 		// Top border with embedded title
-		const title = ` ${APP_NAME} v${this.version} `;
+		const title = ` ${BINARY_NAME} v${this.version} `;
 		const titlePrefixRaw = hChar.repeat(3);
 		const titleStyled = theme.fg("dim", titlePrefixRaw) + theme.fg("muted", title);
 		const titleVisLen = visibleWidth(titlePrefixRaw) + visibleWidth(title);
@@ -479,14 +423,6 @@ export class WelcomeComponent implements Component {
 		}
 		return str + padding(width - visLen);
 	}
-
-	/** Pick the logo frame for the current intro phase, or the resting frame. */
-	#currentLogoFrame(): readonly string[] {
-		if (this.#animStart == null) return REST_FRAME;
-		const elapsed = performance.now() - this.#animStart;
-		if (elapsed >= INTRO_MS) return REST_FRAME;
-		return introLogoFrame(elapsed / INTRO_MS);
-	}
 }
 
 export const PI_LOGO = ["▀██████████▀", " ╘██    ██  ", "  ██    ██  ", "  ██    ██  ", " ▄██▄  ▄██▄ "];
@@ -503,25 +439,11 @@ const GRADIENT_STOPS: ReadonlyArray<readonly [number, number, number]> = [
 /** 256-color ramp fallback when truecolor isn't available. */
 const GRADIENT_RAMP_256 = [199, 171, 135, 99, 75, 51, 87];
 
-/** Half-width of the shine highlight band, expressed in gradient-t units. */
-const SHINE_HALF_WIDTH = 0.18;
-
-export interface ShineConfig {
-	/** Overall opacity of the shine overlay, in [0, 1]. */
-	strength: number;
-	/** Center of the shine band along the diagonal, in [0, 1]. */
-	pos: number;
-}
-
 /**
  * Resolve the gradient SGR foreground escape for a normalized position `t`
- * (0..1) along the diagonal, compositing the optional sliding shine highlight.
- * Shared by {@link gradientLogo} and the setup splash so both stay
- * color-identical (truecolor when available, 256-color ramp otherwise).
+ * (0..1) along the diagonal (truecolor when available, 256-color ramp otherwise).
  */
-export function gradientEscape(t: number, shine?: ShineConfig): string {
-	const shineStrength = shine && shine.strength > 0 ? shine.strength : 0;
-	const shinePos = shine ? shine.pos : 0;
+export function gradientEscape(t: number): string {
 	if (TERMINAL.trueColor) {
 		// 5-stop palette widens the visible color range and avoids the
 		// deep-blue valley a naive HSL lerp falls into.
@@ -531,38 +453,20 @@ export function gradientEscape(t: number, shine?: ShineConfig): string {
 		const f = seg - i;
 		const a = stops[i];
 		const b = stops[i + 1];
-		let r = a[0] + (b[0] - a[0]) * f;
-		let g = a[1] + (b[1] - a[1]) * f;
-		let bl = a[2] + (b[2] - a[2]) * f;
-		if (shineStrength > 0) {
-			const dist = Math.abs(t - shinePos);
-			const intensity = Math.max(0, 1 - dist / SHINE_HALF_WIDTH) * shineStrength;
-			if (intensity > 0) {
-				r += (255 - r) * intensity;
-				g += (255 - g) * intensity;
-				bl += (255 - bl) * intensity;
-			}
-		}
+		const r = a[0] + (b[0] - a[0]) * f;
+		const g = a[1] + (b[1] - a[1]) * f;
+		const bl = a[2] + (b[2] - a[2]) * f;
 		return `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(bl)}m`;
 	}
 	const ramp = GRADIENT_RAMP_256;
-	let idx = Math.min(ramp.length - 1, Math.max(0, Math.floor(t * (ramp.length - 1) + 0.5)));
-	if (shineStrength > 0) {
-		const dist = Math.abs(t - shinePos);
-		const intensity = Math.max(0, 1 - dist / SHINE_HALF_WIDTH) * shineStrength;
-		// Promote to the brightest ramp slot when the shine band peaks here.
-		if (intensity > 0.5) idx = ramp.length - 1;
-	}
+	const idx = Math.min(ramp.length - 1, Math.max(0, Math.floor(t * (ramp.length - 1) + 0.5)));
 	return `\x1b[38;5;${ramp[idx]}m`;
 }
 
-/**
- * Apply a multi-stop diagonal gradient (bottom-left → top-right) plus an
- * optional sliding shine band across multi-line art. `phase` (0..1) shifts the
- * gradient along the diagonal, wrapping at 1. When `shine` is provided, a soft
- * white highlight is composited on top, centered at `shine.pos`.
- */
-export function gradientLogo(lines: readonly string[], phase = 0, shine?: ShineConfig): string[] {
+/** Apply a multi-stop diagonal gradient (bottom-left → top-right) across
+ * multi-line art. `phase` (0..1) shifts the gradient along the diagonal,
+ * wrapping at 1. */
+export function gradientLogo(lines: readonly string[], phase = 0): string[] {
 	const reset = "\x1b[0m";
 	const rows = lines.length;
 	const cols = Math.max(...lines.map(l => l.length));
@@ -580,38 +484,11 @@ export function gradientLogo(lines: readonly string[], phase = 0, shine?: ShineC
 			// Diagonal: bottom-left (x=0, y=rows-1) → top-right (x=cols-1, y=0)
 			const base = (x + (rows - 1 - y)) / span;
 			const t = (((base + phase) % 1) + 1) % 1;
-			result += gradientEscape(t, shine) + char + reset;
+			result += gradientEscape(t) + char + reset;
 		}
 		return result;
 	});
 }
 
-/** Total length of the intro animation. */
-const INTRO_MS = 3000;
-/** Render cadence during the intro (~30fps). */
-const INTRO_TICK_MS = 33;
-/** Number of full gradient rotations the sweep performs before settling. */
-const INTRO_SWEEPS = 2.5;
-/** Number of times the shine highlight crosses the diagonal across the intro. */
-const INTRO_SHINE_TRAVERSALS = 3;
-
-/**
- * Logo frame for a normalized intro progress in [0, 1).
- *
- * Ease-out cubic so the spin decelerates into the resting state. The gradient
- * sweeps backward through INTRO_SWEEPS full rotations (`eased == 1` → phase =
- * 0 = resting frame) while the shine traverses the diagonal at a steady pace,
- * decoupled from the gradient phase so the two layers parallax; its strength
- * fades with the same ease-out curve so the highlight is gone by the resting
- * frame.
- */
-function introLogoFrame(progress: number): string[] {
-	const eased = 1 - (1 - progress) ** 3;
-	const phase = ((((1 - eased) * INTRO_SWEEPS) % 1) + 1) % 1;
-	const shinePos = (((progress * INTRO_SHINE_TRAVERSALS) % 1) + 1) % 1;
-	const shineStrength = (1 - eased) ** 1.5;
-	return gradientLogo(PI_LOGO, phase, { strength: shineStrength, pos: shinePos });
-}
-
-/** Resting gradient frame, cached for re-renders outside of the intro. */
+/** Resting gradient frame, cached for re-renders. */
 const REST_FRAME = gradientLogo(PI_LOGO, 0);

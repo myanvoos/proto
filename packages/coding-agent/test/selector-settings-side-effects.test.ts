@@ -15,7 +15,6 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { ResolvedRoleModel } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
@@ -185,7 +184,7 @@ describe("selector setting side effects", () => {
 		});
 	}
 
-	it("clears stale default role thinking when auto is selected", async () => {
+	it("applies an explicit thinking level when assigning a default model", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");
 		setThemeInstance(testTheme);
@@ -198,12 +197,13 @@ describe("selector setting side effects", () => {
 			defaultThinkingLevel: ThinkingLevel.High,
 			modelRoles: { default: `${previousModel.provider}/${previousModel.id}:high` },
 		});
-		const setModel = vi.fn(async () => ({ switched: true }));
-		const autoApplied = Promise.withResolvers<void>();
-		const setThinkingLevel = vi.fn((level: ThinkingLevel | typeof AUTO_THINKING, persist: boolean) => {
-			if (level === AUTO_THINKING && persist) {
-				settings.set("defaultThinkingLevel", level);
-				autoApplied.resolve();
+		const setModel = vi.fn(async (_model: unknown, _role: string, _options?: Record<string, unknown>) => ({
+			switched: true,
+		}));
+		const levelApplied = Promise.withResolvers<void>();
+		const setThinkingLevel = vi.fn((level: ThinkingLevel) => {
+			if (level === ThinkingLevel.Low) {
+				levelApplied.resolve();
 			}
 		});
 		let captured: unknown;
@@ -255,28 +255,25 @@ describe("selector setting side effects", () => {
 			hub.handleInput("\n"); // Assign DEFAULT.
 			hub.handleInput("\n"); // Pick the scoped replacement model.
 
-			const levels = [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(nextModel)];
-			const highIndex = levels.indexOf(ThinkingLevel.High);
-			const autoIndex = levels.indexOf(AUTO_THINKING);
-			if (highIndex < autoIndex) throw new Error("Expected auto before high in the thinking strip");
-			for (let i = autoIndex; i < highIndex; i++) hub.handleInput("\x1b[D");
+			const levels = [ThinkingLevel.Inherit, ThinkingLevel.Off, ...getSupportedEfforts(nextModel)];
+			const lowIndex = levels.indexOf(ThinkingLevel.Low);
+			if (lowIndex < 0) throw new Error("Expected model to support low thinking");
+			// The strip preselects the role's configured level (`:high`); walk left
+			// down to the target effort, then apply it.
+			const steps = (levels.indexOf(ThinkingLevel.High) - lowIndex + levels.length) % levels.length;
+			for (let i = 0; i < steps; i++) hub.handleInput("\x1b[D");
 			hub.handleInput("\n");
-			await autoApplied.promise;
-
-			expect(setModel).toHaveBeenLastCalledWith(
-				nextModel,
-				"default",
-				expect.objectContaining({
-					thinkingLevel: ThinkingLevel.Inherit,
-					persist: true,
-				}),
-			);
-			expect(setThinkingLevel).toHaveBeenLastCalledWith(AUTO_THINKING, true);
+			await levelApplied.promise;
+			const lastCall = setModel.mock.calls.at(-1);
+			expect(lastCall?.[0]).toBe(nextModel);
+			expect(lastCall?.[1]).toBe("default");
+			expect(lastCall?.[2]).toMatchObject({ thinkingLevel: ThinkingLevel.Low, persist: true });
+			expect(setThinkingLevel).toHaveBeenLastCalledWith(ThinkingLevel.Low);
 		} finally {
 			hub.dispose();
 		}
 	});
-	it("keeps non-default auto thinking on the role without changing the active session", async () => {
+	it("keeps a concrete thinking level on the task role without changing the active session", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");
 		setThemeInstance(testTheme);
@@ -287,17 +284,18 @@ describe("selector setting side effects", () => {
 
 		const activeSelector = `${activeModel.provider}/${activeModel.id}`;
 		const taskSelector = `${taskModel.provider}/${taskModel.id}`;
+
 		const settings = Settings.isolated({
+			modelRoleStorage: "project",
 			defaultThinkingLevel: ThinkingLevel.High,
-			modelRoles: {
-				default: activeSelector,
-				task: `${taskSelector}:max`,
-			},
+			modelRoles: { default: activeSelector },
 		});
+		settings.setProjectModelRole("task", taskSelector);
+		const setModel = vi.fn(async () => ({ switched: true }));
 		const setThinkingLevel = vi.fn();
 		const assignmentApplied = Promise.withResolvers<void>();
 		const showStatus = vi.fn((message: string) => {
-			if (message.startsWith("TASK model:")) assignmentApplied.resolve();
+			if (message.includes("TASK model:")) assignmentApplied.resolve();
 		});
 		let captured: unknown;
 		const controller = new SelectorController({
@@ -327,6 +325,7 @@ describe("selector setting side effects", () => {
 				},
 				scopedModels: [{ model: activeModel }, { model: taskModel }],
 				getContextUsage: () => undefined,
+				setModel,
 				setThinkingLevel,
 			},
 			statusLine: { invalidate: vi.fn() },
@@ -347,24 +346,22 @@ describe("selector setting side effects", () => {
 			for (let i = 0; i < 8; i++) hub.handleInput("\x1b[B"); // Default → task.
 			hub.handleInput("t");
 
-			const levels = [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(taskModel)];
-			const autoIndex = levels.indexOf(AUTO_THINKING);
+			const levels = [ThinkingLevel.Inherit, ThinkingLevel.Off, ...getSupportedEfforts(taskModel)];
 			const maxIndex = levels.indexOf(ThinkingLevel.Max);
-			if (maxIndex < autoIndex) throw new Error("Expected task model to support max thinking");
-			for (let i = autoIndex; i < maxIndex; i++) hub.handleInput("\x1b[D");
+			if (maxIndex < 0) throw new Error("Expected task model to support max thinking");
+			for (let i = 0; i < maxIndex; i++) hub.handleInput("\x1b[C");
 			hub.handleInput("\n");
 			await assignmentApplied.promise;
 
-			expect(settings.getModelRole("task")).toBe(`${taskSelector}:auto`);
+			expect(settings.getModelRole("task")).toBe(`${taskSelector}:max`);
 			expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.High);
 			expect(setThinkingLevel).not.toHaveBeenCalled();
 			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
 			const defaultRow = lines.find(line => line.includes("DEFAULT"));
 			const taskRow = lines.find(line => line.includes("TASK"));
 			expect(defaultRow).toContain("high");
-			expect(defaultRow).not.toContain("auto");
-			expect(taskRow).toContain("auto");
-			expect(taskRow).not.toContain("max");
+			expect(taskRow).toContain("max");
+			expect(taskRow).not.toContain("inherit");
 		} finally {
 			hub.dispose();
 		}
@@ -767,16 +764,9 @@ describe("selector setting side effects", () => {
 
 			const setModel = vi.fn(async () => ({ switched: true }));
 			const projectAssignmentApplied = Promise.withResolvers<void>();
-			const autoApplied = Promise.withResolvers<void>();
 			const globalAssignmentApplied = Promise.withResolvers<void>();
 			const showStatus = vi.fn((message: string) => {
 				if (message.startsWith("Project default model:")) projectAssignmentApplied.resolve();
-				if (
-					message.startsWith("Project default model:") &&
-					settings.get("defaultThinkingLevel") === AUTO_THINKING
-				) {
-					autoApplied.resolve();
-				}
 				if (message.startsWith("Global default model:")) globalAssignmentApplied.resolve();
 			});
 			let captured: unknown;
@@ -829,11 +819,7 @@ describe("selector setting side effects", () => {
 				hub.handleInput("\n"); // Pick the project model.
 				hub.handleInput("\n"); // Save to project scope.
 				await projectAssignmentApplied.promise;
-				hub.handleInput("\x1b[C"); // Inherit → off.
-				hub.handleInput("\x1b[C"); // Off → auto.
-				hub.handleInput("\n");
-				await autoApplied.promise;
-				expect(settings.get("defaultThinkingLevel")).toBe(AUTO_THINKING);
+				hub.handleInput("\n"); // Apply the current (inherit) selection — nothing persists.
 				await settings.flush();
 
 				expect(settings.getProjectModelRole("default")).toBe(projectSelector);
@@ -1654,90 +1640,6 @@ describe("selector setting side effects", () => {
 			}
 		} finally {
 			if (fs.existsSync(testDir)) removeSyncWithRetries(testDir);
-		}
-	});
-
-	it("re-enables auto thinking from defaultThinkingLevel when the global default has no explicit thinking", async () => {
-		const testTheme = await getThemeByName("dark");
-		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");
-		setThemeInstance(testTheme);
-
-		const projectModel = getBundledModel("openai", "gpt-5.5");
-		const globalModel = getBundledModel("openai", "gpt-5.6");
-		if (!projectModel || !globalModel) throw new Error("Expected bundled OpenAI models for selector test");
-
-		const projectSelector = `${projectModel.provider}/${projectModel.id}`;
-		const globalSelector = `${globalModel.provider}/${globalModel.id}`;
-		const settings = Settings.isolated({ modelRoleStorage: "project", defaultThinkingLevel: AUTO_THINKING });
-		settings.setProjectModelRole("default", projectSelector);
-		settings.setModelRole("default", globalSelector);
-
-		const setModel = vi.fn(async () => ({ switched: true }));
-		const setThinkingLevel = vi.fn((level: unknown, persist?: boolean) => {
-			if (level === AUTO_THINKING && persist) {
-				settings.set("defaultThinkingLevel", AUTO_THINKING);
-			}
-		});
-		const roleCleared = Promise.withResolvers<void>();
-		const showStatus = vi.fn((message: string) => {
-			if (message.includes("role cleared")) roleCleared.resolve();
-		});
-		let captured: unknown;
-		const controller = new SelectorController({
-			ui: {
-				requestRender: vi.fn(),
-				setFocus: vi.fn(),
-				showOverlay: vi.fn((component: unknown) => {
-					captured = component;
-					return { hide: vi.fn() };
-				}),
-				terminal: { rows: 40 },
-			},
-			editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
-			editor: {},
-			settings,
-			session: {
-				model: projectModel,
-				modelRegistry: {
-					getAll: () => [projectModel, globalModel],
-					getAvailable: () => [projectModel, globalModel],
-					getError: () => undefined,
-					refresh: async () => {},
-					refreshProvider: async () => {},
-					getDiscoverableProviders: () => [],
-					getProviderDiscoveryState: () => undefined,
-					authStorage: { hasAuth: () => false },
-				},
-				scopedModels: [{ model: projectModel }, { model: globalModel }],
-				getContextUsage: () => undefined,
-				setModel,
-				setThinkingLevel,
-			},
-			statusLine: { invalidate: vi.fn() },
-			updateEditorBorderColor: vi.fn(),
-			keybindings: { getKeys: () => [] },
-			showStatus,
-			showError: vi.fn(),
-		} as unknown as InteractiveModeContext);
-
-		controller.showModelSelector();
-		const hub = captured as { handleInput(data: string): void; dispose(): void } | undefined;
-		if (!hub) throw new Error("Expected model hub overlay to be shown");
-		try {
-			hub.handleInput("\x1b[A");
-			hub.handleInput("\n");
-			hub.handleInput("\x7f");
-			await roleCleared.promise;
-			await Promise.resolve();
-
-			expect(setModel).toHaveBeenCalledWith(
-				globalModel,
-				"default",
-				expect.objectContaining({ persist: false, thinkingLevel: ThinkingLevel.Inherit }),
-			);
-			expect(setThinkingLevel).toHaveBeenCalledWith(AUTO_THINKING, true);
-		} finally {
-			hub.dispose();
 		}
 	});
 

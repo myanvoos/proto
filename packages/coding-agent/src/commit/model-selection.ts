@@ -11,7 +11,6 @@ import {
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
-import { concreteThinkingLevel } from "../thinking";
 
 export interface ResolvedCommitModel {
 	model: Model<Api>;
@@ -55,7 +54,7 @@ export async function resolvePrimaryModel(
 	return {
 		model,
 		apiKey: modelRegistry.resolver(model),
-		thinkingLevel: concreteThinkingLevel(resolved?.thinkingLevel),
+		thinkingLevel: resolved?.thinkingLevel,
 	};
 }
 
@@ -73,7 +72,7 @@ export async function resolveSmolModel(
 			return {
 				model: resolvedSmol.model,
 				apiKey: modelRegistry.resolver(resolvedSmol.model),
-				thinkingLevel: concreteThinkingLevel(resolvedSmol.thinkingLevel),
+				thinkingLevel: resolvedSmol.thinkingLevel,
 			};
 		}
 	}

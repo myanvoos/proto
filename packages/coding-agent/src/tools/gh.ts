@@ -1,11 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import {
 	BINARY_SNIFF_BYTES,
 	formatBytes,
@@ -50,17 +44,6 @@ export {
 	type PrViewLookupOptions,
 	type ViewLookupResult,
 } from "./gh-view";
-
-const GITHUB_READONLY_OPS: ReadonlySet<string> = new Set([
-	"repo_view",
-	"file_read",
-	"search_issues",
-	"search_prs",
-	"search_code",
-	"search_commits",
-	"search_repos",
-	"run_watch",
-]);
 
 const githubSchema = type({
 	op: type(
@@ -193,11 +176,6 @@ export interface GhRunWatchViewDetails {
 
 export class GithubTool implements AgentTool<typeof githubSchema, GhToolDetails> {
 	readonly name = "github";
-	readonly approval = (args: unknown): ToolApprovalDecision => {
-		const rawOp = (args as Partial<GithubInput>).op;
-		const op = typeof rawOp === "string" ? rawOp : "";
-		return GITHUB_READONLY_OPS.has(op) ? "read" : "exec";
-	};
 	readonly summary = "Interact with GitHub repositories, files, pull requests, and Actions";
 	readonly loadMode = "discoverable";
 	readonly label = "GitHub";

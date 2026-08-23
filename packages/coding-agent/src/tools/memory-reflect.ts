@@ -14,7 +14,6 @@ export type MemoryReflectParams = typeof memoryReflectSchema.infer;
 
 export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> {
 	readonly name = "reflect";
-	readonly approval = "read" as const;
 	readonly label = "Reflect";
 	readonly description = reflectDescription;
 	readonly parameters = memoryReflectSchema;

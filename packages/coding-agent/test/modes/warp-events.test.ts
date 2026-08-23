@@ -12,7 +12,6 @@ import type {
 	SessionBranchEvent,
 	SessionStartEvent,
 	SessionSwitchEvent,
-	ToolApprovalRequestedEvent,
 } from "../../src/extensibility/extensions/types";
 import { createWarpEventBridgeExtension, createWarpEventEmitter } from "../../src/modes/warp-events";
 import { SILENT_ABORT_MARKER, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../src/session/messages";
@@ -134,14 +133,8 @@ describe("Warp CLI-agent events", () => {
 		expect(written.endsWith("\x1b\\\x07")).toBe(true);
 	});
 
-	const attentionEvents = ["stop", "stop_failure", "permission_request", "question_asked"] as const;
-	const nonAttentionEvents = [
-		"session_start",
-		"prompt_submit",
-		"tool_complete",
-		"permission_replied",
-		"custom_event",
-	] as const;
+	const attentionEvents = ["stop", "stop_failure", "question_asked"] as const;
+	const nonAttentionEvents = ["session_start", "prompt_submit", "tool_complete", "custom_event"] as const;
 
 	for (const eventName of attentionEvents) {
 		it(`rings tmux outer BEL for attention event ${eventName}`, () => {
@@ -750,45 +743,5 @@ describe("Warp CLI-agent events", () => {
 			}),
 		]);
 		expect(bodies[1]).not.toHaveProperty("query");
-	});
-
-	it("maps approval requests to Warp permission requests", () => {
-		enableWarpProtocol();
-		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-		vi.spyOn(terminalCapabilities, "isInsideTmux").mockReturnValue(false);
-		const handlers = createHandlers();
-		const sessionStart = handlers.get("session_start") as never as (
-			event: SessionStartEvent,
-			context: ExtensionContext,
-		) => void;
-		sessionStart({ type: "session_start" }, bridgeContext());
-		write.mockClear();
-
-		const approvalRequested = handlers.get("tool_approval_requested") as never as (
-			event: ToolApprovalRequestedEvent,
-		) => void;
-		approvalRequested({
-			type: "tool_approval_requested",
-			sessionId: "session-123",
-			toolCallId: "tool-call-123",
-			toolName: "bash",
-			approvalMode: "always-ask",
-		});
-
-		const osc = write.mock.calls[0]?.[0] as string;
-		expect(osc.startsWith(OSC_PREFIX)).toBe(true);
-		expect(osc.endsWith("\x07")).toBe(true);
-		const body = JSON.parse(osc.slice(OSC_PREFIX.length, osc.length - 1));
-		expect(body).toEqual({
-			event: "permission_request",
-			tool_name: "bash",
-			summary: "omp wants to run bash",
-			v: 1,
-			agent: "omp",
-			session_id: "session-123",
-			cwd: process.cwd(),
-			project,
-			plugin_version: VERSION,
-		});
 	});
 });

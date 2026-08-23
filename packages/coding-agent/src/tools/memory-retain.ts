@@ -16,7 +16,6 @@ const memoryRetainSchema = type({
 export type MemoryRetainParams = typeof memoryRetainSchema.infer;
 export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 	readonly name = "retain";
-	readonly approval = "read" as const;
 	readonly label = "Retain";
 	readonly description = retainDescription;
 	readonly parameters = memoryRetainSchema;

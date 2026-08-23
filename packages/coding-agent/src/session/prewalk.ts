@@ -10,7 +10,7 @@ import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with 
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
-import { type ConfiguredThinkingLevel, prewalkWouldBeNoop } from "../thinking";
+import { prewalkWouldBeNoop, type ThinkingLevel } from "../thinking";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { PlanProposalHandler } from "../tools/resolve";
 import { ToolError } from "../tools/tool-errors";
@@ -33,24 +33,16 @@ const PLAN_YOLO_HANDOFF_MESSAGE_TYPE = "plan-yolo-handoff";
 
 /**
  * Whether a completed tool result is the first workspace-mutating action that
- * arms the prewalk hand-off. A direct `edit`/`write` call always counts; a
- * `write` that dispatched an `xd://` device (e.g. `lsp`, `ast_edit`, `debug`)
- * counts only when the wrapped tool resolved to a `write`/`exec` approval tier.
- * Read-only device calls — LSP navigation, `debug` inspection, `ast_edit` on
- * internal URLs, help lookups — leave the tier `read` (or absent) and must not
- * switch the model mid-investigation (issue #7312).
+ * arms the prewalk hand-off. Only direct `edit`/`write` calls count; `write`
+ * dispatches into an `xd://` device are treated as investigation and leave the
+ * prewalk armed, since dispatches carry no mutation-tier signal anymore.
  */
 function isPrewalkImplementationAction(result: ToolResultMessage): boolean {
 	if (!PREWALK_ACTION_TOOLS[result.toolName]) return false;
 	const details = result.details;
 	// A direct filesystem edit/write carries no `xd://` dispatch metadata.
-	if (!details || typeof details !== "object" || !("xdev" in details) || !details.xdev) return true;
-	const xdev = details.xdev;
-	// Device dispatch: switch only on a genuine mutation tier. An absent tier
-	// (help lookup, unresolved approval) declines the switch, matching the
-	// reporter's "stay on the large model a couple turns longer" preference.
-	if (typeof xdev !== "object" || !("tier" in xdev)) return false;
-	return xdev.tier === "write" || xdev.tier === "exec";
+	if (!details || typeof details !== "object") return true;
+	return !("xdev" in details);
 }
 
 /** Capabilities the prewalk coordinator borrows from its owning session. */
@@ -58,13 +50,9 @@ export interface PrewalkCoordinatorHost {
 	agent: Agent;
 	sessionManager: SessionManager;
 	model(): Model | undefined;
-	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
+	configuredThinkingLevel(): ThinkingLevel | undefined;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
-	setModelTemporary(
-		model: Model,
-		thinkingLevel?: ConfiguredThinkingLevel,
-		options?: { ephemeral?: boolean },
-	): Promise<void>;
+	setModelTemporary(model: Model, thinkingLevel?: ThinkingLevel, options?: { ephemeral?: boolean }): Promise<void>;
 	setActiveToolsByName(names: string[]): Promise<void>;
 	setActiveToolPresentation(toolNames: string[], mountedToolNames: string[]): Promise<void>;
 	runToolRegistryMutation<T>(mutation: () => Promise<T>): Promise<T>;
@@ -209,7 +197,7 @@ export class PrewalkCoordinator {
 	}
 
 	/** Arms a prewalk immediately for an explicit slash-command request. */
-	arm(target: Model, thinkingLevel?: ConfiguredThinkingLevel): boolean {
+	arm(target: Model, thinkingLevel?: ThinkingLevel): boolean {
 		const active = this.#prewalk;
 		if (active) {
 			this.#host.emitNotice(

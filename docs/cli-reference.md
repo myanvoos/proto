@@ -224,12 +224,10 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `gallery` | Preview tool renderers across streaming, in-progress, success, and failure states. | |
 | `grievances` | View, clean, or push reported tool issues (auto-QA grievances). | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |
-| `join` | Join a shared collab session (same as `/join`). | [collab](./collab.md) |
 | `models` | List, search, and refresh available models. | [models](./models.md) |
 | `plugin` | Manage plugins (install, uninstall, list, etc.). | [extensions](./extensions.md), [marketplace](./marketplace.md) |
 | `ps` | List and control daemon-supervised background processes (logs, stop, kill, restart). | |
 | `say` | Synthesize text with the local TTS engine and play it through the speakers. | [tts tool](./tools/tts.md) |
-| `share` | Share a saved session via an encrypted link (same as the `/share` slash command). | [session operations](./session-operations-export-share-fork-resume.md) |
 | `setup` | Run onboarding setup or install dependencies for optional features. | |
 | `shell` | Interactive shell console. | |
 | `read` | Show what the read tool will return for a path, URL, or internal URI. (The [`read` tool](./tools/read.md) is a separate agent tool.) | |
@@ -243,7 +241,7 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `worktree`, `wt` | List or clear agent-managed git worktrees (`~/.omp/wt`). | |
 | `search`, `q` | Test web search providers from the CLI. | [web_search tool](./tools/web_search.md) |
 
-> `install`, `join`, `browser-relay`, `auth-gateway`, and `tiny-models` are also
-> reachable through related mechanisms (the `plugin` command, the `/join` slash
-> command, and so on). The table lists each as it is registered in
+> `install`, `browser-relay`, `auth-gateway`, and `tiny-models` are also
+> reachable through related mechanisms (the `plugin` command and so on).
+> The table lists each as it is registered in
 > `packages/coding-agent/src/cli-commands.ts`.

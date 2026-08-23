@@ -37,7 +37,6 @@ export type ManageSkillParams = typeof manageSkillSchema.infer;
  */
 export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 	readonly name = "manage_skill";
-	readonly approval = "write" as const;
 	readonly label = "Manage Skill";
 	readonly description = manageSkillDescription;
 	readonly parameters = manageSkillSchema;

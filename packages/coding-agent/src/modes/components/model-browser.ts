@@ -26,7 +26,7 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/mo
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import type { ModelPerfStats } from "../../session/agent-storage";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../../thinking";
+import { parseThinkingLevel } from "../../thinking";
 import { type ThemeColor, theme } from "../theme/theme";
 import {
 	matchesSelectCancel,
@@ -49,7 +49,7 @@ export interface ModelBrowserItem {
 /** Resolved role assignment as displayed by the browser and the hub. */
 export interface RoleAssignment {
 	model: Model;
-	thinkingLevel: ConfiguredThinkingLevel;
+	thinkingLevel: ThinkingLevel;
 	/** True when the role has no configured value and fell back to auto-selection. */
 	autoSelected: boolean;
 }
@@ -70,13 +70,13 @@ export function resolveRoleAssignments(
 ): RoleAssignments {
 	const resolvedThinkingLevel = (
 		role: string,
-		resolved: { explicitThinkingLevel: boolean; thinkingLevel?: ConfiguredThinkingLevel },
-	): ConfiguredThinkingLevel => {
+		resolved: { explicitThinkingLevel: boolean; thinkingLevel?: ThinkingLevel },
+	): ThinkingLevel => {
 		if (resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined) {
 			return resolved.thinkingLevel;
 		}
 		if (role === "default") {
-			return parseConfiguredThinkingLevel(settings.get("defaultThinkingLevel")) ?? ThinkingLevel.Inherit;
+			return parseThinkingLevel(settings.get("defaultThinkingLevel")) ?? ThinkingLevel.Inherit;
 		}
 		return ThinkingLevel.Inherit;
 	};
@@ -229,11 +229,9 @@ export function sortModelItems(items: ModelBrowserItem[], options: SortModelItem
 }
 
 /** Compact glyph for a configured thinking level; empty for `inherit` (nothing to show). */
-export function thinkingLevelGlyph(level: ConfiguredThinkingLevel): string {
+export function thinkingLevelGlyph(level: ThinkingLevel): string {
 	const glyphOf = (symbol: string) => symbol.split(" ")[0] ?? symbol;
 	switch (level) {
-		case AUTO_THINKING:
-			return glyphOf(theme.thinking.autoPending);
 		case ThinkingLevel.Off:
 			return theme.status.disabled;
 		case ThinkingLevel.Minimal:

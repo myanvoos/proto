@@ -284,19 +284,6 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		expect(state.messageCount).toBe(0);
 	}, 90000);
 
-	test("should export to HTML", async () => {
-		await client.start();
-
-		// Send a prompt first
-		await client.promptAndWait("Hello");
-
-		// Export
-		const result = await client.exportHtml();
-		expect(result.path).toBeDefined();
-		expect(result.path.endsWith(".html")).toBe(true);
-		expect(fs.existsSync(result.path)).toBe(true);
-	}, 90000);
-
 	test("should get last assistant text", async () => {
 		await client.start();
 

@@ -2,13 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { splitAddressableFileLines } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolTier,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import {
 	BINARY_SNIFF_BYTES,
@@ -72,7 +66,6 @@ import {
 	expandPath,
 	formatPathRelativeToCwd,
 	type LineRange,
-	pathTargetsSsh,
 	probeLiteralPathExists,
 	resolveReadPath,
 	splitDelimitedPathEntry,
@@ -615,13 +608,6 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
  */
 export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly name = "read";
-	readonly approval = (args: unknown): ToolTier => {
-		let readPath = "";
-		if (args && typeof args === "object" && "path" in args) readPath = String(args.path ?? "");
-		if (pathTargetsSsh(readPath)) return "exec";
-		const target = splitPathAndSel(readPath);
-		return target.sel === undefined && splitPdfImageReadPath(readPath) ? "exec" : "read";
-	};
 	readonly label = "Read";
 	readonly loadMode = "essential";
 	description: string;

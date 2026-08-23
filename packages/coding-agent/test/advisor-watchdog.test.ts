@@ -69,16 +69,13 @@ describe("advisor watchdog prompt discovery", () => {
 				enableLsp: false,
 			});
 			session = result.session;
+			const prompt = session.agent.state.systemPrompt.join("\n\n");
 
 			expect(session.isAdvisorActive()).toBe(true);
-			const dump = session.formatAdvisorHistoryAsText();
-			expect(dump).not.toBeNull();
-			expect(dump).toContain("Especially pay attention to:");
-			expect(dump).toContain("<attention>");
-			expect(dump).toContain(watchdogContent);
-			expect(dump).toContain(activeRepoMarker);
-			expect(dump!.indexOf(watchdogContent)).toBeLessThan(dump!.indexOf(activeRepoMarker));
-			expect(dump).toContain("</attention>");
+			expect(prompt).toContain(watchdogContent);
+			expect(prompt).toContain(activeRepoMarker);
+			expect(prompt.indexOf(watchdogContent)).toBeLessThan(prompt.indexOf(activeRepoMarker));
+			expect(prompt).toContain("</attention>");
 		} finally {
 			try {
 				await session?.dispose();

@@ -271,7 +271,6 @@ function legacyBuiltinTool(cwd: string, name: LegacyCodingToolName): ToolDefinit
 		parameters: tool.parameters,
 		hidden: tool.hidden,
 		deferrable: tool.deferrable,
-		approval: tool.approval,
 		execute: (toolCallId, params, signal, onUpdate) =>
 			executeBuiltinTool(cwd, name, toolCallId, params, signal, onUpdate),
 		[LEGACY_BUILTIN_TOOL_MARKER]: true,
@@ -465,7 +464,6 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 		label: "Read",
 		description: tool.description,
 		parameters: legacyReadSchema,
-		approval: "read",
 		renderCall: (params, options, themeArg) => {
 			const theme = renderTheme(options, themeArg);
 			const readPath = stringField(params, "path") ?? "";
@@ -493,7 +491,6 @@ export function createBashToolDefinition(cwd: string, options?: BashToolOptions)
 		label: "Bash",
 		description: tool.description,
 		parameters: legacyBashSchema,
-		approval: "exec",
 		renderCall: (params, optionsArg, themeArg) => {
 			const theme = renderTheme(optionsArg, themeArg);
 			const command = stringField(params, "command") ?? "";
@@ -550,7 +547,6 @@ export function createGrepToolDefinition(cwd: string, options?: GrepToolOptions)
 		label: "grep",
 		description: "Search file contents for a pattern.",
 		parameters: legacyGrepSchema,
-		approval: "read",
 		renderCall: (params, optionsArg, themeArg) => {
 			const theme = renderTheme(optionsArg, themeArg);
 			const pattern = stringField(params, "pattern") ?? "";
@@ -600,7 +596,6 @@ export function createFindToolDefinition(cwd: string, options?: FindToolOptions)
 		label: "find",
 		description: "Find files by glob pattern.",
 		parameters: legacyFindSchema,
-		approval: "read",
 		renderCall: (params, optionsArg, themeArg) => {
 			const theme = renderTheme(optionsArg, themeArg);
 			const pattern = stringField(params, "pattern") ?? "";
@@ -655,7 +650,6 @@ export function createLsToolDefinition(cwd: string, options?: LsToolOptions): To
 		label: "ls",
 		description: "List directory entries.",
 		parameters: legacyLsSchema,
-		approval: "read",
 		renderCall: (params, optionsArg, themeArg) => {
 			const theme = renderTheme(optionsArg, themeArg);
 			return new Text(`${themedTitle(theme, "ls")} ${themedMuted(theme, stringField(params, "path") ?? ".")}`, 0, 0);

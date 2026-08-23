@@ -1,11 +1,5 @@
 import { type Type, type } from "@oh-my-pi/omptype";
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolApprovalDecision,
-} from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { isClaudeModelId } from "@oh-my-pi/pi-catalog/identity";
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
@@ -13,7 +7,6 @@ import { once, prompt } from "@oh-my-pi/pi-utils";
 import { callSessionTool } from "../eval/js/tool-bridge";
 import computerDescription from "../prompts/tools/computer.md" with { type: "text" };
 import { enforceInlineByteCap } from "../session/streaming-output";
-import { truncateForPrompt } from "./approval";
 import type { ComputerScreenshot, ComputerSessionSnapshot } from "./computer/protocol";
 import { type ComputerController, ComputerSupervisor, registerComputerController } from "./computer/supervisor";
 import type { ToolSession } from "./index";
@@ -74,12 +67,6 @@ export interface ComputerToolDetails {
 
 /** Creates the session-scoped controller used by the computer tool. */
 export type ComputerControllerFactory = (session: ToolSession) => ComputerController;
-/** Maps inspection-only runs to read approval and all other runs to execution approval. */
-export function computerApproval(args: unknown): ToolApprovalDecision {
-	if (args === null || typeof args !== "object" || !("read_only" in args)) return "exec";
-	return args.read_only === true ? "read" : "exec";
-}
-
 /** Executes persistent desktop JavaScript through one lazy worker session. */
 export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";
@@ -88,15 +75,6 @@ export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetai
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Control the host desktop with persistent JavaScript and OS accessibility APIs";
 	readonly strict = false;
-	readonly approval = computerApproval;
-	readonly formatApprovalDetails = (args: unknown): string[] => {
-		if (args === null || typeof args !== "object") return [""];
-		const code = "code" in args && typeof args.code === "string" ? args.code : "";
-		return [
-			...("read_only" in args && args.read_only === true ? ["read-only"] : []),
-			...truncateForPrompt(code, 2_000).split("\n"),
-		];
-	};
 
 	readonly #controller: ComputerController;
 	readonly #unregisterOwner: () => void;

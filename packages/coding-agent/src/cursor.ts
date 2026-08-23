@@ -30,8 +30,6 @@ import {
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { cursorMcpPrefersReplaceEdit, normalizeCursorReplaceArgs } from "./cursor-bridge-tools";
 import type { MCPResourceReadResult } from "./mcp/types";
-import type { ApprovalMode } from "./tools/approval";
-import { resolveApproval } from "./tools/approval";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
 import type { TodoPhase, TodoStatus } from "./tools/todo";
 
@@ -290,47 +288,12 @@ async function executeTool(
 	return createToolResultMessage(toolCallId, toolName, result, isError);
 }
 
-/**
- * Resolve the user's policy for a frame that mutates the filesystem directly.
- *
- * The native `delete` and `read_mcp_resource` download frames both bypass the
- * registry, so no approval wrapper sits in front of them. `write` is the tier
- * a file creation or removal belongs to. Returns `null` when the call may
- * proceed, or the refusal text to answer with.
- */
-function refuseByWritePolicy(options: CursorExecBridgeOptions, toolName: string, pathArg: string): string | null {
-	const context = options.getToolContext?.();
-	const settings = context?.settings;
-	const approvalMode: ApprovalMode =
-		context?.autoApprove === true ? "yolo" : (settings?.get("tools.approvalMode") ?? "yolo");
-	const approval = resolveApproval(
-		{ name: toolName, approval: "write" },
-		{ path: pathArg },
-		approvalMode,
-		(settings?.get("tools.approval") ?? {}) as Record<string, unknown>,
-	);
-	if (approval.policy === "allow") return null;
-	return approval.policy === "deny"
-		? `Tool "${toolName}" is blocked by user policy.`
-		: `Tool "${toolName}" requires approval, which this channel cannot request.`;
-}
-
 async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, toolCallId: string) {
 	const toolName = "delete";
 
 	if (options.allowDirectFileMutation === false) {
 		const result = buildToolErrorResult(`Tool "${toolName}" not available`);
 		return createToolResultMessage(toolCallId, toolName, result, true);
-	}
-
-	// Unlike every other frame, this one mutates the filesystem directly instead
-	// of running a registry tool, so no approval wrapper sits in front of it.
-	// `allowDirectFileMutation` answers "was a mutating tool granted", which is a
-	// different question from "does the user's policy allow this call" — without
-	// this, a configured `deny` or an `always-ask` session still lost the file.
-	const refusal = refuseByWritePolicy(options, toolName, pathArg);
-	if (refusal) {
-		return createToolResultMessage(toolCallId, toolName, buildToolErrorResult(refusal), true);
 	}
 
 	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName, args: { path: pathArg } });
@@ -787,8 +750,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			if (this.options.allowDirectFileMutation === false) {
 				throw new Error('Tool "write" not available: this session cannot download resources to disk.');
 			}
-			const refusal = refuseByWritePolicy(this.options, "write", downloadPath);
-			if (refusal) throw new Error(refusal);
 		}
 		const mcp = this.options.mcpResources;
 		if (!mcp) return null;
@@ -945,34 +906,5 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 		const toolResultMessage = await executeTool(this.options, toolName, toolCallId, args);
 		return toolResultMessage;
-	}
-
-	/**
-	 * Resolve an MCP call's approval without running it.
-	 *
-	 * Same resolution the wrapper applies at execution time, minus the
-	 * execution: an unknown tool is not approvable, and a `prompt` is not an
-	 * approval — the frame has no way to carry an interactive question, and the
-	 * user is asked for real when the call itself arrives.
-	 */
-	async mcpApprovalPreflight(call: CursorMcpCall) {
-		const toolName = call.toolName || call.name;
-		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
-		const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
-		const tool = preferReplace
-			? this.options.getEditReplaceTool?.()
-			: (this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName));
-		if (!tool) return false;
-		const context = this.options.getToolContext?.();
-		const settings = context?.settings;
-		const approvalMode: ApprovalMode =
-			context?.autoApprove === true ? "yolo" : (settings?.get("tools.approvalMode") ?? "yolo");
-		const approval = resolveApproval(
-			tool,
-			preferReplace ? normalizeCursorReplaceArgs(args) : args,
-			approvalMode,
-			(settings?.get("tools.approval") ?? {}) as Record<string, unknown>,
-		);
-		return approval.policy === "allow";
 	}
 }

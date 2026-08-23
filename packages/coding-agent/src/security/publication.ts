@@ -259,7 +259,6 @@ export function createSecurityPublicationTool(
 		label: "Publish Security Scan",
 		description: securityPublishDescription.trim(),
 		parameters: securityPublishSchema,
-		approval: "write",
 		strict: true,
 		async execute(_toolCallId, params) {
 			if (published) throw new Error(`Security scan ${options.scanId} has already been published`);

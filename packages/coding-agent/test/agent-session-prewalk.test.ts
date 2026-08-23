@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import { Agent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type Api, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -14,7 +14,6 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import type { TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -438,69 +437,6 @@ describe("AgentSession prewalk", () => {
 		expect(session.model?.id).toBe(primary.id);
 	});
 
-	it("switches on a write-tier xd:// device dispatched through write (issue #7312)", async () => {
-		const primary = modelOrThrow("claude-sonnet-4-5");
-		const target = modelOrThrow("claude-sonnet-4-6");
-
-		// An lsp rename is a write-tier device call — it must arm the hand-off
-		// just like a direct edit/write: the write turn stays on the strong model,
-		// the next turn runs on the target.
-		const writeDeviceWrite: AgentTool<
-			typeof writeToolSchema,
-			{ xdev: { tool: string; mode: string; tier: string } }
-		> = {
-			name: "write",
-			label: "Write",
-			description: "Dispatch a write-tier device",
-			parameters: writeToolSchema,
-			async execute() {
-				return {
-					content: [{ type: "text", text: "renamed" }],
-					details: { xdev: { tool: "lsp", mode: "execute", tier: "write" } },
-				};
-			},
-		};
-		const mock = createMockModel({
-			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],
-		});
-		const requested: string[] = [];
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: {
-				model: primary,
-				systemPrompt: ["Test"],
-				tools: [recordTool as AgentTool, writeDeviceWrite as AgentTool],
-				messages: [],
-				thinkingLevel: Effort.Medium,
-			},
-			convertToLlm,
-			streamFn: (model, context, options) => {
-				requested.push(`${model.provider}/${model.id}`);
-				return mock.stream(model, context, options);
-			},
-		});
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
-			modelRegistry,
-			toolRegistry: new Map([
-				[recordTool.name, recordTool as AgentTool],
-				[writeDeviceWrite.name, writeDeviceWrite as AgentTool],
-			]),
-			prewalk: { target },
-		});
-
-		await session.prompt("rename the symbol");
-
-		expect(requested).toEqual([
-			`${primary.provider}/${primary.id}`,
-			`${primary.provider}/${primary.id}`,
-			`${target.provider}/${target.id}`,
-		]);
-		expect(session.model?.id).toBe(target.id);
-	});
-
 	it("re-arms continuation after tool progress between prose turns", async () => {
 		// Regression: a normal prewalk can split planning across several turns:
 		// prose plan, todo init, then prose before implementation. Each tool
@@ -738,7 +674,6 @@ describe("AgentSession prewalk", () => {
 			session,
 			sessionManager,
 			settings,
-			collabGuest: false,
 			showStatus,
 			editor: { setText: vi.fn() },
 			refreshSlashCommandState: vi.fn(),
@@ -940,50 +875,5 @@ describe("AgentSession prewalk", () => {
 
 		expect(session.thinkingLevel).toBe(Effort.High);
 		expect(notices.some(message => message.includes("nothing to switch"))).toBe(true);
-	});
-
-	it("switches when a same-model target clears auto mode even though efforts both resolve to undefined", async () => {
-		// Review edge case: session in `auto`, same-model prewalk target `:inherit`.
-		// Both selectors resolve to an `undefined` effort, but `:inherit` clears
-		// per-turn classification, so this is a real change and must switch — not
-		// collapse to a no-op.
-		const model = modelOrThrow("claude-sonnet-4-5");
-
-		const mock = createMockModel({
-			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],
-		});
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [recordTool as AgentTool, writeTool as AgentTool],
-				messages: [],
-				thinkingLevel: Effort.Medium,
-			},
-			convertToLlm,
-			streamFn: (streamModel, _context, options) => mock.stream(streamModel, _context, options),
-		});
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
-			modelRegistry,
-			toolRegistry,
-			thinkingLevel: AUTO_THINKING,
-			prewalk: { target: model, thinkingLevel: ThinkingLevel.Inherit },
-		});
-		const notices: string[] = [];
-		session.subscribe(event => {
-			if (event.type === "notice" && event.source === "prewalk") notices.push(event.message);
-		});
-
-		expect(session.isAutoThinking).toBe(true);
-
-		await session.prompt("do the task");
-
-		// The hand-off clears automatic thinking.
-		expect(session.isAutoThinking).toBe(false);
-		expect(notices.some(message => message.includes("nothing to switch"))).toBe(false);
 	});
 });

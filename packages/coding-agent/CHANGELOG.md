@@ -80,6 +80,16 @@
 - Fixed MCP request timeouts surfacing as `Unexpected end of JSON input` instead of `Request timeout after Nms` when the abort lands mid-JSON-body read.
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
 
+### Removed
+
+- Removed the big TUI hero animations: the animated welcome intro (gradient/shine sweep on the startup logo), the full-screen animated startup/setup splash (water/starfield scene and the `startup.showSplash` setting), and the Codex reset fireworks overlay (and its `tui.codexResetFireworks` setting). Startup now renders the static gradient logo and the setup wizard opens directly on the first scene; the setup outro is a static frame. Small indicators (spinners, thinking pulse, editor shimmer) are unchanged.
+- Removed /share, `omp share`, /export, and `--export` along with their HTML template/tool-view bundle, custom-share hook, `share.*` settings, and the `export_html` RPC method.
+
+- Removed `/dump` and its clipboard/sidecar plumbing (`formatSessionAsText`, `dumpLlmRequestToTmpDir`); `/advisor dump` remains.
+
+- Removed `/advisor dump [raw]` and the now-unused verbose session-dump formatter (`session-dump-format`).
+- Removed the `auto` thinking level and its per-prompt difficulty classifier: `defaultThinkingLevel` no longer accepts `"auto"`, the `providers.autoThinkingModel`/`providers.autoThinkingMaxEffort` settings, the `--thinking auto` CLI value, the `:auto` model-selector suffix, and the `/thinking auto` cycle stop are gone. Configure a concrete level (`off`, `minimal`..`max`) instead; persisted configs that still say `auto` fall back to `high`.
+
 ## [18.0.0] - 2026-08-22
 
 ### Added

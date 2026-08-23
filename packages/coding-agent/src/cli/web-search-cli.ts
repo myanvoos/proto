@@ -4,7 +4,7 @@
  * Handles `omp q`/`omp web-search` subcommands for testing web search providers.
  */
 
-import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { Settings } from "../config/settings";
@@ -114,11 +114,11 @@ export async function runSearchCommand(cmd: SearchCommandArgs): Promise<void> {
 }
 
 export function printSearchHelp(): void {
-	process.stdout.write(`${chalk.bold(`${APP_NAME} q`)} - Test web search providers
+	process.stdout.write(`${chalk.bold(`${BINARY_NAME} q`)} - Test web search providers
 
 ${chalk.bold("Usage:")}
-  ${APP_NAME} q [options] <query>
-  ${APP_NAME} web-search [options] <query>
+  ${BINARY_NAME} q [options] <query>
+  ${BINARY_NAME} web-search [options] <query>
 
 ${chalk.bold("Arguments:")}
   query      Search query text
@@ -137,8 +137,8 @@ ${chalk.bold("Query directives:")}
   lenient post-filter (a constraint matching nothing is relaxed, not fatal).
 
 ${chalk.bold("Examples:")}
-  ${APP_NAME} q --provider=exa "what's the color of the sky"
-  ${APP_NAME} q --provider=brave --recency=week "latest TypeScript 5.7 changes"
-  ${APP_NAME} q 'transformer scaling site:arxiv.org after:2024 -site:reddit.com'
+  ${BINARY_NAME} q --provider=exa "what's the color of the sky"
+  ${BINARY_NAME} q --provider=brave --recency=week "latest TypeScript 5.7 changes"
+  ${BINARY_NAME} q 'transformer scaling site:arxiv.org after:2024 -site:reddit.com'
 `);
 }

@@ -12,14 +12,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
-import {
-	Agent,
-	type AgentMessage,
-	type AgentTool,
-	type StreamFn,
-	type ToolApproval,
-	type ToolLoadMode,
-} from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool, type StreamFn, type ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -59,14 +52,13 @@ function makeTool(name: string): AgentTool {
 	};
 }
 
-function makeMcpTool(name: string, loadMode: ToolLoadMode, approval: ToolApproval = "read"): CustomTool {
+function makeMcpTool(name: string, loadMode: ToolLoadMode): CustomTool {
 	return {
 		name,
 		label: name,
 		description: `Test MCP tool ${name}`,
 		parameters: type({}),
 		loadMode,
-		approval,
 		mcpServerName: name.split("__")[1] ?? "test-mcp",
 		mcpToolName: name.split("__").at(-1) ?? name,
 		async execute() {
@@ -469,7 +461,7 @@ describe("AgentSession plan-mode convergence", () => {
 		await harness.session.prompt("make a plan");
 		await harness.session.waitForIdle();
 
-		const chromeTool = makeMcpTool("mcp__chrome_devtools_list_pages", "discoverable", "write");
+		const chromeTool = makeMcpTool("mcp__chrome_devtools_list_pages", "discoverable");
 		await harness.session.refreshMCPTools([chromeTool]);
 		const registeredTool = harness.session.getToolByName("mcp__chrome_devtools_list_pages");
 		expect(registeredTool).toBeDefined();

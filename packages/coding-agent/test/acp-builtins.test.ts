@@ -13,7 +13,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
-import { removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { setProjectDir } from "@oh-my-pi/pi-utils";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -31,8 +31,6 @@ interface FakeAcpBuiltinSession {
 	setForcedToolChoice(toolName: string): void;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
-	formatSessionAsText: () => string;
-	dumpLlmRequestToTmpDir: () => Promise<string | undefined>;
 	getLastAssistantText: () => string | undefined;
 	messages: unknown[];
 	settings: Settings;
@@ -43,7 +41,6 @@ interface FakeAcpBuiltinSession {
 	markMovedFromEmptySessionFile(sessionFile: string): void;
 	fork(): Promise<boolean>;
 	handoff(instr?: string): Promise<{ document: string; savedPath?: string } | undefined>;
-	exportToHtml(outputPath?: string): Promise<string>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
@@ -136,9 +133,6 @@ function createRuntime() {
 		async handoff(_instr?: string) {
 			return undefined;
 		},
-		async exportToHtml(outputPath?: string) {
-			return outputPath ?? "/tmp/exported-session.html";
-		},
 		getTodoPhases() {
 			return this._todoPhases;
 		},
@@ -147,8 +141,6 @@ function createRuntime() {
 		},
 		async refreshBaseSystemPrompt() {},
 		getAsyncJobSnapshot: () => null,
-		formatSessionAsText: () => "",
-		dumpLlmRequestToTmpDir: async () => undefined,
 		getLastAssistantText: () => undefined,
 		messages: [],
 		model: undefined,
@@ -434,42 +426,6 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("Recent Jobs");
 	});
 
-	// /dump
-	it("dump: outputs transcript with LLM request JSON path when sidecar succeeds", async () => {
-		const { output, runtime } = createRuntime();
-		runtime.session.formatSessionAsText = () => "Session content here";
-		runtime.session.dumpLlmRequestToTmpDir = async () => "/tmp/omp-llm-request-test.json";
-
-		const result = await executeAcpBuiltinSlashCommand("/dump", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Session content here");
-		expect(output[0]).toContain("LLM request JSON: /tmp/omp-llm-request-test.json");
-		expect(output[0]).toContain("persists on disk");
-	});
-
-	it("dump: outputs transcript without sidecar when dumpLlmRequestToTmpDir throws", async () => {
-		const { output, runtime } = createRuntime();
-		runtime.session.formatSessionAsText = () => "Session content here";
-		runtime.session.dumpLlmRequestToTmpDir = async () => {
-			throw new Error("convert failed");
-		};
-
-		const result = await executeAcpBuiltinSlashCommand("/dump", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Session content here");
-	});
-
-	it("dump: outputs empty-state message when no messages", async () => {
-		const { output, runtime } = createRuntime();
-
-		const result = await executeAcpBuiltinSlashCommand("/dump", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("No messages");
-	});
-
 	// /model
 	it("model: returns current model when set", async () => {
 		const { output, runtime } = createRuntime();
@@ -610,299 +566,6 @@ describe("session lifecycle commands", () => {
 		const result = await executeAcpBuiltinSlashCommand("/move /tmp", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("streaming");
-	});
-});
-
-describe("wave 3 commands", () => {
-	// /export
-	it("/export: calls exportToHtml with the given arg and outputs the path", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/export /tmp/out.html", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Session exported to: /tmp/out.html");
-	});
-
-	it("/export: uses default path when no arg given", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/export", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Session exported to:");
-	});
-
-	it("/export: returns usage on exportToHtml failure", async () => {
-		const { output, session, runtime } = createRuntime();
-		session.exportToHtml = async () => {
-			throw new Error("disk full");
-		};
-		const result = await executeAcpBuiltinSlashCommand("/export", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Failed to export session: disk full");
-	});
-
-	// /todo
-	it("/todo no-args: outputs empty state message when no todos", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/todo", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("No todos. Use /todo append <task> to start one.");
-	});
-
-	it("/todo append: stores phases and records custom entry", async () => {
-		const { session, fakeSessionManager, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand('/todo append "Build" "Wire setup"', runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(session._todoPhases).toHaveLength(1);
-		expect(session._todoPhases[0]?.name).toBe("Build");
-		expect(session._todoPhases[0]?.tasks[0]?.content).toBe("Wire setup");
-		expect(fakeSessionManager._customEntries).toHaveLength(1);
-		expect(fakeSessionManager._customEntries[0]?.customType).toBe("user_todo_edit");
-	});
-
-	it("/todo export: writes the default file under the active session cwd", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-export-"));
-		try {
-			const { output, session, fakeSessionManager, runtime } = createRuntime();
-			fakeSessionManager._cwd = tempRoot;
-			session._todoPhases = [{ name: "Work", tasks: [{ content: "Ship it", status: "pending" }] }];
-
-			const result = await executeAcpBuiltinSlashCommand("/todo export", runtime);
-
-			const target = path.join(tempRoot, "TODO.md");
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toBe(`Wrote todos to ${target}`);
-			expect(await fs.readFile(target, "utf8")).toBe("# Work\n- [ ] Ship it\n");
-		} finally {
-			await removeWithRetries(tempRoot);
-		}
-	});
-
-	it("/todo export: writes a quoted path with spaces", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-export-quoted-"));
-		try {
-			const { output, session, runtime } = createRuntime();
-			const target = path.join(tempRoot, "todo file.md");
-			session._todoPhases = [{ name: "Work", tasks: [{ content: "Ship it", status: "pending" }] }];
-
-			const result = await executeAcpBuiltinSlashCommand(`/todo export "${target}"`, runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toBe(`Wrote todos to ${target}`);
-			expect(await fs.readFile(target, "utf8")).toBe("# Work\n- [ ] Ship it\n");
-		} finally {
-			await removeWithRetries(tempRoot);
-		}
-	});
-
-	it("/todo import: reads a quoted absolute path", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-import-"));
-		try {
-			const target = path.join(tempRoot, "todo file.md");
-			await fs.writeFile(target, "# Imported\n- [/] Active task\n", "utf8");
-			const { output, session, runtime } = createRuntime();
-
-			const result = await executeAcpBuiltinSlashCommand(`/todo import "${target}"`, runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toBe(`Imported 1 phase(s), 1 task(s) from ${target}.`);
-			expect(session._todoPhases).toEqual([
-				{ name: "Imported", tasks: [{ content: "Active task", status: "in_progress" }] },
-			]);
-		} finally {
-			await removeWithRetries(tempRoot);
-		}
-	});
-
-	it("/todo import: reads the default file under the active session cwd", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-import-default-"));
-		try {
-			const target = path.join(tempRoot, "TODO.md");
-			await fs.writeFile(target, "# Default\n- [ ] From cwd\n", "utf8");
-			const { output, session, fakeSessionManager, runtime } = createRuntime();
-			fakeSessionManager._cwd = tempRoot;
-
-			const result = await executeAcpBuiltinSlashCommand("/todo import", runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toBe(`Imported 1 phase(s), 1 task(s) from ${target}.`);
-			expect(session._todoPhases).toEqual([
-				{ name: "Default", tasks: [{ content: "From cwd", status: "in_progress" }] },
-			]);
-		} finally {
-			await removeWithRetries(tempRoot);
-		}
-	});
-
-	it("/todo import: reports parse errors without committing", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-import-invalid-"));
-		try {
-			const target = path.join(tempRoot, "TODO.md");
-			await fs.writeFile(target, "# Imported\nnot a todo\n", "utf8");
-			const { output, session, fakeSessionManager, runtime } = createRuntime();
-			fakeSessionManager._cwd = tempRoot;
-
-			const result = await executeAcpBuiltinSlashCommand("/todo import", runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toContain(`Could not parse ${target}:`);
-			expect(session._todoPhases).toEqual([]);
-		} finally {
-			await removeWithRetries(tempRoot);
-		}
-	});
-
-	it("/todo export: reports invalid internal-scheme paths", async () => {
-		const { output, session, runtime } = createRuntime();
-		session._todoPhases = [{ name: "Work", tasks: [{ content: "Ship it", status: "pending" }] }];
-
-		const result = await executeAcpBuiltinSlashCommand("/todo export artifact://1", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Failed to write todos:");
-		expect(output[0]).toContain("internal scheme");
-	});
-
-	it("/todo import: reports invalid internal-scheme paths", async () => {
-		const { output, session, runtime } = createRuntime();
-
-		const result = await executeAcpBuiltinSlashCommand("/todo import artifact://1", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Failed to read todos:");
-		expect(output[0]).toContain("internal scheme");
-		expect(session._todoPhases).toEqual([]);
-	});
-
-	it("/todo edit: returns TUI-only usage message", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/todo edit", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("TUI editor");
-	});
-
-	it("/todo unknown: returns usage message", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/todo foobar", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Unknown /todo subcommand");
-	});
-
-	// /move
-	it("/move: returns usage when no arg", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/move", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Usage: /move");
-	});
-
-	it("/move: returns usage when path does not exist", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/move /no/such/path/xyz", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("does not exist");
-	});
-
-	it("/move: relocates the current session instead of switching to an empty target session", async () => {
-		const { output, runtime, session, fakeSessionManager } = createRuntime();
-		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-target-"));
-		const originalProjectDir = process.cwd();
-		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd");
-		let configNotified = 0;
-		runtime.notifyConfigChanged = () => {
-			configNotified++;
-		};
-
-		try {
-			const result = await executeAcpBuiltinSlashCommand(`/move ${targetDir}`, runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(fakeSessionManager._movedTo).toBe(targetDir);
-			expect(fakeSessionManager.getCwd()).toBe(targetDir);
-			expect(session._switchedTo).toBeUndefined();
-			expect(session._movedFromEmptySessionFile).toBeUndefined();
-			expect(reloadForCwd).toHaveBeenCalledWith(targetDir);
-			expect(configNotified).toBe(1);
-			expect(output[0]).toContain(`Moved to ${targetDir}.`);
-		} finally {
-			setProjectDir(originalProjectDir);
-			await fs.rm(targetDir, { recursive: true, force: true });
-		}
-	});
-
-	// /memory
-	it("/memory unknown: returns usage message", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/memory unknownverb", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Usage: /memory");
-	});
-
-	it("/memory stats: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
-	});
-
-	it("/memory diagnose: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/memory diagnose", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
-	});
-
-	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
-		const { output, runtime } = createRuntime();
-		runtime.settings.set("memory.backend" as never, "local" as never);
-		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toBe("Memory stats is not available for the local backend.");
-	});
-
-	// /todo start fuzzy match
-	it("/todo start: finds pending task by substring and starts it", async () => {
-		const { output, session, runtime } = createRuntime();
-		session._todoPhases = [{ name: "Setup", tasks: [{ content: "Wire up router", status: "pending" }] }];
-		const result = await executeAcpBuiltinSlashCommand('/todo start "wire"', runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Wire up router");
-		expect(session._todoPhases[0]?.tasks[0]?.status).toBe("in_progress");
-	});
-
-	// /browser
-	it("/browser visible: sets headless=false; second call is idempotent", async () => {
-		const { runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
-		const r1 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
-		expect(r1).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
-		const r2 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
-		expect(r2).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
-	});
-
-	it("/browser no-arg after /browser visible toggles to headless", async () => {
-		const { output, runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
-		await executeAcpBuiltinSlashCommand("/browser visible", runtime);
-		const r = await executeAcpBuiltinSlashCommand("/browser", runtime);
-		expect(r).toEqual({ consumed: true });
-		expect(output[output.length - 1]).toContain("headless");
-		expect(runtime.settings.get("browser.headless" as never)).toBe(true);
-	});
-
-	// /compact
-	it("/compact: reports Compaction complete. after session.compact resolves", async () => {
-		const { output, session, runtime } = createRuntime();
-		let compactCalled = false;
-		session.compact = async (_args?: string) => {
-			compactCalled = true;
-		};
-		const result = await executeAcpBuiltinSlashCommand("/compact", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(compactCalled).toBe(true);
-		expect(output[0]).toContain("Compaction complete.");
 	});
 });
 

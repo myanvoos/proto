@@ -1,12 +1,10 @@
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
-import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import {
 	type BlobDestinationId,
 	type BlobDestinationMetadata,
 	BUILTIN_BLOB_DESTINATIONS,
 } from "../blob-broker/destinations";
-import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS, LIVE_VOICE_VALUES } from "../live/voices";
 import {
 	COMPACTION_METHOD_CHOICES,
@@ -15,7 +13,7 @@ import {
 } from "../session/compaction-methods";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
-import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
+import { getThinkingLevelMetadata } from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
@@ -27,9 +25,6 @@ import {
 	TINY_MODEL_DTYPE_SETTING_VALUES,
 } from "../tiny/dtype";
 import {
-	AUTO_THINKING_MODEL_OPTIONS,
-	AUTO_THINKING_MODEL_VALUES,
-	ONLINE_AUTO_THINKING_MODEL_KEY,
 	ONLINE_MEMORY_MODEL_KEY,
 	ONLINE_TINY_TITLE_MODEL_KEY,
 	TINY_MEMORY_MODEL_OPTIONS,
@@ -203,7 +198,6 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Approvals",
 		"Notifications",
 		"Speech",
-		"Collab",
 		"Magic Keywords",
 		"Startup & Updates",
 		"Power (macOS)",
@@ -254,8 +248,7 @@ export type StatusLineSegmentId =
 	| "cache_write"
 	| "cache_hit"
 	| "session_name"
-	| "usage"
-	| "collab";
+	| "usage";
 
 /** Submenu choice metadata. */
 export type SubmenuOption<V extends string = string> = {
@@ -1172,18 +1165,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"tui.codexResetFireworks": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "appearance",
-			group: "Display",
-			label: "Codex Reset Fireworks",
-			description:
-				"Celebrate unscheduled Codex weekly usage resets and newly banked saved resets with a top-third fireworks overlay that remains until Escape",
-		},
-	},
-
 	"tui.titleState": {
 		type: "boolean",
 		default: true,
@@ -1362,17 +1343,14 @@ export const SETTINGS_SCHEMA = {
 	// Reasoning and prompts
 	defaultThinkingLevel: {
 		type: "enum",
-		values: [...THINKING_EFFORTS, AUTO_THINKING],
+		values: [...THINKING_EFFORTS],
 		default: "high",
 		ui: {
 			tab: "model",
 			group: "Thinking",
 			label: "Thinking Level",
 			description: "Reasoning depth for thinking-capable models",
-			options: [
-				getConfiguredThinkingLevelMetadata(AUTO_THINKING),
-				...THINKING_EFFORTS.map(getThinkingLevelMetadata),
-			],
+			options: [...THINKING_EFFORTS.map(getThinkingLevelMetadata)],
 		},
 	},
 
@@ -2107,18 +2085,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"startup.showSplash": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Show Startup Splash",
-			description:
-				"Show the full animated setup splash on normal interactive startup without rerunning setup. Quiet Startup still suppresses it.",
-		},
-	},
-
 	"startup.setupWizard": {
 		type: "boolean",
 		default: true,
@@ -2312,88 +2278,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "300", label: "5 minutes" },
 				{ value: "600", label: "10 minutes" },
 			],
-		},
-	},
-
-	// Collab
-	"collab.relayUrl": {
-		type: "string",
-		default: DEFAULT_RELAY_URL,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Relay URL",
-			description: "Relay used by /collab (wss://host[:port])",
-		},
-	},
-
-	"collab.webUrl": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Web UI URL",
-			description:
-				"Browser UI used by /collab links; empty derives from collab.relayUrl; explicit http:// is localhost-only",
-		},
-	},
-
-	"collab.displayName": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Display Name",
-			description: "Name shown to other collab participants (default: OS username)",
-		},
-	},
-
-	"share.serverUrl": {
-		type: "string",
-		default: DEFAULT_SHARE_URL,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Server",
-			description:
-				"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
-		},
-	},
-
-	"share.store": {
-		type: "enum",
-		values: ["blob", "gist"] as const,
-		default: "blob",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Store",
-			description: "Where /share uploads the encrypted session blob",
-			options: [
-				{
-					value: "blob",
-					label: "Encrypted Blob",
-					description: "Upload to the share server (no GitHub account needed; avoids gist API rate limits)",
-				},
-				{
-					value: "gist",
-					label: "GitHub Gist",
-					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
-				},
-			],
-		},
-	},
-
-	"share.redactSecrets": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Secret Redaction",
-			description: "Run the secret obfuscator over /share snapshots before upload (uses the secrets.* config)",
 		},
 	},
 
@@ -3798,18 +3682,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Automatically background long-running bash commands and deliver the result later",
 		},
 	},
-	"bash.patterns": {
-		type: "array",
-		default: [],
-		ui: {
-			tab: "shell",
-			group: "Bash",
-			label: "Bash Approval Patterns",
-			description:
-				"Ordered bash command approval rules. Each item has match and approval fields; only '*' wildcards are supported.",
-		},
-	},
-
 	// Bash interceptor
 	"bashInterceptor.enabled": {
 		type: "boolean",
@@ -3993,55 +3865,6 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// Tools
 	// ────────────────────────────────────────────────────────────────────────
-
-	// Tool approval policies
-	"tools.approval": {
-		type: "record",
-		default: {},
-		ui: {
-			tab: "interaction",
-			group: "Approvals",
-			label: "Tool Approval Policies",
-			description:
-				"Per-tool approval policies. Set to 'allow' to auto-approve, 'prompt' to require confirmation, or 'deny' to block. Overrides are honored in every approval mode.",
-		},
-	},
-
-	// Default tool approval mode (interaction tab, but governs the tool wrapper).
-	//   "always-ask" — auto-approves read-tier tools only; prompts for write/exec.
-	//   "write"      — auto-approves read and write-tier tools; prompts for exec.
-	//   "yolo"       — auto-approves every tier.
-	"tools.approvalMode": {
-		type: "enum",
-		values: ["always-ask", "write", "yolo"] as const,
-		default: "yolo",
-		ui: {
-			tab: "interaction",
-			group: "Approvals",
-			label: "Tool Approval",
-			description:
-				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
-			options: [
-				{
-					value: "always-ask",
-					label: "Always ask",
-					description: "Auto-approve read-only tools; require confirmation for write and exec tools.",
-				},
-				{
-					value: "write",
-					label: "Write",
-					description:
-						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, and task.",
-				},
-				{
-					value: "yolo",
-					label: "Yolo",
-					description:
-						"Auto-approve read, write, and exec tools. User policy can still require confirmation or block calls.",
-				},
-			],
-		},
-	},
 
 	// Todo tool
 	"todo.enabled": {
@@ -5496,38 +5319,6 @@ export const SETTINGS_SCHEMA = {
 				"Mnemopi LLM for fact extraction + consolidation: online (the TINY role from /models, else smol/remote) by default, or a local on-device model",
 			condition: "mnemopiActive",
 			options: TINY_MEMORY_MODEL_OPTIONS,
-		},
-	},
-
-	"providers.autoThinkingModel": {
-		type: "enum",
-		values: AUTO_THINKING_MODEL_VALUES,
-		default: ONLINE_AUTO_THINKING_MODEL_KEY,
-		ui: {
-			tab: "model",
-			group: "Thinking",
-			label: "Auto Thinking Model",
-			description:
-				"Difficulty classifier for the `auto` thinking level: online (the TINY role from /models, else smol) by default, or a local on-device model",
-			condition: "autoThinkingActive",
-			options: AUTO_THINKING_MODEL_OPTIONS,
-		},
-	},
-	"providers.autoThinkingMaxEffort": {
-		type: "enum",
-		values: ["xhigh", "max"] as const,
-		default: "xhigh",
-		ui: {
-			tab: "model",
-			group: "Thinking",
-			label: "Auto Thinking Ceiling",
-			description:
-				"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.",
-			condition: "autoThinkingActive",
-			options: [
-				{ value: "xhigh", label: "xhigh", description: "Classifier stops at xhigh (default)" },
-				{ value: "max", label: "max", description: "Classifier may resolve max where the model supports it" },
-			],
 		},
 	},
 	"features.unexpectedStopDetection": {

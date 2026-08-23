@@ -74,7 +74,6 @@ interface ThinkToolDetails {
 /** Records private scratchpad thoughts while native model reasoning is disabled. */
 export class ThinkTool implements AgentTool<typeof thinkSchema, ThinkToolDetails> {
 	readonly name = "think";
-	readonly approval = "read" as const;
 	readonly label = "Think";
 	readonly summary = "Record private scratchpad thoughts";
 	readonly description = "private scratchpad; not shown to user";

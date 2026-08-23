@@ -75,12 +75,7 @@ import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import {
-	concreteThinkingLevel,
-	resolveThinkingLevelForModel,
-	shouldDisableReasoning,
-	toReasoningEffort,
-} from "../thinking";
+import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ClientBridge } from "./client-bridge";
 import { resolveCompactionMethodOrder } from "./compaction-methods";
@@ -92,7 +87,6 @@ import {
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
 } from "./retry-fallback-chains";
-import { formatSessionDumpText } from "./session-dump-format";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
@@ -616,7 +610,7 @@ export class SessionAdvisors {
 			if (config.model) {
 				const resolved = resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
 				model = resolved.model;
-				thinkingLevel = concreteThinkingLevel(resolved.thinkingLevel);
+				thinkingLevel = resolved.thinkingLevel;
 				if (!model) {
 					this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
 					if (emitWarnings) {
@@ -640,7 +634,7 @@ export class SessionAdvisors {
 					continue;
 				}
 				model = sel.model;
-				thinkingLevel = concreteThinkingLevel(sel.thinkingLevel);
+				thinkingLevel = sel.thinkingLevel;
 			}
 			// Clamp the effort against the resolved model. Historically we defaulted
 			// to `ThinkingLevel.Medium` unconditionally, which threw at first stream
@@ -1672,7 +1666,7 @@ export class SessionAdvisors {
 	 * `advisor.enabled` is set for this session (subagents opt in per agent via
 	 * frontmatter `advisor` / `task.agentAdvisor`) AND a model resolved for the
 	 * `advisor` role — i.e. the actual runtime exists, not merely the setting.
-	 * Drives the status-line badge and `/dump advisor`.
+	 * Drives the status-line badge.
 	 */
 	isAdvisorActive(): boolean {
 		return this.#advisors.length > 0;
@@ -1690,8 +1684,7 @@ export class SessionAdvisors {
 
 	/**
 	 * The live advisor `Agent`, or `undefined` when no advisor runtime is
-	 * attached. Surfaced for diagnostics (`/dump advisor` already serializes
-	 * its transcript via {@link formatAdvisorHistoryAsText}) and so callers can
+	 * attached. Surfaced for diagnostics so callers can
 	 * verify the advisor inherits the session's provider-shaping options
 	 * (`streamFn`, `promptCacheKey`, `providerSessionState`, ...).
 	 */
@@ -1917,29 +1910,5 @@ export class SessionAdvisors {
 			anchorFromIndex: usageAnchorStartIndex,
 			excludeEncryptedReasoning: true,
 		});
-	}
-
-	/**
-	 * Format the advisor agent's own transcript (its system prompt, config,
-	 * tools, and the markdown deltas it received plus its thinking/advise/read
-	 * calls) as plain text — the advisor-side equivalent of
-	 * {@link formatSessionAsText}. Returns null when no advisor is active.
-	 */
-	formatAdvisorHistoryAsText(options?: { compact?: boolean }): string | null {
-		if (this.#advisors.length === 0) return null;
-		const dump = (a: ActiveAdvisor): string =>
-			options?.compact
-				? formatSessionHistoryMarkdown(a.agent.state.messages)
-				: formatSessionDumpText({
-						messages: a.agent.state.messages,
-						systemPrompt: a.agent.state.systemPrompt,
-						model: a.agent.state.model,
-						thinkingLevel: a.agent.state.thinkingLevel,
-						tools: a.agent.state.tools,
-					});
-		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
-		return this.#advisors
-			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)
-			.join("\n\n");
 	}
 }

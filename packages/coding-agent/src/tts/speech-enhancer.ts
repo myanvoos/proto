@@ -9,8 +9,7 @@
  *   inside a fence stays silent so half a code block is never sent to the
  *   rewriter.
  * - {@link SpeechEnhancer} — the per-session rewrite service the event
- *   controller hands to the vocalizer. Resolves the tiny/smol role (same chain
- *   as the auto-thinking classifier), sends one bounded completion per block,
+ *   controller hands to the vocalizer. Resolves the tiny/smol role, sends one bounded completion per block,
  *   and returns null on any failure or timeout so the caller falls back to the
  *   mechanical {@link SpeakableStream} cleanup — speech never blocks on the
  *   model.
@@ -34,7 +33,7 @@ const REWRITE_TIMEOUT_MS = 6000;
 /** Bound block characters sent to the model (huge diffs/code dumps get elided). */
 const MAX_BLOCK_CHARS = 4000;
 
-/** Session-scoped dependencies; mirrors the auto-thinking classifier's deps. */
+/** Session-scoped dependencies. */
 export interface SpeechEnhancerDeps {
 	settings: Settings;
 	registry: ModelRegistry;

@@ -40,7 +40,6 @@ export function resolveConfiguredModelTarget(
 	if (!trimmedTarget) return undefined;
 	const parsed = parseModelString(trimmedTarget, {
 		allowMaxSuffix: true,
-		allowAutoAlias: true,
 		isLiteralModelId: (provider, id) => availableModels.some(model => model.provider === provider && model.id === id),
 	});
 	if (parsed) {
