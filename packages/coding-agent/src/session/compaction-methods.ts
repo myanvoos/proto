@@ -15,19 +15,9 @@ export const COMPACTION_METHOD_CHOICES = [
 		description: "Use provider-native OpenAI-compatible server compaction when the active route supports it",
 	},
 	{
-		value: "handoff",
-		label: "Handoff",
-		description: "Generate a handoff document and continue from it as the compaction summary",
-	},
-	{
 		value: "soft",
 		label: "Soft compaction",
 		description: "Summarize in place with a compaction model without using server compaction",
-	},
-	{
-		value: "shake",
-		label: "Shake",
-		description: "Drop recoverable heavy content in place without an LLM call",
 	},
 ] as const;
 
@@ -35,13 +25,11 @@ export const COMPACTION_METHOD_CHOICES = [
 export type CompactionMethod = (typeof COMPACTION_METHOD_CHOICES)[number]["value"];
 
 /** Default fallback order: server-native first, portable summary last. */
-export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote", "handoff", "shake", "soft"];
+export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote", "soft"];
 
 const COMPACTION_METHODS: Record<CompactionMethod, true> = {
 	remote: true,
-	handoff: true,
 	soft: true,
-	shake: true,
 };
 
 /** Whether an unknown configuration value names a supported compaction method. */
@@ -63,11 +51,9 @@ export function resolveCompactionMethodOrder(value: unknown): CompactionMethod[]
 	return methods;
 }
 
-const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full" | "handoff" | "shake"> = {
+const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full"> = {
 	remote: "context-full",
-	handoff: "handoff",
 	soft: "context-full",
-	shake: "shake",
 };
 
 /**
@@ -103,12 +89,12 @@ export function canUseRemoteCompaction(model: Model | null | undefined, settings
 export function resolveSpeculationMethod(
 	model: Model | null | undefined,
 	settings: CompactionSettings,
-): "remote" | "handoff" | "soft" | undefined {
+): "remote" | "soft" | undefined {
 	for (const candidate of resolveCompactionMethodOrder(settings.methodOrder)) {
 		const available =
 			candidate === "remote" ? canUseRemoteCompaction(model, resolveMethodSettings(settings, candidate)) : true;
 		if (!available) continue;
-		return candidate === "remote" || candidate === "handoff" || candidate === "soft" ? candidate : undefined;
+		return candidate;
 	}
 	return undefined;
 }

@@ -2,33 +2,22 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { getEditorCommand, openInEditor, resolveEditorSpawnCommand } from "../src/utils/external-editor";
-
-interface MutableProcess {
-	platform: NodeJS.Platform;
-}
-
-function setPlatform(value: NodeJS.Platform): void {
-	(process as unknown as MutableProcess).platform = value;
-}
+import { getEditorCommand, openInEditor } from "../src/utils/external-editor";
 
 describe("getEditorCommand", () => {
-	const originalPlatform = process.platform;
 	const originalVisual = Bun.env.VISUAL;
 	const originalEditor = Bun.env.EDITOR;
 
 	afterEach(() => {
-		setPlatform(originalPlatform);
 		if (originalVisual === undefined) delete Bun.env.VISUAL;
 		else Bun.env.VISUAL = originalVisual;
 		if (originalEditor === undefined) delete Bun.env.EDITOR;
 		else Bun.env.EDITOR = originalEditor;
 	});
 
-	it("prefers $VISUAL over $EDITOR and the platform default", () => {
+	it("prefers $VISUAL over $EDITOR", () => {
 		Bun.env.VISUAL = "nvim";
 		Bun.env.EDITOR = "nano";
-		setPlatform("win32");
 		expect(getEditorCommand()).toBe("nvim");
 	});
 
@@ -50,17 +39,9 @@ describe("getEditorCommand", () => {
 		expect(getEditorCommand()).toBe("vim");
 	});
 
-	it("defaults to notepad on Windows when neither variable is set", () => {
-		delete Bun.env.VISUAL;
-		delete Bun.env.EDITOR;
-		setPlatform("win32");
-		expect(getEditorCommand()).toBe("notepad");
-	});
-
 	it("returns undefined on POSIX when neither variable is set", () => {
 		delete Bun.env.VISUAL;
 		delete Bun.env.EDITOR;
-		setPlatform("linux");
 		expect(getEditorCommand()).toBeUndefined();
 	});
 });
@@ -87,22 +68,7 @@ describe("openInEditor", () => {
 		}
 	});
 
-	it("passes the cmd.exe command line verbatim on Windows", () => {
-		const tmpFile = String.raw`C:\Users\Example User\AppData\Local\Temp\proto-editor-123.proto.md`;
-
-		expect(resolveEditorSpawnCommand('"C:\\Program Files\\Code.exe" --wait', tmpFile, "win32")).toEqual({
-			cmd: [
-				"cmd.exe",
-				"/d",
-				"/s",
-				"/c",
-				String.raw`""C:\Program Files\Code.exe" --wait "C:\Users\Example User\AppData\Local\Temp\proto-editor-123.proto.md""`,
-			],
-			windowsVerbatimArguments: true,
-		});
-	});
-
-	it.skipIf(process.platform === "win32")("supports quoted editor paths containing spaces", async () => {
+	it("supports quoted editor paths containing spaces", async () => {
 		const tempDir = TempDir.createSync("@external-editor-");
 		try {
 			const editorPath = path.join(tempDir.path(), "My Editor", "edit");

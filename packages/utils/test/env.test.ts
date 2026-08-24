@@ -152,21 +152,6 @@ describe("filterProcessEnv", () => {
 			GOOD: "value",
 		});
 	});
-
-	it("preserves Windows-style variable names containing parentheses", () => {
-		// `ProgramFiles(x86)` and friends are standard on Windows and must
-		// survive the scrub so Git Bash discovery in procmgr.ts can resolve
-		// 32-bit Program Files installations.
-		expect(
-			filterProcessEnv({
-				"ProgramFiles(x86)": "C:\\Program Files (x86)",
-				"CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files",
-			}),
-		).toEqual({
-			"ProgramFiles(x86)": "C:\\Program Files (x86)",
-			"CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files",
-		});
-	});
 });
 
 describe("filterChildShellEnv", () => {

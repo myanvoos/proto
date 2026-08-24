@@ -66,7 +66,7 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 	const originalWslInterop = Bun.env.WSL_INTEROP;
 
 	beforeEach(() => {
-		// Default to a clean Linux: tests explicitly opt into win32 or WSL.
+		// Default to a clean Linux: tests explicitly opt into WSL.
 		delete Bun.env.WSL_DISTRO_NAME;
 		delete Bun.env.WSL_INTEROP;
 	});
@@ -80,8 +80,9 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 		vi.restoreAllMocks();
 	});
 
-	it("coalesces a 30 Hz spinner storm after a big sessionReplace paint into one trailing render on win32", async () => {
-		setPlatform("win32");
+	it("coalesces a 30 Hz spinner storm after a big sessionReplace paint into one trailing render on ConPTY", async () => {
+		setPlatform("linux");
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 4096);
 		const tui = new TUI(term);
 		// 200 rows fills well past the 24-row viewport so `#emitFullPaint`
@@ -178,7 +179,7 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 			await settle(term);
 			const fullPaintsAfterStart = tui.fullRedraws;
 
-			// Same storm pattern as the win32 test, but no settle gate is
+			// Same storm pattern as the ConPTY tests, but no settle gate is
 			// armed: requestRender(false) follows the immediate scheduler
 			// path. The cursor-only noop renders don't bump fullRedraws — what
 			// we're asserting is that no settle-window timer parks the next
@@ -198,7 +199,8 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 	});
 
 	it("forced renders preempt an in-flight settle so they fire immediately", async () => {
-		setPlatform("win32");
+		setPlatform("linux");
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 4096);
 		const tui = new TUI(term);
 		tui.addChild(new TallContent(200));
@@ -220,8 +222,9 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 		}
 	});
 
-	it("stop() cancels a pending settle-window trailing render on win32", async () => {
-		setPlatform("win32");
+	it("stop() cancels a pending settle-window trailing render", async () => {
+		setPlatform("linux");
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 4096);
 		const tui = new TUI(term);
 		tui.addChild(new TallContent(200));
@@ -244,7 +247,7 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 		expect(writes.length).toBe(writesAtStop);
 	});
 
-	it("absorbs a mid-paint `requestRender(false)` (e.g. ImageBudget.endPass) into the trailing settle on win32 (#2095)", async () => {
+	it("absorbs a mid-paint `requestRender(false)` (e.g. ImageBudget.endPass) into the trailing settle (#2095)", async () => {
 		// `ImageBudget.endPass()` (and any other mid-composition caller) can fire
 		// `requestRender(false)` from inside the in-flight paint, *before*
 		// `#armPostFullPaintSettle()` runs at the tail of the intent dispatch.
@@ -261,7 +264,8 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 		// contract is that no short-delay (< 100 ms) timer is queued after
 		// the sessionReplace arm — only the settle's trailing timer at the
 		// full 150 ms window.
-		setPlatform("win32");
+		setPlatform("linux");
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 4096);
 
 		type Scheduled = { delayMs: number };

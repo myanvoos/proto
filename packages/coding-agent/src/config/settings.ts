@@ -1639,25 +1639,23 @@ export class Settings {
 
 		// compaction.strategy / compaction.remoteEnabled → compaction.methodOrder.
 		// The old single strategy could not express a capability-dependent fallback
-		// chain. Preserve explicit legacy intent while new installs use the
-		// server → handoff → shake → soft default.
+		// chain. Preserve explicit remote intent while new installs use the
+		// server → soft default. The removed "handoff" and "shake-summary"/"shake"
+		// strategies collapse onto the surviving summarization methods.
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
 		const configuredMethodOrder = compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
 		const legacyStrategy = compactionObj?.strategy ?? raw["compaction.strategy"];
 		const legacyRemoteEnabled = compactionObj?.remoteEnabled ?? raw["compaction.remoteEnabled"];
 		if (!Array.isArray(configuredMethodOrder)) {
 			const remoteEnabled = legacyRemoteEnabled !== false;
-			const strategy = legacyStrategy === "shake-summary" ? "shake" : legacyStrategy;
+			const strategy = legacyStrategy;
 			let methodOrder: CompactionMethod[] | undefined;
 			switch (strategy) {
 				case "context-full":
-					methodOrder = remoteEnabled ? ["remote", "soft"] : ["soft"];
-					break;
 				case "handoff":
-					methodOrder = remoteEnabled ? ["handoff", "remote", "soft"] : ["handoff", "soft"];
-					break;
+				case "shake-summary":
 				case "shake":
-					methodOrder = remoteEnabled ? ["shake", "remote", "soft"] : ["shake", "soft"];
+					methodOrder = remoteEnabled ? ["remote", "soft"] : ["soft"];
 					break;
 				case "off":
 					methodOrder = [];

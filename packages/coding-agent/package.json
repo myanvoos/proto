@@ -69,8 +69,7 @@
     "puppeteer-core": "catalog:"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "catalog:",
-    "sherpa-onnx-node": "1.13.2"
+    "@huggingface/transformers": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:"
@@ -109,18 +108,6 @@
     "./async/*": {
       "types": "./src/async/*.ts",
       "import": "./src/async/*.ts"
-    },
-    "./autoresearch": {
-      "types": "./src/autoresearch/index.ts",
-      "import": "./src/autoresearch/index.ts"
-    },
-    "./autoresearch/*": {
-      "types": "./src/autoresearch/*.ts",
-      "import": "./src/autoresearch/*.ts"
-    },
-    "./autoresearch/tools/*": {
-      "types": "./src/autoresearch/tools/*.ts",
-      "import": "./src/autoresearch/tools/*.ts"
     },
     "./capability": {
       "types": "./src/capability/index.ts",
@@ -466,14 +453,6 @@
     "./ssh/*": {
       "types": "./src/ssh/*.ts",
       "import": "./src/ssh/*.ts"
-    },
-    "./stt": {
-      "types": "./src/stt/index.ts",
-      "import": "./src/stt/index.ts"
-    },
-    "./stt/*": {
-      "types": "./src/stt/*.ts",
-      "import": "./src/stt/*.ts"
     },
     "./task": {
       "types": "./src/task/index.ts",

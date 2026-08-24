@@ -12,7 +12,6 @@ import {
 function source(overrides: Partial<CopySource>): CopySource {
 	return {
 		messages: [],
-		getLastVisibleHandoffText: () => undefined,
 		...overrides,
 	};
 }
@@ -174,20 +173,6 @@ describe("buildCopyTargets", () => {
 		] as unknown as AgentMessage[];
 		const targets = buildCopyTargets(source({ messages }));
 		expect(targets.filter(t => t.id.startsWith("msg:")).map(t => t.label)).toEqual(["real answer"]);
-	});
-
-	it("falls back to handoff context only when there are no assistant messages", () => {
-		const withMessages = buildCopyTargets(
-			source({
-				messages: [assistantText("answer")] as unknown as AgentMessage[],
-				getLastVisibleHandoffText: () => "<handoff>",
-			}),
-		);
-		expect(byId(withMessages, "handoff")).toBeUndefined();
-
-		const fresh = buildCopyTargets(source({ getLastVisibleHandoffText: () => "<handoff>\nGoal" }));
-		expect(byId(fresh, "handoff")?.content).toBe("<handoff>\nGoal");
-		expect(byId(fresh, "handoff")?.copyMessage).toBe("Copied handoff context to clipboard");
 	});
 
 	it("interleaves runnable commands after the assistant message that issued them", () => {

@@ -107,9 +107,8 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 	// Mode bits do not constrain a privileged user, so `chmod` denies nothing as root
 	// and every expectation that depends on a real denial would fail for a reason
 	// unrelated to the seam. Root is real for a Docker-based local run and for a
-	// self-hosted CI runner. `getuid` is undefined on Windows, where these modes are
-	// not enforced either.
-	const itDenied = it.skipIf(process.platform === "win32" || process.getuid?.() === 0);
+	// self-hosted CI runner.
+	const itDenied = it.skipIf(process.getuid?.() === 0);
 
 	const baseOptions = (tempDir: string, extensions: ExtensionFactory[]): CreateAgentSessionOptions => ({
 		cwd: tempDir,

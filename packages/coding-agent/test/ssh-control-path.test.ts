@@ -95,14 +95,6 @@ describe("resolveSshControlDir", () => {
 		expect(a.dir).not.toBe(b.dir);
 	});
 
-	it("never relocates on Windows (ControlMaster unused) even for a long path", () => {
-		const canonicalDir = "/Users/arthur/.proto/profiles/upstream/ssh-control";
-		expect(resolveSshControlDir({ canonicalDir, platform: "win32", uid: 501 })).toEqual({
-			dir: canonicalDir,
-			shared: false,
-		});
-	});
-
 	it("keeps the canonical dir when there is no uid to key the fallback", () => {
 		const canonicalDir = "/Users/arthur/.proto/profiles/upstream/ssh-control";
 		expect(resolveSshControlDir({ canonicalDir, platform: "darwin", uid: undefined })).toEqual({

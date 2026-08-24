@@ -5,7 +5,7 @@
  */
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
-import { isCmdShell, isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
+import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
@@ -323,7 +323,7 @@ function buildUserShellCommand(shell: string, args: string[], command: string): 
 function resolveUserShellConfig(settings: Settings, baseConfig: ShellConfig): ShellConfig {
 	const customShellPath = settings.get("shellPath");
 	const envShell = Bun.env.SHELL;
-	if (customShellPath || process.platform === "win32" || !envShell || envShell === baseConfig.shell) {
+	if (customShellPath || !envShell || envShell === baseConfig.shell) {
 		return baseConfig;
 	}
 	if (!supportsAutoUserShell(envShell) || !isExecutable(envShell)) {
@@ -367,10 +367,10 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	});
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
-	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
-	// paths, and the embedded brush shell runs the POSIX line better directly.
+	// The embedded brush shell runs the POSIX line better directly than a
+	// configured non-bash shell wrapper.
 	const finalCommand =
-		options?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell
+		options?.useUserShell === true && !bashShell && !runCdInPersistentShell
 			? buildUserShellCommand(shell, args, preflight.command)
 			: preflight.command;
 

@@ -153,8 +153,8 @@ export function piGrepSkip(offset?: number): number | undefined {
  * pattern ignores the path, and an absent or `.` path leaves the pattern
  * standing alone rather than building a `./`- or `//`-prefixed spec.
  *
- * Uses `node:path` rather than string surgery so Windows absolutes (`C:\…`,
- * UNC) are recognised and separators stay normalized.
+ * Uses `node:path` rather than string surgery so absolutes are recognised and
+ * separators stay normalized.
  */
 export function piJoinPath(basePath: string | undefined, pattern: string): string {
 	if (path.isAbsolute(pattern)) return pattern;

@@ -7,16 +7,17 @@ withoutTerminalMultiplexer();
 
 // Regression test for https://github.com/can1357/oh-my-pi/issues/2115
 //
-// Large CJK session resumes on Windows legacy console hosts used to feed the
-// terminal a full synchronized paint for the entire transcript. ProcessTerminal
-// split that payload into ConPTY-sized writes, but the renderer still built a
-// multi-megabyte paint and asked the Windows host to process every historical
-// row in one DEC 2026 frame. Legacy conhost/ConPTY byte parsing could park the
-// viewport mid-conversation, and even ASCII sessions became sluggish once the
-// replay crossed ~1-2 MiB.
+// Large session resumes on ConPTY hosts used to feed the terminal a full
+// synchronized paint for the entire transcript. ProcessTerminal split that
+// payload into ConPTY-sized writes, but the renderer still built a
+// multi-megabyte paint and asked the host to process every historical row in
+// one DEC 2026 frame. ConPTY byte parsing could park the viewport
+// mid-conversation, and even ASCII sessions became sluggish once the replay
+// crossed ~1-2 MiB.
 
-const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 const ORIGINAL_HERDR_ENV = Bun.env.HERDR_ENV;
+const WSL_DISTRO_NAME = Bun.env.WSL_DISTRO_NAME;
+const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -96,13 +97,17 @@ beforeEach(() => {
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
 	afterEach(() => {
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+		if (WSL_DISTRO_NAME === undefined) delete Bun.env.WSL_DISTRO_NAME;
+		else Bun.env.WSL_DISTRO_NAME = WSL_DISTRO_NAME;
 		if (ORIGINAL_HERDR_ENV === undefined) delete Bun.env.HERDR_ENV;
 		else Bun.env.HERDR_ENV = ORIGINAL_HERDR_ENV;
 		vi.restoreAllMocks();
 	});
 
-	it("bounds a Windows CJK resume paint while preserving the visible tail", async () => {
-		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+	it("bounds a CJK resume paint while preserving the visible tail", async () => {
+		// isConPTYHosted() is true on linux when a WSL marker is present.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 12_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);
@@ -133,7 +138,8 @@ describe("issue #2115: ConPTY large-session resume truncates at logical lines", 
 	});
 
 	it("keeps later tail appends on the cheap append path", async () => {
-		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 12_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);

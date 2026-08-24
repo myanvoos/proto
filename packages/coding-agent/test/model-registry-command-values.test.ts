@@ -14,22 +14,15 @@ function shellQuote(value: string): string {
 }
 
 function stdoutCommand(value: string): string {
-	if (process.platform !== "win32") return `printf %s ${shellQuote(value)}`;
-	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(value)})`)}`;
+	return `printf %s ${shellQuote(value)}`;
 }
 
 function trackedTokenCommand(tokenFile: string, counterFile: string): string {
-	if (process.platform !== "win32") {
-		return `IFS= read -r token < ${shellQuote(tokenFile)}; printf 1 >> ${shellQuote(counterFile)}; [ "$token" = FAIL ] && exit 1; printf %s "$token"`;
-	}
-	const script = `const fs=require("node:fs");fs.appendFileSync(${JSON.stringify(counterFile)}, "1");const token=fs.readFileSync(${JSON.stringify(tokenFile)}, "utf8").trim();if(token==="FAIL")process.exit(1);process.stdout.write(token);`;
-	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+	return `IFS= read -r token < ${shellQuote(tokenFile)}; printf 1 >> ${shellQuote(counterFile)}; [ "$token" = FAIL ] && exit 1; printf %s "$token"`;
 }
 
 function failedTrackingCommand(counterFile: string): string {
-	if (process.platform !== "win32") return `printf 1 >> ${shellQuote(counterFile)}; exit 1`;
-	const script = `const fs=require("node:fs");fs.appendFileSync(${JSON.stringify(counterFile)}, "1");process.exit(1);`;
-	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+	return `printf 1 >> ${shellQuote(counterFile)}; exit 1`;
 }
 
 describe("ModelRegistry command-resolved models.yml values", () => {

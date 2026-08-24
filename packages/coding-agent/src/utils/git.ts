@@ -486,7 +486,6 @@ function gitSpawnSyncText(
 			env: buildGitEnv(),
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 			timeout: timeoutMs,
 		});
 		// Bun's timeout marker is authoritative even when process cleanup reports
@@ -523,7 +522,6 @@ async function git(cwd: string, args: readonly string[], options: CommandOptions
 			stdin: normalizeStdin(options.stdin),
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 		});
 	} catch (err) {
 		if (isEnoent(err)) {
@@ -2506,7 +2504,6 @@ export const github = {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
-				windowsHide: true,
 				signal,
 			});
 			const { stdout, stderr, exitCode } = await collectSubprocessResult("gh", args, child, {});

@@ -246,9 +246,7 @@ describe("Settings", () => {
 			});
 			expect(await Bun.file(backupPath).text()).toBe(corrupted);
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp"))).toBe(false);
-			if (process.platform !== "win32") {
-				expect(fs.statSync(getConfigPath()).mode & 0o777).toBe(0o600);
-			}
+			expect(fs.statSync(getConfigPath()).mode & 0o777).toBe(0o600);
 		});
 
 		it("backs up a corrupted project config and retains the pending project role for retry", async () => {
@@ -1014,8 +1012,8 @@ describe("Settings", () => {
 	});
 
 	describe("compaction method migration", () => {
-		it("defaults to server, handoff, shake, then soft compaction", () => {
-			expect(Settings.isolated().get("compaction.methodOrder")).toEqual(["remote", "handoff", "shake", "soft"]);
+		it("defaults to server, then soft compaction", () => {
+			expect(Settings.isolated().get("compaction.methodOrder")).toEqual(["remote", "soft"]);
 		});
 
 		it("migrates a local-only legacy strategy to soft compaction", async () => {

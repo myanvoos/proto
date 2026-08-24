@@ -4,7 +4,6 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 function zeroUsage(): Usage {
@@ -48,7 +47,6 @@ function createStreamingFixture() {
 		init: vi.fn(async () => {}),
 		ui,
 		settings,
-		chatContainer: { addChild: vi.fn(), children: [] },
 		pendingTools: new Map(),
 		transcriptMessageComponents: new WeakMap(),
 		streamingComponent: {
@@ -136,25 +134,6 @@ describe("EventController message_update coalescing", () => {
 		expect((ctx.streamingMessage as AssistantMessage | undefined)?.content).toEqual([
 			{ type: "text", text: "tok1 tok2" },
 		]);
-	});
-
-	it("speaks every delta exactly once even when intermediate snapshots are coalesced away", async () => {
-		const { emit } = createStreamingFixture();
-		const pushDelta = vi.spyOn(vocalizer, "pushDelta");
-		settings.set("speech.enabled", true);
-		settings.set("speech.mode", "assistant");
-
-		emit(messageUpdate("one "));
-		emit(messageUpdate("one two "));
-		emit(messageUpdate("one two three "));
-
-		vi.advanceTimersByTime(33);
-		await flushMicrotasks();
-
-		expect(pushDelta).toHaveBeenCalledTimes(3);
-		expect(pushDelta).toHaveBeenNthCalledWith(1, "one ");
-		expect(pushDelta).toHaveBeenNthCalledWith(2, "one two ");
-		expect(pushDelta).toHaveBeenNthCalledWith(3, "one two three ");
 	});
 
 	it("serializes a tail event behind an in-flight window flush", async () => {

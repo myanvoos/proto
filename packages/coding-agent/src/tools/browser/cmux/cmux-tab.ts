@@ -273,7 +273,7 @@ const activeCmuxRuns = new Map<string, ActiveCmuxRun>();
 const recentCmuxRunFiles = new Set<string>();
 
 function consumeCmuxRunRejection(reason: unknown): boolean {
-	// cmux runs guest JS in the shared main-process realm (TTS/STT/MCP and other
+	// cmux runs guest JS in the shared main-process realm (MCP and other
 	// subsystems live here too), so — like the eval inline fallback — only a
 	// guest-file stack frame can safely attribute a rejection. A stackless or
 	// non-run-stack reason is indistinguishable from a subsystem failure and

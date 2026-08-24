@@ -132,9 +132,9 @@ describe("TUI SIXEL capability probe", () => {
 
 	it("enables SIXEL under WSL + Windows Terminal (process.platform is linux)", () => {
 		// Regression for #6009: inside WSL, process.platform reports "linux" even
-		// though the host is Windows Terminal, so a probe gated on
-		// process.platform === "win32" never negotiated SIXEL there. The probe no
-		// longer gates on the host at all; WSL is one covered environment of many.
+		// though the host is Windows Terminal, so the original host-gated probe
+		// never negotiated SIXEL there. The probe does not gate on the host at
+		// all; WSL is one covered environment of many.
 		if (process.platform !== "linux") return;
 		Bun.env.WT_SESSION = "test-wt-session";
 		Bun.env.WSL_DISTRO_NAME = "Ubuntu";

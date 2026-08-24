@@ -114,7 +114,6 @@ codesign -dvvv "$BINARY" 2>&1 | grep -E "Authority|TeamIdentifier|flags=|Timesta
 echo "ci-macos-sign: launch check under the hardened-runtime signature"
 run_home="$WORKDIR/home"
 HOME="$run_home" XDG_DATA_HOME="$run_home/xdg" "$BINARY" --version
-HOME="$run_home" XDG_DATA_HOME="$run_home/xdg" "$BINARY" --smoke-test
 
 echo "ci-macos-sign: submitting for notarization"
 /usr/bin/ditto -c -k --keepParent "$BINARY" "$ZIP_PATH"

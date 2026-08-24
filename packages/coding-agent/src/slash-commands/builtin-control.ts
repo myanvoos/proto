@@ -4,14 +4,6 @@ import type { SlashCommandSpec } from "./types";
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
-		name: "live",
-		description: "Start Codex-backed realtime voice mode",
-		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleLiveCommand();
-		},
-	},
-	{
 		name: "pause",
 		description: "Freeze all agents (main, subagents, advisor) until resumed",
 		handleTui: async (_command, runtime) => {

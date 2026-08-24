@@ -50,8 +50,6 @@ export interface NewSessionOptions {
 	parentSession?: string;
 	/** Provider prompt-cache identity to seed on the new session header. */
 	providerPromptCacheKey?: string;
-	/** Skip flushing the current session and delete it instead of saving. */
-	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */
 	additionalDirectories?: string[];
 }

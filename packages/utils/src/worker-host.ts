@@ -1,5 +1,3 @@
-import { stripWindowsExtendedLengthPathPrefix } from "./path";
-
 /** Prefix reserved for argv selectors dispatched by the shared CLI worker host. */
 export const WORKER_HOST_SELECTOR_PREFIX = "__proto_worker_";
 
@@ -20,7 +18,7 @@ let workerHostMain: string | null = null;
 
 /** Called by CLI entrypoints whose main module dispatches worker argv selectors. */
 export function declareWorkerHostEntry(): void {
-	workerHostMain = stripWindowsExtendedLengthPathPrefix(Bun.main);
+	workerHostMain = Bun.main;
 }
 
 /** Main-module path of the self-dispatching CLI host, or null outside it. */

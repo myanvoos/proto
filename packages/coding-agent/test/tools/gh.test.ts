@@ -1097,8 +1097,6 @@ describe("github tool", () => {
 				expect(runGit(fixture.repoRoot, ["remote", "get-url", "forksrc"])).toBe(fixture.forkBare);
 			});
 			it("does not depend on localized git remote-add stderr for existing remotes", async () => {
-				// The shim is a bash script resolved via `which`; neither exists on Windows.
-				if (process.platform === "win32") return;
 				const originalPath = process.env.PATH;
 				const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "proto-fake-git-"));
 				const realGitResult = Bun.spawnSync(["which", "git"], { stdout: "pipe", stderr: "pipe" });
@@ -1132,7 +1130,6 @@ exec ${JSON.stringify(realGit)} "$@"
 			});
 
 			it("pins Git messages while preserving UTF-8 character locale", async () => {
-				if (process.platform === "win32") return;
 				const originalPath = process.env.PATH;
 				const originalLocale = {
 					EXPECTED_LC_CTYPE: process.env.EXPECTED_LC_CTYPE,
@@ -1206,7 +1203,6 @@ exec ${JSON.stringify(realGit)} "$@"
 	});
 
 	it("pins gh messages while preserving UTF-8 character locale", async () => {
-		if (process.platform === "win32") return;
 		const originalPath = process.env.PATH;
 		const originalLocale = {
 			EXPECTED_LC_CTYPE: process.env.EXPECTED_LC_CTYPE,

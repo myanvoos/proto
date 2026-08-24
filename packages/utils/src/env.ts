@@ -19,10 +19,7 @@ export function isValidEnvName(name: string): boolean {
 /**
  * The only names that are genuinely unsafe to forward to a native `execve`
  * spawn: empty, containing `=` (would corrupt the `KEY=VALUE` framing) or
- * NUL (terminates the C string mid-entry). Windows ships standard variables
- * whose names contain parentheses (e.g. `ProgramFiles(x86)`, `CommonProgramFiles(x86)`)
- * — those MUST survive the scrub so downstream resolvers (Git Bash discovery
- * in `procmgr.ts`, etc.) can still read them.
+ * NUL (terminates the C string mid-entry).
  */
 export function isSafeEnvName(name: string): boolean {
 	return name.length > 0 && !name.includes("=") && !name.includes("\0");

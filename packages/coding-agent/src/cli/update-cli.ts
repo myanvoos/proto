@@ -58,13 +58,7 @@ const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
  * `packages/natives/scripts/gen-npm-packages.ts`; kept here as the local
  * source of truth so the update path stays free of cross-package imports.
  */
-const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set([
-	"linux-x64",
-	"linux-arm64",
-	"darwin-x64",
-	"darwin-arm64",
-	"win32-x64",
-]);
+const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]);
 
 function currentNativeTag(): string {
 	return `${process.platform}-${process.arch}`;
@@ -389,7 +383,7 @@ async function getNpmGlobalBinDir(): Promise<string | undefined> {
 		if (result.exitCode !== 0) return undefined;
 		const prefix = result.text().trim();
 		if (prefix.length === 0) return undefined;
-		return process.platform === "win32" ? prefix : path.join(prefix, "bin");
+		return path.join(prefix, "bin");
 	} catch {
 		return undefined;
 	}
@@ -426,19 +420,13 @@ async function getMiseBinDirs(): Promise<string[]> {
 function getMiseDataDir(): string {
 	const override = process.env.MISE_DATA_DIR;
 	if (override && override.length > 0) return override;
-	if (process.platform === "win32") {
-		const localAppData = process.env.LOCALAPPDATA;
-		if (localAppData && localAppData.length > 0) return path.join(localAppData, "mise");
-	}
 	const xdgDataHome = process.env.XDG_DATA_HOME;
 	if (xdgDataHome && xdgDataHome.length > 0) return path.join(xdgDataHome, "mise");
 	return path.join(os.homedir(), ".local", "share", "mise");
 }
 
 function normalizePathForComparison(filePath: string): string {
-	const normalized = path.normalize(filePath);
-	if (process.platform === "win32") return normalized.toLowerCase();
-	return normalized;
+	return path.normalize(filePath);
 }
 
 function tryRealpath(p: string): string | undefined {
@@ -466,13 +454,11 @@ function isPathInDirectoryLexical(filePath: string, directoryPath: string): bool
 
 function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	if (isPathInDirectoryLexical(filePath, directoryPath)) return true;
-	// Layer realpath resolution on top of the lexical guard. On Windows, ~/.bun
-	// is a junction when Bun is installed via Scoop, so `bun pm bin -g` and the
-	// PATH-resolved omp path can refer to the same directory through different
-	// strings. path.resolve does not traverse junctions/symlinks; realpath does.
-	// Resolve both the file and its parent directory: the file catches manager
-	// links like Homebrew's `bin/omp -> Cellar/.../bin/omp`; the parent fallback
-	// still tolerates fresh install paths where the file does not exist yet.
+	// Layer realpath resolution on top of the lexical guard: path.resolve does
+	// not traverse symlinks; realpath does. Resolve both the file and its parent
+	// directory: the file catches manager links like Homebrew's
+	// `bin/omp -> Cellar/.../bin/omp`; the parent fallback still tolerates fresh
+	// install paths where the file does not exist yet.
 	const dirReal = tryRealpath(path.resolve(directoryPath));
 	if (!dirReal) return false;
 	const fileReal = tryRealpath(path.resolve(filePath));
@@ -493,7 +479,6 @@ function isPathInManagerRoot(linkTarget: string, nodeModulesDir: string): boolea
 
 function resolveNpmGlobalNodeModulesDir(globalBinDir: string | undefined): string | undefined {
 	if (!globalBinDir) return undefined;
-	if (process.platform === "win32") return path.join(globalBinDir, "node_modules");
 	return path.join(path.dirname(globalBinDir), "lib", "node_modules");
 }
 
@@ -558,9 +543,6 @@ function resolveUpdateMethod(
 		ompIsRegularFile = false,
 		ompLinkTarget,
 	} = options;
-	const launcherExtension = path.extname(ompPath).toLowerCase();
-	const isWindowsScriptLauncher =
-		launcherExtension === ".cmd" || launcherExtension === ".ps1" || launcherExtension === ".bat";
 	if (isPathInDirectory(ompPath, NIX_STORE_DIR)) return "nix";
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
@@ -571,10 +553,6 @@ function resolveUpdateMethod(
 	// installer's default (~/.local/bin), classifying by directory alone routes
 	// a binary install through npm/bun, whose reinstall then collides with the
 	// existing file (npm EEXIST). Fall through to binary replacement instead.
-	// Windows is excluded: there package managers write regular-file shims
-	// (bun's .exe launcher, npm's .cmd/.ps1), so a regular file is NOT evidence
-	// of a standalone install and the override would hijack managed installs.
-	const isStandaloneRegularFile = ompIsRegularFile && process.platform !== "win32";
 	const bunNodeModulesDir = resolveBunGlobalNodeModulesDirFromLocations({
 		globalDir: bunGlobalDir,
 		globalBinDir: bunBinDir,
@@ -583,7 +561,7 @@ function resolveUpdateMethod(
 		allowPackageManagers &&
 		bunBinDir &&
 		isPathInDirectory(ompPath, bunBinDir) &&
-		!isStandaloneRegularFile &&
+		!ompIsRegularFile &&
 		isManagerOwnedBinEntry(ompLinkTarget, bunNodeModulesDir)
 	) {
 		return "bun";
@@ -593,12 +571,11 @@ function resolveUpdateMethod(
 		allowPackageManagers &&
 		npmBinDir &&
 		isPathInDirectory(ompPath, npmBinDir) &&
-		!isStandaloneRegularFile &&
+		!ompIsRegularFile &&
 		isManagerOwnedBinEntry(ompLinkTarget, npmNodeModulesDir)
 	) {
 		return "npm";
 	}
-	if (isWindowsScriptLauncher) return "npm";
 	return "binary";
 }
 
@@ -1039,9 +1016,6 @@ function getBinaryName(): string {
 		case "darwin":
 			os = "darwin";
 			break;
-		case "win32":
-			os = "windows";
-			break;
 		default:
 			throw new Error(`Unsupported platform: ${platform}`);
 	}
@@ -1058,9 +1032,6 @@ function getBinaryName(): string {
 			throw new Error(`Unsupported architecture: ${arch}`);
 	}
 
-	if (os === "windows") {
-		return `${BINARY_NAME}-${os}-${archName}.exe`;
-	}
 	return `${BINARY_NAME}-${os}-${archName}`;
 }
 
@@ -1132,12 +1103,10 @@ async function unlinkIfExists(filePath: string): Promise<void> {
 /**
  * Remove a backup binary without letting the removal abort a completed update.
  *
- * On Windows the executable that was just moved aside is still mapped as the
- * running process image, so unlinking it fails with EPERM/EACCES until this
- * process exits (issue #845). The replacement and verification already
- * succeeded by the time we get here, so every error is swallowed; the leftover
- * is reclaimed by {@link sweepStaleUpdateArtifacts} on the next update once it
- * is no longer in use. Returns whether the file is gone.
+ * The replacement and verification already succeeded by the time we get here,
+ * so every error is swallowed; the leftover is reclaimed by
+ * {@link sweepStaleUpdateArtifacts} on the next update once it is no longer in
+ * use. Returns whether the file is gone.
  */
 async function removeBackupBestEffort(filePath: string): Promise<boolean> {
 	try {
@@ -1153,9 +1122,8 @@ async function removeBackupBestEffort(filePath: string): Promise<boolean> {
  *
  * Each self-update writes to `<binary>.<timestamp>.<pid>.new` and moves the
  * previous executable to `<binary>.<timestamp>.<pid>.bak` before swapping the
- * new one in. On Windows a backup cannot be deleted while the updating process
- * is alive (it is the running process image), so it is left for a later run to
- * reclaim once its owning process has exited. A `.new` temp file only survives
+ * new one in. A stale backup from a crashed run is reclaimed once it is older
+ * than the reaping window. A `.new` temp file only survives
  * a hard kill mid-download; it is reaped once older than the download window,
  * which a live download cannot exceed without timing out and cleaning up after
  * itself — so a concurrent run's in-progress temp is never deleted. Legacy
@@ -1205,8 +1173,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 	try {
 		// `backupPath` is unique per attempt (see updateViaBinaryAt), so this rename
 		// never has to overwrite — or unlink — a possibly-locked leftover from an
-		// earlier run. Renaming the running executable itself is permitted on
-		// Windows; only deleting its still-mapped image is not.
+		// earlier run.
 		await fs.promises.rename(options.targetPath, options.backupPath);
 		backupReady = true;
 		await fs.promises.rename(options.tempPath, options.targetPath);
@@ -1219,9 +1186,8 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		}
 
 		backupReady = false;
-		// Swap done and verified. On Windows the backup is still the running
-		// process image and cannot be unlinked until this process exits, so a
-		// failure here must NOT fail an otherwise-successful update.
+		// Swap done and verified. Removal of the backup must NOT fail an
+		// otherwise-successful update.
 		await removeBackupBestEffort(options.backupPath);
 		return verification;
 	} catch (err) {
@@ -1528,7 +1494,7 @@ export async function updateViaBinaryAt(
 	// first kept writing to its open fd (size + digest still passed), then chmod
 	// hit the missing path and the update aborted (issue #8434). The backup needs
 	// the same uniqueness: a stale backup from an earlier update may still be
-	// locked (the previous process image on Windows), so a fixed name would force
+	// locked, so a fixed name would force
 	// the move-aside rename to overwrite it. pid, timestamp, and a process-local
 	// counter keep two updates started in the same millisecond from colliding.
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
@@ -1566,147 +1532,14 @@ export async function updateViaBinaryAt(
 }
 
 /**
- * In-place forwarder bodies, by shim extension, for launchers that cannot be
- * renamed aside during a script-shim takeover; each execs the sibling
- * `omp.exe`. Rewriting matters for the shims that outrank `.exe` at command
- * resolution: PowerShell prefers `.ps1` and Git Bash resolves the
- * extensionless sh shim first, so leaving the old body behind would keep
- * launching the replaced install.
- */
-const SHIM_FORWARDERS: Record<string, string> = {
-	"": `#!/bin/sh\nexec "$(dirname "$0")/${BINARY_NAME}.exe" "$@"\n`,
-	".cmd": `@"%~dp0${BINARY_NAME}.exe" %*\r\n`,
-	".bat": `@"%~dp0${BINARY_NAME}.exe" %*\r\n`,
-	".ps1": `& "$PSScriptRoot\\${BINARY_NAME}.exe" @args\nexit $LASTEXITCODE\n`,
-};
-
-/**
- * Take over a Windows script-launcher install for a binary-only release.
+ * Installer one-liner for recovery instructions.
  *
- * npm-managed Windows installs are launched through script shims
- * (`omp`/`omp.cmd`/`omp.ps1`) that cannot be overwritten with a native
- * executable. The release binary is installed as `omp.exe` beside them and
- * the shims are then renamed aside: cmd.exe would already prefer `.exe` via
- * PATHEXT, but PowerShell resolves `.ps1` first, so the takeover only sticks
- * once the shims are out of the way. A working launcher exists at every
- * step — the exe lands before any shim moves, a shim that refuses to move
- * (a running `.cmd` can be renamed but may be held open some other way) is
- * rewritten in place as a forwarder to the exe, and a failed version
- * verification moves everything back.
- */
-export async function updateViaShimTakeover(
-	shimPath: string,
-	expectedVersion: string,
-	options: {
-		binaryName?: string;
-		fetchImpl?: Fetch;
-		githubToken?: string;
-		verifyBinary?: typeof verifyBinaryAtPath;
-	} = {},
-): Promise<void> {
-	const binaryName = options.binaryName ?? getBinaryName();
-	const launcherDir = path.dirname(shimPath);
-	const exePath = path.join(launcherDir, `${BINARY_NAME}.exe`);
-	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
-	const tempPath = `${exePath}.${attempt}.new`;
-	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
-	console.log(chalk.dim(`Downloading ${binaryName}…`));
-	await downloadVerifiedBinary({
-		url: asset.url,
-		targetPath: tempPath,
-		expectedSize: asset.size,
-		expectedDigest: asset.digest,
-		fetchImpl: options.fetchImpl,
-	});
-	console.log(chalk.dim(`Verified ${asset.digest}`));
-	const forwarded: Array<{ launcher: string; original: string }> = [];
-	const stuck: string[] = [];
-	// Serialize the launcher swap and artifact sweep so two overlapping updates
-	// never retire the same shims or reclaim a live run's backup before its
-	// verification can roll it back.
-	await withFileLock(exePath, async () => {
-		console.log(chalk.dim(`Installing ${BINARY_NAME}.exe beside the script launcher...`));
-		await fs.promises.rename(tempPath, exePath);
-		// Retire the shims so PATH resolution lands on the new exe. Renamed, not
-		// deleted: restorable on verification failure, and Windows permits
-		// renaming a batch file that is still executing. A shim that cannot be
-		// renamed (held open without delete sharing) is rewritten in place as a
-		// forwarder to the exe — write and rename take different Windows locks,
-		// so one can succeed where the other fails.
-		const backupSuffix = `${attempt}.bak`;
-		const retired: Array<{ launcher: string; backup: string }> = [];
-		for (const ext of ["", ".cmd", ".ps1", ".bat"]) {
-			const launcher = path.join(launcherDir, `${BINARY_NAME}${ext}`);
-			const backup = `${launcher}.${backupSuffix}`;
-			try {
-				await fs.promises.rename(launcher, backup);
-				retired.push({ launcher, backup });
-			} catch (err) {
-				if (isEnoent(err)) continue;
-				try {
-					const original = await Bun.file(launcher).text();
-					await Bun.write(launcher, SHIM_FORWARDERS[ext]);
-					forwarded.push({ launcher, original });
-				} catch {
-					stuck.push(launcher);
-				}
-			}
-		}
-
-		// Verify the exe by its explicit path: $which cached the shim path when
-		// the update target was resolved, and the shim was just renamed away, so
-		// a PATH re-resolution here would test a file that no longer exists.
-		const verify = options.verifyBinary ?? verifyBinaryAtPath;
-		const verification = await verify(exePath, expectedVersion);
-		if (!verification.ok) {
-			for (const { launcher, backup } of retired) {
-				try {
-					await fs.promises.rename(backup, launcher);
-				} catch {}
-			}
-			for (const { launcher, original } of forwarded) {
-				try {
-					await Bun.write(launcher, original);
-				} catch {}
-			}
-			await unlinkIfExists(exePath);
-			throw new Error(
-				`${formatVerificationFailure(verification, expectedVersion)}; restored previous ${BINARY_NAME} launcher`,
-			);
-		}
-		for (const { backup } of retired) {
-			await removeBackupBestEffort(backup);
-		}
-		// Reclaim exe backups and retired-shim leftovers from earlier attempts.
-		for (const ext of [".exe", "", ".cmd", ".ps1", ".bat"]) {
-			await sweepStaleUpdateArtifacts(path.join(launcherDir, `${BINARY_NAME}${ext}`));
-		}
-	});
-	for (const { launcher } of forwarded) {
-		console.log(chalk.dim(`Converted ${launcher} to a forwarder (it could not be removed).`));
-	}
-	for (const launcher of stuck) {
-		console.log(
-			chalk.yellow(
-				`Could not retire ${launcher}; shells that prefer it may keep launching the old version until it is deleted manually.`,
-			),
-		);
-	}
-	printVerifiedVersion(expectedVersion);
-	console.log(chalk.dim(`Restart ${BINARY_NAME} to use the new version`));
-}
-
-/**
- * Platform-appropriate installer one-liner for recovery instructions.
- *
- * Forces the installer's binary mode (`--binary` / `-Binary`): the default
- * mode prefers a bun-based install whenever bun is present, which would send
- * a user recovering from a binary-only release straight back through bun.
+ * Forces the installer's binary mode (`--binary`): the default mode prefers a
+ * bun-based install whenever bun is present, which would send a user
+ * recovering from a binary-only release straight back through bun.
  */
 function installerHint(): string {
-	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://proto.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://proto.sh/install | sh -s -- --binary";
+	return "curl -fsSL https://proto.sh/install | sh -s -- --binary";
 }
 
 /**
@@ -1759,24 +1592,10 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			await updateViaHomebrew(release.version, opts.force);
 		} else if (target.method === "mise") {
 			await updateViaMise(release.version, opts.force);
-		} else if (target.method === "bun" || target.method === "npm") {
-			if (forceBinary) {
-				// Reachable in forced mode only through a Windows script
-				// launcher resolved from PATH (the bun/npm bin-dir probes are
-				// skipped), so the launcher path is always known.
-				if (!target.path) throw new Error(`Could not resolve ${BINARY_NAME} launcher path in PATH`);
-				console.log(chalk.dim("This release ships as a standalone binary; replacing the script launcher."));
-				await updateViaShimTakeover(target.path, release.version);
-				console.log(
-					chalk.yellow(
-						`This install is no longer managed by ${target.method}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
-					),
-				);
-			} else if (target.method === "bun") {
-				await updateViaBun(release);
-			} else {
-				await updateViaNpm(release);
-			}
+		} else if (target.method === "bun") {
+			await updateViaBun(release);
+		} else if (target.method === "npm") {
+			await updateViaNpm(release);
 		} else {
 			if (forceBinary && target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));

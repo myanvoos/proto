@@ -43,11 +43,7 @@ import { AssistantMessageComponent } from "./assistant-message";
 import { createBackgroundTanDispatchBlock } from "./background-tan-message";
 import { BashExecutionComponent } from "./bash-execution";
 import { detectCacheInvalidation } from "./cache-invalidation-marker";
-import {
-	BranchSummaryMessageComponent,
-	CompactionSummaryMessageComponent,
-	createHandoffSummaryMessageComponent,
-} from "./compaction-summary-message";
+import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent } from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
@@ -503,12 +499,6 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
 			this.container.addChild(createBackgroundTanDispatchBlock(message as CustomMessage<unknown>));
-			return;
-		}
-		const handoffComponent = createHandoffSummaryMessageComponent(message as CustomMessage<unknown>, this.#expanded);
-		if (handoffComponent) {
-			this.#trackExpandable(handoffComponent);
-			this.container.addChild(handoffComponent);
 			return;
 		}
 		const component = new CustomMessageComponent(

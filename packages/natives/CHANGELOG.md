@@ -3,8 +3,9 @@
 ## [Unreleased]
 
 ### Breaking Changes
-
+- Dropped Windows support: no `win32-x64` native addon or npm leaf package is built or published anymore, and the loader no longer ships Windows node_modules staging, the `%LOCALAPPDATA%` cache fallback, or PowerShell AVX2 detection.
 - Removed `renderSnapcompactPng` and `snapcompactSupportedChars` native exports along with the bundled snapcompact fonts.
+- Native addons now build with plain cargo on matching-host runners via `scripts/build-natives.sh`; the Bazel pipeline and its hermetic cross toolchains are removed. Local iteration (`bun --cwd=packages/natives run build`) still uses the cargo/napi-rs host backend.
 
 ### Fixed
 

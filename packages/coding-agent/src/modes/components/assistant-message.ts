@@ -83,19 +83,19 @@ function containsMermaidFence(text: string): boolean {
 
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
- * thinking block while the model is still producing it. A single fixed-width
- * starburst cycles through facets (✻ ✼ ❉ ❊ ✺ ✹ ✸ ✶) so the indicator animates
- * in place without shifting the line or the trailing speed badge. The dwell per
- * frame eases between {@link THINKING_DOTS_FRAME_MS_MIN} and
+ * thinking block while the model is still producing it. A braille ring expands
+ * from center dot to full-width and collapses (radius interpolated in 9 steps,
+ * all frames 3 columns wide) so the indicator animates in place without
+ * shifting the line or the trailing speed badge. The dwell per frame eases
+ * between {@link THINKING_DOTS_FRAME_MS_MIN} and
  * {@link THINKING_DOTS_FRAME_MS_MAX} across each revolution (see
  * {@link AssistantMessageComponent.thinkingDotsFrameDelay}).
  */
-const THINKING_DOTS_FRAMES = ["✻", "✼", "❉", "❊", "✺", "✹", "✸", "✶"] as const;
+const THINKING_DOTS_FRAMES = ["⠀⠶⠀", "⠰⣿⠆", "⢸⣿⡇", "⢸⣉⡇", "⢾⣉⡷", "⣿⣉⣿", "⣏⠀⣹", "⡇⠀⢸", "⡁⠀⢈"] as const;
 /**
  * Pulse cadence bounds (ms). Each frame's dwell eases between these on a
  * raised-cosine "breath" — quickest at the cycle start, slowest at its midpoint —
- * so the starburst accelerates and slows instead of ticking at one fixed rate.
- * Mean ≈ 150ms, snappier than the previous flat 320ms.
+ * so the pulse accelerates and slows instead of ticking at one fixed rate.
  */
 const THINKING_DOTS_FRAME_MS_MIN = 70;
 const THINKING_DOTS_FRAME_MS_MAX = 230;
@@ -389,7 +389,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/** Eased dwell (ms) for the current pulse frame: a raised cosine over the
-	 *  8-frame cycle, continuous across the wrap, so the rotation breathes rather
+	 *  frame cycle, continuous across the wrap, so the rotation breathes rather
 	 *  than advancing at a fixed interval. */
 	#thinkingDotsFrameDelay(): number {
 		const phase = (1 - Math.cos((2 * Math.PI * this.#thinkingDotsFrame) / THINKING_DOTS_FRAMES.length)) / 2;

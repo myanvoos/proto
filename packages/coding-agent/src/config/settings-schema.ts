@@ -4,14 +4,11 @@ import {
 	type BlobDestinationMetadata,
 	BUILTIN_BLOB_DESTINATIONS,
 } from "../blob-broker/destinations";
-import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS, LIVE_VOICE_VALUES } from "../live/voices";
 import {
 	COMPACTION_METHOD_CHOICES,
 	type CompactionMethod,
 	DEFAULT_COMPACTION_METHOD_ORDER,
 } from "../session/compaction-methods";
-import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
-import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import { getThinkingLevelMetadata } from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
@@ -32,14 +29,6 @@ import {
 	TINY_TITLE_MODEL_VALUES,
 } from "../tiny/models";
 import { IMAGE_PROVIDER_CHOICES, type ImageProvider } from "../tools/image-providers";
-import {
-	DEFAULT_TTS_LOCAL_MODEL_KEY,
-	DEFAULT_TTS_VOICE,
-	TTS_LOCAL_MODEL_OPTIONS,
-	TTS_LOCAL_MODEL_VALUES,
-	TTS_LOCAL_VOICE_OPTIONS,
-	TTS_LOCAL_VOICE_VALUES,
-} from "../tts/models";
 import { EDIT_MODES } from "../utils/edit-mode";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
@@ -1057,7 +1046,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Terminal Title Run State",
 			description:
-				"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you",
+				"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you",
 		},
 	},
 
@@ -2165,51 +2154,6 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-
-	// Speech-to-text
-	"stt.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "interaction",
-			group: "Speech",
-			label: "Speech-to-Text",
-			description: "Enable speech-to-text input via microphone",
-		},
-	},
-
-	"stt.language": {
-		type: "string",
-		default: "en",
-	},
-
-	"stt.modelName": {
-		type: "enum",
-		values: STT_MODEL_VALUES,
-		default: DEFAULT_STT_MODEL_KEY,
-		ui: {
-			tab: "interaction",
-			group: "Speech",
-			label: "Speech Model",
-			description:
-				"Local on-device speech model. Parakeet TDT v3 (sherpa-onnx) is the SoTA default; Whisper base/small/large-v3-turbo tiers (transformers.js) trade size for multilingual coverage. Downloaded on first use.",
-			options: STT_MODEL_OPTIONS,
-		},
-	},
-	"stt.submitTrigger": {
-		type: "enum",
-		values: STT_SUBMIT_TRIGGER_VALUES,
-		default: "never",
-		ui: {
-			tab: "interaction",
-			group: "Speech",
-			label: "Speech-to-Text Submit Trigger",
-			description:
-				"Choose when speech dictation automatically submits: Never, Release (2+ words), Release with complete sentence, or When I Say Submit.",
-			options: STT_SUBMIT_TRIGGER_OPTIONS,
-		},
-	},
-
 	// ────────────────────────────────────────────────────────────────────────
 	// Context
 	// ────────────────────────────────────────────────────────────────────────
@@ -2321,17 +2265,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "300000", label: "300K tokens", description: "Large context window" },
 				{ value: "500000", label: "500K tokens", description: "Very large context window" },
 			],
-		},
-	},
-
-	"compaction.handoffSaveToDisk": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "context",
-			group: "Compaction",
-			label: "Save Handoff Docs",
-			description: "Save generated handoff documents to markdown files for the auto-handoff flow",
 		},
 	},
 
@@ -3299,17 +3232,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Enable the launch tool for supervising shared long-running project processes",
 		},
 	},
-
-	"speechgen.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Speech Generation",
-			description: "Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis",
-		},
-	},
 	"generate_image.enabled": {
 		type: "boolean",
 		default: false,
@@ -3842,18 +3764,7 @@ export const SETTINGS_SCHEMA = {
 	// Delegation
 	"orchestrator.isolation.mode": {
 		type: "enum",
-		values: [
-			"none",
-			"auto",
-			"apfs",
-			"btrfs",
-			"zfs",
-			"reflink",
-			"overlayfs",
-			"projfs",
-			"block-clone",
-			"rcopy",
-		] as const,
+		values: ["none", "auto", "apfs", "btrfs", "zfs", "reflink", "overlayfs", "rcopy"] as const,
 		default: "none",
 		ui: {
 			tab: "tasks",
@@ -3868,17 +3779,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "btrfs", label: "btrfs", description: "btrfs subvolume snapshot" },
 				{ value: "zfs", label: "ZFS", description: "ZFS snapshot + clone" },
 				{ value: "reflink", label: "Reflink", description: "Linux FICLONE per-file reflink" },
-				{
-					value: "overlayfs",
-					label: "Overlayfs",
-					description: "Linux kernel overlay (or fuse-overlayfs fallback)",
-				},
-				{ value: "projfs", label: "ProjFS", description: "Windows Projected File System" },
-				{
-					value: "block-clone",
-					label: "Block clone",
-					description: "Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)",
-				},
 				{
 					value: "rcopy",
 					label: "Recursive copy",
@@ -4346,116 +4246,6 @@ export const SETTINGS_SCHEMA = {
 					description: "Priority serving path: higher reliability, premium per-token pricing",
 				},
 			],
-		},
-	},
-	"live.voice": {
-		type: "enum",
-		values: LIVE_VOICE_VALUES,
-		default: DEFAULT_LIVE_VOICE,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Live Voice",
-			description: "Voice used by Codex-backed realtime voice sessions",
-			options: LIVE_VOICE_OPTIONS,
-		},
-	},
-	"providers.tts": {
-		type: "enum",
-		values: ["auto", "local", "xai"] as const,
-		default: "auto",
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Text-to-Speech Provider",
-			description: "Backend for the tts tool: local on-device neural TTS (Kokoro-82M) or xAI Grok Voice",
-			options: [
-				{
-					value: "auto",
-					label: "Auto",
-					description: "Prefer local on-device TTS; route .mp3 output to xAI when credentials exist",
-				},
-				{ value: "local", label: "Local", description: "On-device neural TTS (Kokoro-82M); output is WAV/PCM16" },
-				{
-					value: "xai",
-					label: "xAI Grok Voice",
-					description: "Requires xAI Grok OAuth or XAI_API_KEY; MP3 or WAV",
-				},
-			],
-		},
-	},
-	"tts.localModel": {
-		type: "enum",
-		values: TTS_LOCAL_MODEL_VALUES,
-		default: DEFAULT_TTS_LOCAL_MODEL_KEY,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Local TTS Model",
-			description: "On-device neural TTS model (Kokoro-82M) used by the local TTS backend",
-			options: TTS_LOCAL_MODEL_OPTIONS,
-		},
-	},
-	"tts.localVoice": {
-		type: "enum",
-		values: TTS_LOCAL_VOICE_VALUES,
-		default: DEFAULT_TTS_VOICE,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Local TTS Voice",
-			description: "Kokoro voice used by the local TTS backend (American/British, female/male)",
-			options: TTS_LOCAL_VOICE_OPTIONS,
-		},
-	},
-	"speech.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization",
-			description: "Speak the assistant's output aloud through the speakers as it streams",
-		},
-	},
-	"speech.mode": {
-		type: "enum",
-		values: ["all", "assistant", "yield"] as const,
-		default: "assistant",
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization Mode",
-			description:
-				"What to speak: all = assistant messages + thinking; assistant = messages only; yield = only the final message at turn end",
-			options: [
-				{ value: "all", label: "All (messages + thinking)" },
-				{ value: "assistant", label: "Assistant messages" },
-				{ value: "yield", label: "Final message only" },
-			],
-		},
-	},
-	"speech.enhanced": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Enhanced Speech Rewriting",
-			description:
-				"Rewrite assistant output into natural spoken prose with the tiny/smol model before synthesis (describes code, drops links and markdown). Falls back to mechanical cleanup on failure",
-		},
-	},
-	"speech.voice": {
-		type: "enum",
-		values: TTS_LOCAL_VOICE_VALUES,
-		default: DEFAULT_TTS_VOICE,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization Voice",
-			description: "Kokoro voice used when speaking the assistant's output aloud",
-			options: TTS_LOCAL_VOICE_OPTIONS,
 		},
 	},
 	"providers.tinyModel": {
@@ -5016,7 +4806,6 @@ export interface CompactionSettings {
 	keepRecentTokens: number;
 	midTurnEnabled: boolean;
 	asyncEnabled: boolean;
-	handoffSaveToDisk: boolean;
 	autoContinue: boolean;
 	remoteEndpoint: string | undefined;
 	remoteStreamingV2Enabled: boolean;
@@ -5134,14 +4923,6 @@ export interface ThinkingBudgetsSettings {
 	xhigh: number;
 	max: number;
 }
-
-export interface SttSettings {
-	enabled: boolean;
-	language: string | undefined;
-	modelName: string;
-	streaming: boolean;
-}
-
 export interface BashInterceptorRule {
 	pattern: string;
 	flags?: string;
@@ -5192,7 +4973,6 @@ export interface GroupTypeMap {
 	exa: ExaSettings;
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;
-	stt: SttSettings;
 	modelRoles: Record<string, string>;
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];

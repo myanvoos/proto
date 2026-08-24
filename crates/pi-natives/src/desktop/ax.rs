@@ -10,8 +10,6 @@ use super::{
 pub enum AxHandle {
 	#[cfg(target_os = "macos")]
 	Mac(objc2_core_foundation::CFRetained<objc2_application_services::AXUIElement>),
-	#[cfg(target_os = "windows")]
-	Uia(uiautomation::UIElement),
 	#[cfg(target_os = "linux")]
 	AtSpi(atspi::ObjectRefOwned),
 	#[cfg(test)]
@@ -466,23 +464,6 @@ pub fn normalize_role_macos(native: &str) -> String {
 	}
 	.to_ascii_lowercase()
 }
-#[cfg(any(target_os = "windows", test))]
-pub fn normalize_role_uia(native: &str) -> String {
-	match native {
-		"Edit" => "textfield",
-		"Document" => "textarea",
-		"Text" => "statictext",
-		"Hyperlink" => "link",
-		"Pane" => "group",
-		"TabItem" => "tab",
-		"Tab" => "tabgroup",
-		"DataItem" => "listitem",
-		"DataGrid" => "table",
-		"SplitButton" => "popupbutton",
-		other => return other.to_ascii_lowercase(),
-	}
-	.to_string()
-}
 #[cfg(any(target_os = "linux", test))]
 pub fn normalize_role_atspi(native: &str, multiline: bool) -> String {
 	match native.to_ascii_lowercase().as_str() {
@@ -765,21 +746,6 @@ mod tests {
 			("AXButton", "button"),
 		] {
 			assert_eq!(normalize_role_macos(native), role);
-		}
-		for (native, role) in [
-			("Edit", "textfield"),
-			("Document", "textarea"),
-			("Text", "statictext"),
-			("Hyperlink", "link"),
-			("Pane", "group"),
-			("TabItem", "tab"),
-			("Tab", "tabgroup"),
-			("DataItem", "listitem"),
-			("DataGrid", "table"),
-			("SplitButton", "popupbutton"),
-			("Button", "button"),
-		] {
-			assert_eq!(normalize_role_uia(native), role);
 		}
 		for (native, multiline, role) in [
 			("push button", false, "button"),

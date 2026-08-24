@@ -25,7 +25,6 @@ import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
-	RpcHandoffResult,
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
 	RpcHostToolDefinition,
@@ -778,17 +777,6 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
-	/**
-	 * Hand off session context to a new session.
-	 */
-	async handoff(customInstructions?: string): Promise<RpcHandoffResult | null> {
-		const response = await this.#send({ type: "handoff", customInstructions });
-		return this.#getData(response);
-	}
-
-	/**
-	 * Export session to HTML.
-	 */
 	/**
 	 * Switch to a different session file.
 	 * @returns Object with `cancelled: true` if an extension cancelled the switch

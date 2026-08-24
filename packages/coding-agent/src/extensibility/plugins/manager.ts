@@ -501,7 +501,6 @@ export class PluginManager {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
-				windowsHide: true,
 			});
 			// Drain stdout+stderr concurrently with proc.exited. Awaiting exited
 			// before reading either pipe risks a >64 KiB OS-pipe-buffer deadlock
@@ -557,7 +556,6 @@ export class PluginManager {
 					stdin: "ignore",
 					stdout: "pipe",
 					stderr: "pipe",
-					windowsHide: true,
 				});
 				// Same drain-concurrent-with-exit pattern as the bun install above.
 				const [updateExit, , updateStderr] = await Promise.all([
@@ -660,7 +658,6 @@ export class PluginManager {
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 		});
 
 		// Drain both pipes concurrently with proc.exited to avoid a pipe-buffer
@@ -1094,7 +1091,6 @@ export class PluginManager {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
-				windowsHide: true,
 			});
 			// Drain pipes concurrently with proc.exited; otherwise a chatty
 			// bun install can block on a full OS pipe buffer.

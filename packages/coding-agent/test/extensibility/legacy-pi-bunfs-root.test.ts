@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import * as path from "node:path";
 import { __computeBundledSelfPackageRoot } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
 
 // Issue #3423 removed the runtime bunfs-path computation (`__computeBunfsPackageRoot`,
@@ -15,22 +14,14 @@ import { __computeBundledSelfPackageRoot } from "@oh-my-pi/pi-coding-agent/exten
 // pinned below.
 describe("legacy pi compat bundled-self package root computation", () => {
 	it("derives the npm prebuilt bundle package root from dist import.meta.dir", () => {
-		const winMetaDir = "C:\\Users\\me\\.bun\\install\\global\\node_modules\\@oh-my-pi\\pi-coding-agent\\dist";
-		expect(__computeBundledSelfPackageRoot(winMetaDir, path.win32)).toBe(
-			"C:\\Users\\me\\.bun\\install\\global\\node_modules\\@oh-my-pi\\pi-coding-agent",
-		);
-
 		const posixMetaDir = "/home/me/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist";
-		expect(__computeBundledSelfPackageRoot(posixMetaDir, path.posix)).toBe(
+		expect(__computeBundledSelfPackageRoot(posixMetaDir)).toBe(
 			"/home/me/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent",
 		);
 	});
 
 	it("derives the source package root when PI_BUNDLED is used outside dist", () => {
-		const winMetaDir = "C:\\repo\\packages\\coding-agent\\src\\extensibility\\plugins";
-		expect(__computeBundledSelfPackageRoot(winMetaDir, path.win32)).toBe("C:\\repo\\packages\\coding-agent");
-
 		const posixMetaDir = "/repo/packages/coding-agent/src/extensibility/plugins";
-		expect(__computeBundledSelfPackageRoot(posixMetaDir, path.posix)).toBe("/repo/packages/coding-agent");
+		expect(__computeBundledSelfPackageRoot(posixMetaDir)).toBe("/repo/packages/coding-agent");
 	});
 });

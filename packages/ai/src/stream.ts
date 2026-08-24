@@ -704,7 +704,7 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 			const result = await inner.result();
 			// Releasing the permit is part of request completion. Publishing the
 			// result first lets an immediate follow-up turn contend with its own
-			// still-live lease, which is particularly costly on Windows.
+			// still-live lease, which is particularly costly.
 			await releaseBestEffort();
 			if (!outer.done) {
 				if (terminalEvent) outer.push(terminalEvent);

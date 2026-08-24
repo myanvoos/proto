@@ -92,7 +92,6 @@ const BRACKETED_IMAGE_PATH_REGEX = /\.(?:png|jpe?g|gif|webp)$/i;
 const SHELL_ESCAPED_PATH_CHAR_REGEX = /\\([\\\s'"()[\]{}&;<>|?*!$`])/g;
 const URI_SCHEME_REGEX = /^[a-z][a-z0-9+.-]*:/i;
 const FILE_URI_REGEX = /^file:\/\//i;
-const WINDOWS_DRIVE_PATH_REGEX = /^[a-z]:[\\/]/i;
 /**
  * Alternation of the filesystem prefixes that make a path unambiguously
  * absolute (POSIX root, home, `file://`, UNC, Windows drive). Shared by
@@ -123,34 +122,6 @@ const ABSOLUTE_PATH_PREFIX_REGEX = new RegExp(`^${ABSOLUTE_PATH_PREFIX_SOURCE}`)
  */
 const INTERIOR_PATH_ANCHOR_REGEX = new RegExp(String.raw`(?<!\\)\s(?:${ABSOLUTE_PATH_PREFIX_SOURCE}|\.\.?[\\/])`);
 
-/** Max gap (ms) between two spaces for the later one to count as OS key auto-repeat rather than a
- *  deliberate press. OS auto-repeat is fast; a deliberate tap (even a fast one) is slower. */
-export const SPACE_REPEAT_MAX_GAP_MS = 120;
-/** Two consecutive inter-space gaps are "mechanical" (machine-driven auto-repeat) when both are
- *  within {@link SPACE_REPEAT_MAX_GAP_MS} and differ by no more than this — an absolute jitter floor
- *  or, for slower repeat rates, {@link SPACE_REPEAT_JITTER_RATIO} of the smaller gap. OS key-repeat
- *  is metronomic; a human smashing the bar is fast but irregular, so its deltas never stay this
- *  steady. */
-export const SPACE_REPEAT_JITTER_MS = 18;
-export const SPACE_REPEAT_JITTER_RATIO = 0.35;
-/** Consecutive mechanical (fast + steady) deltas that confirm the space bar is held and start
- *  recording. Needs a sustained metronomic cadence, so jittery smashing and deliberate taps never
- *  reach it. */
-export const SPACE_HOLD_MECHANICAL_RUN = 2;
-/** Idle gap (ms) after the last repeated space that counts as the space bar being released, ending
- *  the push-to-talk recording. Must comfortably exceed the OS key-repeat interval. */
-export const SPACE_HOLD_RELEASE_MS = 250;
-
-/** Whether two consecutive inter-space gaps look machine-driven: both within the auto-repeat band
- *  and steady enough (small absolute or proportional difference). OS key-repeat is metronomic, so
- *  its successive deltas match closely; human smashing is fast but irregular and deliberate taps are
- *  too slow, so neither passes. */
-function gapsAreMechanical(gap: number, prevGap: number): boolean {
-	if (gap > SPACE_REPEAT_MAX_GAP_MS || prevGap > SPACE_REPEAT_MAX_GAP_MS) return false;
-	const tolerance = Math.max(SPACE_REPEAT_JITTER_MS, Math.min(gap, prevGap) * SPACE_REPEAT_JITTER_RATIO);
-	return Math.abs(gap - prevGap) <= tolerance;
-}
-
 function isPastedPathSeparator(char: string | undefined): boolean {
 	return char === undefined || char === " " || char === "\t" || char === "\r" || char === "\n";
 }
@@ -179,7 +150,7 @@ function normalizePastedPath(path: string): string {
 }
 
 function isExplicitPastedPath(path: string): boolean {
-	if (WINDOWS_DRIVE_PATH_REGEX.test(path) || FILE_URI_REGEX.test(path)) return true;
+	if (FILE_URI_REGEX.test(path)) return true;
 	if (URI_SCHEME_REGEX.test(path)) return false;
 	return path.includes("/") || path.includes("\\");
 }
@@ -258,7 +229,7 @@ function extractExplicitPathSegments(payload: string): string[] | undefined {
  * Extract image-or-other file paths from plain (un-bracketed) clipboard text.
  * Mirrors {@link extractBracketedPastePaths} for terminals/handlers that
  * already stripped the `\x1b[200~`…`\x1b[201~` markers (e.g. clipboard text
- * read directly via `pbpaste`/PowerShell).
+ * read directly via `pbpaste`).
  */
 export function extractPastePathsFromText(text: string): string[] | undefined {
 	return extractExplicitPathSegments(text);
@@ -716,16 +687,6 @@ export class CustomEditor extends Editor {
 	/** Called when left-arrow is pressed while the editor is empty (cursor necessarily at start). */
 	onLeftAtStart?: () => void;
 
-	/** Fired when a sustained space-bar hold is recognized — the push-to-talk STT start. The
-	 *  optimistically-typed spaces have already been deleted by the time this runs. */
-	onSpaceHoldStart?: () => void;
-	/** Fired when the held space bar is released (detected as an idle gap with no further repeated
-	 *  spaces) — the push-to-talk STT stop. */
-	onSpaceHoldEnd?: () => void;
-	/** Gate for the space-hold gesture. Returns false to keep the space bar inserting spaces
-	 *  normally; wired to `stt.enabled` so disabling STT restores plain space behavior. */
-	sttHoldEnabled?: () => boolean;
-
 	/** Custom key handlers from extensions and non-built-in app actions. */
 	#customKeyHandlers = new Map<KeyId, () => void>();
 	#customMatchKeys = new Map<string, () => void>();
@@ -742,18 +703,6 @@ export class CustomEditor extends Editor {
 	/** Input chunks deferred behind an in-flight paste, drained in FIFO order once the paste
 	 *  count returns to zero. */
 	#pendingInput: string[] = [];
-	/** Spaces actually inserted in the current run; tracked back out when a hold is recognized. */
-	#spaceRunInserted = 0;
-	/** Consecutive "mechanical" deltas (fast + steady); a sustained run of these confirms a held bar. */
-	#mechanicalRun = 0;
-	/** Inter-space gap (ms) of the previous space pair, compared against the next to judge steadiness. */
-	#prevSpaceGap: number | undefined;
-	/** Monotonic timestamp (ms) of the last space, to measure the gap to the next one. */
-	#lastSpaceAt = Number.NEGATIVE_INFINITY;
-	/** True while a recognized space-hold push-to-talk recording is in progress. */
-	#spaceHoldActive = false;
-	/** Idle timer that fires `onSpaceHoldEnd` once repeated spaces stop arriving. */
-	#spaceHoldTimer: NodeJS.Timeout | undefined;
 	#actionKeys = new Map<ConfigurableEditorAction, KeyId[]>(
 		Object.entries(DEFAULT_ACTION_KEYS).map(([action, keys]) => [action as ConfigurableEditorAction, [...keys]]),
 	);
@@ -809,90 +758,6 @@ export class CustomEditor extends Editor {
 	clearCustomKeyHandlers(): void {
 		this.#customKeyHandlers.clear();
 		this.#rebuildCustomMatchKeys();
-	}
-
-	#spaceHoldGestureEnabled(): boolean {
-		return this.onSpaceHoldStart !== undefined && (this.sttHoldEnabled?.() ?? false) && !this.isShowingAutocomplete();
-	}
-
-	/** Drive the space-hold push-to-talk state machine. Returns true when the gesture consumed the
-	 *  input so it must not reach normal editing. A held space bar emits OS auto-repeat: a *steady*
-	 *  stream of spaces at a fixed fast interval. We watch the inter-space deltas and only recognize a
-	 *  hold once {@link SPACE_HOLD_MECHANICAL_RUN} consecutive deltas are "mechanical" — both
-	 *  auto-repeat-fast and near-identical (see {@link gapsAreMechanical}). Smashing the bar is fast
-	 *  but jittery and deliberate taps are too slow, so neither escalates and both keep typing real
-	 *  spaces; the few spaces typed before a real hold is recognized are tracked back out. */
-	#handleSpaceHold(data: string, canonical: string | undefined): boolean {
-		const isSpace = canonical === "space";
-		if (this.#spaceHoldActive) {
-			if (isSpace) {
-				// Auto-repeat while held: swallow it and keep the release timer alive.
-				this.#armSpaceHoldReleaseTimer();
-				return true;
-			}
-			// Any non-space means the bar was released — stop recording, then let the key through.
-			this.#endSpaceHold();
-			return false;
-		}
-		if (!isSpace) {
-			this.#resetSpaceRun();
-			return false;
-		}
-		if (!this.#spaceHoldGestureEnabled()) return false;
-		const now = performance.now();
-		const gap = now - this.#lastSpaceAt;
-		const prevGap = this.#prevSpaceGap;
-		this.#lastSpaceAt = now;
-		this.#prevSpaceGap = gap;
-		if (prevGap === undefined || !gapsAreMechanical(gap, prevGap)) {
-			// First space, a deliberate tap, or jittery smashing: not a steady machine cadence yet, so
-			// type a real space and reset the mechanical run.
-			this.#mechanicalRun = 0;
-			super.handleInput(data);
-			this.#spaceRunInserted++;
-			return true;
-		}
-		// Steady fast repeat: swallow it. Once the cadence has held for SPACE_HOLD_MECHANICAL_RUN
-		// deltas it's a held bar — track back the few pre-burst spaces already typed and start.
-		if (++this.#mechanicalRun >= SPACE_HOLD_MECHANICAL_RUN) {
-			this.deleteBeforeCursor(this.#spaceRunInserted);
-			this.#resetSpaceRun();
-			this.#beginSpaceHold();
-		}
-		return true;
-	}
-
-	#resetSpaceRun(): void {
-		this.#spaceRunInserted = 0;
-		this.#mechanicalRun = 0;
-		this.#prevSpaceGap = undefined;
-		this.#lastSpaceAt = Number.NEGATIVE_INFINITY;
-	}
-
-	#beginSpaceHold(): void {
-		this.#spaceHoldActive = true;
-		this.#armSpaceHoldReleaseTimer();
-		this.onSpaceHoldStart?.();
-	}
-
-	#armSpaceHoldReleaseTimer(): void {
-		if (this.#spaceHoldTimer) clearTimeout(this.#spaceHoldTimer);
-		this.#spaceHoldTimer = setTimeout(() => {
-			this.#spaceHoldTimer = undefined;
-			this.#endSpaceHold();
-		}, SPACE_HOLD_RELEASE_MS);
-		this.#spaceHoldTimer.unref?.();
-	}
-
-	#endSpaceHold(): void {
-		if (!this.#spaceHoldActive) return;
-		this.#spaceHoldActive = false;
-		this.#resetSpaceRun();
-		if (this.#spaceHoldTimer) {
-			clearTimeout(this.#spaceHoldTimer);
-			this.#spaceHoldTimer = undefined;
-		}
-		this.onSpaceHoldEnd?.();
 	}
 
 	/** Decrement {@link #pasteInFlight} once an async paste settles and, when the count returns
@@ -984,9 +849,6 @@ export class CustomEditor extends Editor {
 			this.onLeftAtStart();
 			return;
 		}
-
-		// Space-hold push-to-talk: a sustained space bar starts/stops STT instead of typing spaces.
-		if (this.#handleSpaceHold(data, canonical)) return;
 
 		// One union probe decides whether any per-action interception below can
 		// match — plain typing then skips the ~20 per-action set lookups per key.

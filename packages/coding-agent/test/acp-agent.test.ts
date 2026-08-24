@@ -17,13 +17,6 @@ import type {
 	UsageFallbackConfirmation,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "@oh-my-pi/pi-coding-agent/stt/models";
-import {
-	DEFAULT_TTS_LOCAL_MODEL_KEY,
-	DEFAULT_TTS_VOICE,
-	TTS_LOCAL_MODELS,
-	TTS_LOCAL_VOICE_OPTIONS,
-} from "@oh-my-pi/pi-coding-agent/tts/models";
 import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import type {
 	AgentSideConnection,
@@ -784,49 +777,6 @@ describe("ACP agent", () => {
 		expect(modelOption?.currentValue).toBe(`${TEST_MODELS[1]!.provider}/${TEST_MODELS[1]!.id}`);
 
 		vi.useRealTimers();
-		harness.abortController.abort();
-		await Bun.sleep(0);
-	});
-
-	it("lists static speech models for ACP mobile voice settings", async () => {
-		const harness = await createHarness();
-		const voices = TTS_LOCAL_VOICE_OPTIONS.map(({ value, label }) => ({ value, label }));
-
-		const result = await harness.agent.extMethod("speech.models.list", {});
-
-		expect(result).toEqual({
-			settings: {
-				speechToTextModel: "stt.modelName",
-				textToSpeechModel: "tts.localModel",
-				textToSpeechVoice: "tts.localVoice",
-				speechVoice: "speech.voice",
-			},
-			defaults: {
-				speechToTextModel: DEFAULT_STT_MODEL_KEY,
-				textToSpeechModel: DEFAULT_TTS_LOCAL_MODEL_KEY,
-				voice: DEFAULT_TTS_VOICE,
-			},
-			speechToText: {
-				setting: "stt.modelName",
-				defaultValue: DEFAULT_STT_MODEL_KEY,
-				models: STT_MODEL_OPTIONS.map(({ value, label, description }) => ({ value, label, description })),
-			},
-			textToSpeech: {
-				modelSetting: "tts.localModel",
-				voiceSetting: "tts.localVoice",
-				speechVoiceSetting: "speech.voice",
-				defaultModel: DEFAULT_TTS_LOCAL_MODEL_KEY,
-				defaultVoice: DEFAULT_TTS_VOICE,
-				models: TTS_LOCAL_MODELS.map(({ key, label, description, voices: modelVoices }) => ({
-					value: key,
-					label,
-					description,
-					voices: modelVoices.map(({ id, label: voiceLabel }) => ({ value: id, label: voiceLabel })),
-				})),
-				voices,
-			},
-		});
-
 		harness.abortController.abort();
 		await Bun.sleep(0);
 	});

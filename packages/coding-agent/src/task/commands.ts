@@ -1,18 +1,10 @@
 /**
  * Workflow commands for orchestrating multi-agent workflows.
- *
- * Commands are embedded at build time via Bun's import with { type: "text" }.
  */
 import * as path from "node:path";
-import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
+import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { type SlashCommand, slashCommandCapability } from "../capability/slash-command";
 import { loadCapability } from "../discovery";
-// Embed command markdown files at build time
-import initMd from "../prompts/agents/init.md" with { type: "text" };
-
-const EMBEDDED_COMMANDS: { name: string; content: string }[] = [{ name: "init.md", content: prompt.render(initMd) }];
-
-export const EMBEDDED_COMMAND_TEMPLATES: ReadonlyArray<{ name: string; content: string }> = EMBEDDED_COMMANDS;
 
 /** Workflow command definition */
 export interface WorkflowCommand {
@@ -29,43 +21,10 @@ function getString(frontmatter: Record<string, unknown>, key: string): string {
 	return typeof value === "string" ? value : "";
 }
 
-/** Cache for bundled commands */
-let bundledCommandsCache: WorkflowCommand[] | null = null;
-
-/**
- * Load all bundled commands from embedded content.
- */
-export function loadBundledCommands(): WorkflowCommand[] {
-	if (bundledCommandsCache !== null) {
-		return bundledCommandsCache;
-	}
-
-	const commands: WorkflowCommand[] = [];
-
-	for (const { name, content } of EMBEDDED_COMMANDS) {
-		const { frontmatter, body } = parseFrontmatter(content, {
-			source: `embedded:${name}`,
-			level: "fatal",
-		});
-		const cmdName = name.replace(/\.md$/, "");
-
-		commands.push({
-			name: cmdName,
-			description: getString(frontmatter, "description"),
-			instructions: body,
-			source: "bundled",
-			filePath: `embedded:${name}`,
-		});
-	}
-
-	bundledCommandsCache = commands;
-	return commands;
-}
-
 /**
  * Discover all available commands.
  *
- * Precedence (highest wins): .omp > .pi > .claude (project before user), then bundled
+ * Precedence (highest wins): .omp > .pi > .claude (project before user)
  */
 export async function discoverCommands(cwd: string): Promise<WorkflowCommand[]> {
 	const resolvedCwd = path.resolve(cwd);
@@ -98,13 +57,6 @@ export async function discoverCommands(cwd: string): Promise<WorkflowCommand[]> 
 		seen.add(cmd.name);
 	}
 
-	// Add bundled commands if not already present
-	for (const cmd of loadBundledCommands()) {
-		if (seen.has(cmd.name)) continue;
-		commands.push(cmd);
-		seen.add(cmd.name);
-	}
-
 	return commands;
 }
 
@@ -122,11 +74,4 @@ export function getCommand(commands: WorkflowCommand[], name: string): WorkflowC
 export function expandCommand(command: WorkflowCommand, input: string): string {
 	// Function replacement so `$`-patterns in user input ($$, $&, ...) stay literal.
 	return command.instructions.replace(/\$@/g, () => input);
-}
-
-/**
- * Clear the bundled commands cache (for testing).
- */
-export function clearBundledCommandsCache(): void {
-	bundledCommandsCache = null;
 }

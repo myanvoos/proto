@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -123,29 +122,6 @@ describe("AgentSession advisor toggle", () => {
 		} finally {
 			await manager.close();
 		}
-	}
-
-	function prepareHandoffConversation(advisor: Agent): void {
-		sessionManager.appendMessage({ role: "user", content: "work to hand off", timestamp: 1 });
-		sessionManager.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "done" }],
-			api: "anthropic-messages",
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 1,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 2,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: 2,
-		});
-		session.agent.replaceMessages(sessionManager.buildSessionContext().messages);
-		appendAdvisorCost(advisor, 0.5, 1);
 	}
 
 	it("starts with advisor disabled", () => {
@@ -672,22 +648,6 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.getAdvisorCost()).toBeCloseTo(0.75, 8);
 		await session.dispose();
 		expect((await loadAdvisorTranscriptCosts(previousSessionFile)).get("")).toBeCloseTo(0.75, 8);
-	});
-	it("resets advisor runtimes after an in-place handoff compaction", async () => {
-		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("## Goal\nContinue from here");
-		const advisor = enableAdvisor();
-		prepareHandoffConversation(advisor);
-		session.settings.set("compaction.keepRecentTokens", 1);
-		const sessionFile = session.sessionFile;
-
-		const result = await session.handoff();
-
-		expect(result?.document).toContain("Continue from here");
-		expect(session.sessionFile).toBe(sessionFile);
-		const compaction = sessionManager.getBranch().at(-1);
-		expect(compaction).toMatchObject({ type: "compaction" });
-		if (compaction?.type !== "compaction") throw new Error("Expected handoff compaction entry");
-		expect(compaction.summary).toContain("Continue from here");
 	});
 	it("clears advisor cost when a branch skips conversation restore", async () => {
 		const extensionRunner = {

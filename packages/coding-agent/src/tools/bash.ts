@@ -69,13 +69,12 @@ const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * containing a space, pipe, `&&`, redirect, or `$(...)`.
  *
  * The wrap reuses the same shell binary + args the local `bash-executor` would
- * pick via `settings.getShellConfig()` — Git Bash / `bash.exe` on Windows
- * (`cmd.exe /c` as the last-resort fallback when no bash exists on the host),
- * `$SHELL` (bash/zsh) with the `sh` fallback on POSIX — so the ACP path
- * preserves `bash` tool semantics (`$VAR`, `$(...)`, `source`, POSIX quoting,
- * `-l`) wherever a POSIX shell is available. The agent host's shell path is
- * used as a proxy for the client's, matching the near-universal ACP
- * deployment shape of an editor spawning omp as a co-hosted subprocess.
+ * pick via `settings.getShellConfig()` — `$SHELL` (bash/zsh) with the `sh`
+ * fallback — so the ACP path preserves `bash` tool semantics (`$VAR`, `$(...)`,
+ * `source`, POSIX quoting, `-l`) wherever a POSIX shell is available.
+ * The agent host's shell path is used as a proxy for the client's, matching the
+ * near-universal ACP deployment shape of an editor spawning omp as a co-hosted
+ * subprocess.
  */
 export function wrapShellLineForClientTerminal(
 	line: string,
@@ -365,7 +364,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
 			),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
-			isWindows: process.platform === "win32",
 		});
 	}
 	readonly parameters: BashToolSchema;

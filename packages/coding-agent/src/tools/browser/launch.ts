@@ -223,7 +223,6 @@ function isExecutableFile(p: string): boolean {
 	try {
 		const st = fs.statSync(p);
 		if (!st.isFile()) return false;
-		if (process.platform === "win32") return true;
 		fs.accessSync(p, fs.constants.X_OK);
 		return true;
 	} catch {
@@ -319,21 +318,6 @@ function systemChromiumCandidates(
 				"/usr/bin/ungoogled-chromium-browser",
 				`/var/lib/flatpak/exports/bin/${UNGOOGLED_CHROMIUM_FLATPAK_ID}`,
 				path.join(home, ".local/share/flatpak/exports/bin", UNGOOGLED_CHROMIUM_FLATPAK_ID),
-			);
-			break;
-		}
-		case "win32": {
-			const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-			const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-			const localAppData = process.env.LOCALAPPDATA ?? path.join(home, "AppData\\Local");
-			candidates.push(
-				path.join(programFiles, "Google\\Chrome\\Application\\chrome.exe"),
-				path.join(programFilesX86, "Google\\Chrome\\Application\\chrome.exe"),
-				path.join(localAppData, "Google\\Chrome\\Application\\chrome.exe"),
-				path.join(programFiles, "Chromium\\Application\\chrome.exe"),
-				path.join(localAppData, "Chromium\\Application\\chrome.exe"),
-				path.join(programFiles, "Microsoft\\Edge\\Application\\msedge.exe"),
-				path.join(programFilesX86, "Microsoft\\Edge\\Application\\msedge.exe"),
 			);
 			break;
 		}

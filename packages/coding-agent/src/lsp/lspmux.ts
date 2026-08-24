@@ -65,8 +65,6 @@ const STATE_CACHE_TTL_MS = 5 * 60 * 1000;
 function getConfigPath(): string {
 	const home = os.homedir();
 	switch (os.platform()) {
-		case "win32":
-			return path.join(Bun.env.APPDATA ?? path.join(home, "AppData", "Roaming"), "lspmux", "config.toml");
 		case "darwin":
 			return path.join(home, "Library", "Application Support", "lspmux", "config.toml");
 		default:
@@ -104,7 +102,6 @@ async function checkServerRunning(binaryPath: string): Promise<boolean> {
 		const proc = Bun.spawn([binaryPath, "status"], {
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 		});
 
 		const exited = await Promise.race([

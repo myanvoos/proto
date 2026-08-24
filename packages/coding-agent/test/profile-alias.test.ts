@@ -174,93 +174,19 @@ describe("profile alias installer", () => {
 		await installProfileAlias({
 			profile: "work",
 			aliasName: "proto-work",
-			shellPath: "pwsh.exe",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
+			shellPath: "/usr/bin/pwsh",
+			homeDir: "/home/me",
 			readFile: async filePath => files.get(filePath) ?? "",
 			writeFile: async (filePath, content) => {
 				files.set(filePath, content);
 			},
 		});
 
-		const psConfigPath = path.join("C:\\Users\\me", "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
+		const psConfigPath = path.join("/home/me", ".config", "powershell", "Microsoft.PowerShell_profile.ps1");
 		const content = files.get(psConfigPath) ?? "";
 		expect(content).toContain("function proto-work");
 		expect(content).toContain("& proto --profile=work @args");
 	});
-
-	it("detects pwsh from PSModulePath when SHELL is unset on Windows", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			env: {
-				PSModulePath:
-					"C:\\Users\\me\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\7\\Modules;C:\\Users\\me\\Documents\\WindowsPowerShell\\Modules",
-			},
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		expect(result.shell).toBe("pwsh");
-		const psConfigPath = path.join("C:\\Users\\me", "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
-		expect(result.configPath).toBe(psConfigPath);
-		expect(files.get(result.configPath)).toContain("& proto --profile=work @args");
-	});
-
-	it("selects Windows PowerShell when only WindowsPowerShell modules are present", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			env: {
-				PSModulePath:
-					"C:\\Users\\me\\Documents\\WindowsPowerShell\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules",
-			},
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		expect(result.shell).toBe("powershell");
-		const psConfigPath = path.join(
-			"C:\\Users\\me",
-			"Documents",
-			"WindowsPowerShell",
-			"Microsoft.PowerShell_profile.ps1",
-		);
-		expect(result.configPath).toBe(psConfigPath);
-	});
-
-	it("treats POWERSHELL_DISTRIBUTION_CHANNEL as a pwsh hint when no module paths disambiguate", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			env: { POWERSHELL_DISTRIBUTION_CHANNEL: "MSI:Windows 10 Pro" },
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		expect(result.shell).toBe("pwsh");
-		const psConfigPath = path.join("C:\\Users\\me", "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
-		expect(result.configPath).toBe(psConfigPath);
-	});
-
 	it("replaces a previous block for the same alias", async () => {
 		const files = new Map<string, string>([
 			[
@@ -341,14 +267,13 @@ describe("profile alias installer", () => {
 		for (const { aliasName, shellPath } of [
 			{ aliasName: "if", shellPath: "/bin/bash" },
 			{ aliasName: "end", shellPath: "/opt/homebrew/bin/fish" },
-			{ aliasName: "foreach", shellPath: "pwsh.exe" },
+			{ aliasName: "foreach", shellPath: "/usr/bin/pwsh" },
 		]) {
 			await expect(
 				installProfileAlias({
 					profile: "work",
 					aliasName,
 					shellPath,
-					platform: shellPath === "pwsh.exe" ? "win32" : "linux",
 					homeDir: "/home/me",
 				}),
 			).rejects.toThrow("reserved word");
@@ -398,86 +323,5 @@ describe("profile alias installer", () => {
 			}),
 		).rejects.toThrow("Invalid PROTO profile");
 		expect(files.size).toBe(0);
-	});
-
-	it("normalizes backslashes in Windows homeDir for POSIX shell config paths", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			shellPath: "/bin/bash",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		// path.posix.join preserves backslashes in input segments, so we must
-		// normalize them — bash/zsh/fish can't resolve C:\Users\me/.bashrc
-		expect(result.configPath).toBe("C:/Users/me/.bashrc");
-		expect(result.reloadedWith).toBe(". 'C:/Users/me/.bashrc'");
-	});
-
-	it("normalizes backslashes in ZDOTDIR for zsh config paths on Windows", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			shellPath: "/bin/zsh",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			env: { ZDOTDIR: "D:\\zdotdir" },
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		expect(result.configPath).toBe("D:/zdotdir/.zshrc");
-		expect(result.reloadedWith).toBe(". 'D:/zdotdir/.zshrc'");
-	});
-
-	it("normalizes backslashes in XDG_CONFIG_HOME for fish config paths on Windows", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			shellPath: "/bin/fish",
-			platform: "win32",
-			homeDir: "C:\\Users\\me",
-			env: { XDG_CONFIG_HOME: "D:\\xdg" },
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		expect(result.configPath).toBe("D:/xdg/fish/conf.d/proto-profiles.fish");
-		expect(result.reloadedWith).toBe("source 'D:/xdg/fish/conf.d/proto-profiles.fish'");
-	});
-
-	it("preserves UNC path roots when normalizing POSIX shell config paths", async () => {
-		const files = new Map<string, string>();
-
-		const result = await installProfileAlias({
-			profile: "work",
-			aliasName: "proto-work",
-			shellPath: "/bin/bash",
-			platform: "win32",
-			homeDir: "\\\\server\\share\\me",
-			readFile: async filePath => files.get(filePath) ?? "",
-			writeFile: async (filePath, content) => {
-				files.set(filePath, content);
-			},
-		});
-
-		// UNC path //server/share/me must NOT be collapsed to /server/share/me
-		expect(result.configPath).toBe("//server/share/me/.bashrc");
-		expect(result.reloadedWith).toBe(". '//server/share/me/.bashrc'");
 	});
 });

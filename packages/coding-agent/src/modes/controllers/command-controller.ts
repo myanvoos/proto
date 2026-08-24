@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import type { CompactOptions } from "../../extensibility/extensions/types";
@@ -29,7 +29,6 @@ import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
-import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
@@ -478,14 +477,6 @@ export class CommandController {
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
-	async handleDropCommand(): Promise<void> {
-		if (!this.ctx.sessionManager.getSessionFile()) {
-			this.ctx.showError("Nothing to drop (in-memory session)");
-			return;
-		}
-		await this.#runNewSessionFlow({ drop: true }, "Session dropped");
-	}
-
 	async handleForkCommand(): Promise<void> {
 		if (this.ctx.session.isStreaming) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before forking.");
@@ -757,36 +748,6 @@ export class CommandController {
 
 		return this.executeCompaction(customInstructions, false, beforeFlush, mode);
 	}
-
-	/**
-	 * TUI handler for `/shake`. `elide` drops heavy structural content,
-	 * `images` strips image blocks, and `thinking` drops all thinking blocks.
-	 * Rebuilds the chat and reports counts.
-	 */
-	async handleShakeCommand(mode: ShakeMode): Promise<void> {
-		let result: ShakeResult;
-		try {
-			result = await this.ctx.session.shake(mode);
-		} catch (error) {
-			this.ctx.showError(`Shake failed: ${error instanceof Error ? error.message : String(error)}`);
-			return;
-		}
-
-		const dropped =
-			result.toolResultsDropped +
-			result.blocksDropped +
-			(result.imagesDropped ?? 0) +
-			(result.thinkingBlocksDropped ?? 0);
-		if (dropped === 0) {
-			this.ctx.showStatus("Nothing to shake.");
-			return;
-		}
-		this.ctx.rebuildChatFromMessages();
-		this.ctx.statusLine.invalidate();
-		this.ctx.ui.requestRender();
-		this.ctx.showStatus(formatShakeSummary(result));
-	}
-
 	async executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto = false,
@@ -860,84 +821,6 @@ export class CommandController {
 		if (beforeFlush) await beforeFlush(outcome);
 		await this.ctx.flushCompactionQueue({ willRetry: false });
 		return outcome;
-	}
-
-	async handleHandoffCommand(customInstructions?: string): Promise<void> {
-		if (this.ctx.session.isStreaming) {
-			this.ctx.showWarning("Wait for the current response to finish or abort it before handing off.");
-			return;
-		}
-
-		const entries = this.ctx.sessionManager.getEntries();
-		const messageCount = entries.filter(e => e.type === "message").length;
-
-		if (messageCount < 2) {
-			this.ctx.showWarning("Nothing to hand off (no messages yet)");
-			return;
-		}
-
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.disposeChildren();
-
-		const handoffLoader = new Loader(
-			this.ctx.ui,
-			spinner => theme.fg("accent", spinner),
-			text => theme.fg("muted", text),
-			"Generating handoff… (esc to cancel)",
-			getSymbolTheme().spinnerFrames,
-		);
-		this.ctx.statusContainer.addChild(handoffLoader);
-		this.ctx.ui.requestRender();
-
-		try {
-			// Handoff generation runs as a oneshot request; the document is then
-			// committed as a compaction entry on this session.
-			const result = await this.ctx.session.handoff(customInstructions);
-
-			if (!result) {
-				this.ctx.showError("Handoff cancelled");
-				return;
-			}
-
-			// Rebuild chat from the session, which now shows the handoff compaction divider.
-			this.ctx.clearTransientSessionUi();
-			await this.ctx.renderInitialMessages();
-			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorBorderColor();
-			await this.ctx.reloadTodos();
-
-			this.ctx.present([
-				new Spacer(1),
-				new Text(
-					`${theme.fg("accent", `${theme.status.success} Context handed off and compacted in place`)}`,
-					1,
-					1,
-				),
-			]);
-			if (result.savedPath) {
-				this.ctx.showStatus(`Handoff document saved to: ${result.savedPath}`);
-			}
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			// `session.handoff()` normalizes genuine cancellations to this exact message; a
-			// provider error (even one named AbortError) is re-thrown verbatim so it surfaces
-			// as a real failure instead of a false "cancelled".
-			if (message === "Handoff cancelled") {
-				this.ctx.showError("Handoff cancelled");
-			} else {
-				// Persist the real failure so it is debuggable after the transient
-				// TUI error clears (#7993).
-				logger.error("Handoff failed", { error: message });
-				this.ctx.showError(`Handoff failed: ${message}`);
-			}
-		} finally {
-			handoffLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
-		}
-		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 }
 

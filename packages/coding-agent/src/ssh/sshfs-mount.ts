@@ -2,12 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, getRemoteDir, postmortem } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
-import {
-	ensureSshControlDir,
-	getControlPathTemplate,
-	type SSHConnectionTarget,
-	supportsSshControlMaster,
-} from "./connection-manager";
+import { ensureSshControlDir, getControlPathTemplate, type SSHConnectionTarget } from "./connection-manager";
 import { buildSshTarget, sanitizeHostName } from "./utils";
 
 const REMOTE_DIR = getRemoteDir();
@@ -55,10 +50,7 @@ function buildSshfsArgs(host: SSHConnectionTarget): string[] {
 		"-o",
 		"StrictHostKeyChecking=accept-new",
 	];
-
-	if (supportsSshControlMaster()) {
-		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
-	}
+	args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
 
 	if (host.port) {
 		args.push("-p", String(host.port));

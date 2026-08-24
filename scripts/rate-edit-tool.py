@@ -1006,8 +1006,6 @@ class ModelRunRecorder:
         self._touch()
         if request.method in {"notify", "setStatus", "setTitle", "set_editor_text"}:
             return
-        if request.method == "setWidget" and request.widget_key == "autoresearch":
-            return
 
     def record_turn_start(self, _event: TurnStartEvent) -> None:
         self._touch()

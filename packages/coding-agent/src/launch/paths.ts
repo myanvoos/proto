@@ -10,7 +10,7 @@ const SCOPE_FILE = "scope.json";
 
 /**
  * Canonicalize a project directory the same way every broker client does, so
- * hash-keyed runtime dirs and Windows pipe names agree across processes.
+ * hash-keyed runtime dirs agree across processes.
  * Missing paths resolve without realpath instead of failing.
  */
 export async function canonicalProjectDir(projectDir: string): Promise<string> {
@@ -45,11 +45,7 @@ export async function readDaemonScopeMeta(runtimeDir: string): Promise<string | 
 	return undefined;
 }
 
-/** Resolve the Unix socket or Windows named pipe used by one daemon broker scope. */
-export function daemonBrokerEndpoint(projectDir: string, runtimeDir: string): string {
-	if (process.platform === "win32") {
-		const key = Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0");
-		return `\\\\.\\pipe\\proto-daemon-${key}`;
-	}
+/** Resolve the Unix socket used by one daemon broker scope. */
+export function daemonBrokerEndpoint(_projectDir: string, runtimeDir: string): string {
 	return path.join(runtimeDir, "broker.sock");
 }

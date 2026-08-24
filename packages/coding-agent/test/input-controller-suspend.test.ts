@@ -29,12 +29,7 @@ function createCtx(): SuspendCtx {
 	return { ctx, ui, showStatus, showError };
 }
 
-const originalPlatform = process.platform;
 let sigcontListener: (() => void) | undefined;
-
-function setPlatform(value: NodeJS.Platform): void {
-	Object.defineProperty(process, "platform", { value, configurable: true, writable: true });
-}
 
 function spyOnProcessOnce(): Mock<(event: NodeJS.Signals | string, listener: () => void) => NodeJS.Process> {
 	return vi.spyOn(process, "once") as unknown as Mock<
@@ -43,35 +38,13 @@ function spyOnProcessOnce(): Mock<(event: NodeJS.Signals | string, listener: () 
 }
 
 afterEach(() => {
-	Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
 	if (sigcontListener) process.removeListener("SIGCONT", sigcontListener);
 	sigcontListener = undefined;
 	vi.restoreAllMocks();
 });
 
 describe("InputController.handleCtrlZ", () => {
-	it("no-ops on Windows so the unsupported SIGSTOP signal can't crash the process (#2036)", () => {
-		setPlatform("win32");
-		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
-			throw new Error("process.kill must not be called on win32");
-		});
-		const onceSpy = spyOnProcessOnce();
-		const { ctx, ui, showStatus, showError } = createCtx();
-
-		const controller = new InputController(ctx);
-		expect(() => controller.handleCtrlZ()).not.toThrow();
-
-		expect(killSpy).not.toHaveBeenCalled();
-		expect(onceSpy).not.toHaveBeenCalledWith("SIGCONT", expect.anything());
-		expect(ui.stop).not.toHaveBeenCalled();
-		expect(ui.start).not.toHaveBeenCalled();
-		expect(showStatus).toHaveBeenCalledTimes(1);
-		expect(showStatus.mock.calls[0]?.[0]).toMatch(/not supported/i);
-		expect(showError).not.toHaveBeenCalled();
-	});
-
 	it("SIGSTOPs the foreground process group and registers a SIGCONT resume hook on POSIX (#3461)", () => {
-		setPlatform("linux");
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 		const onceSpy = spyOnProcessOnce();
 		const { ctx, ui, showError } = createCtx();
@@ -102,7 +75,6 @@ describe("InputController.handleCtrlZ", () => {
 	});
 
 	it("restores the TUI and drops the SIGCONT listener when process.kill rejects the signal", () => {
-		setPlatform("linux");
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
 			throw new Error("Unknown signal: SIGSTOP");
 		});

@@ -531,7 +531,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				try {
 					await fs.chmod(dbPath, 0o600);
 				} catch {
-					// Ignore chmod failures (e.g., Windows)
+					// Best-effort hardening; ignore chmod failures.
 				}
 				SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(db);
 				return new SqliteAuthCredentialStore(db);

@@ -231,7 +231,7 @@ stdenv.mkDerivation {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    HOME="$TMPDIR" "$out/bin/proto" --smoke-test | grep -q "smoke-test: ok"
+    HOME="$TMPDIR" "$out/bin/proto" --version | grep -q "proto/"
     BUN_BE_BUN=1 "$out/bin/proto" -e \
       'if (Bun.version !== "${bun.version}" || typeof Bun.Image !== "function") process.exit(1)'
     ${lib.optionalString stdenv.hostPlatform.isLinux ''

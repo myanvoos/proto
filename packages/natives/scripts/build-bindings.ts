@@ -1,15 +1,15 @@
 /**
  * Local napi build: regenerates the TypeScript bindings (native/index.d.ts)
  * and the runtime enum exports, then installs the host addon. This is the
- * default backend for the `host` target (`bun run build` →
- * scripts/bazel-natives.ts); release addons build through Bazel with explicit
- * //:natives-* targets. Host target only — no cross-compilation.
+ * backend for the `host` target (`bun run build` →
+ * scripts/build-natives.sh host); release addons for the other targets are
+ * built by the same shell driver with explicit target names. Host target
+ * only — no cross-compilation.
  *
  * `OMP_NATIVE_CARGO_PROFILE` selects the cargo profile (default `local`:
  * incremental, unstripped). Image builds set `ci` for a stripped addon.
  */
 
-import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as path from "node:path";
@@ -20,44 +20,6 @@ import { generateEnumExports } from "./gen-enums";
 // pcre2-sys prefers a system libpcre2 when pkg-config finds one. Keep the
 // static build so the local addon never retains host Homebrew paths.
 process.env.PCRE2_SYS_STATIC ??= "1";
-
-// Windows: cc-rs and rustc auto-locate cl.exe/link.exe through the VS
-// registry, but the cmake crate (audiopus_sys' bundled opus) needs cmake —
-// and its Ninja generator needs ninja — on PATH. VS Build Tools ships both
-// without exposing them, so outside a vcvars prompt the build dies on
-// "cmake not found". Resolve the VS install via vswhere and append its
-// CMake/Ninja dirs, keeping any user-provided tools ahead.
-if (process.platform === "win32" && (!Bun.which("cmake") || !Bun.which("ninja"))) {
-	const vswhere = path.join(
-		process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
-		"Microsoft Visual Studio",
-		"Installer",
-		"vswhere.exe",
-	);
-	const probe = Bun.spawnSync(
-		[
-			vswhere,
-			"-latest",
-			"-products",
-			"*",
-			"-requires",
-			"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-			"-property",
-			"installationPath",
-		],
-		{ stdout: "pipe", stderr: "pipe" },
-	);
-	const vsRoot = probe.exitCode === 0 ? probe.stdout.toString("utf-8").trim() : "";
-	if (vsRoot) {
-		const cmakeExt = path.join(vsRoot, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake");
-		const extraDirs = [path.join(cmakeExt, "CMake", "bin"), path.join(cmakeExt, "Ninja")].filter(dir =>
-			fsSync.existsSync(dir),
-		);
-		if (extraDirs.length > 0) {
-			process.env.PATH = [process.env.PATH ?? "", ...extraDirs].filter(Boolean).join(path.delimiter);
-		}
-	}
-}
 
 const repoRoot = path.join(import.meta.dir, "../../..");
 const rustDir = path.join(repoRoot, "crates/pi-natives");
@@ -107,17 +69,13 @@ async function installBinary(src: string, dest: string): Promise<void> {
 		// Atomic rename - works even if dest is loaded on Linux/macOS (old inode stays valid)
 		await fs.rename(tempPath, dest);
 	} catch {
-		// On Windows, loaded DLLs cannot be overwritten via rename
-		// Try delete-then-rename as fallback
+		// Rename failed (dest busy): fall back to delete-then-rename.
 		try {
 			await fs.unlink(dest);
 		} catch (unlinkErr) {
 			if ((unlinkErr as NodeJS.ErrnoException).code !== "ENOENT") {
 				await fs.unlink(tempPath).catch(() => {});
-				const isWindows = process.platform === "win32";
-				throw new Error(
-					`Cannot replace ${path.basename(dest)}${isWindows ? " (file may be in use - close any running processes)" : ""}: ${(unlinkErr as Error).message}`,
-				);
+				throw new Error(`Cannot replace ${path.basename(dest)}: ${(unlinkErr as Error).message}`);
 			}
 		}
 		try {
@@ -131,8 +89,8 @@ async function installBinary(src: string, dest: string): Promise<void> {
 
 async function resolveBuiltAddonPath(outputDir: string, canonicalFilename: string): Promise<string> {
 	// napi-rs 3.x emits `${binaryName}.${platformArchABI}.node` where
-	// platformArchABI is e.g. `darwin-x64`, `linux-x64-gnu`, `win32-x64-msvc`,
-	// `darwin-arm64`. Build into an isolated output dir so only this invocation's
+	// platformArchABI is e.g. `darwin-x64`, `linux-x64-gnu`, `darwin-arm64`.
+	// Build into an isolated output dir so only this invocation's
 	// outputs are considered fresh candidates.
 	const entries = await fs.readdir(outputDir);
 
@@ -185,9 +143,7 @@ const buildOutputDir = await fs.mkdtemp(
 
 // Resolve the CLI's JS entry from the package manifest rather than the
 // `node_modules/.bin` shim: `bunx @napi-rs/cli` can pick up the wrong bin on
-// systems where `cli` exists on PATH (e.g. Mono's /usr/bin/cli on Ubuntu), and
-// on Windows the shim is a `napi.exe` launcher that Bun would try to parse as
-// JavaScript.
+// systems where `cli` exists on PATH (e.g. Mono's /usr/bin/cli on Ubuntu).
 const require_ = createRequire(import.meta.url);
 const napiManifestPath = require_.resolve("@napi-rs/cli/package.json");
 const napiManifest: unknown = require_(napiManifestPath);

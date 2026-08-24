@@ -39,7 +39,6 @@ import {
 	$env,
 	adjustHsv,
 	getProjectDir,
-	hsvToRgb,
 	logger,
 	postmortem,
 	prompt,
@@ -84,10 +83,8 @@ import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
-import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
-import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { formatWorkerId, workerTypeBadge } from "../task/display";
 import { labelEchoesHandle } from "../task/label";
@@ -102,7 +99,6 @@ import {
 	setActiveTodoDescriptionsProvider,
 	todoMatchesAnyDescription,
 } from "../tools/todo";
-import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import type { EventBus } from "../utils/event-bus";
@@ -137,7 +133,6 @@ import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
 import { InputController } from "./controllers/input-controller";
-import { LiveCommandController } from "./controllers/live-command-controller";
 import { MCPCommandController } from "./controllers/mcp-command-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
@@ -565,7 +560,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #tanCommandController: TanCommandController;
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
-	readonly #liveCommandController: LiveCommandController;
 	readonly #eventController: EventController;
 	get eventController(): EventController {
 		return this.#eventController;
@@ -623,11 +617,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingTools.clear();
 	}
 	readonly #uiHelpers: UiHelpers;
-	#sttController: STTController | undefined;
-	#voiceAnimationInterval: NodeJS.Timeout | undefined;
-	#voiceHue = 0;
-	#voicePreviousShowHardwareCursor: boolean | null = null;
-	#voicePreviousUseTerminalCursor: boolean | null = null;
 	#resizeHandler?: () => void;
 	#observerRegistry: SessionObserverRegistry;
 	#eventBus?: EventBus;
@@ -830,7 +819,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
-		this.#liveCommandController = new LiveCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
@@ -1083,9 +1071,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.initHooksAndCustomTools();
 
 		// Restore mode from session (e.g. goal mode on resume)
-		this.session.setSessionBeforeSwitchReconciler?.(async () => {
-			await this.#liveCommandController.stop();
-		});
 		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
 		await this.#reconcileModeFromSession();
 
@@ -1859,8 +1844,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
-		// Mid-stream rebuilds (e.g. `/shake`, theme/setting changes that touch the
-		// transcript) replay only committed `state.messages`. The agent's in-flight
+		// Mid-stream rebuilds (theme/setting changes that touch the transcript)
+		// replay only committed `state.messages`. The agent's in-flight
 		// `streamMessage` and its still-pending tool calls live OUTSIDE
 		// `state.messages` until `message_end`, so a plain clear+replay detaches
 		// their UI components while keeping the `streamingComponent` / `pendingTools`
@@ -2904,18 +2889,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
 		}
-		this.#cleanupMicAnimation();
 		// Stop the shared tool-spinner ticker: a live block missed by per-component
 		// stopAnimation would otherwise keep an 80ms interval pinning the process.
 		stopSharedSpinnerTicker();
-		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
-		if (this.#sttController) {
-			this.#sttController.dispose();
-			this.#sttController = undefined;
-		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
@@ -2950,8 +2929,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
-
-		await this.#liveCommandController.stop();
 
 		this.#btwController.dispose();
 		this.#focusController.dispose();
@@ -3487,11 +3464,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleResetContextCommand();
 	}
 
-	async handleDropCommand(): Promise<void> {
-		this.#prepareSessionSwitch();
-		await this.#commandController.handleDropCommand();
-	}
-
 	async handleForkCommand(): Promise<void> {
 		this.#btwController.dispose();
 		await this.#commandController.handleForkCommand();
@@ -3503,100 +3475,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleRenameCommand(title: string): Promise<void> {
 		return this.#commandController.handleRenameCommand(title);
-	}
-
-	async handleSTTToggle(): Promise<void> {
-		if (this.#liveCommandController.active) {
-			this.showWarning("End live mode before using push-to-talk speech input.");
-			return;
-		}
-		if (!settings.get("stt.enabled")) {
-			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
-			return;
-		}
-		if (!this.#sttController) {
-			this.#sttController = new STTController();
-		}
-		await this.#sttController.toggle(this.editor, {
-			showWarning: (msg: string) => this.showWarning(msg),
-			showStatus: (msg: string) => this.showStatus(msg),
-			requestRender: () => this.ui.requestRender(),
-			onStateChange: (state: SttState) => {
-				// Duck assistant speech while the user is talking (push-to-talk); restore after.
-				if (state === "recording") vocalizer.duck();
-				else vocalizer.unduck();
-				if (state === "recording") {
-					this.#voicePreviousShowHardwareCursor = this.ui.getShowHardwareCursor();
-					this.#voicePreviousUseTerminalCursor = this.editor.getUseTerminalCursor();
-					this.ui.setShowHardwareCursor(false);
-					this.editor.setUseTerminalCursor(false);
-					this.#startMicAnimation();
-				} else if (state === "transcribing") {
-					this.#stopMicAnimation();
-					this.#setMicCursor({ r: 200, g: 200, b: 200 });
-				} else {
-					this.#cleanupMicAnimation();
-				}
-				this.ui.requestRender();
-			},
-		});
-	}
-
-	/** Start or stop the Codex-backed realtime voice surface. */
-	async handleLiveCommand(): Promise<void> {
-		if (this.#sttController && this.#sttController.state !== "idle") {
-			this.showWarning("Finish the current speech-to-text capture before starting live mode.");
-			return;
-		}
-		await this.#liveCommandController.handleCommand();
-	}
-
-	#setMicCursor(color: { r: number; g: number; b: number }): void {
-		this.editor.cursorOverride = `\x1b[38;2;${color.r};${color.g};${color.b}m${theme.icon.mic}\x1b[0m`;
-		// Theme symbols can be wide, so measure the rendered override.
-		this.editor.cursorOverrideWidth = visibleWidth(this.editor.cursorOverride);
-	}
-
-	#updateMicIcon(): void {
-		const { r, g, b } = hsvToRgb({ h: this.#voiceHue, s: 0.9, v: 1.0 });
-		this.#setMicCursor({ r, g, b });
-	}
-
-	#startMicAnimation(): void {
-		if (this.#voiceAnimationInterval) return;
-		this.#voiceHue = 0;
-		this.#updateMicIcon();
-		this.#voiceAnimationInterval = setInterval(() => {
-			this.#voiceHue = (this.#voiceHue + 8) % 360;
-			this.#updateMicIcon();
-			// Component-scoped: the hue sweep only recolors the editor's cursor
-			// glyph, so the transcript subtree is reused per animation frame.
-			this.ui.requestComponentRender(this.editor);
-		}, 60);
-	}
-
-	#stopMicAnimation(): void {
-		if (this.#voiceAnimationInterval) {
-			clearInterval(this.#voiceAnimationInterval);
-			this.#voiceAnimationInterval = undefined;
-		}
-	}
-
-	#cleanupMicAnimation(): void {
-		if (this.#voiceAnimationInterval) {
-			clearInterval(this.#voiceAnimationInterval);
-			this.#voiceAnimationInterval = undefined;
-		}
-		this.editor.cursorOverride = undefined;
-		this.editor.cursorOverrideWidth = undefined;
-		if (this.#voicePreviousShowHardwareCursor !== null) {
-			this.ui.setShowHardwareCursor(this.#voicePreviousShowHardwareCursor);
-			this.#voicePreviousShowHardwareCursor = null;
-		}
-		if (this.#voicePreviousUseTerminalCursor !== null) {
-			this.editor.setUseTerminalCursor(this.#voicePreviousUseTerminalCursor);
-			this.#voicePreviousUseTerminalCursor = null;
-		}
 	}
 
 	showAgentFleet(options?: { requireContent?: boolean; armCloseTap?: boolean }): void {
@@ -3632,14 +3510,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 	): Promise<CompactionOutcome> {
 		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush);
-	}
-
-	handleHandoffCommand(customInstructions?: string): Promise<void> {
-		return this.#commandController.handleHandoffCommand(customInstructions);
-	}
-
-	handleShakeCommand(mode: ShakeMode): Promise<void> {
-		return this.#commandController.handleShakeCommand(mode);
 	}
 
 	executeCompaction(

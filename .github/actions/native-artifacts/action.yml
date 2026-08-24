@@ -1,11 +1,11 @@
 name: "Install native addon artifacts"
 description: >
-   Downloads the native addons built once by the Rust job and installs exact
-   targets without invoking Bazel.
+   Downloads the native addons built once by the native_addons job and copies
+   the requested targets into place without rebuilding.
 
 inputs:
    targets:
-      description: Space-separated scripts/bazel-natives.ts target names
+      description: Space-separated scripts/build-natives.sh target names
       required: true
    dest:
       description: Destination directory for the .node files
@@ -28,11 +28,50 @@ runs:
            NATIVE_DEST: ${{ inputs.dest }}
         run: |
            set -euo pipefail
-           read -r -a targets <<< "$NATIVE_TARGETS"
-           if [ "${#targets[@]}" -eq 0 ]; then
-             echo "::error::At least one native addon target is required"
-             exit 1
-           fi
-           bun scripts/bazel-natives.ts "${targets[@]}" \
-             --source "$RUNNER_TEMP/proto-native-artifacts" \
-             --dest "$NATIVE_DEST"
+           src_dir="$RUNNER_TEMP/proto-native-artifacts"
+           mkdir -p "$NATIVE_DEST"
+           installed=""
+           for target in $NATIVE_TARGETS; do
+              # Canonical loader filename per target. Musl addons SHIP under the
+              # plain linux-<arch> names (the runtime loader never sees gnu and
+              # musl side by side); the flat artifact dir stores them under
+              # their musl-explicit target names so both libcs can sit in one
+              # directory, and this loop renames back to canonical at install.
+              case $target in
+                 linux-x64-baseline)      canonical=pi_natives.linux-x64-baseline.node ;;
+                 linux-x64-modern)        canonical=pi_natives.linux-x64-modern.node ;;
+                 linux-arm64)             canonical=pi_natives.linux-arm64.node ;;
+                 linux-musl-x64-baseline) canonical=pi_natives.linux-x64-baseline.node ;;
+                 linux-musl-arm64)        canonical=pi_natives.linux-arm64.node ;;
+                 darwin-x64-baseline)     canonical=pi_natives.darwin-x64-baseline.node ;;
+                 darwin-arm64)            canonical=pi_natives.darwin-arm64.node ;;
+                 *)
+                    echo "::error::Unknown native addon target '$target'"
+                    exit 1
+                    ;;
+              esac
+              if [ -f "$src_dir/pi_natives.$target.node" ]; then
+                 src_file="$src_dir/pi_natives.$target.node"
+              elif [ -f "$src_dir/$canonical" ]; then
+                 # Canonical-name source (packages/natives/native, npm tarballs).
+                 src_file="$src_dir/$canonical"
+              else
+                 echo "::error::No addon for target '$target': expected pi_natives.$target.node or $canonical under $src_dir"
+                 exit 1
+              fi
+              dst_file="$NATIVE_DEST/$canonical"
+              if [ "$src_file" -ef "$dst_file" ]; then
+                 continue
+              fi
+              # gnu and musl targets share canonical basenames; installing both
+              # in one invocation would silently let the last win.
+              case " $installed " in
+                 *" $canonical "*)
+                    echo "::error::Targets '$target' and an earlier target both map to $canonical (gnu/musl share canonical filenames); install them in separate invocations"
+                    exit 1
+                    ;;
+              esac
+              installed="$installed $canonical"
+              cp "$src_file" "$dst_file"
+              echo "installed $dst_file"
+           done

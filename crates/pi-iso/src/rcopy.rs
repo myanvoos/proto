@@ -369,21 +369,7 @@ fn copy_symlink(src: &Path, dst: &Path) -> IsoResult<()> {
 		.map_err(|err| IsoError::other(format!("symlink {}: {err}", dst.display())))
 }
 
-#[cfg(windows)]
-fn copy_symlink(src: &Path, dst: &Path) -> IsoResult<()> {
-	let target = std::fs::read_link(src)
-		.map_err(|err| IsoError::other(format!("read_link {}: {err}", src.display())))?;
-	let meta = std::fs::symlink_metadata(src)
-		.map_err(|err| IsoError::other(format!("symlink_metadata {}: {err}", src.display())))?;
-	let res = if meta.file_type().is_dir() {
-		std::os::windows::fs::symlink_dir(target, dst)
-	} else {
-		std::os::windows::fs::symlink_file(target, dst)
-	};
-	res.map_err(|err| IsoError::other(format!("symlink {}: {err}", dst.display())))
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn copy_symlink(_src: &Path, _dst: &Path) -> IsoResult<()> {
 	Err(IsoError::other("symlink copy unsupported on this platform"))
 }
@@ -428,45 +414,7 @@ fn filetime_set(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()
 	}
 }
 
-#[cfg(windows)]
-fn filetime_set(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()> {
-	use std::{
-		fs::OpenOptions,
-		os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
-	};
-
-	use windows_sys::Win32::{
-		Foundation::FILETIME,
-		Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, SetFileTime},
-	};
-
-	let dur = mtime
-		.duration_since(std::time::UNIX_EPOCH)
-		.map_err(|err| std::io::Error::other(err.to_string()))?;
-	// Windows FILETIME = 100-ns ticks since 1601-01-01.
-	const EPOCH_DIFF_100NS: u64 = 116_444_736_000_000_000;
-	let ticks = EPOCH_DIFF_100NS + dur.as_secs() * 10_000_000 + u64::from(dur.subsec_nanos() / 100);
-	let ft = FILETIME {
-		dwLowDateTime:  (ticks & 0xffff_ffff) as u32,
-		dwHighDateTime: (ticks >> 32) as u32,
-	};
-
-	let mut opts = OpenOptions::new();
-	opts.write(true);
-	opts.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
-	let file = opts.open(path)?;
-	// SAFETY: file owns the HANDLE for the duration of the call.
-	let ok = unsafe {
-		SetFileTime(file.as_raw_handle() as _, std::ptr::null(), std::ptr::null(), &raw const ft)
-	};
-	if ok != 0 {
-		Ok(())
-	} else {
-		Err(std::io::Error::last_os_error())
-	}
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn filetime_set(_path: &Path, _mtime: std::time::SystemTime) -> std::io::Result<()> {
 	Ok(())
 }

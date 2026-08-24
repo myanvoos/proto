@@ -15,7 +15,6 @@ import { detectCacheInvalidation } from "../../modes/components/cache-invalidati
 import {
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
-	createHandoffSummaryMessageComponent,
 } from "../../modes/components/compaction-summary-message";
 import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -224,14 +223,6 @@ export class UiHelpers {
 					}
 					if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
 						this.ctx.chatContainer.addChild(createBackgroundTanDispatchBlock(message as CustomMessage<unknown>));
-						break;
-					}
-					const handoffComponent = createHandoffSummaryMessageComponent(
-						message as CustomMessage<unknown>,
-						this.ctx.toolOutputExpanded,
-					);
-					if (handoffComponent) {
-						this.ctx.chatContainer.addChild(handoffComponent);
 						break;
 					}
 					const renderer = this.ctx.viewSession.extensionRunner?.getMessageRenderer(message.customType);

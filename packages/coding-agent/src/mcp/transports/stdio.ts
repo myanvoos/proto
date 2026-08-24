@@ -1,15 +1,5 @@
-/**
- * MCP stdio transport.
- *
- * Implements JSON-RPC 2.0 over subprocess stdin/stdout.
- * Messages are newline-delimited JSON.
- */
-
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import { getProjectDir, readJsonl } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
-import { hostHasInheritableConsole } from "../../eval/py/spawn-options";
 import type {
 	JsonRpcError,
 	JsonRpcMessage,
@@ -27,17 +17,6 @@ import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 export interface StdioSpawnCommand {
 	cmd: string[];
 	/**
-	 * Hide the Windows console window for the direct child.
-	 *
-	 * Windows uses this only when the OMP host has no console to share. When
-	 * the host is running inside a terminal, `windowsHide: true` maps to
-	 * `CREATE_NO_WINDOW`, which strips that inheritable console from hidden
-	 * `cmd.exe` / PowerShell wrapper chains. Their console grandchildren then
-	 * allocate fresh visible conhost windows during startup or reconnects
-	 * (#3567).
-	 */
-	windowsHide?: boolean;
-	/**
 	 * Run the subprocess in its own session when the platform can safely do so.
 	 *
 	 * Linux/other POSIX: `true`. Detach → `setsid`, so the MCP process tree has
@@ -49,312 +28,24 @@ export interface StdioSpawnCommand {
 	 * the responsible terminal process only while the child stays in the
 	 * inherited session; detaching via `setsid` prevents the permission prompt
 	 * for servers such as `xcrun mcpbridge` (#4987).
-	 *
-	 * Windows: `false`. There is no SIGTSTP/SIGTTIN to escape, and Windows
-	 * wrapper chains must stay in the OMP console session so nested console
-	 * grandchildren keep stdout routed through our pipe (#3544).
 	 */
 	detached: boolean;
-	/**
-	 * Pass argv to `Bun.spawn` verbatim (Windows only), suppressing the
-	 * default libuv backslash-quoting.
-	 *
-	 * Set when `cmd` already holds a `cmd.exe /d /e:ON /v:OFF /c "<line>"`
-	 * command line escaped for `cmd.exe`'s parser (see `buildCmdExeArgv`).
-	 * libuv's quoting targets `CommandLineToArgvW`, not `cmd.exe`, so letting
-	 * it re-quote a batch launch would corrupt arguments and re-open the
-	 * `%VAR%` / quote-injection holes the escaping closes (BatBadBut,
-	 * CVE-2024-24576).
-	 */
-	windowsVerbatimArguments?: boolean;
 }
 
 /** Inputs used to resolve platform-specific stdio spawn behavior. */
 export interface ResolveStdioSpawnOptions {
-	cwd: string;
-	env: Record<string, string | undefined>;
-	hostHasInheritableConsole?: boolean;
 	platform?: NodeJS.Platform;
-}
-
-const DEFAULT_WINDOWS_PATHEXT = [".COM", ".EXE", ".BAT", ".CMD"];
-const WINDOWS_BATCH_EXTENSIONS = new Set([".bat", ".cmd"]);
-
-function getCaseInsensitiveEnv(env: Record<string, string | undefined>, name: string): string | undefined {
-	const direct = env[name];
-	if (direct !== undefined) return direct;
-	const normalized = name.toLowerCase();
-	for (const [key, value] of Object.entries(env)) {
-		if (key.toLowerCase() === normalized) return value;
-	}
-	return undefined;
-}
-
-function getWindowsPathExt(env: Record<string, string | undefined>): string[] {
-	const raw = getCaseInsensitiveEnv(env, "PATHEXT");
-	if (!raw) return DEFAULT_WINDOWS_PATHEXT;
-	const extensions: string[] = [];
-	for (const part of raw.split(";")) {
-		const trimmed = part.trim();
-		if (!trimmed) continue;
-		extensions.push(trimmed.startsWith(".") ? trimmed : `.${trimmed}`);
-	}
-	return extensions.length > 0 ? extensions : DEFAULT_WINDOWS_PATHEXT;
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-	try {
-		await fs.access(filePath);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function hasPathSegment(command: string): boolean {
-	return command.includes("/") || command.includes("\\") || path.isAbsolute(command);
-}
-
-function hasExecutableExtension(command: string, extensions: string[]): boolean {
-	const ext = path.extname(command).toLowerCase();
-	if (!ext) return false;
-	return extensions.some(candidate => candidate.toLowerCase() === ext);
-}
-
-async function resolveWindowsCommandPath(
-	command: string,
-	cwd: string,
-	env: Record<string, string | undefined>,
-): Promise<string | null> {
-	const extensions = getWindowsPathExt(env);
-	const hasExt = hasExecutableExtension(command, extensions);
-	const candidates = hasExt ? [command] : extensions.map(ext => `${command}${ext}`);
-
-	if (hasPathSegment(command)) {
-		for (const candidate of candidates) {
-			const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
-			if (await fileExists(resolved)) return resolved;
-		}
-		return hasExt ? command : null;
-	}
-
-	// Match cmd.exe's lookup order for an unqualified name: current directory
-	// first, then PATH. Skipping cwd would launch a global shim instead of a
-	// project-local one with the same name.
-	const searchDirs = [cwd];
-	const pathValue = getCaseInsensitiveEnv(env, "PATH");
-	if (pathValue) {
-		for (const dir of pathValue.split(";")) {
-			if (dir) searchDirs.push(dir);
-		}
-	}
-	for (const dir of searchDirs) {
-		for (const candidate of candidates) {
-			const resolved = path.join(dir, candidate);
-			if (await fileExists(resolved)) return resolved;
-		}
-	}
-	return hasExt ? command : null;
-}
-
-function resolveWindowsShimPath(value: string, shimDir: string): string | null {
-	const match = /^%dp0%[\\/]*(.*)$/i.exec(value);
-	if (!match) return null;
-	const suffix = match[1];
-	if (!suffix) return shimDir;
-	return path.join(shimDir, ...suffix.split(/[\\/]+/).filter(Boolean));
-}
-
-async function resolveWindowsNpmShimCommand(
-	command: string,
-	args: readonly string[],
-	cwd: string,
-	windowsHide: boolean,
-): Promise<StdioSpawnCommand | null> {
-	if (!isWindowsBatchCommand(command)) return null;
-	if (!hasPathSegment(command)) return null;
-	const commandPath = path.resolve(cwd, command);
-	const commandName = path
-		.basename(commandPath)
-		.replace(/\.cmd$/i, "")
-		.toLowerCase();
-	if (commandName === "npx") return null;
-
-	let content: string;
-	try {
-		content = await Bun.file(commandPath).text();
-	} catch {
-		return null;
-	}
-
-	// cmd-shim emits the same invocation line for every interpreter; only
-	// bypass cmd.exe when the shim's fallback interpreter is actually node.
-	// The IF EXIST branch assigns a %dp0%-prefixed value, so requiring a
-	// non-%-leading SET value picks the bare PATH-fallback program name.
-	const prog = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content)?.[1];
-	if (
-		!prog ||
-		path
-			.basename(prog)
-			.replace(/\.exe$/i, "")
-			.toLowerCase() !== "node"
-	)
-		return null;
-
-	const rawTarget = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content)?.[1];
-	if (!rawTarget) return null;
-
-	const target = resolveWindowsShimPath(rawTarget, path.dirname(commandPath));
-	if (!target) return null;
-
-	const siblingNode = path.join(path.dirname(commandPath), "node.exe");
-	const nodeCommand = (await fileExists(siblingNode)) ? siblingNode : "node";
-	return {
-		cmd: [nodeCommand, target, ...args],
-		windowsHide,
-		detached: false,
-	};
-}
-
-function isWindowsBatchCommand(command: string): boolean {
-	return WINDOWS_BATCH_EXTENSIONS.has(path.extname(command).toLowerCase());
-}
-
-function resolveComSpec(env: Record<string, string | undefined>): string {
-	const comspec = getCaseInsensitiveEnv(env, "COMSPEC");
-	return comspec && comspec.length > 0 ? comspec : "cmd.exe";
-}
-
-// Argument bytes cmd.exe delivers unchanged without quoting. Anything outside
-// this set (spaces, quotes, `%`, shell metacharacters, non-ASCII) forces the
-// quoted+escaped path below. Mirrors the fuzz-tested allow-list from Zig's
-// BatBadBut mitigation.
-const CMD_SAFE_ARG = /^[A-Za-z0-9#$*+\-./:?@\\_]+$/;
-
-/**
- * Escape the interior of a `cmd.exe`-quoted token: neutralize `%VAR%` expansion
- * and double any backslash run that precedes a quote (including the caller's
- * closing quote) so `CommandLineToArgvW` delivers the backslashes literally.
- *
- * `cmd.exe` re-parses the whole `/c` string and expands `%…%` *before* the
- * batch shim's own argv split runs, so both the command path and every argument
- * must pass through this. Percent → `%%cd:~,%` (which expands to nothing,
- * leaving a literal `%`) and `"` → `""` are the documented BatBadBut mitigation
- * (CVE-2024-24576). The caller supplies the surrounding double quotes.
- *
- * @see https://flatt.tech/research/posts/batbadbut-you-cant-securely-execute-commands-on-windows/
- */
-function escapeCmdQuotedInterior(value: string): string {
-	let out = "";
-	let backslashes = 0;
-	for (const ch of value) {
-		if (ch === "\\") {
-			backslashes += 1;
-			out += ch;
-		} else if (ch === '"') {
-			out += "\\".repeat(backslashes);
-			out += '""';
-			backslashes = 0;
-		} else if (ch === "%") {
-			out += "%%cd:~,%";
-			backslashes = 0;
-		} else {
-			backslashes = 0;
-			out += ch;
-		}
-	}
-	// Double the trailing backslash run so it stays literal before the closing
-	// quote the caller appends.
-	out += "\\".repeat(backslashes);
-	return out;
-}
-
-/** Reject bytes that cannot round-trip through `cmd.exe`'s `/c` command line. */
-function assertCmdBatchToken(value: string, kind: "command" | "argument"): void {
-	// NUL/LF act as an end-of-command marker and CR is stripped, so any of them
-	// would silently truncate or corrupt the launch.
-	if (/[\0\r\n]/.test(value)) {
-		throw new Error(`Windows batch MCP ${kind} cannot contain NUL, CR, or LF characters`);
-	}
-}
-
-/**
- * Escape one argument for `cmd.exe`'s command-line pre-parse so a `.cmd`/`.bat`
- * shim receives it verbatim. Quotes only when the argument is empty, ends in a
- * backslash, or holds a byte outside {@link CMD_SAFE_ARG}; the quoted body is
- * escaped by {@link escapeCmdQuotedInterior}.
- *
- * @throws when the argument contains NUL, CR, or LF (see {@link assertCmdBatchToken}).
- */
-function escapeCmdBatchArg(arg: string): string {
-	assertCmdBatchToken(arg, "argument");
-	const needsQuotes = arg.length === 0 || arg.endsWith("\\") || !CMD_SAFE_ARG.test(arg);
-	// An unquoted arg is pure allow-list bytes (no `%`, `"`, or trailing `\`), so
-	// it needs no interior escaping.
-	return needsQuotes ? `"${escapeCmdQuotedInterior(arg)}"` : arg;
-}
-
-/**
- * Build the `cmd.exe` argv for a Windows `.cmd`/`.bat` (or unresolved bare)
- * MCP command.
- *
- * The trailing element is a single `/c` string wrapped in an outer quote pair
- * that `cmd.exe` strips (its opening-quote rule). The command token is always
- * quoted and, like every argument, escaped so a `%` in the resolved path (e.g.
- * `C:\work\%TOKEN%\server.cmd`) is not expanded before the shim launches.
- * `/e:ON` keeps command extensions on (required for the `%%cd:~,%` trick) and
- * `/v:OFF` disables delayed expansion. The result MUST be spawned with
- * `windowsVerbatimArguments` so libuv passes it through unmodified.
- */
-function buildCmdExeArgv(comspec: string, command: string, args: readonly string[]): string[] {
-	assertCmdBatchToken(command, "command");
-	let line = `""${escapeCmdQuotedInterior(command)}"`;
-	for (const arg of args) line += ` ${escapeCmdBatchArg(arg)}`;
-	line += '"';
-	return [comspec, "/d", "/e:ON", "/v:OFF", "/c", line];
 }
 
 /**
  * Resolve the subprocess argv used to launch an MCP stdio server.
- *
- * On Windows, our PATH/PATHEXT walk may return `null` for a bare command
- * (e.g. `npx`) — `Bun.env.PATH` empty under a restricted parent process,
- * UNC/network mounts that reject `fs.access`, locked-down shells. The
- * legacy fallback handed `Bun.spawn` the bare name, but `CreateProcess`
- * only appends `.exe` for extensionless names — `.cmd`/`.bat` are never
- * tried, so `npx` (which exists only as `npx.cmd` on Windows) crashes the
- * subprocess immediately. When the resolver can't pin the command down,
- * route through `cmd.exe` so Windows's own PATHEXT lookup runs.
  */
 export async function resolveStdioSpawnCommand(
 	config: MCPStdioServerConfig,
 	options: ResolveStdioSpawnOptions,
 ): Promise<StdioSpawnCommand> {
 	const args = config.args ?? [];
-	if (options.platform !== "win32") return { cmd: [config.command, ...args], detached: options.platform !== "darwin" };
-
-	const windowsHide = options.hostHasInheritableConsole === undefined ? true : !options.hostHasInheritableConsole;
-	const resolved = await resolveWindowsCommandPath(config.command, options.cwd, options.env);
-	const resolvedCommand = resolved ?? config.command;
-	const npmShimCommand = await resolveWindowsNpmShimCommand(resolvedCommand, args, options.cwd, windowsHide);
-	if (npmShimCommand) return npmShimCommand;
-
-	// Direct-spawn only when we resolved to a concrete file AND its extension
-	// is not a batch script. Everything else (resolved .cmd/.bat, or an
-	// unresolved extensionless command) goes through cmd.exe so PATHEXT runs.
-	// Windows stdio servers stay attached so wrapper grandchildren inherit the
-	// same console session. Only hide the child when PROTO itself has no console
-	// to share; CREATE_NO_WINDOW breaks console inheritance for nested wrappers.
-	const detached = false;
-	const needsCmdExe = resolved === null || isWindowsBatchCommand(resolvedCommand);
-	if (!needsCmdExe) return { cmd: [resolvedCommand, ...args], windowsHide, detached };
-
-	return {
-		cmd: buildCmdExeArgv(resolveComSpec(options.env), resolvedCommand, args),
-		windowsHide,
-		detached,
-		windowsVerbatimArguments: true,
-	};
+	return { cmd: [config.command, ...args], detached: options.platform !== "darwin" };
 }
 
 /** Minimal write surface of `Subprocess.stdin` we need for framed sends. */
@@ -457,27 +148,21 @@ function isErrnoCode(error: unknown, code: string): boolean {
 }
 
 /**
- * Signal `signal` to `proc`. When `detached` is true on a POSIX platform,
- * targets the whole process group via the negative-pid convention
- * (`process.kill(-pid, signal)`) so a detached session leader's descendants —
- * not just the direct child — receive it too; a bare direct-child signal
- * never reaches grandchildren the child itself spawned.
+ * Signal `signal` to `proc`. When `detached` is true, targets the whole
+ * process group via the negative-pid convention (`process.kill(-pid, signal)`)
+ * so a detached session leader's descendants — not just the direct child —
+ * receive it too; a bare direct-child signal never reaches grandchildren the
+ * child itself spawned.
  *
  * `ESRCH` from the group signal means the group is already gone — that is a
  * success (nothing left to signal), not a failure — so it does not fall
  * through. Any other group-signal failure (e.g. `EPERM`) falls back to
- * signaling the direct child as a last resort. Non-detached transports
- * (macOS, Windows, or POSIX where detach did not apply) always signal the
- * direct child only: a negative-pid signal outside a detached session could
- * hit an unrelated process group.
+ * signaling the direct child as a last resort. Non-detached transports always
+ * signal the direct child only: a negative-pid signal outside a detached
+ * session could hit an unrelated process group.
  */
-function signalStdioProcess(
-	proc: KillableSubprocess,
-	detached: boolean,
-	signal: NodeJS.Signals,
-	platform: NodeJS.Platform,
-): void {
-	if (detached && platform !== "win32") {
+function signalStdioProcess(proc: KillableSubprocess, detached: boolean, signal: NodeJS.Signals): void {
+	if (detached) {
 		try {
 			process.kill(-proc.pid, signal);
 			return;
@@ -516,10 +201,9 @@ function signalStdioProcess(
 export async function terminateStdioProcess(
 	proc: KillableSubprocess,
 	detached: boolean,
-	platform: NodeJS.Platform = process.platform,
 	termGraceMs = TERM_GRACE_MS,
 ): Promise<void> {
-	signalStdioProcess(proc, detached, "SIGTERM", platform);
+	signalStdioProcess(proc, detached, "SIGTERM");
 	const exitedOnTerm = await waitForProcessExit(proc.exited, termGraceMs);
 	// A non-detached transport has no process group beyond the leader itself:
 	// once it exits, there is nothing left to signal. A detached transport's
@@ -527,7 +211,7 @@ export async function terminateStdioProcess(
 	// can still be alive and ignoring SIGTERM — so detached transports always
 	// fall through to the group SIGKILL, even on a cooperative leader exit.
 	if (exitedOnTerm && !detached) return;
-	signalStdioProcess(proc, detached, "SIGKILL", platform);
+	signalStdioProcess(proc, detached, "SIGKILL");
 	// Once the leader has already exited there is no further `exited` signal
 	// to wait on for this call — the SIGKILL above is a fire-and-forget sweep
 	// for any surviving group members — so only block on the grace window
@@ -580,19 +264,12 @@ export class StdioTransport implements MCPTransport {
 			...this.config.env,
 		};
 		const cwd = this.config.cwd ?? getProjectDir();
-		const spawnCommand = await resolveStdioSpawnCommand(this.config, {
-			cwd,
-			env,
-			platform: process.platform,
-			hostHasInheritableConsole: hostHasInheritableConsole(),
-		});
+		const spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
 
-		// Platform-derived session and console-window handling come from
-		// `resolveStdioSpawnCommand`: Linux/other POSIX detach into their own
-		// session to escape terminal job-control signals (SIGTSTP, SIGTTIN);
-		// macOS stays attached so TCC can prompt for Apple Events automation;
-		// Windows stays attached, and only hides the child when the host has no
-		// console to share. See `StdioSpawnCommand`.
+		// Platform-derived session handling comes from `resolveStdioSpawnCommand`:
+		// Linux/other POSIX detach into their own session to escape terminal
+		// job-control signals (SIGTSTP, SIGTTIN); macOS stays attached so TCC can
+		// prompt for Apple Events automation. See `StdioSpawnCommand`.
 		// Keep this on Bun's argv-first overload. The eval JS kernel path that
 		// triggers macOS Apple Events TCC prompts uses the same shape; the
 		// one-object `{ cmd }` overload timed out before prompting for `mcpbridge`
@@ -603,9 +280,7 @@ export class StdioTransport implements MCPTransport {
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: spawnCommand.windowsHide,
 			detached: spawnCommand.detached,
-			windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments,
 		});
 		this.#detached = spawnCommand.detached;
 

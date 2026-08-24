@@ -236,28 +236,22 @@ describe("terminal image rendering", () => {
 });
 
 describe("Windows Terminal Preview SIXEL detection", () => {
-	it("requires Windows platform, WT session, and known version 1.22+", () => {
+	it("requires a WT session and known version 1.22+", () => {
 		expect(
-			isWindowsTerminalPreviewSixelSupported(
-				{ WT_SESSION: "1", TERM_PROGRAM: "Windows_Terminal", TERM_PROGRAM_VERSION: "1.22.2362.0" },
-				"win32",
-			),
+			isWindowsTerminalPreviewSixelSupported({
+				WT_SESSION: "1",
+				TERM_PROGRAM: "Windows_Terminal",
+				TERM_PROGRAM_VERSION: "1.22.2362.0",
+			}),
 		).toBe(true);
 		expect(
-			isWindowsTerminalPreviewSixelSupported(
-				{ WT_SESSION: "1", TERM_PROGRAM: "Windows_Terminal", TERM_PROGRAM_VERSION: "1.21.0.0" },
-				"win32",
-			),
+			isWindowsTerminalPreviewSixelSupported({
+				WT_SESSION: "1",
+				TERM_PROGRAM: "Windows_Terminal",
+				TERM_PROGRAM_VERSION: "1.21.0.0",
+			}),
 		).toBe(false);
-		expect(
-			isWindowsTerminalPreviewSixelSupported({ WT_SESSION: "1", TERM_PROGRAM: "Windows_Terminal" }, "win32"),
-		).toBe(false);
-		expect(
-			isWindowsTerminalPreviewSixelSupported(
-				{ WT_SESSION: "1", TERM_PROGRAM: "Windows_Terminal", TERM_PROGRAM_VERSION: "1.22.2362.0" },
-				"linux",
-			),
-		).toBe(false);
+		expect(isWindowsTerminalPreviewSixelSupported({ WT_SESSION: "1", TERM_PROGRAM: "Windows_Terminal" })).toBe(false);
 	});
 });
 

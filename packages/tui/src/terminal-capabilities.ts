@@ -250,15 +250,12 @@ function parseMajorMinorVersion(versionRaw?: string): { major: number; minor: nu
 }
 
 /**
- * Returns true when running in Windows Terminal with known SIXEL support.
+ * Returns true when running in Windows Terminal with known SIXEL support,
+ * including WSL/SSH-fronted hosts — anywhere `WT_SESSION` reaches us.
  *
  * Windows Terminal introduced SIXEL support in preview 1.22.
  */
-export function isWindowsTerminalPreviewSixelSupported(
-	env: NodeJS.ProcessEnv = Bun.env,
-	platform: NodeJS.Platform = process.platform,
-): boolean {
-	if (platform !== "win32") return false;
+export function isWindowsTerminalPreviewSixelSupported(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.WT_SESSION) return false;
 	if (env.TERM_PROGRAM && env.TERM_PROGRAM.toLowerCase() !== "windows_terminal") {
 		return false;
@@ -297,8 +294,8 @@ function advertisesSynchronizedOutput(termFeatures: string | undefined): boolean
  *   1. Explicit user override (`PI_NO_SYNC_OUTPUT`/`PI_TUI_SYNC_OUTPUT=0` off,
  *      `PI_FORCE_SYNC_OUTPUT=1`/`PI_TUI_SYNC_OUTPUT=1` on).
  *   2. Positive `TERM_FEATURES` advertisement (`Sy`) — survives SSH/mux wrapping.
- *   3. Windows Terminal (1.24+) via `WT_SESSION`, on native win32 and the
- *      WSL/SSH-fronted host alike.
+ *   3. Windows Terminal (1.24+) via `WT_SESSION`, including the
+ *      WSL/SSH-fronted host.
  *   4. Known direct terminals with confirmed support. SSH does *not* disable —
  *      DEC 2026 passes through SSH when the outer terminal honors it.
  *   5. Everything else starts off, including risky multiplexers; the runtime
@@ -455,17 +452,16 @@ function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null 
 	return null;
 }
 /**
- * Warp implements the Kitty graphics protocol only on macOS/Linux; its Windows
- * build (including Warp-hosted WSL shells) renders the same APC sequences as
- * visible garbage. Keep platform/env injectable so the carve-out is testable
- * without mutating `process.platform`.
+ * Warp implements the Kitty graphics protocol only outside Windows hosts; its
+ * Windows build (including Warp-hosted WSL shells) renders the same APC
+ * sequences as visible garbage. Keep platform/env injectable so the carve-out
+ * is testable without mutating `process.platform`.
  */
 export function resolveWarpImageProtocol(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = Bun.env,
 ): ImageProtocol | null {
-	const windowsHost =
-		platform === "win32" || (platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP));
+	const windowsHost = platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
 	return windowsHost ? null : ImageProtocol.Kitty;
 }
 
@@ -570,7 +566,7 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
 	} else if (resolved.id === "warp") {
-		// Warp advertises Kitty graphics on macOS/Linux only; drop it on win32.
+		// Warp advertises Kitty graphics only outside Windows hosts; drop it under WSL.
 		resolved.imageProtocol = resolveWarpImageProtocol();
 	} else if (!resolved.imageProtocol) {
 		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id);

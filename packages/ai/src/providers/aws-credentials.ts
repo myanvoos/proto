@@ -550,7 +550,6 @@ async function readCredentialProcess(
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		windowsHide: true,
 		signal,
 	});
 	const [stdout, stderr, exitCode] = await Promise.all([
@@ -602,9 +601,7 @@ async function readCredentialProcess(
 	return out;
 }
 
-/** Resolve the argv for `Bun.spawn`. On Windows we route `.cmd`/`.bat` helpers
- * through `cmd.exe /c` because direct execution refuses batch files (mirrors
- * Node's `execFile` policy and avoids surprise no-ops). */
+/** Resolve the argv for `Bun.spawn`. */
 function buildCredentialProcessArgv(profile: string, command: string): string[] {
 	const tokens = tokenizeCredentialProcessCommand(command);
 	if (tokens.length === 0) {
@@ -613,15 +610,7 @@ function buildCredentialProcessArgv(profile: string, command: string): string[] 
 			"credential-process",
 		);
 	}
-	if (process.platform === "win32" && isBatchScript(tokens[0])) {
-		return ["cmd.exe", "/d", "/s", "/c", command];
-	}
 	return tokens;
-}
-
-function isBatchScript(executable: string): boolean {
-	const lower = executable.toLowerCase();
-	return lower.endsWith(".cmd") || lower.endsWith(".bat");
 }
 
 /** POSIX-shell-style tokenizer used by the AWS CLI for `credential_process`.
@@ -629,8 +618,7 @@ function isBatchScript(executable: string): boolean {
  * Outside quotes a backslash escapes the next character. Inside single quotes
  * everything is literal (no escapes, cannot contain `'`). Inside double quotes
  * a backslash only escapes `$`, `` ` ``, `"`, and `\` — every other backslash
- * is preserved verbatim, which is what makes Windows paths like
- * `"C:\Program Files\tool\auth.exe"` survive tokenization. */
+ * is preserved verbatim, matching the AWS CLI's tokenizer. */
 export function tokenizeCredentialProcessCommand(cmd: string): string[] {
 	const tokens: string[] = [];
 	let current = "";
@@ -686,7 +674,7 @@ export function tokenizeCredentialProcessCommand(cmd: string): string[] {
 				i++;
 				continue;
 			}
-			// Preserve literal backslash for Windows paths.
+			// Preserve literal backslash (matches the AWS CLI tokenizer).
 			current += ch;
 			continue;
 		}

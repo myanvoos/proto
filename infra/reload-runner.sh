@@ -169,10 +169,10 @@ verify_baked_tools() {
   local runner="$1"
   "$runner" --namespace k8s.io run --rm --entrypoint bash "$IMAGE" -lc '
     set -e
-    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zstd zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin bazelisk bazel; do
+    for b in gh fd rg magick bun cargo rustc pkg-config clang lld zstd cmake ninja cargo-nextest musl-gcc aarch64-linux-gnu-gcc; do
       command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
     done
-    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zstd $(zstd --version) | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
+    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | zstd $(zstd --version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
   '
 }
 
@@ -201,10 +201,10 @@ build_with_docker() {
   echo "==> [2/5] verifying baked tools"
   docker run --rm --entrypoint bash "$IMAGE" -lc '
     set -e
-    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zstd zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin bazelisk bazel; do
+    for b in gh fd rg magick bun cargo rustc pkg-config clang lld zstd cmake ninja cargo-nextest musl-gcc aarch64-linux-gnu-gcc; do
       command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
     done
-    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zstd $(zstd --version) | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
+    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | zstd $(zstd --version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
   '
 
   echo "==> [3/5] importing into k3s containerd (k8s.io namespace)"
@@ -248,8 +248,11 @@ esac
 echo "==> [4/5] pointing ARC runner scale set at $IMAGE"
 sed -i "s#image: omp-kata-runner:.*#image: $IMAGE#" "$ARC_VALUES"
 sed -i -E "s/^maxRunners:.*/maxRunners: $RUNNER_MAX_RUNNERS/" "$ARC_VALUES"
-# Ensure the bazel-remote cache credentials reach every runner pod (idempotent;
-# the secret is created by infra/bazel-remote/setup.sh).
+# Ensure the legacy-named `bazel-remote-ci` secret reaches every runner pod
+# (idempotent). The secret predates the Bazel removal and now serves purely as
+# an infra-presence marker: .github/actions/bun-install probes $BAZEL_REMOTE_USER
+# to detect omp-kata pods. It already exists in the cluster; do not remove this
+# envFrom injection.
 if ! grep -q 'name: bazel-remote-ci' "$ARC_VALUES"; then
   awk '1; /^        envFrom:/ { print "          - secretRef:"; print "              name: bazel-remote-ci" }' \
     "$ARC_VALUES" > "$ARC_VALUES.tmp" && mv "$ARC_VALUES.tmp" "$ARC_VALUES"

@@ -83,7 +83,7 @@ Numeric and string enum declarations constrain TypeScript callers but do not by 
 ## Binding-change checklist
 
 1. Add or change the owning Rust `#[napi]` item; register a new module in `crates/pi-natives/src/lib.rs`.
-2. Run `bun --cwd=packages/natives run build:bindings` when the exported type surface changes. This is the declaration/local-addon path; the normal `build` script is the Bazel shipping-addon path.
+2. Run `bun --cwd=packages/natives run build:bindings` when the exported type surface changes. This is the declaration/local-addon path; the normal `build` script is the host shipping-addon path (`scripts/build-natives.sh host`).
 3. Confirm `native/index.d.ts` has the intended JS name, types, optionality, callback shape, and sync/promise return.
 4. Confirm the marked block in `native/index.js` contains the class/function and any enum runtime object.
 5. Add a lazy subpath wrapper only when deferred loading is required, and then add matching `package.json#exports` runtime/types entries.

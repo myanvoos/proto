@@ -81,7 +81,6 @@ export type RpcCommand =
 	| { id?: string; type: "get_branch_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
-	| { id?: string; type: "handoff"; customInstructions?: string }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -155,10 +154,6 @@ export interface RpcChunkFrame {
 	count: number;
 	byteLength: number;
 	data: string;
-}
-
-export interface RpcHandoffResult {
-	savedPath?: string;
 }
 
 export type RpcSubagentSubscriptionLevel = "off" | "progress" | "events";
@@ -320,7 +315,6 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
-	| { id?: string; type: "response"; command: "handoff"; success: true; data: RpcHandoffResult | null }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

@@ -71,7 +71,6 @@ async function probeDaemon(socket: string): Promise<DaemonInfo | null> {
 }
 
 async function liveBlobBrokerSocket(projectDir: string): Promise<string | null> {
-	if (process.platform === "win32") return null;
 	try {
 		const client = await daemonClientForProject(projectDir);
 		await client.request({ op: "ping" });
@@ -110,7 +109,6 @@ export async function queryBlobBrokerProbe(
 	config: BlobBrokerWorkerConfig,
 	request: BlobBrokerProbeRequest = {},
 ): Promise<BlobBrokerProbeResponse | null> {
-	if (process.platform === "win32") return null;
 	const info = await ensureBlobDaemon(projectDir, config);
 	if (!info) return null;
 	const socket = await liveBlobBrokerSocket(projectDir);
@@ -262,8 +260,7 @@ class DaemonBlobBackend implements BlobBackend {
 
 /**
  * Connect the project-shared blob daemon, starting it when necessary.
- * Returns `null` (after a debug log) when the shared path is unavailable —
- * including on Windows, where the control plane's Unix socket cannot bind —
+ * Returns `null` (after a debug log) when the shared path is unavailable,
  * so the caller falls back to an in-process backend.
  */
 export async function connectDaemonBlobBackend(
@@ -271,7 +268,6 @@ export async function connectDaemonBlobBackend(
 	config: BlobBrokerWorkerConfig,
 	callbacks: RenderCallbackHost,
 ): Promise<BlobBackend | null> {
-	if (process.platform === "win32") return null;
 	try {
 		const client = await daemonClientForProject(projectDir);
 		const socket = blobBrokerEndpoint(daemonRuntimeDir(client.projectDir));

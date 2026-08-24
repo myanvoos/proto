@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -309,42 +308,6 @@ describe("AgentSession bash session ownership", () => {
 						entry.message.output.includes(`artifact://${artifactId}`),
 				),
 		).toBe(true);
-	});
-
-	it("does not recreate a dropped session for a late bash result or artifact", async () => {
-		const sessionDir = path.join(tempDir.path(), "sessions");
-		createSession(SessionManager.create(tempDir.path(), sessionDir));
-		const oldSessionFile = await seedPersistedSession();
-		const oldArtifactsDir = oldSessionFile.slice(0, -6);
-		const bashStarted = Promise.withResolvers<void>();
-		const finishBash = Promise.withResolvers<void>();
-		vi.spyOn(bashExecutor, "executeBash").mockImplementation(async (_command, options) => {
-			bashStarted.resolve();
-			await finishBash.promise;
-			const artifactId = await options?.onMinimizedSave?.("discarded raw output", {
-				filter: "test",
-				inputBytes: 20,
-				outputBytes: 9,
-			});
-			return { ...bashResult, output: artifactId ? `[raw output: artifact://${artifactId}]` : "discarded" };
-		});
-
-		const bashPromise = session.executeBash("dropped-session-command");
-		await bashStarted.promise;
-		await session.newSession({ drop: true });
-		expect(fs.existsSync(oldSessionFile)).toBe(false);
-		expect(fs.existsSync(oldArtifactsDir)).toBe(false);
-
-		finishBash.resolve();
-		await bashPromise;
-
-		expect(fs.existsSync(oldSessionFile)).toBe(false);
-		expect(fs.existsSync(oldArtifactsDir)).toBe(false);
-		expect(
-			session.messages.some(
-				message => message.role === "bashExecution" && message.command === "dropped-session-command",
-			),
-		).toBe(false);
 	});
 
 	it("keeps a late bash result on the branch where it started", async () => {

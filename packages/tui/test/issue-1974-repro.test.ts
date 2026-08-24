@@ -154,8 +154,6 @@ function occurrencesOf(haystack: string, needle: string): number {
 
 describe("issue #1974: tmux scrollback rendering", () => {
 	it("commits a streaming reply's scrolled-off head to pane history exactly once", async () => {
-		if (process.platform === "win32") return;
-
 		await withEnvPatch(TMUX_ENV, async () => {
 			const term = new VirtualTerminal(80, 8, 10_000);
 			// Real tmux/ProcessTerminal does not implement
@@ -211,8 +209,6 @@ describe("issue #1974: tmux scrollback rendering", () => {
 	});
 
 	it("never emits ED3 (CSI 3 J) inside a tmux pane during streaming", async () => {
-		if (process.platform === "win32") return;
-
 		await withEnvPatch(TMUX_ENV, async () => {
 			const term = new VirtualTerminal(80, 8, 10_000);
 			overrideProbe(term, undefined);
@@ -247,7 +243,6 @@ describe("issue #1974: tmux scrollback rendering", () => {
 		// so the renderer must push only sealed rows of the live block into
 		// pane history while keeping the chrome rows transient and confined to
 		// the visible pane.
-		if (process.platform === "win32") return;
 
 		await withEnvPatch(TMUX_ENV, async () => {
 			const term = new VirtualTerminal(80, 10, 10_000);
@@ -303,8 +298,6 @@ describe("issue #1974: tmux scrollback rendering", () => {
 	});
 
 	it("keeps the cursor anchored when a no-append live repaint shifts the viewport", async () => {
-		if (process.platform === "win32") return;
-
 		const term = new VirtualTerminal(20, 5, 1_000);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, true);

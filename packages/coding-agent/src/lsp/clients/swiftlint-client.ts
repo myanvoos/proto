@@ -39,7 +39,6 @@ async function runSwiftLint(
 			cwd,
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 			signal,
 		});
 

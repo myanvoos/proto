@@ -137,12 +137,6 @@ async fn git_diff(merged: &Path) -> IsoResult<Diff> {
 	Ok(Diff { files })
 }
 
-#[cfg(windows)]
-const fn git_null_path() -> &'static str {
-	"NUL"
-}
-
-#[cfg(not(windows))]
 const fn git_null_path() -> &'static str {
 	"/dev/null"
 }

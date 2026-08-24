@@ -28,7 +28,7 @@ function resolveCommandConfig(command: string, options?: ResolveConfigValueOptio
 	const retryAt = commandFailureRetryAt.get(command);
 	if (retryAt !== undefined && Date.now() < retryAt) return undefined;
 	try {
-		const stdout = execSync(command, { encoding: "utf8", timeout: 10_000, windowsHide: true });
+		const stdout = execSync(command, { encoding: "utf8", timeout: 10_000 });
 		const trimmed = stdout.trim();
 		if (trimmed.length === 0) {
 			commandFailureRetryAt.set(command, Date.now() + COMMAND_FAILURE_RETRY_MS);

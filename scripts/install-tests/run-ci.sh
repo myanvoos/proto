@@ -28,8 +28,6 @@ smoke_cli() {
    runtime_dir="$(mktemp -d "$WORK_DIR/compiled-runtime.XXXXXX")"
    XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$proto_bin" --version
    XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$proto_bin" --help >/dev/null
-   # Spawns bundled workers via --smoke-test. Regression probe for #1011/#1027
-   # worker loading across npm/compiled distributions.
 }
 
 find_tarball() {

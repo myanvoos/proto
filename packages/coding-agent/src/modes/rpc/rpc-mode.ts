@@ -1044,11 +1044,9 @@ export async function runRpcMode(
 						});
 						return success(id, "prompt");
 					}
-					// A consumed builtin is normally local-only, but some (e.g.
-					// `/retry`) schedule an agent turn whose events stream after
-					// this response. Report that so the host does not finalize the
-					// request as non-agent work while the agent is running.
-					return success(id, "prompt", { agentInvoked: builtinResult.agentInvoked === true });
+					// A consumed builtin is local-only work: no agent turn was
+					// scheduled, so the host may finalize the request now.
+					return success(id, "prompt");
 				}
 
 				// Don't await - events will stream
@@ -1354,17 +1352,6 @@ export async function runRpcMode(
 					return error(id, "set_session_name", "Session name cannot be empty");
 				}
 				return success(id, "set_session_name");
-			}
-
-			case "handoff": {
-				// Resetting the agent mid-stream lets the live turn keep emitting into a
-				// session that handoff has already torn down. Refuse while a prompt is in
-				// flight (mirrors the TUI /handoff guard).
-				if (session.isStreaming) {
-					return error(id, "handoff", "Cannot hand off while a response is in progress");
-				}
-				const result = await session.handoff(command.customInstructions);
-				return success(id, "handoff", result ? { savedPath: result.savedPath } : null);
 			}
 
 			// =================================================================

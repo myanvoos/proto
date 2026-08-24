@@ -29,9 +29,6 @@ export function resolveCrossBuild(value: string | undefined): CrossBuild | null 
 			return { id: value, platform: "linux", arch: "arm64", target: "bun-linux-arm64" };
 		case "linux-x64":
 			return { id: value, platform: "linux", arch: "x64", target: "bun-linux-x64-baseline" };
-		case "win32-x64":
-		case "windows-x64":
-			return { id: value, platform: "win32", arch: "x64", target: "bun-windows-x64-baseline" };
 		default:
 			throw new Error(`Unsupported CROSS_TARGET: ${value}`);
 	}

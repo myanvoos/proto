@@ -83,25 +83,8 @@ function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
 }
 
-function syntheticToolResultTailStart(messages: readonly AgentMessage[]): number {
-	let index = messages.length;
-	while (index > 0 && isSyntheticToolResultMessage(messages[index - 1])) {
-		index--;
-	}
-	return index;
-}
-
-function retryableAssistantTurnEnd(messages: readonly AgentMessage[]): number | undefined {
-	const turnEnd = syntheticToolResultTailStart(messages);
-	const message = messages[turnEnd - 1];
-	if (message?.role !== "assistant") return undefined;
-	if (message.stopReason !== "error" && message.stopReason !== "aborted") return undefined;
-	return turnEnd;
-}
-
 /** Result shape shared with automatic maintenance recovery. */
 export interface RecoveryCompactionResult {
-	deferredHandoff: boolean;
 	continuationScheduled: boolean;
 	automaticContinuationBlocked?: boolean;
 	historyRewritten?: boolean;
@@ -154,8 +137,6 @@ export interface TurnRecoveryHost {
 	runAutoCompaction(
 		reason: "overflow" | "threshold" | "idle" | "incomplete",
 		willRetry: boolean,
-		deferred?: boolean,
-		allowDefer?: boolean,
 		options?: {
 			autoContinue?: boolean;
 			triggerContextTokens?: number;
@@ -417,10 +398,9 @@ export class TurnRecovery {
 	runRecoveryCompactionWithRollback(
 		reason: "overflow" | "incomplete",
 		message: AssistantMessage,
-		allowDefer: boolean,
 		options: { autoContinue: boolean; triggerContextTokens?: number },
 	): Promise<RecoveryCompactionResult> {
-		return this.#runRecoveryCompactionWithRollback(reason, message, allowDefer, options);
+		return this.#runRecoveryCompactionWithRollback(reason, message, options);
 	}
 
 	/**
@@ -883,12 +863,11 @@ export class TurnRecovery {
 	async #runRecoveryCompactionWithRollback(
 		reason: "overflow" | "incomplete",
 		assistantMessage: AssistantMessage,
-		allowDefer: boolean,
 		options: { autoContinue: boolean; triggerContextTokens?: number },
 	): Promise<RecoveryCompactionResult> {
 		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 		await this.dropPersistedAssistantTurn(assistantMessage);
-		const result = await this.#host.runAutoCompaction(reason, true, false, allowDefer, {
+		const result = await this.#host.runAutoCompaction(reason, true, {
 			autoContinue: options.autoContinue,
 			triggerContextTokens: options.triggerContextTokens,
 			phase: "mid_turn",
@@ -2301,24 +2280,6 @@ export class TurnRecovery {
 		this.resolveRetry();
 	}
 
-	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
-		const deadline = Date.now() + 30_000;
-		for (;;) {
-			try {
-				await this.#host.agent.prompt(messages, options);
-				return;
-			} catch (err) {
-				if (!(err instanceof AgentBusyError)) {
-					throw err;
-				}
-				if (Date.now() >= deadline) {
-					throw new Error("Timed out waiting for prior agent run to finish before prompting.");
-				}
-				await this.#host.agent.waitForIdle();
-			}
-		}
-	}
-
 	/** Whether auto-retry is currently in progress */
 	get isRetrying(): boolean {
 		return this.#retryPromise !== undefined;
@@ -2335,49 +2296,22 @@ export class TurnRecovery {
 	setAutoRetryEnabled(enabled: boolean): void {
 		this.#host.settings.set("retry.enabled", enabled);
 	}
-	/**
-	 * Manually retry the last failed assistant turn.
-	 * Removes the error message from active agent state when present and
-	 * re-attempts with a fresh retry budget.
-	 *
-	 * A stream that stalls or aborts mid-tool-call ends the turn with
-	 * `stopReason: "error" | "aborted"` and then appends one synthetic
-	 * {@link isSyntheticToolResultMessage tool_result} per emitted tool call to
-	 * preserve the provider's tool_use/tool_result pairing (see
-	 * `createAbortedToolResult` in `agent-loop.ts`). Those placeholders trail the
-	 * failed assistant turn, so the retry lookback walks back over them before
-	 * checking the assistant message; it strips both the placeholders and the
-	 * failed turn before re-attempting.
-	 *
-	 * A restored session deliberately omits failed assistant turns from provider
-	 * context. In that case, the persisted display transcript remains the source
-	 * of truth for whether the current branch has a retryable failed tail.
-	 *
-	 * @returns true if retry was initiated, false if no failed turn to retry or agent is busy
-	 */
-	async retry(): Promise<boolean> {
-		if (this.#host.isStreaming() || this.#host.isCompacting() || this.isRetrying) return false;
 
-		const messages = this.#host.agent.state.messages;
-		const activeTurnEnd = retryableAssistantTurnEnd(messages);
-		if (activeTurnEnd !== undefined) {
-			// Remove the failed/aborted assistant message plus its synthetic tool
-			// results (same as auto-retry does before re-attempting).
-			this.#host.agent.replaceMessages(messages.slice(0, activeTurnEnd - 1));
-		} else {
-			// A restored session already dropped the failed assistant turn (and its
-			// paired synthetic tool results) from provider context, so the persisted
-			// display transcript is the source of truth for a retryable failed tail.
-			const transcriptMessages = this.#host.sessionManager.buildSessionContext({ transcript: true }).messages;
-			if (retryableAssistantTurnEnd(transcriptMessages) === undefined) return false;
+	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
+		const deadline = Date.now() + 30_000;
+		for (;;) {
+			try {
+				await this.#host.agent.prompt(messages, options);
+				return;
+			} catch (err) {
+				if (!(err instanceof AgentBusyError)) {
+					throw err;
+				}
+				if (Date.now() >= deadline) {
+					throw new Error("Timed out waiting for prior agent run to finish before prompting.");
+				}
+				await this.#host.agent.waitForIdle();
+			}
 		}
-
-		// Reset retry budget for a fresh attempt
-		this.#retryAttempt = 0;
-
-		// Re-attempt the turn
-		this.#host.scheduleAgentContinue({ delayMs: 1 });
-
-		return true;
 	}
 }

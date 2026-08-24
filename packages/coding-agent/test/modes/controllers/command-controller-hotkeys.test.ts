@@ -27,8 +27,6 @@ describe("buildHotkeysMarkdown", () => {
 			"app.editor.external": "Ctrl+G",
 			"app.retry": "Alt+R",
 			"app.clipboard.pasteImage": "Ctrl+V",
-			"app.stt.toggle": "Alt+H",
-			"app.live.toggle": "Ctrl+L",
 		};
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
@@ -44,7 +42,6 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Ctrl+Shift+L` | Select model (temporary) |");
 		expect(markdown).toContain("| `Alt+M` | Select model (set roles) |");
 		expect(markdown).toContain("| `Alt+L` | Reset terminal display |");
-		expect(markdown).toContain("| `Ctrl+L` | Start/stop live voice mode (/live) |");
 		expect(markdown).toContain("| `Alt+R` | Retry last failed assistant turn |");
 		expect(markdown).toContain("| `Ctrl+Shift+O` | Toggle tool activity visibility |");
 		expect(markdown).toContain("| `#<number>` | GitHub issue/PR reference");

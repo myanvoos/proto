@@ -116,8 +116,6 @@ export type SymbolKey =
 	| "icon.extensionPrompt"
 	| "icon.extensionContextFile"
 	| "icon.extensionInstruction"
-	// STT
-	| "icon.mic"
 	// Compaction divider
 	| "icon.camera"
 	// Thinking Levels
@@ -336,8 +334,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.extensionPrompt": "¶",
 	"icon.extensionContextFile": "",
 	"icon.extensionInstruction": "",
-	// STT
-	"icon.mic": "",
 	// Compaction divider
 	"icon.camera": "",
 	// Thinking levels
@@ -450,12 +446,13 @@ export const SYMBOL_PRESETS = {
 	unicode: UNICODE_SYMBOLS,
 } as const;
 
-export type SpinnerType = "status" | "activity";
+export type SpinnerType = "status" | "activity" | "thinking";
 
 export const SPINNER_FRAMES: Record<SymbolPreset, Record<SpinnerType, string[]>> = {
 	unicode: {
-		status: ["·", ":", "░", "▒", "▓", "█", "▓", "▒", "░", ":"],
-		activity: ["·", ":", "░", "▒", "▓", "█", "▓", "▒", "░", ":"],
+		status: ["░", "▒", "▓", "█", "▓", "▒", "░"],
+		activity: ["⠁⠀", "⠋⠀", "⠟⠁", "⡿⠋", "⣿⠟", "⣿⡿", "⣿⣿", "⣿⣿", "⣾⣿", "⣴⣿", "⣠⣾", "⢀⣴", "⠀⣠", "⠀⢀", "⠀⠀", "⠀⠀"],
+		thinking: ["⠀⠶⠀", "⠰⣿⠆", "⢸⣿⡇", "⢸⣉⡇", "⢾⣉⡷", "⣿⣉⣿", "⣏⠀⣹", "⡇⠀⢸", "⡁⠀⢈"],
 	},
 };
 

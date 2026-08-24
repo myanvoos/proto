@@ -75,7 +75,7 @@ function readTinyModelSetting(path: "providers.tinyModelDevice" | "providers.tin
 		const value = settings.get(path);
 		return typeof value === "string" ? value : undefined;
 	} catch {
-		// Settings may be uninitialized (e.g. `omp --smoke-test`); fall back to env/default.
+		// Settings may be uninitialized in short-lived subprocesses; fall back to env/default.
 		return undefined;
 	}
 }
@@ -105,8 +105,7 @@ export function tinyWorkerEnvOverlay(
 }
 
 /**
- * Env handed to the tiny-model subprocess — and reused verbatim by the STT and
- * TTS workers, which share the same device/dtype resolution. The
+ * Env handed to the tiny-model subprocess. The
  * `PI_TINY_DEVICE` / `PI_TINY_DTYPE` env vars win; otherwise the persisted
  * `providers.tinyModelDevice` / `providers.tinyModelDtype` settings are mapped
  * onto those vars so the subprocess's env-based resolution picks them up.

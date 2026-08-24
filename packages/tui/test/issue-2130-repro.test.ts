@@ -73,8 +73,6 @@ async function withTmuxEnv<T>(run: () => T | Promise<T>): Promise<T> {
 
 describe("issue #2130: tmux rewind/branch leaves the viewport anchored to the pane top", () => {
 	it("recovers normal rendering after a clearScrollback render shrinks a tall transcript", async () => {
-		if (process.platform === "win32") return;
-
 		await withTmuxEnv(async () => {
 			const term = new VirtualTerminal(40, 8, 10_000);
 			// Real tmux/ProcessTerminal does not implement the at-bottom

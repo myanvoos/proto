@@ -78,57 +78,12 @@ function normalizePrefix(prefix?: string): string {
 }
 
 const kRemoveOptions = { recursive: true, force: true } as const;
-const kRemoveRetries = 40;
-// 50ms × 40 retries = 2s total retry window. Windows holds file locks on
-// SQLite DBs for up to ~1.5s after close(); the previous 25ms (1s total)
-// was too short for some test cleanup scenarios.
-const kRemoveRetryDelayMs = 50;
-const kRetryableRemoveErrorCodes = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-const kSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
-/** Removes a path recursively, retrying transient Windows deletion failures. */
+/** Removes a path recursively. */
 export async function removeWithRetries(target: string): Promise<void> {
-	for (let attempt = 0; ; attempt++) {
-		try {
-			await fsPromises.rm(target, kRemoveOptions);
-			return;
-		} catch (err) {
-			if (!shouldRetryRemove(err, attempt)) throw err;
-			await Bun.sleep(kRemoveRetryDelayMs);
-		}
-	}
+	await fsPromises.rm(target, kRemoveOptions);
 }
 
 export function removeSyncWithRetries(target: string): void {
-	for (let attempt = 0; ; attempt++) {
-		try {
-			fs.rmSync(target, kRemoveOptions);
-			return;
-		} catch (err) {
-			if (!shouldRetryRemove(err, attempt)) throw err;
-			sleepSync(kRemoveRetryDelayMs);
-		}
-	}
-}
-
-function shouldRetryRemove(err: unknown, attempt: number): boolean {
-	return attempt < kRemoveRetries && process.platform === "win32" && isRetryableRemoveError(err);
-}
-
-function isRetryableRemoveError(err: unknown): boolean {
-	return (
-		typeof err === "object" &&
-		err !== null &&
-		"code" in err &&
-		typeof err.code === "string" &&
-		kRetryableRemoveErrorCodes.has(err.code)
-	);
-}
-
-function sleepSync(ms: number): void {
-	if ("sleepSync" in Bun && typeof Bun.sleepSync === "function") {
-		Bun.sleepSync(ms);
-		return;
-	}
-	Atomics.wait(kSleepBuffer, 0, 0, ms);
+	fs.rmSync(target, kRemoveOptions);
 }

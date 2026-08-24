@@ -99,7 +99,7 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 			cliPath: MOCK_AGENT,
 			env: {
 				MOCK_RPC_PID_FILE: pidFile,
-				MOCK_RPC_IGNORE_SIGTERM: process.platform === "win32" ? "0" : "1",
+				MOCK_RPC_IGNORE_SIGTERM: "1",
 			},
 			terminationGraceMs: 10,
 		});
@@ -161,7 +161,7 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 			env: {
 				MOCK_RPC_PID_FILE: pidFile,
 				MOCK_RPC_INVALID_OUTPUT: "1",
-				MOCK_RPC_IGNORE_SIGTERM: process.platform === "win32" ? "0" : "1",
+				MOCK_RPC_IGNORE_SIGTERM: "1",
 			},
 			terminationGraceMs: 10,
 		});

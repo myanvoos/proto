@@ -373,8 +373,7 @@ mod platform {
 			// from C, Rust, and Bun callers via `proc_listchildpids(getpid(), …)`,
 			// while `ps -P` and `pgrep -P` still see the same children. Walk the
 			// whole pid table via `proc_listallpids` and filter on `pbi_ppid`
-			// instead; this is the same approach we already use for `find_by_path`
-			// and that the Windows implementation uses via Toolhelp snapshots.
+			// instead; this is the same approach we already use for `find_by_path`.
 			let tree = build_process_tree();
 			Self::children_from_tree(self.pid, &tree)
 		}
@@ -415,7 +414,7 @@ mod platform {
 		pub fn descendants(&self) -> Vec<Self> {
 			// One process-table snapshot per walk — building it inside the recursion
 			// would re-scan every pid for every visited node, producing an `O(N · D)`
-			// kernel call pattern. Mirrors the Windows implementation.
+			// kernel call pattern.
 			let tree = build_process_tree();
 			let mut out = Vec::new();
 			let mut visited = HashSet::new();
@@ -688,588 +687,6 @@ mod platform {
 		args
 	}
 }
-#[cfg(target_os = "windows")]
-mod platform {
-	use std::{
-		collections::{HashMap, HashSet},
-		ffi::c_void,
-		mem,
-		sync::Arc,
-	};
-
-	use smallvec::SmallVec;
-
-	use super::ProcessStatus;
-
-	#[repr(C)]
-	#[allow(non_snake_case, reason = "Windows PROCESSENTRY32W field names must match Win32 ABI")]
-	struct PROCESSENTRY32W {
-		dwSize:              u32,
-		cntUsage:            u32,
-		th32ProcessID:       u32,
-		th32DefaultHeapID:   usize,
-		th32ModuleID:        u32,
-		cntThreads:          u32,
-		th32ParentProcessID: u32,
-		pcPriClassBase:      i32,
-		dwFlags:             u32,
-		szExeFile:           [u16; 260],
-	}
-
-	#[repr(C)]
-	struct ProcessBasicInformation {
-		exit_status: i32,
-		peb_base_address: usize,
-		affinity_mask: usize,
-		base_priority: i32,
-		unique_process_id: usize,
-		inherited_from_unique_process_id: usize,
-	}
-
-	#[repr(C)]
-	#[derive(Clone, Copy)]
-	struct UnicodeString {
-		length:         u16,
-		maximum_length: u16,
-		buffer:         usize,
-	}
-
-	#[repr(C)]
-	#[derive(Clone, Copy)]
-	struct PebPartial {
-		reserved1:          [u8; 2],
-		being_debugged:     u8,
-		reserved2:          [u8; 1],
-		reserved3:          [usize; 2],
-		loader:             usize,
-		process_parameters: usize,
-	}
-
-	#[repr(C)]
-	#[derive(Clone, Copy)]
-	struct UserProcessParametersPartial {
-		reserved1:       [u8; 16],
-		reserved2:       [usize; 10],
-		image_path_name: UnicodeString,
-		command_line:    UnicodeString,
-	}
-
-	#[repr(C)]
-	#[derive(Clone, Copy, Default)]
-	struct Filetime {
-		dw_low_date_time:  u32,
-		dw_high_date_time: u32,
-	}
-
-	type Handle = *mut c_void;
-	type NtStatus = i32;
-	const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-	const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
-	const PROCESS_VM_READ: u32 = 0x0010;
-	const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
-	const STATUS_SUCCESS: NtStatus = 0;
-	const TH32CS_SNAPPROCESS: u32 = 0x00000002;
-	const PROCESS_TERMINATE: u32 = 0x0001;
-	const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-	const SYNCHRONIZE: u32 = 0x00100000;
-	const PROCESS_REFERENCE_ACCESS: u32 =
-		PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
-	const WAIT_OBJECT_0: u32 = 0;
-
-	#[link(name = "kernel32")]
-	unsafe extern "system" {
-		fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> Handle;
-		fn Process32FirstW(hSnapshot: Handle, lppe: *mut PROCESSENTRY32W) -> i32;
-		fn Process32NextW(hSnapshot: Handle, lppe: *mut PROCESSENTRY32W) -> i32;
-		fn CloseHandle(hObject: Handle) -> i32;
-		fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> Handle;
-		fn TerminateProcess(hProcess: Handle, uExitCode: u32) -> i32;
-		fn QueryFullProcessImageNameW(
-			hProcess: Handle,
-			dwFlags: u32,
-			lpExeName: *mut u16,
-			lpdwSize: *mut u32,
-		) -> i32;
-		fn WaitForSingleObject(hHandle: Handle, dwMilliseconds: u32) -> u32;
-		fn GetProcessTimes(
-			hProcess: Handle,
-			lpCreationTime: *mut Filetime,
-			lpExitTime: *mut Filetime,
-			lpKernelTime: *mut Filetime,
-			lpUserTime: *mut Filetime,
-		) -> i32;
-		fn ReadProcessMemory(
-			hProcess: Handle,
-			lpBaseAddress: *const c_void,
-			lpBuffer: *mut c_void,
-			nSize: usize,
-			lpNumberOfBytesRead: *mut usize,
-		) -> i32;
-		fn LocalFree(hMem: Handle) -> Handle;
-	}
-
-	#[link(name = "shell32")]
-	unsafe extern "system" {
-		fn CommandLineToArgvW(lpCmdLine: *const u16, pNumArgs: *mut i32) -> *mut *mut u16;
-	}
-
-	#[link(name = "ntdll")]
-	unsafe extern "system" {
-		fn NtQueryInformationProcess(
-			ProcessHandle: Handle,
-			ProcessInformationClass: u32,
-			ProcessInformation: *mut c_void,
-			ProcessInformationLength: u32,
-			ReturnLength: *mut u32,
-		) -> NtStatus;
-	}
-
-	struct OwnedHandle {
-		raw: isize,
-	}
-
-	impl OwnedHandle {
-		fn from_raw(raw: Handle) -> Option<Self> {
-			if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-				None
-			} else {
-				Some(Self { raw: raw as isize })
-			}
-		}
-
-		const fn as_raw(&self) -> Handle {
-			self.raw as Handle
-		}
-	}
-
-	impl Drop for OwnedHandle {
-		fn drop(&mut self) {
-			// SAFETY: `self.raw` was returned by a successful Win32 handle-producing
-			// function and stored only in this `OwnedHandle`. `Drop` runs once, so this
-			// closes the owned handle exactly once and no code uses it afterward.
-			let _ = unsafe { CloseHandle(self.as_raw()) };
-		}
-	}
-
-	#[derive(Clone)]
-	/// Stable Windows process reference backed by an owned process handle plus
-	/// the kernel-reported creation time, which pins identity even if the PID is
-	/// recycled while we hold the handle.
-	pub struct Process {
-		pid:           i32,
-		handle:        Arc<OwnedHandle>,
-		creation_time: u64,
-	}
-
-	impl Process {
-		pub fn from_pid(pid: i32) -> Option<Self> {
-			if pid <= 0 {
-				return None;
-			}
-			let pid_u32 = u32::try_from(pid).ok()?;
-			let handle = open_process(pid_u32, PROCESS_REFERENCE_ACCESS)?;
-			let creation_time = process_creation_time(handle.as_raw())?;
-			Some(Self { pid, handle, creation_time })
-		}
-
-		pub const fn pid(&self) -> i32 {
-			self.pid
-		}
-
-		pub fn parent_pid(&self) -> Option<i32> {
-			process_basic_information(self.handle.as_raw())
-				.and_then(|info| i32::try_from(info.inherited_from_unique_process_id).ok())
-				.filter(|pid| *pid > 0)
-		}
-
-		pub fn args(&self) -> Vec<String> {
-			process_command_line(self)
-				.as_deref()
-				.map(split_windows_command_line)
-				.unwrap_or_default()
-		}
-
-		pub fn children(&self) -> Vec<Self> {
-			let tree = build_process_tree();
-			Self::children_from_tree(self.pid, &tree)
-		}
-
-		/// Walk the entire descendant tree using a single Toolhelp snapshot.
-		///
-		/// `children()` recursing per-node would re-snapshot the whole process
-		/// table for every visited descendant, making tree termination
-		/// `O(N · D)` snapshots. One snapshot per termination wave is enough.
-		pub fn descendants(&self) -> Vec<Self> {
-			let tree = build_process_tree();
-			let Ok(root) = u32::try_from(self.pid) else {
-				return Vec::new();
-			};
-			let mut visited: HashSet<u32> = HashSet::new();
-			visited.insert(root);
-			let mut out = Vec::new();
-			Self::collect_descendants_from_tree(root, &tree, &mut visited, &mut out);
-			out
-		}
-
-		fn children_from_tree(pid: i32, tree: &HashMap<u32, SmallVec<[u32; 4]>>) -> Vec<Self> {
-			let Ok(pid_u32) = u32::try_from(pid) else {
-				return Vec::new();
-			};
-			tree
-				.get(&pid_u32)
-				.into_iter()
-				.flatten()
-				.filter_map(|&child_pid| {
-					let child = Self::from_pid(i32::try_from(child_pid).ok()?)?;
-					(child.status() == ProcessStatus::Running).then_some(child)
-				})
-				.collect()
-		}
-
-		fn collect_descendants_from_tree(
-			parent: u32,
-			tree: &HashMap<u32, SmallVec<[u32; 4]>>,
-			visited: &mut HashSet<u32>,
-			out: &mut Vec<Self>,
-		) {
-			let Some(children) = tree.get(&parent) else {
-				return;
-			};
-			for &child_pid in children {
-				if !visited.insert(child_pid) {
-					continue;
-				}
-				let Ok(child_pid_i) = i32::try_from(child_pid) else {
-					continue;
-				};
-				let Some(child) = Self::from_pid(child_pid_i) else {
-					continue;
-				};
-				if child.status() != ProcessStatus::Running {
-					continue;
-				}
-				// Post-order: collect grandchildren first so leaves are signalled before
-				// their parents during tree termination.
-				Self::collect_descendants_from_tree(child_pid, tree, visited, out);
-				out.push(child);
-			}
-		}
-
-		pub fn kill(&self, _signal: i32) -> bool {
-			// The handle pins the original kernel process object even after the PID is
-			// recycled, so `TerminateProcess` cannot accidentally hit a different
-			// process. SAFETY: `self.handle` is an owned process handle opened with
-			// `PROCESS_TERMINATE` access and remains valid for the duration of this
-			// call. The exit code is passed by value.
-			unsafe { TerminateProcess(self.handle.as_raw(), 1) != 0 }
-		}
-
-		pub const fn group_id() -> Option<i32> {
-			None
-		}
-
-		pub fn status(&self) -> ProcessStatus {
-			// `WaitForSingleObject` on a process handle opened with `SYNCHRONIZE` is
-			// the definitive liveness probe: the handle becomes signalled iff the
-			// process has exited. This avoids the `STILL_ACTIVE == 259` pitfall in
-			// `GetExitCodeProcess`, where a process that legitimately exits with code
-			// 259 is indistinguishable from a still-running one.
-			//
-			// SAFETY: `self.handle` is an owned process handle opened with
-			// `SYNCHRONIZE` access. A zero timeout makes this a non-blocking probe.
-			let result = unsafe { WaitForSingleObject(self.handle.as_raw(), 0) };
-			if result == WAIT_OBJECT_0 {
-				ProcessStatus::Exited
-			} else {
-				ProcessStatus::Running
-			}
-		}
-	}
-
-	fn process_basic_information(handle: Handle) -> Option<ProcessBasicInformation> {
-		let mut info = ProcessBasicInformation {
-			exit_status: 0,
-			peb_base_address: 0,
-			affinity_mask: 0,
-			base_priority: 0,
-			unique_process_id: 0,
-			inherited_from_unique_process_id: 0,
-		};
-		let mut returned = 0u32;
-		// SAFETY: `handle` is a valid process handle. `info` is writable for exactly
-		// `size_of::<ProcessBasicInformation>()` bytes, and `returned` is a valid
-		// optional out-parameter for the byte count.
-		let status = unsafe {
-			NtQueryInformationProcess(
-				handle,
-				PROCESS_BASIC_INFORMATION_CLASS,
-				(&raw mut info).cast::<c_void>(),
-				mem::size_of::<ProcessBasicInformation>() as u32,
-				&raw mut returned,
-			)
-		};
-		(status == STATUS_SUCCESS).then_some(info)
-	}
-
-	fn process_command_line(process: &Process) -> Option<String> {
-		let pid_u32 = u32::try_from(process.pid).ok()?;
-		let read_handle = open_process(pid_u32, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)?;
-		// PID-reuse defense: `OpenProcess` resolves a PID to *whichever* process owns
-		// it right now, which need not be the one our original handle pinned. Compare
-		// the freshly opened handle's creation time against the recorded value to
-		// reject reads from an unrelated process that happens to share the PID.
-		if process_creation_time(read_handle.as_raw())? != process.creation_time {
-			return None;
-		}
-		let info = process_basic_information(read_handle.as_raw())?;
-		let peb: PebPartial = read_remote(read_handle.as_raw(), info.peb_base_address)?;
-		if peb.process_parameters == 0 {
-			return None;
-		}
-		let params: UserProcessParametersPartial =
-			read_remote(read_handle.as_raw(), peb.process_parameters)?;
-		read_remote_unicode_string(read_handle.as_raw(), params.command_line)
-	}
-
-	fn process_creation_time(handle: Handle) -> Option<u64> {
-		let mut creation = Filetime::default();
-		let mut exit = Filetime::default();
-		let mut kernel = Filetime::default();
-		let mut user = Filetime::default();
-		// SAFETY: `handle` is a valid process handle opened with at least
-		// `PROCESS_QUERY_LIMITED_INFORMATION`. All four out-parameters point to
-		// initialized, writable `Filetime` values that live until the call returns.
-		let ok = unsafe {
-			GetProcessTimes(handle, &raw mut creation, &raw mut exit, &raw mut kernel, &raw mut user)
-				!= 0
-		};
-		if !ok {
-			return None;
-		}
-		Some((u64::from(creation.dw_high_date_time) << 32) | u64::from(creation.dw_low_date_time))
-	}
-
-	fn read_remote<T: Copy>(handle: Handle, address: usize) -> Option<T> {
-		if address == 0 {
-			return None;
-		}
-		let mut value = mem::MaybeUninit::<T>::uninit();
-		let mut bytes_read = 0usize;
-		// SAFETY: `handle` is opened with `PROCESS_VM_READ`. `address` comes from
-		// kernel-reported process structures for that same process. `value` points to
-		// uninitialized local storage large enough for `T`, and `bytes_read` is a valid
-		// out-parameter. The value is only assumed initialized after the OS reports a
-		// full-size successful read.
-		let ok = unsafe {
-			ReadProcessMemory(
-				handle,
-				address as *const c_void,
-				value.as_mut_ptr().cast::<c_void>(),
-				mem::size_of::<T>(),
-				&raw mut bytes_read,
-			) != 0
-		};
-		if ok && bytes_read == mem::size_of::<T>() {
-			// SAFETY: The successful `ReadProcessMemory` call above initialized exactly
-			// `size_of::<T>()` bytes in `value`.
-			Some(unsafe { value.assume_init() })
-		} else {
-			None
-		}
-	}
-
-	fn read_remote_unicode_string(handle: Handle, value: UnicodeString) -> Option<String> {
-		if value.length == 0 || value.buffer == 0 || !value.length.is_multiple_of(2) {
-			return None;
-		}
-		let code_units = usize::from(value.length) / size_of::<u16>();
-		let mut buffer = vec![0u16; code_units];
-		let mut bytes_read = 0usize;
-		// SAFETY: `handle` is opened with `PROCESS_VM_READ`. `value.buffer` and
-		// `value.length` come from the remote process' own `UNICODE_STRING`. `buffer`
-		// is writable for exactly `value.length` bytes, and `bytes_read` is a valid
-		// out-parameter. The string is decoded only after a full successful read.
-		let ok = unsafe {
-			ReadProcessMemory(
-				handle,
-				value.buffer as *const c_void,
-				buffer.as_mut_ptr().cast::<c_void>(),
-				usize::from(value.length),
-				&raw mut bytes_read,
-			) != 0
-		};
-		if ok && bytes_read == usize::from(value.length) {
-			Some(String::from_utf16_lossy(&buffer))
-		} else {
-			None
-		}
-	}
-
-	fn split_windows_command_line(command_line: &str) -> Vec<String> {
-		use std::os::windows::ffi::OsStringExt;
-
-		let mut wide: Vec<u16> = command_line.encode_utf16().chain([0]).collect();
-		let mut argc = 0i32;
-		// SAFETY: `wide` is a local, NUL-terminated UTF-16 buffer that remains alive
-		// for the duration of the call. `argc` is a valid out-parameter. The returned
-		// argv block is released with `LocalFree` below as required by
-		// `CommandLineToArgvW`.
-		let argv = unsafe { CommandLineToArgvW(wide.as_mut_ptr(), &raw mut argc) };
-		if argv.is_null() || argc <= 0 {
-			return Vec::new();
-		}
-		let argc = argc as usize;
-		// SAFETY: `CommandLineToArgvW` returned a non-null pointer to `argc` argument
-		// pointers, valid until freed with `LocalFree`.
-		let pointers = unsafe { std::slice::from_raw_parts(argv, argc) };
-		let args = pointers
-			.iter()
-			.filter_map(|&arg| {
-				if arg.is_null() {
-					return None;
-				}
-				let mut len = 0usize;
-				// SAFETY: Each pointer in the argv block is a NUL-terminated UTF-16
-				// string owned by the argv block and valid until `LocalFree` below.
-				while unsafe { *arg.add(len) } != 0 {
-					len += 1;
-				}
-				// SAFETY: The loop above found the terminating NUL, so the preceding
-				// `len` code units form a valid readable slice.
-				let slice = unsafe { std::slice::from_raw_parts(arg, len) };
-				Some(
-					std::ffi::OsString::from_wide(slice)
-						.to_string_lossy()
-						.into_owned(),
-				)
-			})
-			.collect();
-		// SAFETY: `argv` is the allocation returned by `CommandLineToArgvW` and has
-		// not been freed yet. No pointers into it are used after this call.
-		let _ = unsafe { LocalFree(argv.cast::<c_void>()) };
-		args
-	}
-
-	fn open_process(pid: u32, access: u32) -> Option<Arc<OwnedHandle>> {
-		// SAFETY: `OpenProcess` takes the PID and access mask by value and does not
-		// dereference caller-owned memory. Handle inheritance is disabled. Identity
-		// is established by the caller (typically `Process::from_pid`) capturing the
-		// creation time immediately after a successful open and re-checking it on
-		// every subsequent operation that re-resolves the PID.
-		let handle = unsafe { OpenProcess(access, 0, pid) };
-		OwnedHandle::from_raw(handle).map(Arc::new)
-	}
-
-	fn create_process_snapshot() -> Option<OwnedHandle> {
-		// SAFETY: The process snapshot API takes flags and a process ID by value and
-		// does not dereference caller-owned memory. PID zero requests all processes.
-		let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-		OwnedHandle::from_raw(snapshot)
-	}
-
-	const fn process_entry() -> PROCESSENTRY32W {
-		PROCESSENTRY32W {
-			dwSize:              mem::size_of::<PROCESSENTRY32W>() as u32,
-			cntUsage:            0,
-			th32ProcessID:       0,
-			th32DefaultHeapID:   0,
-			th32ModuleID:        0,
-			cntThreads:          0,
-			th32ParentProcessID: 0,
-			pcPriClassBase:      0,
-			dwFlags:             0,
-			szExeFile:           [0; 260],
-		}
-	}
-
-	/// Build a map of `parent_pid` -> [`child_pids`] for all processes.
-	fn build_process_tree() -> HashMap<u32, SmallVec<[u32; 4]>> {
-		let mut tree: HashMap<u32, SmallVec<[u32; 4]>> = HashMap::new();
-		let Some(snapshot) = create_process_snapshot() else {
-			return tree;
-		};
-
-		let mut entry = process_entry();
-		// SAFETY: `snapshot` is a valid Toolhelp snapshot handle. `entry` points to a
-		// writable `PROCESSENTRY32W` whose `dwSize` field was initialized to the exact
-		// ABI size before the call.
-		if unsafe { Process32FirstW(snapshot.as_raw(), &raw mut entry) } == 0 {
-			return tree;
-		}
-
-		loop {
-			tree
-				.entry(entry.th32ParentProcessID)
-				.or_default()
-				.push(entry.th32ProcessID);
-
-			// SAFETY: `snapshot` remains a valid Toolhelp snapshot handle, and `entry`
-			// remains a writable `PROCESSENTRY32W` with its ABI size preserved.
-			if unsafe { Process32NextW(snapshot.as_raw(), &raw mut entry) } == 0 {
-				break;
-			}
-		}
-
-		tree
-	}
-
-	/// Process groups are not exposed on Windows.
-	/// Always returns `false`.
-	pub const fn kill_process_group(_pgid: i32, _signal: i32) -> bool {
-		false
-	}
-
-	/// Find processes whose `QueryFullProcessImageNameW` result equals `target`.
-	pub fn find_by_path(target: &str) -> Vec<Process> {
-		use std::{ffi::OsString, os::windows::ffi::OsStringExt};
-
-		let mut matches = Vec::new();
-		let Some(snapshot) = create_process_snapshot() else {
-			return matches;
-		};
-
-		let mut entry = process_entry();
-		let mut buf = vec![0u16; 32_768];
-		let target = OsString::from(target);
-
-		// SAFETY: `snapshot` is a valid Toolhelp snapshot handle. `entry` points to a
-		// writable `PROCESSENTRY32W` whose `dwSize` field was initialized to the exact
-		// ABI size before the call.
-		if unsafe { Process32FirstW(snapshot.as_raw(), &raw mut entry) } == 0 {
-			return matches;
-		}
-
-		loop {
-			let pid = entry.th32ProcessID;
-			if let Some(handle) = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
-				let mut size = buf.len() as u32;
-				// SAFETY: `handle` was opened with query access and remains valid for the
-				// call. `buf` is writable for `size` UTF-16 code units, and `size` is a valid
-				// in/out parameter initialized to that capacity.
-				let ok = unsafe {
-					QueryFullProcessImageNameW(handle.as_raw(), 0, buf.as_mut_ptr(), &raw mut size) != 0
-				};
-				if ok {
-					let path = OsString::from_wide(&buf[..size as usize]);
-					if path == target
-						&& let Some(process) = Process::from_pid(i32::try_from(pid).unwrap_or_default())
-					{
-						matches.push(process);
-					}
-				}
-			}
-
-			// SAFETY: `snapshot` remains a valid Toolhelp snapshot handle, and `entry`
-			// remains a writable `PROCESSENTRY32W` with its ABI size preserved.
-			if unsafe { Process32NextW(snapshot.as_raw(), &raw mut entry) } == 0 {
-				break;
-			}
-		}
-
-		matches
-	}
-}
-
 /// Stable process reference.
 #[derive(Clone)]
 pub struct Process {
@@ -1310,9 +727,7 @@ impl Process {
 
 	/// Send `signal` to this process and its descendants, children first.
 	///
-	/// On Linux and macOS the signal is forwarded as-is. On Windows there is no
-	/// signal abstraction, so the `signal` argument is ignored and the entire
-	/// tree is hard-killed via `TerminateProcess`. Defaults to the POSIX
+	/// On Linux and macOS the signal is forwarded as-is. Defaults to the POSIX
 	/// hard-kill signal.
 	#[must_use]
 	pub fn kill_tree(&self, signal: Option<i32>) -> u32 {
@@ -1320,13 +735,6 @@ impl Process {
 	}
 
 	/// Process group id for this process, when supported by the platform.
-	#[cfg(target_os = "windows")]
-	#[must_use]
-	pub const fn group_id(&self) -> Option<i32> {
-		platform::Process::group_id()
-	}
-
-	#[cfg(not(target_os = "windows"))]
 	#[must_use]
 	pub fn group_id(&self) -> Option<i32> {
 		self.inner.group_id()
@@ -1747,12 +1155,11 @@ impl SpawnRegistry {
 	///
 	/// A shell run that spawns many short-lived external commands (e.g. a bash
 	/// loop invoking a binary per iteration) would otherwise retain one owned
-	/// process handle per spawn — a pidfd on Linux, a `HANDLE` on Windows — for
-	/// the lifetime of the run, exhausting per-process FD/handle limits.
+	/// pidfd per spawn for the lifetime of the run, exhausting per-process FD
+	/// limits.
 	///
-	/// Each sweep costs `O(N)` (one non-blocking status probe per entry, plus
-	/// a Toolhelp descendant walk on Windows for exited roots). The next sweep
-	/// is scheduled `PRUNE_THRESHOLD` further records away — via the
+	/// Each sweep costs `O(N)` (one non-blocking status probe per entry). The
+	/// next sweep is scheduled `PRUNE_THRESHOLD` further records away — via the
 	/// `next_sweep_at` watermark — so a run that keeps many concurrent
 	/// long-lived children (`for i in {1..1000}; do sleep 60 & done`) does not
 	/// sweep on every spawn just because the vec is already above threshold.
@@ -1835,33 +1242,18 @@ impl SpawnRegistry {
 	}
 }
 
-/// Drop registry entries whose pinned process, process group, and — on
-/// Windows — descendant tree are all gone. With nothing still-live the entry
-/// contributes nothing to the next termination wave and only pins an owned OS
-/// handle for no reason.
+/// Drop registry entries whose pinned process and process group are both
+/// gone. With nothing still-live the entry contributes nothing to the next
+/// termination wave and only pins an owned OS resource for no reason.
 ///
-/// The platform split matters because Windows has no process groups. On Unix
-/// a child reparented onto init keeps its pgid, so a live pgid still catches
-/// grandchildren whose immediate parent exited. On Windows there is no
-/// reparenting and no pgid, so we probe the descendant tree directly through
-/// the still-open pinned handle — dropping that handle would release the pid
-/// slot, letting a recycled pid make future Toolhelp walks unsafe (issue
-/// #4605) and orphaning any leftover child from the next cancellation wave.
+/// On Unix a child reparented onto init keeps its pgid, so a live pgid still
+/// catches grandchildren whose immediate parent exited.
 fn prune_exited(spawned: &mut Vec<SpawnedProcess>) {
 	spawned.retain(|entry| {
-		if let Some(process) = &entry.process {
-			if process.status() == ProcessStatus::Running {
-				return true;
-			}
-			// Windows-only: root exited but the pinned handle still keeps its
-			// pid reserved, so `live_descendants` walks the *original* subtree
-			// via Toolhelp. If any child is still running we must keep the
-			// entry — closing the handle would both release the pid (racing
-			// pid reuse) and strand the surviving child.
-			#[cfg(target_os = "windows")]
-			if !process.live_descendants().is_empty() {
-				return true;
-			}
+		if let Some(process) = &entry.process
+			&& process.status() == ProcessStatus::Running
+		{
+			return true;
 		}
 		entry
 			.pgid
@@ -2056,18 +1448,17 @@ mod tests {
 	/// pid until termination.
 	///
 	/// Before the fix, `SpawnRegistry` stored only the raw pid; `build_targets`
-	/// called `Process::from_pid` at cancellation time. On Windows pids recycle
-	/// aggressively, so a bash-spawned `pwsh.exe` that had already exited could
-	/// see its pid reassigned to an unrelated PowerShell session (e.g. the
-	/// user's other Cursor terminal). `Process::from_pid` at cancel time would
-	/// happily open that unrelated process, and `signal_tree` would then
-	/// enumerate — and `TerminateProcess` — the entire foreign subtree.
+	/// called `Process::from_pid` at cancellation time. Pids recycle aggressively
+	/// on busy systems, so an exited child's pid could be reassigned to an
+	/// unrelated process; `Process::from_pid` at cancel time would happily open
+	/// that unrelated process, and `signal_tree` would then signal its entire
+	/// foreign subtree.
 	///
-	/// This test cannot literally trigger Windows pid recycling from a
-	/// cross-platform Rust test, but it can prove the observable defense: a
-	/// recorded process reference survives the original pid's death (so no
-	/// "look it up again" step exists to be raced), and the registry never
-	/// consults `Process::from_pid` when a handle was pinned at record time.
+	/// A cross-platform Rust test cannot literally trigger pid recycling, but it
+	/// can prove the observable defense: a recorded process reference survives
+	/// the original pid's death (so no "look it up again" step exists to be
+	/// raced), and the registry never consults `Process::from_pid` when a handle
+	/// was pinned at record time.
 	#[cfg(unix)]
 	#[test]
 	fn spawn_registry_pins_identity_at_record_time() {

@@ -24,8 +24,6 @@ export enum BrowserPlatform {
 	LINUX_ARM = "linux_arm",
 	MAC = "mac",
 	MAC_ARM = "mac_arm",
-	WIN32 = "win32",
-	WIN64 = "win64",
 }
 
 const BROWSERS = [
@@ -40,8 +38,6 @@ const BROWSER_PLATFORMS = [
 	BrowserPlatform.LINUX_ARM,
 	BrowserPlatform.MAC,
 	BrowserPlatform.MAC_ARM,
-	BrowserPlatform.WIN32,
-	BrowserPlatform.WIN64,
 ] as const;
 
 /** Chrome-for-Testing release channel tags accepted by {@link resolveBuildId}. */
@@ -103,7 +99,6 @@ export function detectBrowserPlatform(): BrowserPlatform | undefined {
 	const arch = os.arch();
 	if (platform === "darwin") return arch === "arm64" ? BrowserPlatform.MAC_ARM : BrowserPlatform.MAC;
 	if (platform === "linux") return arch === "arm64" ? BrowserPlatform.LINUX_ARM : BrowserPlatform.LINUX;
-	if (platform === "win32") return arch === "ia32" ? BrowserPlatform.WIN32 : BrowserPlatform.WIN64;
 	return undefined;
 }
 
@@ -177,10 +172,6 @@ export function computeExecutablePath(options: ComputeExecutablePathOptions): st
 				"MacOS",
 				"Google Chrome for Testing",
 			);
-		case BrowserPlatform.WIN32:
-			return path.join(installDir, "chrome-win32", "chrome.exe");
-		case BrowserPlatform.WIN64:
-			return path.join(installDir, "chrome-win64", "chrome.exe");
 	}
 }
 
@@ -288,10 +279,6 @@ function chromeArchivePlatform(platform: BrowserPlatform): string {
 			return "mac-x64";
 		case BrowserPlatform.MAC_ARM:
 			return "mac-arm64";
-		case BrowserPlatform.WIN32:
-			return "win32";
-		case BrowserPlatform.WIN64:
-			return "win64";
 	}
 }
 

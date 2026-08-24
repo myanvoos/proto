@@ -2,7 +2,7 @@
  * `omp auth-gateway` command handlers.
  *
  * Boots a forward-proxy server that lets less-trusted clients (the macOS
- * usage widget, robomp containers, …) make provider API calls without ever
+ * usage widget, containers, …) make provider API calls without ever
  * seeing the access token. The gateway is itself a broker client and
  * resolves credentials through the configured broker (via the same
  * `OMP_AUTH_BROKER_URL` / `auth.broker.url` precedence used elsewhere).

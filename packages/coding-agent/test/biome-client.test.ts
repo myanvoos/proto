@@ -16,9 +16,8 @@ function resolveRepoBiome(): string {
 			arm64: ["cli-linux-arm64", "cli-linux-arm64-musl"],
 			x64: ["cli-linux-x64", "cli-linux-x64-musl"],
 		},
-		win32: { arm64: ["cli-win32-arm64"], x64: ["cli-win32-x64"] },
 	};
-	const executable = process.platform === "win32" ? "biome.exe" : "biome";
+	const executable = "biome";
 	for (const packageName of platformPackages[process.platform]?.[process.arch] ?? []) {
 		try {
 			return Bun.resolveSync(`@biomejs/${packageName}/${executable}`, repoRoot);

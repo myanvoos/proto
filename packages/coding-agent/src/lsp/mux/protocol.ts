@@ -31,12 +31,8 @@ export function lspMuxReadyBanner(endpoint: string): string {
 	return `proto lsp mux listening on ${endpoint}`;
 }
 
-/** Resolve the Unix socket or Windows named pipe for one project scope. */
-export function lspMuxEndpoint(projectDir: string, runtimeDir: string): string {
-	if (process.platform === "win32") {
-		const key = Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0");
-		return `\\\\.\\pipe\\proto-lsp-mux-${key}`;
-	}
+/** Resolve the Unix socket for one project scope. */
+export function lspMuxEndpoint(_projectDir: string, runtimeDir: string): string {
 	return path.join(runtimeDir, "lsp-mux.sock");
 }
 

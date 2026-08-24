@@ -25,8 +25,8 @@ export class Loader extends Text {
 	#lastSpinnerTick = 0;
 	#layoutSource?: readonly string[];
 	#layout?: readonly { leading: string; content: string; trailing: string }[];
-	#layoutFrames: readonly string[];
-	#layoutFrame: string;
+	#layoutFrames: readonly string[] = [];
+	#layoutFrame = "";
 
 	constructor(
 		ui: TUI,
@@ -40,6 +40,25 @@ export class Loader extends Text {
 		if (spinnerFrames && spinnerFrames.length > 0) {
 			this.#frames = spinnerFrames;
 		}
+		this.#applyFrames();
+		this.start();
+	}
+
+	/** Swap the frame cycle mid-flight (e.g. switching spinners by turn phase).
+	 * Layout representatives are recomputed so same-width frames keep swapping
+	 * glyphs without rewrapping the line. */
+	setSpinnerFrames(frames: string[]) {
+		if (frames.length === 0 || frames === this.#frames) {
+			return;
+		}
+		this.#frames = frames;
+		this.#applyFrames();
+		this.#currentFrame %= this.#frames.length;
+		this.#syncText();
+		this.#requestPaint();
+	}
+
+	#applyFrames() {
 		const representatives = new Map<number, string>();
 		this.#layoutFrames = this.#frames.map(frame => {
 			const width = visibleWidth(frame);
@@ -50,8 +69,6 @@ export class Loader extends Text {
 			representatives.set(width, frame);
 			return frame;
 		});
-		this.#layoutFrame = this.#layoutFrames[0];
-		this.start();
 	}
 
 	override render(width: number): readonly string[] {

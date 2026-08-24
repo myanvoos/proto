@@ -17,7 +17,6 @@ describe("hasLinuxDesktopSession", () => {
 		expect(hasLinuxDesktopSession("linux", LINUX_ENV)).toBe(true);
 		expect(hasLinuxDesktopSession("linux", {})).toBe(false);
 		expect(hasLinuxDesktopSession("darwin", LINUX_ENV)).toBe(false);
-		expect(hasLinuxDesktopSession("win32", LINUX_ENV)).toBe(false);
 	});
 
 	it("accepts the systemd user bus socket when the address is not exported", () => {
@@ -59,9 +58,8 @@ describe("shouldDeliverDesktopNotification", () => {
 		).toBe(false);
 	});
 
-	it("requires a Linux desktop session — silent on macOS / Windows / headless Linux", () => {
+	it("requires a Linux desktop session — silent on macOS / headless Linux", () => {
 		expect(shouldDeliverDesktopNotification("trueColor", true, "darwin", LINUX_ENV)).toBe(false);
-		expect(shouldDeliverDesktopNotification("trueColor", true, "win32", LINUX_ENV)).toBe(false);
 		expect(shouldDeliverDesktopNotification("trueColor", true, "linux", {})).toBe(false);
 	});
 });

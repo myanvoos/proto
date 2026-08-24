@@ -54,9 +54,8 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 describe("worktree isolation helpers", () => {
-	it("returns platform-specific null path for git --no-index diffs", () => {
-		const expected = process.platform === "win32" ? "NUL" : "/dev/null";
-		expect(getGitNoIndexNullPath()).toBe(expected);
+	it("returns the null path for git --no-index diffs", () => {
+		expect(getGitNoIndexNullPath()).toBe("/dev/null");
 	});
 
 	it("maps every isolation mode to the native backend contract", () => {
@@ -68,9 +67,6 @@ describe("worktree isolation helpers", () => {
 		expect(parseIsolationMode("reflink")).toBe(natives.IsoBackendKind.LinuxReflink);
 		expect(parseIsolationMode("overlayfs")).toBe(natives.IsoBackendKind.Overlayfs);
 		expect(parseIsolationMode("fuse-overlay")).toBe(natives.IsoBackendKind.Overlayfs);
-		expect(parseIsolationMode("projfs")).toBe(natives.IsoBackendKind.Projfs);
-		expect(parseIsolationMode("fuse-projfs")).toBe(natives.IsoBackendKind.Projfs);
-		expect(parseIsolationMode("block-clone")).toBe(natives.IsoBackendKind.WindowsBlockClone);
 		expect(parseIsolationMode("rcopy")).toBe(natives.IsoBackendKind.Rcopy);
 		expect(parseIsolationMode("worktree")).toBe(natives.IsoBackendKind.Rcopy);
 	});
@@ -108,7 +104,6 @@ describe("worktree isolation helpers", () => {
 	});
 
 	it("sizes an untracked symlink itself rather than its target", async () => {
-		if (process.platform === "win32") return;
 		const repo = await createGitRepo();
 		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-worktree-symlink-target-"));
 		tempDirs.push(targetDir);
@@ -307,7 +302,7 @@ describe("worktree isolation helpers", () => {
 				// as a stash entry for the user to reconcile manually.
 				expect(status).toBe("");
 				expect(headContent).toBe("task branch change\n");
-				expect(stashList).toContain("proto-task-merge");
+				expect(stashList).toContain("proto-worker-merge");
 
 				// Downstream contract: with a clean index, captureDeltaPatch
 				// produces a valid unified diff (not `diff --cc`) that a
@@ -368,7 +363,7 @@ describe("worktree isolation helpers", () => {
 					expect(magicExists).toBe(false);
 					expect(buildLogExists).toBe(true);
 					expect(headContent).toBe("task branch change\n");
-					expect(stashList).toContain("proto-task-merge");
+					expect(stashList).toContain("proto-worker-merge");
 				} finally {
 					await cleanupTaskBranches(repo, [ignoredBranch]);
 					await Promise.all([
@@ -563,7 +558,7 @@ describe("getRepoRoot", () => {
 	it("preserves the generic git-not-found error for directories without any repo", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-norepo-"));
 		tempDirs.push(dir);
-		await expect(getRepoRoot(dir)).rejects.toThrow("Git repository not found for isolated task execution.");
+		await expect(getRepoRoot(dir)).rejects.toThrow("Git repository not found for isolated worker execution.");
 	});
 
 	it("rejects a pure jj workspace nested inside an unrelated outer git checkout", async () => {

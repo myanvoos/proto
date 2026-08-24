@@ -44,9 +44,9 @@ async function settle(term: VirtualTerminal): Promise<void> {
 describe("slash command autocomplete with unknown native viewport state", () => {
 	it("keeps repainting the editor while the autocomplete list changes height", async () => {
 		const originalPlatform = process.platform;
-		const originalWtSession = Bun.env.WT_SESSION;
-		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
-		Bun.env.WT_SESSION = "wt-test";
+		const originalWslDistro = Bun.env.WSL_DISTRO_NAME;
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(40, 8);
 		const tui = new TUI(term);
 		const root = new Container();
@@ -72,8 +72,8 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 		} finally {
 			tui.stop();
 			Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
-			if (originalWtSession === undefined) delete Bun.env.WT_SESSION;
-			else Bun.env.WT_SESSION = originalWtSession;
+			if (originalWslDistro === undefined) delete Bun.env.WSL_DISTRO_NAME;
+			else Bun.env.WSL_DISTRO_NAME = originalWslDistro;
 		}
 	});
 
@@ -159,9 +159,9 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 
 	it("repaints autocomplete updates coalesced with offscreen background mutations", async () => {
 		const originalPlatform = process.platform;
-		const originalWtSession = Bun.env.WT_SESSION;
-		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
-		Bun.env.WT_SESSION = "wt-test";
+		const originalWslDistro = Bun.env.WSL_DISTRO_NAME;
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(40, 6);
 		const tui = new TUI(term);
 		const root = new Container();
@@ -192,10 +192,9 @@ describe("slash command autocomplete with unknown native viewport state", () => 
 			}
 			expect(editor.getText()).toBe("/mo");
 		} finally {
-			tui.stop();
 			Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
-			if (originalWtSession === undefined) delete Bun.env.WT_SESSION;
-			else Bun.env.WT_SESSION = originalWtSession;
+			if (originalWslDistro === undefined) delete Bun.env.WSL_DISTRO_NAME;
+			else Bun.env.WSL_DISTRO_NAME = originalWslDistro;
 		}
 	});
 });

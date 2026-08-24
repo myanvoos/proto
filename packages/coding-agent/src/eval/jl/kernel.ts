@@ -11,7 +11,6 @@ import { $ } from "bun";
 import { Settings } from "../../config/settings";
 import { BaseKernel, getRemainingTimeMs, type KernelStartOptions } from "../kernel-base";
 import type { KernelDisplayOutput } from "../py/display";
-import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "../py/spawn-options";
 import { stageRunnerScript } from "../runner-cache";
 import { JULIA_PRELUDE } from "./prelude";
 import RUNNER_SCRIPT from "./runner.jl" with { type: "text" };
@@ -169,15 +168,11 @@ export class JuliaKernel extends BaseKernel<KernelExecuteOptions> {
 			[runtime.juliaPath, "--startup-file=no", "--history-file=no", "--color=no", "--project=@.", scriptPath],
 			{
 				cwd: options.cwd,
-				detached: shouldDetachKernel(process.platform),
+				detached: true,
 				env: spawnEnv,
 				stdin: "pipe",
 				stdout: "pipe",
 				stderr: "pipe",
-				windowsHide: shouldHideKernelWindow({
-					platform: process.platform,
-					hostHasInheritableConsole: hostHasInheritableConsole(),
-				}),
 			},
 		);
 		kernel.setProcess(proc);

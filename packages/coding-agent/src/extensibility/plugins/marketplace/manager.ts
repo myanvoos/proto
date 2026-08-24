@@ -834,7 +834,7 @@ export class MarketplaceManager {
 		const linkPath = this.#runtimePackagePath(scope, packageName);
 		await fs.mkdir(path.dirname(linkPath), { recursive: true });
 		await fs.rm(linkPath, { recursive: true, force: true });
-		await fs.symlink(cachePath, linkPath, process.platform === "win32" ? "junction" : "dir");
+		await fs.symlink(cachePath, linkPath, "dir");
 
 		const config = await this.#loadRuntimeConfig(scope);
 		const previous = config.plugins[packageName];

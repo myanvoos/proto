@@ -22,11 +22,12 @@ runs:
            else
              echo "setup_bun=true" >> "$GITHUB_OUTPUT"
            fi
-           # The repo keys "are we on can.internal infra?" off $BAZEL_REMOTE_USER
-           # (the bazel-remote-ci secret is envFrom-injected into every omp-kata
-           # runner pod). RUNNER_ENVIRONMENT is empty on ARC pods, so it is not a
-           # usable signal here. On infra, the ARC pod mounts the shared Bun
-           # store at the default cache path; off infra, actions/cache restores it.
+           # Infra detection keys "are we on can.internal infra?" off
+           # $BAZEL_REMOTE_USER — a legacy-named secret that is envFrom-injected
+           # into every omp-kata runner pod; only its presence is consulted.
+           # RUNNER_ENVIRONMENT is empty on ARC pods, so it is not a usable
+           # signal here. On infra, the ARC pod mounts the shared Bun store
+           # at the default cache path; off infra, actions/cache restores it.
            if [ -n "${BAZEL_REMOTE_USER:-}" ]; then
              echo "cache=mounted" >> "$GITHUB_OUTPUT"
              echo "bun cache backend: mounted PVC (${BUN_INSTALL_CACHE_DIR:-${HOME}/.bun/install/cache})"
@@ -45,9 +46,8 @@ runs:
       # Off-infra (GitHub-hosted): actions/cache for the bun store, split into
       # restore + save. actions/cache entries are scoped per ref but count
       # against the shared 10 GB repo quota — letting every PR branch save its
-      # own copy of the ~500 MB store duplicated it 19x, evicting the far more
-      # valuable bazel disk-cache archives (which is why release darwin builds
-      # kept going cold). PRs only restore; non-PR runs (main pushes, releases,
+      # own copy of the ~500 MB store duplicated it 19x and evicted other
+      # jobs' caches. PRs only restore; non-PR runs (main pushes, releases,
       # dispatches) produce the shared entry every PR can see.
       - name: Restore bun store (GitHub cache)
         id: bun-cache

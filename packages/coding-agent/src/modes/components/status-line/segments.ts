@@ -68,19 +68,10 @@ function stripDisplayRoot(pwd: string): string {
 }
 
 const SCRATCH_ROOTS: readonly string[] = (() => {
-	const roots = new Set<string>([os.tmpdir(), path.join(os.homedir(), "tmp")]);
-	if (process.platform === "win32") {
-		const { TEMP, TMP, SystemRoot } = process.env;
-		if (TEMP) roots.add(TEMP);
-		if (TMP) roots.add(TMP);
-		if (SystemRoot) roots.add(path.join(SystemRoot, "Temp"));
-	} else {
-		roots.add("/tmp");
-		roots.add("/var/tmp");
-		if (process.platform === "darwin") {
-			roots.add("/private/tmp");
-			roots.add("/private/var/tmp");
-		}
+	const roots = new Set<string>([os.tmpdir(), path.join(os.homedir(), "tmp"), "/tmp", "/var/tmp"]);
+	if (process.platform === "darwin") {
+		roots.add("/private/tmp");
+		roots.add("/private/var/tmp");
 	}
 	return [...roots];
 })();

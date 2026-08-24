@@ -98,7 +98,9 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 	});
 
 	it("still bounds the initial session-resume paint on ConPTY (issue #2115)", async () => {
-		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		// isConPTYHosted() is true on linux when a WSL marker is present.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		process.env.WSL_DISTRO_NAME = "Ubuntu";
 		const term = new VirtualTerminal(80, 24, 20_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);

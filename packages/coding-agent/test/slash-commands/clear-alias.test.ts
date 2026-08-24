@@ -7,10 +7,7 @@ import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 
 describe("/clear slash command", () => {
 	it("resolves /clear to the context reset command and removed /clear alias from /new", async () => {
-		const provider = new CombinedAutocompleteProvider(
-			[...BUILTIN_SLASH_COMMANDS, { name: "autoresearch", description: "Clear stale research results" }],
-			process.cwd(),
-		);
+		const provider = new CombinedAutocompleteProvider([...BUILTIN_SLASH_COMMANDS], process.cwd());
 
 		const suggestions = await provider.getSuggestions(["/clear"], 0, 6);
 

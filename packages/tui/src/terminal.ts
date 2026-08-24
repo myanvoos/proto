@@ -1,4 +1,3 @@
-import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as fs from "node:fs";
 import { TtyWriter } from "@oh-my-pi/pi-natives";
 import {
@@ -25,19 +24,13 @@ import { setHangulCompatibilityJamoWidth } from "./utils";
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
-const WINDOWS_TERMINAL_OSC11_POLL_MS = 30_000;
 function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.SSH_CONNECTION && !env.SSH_TTY && !env.SSH_CLIENT) return true;
 	return TERMINAL.id !== "base" && TERMINAL.id !== "trueColor";
 }
 
-function shouldPollWindowsTerminalAppearance(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	if (process.platform !== "win32") return false;
-	if (!env.WT_SESSION) return false;
-	return !env.TERM_PROGRAM || env.TERM_PROGRAM.toLowerCase() === "windows_terminal";
-}
 /**
- * Maximum encoded UTF-8 bytes per `process.stdout.write` call on Windows.
+ * Maximum encoded UTF-8 bytes per `process.stdout.write` call on a ConPTY host.
  *
  * Windows ConPTY ties viewport tracking to per-`WriteFile` boundaries: when a
  * single write exceeds ~32-64 KB, the pseudo-console stops following the
@@ -264,81 +257,6 @@ function registerStdoutErrorHandler(handler: (err: Error) => void): () => void {
 	};
 }
 
-const STD_INPUT_HANDLE = -10;
-const ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200;
-/** UTF-8 codepage id for SetConsoleCP/SetConsoleOutputCP. */
-const CP_UTF8 = 65001;
-
-/**
- * Lazily-initialized closure re-asserting the UTF-8 console codepage, or
- * `null` when unavailable (non-win32, FFI failure, console detached).
- */
-let consoleCodepageGuard: (() => void) | null | undefined;
-
-/**
- * Re-assert the UTF-8 console codepage before writing (win32 only).
- *
- * Bun sets both console codepages to UTF-8 (65001) at startup, and
- * `process.stdout.write(string)` hands UTF-8 bytes to `WriteFile`, which
- * conhost translates using the *current* console output codepage. Child
- * processes spawned by tools (bash commands, MCP/LSP servers, eval kernels)
- * share this console, and some flip the codepage behind our back: PHP >=7.1
- * CLI issues the equivalent of `chcp` whenever `internal_encoding` mismatches
- * the console codepage (php.net request #73716) and skips the restore when
- * killed — and two PHP processes in a pipeline race their restores. Once the
- * codepage falls back to an OEM page (437/850), every non-ASCII glyph the TUI
- * paints is mis-translated: box-drawing borders degrade into `Γöé`/`ΓöÇ`
- * mojibake on the next full repaint (most visibly ctrl+o expand, which
- * rewrites every row).
- *
- * `GetConsoleOutputCP` is one cheap console call per `#safeWrite`; the setter
- * only runs after a foreign flip. A reading of 0 means "no console" — leave
- * that alone. Guarding the write chokepoint (rather than per-spawn cleanup)
- * covers every console-sharing child and long-running processes that flip
- * the codepage mid-session.
- */
-function ensureWindowsConsoleUtf8(): void {
-	if (consoleCodepageGuard === undefined) consoleCodepageGuard = createConsoleCodepageGuard();
-	consoleCodepageGuard?.();
-}
-
-let lastWarnedCodepage = 0;
-
-function createConsoleCodepageGuard(): (() => void) | null {
-	if (process.platform !== "win32") return null;
-	try {
-		const kernel32 = dlopen("kernel32.dll", {
-			GetConsoleOutputCP: { args: [], returns: FFIType.u32 },
-			SetConsoleOutputCP: { args: [FFIType.u32], returns: FFIType.bool },
-			GetConsoleCP: { args: [], returns: FFIType.u32 },
-			SetConsoleCP: { args: [FFIType.u32], returns: FFIType.bool },
-		});
-		return () => {
-			try {
-				const outCp = kernel32.symbols.GetConsoleOutputCP();
-				if (outCp !== 0 && outCp !== CP_UTF8) {
-					kernel32.symbols.SetConsoleOutputCP(CP_UTF8);
-					if (outCp !== lastWarnedCodepage) {
-						lastWarnedCodepage = outCp;
-						logger.warn("console output codepage changed by a child process; restoring UTF-8", {
-							codepage: outCp,
-						});
-					}
-				}
-				const inCp = kernel32.symbols.GetConsoleCP();
-				if (inCp !== 0 && inCp !== CP_UTF8) {
-					kernel32.symbols.SetConsoleCP(CP_UTF8);
-				}
-			} catch {
-				// Console APIs failed (console detached mid-session); disable the guard.
-				consoleCodepageGuard = null;
-			}
-		};
-	} catch {
-		// bun:ffi unavailable; rendering proceeds without the guard.
-		return null;
-	}
-}
 /**
  * Emergency terminal restore - call this from signal/crash handlers
  * Resets terminal state without requiring access to the ProcessTerminal instance
@@ -534,16 +452,13 @@ export interface Terminal {
 }
 
 /**
- * True when stdout flows through a ConPTY pseudo-console (native win32, or
- * Linux running under WSL where stdout still crosses into ConPTY at the
- * `wslhost` boundary). ConPTY hosts share the per-WriteFile viewport-tracking
- * quirks documented above and on {@link MAX_CONPTY_WRITE_CHUNK_BYTES}, so both
- * `#safeWrite` and the renderer's post-big-paint settle gate hang off this
- * single predicate.
+ * True when stdout flows through a ConPTY pseudo-console: Linux running under
+ * WSL, where stdout crosses into ConPTY at the `wslhost` boundary. ConPTY
+ * hosts share the per-WriteFile viewport-tracking quirks documented above and
+ * on {@link MAX_CONPTY_WRITE_CHUNK_BYTES}, so both `#safeWrite` and the
+ * renderer's post-big-paint settle gate hang off this single predicate.
  */
 export function isConPTYHosted(): boolean {
-	if (process.platform === "win32") return true;
-	// WSL: stdout still crosses into ConPTY at the `wslhost` boundary.
 	return process.platform === "linux" && (!!$env.WSL_DISTRO_NAME || !!$env.WSL_INTEROP);
 }
 
@@ -641,7 +556,6 @@ export class ProcessTerminal implements Terminal {
 		this.#stdoutBacklog.reset();
 	};
 
-	#windowsVTInputRestore?: () => void;
 	#xtermScrollToBottomRestoreModes = new Set<number>();
 	#appearanceCallbacks: Array<
 		(appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void
@@ -671,7 +585,6 @@ export class ProcessTerminal implements Terminal {
 	#reportedColumns?: number;
 	#reportedRows?: number;
 	#mode2031DebounceTimer?: Timer;
-	#windowsTerminalAppearancePollTimer?: Timer;
 	#progressTimer?: Timer;
 
 	get kittyProtocolActive(): boolean {
@@ -777,11 +690,11 @@ export class ProcessTerminal implements Terminal {
 		// Register for emergency cleanup
 		activeTerminal = this;
 		terminalEverStarted = true;
-		// Own the blocking write(2) on a pump thread (unix TTYs only). A stale
+		// Own the blocking write(2) on a pump thread. A stale
 		// prebuilt natives module without the export falls back to direct writes.
 		// Test suites spy on `process.stdout.write` with a faked isTTY, so the
 		// pump stays off under `bun test` — same philosophy as isTerminalHeadless.
-		if (process.platform !== "win32" && process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
+		if (process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
 			try {
 				this.#outputPump = new TtyWriter(1);
 			} catch (err) {
@@ -806,11 +719,8 @@ export class ProcessTerminal implements Terminal {
 		};
 		process.stdout.on("resize", this.#stdoutResizeListener);
 
-		// Refresh terminal dimensions - they may be stale after suspend/resume
-		// (SIGWINCH is lost while process is stopped). Unix only.
-		if (process.platform !== "win32") {
-			process.kill(process.pid, "SIGWINCH");
-		}
+		// Refresh terminal dimensions - they may be stale after suspend/resume.
+		process.kill(process.pid, "SIGWINCH");
 
 		setHangulCompatibilityJamoWidth(TERMINAL.hangulJamoWidth);
 
@@ -866,11 +776,6 @@ export class ProcessTerminal implements Terminal {
 		// See #6374.
 		this.#safeWrite("\x1b[?1l\x1b>");
 
-		// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
-		// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
-		// events that lose modifier information. Must run after setRawMode(true)
-		// since that resets console mode flags.
-		this.#enableWindowsVTInput();
 		// Query and enable Kitty keyboard protocol
 		// The query handler intercepts input temporarily, then installs the user's handler
 		// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
@@ -901,8 +806,7 @@ export class ProcessTerminal implements Terminal {
 		// WezTerm) detect the appearance once at startup and pick up later OS
 		// theme changes on next launch. Earlier builds polled OSC 11 every 30 s
 		// here for those terminals, but each poll's OSC 11/DA1 write wiped the
-		// user's active text selection on several of them (#3297). Native Windows
-		// Terminal gets a scoped fallback after DECRQM confirms 2031 is unsupported.
+		// user's active text selection on several of them (#3297).
 
 		// Probe DEC private-mode support via DECRQM. 2026 (synchronized output)
 		// gates the renderer's begin/end markers; 2048 (in-band resize) is enabled
@@ -917,56 +821,6 @@ export class ProcessTerminal implements Terminal {
 		this.#queryPrivateMode(2031);
 		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
 			this.#queryPrivateMode(mode);
-		}
-	}
-
-	/**
-	 * On Windows, add ENABLE_VIRTUAL_TERMINAL_INPUT to the stdin console mode
-	 * so modified keys (for example Shift+Tab) arrive as VT escape sequences.
-	 */
-	#enableWindowsVTInput(): void {
-		if (process.platform !== "win32") return;
-		this.#restoreWindowsVTInput();
-		try {
-			const kernel32 = dlopen("kernel32.dll", {
-				GetStdHandle: { args: [FFIType.i32], returns: FFIType.ptr },
-				GetConsoleMode: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
-				SetConsoleMode: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.bool },
-			});
-			const handle = kernel32.symbols.GetStdHandle(STD_INPUT_HANDLE);
-			const mode = new Uint32Array(1);
-			const modePtr = ptr(mode);
-			if (!modePtr || !kernel32.symbols.GetConsoleMode(handle, modePtr)) {
-				kernel32.close();
-				return;
-			}
-			const originalMode = mode[0]!;
-			const vtMode = originalMode | ENABLE_VIRTUAL_TERMINAL_INPUT;
-			if (vtMode !== originalMode && !kernel32.symbols.SetConsoleMode(handle, vtMode)) {
-				kernel32.close();
-				return;
-			}
-			this.#windowsVTInputRestore = () => {
-				try {
-					kernel32.symbols.SetConsoleMode(handle, originalMode);
-				} finally {
-					kernel32.close();
-				}
-			};
-		} catch {
-			// bun:ffi unavailable or console API unsupported; keep startup non-fatal.
-		}
-	}
-
-	#restoreWindowsVTInput(): void {
-		if (process.platform !== "win32") return;
-		const restore = this.#windowsVTInputRestore;
-		this.#windowsVTInputRestore = undefined;
-		if (!restore) return;
-		try {
-			restore();
-		} catch {
-			// Ignore restore errors during terminal teardown.
 		}
 	}
 
@@ -1494,25 +1348,8 @@ export class ProcessTerminal implements Terminal {
 			}
 		}
 		if (mode === 2048 && supported) this.#enableInBandResize();
-		if (mode === 2031) this.#syncWindowsTerminalAppearancePolling(supported);
 	}
 
-	#syncWindowsTerminalAppearancePolling(mode2031Supported: boolean): void {
-		if (mode2031Supported || !shouldPollWindowsTerminalAppearance() || this.#dead) {
-			this.#clearWindowsTerminalAppearancePoll();
-			return;
-		}
-		if (this.#windowsTerminalAppearancePollTimer) return;
-		this.#windowsTerminalAppearancePollTimer = setInterval(() => {
-			this.#queryBackgroundColor();
-		}, WINDOWS_TERMINAL_OSC11_POLL_MS);
-	}
-
-	#clearWindowsTerminalAppearancePoll(): void {
-		if (!this.#windowsTerminalAppearancePollTimer) return;
-		clearInterval(this.#windowsTerminalAppearancePollTimer);
-		this.#windowsTerminalAppearancePollTimer = undefined;
-	}
 	#disableXtermScrollToBottomMode(mode: number): void {
 		if (this.#xtermScrollToBottomRestoreModes.has(mode) || this.#dead) return;
 		this.#xtermScrollToBottomRestoreModes.add(mode);
@@ -1686,7 +1523,6 @@ export class ProcessTerminal implements Terminal {
 		this.#appearanceReportCallbacks = [];
 		this.#osc11Pending = false;
 		this.#osc11ActiveToken = undefined;
-		this.#clearWindowsTerminalAppearancePoll();
 		this.#osc11QueuedQuery = undefined;
 		this.#osc11ResponseBuffer = "";
 		this.#osc99PendingId = undefined;
@@ -1717,7 +1553,6 @@ export class ProcessTerminal implements Terminal {
 			this.#modifyOtherKeysActive = false;
 		}
 
-		this.#restoreWindowsVTInput();
 		// Clean up StdinBuffer
 		if (this.#stdinBuffer) {
 			this.#stdinBuffer.destroy();
@@ -1796,10 +1631,6 @@ export class ProcessTerminal implements Terminal {
 			logger.error("Terminal disconnect handler failed; exiting anyway", { err: handlerErr });
 		}
 
-		if (process.platform === "win32") {
-			void postmortem.quit(129, { drainStdout: false });
-			return;
-		}
 		try {
 			process.kill(process.pid, "SIGHUP");
 		} catch (signalErr) {
@@ -1844,10 +1675,6 @@ export class ProcessTerminal implements Terminal {
 			}
 			return;
 		}
-		// A console-sharing child process may have flipped the console codepage
-		// away from UTF-8; repair it before any bytes hit WriteFile so no frame
-		// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
-		if (process.platform === "win32") ensureWindowsConsoleUtf8();
 		try {
 			// Windows ConPTY drops viewport tracking when a single write exceeds
 			// ~32-64 KB: the host UI's scroll position stays parked at wherever

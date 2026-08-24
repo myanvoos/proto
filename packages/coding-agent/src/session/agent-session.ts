@@ -48,7 +48,6 @@ import {
 	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	generateBranchSummary,
-	type ShakeConfig,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	AssistantMessage,
@@ -196,7 +195,6 @@ import type {
 	ContextUsageBreakdown,
 	DroppedPrompt,
 	FollowUpOptions,
-	HandoffResult,
 	ModelCycleResult,
 	Prewalk,
 	PromptOptions,
@@ -205,7 +203,6 @@ import type {
 	RestoredQueuedMessage,
 	RoleModelCycle,
 	RoleModelCycleResult,
-	SessionHandoffOptions,
 	SessionOAuthAccountList,
 	SessionStats,
 	UsageFallbackConfirmer,
@@ -295,7 +292,6 @@ import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
 import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
-import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
 	createCodexCompactionContext as createMaintenanceCodexCompactionContext,
@@ -307,7 +303,6 @@ import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
-import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "./skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -488,8 +483,6 @@ export class AgentSession {
 	// Branch summarization state
 	#branchSummaryAbortController: AbortController | undefined = undefined;
 
-	readonly #handoff: SessionHandoff;
-
 	// Retry state
 	readonly #recovery: TurnRecovery;
 	#textOutputCommitted = true;
@@ -620,8 +613,6 @@ export class AgentSession {
 	#sessionStopContinuationCount = 0;
 	#sessionStopHookActive = false;
 	#obfuscator: SecretObfuscator | undefined;
-	/** Session-start value of `inlineToolDescriptors`; drives handoff tool pruning. */
-	#pruneToolDescriptions = false;
 	#checkpointState: CheckpointState | undefined = undefined;
 	#pendingRewindReport: string | undefined = undefined;
 	#lastCompletedRewind: CompletedRewindState | undefined = undefined;
@@ -1021,8 +1012,8 @@ export class AgentSession {
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
 			resetCurrentResponsesProviderSession: reason => this.#resetCurrentResponsesProviderSession(reason),
 			maybeAutoRedeemCodexReset: activeBlockUnblockAtMs => this.#maybeAutoRedeemCodexReset(activeBlockUnblockAtMs),
-			runAutoCompaction: (reason, willRetry, deferred, allowDefer, options) =>
-				this.#maintenance.runAutoCompaction(reason, willRetry, deferred, allowDefer, options),
+			runAutoCompaction: (reason, willRetry, options) =>
+				this.#maintenance.runAutoCompaction(reason, willRetry, options),
 			withBashBranchTransition: operation => this.#bash.withBranchTransition(operation),
 		};
 		this.#recovery = new TurnRecovery(recoveryHost, { initialRetryFallback: config.initialRetryFallback });
@@ -1065,7 +1056,6 @@ export class AgentSession {
 		// session `serviceTier` that drives `/fast` and OpenAI/Anthropic priority.
 		this.agent.serviceTierResolver = model => this.#models.effectiveServiceTier(model);
 		this.#titleSystemPrompt = config.titleSystemPrompt;
-		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#transformContext = config.transformContext ?? (messages => messages);
 		this.#sideStreamFn = config.sideStreamFn ?? streamSimple;
 		this.#preferWebsockets = config.preferWebsockets;
@@ -1418,7 +1408,6 @@ export class AgentSession {
 			thinkingLevel: () => this.thinkingLevel,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
-			isGeneratingHandoff: () => this.isGeneratingHandoff,
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			messages: () => this.messages,
@@ -1447,43 +1436,17 @@ export class AgentSession {
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),
-			shake: (mode, options) => this.shake(mode, options),
 			dropImages: () => this.dropImages(),
-			generateHandoffDocument: (customInstructions, options) =>
-				this.#handoff.generateDocument(customInstructions, options),
 			removeAssistantMessageFromActiveContext: message =>
 				this.#recovery.removeAssistantMessageFromActiveContext(message),
 			dropPersistedAssistantTurn: message => this.#recovery.dropPersistedAssistantTurn(message),
-			runRecoveryCompactionWithRollback: (reason, message, allowDefer, options) =>
-				this.#recovery.runRecoveryCompactionWithRollback(reason, message, allowDefer, options),
+			runRecoveryCompactionWithRollback: (reason, message, options) =>
+				this.#recovery.runRecoveryCompactionWithRollback(reason, message, options),
 			parseRetryAfterMsFromError: errorMessage => this.#recovery.parseRetryAfterMsFromError(errorMessage),
 			setModelTemporary: (model, thinkingLevel, options) => this.setModelTemporary(model, thinkingLevel, options),
 			abort: options => this.abort(options),
-			abortHandoff: () => this.abortHandoff(),
 		};
 		this.#maintenance = new SessionMaintenance(maintenanceHost);
-
-		const handoffHost: SessionHandoffHost = {
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			settings: this.settings,
-			modelRegistry: this.#modelRegistry,
-			sideStreamFn: this.#sideStreamFn,
-			obfuscator: this.#obfuscator,
-			model: () => this.model,
-			thinkingLevel: () => this.thinkingLevel,
-			sessionId: () => this.sessionId,
-			baseSystemPrompt: () => this.#tools.baseSystemPrompt,
-			setSkipPostTurnMaintenance: timestamp => {
-				this.#maintenance.skipPostTurnMaintenanceAssistantTimestamp = timestamp;
-			},
-			obfuscateTextForProvider: text => this.#obfuscateTextForProvider(text),
-			deobfuscateFromProvider: text => this.#deobfuscateFromProvider(text),
-			convertMessagesToLlm: (messages, signal) => this.convertMessagesToLlm(messages, signal),
-			prepareSimpleStreamOptions: (options, provider) => this.prepareSimpleStreamOptions(options, provider),
-			effectiveServiceTier: model => this.#models.effectiveServiceTier(model),
-		};
-		this.#handoff = new SessionHandoff(handoffHost);
 
 		this.#rehydrateCheckpointRewindState();
 
@@ -1657,7 +1620,7 @@ export class AgentSession {
 
 	/**
 	 * Cancel async jobs registered by *this* agent only. Used by lifecycle
-	 * transitions (newSession, switchSession, handoff, dispose) so a subagent
+	 * transitions (newSession, switchSession, dispose) so a subagent
 	 * cleans up its own background work without touching its parent's jobs.
 	 *
 	 * Cleanup runs against this session's scoped manager: running jobs are
@@ -1704,7 +1667,7 @@ export class AgentSession {
 			// Delivered but not yet injected: the sink has enqueued the
 			// async-result follow-up on the yield queue, and the manager no
 			// longer reports it. Without this leg a terminal yield in the
-			// (idle-flush delay / step-boundary) handoff window would read as
+			// (idle-flush delay / step-boundary) window would read as
 			// quiescent and the run driver would drop the queued result.
 			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE)
 		);
@@ -2004,12 +1967,12 @@ export class AgentSession {
 	/** Internal handler for agent events - shared by subscribe and reconnect.
 	 *
 	 * `agent_end` handling schedules deferred post-prompt recovery work
-	 * (compaction/handoff, context-promotion continuations). It is invoked
+	 * (compaction, context-promotion continuations). It is invoked
 	 * fire-and-forget by the agent's synchronous `#emit`, and only reaches
 	 * `#checkCompaction` after several internal awaits. `prompt()` runs
 	 * `#waitForPostPromptRecovery()` the instant `agent.prompt()` resolves — which
 	 * can land BEFORE the handler registers its tasks, so the wait would observe an
-	 * empty task set and return early, letting a deferred handoff/promotion race
+	 * empty task set and return early, letting a deferred promotion race
 	 * prompt completion. Tracking the `agent_end` handler as a post-prompt task
 	 * that is registered SYNCHRONOUSLY (before the first await) closes that window:
 	 * `#postPromptTasksPromise` is set the moment `#emit` invokes this handler, so
@@ -2549,9 +2512,6 @@ export class AgentSession {
 					);
 				}
 				this.#ttsr.onAssistantMessageEnd(assistantMsg);
-				if (this.#handoff.isGeneratingHandoff) {
-					this.#maintenance.skipPostTurnMaintenanceAssistantTimestamp = assistantMsg.timestamp;
-				}
 				await this.#recovery.onAssistantSettledSuccessfully(assistantMsg);
 				// Broker deployments: report this request's burn so the broker can
 				// attribute token usage per install. No-op with a local auth store.
@@ -2796,10 +2756,9 @@ export class AgentSession {
 				this.#trackPostPromptTask(compactionTask);
 				compactionResult = await compactionTask;
 				checkedCompaction = true;
-				const compactionContinues = compactionResult.deferredHandoff || compactionResult.continuationScheduled;
+				const compactionContinues = compactionResult.continuationScheduled;
 				if (compactionContinues || compactionResult.automaticContinuationBlocked) {
 					maintenanceRoute("active-goal-pre-empt-compaction-handled", {
-						deferredHandoff: compactionResult.deferredHandoff,
 						continuationScheduled: compactionResult.continuationScheduled,
 						automaticContinuationBlocked: compactionResult.automaticContinuationBlocked === true,
 					});
@@ -2914,13 +2873,9 @@ export class AgentSession {
 			}
 			// When compaction queued recovery or hit a deliberate dead-end, skip the
 			// rewind/todo/session_stop passes: any reminder or hook continuation we append
-			// here would race the handoff, retry, auto-continue prompt, queued-message
+			// here would race the retry, auto-continue prompt, queued-message
 			// drain, or the explicit pause that is preventing a compaction loop.
-			if (
-				compactionResult.deferredHandoff ||
-				compactionResult.continuationScheduled ||
-				compactionResult.automaticContinuationBlocked
-			) {
+			if (compactionResult.continuationScheduled || compactionResult.automaticContinuationBlocked) {
 				await emitAgentEndNotification(compactionResult.continuationScheduled ? { willContinue: true } : undefined);
 				return;
 			}
@@ -3012,12 +2967,11 @@ export class AgentSession {
 	#scheduleAgentContinue(options?: ScheduledAgentContinueOptions): void {
 		this.#schedulePostPromptTask(
 			async signal => {
-				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
+				// Defense in depth: if compaction slipped onto the post-prompt queue
 				// alongside us (e.g. via a scheduler we don't own), refuse to start a fresh
-				// streaming turn — agent.continue() here would race the handoff's session
-				// reset. The first-class fix is in #checkCompaction/the agent_end handler,
-				// but this guard catches anything that bypasses that path.
-				if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+				// streaming turn. The first-class fix is in #checkCompaction/the
+				// agent_end handler, but this guard catches anything that bypasses it.
+				if (signal.aborted || this.#isDisposed || this.isCompacting) {
 					this.#skipAgentContinue("session-unavailable", options);
 					return;
 				}
@@ -4481,18 +4435,12 @@ export class AgentSession {
 	dropImages(): Promise<{ removed: number }> {
 		return this.#maintenance.dropImages();
 	}
-
-	/** Reduce stored context with the selected shake strategy. */
-	shake(mode: ShakeMode, opts: { config?: ShakeConfig; signal?: AbortSignal } = {}): Promise<ShakeResult> {
-		return this.#maintenance.shake(mode, opts);
-	}
-
 	/** Compact the active session history. */
 	compact(customInstructions?: string, options?: CompactOptions): Promise<CompactionResult> {
 		return this.#maintenance.compact(customInstructions, options);
 	}
 
-	/** Cancel active manual, automatic, and handoff maintenance, preserving an optional source reason. */
+	/** Cancel active manual and automatic maintenance, preserving an optional source reason. */
 	abortCompaction(reason?: unknown): void {
 		void this.#maintenance.abortCompaction(reason);
 	}
@@ -5193,7 +5141,7 @@ export class AgentSession {
 				!options?.skipCompactionCheck &&
 				(lastAssistant.stopReason === "error" || lastAssistant.stopReason === "length")
 			) {
-				await this.#maintenance.checkCompaction(lastAssistant, false, false, false);
+				await this.#maintenance.checkCompaction(lastAssistant, false, false);
 			}
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
@@ -6259,9 +6207,6 @@ export class AgentSession {
 			this.abortRetry();
 			this.#promptGeneration++;
 			this.#scheduledHiddenNextTurnGeneration = undefined;
-			// Abort the handoff first so generic compaction cancellation cannot replace
-			// the harness reason with an unreasoned "Handoff cancelled".
-			this.#handoff.abortHandoff(new Error(options?.reason ?? "Handoff aborted by session"));
 			let manualCompactionCleanup: Promise<void> | undefined;
 			if (options?.preserveCompaction) {
 				// Manual `/compact` installed its own #compactionAbortController before
@@ -6347,7 +6292,7 @@ export class AgentSession {
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		await this.#bash.flushPending();
-		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: options?.drop !== true });
+		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: true });
 		let sessionTransitioned = false;
 		let sessionReconciled = false;
 		try {
@@ -6355,15 +6300,7 @@ export class AgentSession {
 			await this.#advisors.drainAndDetachRecorders();
 			try {
 				this.agent.reset();
-				if (options?.drop && previousSessionFile) {
-					try {
-						await this.sessionManager.dropSession(previousSessionFile);
-					} catch (err) {
-						logger.error("Failed to delete session during /drop", { err });
-					}
-				} else {
-					await this.sessionManager.flush();
-				}
+				await this.sessionManager.flush();
 				await this.sessionManager.newSession({
 					...options,
 					additionalDirectories: this.settings.get("workspace.additionalDirectories"),
@@ -6658,33 +6595,6 @@ export class AgentSession {
 	 */
 	abortBranchSummary(): void {
 		this.#branchSummaryAbortController?.abort();
-	}
-
-	/**
-	 * Cancel in-progress handoff generation.
-	 */
-	abortHandoff(): void {
-		this.#handoff.abortHandoff();
-	}
-
-	/**
-	 * Check if handoff generation is in progress.
-	 */
-	get isGeneratingHandoff(): boolean {
-		return this.#handoff.isGeneratingHandoff;
-	}
-
-	/**
-	 * Generate a handoff document with a oneshot LLM call and commit it as a
-	 * compaction entry on the current session (the document becomes the summary;
-	 * recent history is kept).
-	 *
-	 * @param customInstructions Optional focus for the handoff document
-	 * @param options Handoff execution options
-	 * @returns The handoff document text, or undefined if cancelled/failed
-	 */
-	handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
-		return this.#maintenance.handoff(customInstructions, options);
 	}
 
 	#isTerminalYieldToolResult(event: { toolName: string; isError?: boolean; result?: { details?: unknown } }): boolean {
@@ -7026,15 +6936,6 @@ export class AgentSession {
 	setAutoRetryEnabled(enabled: boolean): void {
 		this.#recovery.setAutoRetryEnabled(enabled);
 	}
-
-	/** Retry the last failed assistant turn when the session is idle. */
-	retry(): Promise<boolean> {
-		return this.#recovery.retry();
-	}
-
-	// =========================================================================
-	// Bash Execution
-	// =========================================================================
 
 	/**
 	 * Execute a bash command and retain the session/branch that owned its start.
@@ -7733,14 +7634,7 @@ export class AgentSession {
 			throw new Error("Cannot branch /btw: session changed since /btw started");
 		}
 
-		if (
-			this.isStreaming ||
-			this.isBashRunning ||
-			this.isEvalRunning ||
-			this.isCompacting ||
-			this.isGeneratingHandoff ||
-			this.isRetrying
-		) {
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
 
@@ -7764,14 +7658,7 @@ export class AgentSession {
 			POST_PROMPT_DRAIN_TIMEOUT_MS,
 			"Timed out draining post-prompt tasks before /btw branch",
 		);
-		if (
-			this.isStreaming ||
-			this.isBashRunning ||
-			this.isEvalRunning ||
-			this.isCompacting ||
-			this.isGeneratingHandoff ||
-			this.isRetrying
-		) {
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
 
@@ -8772,36 +8659,6 @@ export class AgentSession {
 
 		return undefined;
 	}
-	/**
-	 * Get text content of the most recent visible handoff message.
-	 * Sessions created by older versions injected the handoff document as a
-	 * custom message at the top of a fresh session; callers that copy the
-	 * "last" message use this as a fallback while no assistant response exists.
-	 */
-	getLastVisibleHandoffText(): string | undefined {
-		for (let i = this.messages.length - 1; i >= 0; i--) {
-			const message = this.messages[i];
-			if (message.role !== "custom") continue;
-
-			const customMessage = message as CustomMessage;
-			if (customMessage.customType !== "handoff" || !customMessage.display) continue;
-
-			if (typeof customMessage.content === "string") {
-				return customMessage.content.trim() || undefined;
-			}
-
-			let text = "";
-			for (const content of customMessage.content) {
-				if (content.type === "text") {
-					text += content.text;
-				}
-			}
-			return text.trim() || undefined;
-		}
-
-		return undefined;
-	}
-
 	/**
 	 * Enable or disable the advisor for this session. The setting is overridden for the session,
 	 * and the runtime is started or stopped to match.

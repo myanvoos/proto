@@ -70,7 +70,6 @@ async function runBiome(
 			cwd,
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 			signal,
 		});
 

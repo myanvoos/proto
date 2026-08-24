@@ -6,8 +6,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
 
-export const CASE_INSENSITIVE_ENV = process.platform === "win32";
-
 // Secret-shaped names that must never leak into eval cells even when they fall
 // under a broad allow-prefix.
 export const SECRET_KEY_PATTERN =
@@ -15,7 +13,6 @@ export const SECRET_KEY_PATTERN =
 
 export interface EnvFilterOptions {
 	allowList: string[];
-	windowsAllowList: string[];
 	denyList: string[];
 	allowPrefixes: string[];
 }
@@ -26,27 +23,21 @@ export interface EnvFilterOptions {
 export function createEnvFilter(
 	options: EnvFilterOptions,
 ): (env: Record<string, string | undefined>) => Record<string, string | undefined> {
-	const normalizedAllowList = new Set(
-		[...options.allowList, ...options.windowsAllowList].map(key => (CASE_INSENSITIVE_ENV ? key.toUpperCase() : key)),
-	);
-	const normalizedDenyList = new Set(options.denyList.map(key => (CASE_INSENSITIVE_ENV ? key.toUpperCase() : key)));
-	const normalizedAllowPrefixes = CASE_INSENSITIVE_ENV
-		? options.allowPrefixes.map(prefix => prefix.toUpperCase())
-		: options.allowPrefixes;
+	const normalizedAllowList = new Set(options.allowList);
+	const normalizedDenyList = new Set(options.denyList);
 
 	return (env: Record<string, string | undefined>): Record<string, string | undefined> => {
 		const filtered: Record<string, string | undefined> = {};
 		for (const key in env) {
 			const value = env[key];
 			if (value === undefined) continue;
-			const normalizedKey = CASE_INSENSITIVE_ENV ? key.toUpperCase() : key;
-			if (normalizedDenyList.has(normalizedKey)) continue;
-			if (normalizedAllowList.has(normalizedKey)) {
-				filtered[normalizedKey === "PATH" ? "PATH" : key] = value;
+			if (normalizedDenyList.has(key)) continue;
+			if (normalizedAllowList.has(key)) {
+				filtered[key] = value;
 				continue;
 			}
-			if (SECRET_KEY_PATTERN.test(normalizedKey)) continue;
-			if (normalizedAllowPrefixes.some(prefix => normalizedKey.startsWith(prefix))) {
+			if (SECRET_KEY_PATTERN.test(key)) continue;
+			if (options.allowPrefixes.some(prefix => key.startsWith(prefix))) {
 				filtered[key] = value;
 			}
 		}

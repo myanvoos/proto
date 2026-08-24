@@ -298,16 +298,7 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 fn home_dir() -> Option<PathBuf> {
-	#[cfg(unix)]
-	{
-		std::env::var_os("HOME").map(PathBuf::from)
-	}
-	#[cfg(windows)]
-	{
-		std::env::var_os("USERPROFILE")
-			.or_else(|| std::env::var_os("HOMEPATH"))
-			.map(PathBuf::from)
-	}
+	std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[cfg(test)]

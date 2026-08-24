@@ -305,12 +305,6 @@ fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> 
 	)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-#[allow(clippy::missing_const_for_fn, reason = "windows/non-xdg platforms keep the signature")]
-fn xdg_state_logs_from_env(_home: &Path, _config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
-	None
-}
-
 /// Pure XDG-eligibility computation extracted for unit testing — no env
 /// reads, no fs reads. `omp_dir_exists` decides whether the candidate
 /// `<xdg_state_home>/omp` actually lives on disk.
@@ -362,21 +356,7 @@ fn config_root_dir(home: &Path, config_dir: &OsStr) -> PathBuf {
 }
 
 fn home_dir() -> Option<PathBuf> {
-	#[cfg(unix)]
-	{
-		std::env::var_os("HOME").map(PathBuf::from)
-	}
-	#[cfg(windows)]
-	{
-		if let Some(profile) = std::env::var_os("USERPROFILE") {
-			return Some(PathBuf::from(profile));
-		}
-		let drive = std::env::var_os("HOMEDRIVE")?;
-		let path = std::env::var_os("HOMEPATH")?;
-		let mut combined = drive;
-		combined.push(path);
-		Some(PathBuf::from(combined))
-	}
+	std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn unix_millis() -> u128 {

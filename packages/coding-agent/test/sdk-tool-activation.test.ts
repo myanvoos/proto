@@ -1726,40 +1726,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("does not register the xAI TTS tool unless enabled", async () => {
-		const tempDir = makeTempDir();
-
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-		});
-
-		try {
-			expect(session.getToolByName("tts")).toBeUndefined();
-			expect(session.getAllToolNames()).not.toContain("tts");
-			expect(session.getActiveToolNames()).not.toContain("tts");
-		} finally {
-			await session.dispose();
-		}
-	});
-
-	it("registers the xAI TTS tool when enabled", async () => {
-		const tempDir = makeTempDir();
-
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-			settings: Settings.isolated({ "speechgen.enabled": true }),
-		});
-
-		try {
-			expect(session.getToolByName("tts")).toBeDefined();
-			// tts is a discoverable custom tool → mounted as an xd:// device, not top-level.
-			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("tts");
-			expect(session.getActiveToolNames()).not.toContain("tts");
-		} finally {
-			await session.dispose();
-		}
-	});
-
 	it("keeps the stable MCP tool-name collision winner during SDK startup and warns", async () => {
 		const tempDir = makeTempDir();
 		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
@@ -1801,7 +1767,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			Settings.isolated({
 				"providers.imageOrder": ["openai"],
 				"generate_image.enabled": true,
-				"speechgen.enabled": true,
 				"autolearn.enabled": true,
 			});
 

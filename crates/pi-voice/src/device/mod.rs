@@ -1,8 +1,7 @@
 //! In-house default-device audio backends.
 //!
 //! One backend per platform, each implementing the same two devices against
-//! the OS audio API directly: `CoreAudio` `AudioQueue` on macOS, shared-mode
-//! WASAPI with automatic format conversion on Windows, and the `PulseAudio`
+//! the OS audio API directly: `CoreAudio` `AudioQueue` on macOS, and the `PulseAudio`
 //! simple API with an ALSA fallback (both loaded via `dlopen`) on Linux.
 //! Every backend delegates format conversion, channel mixing, and resampling
 //! to the OS so the engine keeps a single mono `f32` contract at the
@@ -30,19 +29,15 @@ mod coreaudio;
 #[cfg(target_os = "macos")]
 use coreaudio as imp;
 
-#[cfg(target_os = "windows")]
-mod wasapi;
-#[cfg(target_os = "windows")]
-use wasapi as imp;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as imp;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod unsupported;
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use unsupported as imp;
 
 use crate::VoiceResult;

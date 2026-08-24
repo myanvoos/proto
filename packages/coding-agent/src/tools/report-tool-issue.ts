@@ -420,7 +420,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 		const body = JSON.stringify({
 			agent: { name: "proto", version: VERSION },
 			installId: getInstallId(),
-			// Coarse host fingerprint for triage — `darwin`/`linux`/`win32` +
+			// Coarse host fingerprint for triage — `darwin`/`linux` +
 			// `arm64`/`x64`. Useful for "is this bug arch-specific?" without
 			// leaking the user's machine name.
 			platform: process.platform,

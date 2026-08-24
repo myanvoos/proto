@@ -32,7 +32,7 @@ function rule(name: string, description?: string): Rule {
 describe("internal-url-autocomplete", () => {
 	beforeEach(() => {
 		setActiveSkills([skill("humanizer", "Remove AI tells"), skill("react", "React UI"), skill("tla", "TLA+ specs")]);
-		setActiveRules([rule("python", "robomp rules"), rule("style")]);
+		setActiveRules([rule("python", "triage rules"), rule("style")]);
 	});
 
 	afterEach(() => {
@@ -100,7 +100,7 @@ describe("internal-url-autocomplete", () => {
 
 		it("carries the candidate description through", async () => {
 			const result = await getInternalUrlSuggestions("rule://python");
-			expect(result!.items[0]).toMatchObject({ value: "rule://python", description: "robomp rules" });
+			expect(result!.items[0]).toMatchObject({ value: "rule://python", description: "triage rules" });
 		});
 
 		it("returns null when no candidate matches", async () => {

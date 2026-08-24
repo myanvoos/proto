@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
-import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
@@ -28,7 +27,6 @@ import {
 	parseDaemonWireMessage,
 	parseDaemonWireRequest,
 } from "./protocol";
-import { resolveDaemonSpawnOptions } from "./spawn-options";
 import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
@@ -49,10 +47,7 @@ const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
 const LOG_FILE = "output.log";
 const PREVIOUS_LOG_FILE = "output.previous.log";
-const DAEMON_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
-	platform: process.platform,
-	hostHasInheritableConsole: hostHasInheritableConsole(),
-});
+const DAEMON_SPAWN_OPTIONS = { detached: true };
 
 const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 	SIGINT: os.constants.signals.SIGINT,
@@ -390,7 +385,7 @@ class DaemonBroker {
 
 	async run(): Promise<void> {
 		await this.#recoverRecords();
-		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
+		await fs.rm(this.#endpoint, { force: true });
 		const server = net.createServer(socket => this.#accept(socket));
 		this.#server = server;
 		const { promise: listening, resolve, reject } = Promise.withResolvers<void>();
@@ -398,7 +393,7 @@ class DaemonBroker {
 		server.once("error", reject);
 		server.listen(this.#endpoint);
 		await listening;
-		if (process.platform !== "win32") await fs.chmod(this.#endpoint, 0o600);
+		await fs.chmod(this.#endpoint, 0o600);
 		this.#scheduleIdleShutdown();
 		await this.#finished.promise;
 	}
@@ -424,7 +419,7 @@ class DaemonBroker {
 			this.#server.close(() => resolve());
 			await promise;
 		}
-		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
+		await fs.rm(this.#endpoint, { force: true });
 		this.#finished.resolve();
 	}
 
@@ -600,13 +595,6 @@ class DaemonBroker {
 		if (spec.detached && spec.pty) {
 			throw new Error("A detached daemon cannot allocate a PTY");
 		}
-		if (
-			spec.pty &&
-			process.platform === "win32" &&
-			[".bat", ".cmd"].includes(path.extname(spec.application).toLowerCase())
-		) {
-			throw new Error('Windows batch files require application "cmd.exe" with the batch path after "/c"');
-		}
 		if (this.#startingNames.has(spec.name)) {
 			throw new Error(`Daemon ${spec.name} is already starting`);
 		}
@@ -739,23 +727,10 @@ class DaemonBroker {
 			}
 			started.resolve(Number.isSafeInteger(pid) && pid > 0 ? pid : undefined);
 		};
-		let run: Promise<PtyRunResult>;
-		if (process.platform === "win32") {
-			run = session.startArgv(
-				{
-					application: record.spec.application,
-					args: record.spec.args,
-					...options,
-				},
-				onChunk,
-				onStart,
-			);
-		} else {
-			const argv = [record.spec.application, ...record.spec.args];
-			const command = `exec ${argv.map(quoteShellArg).join(" ")}`;
-			const shell = procmgr.getShellConfig().shell;
-			run = session.start({ command, shell, ...options }, onChunk, onStart);
-		}
+		const argv = [record.spec.application, ...record.spec.args];
+		const command = `exec ${argv.map(quoteShellArg).join(" ")}`;
+		const shell = procmgr.getShellConfig().shell;
+		const run = session.start({ command, shell, ...options }, onChunk, onStart);
 		void run.then(
 			async result => {
 				await this.#onPtyExit(record, generation, result);
@@ -1110,14 +1085,9 @@ class DaemonBroker {
 			} else throw new Error(`Daemon ${operation.name} stdin is unavailable`);
 		}
 		if (operation.signal) {
-			if (process.platform === "win32" && record.pty) {
-				if (operation.signal === "SIGINT") record.pty.write("\u0003");
-				else record.pty.kill();
-			} else {
-				const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
-				if (!processRef) throw new Error(`Daemon ${operation.name} process is unavailable`);
-				processRef.killTree(SIGNAL_NUMBER[operation.signal]);
-			}
+			const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
+			if (!processRef) throw new Error(`Daemon ${operation.name} process is unavailable`);
+			processRef.killTree(SIGNAL_NUMBER[operation.signal]);
 		}
 		return { op: "send", daemon: record.snapshot };
 	}
@@ -1385,7 +1355,7 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 	if (!lease) return;
 	setProcessName("proto daemon broker");
 	// Record the scope's project dir so `proto ps` can map this hash-keyed runtime
-	// dir back to its project (and derive the Windows pipe name) offline.
+	// dir back to its project offline.
 	void writeDaemonScopeMeta(runtimeDir, projectDir).catch(error => {
 		logger.warn("Failed to record daemon scope metadata", {
 			error: error instanceof Error ? error.message : String(error),

@@ -50,7 +50,6 @@ import {
 } from "./advisor";
 import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
-import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
@@ -222,7 +221,6 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
-import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
@@ -1941,10 +1939,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 
-			if (settings.get("speechgen.enabled")) {
-				customTools.push(ttsTool as unknown as CustomTool);
-			}
-
 			// Add web search tools
 			if (options.toolNames?.includes("web_search")) {
 				customTools.push(...getSearchTools());
@@ -1971,7 +1965,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 
 			inlineExtensions.push(...(options.extensions ?? []));
-			inlineExtensions.push(createAutoresearchExtension);
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools));
 			}
@@ -2601,7 +2594,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		];
 		// `wrapToolWithMetaNotice` runs the centralized large-output → artifact spill.
 		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
-		// TTS, and startup (non-deferred) MCP tools all funnel through here, so apply
+		// and startup (non-deferred) MCP tools all funnel through here, so apply
 		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
 		const wrappedExtensionTools: Tool[] = deduplicateMCPToolsByName(
 			wrapRegisteredTools(allCustomTools, extensionRunner).map(wrapToolWithMetaNotice),
@@ -3244,7 +3237,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformToolCallArguments,
 			resolveFallbackTool: resolveDeviceTool,
 			intentTracing: !!intentField,
-			pruneToolDescriptions: inlineToolDescriptors,
 			dialect: resolveDialect(settings.get("tools.format"), model),
 			abortOnFabricatedToolResult: settings.get("tools.abortOnFabricatedResult"),
 			getToolChoice: () => session?.nextToolChoiceDirective(),
@@ -3345,7 +3337,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
-			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			initialRetryFallback,
@@ -3780,7 +3771,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					transformToolCallArguments,
 					resolveFallbackTool: resolveDeviceTool,
 					intentTracing: !!intentField,
-					pruneToolDescriptions: inlineToolDescriptors,
 					dialect: resolveDialect(settings.get("tools.format"), captureModel),
 					abortOnFabricatedToolResult: settings.get("tools.abortOnFabricatedResult"),
 					appendOnlyContext: shouldEnableAppendOnlyContext(

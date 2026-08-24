@@ -104,7 +104,6 @@ describe("transcript streaming commit (assistant text)", () => {
 	});
 
 	it("keeps diff foreground on rows committed while a streamed fence is still open", async () => {
-		if (process.platform === "win32") return;
 		const rows = 6;
 		const term = new VirtualTerminal(48, rows);
 		Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
@@ -150,7 +149,6 @@ describe("transcript streaming commit (assistant text)", () => {
 	});
 
 	it("keeps the final closed diff row highlighted while following prose streams", async () => {
-		if (process.platform === "win32") return;
 		const rows = 6;
 		const term = new VirtualTerminal(52, rows);
 		Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });

@@ -23,6 +23,3 @@ webrtc.workspace = true
 # dlopen/dlsym for the PulseAudio and ALSA backends: no link-time dependency
 # on libpulse/libasound, so the prebuilt addon loads on systems without them.
 libc.workspace = true
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys.workspace = true

@@ -1,6 +1,6 @@
 # Self-hosted Kata CI
 
-This is a self-hosted GitHub Actions setup where **every CI job on the self-hosted `omp-kata` label runs inside its own throwaway Kata Containers QEMU/KVM microVM**. A single bare-metal Linux host runs a one-node [k3s](https://k3s.io) cluster; [actions-runner-controller (ARC)](https://github.com/actions/actions-runner-controller) watches GitHub for queued jobs and, for each one, creates a just-in-time ephemeral runner pod that boots a fresh microVM (its own guest kernel, isolated from the host), runs exactly one job, and is then destroyed. Pull requests deliberately run on GitHub-hosted runners instead, so the self-hosted fleet only serves trusted `push`/main + release builds and untrusted PR code never reaches the shared caches (see [04-arc-and-caching.md](04-arc-and-caching.md)). Runners share an in-cluster **RustFS** (S3-compatible) object store for `sccache`, plus a namespace-local PVC mounted as the Bun package store and Cargo registry cache. Public internet egress goes through host NAT under a restrictive NetworkPolicy. The result is hardware-isolated, scale-to-zero CI on hardware you control.
+This is a self-hosted GitHub Actions setup where **every CI job on the self-hosted `omp-kata` label runs inside its own throwaway Kata Containers QEMU/KVM microVM**. A single bare-metal Linux host runs a one-node [k3s](https://k3s.io) cluster; [actions-runner-controller (ARC)](https://github.com/actions/actions-runner-controller) watches GitHub for queued jobs and, for each one, creates a just-in-time ephemeral runner pod that boots a fresh microVM (its own guest kernel, isolated from the host), runs exactly one job, and is then destroyed. Pull requests deliberately run on GitHub-hosted runners instead, so the self-hosted fleet only serves trusted `push`/main + release builds and untrusted PR code never reaches the shared caches (see [04-arc-and-caching.md](04-arc-and-caching.md)). Runners share a namespace-local PVC mounted as the Bun package store and Cargo registry cache; a legacy-named `bazel-remote-ci` secret marks infra presence for the jobs. Public internet egress goes through host NAT under a restrictive NetworkPolicy. The result is hardware-isolated, scale-to-zero CI on hardware you control.
 
 These docs are written as a **from-scratch setup guide**: read this overview first, then follow the numbered guides in order to reproduce the system on your own host.
 
@@ -25,10 +25,8 @@ flowchart LR
           end
         end
         subgraph CACHE["shared caches"]
-          BRC["ns: bazel-cache<br/>bazel-remote svc :9092 grpcs (cluster-internal) · PVC bazel-remote-data 100Gi"]
           PVC["ns: arc-runners<br/>PVC runner-cache 100Gi<br/>Bun store + Cargo registry"]
-        end
-        SEC["Secret bazel-remote-ci<br/>cache write credentials"]
+          SEC["Secret bazel-remote-ci<br/>legacy-named infra marker"]
       end
     end
 
@@ -38,7 +36,6 @@ flowchart LR
     POD --> VM
     SEC -.->|"envFrom"| POD
     NP -.->|"filters egress"| POD
-    JOB -->|"Bazel remote cache (grpcs)"| BRC
     JOB -->|"Bun/Cargo stores"| PVC
     POD -->|"allowed egress"| NAT
     NAT -->|"checkout / API / internet"| GH
@@ -50,16 +47,16 @@ Key properties baked into this design:
 - **Scale-to-zero.** `minRunners: 0` / `maxRunners: 8` — when no jobs are queued, zero runner pods (and zero microVMs) exist. Runners are burstable (3-vCPU/10-GiB requests, 8-vCPU/14-GiB limits) so a full workflow fan-out runs 8-wide while a lone heavy job still bursts to 8 vCPUs.
 - **Host-kernel isolation.** Jobs see the microVM's guest kernel, not the host kernel, so a kernel exploit in a job does not reach the host.
 - **No external registry.** The runner image is built on the host and imported straight into k3s' containerd.
-- **Shared, in-cluster cache.** bazel-remote stores Bazel action results and CAS blobs (Rust compilation, tests, native `.node` addons) behind TLS + htpasswd auth, with a public read-mostly NodePort for GitHub-hosted runners; the runner-cache PVC stores Bun/Cargo downloads. Cache traffic stays on the host.
+- **Shared, in-cluster cache.** The `runner-cache` PVC stores Bun's package store and Cargo's registry cache/index; a legacy-named `bazel-remote-ci` secret marks infra presence for the jobs (see [04-arc-and-caching.md](04-arc-and-caching.md)). Cache traffic stays on the host.
 
 ## End-to-end job lifecycle
 
 1. A workflow job targeting the self-hosted label (`runs-on:`) is **queued** on GitHub.
 2. The **scale-set listener** in `arc-systems` is long-polling the GitHub Actions service and receives the job-assignment message.
 3. The listener signals demand to the **ARC controller**, which scales the **EphemeralRunnerSet** up by one.
-4. The controller creates a single **JIT-registered ephemeral runner pod** in `arc-runners`, with `runtimeClassName: kata-qemu` and the `bazel-remote-ci` secret injected via `envFrom`.
+4. The controller creates a single **JIT-registered ephemeral runner pod** in `arc-runners`, with `runtimeClassName: kata-qemu` and the legacy-named `bazel-remote-ci` marker secret injected via `envFrom`.
 5. containerd hands the pod to the Kata shim, which **boots a fresh QEMU/KVM microVM** (own guest kernel; the container rootfs is shared in over virtio-fs). No templating — every job gets a clean VM.
-6. The runner agent inside the microVM **registers just-in-time and picks up exactly one job**. Steps run isolated from the host, using bazel-remote for Bazel action/CAS caches, mounted PVC paths for package caches, and NAT egress for the public internet, all constrained by the `runner-egress-lockdown` NetworkPolicy.
+6. The runner agent inside the microVM **registers just-in-time and picks up exactly one job**. Steps run isolated from the host, using mounted PVC paths for package caches, and NAT egress for the public internet, all constrained by the `runner-egress-lockdown` NetworkPolicy.
 7. The job finishes; the ephemeral runner **deregisters and the pod (and its microVM) is destroyed** — never reused.
 8. When no jobs remain queued, the EphemeralRunnerSet **scales back to zero**, leaving no idle runners or VMs.
 
@@ -71,7 +68,7 @@ Key properties baked into this design:
 | Kata Containers runtime | QEMU/KVM microVM runtime: containerd drop-in registering `kata-qemu` + the `kata-qemu` RuntimeClass | Kata `3.31.0` | [02-kata-runtime.md](02-kata-runtime.md) |
 | Preloaded runner image | Custom `actions/runner` image (build toolchain, Bun, Rust nightly + cross targets, native-build deps) built on the host and imported into k3s containerd — no registry | local dated tag | [03-runner-image.md](03-runner-image.md) |
 | ARC (runner scale set) | actions-runner-controller, `gha-runner-scale-set` flavor: controller in `arc-systems`, one scale set + listener, GitHub App auth | ARC `0.14.2` | [04-arc-and-caching.md](04-arc-and-caching.md) |
-| Shared caches | bazel-remote `v2.6.2` (`svc bazel-remote:9092` grpcs, cluster-internal only, 100Gi PVC) is the Bazel action/CAS cache; `arc-runners/runner-cache` (100Gi PVC) holds Bun/Cargo downloads; the `bazel-remote-ci` secret and egress NetworkPolicy wire access | in-cluster services/storage | [04-arc-and-caching.md](04-arc-and-caching.md) |
+| Shared caches | `arc-runners/runner-cache` (100Gi PVC) holds Bun/Cargo downloads; the legacy-named `bazel-remote-ci` secret (infra-presence marker) and egress NetworkPolicy wire access | in-cluster services/storage | [04-arc-and-caching.md](04-arc-and-caching.md) |
 
 ## Prerequisites
 
@@ -96,10 +93,10 @@ The configs in this doc set are copied verbatim from the live host and then reda
 | `<GITHUB_APP_ID>` | Your GitHub App ID |
 | `<GITHUB_APP_INSTALLATION_ID>` | Your GitHub App installation ID |
 | `<GITHUB_APP_PRIVATE_KEY>` | Your GitHub App private key (PEM) |
-| `<S3_ACCESS_KEY>` / `<S3_SECRET_KEY>` | Legacy RustFS/S3 credentials (only while the legacy sccache stack survives) |
+| `<S3_ACCESS_KEY>` / `<S3_SECRET_KEY>` | Legacy RustFS/S3 credentials (retained only while the legacy stack teardown is pending) |
 | `<PLACEHOLDER>` | Any other password/key/token (named in context where it appears) |
 
-Secret **values** never appear in these docs — only key names and placeholders. The following are intentionally **kept as-is** because they are not sensitive and are needed to follow along: the pod CIDR `10.42.0.0/16`, the service CIDR `10.43.0.0/16`, the CoreDNS service IP `10.43.0.10`, in-cluster service DNS names and ports (including `bazel-remote.bazel-cache.svc.cluster.local:9092` and NodePort `30992`), and all version numbers.
+Secret **values** never appear in these docs — only key names and placeholders. The following are intentionally **kept as-is** because they are not sensitive and are needed to follow along: the pod CIDR `10.42.0.0/16`, the service CIDR `10.43.0.0/16`, the CoreDNS service IP `10.43.0.10`, and all version numbers.
 
 ## Recommended setup order
 
@@ -108,4 +105,4 @@ Work through the numbered guides in order — each builds on the previous:
 1. **[01-host-and-cluster.md](01-host-and-cluster.md)** — Host prep (KVM, firewall/NAT) and the single-node k3s install, networking, and CNI.
 2. **[02-kata-runtime.md](02-kata-runtime.md)** — Install Kata Containers, wire it into k3s' containerd, and register the `kata-qemu` RuntimeClass.
 3. **[03-runner-image.md](03-runner-image.md)** — Build the preloaded runner image and import it into k3s containerd.
-4. **[04-arc-and-caching.md](04-arc-and-caching.md)** — Install ARC and the runner scale set, deploy the bazel-remote cache (`infra/bazel-remote/setup.sh`), add the runner cache PVC for Bun/Cargo, wire up the `bazel-remote-ci` secret, and apply the egress NetworkPolicy.
+4. **[04-arc-and-caching.md](04-arc-and-caching.md)** — Install ARC and the runner scale set, add the runner cache PVC for Bun/Cargo, keep the legacy-named `bazel-remote-ci` marker secret wired via `envFrom`, and apply the egress NetworkPolicy.

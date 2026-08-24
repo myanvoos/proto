@@ -14,9 +14,9 @@ const RUST_AFFECTING_FILE_NAMES = [
 	"rustfmt.toml",
 	".rustfmt.toml",
 ] as const satisfies readonly string[];
-// brush-core became a workspace member for Bazel hermeticity (path-patch
-// rendering is machine-local), but the cargo dev tasks keep their historical
-// scope: the vendored fork is not held to workspace lint/test gates.
+// brush-core is a workspace member (kept as a path-patch so the vendored fork
+// stays self-contained), but the cargo dev tasks keep their historical scope:
+// the vendored fork is not held to workspace lint/test gates.
 //
 // pi-builtins is NOT excluded. It is first-party, and although it opts out of
 // the workspace's pedantic/nursery lints in its own manifest (most of it is
@@ -171,9 +171,8 @@ async function runCommand(command: readonly string[]): Promise<number> {
 		// via PATH; ensure the active toolchain bin dir wins over Homebrew's
 		// rustup-init shadow on macOS runners.
 		const toolchainBin = path.dirname(cargoBinary);
-		const pathSep = process.platform === "win32" ? ";" : ":";
-		const currentPath = env.PATH ?? env.Path ?? "";
-		env.PATH = currentPath === "" ? toolchainBin : `${toolchainBin}${pathSep}${currentPath}`;
+		const currentPath = env.PATH ?? "";
+		env.PATH = currentPath === "" ? toolchainBin : `${toolchainBin}:${currentPath}`;
 	}
 	const proc = Bun.spawn(argv, {
 		cwd: repoRoot,

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Breaking Changes
+- Dropped Windows support: no Windows binary, npm artifact, or installer is published anymore (`install.ps1` removed), and Windows-only code paths are gone — TUI console/codepage and ConPTY input handling, Windows spawn/console-probe options, `ProjFS`/`block-clone` isolation backends, PowerShell profile detection for `proto profile`, and Windows case-insensitive path/env special-casing. Linux and macOS behavior is unchanged; SSH sessions to Windows hosts keep working.
 - Removed the built-in long-term memory system: the `off`/`local`/Hindsight/Mnemopi backends (`memory.backend`), the `retain`, `recall`, `reflect`, `memory_edit`, and `learn` tools, the `memory://` internal URL scheme and `/memory` slash command, all `mnemopi.*`/`hindsight.*`/`memory.*`/`memories.*` settings, the extension-API `memory` runtime context, and the `@oh-my-pi/pi-mnemopi` dependency. Data previously written under the agent memories directory is simply no longer read.
 
 - Removed the snapcompact compaction method, the `snapcompact.*` inline-imaging settings (`snapcompact.systemPrompt`, `snapcompact.toolResults`, `snapcompact.shape`), and the `/compact snapcompact` mode. Configured method orders containing `snapcompact` fall back to the remaining methods; existing session entries that carry snapcompact frame archives render as their text summary only.
@@ -11,6 +12,8 @@
 - Removed the `/debug` slash command and the debug selector subsystem (log viewer, profiler, protocol probe, remote debugger, report bundles); the SSE capture buffer stays, and the Shift+Ctrl+D global shortcut is gone.
 - Removed the `/green` bundled custom command.
 - Removed the `/force` slash command (forcing the next turn to use a specific tool) and the `/fresh` slash command (rotating provider stream state without changing the local transcript); `/clear` still rotates provider-side session state when it drops context.
+- Removed the `/autoresearch` experiment-harness extension entirely: the command, the `init_experiment`, `run_experiment`, `log_experiment`, and `update_notes` tools, the dashboard widget, branch isolation and auto-commit handling, per-project state under `~/.proto/autoresearch/`, the `PROTO_AUTORESEARCH_DB_DIR` override, and the `@oh-my-pi/pi-coding-agent/autoresearch*` export paths. Existing session `autoresearch-control` entries are ignored on replay.
+- Removed the `/live` Codex-backed realtime voice mode and the entire speech subsystem: push-to-talk speech-to-text (hold-Space gesture, `app.stt.toggle`, all `stt.*` settings), the `tts` tool and `speechgen.enabled` gate with its `providers.tts`/`tts.localModel`/`tts.localVoice` settings, spoken-reply vocalization (`speech.enabled`, `speech.mode`, `speech.voice`, `speech.enhanced`), the `say` CLI command, `proto setup speech`, the `app.live.toggle` keybinding and `/live` command, the `@oh-my-pi/pi-coding-agent/stt*` export paths, and the `sherpa-onnx-node` dependency.
 
 
 ### Added

@@ -66,8 +66,6 @@ export interface AsyncJobSnapshot {
 	delivery: AsyncJobDeliveryState;
 }
 
-export type { ShakeMode, ShakeResult } from "./shake-types";
-
 /**
  * Prewalk switches an active session one-way from its starting model to a
  * fast/cheap target after implementation begins.
@@ -248,8 +246,6 @@ export interface AgentSessionConfig {
 	advisorContextPrompt?: string;
 	/** Advisors discovered from WATCHDOG.yml. */
 	advisorConfigs?: AdvisorConfig[];
-	/** Strip tool descriptions from provider-bound side-request tool specs. */
-	pruneToolDescriptions?: boolean;
 	/** Disconnect the MCP manager owned by this session during disposal. */
 	disconnectOwnedMcpManager?: () => Promise<void>;
 	/** System prompt used by automatic session-title generation. */
@@ -294,18 +290,6 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
-}
-
-/** Result from a handoff operation. */
-export interface HandoffResult {
-	document: string;
-	savedPath?: string;
-}
-
-/** Options controlling handoff generation. */
-export interface SessionHandoffOptions {
-	autoTriggered?: boolean;
-	signal?: AbortSignal;
 }
 
 /** Result from cycleModel(). */

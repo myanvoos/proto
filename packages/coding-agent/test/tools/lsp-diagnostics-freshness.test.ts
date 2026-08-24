@@ -512,20 +512,6 @@ describe("LSP diagnostics freshness", () => {
 		expect(result?.messages.some(message => message.includes("renormalized URI error"))).toBe(true);
 	});
 
-	it("matches Windows drive-letter case and percent-encoding differences", () => {
-		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-		if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
-		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
-		try {
-			const diagnostics = new EquivalentUriMap<string>();
-			diagnostics.set("file:///c%3A/Users/serge/doc.md", "published");
-
-			expect(diagnostics.get("file:///C:/Users/serge/doc.md")).toBe("published");
-		} finally {
-			Object.defineProperty(process, "platform", platformDescriptor);
-		}
-	});
-
 	it("returns completed pull diagnostics inside the inline write window", async () => {
 		const filePath = path.join(tempDir.path(), "pull-only.ts");
 		const uri = fileToUri(filePath);

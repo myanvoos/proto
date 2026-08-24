@@ -93,7 +93,7 @@ describe("plugin extension discovery", () => {
 		expect(extension?.commands.has("plugin-ext")).toBe(true);
 	});
 
-	it("loads installed legacy Pi plugin extensions from Windows drive-letter paths", async () => {
+	it("loads installed legacy Pi plugin extensions", async () => {
 		const pluginsDir = getPluginsDir();
 		const pluginDir = path.join(pluginsDir, "node_modules", "legacy-pi-plugin");
 		const extensionPath = path.join(pluginDir, "dist", "extension.ts");
@@ -148,9 +148,6 @@ describe("plugin extension discovery", () => {
 		const result = await discoverAndLoadExtensions([], projectDir.path());
 		const extension = result.extensions.find(ext => ext.path === extensionPath);
 
-		if (process.platform === "win32") {
-			expect(extensionPath).toMatch(/^[A-Za-z]:\\/);
-		}
 		expect(result.errors).toHaveLength(0);
 		expect(extension).toBeDefined();
 		expect(extension?.tools.has("legacy-pi-ext")).toBe(true);

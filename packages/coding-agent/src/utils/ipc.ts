@@ -24,7 +24,7 @@ export function isThenable(value: unknown): value is PromiseLike<unknown> {
  * un-awaited EPIPE rejection must not escape as a fatal unhandled rejection
  * that takes down the whole session. See issue #2997.
  *
- * `label` prefixes the debug log on synchronous failure (e.g. "tts").
+ * `label` prefixes the debug log on synchronous failure (e.g. "tiny").
  */
 export function safeSend(proc: { send(message: unknown): unknown }, message: unknown, label: string): void {
 	try {

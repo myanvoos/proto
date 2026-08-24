@@ -719,8 +719,8 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	const home = homeDir ?? os.homedir();
 	if (home && filePath.startsWith(home)) {
 		const suffix = filePath.slice(home.length);
-		if (suffix === "" || suffix.startsWith(path.posix.sep) || suffix.startsWith(path.win32.sep)) {
-			return `~${suffix.replaceAll(path.win32.sep, path.posix.sep)}`;
+		if (suffix === "" || suffix.startsWith("/")) {
+			return `~${suffix}`;
 		}
 	}
 	return filePath;

@@ -7,12 +7,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import type { ParseResult, ParserPlugin } from "@babel/parser";
 import { parse as parseBabel } from "@babel/parser";
-import {
-	getLegacyPiExtensionCacheDbPath,
-	isCompiledBinary,
-	logger,
-	stripWindowsExtendedLengthPathPrefix,
-} from "@oh-my-pi/pi-utils";
+import { getLegacyPiExtensionCacheDbPath, isCompiledBinary, logger } from "@oh-my-pi/pi-utils";
 import { registerPluginCacheInvalidator } from "../../discovery/helpers";
 
 const IS_COMPILED_BINARY = isCompiledBinary();
@@ -918,18 +913,18 @@ const TYPEBOX_SPECIFIER_FILTER = /^(?:@sinclair\/typebox|typebox)$/;
  * bare `@oh-my-pi/pi-coding-agent` here: from a global install Bun can pick an
  * older cache entry, recreating mixed-runtime plugin loading.
  */
-export function __computeBundledSelfPackageRoot(metaDir: string, pathImpl: typeof path = path): string {
-	const normalizedMetaDir = pathImpl.normalize(metaDir);
-	if (pathImpl.basename(normalizedMetaDir) === "dist") {
-		return pathImpl.resolve(metaDir, "..");
+export function __computeBundledSelfPackageRoot(metaDir: string): string {
+	const normalizedMetaDir = path.normalize(metaDir);
+	if (path.basename(normalizedMetaDir) === "dist") {
+		return path.resolve(metaDir, "..");
 	}
 
-	const pluginsDirSuffix = pathImpl.join("src", "extensibility", "plugins");
+	const pluginsDirSuffix = path.join("src", "extensibility", "plugins");
 	if (normalizedMetaDir.endsWith(pluginsDirSuffix)) {
-		return pathImpl.resolve(metaDir, "..", "..", "..");
+		return path.resolve(metaDir, "..", "..", "..");
 	}
 
-	return pathImpl.resolve(metaDir);
+	return path.resolve(metaDir);
 }
 
 function resolveBundledSelfPackageRoot(): string | undefined {
@@ -1132,7 +1127,7 @@ function toImportSpecifier(resolvedPath: string): string {
 	if (isBundledVirtualSpecifier(resolvedPath)) {
 		return resolvedPath;
 	}
-	return url.pathToFileURL(stripWindowsExtendedLengthPathPrefix(resolvedPath)).href;
+	return url.pathToFileURL(resolvedPath).href;
 }
 
 /**
@@ -1215,18 +1210,16 @@ export async function __rewriteLegacyExtensionSourceForTests(
  * emits a bare filesystem path with an optional `?mtime=<tag>` (Bun keys
  * query strings for bare-path specifiers), so same-process extension
  * reloads pick up edits to package-alias (`#foo/*`) and extension-local
- * bare deps. Windows and bundled virtual specifiers keep the current
- * `file://` / virtual form — Bun ignores queries on `file://` URLs, so
- * cache-bust does not reach Windows extensions until Bun changes that.
+ * bare deps. Bundled virtual specifiers keep the current virtual form.
  */
 function toGraphImportSpecifier(resolvedPath: string, mtimeTag: string | null): string {
 	if (isBundledVirtualSpecifier(resolvedPath)) {
 		return resolvedPath;
 	}
-	if (process.platform === "win32" || !mtimeTag) {
-		return url.pathToFileURL(stripWindowsExtendedLengthPathPrefix(resolvedPath)).href;
+	if (!mtimeTag) {
+		return url.pathToFileURL(resolvedPath).href;
 	}
-	return `${stripWindowsExtendedLengthPathPrefix(resolvedPath)}?mtime=${mtimeTag}`;
+	return `${resolvedPath}?mtime=${mtimeTag}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1980,9 +1973,8 @@ async function rewriteExtensionSpecifiers(
 			}
 		}
 		if (!resolved) continue;
-		const replacement = stripWindowsExtendedLengthPathPrefix(resolved).replaceAll("\\", "/");
-		resolvedSpecifierTargets.set(`${reference.kind}\0${reference.specifier}`, replacement);
-		replacements.push({ ...reference, replacement });
+		resolvedSpecifierTargets.set(`${reference.kind}\0${reference.specifier}`, resolved);
+		replacements.push({ ...reference, replacement: resolved });
 	}
 	extensionSynchronousSpecifierTargets.set(importerPath, resolvedSpecifierTargets);
 	return applySpecifierReplacements(source, replacements);
@@ -2778,10 +2770,9 @@ export async function loadLegacyPiModule(resolvedPath: string): Promise<unknown>
 		// On POSIX, use the raw filesystem path so Bun keys the `?mtime`
 		// suffix as part of the module identity; Bun ignores query strings on
 		// `file://` specifiers, which would serve stale edited source.
-		const entrySpecifier =
-			process.platform === "win32" || isBundledVirtualSpecifier(entryRealPath)
-				? toImportSpecifier(entryRealPath)
-				: entryRealPath;
+		const entrySpecifier = isBundledVirtualSpecifier(entryRealPath)
+			? toImportSpecifier(entryRealPath)
+			: entryRealPath;
 		return await import(`${entrySpecifier}?mtime=${nextLegacyPiLoadTag()}`);
 	} finally {
 		// Drop whatever the initial import didn't consume: graph modules only

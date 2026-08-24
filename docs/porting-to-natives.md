@@ -19,9 +19,9 @@ The package has no `packages/natives/src/<module>` wrapper layer. Its entrypoint
 Two commands serve different purposes:
 
 - `bun --cwd=packages/natives run build:bindings` runs napi-rs for the host, installs a local variant addon and generated declarations, and regenerates explicit ESM/enum exports. Use this when the Rust public type surface changes.
-- `bun --cwd=packages/natives run build` invokes `scripts/bazel-natives.ts host --dest native`. The host target builds through the local cargo/napi-rs backend by default (`PROTO_NATIVE_BUILD_BACKEND=bazel` opts into bazel) but does not regenerate declarations.
+- `bun --cwd=packages/natives run build` invokes `sh ../../scripts/build-natives.sh host --dest native`. The host target builds through the local cargo/napi-rs backend (AVX2 detection picks modern vs baseline on x64) but does not regenerate declarations.
 
-Release builds use Bazel targets and publish `.node` files in platform leaf packages. The core publish rewrite removes addons and injects lockstep optional dependencies generated from `LEAF_TARGETS` in `gen-npm-packages.ts`.
+Release builds run `scripts/build-natives.sh <target>` (plain cargo, `--profile ci`) on matching-host CI runners and publish `.node` files in platform leaf packages. The core publish rewrite removes addons and injects lockstep optional dependencies generated from `LEAF_TARGETS` in `gen-npm-packages.ts`.
 
 ## Design the N-API boundary
 
@@ -125,7 +125,7 @@ Remove only the stale local artifacts/cache identified by loader diagnostics, th
 
 ### Declarations changed but shipping addon did not
 
-`build:bindings` owns declaration generation; `build` owns the Bazel host artifact. CI/release targets own cross-platform artifacts. Verify both generated source control outputs and the actual binary used by the scenario.
+`build:bindings` owns declaration generation; `build` owns the local host artifact. CI/release targets built by `scripts/build-natives.sh` own cross-platform artifacts. Verify both generated source control outputs and the actual binary used by the scenario.
 
 ### Same-version incomplete addon
 

@@ -485,9 +485,7 @@ describe("AgentSession mid-run threshold compaction", () => {
 	it.each([
 		["auto_compaction_end", "context-full", ["soft"]],
 		["session_compact", "context-full", ["soft"]],
-		["auto_compaction_end", "shake", ["shake", "soft"]],
-		["session_compact", "shake", ["shake", "soft"]],
-	] as const)("hung %s handlers do not pin the mid-run %s loop", async (handlerType, action, methodOrder) => {
+	] as const)("hung %s handlers do not pin the mid-run %s loop", async (handlerType, _action, methodOrder) => {
 		const releaseHandler = Promise.withResolvers<void>();
 		const handlerEntered = Promise.withResolvers<void>();
 		const nextProviderCall = Promise.withResolvers<void>();
@@ -510,12 +508,6 @@ describe("AgentSession mid-run threshold compaction", () => {
 				},
 			},
 		);
-		const shakeSpy =
-			action === "shake"
-				? vi
-						.spyOn(session, "shake")
-						.mockResolvedValue({ mode: "elide", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 })
-				: undefined;
 		const compactSpy = mockCompaction("MID-RUN-COMPACTED-WITHOUT-WAITING-ON-LIFECYCLE");
 
 		const prompt = session.prompt("work on the release");
@@ -543,7 +535,6 @@ describe("AgentSession mid-run threshold compaction", () => {
 		expect(providerOutcome).toBe("dispatched");
 		expect(promptOutcome).toBe("settled");
 		expect(compactSpy).toHaveBeenCalledTimes(1);
-		if (shakeSpy) expect(shakeSpy).toHaveBeenCalledTimes(1);
 		expect(observedContexts[1].join("\n")).toContain("MID-RUN-COMPACTED-WITHOUT-WAITING-ON-LIFECYCLE");
 	});
 

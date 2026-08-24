@@ -159,16 +159,13 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(exitCode).toBe(0);
 		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
 		expect(resolved.id).toBe("warp");
-		// Warp for Windows lacks Kitty graphics support.
-		expect(resolved.imageProtocol).toBe(process.platform === "win32" ? null : resolved.expected);
+		expect(resolved.imageProtocol).toBe(resolved.expected);
 	});
 
 	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
 		const warp = getTerminalInfo("warp");
 		// Warp lacks Kitty graphics on Windows hosts, including WSL.
-		const windowsHost =
-			process.platform === "win32" ||
-			(process.platform === "linux" && Boolean(Bun.env.WSL_DISTRO_NAME || Bun.env.WSL_INTEROP));
+		const windowsHost = process.platform === "linux" && Boolean(Bun.env.WSL_DISTRO_NAME || Bun.env.WSL_INTEROP);
 		expect(warp.imageProtocol).toBe(windowsHost ? null : ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
@@ -176,17 +173,14 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(warp.supportsTextSizing).toBe(false);
 	});
 
-	it("uses Kitty images on macOS/Linux and disables them on Windows", () => {
+	it("uses Kitty images on macOS/Linux and disables them under WSL", () => {
 		const mac = getTerminalInfo("warp", "darwin", {});
 		const linux = getTerminalInfo("warp", "linux", {});
-		const windows = getTerminalInfo("warp", "win32", {});
 
 		expect(resolveWarpImageProtocol("darwin", {})).toBe(ImageProtocol.Kitty);
 		expect(resolveWarpImageProtocol("linux", {})).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("win32", {})).toBeNull();
 		expect(mac.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(linux.imageProtocol).toBe(ImageProtocol.Kitty);
-		expect(windows.imageProtocol).toBeNull();
 		expect(linux.trueColor).toBe(true);
 		expect(linux.hyperlinks).toBe(false);
 		expect(linux.deccara).toBe(false);

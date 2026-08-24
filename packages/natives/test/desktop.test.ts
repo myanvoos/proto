@@ -4,7 +4,7 @@ import { DesktopSession } from "../native/index.js";
 
 const ERROR_CODE_PREFIX = /^([A-Z][A-Za-z]+): /;
 const PERMISSION_STATES = ["granted", "denied", "unknown", "unavailable", "prompt-or-granted"];
-const BACKENDS = ["quartz", "x11", "wayland", "win32", "unavailable"];
+const BACKENDS = ["quartz", "x11", "wayland", "unavailable"];
 
 async function expectRejectionCode(operation: () => Promise<unknown>, acceptedCodes: readonly string[]): Promise<void> {
 	const fulfilled = Symbol("fulfilled");

@@ -207,7 +207,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("records a volatile live block's scrolled rows and never duplicates them on finalize", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -253,7 +252,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("records a tall all-live block's scrolled head", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -285,7 +283,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("keeps a tall viewport-pinned wall out of scrollback until it finalizes", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(60, 8, 1_000);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -322,7 +319,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("commits an append-only declared-final block's scrolled head as exact rows", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -356,7 +352,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("rebuilds history once at finalize when a wholesale-replaced live block diverged", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(24, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -406,7 +401,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("keeps the topmost seam when a lower sibling also reports one", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(24, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -457,7 +451,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("commits scrolled streaming rows to history exactly once without ED3 (shell semantics)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 10);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -500,7 +493,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("does not emit ED3 during streaming", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 10);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -535,7 +527,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("does not duplicate committed sealed rows when the live region collapses mid-stream", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -570,7 +561,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("keeps committed prefix accounting after a capped streaming frame", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(24, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -607,7 +597,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("erases mis-wrapped native scrollback on resize even mid-stream", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 10);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -648,7 +637,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("feeds committed native scrollback rows to interested children before render", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -676,7 +664,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("publishes the post-emit committed count between frames — never one frame stale", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 8);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -725,7 +712,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("publishes the post-emit committed count on the full-paint replay path too", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 8);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -752,7 +738,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("clamps each child's committed-count feed to its own extent", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(40, 8);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -800,7 +785,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("never re-anchors a re-laying-out live block mid-run, rebuilds once at finalize", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -856,7 +840,6 @@ describe("streaming scrollback — visual record", () => {
 	});
 
 	it("repairs a declared-final violation with one rebuild, never spraying", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -907,7 +890,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("does not drop the tail when a pending barrier above it is removed (S5/S6)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -945,7 +927,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("does not drop result rows when a provisional preview is replaced by its result (S4)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -982,7 +963,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("does not drop rows when a barrier partially collapses above a long tail (S10)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -1020,7 +1000,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("keeps a finalized tail in order when its live barrier sibling is removed (multi-child S6)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 5);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -1057,7 +1036,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("survives a streaming-then-removed barrier across many frames without loss", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 5);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -1093,7 +1071,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("commits a declared-final prose head exactly, with zero finalize repair", async () => {
-		if (process.platform === "win32") return;
 		// A streaming block whose settled head is declared final (the
 		// transcript's settled-prefix path) while its last row re-wraps in place
 		// and a live card renders below. The head commits as verified exact rows
@@ -1136,7 +1113,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("does not lose a single-row finalize edit above an unchanged tail (#4124)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -1176,7 +1152,6 @@ describe("scrollback commit gap — live barriers", () => {
 	});
 
 	it("does not lose a single-row finalize edit far above a long unchanged tail (deep tail)", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -1227,7 +1202,6 @@ describe("scrollback divergence — multiplexer fallback", () => {
 	});
 
 	it("repairs below the stale fragment without ED3 when the pane cannot be cleared", async () => {
-		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });

@@ -277,20 +277,6 @@ webrtc = "0.17.2"
 # ──────────────────────────────────────────────────────────────────────────────
 libc = "0.2"
 os_pipe = "1"
-windows-sys = { version = "0.61", features = [
-   "Win32_Foundation",
-   "Win32_Media_Audio",
-   "Win32_Media_Multimedia",
-   "Win32_Security",
-   "Win32_Storage_FileSystem",
-   "Win32_Storage_ProjectedFileSystem",
-   "Win32_System_Com",
-   "Win32_System_LibraryLoader",
-   "Win32_System_IO",
-   "Win32_System_Ioctl",
-   "Win32_System_Threading",
-] }
-winreg = "0.56"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Node.js Bindings (NAPI)
@@ -303,7 +289,6 @@ napi-derive = "3"
 # Terminal & PTY
 # ──────────────────────────────────────────────────────────────────────────────
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-clipboard-win = "5.4"
 icy_sixel = "0.5"
 portable-pty = "0.9"
 

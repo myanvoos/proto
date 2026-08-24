@@ -103,11 +103,10 @@ function snapshotHostSessionId(): number {
 }
 
 /**
- * Skip the entire suite if `python3` is not available. The brush-core fix is
- * platform-conditional (POSIX only) and the probe needs `getsid`.
+ * Skip the entire suite if `python3` is not available (the probe needs
+ * `getsid`).
  */
 function pythonAvailable(): boolean {
-	if (process.platform === "win32") return false;
 	const probe = spawnSync("python3", ["--version"], { encoding: "utf8" });
 	return probe.status === 0;
 }

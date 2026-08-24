@@ -28,8 +28,9 @@ merged.
 ### Do not open an issue for work you are about to submit
 
 If you intend to implement a change yourself, **do not create an issue for it
-first**. robomp treats actionable issues as work to pick up and may start the
-same fix in parallel, wasting compute and maintainer time.
+first** — issues are triaged by maintainers, so opening one before you have
+something to show just adds a round-trip. If an issue already exists and you
+plan to take it on, say so on the issue so nobody duplicates your work.
 
 Open an issue when you are reporting a problem or proposing work that you are
 not already turning into a pull request. If a relevant issue already exists,

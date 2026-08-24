@@ -5,9 +5,8 @@ RuntimeClass ([02-kata-runtime.md](02-kata-runtime.md)) and the preloaded runner
 image has been imported into the cluster containerd ([03-runner-image.md](03-runner-image.md)).
 Here we install **actions-runner-controller (ARC)**, register an ephemeral
 **scale set** whose pods each boot inside their own Kata microVM, stand up the
-in-cluster **bazel-remote** Bazel cache and the runner cache PVC, and lock
-down runner egress with a NetworkPolicy. See [README.md](README.md) for the
-architecture overview.
+runner cache PVC, and lock down runner egress with a NetworkPolicy. See
+[README.md](README.md) for the architecture overview.
 
 Everything below is read against the live cluster; set the kubeconfig once:
 
@@ -177,10 +176,11 @@ template:
         imagePullPolicy: IfNotPresent
         command: ["/home/runner/run.sh"]
         envFrom:
+          # Legacy-named infra-presence marker. The name predates the Bazel
+          # removal; .github/actions/bun-install probes $BAZEL_REMOTE_USER to
+          # detect omp-kata pods. It carries no build-system function anymore.
           - secretRef:
               name: bazel-remote-ci
-          - secretRef:
-              name: sccache-s3   # legacy - removed together with the cargo CI pipeline
         volumeMounts:
           - name: runner-cache
             mountPath: /home/runner/.bun/install/cache
@@ -191,15 +191,6 @@ template:
           - name: runner-cache
             mountPath: /home/runner/.cargo/registry/index
             subPath: cargo-registry/index
-          # Shared Bazel repository cache: pods are ephemeral, so without it
-          # every job re-downloads toolchains and crate archives. Content-
-          # addressed and written atomically, safe to share across pods.
-          # Deliberately OUTSIDE $HOME: kubelet creates missing mountpoint
-          # parents root-owned, and a root-owned ~/.cache breaks bazel's
-          # default output root and zig's wrapper cache.
-          - name: runner-cache
-            mountPath: /opt/bazel-repo-cache
-            subPath: bazel-repo-cache
         resources:
           # Burstable on purpose: requests bin-pack 8 runners onto the
           # 32-vCPU / 125 GiB host; limits are each Kata VM's hotplug
@@ -245,10 +236,13 @@ Field by field:
   here when you rebuild the image (see [Operate](#7-operate)).
 - **`command: ["/home/runner/run.sh"]`** - the stock actions-runner entrypoint;
   overridden explicitly because the custom image keeps the upstream layout.
-- **`envFrom.secretRef`** - injects the bazel-remote cache credentials
-  (`bazel-remote-ci`, [step 5](#5-shared-caches-bazel-remote--runner-pvc)) that
-  every runner needs for read-write cache access. `sccache-s3` is the legacy
-  sccache wiring and disappears with it ([5e](#5e-legacy-sccacherustfs-removed)).
+- **`envFrom.secretRef`** - injects the `bazel-remote-ci` secret into every
+  runner pod. This is a **legacy-named infra-presence marker**: the name predates
+  the Bazel removal, and its only consumer today is
+  [`.github/actions/bun-install`](../../.github/actions/bun-install/action.yml),
+  which probes `$BAZEL_REMOTE_USER` to detect that a job runs on omp-kata infra
+  (and should use the mounted PVC caches). Keep the `envFrom` injection; it has
+  no build-system function anymore.
 - **`securityContext.fsGroup: 1001`** - makes the mounted PVC writable by the
   image's `runner` user without replacing image-owned `~/.cargo/bin` or `~/.rustup`.
 - **`initContainers.prepare-runner-cache`** - uses the same locally imported image
@@ -317,130 +311,52 @@ a compromised job is boxed into a throwaway VM with no cluster reach.
 
 ---
 
-## 5. Shared caches (bazel-remote + runner PVC)
+## 5. Shared caches (runner PVC)
 
 GitHub's hosted cache backend is only reachable over the node's NAT egress, so on
 a busy matrix (many concurrent jobs) it becomes the bottleneck. This setup keeps
 the hot paths inside the cluster:
 
-- **bazel-remote** serves the Bazel remote cache (CAS + action cache) for the
-  native pipeline. Rust compilation, clippy, rustfmt, tests, and the final
-  `.node` addons are all Bazel actions, so this one content-addressed store
-  replaces the previous sccache/RustFS backend, the rolling Cargo `target/`
-  snapshots, and the native-artifact PVC directory ([5e](#5e-legacy-sccacherustfs-removed)).
 - **`runner-cache` PVC** is mounted into every runner for Bun's global package
-  store and Cargo's crates.io registry cache.
+  store and Cargo's crates.io registry cache/index.
 
-### 5a. Deploy bazel-remote
+### 5a. Retired: the bazel-remote service
 
-Unlike the legacy stack, the whole deployment lives in the repo under
-[`infra/bazel-remote/`](../bazel-remote/):
-
-- [`bazel-remote.yaml`](../bazel-remote/bazel-remote.yaml) - namespace
-  `bazel-cache`, a 100Gi `local-path` PVC (`bazel-remote-data`), a
-  single-replica `Recreate` Deployment pinned to
-  `buchgr/bazel-remote-cache:v2.6.2` (`--max_size 90` GiB LRU, gRPC `:9092`,
-  HTTP `:8080`, TLS + htpasswd from secret mounts,
-  `--allow_unauthenticated_reads`), and the ClusterIP Service `bazel-remote`
-  (9092 grpc + 8080 http). There is deliberately **no public exposure**: the
-  cache is reachable only inside the cluster.
-- [`setup.sh`](../bazel-remote/setup.sh) - the idempotent bootstrap, run **on
-  the CI host** as root:
-
-  ```bash
-  ./setup.sh   # from a checkout of infra/bazel-remote/ on the host
-  ```
-
-  It generates a self-signed CA + server certificate (SANs:
-  `bazel-remote.bazel-cache.svc.cluster.local`, `bazel-remote.bazel-cache.svc`,
-  plus a private admin name via `ADMIN_SAN`), creates the secrets
-  ([5b](#5b-endpoints-tls-and-auth)), applies `bazel-remote.yaml`, patches the
-  egress policy ([step 6](#6-runner-egress-lockdown)), and removes any retired
-  public exposure (NodePort service, firewalld `30992/tcp`) from earlier
-  iterations.
-  Re-running is safe: the CA, server cert, and `ci` password persist under
-  `/root/bazel-remote-cache`, and every kubectl step is `apply`-based or
-  guarded by a presence check.
-
-Verify:
+The repo previously deployed an in-cluster **bazel-remote** server (namespace
+`bazel-cache`) as the Bazel action/CAS cache for the native pipeline. The Bazel
+build system is gone — Rust validation runs plain cargo and addons build via
+`scripts/build-natives.sh` with an actions/cache entry in `rust_validate` — so
+the deployment configs (`infra/bazel-remote/`) were removed from the repo. If
+the namespace still exists on your host, tear it down:
 
 ```bash
-kubectl -n bazel-cache get deploy,svc,pvc
-# deployment.apps/bazel-remote      1/1
-# service/bazel-remote              ClusterIP   10.43.x.x   9092/TCP,8080/TCP
-# (no public/NodePort service: the cache is cluster-internal only)
-# persistentvolumeclaim/bazel-remote-data   Bound   100Gi   local-path
-
-# Status endpoint (TLS is on, so use https; -k or --cacert the committed CA):
-curl -sk "https://$(kubectl -n bazel-cache get pod -l app=bazel-remote \
-  -o jsonpath='{.items[0].status.podIP}'):8080/status"
-# {"CurrSize": ..., "MaxSize": 96636764160, "NumFiles": ..., ...}
+kubectl delete namespace bazel-cache          # removes the bazel-remote deploy, svc, PVC
+# then drop the tcp/9092 egress rule for the bazel-cache namespace from
+# runner-egress-lockdown (see step 6) and `helm upgrade` nothing — the policy
+# is applied directly.
 ```
 
-### 5b. Endpoints, TLS, and auth
+The `bazel-remote-ci` secret in `arc-runners` is deliberately KEPT despite its
+name: it is envFrom-injected into every runner pod, and
+[`.github/actions/bun-install`](../../.github/actions/bun-install/action.yml)
+probes `$BAZEL_REMOTE_USER` as its "am I on infra?" signal to decide between the
+mounted PVC caches and actions/cache. It is a legacy-named marker with zero
+Bazel function; do not delete the secret or the `envFrom` entry.
 
-One endpoint, one auth model — **reads are unauthenticated, writes require the
-`ci` credentials**, and only in-cluster clients can reach it at all:
+### 5b. The cache consumers
 
-| Client | Endpoint | Writes |
-| --- | --- | --- |
-| omp-kata runner pods (trusted `push`/main + release) | `grpcs://bazel-remote.bazel-cache.svc.cluster.local:9092` | yes - `ci` credentials injected via the `bazel-remote-ci` secret |
-| GitHub-hosted runners (PRs, macOS, release) | — never touch this infrastructure; they persist a local `--disk_cache`/`--repository_cache` via `actions/cache` (`.github/actions/bazel-cache`) | n/a |
-
-- **TLS.** The server certificate is signed by a self-signed CA committed at
-  [`infra/bazel-remote/ca.crt`](../bazel-remote/ca.crt); every client passes
-  `--tls_certificate=infra/bazel-remote/ca.crt`. Only the CA *key* stays on the
-  host (`/root/bazel-remote-cache/ca.key`). `setup.sh` echoes the CA cert so
-  the operator can commit it (the script cannot commit).
-- **Secrets** (all maintained by `setup.sh`):
-  - `bazel-cache/bazel-remote-tls` - server cert + key, mounted at `/tls`;
-  - `bazel-cache/bazel-remote-auth` - bcrypt htpasswd with the single user
-    `ci`, mounted at `/auth` (`--allow_unauthenticated_reads` keeps reads open);
-  - `arc-runners/bazel-remote-ci` - `BAZEL_REMOTE_USER` / `BAZEL_REMOTE_PASSWORD`,
-    injected into every runner pod via `envFrom`
-    ([step 3](#3-scale-set-values-arc-omp-valuesyaml); `infra/reload-runner.sh`
-    inserts the `envFrom` entry into `arc-omp-values.yaml` idempotently on the
-    next image reload).
-- **No GitHub secrets.** Nothing outside the cluster holds cache credentials;
-  the public repo carries only the CA *certificate*.
-
-### 5c. The cache consumers
-
-**(a) Bazel remote cache** - `.bazelrc` carries the cache *policy* configs
-(`cache-rw` / `cache-ro`); CI composes the endpoint and credentials per
-environment:
-
-```bash
-bazel build \
-  --config=cache-rw \
-  --remote_cache=grpcs://bazel-remote.bazel-cache.svc.cluster.local:9092 \
-  --tls_certificate=infra/bazel-remote/ca.crt \
-  --remote_header="authorization=Basic $(printf %s "$BAZEL_REMOTE_USER:$BAZEL_REMOTE_PASSWORD" | base64 -w0)" \
-  //:natives-linux-all
-```
-
-On omp-kata the credentials come from the injected pod env
-(`bazel-remote-ci` secret) and `.github/actions/bazel-cache` composes the rc
-fragment. GitHub-hosted jobs get the disk-cache branch of the same action —
-no remote endpoint, no credentials, no infrastructure knowledge. The bridge
-between the two worlds is the **disk-cache export**: main-push rust jobs
-write a bazel disk cache alongside the remote cache and save it to the
-GitHub Actions cache (once per lockfile change, `linux` scope). GitHub only
-shares caches from the default branch across pull requests, so this export
-is what keeps PR builds warm; kata jobs otherwise skip artifact downloads
-entirely (`--remote_download_toplevel`), and the xwin MSVC splat persists on
-the runner-cache PVC (`PROTO_XWIN_CACHE_DIR`).
-
-**(b) Cargo registry cache** - the scale-set pod template mounts only the
+**(a) Cargo registry cache** - the scale-set pod template mounts only the
 immutable download cache and sparse index at
 `/home/runner/.cargo/registry/cache` and `/home/runner/.cargo/registry/index`.
 Source extraction, lock files, Cargo git checkouts, and `target/` remain
 job-local; virtio-fs does not propagate Cargo's file locks safely across VMs.
+(The `rust_validate` CI job additionally saves/restores a workspace `target/`
+snapshot through stock `actions/cache`, keyed on the `Cargo.lock` hash.)
 
-**(c) Bun package store** -
+**(b) Bun package store** -
 [`.github/actions/bun-install`](../../.github/actions/bun-install/action.yml)
 wraps `bun install --frozen-lockfile`. On omp-kata, the pod template mounts
-`runner-cache:/bun-store` at Bun's default store path
+`runner-cache` at Bun's default store path
 (`/home/runner/.bun/install/cache`), so the action only ensures the directory
 exists before running Bun. Off-infra it still uses stock `actions/cache@v4` for
 the same store path.
@@ -450,50 +366,25 @@ and workspace-state-sensitive, and concurrent jobs would write through the same
 tree. The clean VM still runs `bun install --frozen-lockfile`; it just reuses the
 package tarball/extract store.
 
-### 5d. Poisoning boundary and pressure
+### 5c. Poisoning boundary and pressure
 
-The bazel-remote store is content-addressed and **writes require the `ci`
-credentials**, so the poisoning surface is exactly the set of jobs holding those
-credentials. The primary defense is to keep untrusted code away from them:
+Untrusted code never reaches these caches: `ci.yml` routes every pull-request
+job to GitHub-hosted runners (`runs-on` resolves to `omp-kata` only for
+`push`/main, manual dispatch, and release). That expression lives in the base
+workflow, which GitHub uses verbatim for `pull_request` events, so a fork cannot
+override it. As defense in depth, set the repo's **Settings -> Actions -> Fork
+pull request workflows** policy to *Require approval for all outside
+collaborators* (or all forks). GitHub's public-repo default only gates
+first-time contributors.
 
-- `ci.yml` routes every pull-request job to GitHub-hosted runners
-  (`runs-on` resolves to `omp-kata` only for `push`/main, manual dispatch, and
-  release). That expression lives in the base workflow, which GitHub uses
-  verbatim for `pull_request` events, so a fork cannot override it. PR jobs
-  never talk to the cluster at all — they build against a local
-  `actions/cache`-backed disk cache — and fork code never sees
-  `bazel-remote-ci` (the cache has no publicly reachable endpoint to attack).
-- As defense in depth, set the repo's **Settings -> Actions -> Fork pull request
-  workflows** policy to *Require approval for all outside collaborators* (or all
-  forks). GitHub's public-repo default only gates first-time contributors.
+The mounted-cache design narrows the blast radius of trusted runs: no shared
+`node_modules`, no shared Cargo `target/` through the PVC, Bun installs from
+`bun.lock`, and Cargo registry entries are checked against lockfile/source
+checksums.
 
-The mounted-cache design still narrows the blast radius of trusted runs: no
-shared `node_modules`, no shared Cargo `target/`, Bun installs from `bun.lock`,
-and Cargo registry entries are checked against lockfile/source checksums.
-
-Pressure is mostly self-managing:
-
-- `bazel-cache/bazel-remote-data` - bazel-remote evicts LRU at `--max_size 90`
-  GiB on its own; watch `CurrSize` on `/status` and grow the PVC/flag together
-  if hit rates drop.
-- `arc-runners/runner-cache` - coarse manual cleanup: scale `omp-kata` to zero,
-  delete `bun-store/` or `cargo-registry/` from the bound local-path volume,
-  let the next jobs repopulate it.
-
-### 5e. Legacy: sccache/RustFS (removed)
-
-The previous cache stack - RustFS (S3) in the `sccache` namespace backing
-sccache, rolling Cargo `target/` snapshots via `scripts/ci-target-cache.ts`,
-and source-hash-addressed `.node` artifacts on the runner PVC - is superseded
-by the Bazel pipeline above. Once no workflow references remain, tear it down:
-
-```bash
-kubectl -n arc-runners delete secret sccache-s3
-kubectl delete namespace sccache        # removes RustFS and the rustfs-data PVC
-# then: drop the sccache tcp/9000 rule from runner-egress-lockdown, and remove
-# the sccache-s3 envFrom entry, the native-artifacts subPath mount, and
-# PROTO_NATIVE_CACHE_DIR from arc-omp-values.yaml (+ helm upgrade).
-```
+Pressure is mostly self-managing; coarse manual cleanup is to scale `omp-kata`
+to zero, delete `bun-store/` or `cargo-registry/` from the bound local-path
+volume, and let the next jobs repopulate it.
 
 ---
 
@@ -548,7 +439,8 @@ spec:
               - 169.254.0.0/16
               - 100.64.0.0/10
               - <PUBLIC_IP>/32
-    # 3. RustFS shared cache (S3) - legacy, removed together with sccache.
+    # 3. RustFS shared cache (S3) - legacy, removed together with sccache;
+    #    drop this rule when the legacy namespace is torn down.
     - to:
         - ipBlock:
             cidr: 10.43.0.0/16
@@ -557,16 +449,6 @@ spec:
               kubernetes.io/metadata.name: sccache
       ports:
         - port: 9000
-          protocol: TCP
-    # 4. bazel-remote shared cache (gRPC) over the cluster network.
-    - to:
-        - ipBlock:
-            cidr: 10.43.0.0/16
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: bazel-cache
-      ports:
-        - port: 9092
           protocol: TCP
 ```
 
@@ -583,18 +465,15 @@ The allow-list, rule by rule:
   reach - the remaining rules punch the only holes the job legitimately needs.
 - **Rule 3 - RustFS cache (legacy).** TCP 9000 to the service CIDR
   (`10.43.0.0/16`) and the `sccache` namespace - drop this rule when the legacy
-  stack is torn down ([5e](#5e-legacy-sccacherustfs-removed)).
-- **Rule 4 - bazel-remote cache.** TCP 9092 to the service CIDR
-  (`10.43.0.0/16`) and the `bazel-cache` namespace - the Bazel remote cache
-  from [step 5](#5-shared-caches-bazel-remote--runner-pvc). `setup.sh` appends
-  this rule idempotently via
-  [`runner-egress-patch.yaml`](../bazel-remote/runner-egress-patch.yaml):
+  stack is torn down.
+- **Retired rule - bazel-remote cache.** The tcp/9092 hole to the `bazel-cache`
+  namespace existed for the former Bazel remote cache; with that service removed
+  ([5a](#5a-retired-the-bazel-remote-service)), delete the rule from the live
+  policy:
 
   ```bash
-  kubectl -n arc-runners get networkpolicy runner-egress-lockdown -o json \
-    | jq -e '.spec.egress[].to[]? | select(.namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "bazel-cache")' >/dev/null \
-    || kubectl -n arc-runners patch networkpolicy runner-egress-lockdown \
-         --type=json --patch-file=infra/bazel-remote/runner-egress-patch.yaml
+  kubectl -n arc-runners patch networkpolicy runner-egress-lockdown --type=json \
+    --patch='[{"op":"remove","path":"/spec/egress/3"}]'
   ```
 - **Ingress.** `policyTypes` lists `Ingress` but no ingress rule is defined, which
   is a **default-deny**: nothing can open a connection *into* a runner pod.
@@ -611,8 +490,8 @@ Egress that survives rule 2 leaves the node via the host's firewalld masquerade
 - **No cluster rights.** Jobs run under `omp-kata-gha-rs-no-permission` with no
   RBAC ([step 4](#4-job-lifecycle-and-the-no-permission-serviceaccount)).
 - **Constrained network.** The policy above blocks the host, LAN, tailnet, and
-  arbitrary cluster pods; only DNS, the public internet, and the shared caches
-  (bazel-remote, plus legacy RustFS until torn down) are reachable.
+  arbitrary cluster pods; only DNS, the public internet, and the shared runner-cache
+  PVC (plus legacy RustFS until torn down) are reachable.
 - **Ephemeral.** One job per VM, destroyed afterward - no state, secret, or
   artifact survives into the next job.
 - **Public-repo recommendation.** For a public repo, require approval for fork
@@ -623,7 +502,6 @@ Egress that survives rule 2 leaves the node via the host's firewalld masquerade
 ---
 
 ## 7. Operate
-
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 ```
@@ -647,10 +525,8 @@ kubectl -n arc-systems logs deploy/arc-gha-rs-controller -f
 kubectl -n arc-runners logs <runner-pod>
 ```
 
-**Verify the caches are being used.** A warm Bazel build on omp-kata logs
-`remote cache hit` counts in its build summary; `curl -sk https://<pod-ip>:8080/status`
-shows `CurrSize`/`NumFiles` growing ([5a](#5a-deploy-bazel-remote)). A warm job
-also logs `bun cache backend: mounted PVC (...)`. To inspect the mounted
+**Verify the caches are being used.** A warm job on omp-kata logs
+`bun cache backend: mounted PVC (...)`. To inspect the mounted
 runner cache, scale to zero and check the `runner-cache` local-path volume on
 the host.
 

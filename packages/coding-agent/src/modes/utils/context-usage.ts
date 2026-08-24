@@ -46,8 +46,7 @@ export interface CompactionBoundaries {
 	thresholdPercent: number;
 	/**
 	 * Where the background speculative summarizer starts (threshold − lead), or
-	 * `null` when no speculation will run (async compaction disabled, or the
-	 * first available method is local — shake — and thus instant).
+	 * `null` when no speculation will run (async compaction disabled).
 	 */
 	speculationPercent: number | null;
 }

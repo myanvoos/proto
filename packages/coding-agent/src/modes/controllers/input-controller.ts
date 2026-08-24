@@ -27,7 +27,6 @@ import { isTinyTitleLocalModelKey } from "../../tiny/models";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
-import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
@@ -327,8 +326,8 @@ export class InputController {
 
 			// Side-channel panels are the topmost view. Esc dismisses them before
 			// touching loop mode, maintenance, or the underlying main turn.
-			// Active context maintenance owns Esc: auto/manual compaction,
-			// handoff generation, and auto-retry backoff all advertise
+			// Active context maintenance owns Esc: auto/manual compaction and
+			// auto-retry backoff both advertise
 			// "(esc to cancel)". Dispatch on live session state instead of
 			// swapping onEscape handlers — interleaved start/end events used
 			// to clobber the single saved-handler slot (auto-compaction start
@@ -340,8 +339,7 @@ export class InputController {
 			// accidentally killing a focused subagent's compaction on the way out
 			// was #2819. The auto-maintenance loaders relabel their hint to match
 			// (see EventController). Main-session maintenance still owns Esc and
-			// stays cancellable from the main view (focused submit gates /compact
-			// and handoff, so manual maintenance is main-only anyway).
+			// stays cancellable from the main view.
 			if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
 				return;
 			}
@@ -353,23 +351,11 @@ export class InputController {
 					safeAbort("compaction", () => viewSession.abortCompaction());
 					aborted = true;
 				}
-				if (viewSession.isGeneratingHandoff) {
-					safeAbort("handoff", () => viewSession.abortHandoff());
-					aborted = true;
-				}
 				if (viewSession.isRetrying) {
 					safeAbort("retry", () => viewSession.abortRetry());
 					aborted = true;
 				}
 				if (aborted) return;
-			}
-
-			if (vocalizer.isSpeaking()) {
-				// Playback from the completed response can overlap the next agent
-				// turn. Silence it before interrupting any ongoing main-turn work.
-				vocalizer.clear();
-				this.ctx.lastEscapeTime = 0;
-				return;
 			}
 
 			if (this.ctx.loopModeEnabled) {
@@ -500,8 +486,6 @@ export class InputController {
 		this.ctx.editor.onToggleToolActivity = () => this.toggleToolActivityVisibility();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
-		this.ctx.editor.setActionKeys("app.retry", this.ctx.keybindings.getKeys("app.retry"));
-		this.ctx.editor.onRetry = () => void this.handleRetry();
 		this.ctx.editor.clearCustomKeyHandlers();
 		// Wire up extension shortcuts
 		this.registerExtensionShortcuts();
@@ -520,18 +504,6 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
 		}
-		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
-		}
-		for (const key of this.ctx.keybindings.getKeys("app.live.toggle")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleLiveCommand());
-		}
-		// Hold the space bar to push-to-talk: the editor recognizes the auto-repeat burst, tracks
-		// the spam back out, and toggles STT on hold start / release. Gated on `stt.enabled` so a
-		// disabled STT leaves the space bar typing normally.
-		this.ctx.editor.sttHoldEnabled = () => settings.get("stt.enabled");
-		this.ctx.editor.onSpaceHoldStart = () => void this.ctx.handleSTTToggle();
-		this.ctx.editor.onSpaceHoldEnd = () => void this.ctx.handleSTTToggle();
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
@@ -1079,15 +1051,6 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
-		// Job-control suspend is POSIX-only: on Windows `process.kill(_, "SIGSTOP")`
-		// throws `TypeError: Unknown signal: SIGSTOP` and takes the whole agent down
-		// via an uncaught exception (issue #2036, originally for SIGTSTP — same
-		// shape for SIGSTOP). No-op on platforms that cannot suspend.
-		if (process.platform === "win32") {
-			this.ctx.showStatus("Suspend (Ctrl+Z) is not supported on this platform");
-			return;
-		}
-
 		// Capture the listener so we can detach it if the signal never fires;
 		// otherwise a failed suspend would leave a stale SIGCONT handler that
 		// fires on the next unrelated continue and tries to re-`start()` an
@@ -1223,15 +1186,6 @@ export class InputController {
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 			}
-		}
-	}
-
-	async handleRetry(): Promise<void> {
-		const didRetry = await this.ctx.viewSession.retry();
-		if (didRetry) {
-			this.ctx.editor.clearDraft();
-		} else {
-			this.ctx.showStatus("Nothing to retry");
 		}
 	}
 

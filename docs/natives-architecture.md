@@ -17,7 +17,7 @@
 - `packages/natives/scripts/embed-native.ts`
 - `packages/natives/scripts/gen-enums.ts`
 - `packages/natives/scripts/gen-npm-packages.ts`
-- `scripts/bazel-natives.ts`
+- `scripts/build-natives.sh`
 - `crates/pi-natives/src/lib.rs` and its modules
 
 ## Package entrypoints

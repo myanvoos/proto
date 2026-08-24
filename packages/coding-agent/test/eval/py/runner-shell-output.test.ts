@@ -15,11 +15,7 @@ const repoRoot = path.resolve(import.meta.dir, "../../../../..");
 const encoder = new TextEncoder();
 
 function shellQuote(value: string): string {
-	// `!cmd` runs through cmd.exe on Windows (shell=True) and a POSIX shell
-	// elsewhere; quote for the shell that will actually parse the command.
-	if (process.platform === "win32") {
-		return `"${value.replaceAll('"', '""')}"`;
-	}
+	// `!cmd` runs through a POSIX shell (shell=True); quote for it.
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 

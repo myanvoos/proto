@@ -194,12 +194,6 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 			shortCircuitCompaction: true,
 			delayMessageEndPersistence: true,
 		});
-		vi.spyOn(session, "shake").mockResolvedValue({
-			mode: "elide",
-			toolResultsDropped: 0,
-			blocksDropped: 0,
-			tokensFreed: 0,
-		});
 		vi.spyOn(session, "getContextUsage").mockImplementation(() =>
 			cutPointSeen
 				? { tokens: 1_000, contextWindow: 200_000, percent: 0.5 }

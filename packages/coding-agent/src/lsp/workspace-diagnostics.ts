@@ -23,7 +23,7 @@ function goWorkspaceBuildPattern(diskPath: string): string | null {
 	const trimmed = diskPath.trim();
 	if (!trimmed) return null;
 
-	const isAbsolute = path.isAbsolute(trimmed) || path.win32.isAbsolute(trimmed);
+	const isAbsolute = path.isAbsolute(trimmed);
 	const normalized = trimmed.replaceAll("\\", "/").replace(/\/+$/, "");
 	const dir = normalized || ".";
 	if (dir === ".") return "./...";
@@ -62,7 +62,6 @@ async function resolveGoWorkspaceDiagnosticsCommand(cwd: string, signal?: AbortS
 			cwd,
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 		});
 		const abortHandler = () => {
 			proc.kill();
@@ -198,7 +197,6 @@ async function runProjectDiagnostics(cwd: string, projectType: ProjectType, sign
 			cwd,
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: true,
 		});
 		const abortHandler = () => {
 			proc.kill();

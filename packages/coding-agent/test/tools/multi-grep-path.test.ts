@@ -9,7 +9,6 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { GrepTool } from "../../src/tools/grep";
 
 const testSettings = Settings.isolated();
-const isWindows = process.platform === "win32";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -29,7 +28,7 @@ function getText(result: { content: Array<{ type: string; text?: string }> }): s
 		.join("\n");
 }
 
-describe.skipIf(isWindows)("resolveExplicitSearchPaths cross-tree degeneracy", () => {
+describe("resolveExplicitSearchPaths cross-tree degeneracy", () => {
 	it("returns per-path targets when commonBasePath collapses to filesystem root", async () => {
 		// Two real top-level directories that exist on every Unix host. Their only
 		// shared ancestor is `/`. A naive shared-base scan would walk the entire
@@ -47,7 +46,7 @@ describe.skipIf(isWindows)("resolveExplicitSearchPaths cross-tree degeneracy", (
 	});
 });
 
-describe.skipIf(isWindows)("search with omitted paths", () => {
+describe("search with omitted paths", () => {
 	let cwd: string;
 
 	beforeEach(async () => {
@@ -85,7 +84,7 @@ describe.skipIf(isWindows)("search with omitted paths", () => {
 	});
 });
 
-describe.skipIf(isWindows)("search across unrelated filesystem trees", () => {
+describe("search across unrelated filesystem trees", () => {
 	let dirA: string;
 	let dirB: string;
 	let cwd: string;
@@ -129,7 +128,7 @@ describe.skipIf(isWindows)("search across unrelated filesystem trees", () => {
 	});
 });
 
-describe.skipIf(isWindows)("resolveExplicitSearchPaths shared non-root ancestor", () => {
+describe("resolveExplicitSearchPaths shared non-root ancestor", () => {
 	let parent: string;
 	let repo: string;
 	let cousinFile: string;
@@ -180,7 +179,7 @@ describe.skipIf(isWindows)("resolveExplicitSearchPaths shared non-root ancestor"
 	});
 });
 
-describe.skipIf(isWindows)("search with explicit walker-pruned file targets", () => {
+describe("search with explicit walker-pruned file targets", () => {
 	let repo: string;
 
 	beforeEach(async () => {

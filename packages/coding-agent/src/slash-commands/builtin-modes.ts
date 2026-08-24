@@ -298,18 +298,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "switch",
-		description: "Switch model for this session (same as alt+p)",
-		getTuiAutocompleteDescription: runtime => {
-			const model = runtime.ctx.session.model;
-			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
-		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector({ temporaryOnly: true });
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
 		name: "fast",
 		description: "Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)",
 		acpDescription: "Toggle fast mode",

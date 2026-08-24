@@ -542,7 +542,6 @@ export class Theme {
 			extensionPrompt: this.#symbols["icon.extensionPrompt"],
 			extensionContextFile: this.#symbols["icon.extensionContextFile"],
 			extensionInstruction: this.#symbols["icon.extensionInstruction"],
-			mic: this.#symbols["icon.mic"],
 			camera: this.#symbols["icon.camera"],
 		};
 	}

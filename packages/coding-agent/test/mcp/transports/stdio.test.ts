@@ -6,52 +6,18 @@ import * as path from "node:path";
 import { resolveStdioSpawnCommand, StdioTransport, terminateStdioProcess } from "../../../src/mcp/transports/stdio";
 
 describe("resolveStdioSpawnCommand", () => {
-	it("hides Windows executable MCP servers when the host has no console", async () => {
-		// Hidden so a console-app child does not allocate a visible window when
-		// OMP is launched without a terminal console (#3536).
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "win32", hostHasInheritableConsole: false },
-			),
-		).resolves.toEqual({
-			cmd: ["server.exe", "--stdio"],
-			windowsHide: true,
-			detached: false,
-		});
-	});
-
-	it("inherits an attached Windows console instead of forcing CREATE_NO_WINDOW", async () => {
-		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "win32", hostHasInheritableConsole: true },
-			),
-		).resolves.toEqual({
-			cmd: ["server.exe", "--stdio"],
-			windowsHide: false,
-			detached: false,
-		});
-	});
-
 	it("keeps Darwin stdio MCP servers attached so TCC Apple Events prompts can resolve", async () => {
 		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "xcrun", args: ["mcpbridge"] },
-				{ cwd: process.cwd(), env: {}, platform: "darwin" },
-			),
+			resolveStdioSpawnCommand({ command: "xcrun", args: ["mcpbridge"] }, { platform: "darwin" }),
 		).resolves.toEqual({
 			cmd: ["xcrun", "mcpbridge"],
 			detached: false,
 		});
 	});
 
-	it("detaches off-Windows MCP servers so terminal job-control signals cannot stop them", async () => {
+	it("detaches POSIX MCP servers so terminal job-control signals cannot stop them", async () => {
 		await expect(
-			resolveStdioSpawnCommand(
-				{ command: "server.exe", args: ["--stdio"] },
-				{ cwd: process.cwd(), env: {}, platform: "linux" },
-			),
+			resolveStdioSpawnCommand({ command: "server.exe", args: ["--stdio"] }, { platform: "linux" }),
 		).resolves.toEqual({
 			cmd: ["server.exe", "--stdio"],
 			detached: true,
@@ -86,14 +52,13 @@ describe("StdioTransport.connect", () => {
 			expect(spawnOptions).toEqual(
 				expect.objectContaining({
 					cwd,
-					detached: !(process.platform === "darwin" || process.platform === "win32"),
+					detached: process.platform !== "darwin",
 					env: expect.objectContaining({
 						PROTO_STDIO_SPAWN_SHAPE: envValue,
 					}),
 					stderr: "pipe",
 					stdin: "pipe",
 					stdout: "pipe",
-					windowsHide: process.platform === "win32" ? expect.any(Boolean) : undefined,
 				}),
 			);
 		} finally {
@@ -106,8 +71,8 @@ describe("StdioTransport.connect", () => {
 // Regression for #3945: request() awaited stdin.write/flush, so a child that
 // stops draining stdin would park the async fn past the timeout timer and past
 // `return promise`, orphaning the deferred rejection and hanging the caller
-// forever. `sleep` is POSIX-only, so the check is scoped to non-Windows hosts.
-describe.skipIf(process.platform === "win32")("StdioTransport request write stall", () => {
+// forever.
+describe("StdioTransport request write stall", () => {
 	it("rejects with the timeout error when the child never drains stdin", async () => {
 		const timeoutMs = 100;
 		const orphaned: Error[] = [];
@@ -180,7 +145,7 @@ function processExists(pid: number): boolean {
 // real `process.platform` — a POSIX detached session cannot be reproduced
 // end-to-end through `connect()` on a non-Linux dev/CI host, but a real
 // detached process group can still be spawned directly on any POSIX host.
-describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
+describe("terminateStdioProcess", () => {
 	const TEST_TERM_GRACE_MS = 50;
 	it("escalates a detached child that traps SIGTERM to SIGKILL", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-stdio-kill-solo-"));
@@ -215,7 +180,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			}
 
 			const started = performance.now();
-			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
+			await terminateStdioProcess(proc, true, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			const elapsedMs = performance.now() - started;
 
@@ -282,7 +247,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			if (grandchildPid === undefined) throw new Error("grandchild never reported its pid");
 			expect(processExists(grandchildPid)).toBe(true);
 
-			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
+			await terminateStdioProcess(proc, true, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			expect(proc.signalCode).toBe("SIGKILL");
 
@@ -355,7 +320,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			expect(processExists(grandchildPid)).toBe(true);
 
 			const started = performance.now();
-			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
+			await terminateStdioProcess(proc, true, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			const elapsedMs = performance.now() - started;
 
@@ -406,7 +371,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 	}, 5000);
 });
 
-describe.skipIf(process.platform === "win32")("StdioTransport.close teardown", () => {
+describe("StdioTransport.close teardown", () => {
 	it("closes a well-behaved child promptly without escalating to SIGKILL", async () => {
 		const transport = new StdioTransport({
 			command: "bun",
@@ -427,7 +392,7 @@ describe.skipIf(process.platform === "win32")("StdioTransport.close teardown", (
 	}, 5000);
 });
 
-describe.skipIf(process.platform === "win32")("StdioTransport request ids", () => {
+describe("StdioTransport request ids", () => {
 	/** Echoes each request back with the JSON type the server actually observed for `id`. */
 	const ECHO_OBSERVED_ID = `for await (const line of console) {
 		const message = JSON.parse(line);

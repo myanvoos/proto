@@ -38,7 +38,7 @@ function shellQuote(value: string): string {
 }
 
 function configureBashUserShell(homeDir: string): boolean {
-	if (process.platform === "win32" || !fs.existsSync("/bin/bash")) return false;
+	if (!fs.existsSync("/bin/bash")) return false;
 	Settings.instance.set("shellPath", "/bin/bash");
 	vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
 		shell: "/bin/bash",
@@ -182,9 +182,6 @@ describe("executeBash", () => {
 	});
 
 	it("honors symlinked cwd requests in persistent shells", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		if (!configureBashUserShell(tempDir)) return;
 
 		const realDir = path.join(tempDir, "real");
@@ -219,10 +216,6 @@ describe("executeBash", () => {
 	});
 
 	it("runs non-bash shellPath commands through the configured shell", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-shellpath-"));
 		const marker = path.join(shellDir, "fake-shell-ran");
 		const markerEscaped = marker.replace(/'/g, "'\\''");
@@ -272,8 +265,6 @@ exit 64
 	});
 
 	it("persists cd, bare cd, and cd - when shortcut commands use a non-bash user shell", async () => {
-		if (process.platform === "win32") return;
-
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-cd-shellpath-"));
 		const marker = path.join(shellDir, "fake-shell-ran");
 		const fakeShell = path.join(shellDir, "fake-shell");
@@ -354,10 +345,6 @@ exit 64
 	});
 
 	it("uses executable SHELL for user-shell shortcut commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const originalShell = Bun.env.SHELL;
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-env-shell-"));
 		const marker = path.join(shellDir, "env-shell-ran");
@@ -417,10 +404,6 @@ exit 64
 	});
 
 	it("loads zshrc aliases for user-shell shortcut commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const zshPath = ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh", "/opt/homebrew/bin/zsh"].find(candidate =>
 			fs.existsSync(candidate),
 		);
@@ -466,10 +449,6 @@ exit 64
 	});
 
 	it("runs fish user-shell commands without login-shell side effects", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const fishPath = ["/usr/bin/fish", "/bin/fish", "/usr/local/bin/fish", "/opt/homebrew/bin/fish"].find(candidate =>
 			fs.existsSync(candidate),
 		);
@@ -534,10 +513,6 @@ exit 64
 	});
 
 	it("returns a real PID for background external commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		// Redirect the backgrounded job's stdout so it doesn't hold the executor's
 		// output pipe open (which would add the ~250ms background-drain grace);
 		// `$!` still reports the real external PID, which is all this test checks.
@@ -554,18 +529,12 @@ exit 64
 	});
 
 	it("times out commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const result = await executeBash("sleep 10", { cwd: tempDir, timeout: 50 });
 		expect(result.cancelled).toBe(true);
 		expect(result.output).toContain("timed out");
 	});
 
 	it("times out before follow-up output", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const result = await executeBash("sleep 10; echo done", { cwd: tempDir, timeout: 50 });
 		expect(result.cancelled).toBe(true);
 		expect(result.output).toContain("timed out");
@@ -573,9 +542,6 @@ exit 64
 	});
 
 	it("does not arm a deadline when timeout is zero", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		// Compress any accidentally armed one-second deadline. The real command
 		// runs longer than that compressed window, so the success result proves
 		// timeout:0 left the execution deadline disabled without a 1.2s sleep.
@@ -592,9 +558,6 @@ exit 64
 	});
 
 	it("aborts commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const controller = new AbortController();
 		const started = Promise.withResolvers<void>();
 		const promise = executeBash("echo started; sleep 10", {
@@ -611,10 +574,6 @@ exit 64
 	});
 
 	it("returns promptly and quarantines the session key when native abort cleanup stalls", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const originalRun = piNatives.Shell.prototype.run;
 		let runCalls = 0;
 		const dispatched = Promise.withResolvers<void>();
@@ -661,10 +620,6 @@ exit 64
 	});
 
 	it("restores persistent sessions after native abort cleanup settles", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const nativeResult = Promise.withResolvers<{ exitCode: undefined; cancelled: true; timedOut: false }>();
 		const dispatched = Promise.withResolvers<void>();
 		vi.spyOn(piNatives.Shell.prototype, "run").mockImplementation((_options, onChunk) => {
@@ -784,9 +739,6 @@ exit 64
 	});
 
 	it("aborts before follow-up output", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const controller = new AbortController();
 		const started = Promise.withResolvers<void>();
 		const promise = executeBash("echo started; sleep 10; echo done", {
@@ -804,10 +756,6 @@ exit 64
 	});
 
 	it("resets persistent session state after abort", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
 		const sessionKey = "reset-on-abort";
 		await executeBash("export PI_RESET_VAR=alive", { cwd: tempDir, timeout: 5000, sessionKey });
 		const beforeAbort = await executeBash("echo $PI_RESET_VAR", { cwd: tempDir, timeout: 5000, sessionKey });
@@ -844,8 +792,6 @@ exit 64
 	});
 
 	it("runs overlapping calls on the same session key concurrently", async () => {
-		if (process.platform === "win32") return;
-
 		const sessionKey = "parallel-overlap";
 		const order: string[] = [];
 		const slow = executeBash('sleep 0.15 && echo "A-done"', { cwd: tempDir, timeout: 5000, sessionKey }).then(
@@ -870,8 +816,6 @@ exit 64
 	});
 
 	it("keeps the owner session usable when an overlapping call times out", async () => {
-		if (process.platform === "win32") return;
-
 		const sessionKey = "parallel-timeout-isolation";
 		const started = path.join(tempDir, "owner.started");
 		const release = path.join(tempDir, "owner.release");
@@ -919,9 +863,6 @@ exit 64
 	});
 
 	it("streams large output without exhausting memory", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		let sawChunk = false;
 		const result = await executeBash("awk 'BEGIN { for (i = 0; i < 100000; i++) printf \"a\" }'", {
 			cwd: tempDir,
@@ -937,8 +878,6 @@ exit 64
 	});
 
 	it("handles large output without freeze or OOM", async () => {
-		if (process.platform === "win32") return;
-
 		// Once raw output exceeds the truncation cap, the streaming + middle-elision
 		// path is volume-independent, so a few hundred KB exercises the same
 		// no-freeze / no-OOM contract the original 40MB did without paying several
@@ -988,9 +927,6 @@ exit 64
 	}, 15_000);
 
 	it("sources snapshot env vars across session commands", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const bashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
 		if (!fs.existsSync(bashPath)) {
 			return;
@@ -1014,9 +950,6 @@ exit 64
 	});
 
 	it("sources large bash functions without base64 eval wrappers", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
 		const realBashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
 		if (!fs.existsSync(realBashPath)) {
 			return;
@@ -1056,7 +989,6 @@ exit 64
 	});
 
 	it("survives compound aliases from the user's shell snapshot (issue #3234)", async () => {
-		if (process.platform === "win32") return;
 		const bashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
 		if (!fs.existsSync(bashPath)) return;
 
@@ -1112,8 +1044,6 @@ exit 64
 	});
 
 	it("completes even when background job keeps stdout pipe open", async () => {
-		if (process.platform === "win32") return;
-
 		const runPromise = executeBash("{ sleep 2; echo late; } & echo immediate", {
 			cwd: tempDir,
 			timeout: 5000,
@@ -1131,8 +1061,6 @@ exit 64
 		}
 	});
 	it("kills spawned process on timeout (not just orphans it)", async () => {
-		if (process.platform === "win32") return;
-
 		const marker = path.join(tempDir, "marker.txt");
 		const release = path.join(tempDir, "marker.release");
 
@@ -1149,8 +1077,6 @@ exit 64
 	});
 
 	it("kills background jobs on timeout", async () => {
-		if (process.platform === "win32") return;
-
 		const marker = path.join(tempDir, "marker-bg.txt");
 		const release = path.join(tempDir, "marker-bg.release");
 
@@ -1166,8 +1092,6 @@ exit 64
 	});
 
 	it("kills background jobs on abort", async () => {
-		if (process.platform === "win32") return;
-
 		const marker = path.join(tempDir, "marker-bg-abort.txt");
 		const release = path.join(tempDir, "marker-bg-abort.release");
 		const started = path.join(tempDir, "marker-bg-abort.started");
@@ -1191,8 +1115,6 @@ exit 64
 	});
 
 	it("kills spawned process on abort (not just orphans it)", async () => {
-		if (process.platform === "win32") return;
-
 		const marker = path.join(tempDir, "marker.txt");
 		const release = path.join(tempDir, "marker.release");
 		const started = path.join(tempDir, "marker.started");
@@ -1266,90 +1188,84 @@ describe("executeBash :async: background retention", () => {
 		if (fs.existsSync(tmp)) removeSyncWithRetries(tmp);
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"keeps a per-job :async: shell's plain-`&` background process alive across turns",
-		async () => {
-			const pidFile = path.join(tmp, "pid");
-			const sleepBin = fs.existsSync("/bin/sleep") ? "/bin/sleep" : "sleep";
-			let pid: number | undefined;
+	it("keeps a per-job :async: shell's plain-`&` background process alive across turns", async () => {
+		const pidFile = path.join(tmp, "pid");
+		const sleepBin = fs.existsSync("/bin/sleep") ? "/bin/sleep" : "sleep";
+		let pid: number | undefined;
+		try {
+			// A per-job `:async:` key: its shell is removed from the reuse map at
+			// teardown, which would SIGKILL the backgrounded child (kill-on-drop).
+			// A plain `&` job stays a child of the shell, so `liveBackgroundJobCount`
+			// sees it and the retain logic keeps the shell alive while the child
+			// runs. `$!` is the external child's own pid (no transparent wrapper to
+			// unwrap), so it is the process we assert on.
+			const res = await executeBash(`${sleepBin} 30 >/dev/null 2>&1 & echo $! > ${shellQuote(pidFile)}`, {
+				sessionKey: "retain-probe:async:job1",
+				cwd: tmp,
+			});
+			expect(res.cancelled).toBe(false);
+			pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
+			expect(Number.isInteger(pid)).toBe(true);
+
+			// A later turn on a different per-job shell must not have killed it.
+			await executeBash("true", { sessionKey: "retain-probe:async:job2", cwd: tmp });
+
+			let alive = true;
 			try {
-				// A per-job `:async:` key: its shell is removed from the reuse map at
-				// teardown, which would SIGKILL the backgrounded child (kill-on-drop).
-				// A plain `&` job stays a child of the shell, so `liveBackgroundJobCount`
-				// sees it and the retain logic keeps the shell alive while the child
-				// runs. `$!` is the external child's own pid (no transparent wrapper to
-				// unwrap), so it is the process we assert on.
-				const res = await executeBash(`${sleepBin} 30 >/dev/null 2>&1 & echo $! > ${shellQuote(pidFile)}`, {
-					sessionKey: "retain-probe:async:job1",
-					cwd: tmp,
-				});
-				expect(res.cancelled).toBe(false);
-				pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-				expect(Number.isInteger(pid)).toBe(true);
-
-				// A later turn on a different per-job shell must not have killed it.
-				await executeBash("true", { sessionKey: "retain-probe:async:job2", cwd: tmp });
-
-				let alive = true;
-				try {
-					process.kill(pid, 0);
-				} catch {
-					alive = false;
-				}
-				expect(alive).toBe(true);
-			} finally {
-				if (pid !== undefined) {
-					try {
-						process.kill(pid, "SIGKILL");
-					} catch {}
-				}
+				process.kill(pid, 0);
+			} catch {
+				alive = false;
 			}
-		},
-	);
+			expect(alive).toBe(true);
+		} finally {
+			if (pid !== undefined) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {}
+			}
+		}
+	});
 
-	it.skipIf(process.platform === "win32")(
-		"keeps a nohup-detached background process alive across turns (reparenting)",
-		async () => {
-			const pidFile = path.join(tmp, "nohup-pid");
-			const sleepBin = fs.existsSync("/bin/sleep") ? "/bin/sleep" : "sleep";
-			let pid: number | undefined;
+	it("keeps a nohup-detached background process alive across turns (reparenting)", async () => {
+		const pidFile = path.join(tmp, "nohup-pid");
+		const sleepBin = fs.existsSync("/bin/sleep") ? "/bin/sleep" : "sleep";
+		let pid: number | undefined;
+		try {
+			// `nohup cmd &` is a transparent background wrapper: brush unwraps it and
+			// double-forks the operand so it reparents to init and survives teardown
+			// independently of the retain map. The shell only ever tracked the
+			// short-lived intermediate fork, so `$!` is NOT the surviving process —
+			// the operand writes its own pid before `exec`ing the long sleep, and
+			// that pid (unchanged across exec) is the one we assert stays alive.
+			const operand = `echo $$ > ${pidFile}; exec ${sleepBin} 30`;
+			const res = await executeBash(`nohup sh -c ${shellQuote(operand)} >/dev/null 2>&1 &`, {
+				sessionKey: "reparent-probe:async:job1",
+				cwd: tmp,
+			});
+			expect(res.cancelled).toBe(false);
+
+			await pollUntil(() => fs.existsSync(pidFile), Date.now() + 4000);
+			pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
+			expect(Number.isInteger(pid)).toBe(true);
+
+			// A later turn on a different per-job shell must not have killed it.
+			await executeBash("true", { sessionKey: "reparent-probe:async:job2", cwd: tmp });
+
+			let alive = true;
 			try {
-				// `nohup cmd &` is a transparent background wrapper: brush unwraps it and
-				// double-forks the operand so it reparents to init and survives teardown
-				// independently of the retain map. The shell only ever tracked the
-				// short-lived intermediate fork, so `$!` is NOT the surviving process —
-				// the operand writes its own pid before `exec`ing the long sleep, and
-				// that pid (unchanged across exec) is the one we assert stays alive.
-				const operand = `echo $$ > ${pidFile}; exec ${sleepBin} 30`;
-				const res = await executeBash(`nohup sh -c ${shellQuote(operand)} >/dev/null 2>&1 &`, {
-					sessionKey: "reparent-probe:async:job1",
-					cwd: tmp,
-				});
-				expect(res.cancelled).toBe(false);
-
-				await pollUntil(() => fs.existsSync(pidFile), Date.now() + 4000);
-				pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-				expect(Number.isInteger(pid)).toBe(true);
-
-				// A later turn on a different per-job shell must not have killed it.
-				await executeBash("true", { sessionKey: "reparent-probe:async:job2", cwd: tmp });
-
-				let alive = true;
-				try {
-					process.kill(pid, 0);
-				} catch {
-					alive = false;
-				}
-				expect(alive).toBe(true);
-			} finally {
-				if (pid !== undefined) {
-					try {
-						process.kill(pid, "SIGKILL");
-					} catch {}
-				}
+				process.kill(pid, 0);
+			} catch {
+				alive = false;
 			}
-		},
-	);
+			expect(alive).toBe(true);
+		} finally {
+			if (pid !== undefined) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {}
+			}
+		}
+	});
 });
 
 describe("applyDirenvPreflight direnv-load clamp", () => {

@@ -8,13 +8,12 @@ interface OmpCommand {
 	shell: boolean;
 }
 
-const DEFAULT_CMD = process.platform === "win32" ? "proto.cmd" : "proto";
-const DEFAULT_SHELL = process.platform === "win32";
+const DEFAULT_CMD = "proto";
 
 export function resolveOmpCommand(): OmpCommand {
 	const envCmd = $env.PI_SUBPROCESS_CMD;
 	if (envCmd?.trim()) {
-		return { cmd: envCmd, args: [], shell: DEFAULT_SHELL };
+		return { cmd: envCmd, args: [], shell: false };
 	}
 
 	const entry = process.argv[1];
@@ -22,5 +21,5 @@ export function resolveOmpCommand(): OmpCommand {
 		return { cmd: process.execPath, args: [entry], shell: false };
 	}
 
-	return { cmd: DEFAULT_CMD, args: [], shell: DEFAULT_SHELL };
+	return { cmd: DEFAULT_CMD, args: [], shell: false };
 }

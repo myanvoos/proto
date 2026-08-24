@@ -70,11 +70,6 @@ function laxUriToFile(uri: string): string {
 		// Invalid percent-encoding — treat as a literal path.
 	}
 
-	// Windows: file:///C:/path → C:/path (strip leading slash before drive letter)
-	if (process.platform === "win32" && filePath.startsWith("/") && /^[A-Za-z]:/.test(filePath.slice(1))) {
-		filePath = filePath.slice(1);
-	}
-
 	return filePath;
 }
 
@@ -83,7 +78,7 @@ export class EquivalentUriMap<Value> extends Map<string, Value> {
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
 		const filePath = path.normalize(uriToFile(uri));
-		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
+		return filePath;
 	}
 
 	override delete(uri: string): boolean {

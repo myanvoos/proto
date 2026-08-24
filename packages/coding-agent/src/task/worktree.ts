@@ -49,7 +49,7 @@ export async function getRepoRoot(cwd: string): Promise<string> {
 	throw new Error("Git repository not found for isolated worker execution.");
 }
 
-const GIT_NO_INDEX_NULL_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
+const GIT_NO_INDEX_NULL_PATH = "/dev/null";
 
 export function getGitNoIndexNullPath(): string {
 	return GIT_NO_INDEX_NULL_PATH;
@@ -410,13 +410,10 @@ export type WorkerIsolationMode =
 	| "zfs"
 	| "reflink"
 	| "overlayfs"
-	| "projfs"
-	| "block-clone"
 	| "rcopy"
 	// Legacy values, accepted for back-compat with pre-PAL settings files.
 	| "worktree"
-	| "fuse-overlay"
-	| "fuse-projfs";
+	| "fuse-overlay";
 
 /**
  * Translate a {@link WorkerIsolationMode} string to an [`IsoBackendKind`]
@@ -440,11 +437,6 @@ export function parseIsolationMode(mode: WorkerIsolationMode): IsoBackendKind | 
 		case "overlayfs":
 		case "fuse-overlay":
 			return IsoBackendKind.Overlayfs;
-		case "projfs":
-		case "fuse-projfs":
-			return IsoBackendKind.Projfs;
-		case "block-clone":
-			return IsoBackendKind.WindowsBlockClone;
 		case "rcopy":
 		case "worktree":
 			return IsoBackendKind.Rcopy;

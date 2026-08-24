@@ -1,7 +1,6 @@
 /**
  * Generate session titles using a smol, fast model.
  */
-import { dlopen, FFIType, ptr } from "bun:ffi";
 import * as path from "node:path";
 
 import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
@@ -35,58 +34,7 @@ function writeTitleSequence(seq: string): void {
 	if (!writeThroughActiveTerminal(seq)) process.stdout.write(seq);
 }
 
-interface WindowsConsoleTitleApi {
-	set(title: string): boolean;
-	close(): void;
-}
-
-let windowsConsoleTitleApi: WindowsConsoleTitleApi | null | undefined;
 let lastTerminalTitle: string | undefined;
-
-function getWindowsConsoleTitleApi(): WindowsConsoleTitleApi | null {
-	if (process.platform !== "win32") return null;
-	if (windowsConsoleTitleApi !== undefined) return windowsConsoleTitleApi;
-	try {
-		const kernel32 = dlopen("kernel32.dll", {
-			SetConsoleTitleW: { args: [FFIType.ptr], returns: FFIType.bool },
-		});
-		windowsConsoleTitleApi = {
-			set(title) {
-				const wideTitle = Buffer.from(`${title}\0`, "utf16le");
-				return kernel32.symbols.SetConsoleTitleW(ptr(wideTitle));
-			},
-			close: () => kernel32.close(),
-		};
-	} catch {
-		windowsConsoleTitleApi = null;
-	}
-	return windowsConsoleTitleApi;
-}
-
-function setWindowsConsoleTitle(title: string): boolean {
-	const api = getWindowsConsoleTitleApi();
-	if (!api) return false;
-	try {
-		return api.set(title);
-	} catch {
-		try {
-			api.close();
-		} catch {
-			// Ignore cleanup failures after the native title path has already failed.
-		}
-		windowsConsoleTitleApi = null;
-		return false;
-	}
-}
-
-function disposeWindowsConsoleTitleApi(): void {
-	try {
-		windowsConsoleTitleApi?.close();
-	} catch {
-		// Terminal teardown must remain best-effort.
-	}
-	windowsConsoleTitleApi = undefined;
-}
 
 // Cover the "backend ignores `disableReasoning`" case unconditionally: the
 // static `model.reasoning` catalog flag can't distinguish a thinking model that
@@ -448,7 +396,7 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 }
 
 /**
- * Set the terminal title through the native Win32 API or OSC 0.
+ * Set the terminal title via OSC 0.
  *
  * Repeating the same sanitized title is a no-op on every platform.
  */
@@ -456,7 +404,7 @@ export function setTerminalTitle(title: string): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
 	if (next === lastTerminalTitle) return;
-	if (!setWindowsConsoleTitle(next)) writeTitleSequence(`\x1b]0;${next}\x07`);
+	writeTitleSequence(`\x1b]0;${next}\x07`);
 	lastTerminalTitle = next;
 }
 
@@ -481,8 +429,6 @@ export function setExtensionTerminalTitle(title: string): void {
 
 export type TerminalTitleState = "idle" | "working" | "attention";
 
-/** Windows uses a static working separator instead of scheduling title animation. */
-const WINDOWS_TITLE_WORKING_SEPARATOR = ":";
 const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TITLE_SPINNER_INTERVAL_MS = 80;
 /** The user's turn: the title reads like a shell prompt awaiting input. */
@@ -514,7 +460,7 @@ const terminalTitleRuntime: {
  * Compose the terminal title from the `π` brand, a state-carrying separator, and
  * the session label. Pure (no I/O) so the state→separator contract is testable:
  *   - `idle` (user's turn):  `π > label`;
- *   - `working`:             `π ⠋ label` (`π : label` on Windows);
+ *   - `working`:             `π ⠋ label`;
  *   - `attention`:           `π ! label`;
  *   - disabled:              `π: label`.
  * Without a label the separator trails the brand (`π >`) so the state stays visible.
@@ -524,14 +470,11 @@ export function buildTerminalTitleWithState(
 	state: TerminalTitleState,
 	frame: number,
 	enabled: boolean,
-	platform: NodeJS.Platform = process.platform,
 ): string {
 	if (!enabled) return label ? `${DEFAULT_TERMINAL_TITLE}: ${label}` : DEFAULT_TERMINAL_TITLE;
 	const separator =
 		state === "working"
-			? platform === "win32"
-				? WINDOWS_TITLE_WORKING_SEPARATOR
-				: TITLE_SPINNER_FRAMES[frame % TITLE_SPINNER_FRAMES.length]
+			? TITLE_SPINNER_FRAMES[frame % TITLE_SPINNER_FRAMES.length]
 			: state === "attention"
 				? TITLE_ATTENTION_SEPARATOR
 				: TITLE_IDLE_SEPARATOR;
@@ -548,7 +491,6 @@ function emitTerminalTitle(): void {
 			terminalTitleRuntime.state,
 			terminalTitleRuntime.frame,
 			terminalTitleRuntime.enabled,
-			isConPTYHosted() ? "win32" : process.platform,
 		);
 	setTerminalTitle(next);
 }
@@ -570,9 +512,8 @@ function startTerminalTitleSpinner(): void {
 
 /**
  * Reflect the agent run state in the terminal title's separator: `working`
- * animates outside Windows and stays `:` on Windows, `idle` shows `>` (your
- * turn), and `attention` shows `!` (agent blocked on you). Gated off by
- * `tui.titleState`.
+ * animates a spinner, `idle` shows `>` (your turn), and `attention` shows `!`
+ * (agent blocked on you). Gated off by `tui.titleState`.
  */
 export function setTerminalTitleState(state: TerminalTitleState): void {
 	terminalTitleRuntime.state = state;
@@ -592,7 +533,6 @@ export function setTerminalTitleStateEnabled(enabled: boolean): void {
 /** Release terminal-title runtime resources. */
 export function disposeTerminalTitleState(): void {
 	stopTerminalTitleSpinner();
-	disposeWindowsConsoleTitleApi();
 	lastTerminalTitle = undefined;
 }
 

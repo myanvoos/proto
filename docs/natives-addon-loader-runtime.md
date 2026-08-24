@@ -19,10 +19,10 @@ A successful call is not memoized by JS. Repeated calls rely on the runtime's `r
 - package-local `nativeDir` and the directory of `process.execPath`;
 - `nativesDir`, normally `~/.proto/natives`; it uses `$XDG_DATA_HOME/proto/natives` only when `$XDG_DATA_HOME/proto` exists;
 - `versionedDir`: `<nativesDir>/<packageVersion>`;
-- legacy compiled-binary directory: `%LOCALAPPDATA%/proto` (or `~/AppData/Local/proto`) on Windows, `~/.local/bin` elsewhere;
-- workspace/install/compiled mode, optional leaf directory, Windows staging policy, CPU variant, filenames, and ordered candidates.
+- legacy compiled-binary directory: `~/.local/bin`;
+- workspace/install/compiled mode, optional leaf directory, CPU variant, filenames, and ordered candidates.
 
-Compiled mode is true when a populated embedded manifest exists, `PI_COMPILED` is set, or `import.meta.url` contains a Bun embedded marker (`$bunfs`, `~BUN`, or `%7EBUN`). A non-compiled `nativeDir` outside a `node_modules` path is a workspace load. Windows path classification is case-insensitive; other platforms use case-sensitive path matching.
+Compiled mode is true when a populated embedded manifest exists, `PI_COMPILED` is set, or `import.meta.url` contains a Bun embedded marker (`$bunfs`, `~BUN`, or `%7EBUN`). A non-compiled `nativeDir` outside a `node_modules` path is a workspace load; path classification uses case-sensitive matching.
 
 ## Platforms and variants
 
@@ -32,7 +32,6 @@ Supported publish tags are:
 - `linux-arm64`
 - `darwin-x64`
 - `darwin-arm64`
-- `win32-x64`
 
 An unsupported tag is reported only after probing candidates.
 
@@ -40,7 +39,6 @@ For x64, `PI_NATIVE_VARIANT=modern|baseline` wins. Invalid values are ignored. O
 
 - Linux reads `/proc/cpuinfo`.
 - macOS tries `/usr/sbin/sysctl` and then `sysctl`, querying `machdep.cpu.leaf7_features` and `machdep.cpu.features`.
-- Windows invokes non-interactive PowerShell for `System.Runtime.Intrinsics.X86.Avx2`.
 
 Detection uses `Bun.spawnSync` when available, then falls back to `node:child_process`. A detected result is written to the private cache environment entry so later workers/children inherit the same decision. Non-x64 does not use or populate a variant.
 
@@ -63,22 +61,12 @@ Detection uses `Bun.spawnSync` when available, then falls back to `node:child_pr
 
 The platform leaf wins over a stale core artifact. Workspace loads deliberately skip leaf resolution.
 
-### Windows `node_modules` staging
-
-When the platform is Windows, the runtime is non-compiled, and `nativeDir` contains a `node_modules` segment:
-
-1. Every selected filename in `versionedDir`.
-2. Leaf-package candidates.
-3. Package-local and executable candidates.
-
-Before probing, `maybeStageNodeModulesAddon()` copies each available filename from `leafPackageDir ?? nativeDir` to a missing cache target. Existing cache files are retained. This keeps the loaded DLL handle away from the package-manager copy that an update must replace. Directory/copy failures are recorded and normal probing continues.
-
 ### Compiled runtime
 
 1. For each filename, `versionedDir`, then the legacy user-data directory.
 2. For each filename, package-local `nativeDir`, then the executable directory.
 
-A successfully selected embedded candidate is prepended. Windows staging is disabled in compiled mode.
+A successfully selected embedded candidate is prepended.
 
 ## Embedded manifest and extraction
 
@@ -111,7 +99,7 @@ For each candidate:
 
 The sentinel error distinguishes a previous addon still resident in the current process from a stale file on disk. If the loaded exports carry an older sentinel but the candidate bytes contain the expected current sentinel, the diagnostic says to restart. Otherwise it says to reinstall. The loader does not validate all public exports.
 
-Rust module initialization installs crash diagnostics but does not spawn runtime threads under the dynamic-loader lock. The optional post-load hook installs bounded Windows Tokio and Rayon pools. It is best-effort; older addons or hook failures fall back to napi-rs behavior. Set `PI_DEBUG_STARTUP` to emit synchronous `[startup]` markers to stderr, including hook success/failure.
+Rust module initialization installs crash diagnostics but does not spawn runtime threads under the dynamic-loader lock. The optional post-load hook installs bounded Tokio and Rayon pools. It is best-effort; older addons or hook failures fall back to napi-rs behavior. Set `PI_DEBUG_STARTUP` to emit synchronous `[startup]` markers to stderr, including hook success/failure.
 
 Cache cleanup ignores read/delete failures and removes only directories whose parsed semantic version is older than the current package. It preserves current/future versions, prerelease/non-semver names, and ordinary files.
 
@@ -122,7 +110,7 @@ If no candidate succeeds:
 - an unsupported tag throws `Unsupported platform: <tag>`, the supported list, and issue guidance;
 - a supported tag throws `Failed to load pi_natives native addon for <tag>` (including the x64 variant), followed by every candidate/preparation error and mode-specific help.
 
-Compiled help lists expected cache paths, suggests deleting the versioned directory, and prints release-download `curl` commands. Installed-package help suggests reinstalling, the local host build (`bun --cwd=packages/natives run build`), and explicit `scripts/bazel-natives.ts <target> --dest packages/natives/native` builds.
+Compiled help lists expected cache paths, suggests deleting the versioned directory, and prints release-download `curl` commands. Installed-package help suggests reinstalling, the local host build (`bun --cwd=packages/natives run build`), and explicit `sh scripts/build-natives.sh <target> --dest packages/natives/native` builds.
 
 ## Lifecycle
 
@@ -130,7 +118,6 @@ Compiled help lists expected cache paths, suggests deleting the versioned direct
 entrypoint evaluates or lazy wrapper is invoked
   -> initialize loader context
   -> extract matching embedded archive, if any
-  -> otherwise stage Windows node_modules addon, if applicable
   -> require candidates in deterministic order
        -> validate sentinel outside workspace development
        -> install optional post-load runtime

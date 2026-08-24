@@ -84,8 +84,6 @@ const TINY_WORKER_ARG = "__proto_worker_tiny_inference";
 const TAB_WORKER_ARG = "__proto_worker_tab";
 const JS_EVAL_WORKER_ARG = "__proto_worker_js_eval";
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
-const STT_WORKER_ARG = "__proto_worker_stt";
-const TTS_WORKER_ARG = "__proto_worker_tts";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -124,16 +122,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		);
 		return true;
 	}
-	if (arg === STT_WORKER_ARG) {
-		const { startSttWorker } = await import("./stt/asr-worker");
-		await runIpcSubprocessWorker(startSttWorker);
-		return true;
-	}
-	if (arg === TTS_WORKER_ARG) {
-		const { startTtsWorker } = await import("./tts/tts-worker");
-		await runIpcSubprocessWorker(startTtsWorker);
-		return true;
-	}
 	if (arg === TERMINAL_OUTPUT_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		// This selector is the isolation boundary; a static import would evaluate xterm in normal CLI startup.
@@ -161,8 +149,8 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 
 /**
  * Boot a subprocess-isolated transformers.js worker over the parent's IPC
- * channel and block until the parent disconnects. The tiny-model, STT, and TTS
- * workers each run `onnxruntime-node` (loaded transitively by
+ * channel and block until the parent disconnects. The tiny-model worker runs
+ * `onnxruntime-node` (loaded transitively by
  * `@huggingface/transformers`) in a child address space because its NAPI
  * finalizer segfaults Bun on shutdown (issue #1606); the parent `SIGKILL`s the
  * child so that finalizer never runs in either process. This wires `process`

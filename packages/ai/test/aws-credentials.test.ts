@@ -40,8 +40,8 @@ const ENV_KEYS = [
 
 function quoteForConfig(p: string): string {
 	if (!/[\s"]/.test(p)) return p;
-	// Wrap in double quotes; our tokenizer preserves backslashes so Windows
-	// paths survive without further escaping.
+	// Wrap in double quotes; our tokenizer preserves backslashes so paths
+	// survive without further escaping.
 	return `"${p.replace(/(["])/g, "\\$1")}"`;
 }
 
@@ -54,7 +54,7 @@ describe("tokenizeCredentialProcessCommand", () => {
 		expect(tokenizeCredentialProcessCommand("  a\tb \n c")).toEqual(["a", "b", "c"]);
 	});
 
-	test("double quotes preserve Windows backslashes", () => {
+	test("double quotes preserve literal backslashes in quoted paths", () => {
 		expect(tokenizeCredentialProcessCommand(`"C:\\Program Files\\auth\\tool.exe" --json`)).toEqual([
 			"C:\\Program Files\\auth\\tool.exe",
 			"--json",

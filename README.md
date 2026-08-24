@@ -79,19 +79,13 @@ Flake consumers can use `packages.<system>.proto`, `overlays.default`, `nixosMod
 }
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-irm https://proto.sh/install.ps1 | iex
-```
-
 **Pinned versions (mise)**
 
 ```sh
 mise use -g github:can1357/oh-my-pi
 ```
 
-macOS · Linux · Windows · bun ≥ 1.3.14
+macOS · Linux · bun ≥ 1.3.14
 
 ### Shell completions
 
@@ -286,7 +280,6 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 - `github` — GitHub CLI ops — repo, PR, issues, code search, Actions run-watch.
 - `generate_image` — generate or edit raster images via Gemini, GPT, or xAI Grok image models.
 - `inspect_image` — vision-model analysis of a local image file.
-- `tts` — text-to-speech via xAI Grok Voice — five built-in voices, WAV or MP3.
 
 **Skills & session state**
 
@@ -294,7 +287,7 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 - `rewind` — prune exploratory context, keep a concise report.
 - `manage_skill` — create, update, or delete an isolated managed skill.
 
-Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and `manage_skill`. `inspect_image` activates automatically when the active model can't see.
+Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `checkpoint`, `rewind`, and `manage_skill`. `inspect_image` activates automatically when the active model can't see.
 
 [Full reference →](https://proto.sh/docs/tools)
 

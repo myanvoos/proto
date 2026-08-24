@@ -44,7 +44,7 @@ const BEL = "\x07";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 const SMILE = String.fromCodePoint(0x1f642);
-type TestPlatform = "darwin" | "linux" | "win32";
+type TestPlatform = "darwin" | "linux";
 type TerminalMode = "normal" | "unknown" | "intermittentUnknown" | "staleBottom";
 type GeometryMode = "small" | "large";
 type EnvMode = "plain" | "tmux" | "herdr" | "termux" | "appleTerminal" | "iterm2" | "wsl" | "vteNoSync" | "ghostty";
@@ -337,11 +337,10 @@ interface AppliedOperation {
 	// runs the prompt-submit reconciliation (a `/clear`-style forced rebuild for
 	// `normal`; other hosts get a plain forced render). Native scrollback
 	// must equal the transcript only when that reconciliation actually ran:
-	// ConPTY/Windows and other unobservable host-scrollback paths deliberately
+	// ConPTY/WSL and other unobservable host-scrollback paths deliberately
 	// keep dirty history deferred until the renderer gets a positive at-tail probe.
 	// Plain `scrollToBottom` / forced-render ops also set `checkpoint`, but on
-	// Windows hosts a forced render cannot rebuild ConPTY-hidden history, so the
-	// clean-buffer oracle keys on this flag for non-`normal` scenarios.
+	// ConPTY hosts a forced render cannot rebuild ConPTY-hidden history, so the
 	reconcilesNativeScrollback?: boolean;
 }
 
@@ -582,7 +581,7 @@ function terminalStressTraits(scenario: Scenario): TerminalStressTraits {
 		syncOutputDisabled: scenario.envMode === "vteNoSync",
 		viewportProbe: scenario.terminalMode === "normal" ? "known" : scenario.terminalMode,
 		ed3ScrollbackEraseRisk: isEd3RiskScenario(scenario.terminalMode, scenario.envMode),
-		conptyHostScrollbackUnobservable: scenario.platform === "win32" && scenario.terminalMode === "unknown",
+		conptyHostScrollbackUnobservable: scenario.envMode === "wsl" && scenario.terminalMode === "unknown",
 		foregroundStreaming: scenario.foregroundStream,
 	};
 }
@@ -3605,10 +3604,7 @@ function materializeScenario(
 	replayOperations?: readonly OperationKind[],
 ): Scenario {
 	const strictScrollback =
-		template.envMode !== "tmux" &&
-		template.envMode !== "herdr" &&
-		template.terminalMode === "normal" &&
-		template.platform !== "win32";
+		template.envMode !== "tmux" && template.envMode !== "herdr" && template.terminalMode === "normal";
 	const foregroundStream = template.foregroundStream ?? false;
 	const reflow = template.reflow ?? false;
 	return {
@@ -3796,17 +3792,6 @@ function coreTemplates(): ScenarioTemplate[] {
 			heightChoices: [12, 24],
 		},
 		{
-			name: "win32-intermittentUnknown-small",
-			platform: "win32",
-			terminalMode: "intermittentUnknown",
-			envMode: "plain",
-			geometryMode: "small",
-			columns: 32,
-			rows: 4,
-			widthChoices: [10, 16, 32],
-			heightChoices: [3, 4, 6],
-		},
-		{
 			name: "darwin-normal-tmux-small",
 			platform: "darwin",
 			terminalMode: "normal",
@@ -3898,25 +3883,6 @@ function coreTemplates(): ScenarioTemplate[] {
 			scrollbackRows: 10_000,
 		},
 		{
-			// Native-Windows ConPTY host (Windows Terminal, Tabby, Hyper, VS Code,
-			// conhost behind ConPTY — #1635/#1746). kernel32 cannot see the host
-			// UI's scrollback (the pseudo-console buffer is pinned to the visible
-			// grid), and no env var distinguishes the hosts (Tabby sets none), so
-			// the probe is permanently `undefined`. A reader scrolled in the host
-			// UI must not be yanked by streaming-time rebuilds; reconciliation
-			// waits for explicit checkpoints.
-			name: "win32-unknown-small",
-			platform: "win32",
-			terminalMode: "unknown",
-			envMode: "plain",
-			geometryMode: "small",
-			columns: 32,
-			rows: 4,
-			widthChoices: [10, 16, 32],
-			heightChoices: [3, 4, 6],
-			scrollbackRows: 10_000,
-		},
-		{
 			// Foreground tool actively streaming on an ED3-risk terminal whose
 			// viewport position is unobservable (ghostty/kitty/alacritty/VTE/iTerm2).
 			// Content frames flow through `viewportRepaint`/`diff` instead of a
@@ -3994,7 +3960,6 @@ function soakTemplates(): ScenarioTemplate[] {
 	const platformEnvModes: readonly { platform: TestPlatform; envModes: readonly EnvMode[] }[] = [
 		{ platform: "darwin", envModes: ["plain", "tmux", "herdr"] },
 		{ platform: "linux", envModes: ["plain", "tmux", "termux", "vteNoSync"] },
-		{ platform: "win32", envModes: ["plain"] },
 	];
 	const terminalModes: readonly TerminalMode[] = ["normal", "unknown", "intermittentUnknown", "staleBottom"];
 	const geometries: readonly GeometryMode[] = ["small", "large"];

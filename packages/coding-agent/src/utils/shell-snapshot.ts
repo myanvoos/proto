@@ -187,12 +187,7 @@ ${optionsScript}
 
 # Export aliases (limit to 1000)
 echo "# Aliases" >> "$SNAPSHOT_FILE"
-# Filter out winpty aliases on Windows to avoid "stdin is not a tty" errors
-if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-   alias 2>/dev/null | grep -v "='winpty " | grep -vE '^alias (${commonToolsRegex})=' | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"
-else
-   alias 2>/dev/null | grep -vE '^alias (${commonToolsRegex})=' | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"
-fi
+alias 2>/dev/null | grep -vE '^alias (${commonToolsRegex})=' | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"
 
 # Export PATH
 echo "export PATH='$PATH'" >> "$SNAPSHOT_FILE"
@@ -225,11 +220,6 @@ export async function getOrCreateSnapshot(
 	}
 	if (cached) {
 		cachedSnapshotPaths.delete(cacheKey);
-	}
-
-	// Skip on Windows (no .bashrc in standard location)
-	if (process.platform === "win32") {
-		return null;
 	}
 
 	const rcFile = getShellConfigFile(shell, env);

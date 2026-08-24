@@ -197,10 +197,10 @@ export class LspMuxServer {
 		return [...this.#servers].map(server => server.key);
 	}
 
-	/** Listen for Content-Length framed mux links at a Unix socket or named pipe. */
+	/** Listen for Content-Length framed mux links at a Unix socket. */
 	async listen(endpoint: string): Promise<void> {
 		if (this.#netServer) throw new Error("LSP mux is already listening");
-		if (process.platform !== "win32") await this.#clearStaleSocket(endpoint);
+		await this.#clearStaleSocket(endpoint);
 		const server = net.createServer(socket => this.#accept(socket));
 		this.#netServer = server;
 		this.#endpoint = endpoint;
@@ -233,7 +233,7 @@ export class LspMuxServer {
 			listener.close(() => resolve());
 			await promise;
 		}
-		if (process.platform !== "win32" && this.#endpoint) {
+		if (this.#endpoint) {
 			try {
 				await fs.unlink(this.#endpoint);
 			} catch {

@@ -38,35 +38,6 @@ const DEFAULT_ENV_ALLOWLIST = new Set([
 	"LD_LIBRARY_PATH",
 ]);
 
-const WINDOWS_ENV_ALLOWLIST = new Set([
-	"APPDATA",
-	"COMPUTERNAME",
-	"COMSPEC",
-	"HOMEDRIVE",
-	"HOMEPATH",
-	"LOCALAPPDATA",
-	"NUMBER_OF_PROCESSORS",
-	"OS",
-	"PATH",
-	"PATHEXT",
-	"PROCESSOR_ARCHITECTURE",
-	"PROCESSOR_IDENTIFIER",
-	"PROGRAMDATA",
-	"PROGRAMFILES",
-	"PROGRAMFILES(X86)",
-	"PROGRAMW6432",
-	"SESSIONNAME",
-	"SYSTEMDRIVE",
-	"SYSTEMROOT",
-	"TEMP",
-	"TMP",
-	"USERDOMAIN",
-	"USERDOMAIN_ROAMINGPROFILE",
-	"USERPROFILE",
-	"USERNAME",
-	"WINDIR",
-]);
-
 const DEFAULT_ENV_DENYLIST = new Set([
 	"OPENAI_API_KEY",
 	"ANTHROPIC_API_KEY",
@@ -82,37 +53,14 @@ const DEFAULT_ENV_DENYLIST = new Set([
 
 const DEFAULT_ENV_ALLOW_PREFIXES = ["LC_", "XDG_", "PI_"];
 
-const CASE_INSENSITIVE_ENV = process.platform === "win32";
-const BASE_ENV_ALLOWLIST = new Set([...DEFAULT_ENV_ALLOWLIST, ...WINDOWS_ENV_ALLOWLIST]);
-
-const NORMALIZED_ALLOWLIST = new Set(
-	Array.from(BASE_ENV_ALLOWLIST, key => (CASE_INSENSITIVE_ENV ? key.toUpperCase() : key)),
-);
-const NORMALIZED_DENYLIST = new Set(
-	Array.from(DEFAULT_ENV_DENYLIST, key => (CASE_INSENSITIVE_ENV ? key.toUpperCase() : key)),
-);
-const NORMALIZED_ALLOW_PREFIXES = CASE_INSENSITIVE_ENV
-	? DEFAULT_ENV_ALLOW_PREFIXES.map(prefix => prefix.toUpperCase())
-	: DEFAULT_ENV_ALLOW_PREFIXES;
-
-function normalizeEnvKey(key: string): string {
-	return CASE_INSENSITIVE_ENV ? key.toUpperCase() : key;
-}
-
-function resolvePathKey(env: Record<string, string | undefined>): string {
-	if (!CASE_INSENSITIVE_ENV) return "PATH";
-	const match = Object.keys(env).find(candidate => candidate.toLowerCase() === "path");
-	return match ?? "PATH";
-}
-
 function resolveManagedPythonEnv(): string {
 	return getPythonEnvDir();
 }
 
 function resolveManagedPythonCandidate(): { venvPath: string; pythonPath: string } {
 	const venvPath = resolveManagedPythonEnv();
-	const binDir = process.platform === "win32" ? path.join(venvPath, "Scripts") : path.join(venvPath, "bin");
-	const pythonPath = path.join(binDir, process.platform === "win32" ? "python.exe" : "python");
+	const binDir = path.join(venvPath, "bin");
+	const pythonPath = path.join(binDir, "python");
 	return { venvPath, pythonPath };
 }
 
@@ -133,14 +81,12 @@ export function filterEnv(env: Record<string, string | undefined>): Record<strin
 	const filtered: Record<string, string | undefined> = {};
 	for (const [key, value] of Object.entries(env)) {
 		if (value === undefined) continue;
-		const normalizedKey = normalizeEnvKey(key);
-		if (NORMALIZED_DENYLIST.has(normalizedKey)) continue;
-		if (NORMALIZED_ALLOWLIST.has(normalizedKey)) {
-			const destKey = normalizedKey === "PATH" ? "PATH" : key;
-			filtered[destKey] = value;
+		if (DEFAULT_ENV_DENYLIST.has(key)) continue;
+		if (DEFAULT_ENV_ALLOWLIST.has(key)) {
+			filtered[key] = value;
 			continue;
 		}
-		if (NORMALIZED_ALLOW_PREFIXES.some(prefix => normalizedKey.startsWith(prefix))) {
+		if (DEFAULT_ENV_ALLOW_PREFIXES.some(prefix => key.startsWith(prefix))) {
 			filtered[key] = value;
 		}
 	}
@@ -173,14 +119,9 @@ function applyVenvEnv(
 ): Record<string, string | undefined> {
 	const env = { ...baseEnv };
 	env.VIRTUAL_ENV = venvPath;
-	const pathKey = resolvePathKey(env);
-	const currentPath = env[pathKey];
-	env[pathKey] = currentPath ? `${binDir}${path.delimiter}${currentPath}` : binDir;
+	const currentPath = env.PATH;
+	env.PATH = currentPath ? `${binDir}${path.delimiter}${currentPath}` : binDir;
 	return env;
-}
-
-function venvBinDir(venvPath: string): string {
-	return process.platform === "win32" ? path.join(venvPath, "Scripts") : path.join(venvPath, "bin");
 }
 
 function detectExplicitVenv(pythonPath: string): { venvPath: string; binDir: string } | undefined {
@@ -237,8 +178,8 @@ export function enumeratePythonRuntimes(cwd: string, baseEnv: Record<string, str
 
 	const venvPath = baseEnv.VIRTUAL_ENV ?? resolveVenvPath(cwd);
 	if (venvPath) {
-		const binDir = venvBinDir(venvPath);
-		const pythonCandidate = path.join(binDir, process.platform === "win32" ? "python.exe" : "python");
+		const binDir = path.join(venvPath, "bin");
+		const pythonCandidate = path.join(binDir, "python");
 		if (fs.existsSync(pythonCandidate)) {
 			push({ pythonPath: pythonCandidate, env: applyVenvEnv(baseEnv, venvPath, binDir), venvPath });
 		}

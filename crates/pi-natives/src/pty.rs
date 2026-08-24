@@ -109,11 +109,8 @@ const POST_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
 const POST_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
 /// How long a cancelled run polls for its SIGKILL'd child before handing the
 /// reap off to a detached thread rather than blocking the PTY promise.
-#[cfg(not(windows))]
 const CANCEL_REAP_TIMEOUT: Duration = Duration::from_millis(500);
-#[cfg(not(windows))]
 const CANCEL_REAP_POLL_INTERVAL: Duration = Duration::from_millis(5);
-#[cfg(not(windows))]
 const FINAL_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 struct PtySessionCore {
@@ -284,40 +281,14 @@ fn run_pty_sync(
 	ct.heartbeat()
 		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before openpty: {err}")))?;
 
-	const PTY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-	let pair = if cfg!(windows) {
-		// Windows ConPTY openpty() can hang indefinitely when the console
-		// subsystem isn't properly initialized. Use a short startup timeout
-		// so the Promise rejects instead of hanging forever.
-		let (tx, rx) = flume::unbounded();
-		std::thread::spawn(move || {
-			let result = pty_system.openpty(PtySize {
-				rows:         config.rows,
-				cols:         config.cols,
-				pixel_width:  0,
-				pixel_height: 0,
-			});
-			let _ = tx.send(result);
-		});
-		match rx.recv_timeout(PTY_STARTUP_TIMEOUT) {
-			Ok(Ok(pair)) => pair,
-			Ok(Err(e)) => return Err(Error::from_reason(format!("Failed to open PTY: {e}"))),
-			Err(_) => {
-				return Err(Error::from_reason(
-					"PTY creation timed out (5s). ConPTY may be unavailable on this system.",
-				));
-			},
-		}
-	} else {
-		pty_system
-			.openpty(PtySize {
-				rows:         config.rows,
-				cols:         config.cols,
-				pixel_width:  0,
-				pixel_height: 0,
-			})
-			.map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))?
-	};
+	let pair = pty_system
+		.openpty(PtySize {
+			rows:         config.rows,
+			cols:         config.cols,
+			pixel_width:  0,
+			pixel_height: 0,
+		})
+		.map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))?;
 
 	let mut cmd = match config.command {
 		PtyCommand::Shell { command, shell } => {
@@ -376,14 +347,6 @@ fn run_pty_sync(
 	let mut writer = master
 		.take_writer()
 		.map_err(|err| Error::from_reason(format!("Failed to create PTY writer: {err}")))?;
-	// ConPTY sends ESC[6n (cursor position query) and blocks until we reply.
-	// Reply with cursor at 1,1 so it unblocks the child spawn.
-	// Only needed on Windows; on Unix/macOS this would corrupt stdin.
-	#[cfg(windows)]
-	{
-		let _ = writer.write_all(b"\x1b[1;1R");
-		let _ = writer.flush();
-	}
 	let mut reader = master
 		.try_clone_reader()
 		.map_err(|err| Error::from_reason(format!("Failed to create PTY reader: {err}")))?;
@@ -540,26 +503,8 @@ fn run_pty_sync(
 		}
 	}
 	if exit_code.is_none() {
-		// `std::process::Child` (what `portable-pty` wraps on Unix) never waits on
+		// `std::process::Child` (what `portable-pty` wraps) never waits on
 		// `Drop`, so a child left unwaited here leaks as a permanent zombie.
-		//
-		// On Windows, child.wait() can hang indefinitely in ConPTY.
-		// Poll try_wait() with a short timeout instead.
-		#[cfg(windows)]
-		if !terminate_requested {
-			let wait_start = Instant::now();
-			while exit_code.is_none() && wait_start.elapsed() < Duration::from_secs(5) {
-				if let Some(status) = child
-					.try_wait()
-					.map_err(|err| Error::from_reason(format!("Failed checking PTY status: {err}")))?
-				{
-					exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
-					break;
-				}
-				std::thread::sleep(Duration::from_millis(50));
-			}
-		}
-		#[cfg(not(windows))]
 		if terminate_requested {
 			// SIGKILL does not guarantee a prompt exit — a child wedged in
 			// uninterruptible I/O never reaps, and a kill that failed leaves it
@@ -593,21 +538,15 @@ fn run_pty_sync(
 		}
 	}
 	// --- Teardown ---
-
-	// Step 1: Close the ConPTY input pipe first.
-	// Per Microsoft docs, close the input handle before calling ClosePseudoConsole.
-	// This signals to ConPTY that no more input will arrive, allowing its internal
-	// I/O threads to finish processing and eventually close the output pipe.
+	// Step 1: Close the pty input pipe first so the child sees EOF on stdin
+	// and can finish flushing its output before the master is dropped.
 	drop(writer);
 
 	// Step 2: Drain the reader thread.
-	// After the child exits and input is closed, ConPTY should flush remaining
-	// output and signal EOF on the output pipe, causing the reader thread to exit.
-	// On Windows, use a generous timeout to accommodate ConPTY's async teardown.
+	// After the child exits and input is closed, the pty master should flush
+	// remaining output and signal EOF on the output pipe, causing the reader
+	// thread to exit.
 	if !reader_done {
-		#[cfg(windows)]
-		let drain_timeout = Duration::from_millis(500);
-		#[cfg(not(windows))]
 		let drain_timeout = FINAL_READER_DRAIN_TIMEOUT;
 		let finalize_deadline = Instant::now() + drain_timeout;
 		while Instant::now() < finalize_deadline {
@@ -628,26 +567,8 @@ fn run_pty_sync(
 		}
 	}
 
-	// Step 3: Drop master (calls ClosePseudoConsole on Windows).
-	// ClosePseudoConsole can deadlock if ConPTY tries to flush output
-	// while nobody is reading the pipe (microsoft/terminal#1810).
-	// Always offload to a background thread on Windows, then wait with
-	// a timeout so the thread is reclaimed when ClosePseudoConsole
-	// completes cleanly. If it hangs, we walk away — the thread leaks,
-	// but the main thread never blocks.
-	#[cfg(windows)]
-	{
-		let (drop_tx, drop_rx) = flume::unbounded::<()>();
-		std::thread::spawn(move || {
-			drop(master);
-			let _ = drop_tx.send(());
-		});
-		let _ = drop_rx.recv_timeout(Duration::from_secs(2));
-	}
-	#[cfg(not(windows))]
-	{
-		drop(master);
-	}
+	// Step 3: Drop the pty master now that the reader has drained.
+	drop(master);
 
 	// Step 4: Join reader thread if it finished.
 	// A detached descendant can keep the PTY slave open forever; do not block

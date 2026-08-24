@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Dropped Windows support: removed native Windows Terminal OSC-11 polling, ConPTY input handling, and the kernel32 console codepage guard; WSL remains fully supported.
+
 ### Added
 
 - Collapsed individual skill commands into a `/skill:` namespace entry to declutter suggestions

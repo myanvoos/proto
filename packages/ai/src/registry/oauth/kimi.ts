@@ -53,7 +53,6 @@ function getDeviceModel(): string {
 	const release = os.release();
 	const arch = os.arch();
 	if (platform === "darwin") return formatDeviceModel("macOS", release, arch);
-	if (platform === "win32") return formatDeviceModel("Windows", release, arch);
 	const label = platform === "linux" ? "Linux" : platform;
 	return formatDeviceModel(label, release, arch);
 }

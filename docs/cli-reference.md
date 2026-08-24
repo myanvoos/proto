@@ -220,7 +220,6 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `models` | List, search, and refresh available models. | [models](./models.md) |
 | `plugin` | Manage plugins (install, uninstall, list, etc.). | [extensions](./extensions.md), [marketplace](./marketplace.md) |
 | `ps` | List and control daemon-supervised background processes (logs, stop, kill, restart). | |
-| `say` | Synthesize text with the local TTS engine and play it through the speakers. | [tts tool](./tools/tts.md) |
 | `setup` | Run onboarding setup or install dependencies for optional features. | |
 | `shell` | Interactive shell console. | |
 | `read` | Show what the read tool will return for a path, URL, or internal URI. (The [`read` tool](./tools/read.md) is a separate agent tool.) | |

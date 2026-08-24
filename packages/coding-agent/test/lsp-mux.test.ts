@@ -212,187 +212,149 @@ describe("LspMuxServer", () => {
 		return { client, connected };
 	}
 
-	it.skipIf(process.platform === "win32")(
-		"spawns one server per concurrent link",
-		async () => {
-			const first = await link();
-			const second = await link();
-			expect(first.connected.spawned).toBe(true);
-			expect(second.connected.spawned).toBe(true);
-			expect(second.connected.pid).not.toBe(first.connected.pid);
+	it("spawns one server per concurrent link", async () => {
+		const first = await link();
+		const second = await link();
+		expect(first.connected.spawned).toBe(true);
+		expect(second.connected.spawned).toBe(true);
+		expect(second.connected.pid).not.toBe(first.connected.pid);
 
-			const [firstInitialize, secondInitialize] = await Promise.all([
-				initialize(first.client),
-				initialize(second.client),
+		const [firstInitialize, secondInitialize] = await Promise.all([
+			initialize(first.client),
+			initialize(second.client),
+		]);
+		const firstInfo = firstInitialize.serverInfo as { version: string };
+		const secondInfo = secondInitialize.serverInfo as { version: string };
+		expect(firstInfo.version).toBe(String(first.connected.pid));
+		expect(secondInfo.version).toBe(String(second.connected.pid));
+		expect((await state(first.client)).initializeCount).toBe(1);
+		expect((await state(second.client)).initializeCount).toBe(1);
+	}, 10_000);
+
+	it("rewrites initialize processId to the mux process", async () => {
+		const { client } = await link();
+		await initialize(client, 424242);
+		expect((await state(client)).processId).toBe(process.pid);
+	}, 10_000);
+
+	it("isolates equal request ids between sessions", async () => {
+		const first = await link();
+		const second = await link();
+		await Promise.all([initialize(first.client), initialize(second.client)]);
+		const [one, two] = await Promise.all([
+			first.client.request<{ owner: string }>("test/echo", { owner: "first" }, 7),
+			second.client.request<{ owner: string }>("test/echo", { owner: "second" }, 7),
+		]);
+		expect(one).toEqual({ owner: "first" });
+		expect(two).toEqual({ owner: "second" });
+	}, 10_000);
+
+	it("isolates open-document overlays between concurrent sessions", async () => {
+		const first = await link();
+		const second = await link();
+		expect(second.connected.pid).not.toBe(first.connected.pid);
+		await Promise.all([initialize(first.client), initialize(second.client)]);
+		const uri = "file:///shared.ts";
+		first.client.notify("textDocument/didOpen", {
+			textDocument: { uri, languageId: "typescript", version: 1, text: "first" },
+		});
+		second.client.notify("textDocument/didOpen", {
+			textDocument: { uri, languageId: "typescript", version: 1, text: "second" },
+		});
+
+		await pollUntil(async () => {
+			const [seenByFirst, seenBySecond] = await Promise.all([
+				first.client.request<string | null>("test/documentText", { uri }),
+				second.client.request<string | null>("test/documentText", { uri }),
 			]);
-			const firstInfo = firstInitialize.serverInfo as { version: string };
-			const secondInfo = secondInitialize.serverInfo as { version: string };
-			expect(firstInfo.version).toBe(String(first.connected.pid));
-			expect(secondInfo.version).toBe(String(second.connected.pid));
-			expect((await state(first.client)).initializeCount).toBe(1);
-			expect((await state(second.client)).initializeCount).toBe(1);
-		},
-		10_000,
-	);
+			return seenByFirst === "first" && seenBySecond === "second";
+		}, "session-specific document contents");
+	}, 10_000);
 
-	it.skipIf(process.platform === "win32")(
-		"rewrites initialize processId to the mux process",
-		async () => {
-			const { client } = await link();
-			await initialize(client, 424242);
-			expect((await state(client)).processId).toBe(process.pid);
-		},
-		10_000,
-	);
+	it("replays cached diagnostics when an idle server is reused", async () => {
+		const first = await link();
+		await initialize(first.client);
+		const uri = "file:///diagnostics.ts";
+		first.client.notify("textDocument/didOpen", {
+			textDocument: { uri, languageId: "typescript", version: 1, text: "x" },
+		});
+		const publication = await first.client.nextNotification<PublishDiagnosticsParams>(
+			"textDocument/publishDiagnostics",
+		);
+		expect(publication).toMatchObject({
+			uri,
+			version: 1,
+			diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
+		});
 
-	it.skipIf(process.platform === "win32")(
-		"isolates equal request ids between sessions",
-		async () => {
-			const first = await link();
-			const second = await link();
-			await Promise.all([initialize(first.client), initialize(second.client)]);
-			const [one, two] = await Promise.all([
-				first.client.request<{ owner: string }>("test/echo", { owner: "first" }, 7),
-				second.client.request<{ owner: string }>("test/echo", { owner: "second" }, 7),
-			]);
-			expect(one).toEqual({ owner: "first" });
-			expect(two).toEqual({ owner: "second" });
-		},
-		10_000,
-	);
+		first.client.destroy();
+		await pollUntil(() => Promise.resolve(server.sessionCount === 0), "first session close");
+		const second = await link();
+		expect(second.connected.spawned).toBe(false);
+		expect(second.connected.pid).toBe(first.connected.pid);
+		await initialize(second.client);
+		const replay = await second.client.nextNotification<PublishDiagnosticsParams>("textDocument/publishDiagnostics");
+		expect(replay).toMatchObject({
+			uri,
+			diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
+		});
+	}, 10_000);
 
-	it.skipIf(process.platform === "win32")(
-		"isolates open-document overlays between concurrent sessions",
-		async () => {
-			const first = await link();
-			const second = await link();
-			expect(second.connected.pid).not.toBe(first.connected.pid);
-			await Promise.all([initialize(first.client), initialize(second.client)]);
-			const uri = "file:///shared.ts";
+	it("intercepts shutdown and exit for only the calling session", async () => {
+		const first = await link();
+		const second = await link();
+		await Promise.all([initialize(first.client), initialize(second.client)]);
+		expect(await first.client.request<null>("shutdown")).toBeNull();
+		const closed = first.client.waitForClose();
+		first.client.notify("exit");
+		await closed;
+		expect(await second.client.request<{ alive: boolean }>("test/echo", { alive: true })).toEqual({ alive: true });
+	}, 10_000);
+
+	it("answers muxPing before a link is bound", async () => {
+		const client = await MuxTestClient.connect(socketPath);
+		clients.push(client);
+		expect(await client.request<string>(MUX_PING_METHOD)).toBe("pong");
+	}, 10_000);
+
+	it("restarts only the calling session's server", async () => {
+		const first = await link();
+		const second = await link();
+		await Promise.all([initialize(first.client), initialize(second.client)]);
+		const firstClosed = first.client.waitForClose();
+		first.client.notify(MUX_RESTART_METHOD);
+		await firstClosed;
+		expect(await second.client.request<{ alive: boolean }>("test/echo", { alive: true })).toEqual({ alive: true });
+
+		const replacement = await link();
+		expect(replacement.connected.spawned).toBe(true);
+		expect(replacement.connected.pid).not.toBe(first.connected.pid);
+		expect(replacement.connected.pid).not.toBe(second.connected.pid);
+	}, 10_000);
+
+	it("finishes orphan document closes before reusing a server", async () => {
+		const first = await link();
+		await initialize(first.client);
+		const uris = Array.from({ length: 128 }, (_, index) => `file:///orphan-${index}.ts`);
+		for (const uri of uris) {
 			first.client.notify("textDocument/didOpen", {
-				textDocument: { uri, languageId: "typescript", version: 1, text: "first" },
+				textDocument: { uri, languageId: "typescript", version: 1, text: "orphan" },
 			});
-			second.client.notify("textDocument/didOpen", {
-				textDocument: { uri, languageId: "typescript", version: 1, text: "second" },
-			});
+		}
+		await first.client.request("test/echo", { barrier: true });
+		const firstClosed = first.client.waitForClose();
+		first.client.destroy();
+		await firstClosed;
 
-			await pollUntil(async () => {
-				const [seenByFirst, seenBySecond] = await Promise.all([
-					first.client.request<string | null>("test/documentText", { uri }),
-					second.client.request<string | null>("test/documentText", { uri }),
-				]);
-				return seenByFirst === "first" && seenBySecond === "second";
-			}, "session-specific document contents");
-		},
-		10_000,
-	);
-
-	it.skipIf(process.platform === "win32")(
-		"replays cached diagnostics when an idle server is reused",
-		async () => {
-			const first = await link();
-			await initialize(first.client);
-			const uri = "file:///diagnostics.ts";
-			first.client.notify("textDocument/didOpen", {
-				textDocument: { uri, languageId: "typescript", version: 1, text: "x" },
-			});
-			const publication = await first.client.nextNotification<PublishDiagnosticsParams>(
-				"textDocument/publishDiagnostics",
-			);
-			expect(publication).toMatchObject({
-				uri,
-				version: 1,
-				diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
-			});
-
-			first.client.destroy();
-			await pollUntil(() => Promise.resolve(server.sessionCount === 0), "first session close");
-			const second = await link();
-			expect(second.connected.spawned).toBe(false);
-			expect(second.connected.pid).toBe(first.connected.pid);
-			await initialize(second.client);
-			const replay = await second.client.nextNotification<PublishDiagnosticsParams>(
-				"textDocument/publishDiagnostics",
-			);
-			expect(replay).toMatchObject({
-				uri,
-				diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
-			});
-		},
-		10_000,
-	);
-
-	it.skipIf(process.platform === "win32")(
-		"intercepts shutdown and exit for only the calling session",
-		async () => {
-			const first = await link();
-			const second = await link();
-			await Promise.all([initialize(first.client), initialize(second.client)]);
-			expect(await first.client.request<null>("shutdown")).toBeNull();
-			const closed = first.client.waitForClose();
-			first.client.notify("exit");
-			await closed;
-			expect(await second.client.request<{ alive: boolean }>("test/echo", { alive: true })).toEqual({ alive: true });
-		},
-		10_000,
-	);
-
-	it.skipIf(process.platform === "win32")(
-		"answers muxPing before a link is bound",
-		async () => {
-			const client = await MuxTestClient.connect(socketPath);
-			clients.push(client);
-			expect(await client.request<string>(MUX_PING_METHOD)).toBe("pong");
-		},
-		10_000,
-	);
-
-	it.skipIf(process.platform === "win32")(
-		"restarts only the calling session's server",
-		async () => {
-			const first = await link();
-			const second = await link();
-			await Promise.all([initialize(first.client), initialize(second.client)]);
-			const firstClosed = first.client.waitForClose();
-			first.client.notify(MUX_RESTART_METHOD);
-			await firstClosed;
-			expect(await second.client.request<{ alive: boolean }>("test/echo", { alive: true })).toEqual({ alive: true });
-
-			const replacement = await link();
-			expect(replacement.connected.spawned).toBe(true);
-			expect(replacement.connected.pid).not.toBe(first.connected.pid);
-			expect(replacement.connected.pid).not.toBe(second.connected.pid);
-		},
-		10_000,
-	);
-
-	it.skipIf(process.platform === "win32")(
-		"finishes orphan document closes before reusing a server",
-		async () => {
-			const first = await link();
-			await initialize(first.client);
-			const uris = Array.from({ length: 128 }, (_, index) => `file:///orphan-${index}.ts`);
-			for (const uri of uris) {
-				first.client.notify("textDocument/didOpen", {
-					textDocument: { uri, languageId: "typescript", version: 1, text: "orphan" },
-				});
-			}
-			await first.client.request("test/echo", { barrier: true });
-			const firstClosed = first.client.waitForClose();
-			first.client.destroy();
-			await firstClosed;
-
-			const second = await link();
-			expect(second.connected.spawned).toBe(false);
-			const uri = uris.at(-1);
-			expect(uri).toBeDefined();
-			await initialize(second.client);
-			second.client.notify("textDocument/didOpen", {
-				textDocument: { uri, languageId: "typescript", version: 1, text: "replacement" },
-			});
-			await second.client.request("test/echo", { barrier: true });
-			expect(await second.client.request<string | null>("test/documentText", { uri })).toBe("replacement");
-		},
-		10_000,
-	);
+		const second = await link();
+		expect(second.connected.spawned).toBe(false);
+		const uri = uris.at(-1);
+		expect(uri).toBeDefined();
+		await initialize(second.client);
+		second.client.notify("textDocument/didOpen", {
+			textDocument: { uri, languageId: "typescript", version: 1, text: "replacement" },
+		});
+		await second.client.request("test/echo", { barrier: true });
+		expect(await second.client.request<string | null>("test/documentText", { uri })).toBe("replacement");
+	}, 10_000);
 });

@@ -11,9 +11,8 @@
  *
  * Activated when a {@link Model} has `transport: "pi-native"` set; the
  * dispatch hook lives in `streamSimple()` (see `../stream.ts`). Used by
- * containerized omp deployments (such as robomp slots) that
- * route every LLM call through a credential-holding sidecar so the slot
- * itself stays credential-free.
+ * containerized omp deployments that route every LLM call through a
+ * credential-holding sidecar so the container itself stays credential-free.
  */
 import { readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";

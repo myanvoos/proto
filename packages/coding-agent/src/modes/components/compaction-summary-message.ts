@@ -1,14 +1,12 @@
 import { Box, type Component, Markdown } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
-import type { BranchSummaryMessage, CompactionSummaryMessage, CustomMessage } from "../../session/messages";
+import type { BranchSummaryMessage, CompactionSummaryMessage } from "../../session/messages";
 
 /** Divider labels per compaction method; unknown/legacy methods fall back to "compacted". */
 const COMPACTION_METHOD_LABELS: Record<string, string> = {
 	remote: "remote-compacted",
 	soft: "soft-compacted",
-	handoff: "handed-off",
-	shake: "shaken",
 };
 
 /** `256K→20K` amount badge, or undefined when the entry predates `tokensAfter`. */
@@ -148,51 +146,8 @@ export class CompactionSummaryMessageComponent implements Component {
 }
 
 /**
- * Handoff is a compaction strategy too, but it is persisted as a custom message
- * so the LLM sees the handoff-specific developer context. Render it with the
- * same divider affordance as `/compact` instead of the generic `[handoff]` box.
- */
-export class HandoffSummaryMessageComponent implements Component {
-	#divider: SummaryDividerComponent;
-
-	constructor(private readonly message: CustomMessage<unknown>) {
-		this.#divider = new SummaryDividerComponent({
-			label: () => `${theme.icon.context} handed-off`,
-			detailMarkdown: () => this.#detailMarkdown(),
-		});
-	}
-
-	setExpanded(expanded: boolean): void {
-		this.#divider.setExpanded(expanded);
-	}
-
-	invalidate(): void {
-		this.#divider.invalidate();
-	}
-
-	render(width: number): readonly string[] {
-		return this.#divider.render(width);
-	}
-
-	#detailMarkdown(): string {
-		const document = extractHandoffDocument(getCustomMessageText(this.message));
-		return `**Handoff context**\n\n${document || "_No handoff content._"}`;
-	}
-}
-
-export function createHandoffSummaryMessageComponent(
-	message: CustomMessage<unknown>,
-	expanded: boolean,
-): HandoffSummaryMessageComponent | undefined {
-	if (message.customType !== "handoff" || !message.display) return undefined;
-	const component = new HandoffSummaryMessageComponent(message);
-	component.setExpanded(expanded);
-	return component;
-}
-
-/**
  * A branch summary collapses a side branch back into the main line. Render it
- * with the same slim divider as `/compact` and handoff rather than a `[branch]`
+ * with the same slim divider as `/compact` rather than a `[branch]`
  * box, so every history-collapse point reads as one consistent banner.
  */
 export class BranchSummaryMessageComponent implements Component {
@@ -216,34 +171,4 @@ export class BranchSummaryMessageComponent implements Component {
 	render(width: number): readonly string[] {
 		return this.#divider.render(width);
 	}
-}
-
-function getCustomMessageText(message: CustomMessage<unknown>): string {
-	if (typeof message.content === "string") return message.content;
-	let firstText: string | undefined;
-	let parts: string[] | undefined;
-	for (const content of message.content) {
-		if (content.type !== "text") continue;
-		if (firstText === undefined) {
-			firstText = content.text;
-			continue;
-		}
-		if (parts === undefined) {
-			parts = [firstText];
-		}
-		parts.push(content.text);
-	}
-	return parts === undefined ? (firstText ?? "") : parts.join("\n");
-}
-
-function extractHandoffDocument(text: string): string {
-	const openTag = "<handoff-context>";
-	const closeTag = "</handoff-context>";
-	const openIndex = text.indexOf(openTag);
-	if (openIndex === -1) return text.trim();
-
-	const contentStart = openIndex + openTag.length;
-	const closeIndex = text.indexOf(closeTag, contentStart);
-	const document = closeIndex === -1 ? text.slice(contentStart) : text.slice(contentStart, closeIndex);
-	return document.trim();
 }

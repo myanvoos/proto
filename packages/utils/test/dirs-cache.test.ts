@@ -48,8 +48,6 @@ describe("document conversion cache directory", () => {
 	});
 
 	it("uses XDG_CACHE_HOME for the default agent dir when $XDG_CACHE_HOME/proto exists", async () => {
-		if (process.platform === "win32") return;
-
 		process.env.XDG_CACHE_HOME = path.join(tempRoot, "cache");
 		await fs.mkdir(path.join(process.env.XDG_CACHE_HOME, "proto"), { recursive: true });
 
@@ -151,7 +149,6 @@ describe("legacy file adoption on XDG paths", () => {
 	}
 
 	it("adopts legacy files at the XDG paths without clobbering existing XDG files", async () => {
-		if (process.platform === "win32") return;
 		const xdgState = path.join(tempRoot, "xdg-state");
 		const xdgData = path.join(tempRoot, "xdg-data");
 		await fs.mkdir(path.join(xdgState, "proto"), { recursive: true });
@@ -173,7 +170,6 @@ describe("legacy file adoption on XDG paths", () => {
 	});
 
 	it("keeps the legacy paths canonical when XDG is inactive", async () => {
-		if (process.platform === "win32") return;
 		activateTempHome({});
 		expect(getSecretPlaceholderKeyPath()).toBe(path.join(tempRoot, ".proto", "agent", "secret-placeholder.key"));
 		expect(getMarketplacesRegistryPath()).toBe(path.join(tempRoot, ".proto", "marketplaces.json"));

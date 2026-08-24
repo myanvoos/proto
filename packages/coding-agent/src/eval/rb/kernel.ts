@@ -14,7 +14,6 @@ import { $ } from "bun";
 import { Settings } from "../../config/settings";
 import { BaseKernel, getRemainingTimeMs, type KernelRuntimeEnv, type KernelStartOptions } from "../kernel-base";
 import type { KernelDisplayOutput } from "../py/display";
-import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "../py/spawn-options";
 import { stageRunnerScript } from "../runner-cache";
 import { RUBY_PRELUDE } from "./prelude";
 import RUNNER_SCRIPT from "./runner.rb" with { type: "text" };
@@ -168,15 +167,11 @@ export class RubyKernel extends BaseKernel<KernelExecuteOptions> {
 
 		const proc = Bun.spawn([runtime.rubyPath, scriptPath], {
 			cwd: options.cwd,
-			detached: shouldDetachKernel(process.platform),
+			detached: true,
 			env: spawnEnv,
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: shouldHideKernelWindow({
-				platform: process.platform,
-				hostHasInheritableConsole: hostHasInheritableConsole(),
-			}),
 		});
 		kernel.setProcess(proc);
 

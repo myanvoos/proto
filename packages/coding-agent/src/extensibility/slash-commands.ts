@@ -3,7 +3,6 @@ import { slashCommandCapability } from "../capability/slash-command";
 import { appendInlineArgsFallback, templateUsesInlineArgPlaceholders } from "../config/prompt-templates";
 import type { SlashCommand } from "../discovery";
 import { loadCapability } from "../discovery";
-import { EMBEDDED_COMMAND_TEMPLATES } from "../task/commands";
 import { parseCommandArgs, substituteArgs } from "../utils/command-args";
 
 export type SlashCommandSource = "extension" | "prompt" | "skill";
@@ -31,8 +30,6 @@ export interface FileSlashCommand {
 	/** Source metadata for display */
 	_source?: { providerName: string; level: "user" | "project" | "native" };
 }
-
-const EMBEDDED_SLASH_COMMANDS = EMBEDDED_COMMAND_TEMPLATES;
 
 function parseCommandTemplate(
 	content: string,
@@ -84,24 +81,6 @@ export async function loadSlashCommands(options: LoadSlashCommandsOptions = {}):
 			_source: { providerName: cmd._source.providerName, level: cmd.level },
 		};
 	});
-
-	const seenNames = new Set(fileCommands.map(cmd => cmd.name));
-	for (const cmd of EMBEDDED_SLASH_COMMANDS) {
-		const name = cmd.name.replace(/\.md$/, "");
-		if (seenNames.has(name)) continue;
-
-		const { description, body } = parseCommandTemplate(cmd.content, {
-			source: `embedded:${cmd.name}`,
-			level: "fatal",
-		});
-		fileCommands.push({
-			name,
-			description,
-			content: body,
-			source: "bundled",
-		});
-		seenNames.add(name);
-	}
 
 	return fileCommands;
 }

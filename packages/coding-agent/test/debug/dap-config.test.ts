@@ -29,7 +29,7 @@ interface NestedGoProgram {
 
 async function writeExecutable(filePath: string): Promise<void> {
 	await fs.mkdir(path.dirname(filePath), { recursive: true });
-	await fs.writeFile(filePath, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+	await fs.writeFile(filePath, "#!/bin/sh\n");
 	await fs.chmod(filePath, 0o755);
 }
 
@@ -169,7 +169,7 @@ describe("DAP adapter configuration", () => {
 
 	it("resolves relative adapter commands from the debug cwd", async () => {
 		const cwd = await makeTempDir("proto-dap-config-relative-command-");
-		const command = path.join(cwd, "tools", process.platform === "win32" ? "debug-adapter.cmd" : "debug-adapter");
+		const command = path.join(cwd, "tools", "debug-adapter");
 		await fs.mkdir(path.dirname(command), { recursive: true });
 		await fs.writeFile(command, "");
 		await fs.chmod(command, 0o755);
@@ -178,7 +178,7 @@ describe("DAP adapter configuration", () => {
 			JSON.stringify({
 				adapters: {
 					relative: {
-						command: process.platform === "win32" ? ".\\tools\\debug-adapter.cmd" : "./tools/debug-adapter",
+						command: "./tools/debug-adapter",
 						fileTypes: [".rel"],
 					},
 				},
@@ -186,9 +186,7 @@ describe("DAP adapter configuration", () => {
 		);
 
 		const adapter = resolveAdapter("relative", cwd);
-		expect(adapter?.command).toBe(
-			process.platform === "win32" ? ".\\tools\\debug-adapter.cmd" : "./tools/debug-adapter",
-		);
+		expect(adapter?.command).toBe("./tools/debug-adapter");
 		expect(adapter?.resolvedCommand).toBe(command);
 	});
 
@@ -322,7 +320,7 @@ describe("DAP adapter configuration", () => {
 	it("re-resolves an adapter installed after an earlier miss", async () => {
 		const cwd = await makeTempDir("proto-dap-go-fresh-");
 		const program = path.join(cwd, "main.go");
-		const command = path.join(cwd, "tools", process.platform === "win32" ? "dlv.cmd" : "dlv");
+		const command = path.join(cwd, "tools", "dlv");
 		await fs.writeFile(path.join(cwd, "go.mod"), "module example.com/cache\n\ngo 1.22\n");
 		await fs.writeFile(program, "package main\n\nfunc main() {}\n");
 		await writeDlvOverride(cwd, command);

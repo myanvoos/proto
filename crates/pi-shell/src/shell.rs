@@ -1,7 +1,5 @@
 //! Runtime-agnostic brush shell execution.
 
-#[cfg(windows)]
-use std::collections::HashSet;
 use std::{
 	collections::HashMap,
 	fs,
@@ -27,8 +25,6 @@ use tokio::io::AsyncReadExt as _;
 use tokio::{sync::Mutex as TokioMutex, time};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(windows)]
-use crate::windows::configure_windows_path;
 use crate::{
 	cancel::{AbortReason, AbortToken, CancelToken},
 	minimizer, process,
@@ -523,63 +519,8 @@ const fn exit_code(result: &ExecutionResult) -> i32 {
 	}
 }
 
-#[cfg(windows)]
-const fn normalize_env_key(key: &str) -> &str {
-	if key.eq_ignore_ascii_case("PATH") {
-		"PATH"
-	} else {
-		key
-	}
-}
-
-#[cfg(not(windows))]
 const fn normalize_env_key(key: &str) -> &str {
 	key
-}
-
-#[cfg(windows)]
-fn merge_path_values(existing: &str, incoming: &str) -> String {
-	let mut merged = Vec::new();
-	let mut seen = HashSet::new();
-	push_unique_paths(&mut merged, &mut seen, existing);
-	push_unique_paths(&mut merged, &mut seen, incoming);
-
-	std::env::join_paths(merged.iter())
-		.map_or_else(|_| merged.join(";"), |paths| paths.to_string_lossy().into_owned())
-}
-
-#[cfg(windows)]
-fn push_unique_paths(merged: &mut Vec<String>, seen: &mut HashSet<String>, value: &str) {
-	for segment in std::env::split_paths(value) {
-		let segment_str = segment.to_string_lossy().into_owned();
-		let normalized = normalize_path_segment(&segment_str);
-		if normalized.is_empty() {
-			continue;
-		}
-		if seen.insert(normalized) {
-			merged.push(segment_str);
-		}
-	}
-}
-
-#[cfg(windows)]
-fn normalize_path_segment(segment: &str) -> String {
-	let trimmed = segment.trim().trim_matches('"');
-	if trimmed.is_empty() {
-		return String::new();
-	}
-
-	let mut normalized = std::path::PathBuf::new();
-	for component in std::path::Path::new(trimmed).components() {
-		normalized.push(component.as_os_str());
-	}
-
-	normalized.to_string_lossy().to_ascii_lowercase()
-}
-
-#[cfg(not(windows))]
-fn merge_path_values(_existing: &str, incoming: &str) -> String {
-	incoming.to_string()
 }
 
 #[cfg(test)]
@@ -587,8 +528,8 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 	create_session_for_run(config, None, None).await
 }
 
-/// Copies the host environment into `shell`, merging duplicate `PATH` values
-/// and registering the merged `PATH` last.
+/// Copies the host environment into `shell`, registering the host `PATH`
+/// last.
 ///
 /// Entries whose key or value is not valid Unicode are skipped: a corrupt
 /// entry carries no usable meaning, and `std::env::vars()` — the naive way to
@@ -611,10 +552,7 @@ fn copy_env_into_shell(
 			continue;
 		}
 		if normalized_key == "PATH" {
-			merged_path = Some(match merged_path {
-				Some(existing) => merge_path_values(&existing, value),
-				None => value.to_string(),
-			});
+			merged_path = Some(value.to_string());
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.to_string()));
@@ -623,13 +561,6 @@ fn copy_env_into_shell(
 			.env_mut()
 			.set_global(normalized_key, var)
 			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
-	}
-
-	#[cfg(windows)]
-	if merged_path.is_none()
-		&& let Some(value) = std::env::var_os("Path").or_else(|| std::env::var_os("PATH"))
-	{
-		merged_path = Some(value.to_string_lossy().into_owned());
 	}
 
 	if let Some(path_value) = &merged_path {
@@ -718,9 +649,6 @@ async fn create_session_for_run(
 	}
 	apply_env_fallback(&mut shell)?;
 	// `nohup` is registered above, with the rest of the process builtins.
-
-	#[cfg(windows)]
-	configure_windows_path(&mut shell)?;
 
 	if let Some(snapshot_path) = config.snapshot_path.as_ref() {
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;
@@ -1391,11 +1319,10 @@ async fn read_output_bytes(
 impl SpawnObserver for process::SpawnRegistry {
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>) {
 		// Pin a stable process reference *now*, before the pid can be recycled.
-		// On Windows an open handle keeps the pid slot reserved for the lifetime
-		// of the handle; on Linux the pidfd carries identity; on macOS the
-		// recorded start-time triple detects impersonation. Deferring the open
-		// to `build_targets` (as the old code did) let a recycled pid resolve
-		// to an unrelated process — issue #4605.
+		// On Linux the pidfd carries identity; on macOS the recorded start-time
+		// triple detects impersonation. Deferring the open to `build_targets`
+		// (as the old code did) let a recycled pid resolve to an unrelated
+		// process — issue #4605.
 		let process = process::Process::from_pid(pid);
 		self.record(pgid, process);
 	}
@@ -1906,15 +1833,6 @@ fn pipe_to_files(label: &str) -> Result<(fs::File, fs::File)> {
 		let w = w.into_raw_fd();
 		// SAFETY: We just obtained these fds from os_pipe and own them exclusively.
 		unsafe { (FromRawFd::from_raw_fd(r), FromRawFd::from_raw_fd(w)) }
-	};
-
-	#[cfg(windows)]
-	let (r, w): (fs::File, fs::File) = {
-		use std::os::windows::io::{FromRawHandle, IntoRawHandle};
-		let r = r.into_raw_handle();
-		let w = w.into_raw_handle();
-		// SAFETY: We just obtained these handles from os_pipe and own them exclusively.
-		unsafe { (FromRawHandle::from_raw_handle(r), FromRawHandle::from_raw_handle(w)) }
 	};
 
 	Ok((r, w))
@@ -5524,11 +5442,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	/// own exit status — not nohup's (`125`/`126`/`127`) error codes.
 	#[tokio::test(flavor = "multi_thread")]
 	async fn nohup_builtin_propagates_command_exit_code() {
-		let command = if cfg!(windows) {
-			"nohup cmd /C exit 7"
-		} else {
-			"nohup sh -c 'exit 7'"
-		};
+		let command = "nohup sh -c 'exit 7'";
 		let options = ShellExecuteOptions { command: command.to_string(), ..Default::default() };
 		let result = execute_shell(options, None, CancelToken::default())
 			.await

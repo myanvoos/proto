@@ -58,8 +58,8 @@ describe("enumeratePythonRuntimes", () => {
 	});
 
 	const managedDir = path.join(path.sep, "fake", ".proto", "python-env");
-	const managedBin = path.join(managedDir, process.platform === "win32" ? "Scripts" : "bin");
-	const managedPy = path.join(managedBin, process.platform === "win32" ? "python.exe" : "python");
+	const managedBin = path.join(managedDir, "bin");
+	const managedPy = path.join(managedBin, "python");
 	const systemPy = path.join(path.sep, "usr", "bin", "python3");
 
 	it("enumerates the managed env AND the system interpreter so a broken managed env can fall through", () => {
@@ -115,8 +115,8 @@ describe("enumeratePythonRuntimes", () => {
 
 	it("sets venv env vars for an explicit interpreter inside a virtualenv", () => {
 		const venvDir = path.join(path.sep, "work", ".venv");
-		const binDir = path.join(venvDir, process.platform === "win32" ? "Scripts" : "bin");
-		const explicitPy = path.join(binDir, process.platform === "win32" ? "python.exe" : "python");
+		const binDir = path.join(venvDir, "bin");
+		const explicitPy = path.join(binDir, "python");
 		vi.spyOn(fs, "existsSync").mockImplementation(candidate => candidate === path.join(venvDir, "pyvenv.cfg"));
 
 		const runtime = resolveExplicitPythonRuntime(explicitPy, path.join(path.sep, "work"), {

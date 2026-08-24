@@ -15,7 +15,7 @@ describe("$which", () => {
 		}
 	});
 
-	it.skipIf(process.platform === "win32")("uses the current process PATH for each cached lookup", () => {
+	it("uses the current process PATH for each cached lookup", () => {
 		const firstDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-which-first-"));
 		const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-which-second-"));
 		tempDirs.push(firstDir, secondDir);

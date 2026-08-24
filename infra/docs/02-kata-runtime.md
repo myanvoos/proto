@@ -304,16 +304,16 @@ none of them is the host kernel, which is the whole point. `machine_type =
 spurious PMU passthrough issues. The first two `kernel_params` entries force
 cgroup v2-only in the guest, matching a modern systemd userspace.
 
-### Open-file ceilings — Bazel sandbox headroom
+### Open-file ceilings — build headroom
 
 Two limits protect each runner. `sysctl.fs.nr_open=8388608` raises the guest
 open-file ceiling from 1,048,576. New runner containers inherit this value for
 both soft and hard open-file resource limits (`RLIMIT_NOFILE`).
 
 `--rlimit-nofile=8388608` raises the host `virtiofsd` process ceiling.
-Virtiofsd otherwise caps itself at 1,000,000 descriptors. Cold Bazel builds
-index large Zig and xwin trees through this daemon. The daemon exhausted its old
-ceiling and returned `EMFILE` to Bazel. Linux grows descriptor tables on demand,
+Virtiofsd otherwise caps itself at 1,000,000 descriptors. Large dependency
+trees indexed through this daemon previously exhausted its old
+ceiling and returned `EMFILE`. Linux grows descriptor tables on demand,
 so unused headroom has no fixed allocation.
 
 ### vCPU / memory sizing — hotplug from pod requests/limits

@@ -43,7 +43,7 @@
 1. `AskTool.createIf()` only registers the discoverable tool when `session.hasUI` is true; headless sessions never get it.
 2. `execute()` also requires `context.hasUI` and `context.ui`; if missing it aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
 3. It reads `ask.timeout` from settings and converts seconds to milliseconds (`0` disables timeout).
-4. If `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`. When `speech.enabled` is true, it also sends all question text to the vocalizer before opening the dialog.
+4. If `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`.
 5. When the UI supplies `askDialog`, the tool opens one rich multi-question form. Rich options receive `header`, `description`, and `preview`; results may contain an answer note or choose the dialog's `Chat about this` redirect.
 6. Otherwise it uses the selector/editor fallback for each question:
    - single-select list plus `Other (type your own)`
@@ -67,7 +67,6 @@
   - Opens a selection dialog via `context.ui.select(...)`.
   - Opens a text editor dialog via `context.ui.editor(...)` for `Other`.
   - Sends a terminal notification unless `ask.notify=off`.
-  - Speaks the question text through the vocalizer when `speech.enabled=true`.
 - Session state
   - Calls `context.abort()` on headless use or user cancellation.
 - Background work / cancellation

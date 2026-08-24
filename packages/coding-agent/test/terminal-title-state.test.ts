@@ -7,7 +7,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { isConPTYHosted } from "@oh-my-pi/pi-tui";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
-import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
 
 const LABEL = "my-project";
 
@@ -20,9 +19,9 @@ describe("buildTerminalTitleWithState", () => {
 		expect(buildTerminalTitleWithState(LABEL, "attention", 0, true)).toBe(`π ! ${LABEL}`);
 	});
 
-	it("animates spinner frames in the separator slot while working outside Windows", () => {
-		const frame0 = buildTerminalTitleWithState(LABEL, "working", 0, true, "linux");
-		const frame1 = buildTerminalTitleWithState(LABEL, "working", 1, true, "linux");
+	it("animates spinner frames in the separator slot while working", () => {
+		const frame0 = buildTerminalTitleWithState(LABEL, "working", 0, true);
+		const frame1 = buildTerminalTitleWithState(LABEL, "working", 1, true);
 		// The brand stays a bare `π`; only the separator between brand and label
 		// carries the spinner glyph, and it advances per frame.
 		expect(frame0).toBe(`π ⠋ ${LABEL}`);
@@ -30,22 +29,16 @@ describe("buildTerminalTitleWithState", () => {
 		expect(frame1).not.toBe(frame0);
 		// The frame index is taken modulo the frame count, so it never throws or
 		// produces an "undefined" separator for a large counter.
-		const wrapped = buildTerminalTitleWithState(LABEL, "working", 9999, true, "linux");
+		const wrapped = buildTerminalTitleWithState(LABEL, "working", 9999, true);
 		expect(wrapped.startsWith("π ")).toBe(true);
 		expect(wrapped.endsWith(` ${LABEL}`)).toBe(true);
 		expect(wrapped).not.toContain("undefined");
 	});
 
-	it("uses a static colon while working on Windows", () => {
-		expect(buildTerminalTitleWithState(LABEL, "working", 0, true, "win32")).toBe(`π : ${LABEL}`);
-		expect(buildTerminalTitleWithState(LABEL, "working", 1, true, "win32")).toBe(`π : ${LABEL}`);
-		expect(buildTerminalTitleWithState(undefined, "working", 1, true, "win32")).toBe("π :");
-	});
-
 	it("keeps the state visible as a trailing separator when there is no label", () => {
 		expect(buildTerminalTitleWithState(undefined, "idle", 0, true)).toBe("π >");
 		expect(buildTerminalTitleWithState(undefined, "attention", 0, true)).toBe("π !");
-		expect(buildTerminalTitleWithState(undefined, "working", 0, true, "linux")).toBe("π ⠋");
+		expect(buildTerminalTitleWithState(undefined, "working", 0, true)).toBe("π ⠋");
 	});
 
 	it("renders the pre-state `π: label` layout when disabled, regardless of state", () => {
@@ -82,7 +75,6 @@ describe("disposeTerminalTitleState", () => {
 	let stdoutSpy: { mockRestore(): void } | undefined;
 	let prevHeadless = false;
 	let ttyDescriptor: PropertyDescriptor | undefined;
-	let windowsTitleMock: WindowsConsoleTitleMock | undefined;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
@@ -91,7 +83,6 @@ describe("disposeTerminalTitleState", () => {
 		ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 
-		windowsTitleMock = mockWindowsConsoleTitle();
 		writes = [];
 		stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
 			writes.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk as Uint8Array));
@@ -109,8 +100,6 @@ describe("disposeTerminalTitleState", () => {
 		// A started interval must never leak between tests.
 		disposeTerminalTitleState();
 		stdoutSpy?.mockRestore();
-		windowsTitleMock?.restore();
-		windowsTitleMock = undefined;
 		stdoutSpy = undefined;
 		if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
 		else Reflect.deleteProperty(process.stdout, "isTTY");

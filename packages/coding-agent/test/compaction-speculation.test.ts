@@ -195,7 +195,7 @@ describe("async speculative compaction", () => {
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await waitForState("armed");
 
-		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		await maintenance.runAutoCompaction("threshold", false, { triggerContextTokens: THRESHOLD });
 
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("armed summary");
@@ -249,7 +249,7 @@ describe("async speculative compaction", () => {
 		release.resolve();
 		await waitForState("armed");
 
-		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		await maintenance.runAutoCompaction("threshold", false, { triggerContextTokens: THRESHOLD });
 
 		expect(agent.state.messages.map(message => message.role)).toEqual([
 			"compactionSummary",
@@ -278,7 +278,7 @@ describe("async speculative compaction", () => {
 		sessionManager.appendResetBoundary();
 		appendSummarizableConversation();
 
-		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		await maintenance.runAutoCompaction("threshold", false, { triggerContextTokens: THRESHOLD });
 
 		expect(compactSpy).toHaveBeenCalledTimes(2);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
@@ -288,18 +288,6 @@ describe("async speculative compaction", () => {
 	it("does not start speculative work when async compaction is disabled", () => {
 		maintenance = createMaintenance({ asyncEnabled: false });
 		const compactSpy = vi.spyOn(compactionModule, "compact");
-
-		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
-
-		expect(maintenance.speculationState).toBe("idle");
-		expect(compactSpy).not.toHaveBeenCalled();
-	});
-
-	it("does not speculate when a local method leads the configured methods", () => {
-		// Shake is local and effectively instant — there is no
-		// summarization latency to hide, so no background run may start.
-		const compactSpy = vi.spyOn(compactionModule, "compact");
-		maintenance = createMaintenance({ methodOrder: ["shake", "soft"] });
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 
@@ -340,7 +328,7 @@ describe("async speculative compaction", () => {
 
 		// Armed: deferral ends so the real pass splices the result in immediately.
 		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 2_000, CONTEXT_WINDOW)).toBe(false);
-		await maintenance.runAutoCompaction("threshold", false, false, false, {
+		await maintenance.runAutoCompaction("threshold", false, {
 			triggerContextTokens: THRESHOLD + 2_000,
 		});
 
@@ -360,13 +348,8 @@ describe("async speculative compaction", () => {
 		expect(compactSpy).not.toHaveBeenCalled();
 	});
 
-	it("never defers when async compaction is disabled or a local method leads", () => {
+	it("never defers when async compaction is disabled", () => {
 		maintenance = createMaintenance({ asyncEnabled: false });
-		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1, CONTEXT_WINDOW)).toBe(false);
-		expect(maintenance.speculationState).toBe("idle");
-
-		// Shake is local and effectively instant — blocking on it is fine.
-		maintenance = createMaintenance({ methodOrder: ["shake", "soft"] });
 		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1, CONTEXT_WINDOW)).toBe(false);
 		expect(maintenance.speculationState).toBe("idle");
 	});

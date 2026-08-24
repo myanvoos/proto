@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "@oh-my-pi/hashline";
 import { glob } from "@oh-my-pi/pi-natives";
-import { hasFsCode, isEnoent, isEnotdir, stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../extensibility/skills";
 import {
 	InternalUrlRouter,
@@ -119,8 +119,6 @@ function normalizeAtPrefix(filePath: string): string {
 		withoutAt.startsWith("/") ||
 		withoutAt === "~" ||
 		withoutAt.startsWith("~/") ||
-		// Windows absolute paths (drive letters / UNC / root-relative)
-		path.win32.isAbsolute(withoutAt) ||
 		// Internal URL shorthands
 		withoutAt.startsWith("agent://") ||
 		withoutAt.startsWith("artifact://") ||
@@ -167,40 +165,8 @@ export function expandPath(filePath: string): string {
 	// lookahead admits POSIX (`/`, `~`, `./`, `../`) and Windows (`\`, `.\`,
 	// `..\`, drive-letter `C:`) path shapes.
 	const deColoned = /^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(filePath) ? filePath.slice(1) : filePath;
-	const normalized = stripWindowsExtendedLengthPathPrefix(
-		stripFileUrl(normalizeUnicodeSpaces(normalizeAtPrefix(deColoned))),
-	);
+	const normalized = stripFileUrl(normalizeUnicodeSpaces(normalizeAtPrefix(deColoned)));
 	return expandTilde(normalized);
-}
-
-function isAsciiDriveLetter(value: string): boolean {
-	if (value.length !== 1) return false;
-	const code = value.charCodeAt(0);
-	return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-}
-
-function windowsDriveAliasPath(filePath: string): string | undefined {
-	if (!filePath.startsWith("/")) return undefined;
-	const parts = filePath.split("/");
-	if (parts[0] !== "") return undefined;
-
-	let drive: string | undefined;
-	let tailStart = 2;
-	if (parts.length >= 2 && isAsciiDriveLetter(parts[1] ?? "")) {
-		drive = parts[1]!.toUpperCase();
-	} else if (parts.length >= 3 && (parts[1] ?? "").toLowerCase() === "mnt" && isAsciiDriveLetter(parts[2] ?? "")) {
-		drive = parts[2]!.toUpperCase();
-		tailStart = 3;
-	}
-	if (!drive) return undefined;
-
-	const tail = parts.slice(tailStart).filter(Boolean).join("\\");
-	return tail ? `${drive}:\\${tail}` : `${drive}:\\`;
-}
-
-export function normalizeWindowsDriveAliasPath(filePath: string, platform: NodeJS.Platform = process.platform): string {
-	if (platform !== "win32") return filePath;
-	return windowsDriveAliasPath(filePath) ?? filePath;
 }
 
 /**
@@ -507,7 +473,7 @@ export function isReadableUrlPath(value: string): boolean {
  */
 export function resolveToCwd(filePath: string, cwd: string): string {
 	const normalized = normalizeLocalScheme(filePath);
-	const expanded = normalizeWindowsDriveAliasPath(expandPath(normalized));
+	const expanded = expandPath(normalized);
 	const expandedAndNormalized = normalizeLocalScheme(expanded);
 
 	assertNotInternalUrl(expandedAndNormalized, normalized);

@@ -13,7 +13,7 @@ import packageJson from "../../package.json" with { type: "json" };
 
 /**
  * Child-side scaffolding shared by the ONNX inference worker bodies
- * (`stt/asr-worker`, `tiny/worker`, `tts/tts-worker`). These are the helpers
+ * (`tiny/worker`). These are the helpers
  * that run inside the spawned subprocess: error serialization, structured log
  * and progress reporting over the worker's typed transport, side-runtime
  * install (sharp stubbing + module-resolver patch), once-per-process runtime
@@ -286,7 +286,7 @@ let cachedTransformersVersionSpec: string | undefined;
  * Lazily resolve (and memoize) the transformers version spec. In the `catalog:`
  * case {@link resolveTransformersVersionSpec} `require`s the installed
  * `@huggingface/transformers/package.json`, so it is only ever touched on the
- * compiled-binary runtime-install path — loading a worker (smoke-test ping,
+ * compiled-binary runtime-install path — loading a worker (startup ping,
  * online path) never triggers the transformers resolve/install dance.
  */
 export function getTransformersVersionSpec(): string {

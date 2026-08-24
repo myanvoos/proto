@@ -163,15 +163,6 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 		.trim();
 }
 
-function parseWmicTable(output: string, header: string): string | null {
-	const lines = output
-		.split("\n")
-		.map(line => line.trim())
-		.filter(Boolean);
-	const filtered = lines.filter(line => line.toLowerCase() !== header.toLowerCase());
-	return filtered[0] ?? null;
-}
-
 const SYSTEM_PROMPT_PREP_TIMEOUT_MS = 5000;
 /** Kept below prep timeout so timed-out probes can still write the null cache before fallback. */
 const GPU_PROBE_TIMEOUT_MS = SYSTEM_PROMPT_PREP_TIMEOUT_MS - 500;
@@ -221,10 +212,6 @@ async function runGpuProbe(cmd: string[]): Promise<string | null> {
 
 async function getGpuModel(): Promise<string | null> {
 	switch (process.platform) {
-		case "win32": {
-			const output = await runGpuProbe(["wmic", "path", "win32_VideoController", "get", "name"]);
-			return output ? parseWmicTable(output, "Name") : null;
-		}
 		case "linux": {
 			const output = await runGpuProbe(["lspci"]);
 			if (!output) return null;

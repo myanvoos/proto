@@ -3,7 +3,6 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getEditClipboard } from "../../edit/edit-clipboard";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
@@ -26,8 +25,6 @@ import type { AgentSessionEvent } from "../../session/agent-session";
 import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { nextActionableTask } from "../../tools/todo";
-import { SpeechEnhancer } from "../../tts/speech-enhancer";
-import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import { interruptHint } from "../shared";
@@ -174,37 +171,16 @@ export class EventController {
 	// this window only the latest snapshot needs to rebuild streaming state — the
 	// intermediate rebuilds are redundant work. The TUI already caps the paint
 	// rate via its own render cadence; this caps the per-token handler work that
-	// feeds it. Speech stays intact: `#vocalizeDelta` runs at ARRIVAL for every
-	// delta before the snapshot is coalesced away.
+	// feeds it.
 	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
 	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
 	/** Tail of the serialized dispatch chain; see #runSerialized. */
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
 	#dispatchInFlight = false;
-	// Deltas already fed to speech at arrival by the coalescer. `#handleMessageUpdate`
-	// also vocalizes so the direct `handleEvent` path (tests, session focus replay)
-	// keeps working — the WeakSet makes the coalesced path speak each delta exactly
-	// once instead of twice.
-	#vocalizedMessageUpdates = new WeakSet<object>();
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
 	constructor(private ctx: InteractiveModeContext) {
-		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
-		// tiny/smol role with this session's registry and credentials; the
-		// vocalizer falls back to mechanical cleanup when unset. Tolerates
-		// partial contexts (tests, minimal embeddings) by wiring null.
-		const session = ctx.session;
-		vocalizer.setEnhancer(
-			session?.modelRegistry && session.agent && session.settings
-				? new SpeechEnhancer({
-						settings: session.settings,
-						registry: session.modelRegistry,
-						sessionId: session.sessionId,
-						metadataResolver: provider => session.agent.metadataForProvider(provider),
-					})
-				: null,
-		);
 		this.#streamingReveal = new StreamingRevealController({
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
@@ -219,7 +195,7 @@ export class EventController {
 			agent_start: e => this.#handleAgentStart(e),
 			agent_end: e => this.#handleAgentEnd(e),
 			turn_start: async () => {},
-			turn_end: async e => this.#handleTurnEnd(e),
+			turn_end: async () => {},
 			message_start: e => this.#handleMessageStart(e),
 			message_update: e => this.#handleMessageUpdate(e),
 			message_end: e => this.#handleMessageEnd(e),
@@ -536,14 +512,8 @@ export class EventController {
 
 	/**
 	 * Queue a streaming `message_update` for the next coalesced handler run.
-	 * Speech is per-delta, so the delta is vocalized at arrival before the
-	 * snapshot is (possibly) superseded by a newer one.
 	 */
 	#enqueueMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
-		// Speech is per-delta: every delta is spoken at arrival even when its
-		// cumulative snapshot is later superseded and never rebuilt.
-		this.#vocalizeDelta(event);
-		this.#vocalizedMessageUpdates.add(event);
 		this.#pendingMessageUpdate = event;
 		if (this.#messageUpdateTimer) return;
 		this.#messageUpdateTimer = setTimeout(() => {
@@ -732,6 +702,7 @@ export class EventController {
 
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
+		if (event.message.role === "assistant") this.#updateWorkingSpinnerFrames(event.message);
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 			if (this.#renderedCustomMessages.has(signature)) {
@@ -758,7 +729,6 @@ export class EventController {
 			}
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
-			vocalizer.clear();
 			const textContent = this.ctx.getUserMessageText(event.message);
 			const imageBlocks =
 				typeof event.message.content === "string"
@@ -815,6 +785,7 @@ export class EventController {
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
+			this.#updateWorkingSpinnerFrames(event.message);
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
 			this.#streamingReveal.begin(
 				this.ctx.streamingComponent,
@@ -955,45 +926,8 @@ export class EventController {
 		}
 	}
 
-	/**
-	 * Speak streamed assistant output as a side effect of the turn. The mode
-	 * decides which deltas feed the vocalizer (the vocalizer re-checks enabled):
-	 * assistant|all speak text; all also speaks thinking; yield speaks nothing
-	 * live (the final message is spoken at turn end).
-	 */
-	#vocalizeDelta(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
-		if (!settings.get("speech.enabled")) return;
-		const mode = settings.get("speech.mode");
-		const delta = event.assistantMessageEvent;
-		if (delta.type === "text_delta" && (mode === "assistant" || mode === "all")) {
-			vocalizer.pushDelta(delta.delta);
-		} else if (delta.type === "thinking_delta" && mode === "all") {
-			vocalizer.pushDelta(delta.delta);
-		}
-	}
-
-	/**
-	 * End-of-turn vocalization: yield mode speaks the final assistant message in
-	 * one shot here (the only mode that is post-hoc); every other mode just makes
-	 * sure the live buffer's trailing partial gets flushed.
-	 */
-	#handleTurnEnd(event: Extract<AgentSessionEvent, { type: "turn_end" }>): void {
-		if (!settings.get("speech.enabled")) return;
-		if (settings.get("speech.mode") !== "yield") {
-			vocalizer.flush();
-			return;
-		}
-		if (event.message.role !== "assistant") return;
-		if (event.message.stopReason === "aborted") return; // interrupted: never speak the aborted partial
-		const text = extractTextContent(event.message);
-		if (text) vocalizer.speak(text);
-	}
-
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
-		if (!this.#vocalizedMessageUpdates.delete(event)) {
-			this.#vocalizeDelta(event);
-		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
 			if (unlockedThinkingVisibility) {
@@ -1001,6 +935,7 @@ export class EventController {
 				this.#streamingReveal.resyncVisibility();
 			}
 			this.ctx.streamingMessage = event.message;
+			this.#updateWorkingSpinnerFrames(event.message);
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools);
 
@@ -1166,17 +1101,6 @@ export class EventController {
 		if (unlockedThinkingVisibility && this.ctx.streamingComponent) {
 			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 			this.#streamingReveal.resyncVisibility();
-		}
-		if (event.message.role === "assistant" && settings.get("speech.enabled")) {
-			if (event.message.stopReason === "aborted") {
-				// Esc / Ctrl+C / interrupt: stop speaking now and drop the trailing partial.
-				vocalizer.clear();
-			} else {
-				const mode = settings.get("speech.mode");
-				// Speak the last partial sentence of a completed message; yield mode
-				// instead speaks the whole final message at turn end.
-				if (mode === "assistant" || mode === "all") vocalizer.flush();
-			}
 		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			this.ctx.streamingMessage = event.message;
@@ -1461,7 +1385,7 @@ export class EventController {
 				syntheticFailureDetails.source === "assistant_stop_aborted")
 				? this.ctx.pendingTools.get(event.toolCallId)
 				: undefined;
-		// A transient overlay (auto-compaction / auto-retry / handoff) that ran
+		// A transient overlay (auto-compaction / auto-retry) that ran
 		// between this tool's start and end could have detached the working
 		// loader. `tool_execution_update` already reconciles this so the spinner
 		// reappears mid-tool; mirror it here so worker completions —
@@ -1684,6 +1608,29 @@ export class EventController {
 	}
 
 	/**
+	 * Swap the working loader's spinner with the turn phase: pulse while the
+	 * streaming assistant message's tail block is reasoning, the activity
+	 * frames otherwise (text streaming, tool calls, inter-message gaps).
+	 * Mirrors AssistantMessageComponent's tail-block detection.
+	 */
+	#updateWorkingSpinnerFrames(message: AssistantMessage): void {
+		const loader = this.ctx.loadingAnimation;
+		if (!loader) return;
+		let tail: "text" | "thinking" | undefined;
+		for (const content of message.content) {
+			if (content.type === "toolCall") {
+				tail = undefined;
+				break;
+			}
+			if (content.type === "text" && canonicalizeMessage(content.text)) tail = "text";
+			else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) tail = "thinking";
+		}
+		loader.setSpinnerFrames(
+			tail === "thinking" ? theme.getSpinnerFrames("thinking") : theme.getSpinnerFrames("activity"),
+		);
+	}
+
+	/**
 	 * Trailing Esc hint for live maintenance loaders. While a subagent is
 	 * focused, Esc returns to main instead of cancelling its maintenance
 	 * (#2819), so the loader drops the hint entirely rather than advertise a
@@ -1710,14 +1657,7 @@ export class EventController {
 					: event.reason === "idle"
 						? "Idle "
 						: "";
-		const actionLabel =
-			event.action === "remote"
-				? "Auto server compaction"
-				: event.action === "handoff"
-					? "Auto-handoff"
-					: event.action === "shake"
-						? "Auto-shake"
-						: "Auto context-full maintenance";
+		const actionLabel = event.action === "remote" ? "Auto server compaction" : "Auto context-full maintenance";
 		this.ctx.autoCompactionLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
@@ -1738,38 +1678,11 @@ export class EventController {
 			this.ctx.autoCompactionLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
-		const isHandoffAction = event.action === "handoff";
 		const isRemoteAction = event.action === "remote";
-		const isShakeAction = event.action === "shake";
 		if (event.aborted) {
 			this.ctx.showStatus(
-				isHandoffAction
-					? "Auto-handoff cancelled"
-					: isRemoteAction
-						? "Auto server compaction cancelled"
-						: isShakeAction
-							? "Auto-shake cancelled"
-							: "Auto context-full maintenance cancelled",
+				isRemoteAction ? "Auto server compaction cancelled" : "Auto context-full maintenance cancelled",
 			);
-		} else if (isShakeAction) {
-			// Shake produces no CompactionResult; rebuild on success, suppress benign skips.
-			// The fallback path (`errorMessage` set, `skipped` false) means shake reclaimed
-			// some tokens before deciding the threshold still wasn't cleared — rebuild so
-			// the chat reflects the dropped regions even though a context-full pass follows.
-			if (event.errorMessage) {
-				if (!event.skipped) {
-					this.ctx.rebuildChatFromMessages();
-					this.ctx.statusLine.invalidate();
-					this.ctx.ui.requestRender();
-				}
-				this.ctx.showWarning(event.errorMessage);
-			} else if (!event.skipped) {
-				this.ctx.lastAssistantUsage = undefined;
-				this.ctx.rebuildChatFromMessages();
-				this.ctx.statusLine.invalidate();
-				this.ctx.ui.requestRender();
-				this.ctx.showStatus("Auto-shake completed");
-			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
@@ -1779,7 +1692,7 @@ export class EventController {
 			// differential renderer's "duplication, never loss" resync repaints
 			// the whole collapsed transcript (welcome box included) BELOW the
 			// stale pre-compaction scrollback. Compaction is an intentional
-			// transcript replacement then — same as auto-handoff below. With
+			// transcript replacement then. With
 			// collapse disabled the rebuilt transcript keeps the full history,
 			// so the resync handles it and scrollback stays.
 			if (settings.get("display.collapseCompacted")) {
@@ -1789,14 +1702,6 @@ export class EventController {
 			}
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
-		} else if (isHandoffAction) {
-			this.ctx.clearTransientSessionUi();
-			this.ctx.lastAssistantUsage = undefined;
-			await this.ctx.renderInitialMessages();
-			this.ctx.statusLine.invalidate();
-			await this.ctx.reloadTodos();
-			this.ctx.ui.requestRender(true, { clearScrollback: true });
-			this.ctx.showStatus("Auto-handoff completed");
 		} else if (event.skipped) {
 			// Benign skip: no model selected, no candidate models available, or nothing
 			// to compact yet. Not a failure — suppress the warning.

@@ -4,7 +4,7 @@ import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
 // Regression test for https://github.com/can1357/oh-my-pi/issues/2034
 //
-// Windows ConPTY ties viewport tracking to per-`WriteFile` boundaries: when
+// ConPTY ties viewport tracking to per-`WriteFile` boundaries: when
 // a single `process.stdout.write` exceeds ~32-64 KB, the pseudo-console
 // stops following the cursor and the host UI's scroll position stays parked
 // at wherever the write began. The data lands in scrollback — Alt+Tab forces
@@ -13,9 +13,9 @@ import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 // or resume payload.
 //
 // Fix: `ProcessTerminal#safeWrite` chunks writes whose encoded UTF-8 byte
-// length exceeds 16 KiB into newline-aligned pieces on `process.platform ===
-// "win32"` and on WSL (`linux` plus `WSL_DISTRO_NAME`/`WSL_INTEROP`). Other
-// platforms keep the single-write fast path.
+// length exceeds 16 KiB into newline-aligned pieces on ConPTY hosts (WSL:
+// `linux` plus `WSL_DISTRO_NAME`/`WSL_INTEROP`). Other platforms keep the
+// single-write fast path.
 //
 // The cap is on encoded UTF-8 bytes, not JS code units: `process.stdout.write`
 // UTF-8-encodes before `WriteFile`, so a code-unit cap would let CJK rows
@@ -38,7 +38,7 @@ function buildFullPaint(lines: number, lineLength: number): string {
 	return buf;
 }
 
-describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
+describe("issue #2034: chunk large terminal writes on ConPTY", () => {
 	describe("chunkForConPTY()", () => {
 		it("returns the original buffer untouched when its UTF-8 byte length is under the chunk size", () => {
 			const data = "small payload";
@@ -201,22 +201,6 @@ describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
 			return writes;
 		}
 
-		it("splits >16 KiB writes into chunks on win32 so ConPTY can track the viewport", () => {
-			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-			const writes = captureStdoutWrites();
-			const terminal = new ProcessTerminal();
-			const payload = buildFullPaint(2000, 60);
-
-			terminal.write(payload);
-
-			const conptyChunks = writes.filter(w => w.length > 0);
-			expect(conptyChunks.length).toBeGreaterThan(1);
-			for (const chunk of conptyChunks) {
-				expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(16 * 1024);
-			}
-			expect(conptyChunks.join("")).toBe(payload);
-		});
-
 		it("splits >16 KiB writes inside WSL because stdout still crosses ConPTY at wslhost", () => {
 			Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 			setEnv("WSL_DISTRO_NAME", "Ubuntu");
@@ -246,22 +230,12 @@ describe("issue #2034: chunk large terminal writes on Windows ConPTY", () => {
 			expect(writes).toEqual([payload]);
 		});
 
-		it("does not chunk small writes on win32", () => {
-			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-			const writes = captureStdoutWrites();
-			const terminal = new ProcessTerminal();
-			const payload = `${ESC}[H${ESC}[K`;
-
-			terminal.write(payload);
-
-			expect(writes).toEqual([payload]);
-		});
-
-		it("chunks a CJK payload on win32 whose code-unit length fits but encoded bytes don't (#2095)", () => {
+		it("chunks a CJK payload on ConPTY whose code-unit length fits but encoded bytes don't (#2095)", () => {
 			// 200 BMP code units / row × 3 bytes each = 600 bytes / row. 30 rows
 			// = 6000 code units but 18 KiB UTF-8 bytes — code-unit check alone
 			// would let the whole burst through as a single oversized WriteFile.
-			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+			Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+			Bun.env.WSL_DISTRO_NAME = "Ubuntu";
 			const writes = captureStdoutWrites();
 			const terminal = new ProcessTerminal();
 			const row = "字".repeat(200);

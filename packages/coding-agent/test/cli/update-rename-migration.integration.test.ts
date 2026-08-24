@@ -81,7 +81,7 @@ const RELEASE: ReleaseInfo = {
 	packages: { pkg: NEW_PKG, natives: "@oh-my-pi/pi-natives" },
 };
 
-describe.skipIf(process.platform === "win32" || !$which("npm"))("rename migration over real npm", () => {
+describe.skipIf(!$which("npm"))("rename migration over real npm", () => {
 	it.concurrent("takes bin ownership with --force, survives the uninstall deleting the bin, and lands on the new version", async () => {
 		const root = fixtureDir.path();
 		const prefix = path.join(root, "npm-prefix");
@@ -129,7 +129,7 @@ describe.skipIf(process.platform === "win32" || !$which("npm"))("rename migratio
 	}, 120_000);
 });
 
-describe.skipIf(process.platform === "win32")("rename migration over real bun", () => {
+describe("rename migration over real bun", () => {
 	it.concurrent("clobbers the old bin on install, survives removing the old package, and lands on the new version", async () => {
 		const root = fixtureDir.path();
 		const binDir = path.join(root, "bun-bin");

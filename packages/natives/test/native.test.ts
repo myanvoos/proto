@@ -98,7 +98,7 @@ async function cleanupFixtures() {
 }
 
 function canCreateFifo() {
-	return process.platform !== "win32" && Boolean(Bun.which("mkfifo"));
+	return Boolean(Bun.which("mkfifo"));
 }
 
 async function createFifo(fifoPath: string) {
@@ -768,7 +768,7 @@ describe("pi-natives", () => {
 		});
 
 		it("should time out detached background workloads without hanging", async () => {
-			if (process.platform === "win32" || !Bun.which("bash")) {
+			if (!Bun.which("bash")) {
 				return;
 			}
 
@@ -808,10 +808,6 @@ describe("pi-natives", () => {
 
 	describe("shell", () => {
 		it("should time out background workloads without leaving delayed writers behind", async () => {
-			if (process.platform === "win32") {
-				return;
-			}
-
 			const markerPath = path.join(testDir, "shell-timeout-marker.txt");
 			const markerEscaped = markerPath.replace(/'/g, "'\\''");
 			await fs.rm(markerPath, { force: true });
@@ -829,10 +825,6 @@ describe("pi-natives", () => {
 		});
 
 		it("should SIGKILL workloads that ignore SIGTERM on timeout", async () => {
-			if (process.platform === "win32") {
-				return;
-			}
-
 			const markerPath = path.join(testDir, "shell-timeout-sigkill-marker.txt");
 			const markerEscaped = markerPath.replace(/'/g, "'\\''");
 			await fs.rm(markerPath, { force: true });

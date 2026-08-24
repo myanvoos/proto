@@ -8,8 +8,6 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod types;
-#[cfg(any(target_os = "windows", test))]
-mod win32;
 
 use std::{
 	collections::HashMap,
@@ -592,15 +590,11 @@ fn axnode(reference: String, props: ax::AxProps) -> AxNode {
 fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	Ok(Box::new(macos::MacosBackend::new(selector)?))
 }
-#[cfg(target_os = "windows")]
-fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
-	Ok(Box::new(win32::Win32Backend::new(selector)?))
-}
 #[cfg(target_os = "linux")]
 fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	linux::new_backend(selector)
 }
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn create_backend(_: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	Err(DesktopError::capture_failed("desktop backend unavailable on this platform"))
 }

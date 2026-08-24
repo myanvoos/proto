@@ -868,82 +868,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		);
 	});
 
-	it("drops a length stop and retries after handoff recovery commits", async () => {
-		session.settings.set("compaction.methodOrder", ["handoff", "soft"]);
-		session.settings.set("compaction.enabled", true);
-		session.settings.set("compaction.keepRecentTokens", 1);
-		compactHookEnabled = false;
-		sessionManager.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "completed seed" }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-			stopReason: "stop",
-			usage: {
-				input: 1,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 2,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: Date.now(),
-		});
-		session.settings.set("contextPromotion.enabled", false);
-		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const generateHandoffSpy = vi
-			.spyOn(compactionModule, "generateHandoffFromContext")
-			.mockResolvedValue("handoff document");
-
-		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
-		session.subscribe(event => {
-			if (event.type === "auto_compaction_end") onCompactionDone();
-		});
-
-		const assistantMsg = {
-			role: "assistant" as const,
-			content: [{ type: "text" as const, text: "unfinished" }],
-			api: "anthropic-messages" as const,
-			provider: "anthropic" as const,
-			model: "claude-sonnet-4-5",
-			stopReason: "length" as const,
-			usage: {
-				input: 10_000,
-				output: 1_000,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 11_000,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: Date.now(),
-		};
-		sessionManager.appendMessage(assistantMsg);
-		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
-
-		await compactionDone;
-		await session.waitForIdle();
-
-		expect(promptSpy).not.toHaveBeenCalled();
-		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
-		expect(continueSpy).toHaveBeenCalledTimes(1);
-		expect(sessionManager.getBranch().at(-1)).toMatchObject({
-			type: "compaction",
-			summary: "handoff document",
-		});
-		expect(sessionManager.getBranch()).not.toContainEqual(
-			expect.objectContaining({
-				type: "message",
-				message: expect.objectContaining({
-					role: "assistant",
-					stopReason: "length",
-				}),
-			}),
-		);
-	});
-
 	it("retries a small-window overflow when the reserve exceeds the model window", async () => {
 		// Bundled 4k/8k models can be smaller than the absolute reserve (16,384,
 		// explicit or defaulted). Retry fit must clamp that reserve; otherwise the
@@ -1274,12 +1198,9 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		// Post-removal overflow order: shake runs first (emitting its own
-		// lifecycle pair), cannot clear the window, and falls back to the soft
-		// summarizer — whose recovery guard then pauses maintenance once.
-		expect(startActions[0]).toBe("shake");
-		expect(startActions[1]).toBe("context-full");
-		expect(startActions).toHaveLength(2);
+		// Overflow recovery goes straight to the soft summarizer (no local
+		// shake-method pass anymore); its recovery guard pauses maintenance once.
+		expect(startActions).toEqual(["context-full"]);
 		expect(continueSpy).not.toHaveBeenCalled();
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(1);
@@ -1301,9 +1222,15 @@ describe("AgentSession auto-compaction progress guard", () => {
 				? { tokens: 1000, contextWindow: 200000, percent: 0.5 }
 				: { tokens: 190000, contextWindow: 200000, percent: 95 },
 		);
-		const shakeSpy = vi.spyOn(session, "shake").mockImplementation(async () => {
+		// The elide pass is driven through the compaction engine; fake one eligible
+		// region and flip the residual when the rescue applies it.
+		const messageEntry = sessionManager.getBranch().find(entry => entry.type === "message");
+		if (!messageEntry) throw new Error("expected a seeded message entry");
+		vi.spyOn(compactionModule, "collectShakeRegions").mockImplementation(() => [
+			{ kind: "toolResult", entry: messageEntry, tokens: 160000, originalText: "x", label: "read" },
+		]);
+		vi.spyOn(compactionModule, "applyShakeRegions").mockImplementation(() => {
 			shaken = true;
-			return { mode: "elide", toolResultsDropped: 1, blocksDropped: 0, tokensFreed: 160000, artifactId: "art-1" };
 		});
 
 		const notices = collectNotices();
@@ -1320,7 +1247,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(shakeSpy).toHaveBeenCalledWith("elide", expect.anything());
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(0);
@@ -1336,10 +1262,8 @@ describe("AgentSession auto-compaction progress guard", () => {
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
 		vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 190000, contextWindow: 200000, percent: 95 });
-		// Nothing eligible: shake reports zero dropped, so residual is unchanged.
-		const shakeSpy = vi
-			.spyOn(session, "shake")
-			.mockResolvedValue({ mode: "elide", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 });
+		// Nothing elide-eligible in the prose-only tail: the real rescue pass
+		// finds zero regions, so residual is unchanged.
 
 		const notices = collectNotices();
 
@@ -1355,7 +1279,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(shakeSpy).toHaveBeenCalledWith("elide", expect.anything());
 		expect(promptSpy).not.toHaveBeenCalled();
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(1);
@@ -1375,7 +1298,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		activateOngoingGoal("image-drop-rescue");
 		// Elide cannot touch image content (collectShakeRegions skips image-only
 		// tool results and user-message images), so the rescue's second tier drops
-		// attached images — the automated `/shake images` remedy — and re-tests
+		// attached images and re-tests
 		// the recovery band before the guard is allowed to pause.
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
 		vi.spyOn(session.agent, "continue").mockResolvedValue();
@@ -1385,13 +1308,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 				? { tokens: 1000, contextWindow: 200000, percent: 0.5 }
 				: { tokens: 190000, contextWindow: 200000, percent: 95 },
 		);
-		// Nothing elide-eligible in the oversized tail.
-		vi.spyOn(session, "shake").mockResolvedValue({
-			mode: "elide",
-			toolResultsDropped: 0,
-			blocksDropped: 0,
-			tokensFreed: 0,
-		});
 		const dropSpy = vi.spyOn(session, "dropImages").mockImplementation(async () => {
 			imagesDropped = true;
 			return { removed: 2 };
@@ -1461,9 +1377,13 @@ describe("AgentSession auto-compaction progress guard", () => {
 				? { tokens: 1000, contextWindow: 200000, percent: 0.5 }
 				: { tokens: 190000, contextWindow: 200000, percent: 95 },
 		);
-		const shakeSpy = vi.spyOn(session, "shake").mockImplementation(async () => {
+		const messageEntry = sessionManager.getBranch().find(entry => entry.type === "message");
+		if (!messageEntry) throw new Error("expected a seeded message entry");
+		vi.spyOn(compactionModule, "collectShakeRegions").mockImplementation(() => [
+			{ kind: "toolResult", entry: messageEntry, tokens: 160000, originalText: "x", label: "read" },
+		]);
+		vi.spyOn(compactionModule, "applyShakeRegions").mockImplementation(() => {
 			shaken = true;
-			return { mode: "elide", toolResultsDropped: 1, blocksDropped: 0, tokensFreed: 160000, artifactId: "art-1" };
 		});
 
 		const notices = collectNotices();
@@ -1480,7 +1400,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(shakeSpy).toHaveBeenCalledWith("elide", expect.anything());
 		expect(promptSpy).toHaveBeenCalledTimes(1);
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(0);
@@ -1495,11 +1414,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		// (not loop) instead of re-firing on the same oversized tail.
 		vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue(undefined);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 190000, contextWindow: 200000, percent: 95 });
-		const shakeSpy = vi
-			.spyOn(session, "shake")
-			.mockResolvedValue({ mode: "elide", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 });
 
 		const notices = collectNotices();
 
@@ -1507,7 +1422,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		session.subscribe(event => {
 			if (event.type === "auto_compaction_end") onCompactionDone();
 		});
-
 		const assistantMsg = highUsageAssistant();
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
@@ -1515,9 +1429,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(shakeSpy).toHaveBeenCalledWith("elide", expect.anything());
 		expect(promptSpy).not.toHaveBeenCalled();
-		expect(continueSpy).not.toHaveBeenCalled();
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(1);
 		expect(noProgress[0].level).toBe("warning");

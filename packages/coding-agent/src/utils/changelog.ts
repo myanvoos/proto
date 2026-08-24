@@ -135,7 +135,7 @@ export function formatStartupChangelogSummary(selection: StartupChangelogSelecti
  * resolving relative to the host project's cwd, which caused issue #1423.
  */
 export function resolveBundledChangelogPath(assetPath: string, moduleUrl: string | URL): string | URL {
-	if (path.isAbsolute(assetPath) || path.win32.isAbsolute(assetPath)) return assetPath;
+	if (path.isAbsolute(assetPath)) return assetPath;
 	return new URL(assetPath, moduleUrl);
 }
 

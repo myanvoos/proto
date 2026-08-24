@@ -50,7 +50,6 @@ export async function installPlugin(packageName: string): Promise<InstalledPlugi
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		windowsHide: true,
 	});
 
 	// Drain both pipes concurrently with proc.exited to avoid a pipe-buffer
@@ -97,7 +96,6 @@ export async function uninstallPlugin(name: string): Promise<void> {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		windowsHide: true,
 	});
 
 	const [exitCode] = await Promise.all([

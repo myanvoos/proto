@@ -1035,11 +1035,11 @@ mod tests {
 
 	#[test]
 	fn pruned_walk_matches_unpruned_on_repo_corpus_sample() {
-		// Sandboxed runners (bazel test) stage only this crate's declared inputs,
-		// so the repository corpus this sweep samples is absent (or a symlink
-		// farm the walker cannot see through). Both surface as an empty scan —
-		// skip then. Whenever the scan finds anything, the evidence assert below
-		// still guards against a broken/undersized sample.
+		// Sandboxed CI runners stage only this crate's declared inputs, so the
+		// repository corpus this sweep samples is absent (or a symlink farm the
+		// walker cannot see through). Both surface as an empty scan — skip then.
+		// Whenever the scan finds anything, the evidence assert below still
+		// guards against a broken/undersized sample.
 		let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 		if !root.join("packages").is_dir() {
 			eprintln!("skipping: repository corpus unavailable at {}", root.display());

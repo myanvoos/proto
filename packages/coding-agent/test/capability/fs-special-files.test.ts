@@ -4,8 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { clearCache, readFile } from "@oh-my-pi/pi-coding-agent/capability/fs";
 
-const isWindows = process.platform === "win32";
-
 describe("capability/fs readFile on special files", () => {
 	let dir = "";
 
@@ -21,7 +19,7 @@ describe("capability/fs readFile on special files", () => {
 	// project trees). A FIFO/socket dropped where a context file is expected
 	// must yield null instead of blocking startup forever on a read that can
 	// never see EOF.
-	it.skipIf(isWindows)("returns null for a FIFO instead of blocking", async () => {
+	it("returns null for a FIFO instead of blocking", async () => {
 		const fifo = path.join(dir, "CLAUDE.md");
 		const made = Bun.spawnSync(["mkfifo", fifo]);
 		expect(made.exitCode).toBe(0);
@@ -41,7 +39,7 @@ describe("capability/fs readFile on special files", () => {
 
 	// Symlinked context files (CLAUDE.md -> AGENTS.md) are common; the type
 	// gate must follow links rather than rejecting them.
-	it.skipIf(isWindows)("still reads regular files through symlinks", async () => {
+	it("still reads regular files through symlinks", async () => {
 		const target = path.join(dir, "AGENTS.md");
 		await Bun.write(target, "# context");
 		const link = path.join(dir, "CLAUDE-link.md");

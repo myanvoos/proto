@@ -96,7 +96,6 @@ async function jj(cwd: string, args: readonly string[], options: JjCommandOption
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		windowsHide: true,
 	});
 
 	if (!child.stdout || !child.stderr) {

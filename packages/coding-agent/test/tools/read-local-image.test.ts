@@ -135,7 +135,6 @@ describe("read local:// images", () => {
 	});
 
 	it("does not read an image symlinked outside the local root", async () => {
-		if (process.platform === "win32") return;
 		const outsideDir = path.join(testDir, "outside");
 		await fs.mkdir(outsideDir, { recursive: true });
 		await Bun.write(path.join(outsideDir, "secret.png"), TINY_PNG);

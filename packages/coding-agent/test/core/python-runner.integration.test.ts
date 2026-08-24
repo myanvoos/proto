@@ -67,7 +67,7 @@ describe.skipIf(!SHOULD_RUN)("python runner subprocess", () => {
 		}
 	});
 
-	it.skipIf(process.platform === "win32")("runs in its own POSIX session", async () => {
+	it("runs in its own POSIX session", async () => {
 		using tempDir = TempDir.createSync("@python-runner-session-isolation-");
 		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
 		try {

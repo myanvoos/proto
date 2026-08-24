@@ -5,42 +5,8 @@ import * as path from "node:path";
 import { buildNonInteractiveEnv, NON_INTERACTIVE_ENV } from "@oh-my-pi/pi-coding-agent/exec/non-interactive-env";
 
 describe("buildNonInteractiveEnv", () => {
-	it("defaults Windows child-process encoding to UTF-8 when inherited env is unset", () => {
-		const env = buildNonInteractiveEnv(undefined, {}, "win32");
-
-		expect(env.PYTHONIOENCODING).toBe("utf-8");
-		expect(env.PYTHONUTF8).toBe("1");
-		expect(env.LANG).toBe("C.UTF-8");
-		expect(env.LC_ALL).toBe("C.UTF-8");
-	});
-
-	it("preserves inherited Windows encoding groups as user-owned", () => {
-		const env = buildNonInteractiveEnv(undefined, { PYTHONUTF8: "0", LANG: "de_DE.UTF-8" }, "win32");
-
-		expect(env.PYTHONIOENCODING).toBeUndefined();
-		expect(env.PYTHONUTF8).toBeUndefined();
-		expect(env.LANG).toBeUndefined();
-		expect(env.LC_ALL).toBeUndefined();
-	});
-
-	it("preserves per-command Windows encoding groups as user-owned", () => {
-		const env = buildNonInteractiveEnv({ PYTHONUTF8: "0", LC_ALL: "en_US.UTF-8" }, {}, "win32");
-
-		expect(env.PYTHONIOENCODING).toBeUndefined();
-		expect(env.PYTHONUTF8).toBe("0");
-		expect(env.LANG).toBeUndefined();
-		expect(env.LC_ALL).toBe("en_US.UTF-8");
-	});
-
-	it("preserves inherited Windows LC category locales as user-owned", () => {
-		const env = buildNonInteractiveEnv(undefined, { LC_CTYPE: "en_US.UTF-8" }, "win32");
-
-		expect(env.LANG).toBeUndefined();
-		expect(env.LC_ALL).toBeUndefined();
-	});
-
-	it("does not force UTF-8 encoding defaults on non-Windows platforms", () => {
-		const env = buildNonInteractiveEnv(undefined, {}, "linux");
+	it("does not invent UTF-8 encoding defaults", () => {
+		const env = buildNonInteractiveEnv(undefined, {});
 
 		expect(env.PYTHONIOENCODING).toBeUndefined();
 		expect(env.PYTHONUTF8).toBeUndefined();
@@ -49,19 +15,18 @@ describe("buildNonInteractiveEnv", () => {
 	});
 
 	it("does not invent a bogus GPG_TTY", () => {
-		const env = buildNonInteractiveEnv(undefined, {}, "linux");
+		const env = buildNonInteractiveEnv(undefined, {});
 
 		expect(env).not.toHaveProperty("GPG_TTY");
 	});
 
 	it("preserves per-command GPG_TTY overrides", () => {
-		const env = buildNonInteractiveEnv({ GPG_TTY: "/dev/pts/7" }, {}, "linux");
+		const env = buildNonInteractiveEnv({ GPG_TTY: "/dev/pts/7" }, {});
 
 		expect(env.GPG_TTY).toBe("/dev/pts/7");
 	});
 
 	it("uses an executable SSH askpass rejector on POSIX", async () => {
-		if (process.platform === "win32") return;
 		const proc = Bun.spawn([NON_INTERACTIVE_ENV.SSH_ASKPASS], {
 			stdout: "ignore",
 			stderr: "ignore",
@@ -71,18 +36,16 @@ describe("buildNonInteractiveEnv", () => {
 	});
 
 	it("injects clap-compatible CI=true by default", () => {
-		expect(buildNonInteractiveEnv(undefined, {}, "linux").CI).toBe("true");
-		expect(buildNonInteractiveEnv(undefined, {}, "win32").CI).toBe("true");
+		expect(buildNonInteractiveEnv(undefined, {}).CI).toBe("true");
 	});
 
 	it("drops CI when PI_BASH_NO_CI or its legacy alias is set", () => {
-		expect(buildNonInteractiveEnv(undefined, { PI_BASH_NO_CI: "1" }, "linux")).not.toHaveProperty("CI");
-		expect(buildNonInteractiveEnv(undefined, { CLAUDE_BASH_NO_CI: "1" }, "linux")).not.toHaveProperty("CI");
-		expect(buildNonInteractiveEnv(undefined, { PI_BASH_NO_CI: "1" }, "win32")).not.toHaveProperty("CI");
+		expect(buildNonInteractiveEnv(undefined, { PI_BASH_NO_CI: "1" })).not.toHaveProperty("CI");
+		expect(buildNonInteractiveEnv(undefined, { CLAUDE_BASH_NO_CI: "1" })).not.toHaveProperty("CI");
 	});
 
 	it("lets a per-command CI override win over the opt-out", () => {
-		expect(buildNonInteractiveEnv({ CI: "0" }, { PI_BASH_NO_CI: "1" }, "linux").CI).toBe("0");
+		expect(buildNonInteractiveEnv({ CI: "0" }, { PI_BASH_NO_CI: "1" }).CI).toBe("0");
 	});
 });
 

@@ -90,7 +90,7 @@ const XD_SCHEME_NEAR_MISSES: Record<string, true> = { dx: true, xdd: true, xdt: 
 
 function assertWriteTargetAddressable(target: string, router: InternalUrlRouter): void {
 	const trimmed = target.trim();
-	if (path.win32.isAbsolute(trimmed) || router.canHandle(trimmed)) return;
+	if (router.canHandle(trimmed)) return;
 
 	const missingDelimiter = trimmed.match(XD_MISSING_DELIMITER_RE);
 	if (missingDelimiter) {

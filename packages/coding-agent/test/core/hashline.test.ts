@@ -476,14 +476,14 @@ describe("hashline — filename+tag path recovery", () => {
 		await withTempDir(async tempDir => {
 			const nestedDir = path.join(tempDir, "pkg", "test");
 			await fs.mkdir(nestedDir, { recursive: true });
-			const filePath = path.join(nestedDir, "autoresearch-tools.test.ts");
+			const filePath = path.join(nestedDir, "widget-tools.test.ts");
 			const source = "alpha\nbeta\ngamma\n";
 			await Bun.write(filePath, source);
 			const session = makeHashlineSession(tempDir);
 			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, source);
 
 			// The model issues the edit with only the basename — the wrong path.
-			const input = `${header("autoresearch-tools.test.ts", sourceTag)}\n${sameLineRange(tag(2, "beta"))}\n${repl("BETA")}\n`;
+			const input = `${header("widget-tools.test.ts", sourceTag)}\n${sameLineRange(tag(2, "beta"))}\n${repl("BETA")}\n`;
 			const result = await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
@@ -491,9 +491,9 @@ describe("hashline — filename+tag path recovery", () => {
 			expect(await Bun.file(filePath).text()).toBe("alpha\nBETA\ngamma\n");
 			// The resolved full path is surfaced so the next turn anchors on it.
 			expect(text).toContain("does not exist");
-			expect(text).toContain(path.join("pkg", "test", "autoresearch-tools.test.ts"));
+			expect(text).toContain(path.join("pkg", "test", "widget-tools.test.ts"));
 			// The stray cwd-relative file was never created.
-			expect(await Bun.file(path.join(tempDir, "autoresearch-tools.test.ts")).exists()).toBe(false);
+			expect(await Bun.file(path.join(tempDir, "widget-tools.test.ts")).exists()).toBe(false);
 		});
 	});
 

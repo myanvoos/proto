@@ -35,18 +35,9 @@ export interface GetAddonFilenamesInput {
 
 export function getAddonFilenames(input: GetAddonFilenamesInput): string[];
 
-export interface ShouldStageNodeModulesAddonInput {
-	platform: NodeJS.Platform | string;
-	isCompiledBinary: boolean;
-	nativeDir: string;
-}
-
-export function shouldStageNodeModulesAddon(input: ShouldStageNodeModulesAddonInput): boolean;
-
 export interface ResolveLoaderCandidatesInput {
 	addonFilenames: string[];
 	isCompiledBinary: boolean;
-	stageFromNodeModules?: boolean;
 	nativeDir: string;
 	leafPackageDir?: string | null;
 	execDir: string;
@@ -70,7 +61,6 @@ export interface NativeLoaderContext {
 	leafPackageDir: string | null;
 	versionedDir: string;
 	isCompiledBinary: boolean;
-	stageFromNodeModules: boolean;
 	selectedVariant: "modern" | "baseline" | null;
 	addonFilenames: string[];
 	addonLabel: string;

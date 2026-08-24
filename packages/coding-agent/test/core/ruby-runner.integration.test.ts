@@ -34,7 +34,7 @@ describe.skipIf(!SHOULD_RUN)("ruby runner subprocess", () => {
 		}
 	});
 
-	it.skipIf(process.platform === "win32")("runs in its own POSIX session", async () => {
+	it("runs in its own POSIX session", async () => {
 		using tempDir = TempDir.createSync("@ruby-runner-session-isolation-");
 		const kernel = await RubyKernel.start({ cwd: tempDir.path() });
 		try {

@@ -12,10 +12,9 @@ import { embeddedAddon } from "./embedded-addon.js";
  *
  * Owns every step between "Node imports `native/index.js`" and "the right
  * `pi_natives.<platform>-<arch>*.node` is required, validated, and returned":
- * platform/variant detection, candidate-path resolution, on-disk staging from
- * `node_modules` (Windows update safety), embedded-addon extraction (Bun
- * standalone binaries), version-sentinel validation, and the aggregated error
- * surface for diagnostic-friendly failures.
+ * platform/variant detection, candidate-path resolution, embedded-addon
+ * extraction (Bun standalone binaries), version-sentinel validation, and the
+ * aggregated error surface for diagnostic-friendly failures.
  *
  * `native/index.js` is reduced to one `loadNative()` call plus the generated
  * surface-area exports between `MARKER_START`/`MARKER_END` (rewritten by
@@ -31,7 +30,7 @@ import { embeddedAddon } from "./embedded-addon.js";
  * post-build `--reset` stub) is the authoritative compiled-mode signal.
  */
 
-const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"];
+const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"];
 
 /**
  * Streaming startup marker, enabled by `PI_DEBUG_STARTUP`. Local copy of the
@@ -103,40 +102,9 @@ export function getAddonFilenames({ tag, arch, variant }) {
 }
 
 /**
- * Decide whether the loader should mirror the package's `native/<filename>.node`
- * into the per-version cache directory (`~/.omp/natives/<version>/`) before loading.
- *
- * Windows-only safety net for `bun install -g` updates: when a previous `omp`
- * process is running, bun cannot overwrite the locked `.node` inside
- * `node_modules/@oh-my-pi/pi-natives/native/`, leaving an old binary next to a
- * newer `index.js` and producing `<sym> is not a function` crashes on the next
- * launch. Staging into the version-pinned cache:
- *   1. Gives every package version its own filesystem path, so concurrent omp
- *      processes never collide on the same file.
- *   2. Makes the running process keep its handle on the cache copy, freeing bun
- *      to overwrite the `node_modules` copy on subsequent updates.
- * Disabled on non-Windows (no file-lock problem), in workspace dev (`nativeDir`
- * is not inside a `node_modules` segment), and for compiled binaries (handled
- * by `maybeExtractEmbeddedAddon`).
- *
- * @param {{ platform: NodeJS.Platform | string; isCompiledBinary: boolean; nativeDir: string }} input
- * @returns {boolean}
- */
-export function shouldStageNodeModulesAddon({ platform, isCompiledBinary, nativeDir }) {
-	if (platform !== "win32") return false;
-	if (isCompiledBinary) return false;
-	// Check both separators independently of the host's `path.sep`: this helper
-	// is shared by the loader (running on Windows with `\`) and the test suite
-	// (typically running on POSIX hosts when CI executes the regression test).
-	const normalizedNativeDir = nativeDir.toLowerCase();
-	return normalizedNativeDir.includes("\\node_modules\\") || normalizedNativeDir.includes("/node_modules/");
-}
-
-/**
  * @param {{
  *   addonFilenames: string[];
  *   isCompiledBinary: boolean;
- *   stageFromNodeModules?: boolean;
  *   nativeDir: string;
  *   leafPackageDir?: string | null;
  *   execDir: string;
@@ -148,7 +116,6 @@ export function shouldStageNodeModulesAddon({ platform, isCompiledBinary, native
 export function resolveLoaderCandidates({
 	addonFilenames,
 	isCompiledBinary,
-	stageFromNodeModules = false,
 	nativeDir,
 	leafPackageDir = null,
 	execDir,
@@ -164,12 +131,9 @@ export function resolveLoaderCandidates({
 		path.join(versionedDir, filename),
 		path.join(userDataDir, filename),
 	]);
-	const stagedCandidates = stageFromNodeModules ? addonFilenames.map(filename => path.join(versionedDir, filename)) : [];
 	let releaseCandidates;
 	if (isCompiledBinary) {
 		releaseCandidates = [...compiledCandidates, ...baseReleaseCandidates];
-	} else if (stageFromNodeModules) {
-		releaseCandidates = [...stagedCandidates, ...leafCandidates, ...baseReleaseCandidates];
 	} else {
 		releaseCandidates = [...leafCandidates, ...baseReleaseCandidates];
 	}
@@ -318,42 +282,6 @@ function detectAvx2Support() {
 			if (leaf7 && /\bAVX2\b/i.test(leaf7)) return true;
 			const features = runCommand(sysctlBin, ["-n", "machdep.cpu.features"]);
 			if (features && /\bAVX2\b/i.test(features)) return true;
-		}
-		return false;
-	}
-
-	if (process.platform === "win32") {
-		// Under Bun, ask the kernel: PF_AVX2_INSTRUCTIONS_AVAILABLE == 40. Exact,
-		// and ~0.5 ms against ~270 ms for the PowerShell spawn it replaces on the
-		// startup path.
-		if (typeof Bun !== "undefined") {
-			try {
-				const { dlopen, FFIType } = createRequire(import.meta.url)("bun:ffi");
-				const kernel32 = dlopen("kernel32.dll", {
-					IsProcessorFeaturePresent: { args: [FFIType.u32], returns: FFIType.i32 },
-				});
-				try {
-					return kernel32.symbols.IsProcessorFeaturePresent(40) !== 0;
-				} finally {
-					kernel32.close();
-				}
-			} catch {
-				// No FFI (embedder policy, unusual host): fall through to the shell probe.
-			}
-		}
-		// Node embeds have no `bun:ffi`. `[System.Runtime.Intrinsics.X86.Avx2]`
-		// exists only on .NET Core, so `pwsh` (PowerShell 7) answers correctly
-		// while a stock `powershell.exe` (Windows PowerShell 5.1, .NET Framework)
-		// raises TypeNotFound and pins such hosts to the baseline addon.
-		for (const shell of ["pwsh.exe", "powershell.exe"]) {
-			const output = runCommand(shell, [
-				"-NoProfile",
-				"-NonInteractive",
-				"-Command",
-				"[System.Runtime.Intrinsics.X86.Avx2]::IsSupported",
-			]);
-			if (output && output.toLowerCase() === "true") return true;
-			if (output && output.toLowerCase() === "false") return false;
 		}
 		return false;
 	}
@@ -606,48 +534,6 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 	}
 }
 
-/**
- * Mirror `leafPackageDir ?? nativeDir` addon binaries to
- * `versionedDir/<filename>.node` on Windows installs so the running process
- * cache path, never on the `node_modules` copy that bun must overwrite on
- * update. No-op on non-Windows, in workspace dev, and for compiled binaries —
- * see `shouldStageNodeModulesAddon` for the gating rules.
- */
-function maybeStageNodeModulesAddon(ctx, errors) {
-	if (!ctx.stageFromNodeModules) return null;
-
-	let stagedPath = null;
-	for (const filename of ctx.addonFilenames) {
-		const sourcePath = path.join(ctx.leafPackageDir ?? ctx.nativeDir, filename);
-		const targetPath = path.join(ctx.versionedDir, filename);
-
-		if (fs.existsSync(targetPath)) {
-			stagedPath = stagedPath || targetPath;
-			continue;
-		}
-		if (!fs.existsSync(sourcePath)) continue;
-
-		try {
-			prepareNativeVersionDir(ctx.versionedDir);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			errors.push(`staged addon dir: ${message}`);
-			continue;
-		}
-
-		try {
-			// `copyFileSync` is atomic on Windows (CopyFileW) and avoids holding
-			// two large buffers in JS for the read/write dance.
-			fs.copyFileSync(sourcePath, targetPath);
-			stagedPath = stagedPath || targetPath;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			errors.push(`staged addon copy (${filename}): ${message}`);
-		}
-	}
-	return stagedPath;
-}
-
 
 /**
  * Before version sentinels were exported, published native addons still shared
@@ -758,7 +644,7 @@ function buildHelpMessage(ctx) {
 	return (
 		"If installed via npm/bun, try reinstalling: bun install @oh-my-pi/pi-natives\n" +
 		"If developing locally, build with: bun --cwd=packages/natives run build\n" +
-		"Explicit targets: bun scripts/bazel-natives.ts <target> --dest packages/natives/native"
+		"Explicit targets: sh scripts/build-natives.sh <target> --dest packages/natives/native"
 	);
 }
 
@@ -779,10 +665,7 @@ export function initLoaderContext(overrides = {}) {
 	const execDir = path.dirname(process.execPath);
 	const nativesDir = getNativesDir();
 	const versionedDir = path.join(nativesDir, packageVersion);
-	const userDataDir =
-		platform === "win32"
-			? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "proto")
-			: path.join(os.homedir(), ".local", "bin");
+	const userDataDir = path.join(os.homedir(), ".local", "bin");
 
 	const isCompiledBinary =
 		overrides.isCompiledBinary ??
@@ -791,23 +674,13 @@ export function initLoaderContext(overrides = {}) {
 			env: process.env,
 			importMetaUrl: import.meta.url,
 		});
-	const normalizedNativeDir = platform === "win32" ? nativeDir.toLowerCase() : nativeDir;
-	const isWorkspaceLoad =
-		!isCompiledBinary &&
-		!normalizedNativeDir.includes("\\node_modules\\") &&
-		!normalizedNativeDir.includes("/node_modules/");
+	const isWorkspaceLoad = !isCompiledBinary && !nativeDir.includes("/node_modules/");
 	const leafPackageDir =
 		isCompiledBinary || isWorkspaceLoad
 			? null
 			: overrides.leafPackageDir === undefined
 				? resolveLeafPackageDir(platformTag)
 				: overrides.leafPackageDir;
-	const stageFromNodeModules = shouldStageNodeModulesAddon({
-		platform,
-		isCompiledBinary,
-		nativeDir: normalizedNativeDir,
-	});
-
 	const selectedVariant = resolveCpuVariant(getVariantOverride());
 	const addonFilenames = getAddonFilenames({ tag: platformTag, arch: process.arch, variant: selectedVariant });
 	const addonLabel = selectedVariant ? `${platformTag} (${selectedVariant})` : platformTag;
@@ -815,7 +688,6 @@ export function initLoaderContext(overrides = {}) {
 	const candidates = resolveLoaderCandidates({
 		addonFilenames,
 		isCompiledBinary,
-		stageFromNodeModules,
 		nativeDir,
 		leafPackageDir,
 		execDir,
@@ -828,8 +700,8 @@ export function initLoaderContext(overrides = {}) {
 	// `scripts/release.ts` bumps the name in `crates/pi-natives/src/lib.rs` in
 	// lock-step with the version, so a `.node` from a different release
 	// physically cannot expose the symbol this loader is looking for. That
-	// turns the silent `<sym> is not a function` crash from a Windows
-	// locked-file update into an actionable load-time error.
+	// turns the silent `<sym> is not a function` crash into an actionable
+	// load-time error.
 	const versionSentinelExport = `__piNativesV${packageVersion.replace(/[^A-Za-z0-9]/g, "_")}`;
 
 	return {
@@ -839,7 +711,6 @@ export function initLoaderContext(overrides = {}) {
 		leafPackageDir,
 		versionedDir,
 		isCompiledBinary,
-		stageFromNodeModules,
 		selectedVariant,
 		addonFilenames,
 		addonLabel,
@@ -857,9 +728,8 @@ export function loadNative() {
 
 	const errors = [];
 	const embeddedCandidate = maybeExtractEmbeddedAddon(ctx, errors);
-	const stagedCandidate = embeddedCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
-	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
-	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
+	const runtimeCandidates =
+		typeof embeddedCandidate === "string" ? [embeddedCandidate, ...ctx.candidates] : ctx.candidates;
 
 	for (const candidate of runtimeCandidates) {
 		try {
@@ -867,7 +737,7 @@ export function loadNative() {
 			const bindings = require_(candidate);
 			validateLoadedBindings(ctx, bindings, candidate);
 			installNativeTokioRuntime(bindings);
-	        cleanupStaleNativeVersions({ nativesDir: ctx.nativesDir, currentVersion: ctx.packageVersion });
+			cleanupStaleNativeVersions({ nativesDir: ctx.nativesDir, currentVersion: ctx.packageVersion });
 			startupMarker("native:loadNative:done");
 			return bindings;
 		} catch (err) {

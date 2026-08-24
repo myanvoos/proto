@@ -47,16 +47,6 @@ describe("Chrome-for-Testing layout goldens", () => {
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/mac-arm64/chrome-mac-arm64.zip`,
 			executable: `/cache/chrome/mac_arm-${BUILD_ID}/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
 		},
-		{
-			platform: BrowserPlatform.WIN32,
-			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/win32/chrome-win32.zip`,
-			executable: `/cache/chrome/win32-${BUILD_ID}/chrome-win32/chrome.exe`,
-		},
-		{
-			platform: BrowserPlatform.WIN64,
-			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/win64/chrome-win64.zip`,
-			executable: `/cache/chrome/win64-${BUILD_ID}/chrome-win64/chrome.exe`,
-		},
 	] as const;
 
 	for (const golden of goldens) {
@@ -80,8 +70,6 @@ test("detectBrowserPlatform maps the current supported host", () => {
 		expect(platform).toBe(process.arch === "arm64" ? BrowserPlatform.MAC_ARM : BrowserPlatform.MAC);
 	else if (process.platform === "linux")
 		expect(platform).toBe(process.arch === "arm64" ? BrowserPlatform.LINUX_ARM : BrowserPlatform.LINUX);
-	else if (process.platform === "win32")
-		expect(platform).toBe(process.arch === "ia32" ? BrowserPlatform.WIN32 : BrowserPlatform.WIN64);
 });
 
 test("getInstalledBrowsers scans only valid cache installation names", async () => {

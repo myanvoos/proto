@@ -26,19 +26,18 @@ All host commands below run on `<CI_HOST>` (the single k3s node) as root.
 The base `ghcr.io/actions/actions-runner:latest` is a clean Ubuntu 24.04 runner.
 On a normal (GitHub-hosted-style) runner, the CI workflow installs its system
 dependencies at the start of every job: the cairo/pango native stack for canvas
-builds, `fd`/`ripgrep`/`imagemagick`, `bun`, `sccache`, Zig, the cargo-native
-helper CLIs (`cargo-nextest`, `cargo-zigbuild`, `cargo-xwin`), `bazelisk` with a
-pre-warmed pinned Bazel for the Bazel native pipeline, and a pinned Rust
-nightly with the cross targets/components. Inside a Kata microVM that is
+builds, `fd`/`ripgrep`/`imagemagick`, `bun`, `cmake`/`ninja` for the native C
+deps, the aarch64-gnu cross gcc and `musl-gcc` for host-native addon builds,
+`cargo-nextest`, and a pinned Rust nightly with the cross target/components.
+Inside a Kata microVM that is
 destroyed after a single job, paying that apt/bun/rustup/tool-download cost on
 **every** job is pure latency - the microVM starts cold each time.
 
 The preloaded image moves that work to build time. Every ephemeral runner then
 starts with the toolchain already present: apt deps are not re-fetched, `bun`,
-`cargo`/`rustc`, `sccache`, `zig`, `bazel`(isk), and the cargo helper CLIs are
-on `PATH`, and
-the pinned Rust toolchain is already the default so target/component installs in
-CI become no-ops.
+`cargo`/`rustc`, `cmake`/`ninja`, and `cargo-nextest` are on `PATH`, and the
+pinned Rust toolchain is already the default so target/component installs in CI
+become no-ops.
 
 ### Stay in sync with `setup-system-deps`
 
@@ -83,8 +82,8 @@ reproduced verbatim (it contains no secrets or redactable host identifiers; the
 #     tool and release workflows expect it
 #   - C/build toolchain the native + canvas builds need
 #   - bun (system-wide, on PATH)
-#   - sccache + Zig + cargo-nextest/cargo-zigbuild/cargo-xwin for native builds
-#   - rust nightly (pinned) + clippy/rustfmt/rust-analyzer + linux-arm64/windows-msvc targets
+#   - cmake/ninja + musl/aarch64 cross tools for the host-native addon builds
+#   - rust nightly (pinned) + clippy/rustfmt/rust-analyzer + linux-arm64 target
 #
 # Rebuild + reimport (see /root/omp-kata-runner.md) after bumping the ARGs below
 # or the apt set. Keep the apt set in sync with .github/actions/setup-system-deps.
@@ -92,24 +91,23 @@ FROM ghcr.io/actions/actions-runner:latest
 
 ARG RUST_NIGHTLY=nightly-2026-04-29
 ARG BUN_VERSION=1.4.0
-ARG SCCACHE_VERSION=0.15.0
-ARG ZIG_VERSION=0.16.0
+ARG CMAKE_VERSION=4.1.2
+ARG NINJA_VERSION=1.13.1
 
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Mirrors the "Install system deps" block in .github/workflows/ci.yml plus the
-# native/cross toolchain (clang/lld/llvm), the baked cache/tooling binaries, and
-# the GitHub CLI. The gh apt repo is added first so `gh` installs in the same apt
-# transaction.
+# Mirrors the "Install system deps" block in .github/actions/setup-system-deps
+# plus the native-build toolchain (aarch64 gnu cross gcc + musl-gcc for the
+# addon targets, clang/lld/llvm as a generic C toolchain) and the GitHub CLI.
+# The gh apt repo is added first so `gh` installs in the same apt transaction.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update \
  && apt-get install -y \
-      build-essential pkg-config curl ca-certificates git unzip xz-utils gh \
+      build-essential pkg-config curl ca-certificates git unzip xz-utils zstd gh \
       clang lld llvm \
-      libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+      gcc-aarch64-linux-gnu musl-tools \
       fd-find ripgrep imagemagick \
  && ln -sf "$(command -v fdfind)" /usr/local/bin/fd \
  && ln -sf /usr/bin/convert /usr/local/bin/magick \
@@ -120,15 +118,32 @@ ENV BUN_INSTALL=/usr/local
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && bun --version
 
-# Pinned native-build helpers, system-wide.
-RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-      | tar -xz -C /tmp \
- && install -m755 "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache \
- && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl"
-RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
- && tar -xJf /tmp/zig.tar.xz -C /opt \
- && ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig \
- && rm -f /tmp/zig.tar.xz
+# cmake + ninja for native C deps (audiopus_sys builds bundled libopus via
+# CMake). Pinned to the same versions as .github/actions/ensure-cmake, which
+# no-ops when these are present.
+RUN curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" -o /tmp/cmake.tar.gz \
+ && tar -xzf /tmp/cmake.tar.gz -C /opt \
+ && ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake" /usr/local/bin/cmake \
+ && ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/ctest" /usr/local/bin/ctest \
+ && rm -f /tmp/cmake.tar.gz
+RUN curl -fsSL "https://github.com/ninja-build/ninja/releases/download/v${NINJA_VERSION}/ninja-linux.zip" -o /tmp/ninja.zip \
+ && unzip -o /tmp/ninja.zip -d /usr/local/bin \
+ && chmod +x /usr/local/bin/ninja \
+ && rm -f /tmp/ninja.zip
+
+# Pre-own ~/.cache for the runner user: kubelet otherwise creates it root-owned
+# when it materializes parent dirs of subPath mountpoints, breaking sibling
+# cache dirs.
+RUN install -d -o 1001 -g 1001 -m 0755 /home/runner/.cache
+
+# Cross-linker wiring for the addon targets scripts/build-natives.sh may build
+# from this amd64 image: aarch64 gnu links via the Debian cross gcc; musl-gcc
+# covers x86_64 musl. NOTE: aarch64-musl has no apt-shippable cross toolchain —
+# that leg must run on an arm64 host (ubuntu-24.04-arm), where the script's
+# CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_CC=musl-gcc resolves natively.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_CC=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR=aarch64-linux-gnu-ar
 
 # rust toolchain + cargo helpers for the runner user; rustup default == pinned
 # nightly so Rust setup becomes a no-op on the preloaded image.
@@ -139,15 +154,11 @@ ENV RUSTUP_HOME=/home/runner/.rustup \
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain "${RUST_NIGHTLY}" --profile minimal \
  && rustup component add clippy rustfmt rust-analyzer \
- && rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-msvc \
- && cargo install --locked cargo-nextest cargo-zigbuild cargo-xwin \
+ && rustup target add aarch64-unknown-linux-gnu \
+ && cargo install --locked cargo-nextest \
  && cargo --version \
  && rustc --version \
- && sccache --version \
- && zig version \
- && cargo-nextest --version \
- && cargo-zigbuild --help >/dev/null \
- && cargo-xwin --help >/dev/null
+ && cargo-nextest --version
 ```
 
 ### Stage-by-stage annotation
@@ -181,8 +192,9 @@ In order:
     ca-certificates git unzip xz-utils gh clang lld llvm`.
     `build-essential` + `pkg-config` are needed by the native and canvas builds;
     `gh` is used by release workflows and the coding-agent GitHub tool; `clang
-    lld llvm` are the MSVC-cross prerequisites that used to be apt-installed per
-    job.
+    lld llvm` stay as a generic C toolchain; `gcc-aarch64-linux-gnu` and
+    `musl-tools` provide the cross linkers/compilers for the aarch64-gnu and
+    x86_64-musl addon targets.
   - **canvas / cairo native stack:** `libcairo2-dev libpango1.0-dev libjpeg-dev
     libgif-dev librsvg2-dev` - the `-dev` headers the canvas/rsvg native modules
     compile against.
@@ -202,12 +214,11 @@ In order:
 `bun-v${BUN_VERSION}`, and `bun --version` fails the build if the install is
 broken.
 
-**Pinned native-build helpers (two root `RUN`s).** `sccache` is downloaded as a
-version-pinned GitHub release tarball and installed to `/usr/local/bin`; Zig is
-downloaded as the pinned release archive, unpacked under `/opt`, and symlinked
-into `/usr/local/bin/zig`. Baking these two removes the per-job
-`mozilla-actions/sccache-action` and `mlugg/setup-zig` downloads from the
-self-hosted path.
+**Native-build helpers (root `RUN`s).** `cmake` and `ninja` are pinned release
+downloads installed system-wide — audiopus_sys builds its bundled libopus via
+CMake on every native addon build. The apt set adds the aarch64 gnu cross gcc
+and musl-gcc so `scripts/build-natives.sh` can build the linux-arm64 and musl
+targets, with `CARGO_TARGET_*` env wiring baked into the image.
 
 **Rust toolchain (`USER runner` + rustup `RUN`).** The toolchain is installed as
 the **`runner` user** - the UID jobs execute as - so cargo/rustc are owned by and
@@ -215,12 +226,10 @@ visible to the job without sudo. `RUSTUP_HOME`/`CARGO_HOME` are pinned under
 `/home/runner`, and `~/.cargo/bin` is prepended to `PATH`. rustup installs the
 pinned nightly as the **default toolchain** (`--profile minimal`), then adds the
 `clippy`, `rustfmt`, and `rust-analyzer` components plus the
-`aarch64-unknown-linux-gnu` (Linux arm64) and `x86_64-pc-windows-msvc` (Windows
-cross) targets. The same layer also `cargo install`s the Rust-native helper CLIs
-`cargo-nextest`, `cargo-zigbuild`, and `cargo-xwin`, so the self-hosted native
-build path no longer fetches those tools job-by-job. Because the default toolchain
-already *is* the pinned nightly with these components/targets, the corresponding
-Rust setup steps in CI become no-ops - the warm-start payoff.
+`aarch64-unknown-linux-gnu` (Linux arm64) target, and `cargo install`s
+`cargo-nextest`. Because the default toolchain already *is* the pinned nightly
+with these components/targets, the corresponding Rust setup steps in CI become
+no-ops - the warm-start payoff.
 
 ---
 
@@ -254,10 +263,10 @@ DOCKER_BUILDKIT=1 docker build -t "$IMAGE" -t omp-kata-runner:preloaded .
 echo "==> [2/5] verifying baked tools"
 docker run --rm --entrypoint bash "$IMAGE" -lc '
   set -e
-  for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zig cargo-nextest cargo-zigbuild cargo-xwin; do
+  for b in gh fd rg magick bun cargo rustc pkg-config clang lld zstd cmake ninja cargo-nextest musl-gcc aarch64-linux-gnu-gcc; do
     command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
   done
-  echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(sccache --version | awk '\''{print $2}'\'') | zig $(zig version) | gh $(gh --version | head -1 | cut -d\" \" -f3)"
+  echo "tools OK | bun $(bun --version) | rust $(rustc --version) | cmake $(cmake --version | head -1) | ninja $(ninja --version) | gh $(gh --version | head -1)"
 '
 
 echo "==> [3/5] importing into k3s containerd (k8s.io namespace)"
@@ -296,9 +305,9 @@ BuildKit + the docker layer cache make an unchanged rebuild near-instant.
 
 **[2/5] verify baked tools.** Runs the freshly built image with a bash entrypoint
 and asserts every expected binary is on `PATH`
-(`gh fd rg magick bun cargo rustc pkg-config clang lld sccache zig cargo-nextest cargo-zigbuild cargo-xwin`),
+(`gh fd rg magick bun cargo rustc pkg-config clang lld zstd cmake ninja cargo-nextest musl-gcc aarch64-linux-gnu-gcc`),
 failing the whole script if any is missing, then prints the key version tuple
-(bun / rust / sccache / zig / gh). This catches a broken apt set, missing shim,
+(bun / rust / cmake / ninja / gh). This catches a broken apt set, missing shim,
 or bad toolchain pin **before** anything touches the cluster.
 
 **[3/5] import into k3s containerd.**
@@ -418,10 +427,10 @@ standalone:
 ```bash
 docker run --rm --entrypoint bash omp-kata-runner:preloaded -lc '
   set -e
-  for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zig cargo-nextest cargo-zigbuild cargo-xwin; do
+  for b in gh fd rg magick bun cargo rustc pkg-config clang lld zstd cmake ninja cargo-nextest musl-gcc aarch64-linux-gnu-gcc; do
     command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
   done
-  echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zig $(zig version) | gh $(set -- $(gh --version | head -1); echo "$3")"
+  echo "tools OK | bun $(bun --version) | rust $(rustc --version) | cmake $(cmake --version | head -1) | ninja $(ninja --version) | gh $(gh --version | head -1)"
 '
 ```
 
@@ -464,5 +473,4 @@ afterward as shown.
 ---
 
 Continue to [04-arc-and-caching.md](./04-arc-and-caching.md) for how ARC
-wires in the shared bazel-remote/Bun/Cargo cache storage, and locks down
-runner egress.
+wires in the shared Bun/Cargo cache PVC, and locks down runner egress.

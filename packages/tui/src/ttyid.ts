@@ -14,7 +14,7 @@ export function getTtyPath(): string | null {
 		} catch {
 			return null;
 		}
-	} else if (os.platform() !== "win32") {
+	} else {
 		try {
 			const libName = os.platform() === "darwin" ? "libSystem.B.dylib" : "libc.so.6";
 			const lib = dlopen(libName, {

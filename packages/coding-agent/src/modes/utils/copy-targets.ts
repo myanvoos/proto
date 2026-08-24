@@ -52,7 +52,6 @@ export interface CopyTarget {
 /** Minimal session surface needed to assemble copy targets (eases testing). */
 export interface CopySource {
 	readonly messages: readonly AgentMessage[];
-	getLastVisibleHandoffText(): string | undefined;
 }
 
 /** Cap on how many recent assistant messages the picker lists. */
@@ -319,8 +318,7 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 /**
  * Assemble the unified `/copy` target tree: recent assistant messages
  * (most recent first, each drillable into its code blocks), runnable command
- * targets interleaved after the assistant message that issued them, and a
- * fresh-handoff fallback when no assistant message exists yet.
+ * targets interleaved after the assistant message that issued them.
  */
 export function buildCopyTargets(source: CopySource): CopyTarget[] {
 	const targets: CopyTarget[] = [];
@@ -360,17 +358,6 @@ export function buildCopyTargets(source: CopySource): CopyTarget[] {
 	}
 
 	if (messageRank === 0) {
-		const handoff = source.getLastVisibleHandoffText();
-		if (handoff) {
-			targets.unshift({
-				id: "handoff",
-				label: "Handoff context",
-				hint: pluralLines(handoff),
-				preview: handoff,
-				content: handoff,
-				copyMessage: "Copied handoff context to clipboard",
-			});
-		}
 		appendCommands(pendingCommands);
 	}
 

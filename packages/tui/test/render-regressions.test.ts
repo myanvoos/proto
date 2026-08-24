@@ -2253,9 +2253,11 @@ describe("TUI terminal-state regressions", () => {
 				tui.stop();
 			}
 		});
-		it("treats unknown Windows viewport state as scrolled", async () => {
+		it("treats unknown Windows-viewport state as scrolled", async () => {
 			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+			const originalWslDistro = process.env.WSL_DISTRO_NAME;
+			process.env.WSL_DISTRO_NAME = "Ubuntu";
 			const term = new UnknownViewportTerminal(32, 5);
 			const tui = new TUI(term);
 			const component = new MutableLinesComponent(rows("line-", 12));
@@ -2267,7 +2269,6 @@ describe("TUI terminal-state regressions", () => {
 				term.scrollLines(-2);
 				const before = term.getBufferPosition();
 				expect(before.viewportY).toBeGreaterThan(0);
-
 				component.setLines(rows("line-", 8));
 				tui.requestRender();
 				await settle(term);
@@ -2278,6 +2279,8 @@ describe("TUI terminal-state regressions", () => {
 				expect(term.getBufferPosition().viewportY).toBe(before.viewportY);
 			} finally {
 				Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+				if (originalWslDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+				else process.env.WSL_DISTRO_NAME = originalWslDistro;
 				tui.stop();
 			}
 		});
@@ -2667,10 +2670,10 @@ describe("TUI terminal-state regressions", () => {
 
 		it("does not trust a single stale at-bottom probe for live rebuilds", async () => {
 			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 			try {
 				await withEnvPatch(
-					{ TMUX: undefined, STY: undefined, ZELLIJ: undefined, WT_SESSION: undefined },
+					{ TMUX: undefined, STY: undefined, ZELLIJ: undefined, WT_SESSION: undefined, WSL_DISTRO_NAME: "Ubuntu" },
 					async () => {
 						const term = new StaleBottomViewportTerminal(32, 5, 200);
 						const tui = new TUI(term);
@@ -2833,18 +2836,18 @@ describe("TUI terminal-state regressions", () => {
 			}
 		});
 
-		it("paints a viewport-saturating pure-append on native Windows Terminal (no \\x1b[3J)", async () => {
-			// Regression: on native Windows the viewport probe is permanently
+		it("paints a viewport-saturating pure-append under WSL + Windows Terminal (no \\x1b[3J)", async () => {
+			// Regression: on ConPTY hosts the viewport probe is permanently
 			// `undefined` (ProcessTerminal does not implement it — see #1635/#1746). The
 			// `15.7.5` #1635 fix routed pure-append-over-saturated-viewport frames to
 			// `deferredMutation` here, which is a literal no-op. That froze the editor
 			// on the very keystroke that grows `lines.length` past the viewport (the
 			// wrap keystroke) until the next prompt-submit checkpoint flushed.
 			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 			try {
 				await withEnvPatch(
-					{ WT_SESSION: "wt-test", TMUX: undefined, STY: undefined, ZELLIJ: undefined },
+					{ WT_SESSION: "wt-test", WSL_DISTRO_NAME: "Ubuntu", TMUX: undefined, STY: undefined, ZELLIJ: undefined },
 					async () => {
 						const term = new UnknownViewportTerminal(32, 5);
 						const tui = new TUI(term);
@@ -2888,17 +2891,18 @@ describe("TUI terminal-state regressions", () => {
 			}
 		});
 
-		it("paints a slash-command-shaped structural mutation on native Windows Terminal (no \\x1b[3J)", async () => {
+		it("paints a slash-command-shaped structural mutation under WSL + Windows Terminal (no \\x1b[3J)", async () => {
 			// Sibling regression: `/plan`, `/resume`, model switches, role-badge flips,
 			// status-line toggles — any structural offscreen mutation — also routed to
-			// `deferredMutation` under WT, so the toggle never painted until the next
-			// checkpoint. After the fix the planner falls back to `viewportRepaint`
-			// instead, painting the visible window without emitting `\x1b[3J`.
+			// `deferredMutation` under ConPTY hosts, so the toggle never painted until
+			// the next checkpoint. After the fix the planner falls back to
+			// `viewportRepaint` instead, painting the visible window without emitting
+			// `\x1b[3J`.
 			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 			try {
 				await withEnvPatch(
-					{ WT_SESSION: "wt-test", TMUX: undefined, STY: undefined, ZELLIJ: undefined },
+					{ WT_SESSION: "wt-test", WSL_DISTRO_NAME: "Ubuntu", TMUX: undefined, STY: undefined, ZELLIJ: undefined },
 					async () => {
 						const term = new UnknownViewportTerminal(32, 5);
 						const tui = new TUI(term);

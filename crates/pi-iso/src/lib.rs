@@ -6,7 +6,6 @@
 //! - **macOS** uses `clonefile(2)` to seed an APFS copy-on-write clone.
 //! - **Linux** mounts a kernel `overlay` filesystem, falling back to
 //!   `fuse-overlayfs` when the syscall is denied.
-//! - **Windows** projects an existing tree through `ProjFS`.
 //! - **`Rcopy`** is the cross-platform fallback: `git worktree` if `lower` is a
 //!   git repo, plain recursive copy otherwise.
 //!
@@ -19,7 +18,7 @@
 //! cheap short-circuit before doing a content diff.
 
 #![cfg_attr(
-	not(any(target_os = "macos", target_os = "linux", windows)),
+	not(any(target_os = "macos", target_os = "linux")),
 	allow(unused_imports, dead_code, reason = "platform without an isolation backend")
 )]
 
@@ -32,9 +31,7 @@ mod btrfs;
 mod diff;
 mod linux_reflink;
 mod overlayfs;
-mod projfs;
 mod rcopy;
-mod windows_block_clone;
 mod zfs;
 
 pub use diff::{ChangeKind, Diff, FileChange};
@@ -56,10 +53,6 @@ pub enum BackendKind {
 	/// Kernel `overlay` filesystem (Linux), with optional `fuse-overlayfs`
 	/// fallback.
 	Overlayfs,
-	/// Windows `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block clone tree (NTFS/ReFS).
-	WindowsBlockClone,
-	/// Windows Projected File System.
-	Projfs,
 	/// `git worktree` when `lower` is a git repo, otherwise plain recursive
 	/// copy. Always available; the universal fallback.
 	Rcopy,
@@ -74,8 +67,6 @@ impl BackendKind {
 			Self::Zfs => "zfs",
 			Self::LinuxReflink => "linux-reflink",
 			Self::Overlayfs => "overlayfs",
-			Self::WindowsBlockClone => "windows-block-clone",
-			Self::Projfs => "projfs",
 			Self::Rcopy => "rcopy",
 		}
 	}
@@ -93,8 +84,6 @@ impl BackendKind {
 			"zfs" => Self::Zfs,
 			"linux-reflink" | "reflink" => Self::LinuxReflink,
 			"overlayfs" => Self::Overlayfs,
-			"windows-block-clone" | "block-clone" => Self::WindowsBlockClone,
-			"projfs" => Self::Projfs,
 			"rcopy" => Self::Rcopy,
 			_ => return None,
 		})
@@ -112,11 +101,7 @@ impl BackendKind {
 		{
 			Self::Overlayfs
 		}
-		#[cfg(windows)]
-		{
-			Self::Projfs
-		}
-		#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+		#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 		{
 			Self::Rcopy
 		}
@@ -133,10 +118,7 @@ const LINUX_AUTO_ORDER: &[BackendKind] = &[
 	BackendKind::Overlayfs,
 	BackendKind::Rcopy,
 ];
-#[cfg(windows)]
-const WINDOWS_AUTO_ORDER: &[BackendKind] =
-	&[BackendKind::WindowsBlockClone, BackendKind::Projfs, BackendKind::Rcopy];
-#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const FALLBACK_AUTO_ORDER: &[BackendKind] = &[BackendKind::Rcopy];
 
 impl fmt::Display for BackendKind {
@@ -169,8 +151,8 @@ impl ProbeResult {
 /// Error returned by every backend operation.
 ///
 /// `Unavailable` is the only variant callers are expected to treat specially —
-/// it indicates the platform prerequisite is missing (no `ProjFS` DLL, no
-/// `overlay` support, etc.) and the workload should fall back rather than
+/// it indicates the platform prerequisite is missing (no `overlay` support,
+/// etc.) and the workload should fall back rather than
 /// surface a hard failure.
 #[derive(Debug, Clone)]
 pub enum IsoError {
@@ -230,7 +212,7 @@ pub(crate) fn command_failed(
 /// for tearing them down in [`stop`](Self::stop).
 ///
 /// `start` / `stop` are synchronous because the platform primitives they
-/// wrap (`mount`, `clonefile`, `PrjStartVirtualizing`) are blocking
+/// wrap (`mount`, `clonefile`) are blocking
 /// syscalls that callers are expected to drive from `spawn_blocking`.
 /// [`diff`](Self::diff) is async because it does heavy I/O — walking
 /// trees, reading files, spawning git — and benefits from the runtime
@@ -252,8 +234,7 @@ pub trait IsolationBackend: Send + Sync {
 	/// content comparison.
 	///
 	/// Backends are free to override when they know a cheaper path —
-	/// overlayfs can scan the upper dir, `ProjFS` can query the placeholder
-	/// set — but the default is correct everywhere.
+	/// overlayfs can scan the upper dir — but the default is correct everywhere.
 	async fn diff(&self, lower: &Path, merged: &Path) -> IsoResult<Diff> {
 		diff::default_diff(lower, merged).await
 	}
@@ -271,7 +252,7 @@ pub fn default_backend() -> &'static dyn IsolationBackend {
 /// Look up a backend by [`BackendKind`].
 ///
 /// Every kind is dispatchable in every build; backends that aren't compiled
-/// in for the current target (`Apfs` off Linux/macOS, `Projfs` off Windows…)
+/// in for the current target (`Apfs` off Linux/macOS, `Overlayfs` off macOS…)
 /// return their own platform stub which fails
 /// [`probe`](IsolationBackend::probe) with `available = false` and rejects
 /// [`start`](IsolationBackend::start) with [`IsoError::Unavailable`]. This way
@@ -284,8 +265,6 @@ pub fn backend(kind: BackendKind) -> &'static dyn IsolationBackend {
 		BackendKind::Zfs => zfs::backend(),
 		BackendKind::LinuxReflink => linux_reflink::backend(),
 		BackendKind::Overlayfs => overlayfs::backend(),
-		BackendKind::WindowsBlockClone => windows_block_clone::backend(),
-		BackendKind::Projfs => projfs::backend(),
 		BackendKind::Rcopy => &rcopy::RcopyBackend,
 	}
 }
@@ -309,11 +288,7 @@ pub const fn auto_order() -> &'static [BackendKind] {
 	{
 		LINUX_AUTO_ORDER
 	}
-	#[cfg(windows)]
-	{
-		WINDOWS_AUTO_ORDER
-	}
-	#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+	#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 	{
 		FALLBACK_AUTO_ORDER
 	}

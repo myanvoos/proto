@@ -51,7 +51,6 @@ const PROMPT_GLOBS = [
 	"packages/coding-agent/src/prompts/**/*.md",
 	"packages/coding-agent/src/commit/prompts/*.md",
 	"packages/coding-agent/src/commit/agentic/prompts/*.md",
-	"packages/coding-agent/src/autoresearch/*.md",
 	"packages/coding-agent/src/discovery/builtin-rules/*.md",
 	"packages/agent/src/compaction/prompts/*.md",
 	"packages/ai/src/prompts/*.md",

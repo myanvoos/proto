@@ -244,11 +244,8 @@ const LOCAL_BIN_PATHS: Array<{ markers: string[]; binDir: string }> = [
 	{ markers: ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"], binDir: "node_modules/.bin" },
 	// Python - check virtual environment bin directories
 	{ markers: PYTHON_ROOT_MARKERS, binDir: ".venv/bin" },
-	{ markers: PYTHON_ROOT_MARKERS, binDir: ".venv/Scripts" },
 	{ markers: PYTHON_ROOT_MARKERS, binDir: "venv/bin" },
-	{ markers: PYTHON_ROOT_MARKERS, binDir: "venv/Scripts" },
 	{ markers: PYTHON_ROOT_MARKERS, binDir: ".env/bin" },
-	{ markers: PYTHON_ROOT_MARKERS, binDir: ".env/Scripts" },
 	// Ruby - check vendor bundle and binstubs
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "vendor/bundle/bin" },
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "bin" },
@@ -256,26 +253,11 @@ const LOCAL_BIN_PATHS: Array<{ markers: string[]; binDir: string }> = [
 	{ markers: ["go.mod", "go.sum", "go.work"], binDir: "bin" },
 ];
 
-const WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS = [".exe", ".cmd", ".bat"] as const;
-
-function resolveLocalCommand(basePath: string): string | null {
-	if (fs.existsSync(basePath)) return basePath;
-	if (process.platform !== "win32") return null;
-
-	// Package managers write Windows launchers with executable suffixes in node_modules/.bin.
-	for (const extension of WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS) {
-		const candidate = `${basePath}${extension}`;
-		if (fs.existsSync(candidate)) return candidate;
-	}
-
-	return null;
-}
-
 function resolveCommandFromLocalRoot(command: string, cwd: string): string | null {
 	for (const { markers, binDir } of LOCAL_BIN_PATHS) {
 		if (!hasRootMarkers(cwd, markers)) continue;
-		const resolved = resolveLocalCommand(path.join(cwd, binDir, command));
-		if (resolved) return resolved;
+		const candidate = path.join(cwd, binDir, command);
+		if (fs.existsSync(candidate)) return candidate;
 	}
 	return null;
 }

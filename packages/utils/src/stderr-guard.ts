@@ -39,7 +39,6 @@ let libcFdOpsCache: LibcFdOps | null | undefined;
 function libcFdOps(): LibcFdOps | null {
 	if (libcFdOpsCache !== undefined) return libcFdOpsCache;
 	libcFdOpsCache = null;
-	if (process.platform === "win32") return null;
 	// Darwin: dyld resolves libSystem from the shared cache. Linux: glibc
 	// first, then the generic soname for musl-style layouts.
 	const candidates =

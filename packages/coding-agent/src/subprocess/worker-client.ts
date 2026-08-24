@@ -1,20 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	$env,
-	isBunTestRuntime,
-	isCompiledBinary,
-	logger,
-	postmortem,
-	stripWindowsExtendedLengthPathPrefix,
-	workerHostEntry,
-} from "@oh-my-pi/pi-utils";
+import { $env, isBunTestRuntime, isCompiledBinary, logger, postmortem, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 
 /**
  * Shared lifecycle scaffolding for the ONNX inference subprocess clients
- * (speech-to-text, tiny-model titles/completions, TTS).
+ * (tiny-model titles/completions).
  * Each runs `onnxruntime-node` inside a dedicated Bun child process so the NAPI
  * constructor/finalizer never executes in the main agent address space — those
  * destructors segfault Bun on shutdown (issues #1606 / #1607 / #3031).
@@ -111,7 +103,7 @@ export interface WorkerSpawnCommand {
  * IPC handles more reliably under `bun test`.
  */
 export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
-	const executable = stripWindowsExtendedLengthPathPrefix(process.execPath);
+	const executable = process.execPath;
 	if (isCompiledBinary()) return { cmd: [executable, workerArg] };
 	const hostEntry = workerHostEntry();
 	if (hostEntry) {
@@ -179,7 +171,7 @@ export function inferenceWorkerEnv(overlay?: Record<string, string>): Record<str
  * `ReadableStream` pipes: even an unref'd child with a piped stderr stream can
  * keep the parent event loop alive. After the worker exits, the last
  * {@link STDERR_TAIL_LIMIT_BYTES} are appended to the `onExit` error so
- * `tts/…: worker error` lines carry the actual stack instead of a bare
+ * worker-error lines carry the actual stack instead of a bare
  * exit code (issue #4324). The child is `unref`'d outside `bun test` so an idle
  * worker never blocks process exit. `exitLabel` prefixes the worker-error
  * message surfaced for an unexpected (non-intentional) exit.
@@ -219,7 +211,6 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stdout: "ignore",
 		stderr: stderrCapture.target,
 		serialization: "advanced",
-		windowsHide: true,
 		ipc(message) {
 			for (const handler of inbound) handler(message as Outbound);
 		},

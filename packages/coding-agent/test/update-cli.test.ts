@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, type Mock, spyOn, vi } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
@@ -30,7 +30,6 @@ import {
 	shouldForceBinaryUpdate,
 	sweepStaleUpdateArtifacts,
 	updateViaBinaryAt,
-	updateViaShimTakeover,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import Update from "@oh-my-pi/pi-coding-agent/commands/update";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -132,12 +131,6 @@ describe("update-cli install target detection", () => {
 		expect(method).toBe("npm");
 	});
 
-	it("uses npm update for Windows npm command shims even when no package-manager bin dirs were detected", () => {
-		const method = resolveUpdateMethodForTest("C:\\Users\\test\\AppData\\Roaming\\npm\\proto.cmd", undefined);
-
-		expect(method).toBe("npm");
-	});
-
 	it("uses binary update when a plain file in the npm global bin dir is the standalone binary, not an npm symlink", () => {
 		// Regression: with `npm prefix -g` pointed at the installer's default
 		// (~/.local), directory containment alone misclassified the standalone
@@ -157,26 +150,6 @@ describe("update-cli install target detection", () => {
 		});
 
 		expect(method).toBe("binary");
-	});
-
-	it("keeps bun update for regular-file entries in the bun global bin dir on Windows, where bun writes .exe shims", () => {
-		// On Windows a bun-managed global install is a regular-file .exe
-		// launcher, not a symlink, so the standalone-binary override must not
-		// apply there — it would clobber the shim with a raw binary. Paths use
-		// forward slashes so the lexical containment check works on the POSIX
-		// host running this suite; the platform gate is what is under test.
-		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-		if (!platformDescriptor) throw new Error("process.platform descriptor missing");
-		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
-		try {
-			const method = resolveUpdateMethodForTest("C:/Users/test/.bun/bin/proto.exe", "C:/Users/test/.bun/bin", {
-				ompIsRegularFile: true,
-			});
-
-			expect(method).toBe("bun");
-		} finally {
-			Object.defineProperty(process, "platform", platformDescriptor);
-		}
 	});
 
 	it("still uses npm update when the npm global bin entry is a package-manager symlink, not a plain file", () => {
@@ -217,7 +190,7 @@ describe("update-cli install target detection", () => {
 		await fs.mkdir(npmBinDir, { recursive: true });
 		await fs.mkdir(path.dirname(packagePath), { recursive: true });
 		await Bun.write(checkoutCli, "linked checkout");
-		await fs.symlink(checkoutPath, packagePath, "junction");
+		await fs.symlink(checkoutPath, packagePath, "dir");
 		await fs.symlink(path.relative(npmBinDir, path.join(packagePath, "dist", "cli.js")), aliasPath);
 
 		const target = resolveUpdateTargetFromPath(aliasPath, undefined, {
@@ -304,7 +277,7 @@ describe("update-cli install target detection", () => {
 		await fs.mkdir(bunBinDir, { recursive: true });
 		await fs.mkdir(path.dirname(packagePath), { recursive: true });
 		await Bun.write(checkoutCli, "linked checkout");
-		await fs.symlink(checkoutPath, packagePath, "junction");
+		await fs.symlink(checkoutPath, packagePath, "dir");
 		await fs.symlink(path.relative(bunBinDir, path.join(packagePath, "dist", "cli.js")), aliasPath);
 
 		const target = resolveUpdateTargetFromPath(aliasPath, bunBinDir, {
@@ -378,13 +351,13 @@ describe("update-cli package manager commands", () => {
 	});
 
 	it("pins npm package installs to the official registry and the checked native package versions", () => {
-		const args = buildNpmInstallArgs("16.3.15", "win32-x64");
+		const args = buildNpmInstallArgs("16.3.15", "linux-arm64");
 
 		expect(args.slice(0, 2)).toEqual(["install", "-g"]);
 		expect(args).toContain("--registry=https://registry.npmjs.org/");
 		expect(args).toContain("@oh-my-pi/pi-coding-agent@16.3.15");
 		expect(args).toContain("@oh-my-pi/pi-natives@16.3.15");
-		expect(args).toContain("@oh-my-pi/pi-natives-win32-x64@16.3.15");
+		expect(args).toContain("@oh-my-pi/pi-natives-linux-arm64@16.3.15");
 	});
 });
 
@@ -419,7 +392,7 @@ describe("update-cli npm rename contract", () => {
 	it("adds --force to npm argv only for rename migrations so the old package's bin can be clobbered", () => {
 		const packages = { pkg: "@new/proto", natives: "@new/natives" };
 		expect(buildNpmInstallArgs("17.0.0", "linux-x64", packages, { force: true })).toContain("--force");
-		expect(buildNpmInstallArgs("16.3.15", "win32-x64")).not.toContain("--force");
+		expect(buildNpmInstallArgs("16.3.15", "darwin-x64")).not.toContain("--force");
 	});
 
 	it("removes the old agent package and its natives companions when both names moved", () => {
@@ -549,7 +522,7 @@ describe("update-cli bun install command", () => {
 		// file and aborted at validateLoadedBindings with `The .node file on
 		// disk is from a different release than this loader`. See
 		// https://github.com/can1357/oh-my-pi/issues/1824.
-		for (const tag of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
+		for (const tag of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]) {
 			const args = buildBunInstallArgs("15.9.0", tag);
 			expect(args).toContain("@oh-my-pi/pi-natives@15.9.0");
 			expect(args).toContain(`@oh-my-pi/pi-natives-${tag}@15.9.0`);
@@ -971,9 +944,9 @@ describe("update-cli binary replacement", () => {
 
 describe("update-cli binary replacement on locked backups", () => {
 	it("treats an EPERM on backup cleanup as a successful, completed update", async () => {
-		// Regression: on Windows the binary moved aside during the swap is still
-		// the running process image, so unlinking it throws EPERM. That cleanup
-		// failure must not turn a verified swap into "Update failed" (issue #845).
+		// Regression: when unlinking the moved-aside backup fails (EPERM on a
+		// still-locked file), that cleanup failure must not turn a verified swap
+		// into "Update failed" (issue #845).
 		const dir = await makeTempDir();
 		const targetPath = path.join(dir, "proto.exe");
 		const tempPath = `${targetPath}.new`;
@@ -1081,151 +1054,6 @@ describe("update-cli binary-only release gating", () => {
 	it("keeps package-manager updates within the same major and on downgrades", () => {
 		expect(shouldForceBinaryUpdate({ version: "1.10.0" }, "1.9.0")).toBe(false);
 		expect(shouldForceBinaryUpdate({ version: "1.0.0" }, "2.0.0")).toBe(false);
-	});
-});
-
-describe("update-cli script-shim takeover", () => {
-	const version = "18.0.0";
-	const binaryName = "proto-windows-x64.exe";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
-
-	function makeFetch(content: string): (input: string | URL | Request) => Promise<Response> {
-		const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-		return async (input: string | URL | Request): Promise<Response> => {
-			const requestUrl = String(input);
-			if (requestUrl.startsWith("https://api.github.com/")) {
-				return new Response(
-					JSON.stringify({
-						tag_name: `v${version}`,
-						draft: false,
-						prerelease: false,
-						assets: [
-							{
-								name: binaryName,
-								state: "uploaded",
-								size: Buffer.byteLength(content),
-								digest,
-								browser_download_url: url,
-							},
-						],
-					}),
-				);
-			}
-			if (requestUrl === url) return new Response(content);
-			throw new Error(`Unexpected request: ${requestUrl}`);
-		};
-	}
-
-	const shims: Record<string, string> = {
-		proto: "#!/bin/sh\nnode proto.js\n",
-		"proto.cmd": "@node proto.js %*\n",
-		"proto.ps1": "node proto.js @args\n",
-	};
-
-	async function writeShims(dir: string): Promise<void> {
-		for (const name in shims) {
-			await Bun.write(path.join(dir, name), shims[name]);
-		}
-	}
-
-	it("installs proto.exe beside the shims and retires them", async () => {
-		const dir = await makeTempDir();
-		await writeShims(dir);
-		// Real executable, no injected verifier: the takeover must verify the
-		// exe by explicit path — $which cached the shim path before it was
-		// renamed away, so a PATH re-resolution would fail here.
-		const exe = `#!/bin/sh\necho proto/${version}\n`;
-
-		await updateViaShimTakeover(path.join(dir, "proto.cmd"), version, {
-			binaryName,
-			fetchImpl: makeFetch(exe),
-			githubToken: "test-token",
-		});
-
-		expect(await Bun.file(path.join(dir, "proto.exe")).text()).toBe(exe);
-		for (const name in shims) {
-			expect(await Bun.file(path.join(dir, name)).exists()).toBe(false);
-		}
-		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
-		expect(residue).toEqual([]);
-	});
-
-	it("restores the shims and removes the exe when the exe reports the wrong version", async () => {
-		const dir = await makeTempDir();
-		await writeShims(dir);
-		// Executable runs but reports the previous version -> full rollback.
-		const exe = "#!/bin/sh\necho proto/17.2.12\n";
-
-		await expect(
-			updateViaShimTakeover(path.join(dir, "proto.cmd"), version, {
-				binaryName,
-				fetchImpl: makeFetch(exe),
-				githubToken: "test-token",
-			}),
-		).rejects.toThrow(/still reports 17\.2\.12 \(expected 18\.0\.0\); restored previous proto launcher/);
-
-		expect(await Bun.file(path.join(dir, "proto.exe")).exists()).toBe(false);
-		for (const name in shims) {
-			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
-		}
-		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
-		expect(residue).toEqual([]);
-	});
-
-	function renameLockingPs1(): Mock<typeof nodeFs.promises.rename> {
-		const realRename = nodeFs.promises.rename;
-		return spyOn(nodeFs.promises, "rename").mockImplementation(async (from, to) => {
-			if (path.basename(String(from)) === "proto.ps1") {
-				throw Object.assign(new Error("EPERM: file is locked"), { code: "EPERM" });
-			}
-			return await realRename(from, to);
-		});
-	}
-
-	it("rewrites an immovable precedence-winning shim as a forwarder to the exe", async () => {
-		const dir = await makeTempDir();
-		await writeShims(dir);
-		const exe = `#!/bin/sh\necho proto/${version}\n`;
-		const renameSpy = renameLockingPs1();
-		try {
-			await updateViaShimTakeover(path.join(dir, "proto.cmd"), version, {
-				binaryName,
-				fetchImpl: makeFetch(exe),
-				githubToken: "test-token",
-			});
-		} finally {
-			renameSpy.mockRestore();
-		}
-
-		expect(await Bun.file(path.join(dir, "proto.exe")).text()).toBe(exe);
-		expect(await Bun.file(path.join(dir, "proto")).exists()).toBe(false);
-		expect(await Bun.file(path.join(dir, "proto.cmd")).exists()).toBe(false);
-		// PowerShell resolves .ps1 before .exe: the locked shim must now exec
-		// the new binary instead of keeping its old body.
-		expect(await Bun.file(path.join(dir, "proto.ps1")).text()).toContain('& "$PSScriptRoot\\proto.exe" @args');
-	});
-
-	it("restores a forwarded shim's original body when verification fails", async () => {
-		const dir = await makeTempDir();
-		await writeShims(dir);
-		const exe = "#!/bin/sh\necho proto/17.2.12\n";
-		const renameSpy = renameLockingPs1();
-		try {
-			await expect(
-				updateViaShimTakeover(path.join(dir, "proto.cmd"), version, {
-					binaryName,
-					fetchImpl: makeFetch(exe),
-					githubToken: "test-token",
-				}),
-			).rejects.toThrow("restored previous proto launcher");
-		} finally {
-			renameSpy.mockRestore();
-		}
-
-		expect(await Bun.file(path.join(dir, "proto.exe")).exists()).toBe(false);
-		for (const name in shims) {
-			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
-		}
 	});
 });
 
