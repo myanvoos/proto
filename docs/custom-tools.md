@@ -144,12 +144,12 @@ execute(toolCallId, params, onUpdate, ctx, signal);
 - `params` is statically typed from its omptype or TypeBox schema via `Static<TParams>`.
 - Runtime argument validation happens before execution in the agent loop.
 - `onUpdate` emits partial results for UI streaming.
-- `ctx` includes `sessionManager`, `modelRegistry`, current `model`, `isIdle()`, `hasQueuedMessages()`, `abort()`, and optional `settings`, `fetch`, `localProtocolOptions`, and `autoApprove`.
+- `ctx` includes `sessionManager`, `modelRegistry`, current `model`, `isIdle()`, `hasQueuedMessages()`, `abort()`, and optional `settings`, `fetch`, and `localProtocolOptions`.
 - `signal` carries cancellation and may be `undefined`.
 
 The session bootstrap bridge converts custom tools to extension `ToolDefinition`s and forwards calls in the correct argument order. `CustomToolAdapter` remains available to library consumers that directly adapt a custom tool to the agent tool interface.
 
-Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, `mcpServerName`, `mcpToolName`, and `approval`. When `loadMode` is omitted, custom tool names default to `"discoverable"` except for the canonical essential built-in names (`read`, `write`, `bash`, `edit`, `glob`, `computer`, `eval`, `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, `orchestrate_list`, `fleet`, `learn`, and `manage_skill`), which default to `"essential"` so wrappers or re-registrations do not demote them. An explicit `loadMode` always wins; use `"essential"` to keep any other tool top-level. Although the public `CustomTool` type also declares `formatApprovalDetails`, the SDK/discovery bridge does not propagate that callback into the registered tool definition, so it cannot customize approval details on the normal integration paths.
+Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, `mcpServerName`, and `mcpToolName`. When `loadMode` is omitted, custom tool names default to `"discoverable"` except for the canonical essential built-in names (`read`, `write`, `bash`, `edit`, `glob`, `computer`, `eval`, `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, `orchestrate_list`, `fleet`, and `manage_skill`), which default to `"essential"` so wrappers or re-registrations do not demote them. An explicit `loadMode` always wins; use `"essential"` to keep any other tool top-level.
 
 ## How tools are exposed to the model
 

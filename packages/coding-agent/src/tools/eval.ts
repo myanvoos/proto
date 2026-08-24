@@ -325,7 +325,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	/**
 	 * Codex Code Mode advertisement, pulled from the session's applied direct
 	 * partition on every read so the declarations can never advertise a tool the
-	 * model can already call directly (a plan-mode transport `write`), nor drift
+	 * model can already call directly (a transport `write`), nor drift
 	 * from the active model or tool registry.
 	 */
 	#codeModeDescription(baseDescription: string): string | undefined {

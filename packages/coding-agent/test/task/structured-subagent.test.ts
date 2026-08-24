@@ -7,7 +7,6 @@ import {
 	artifactsDirsFromRegistry,
 	resetRegisteredArtifactDirsForTests,
 } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
-import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
@@ -32,7 +31,6 @@ const AGENT: AgentDefinition = {
 
 function session(
 	options: {
-		planMode?: boolean;
 		outputSchema?: unknown;
 		maxDepth?: number;
 		isolationMode?: "none" | "worktree";
@@ -53,7 +51,6 @@ function session(
 		}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
-		getPlanModeState: () => (options.planMode ? { enabled: true } : undefined),
 	} as unknown as ToolSession;
 }
 
@@ -148,25 +145,6 @@ describe("structured subagent primitive", () => {
 		}
 	});
 
-	it("attenuates plan-mode agents and rejects mutable isolation controls before discovery", async () => {
-		mockDiscovery();
-		const policy = await resolveEffectiveSubagentPolicy(
-			request({ session: session({ planMode: true }), enableLsp: true, enableIrc: true }),
-		);
-		expect(policy.effectiveAgent.tools).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
-		expect(policy.effectiveAgent.spawns).toBeUndefined();
-		expect(policy.enableLsp).toBe(false);
-		expect(policy.enableIrc).toBe(false);
-
-		vi.restoreAllMocks();
-		const discover = vi.spyOn(discoveryModule, "discoverAgents");
-		await expect(
-			resolveEffectiveSubagentPolicy(
-				request({ session: session({ planMode: true }), isolation: { requested: false } }),
-			),
-		).rejects.toThrow("isolation, apply, and merge controls are unavailable in plan mode");
-		expect(discover).not.toHaveBeenCalled();
-	});
 	it("reloads model roles before resolving an agent added during the session", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-task-hot-reload-"));
 		const projectDir = path.join(root, "project");
@@ -354,7 +332,7 @@ describe("structured subagent primitive", () => {
 		expect(path.basename(settled.artifactsDir)).toStartWith("proto-worker-");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
-	it("uses identical non-plan LSP and IRC policy for task and eval invocations", async () => {
+	it("uses identical LSP and IRC policy for task and eval invocations", async () => {
 		mockDiscovery();
 		const taskPolicy = await resolveEffectiveSubagentPolicy(request());
 		const evalPolicy = await resolveEffectiveSubagentPolicy(request({ invocationKind: "eval" }));
@@ -461,17 +439,15 @@ describe("structured subagent primitive", () => {
 		for (const run of settled) await fs.rm(run.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("suppresses plan capability sources while preserving non-plan propagation", async () => {
+	it("suppresses capability sources for restricted sessions while preserving propagation", async () => {
 		mockDiscovery();
 		const mcpManager = {} as NonNullable<ToolSession["mcpManager"]>;
 		const extensionPaths = ["/plugins/example.ts"];
 		const customToolPaths = [{ path: "/tools/example.ts", source: "project" }] as unknown as NonNullable<
 			ToolSession["customToolPaths"]
 		>;
-		const planSession = session({ planMode: true });
-		Object.assign(planSession, { mcpManager, extensionPaths, customToolPaths });
-		const nonPlanSession = session();
-		Object.assign(nonPlanSession, { mcpManager, extensionPaths, customToolPaths });
+		const unrestrictedSession = session();
+		Object.assign(unrestrictedSession, { mcpManager, extensionPaths, customToolPaths });
 		const mcpDisabledSession = session();
 		mcpDisabledSession.enableMCP = false;
 		const restrictedSession = session();
@@ -489,39 +465,32 @@ describe("structured subagent primitive", () => {
 			return result();
 		});
 
-		const planRun = await runStructuredSubagent(request({ session: planSession, retainArtifacts: true }));
-		const nonPlanRun = await runStructuredSubagent(request({ session: nonPlanSession, retainArtifacts: true }));
+		const unrestrictedRun = await runStructuredSubagent(
+			request({ session: unrestrictedSession, retainArtifacts: true }),
+		);
 		const mcpDisabledRun = await runStructuredSubagent(
 			request({ session: mcpDisabledSession, retainArtifacts: true }),
 		);
 		const restrictedRun = await runStructuredSubagent(request({ session: restrictedSession, retainArtifacts: true }));
 
 		expect(options[0]).toMatchObject({
-			enableMCP: false,
-			restrictToolNames: true,
-			preloadedExtensionPaths: [],
-			preloadedCustomToolPaths: [],
-		});
-		expect(options[0]?.mcpManager).toBeUndefined();
-		expect(options[1]).toMatchObject({
 			enableMCP: true,
 			mcpManager,
 			preloadedExtensionPaths: extensionPaths,
 			preloadedCustomToolPaths: customToolPaths,
 		});
-		expect(options[1]?.restrictToolNames).toBe(false);
-		expect(options[2]).toMatchObject({ enableMCP: false });
-		expect(options[2]?.mcpManager).toBeUndefined();
-		expect(options[3]).toMatchObject({
+		expect(options[0]?.restrictToolNames).toBe(false);
+		expect(options[1]).toMatchObject({ enableMCP: false });
+		expect(options[1]?.mcpManager).toBeUndefined();
+		expect(options[2]).toMatchObject({
 			enableMCP: false,
 			restrictToolNames: true,
 			preloadedExtensionPaths: [],
 			preloadedCustomToolPaths: [],
 		});
-		expect(options[3]?.mcpManager).toBeUndefined();
-		expect(options[3]?.getApiKey).toBe(getApiKey);
-		await fs.rm(planRun.artifactsDir, { recursive: true, force: true });
-		await fs.rm(nonPlanRun.artifactsDir, { recursive: true, force: true });
+		expect(options[2]?.mcpManager).toBeUndefined();
+		expect(options[2]?.getApiKey).toBe(getApiKey);
+		await fs.rm(unrestrictedRun.artifactsDir, { recursive: true, force: true });
 		await fs.rm(mcpDisabledRun.artifactsDir, { recursive: true, force: true });
 		await fs.rm(restrictedRun.artifactsDir, { recursive: true, force: true });
 	});
@@ -545,20 +514,6 @@ describe("structured subagent primitive", () => {
 		expect(artifactsDirsFromRegistry()).toEqual([]);
 		await expect(fs.stat(artifactsDir as string)).rejects.toThrow();
 	});
-
-	it("unregisters and removes a temporary lease when plan reference loading fails", async () => {
-		mockDiscovery();
-		vi.spyOn(planHandoff, "loadOverallPlanReference").mockRejectedValue(new Error("plan unavailable"));
-		const remove = vi.spyOn(fs, "rm");
-
-		await expect(runStructuredSubagent(request())).rejects.toThrow("Subagent execution failed: plan unavailable");
-
-		const artifactsDir = remove.mock.calls[0]?.[0];
-		expect(typeof artifactsDir).toBe("string");
-		expect(artifactsDirsFromRegistry()).toEqual([]);
-		await expect(fs.stat(artifactsDir as string)).rejects.toThrow();
-	});
-
 	it("cleans failed nonisolated handle artifacts", async () => {
 		mockDiscovery();
 		let artifactsDir: string | undefined;

@@ -107,13 +107,7 @@
     "statusLineCost": "poimandresPink",
     "statusLineSubagents": "poimandresDesaturatedGreen"
   },
-  "export": {
-    "pageBg": "poimandresBg",
-    "cardBg": "poimandresFocus",
-    "infoBg": "poimandresFocus"
-  },
   "symbols": {
-    "preset": "nerd",
     "overrides": {
       "status.success": "●",
       "status.error": "✖",
@@ -129,7 +123,6 @@
       "thinking.xhigh": "◉",
       "thinking.max": "●",
       "icon.model": "◇",
-      "icon.plan": "◈",
       "icon.goal": "⊙",
       "icon.pause": "‖",
       "icon.loop": "↻",

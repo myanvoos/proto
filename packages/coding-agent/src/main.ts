@@ -144,10 +144,6 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"orchestrator.agentModelOverrides",
 	"orchestrator.agentPrewalk",
 	"orchestrator.agentAdvisor",
-	// Memory subsystems are off-by-default for RPC/ACP hosts; embedders that want
-	// memory should opt in explicitly through their own settings layer.
-	"memory.backend",
-	"memories.enabled",
 	// Advisor is interactive-session assistance. Protocol hosts opt in explicitly
 	// instead of inheriting a user's globally-enabled local preference, and when
 	// they do opt in they get the default tuning rather than the user's local tuning.
@@ -1181,24 +1177,6 @@ export async function buildSessionOptions(
 		}
 	}
 
-	if (parsed.planYoloInto !== undefined && !parsed.planYolo) {
-		throw new Error("--plan-yolo-into requires --plan-yolo");
-	}
-	if (parsed.planYolo) {
-		const rolePattern = expandRoleAlias(parsed.planYoloInto ?? "@smol", activeSettings);
-		const resolved = resolveCliModel({ cliModel: rolePattern, modelRegistry, preferences: modelMatchPreferences });
-		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
-		}
-		if (resolved.error || !resolved.model) {
-			throw new Error(resolved.error ?? `Model "${parsed.planYoloInto ?? "@smol"}" not found`);
-		}
-		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
-		}
-		options.planYolo = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
-	}
-
 	// Thinking level
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
@@ -1417,12 +1395,10 @@ export async function runRootCommand(
 		// Apply model role overrides from CLI args or env vars (ephemeral, not persisted)
 		const smolModel = parsedArgs.smol ?? $env.PI_SMOL_MODEL;
 		const slowModel = parsedArgs.slow ?? $env.PI_SLOW_MODEL;
-		const planModel = parsedArgs.plan ?? $env.PI_PLAN_MODEL;
-		if (smolModel || slowModel || planModel) {
+		if (smolModel || slowModel) {
 			settingsInstance.overrideModelRoles({
 				smol: smolModel,
 				slow: slowModel,
-				plan: planModel,
 			});
 		}
 
@@ -1936,7 +1912,6 @@ export async function runRootCommand(
 					initialMessage,
 					initialImages,
 					printThoughts: initialArgs.printThoughts,
-					planYolo: parsedArgs.planYolo,
 				});
 				if ($env.PI_TIMING) {
 					logger.printTimings();

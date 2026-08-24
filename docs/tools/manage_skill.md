@@ -9,8 +9,8 @@
 - Skill discovery: `packages/coding-agent/src/extensibility/skills.ts`
 
 ## Registration / Visibility
-- Tool metadata: `approval = "write"`, `strict = true`, `loadMode = "essential"`. It stays top-level rather than mounting under `xd://`.
-- Registration requires `autolearn.enabled = true` (default `false`) but is independent of `memory.backend`.
+- Tool metadata: `loadMode = "essential"`. It stays top-level rather than mounting under `xd://`.
+- Registration requires `autolearn.enabled = true` (default `false`).
 - Enabled top-level sessions auto-include it in an ordinary explicit tool list. Subagents do not discover or auto-receive it, but may use it when their requested-tools/frontmatter list explicitly includes it.
 - Execution is single-shot and emits no progress updates.
 

@@ -10,7 +10,7 @@ import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 
 const RENDER_INTERVAL_MS = 80;
 
-/** Braille spinner advanced once per repaint tick; shared with the interactive cleanse overlay. */
+/** Braille spinner advanced once per repaint tick. */
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /** Output contract for the live board (satisfied by `process.stdout`). */

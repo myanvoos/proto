@@ -298,7 +298,6 @@ describe("InputController orphaned submit", () => {
 				tempDir.path(),
 				sessionManager,
 				modelRegistry,
-				undefined,
 				settings,
 			);
 			const agent = new Agent({

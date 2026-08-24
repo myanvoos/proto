@@ -11,8 +11,7 @@ import applyPatchDescription from "../prompts/tools/apply-patch.md" with { type:
 import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
 import type { ToolSession } from "../tools";
-import { findUniqueWorkspaceSuffix, isInternalUrlPath } from "../tools/path-utils";
-import { resolvePlanPath } from "../tools/plan-mode-guard";
+import { findUniqueWorkspaceSuffix, isInternalUrlPath, resolveAuthoredPath } from "../tools/path-utils";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { type AppliedEditObserver, createEditBlackboxObserver } from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
@@ -94,7 +93,7 @@ async function resolveEditPath(
 	if (!options.mustExist || isInternalUrlPath(authoredPath)) return authoredPath;
 
 	try {
-		await Bun.file(resolvePlanPath(session, authoredPath)).stat();
+		await Bun.file(resolveAuthoredPath(session, authoredPath)).stat();
 		return authoredPath;
 	} catch (error) {
 		if (!isEnoent(error) && !isEnotdir(error)) throw error;
@@ -377,9 +376,9 @@ async function executeSinglePathEntries(
 }
 
 /**
- * Every target path a payload will touch, for approval tiering and display.
+ * Every target path a payload will touch, for display.
  * Multi-file hashline / apply_patch / sloppy payloads report one entry per
- * section so a mixed internal+workspace call cannot be under-classified.
+ * section so a mixed internal+workspace call lists each target.
  */
 export class EditTool implements AgentTool<TInput> {
 	readonly name = "edit";

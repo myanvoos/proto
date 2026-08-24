@@ -81,10 +81,5 @@
 		"statusLineCost": "sunrise",
 		"statusLineSubagents": "gold",
 		"pythonMode": "gold"
-	},
-	"export": {
-		"pageBg": "#faf7f2",
-		"cardBg": "#ffffff",
-		"infoBg": "#f3ece2"
 	}
 }

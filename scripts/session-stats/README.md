@@ -1,9 +1,8 @@
 # session-stats
 
 Ad-hoc analyses over the local agent session corpus
-(`~/.proto/agent/sessions/`). SQLite-backed; data is synced once into the same
-`~/.proto/stats.db` that `packages/stats` uses, then queried by short Python
-scripts.
+(`~/.proto/agent/sessions/`). SQLite-backed; data is synced once into
+`~/.proto/stats.db`, then queried by short Python scripts.
 
 ## Layout
 
@@ -39,7 +38,7 @@ within ~5–10% of Claude's BPE in aggregate.
 
 ## Schema
 
-All tables are prefixed `ss_` to avoid collision with `packages/stats`.
+All tables are prefixed `ss_`.
 
 |Table|Granularity|
 |---|---|

@@ -2,7 +2,7 @@
 
 The advisor subsystem attaches one or more optional reviewer models to a session. Each advisor reviews primary-agent transcript updates, can inspect the workspace with its own tools, and injects concise advice back into the primary session.
 
-An advisor does not approve actions or mutate primary session state directly. Its default investigative toolset is `read`, `grep`, and `glob`, but a `WATCHDOG.yml` roster entry may grant any built-in — including mutating tools such as `edit`, `write`, `bash`, `eval`, and `browser`. Those tools run in an isolated advisor `ToolSession`, but they honor the session's normal approval mode and per-tool policies; grant them only when the advisor model and workspace are trusted (see [Tools and isolation](#tools-and-isolation)).
+An advisor does not mutate primary session state directly. Its default investigative toolset is `read`, `grep`, and `glob`, but a `WATCHDOG.yml` roster entry may grant any built-in — including mutating tools such as `edit`, `write`, `bash`, `eval`, and `browser`. Those tools run in an isolated advisor `ToolSession`; grant them only when the advisor model and workspace are trusted (see [Tools and isolation](#tools-and-isolation)).
 
 ## Implementation files
 
@@ -69,9 +69,9 @@ If the subsystem is enabled but no legacy/default or roster model resolves, stat
 
 ## What the advisor sees
 
-At each primary update, `AdvisorRuntime` receives only the new transcript delta since its previous update. Deltas are rendered with reasoning, tool intent, watched-role markers, and expanded primary constraint context, so advisors can review assistant reasoning as well as user-visible text, tool calls, and tool results. Provider-bound messages and tool arguments/results are passed through the session secret obfuscator before reaching the advisor model.
+At each primary update, `AdvisorRuntime` receives only the new transcript delta since its previous update. Deltas are rendered with reasoning, tool intent, and watched-role markers, so advisors can review assistant reasoning as well as user-visible text, tool calls, and tool results. Provider-bound messages and tool arguments/results are passed through the session secret obfuscator before reaching the advisor model.
 
-Most hidden `custom` messages collapse to a one-line summary in the delta. The primary agent's injected constraint context (`plan-mode-context` and `plan-mode-reference`) is instead rendered verbatim inside an XML-escaped `<primary-context kind="…">` wrapper, while repeated copies are deduplicated. Advisors also receive the primary's discovered project context files (`AGENTS.md` and related standing instructions) in a `<project-context>` system-prompt block. If the session cwd is outside Git with exactly one direct child repository, an additional watchdog block tells the advisor which child is the active project.
+Most hidden `custom` messages collapse to a one-line summary in the delta. Advisors also receive the primary's discovered project context files (`AGENTS.md` and related standing instructions) in a `<project-context>` system-prompt block. If the session cwd is outside Git with exactly one direct child repository, an additional watchdog block tells the advisor which child is the active project.
 
 Advisor messages already injected into the primary transcript are filtered out before the next delta is rendered. This prevents the advisor from recursively reviewing its own advice.
 
@@ -96,9 +96,9 @@ Every advisor has the `advise` tool for surfacing notes into the primary transcr
 - `grep`
 - `glob`
 
-A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null`, such as unavailable `lsp`, is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `eval`, `browser`, `debug`, `ast_edit`, `orchestrate_spawn`, `fleet`, and memory tools.
+A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null`, such as unavailable `lsp`, is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `eval`, `browser`, `debug`, `ast_edit`, `orchestrate_spawn`, and `fleet`.
 
-Advisor tools are built against the isolated advisor `ToolSession` and wrapped with `ExtensionToolWrapper`, so `tools.approvalMode`, per-tool approval policies, and `autoApprove` apply just as they do to registry tools. Cursor's server-side exec bridge uses the same approval context and only exposes delete/edit/search capabilities when the corresponding advisor grant exists.
+Advisor tools are built against the isolated advisor `ToolSession` and wrapped with `ExtensionToolWrapper`, just like registry tools. Cursor's server-side exec bridge gates on the same advisor grants and only exposes delete/edit/search capabilities when the corresponding advisor grant exists.
 
 The `advise` tool accepts one note and an optional severity:
 
@@ -127,10 +127,9 @@ A normal yield the agent drove itself is treated differently from a deliberate i
 
 Two session/client constraints can still preserve a note whose normal delivery path is steering:
 
-- **Plan mode:** every would-be advisor steer is preserved as a visible card, even while the primary loop is streaming, because only user-driven turns converge on ask/resolve.
 - **ACP with deferred agent-initiated turns:** when `deferAgentInitiatedTurns` is enabled and the bridge has not allowed agent-initiated turns, an idle would-be steer is preserved because the client cannot represent the triggered turn as busy. Advice raised while the primary loop is already streaming can still steer into that live turn.
 
-So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer, plan-mode, and deferred-ACP cases above) or downgraded to a non-interrupting aside (the `advisor.immuneTurns` cooldown below); either way it waits for the next step boundary or resume rather than waking the agent.
+So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer and deferred-ACP cases above) or downgraded to a non-interrupting aside (the `advisor.immuneTurns` cooldown below); either way it waits for the next step boundary or resume rather than waking the agent.
 
 `advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
 
@@ -326,7 +325,10 @@ Paths derive from the owning session file (not the shared artifacts root), so ea
 
 Why a file:
 
-- **Usage attribution.** `proto stats` scans each session folder recursively, so advisor assistant turns (with their usage/cost) are attributed to the same project/session like any other subagent. Advisor "session update" prompts are persisted as `synthetic`, agent-attributed user messages so they never inflate user-message metrics.
+- **Usage attribution.** Advisor assistant turns persist their usage/cost
+  alongside the transcript, while advisor "session update" prompts are persisted
+  as `synthetic`, agent-attributed user messages so they never inflate
+  user-message metrics.
 - **Observability.** [Agent Fleet](./agent-fleet.md) discovers legacy and named `__advisor*.jsonl` files on open and shows each as a read-only `advisor`-kind transcript under its owning session.
 
 The file follows session switches: on `/new`, resume/switch, and branch the recorder reopens at the new session's path on the next advisor turn; before a `/drop` deletes the old artifacts dir the recorder feed is detached and drained so a queued write cannot recreate the deleted file. The on-disk log is append-only and independent of the in-memory context — re-primes and compaction never truncate it.

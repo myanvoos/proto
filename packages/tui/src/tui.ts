@@ -1217,8 +1217,6 @@ export class TUI extends Container {
 	#inputListeners = new Set<InputListener>();
 	#startListeners = new Set<StartListener>();
 
-	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
-	onDebug?: () => void;
 	#renderRequested = false;
 	#renderTimer: RenderTimer | undefined;
 	#renderScheduler: RenderScheduler;
@@ -3119,12 +3117,6 @@ export class TUI extends Container {
 
 		// Consume terminal cell size responses without blocking unrelated input.
 		if (this.#consumeCellSizeResponse(data)) {
-			return;
-		}
-
-		// Global debug key handler (Shift+Ctrl+D)
-		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
-			this.onDebug();
 			return;
 		}
 

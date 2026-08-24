@@ -1,10 +1,9 @@
 /**
- * Contract: a custom message steered into a streaming session (the collab-host
- * and skill-prompt path: `promptCustomMessage(..., { streamingBehavior: "steer" })`)
- * is always delivered — never silently stranded in the agent's steering queue.
+ * Contract: a custom message steered into a streaming session (the
+ * `promptCustomMessage(..., { streamingBehavior: "steer" })` path) is always
+ * delivered — never silently stranded in the agent's steering queue.
  *
- * Two regression seams, both observed as "guest messages just disappear" in
- * collab sessions:
+ * Two regression seams, both observed as "steered messages just disappear":
  *  1. A steer landing at the run's yield boundary (after the stop-boundary
  *     dequeue) must force another turn instead of stranding.
  *  2. A steer landing while the prompt unwinds (isStreaming stays true through
@@ -26,7 +25,7 @@ import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
-const COLLAB_PROMPT_TYPE = "collab-prompt";
+const CUSTOM_PROMPT_TYPE = "custom-prompt";
 
 interface SteerHarness {
 	session: AgentSession;
@@ -79,10 +78,10 @@ describe("AgentSession queued steer delivery", () => {
 		return { session, sessionManager, mock };
 	}
 
-	function steerCollabPrompt(target: AgentSession, text: string): Promise<void> {
+	function steerCustomPrompt(target: AgentSession, text: string): Promise<void> {
 		return target.promptCustomMessage(
 			{
-				customType: COLLAB_PROMPT_TYPE,
+				customType: CUSTOM_PROMPT_TYPE,
 				content: text,
 				display: true,
 				details: { from: "guest" },
@@ -111,23 +110,23 @@ describe("AgentSession queued steer delivery", () => {
 		return promise;
 	}
 
-	/** Resolves with the entry text when a collab-prompt entry is persisted. */
-	function nextCollabEntry(sessionManager: SessionManager): Promise<string> {
+	/** Resolves with the entry text when a custom-prompt entry is persisted. */
+	function nextCustomEntry(sessionManager: SessionManager): Promise<string> {
 		const { promise, resolve } = Promise.withResolvers<string>();
 		sessionManager.onEntryAppended = entry => {
-			if (entry.type === "custom_message" && entry.customType === COLLAB_PROMPT_TYPE) {
+			if (entry.type === "custom_message" && entry.customType === CUSTOM_PROMPT_TYPE) {
 				resolve(typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content));
 			}
 		};
 		return promise;
 	}
 
-	it("delivers a collab steer that lands at the run's yield boundary", async () => {
+	it("delivers a custom-prompt steer that lands at the run's yield boundary", async () => {
 		const { session, sessionManager, mock } = await createSession([
 			{ content: ["host answer"] },
 			{ content: ["ack guest"] },
 		]);
-		const entryAppended = nextCollabEntry(sessionManager);
+		const entryAppended = nextCustomEntry(sessionManager);
 
 		let streamingAtInject: boolean | undefined;
 		let injected = false;
@@ -136,7 +135,7 @@ describe("AgentSession queued steer delivery", () => {
 			injected = true;
 			// The session is still mid-prompt here, so this takes the steer path.
 			streamingAtInject = session.isStreaming;
-			await steerCollabPrompt(session, "guest steer at yield");
+			await steerCustomPrompt(session, "guest steer at yield");
 		});
 
 		await session.prompt("hello");
@@ -152,7 +151,7 @@ describe("AgentSession queued steer delivery", () => {
 			{ content: ["host answer"] },
 			{ content: ["ack guest"] },
 		]);
-		const entryAppended = nextCollabEntry(sessionManager);
+		const entryAppended = nextCustomEntry(sessionManager);
 
 		// Inject from the wire agent_end subscriber: it fires synchronously while
 		// the session settles (#promptInFlightCount just hit 0), after the agent
@@ -166,7 +165,7 @@ describe("AgentSession queued steer delivery", () => {
 			if (agentEnds === 1) {
 				session.agent.steer({
 					role: "custom",
-					customType: COLLAB_PROMPT_TYPE,
+					customType: CUSTOM_PROMPT_TYPE,
 					content: "guest steer at settle",
 					display: true,
 					details: { from: "guest" },

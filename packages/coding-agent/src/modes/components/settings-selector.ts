@@ -1272,9 +1272,8 @@ export class SettingsSelectorComponent implements Component {
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Re-run the
-				// definition-to-item mapping so condition-gated settings (e.g. the
-				// Hindsight cluster guarded by memory.backend) appear/disappear
-				// immediately instead of waiting for the next tab switch.
+				// definition-to-item mapping so condition-gated settings
+				// appear/disappear immediately instead of waiting for the next tab switch.
 				this.#refreshCurrentTabItems(defs);
 			},
 			() => this.callbacks.onCancel(),

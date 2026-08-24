@@ -352,8 +352,8 @@ Records the provider and a pseudonymous SHA-256 account/scope hash used to re-pi
   "id": "e2f3a4b5",
   "parentId": "d2e3f4a5",
   "timestamp": "2026-02-16T10:30:00.000Z",
-  "mode": "plan",
-  "data": { "planFile": "/tmp/plan.md" }
+  "mode": "goal",
+  "data": { "goal": "Refactor the auth module" }
 }
 ```
 

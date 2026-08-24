@@ -89,10 +89,8 @@ interface CursorExecBridgeOptions {
 	 * before any bridge-specific rewriting. The primary Cursor session moves
 	 * `edit` out of {@link tools} and serves it through
 	 * {@link getEditReplaceTool}, so reading the map here would deny an
-	 * edit-only session. Defaults to allowed
-	 * to preserve the primary agent's behavior; callers with a restricted tool
-	 * set (advisors) opt out. The user's approval policy is resolved separately,
-	 * per call.
+	 * edit-only session. Defaults to allowed to preserve the primary agent's
+	 * behavior; callers with a restricted tool set (advisors) opt out.
 	 */
 	allowDirectFileMutation?: boolean;
 	/**
@@ -115,10 +113,10 @@ interface CursorExecBridgeOptions {
 	 * two fields are silently dropped. Callers that cannot supply it keep the
 	 * shared instance and the session's defaults.
 	 *
-	 * The returned tool is executed as-is. Callers whose registry tools carry an
-	 * approval wrapper MUST apply the same wrapper here, or a frame supplying
-	 * either field silently escapes the approval gate that every other call
-	 * goes through.
+	 * The returned tool is executed as-is. Callers whose registry tools are
+	 * wrapped in `ExtensionToolWrapper` MUST apply the same wrapper here, or a
+	 * frame supplying either field silently escapes the extension event
+	 * plumbing that every other call goes through.
 	 */
 	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): CursorBridgeTool | undefined;
 	/**
@@ -580,8 +578,8 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	 * These are a separate frame family from the legacy `read`/`shell`/... set,
 	 * not aliases: different args, different result oneofs, and no `tool_call_id`
 	 * (the provider mints one and passes it in `call.toolCallId`). Each maps onto
-	 * the local tool with matching semantics, so the same approval, sandboxing
-	 * and event plumbing applies as for a model-issued call.
+	 * the local tool with matching semantics, so the same sandboxing and
+	 * extension-event plumbing applies as for a model-issued call.
 	 */
 	/**
 	 * `offset`/`limit` are a 1-indexed start line plus a line count (verified

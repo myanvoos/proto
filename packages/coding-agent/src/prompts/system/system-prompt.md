@@ -53,9 +53,6 @@ Matching skill → MUST read `skill://<name>` first.
 Most FS/bash tools auto-resolve these to FS paths.
 - `skill://<name>`: instructions; `/<path>`: its file
 - `rule://<name>`: details
-  {{#if hasMemoryRoot}}
-- `memory://root`: project-memory summary
-  {{/if}}
 - `agent://<id>`: output artifact; `/<child>`: nested-subagent output; otherwise `/<path>`: JSON field
 - `history://<id>`: read-only agent transcript (live|parked|released); bare `history://`: all agents. Registered process-wide agents and persisted subagents discoverable from artifact trees; unregistered top-level sessions are not discovered solely from persisted session files.
 - `artifact://<id>`: content

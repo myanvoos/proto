@@ -1099,60 +1099,6 @@ describe("Settings", () => {
 			expect(settings.getEditVariantForModel("gpt-5.2")).toBe("apply_patch");
 		});
 
-		it("maps legacy hindsight.dynamicBankId=true onto hindsight.scoping=per-project", async () => {
-			await writeSettings({
-				hindsight: { dynamicBankId: true },
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("hindsight.scoping")).toBe("per-project");
-		});
-
-		it("does not override an explicit hindsight.scoping when migrating", async () => {
-			await writeSettings({
-				hindsight: { dynamicBankId: true, scoping: "global" },
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("hindsight.scoping")).toBe("global");
-		});
-
-		it("promotes legacy hindsight.agentName onto hindsight.bankId when bankId is unset", async () => {
-			await writeSettings({
-				hindsight: { agentName: "ada-cli" },
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("hindsight.bankId")).toBe("ada-cli");
-		});
-
-		it("migrates the legacy mnemosyne memory backend to mnemopi", async () => {
-			await writeSettings({
-				memory: { backend: "mnemosyne" },
-				mnemosyne: { dbPath: "/tmp/old.db", scoping: "global" },
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("memory.backend")).toBe("mnemopi");
-			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
-			expect(settings.get("mnemopi.scoping")).toBe("global");
-		});
-
-		it("does not clobber an explicit mnemopi block when the legacy mnemosyne block is also present", async () => {
-			await writeSettings({
-				mnemosyne: { dbPath: "/tmp/old.db" },
-				mnemopi: { dbPath: "/tmp/new.db" },
-			});
-
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-
-			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/new.db");
-		});
-
 		it("moves legacy lastChangelogVersion out of config.yml into the marker file", async () => {
 			await writeSettings({ lastChangelogVersion: "0.40.0" });
 

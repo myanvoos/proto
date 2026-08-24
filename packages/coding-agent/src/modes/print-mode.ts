@@ -8,8 +8,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
-import { isSilentAbort } from "../session/messages";
+import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { flushTelemetryExport } from "../telemetry-export";
 import { initializeExtensions } from "./runtime-init";
 
@@ -27,8 +26,6 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 	/** If true, include thinking blocks in text output */
 	printThoughts?: boolean;
-	/** Whether the caller explicitly started the headless plan flow. */
-	planYolo?: boolean;
 }
 
 /** Matches the longest built-in provider request deadline while bounding tool-loop stalls. */
@@ -89,7 +86,7 @@ export function printableEvent(event: AgentSessionEvent): unknown {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<void> {
-	const { mode, messages = [], initialMessage, initialImages, printThoughts, planYolo = false } = options;
+	const { mode, messages = [], initialMessage, initialImages, printThoughts } = options;
 
 	// process.stdout.write is fire-and-forget: a large final record (e.g. a
 	// multi-MB agent_end) can be dropped when the process exits before the pipe
@@ -128,26 +125,6 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 			process.stderr.write(`Extension error (${err.extensionPath}): ${err.error}\n`);
 		},
 	});
-
-	// `plan.defaultOnStartup` opens fresh *interactive* sessions in plan mode so a
-	// human can review the plan before it executes. Headless print mode has no
-	// surface to review, approve, or exit a plan from, and the turn carries no
-	// deterministic way out of plan mode — the model must voluntarily emit a valid
-	// `xd://propose` execute-dispatch, and when it does not the run strands until
-	// the deadline (issue #8272). So do not honor the startup default here; the
-	// supported headless plan flow is `--plan-yolo` (auto-approve → implement),
-	// which is wired independently through the prewalk coordinator.
-	const planStartupIgnored =
-		session.settings.get("plan.defaultOnStartup") &&
-		session.settings.get("plan.enabled") &&
-		session.sessionManager.buildSessionContext().messages.length === 0 &&
-		!session.sessionManager.getEntries().some(entry => entry.type === "mode_change") &&
-		!planYolo;
-	if (planStartupIgnored) {
-		process.stderr.write(
-			"Note: plan.defaultOnStartup is ignored in print mode (no interactive surface to review the plan). Use --plan-yolo for a headless plan flow.\n",
-		);
-	}
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
 	session.subscribe(event => {
@@ -191,11 +168,8 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		const assistantMsg = session.getLastAssistantMessage();
 
 		if (assistantMsg) {
-			// Check for error/aborted — skip silent-abort (plan-mode compaction transition)
-			if (
-				(assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") &&
-				!isSilentAbort(assistantMsg)
-			) {
+			// Check for error/aborted
+			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 				const errorLine = sanitizeText(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
 				// This branch hard-exits, bypassing the `await session.dispose()` at
 				// the end of runPrintMode. Flush telemetry and dispose the session
@@ -206,7 +180,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				// is idempotent, so the unreachable call below is a harmless no-op.
 				await session.waitForAdvisorCatchup(PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS);
 				await flushTelemetryExport();
-				await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+				await session.dispose();
 				const flushed = process.stderr.write(`${errorLine}\n`);
 				if (flushed) {
 					process.exit(1);
@@ -241,5 +215,5 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// agent_end and late JSON advisor events) has drained; process.exit would
 	// otherwise discard the buffered tail and truncate the last record.
 	await stdoutTail;
-	await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+	await session.dispose();
 }

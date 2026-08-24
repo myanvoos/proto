@@ -24,14 +24,14 @@ export interface SessionContext {
 	models: Record<string, string>;
 	/** Names of TTSR rules that have been injected this session */
 	injectedTtsrRules: string[];
-	/** Active mode (e.g. "plan") or "none" if no special mode is active */
+	/** Active mode (e.g. "goal") or "none" if no special mode is active */
 	mode: string;
 	/** Mode-specific data from the last mode_change entry */
 	modeData?: Record<string, unknown>;
 	/**
 	 * Array parallel to messages, indicating which assistant turns should
-	 * have their prompt-cache misses suppressed/explained (because a model,
-	 * compaction, or plan-mode transition directly preceded them).
+	 * have their prompt-cache misses suppressed/explained (because a model or
+	 * compaction directly preceded them).
 	 * Only populated in transcript mode.
 	 */
 	cacheMissExplainedAt?: boolean[];
@@ -246,7 +246,6 @@ export function buildSessionContext(
 	const messages: AgentMessage[] = [];
 	const cacheMissExplainedAt: boolean[] = [];
 	let pendingReset = false;
-	let currentMode = "none";
 	let lastAssistantModel: string | undefined;
 
 	const handleEntryResetTracking = (entry: SessionEntry) => {
@@ -254,12 +253,6 @@ export function buildSessionContext(
 			pendingReset = true;
 		} else if (entry.type === "model_change") {
 			pendingReset = true;
-		} else if (entry.type === "mode_change") {
-			const isPlanTransition = (entry.mode === "plan") !== (currentMode === "plan");
-			if (isPlanTransition) {
-				pendingReset = true;
-			}
-			currentMode = entry.mode;
 		}
 	};
 

@@ -181,15 +181,15 @@ export function treeBranch(
 	lastSiblingById: ReadonlyMap<string, boolean>,
 ): string {
 	if ((depthById.get(ref.id) ?? 0) === 0) return "";
-	const segments: string[] = [lastSiblingById.get(ref.id) ? "└── " : "├── "];
+	const segments: string[] = [lastSiblingById.get(ref.id) ? `${theme.tree.last} ` : `${theme.tree.branch} `];
 	const ancestry = new Set<string>();
 	let parent = parentById.get(ref.id);
 	while (parent && parentById.get(parent) !== MAIN_AGENT_ID && !ancestry.has(parent)) {
 		ancestry.add(parent);
-		segments.push(lastSiblingById.get(parent) ? "    " : "│   ");
+		segments.push(lastSiblingById.get(parent) ? "   " : `${theme.tree.vertical}  `);
 		parent = parentById.get(parent);
 	}
-	const maxSegments = Math.max(1, Math.floor(Math.max(4, maxWidth - 2) / 4));
+	const maxSegments = Math.max(1, Math.floor(Math.max(4, maxWidth - 2) / 3));
 	const omitted = Math.max(0, segments.length - maxSegments);
 	const prefix = segments.slice(0, maxSegments).reverse().join("");
 	return theme.fg("dim", `${omitted > 0 ? "… " : ""}${prefix}`);

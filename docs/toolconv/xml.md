@@ -13,7 +13,7 @@ tools:
   format: xml
 ```
 
-`tools.format: xml` forces the generic XML owned dialect for the session. `auto` does **not** choose generic XML as its unknown-family fallback: when a model has `supportsTools: false`, the resolver chooses the known model-family dialect or GLM if there is no specific affinity. Use `xml` explicitly when this grammar is required. See [`tools.format`](../settings.md#tools-and-approvals).
+`tools.format: xml` forces the generic XML owned dialect for the session. `auto` does **not** choose generic XML as its unknown-family fallback: when a model has `supportsTools: false`, the resolver chooses the known model-family dialect or GLM if there is no specific affinity. Use `xml` explicitly when this grammar is required. See [`tools.format`](../settings.md#tools).
 
 When selected, PROTO removes native structured tools from the provider request, appends the in-band tool catalog and XML guide to the system prompt, converts prior structured calls/results to text, and scans assistant text back into structured tool-call events.
 

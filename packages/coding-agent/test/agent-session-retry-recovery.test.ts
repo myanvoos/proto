@@ -11,7 +11,6 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveAssistantErrorPresentation } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -388,11 +387,6 @@ describe("AgentSession retry recovery", () => {
 				assistantMessage({ stopReason: "error", errorMessage: "503 service unavailable" }),
 			),
 		).toEqual({ kind: "full", text: "503 service unavailable", isError: true });
-		expect(
-			resolveAssistantErrorPresentation(
-				assistantMessage({ stopReason: "aborted", errorMessage: SILENT_ABORT_MARKER }),
-			),
-		).toEqual({ kind: "none" });
 	});
 
 	it("keeps recovered markers durable across session reload and still excludes them from model context", async () => {

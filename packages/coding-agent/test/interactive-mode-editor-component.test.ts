@@ -152,13 +152,13 @@ describe("InteractiveMode.setEditorComponent", () => {
 			mode.ui = tui;
 			initialEditor.setUseTerminalCursor(true);
 			initialEditor.magicKeywordsEnabledOverride = true;
-			initialEditor.setText("please orchestrate this draft");
+			initialEditor.setText("please workflowz this draft");
 			tui.addChild(mode.editorContainer);
 			tui.setFocus(initialEditor);
 			tui.start();
 			await scheduler.drain(terminal);
 
-			await expectTwoDirectShimmerFrames(tui, terminal, writes, "orchestrate");
+			await expectTwoDirectShimmerFrames(tui, terminal, writes, "workflowz");
 			initialEditor.setShimmerRepaintHandler(undefined);
 
 			mode.setEditorComponent((_tui, editorTheme) => new TestModalEditor(editorTheme));

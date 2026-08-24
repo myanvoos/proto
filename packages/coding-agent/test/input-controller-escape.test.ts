@@ -70,9 +70,7 @@ function createContext(): {
 		ensureLoadingAnimation: Spy;
 		handleBtwCommand: Spy;
 		handleBtwEscape: Spy;
-		handleOmfgEscape: Spy;
 		hasActiveBtw: Spy;
-		hasActiveOmfg: Spy;
 		onInputCallback: Spy;
 		prompt: Spy;
 		requestRender: Spy;
@@ -103,10 +101,6 @@ function createContext(): {
 	const handleBtwCommand = vi.fn(async () => {});
 	const handleBtwEscape = vi.fn(() => true);
 	const hasActiveBtw = vi.fn(() => false);
-	const handleOmfgEscape = vi.fn(() => true);
-	const hasActiveOmfg = vi.fn(() => false);
-	const handleCleanseEscape = vi.fn(() => true);
-	const hasActiveCleanse = vi.fn(() => false);
 	const updatePendingMessagesDisplay = vi.fn();
 	const prompt = vi.fn();
 	const startPendingSubmission = vi.fn(
@@ -210,7 +204,6 @@ function createContext(): {
 		startPendingSubmission,
 		updatePendingMessagesDisplay,
 		updateEditorBorderColor: vi.fn(),
-		showDebugSelector: vi.fn(),
 		toggleTodoExpansion: vi.fn(),
 		showAgentFleet: vi.fn(),
 		unfocusSession: vi.fn(async () => {}),
@@ -219,10 +212,6 @@ function createContext(): {
 		handleBtwEscape,
 		handleBtwCommand,
 		hasActiveBtw,
-		handleOmfgEscape,
-		hasActiveOmfg,
-		handleCleanseEscape,
-		hasActiveCleanse,
 		showTreeSelector: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showSessionSelector: vi.fn(),
@@ -249,8 +238,6 @@ function createContext(): {
 			handleBtwCommand,
 			handleBtwEscape,
 			hasActiveBtw,
-			handleOmfgEscape,
-			hasActiveOmfg,
 			onInputCallback,
 			prompt,
 			requestRender,

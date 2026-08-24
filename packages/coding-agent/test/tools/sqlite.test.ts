@@ -472,23 +472,6 @@ describe("SQLite tool support", () => {
 		expect(readUserEmail(dbPath, 2)).toBeNull();
 	});
 
-	it("enforces plan mode for SQLite writes", async () => {
-		const planSession = createSession(tmpDir, {
-			getPlanModeState: () => ({
-				enabled: true,
-				planFilePath: path.join(tmpDir, "plan.md"),
-			}),
-		});
-		const planWriteTool = new WriteTool(planSession);
-
-		await expect(
-			planWriteTool.execute("sqlite-plan-mode", {
-				path: `${sqlitePath}:users:1`,
-				content: "{ email: 'blocked@example.com' }",
-			}),
-		).rejects.toThrow(/Plan mode/i);
-	});
-
 	it("rejects writes to non-existent tables", async () => {
 		await expect(
 			writeTool.execute("sqlite-write-missing-table", {

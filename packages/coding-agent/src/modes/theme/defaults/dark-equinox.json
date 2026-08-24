@@ -81,10 +81,5 @@
 		"statusLineCost": "warm",
 		"statusLineSubagents": "warm",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#0f1115",
-		"cardBg": "#161a20",
-		"infoBg": "#1b1f26"
 	}
 }

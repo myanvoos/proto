@@ -220,7 +220,7 @@ describe("TanCommandController", () => {
 			undefined,
 			{ copyArtifacts: false, suppressBreadcrumb: true, sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/) },
 		);
-		expect(harness.register).toHaveBeenCalledWith("task", "/tan write the release note", expect.any(Function), {
+		expect(harness.register).toHaveBeenCalledWith("worker", "/tan write the release note", expect.any(Function), {
 			ownerId: MAIN_AGENT_ID,
 			agentId: expect.stringMatching(/^Tan-/) as unknown as string,
 		});

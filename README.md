@@ -202,13 +202,9 @@ Perfect edits, fewer tokens. The model points at anchors instead of retyping the
 
 Other harnesses bolt on gh_issue_view, gh_pr_view, gh_search — each with its own parameters the agent has to learn and you have to debug. We skipped that. read already handles paths; PRs are paths. One interface to teach the model, one surface to keep correct.
 
-### 13 · Memory the agent curates
-
-The agent remembers your codebase between sessions. It writes facts mid-run with retain, captures reusable lessons with learn, pulls them back with recall, and compresses each session into a mental model that loads on the first turn of the next one. Pick the engine with `memory.backend` — local, Hindsight, or Mnemopi. Project-scoped by default, so what it learns about this repo stays with this repo.
-
 ### 14 · ACP: editor-drivable agent
 
-Run proto inside Zed and you get the same agent you drive from the terminal — reading the buffer you're actually looking at, writing through the editor's save path, spawning shells in the editor's terminal. Destructive tools pause for a permission prompt you can answer once and forget. No bridge, no plugin, no second brain to keep in sync.
+Run proto inside Zed and you get the same agent you drive from the terminal — reading the buffer you're actually looking at, writing through the editor's save path, spawning shells in the editor's terminal. No bridge, no plugin, no second brain to keep in sync.
 
 ### 15 · Inherits what your other tools already wrote
 
@@ -292,18 +288,13 @@ Stealth's on by default, so pages see a normal user instead of a headless bot. T
 - `inspect_image` — vision-model analysis of a local image file.
 - `tts` — text-to-speech via xAI Grok Voice — five built-in voices, WAV or MP3.
 
-**Memory & skills**
+**Skills & session state**
 
 - `checkpoint` — mark conversation state for a later collapse-and-report.
 - `rewind` — prune exploratory context, keep a concise report.
-- `retain` — queue durable facts into the active memory bank.
-- `recall` — search the memory bank for raw memories.
-- `reflect` — synthesize an answer over the bank.
-- `memory_edit` — update, forget, or invalidate stored memories by id.
-- `learn` — capture a reusable lesson; optionally promote it into a managed skill.
 - `manage_skill` — create, update, or delete an isolated managed skill.
 
-Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and the memory tools (`retain`/`recall`/`reflect`/`memory_edit`, per `memory.backend`). `inspect_image` activates automatically when the active model can't see.
+Setting-gated, off by default: `github`, `security_scan`, `generate_image`, `tts`, `checkpoint`, `rewind`, and `manage_skill`. `inspect_image` activates automatically when the active model can't see.
 
 [Full reference →](https://proto.sh/docs/tools)
 
@@ -320,7 +311,7 @@ They trigger only in prose, not inside code spans, fenced code blocks, XML/HTML 
 
 Session commands include:
 
-- `/fresh` — reset the provider stream state (stale prompt cache, wedged stream) without changing the local transcript. See [Session operations](docs/session-operations-export-share-fork-resume.md#fresh).
+- `/fresh` — reset the provider stream state (stale prompt cache, wedged stream) without changing the local transcript. See [Session operations](docs/session-operations.md#fresh).
 
 ## Sixty-plus providers, a thousand models, _one /model away_.
 
@@ -541,14 +532,7 @@ $ proto --mode rpc --no-session
 
 `proto acp`
 
-The [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) over JSON-RPC. When the editor advertises capabilities, tool I/O routes through it and writes are gated by `session/request_permission`.
-
-| proto tool     | ACP route                           |
-| ------------ | ----------------------------------- |
-| `bash`       | `terminal/create + terminal/output` |
-| `read`       | `fs/read_text_file`                 |
-| `write`      | `fs/write_text_file`                |
-| `edit, bash` | `session/request_permission`        |
+The [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) over JSON-RPC: the editor creates sessions, streams prompts, and receives agent message and tool-call updates per the ACP spec.
 
 Full reference: [proto.sh/docs/sdk](https://proto.sh/docs/sdk).
 
@@ -635,11 +619,9 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 | **[@oh-my-pi/pi-coding-agent](packages/coding-agent)**                        | Interactive coding agent CLI and SDK                                        |
 | **[@oh-my-pi/pi-tui](packages/tui)**                                          | Terminal UI library with differential rendering                             |
 | **[@oh-my-pi/pi-natives](packages/natives)**                                  | N-API bindings for grep, shell, image, text, syntax highlighting, and more  |
-| **[@oh-my-pi/proto-stats](packages/stats)**                                     | Local observability dashboard for AI usage statistics                       |
 | **[@oh-my-pi/omptype](packages/omptype)**                                     | ArkType-compatible schema validation with lazy JIT compilation              |
 | **[@oh-my-pi/pi-utils](packages/utils)**                                      | Shared utilities (logging, streams, dirs/env/process helpers)               |
 | **[@oh-my-pi/hashline](packages/hashline)**                                   | Line-anchored patch language and applier behind the `edit` tool             |
-| **[@oh-my-pi/pi-mnemopi](packages/mnemopi)**                                  | Local SQLite memory engine for Oh My Pi agents                              |
 | **[@oh-my-pi/browser-relay](packages/browser-relay)**                         | Chrome extension that lets the browser tool drive your existing tabs        |
 
 ### Rust Crates

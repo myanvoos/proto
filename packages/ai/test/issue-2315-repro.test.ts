@@ -67,7 +67,7 @@ describe("issue #2315 — MiniMax M2 / GPT-OSS catalog excludes unsupported reas
 		expect(getSupportedEfforts(model)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
 		const body = await capturePayload(model, { disableReasoning: true });
 		// Pre-fix the catalog included `minimal`, so the Fireworks compat map turned
-		// the auto-thinking classifier's disableReasoning request into `"none"`.
+		// a disableReasoning request into `"none"`.
 		expect(body.reasoning_effort).toBe("low");
 	});
 

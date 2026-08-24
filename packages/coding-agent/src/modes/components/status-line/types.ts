@@ -58,10 +58,6 @@ export interface SegmentContext {
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */
 	compactThinkingLevel: boolean;
-	planMode: {
-		enabled: boolean;
-		paused: boolean;
-	} | null;
 	prewalk: {
 		enabled: boolean;
 	} | null;

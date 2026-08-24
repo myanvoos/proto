@@ -40,7 +40,7 @@
 - `details` is `LspToolDetails`: `action`, `success`, optional `serverName`, optional original `request`.
 - Empty navigation/symbol lookups such as `No definition found` are additionally marked `useless: true` so compaction may elide them; a clean diagnostics result is retained as verification evidence.
 - No streaming updates, artifact URIs, or background jobs. The inline TUI renderer merges call and result, adds action-aware formatting, and supports collapsed/expanded views.
-- The tool is discoverable rather than eagerly loaded. Read-only actions (`diagnostics`, navigation, hover, symbols, `status`, `capabilities`) request read approval; `rename`, `rename_file`, `code_actions`, `reload`, and `request` request write approval regardless of `apply`.
+- The tool is discoverable rather than eagerly loaded. A session with `lspReadOnly` restricts which actions may run (see [Flow](#flow)).
 - Many validation failures are returned as ordinary text results with `details.success: false`; aborts throw `ToolAbortError` instead.
 
 ## Flow

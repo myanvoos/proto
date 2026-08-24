@@ -81,10 +81,5 @@
 		"statusLineCost": "nebula",
 		"statusLineSubagents": "nebula",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#07070d",
-		"cardBg": "#0f1018",
-		"infoBg": "#17152a"
 	}
 }

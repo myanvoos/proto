@@ -210,7 +210,7 @@ describe("formatStartupChangelogSummary", () => {
 		expect(formatStartupChangelogSummary(selection)).toBe(
 			[
 				"Updated to v2.0.0 · 5 changes across 3 releases",
-				"2 added · 1 changed · 1 fixed · 1 security · +1 earlier release · Use /changelog full for history.",
+				"2 added · 1 changed · 1 fixed · 1 security · +1 earlier release · See CHANGELOG.md in the install for full history.",
 			].join("\n"),
 		);
 	});
@@ -223,7 +223,10 @@ describe("formatStartupChangelogSummary", () => {
 		);
 
 		expect(formatStartupChangelogSummary(selection)).toBe(
-			["Updated to v2.0.0 · 1 change in 1 release", "1 breaking change · Use /changelog for details."].join("\n"),
+			[
+				"Updated to v2.0.0 · 1 change in 1 release",
+				"1 breaking change · See CHANGELOG.md in the install for details.",
+			].join("\n"),
 		);
 	});
 });

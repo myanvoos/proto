@@ -66,7 +66,6 @@ function createContext(opts: {
 	const showError = vi.fn();
 
 	const handleGoalModeCommand = vi.fn(async (_prompt?: string, _input?: unknown) => true);
-	const handlePlanModeCommand = vi.fn(async (_prompt?: string, _input?: unknown) => true);
 	const ctx = {
 		editor,
 		ui: { requestRender },
@@ -84,16 +83,12 @@ function createContext(opts: {
 		locallySubmittedUserSignatures: new Set<string>(),
 		updatePendingMessagesDisplay,
 		showError,
-		planModeEnabled: false,
-		planModePaused: false,
 		goalModeEnabled: false,
 		goalModePaused: false,
 		handleGoalModeCommand,
-		handlePlanModeCommand,
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 	} as unknown as InteractiveModeContext;
-
-	return { ctx, editor, handleGoalModeCommand, handlePlanModeCommand, prompt, showError };
+	return { ctx, editor, handleGoalModeCommand, prompt, showError };
 }
 
 describe("InputController.handleFollowUp image forwarding", () => {

@@ -73,7 +73,6 @@ export type SymbolKey =
 	| "sep.pipe"
 	// Icons
 	| "icon.model"
-	| "icon.plan"
 	| "icon.prewalk"
 	| "icon.goal"
 	| "icon.pause"
@@ -294,7 +293,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"sep.pipe": " │ ",
 	// Icons
 	"icon.model": "",
-	"icon.plan": "",
 	"icon.prewalk": "",
 	"icon.goal": "",
 	"icon.pause": "‖",
@@ -478,18 +476,4 @@ export function normalizeSpinnerFramesOverride(
 	if (value.status) result.status = value.status;
 	if (value.activity) result.activity = value.activity;
 	return result;
-}
-
-/**
- * Get available symbol presets.
- */
-export function getAvailableSymbolPresets(): SymbolPreset[] {
-	return ["unicode"];
-}
-
-/**
- * Check if a string is a valid symbol preset.
- */
-export function isValidSymbolPreset(preset: string): preset is SymbolPreset {
-	return preset === "unicode";
 }

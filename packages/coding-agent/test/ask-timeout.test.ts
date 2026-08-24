@@ -30,7 +30,6 @@ function createAskTool(): AskTool {
 				return undefined;
 			},
 		},
-		getPlanModeState: () => ({ enabled: false }),
 	} as unknown as ToolSession);
 }
 

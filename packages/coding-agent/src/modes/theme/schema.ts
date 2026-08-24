@@ -110,11 +110,6 @@ export const themeJsonSchema = type({
 	name: "string",
 	"vars?": { "[string]": "string | number" },
 	colors: themeColorsSchema,
-	"export?": {
-		"pageBg?": "string | number",
-		"cardBg?": "string | number",
-		"infoBg?": "string | number",
-	},
 	"symbols?": {
 		"overrides?": { "[string]": "string" },
 		"spinnerFrames?": spinnerFramesSchema,

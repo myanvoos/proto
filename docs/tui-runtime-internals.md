@@ -11,7 +11,7 @@ This document maps the non-theme runtime path from terminal input to rendered ou
 ## Runtime layers and ownership
 
 - **`packages/tui` engine**: terminal lifecycle, stdin normalization, focus routing, render scheduling, differential painting, overlay composition, hardware cursor placement.
-- **`packages/coding-agent` interactive mode**: builds component tree, binds editor callbacks and keymaps, reacts to agent/session events, and translates domain state (streaming, tool execution, retries, plan mode) into UI components.
+- **`packages/coding-agent` interactive mode**: builds component tree, binds editor callbacks and keymaps, reacts to agent/session events, and translates domain state (streaming, tool execution, retries) into UI components.
 
 Boundary rule: the TUI engine is message-agnostic. It only knows `Component.render(width)`, `handleInput(data)`, focus, and overlays. Agent semantics stay in interactive controllers.
 
@@ -38,7 +38,6 @@ Boundary rule: the TUI engine is message-agnostic. It only knows `Component.rend
 - `todoContainer`
 - `subagentContainer`
 - `btwContainer`
-- `omfgContainer`
 - `errorBannerContainer`
 - `modelCycleContainer` (ctrl+p model-role cycle chip track)
 - `statusLine`
@@ -189,7 +188,7 @@ Read-tool grouping is intentionally stateful (`#lastReadGroup`) to coalesce cons
 Status lane ownership:
 
 - `statusContainer` holds transient loaders (`loadingAnimation`, `autoCompactionLoader`, `retryLoader`).
-- `statusLine` renders persistent status/hooks/plan indicators and drives editor top border updates.
+- `statusLine` renders persistent status/hook indicators and drives editor top border updates.
 
 Loader behavior:
 
@@ -207,10 +206,6 @@ Input text prefixes toggle editor border mode flags:
 - `$` (non-template literal prefix) -> python mode
 
 Escape exits inactive mode by clearing editor text and restoring border color; when execution is active, escape aborts the running task instead.
-
-### Plan mode
-
-`InteractiveMode` tracks plan mode flags, status-line state, active tools, and model switching. Enter/exit updates session mode entries and status/UI state, including deferred model switch if streaming is active.
 
 ### Suspend/resume (`Ctrl+Z`)
 

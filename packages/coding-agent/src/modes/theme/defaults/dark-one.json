@@ -91,10 +91,5 @@
 		"statusLineCost": "hue5",
 		"statusLineSubagents": "hue62",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#1e2227",
-		"cardBg": "#282c34",
-		"infoBg": "#3e3428"
 	}
 }

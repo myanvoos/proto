@@ -53,36 +53,13 @@ The tool returns a single `text` content block plus optional `details`.
 
 Stdout and stderr are merged before the model sees them. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
 
-## Command policy and dedicated-tool routing
+## Dedicated-tool routing
 
-Two independent settings can prevent a Bash subprocess from starting. They serve different purposes and run at different points in the tool-call lifecycle.
+`bashInterceptor.patterns` can prevent a Bash subprocess from starting by redirecting the command to a dedicated tool.
 
 | Setting | Purpose | Rule syntax | Result when matched |
 | --- | --- | --- | --- |
-| `bash.patterns` | Command-specific execution policy | Literal text with `*` wildcards | Allows the call, requests human approval, or denies it. |
 | `bashInterceptor.patterns` | Prefer a dedicated tool over Bash | JavaScript regular expression, optional flags, tool name, and message | Returns a Bash tool error telling the model to call the named dedicated tool instead. |
-
-### `bash.patterns`: permission policy
-
-`bash.patterns` is for commands that must be allowed, confirmed by a person, or refused regardless of whether another tool could perform the work. Rules are ordered; the first matching rule wins. Each rule has a `match` glob and an `approval` value of `allow`, `prompt`, or `deny`.
-
-```yaml
-bash:
-  patterns:
-    - match: "git *"
-      approval: allow
-    - match: "curl *"
-      approval: prompt
-    - match: "rm -rf *"
-      approval: deny
-```
-
-- `deny` stops the call before `BashTool.execute()` runs, including in `yolo` mode.
-- `prompt` displays an approval request. Only an accepted request proceeds to `BashTool.execute()`.
-- `allow` can lower the approval tier for a simple command, but it cannot approve a compound command. For example, `match: "git *"` does not approve `git status && rm -rf build`.
-- `deny` and `prompt` check the complete command and each shell command segment. A rule such as `match: "rm -rf *"` therefore catches `cd /tmp && rm -rf build`.
-
-Use this setting for safety and user control. It remains useful for commands with no appropriate replacement tool, such as destructive removal, network access, deployment scripts, or project-specific scripts.
 
 ### `bashInterceptor.patterns`: dedicated-tool routing
 
@@ -113,16 +90,7 @@ GIT_AUTHOR_NAME=Dev git commit -m "message"
 
 An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commit` command in both examples. A stage that consumes another command's stdout through an unquoted `|` or `|&` (for example `grep x` in `printf 'x\n' | grep x`) is **not** treated as an interception candidate: it reads piped stdin, which the path-based dedicated tools cannot supply, so only a standalone or first-stage command is matched. Blank and comment-only continuation lines after the pipe preserve that context. Quoted, escaped, and commented text is not treated as a command. Heredocs, parameter expansion, command substitution, backticks, grouping, and malformed quoting retain only the complete-command check; the interceptor deliberately does not attempt to become a full shell parser.
 
-### Interaction and selection guide
-
-The approval policy is resolved before execution. A matching `bash.patterns` `deny` never reaches the interceptor. A matching `prompt` reaches the interceptor only after the user accepts the approval request. If an accepted call then matches an interceptor rule, the Bash call still does not run; the model receives the routing error and should invoke the dedicated tool.
-
-Avoid configuring the same operation in both places unless that two-step behavior is intended. For example, a `prompt` rule for `cat *` plus an enabled `cat`-to-`read` interceptor first asks the user to approve Bash, then rejects Bash and asks the model to use `read`.
-
-Choose the setting by the desired outcome:
-
-- Use `bash.patterns` when the question is **whether the command may execute**.
-- Use `bashInterceptor.patterns` when the question is **which tool should perform the operation**.
+## Execution flow
 
 1. `BashTool.execute()` in `packages/coding-agent/src/tools/bash.ts` reads `command`, validates `env`, and defaults `timeout` to `300`.
 2. If `cwd` is absent, it rewrites a leading `cd <path> && ...` into the structured `cwd` field and strips that prefix from `command`.

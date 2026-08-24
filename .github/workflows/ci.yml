@@ -136,7 +136,7 @@ jobs:
               } >> "$GITHUB_OUTPUT"
 
    check:
-      name: Lint, type check & web build
+      name: Lint, type check
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
       steps:
          - uses: actions/checkout@v4
@@ -154,8 +154,6 @@ jobs:
               cargo deny --locked --offline check licenses sources
          - name: Type check workspace
            run: bun run ci:check:full
-         - name: Build collab web
-           run: bun run collab:web:build
 
    # Rust validation (tests, clippy, rustfmt) runs on non-PR events only.
    # Native-changing PRs are rare enough that they do not warrant PR-side

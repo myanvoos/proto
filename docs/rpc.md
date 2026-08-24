@@ -175,7 +175,6 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 ### Session
 
 - `{ id?, type: "get_session_stats" }`
-- `{ id?, type: "export_html", outputPath?: string }`
 - `{ id?, type: "switch_session", sessionPath: string }`
 - `{ id?, type: "branch", entryId: string }`
 - `{ id?, type: "get_branch_messages" }`

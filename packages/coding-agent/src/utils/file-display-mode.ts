@@ -23,7 +23,7 @@ export interface FileDisplayModeSession {
  * Hashline mode takes precedence and implies line-addressed output everywhere.
  * Hashlines are suppressed when the edit tool is not available (e.g. scout agents),
  * when the caller signals a `raw` read, and when the source is `immutable`
- * (e.g. internal URLs like artifact://, agent://, memory:// — there is no edit
+ * (e.g. internal URLs like artifact://, agent:// — there is no edit
  * path that could consume the anchors). Raw output is returned as-is.
  */
 export function resolveFileDisplayMode(

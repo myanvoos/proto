@@ -28,15 +28,6 @@ export function readUInt32BE(bytes: Uint8Array, offset: number): number {
 	return ((bytes[offset]! << 24) | (bytes[offset + 1]! << 16) | (bytes[offset + 2]! << 8) | bytes[offset + 3]!) >>> 0;
 }
 
-/** Read a big-endian u64 as a JS number, rejecting unsafe values. */
-export function readUInt64BE(bytes: Uint8Array, offset: number): number {
-	const value = readUInt32BE(bytes, offset) * 0x100000000 + readUInt32BE(bytes, offset + 4);
-	if (!Number.isSafeInteger(value)) {
-		throw new ArchiveError("Archive uses offsets or sizes too large to read safely");
-	}
-	return value;
-}
-
 export function writeUInt16LE(buf: Uint8Array, offset: number, value: number): void {
 	buf[offset] = value & 0xff;
 	buf[offset + 1] = (value >>> 8) & 0xff;

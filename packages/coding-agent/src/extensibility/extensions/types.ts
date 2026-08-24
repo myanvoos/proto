@@ -57,7 +57,6 @@ import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
-import type { MemoryRuntimeContext } from "../../memory-backend";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
@@ -388,18 +387,6 @@ export interface CompactOptions {
 	 * Omitted = configured preference order.
 	 */
 	mode?: CompactMode;
-	/**
-	 * Internal summarizer guidance — piped only to native summarization, never
-	 * exposed as `customInstructions` on the `session_before_compact` extension
-	 * hook. Used by plan-mode "Approve and compact context" so extensions that
-	 * treat `customInstructions` as user focus don't mistake plan-mode
-	 * boilerplate for the operator's intent (issue #4359).
-	 *
-	 * When both `customInstructions` and `internalGuidance` are set, the
-	 * summarizer uses `internalGuidance`; the hook still sees only the public
-	 * `customInstructions`.
-	 */
-	internalGuidance?: string;
 }
 
 /**
@@ -474,8 +461,6 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
-	/** Structured memory runtime for status/search/save across the configured backend. */
-	memory?: MemoryRuntimeContext;
 	/**
 	 * Schedule a repeating callback whose throws are contained. Unlike raw
 	 * `setInterval`, a synchronous throw or rejected promise from `callback` is
@@ -501,8 +486,7 @@ export interface ExtensionContext {
 	 * tool performs its own side effects and internal bookkeeping.
 	 *
 	 * Delegation is same-tool only: it invokes the built-in of the SAME name as the registering tool,
-	 * never an arbitrary target, so it cannot escalate past the approval already granted for this
-	 * call. Present only when a native built-in of that name exists (undefined otherwise, e.g. for a
+	 * never an arbitrary target. Present only when a native built-in of that name exists (undefined otherwise, e.g. for a
 	 * net-new tool that shadows no built-in). Recursion is depth-guarded per call chain.
 	 */
 	invokeTool?<TDetails = unknown>(

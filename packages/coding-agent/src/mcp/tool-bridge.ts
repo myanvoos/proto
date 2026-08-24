@@ -486,7 +486,6 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly mcpToolName: string;
 	/** Server name */
 	readonly mcpServerName: string;
-	readonly approval = "write" as const;
 	/** Render completed MCP calls with the result header replacing the pending call header. */
 	readonly mergeCallAndResult = true;
 	/**
@@ -598,7 +597,6 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly mcpToolName: string;
 	/** Server name */
 	readonly mcpServerName: string;
-	readonly approval = "write" as const;
 	/** Render completed MCP calls with the result header replacing the pending call header. */
 	readonly mergeCallAndResult = true;
 	/** See {@link MCPTool.strict}: MCP servers own validation, so stay non-strict. */

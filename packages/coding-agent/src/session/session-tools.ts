@@ -13,9 +13,6 @@ import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
-import { resolveMemoryBackend } from "../memory-backend/resolve";
-import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
-import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
@@ -40,12 +37,8 @@ export interface SessionToolsHost {
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	queuedMessageCount(): number;
-	planModeEnabled(): boolean;
 	model(): Model | undefined;
-	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
-	clearMemoryPromotionSnapshot(): void;
-	captureMemoryPromotionSnapshot(prompt: string[]): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
@@ -200,9 +193,9 @@ export class SessionTools {
 	 * Per-turn system prompt returned by a `before_agent_start` extension hook
 	 * ("replace the system prompt for this turn"). While set, base-prompt
 	 * rebuilds keep this override on the agent instead of the rebuilt base, so a
-	 * rebuild landing in the prompt window (compaction/promotion, memory
-	 * promotion, MCP/RPC tool refresh, hindsight MM-TTL refresh) cannot silently
-	 * drop it before the request. Cleared when the turn ends.
+	 * rebuild landing in the prompt window (compaction/promotion, MCP/RPC tool
+	 * refresh) cannot silently drop it before the request. Cleared when the turn
+	 * ends.
 	 */
 	#turnSystemPromptOverride: string[] | undefined;
 	#lastAppliedToolSignature: string | undefined;
@@ -667,7 +660,7 @@ export class SessionTools {
 
 		const pinnedWrite = isPresentationPinned("write");
 		const activeDeferrableTool = tools.some(tool => tool.deferrable === true);
-		const transportNeeded = mountNames.size > 0 || activeDeferrableTool || this.#host.planModeEnabled();
+		const transportNeeded = mountNames.size > 0 || activeDeferrableTool;
 		if (transportNeeded && !builtInWriteAvailable) {
 			const writeRegistration = this.#ensureWriteRegistered?.();
 			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
@@ -694,7 +687,7 @@ export class SessionTools {
 		let nextCodeModeNamespacesInfo: ToolNamespacesInfo | undefined;
 		if (codeMode.active) {
 			for (const name of this.#requiredToolNames) codeMode.directToolNames.add(name);
-			// The write tool survives demotion only when plan mode or a deferrable
+			// The write tool survives demotion only when a deferrable
 			// tool still needs it as the staging transport.
 			if (transportNeeded && validToolNames.includes("write")) codeMode.directToolNames.add("write");
 			appliedTools = tools.filter(tool => codeMode.directToolNames.has(tool.name));
@@ -727,9 +720,8 @@ export class SessionTools {
 		this.#setMountedNames(mountNames);
 		this.#toolPredicateNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames);
-		// The eval tool advertises whatever stays direct, including a plan-mode
-		// transport `write`, so the applied partition lands before the rebuild
-		// reads the tool descriptions.
+		// The eval tool advertises whatever stays direct, so the applied
+		// partition lands before the rebuild reads the tool descriptions.
 		this.#codeModeDirectToolNames = codeMode.active ? appliedNames : undefined;
 
 		let rebuiltSystemPrompt: string[] | undefined;
@@ -789,7 +781,6 @@ export class SessionTools {
 		if (rebuiltSystemPrompt && rebuiltSignature) {
 			if (this.#lastAppliedToolSignature !== undefined) this.#host.clearInheritedProviderPromptCacheKey();
 			this.#baseSystemPrompt = rebuiltSystemPrompt;
-			this.#host.clearMemoryPromotionSnapshot();
 			this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 			this.#lastAppliedToolSignature = rebuiltSignature;
 			this.#promptModelKey = this.#currentPromptModelKey();
@@ -1049,8 +1040,7 @@ export class SessionTools {
 			writeSelected &&
 			this.#builtInToolNames.has("write") &&
 			this.#presentationPinnedToolNames?.has("write") !== true &&
-			this.#runtimeSelectedToolNames?.has("write") !== true &&
-			(mounted.size > 0 || this.#host.planModeEnabled());
+			mounted.size > 0;
 		const previousRuntimeSelectedToolNames = this.#runtimeSelectedToolNames;
 		this.#runtimeSelectedToolNames = new Set(
 			normalized.filter(name => !mounted.has(name) && !(name === "write" && transportWriteActive)),
@@ -1061,29 +1051,6 @@ export class SessionTools {
 			this.#runtimeSelectedToolNames = previousRuntimeSelectedToolNames;
 			throw error;
 		}
-	}
-
-	/** Replaces memory-backend tools while preserving unrelated selections. */
-	replaceMemoryTools(tools: AgentTool[]): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			const removed = new Set<string>(MEMORY_BACKEND_TOOL_NAMES.filter(name => this.#builtInToolNames.has(name)));
-			const nextActive = this.getEnabledToolNames().filter(name => !removed.has(name));
-			for (const name of removed) {
-				this.#toolRegistry.delete(name);
-				this.#builtInToolNames.delete(name);
-			}
-
-			for (const tool of tools) {
-				if (!MEMORY_BACKEND_TOOL_NAMES.some(name => name === tool.name) || this.#toolRegistry.has(tool.name)) {
-					continue;
-				}
-				const wrapped = this.#wrapRuntimeTool(tool);
-				this.#toolRegistry.set(wrapped.name, wrapped);
-				this.#builtInToolNames.add(wrapped.name);
-				nextActive.push(wrapped.name);
-			}
-			await this.#applyActiveToolsByName([...new Set(nextActive)]);
-		});
 	}
 
 	/**
@@ -1299,7 +1266,6 @@ export class SessionTools {
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
-		this.#host.clearMemoryPromotionSnapshot();
 		if (
 			previousBaseSystemPrompt.length !== this.#baseSystemPrompt.length ||
 			previousBaseSystemPrompt.some((part, index) => part !== this.#baseSystemPrompt[index])
@@ -1315,46 +1281,6 @@ export class SessionTools {
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool != null);
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(promptToolNames, promptTools, directToolNames);
-	}
-
-	/** Applies one-turn memory prompt injection before an agent run. */
-	async buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
-		const backend = await resolveMemoryBackend(this.#host.settings);
-		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
-
-		try {
-			const injected = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
-			if (!injected) return this.#baseSystemPrompt;
-
-			const previousBaseSystemPrompt = this.#baseSystemPrompt;
-			try {
-				await this.refreshBaseSystemPrompt();
-			} catch (refreshErr) {
-				logger.debug("Memory backend prompt refresh after beforeAgentStartPrompt failed", {
-					backend: backend.id,
-					error: String(refreshErr),
-				});
-			}
-
-			if (
-				this.#baseSystemPrompt.length !== previousBaseSystemPrompt.length ||
-				this.#baseSystemPrompt.some((part, index) => part !== previousBaseSystemPrompt[index])
-			) {
-				return this.#baseSystemPrompt;
-			}
-
-			this.#host.captureMemoryPromotionSnapshot(previousBaseSystemPrompt);
-			const stablePrompt = [...previousBaseSystemPrompt, injected];
-			this.#baseSystemPrompt = stablePrompt;
-			this.#applyAgentSystemPrompt(stablePrompt);
-			return stablePrompt;
-		} catch (err) {
-			logger.debug("Memory backend beforeAgentStartPrompt failed", {
-				backend: backend.id,
-				error: String(err),
-			});
-			return this.#baseSystemPrompt;
-		}
 	}
 
 	/**

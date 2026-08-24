@@ -3,7 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { isInsideTmux, wrapTmuxPassthrough } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import type { ExtensionContext, ExtensionFactory } from "../extensibility/extensions/types";
-import { isSilentAbort, isUserInterruptAbort, SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
+import { isUserInterruptAbort, SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 
 const WARP_CLI_AGENT_PROTOCOL_VERSION = 1;
 const WARP_CLI_AGENT_SENTINEL = "warp://cli-agent";
@@ -100,7 +100,7 @@ function lastAssistantStop(messages: readonly AgentMessage[]): LastAssistantStop
 			response = text;
 		} else {
 			const errorMessage = message.errorMessage;
-			if (typeof errorMessage === "string" && errorMessage.length > 0 && !isSilentAbort(message)) {
+			if (typeof errorMessage === "string" && errorMessage.length > 0) {
 				if (message.stopReason === "error") {
 					response = errorMessage;
 				} else if (message.stopReason === "aborted" && !isUserInterruptAbort(message)) {
@@ -114,7 +114,6 @@ function lastAssistantStop(messages: readonly AgentMessage[]): LastAssistantStop
 		}
 		if (
 			message.stopReason === "aborted" &&
-			!isSilentAbort(message) &&
 			!isUserInterruptAbort(message) &&
 			typeof message.errorMessage === "string" &&
 			message.errorMessage.length > 0

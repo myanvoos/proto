@@ -74,9 +74,6 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
 - Job ops require `session.asyncJobManager`; otherwise `Async execution is disabled; no background jobs are available.`
 - Process ops require `launch.enabled`; otherwise `Process supervision is disabled (launch.enabled=false).`
 
-## Approval
-`fleetApproval` (per-call): `start`, `stop`, `restart`, and `send`-to-process are `exec`; everything else — messaging, job control, `ps`/`logs`/`describe`/`wait` — is `read`.
-
 ## Starting and readiness (processes)
 `application` and `args` are separate fields, so callers do not need shell quoting:
 

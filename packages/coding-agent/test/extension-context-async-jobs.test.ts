@@ -16,7 +16,6 @@ function createRunner(getAsyncJobSnapshot?: () => AsyncJobSnapshot | null): Exte
 		{} as never,
 		undefined,
 		undefined,
-		undefined,
 		getAsyncJobSnapshot,
 	);
 }

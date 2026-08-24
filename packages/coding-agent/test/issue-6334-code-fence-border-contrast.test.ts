@@ -23,15 +23,15 @@ const MIN_CONTRAST = 2.4;
 
 describe("code fence border contrast (#6334)", () => {
 	for (const name of AFFECTED_THEMES) {
-		test(`${name}: mdCodeBlockBorder is legible against the theme page background`, async () => {
+		test(`${name}: mdCodeBlockBorder is legible against the theme message surface`, async () => {
 			const [theme, themeJson] = await Promise.all([loadTheme(name, { mode: "truecolor" }), loadThemeJson(name)]);
 			const border = theme.getColorHex("mdCodeBlockBorder");
-			const pageBgToken = themeJson.export?.pageBg;
-			expect(pageBgToken).toBeDefined();
-			if (pageBgToken === undefined) throw new Error(`${name} does not define export.pageBg`);
-			const pageBg = resolveVarRefs(pageBgToken, themeJson.vars ?? {});
-			expect(typeof pageBg).toBe("string");
-			if (typeof pageBg !== "string") throw new Error(`${name} export.pageBg is not an RGB color`);
+			// The HTML-export pageBg token is gone; statusLineBg is the live
+			// closest-surrogate surface for "the background this chrome sits on".
+			const bgToken = themeJson.colors.statusLineBg;
+			expect(bgToken).toBeDefined();
+			if (bgToken === undefined) throw new Error(`${name} does not define colors.statusLineBg`);
+			const pageBg = resolveVarRefs(bgToken, themeJson.vars ?? {});
 
 			const borderLuminance = relativeLuminance(border);
 			const pageBgLuminance = relativeLuminance(pageBg);

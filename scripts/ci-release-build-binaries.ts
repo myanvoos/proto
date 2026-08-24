@@ -154,22 +154,12 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	}
 }
 
-async function generateBundle(): Promise<void> {
-	if (isDryRun) {
-		console.log("DRY RUN bun run gen:stats");
-		return;
-	}
-	await runCommand(["bun", "run", "gen:stats"], repoRoot);
-}
-
 async function resetArtifacts(): Promise<void> {
 	if (isDryRun) {
 		console.log("DRY RUN bun run gen:native:reset");
-		console.log("DRY RUN bun run gen:stats:reset");
 		return;
 	}
 	await runCommand(["bun", "run", "gen:native:reset"], repoRoot);
-	await runCommand(["bun", "run", "gen:stats:reset"], repoRoot);
 }
 
 async function main(): Promise<void> {
@@ -190,10 +180,9 @@ async function main(): Promise<void> {
 	}
 
 	await fs.mkdir(binariesDir, { recursive: true });
-	// Generate inside the try so resetArtifacts() always restores the empty
-	// checked-in placeholders, even if a generate or build step throws.
+	// Build inside the try so resetArtifacts() always restores the empty
+	// checked-in placeholders, even if a build step throws.
 	try {
-		await generateBundle();
 		for (const target of selectedTargets) {
 			await buildBinary(target);
 		}

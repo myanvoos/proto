@@ -82,10 +82,5 @@
 		"statusLineCost": "warningGold",
 		"statusLineSubagents": "wildflowerPurple",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#F3F7F1",
-		"cardBg": "#FAFDF8",
-		"infoBg": "#E8EFE4"
 	}
 }

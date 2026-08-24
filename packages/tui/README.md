@@ -53,11 +53,7 @@ tui.stop();
 tui.requestRender(); // Request a re-render
 tui.requestComponentRender(component); // Re-render only the root subtree containing `component` when safe (falls back to a full render on resize, overlays, images, or concurrent full requests)
 
-// Global debug key handler (Shift+Ctrl+D)
-tui.onDebug = () => console.log("Debug triggered");
 ```
-
-### Component Interface
 
 All components implement:
 

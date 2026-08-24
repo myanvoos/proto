@@ -277,7 +277,7 @@ async function generateTitle(
 }
 
 /**
- * Completion path for Mnemopi memory tasks. Extraction can carry a dedicated
+ * Local completion path for small structured-generation tasks. A request may carry a dedicated
  * system prompt and user payload; consolidation retains the generic user-only
  * prompt. Output is capped to keep local inference latency bounded.
  */

@@ -87,10 +87,5 @@
 		"statusLineCost": "earth",
 		"statusLineSubagents": "moss",
 		"pythonMode": "amber"
-	},
-	"export": {
-		"pageBg": "#0A120E",
-		"cardBg": "#141F1A",
-		"infoBg": "#2A3526"
 	}
 }

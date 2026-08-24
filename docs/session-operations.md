@@ -1,6 +1,6 @@
-# Session Operations: export, dump, share, fresh, clear, fork, resume/continue
+# Session Operations: fresh, clear, fork, resume/continue
 
-This document describes operator-visible behavior for session export, sharing, conversation reset, lifecycle, fork, and resume operations as currently implemented.
+This document describes operator-visible behavior for conversation reset, lifecycle, fork, and resume operations as currently implemented.
 
 ## Implementation files
 
@@ -24,22 +24,6 @@ This document describes operator-visible behavior for session export, sharing, c
 | `--resume <id\|path>`                   | CLI startup                  | Yes after session creation                    | Opens existing session; a missing recorded cwd may be re-rooted into the current directory | None                                                                                |
 | `--continue`                            | CLI startup                  | Yes after session creation                    | Opens terminal breadcrumb or most-recent session; creates new one if none exists           | None                                                                                |
 
-## Export and dump
-
-### `--export <inputSessionFile> [outputPath]` (CLI)
-
-Flow in `main.ts`:
-
-1. Handled early (before interactive/session startup).
-2. Calls `exportFromFile(inputPath, outputPath?)`.
-3. `SessionManager.open(inputPath)` loads entries, then HTML is generated and written.
-4. Process prints `Exported to: ...` and exits.
-
-Behavior details:
-
-- Missing input file surfaces as `File not found: <path>`.
-- This path does not create an `AgentSession` and does not mutate any running session.
-
 ## Fresh
 
 Interactive `/fresh` resets the provider-facing stream state of the current
@@ -54,9 +38,8 @@ keeping the conversation you can see.
   abort it first.
 - Closes every cached provider-session state entry (server-side conversation /
   prompt-cache handles) and reports how many were pruned.
-- Mints a fresh provider session id and re-keys hindsight and mnemopi memory to
-  it, and invalidates the append-only context so the next turn re-sends the full
-  local transcript to the provider.
+- Mints a fresh provider session id and invalidates the append-only context so
+  the next turn re-sends the full local transcript to the provider.
 - Leaves the local transcript, session file, and session identity unchanged, so
   nothing you have said or received is lost.
 
@@ -85,8 +68,8 @@ command aborts it and waits for it to stop before resetting.
 - Retains the session id, title, cwd, model, settings, active plan path, and
   transcript file.
 - Appends a durable `reset_boundary`. The collapsed live transcript and rebuilt
-  model context begin after the latest boundary, while the JSONL transcript and
-  full-transcript export retain the pre-reset history on disk.
+  model context begin after the latest boundary, while the JSONL transcript
+  retains the pre-reset history on disk.
 
 The TUI clears its rendered transcript after a successful clear. This differs
 from `/fresh`, which rotates provider stream state without clearing the
@@ -257,7 +240,6 @@ These callbacks are observational; they do not cancel switch/fork.
 When session manager is created with `SessionManager.inMemory()` (`--no-session`):
 
 - Session file path is absent.
-- Export and share commands are removed from this fork.
 - `/fork` fails because `SessionManager.fork()` requires persistence.
 - CLI resume/continue semantics are bypassed if `--no-session` is set, because manager creation returns in-memory immediately.
 

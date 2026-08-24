@@ -5,10 +5,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	dispatchResolutionDevice,
 	isPreviewResolutionToolCall,
-	isProposeToolCall,
-	type PlanProposalHandler,
-	PROPOSE_DEVICE_NAME,
-	PROPOSE_DEVICE_PATH,
 	REJECT_DEVICE_NAME,
 	REJECT_DEVICE_PATH,
 	RESOLVE_DEVICE_NAME,
@@ -20,11 +16,7 @@ import {
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 function createSession(
-	options: {
-		handler?: (input: unknown) => Promise<unknown>;
-		proposalHandler?: PlanProposalHandler;
-		clearPendingInvokers?: () => void;
-	} = {},
+	options: { handler?: (input: unknown) => Promise<unknown>; clearPendingInvokers?: () => void } = {},
 ): ToolSession {
 	return {
 		cwd: "/tmp",
@@ -33,7 +25,6 @@ function createSession(
 		getSessionSpawns: () => "*",
 		settings: Settings.isolated(),
 		peekQueueInvoker: options.handler ? () => options.handler : () => undefined,
-		peekPlanProposalHandler: options.proposalHandler ? () => options.proposalHandler : () => undefined,
 		clearPendingInvokers: options.clearPendingInvokers,
 	};
 }
@@ -46,7 +37,6 @@ describe("dispatchResolutionDevice", () => {
 	it("returns usage text for each device", () => {
 		expect(resolutionDeviceUsage(RESOLVE_DEVICE_NAME)).toContain(RESOLVE_DEVICE_PATH);
 		expect(resolutionDeviceUsage(REJECT_DEVICE_NAME)).toContain(REJECT_DEVICE_PATH);
-		expect(resolutionDeviceUsage(PROPOSE_DEVICE_NAME)).toContain(PROPOSE_DEVICE_PATH);
 	});
 
 	it("errors and clears stale pending markers when resolve has no invoker", async () => {
@@ -156,40 +146,14 @@ describe("dispatchResolutionDevice", () => {
 		});
 		expect(writeDeviceDispatch("write", { details: { xdev } })?.tool).toBe(RESOLVE_DEVICE_NAME);
 	});
-
-	it("routes propose to the plan proposal handler", async () => {
-		let proposedTitle = "";
-		const proposalHandler: PlanProposalHandler = async (title: string) => {
-			proposedTitle = title;
-			return {
-				content: [{ type: "text", text: "Plan ready for approval." }],
-				details: { planFilePath: "local://demo-plan.md", title, planExists: true },
-			};
-		};
-		const { result, xdev } = await dispatchResolutionDevice(
-			createSession({ proposalHandler }),
-			PROPOSE_DEVICE_NAME,
-			"demo",
-		);
-		expect(proposedTitle).toBe("demo");
-		expect(getText(result)).toContain("Plan ready for approval.");
-		expect(xdev).toMatchObject({ tool: PROPOSE_DEVICE_NAME, mode: "execute", args: { title: "demo" } });
-	});
 });
 
 describe("device tool-call predicates", () => {
 	it("matches only writes targeting the preview-resolution devices", () => {
 		expect(isPreviewResolutionToolCall({ name: "write", arguments: { path: RESOLVE_DEVICE_PATH } })).toBe(true);
 		expect(isPreviewResolutionToolCall({ name: "write", arguments: { path: REJECT_DEVICE_PATH } })).toBe(true);
-		expect(isPreviewResolutionToolCall({ name: "write", arguments: { path: PROPOSE_DEVICE_PATH } })).toBe(false);
 		expect(isPreviewResolutionToolCall({ name: "write", arguments: { path: "/tmp/notes.md" } })).toBe(false);
 		expect(isPreviewResolutionToolCall({ name: "edit", arguments: { path: RESOLVE_DEVICE_PATH } })).toBe(false);
-	});
-
-	it("matches only writes targeting xd://propose for plan decisions", () => {
-		expect(isProposeToolCall({ name: "write", arguments: { path: PROPOSE_DEVICE_PATH } })).toBe(true);
-		expect(isProposeToolCall({ name: "write", arguments: { path: RESOLVE_DEVICE_PATH } })).toBe(false);
-		expect(isProposeToolCall({ name: "ask", arguments: {} })).toBe(false);
 	});
 });
 

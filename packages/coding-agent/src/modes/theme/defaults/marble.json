@@ -84,10 +84,5 @@
 		"statusLineCost": 133,
 		"statusLineSubagents": "veinGray",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#f9f7f5",
-		"cardBg": "#ffffff",
-		"infoBg": "#f2efec"
 	}
 }

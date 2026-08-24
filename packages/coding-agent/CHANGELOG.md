@@ -3,8 +3,17 @@
 ## [Unreleased]
 
 ### Breaking Changes
+- Removed the built-in long-term memory system: the `off`/`local`/Hindsight/Mnemopi backends (`memory.backend`), the `retain`, `recall`, `reflect`, `memory_edit`, and `learn` tools, the `memory://` internal URL scheme and `/memory` slash command, all `mnemopi.*`/`hindsight.*`/`memory.*`/`memories.*` settings, the extension-API `memory` runtime context, and the `@oh-my-pi/pi-mnemopi` dependency. Data previously written under the agent memories directory is simply no longer read.
 
 - Removed the snapcompact compaction method, the `snapcompact.*` inline-imaging settings (`snapcompact.systemPrompt`, `snapcompact.toolResults`, `snapcompact.shape`), and the `/compact snapcompact` mode. Configured method orders containing `snapcompact` fall back to the remaining methods; existing session entries that carry snapcompact frame archives render as their text summary only.
+- Removed plan mode entirely: the `/plan` and `/plan-review` commands, the `plan.enabled`/`plan.defaultOnStartup` settings, the `--plan`/`--plan-yolo` CLI flags, the `PI_PLAN_MODEL` environment variable, the `plan` model role, the Alt+Shift+P toggle, plan-file guards in edit/write tools, the ACP plan approval surface, and the `xd://propose` resolution device. Existing sessions containing plan mode entries still load; old configs with a `plan_mode` status-line segment keep migrating to `mode`.
+- Removed `/guided-goal` as a separate command: `/goal <objective>` now starts the guided interview by default, while `/goal set <objective>` keeps setting an objective directly. `/goal show|pause|resume|drop|budget` are unchanged.
+- Removed the `/debug` slash command and the debug selector subsystem (log viewer, profiler, protocol probe, remote debugger, report bundles); the SSE capture buffer stays, and the Shift+Ctrl+D global shortcut is gone.
+- Removed the `/green` bundled custom command.
+- Removed the `/force` slash command (forcing the next turn to use a specific tool) and the `/fresh` slash command (rotating provider stream state without changing the local transcript); `/clear` still rotates provider-side session state when it drops context.
+
+
+### Added
 - Removed the `composer.shape` setting and every composer layout option; the editor always renders the default borderless prompt, and extensions can no longer register composer shapes.
 
 ### Added
@@ -14,9 +23,8 @@
 - Added the `/pin` slash command to pin and unpin sessions so they stay at the top of the `--resume` picker UI.
 - Optional edit parse-regression capture appends the before/after content, model, variant, and arguments to `~/.proto/agent/edit-blackbox.jsonl` when `edit.blackbox.enabled` is enabled.
 - Added `startup.clearScrollback` (off by default) to opt back into erasing the terminal's saved scrollback at launch.
-
 ### Changed
-
+- The agent fleet roster's tree connectors now use the theme's `tree.branch`/`tree.last` glyphs (`├─ `/`└─ `) instead of hardcoded `├── `/`└── `, and the commit tool-args block uses dashed connectors.
 - Interactive startup no longer erases the terminal's scrollback; the session begins on a clear screen with prior history still reachable by scrolling up.
 - The welcome header drops the sun banner art; the wordmark, version, and model line remain.
 - The setup wizard and its outro frame replace the giant pi logo art with the same compact hero header as the welcome screen (letter-spaced wordmark plus version/model line).
@@ -44,6 +52,7 @@
 
 ### Fixed
 
+- Lowered the setup-wizard version marker back to 1 now that the scenes that required version 2 are gone, so users who already walked the current wizard are not re-prompted.
 - Fixed the working spinner and transcript floating above the prompt box at the start of a session: conversation content now pins to the composer edge (the welcome screen's centered layout still applies until the first message).
 - Fixed double-Esc (session tree / branch selector) appearing dead on long sessions: opening it no longer replays the entire transcript through the terminal (which blocked for tens of seconds on PTY backpressure and cleared native scrollback), only the viewport repaints.
 - Fixed prompt history whitespace duplicates: prompts are normalized on save (CRLF folded, per-line trailing padding stripped) so terminal-copy resubmissions upsert instead of adding a near-identical row, and a one-time pass collapses existing padded duplicates keeping the latest submission's metadata.
@@ -101,6 +110,7 @@
 
 ### Removed
 - Removed the opt-in security workflow: the `/security` slash command and its handler, the `security_scan` tool and `security_publish` publication tool, the `src/security` module (coordinator, store, cloud client, importers, SARIF/provenance/remediation), the read-only `security://` internal-URL protocol handler, the bundled `security-reviewer` agent, and the `security.enabled` setting. The scheme is no longer reserved against RPC host URI registration.
+- Removed the inert `--yolo` and `--auto-approve` CLI flags; passing them now fails with an unknown-flag error instead of being silently ignored.
 
 - Removed the big TUI hero animations: the animated welcome intro (gradient/shine sweep on the startup logo), the full-screen animated startup/setup splash (water/starfield scene and the `startup.showSplash` setting), and the Codex reset fireworks overlay (and its `tui.codexResetFireworks` setting). Startup now renders the static gradient logo and the setup wizard opens directly on the first scene; the setup outro is a static frame. Small indicators (spinners, thinking pulse, editor shimmer) are unchanged.
 - Removed /share, `proto share`, /export, and `--export` along with their HTML template/tool-view bundle, custom-share hook, `share.*` settings, and the `export_html` RPC method.

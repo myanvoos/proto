@@ -14,7 +14,7 @@ import type {
 	SessionSwitchEvent,
 } from "../../src/extensibility/extensions/types";
 import { createWarpEventBridgeExtension, createWarpEventEmitter } from "../../src/modes/warp-events";
-import { SILENT_ABORT_MARKER, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../src/session/messages";
+import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../src/session/messages";
 
 const originalTerminalId = terminalCapabilities.TERMINAL.id;
 const originalProtocolVersion = process.env.WARP_CLI_AGENT_PROTOCOL_VERSION;
@@ -500,27 +500,6 @@ describe("Warp CLI-agent events", () => {
 			query: "prompt text",
 			response: "visible answer",
 		});
-
-		// Silent abort marker must not surface as the stop response or fail the turn.
-		write.mockClear();
-		messageStart(userMessageStart("prompt silent"));
-		agentEnd({
-			type: "agent_end",
-			messages: [
-				{
-					role: "assistant",
-					content: [],
-					stopReason: "aborted",
-					errorMessage: SILENT_ABORT_MARKER,
-				} as never,
-			],
-		});
-		expect(parseBodies(write).at(-1)).toMatchObject({
-			event: "stop",
-			query: "prompt silent",
-			response: "",
-		});
-		expect(parseBodies(write).at(-1)).not.toHaveProperty("error_type");
 
 		// User interrupt labels stay suppressed; non-user abort reasons surface as failures.
 		write.mockClear();

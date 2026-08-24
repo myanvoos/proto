@@ -22,7 +22,7 @@ import {
 describe("worker-host selectors", () => {
 	it("recognizes the shared selector namespace without claiming ordinary CLI arguments", () => {
 		expect(WORKER_HOST_SELECTOR_PREFIX).toBe("__proto_worker_");
-		expect(isWorkerHostSelector("__proto_worker_stats_sync")).toBeTrue();
+		expect(isWorkerHostSelector("__proto_worker_tab")).toBeTrue();
 		expect(isWorkerHostSelector("__proto_worker_computer")).toBeTrue();
 		expect(isWorkerHostSelector("--version")).toBeFalse();
 		expect(isWorkerHostSelector(undefined)).toBeFalse();

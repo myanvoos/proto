@@ -82,10 +82,5 @@
 		"statusLineCost": "honeyGold",
 		"statusLineSubagents": "blossomPink",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#F7F2E8",
-		"cardBg": "#FFF9F0",
-		"infoBg": "#F2E8D9"
 	}
 }

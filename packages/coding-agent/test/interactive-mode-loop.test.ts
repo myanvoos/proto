@@ -155,32 +155,20 @@ describe("InteractiveMode loop auto-submit", () => {
 		expect(resolved[0].text).toBe("deliver this");
 	});
 
-	it("reports waiting, running, paused, resumed, and disabled loop states", async () => {
+	it("reports the loop as enabled while active and clears the status when disabled", async () => {
 		const setLoopModeStatus = vi.spyOn(mode.statusLine, "setLoopModeStatus");
 
 		await mode.handleLoopCommand("3");
-		expect(setLoopModeStatus).toHaveBeenLastCalledWith({
-			state: "waiting",
-			limit: { kind: "iterations", initial: 3, remaining: 3 },
-		});
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ enabled: true });
 
 		mode.setLoopPrompt("repeat this");
-		expect(setLoopModeStatus).toHaveBeenLastCalledWith({
-			state: "running",
-			limit: { kind: "iterations", initial: 3, remaining: 3 },
-		});
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ enabled: true });
 
 		mode.pauseLoop();
-		expect(setLoopModeStatus).toHaveBeenLastCalledWith({
-			state: "paused",
-			limit: { kind: "iterations", initial: 3, remaining: 3 },
-		});
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ enabled: true });
 
 		mode.setLoopPrompt("resume this");
-		expect(setLoopModeStatus).toHaveBeenLastCalledWith({
-			state: "running",
-			limit: { kind: "iterations", initial: 3, remaining: 3 },
-		});
+		expect(setLoopModeStatus).toHaveBeenLastCalledWith({ enabled: true });
 
 		mode.disableLoopMode();
 		expect(setLoopModeStatus).toHaveBeenLastCalledWith(undefined);

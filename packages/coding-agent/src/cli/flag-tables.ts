@@ -106,9 +106,7 @@ function parseMaxTimeSeconds(value: string): number {
 
 /**
  * Setters for flags with string values. Most built-ins consume the next argv
- * token even when it starts with `-`; flags listed in
- * {@link EXTENSION_SHADOWABLE_STRING_FLAGS} use extension-style consumption so
- * a registered boolean extension can shadow them before profile bootstrap.
+ * token even when it starts with `-`.
  */
 export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--cwd": (result, value) => {
@@ -140,14 +138,8 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--slow": (result, value) => {
 		result.slow = value;
 	},
-	"--plan": (result, value) => {
-		result.plan = value;
-	},
 	"--prewalk-into": (result, value) => {
 		result.prewalkInto = value;
-	},
-	"--plan-yolo-into": (result, value) => {
-		result.planYoloInto = value;
 	},
 	"--max-time": (result, value) => {
 		result.maxTime = parseMaxTimeSeconds(value);
@@ -244,14 +236,6 @@ export const OPTIONAL_FLAGS: Record<string, OptionalFlagConfig> = {
 export const STRING_VALUE_FLAGS: ReadonlySet<string> = new Set(Object.keys(STRING_SETTERS));
 
 /**
- * Built-in string flags known to be shadowed by bundled/common boolean
- * extensions before extension metadata is available. They still accept a
- * value-like successor for the built-in form (`--plan opus`), but a
- * flag-looking successor remains a fresh flag (`--plan --profile work`).
- */
-export const EXTENSION_SHADOWABLE_STRING_FLAGS: ReadonlySet<string> = new Set(["--plan"]);
-
-/**
  * Derived from {@link OPTIONAL_FLAGS}. Same single-source contract as
  * {@link STRING_VALUE_FLAGS}.
  */
@@ -293,7 +277,6 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--external-thinking",
 	"--prewalk",
 	"--no-prewalk",
-	"--plan-yolo",
 	"--print",
 	"--print-thoughts",
 	"--no-extensions",
@@ -337,7 +320,6 @@ export function flagConsumesValue(flag: string, next: string | undefined): boole
 	// (`--system-prompt --foo` ⇒ the system prompt is literally `--foo`).
 	if (STRING_VALUE_FLAGS.has(flag)) return true;
 	const valueLike = !next.startsWith("-");
-	if (EXTENSION_SHADOWABLE_STRING_FLAGS.has(flag)) return valueLike;
 	if (OPTIONAL_VALUE_FLAGS.has(flag)) {
 		const config = OPTIONAL_FLAGS[flag];
 		return valueLike && !(config.rejectEmpty === true && next.length === 0);

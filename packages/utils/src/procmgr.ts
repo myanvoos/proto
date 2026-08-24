@@ -1,7 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import type { Subprocess } from "bun";
 import { getAgentDir, MAIN_CONFIG_FILENAMES } from "./dirs";
 import { $env, filterChildShellEnv } from "./env";
 import { $which } from "./which";
@@ -220,28 +218,4 @@ export function getShellConfig(customShellPath?: string, options: ShellConfigOpt
 	}
 	cachedShellConfig = buildConfig("sh");
 	return cachedShellConfig;
-}
-
-/**
- * Check if a process is running.
- */
-export function isPidRunning(pid: number | Subprocess): boolean {
-	if (typeof pid !== "number") {
-		if (pid.killed) return false;
-		if (pid.exitCode !== null) return false;
-		return true;
-	}
-
-	return Process.fromPid(pid)?.status() === ProcessStatus.Running;
-}
-
-export async function onProcessExit(proc: Subprocess | number, abortSignal?: AbortSignal): Promise<boolean> {
-	if (typeof proc !== "number") {
-		return proc.exited.then(
-			() => true,
-			() => true,
-		);
-	}
-
-	return (await Process.fromPid(proc)?.waitForExit({ signal: abortSignal })) ?? true;
 }

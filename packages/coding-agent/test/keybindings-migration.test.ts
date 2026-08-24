@@ -151,7 +151,7 @@ describe("KeybindingsManager.create", () => {
 			yamlPath,
 			YAML.stringify(
 				{
-					"app.plan.toggle": "alt+shift+p",
+					"app.model.select": "alt+shift+p",
 				},
 				null,
 				2,
@@ -161,7 +161,7 @@ describe("KeybindingsManager.create", () => {
 		try {
 			const manager = KeybindingsManager.create(agentDir);
 
-			expect(manager.getKeys("app.plan.toggle")).toEqual(["alt+shift+p"]);
+			expect(manager.getKeys("app.model.select")).toEqual(["alt+shift+p"]);
 			expect(await Bun.file(canonicalPath).exists()).toBe(false);
 		} finally {
 			await removeWithRetries(agentDir);
@@ -322,11 +322,11 @@ describe("KeybindingsManager.create", () => {
 
 	it("removes the Ctrl+Q follow-up default when a user remap already claims it (#1903)", () => {
 		const manager = KeybindingsManager.inMemory({
-			"app.plan.toggle": "ctrl+q",
+			"app.model.select": "ctrl+q",
 		});
 		setKeybindings(manager);
 
-		expect(manager.getKeys("app.plan.toggle")).toEqual(["ctrl+q"]);
+		expect(manager.getKeys("app.model.select")).toEqual(["ctrl+q"]);
 		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+enter"]);
 		expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter");
 		expect(manager.getEffectiveConfig()["app.message.followUp"]).toBe("ctrl+enter");

@@ -41,7 +41,6 @@ async function createHarness(options?: { goalEnabled?: boolean }): Promise<Guide
 	const settings = Settings.isolated({
 		"compaction.enabled": false,
 		"goal.enabled": options?.goalEnabled ?? true,
-		"plan.enabled": true,
 	});
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 	const modelRegistry = new ModelRegistry(authStorage);
@@ -67,7 +66,7 @@ async function createHarness(options?: { goalEnabled?: boolean }): Promise<Guide
 		rebuildSystemPrompt: async () => ({ systemPrompt: ["Test"] }),
 	});
 	// Mirror sdk.ts assembly: the goal tool is pre-registered (hidden) whenever
-	// goal.enabled, so /guided-goal can activate it by name for the interview.
+	// goal.enabled, so /goal (the guided interview path) can activate it by name.
 	const goalToolSession = createToolSession(tempDir.path(), settings, {
 		getGoalModeState: () => session.getGoalModeState(),
 		getGoalRuntime: () => session.goalRuntime,
@@ -109,7 +108,7 @@ describe("guided goal setup", () => {
 			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 			const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
 
-			await harness.mode.handleGuidedGoalCommand("automate flaky test triage", {
+			await harness.mode.handleGoalModeCommand("automate flaky test triage", {
 				images,
 				imageLinks: ["file:///shot.png"],
 			});
@@ -134,7 +133,7 @@ describe("guided goal setup", () => {
 		try {
 			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 
-			await harness.mode.handleGuidedGoalCommand();
+			await harness.mode.handleGoalModeCommand();
 
 			expect(promptSpy).toHaveBeenCalledTimes(1);
 			const [text] = promptSpy.mock.calls[0]!;
@@ -151,7 +150,7 @@ describe("guided goal setup", () => {
 			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 			const followUp = vi.spyOn(harness.session, "followUp").mockResolvedValue();
 
-			await harness.mode.handleGuidedGoalCommand("ship it");
+			await harness.mode.handleGoalModeCommand("ship it");
 
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(followUp).toHaveBeenCalledTimes(1);
@@ -167,7 +166,7 @@ describe("guided goal setup", () => {
 			vi.spyOn(harness.session, "prompt").mockRejectedValue(new AgentBusyError());
 			const followUp = vi.spyOn(harness.session, "followUp").mockResolvedValue();
 
-			await harness.mode.handleGuidedGoalCommand("ship it");
+			await harness.mode.handleGoalModeCommand("ship it");
 
 			expect(followUp).toHaveBeenCalledTimes(1);
 			expect(followUp.mock.calls[0]?.[2]).toEqual({ synthetic: true });
@@ -182,7 +181,7 @@ describe("guided goal setup", () => {
 			const promptSpy = vi.spyOn(disabled.session, "prompt").mockResolvedValue(true);
 			const warning = vi.spyOn(disabled.mode, "showWarning");
 
-			await disabled.mode.handleGuidedGoalCommand("ship it");
+			await disabled.mode.handleGoalModeCommand("ship it");
 
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(warning).toHaveBeenCalledWith("Goal mode is disabled. Enable it in settings (goal.enabled).");
@@ -198,7 +197,7 @@ describe("guided goal setup", () => {
 			const warning = vi.spyOn(harness.mode, "showWarning");
 
 			harness.mode.goalModeEnabled = true;
-			await harness.mode.handleGuidedGoalCommand("ship it");
+			await harness.mode.handleGoalModeCommand("ship it");
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(status).toHaveBeenCalledWith(
 				"Goal mode is already active. Use /goal to manage it, or /goal drop to start over.",
@@ -219,7 +218,7 @@ describe("guided goal setup", () => {
 					updatedAt: now,
 				},
 			});
-			await harness.mode.handleGuidedGoalCommand("ship it");
+			await harness.mode.handleGoalModeCommand("ship it");
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(warning).toHaveBeenCalledWith(
 				"Resume the current goal first, or drop it before setting a new objective.",

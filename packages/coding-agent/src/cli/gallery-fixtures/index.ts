@@ -18,7 +18,6 @@ import { codeintelFixtures } from "./codeintel";
 import { editFixtures } from "./edit";
 import { fsFixtures } from "./fs";
 import { interactionFixtures } from "./interaction";
-import { memoryFixtures } from "./memory";
 import { miscFixtures } from "./misc";
 import { searchFixtures } from "./search";
 import { shellFixtures } from "./shell";
@@ -34,7 +33,6 @@ export const galleryFixtures = {
 	...searchFixtures,
 	...editFixtures,
 	...agenticFixtures,
-	...memoryFixtures,
 	...webFixtures,
 	...codeintelFixtures,
 	...statusLineFixtures,

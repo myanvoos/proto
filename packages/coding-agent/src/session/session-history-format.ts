@@ -8,7 +8,7 @@
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { escapeXmlText, INTENT_FIELD } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import type {
 	BashExecutionMessage,
 	BranchSummaryMessage,
@@ -28,17 +28,6 @@ export interface HistoryFormatOptions {
 	includeToolIntent?: boolean;
 	/** Render watched-session roles as inline `**agent**:` / `**user**:` labels (collapsing consecutive same-role messages) instead of `## ` headings, so a primary transcript embedded inside an advisor turn stays visually distinct. */
 	watchedRoles?: boolean;
-	/**
-	 * Expand the primary agent's injected constraint context — plan mode's rules
-	 * (`plan-mode-context`) and the approved plan it implements
-	 * (`plan-mode-reference`) — verbatim instead of as a truncated one-liner,
-	 * wrapped in a `<primary-context>` tag so a reviewer reads it as the primary's
-	 * instructions, not its own. The advisor sets this: a truncated rule (plan
-	 * mode's "NEVER create files … except the plan file") makes it raise false
-	 * blockers. See {@link PRIMARY_CONTEXT_CUSTOM_TYPES}. Other custom messages
-	 * still collapse to a one-liner.
-	 */
-	expandPrimaryContext?: boolean;
 	/**
 	 * Append the full unified diff (from a tool result's `details.diff`) below
 	 * edit/apply_patch tool lines, instead of just the path. The advisor sets
@@ -244,21 +233,6 @@ function executionLine(
 	return `→ user-${kind}! ${sourcePreview} ⇒ ${status} · ${lines} ${lines === 1 ? "line" : "lines"}`;
 }
 
-/**
- * Hidden custom messages that inject the primary agent's operative *constraints*
- * — plan mode's rules and the approved plan it implements. A reviewer (the
- * advisor) must read these verbatim; truncating them hides load-bearing
- * exceptions (e.g. plan mode permits exactly one plan file). Every other custom
- * type stays a one-liner.
- *
- * Deliberately excludes `goal-mode-context`: its body carries live budget
- * counters (tokens/seconds used) that change every turn, so it can neither be
- * deduped against a prior copy nor expanded each turn without flooding the
- * reviewer — and its constraints don't drive the file-write misreads this
- * targets.
- */
-export const PRIMARY_CONTEXT_CUSTOM_TYPES: ReadonlySet<string> = new Set(["plan-mode-context", "plan-mode-reference"]);
-
 /** Hidden non-primary custom messages whose content is needed to understand visible transcript entries. */
 const CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES: Record<string, true> = {
 	"image-attachment-description": true,
@@ -419,26 +393,10 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			case "custom":
 			case "hookMessage": {
 				const custom = msg as CustomMessage | HookMessage;
-				if (
-					custom.display === false &&
-					!PRIMARY_CONTEXT_CUSTOM_TYPES.has(custom.customType) &&
-					CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES[custom.customType] !== true
-				) {
+				if (custom.display === false && CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES[custom.customType] !== true) {
 					break;
 				}
-				if (opts?.expandPrimaryContext && PRIMARY_CONTEXT_CUSTOM_TYPES.has(custom.customType)) {
-					const text = contentToText(custom.content).trim();
-					if (text) {
-						lines.push(
-							`<primary-context kind="${custom.customType}">`,
-							escapeXmlText(text),
-							"</primary-context>",
-							"",
-						);
-					}
-				} else {
-					lines.push(customOneLiner(custom), "");
-				}
+				lines.push(customOneLiner(custom), "");
 				lastWatchedLabel = undefined;
 				break;
 			}

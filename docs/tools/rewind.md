@@ -12,7 +12,7 @@
   - `packages/coding-agent/src/tools/index.ts` — registers the tool and shares the `checkpoint.enabled` gate.
 
 ## Registration / Visibility
-- Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`. Execution is single-shot; rewind side effects are deferred rather than streamed as progress updates.
+- Tool metadata: `loadMode = "discoverable"`. Execution is single-shot; rewind side effects are deferred rather than streamed as progress updates.
 - Registration requires `checkpoint.enabled = true` (default `false`).
 - Top-level sessions receive the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: explicitly requesting either while the feature is enabled automatically includes the other.

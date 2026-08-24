@@ -479,34 +479,6 @@ describe("Code Mode session reconciliation", () => {
 		expect(session.codeModeNamespacesInfo).toBeUndefined();
 		expect(session.getActiveToolNames()).toEqual(["eval", "read"]);
 	});
-
-	test("plan guidance keeps task delegation after Code Mode demotes the tool", async () => {
-		async function planPrompt(codeMode: "on" | "off", extraTools: AgentTool[], names: string[]): Promise<string> {
-			const { session } = createSession(
-				Settings.isolated({ "providers.openai-codex.codeMode": codeMode }),
-				undefined,
-				undefined,
-				extraTools,
-			);
-			await session.setActiveToolsByName(names);
-			session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
-			await session.sendPlanModeContext();
-			const planMessage = session.state.messages.find(
-				message => (message as { customType?: string }).customType === "plan-mode-context",
-			);
-			return String((planMessage as { content?: string })?.content);
-		}
-
-		// The contract is invariance: demoting `task` off the direct surface is a
-		// transport change, so the guidance must match a session where `task` is
-		// directly callable, and must differ from one that cannot delegate at all.
-		const demoted = await planPrompt("on", [tool("task")], ["eval", "task"]);
-		const direct = await planPrompt("off", [tool("task")], ["eval", "task"]);
-		const unavailable = await planPrompt("on", [], ["eval"]);
-
-		expect(demoted).toBe(direct);
-		expect(demoted).not.toBe(unavailable);
-	});
 });
 
 describe("Code Mode session startup", () => {

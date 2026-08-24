@@ -255,21 +255,7 @@ interface BaseModeState {
 	render(ctx: SegmentContext): string;
 }
 
-/** Suffix marking a paused mode: the theme's pause glyph, or words for a preset with none. */
-function pauseSuffix(): string {
-	return theme.icon.pause ? ` ${theme.icon.pause}` : " (paused)";
-}
-
 export const BASE_MODE_STATES: readonly BaseModeState[] = [
-	{
-		id: "plan",
-		render(ctx) {
-			const plan = ctx.planMode;
-			if (!plan || !(plan.enabled || plan.paused)) return "";
-			const label = plan.paused ? `Plan${pauseSuffix()}` : "Plan";
-			return theme.fg(plan.paused ? "warning" : MODE_ACCENT, withIcon(theme.icon.plan, label));
-		},
-	},
 	{
 		id: "prewalk",
 		render(ctx) {
@@ -294,7 +280,7 @@ export const BASE_MODE_STATES: readonly BaseModeState[] = [
 	},
 ];
 
-/** The active mode label (plan/prewalk/goal/loop). */
+/** The active mode label (prewalk/goal/loop). */
 function renderBaseMode(ctx: SegmentContext): string {
 	for (const mode of BASE_MODE_STATES) {
 		const content = mode.render(ctx);

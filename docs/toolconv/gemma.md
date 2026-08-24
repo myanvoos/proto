@@ -36,7 +36,7 @@ The owned `gemma` prompt **does** carry each tool's normalized wire schema. `ren
 </tools>
 ```
 
-`renderToolInventory` is a separate verbose inventory used by the system prompt and `/dump`. It emits one `## functions` TypeScript `namespace functions { … }` block. Tool descriptions are `//` comments above `type NAME = (_: PARAMS);` declarations; configured examples appear as JSDoc-style `// @example` entries whose calls use Python keyword-argument syntax. It does not emit per-tool Markdown sections or native Gemma `<|tool_call>` examples.
+`renderToolInventory` is a separate verbose inventory used by the system prompt. It emits one `## functions` TypeScript `namespace functions { … }` block. Tool descriptions are `//` comments above `type NAME = (_: PARAMS);` declarations; configured examples appear as JSDoc-style `// @example` entries whose calls use Python keyword-argument syntax. It does not emit per-tool Markdown sections or native Gemma `<|tool_call>` examples.
 
 ## Tool-call format
 

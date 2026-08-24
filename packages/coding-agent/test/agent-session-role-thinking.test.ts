@@ -147,10 +147,10 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(Effort.Medium);
 	});
 
-	it("applies slow role thinking even when plan shares the same model", async () => {
+	it("applies slow role thinking when roles share the same model", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const smolModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
-		const slowPlanModel = getAnthropicModelOrThrow("claude-opus-4-5");
+		const slowModel = getAnthropicModelOrThrow("claude-opus-4-5");
 
 		await createSession({
 			initialModelId: defaultModel.id,
@@ -158,8 +158,7 @@ describe("AgentSession role model thinking behavior", () => {
 			modelRoles: {
 				default: `${defaultModel.provider}/${defaultModel.id}`,
 				smol: `${smolModel.provider}/${smolModel.id}:low`,
-				slow: `${slowPlanModel.provider}/${slowPlanModel.id}:high`,
-				plan: `${slowPlanModel.provider}/${slowPlanModel.id}:off`,
+				slow: `${slowModel.provider}/${slowModel.id}:high`,
 			},
 		});
 
@@ -170,7 +169,7 @@ describe("AgentSession role model thinking behavior", () => {
 
 		const toSlow = await session.cycleRoleModels(["slow", "default", "smol"]);
 		expect(toSlow?.role).toBe("slow");
-		expect(toSlow?.model.id).toBe(slowPlanModel.id);
+		expect(toSlow?.model.id).toBe(slowModel.id);
 		expect(toSlow?.thinkingLevel).toBe(Effort.High);
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});

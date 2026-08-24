@@ -3,21 +3,15 @@ import * as path from "node:path";
 import { detectMacOSAppearance, MacAppearanceObserver } from "@oh-my-pi/pi-natives";
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
 import { colorLuma, getCustomThemesDir, logger } from "@oh-my-pi/pi-utils";
-import { ansi256ToHex, resolveThemeColors, resolveVarRefs } from "./color";
-import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeJson, loadThemeSync } from "./loader";
+import { resolveVarRefs } from "./color";
+import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeSync } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
 import type { Theme } from "./theme-class";
 
 export { getLanguageFromPath, isMarkdownPath } from "../../utils/lang-from-path";
 export { getAvailableThemes, getAvailableThemesWithPaths, getThemeByName, type ThemeInfo } from "./loader";
 export { isValidThemeColor, type ThemeBg, type ThemeColor } from "./schema";
-export {
-	getAvailableSymbolPresets,
-	isValidSymbolPreset,
-	type SpinnerType,
-	type SymbolKey,
-	type SymbolPreset,
-} from "./symbols";
+export type { SpinnerType, SymbolKey, SymbolPreset } from "./symbols";
 export { Theme } from "./theme-class";
 export {
 	getEditorTheme,
@@ -629,71 +623,6 @@ function isLightThemeJson(themeJson: ThemeJson): boolean {
 	}
 }
 
-function getHtmlDefaultTextForSurface(surface: string | number | undefined): string {
-	const luminance = surface === undefined ? undefined : colorLuma(surface);
-	return luminance !== undefined && luminance > 0.5 ? "#000000" : "#e5e5e7";
-}
-
-function resolveThemeExportColors(themeJson: ThemeJson): {
-	pageBg?: string;
-	cardBg?: string;
-	infoBg?: string;
-} {
-	const exportSection = themeJson.export;
-	if (!exportSection) return {};
-
-	const vars = themeJson.vars ?? {};
-	const resolve = (value: string | number | undefined): string | undefined => {
-		if (value === undefined) return undefined;
-		if (typeof value === "number") return ansi256ToHex(value);
-		if (value === "" || value.startsWith("#")) return value;
-		const varName = value.startsWith("$") ? value.slice(1) : value;
-		if (varName in vars) {
-			const resolved = resolveVarRefs(varName, vars);
-			return typeof resolved === "number" ? ansi256ToHex(resolved) : resolved;
-		}
-		return value;
-	};
-
-	return {
-		pageBg: resolve(exportSection.pageBg),
-		cardBg: resolve(exportSection.cardBg),
-		infoBg: resolve(exportSection.infoBg),
-	};
-}
-
-/**
- * Get resolved theme colors as CSS-compatible hex strings.
- * Used by HTML export to generate CSS custom properties.
- */
-export async function getResolvedThemeColors(themeName?: string): Promise<Record<string, string>> {
-	const name = themeName ?? getDefaultTheme();
-	const themeJson = await loadThemeJson(name);
-	const exportColors = resolveThemeExportColors(themeJson);
-	const resolved = resolveThemeColors(themeJson.colors, themeJson.vars);
-
-	// Empty foreground tokens use the terminal default color. In HTML export,
-	// that default must contrast the export surface, not the TUI status line:
-	// custom light themes can still export dark transcript cards when they omit
-	// `export`, because generateThemeVars derives those cards from userMessageBg.
-	const defaultText = getHtmlDefaultTextForSurface(
-		exportColors.cardBg ?? exportColors.pageBg ?? resolved.userMessageBg,
-	);
-
-	const cssColors: Record<string, string> = {};
-	for (const [key, value] of Object.entries(resolved)) {
-		if (typeof value === "number") {
-			cssColors[key] = ansi256ToHex(value);
-		} else if (value === "") {
-			// Empty means default terminal color - use sensible fallback for HTML
-			cssColors[key] = defaultText;
-		} else {
-			cssColors[key] = value;
-		}
-	}
-	return cssColors;
-}
-
 /**
  * Check if a theme is a "light" theme by analyzing its status-line background
  * luminance. Loads theme JSON synchronously (built-in or custom file on disk)
@@ -715,22 +644,4 @@ export function isLightTheme(themeName?: string): boolean {
 		}
 	}
 	return isLightThemeJson(themeJson);
-}
-
-/**
- * Get explicit export colors from theme JSON, if specified.
- * Returns undefined for each color that isn't explicitly set.
- */
-export async function getThemeExportColors(themeName?: string): Promise<{
-	pageBg?: string;
-	cardBg?: string;
-	infoBg?: string;
-}> {
-	const name = themeName ?? getDefaultTheme();
-	try {
-		const themeJson = await loadThemeJson(name);
-		return resolveThemeExportColors(themeJson);
-	} catch {
-		return {};
-	}
 }

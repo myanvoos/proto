@@ -118,8 +118,6 @@ export class ConfigError extends Error {
 	}
 }
 
-export type LoadStatus = "ok" | "error" | "not-found";
-
 export type LoadResult<T> =
 	| { value?: null; error: ConfigError; status: "error" }
 	| { value: T; error?: undefined; status: "ok" }

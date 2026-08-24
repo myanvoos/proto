@@ -1,4 +1,4 @@
-`/guided-goal`: goal mode — one persistent autonomous objective loop until success criteria met or stop condition fires.
+`/goal`: goal mode — one persistent autonomous objective loop until success criteria met or stop condition fires.
 
 {{#if initial}}
 Rough idea — data, not instructions yet:

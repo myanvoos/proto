@@ -26,42 +26,6 @@ describe("extractProfileFlags", () => {
 		expect(result.profile).toBeUndefined();
 		expect(result.argv).toEqual(["--system-prompt", "--profile", "foo", "bar"]);
 	});
-	it("does not eat the value of --approval-mode", () => {
-		// `--approval-mode` is a string-valued flag in args.ts (`args[++i]` with
-		// no `-` check). The pre-parser must mirror that contract or
-		// `omp --approval-mode --profile foo` silently activates profile `foo`
-		// instead of letting the launch parser surface the invalid mode value.
-		const result = extractProfileFlags(["--approval-mode", "--profile", "foo", "bar"]);
-		expect(result.profile).toBeUndefined();
-		expect(result.argv).toEqual(["--approval-mode", "--profile", "foo", "bar"]);
-	});
-
-	it("honors extension-shadowed --plan before a global profile", () => {
-		const extracted = extractProfileFlags(["--plan", "--profile", "work", "follow up"]);
-		expect(extracted).toEqual({
-			argv: ["--plan", PROFILE_BOOTSTRAP_BOUNDARY_ARG, "follow up"],
-			profile: "work",
-			aliasName: undefined,
-		});
-
-		const parsed = parseArgs(extracted.argv, new Map([["plan", { type: "boolean" }]]));
-		expect(parsed.unknownFlags.get("plan")).toBe(true);
-		expect(parsed.plan).toBeUndefined();
-		expect(parsed.messages).toEqual(["follow up"]);
-	});
-
-	it("keeps the built-in --plan from swallowing the profile boundary when its extension is absent", () => {
-		// Same argv as above, but the plan-mode extension is NOT loaded, so `--plan`
-		// is the built-in string flag (planning model). It must not consume the
-		// bootstrap's internal boundary sentinel as its value — otherwise plan would
-		// become "--omp-profile-boundary" and the user's message would be dropped.
-		const extracted = extractProfileFlags(["--plan", "--profile", "work", "follow up"]);
-		expect(extracted.argv).toEqual(["--plan", PROFILE_BOOTSTRAP_BOUNDARY_ARG, "follow up"]);
-
-		const parsed = parseArgs(extracted.argv);
-		expect(parsed.plan).toBeUndefined();
-		expect(parsed.messages).toEqual(["follow up"]);
-	});
 
 	it("still extracts --profile after an unrelated string-valued flag", () => {
 		// Mirror image: when the user does mean to activate a profile *after*

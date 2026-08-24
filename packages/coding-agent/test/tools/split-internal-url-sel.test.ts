@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { pathTargetsSsh, peelWriteUrlSelector, splitInternalUrlSel } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
+import { peelWriteUrlSelector, splitInternalUrlSel } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 
 describe("splitInternalUrlSel", () => {
 	it("returns the input unchanged when there is no selector tail", () => {
@@ -171,22 +171,5 @@ describe("peelWriteUrlSelector (write/read selector parity)", () => {
 		expect(() => peelWriteUrlSelector("ssh://h/f:-10")).toThrow(/whole file/);
 		expect(() => peelWriteUrlSelector("ssh://h/f:raw:1-20")).toThrow(/whole file/);
 		expect(() => peelWriteUrlSelector("ssh://h/f:conflicts:1-20")).toThrow(/whole file/);
-	});
-});
-
-describe("pathTargetsSsh", () => {
-	it("matches the ssh:// scheme anywhere in the argument (substring, case-insensitive)", () => {
-		expect(pathTargetsSsh("ssh://h/x")).toBe(true);
-		expect(pathTargetsSsh("SSH://h/x")).toBe(true);
-		// A delimited entry that search only splits into separate paths AFTER approval runs.
-		expect(pathTargetsSsh("src,ssh://h/etc/hosts")).toBe(true);
-		// A hashline-wrapped path.
-		expect(pathTargetsSsh("[ssh://h/x#AB12]")).toBe(true);
-	});
-
-	it("does not match local filesystem paths or other internal schemes", () => {
-		expect(pathTargetsSsh("src/foo.ts")).toBe(false);
-		expect(pathTargetsSsh("local://x")).toBe(false);
-		expect(pathTargetsSsh("")).toBe(false);
 	});
 });

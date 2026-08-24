@@ -7,7 +7,7 @@ import type { ToolSession } from "../tools";
 import { routeWriteThroughBridge } from "../tools/acp-bridge";
 import { invalidateFsScanAfterWrite } from "../tools/fs-cache-invalidation";
 import { outputMeta } from "../tools/output-meta";
-import { enforcePlanModeWrite, resolvePlanPath } from "../tools/plan-mode-guard";
+import { resolveAuthoredPath } from "../tools/path-utils";
 import type { AppliedEditObserver } from "./blackbox";
 import { type DiffError, type DiffResult, generateDiffString } from "./diff";
 import { levenshteinDistance } from "./modes/replace";
@@ -3607,7 +3607,7 @@ interface PreparedSloppySection {
  * Execute a sloppy payload against its `[path]` sections. Hashline-style
  * all-or-nothing: every section is applied in memory first; a failure in any
  * section means no file is written. Mirrors `executeReplace`'s per-file
- * lifecycle (plan-mode guard, BOM/EOL preservation, LSP writethrough, diff
+ * lifecycle (BOM/EOL preservation, LSP writethrough, diff
  * details); {@link sloppyVariant} owns payload parsing and matching.
  */
 export async function executeSloppy(
@@ -3623,14 +3623,14 @@ export async function executeSloppy(
 		// Models copy read-tool selectors into paths (`file.ts:23`, `file.ts:grep=x`).
 		// When the authored path is missing but the selector-less base exists, edit the base.
 		let path = section.path;
-		let absolutePath = resolvePlanPath(session, path);
+		let absolutePath = resolveAuthoredPath(session, path);
 		try {
 			await Bun.file(absolutePath).stat();
 		} catch (error) {
 			if (!isEnoent(error)) throw error;
 			const stripped = path.replace(/:[^/:]*$/, "");
 			if (stripped && stripped !== path) {
-				const strippedAbsolute = resolvePlanPath(session, stripped);
+				const strippedAbsolute = resolveAuthoredPath(session, stripped);
 				try {
 					await Bun.file(strippedAbsolute).stat();
 					path = stripped;
@@ -3640,8 +3640,6 @@ export async function executeSloppy(
 				}
 			}
 		}
-
-		enforcePlanModeWrite(session, path);
 
 		const rawContent = await readEditFileText(absolutePath, path);
 		const { bom, text: fileText } = stripBom(rawContent);

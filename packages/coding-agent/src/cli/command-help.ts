@@ -23,10 +23,6 @@ export const browserRelayHelp = {
 	description: "Run the local CDP relay that lets the browser tool drive your own Chrome tabs",
 } satisfies CommandMetadata;
 
-export const cleanseHelp = {
-	description: "Detect and fix project diagnostics with weighted parallel subagents",
-} satisfies CommandMetadata;
-
 export const commitHelp = { description: "Generate a commit message and update changelogs" } satisfies CommandMetadata;
 
 export const completionsHelp = {
@@ -94,10 +90,8 @@ export const shellHelp = { description: "Interactive shell console" } satisfies 
 
 export const sshHelp = { description: "Manage SSH host configurations" } satisfies CommandMetadata;
 
-export const statsHelp = { description: "View usage statistics" } satisfies CommandMetadata;
-
 export const tinyModelsHelp = {
-	description: "Download tiny local models (session titles + memory)",
+	description: "Download tiny local models (session titles)",
 } satisfies CommandMetadata;
 
 export const tokenHelp = { description: "Get the API key or OAuth token for a provider" } satisfies CommandMetadata;

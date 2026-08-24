@@ -12,7 +12,7 @@
   - `packages/coding-agent/src/config/settings-schema.ts` — defines the disabled-by-default feature flag.
 
 ## Registration / Visibility
-- Tool metadata: `approval = "read"`, `strict = true`, `loadMode = "discoverable"`. Execution is single-shot; the tool does not stream progress updates.
+- Tool metadata: `loadMode = "discoverable"`. Execution is single-shot; the tool does not stream progress updates.
 - Registration requires `checkpoint.enabled = true` (default `false`).
 - Top-level sessions receive the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: when either name is explicitly requested while the feature is enabled, registration automatically includes the other.

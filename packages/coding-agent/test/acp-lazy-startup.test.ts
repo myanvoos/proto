@@ -141,10 +141,6 @@ class LazyFakeSession {
 	}
 	setActiveToolsByName(): void {}
 	setClientBridge(): void {}
-	getPlanModeState(): undefined {
-		return undefined;
-	}
-	setPlanModeState(): void {}
 	async sendCustomMessage(): Promise<void> {}
 	async sendUserMessage(): Promise<void> {}
 	async compact(): Promise<void> {}
@@ -251,8 +247,6 @@ describe("ACP lazy startup", () => {
 			"orchestrator.disabledAgents": ["scout"],
 			"orchestrator.agentModelOverrides": { task: "claude-sonnet-4-20250514" },
 			"orchestrator.agentAdvisor": { task: "on" },
-			"memory.backend": "local",
-			"memories.enabled": true,
 			"advisor.enabled": true,
 			"advisor.syncBacklog": "5",
 			"advisor.immuneTurns": 7,

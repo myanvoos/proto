@@ -105,20 +105,6 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
-	hindsightActive: () => {
-		try {
-			return Settings.instance.get("memory.backend") === "hindsight";
-		} catch {
-			return false;
-		}
-	},
-	mnemopiActive: () => {
-		try {
-			return Settings.instance.get("memory.backend") === "mnemopi";
-		} catch {
-			return false;
-		}
-	},
 	autolearnActive: () => {
 		try {
 			return Settings.instance.get("autolearn.enabled") === true;
@@ -129,13 +115,6 @@ const CONDITIONS: Record<string, () => boolean> = {
 	usageAwareFallbackEnabled: () => {
 		try {
 			return Settings.instance.get("retry.usageAwareFallback") === true;
-		} catch {
-			return false;
-		}
-	},
-	planModeEnabled: () => {
-		try {
-			return Settings.instance.get("plan.enabled");
 		} catch {
 			return false;
 		}

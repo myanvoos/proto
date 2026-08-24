@@ -191,7 +191,7 @@ pi.registerTool({
 });
 ```
 
-Tool definitions may also set `loadMode: "essential" | "discoverable"` (`"discoverable"` by default), `approval: "read" | "write" | "exec"` (`"exec"` by default), and `strict` for provider structured-output grammar behavior.
+Tool definitions may also set `loadMode: "essential" | "discoverable"` (`"discoverable"` by default) and `strict` for provider structured-output grammar behavior.
 
 ## Subscribing to events
 

@@ -65,7 +65,7 @@ Without `SYSTEM.md`, append text is rendered at the end of `project-prompt.md`, 
 
 With `SYSTEM.md`, append text is rendered immediately after the custom text in `custom-system-prompt.md`. Context, skills, and rules follow it, and the separate project/environment footer follows that block. The templates prevent the append text and context files from being emitted twice.
 
-SDK-generated append content (for enabled memory/auto-learn features and MCP guidance) is combined before the user-supplied append text.
+SDK-generated append content (for enabled auto-learn features and MCP guidance) is combined before the user-supplied append text.
 
 ## Plain-text contract
 
@@ -78,7 +78,7 @@ Working in
 {{cwd}}
 on
 {{date}}.
-{{#if hasMemoryRoot}}Memory enabled.{{/if}}
+{{#if thinkingLevel}}thinking level: {{thinkingLevel}}{{/if}}
 ```
 
 those characters reach the model literally. Internal values such as `cwd`, `skills`, `rules`, and `toolRefs` are private template implementation details, not a user templating API. The calendar date is deliberately not exposed as a template value anymore — it rides the per-request first-turn reminder instead (see above).

@@ -1,12 +1,9 @@
 /**
  * Phase 6 — C layer.
  *
- * Asserts `EventController.#handleMessageEnd`'s render labeling for the three
+ * Asserts `EventController.#handleMessageEnd`'s render labeling for the
  * abort-classification paths:
  *
- *   C1  errorMessage = SILENT_ABORT_MARKER + aborted
- *       → `updateContent` receives a message with `stopReason: "stop"`;
- *         `errorMessage` is NOT overwritten.
  *   C2  errorMessage = undefined (no threaded reason) + aborted + no TTSR flag
  *       → `streamingMessage.errorMessage` is set to the generic "Operation
  *         aborted"; `updateContent` receives the original message ref.
@@ -18,12 +15,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { SILENT_ABORT_MARKER, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
@@ -90,52 +85,6 @@ describe("EventController #handleMessageEnd abort labeling", () => {
 	});
 	afterEach(() => {
 		resetSettingsForTest();
-	});
-
-	it("C1: SILENT_ABORT_MARKER + aborted -> updateContent stopReason='stop', errorMessage NOT overwritten", async () => {
-		const message = makeAssistantMessage({
-			stopReason: "aborted",
-			errorMessage: SILENT_ABORT_MARKER,
-		});
-		const { controller, ctx, streamingComponent } = createFixture({ streamingMessage: message });
-
-		const event: Extract<AgentSessionEvent, { type: "message_end" }> = {
-			type: "message_end",
-			message,
-		};
-		await controller.handleEvent(event);
-
-		// `updateContent` was called once with a copy whose `stopReason` is "stop".
-		// The marker on errorMessage is preserved unchanged on that display copy.
-		expect(streamingComponent.updateContent).toHaveBeenCalledTimes(1);
-		const arg = streamingComponent.updateContent.mock.calls[0]![0] as AssistantMessage;
-		expect(arg.stopReason).toBe("stop");
-		expect(arg.errorMessage).toBe(SILENT_ABORT_MARKER);
-
-		// Per the silent-abort contract: the controller must NOT overwrite errorMessage
-		// with the operator-facing string. The marker is what drives replay-side
-		// suppression, so it has to survive on the persisted message.
-		expect(message.errorMessage).toBe(SILENT_ABORT_MARKER);
-		// And the streamingMessage on ctx was cleared after the handler ran (lifecycle
-		// guard — kept for completeness).
-		expect(ctx.streamingMessage).toBeUndefined();
-	});
-
-	it("C1b: silent-abort errorId without marker suppresses the abort line", async () => {
-		const message = makeAssistantMessage({
-			stopReason: "aborted",
-			errorMessage: undefined,
-			errorId: AIError.create(AIError.Flag.SilentAbort),
-		});
-		const { controller, streamingComponent } = createFixture({ streamingMessage: message });
-
-		await controller.handleEvent({ type: "message_end", message });
-
-		expect(message.errorMessage).toBeUndefined();
-		expect(streamingComponent.updateContent).toHaveBeenCalledTimes(1);
-		const arg = streamingComponent.updateContent.mock.calls[0]![0] as AssistantMessage;
-		expect(arg.stopReason).toBe("stop");
-		expect(arg.errorMessage).toBeUndefined();
 	});
 
 	it("C2: errorMessage undefined (no threaded reason) + aborted + no TTSR -> errorMessage='Operation aborted', updateContent receives original ref", async () => {

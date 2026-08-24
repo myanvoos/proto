@@ -280,7 +280,7 @@ function formatToolArgsBlock(lines: string[]): string {
 	return lines
 		.map((line, index) => {
 			if (index === 0) return `  ⎿ ${line}`;
-			const branch = index === lines.length - 1 ? "└" : "├";
+			const branch = index === lines.length - 1 ? "└─" : "├─";
 			return `    ${branch} ${line}`;
 		})
 		.join("\n");

@@ -82,10 +82,5 @@
 		"statusLineCost": "gold",
 		"statusLineSubagents": "violet",
 		"pythonMode": "gold"
-	},
-	"export": {
-		"pageBg": "black",
-		"cardBg": "glass",
-		"infoBg": "smoke"
 	}
 }

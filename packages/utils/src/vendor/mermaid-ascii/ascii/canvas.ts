@@ -52,13 +52,6 @@ export function mkRoleCanvas(x: number, y: number): RoleCanvas {
   return roleCanvas
 }
 
-/** Create a blank role canvas with the same dimensions as the given role canvas. */
-export function copyRoleCanvas(source: RoleCanvas): RoleCanvas {
-  const maxX = source.length - 1
-  const maxY = (source[0]?.length ?? 1) - 1
-  return mkRoleCanvas(maxX, maxY)
-}
-
 /**
  * Grow the role canvas to fit at least (newX, newY), preserving existing roles.
  * Mutates the role canvas in place and returns it.

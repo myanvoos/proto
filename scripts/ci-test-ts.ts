@@ -87,26 +87,24 @@ const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; paralle
 // addon before this bucket: shared utility barrels may load native-backed modules.
 const fastWorkspacePackages = [
 	"packages/hashline",
-	"packages/wire",
 	"packages/omptype",
 	"packages/utils",
 	"packages/catalog",
 	"packages/ai",
 	"packages/agent",
-	"packages/mnemopi",
 ];
 
 // These suites cover the native package, TUI/browser-ish behavior, local servers,
 // or coding-agent-adjacent benchmark paths. Keep them low-concurrency and in jobs
 // that have downloaded the Linux x64 native addon artifacts.
-const nativeAndIntegrationPackages = ["packages/natives", "packages/tui", "packages/collab-web"];
+const nativeAndIntegrationPackages = ["packages/natives", "packages/tui"];
 
 // Packages the CI buckets deliberately skip but a local full run should still
 // cover. robomp-web lives under python/robomp and is outside every CI TS bucket.
 const localOnlyWorkspacePackages = ["python/robomp/web"];
 
 const codingAgentNativePathPatterns = [
-	/(^|\/)[^/]*(bash|native|browser|cmux|mnemopi|hindsight|memory)[^/]*\.test\.ts$/i,
+	/(^|\/)[^/]*(bash|native|browser|cmux|memory)[^/]*\.test\.ts$/i,
 	/^test\/[^/]*(ask|gh|irc|task|eval|search|read|write|edit|ast|resolve|sqlite|web-search|fetch|image|ssh|tool)[^/]*\.test\.ts$/,
 	/^test\/core\/python-[^/]*\.test\.ts$/,
 	/^test\/core\/[^/]*executor[^/]*\.test\.ts$/,
@@ -130,7 +128,7 @@ const codingAgentUiPathPatterns = [
 const codingAgentRuntimePathPatterns = [
 	/^test\/agent-session[^/]*\.test\.ts$/,
 	/^test\/(acp|mcp|rpc|sdk)[^/]*\.test\.ts$/,
-	/^test\/(session|session-manager|task|collab|internal-urls)\//,
+	/^test\/(session|session-manager|task|internal-urls)\//,
 	/^test\/session[^/]*\.test\.ts$/,
 	/^test\/session-manager[^/]*\.test\.ts$/,
 	/^test\/(extensions?|plugin|autolearn|skills|marketplace|oauth)[^/]*\.test\.ts$/,
@@ -559,7 +557,7 @@ const FILE_OVERSUBSCRIBE = 2;
 // flight. Left unbudgeted that oversubscribes the runner by design — the
 // workspace bucket asked for 4 x 8 = 32 files on a 4-core box — and because
 // bun's per-test timeout is wall-clock, CPU-starved suites blow it and fail at
-// random (mnemopi's sqlite/CLI files did, a different set each run). Spend one
+// random (the sqlite/CLI suites did, a different set each run). Spend one
 // budget instead: each live chunk gets an equal share, never below 1 and never
 // above the width it asked for. A chunk that runs alone still gets everything,
 // so the sequential CI path is unchanged.
@@ -569,7 +567,7 @@ function budgetedParallel(requested: number, poolWidth: number): number {
 }
 
 // Bun's 5s default per-test timeout is a unit-test default, and this repo's
-// suites are not unit tests: mnemopi builds real SQLite schemas per case, the
+// suites are not unit tests: some suites build real SQLite schemas per case, the
 // coding-agent suites drive sessions and subprocesses. Those cases already run
 // 1-4s on a quiet CI runner, so any scheduling hiccup crosses 5s and reports a
 // timeout that says nothing about the code. Timing out is still worth catching,

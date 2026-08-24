@@ -16,7 +16,6 @@ import {
 import { HashlineFilesystem } from "@oh-my-pi/pi-coding-agent/edit/hashline/filesystem";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { WritethroughCallback } from "@oh-my-pi/pi-coding-agent/lsp";
-import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
 import type { ClientBridge } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -25,7 +24,6 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 interface SessionOptions {
 	bridge?: ClientBridge;
-	planMode?: PlanModeState;
 }
 
 const noopBeginDeferred = (_p: string) => ({
@@ -49,7 +47,6 @@ function createSession(cwd: string, options: SessionOptions = {}): ToolSession {
 		allocateOutputArtifact: async () => ({ id: "artifact-1", path: path.join(cwd, "artifact-1.log") }),
 		settings: Settings.isolated(),
 		getClientBridge: options.bridge ? () => options.bridge : undefined,
-		getPlanModeState: options.planMode ? () => options.planMode : undefined,
 	};
 }
 
@@ -132,39 +129,12 @@ describe("HashlineFilesystem ACP fs routing", () => {
 		expect(writeSpy.calledWith).toHaveLength(0);
 	});
 
-	it("writes local plan artifacts to disk instead of the ACP bridge", async () => {
-		const planPath = "local://PLAN.md";
-		const planContent = "# Plan\n\nhello world\n";
-		const { bridge, spy: bridgeSpy } = makeBridge();
-		const session = createSession(tmpDir, {
-			bridge,
-			planMode: { enabled: true, planFilePath: planPath, workflow: "parallel", reentry: false },
-		});
-		// Use a no-op writethrough so the call succeeds without real LSP
-		const { writethrough, spy: writeSpy } = makeWritethroughMock();
-
-		const filesystem = new HashlineFilesystem({
-			session,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		await filesystem.writeText(planPath, planContent);
-
-		expect(bridgeSpy).not.toHaveBeenCalled();
-		expect(writeSpy.calledWith.length).toBeGreaterThan(0);
-	});
-
 	it("keeps a local sandbox artifact addressed by absolute path off the ACP bridge", async () => {
-		// Tag-based path recovery rebinds a bare `cfg-…-plan.md` edit onto its
-		// absolute sandbox path. Even though it is NOT the active plan file
-		// (planFilePath is still the default local://PLAN.md, a fresh-slug plan),
-		// the OMP-owned artifact must be written to disk, never pushed to the editor.
+		// Tag-based path recovery rebinds a bare artifact edit onto its absolute
+		// local-sandbox path. OMP-owned artifacts must be written to disk, never
+		// pushed to the editor.
 		const { bridge, spy: bridgeSpy } = makeBridge();
-		const session = createSession(tmpDir, {
-			bridge,
-			planMode: { enabled: true, planFilePath: "local://PLAN.md", workflow: "parallel", reentry: false },
-		});
+		const session = createSession(tmpDir, { bridge });
 		const { writethrough, spy: writeSpy } = makeWritethroughMock();
 		const filesystem = new HashlineFilesystem({
 			session,
@@ -395,37 +365,6 @@ describe("executeReplace ACP fs routing", () => {
 		expect(callArg.content).toContain("new content");
 		expect(writeSpy.calledWith).toHaveLength(0);
 	});
-
-	it("writes local plan artifacts to disk instead of the ACP bridge", async () => {
-		const planPath = "local://PLAN.md";
-		const { bridge, spy: bridgeSpy } = makeBridge();
-		const session = createSession(tmpDir, {
-			bridge,
-			planMode: { enabled: true, planFilePath: planPath, workflow: "parallel", reentry: false },
-		});
-
-		// Create the plan file with some content to replace
-		const resolvedPlanPath = resolveLocalUrlToPath(planPath, {
-			getArtifactsDir: session.getArtifactsDir,
-			getSessionId: session.getSessionId,
-		});
-		await Bun.write(resolvedPlanPath, "old plan\n");
-
-		const { writethrough, spy: writeSpy } = makeWritethroughMock();
-
-		await executeReplace({
-			session,
-			path: planPath,
-			params: { old_string: "old plan", new_string: "new plan", replace_all: false },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		expect(bridgeSpy).not.toHaveBeenCalled();
-		expect(writeSpy.calledWith.length).toBeGreaterThan(0);
-	});
 });
 
 // ─── executePatchSingle ───────────────────────────────────────────────────────
@@ -467,35 +406,5 @@ describe("executePatchSingle ACP fs routing", () => {
 		expect(callArg.path).toBe(filePath);
 		expect(callArg.content).toContain("b");
 		expect(writeSpy.calledWith).toHaveLength(0);
-	});
-
-	it("writes local plan artifacts to disk instead of the ACP bridge", async () => {
-		const planPath = "local://PLAN.md";
-		const { bridge, spy: bridgeSpy } = makeBridge();
-		const session = createSession(tmpDir, {
-			bridge,
-			planMode: { enabled: true, planFilePath: planPath, workflow: "parallel", reentry: false },
-		});
-
-		const resolvedPlanPath = resolveLocalUrlToPath(planPath, {
-			getArtifactsDir: session.getArtifactsDir,
-			getSessionId: session.getSessionId,
-		});
-		await Bun.write(resolvedPlanPath, "a\n");
-
-		const { writethrough, spy: writeSpy } = makeWritethroughMock();
-
-		await executePatchSingle({
-			session,
-			path: planPath,
-			params: { op: "update", diff: "@@\n-a\n+b" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		expect(bridgeSpy).not.toHaveBeenCalled();
-		expect(writeSpy.calledWith.length).toBeGreaterThan(0);
 	});
 });

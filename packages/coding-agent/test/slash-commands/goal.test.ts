@@ -4,21 +4,21 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 
 function createRuntime(handler: () => Promise<boolean>) {
-	const handleGuidedGoalCommand = vi.fn(handler);
+	const handleGoalModeCommand = vi.fn(handler);
 	const clearDraft = vi.fn();
 	return {
-		handleGuidedGoalCommand,
+		handleGoalModeCommand,
 		clearDraft,
 		runtime: {
 			ctx: {
 				editor: { clearDraft } as unknown as InteractiveModeContext["editor"],
-				handleGuidedGoalCommand,
+				handleGoalModeCommand,
 			} as unknown as InteractiveModeContext,
 		},
 	};
 }
 
-describe("/guided-goal slash command", () => {
+describe("/goal defaults to the guided interview", () => {
 	it("clears the slash draft before the interview turn resolves", async () => {
 		// The handler blocks for the whole kickoff turn (session.prompt resolves
 		// only when the agent finishes asking its first question). Hold it open
@@ -28,7 +28,7 @@ describe("/guided-goal slash command", () => {
 		const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
 		const input = { images, imageLinks: ["file:///shot.png"] };
 
-		const dispatched = executeBuiltinSlashCommand("/guided-goal ship the release", {
+		const dispatched = executeBuiltinSlashCommand("/goal ship the release", {
 			...harness.runtime,
 			input,
 		});
@@ -41,15 +41,15 @@ describe("/guided-goal slash command", () => {
 		resolve(true);
 		expect(await dispatched).toBe(true);
 		expect(harness.clearDraft).not.toHaveBeenCalled();
-		expect(harness.handleGuidedGoalCommand).toHaveBeenCalledWith("ship the release", input);
+		expect(harness.handleGoalModeCommand).toHaveBeenCalledWith("ship the release", input);
 	});
 
 	it("passes no objective for a bare invocation", async () => {
 		const harness = createRuntime(async () => true);
 
-		const handled = await executeBuiltinSlashCommand("/guided-goal   ", harness.runtime);
+		const handled = await executeBuiltinSlashCommand("/goal   ", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.handleGuidedGoalCommand).toHaveBeenCalledWith(undefined, undefined);
+		expect(harness.handleGoalModeCommand).toHaveBeenCalledWith(undefined, undefined);
 	});
 });

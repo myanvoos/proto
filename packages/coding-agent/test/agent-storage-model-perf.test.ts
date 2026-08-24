@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -149,71 +148,5 @@ describe("AgentStorage model perf aggregates", () => {
 
 		await flushPerf(flushed);
 		expect(storage.getModelPerf().get("openai/gpt-5")?.tps).toBeCloseTo(250, 5);
-	});
-
-	it("backfills perf aggregates from an proto stats database, excluding errored and stale turns", async () => {
-		const storage = await openStorage();
-
-		// Minimal stats.db fixture: only the columns the backfill query reads.
-		const statsDbPath = path.join(tempDir.path(), "stats.db");
-		const statsDb = new Database(statsDbPath);
-		statsDb.run(`CREATE TABLE messages (
-			provider TEXT, model TEXT, output_tokens INTEGER, duration INTEGER,
-			ttft INTEGER, stop_reason TEXT, timestamp INTEGER
-		)`);
-		const insert = statsDb.prepare("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
-		const now = Date.now();
-		// Two valid turns totaling 1500 tokens over 8.5s, one with ttft missing.
-		insert.run("openai", "gpt-5", 1000, 6000, 1000, "stop", now - 5000);
-		insert.run("openai", "gpt-5", 500, 2500, null, "stop", now - 4000);
-		// Errored and empty turns must not pollute the averages.
-		insert.run("openai", "gpt-5", 9999, 1, null, "error", now - 3000);
-		insert.run("openai", "gpt-5", 0, 4000, null, "stop", now - 2000);
-		// Rows older than the recency window are stale provider speeds; skip them.
-		insert.run("openai", "gpt-5", 100_000, 1000, null, "stop", now - 120 * 86_400_000);
-		insert.run("zai", "glm-5", 300, 3000, 1000, "aborted", now - 1000);
-		statsDb.close();
-
-		const imported = await storage.backfillModelPerfFromStats(statsDbPath);
-
-		expect(imported).toBe(3);
-		const gpt = storage.getModelPerf().get("openai/gpt-5");
-		// 1500 tokens over 6000ms + 2500ms total durations → 176.47 t/s.
-		expect(gpt?.samples).toBe(2);
-		expect(gpt?.tps).toBeCloseTo(1500000 / 8500, 5);
-		expect(gpt?.ttftMs).toBeCloseTo(1000, 5);
-		// Aborted turns with reported usage are valid samples, like live capture.
-		const glm = storage.getModelPerf().get("zai/glm-5");
-		expect(glm?.tps).toBeCloseTo(100, 5);
-	});
-
-	it("caps the backfill at the newest samples per model", async () => {
-		const storage = await openStorage();
-
-		const statsDbPath = path.join(tempDir.path(), "stats.db");
-		const statsDb = new Database(statsDbPath);
-		statsDb.run(`CREATE TABLE messages (
-			provider TEXT, model TEXT, output_tokens INTEGER, duration INTEGER,
-			ttft INTEGER, stop_reason TEXT, timestamp INTEGER
-		)`);
-		const insert = statsDb.prepare("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
-		const now = Date.now();
-		// 257 rows are the minimal cap-boundary fixture: the newest 256 run at
-		// 100 t/s and the one excluded oldest row is a wild 10000 t/s outlier.
-		// One transaction avoids per-row implicit transaction fsyncs.
-		statsDb.transaction(() => {
-			for (let i = 0; i < 257; i++) {
-				const excludedOldest = i === 0;
-				insert.run("openai", "gpt-5", excludedOldest ? 10_000 : 100, 1000, null, "stop", now - (257 - i) * 1000);
-			}
-		})();
-		statsDb.close();
-
-		const imported = await storage.backfillModelPerfFromStats(statsDbPath);
-
-		expect(imported).toBe(256);
-		const stats = storage.getModelPerf().get("openai/gpt-5");
-		expect(stats?.samples).toBe(256);
-		expect(stats?.tps).toBeCloseTo(100, 5);
 	});
 });

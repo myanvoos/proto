@@ -14,13 +14,10 @@ import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
-import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
-import type { MnemopiSessionState } from "../mnemopi/state";
-import type { PlanModeState } from "../plan-mode/state";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -52,12 +49,7 @@ import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
 import { InspectImageTool } from "./inspect-image";
-import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
-import { MemoryEditTool } from "./memory-edit";
-import { MemoryRecallTool } from "./memory-recall";
-import { MemoryReflectTool } from "./memory-reflect";
-import { MemoryRetainTool } from "./memory-retain";
 import {
 	OrchestrateKillTool,
 	OrchestrateListTool,
@@ -67,7 +59,6 @@ import {
 } from "./orchestrate";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
-import type { PlanProposalHandler } from "./resolve";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
@@ -99,12 +90,7 @@ export * from "./glob";
 export * from "./grep";
 export * from "./image-gen";
 export * from "./inspect-image";
-export * from "./learn";
 export * from "./manage-skill";
-export * from "./memory-edit";
-export * from "./memory-recall";
-export * from "./memory-reflect";
-export * from "./memory-retain";
 export * from "./orchestrate";
 export * from "./read";
 export * from "./report-tool-issue";
@@ -246,10 +232,6 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
-	/** Get Hindsight runtime state for this agent session. */
-	getHindsightSessionState?: () => HindsightSessionState | undefined;
-	/** Get Mnemopi runtime state for this agent session. */
-	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
@@ -319,10 +301,6 @@ export interface ToolSession {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Settings instance for passing to subagents */
 	settings: Settings;
-	/** Plan mode state (if active) */
-	getPlanModeState?: () => PlanModeState | undefined;
-	/** Path of the session's active plan reference (e.g. `local://<title>.md`); defaults to `local://PLAN.md`. */
-	getPlanReferencePath?: () => string;
 	/** Goal mode state (if active or paused) */
 	getGoalModeState?: () => GoalModeState | undefined;
 	/** Goal runtime for the active agent session. */
@@ -355,11 +333,6 @@ export interface ToolSession {
 	peekPendingInvoker?(): ((input: unknown) => Promise<unknown> | unknown) | undefined;
 	/** Clear stale pending preview markers when a resolution dispatch cannot run them. */
 	clearPendingInvokers?(): void;
-	/** Peek the plan-proposal handler installed by plan mode. `xd://propose` dispatches the
-	 *  written plan title to it. */
-	peekPlanProposalHandler?(): PlanProposalHandler | undefined;
-	/** Register or clear the plan-proposal handler. Passing `null` clears it. */
-	setPlanProposalHandler?(handler: PlanProposalHandler | null): void;
 	/** Get active checkpoint state if any. */
 	getCheckpointState?: () => CheckpointState | undefined;
 	/** Set or clear active checkpoint state. */
@@ -451,11 +424,6 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
-	memory_edit: MemoryEditTool.createIf,
-	retain: MemoryRetainTool.createIf,
-	recall: MemoryRecallTool.createIf,
-	reflect: MemoryReflectTool.createIf,
-	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 };
 
@@ -573,37 +541,23 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "")) {
-			for (const name of ["recall", "retain", "reflect"]) {
-				if (!requestedTools.includes(name)) requestedTools.push(name);
-			}
-		}
-		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
-			requestedTools.push("memory_edit");
-		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
 			requestedTools.push("think");
 		}
-		// Auto-learn tools are gated by `autolearn.enabled` but, like the memory
-		// tools above, must also be force-included into an explicit requestedTools
-		// list so a restricted top-level session whose controller/guidance is
-		// active still exposes the tools the nudge points at. Gated to top-level
-		// (taskDepth 0): the controller only runs there, so a subagent's explicit
-		// tool whitelist must never be silently widened with write-capable tools.
+		// Auto-learn's manage_skill is gated by `autolearn.enabled` but must also
+		// be force-included into an explicit requestedTools list so a restricted
+		// top-level session whose controller/guidance is active still exposes the
+		// tool the nudge points at. Gated to top-level (taskDepth 0): the
+		// controller only runs there, so a subagent's explicit tool whitelist
+		// must never be silently widened with write-capable tools.
 		if (session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
-			if (
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "") &&
-				!requestedTools.includes("learn")
-			) {
-				requestedTools.push("learn");
-			}
 		}
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
 		// Never in the default set. Explicitly activatable while goal.enabled and
-		// no goal record exists yet — /guided-goal enables it so the agent can
+		// no goal record exists yet — /goal enables it so the agent can
 		// finish the interview with `goal create`, which turns goal mode on. Once
 		// a goal record exists, only an enabled goal keeps the tool: a completed
 		// (exiting) or paused goal must stop advertising it on the next rebuild.
@@ -639,22 +593,11 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
 			);
 		}
-		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
-		}
-		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "learn") {
-			return (
-				session.settings.get("autolearn.enabled") &&
-				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
-			);
-		}
 		if (name.startsWith("orchestrate_")) {
 			const depth = session.taskDepth ?? 0;
 			if (depth === 0) return true;

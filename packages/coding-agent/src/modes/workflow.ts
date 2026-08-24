@@ -39,7 +39,7 @@ export function containsWorkflow(text: string): boolean {
 /**
  * Highlight every standalone "workflowz" in `text` for editor display
  * with a warm amber→green gradient (hue 30..150), visually distinct from
- * ultrathink's rainbow and orchestrate's teal→violet.
+ * ultrathink's rainbow.
  */
 export const highlightWorkflow: KeywordHighlighter = createGradientHighlighter({
 	probe: /workflowz/,

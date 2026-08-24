@@ -15,18 +15,9 @@ const SKILL_URL_PATTERN = /'skill:\/\/[^'\s")`\\]+'|"skill:\/\/[^"\s')`\\]+"|ski
 // Unquoted URLs stop before shell syntax so expansion cannot quote an adjacent
 // operator or substitution into the resolved path.
 const INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL =
-	/'(?:skill|agent|artifact|plan|memory|rule|local|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|plan|memory|rule|local|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|plan|memory|rule|local|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
+	/'(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
 
-const SUPPORTED_INTERNAL_SCHEMES = [
-	"skill",
-	"agent",
-	"artifact",
-	"plan",
-	"memory",
-	"rule",
-	"local",
-	"attachment",
-] as const;
+const SUPPORTED_INTERNAL_SCHEMES = ["skill", "agent", "artifact", "memory", "rule", "local", "attachment"] as const;
 
 type SupportedInternalScheme = (typeof SUPPORTED_INTERNAL_SCHEMES)[number];
 
@@ -332,7 +323,7 @@ export function expandSkillUrls(command: string, skills: readonly Skill[]): stri
 /**
  * Expand supported internal URLs in a bash command string to shell-escaped absolute paths.
  * Unresolvable URLs and literal mentions inside larger quoted text are left unchanged.
- * Supported schemes: skill://, agent://, artifact://, memory://, rule://, local://, attachment://
+ * Supported schemes: skill://, agent://, artifact://, rule://, local://, attachment://
  */
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
 	if (!command.includes("://") && !command.includes("local:/")) return command;

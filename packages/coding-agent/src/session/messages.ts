@@ -440,26 +440,6 @@ export interface SkillPromptDetails {
 	__queueChipText?: string;
 }
 
-/** Sentinel value for `AssistantMessage.errorMessage` indicating that the abort
- *  was an *expected internal transition* (plan-mode → execution compaction)
- *  and must NOT surface as a red "Operation aborted" line. Distinct from
- *  `undefined` (default) so user-cancel aborts with no errorMessage still
- *  render normally. Persists through SessionManager so history replay
- *  branches identically.
- *
- *  Consumers: `AgentSession.#handleAgentEvent` (stamper) writes this value;
- *  `EventController.#handleMessageEnd`, `AssistantMessageComponent`,
- *  `ui-helpers.addMessageToChat` (renderers), `AgentFleetOverlayComponent
- *  #buildTranscriptLines`, `runPrintMode`, and `AcpAgent#replayAssistantMessage`
- *  (fallback error emission) read it via `isSilentAbort`. */
-export const SILENT_ABORT_MARKER = "__proto.silent_abort__";
-
-/** Type-guard for silent aborts. Renderers MUST call this helper so structured
- *  `errorId` and legacy persisted marker messages stay in lockstep. */
-export function isSilentAbort(message: Pick<AssistantMessage, "errorId" | "errorMessage">): boolean {
-	return AIError.is(message.errorId, AIError.Flag.SilentAbort) || message.errorMessage === SILENT_ABORT_MARKER;
-}
-
 /** Reason threaded through `AbortController.abort(reason)` when the user aborts
  *  the turn with Esc (see `AgentSession.abort`). The agent keeps it on the
  *  aborted assistant message's `errorMessage` so queued follow-ups/tool-result
@@ -472,7 +452,7 @@ export function isUserInterruptAbort(message: Pick<AssistantMessage, "errorId" |
 }
 
 export function shouldRenderAbortReason(message: Pick<AssistantMessage, "errorId" | "errorMessage">): boolean {
-	return !isSilentAbort(message) && !isUserInterruptAbort(message);
+	return !isUserInterruptAbort(message);
 }
 
 /** A provider-rejection turn carrying nothing but the error flag: stopReason
@@ -588,8 +568,7 @@ export function resolveAbortLabel(
 	const genericAbort =
 		AIError.is(message.errorId, AIError.Flag.Abort) ||
 		!message.errorMessage ||
-		message.errorMessage === GENERIC_ABORT_SENTINEL ||
-		isSilentAbort(message);
+		message.errorMessage === GENERIC_ABORT_SENTINEL;
 	if (!genericAbort) {
 		return message.errorMessage!;
 	}

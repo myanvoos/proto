@@ -917,8 +917,8 @@ type TodoRenderArgs = TodoRenderOp & {
 /**
  * Normalize streaming/legacy render args to a flat op list. Accepts the new
  * top-level `{op,...}` shape (returned as a one-element list), the legacy
- * `{ops:[...]}` batch from old transcripts/collab-web, and partially-parsed
- * streaming deltas (non-array `ops`, non-object entries) without crashing.
+ * `{ops:[...]}` batch from old transcripts, and partially-parsed streaming
+ * deltas (non-array `ops`, non-object entries) without crashing.
  */
 function normalizeTodoArg(args: TodoRenderArgs | undefined): TodoRenderOp[] {
 	if (!args || typeof args !== "object") return [];

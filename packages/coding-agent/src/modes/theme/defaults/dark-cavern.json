@@ -82,10 +82,5 @@
 		"statusLineCost": "amber",
 		"statusLineSubagents": "crystalBlue",
 		"pythonMode": "amber"
-	},
-	"export": {
-		"pageBg": "#0B0D10",
-		"cardBg": "#14181D",
-		"infoBg": "#1D2229"
 	}
 }

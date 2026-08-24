@@ -190,7 +190,7 @@ Lookup is exact-name linear search:
 3. enforces depth, blocked-self-recursion, and parent spawn-policy guards
 4. rediscovers agents with `discoverAgents(session.cwd)` and performs exact lookup
 5. checks `orchestrator.disabledAgents`
-6. resolves plan-mode restrictions, output schema, model policy, and isolation policy
+6. resolves output schema, model policy, and isolation policy
 
 A missing name fails preflight with `Unknown agent "...". Available: ...`; no subprocess runs.
 
@@ -257,13 +257,3 @@ If denied: `Cannot spawn '...'. Allowed: ...`.
 
 For a restricted agent tool list, `runSubprocess` adds the five `orchestrate_*` tools when `spawns` is declared and depth permits it. It retains `fleet` collaboration unless the session explicitly restricts tool names.
 
-## Plan mode behavior
-
-When parent plan mode is enabled, `resolveEffectiveSubagentPolicy()` builds an `effectiveAgent` before launching subprocesses:
-
-- prepends the plan-mode subagent system prompt
-- restricts tools to `read`, `grep`, `glob`, and `web_search`, plus `ast_grep` when the agent's own tool list declares it
-- clears child spawns
-- clears `prewalk` (read-only exploration must not receive the prewalk plan/implement nudges)
-
-Plan mode also rejects per-spawn isolation, apply, and merge controls. The same `effectiveAgent` is used for subprocess launch, model/thinking overrides, and output-schema selection.

@@ -24,9 +24,6 @@ Run from `packages/coding-agent/` (or add `--cwd=packages/coding-agent`):
 
 Never invoke `tsc`/`npx tsc` directly — `bun run check` is the typecheck gate.
 
-The React tool renderers for HTML exports are a checked-in prebuilt bundle at
-`src/export/html/tool-views.generated.js`.
-
 ## Boot flow
 
 ```text
@@ -61,24 +58,23 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 
 | Directory | Responsibility | Reference |
 |---|---|---|
-| `cli/`, `commands/`, `commit/`, `export/` | Command-line adapters and concrete subcommands | — |
+| `cli/`, `commands/`, `commit/` | Command-line adapters and concrete subcommands | — |
 | `modes/` | Interactive TUI, print, and RPC runtimes | [rpc.md](../../docs/rpc.md), [sdk.md](../../docs/sdk.md) |
 | `session/` | `AgentSession`, JSONL session tree, storage, history | [session.md](../../docs/session.md), [session-tree-plan.md](../../docs/session-tree-plan.md) |
 | `config/`, `registry/`, `secrets/` | Settings, model/provider registry, secret obfuscation | [settings.md](../../docs/settings.md), [config-usage.md](../../docs/config-usage.md), [models.md](../../docs/models.md), [secrets.md](../../docs/secrets.md) |
 | `tools/` | Built-in tool implementations + render/meta helpers | [custom-tools.md](../../docs/custom-tools.md), [`tools/`](../../docs/tools/) |
 | `exec/`, `eval/`, `ssh/`, `dap/`, `debug/` | Execution backends (shell, py/js kernels, ssh, debugger) | [bash-tool-runtime.md](../../docs/bash-tool-runtime.md), [python-repl.md](../../docs/python-repl.md) |
 | `lsp/` | Language-server client/runtime | [lsp-config.md](../../docs/lsp-config.md), [tools/lsp.md](../../docs/tools/lsp.md) |
-| `task/`, `orchestrator/`, `irc/`, `goals/`, `plan-mode/` | Shared worker execution, orchestration, inter-agent IRC, plan mode | [orchestration.md](../../docs/orchestration.md), [worker-agent-discovery.md](../../docs/worker-agent-discovery.md) |
+| `task/`, `orchestrator/`, `irc/`, `goals/` | Shared worker execution, orchestration, inter-agent IRC | [orchestration.md](../../docs/orchestration.md), [worker-agent-discovery.md](../../docs/worker-agent-discovery.md) |
 | `web/`, `exa/` | Fetch, browser automation, search providers, scrapers | [tools/web_search.md](../../docs/tools/web_search.md), [tools/browser.md](../../docs/tools/browser.md) |
 | `mcp/` | MCP transport / manager / loader / tool bridge | [mcp-config.md](../../docs/mcp-config.md), [mcp-runtime-lifecycle.md](../../docs/mcp-runtime-lifecycle.md) |
 | `extensibility/`, `slash-commands/` | Extensions, hooks, custom tools/commands, skills, plugins | [extensions.md](../../docs/extensions.md), [hooks.md](../../docs/hooks.md), [skills.md](../../docs/skills.md) |
 | `capability/`, `discovery/` | Capability registry + provider discovery modules | [extension-loading.md](../../docs/extension-loading.md), [context-files.md](../../docs/context-files.md) |
 | `advisor/`, `autolearn/`, `autoresearch/` | Advisor/watchdog, managed skills, background research | [advisor-watchdog.md](../../docs/advisor-watchdog.md) |
-| `memories/`, `memory-backend/`, `mnemopi/`, `hindsight/` | Memory subsystems and backends | [memory.md](../../docs/memory.md), [mnemosyne-memory-backend.md](../../docs/mnemosyne-memory-backend.md) |
 | `internal-urls/` | Router + handlers (`agent://`, `docs://`, `rule://`, …) | [tree.md](../../docs/tree.md) |
-| `tui/`, `collab/` | Low-level TUI primitives, live session sharing | [tui.md](../../docs/tui.md), [collab.md](../../docs/collab.md) |
+| `tui/` | Low-level TUI primitives | [tui.md](../../docs/tui.md) |
 | `tts/`, `stt/` | Text-to-speech / speech-to-text | — |
-| `tiny/`, `auto-thinking/` | Embedded tiny-model experiments, auto thinking level | [local-models.md](../../docs/local-models.md) |
+| `tiny/` | Embedded tiny-model experiments | [local-models.md](../../docs/local-models.md) |
 | `async/`, `lib/`, `utils/`, `prompts/`, `edit/` | Shared plumbing, prompt assets, patch/diff engine | [tools/edit.md](../../docs/tools/edit.md) |
 
 ## Subsystem reference
@@ -87,7 +83,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - [session.md](../../docs/session.md) — storage and entry model
 - [session-tree-plan.md](../../docs/session-tree-plan.md) — branch/tree architecture
 - [session-switching-and-recent-listing.md](../../docs/session-switching-and-recent-listing.md)
-- [session-operations-export-share-fork-resume.md](../../docs/session-operations-export-share-fork-resume.md)
+- [session-operations.md](../../docs/session-operations.md)
 - [compaction.md](../../docs/compaction.md) — compaction and branch summaries
 - [ttsr-injection-lifecycle.md](../../docs/ttsr-injection-lifecycle.md)
 - [non-compaction-retry-policy.md](../../docs/non-compaction-retry-policy.md)
@@ -107,7 +103,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 ### Tools framework and built-in tools
 - Authoring + registry: [custom-tools.md](../../docs/custom-tools.md)
 - Output/artifacts: [blob-artifact-architecture.md](../../docs/blob-artifact-architecture.md)
-- Gating/approval: [approval-mode.md](../../docs/approval-mode.md), [resolve-tool-runtime.md](../../docs/resolve-tool-runtime.md)
+- Tool resolution devices: [resolve-tool-runtime.md](../../docs/resolve-tool-runtime.md)
 - Per-tool reference: [`docs/tools/`](../../docs/tools/) — `read`, `write`, `edit`, `ast-edit`, `ast-grep`, `grep`, `glob`, `bash`, `eval`, `fleet`, `orchestrate_*`, `lsp`, `debug`, `web_search`, `browser`, `github`, `inspect_image`, `ask`, `todo`, `recall`, `retain`, `reflect`, `checkpoint`, `rewind`
 
 ### Execution backends
@@ -125,10 +121,6 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 ### MCP
 - [mcp-config.md](../../docs/mcp-config.md), [mcp-runtime-lifecycle.md](../../docs/mcp-runtime-lifecycle.md)
 - [mcp-protocol-transports.md](../../docs/mcp-protocol-transports.md), [mcp-server-tool-authoring.md](../../docs/mcp-server-tool-authoring.md)
-
-### Memory
-- [memory.md](../../docs/memory.md), [mnemosyne-memory-backend.md](../../docs/mnemosyne-memory-backend.md)
-- Memory tools: [tools/recall.md](../../docs/tools/recall.md), [tools/retain.md](../../docs/tools/retain.md), [tools/reflect.md](../../docs/tools/reflect.md)
 
 ### Discovery, context, and rules
 - [context-files.md](../../docs/context-files.md), [rulebook-matching-pipeline.md](../../docs/rulebook-matching-pipeline.md)

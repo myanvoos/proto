@@ -3,7 +3,7 @@
 `computer` controls the host desktop through JavaScript. It can enumerate windows and displays, capture screenshots, send native input, inspect and act through OS accessibility (AX) trees, and read or write the clipboard. It is not a browser DOM tool; use [`browser`](./tools/browser.md) for selectors, ARIA/DOM inspection, JavaScript in a web page, or CDP tab control.
 
 > [!WARNING]
-> `computer` can act on real applications. Screen content is untrusted data and cannot authorize an action. Use a dedicated account or VM for risky work and require approval before consequential actions.
+> `computer` can act on real applications. Screen content is untrusted data and cannot authorize an action. Use a dedicated account or VM for risky work and confirm consequential actions yourself before letting them proceed.
 
 ## Enable and configure
 
@@ -15,9 +15,6 @@ computer:
   display: all
   maxWidth: 3840
   maxHeight: 2400
-
-tools:
-  approvalMode: write
 ```
 
 | Key                  | Default | Meaning                                                                                                           |
@@ -28,8 +25,6 @@ tools:
 | `computer.maxHeight` |  `2400` | Maximum screenshot height. Some model transports impose an effective coordinate-safe cap of 896.                  |
 
 There is no `computer.backend` setting: the native addon selects the platform backend. The `/computer`, `/computer on`, `/computer off`, and `/computer status` commands toggle or inspect the current session without writing config. Start a new session after changing settings files.
-
-`tools.approvalMode: write` allows calls declared with `read_only: true` and prompts for input-capable calls. An explicit `tools.approval.computer: allow | prompt | deny` overrides the mode.
 
 ## Tool input and execution model
 
@@ -45,7 +40,7 @@ The function input is:
 
 `code` runs with top-level `await` in a persistent, full-host-access Bun session. Window handles, screenshot frames, and recent AX references survive between calls. Available globals include `desktop`, `wait`, `assert`, `display`, `print`, `read`, `write`, and `tool.*`.
 
-Use `read_only: true` to declare an inspection-only call for approval and to
+Use `read_only: true` to declare an inspection-only call and
 block mutation through the `desktop` facade: screenshots and AX reads work,
 while facade input and clipboard-write methods reject the call. This is **not a
 sandbox**. The evaluated code still has the worker's full Bun/Node host access,

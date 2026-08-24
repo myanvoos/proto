@@ -52,7 +52,7 @@ For transports that do not preserve original image detail, and as a Claude-famil
 | `read_only` | No | When `true`, screenshots, enumeration, AX reads, and clipboard reads are allowed; input, AX mutation, raising windows, and clipboard writes throw. Defaults to `false`. |
 | `timeout` | No | Run budget in seconds; default `120`, minimum `1`, maximum `300` after the shared tool-timeout clamp. |
 
-Unknown fields are rejected by the schema. `computerApproval()` returns `read` only when `read_only === true`; malformed input, an omitted flag, or `false` is classified as `exec`. Approval details contain `read-only` when applicable plus at most 2,000 characters of code.
+Unknown fields are rejected by the schema. `read_only: true` marks the call inspection-only and blocks facade input, AX mutation, raising, and clipboard writes for that run.
 
 `code` has full host access and is not sandboxed. The persistent `JsRuntime` supplies `desktop`, `wait`, and `assert`, plus its ordinary helpers such as `display`, `print`, `read`, `write`, `env`, and `tool`. `wait(ms)` sleeps; `wait(predicate, { timeout?, interval? })` polls until truthy.
 

@@ -65,17 +65,6 @@ describe("selector setting side effects", () => {
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
-	it("applies memory backend changes to the live session", () => {
-		const applyMemoryBackend = vi.fn(async () => {});
-		const controller = new SelectorController({
-			session: { applyMemoryBackend },
-			showError: vi.fn(),
-		} as unknown as InteractiveModeContext);
-
-		controller.handleSettingChange("memory.backend", "mnemopi");
-
-		expect(applyMemoryBackend).toHaveBeenCalledTimes(1);
-	});
 	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", () => {
 		const setAdvisorEnabled = vi.fn();
 		const invalidate = vi.fn();
@@ -294,7 +283,7 @@ describe("selector setting side effects", () => {
 		const setThinkingLevel = vi.fn();
 		const assignmentApplied = Promise.withResolvers<void>();
 		const showStatus = vi.fn((message: string) => {
-			if (message.includes("TASK model:")) assignmentApplied.resolve();
+			if (message.includes("WORKER model:")) assignmentApplied.resolve();
 		});
 		let captured: unknown;
 		const controller = new SelectorController({
@@ -357,7 +346,7 @@ describe("selector setting side effects", () => {
 			expect(setThinkingLevel).not.toHaveBeenCalled();
 			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
 			const defaultRow = lines.find(line => line.includes("DEFAULT"));
-			const taskRow = lines.find(line => line.includes("TASK"));
+			const taskRow = lines.find(line => line.includes("WORKER"));
 			expect(defaultRow).toContain("high");
 			expect(taskRow).toContain("max");
 			expect(taskRow).not.toContain("inherit");

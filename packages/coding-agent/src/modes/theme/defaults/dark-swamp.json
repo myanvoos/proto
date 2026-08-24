@@ -81,10 +81,5 @@
 		"statusLineCost": "fireflyGold",
 		"statusLineSubagents": "fireflyGold",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#080D0C",
-		"cardBg": "#111A18",
-		"infoBg": "#182522"
 	}
 }

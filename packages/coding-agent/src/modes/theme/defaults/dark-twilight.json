@@ -82,10 +82,5 @@
 		"statusLineCost": "sunset",
 		"statusLineSubagents": "rose",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#0f0e21",
-		"cardBg": "#17142c",
-		"infoBg": "#241a36"
 	}
 }

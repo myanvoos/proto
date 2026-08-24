@@ -70,26 +70,3 @@ async function runShellCommand(command: string, timeoutMs: number): Promise<stri
 		return undefined;
 	}
 }
-
-/**
- * Resolve all header values using the same resolution logic as API keys.
- */
-export async function resolveHeaders(
-	headers: Record<string, string> | undefined,
-): Promise<Record<string, string> | undefined> {
-	if (!headers) return undefined;
-	const resolved: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		const resolvedValue = await resolveConfigValue(value);
-		if (resolvedValue) {
-			resolved[key] = resolvedValue;
-		}
-	}
-	return Object.keys(resolved).length > 0 ? resolved : undefined;
-}
-
-/** Clear the config value command cache. Exported for testing. */
-export function clearConfigValueCache(): void {
-	commandResultCache.clear();
-	commandInFlight.clear();
-}

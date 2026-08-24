@@ -155,15 +155,6 @@ export function hsvToHex(hsv: HSV): string {
 	return rgbToHex(hsvToRgb(hsv));
 }
 
-/**
- * Shift the hue of a hex color by a given number of degrees.
- */
-export function shiftHue(hex: string, degrees: number): string {
-	const hsv = hexToHsv(hex);
-	hsv.h = (hsv.h + degrees) % 360;
-	if (hsv.h < 0) hsv.h += 360;
-	return hsvToHex(hsv);
-}
 export interface HSVAdjustment {
 	/** Hue shift in degrees (additive) */
 	h?: number;

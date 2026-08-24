@@ -19,18 +19,12 @@ export const launchHelp = {
 		}),
 		smol: Flags.string({ description: "Smol/fast model for lightweight tasks (or PI_SMOL_MODEL env)" }),
 		slow: Flags.string({ description: "Slow/reasoning model for thorough analysis (or PI_SLOW_MODEL env)" }),
-		plan: Flags.string({ description: "Plan model for architectural planning (or PI_PLAN_MODEL env)" }),
 		prewalk: Flags.boolean({
 			description:
 				"Switch from the active model to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see prewalk.enabled)",
 		}),
 		"no-prewalk": Flags.boolean({ description: "Disable prewalk even if prewalk.enabled is set" }),
 		"prewalk-into": Flags.string({ description: 'Target model for prewalk (default the "smol" role)' }),
-		"plan-yolo": Flags.boolean({
-			description:
-				"Force read-only plan mode at start, auto-approve the plan on the model's first resolve call, then switch to --plan-yolo-into to implement it",
-		}),
-		"plan-yolo-into": Flags.string({ description: 'Target model for plan-yolo execution (default the "smol" role)' }),
 		provider: Flags.string({ description: "Provider to use (legacy; prefer --model)" }),
 		"api-key": Flags.string({ description: "API key (defaults to env vars)" }),
 		"system-prompt": Flags.string({ description: "System prompt (default: coding assistant prompt)" }),
@@ -93,7 +87,6 @@ export const launchHelp = {
 		"no-skills": Flags.boolean({ description: "Disable skills discovery and loading" }),
 		skills: Flags.string({ description: "Comma-separated glob patterns to filter skills (e.g., git-*,docker)" }),
 		"no-rules": Flags.boolean({ description: "Disable rules discovery and loading" }),
-		export: Flags.string({ description: "Export session file to HTML and exit" }),
 		"no-title": Flags.boolean({ description: "Disable title auto-generation" }),
 		"print-thoughts": Flags.boolean({ description: "Include thinking blocks in print mode text output" }),
 		"max-time": Flags.string({ description: "Stop the session after this duration (e.g., 600, 10m, 1h)" }),
@@ -107,6 +100,5 @@ export const launchHelp = {
 		`# Create a shell shortcut for a work profile\n  ${BINARY_NAME} --profile work --alias proto-work`,
 		`# Use different model (fuzzy matching)\n  ${BINARY_NAME} --model opus "Help me refactor this code"`,
 		`# Limit model cycling to specific models\n  ${BINARY_NAME} --models claude-sonnet,claude-haiku,gpt-4o`,
-		`# Export a session file to HTML\n  ${BINARY_NAME} --export ~/.proto/agent/sessions/--path--/session.jsonl`,
 	],
 } satisfies CommandMetadata;

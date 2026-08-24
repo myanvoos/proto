@@ -81,10 +81,5 @@
 		"statusLineCost": "sun",
 		"statusLineSubagents": "terracotta",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#fbf7ef",
-		"cardBg": "#ffffff",
-		"infoBg": "#f2e8d9"
 	}
 }

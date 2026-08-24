@@ -12,8 +12,6 @@ import { resolveAgentModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
-import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
-import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { WorkerEffort } from "../thinking";
@@ -108,7 +106,7 @@ export interface StructuredSubagentRequest {
 	shareEvalSession?: boolean;
 	/** Task frontends may inherit LSP; eval frontends normally set this false. */
 	enableLsp?: boolean;
-	/** Explicitly pass false for plan mode or invocation kinds that must not use IRC. */
+	/** Explicitly pass false for invocation kinds that must not use IRC. */
 	enableIrc?: boolean;
 	/** `0` disables executor wall-clock timeout. Undefined inherits settings. */
 	maxRuntimeMs?: number;
@@ -127,7 +125,6 @@ export interface EffectiveSubagentPolicy {
 	modelRole?: string;
 	parentActiveModelPattern?: string;
 	schema: StructuredSubagentSchemaResolution;
-	planMode: boolean;
 	isIsolated: boolean;
 	mergeMode: "patch" | "branch";
 	applyChanges: boolean;
@@ -156,8 +153,6 @@ export class StructuredSubagentError extends Error {
 	}
 }
 
-const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search"] as const;
-
 function renderSubagentPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });
 }
@@ -185,31 +180,6 @@ function resolveSchema(request: StructuredSubagentRequest, agent: AgentDefinitio
 		return { schema: request.session.outputSchema, source: "session", mode, outputSchemaOverridesAgent: false };
 	}
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
-}
-
-function createPlanModeAgent(agent: AgentDefinition): AgentDefinition {
-	const tools = [...PLAN_MODE_TOOLS, ...(agent.tools ?? []).filter(tool => tool === "ast_grep")];
-	return {
-		...agent,
-		systemPrompt: `${planModeSubagentPrompt}\n\n${agent.systemPrompt}`,
-		tools,
-		spawns: undefined,
-		prewalk: undefined,
-	};
-}
-
-function assertPlanControlsAllowed(request: StructuredSubagentRequest, planMode: boolean): void {
-	if (!planMode) return;
-	const isolation = request.isolation;
-	if (
-		isolation &&
-		(Object.hasOwn(isolation, "requested") || Object.hasOwn(isolation, "apply") || Object.hasOwn(isolation, "merge"))
-	) {
-		throw new StructuredSubagentError(
-			"preflight",
-			"Subagent isolation, apply, and merge controls are unavailable in plan mode.",
-		);
-	}
 }
 
 function assertDepthAndSpawnAllowed(request: StructuredSubagentRequest, agentName: string): void {
@@ -248,8 +218,6 @@ export async function resolveEffectiveSubagentPolicy(
 	await request.session.settings.reloadFromDisk();
 	const spawnPolicy = resolveSpawnPolicy(request.session.getSessionSpawns());
 	const agentName = request.agent?.trim() || spawnPolicy.defaultAgent;
-	const planMode = request.session.getPlanModeState?.()?.enabled === true;
-	assertPlanControlsAllowed(request, planMode);
 	assertDepthAndSpawnAllowed(request, agentName);
 
 	const discovery = await discoverAgents(request.session.cwd);
@@ -269,7 +237,7 @@ export async function resolveEffectiveSubagentPolicy(
 		);
 	}
 
-	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
+	const effectiveAgent = agent;
 	const schema = resolveSchema(request, effectiveAgent);
 	if (schema.source === "caller" || (schema.source !== "none" && schema.mode === "strict")) {
 		const { error } = buildOutputValidator(schema.schema);
@@ -310,21 +278,18 @@ export async function resolveEffectiveSubagentPolicy(
 		modelRole,
 		parentActiveModelPattern,
 		schema,
-		planMode,
 		isIsolated,
 		mergeMode: request.isolation?.merge ?? request.session.settings.get("orchestrator.isolation.merge"),
 		applyChanges:
 			request.isolation?.apply ??
 			(request.invocationKind === "worker" ? request.session.settings.get("orchestrator.isolation.apply") : true),
 		enableLsp:
-			!planMode &&
-			(request.enableLsp ??
-				((request.session.enableLsp ?? true) && request.session.settings.get("orchestrator.enableLsp"))),
+			request.enableLsp ??
+			((request.session.enableLsp ?? true) && request.session.settings.get("orchestrator.enableLsp")),
 		enableIrc:
-			!planMode &&
-			(request.enableIrc ??
-				(request.session.enableIrc !== false &&
-					isIrcEnabled(request.session.settings, request.session.taskDepth ?? 0))),
+			request.enableIrc ??
+			(request.session.enableIrc !== false &&
+				isIrcEnabled(request.session.settings, request.session.taskDepth ?? 0)),
 	};
 }
 
@@ -384,7 +349,7 @@ function buildExecutorOptions(
 		getArtifactsDir: session.getArtifactsDir ?? (() => null),
 		getSessionId: session.getSessionId ?? (() => null),
 	};
-	const restrictToolNames = policy.planMode || session.restrictToolNames === true;
+	const restrictToolNames = session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,
@@ -394,7 +359,6 @@ function buildExecutorOptions(
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
 		context: request.context?.trim() || undefined,
-		planReference: undefined,
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
 		// real UI description. Copy it only for eval so generateTaskLabel can run.
 		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
@@ -444,25 +408,11 @@ function buildExecutorOptions(
 		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: session.getArtifactManager?.() ?? undefined,
-		parentHindsightSessionState: session.getHindsightSessionState?.(),
-		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 		parentTelemetry: session.getTelemetry?.(),
 		parentEvalSessionId: request.shareEvalSession === false ? undefined : (session.getEvalSessionId?.() ?? undefined),
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 		parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 	};
-}
-
-async function loadPlanReference(
-	request: StructuredSubagentRequest,
-	policy: EffectiveSubagentPolicy,
-): Promise<{ path: string; content: string } | undefined> {
-	if (policy.planMode) return undefined;
-	const localProtocolOptions: LocalProtocolOptions = request.session.localProtocolOptions ?? {
-		getArtifactsDir: request.session.getArtifactsDir ?? (() => null),
-		getSessionId: request.session.getSessionId ?? (() => null),
-	};
-	return loadOverallPlanReference(request.session.getPlanReferencePath?.() ?? "local://PLAN.md", localProtocolOptions);
 }
 
 function buildFailureResult(
@@ -569,7 +519,6 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;
 		};
-		baseOptions.planReference = await loadPlanReference(request, policy);
 		let isolationContext: IsolationContext | null = null;
 		if (policy.isIsolated) {
 			try {

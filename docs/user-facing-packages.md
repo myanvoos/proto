@@ -22,18 +22,6 @@ Sources: [`python/robomp/README.md`](../python/robomp/README.md), [`python/robom
 - Root commands: `bun run robomp:install` installs the Python package for host development; `bun run robomp:serve` runs it on the host; `bun run robomp:build`/`bun run robomp:rebuild`, `bun run robomp:up`, `bun run robomp:down`, `bun run robomp:restart`, `bun run robomp:logs`, `bun run robomp:dev`, and `bun run robomp:reset` manage the container deployment.
 - Prerequisites: Docker Compose v2, a host-reachable LiteLLM-style model proxy, container model configuration, a GitHub webhook endpoint, and a bot PAT with write access to every allowlisted repository. The default two-container deployment keeps the PAT in an HMAC-authenticated `gh-proxy` sidecar rather than the orchestrator.
 
-### `packages/stats` — local usage dashboard
-
-Sources: [`packages/stats/README.md`](../packages/stats/README.md), [`packages/stats/package.json`](../packages/stats/package.json), [`packages/coding-agent/src/cli/stats-cli.ts`](../packages/coding-agent/src/cli/stats-cli.ts).
-
-- Package: `@oh-my-pi/proto-stats`; bin: `proto-stats`; main user path: `proto stats`.
-- Feature: local observability dashboard for AI usage statistics from session JSONL logs.
-- CLI modes: `proto stats` starts the dashboard server, opens `http://localhost:3847`, and keeps running; `proto stats --port <port>` changes the port; `proto stats --summary` prints a console summary; `proto stats --json` prints JSON and exits.
-- Programmatic API: exports helpers such as `syncAllSessions()` and `getDashboardStats()` for embedding.
-- Inputs/storage: reads `~/.proto/agent/sessions/`; stores aggregates in `~/.proto/stats.db`.
-- Outputs: dashboard metrics and API endpoints including `/api/stats`, `/api/stats/models`, `/api/stats/folders`, `/api/stats/timeseries`, and `/api/sync`.
-- Side effects/limits: syncs session files before output; long-running dashboard stops on `Ctrl+C` and closes the stats database.
-
 ### `packages/omptype` — schema validation library
 
 Sources: [`packages/omptype/README.md`](../packages/omptype/README.md), [`packages/omptype/package.json`](../packages/omptype/package.json), and the repository [omptype authoring guide](./omptype-guide.md).
@@ -56,12 +44,3 @@ Sources: [`packages/browser-relay/README.md`](../packages/browser-relay/README.m
 - Security/limits: it binds loopback; use `--token` when local processes are untrusted. Chrome
   internal pages, DevTools, Web Store, extension pages, and tabs with DevTools open cannot attach.
 
-### `packages/mnemopi` — standalone local-memory CLI
-
-Sources: [`packages/mnemopi/README.md`](../packages/mnemopi/README.md), [`packages/mnemopi/package.json`](../packages/mnemopi/package.json), [`packages/mnemopi/src/cli.ts`](../packages/mnemopi/src/cli.ts), and the coding-agent [Mnemopi memory backend guide](./mnemosyne-memory-backend.md).
-
-- Package: public `@oh-my-pi/pi-mnemopi`; bin: `mnemopi`; requires Bun 1.3.14 or newer. Install globally with `bun add --global @oh-my-pi/pi-mnemopi`, then run `mnemopi <command>`. From a source checkout, `bun packages/mnemopi/src/cli.ts <command>` runs the same entrypoint.
-- Store and search: `store`/`remember`, `recall`/`search`, `update`/`edit`, and `delete`/`forget`.
-- Inspect and maintain: `stats`, `sleep`/`consolidate`, `diagnose`/`doctor`, JSON `export` and `import`, `scratchpad`/`sp` with `read`, `write`, or `clear`, and `bank` with `list`, `create`, or `delete`.
-- Integration: `mcp` starts the package's MCP server. The standalone CLI operates directly on Mnemopi storage; select `memory.backend: mnemopi` instead when integrating memory into PROTO sessions, as described in the backend guide.
-- Discovery and errors: `mnemopi --help` lists primary command forms. Unknown commands and invalid arguments print a concise error and return a nonzero exit code.

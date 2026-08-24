@@ -53,11 +53,6 @@ export const LowerRight: Direction = { x: 2, y: 2 }
 export const LowerLeft: Direction  = { x: 0, y: 2 }
 export const Middle: Direction     = { x: 1, y: 1 }
 
-/** All named directions for iteration. */
-export const ALL_DIRECTIONS: readonly Direction[] = [
-  Up, Down, Left, Right, UpperRight, UpperLeft, LowerRight, LowerLeft, Middle,
-]
-
 /**
  * 2D text canvas — column-major (canvas[x][y]).
  * Each cell holds a single character (or space).

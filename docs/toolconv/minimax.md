@@ -13,7 +13,7 @@ tools:
   format: minimax
 ```
 
-`tools.format: minimax` forces this owned dialect for the session. In `auto` mode, PROTO keeps provider-native tool calling unless the selected model explicitly has `supportsTools: false`; for a MiniMax-family model id, that fallback resolves to `minimax`. See [`tools.format`](../settings.md#tools-and-approvals).
+`tools.format: minimax` forces this owned dialect for the session. In `auto` mode, PROTO keeps provider-native tool calling unless the selected model explicitly has `supportsTools: false`; for a MiniMax-family model id, that fallback resolves to `minimax`. See [`tools.format`](../settings.md#tools).
 
 When an owned dialect is active, PROTO:
 

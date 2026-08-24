@@ -82,10 +82,5 @@
 		"statusLineCost": "$copper",
 		"statusLineSubagents": "$vein",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "$stone",
-		"cardBg": "$band1",
-		"infoBg": "$band2"
 	}
 }

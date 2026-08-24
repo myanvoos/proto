@@ -36,7 +36,7 @@ export interface DirectiveCallbacks {
 
 export interface ToolChoiceDirective {
 	generator: Iterator<ToolChoice>;
-	/** Stable label for targeted removal and debugging (e.g. "user-force"). */
+	/** Stable label for targeted removal and debugging (e.g. "eager-todo"). */
 	label: string;
 	callbacks: DirectiveCallbacks;
 	/** Original multi-yield directive retained across one-yield replays. */
@@ -92,11 +92,6 @@ export class ToolChoiceQueue {
 	 * the abort safety net, or an `unavailable` rejection on redeem.
 	 */
 	#inFlight: InFlight | undefined;
-	/**
-	 * Label of the directive whose last yield was resolved this turn.
-	 * Consumers (e.g. todo reminder suppression) read via consumeLastServedLabel().
-	 */
-	#lastResolvedLabel: string | undefined;
 	/**
 	 * Non-forcing pending preview invokers, stacked by UNIQUE id. The
 	 * `xd://resolve` or `xd://reject` dispatch runs the head; the agent-loop's
@@ -166,8 +161,6 @@ export class ToolChoiceQueue {
 			return;
 		}
 		this.#inFlight = undefined;
-
-		this.#lastResolvedLabel = inFlight.directive.label;
 		inFlight.directive.callbacks.onResolved?.({ choice: inFlight.yielded });
 	}
 
@@ -286,17 +279,9 @@ export class ToolChoiceQueue {
 		}
 		this.#queue = [];
 		this.#pendingInvokers = [];
-		this.#lastResolvedLabel = undefined;
 	}
 
 	// ── Observation ───────────────────────────────────────────────────────
-
-	/** Return the label of the most recently resolved directive, then clear it. */
-	consumeLastServedLabel(): string | undefined {
-		const label = this.#lastResolvedLabel;
-		this.#lastResolvedLabel = undefined;
-		return label;
-	}
 
 	/** For tests/debug: labels of currently queued directives in order. */
 	inspect(): readonly string[] {

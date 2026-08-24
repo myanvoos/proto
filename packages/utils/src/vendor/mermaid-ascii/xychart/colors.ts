@@ -94,18 +94,6 @@ export function isDarkBackground(bgHex: string): boolean {
 }
 
 /**
- * Mix two hex colors in RGB space.
- * `ratio` controls how much of `fgHex` shows: 0 = pure bg, 1 = pure fg.
- * Equivalent to alpha-compositing fg over bg at the given opacity.
- */
-export function mixHexColors(bgHex: string, fgHex: string, ratio: number): string {
-  const [br, bg, bb] = hexToRgb(bgHex)
-  const [fr, fg, fb] = hexToRgb(fgHex)
-  const inv = 1 - ratio
-  return rgbToHex(br * inv + fr * ratio, bg * inv + fg * ratio, bb * inv + fb * ratio)
-}
-
-/**
  * Get the hex color for a series index.
  * Index 0 returns the accent color as-is.
  * Index 1+ alternate between darker and lighter shades of the same hue

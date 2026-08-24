@@ -81,10 +81,5 @@
 		"statusLineCost": "aurora",
 		"statusLineSubagents": "aurora",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#0a0f1c",
-		"cardBg": "#111827",
-		"infoBg": "#141d2f"
 	}
 }

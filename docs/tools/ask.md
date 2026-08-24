@@ -42,7 +42,7 @@
 ## Flow
 1. `AskTool.createIf()` only registers the discoverable tool when `session.hasUI` is true; headless sessions never get it.
 2. `execute()` also requires `context.hasUI` and `context.ui`; if missing it aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
-3. It reads `ask.timeout` from settings, converts seconds to milliseconds (`0` disables timeout), and disables timeout entirely while plan mode is enabled.
+3. It reads `ask.timeout` from settings and converts seconds to milliseconds (`0` disables timeout).
 4. If `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`. When `speech.enabled` is true, it also sends all question text to the vocalizer before opening the dialog.
 5. When the UI supplies `askDialog`, the tool opens one rich multi-question form. Rich options receive `header`, `description`, and `preview`; results may contain an answer note or choose the dialog's `Chat about this` redirect.
 6. Otherwise it uses the selector/editor fallback for each question:
@@ -69,14 +69,13 @@
   - Sends a terminal notification unless `ask.notify=off`.
   - Speaks the question text through the vocalizer when `speech.enabled=true`.
 - Session state
-  - Reads plan-mode state to disable timeouts.
   - Calls `context.abort()` on headless use or user cancellation.
 - Background work / cancellation
   - Wraps UI waits in `untilAborted(...)` so abort signals interrupt pending dialogs.
 
 ## Limits & Caps
 - `questions` must contain at least 1 item. Unknown fields are rejected because `AskTool.strict=true`.
-- `ask.timeout` defaults to `0` seconds (disabled); configured non-zero values are seconds. Plan mode always disables it.
+- `ask.timeout` defaults to `0` seconds (disabled); configured non-zero values are seconds.
 - Prompt guidance says provide 2–5 options, but code only requires the `options` array field and does not enforce a minimum or maximum length.
 - Option labels must not equal the reserved runtime labels `Other (type your own)`, `Chat about this`, or `Next →`.
 - Fallback timeout only applies to the option picker; once the user chooses `Other`, the editor has no timeout.

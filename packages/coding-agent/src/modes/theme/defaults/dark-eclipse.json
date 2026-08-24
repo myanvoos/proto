@@ -82,10 +82,5 @@
 		"statusLineCost": "corona",
 		"statusLineSubagents": "corona",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#08070d",
-		"cardBg": "#101018",
-		"infoBg": "#1a1523"
 	}
 }

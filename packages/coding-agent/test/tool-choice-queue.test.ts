@@ -156,17 +156,6 @@ describe("ToolChoiceQueue", () => {
 		});
 	});
 
-	describe("consumeLastServedLabel", () => {
-		it("returns label once then clears", () => {
-			const q = new ToolChoiceQueue();
-			q.pushOnce(forced, { label: "user-force" });
-			q.nextToolChoice();
-			q.resolve();
-			expect(q.consumeLastServedLabel()).toBe("user-force");
-			expect(q.consumeLastServedLabel()).toBeUndefined();
-		});
-	});
-
 	describe("hasInFlight", () => {
 		it("is false when queue is empty", () => {
 			const q = new ToolChoiceQueue();

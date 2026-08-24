@@ -707,11 +707,6 @@ export function getFastembedRuntimeDir(): string {
 	return dirs.rootSubdir(path.join("cache", "fastembed-runtime"), "cache");
 }
 
-/** Get the natives directory (~/.omp/natives). */
-export function getNativesDir(): string {
-	return dirs.rootSubdir("natives", "cache");
-}
-
 /** Get the stats database path (~/.omp/stats.db). */
 export function getStatsDbPath(): string {
 	return dirs.rootSubdir("stats.db", "data");
@@ -730,21 +725,6 @@ export function getAutoresearchProjectDir(encodedProject: string): string {
 /** Get the per-project autoresearch SQLite database path (~/.omp/autoresearch/<encoded-project>.db). */
 export function getAutoresearchDbPath(encodedProject: string): string {
 	return path.join(getAutoresearchDir(), `${encodedProject}.db`);
-}
-
-/** Get the per-run artifact directory (~/.omp/autoresearch/<encoded-project>/runs/<runId>). */
-export function getAutoresearchRunDir(encodedProject: string, runId: number): string {
-	return path.join(getAutoresearchProjectDir(encodedProject), "runs", String(runId).padStart(4, "0"));
-}
-
-/** Get the security-analysis state directory (~/.omp/security). */
-export function getSecurityDir(): string {
-	return dirs.rootSubdir("security", "state");
-}
-
-/** Get one project's security-analysis state directory (~/.omp/security/<project-key>). */
-export function getSecurityProjectDir(projectKey: string): string {
-	return path.join(getSecurityDir(), projectKey);
 }
 
 // =============================================================================
@@ -801,19 +781,9 @@ export function getToolsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "tools");
 }
 
-/** Get the slash commands directory (~/.omp/agent/commands). */
-export function getCommandsDir(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "commands");
-}
-
 /** Get the prompts directory (~/.omp/agent/prompts). */
 export function getPromptsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "prompts");
-}
-
-/** Get the user-level Python modules directory (~/.omp/agent/modules). */
-export function getAgentModulesDir(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "modules");
 }
 
 /** Get the memories directory (~/.omp/agent/memories). */
@@ -824,11 +794,6 @@ export function getMemoriesDir(agentDir?: string): string {
 /** Get the terminal sessions directory (~/.omp/agent/terminal-sessions). */
 export function getTerminalSessionsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "terminal-sessions", "state");
-}
-
-/** Get the crash log path (~/.omp/agent/omp-crash.log). */
-export function getCrashLogPath(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "proto-crash.log", "state");
 }
 
 /** Get the debug log path (~/.omp/agent/omp-debug.log). */
@@ -901,11 +866,6 @@ export function getMarketplacesRegistryPath(): string {
 // =============================================================================
 // Project subdirectories (.omp/*)
 // =============================================================================
-
-/** Get the project-level Python modules directory (.omp/modules). */
-export function getProjectModulesDir(cwd: string = getProjectDir()): string {
-	return path.join(getProjectAgentDir(cwd), "modules");
-}
 
 /** Get the project-level prompts directory (.omp/prompts). */
 export function getProjectPromptsDir(cwd: string = getProjectDir()): string {

@@ -45,10 +45,3 @@ export function recordSlashCommandUsage(name: string): void {
 	counts[name] = (counts[name] ?? 0) + 1;
 	storage?.recordCommandUsage(name);
 }
-
-/** Test-only: reset in-memory usage state. */
-export function __resetSlashCommandUsageForTests(): void {
-	counts = {};
-	storage = undefined;
-	loadPromise = undefined;
-}

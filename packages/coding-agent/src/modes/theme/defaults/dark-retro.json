@@ -83,10 +83,5 @@
 		"statusLineCost": 209,
 		"statusLineSubagents": "phosphorBright",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "crtBlack",
-		"cardBg": "crtDarkBg",
-		"infoBg": "crtBg"
 	}
 }

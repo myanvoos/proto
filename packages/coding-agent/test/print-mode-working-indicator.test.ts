@@ -5,9 +5,7 @@ import {
 	PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS,
 	runPrintMode,
 } from "@oh-my-pi/pi-coding-agent/modes/print-mode";
-import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { PlanProposalHandler } from "@oh-my-pi/pi-coding-agent/tools/resolve";
 
 function makeAssistantMessage(text: string): AssistantMessage {
 	const timestamp = Date.now();
@@ -35,31 +33,20 @@ interface DelayedSession {
 	session: AgentSession;
 	promptStarted: Promise<void>;
 	resolvePrompt: () => void;
-	getPlanModeAtPrompt: () => PlanModeState | undefined;
 	getTextOutputCommitted: () => boolean;
-	getModeChanges: () => Array<{ mode: string; data?: Record<string, unknown> }>;
-	getPlanProposalHandler: () => PlanProposalHandler | undefined;
-	getCurrentPlanMode: () => PlanModeState | undefined;
 	emit: (event: AgentSessionEvent) => void;
 	getAbortCalls: () => number;
 }
 
-function createDelayedSession(
-	finalMessage: AssistantMessage,
-	options: { defaultPlanMode?: boolean } = {},
-): DelayedSession {
+function createDelayedSession(finalMessage: AssistantMessage): DelayedSession {
 	const messages: AssistantMessage[] = [];
 	const { promise: promptStarted, resolve: markPromptStarted } = Promise.withResolvers<void>();
 	const { promise: promptReleased, resolve: resolvePrompt } = Promise.withResolvers<void>();
-	let advisorDrainPrepared = false;
-	let planModeState: PlanModeState | undefined;
-	let planModeAtPrompt: PlanModeState | undefined;
-	let enabledToolNames = ["read"];
-	const modeChanges: Array<{ mode: string; data?: Record<string, unknown> }> = [];
-	let planProposalHandler: PlanProposalHandler | undefined;
 	let subscriber: ((event: AgentSessionEvent) => void) | undefined;
 	let textOutputCommitted = true;
 	let abortCalls = 0;
+	let advisorDrainPrepared = false;
+	let enabledToolNames = ["read"];
 
 	const session = {
 		state: { messages },
@@ -68,33 +55,16 @@ function createDelayedSession(
 			getHeader: () => undefined,
 			buildSessionContext: () => ({ messages: [] }),
 			getEntries: () => [],
-			appendModeChange: (mode: string, data?: Record<string, unknown>) => {
-				modeChanges.push({ mode, data });
-				return "mode-change";
-			},
 		},
 		settings: {
-			get: (key: string) =>
-				key === "plan.enabled" || (key === "plan.defaultOnStartup" && options.defaultPlanMode === true),
+			get: () => false,
 		},
 		model: undefined,
 		isStreaming: false,
-		getPlanReferencePath: () => "",
 		getEnabledToolNames: () => enabledToolNames,
 		hasBuiltInTool: (name: string) => name === "write",
 		setActiveToolsByName: async (names: string[]) => {
 			enabledToolNames = names;
-		},
-		getPlanModeState: () => planModeState,
-		setPlanModeState: (state: PlanModeState | undefined) => {
-			planModeState = state;
-		},
-		preparePlanForReview: async (title: string) => {
-			const details = { planFilePath: `local://${title}-plan.md`, title, planExists: true };
-			return { content: [{ type: "text" as const, text: "Plan ready for review." }], details };
-		},
-		setPlanProposalHandler: (handler: PlanProposalHandler | null) => {
-			planProposalHandler = handler ?? undefined;
 		},
 		resolveRoleModelWithThinking: () => ({
 			model: undefined,
@@ -102,8 +72,6 @@ function createDelayedSession(
 			explicitThinkingLevel: false,
 		}),
 		extensionRunner: undefined,
-		markPlanInternalAbortPending: () => {},
-		clearPlanInternalAbortPending: () => {},
 		abort: async () => {
 			abortCalls++;
 		},
@@ -115,7 +83,6 @@ function createDelayedSession(
 			return () => {};
 		},
 		prompt: async () => {
-			planModeAtPrompt = planModeState;
 			if (advisorDrainPrepared) throw new Error("headless advisor delivery armed before prompt completion");
 			markPromptStarted();
 			await promptReleased;
@@ -135,11 +102,7 @@ function createDelayedSession(
 		session,
 		promptStarted,
 		resolvePrompt,
-		getPlanModeAtPrompt: () => planModeAtPrompt,
-		getModeChanges: () => modeChanges,
-		getPlanProposalHandler: () => planProposalHandler,
 		getTextOutputCommitted: () => textOutputCommitted,
-		getCurrentPlanMode: () => planModeState,
 		emit: event => subscriber?.(event),
 		getAbortCalls: () => abortCalls,
 	};
@@ -175,44 +138,6 @@ describe("print mode working indicator", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
-	});
-
-	it("does not enter startup plan mode in headless print mode and warns instead (#8272)", async () => {
-		const delayed = createDelayedSession(makeAssistantMessage("final answer"), { defaultPlanMode: true });
-		const run = runPrintMode(delayed.session, { mode: "text", initialMessage: "Reply with exactly: OK" });
-
-		await delayed.promptStarted;
-		try {
-			// Headless has no surface to review/approve/exit a plan, so the startup
-			// default must not arm the plan-review flow — doing so stranded the turn
-			// until the deadline (issue #8272).
-			expect(delayed.getPlanModeAtPrompt()).toBeUndefined();
-			expect(delayed.getModeChanges()).toEqual([]);
-			expect(delayed.getPlanProposalHandler()).toBeUndefined();
-			expect(stderrOutput.join("")).toContain("plan.defaultOnStartup is ignored in print mode");
-		} finally {
-			delayed.resolvePrompt();
-			await run;
-		}
-
-		expect(stdoutOutput.join("")).toBe("final answer\n");
-	});
-
-	it("suppresses the startup-default note when the headless plan flow is already active", async () => {
-		const delayed = createDelayedSession(makeAssistantMessage("final answer"), { defaultPlanMode: true });
-		const run = runPrintMode(delayed.session, {
-			mode: "text",
-			initialMessage: "Reply with exactly: OK",
-			planYolo: true,
-		});
-
-		await delayed.promptStarted;
-		try {
-			expect(stderrOutput.join("")).not.toContain("plan.defaultOnStartup");
-		} finally {
-			delayed.resolvePrompt();
-			await run;
-		}
 	});
 
 	it("writes a text-mode working indicator before the prompt resolves and prints the final answer afterward", async () => {

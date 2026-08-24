@@ -1,6 +1,6 @@
 # Settings
 
-`proto` resolves settings from built-in defaults, a persistent global config file, optional project-local config, one-shot CLI overlays, and in-memory runtime overrides. Reach for project settings when one repository needs a different provider set, model role, tool policy, memory backend, or UI behavior than your global defaults — without touching your machine-wide configuration.
+`proto` resolves settings from built-in defaults, a persistent global config file, optional project-local config, one-shot CLI overlays, and in-memory runtime overrides. Reach for project settings when one repository needs a different provider set, model role, tool policy, or UI behavior than your global defaults — without touching your machine-wide configuration.
 
 Settings are stored as plain YAML mappings. Every key, its type, default, and enum values come from the settings schema. `proto config` exposes the complete schema; the interactive `/settings` panel exposes the schema entries that have UI metadata.
 
@@ -19,7 +19,7 @@ Settings are stored as plain YAML mappings. Every key, its type, default, and en
 | Project           | `<cwd>/.proto/config.yml` (plus `.proto/settings.json`)   | Loaded when the process working directory has a non-empty `.proto/`.                                                                       | Settings commands do not write arbitrary project keys. With `modelRoleStorage: project`, model-selector role assignments update only `modelRoles` here; edit other keys by hand. |
 | Project legacy    | `<cwd>/.proto/settings.json`                            | Still read; project `config.yml` is merged on top of it.                                                                                 | Not written by settings commands.                                                                                                                                                |
 | CLI overlay       | Any file passed with `--config <file>`                | Loaded after global and project settings, for that one process. Repeatable.                                                              | Never persisted.                                                                                                                                                                 |
-| Runtime overrides | In-memory only                                        | Set by dedicated CLI flags (`--model`, `--approval-mode`, …) and feature env vars.                                                       | Never persisted.                                                                                                                                                                 |
+| Runtime overrides | In-memory only                                        | Set by dedicated CLI flags (`--model`, `--thinking`, …) and feature env vars.                                                            | Never persisted.                                                                                                                                                                 |
 
 `PI_CODING_AGENT_DIR` relocates the `~/.proto/agent` base directory. When it is set, the global `config.yml`, the auth store (`agent.db`), and everything else under the agent directory move with it. Use `proto config path` to print the active agent directory.
 
@@ -90,7 +90,7 @@ built-in defaults  <-  global config  <-  project config  <-  CLI overlays  <-  
 
 From highest to lowest:
 
-1. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--plan`, `--approval-mode`, `--auto-approve`/`--yolo`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted.
+1. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--thinking`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted.
 2. **CLI config overlays** — each `--config <file>`; later overlay files override earlier ones.
 3. **Project settings** — `<cwd>/.proto/settings.json` then `<cwd>/.proto/config.yml` (and contributions from other discovery providers at project level).
 4. **Global settings** — `~/.proto/agent/config.yml`.
@@ -106,7 +106,6 @@ Environment variables are **not** a single settings layer. Each is read by the f
 | ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------- |
 | `PI_SMOL_MODEL`         | `modelRoles.smol`           | Also exposed as `--smol`.                                                                         |
 | `PI_SLOW_MODEL`         | `modelRoles.slow`           | Also exposed as `--slow`.                                                                         |
-| `PI_PLAN_MODEL`         | `modelRoles.plan`           | Also exposed as `--plan`.                                                                         |
 | `PI_NO_PTY=1`           | (disables PTY bash)         | Equivalent to `--no-pty` for the process.                                                         |
 | `PI_PY`                 | `eval.py`                   | `PI_PY=0` disables the Python eval backend.                                                       |
 | `PI_JS`                 | `eval.js`                   | `PI_JS=0` disables the JavaScript eval backend.                                                   |
@@ -133,42 +132,15 @@ theme:
   dark: titanium
   light: light
 
-tools:
-  approvalMode: write
-  approval:
-    bash: prompt
-    read: allow
+edit:
+  mode: hashline
+  fuzzyMatch: true
 ```
 
-### Bash command approval patterns
-
-`tools.approval` is a record keyed by tool name; dotted forms such as `tools.approval.eval` and `tools.approval.computer` identify entries in that record, not separate settings-schema paths. Each entry sets that tool's default policy. For bash, you can add ordered command rules with `bash.patterns`; the first matching rule wins. Patterns support literal text plus `*` as a wildcard.
-
-```yaml
-tools:
-  approvalMode: write
-  approval:
-    bash: allow
-
-bash:
-  patterns:
-    - match: "git *"
-      approval: allow
-    - match: "rm -rf *"
-      approval: deny
-    - match: "*"
-      approval: allow
-```
-
-Valid rule approvals are `allow`, `prompt`, and `deny`. Critical bash commands still require confirmation unless a matching rule explicitly denies them; broad allow rules such as `match: "*"` do not bypass the critical-command guard.
-
-Matching is asymmetric so that rules mean what they appear to: `deny` and `prompt` rules fire when the glob matches the whole command **or any single segment** of a compound line (split on `&&`, `||`, `;`, `|`, a single `&`, subshells, and newlines), so `match: "rm -rf *"` still denies `cd /tmp && rm -rf build` and `sleep 1 & rm -rf build`. `allow` rules must match the **entire** command and never apply to a compound line, so a narrow allow such as `match: "git *"` cannot vouch for `git status && rm -rf /`.
-
-`bash.patterns` gates the `bash` tool only. It does not cover shells started through `eval`, which can spawn one via subprocess, so a `deny` rule here is bypassed when the same command runs through `eval`. To close that path, add a `tools.approval.eval` policy (`prompt` or `deny`) as well; see [Tool approval mode](./approval-mode.md).
 
 ### Bash interceptor patterns
 
-`bashInterceptor` is separate from `bash.patterns`: it redirects Bash commands to dedicated tools rather than defining whether a command may execute. Enable it explicitly and configure regular-expression patterns with a replacement tool and a model-facing message:
+`bashInterceptor` redirects Bash commands to dedicated tools rather than letting them execute. Enable it explicitly and configure regular-expression patterns with a replacement tool and a model-facing message:
 
 ```yaml
 bashInterceptor:
@@ -179,26 +151,23 @@ bashInterceptor:
       message: "Use the read tool instead."
 ```
 
-The named replacement tool must be available in the current session or the interceptor does not block the Bash call. For a detailed comparison of permission policy and dedicated-tool routing, including compound-command behavior and ordering, see [the Bash tool documentation](tools/bash.md#command-policy-and-dedicated-tool-routing).
+The named replacement tool must be available in the current session or the interceptor does not block the Bash call. For the full routing semantics, including compound-command behavior and ordering, see [the Bash tool documentation](tools/bash.md#optional-interception-blocked-command-path).
 
 ### Worked example: global vs. project
 
 ```yaml
 # ~/.proto/agent/config.yml
-tools:
-  approvalMode: write
-  approval:
-    bash: prompt
-    read: allow
+edit:
+  mode: hashline
+  fuzzyMatch: true
 disabledProviders:
   - anthropic
   - openai
   - google
 
 # <repo>/.proto/config.yml
-tools:
-  approval:
-    bash: allow
+edit:
+  fuzzyThreshold: 0.9
 disabledProviders:
   - groq
 ```
@@ -206,11 +175,10 @@ disabledProviders:
 Effective settings inside `<repo>`:
 
 ```yaml
-tools:
-  approvalMode: write # kept from global (object deep-merge)
-  approval:
-    bash: allow # overridden by project
-    read: allow # kept from global
+edit:
+  mode: hashline # kept from global (object deep-merge)
+  fuzzyMatch: true # kept from global
+  fuzzyThreshold: 0.9 # supplied by project
 disabledProviders:
   - groq # project array REPLACES the global array
 ```
@@ -227,11 +195,6 @@ modelRoles:
   default: anthropic/claude-sonnet-4-5
   smol: openai/gpt-4.1-mini
   slow: anthropic/claude-opus-4-5:high
-
-tools:
-  approvalMode: write
-  approval:
-    bash: prompt
 
 compaction:
   methodOrder: [remote, handoff, shake, soft]
@@ -348,7 +311,7 @@ enabledModels:
 
 | Key                    | Type    | Default                     | Notes                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `modelRoles`           | record  | `{}`                        | Map of role name -> model id. Built-in roles: `default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `tiny`, `task`, `advisor`. The `tiny` role overrides the online model for lightweight background tasks (titles, memory, auto-thinking, unexpected-stop), else `@smol`. Per-role env/flags exist only for `--model`/`--smol`/`--slow`/`--plan`; configure the advisor with `modelRoles.advisor`. |
+| `modelRoles`           | record  | `{}`                        | Map of role name -> model id. Built-in roles: `default`, `smol`, `slow`, `vision`, `designer`, `commit`, `tiny`, `task`, `advisor`. The `tiny` role overrides the online model for lightweight background tasks (titles, memory, auto-thinking, unexpected-stop), else `@smol`. Per-role env/flags exist only for `--model`/`--smol`/`--slow`; configure the advisor with `modelRoles.advisor`. |
 | `modelRoleStorage`     | enum    | `global`                    | `global` saves model-selector role assignments in the active global/profile config; `project` saves only those role assignments in `<cwd>/.proto/config.yml`. Missing project roles fall back to global roles.                                                                                                                                                                                                     |
 | `modelTags`            | record  | `{}`                        | Custom role/tag metadata; can introduce additional roles.                                                                                                                                                                                                                                                                                                                                                        |
 | `modelProviderOrder`   | array   | `[]`                        | Preferred provider order when a model id is ambiguous.                                                                                                                                                                                                                                                                                                                                                           |
@@ -396,7 +359,6 @@ thinkingBudgets:
 | `thinkingBudgets.high`            | number  | `16384` | Token budget for `high`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `thinkingBudgets.xhigh`           | number  | `32768` | Token budget for `xhigh`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `thinkingBudgets.max`             | number  | `32768` | Token budget for `max`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `providers.autoThinkingMaxEffort` | enum    | `xhigh` | Highest effort `defaultThinkingLevel: auto` may resolve. `xhigh` keeps the classifier one tier below the top, so only `ultrathink` reaches `max`; `max` lets the classifier bill the top tier on models that expose it. The local on-device classifier stays capped at `xhigh` either way. This governs what `auto` _resolves_: a model whose ladder offers nothing under the ceiling gets no auto level at all, and one whose metadata requires explicit effort still receives its lowest supported effort from the transport — on a `["max"]` ladder that is `max`, because the model accepts nothing else. |
 
 ### Sampling
 
@@ -474,15 +436,11 @@ providers:
 
 When the active model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching roles when the session is not on those roles. It skips models whose selectors are still cooling down and switches for the rest of the turn. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
 
-### Tools and approvals
+### Tools
 
 ```yaml
 tools:
   format: auto
-  approvalMode: yolo # default
-  approval:
-    bash: prompt
-    edit: allow
   maxTimeout: 0
   intentTracing: true
 ```
@@ -490,8 +448,6 @@ tools:
 | Key                            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------------ | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tools.format`                 | enum    | `auto`  | Tool wire format: `auto`, `native`, `glm`, `hermes`, `kimi`, `xml`, `anthropic`, `deepseek`, `harmony`, `qwen3`, `gemini`, `gemma`, or `minimax`. `native` always uses provider-native tool calls. `auto` also uses native calls unless the selected model explicitly has `supportsTools: false`; then it selects the model-family owned dialect, falling back to GLM when no specific family dialect is known. Other values force that owned in-band dialect. `xml` is the [generic XML format](./toolconv/xml.md); `minimax` is the [MiniMax format](./toolconv/minimax.md). Applies on session start. See [GLM](./toolconv/glm-4.5.md), [Qwen3/Hermes](./toolconv/qwen3.md), [Kimi](./toolconv/kimi-k2.md), [Anthropic](./toolconv/anthropic.md), [DeepSeek](./toolconv/deepseek.md), [Harmony](./toolconv/harmony.md), [Gemini](./toolconv/gemini.md), and [Gemma](./toolconv/gemma.md). |
-| `tools.approvalMode`           | enum    | `yolo`  | `always-ask` (auto-approve read-only), `write` (auto-approve read + workspace-write), `yolo` (auto-approve all tiers). `--approval-mode` and `--auto-approve`/`--yolo` override per run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `tools.approval`               | record  | `{}`    | Per-tool policy keyed by tool name; each value is `allow`, `deny`, or `prompt`. e.g. `proto config set tools.approval '{"bash":"prompt"}'`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `tools.maxTimeout`             | number  | `0`     | Max tool runtime in seconds; `0` = no cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `tools.intentTracing`          | boolean | `true`  | Record per-call intent strings.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `tools.outputMaxColumns`       | number  | `768`   | Per-line byte cap for streaming output; `0` disables.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -521,7 +477,7 @@ computer:
 | `computer.maxWidth`  | number  | `3840`  | Maximum composite screenshot width in pixels. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, cap the effective width at `1280`; Claude-family models use the same cap as a compatibility fallback. |
 | `computer.maxHeight` | number  | `2400`  | Maximum composite screenshot height in pixels. Those coordinate-safe transports cap the effective height at `896`; other models retain the configured limit.                                                                                                 |
 
-Computer settings are captured when the desktop controller is created. A model switch that crosses the coordinate-safe sizing boundary recreates the controller and resnapshots those settings; changing config alone does not, so start a new session after a settings change. Every call must name `desktop` or a numeric id from the preceding window list. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Before enabling input, configure `tools.approvalMode` or `tools.approval.computer` and grant platform permissions. See [Window-scoped computer use](computer-use.md).
+Computer settings are captured when the desktop controller is created. A model switch that crosses the coordinate-safe sizing boundary recreates the controller and resnapshots those settings; changing config alone does not, so start a new session after a settings change. Every call must name `desktop` or a numeric id from the preceding window list. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Grant platform permissions before enabling input. See [Window-scoped computer use](computer-use.md).
 
 ### Shell, eval, and LSP
 
@@ -600,7 +556,7 @@ read:
 | `read.toolResultPreview`  | boolean | `false`    | Inline preview of tool results.                   |
 | `readLineNumbers`         | boolean | `false`    | Show plain line numbers.                          |
 
-### Context, compaction, and memory
+### Context and compaction
 
 ```yaml
 contextPromotion:
@@ -612,8 +568,6 @@ compaction:
   midTurnEnabled: true # check thresholds between tool-loop provider requests
   thresholdPercent: -1 # -1 = default reserve-based behavior
   thresholdTokens: -1 # fixed token limit when > 0
-memory:
-  backend: off # off, local, hindsight, mnemopi
 ```
 
 | Key                           | Type    | Default                                  | Notes                                                                                                                                                                                                                                     |
@@ -627,8 +581,7 @@ memory:
 | `compaction.reserveTokens`    | number  | _(unset)_                                | Absolute reserve floor. When unset, the effective reserve is the larger of `16384` and 15% of the context window; if that default would leave no practical small-window budget, it falls back to the 15% reserve.                         |
 | `compaction.keepRecentTokens` | number  | `20000`                                  | Recent tokens always preserved.                                                                                                                                                                                                           |
 | `compaction.autoContinue`     | boolean | `true`                                   | Continue automatically after compaction.                                                                                                                                                                                                  |
-| `memory.backend`              | enum    | `off`                                    | `off`, `local`, `hindsight`, `mnemopi`. Each backend has its own `hindsight.*` / `mnemopi.*` / `memories.*` tuning keys.                                                                                                                  |
-| `autolearn.enabled`           | boolean | `false`       | Experimental: after the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills under `~/.proto/agent/managed-skills`. Enables the `manage_skill` tool (and `learn` when a memory backend is active). |
+| `autolearn.enabled`           | boolean | `false`       | Experimental: after the agent stops, nudge it to create/enhance isolated managed skills under `~/.proto/agent/managed-skills`. Enables the `manage_skill` tool.                                                                           |
 | `autolearn.autoContinue`      | boolean | `false`       | When `autolearn.enabled`, auto-run one capture turn at stop (uses extra tokens). Off = a passive reminder rides your next turn.                                                                                                           |
 | `autolearn.minToolCalls`      | number  | `5`           | Only nudge after a turn that used at least this many tools.                                                                                                                                                                               |
 
@@ -640,11 +593,9 @@ memory:
 theme:
   dark: titanium
   light: light
-symbolPreset: unicode # unicode, nerd, ascii
 colorBlindMode: false
 
 statusLine:
-  preset: default # default, minimal, compact, full, nerd, ascii, custom
   separator: powerline-thin
   transparent: false
   showHookStatus: true
@@ -662,10 +613,8 @@ tui:
 | --------------------------- | ------- | ---------------- | ------------------------------------------------------------------------- |
 | `theme.dark`                | string  | `titanium`       | Theme used on a dark terminal background.                                 |
 | `theme.light`               | string  | `light`          | Theme used on a light terminal background.                                |
-| `symbolPreset`              | enum    | `unicode`        | `unicode`, `nerd`, `ascii`.                                               |
 | `colorBlindMode`            | boolean | `false`          | Use blue instead of green for diff additions.                             |
 | `showHardwareCursor`        | boolean | `true`           | Show the terminal hardware cursor.                                        |
-| `statusLine.preset`         | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `custom`.       |
 | `statusLine.separator`      | enum    | `powerline-thin` | `powerline`, `powerline-thin`, `slash`, `pipe`, `block`, `none`, `ascii`. |
 | `statusLine.sessionAccent`  | boolean | `true`           | Tint the editor border with the session color.                            |
 | `statusLine.transparent`    | boolean | `false`          | Use the terminal background for the status line.                          |
@@ -675,7 +624,7 @@ tui:
 | `images.blockImages`        | boolean | `false`          | Never send images to providers.                                           |
 | `tui.hyperlinks`            | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
 
-For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
+For a custom status line, configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
 
 ### Interaction
 
@@ -686,8 +635,6 @@ For a custom status line, set `statusLine.preset: custom` and configure `statusL
 | `interruptMode`        | enum    | `immediate`     | `immediate`, `wait`.                                                                                    |
 | `doubleEscapeAction`   | enum    | `tree`          | `branch`, `tree`, `none`.                                                                               |
 | `autoResume`           | boolean | `false`         | Auto-resume the most recent session in the cwd.                                                         |
-| `plan.enabled`         | boolean | `true`          | Enable plan mode.                                                                                       |
-| `plan.defaultOnStartup` | boolean | `false`         | Start each fresh interactive session in plan mode when plan mode is enabled. Print/JSON (`--print`) mode ignores this and prints a note; use `--plan-yolo` for a headless plan flow. |
 | `ask.timeout`          | number  | `0`             | Seconds before an `ask` prompt times out; `0` = no timeout. (Legacy ms values are migrated to seconds.) |
 | `ask.notify`           | enum    | `on`            | `on`, `off`.                                                                                            |
 
@@ -753,15 +700,12 @@ Every schema path not individually tabulated in this catalog is explicitly defer
 
 - Agent behavior and safety: `ask.*`, `eval.*`, `features.*`, `goal.*`, `loop.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, `tools.*`, and `vault.*`.
 - Execution and content: `commit.*`, `completion.*`, `edit.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `live.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `speech.*`, `terminal.*`, and `title.*`.
-- Interface and startup: `display.*`, `statusLine.*`, `startup.*`, `stt.*`, `tui.*`, and `ttsr.*`.
-- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `hindsight.*`, `magicKeywords.*`, `mcp.*`, `memories.*`, `mnemopi.*`, `providers.*`, `searxng.*`, `share.*`, `skills.*`, `orchestrator.*`, `todo.*`, `tts.*`, and `workspace.*`.
+- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `magicKeywords.*`, `mcp.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `todo.*`, `tts.*`, and `workspace.*`.
 - Ungrouped keys: `setupVersion`, `proseOnlyThinking`, `omitThinking`, `externalThinking`, `includeWorkspaceTree`, `autocompleteMaxVisible`, `emojiAutocomplete`, `extendedContext`, `disabledExtensions`, `inlineToolDescriptors`, and `treeFilterMode`.
 
 These settings follow the same schema-defined type and default rules shown above.
 
 ## Legacy migration
-
-`proto` migrates older config shapes automatically. None of these require action; they are listed so you know what changes you may see in `config.yml`.
 
 ### Startup migration to `config.yml`
 

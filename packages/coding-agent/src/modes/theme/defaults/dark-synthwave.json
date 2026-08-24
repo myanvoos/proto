@@ -94,10 +94,5 @@
 		"statusLineCost": "vaporPink",
 		"statusLineSubagents": "hotPink",
 		"pythonMode": "gold"
-	},
-	"export": {
-		"pageBg": "#0c0c0c",
-		"cardBg": "#1a0e2e",
-		"infoBg": "#2a1342"
 	}
 }

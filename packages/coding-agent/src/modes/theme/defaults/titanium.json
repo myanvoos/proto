@@ -81,10 +81,5 @@
 		"statusLineCost": "titaniumGold",
 		"statusLineSubagents": "electricBlue",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "brushedTitanium",
-		"cardBg": "darkTitanium",
-		"infoBg": "subtleGray"
 	}
 }

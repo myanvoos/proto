@@ -15,7 +15,6 @@ import { execCommand } from "../../exec/exec";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
 import * as typebox from "../legacy-typebox";
-import { GreenCommand } from "./bundled/ci-green";
 import { ReviewCommand } from "./bundled/review";
 import type {
 	CustomCommand,
@@ -154,13 +153,6 @@ export interface LoadCustomCommandsOptions {
 function loadBundledCommands(sharedApi: CustomCommandAPI): LoadedCustomCommand[] {
 	const bundled: LoadedCustomCommand[] = [];
 
-	// Add bundled commands here
-	bundled.push({
-		path: "bundled:green",
-		resolvedPath: "bundled:green",
-		command: new GreenCommand(sharedApi),
-		source: "bundled",
-	});
 	bundled.push({
 		path: "bundled:review",
 		resolvedPath: "bundled:review",

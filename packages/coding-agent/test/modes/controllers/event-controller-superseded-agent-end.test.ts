@@ -31,7 +31,6 @@ function createContext() {
 		streamingMessage: undefined,
 		statusContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		chatContainer: { removeChild: vi.fn() },
-		flushPendingModelSwitch: vi.fn(async () => {}),
 		editor: { getText: () => "" },
 		sessionManager: { getSessionName: () => "test-session" },
 		ensureLoadingAnimation: vi.fn(),
@@ -126,7 +125,6 @@ describe("EventController superseded agent_end", () => {
 			isTerminal: false,
 		} as unknown as AgentSessionEvent);
 
-		expect(ctx.flushPendingModelSwitch).toHaveBeenCalled();
 		expect(ctx.flushPendingCommandOutput).toHaveBeenCalled();
 	});
 });

@@ -67,7 +67,7 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 	return { hub, doneCalls: () => doneCalls, done: done.promise, renderRequested: renderRequested.promise };
 }
 
-const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
+const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {2}| {3})*)(?:├─ |└─ ))?(\S+)/u;
 
 function renderedRosterEntry(hub: AgentFleetOverlayComponent, id: string, width: number): string {
 	const cells = hub.render(width).map(raw => {
@@ -256,7 +256,7 @@ describe("Agent fleet Enter activation", () => {
 		expect(agents.get("Parent")?.parentId).toBe("Main");
 		expect(agents.get("Child")?.parentId).toBe("Parent");
 		hub.handleInput("t");
-		expect(Bun.stripANSI(renderedRosterEntry(hub, "Child", 120))).toContain("└── Child");
+		expect(Bun.stripANSI(renderedRosterEntry(hub, "Child", 120))).toContain("└─ Child");
 		hub.dispose();
 	});
 

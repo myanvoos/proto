@@ -996,7 +996,7 @@ describe("resolveAgentModelPatterns", () => {
 		const settings = Settings.isolated({
 			modelRoles: {
 				default: "openai/gpt-4o",
-				task: "anthropic/claude-sonnet-4-5:high",
+				worker: "anthropic/claude-sonnet-4-5:high",
 			},
 		});
 
@@ -1012,7 +1012,7 @@ describe("resolveAgentModelPatterns", () => {
 	test("accepts YAML list values for configured worker role patterns", () => {
 		const settings = Settings.isolated({
 			modelRoles: {
-				task: ["anthropic/claude-sonnet-4-6", "zai/glm-5.2:high"],
+				worker: ["anthropic/claude-sonnet-4-6", "zai/glm-5.2:high"],
 			},
 		});
 
@@ -1225,7 +1225,7 @@ describe("resolveCliModel", () => {
 		const registry = { getAll: () => allModels, getAvailable: () => allModels };
 		const settings = Settings.isolated({
 			modelRoles: {
-				task: "openrouter/z-ai/glm-4.7@cerebras,anthropic/claude-sonnet-4-5",
+				worker: "openrouter/z-ai/glm-4.7@cerebras,anthropic/claude-sonnet-4-5",
 			},
 		});
 
@@ -1242,7 +1242,7 @@ describe("resolveCliModel", () => {
 		const registry = { getAll: () => allModels, getAvailable: () => allModels };
 		const settings = Settings.isolated({
 			modelRoles: {
-				task: "runtime-provider/runtime-model,anthropic/claude-sonnet-4-5",
+				worker: "runtime-provider/runtime-model,anthropic/claude-sonnet-4-5",
 			},
 		});
 

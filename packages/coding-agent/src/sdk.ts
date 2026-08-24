@@ -116,7 +116,6 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
-import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
@@ -131,9 +130,6 @@ import {
 	parseMCPToolName,
 } from "./mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
-import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
-import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
-import type { MnemopiSessionState } from "./mnemopi/state";
 import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
@@ -147,7 +143,7 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "./secrets";
-import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewalk } from "./session/agent-session";
+import { AgentSession, type InitialRetryFallbackState, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { withDateCwdReminder } from "./session/date-cwd-reminder";
@@ -395,8 +391,6 @@ export interface CreateAgentSessionOptions {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Prewalk from the starting model to a fast/cheap target at the first edit/write once the todo list exists. */
 	prewalk?: Prewalk;
-	/** Force read-only plan mode at start, auto-approve on the model's first resolve call, then switch to execute. */
-	planYolo?: PlanYolo;
 
 	/** Provider-facing system prompt override. Replaces the fully rendered default blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
@@ -520,10 +514,6 @@ export interface CreateAgentSessionOptions {
 	requireYieldTool?: boolean;
 	/** Worker recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
-	/** Parent Hindsight state to alias for subagent memory tools. */
-	parentHindsightSessionState?: HindsightSessionState;
-	/** Parent Mnemopi state to alias for subagent memory tools. */
-	parentMnemopiSessionState?: MnemopiSessionState;
 	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
@@ -1718,8 +1708,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			isDisposed: () => session?.isDisposed ?? false,
-			getHindsightSessionState: () => session?.getHindsightSessionState(),
-			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
@@ -1738,8 +1726,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getInspectImageModeOverride: () => session?.getInspectImageModeOverride(),
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
-			getPlanModeState: () => session?.getPlanModeState(),
-			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
 			getUsageStatistics: () => sessionManager.getUsageStatistics(),
@@ -1784,8 +1770,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			peekQueueInvoker: () => session.peekQueueInvoker(),
 			peekPendingInvoker: () => session.peekPendingInvoker(),
 			clearPendingInvokers: () => session.clearPendingInvokers(),
-			peekPlanProposalHandler: () => session.peekPlanProposalHandler(),
-			setPlanProposalHandler: handler => session.setPlanProposalHandler(handler),
 			allocateOutputArtifact: async toolType => {
 				try {
 					return await sessionManager.allocateArtifactPath(toolType);
@@ -2561,7 +2545,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cwd,
 			sessionManager,
 			modelRegistry,
-			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
@@ -2593,9 +2576,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolContextStore.setToolNames(snapshot);
 		};
 		// Native built-in implementations backing same-tool `ctx.invokeTool`, so a tool that
-		// re-registers a built-in (e.g. wrapping `write`) can delegate to the original — reaching the
-		// unwrapped native execute, which inherits the caller's already-granted approval rather than
-		// re-running the gate. Seeded from the xdev registry when present (it retains discoverable
+		// re-registers a built-in (e.g. wrapping `write`) can delegate to the original — reaching
+		// the unwrapped native execute directly, without dispatching back through
+		// `ExtensionToolWrapper` (no duplicate extension events, no recursion).
+		// Seeded from the xdev registry when present (it retains discoverable
 		// built-ins like `browser` that xdev partitioning removes from the active tool array), else
 		// from the built-in registry; captured before the ExtensionToolWrapper pass so the natives
 		// stay unwrapped. The extension runner exposes it to re-registered tools via createContext.
@@ -2637,7 +2621,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const builtInRegistryToolNames = toolSession.xdev?.builtInNames ?? new Set(toolRegistry.keys());
 		// Capture the native built-in implementations before extension re-registration replaces registry
 		// entries and before the ExtensionToolWrapper pass below, so `ctx.invokeTool` reaches the
-		// unwrapped native execute (inheriting the caller's already-granted approval, not re-gating).
+		// unwrapped native execute instead of dispatching through the wrapper a second time.
 		for (const [name, tool] of toolRegistry) {
 			nativeToolsByName.set(name, tool);
 		}
@@ -2670,9 +2654,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Wrap every tool with `ExtensionToolWrapper` so the per-tool approval gate runs on every
-		// call site, regardless of whether any user extensions are loaded. See the runner-construction
-		// comment above for the safety invariant this enforces.
+		// Wrap every tool with `ExtensionToolWrapper` so every call site — including bridge-constructed
+		// instances and delegated `ctx.invokeTool` dispatches — flows through the uniform interception
+		// seam: extension `tool_call`/`tool_result` events (which can block or modify) plus file-mutation
+		// session bookkeeping, regardless of whether any user extensions are loaded.
 		for (const tool of toolRegistry.values()) {
 			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
 		}
@@ -2731,8 +2716,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// xd:// mounts never register write: xdev state only exists when the session
 		// already granted a write tool (see createTools), so mounting rides that grant.
 		const hasDeferrableTools = Array.from(toolRegistry.values()).some(tool => tool.deferrable === true);
-		const planModeAvailable = settings.get("plan.enabled");
-		if (!restrictToolNames && (hasDeferrableTools || planModeAvailable || deferMCPDiscoveryForUI)) {
+		if (!restrictToolNames && (hasDeferrableTools || deferMCPDiscoveryForUI)) {
 			await ensureWriteRegistered();
 		}
 
@@ -2817,32 +2801,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.contextFiles = contextFiles;
 				session.setAdvisorContextPrompt(formatAdvisorContextPrompt(contextFiles));
 			}
-			const memoryBackend = restrictToolNames ? undefined : await resolveMemoryBackend(settings);
-			const memoryInstructions = memoryBackend
-				? await memoryBackend.buildDeveloperInstructions(agentDir, settings, session)
-				: undefined;
-
-			// Build combined append prompt: memory instructions + auto-learn guidance
-			// + mounted MCP route guidance + optional MCP server instructions. For UI
-			// sessions MCP discovery is deferred, so the initial registry and
+			// Build combined append prompt: auto-learn guidance + mounted MCP route
+			// guidance + optional MCP server instructions. For UI sessions MCP
+			// discovery is deferred, so the initial registry and
 			// `getServerInstructions()` are empty until the background connect
 			// completes; the rebuild that `refreshMCPTools` triggers post-discovery
 			// then picks up the mounted routes and any connected-server instructions.
 			const serverInstructions = mcpManager?.getServerInstructions();
-			// Drive guidance off the auto-learn BUILTINS that createTools actually built
+			// Drive guidance off the auto-learn BUILTIN that createTools actually built
 			// (provenance, not just an active name): `builtInToolNames` excludes a
 			// custom/extension tool that merely shares the name, and reflects the
-			// session-start build — so a subagent that filtered them out, a mid-session
-			// enable that never built them, or a same-named custom tool while auto-learn
+			// session-start build — so a subagent that filtered it out, a mid-session
+			// enable that never built it, or a same-named custom tool while auto-learn
 			// is off all get no guidance.
 			const autoLearnInstructions = restrictToolNames
 				? undefined
-				: buildAutoLearnInstructions({
-						manageSkill: builtInToolNames.includes("manage_skill"),
-						learn: builtInToolNames.includes("learn"),
-					});
+				: buildAutoLearnInstructions({ manageSkill: builtInToolNames.includes("manage_skill") });
 			const appendParts: string[] = [];
-			if (memoryInstructions) appendParts.push(memoryInstructions);
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
 			const projection = projectMountedMCPXdevGuidance(
 				collectMountedMCPToolRoutes(toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
@@ -2915,7 +2890,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
 				includeWorkspaceTree,
-				memoryRootEnabled: memoryBackend?.id === "local",
 				model: getActiveModelString(),
 				includeModelInPrompt: settings.get("includeModelInPrompt"),
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
@@ -3179,7 +3153,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// a chat request to the provider transport. See onFirstChatDispatch.
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
 		// Shared, settings-aware stream wrapper used by the main agent, advisor,
-		// and side-channel requests (`/btw`, `/omfg`, IRC auto-replies, handoff).
+		// and side-channel requests (`/btw`, IRC auto-replies, handoff).
 		// Keeps OpenRouter sticky-routing variants, antigravity endpoint routing,
 		// in-flight caps, and the loop guard consistent across every provider call
 		// the session drives. Wrapped in a per-provider concurrency limiter so
@@ -3341,9 +3315,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession));
 		}
 		const built = await Promise.all(advisorToolBuilds);
-		// Wrapped like every registry tool: `ExtensionToolWrapper` is where the
-		// bridge both run these instances directly, so a raw one would execute a
-		// `bash`/`write` the user configured as `ask` or `deny`. Meta-notice
+		// Wrapped like every registry tool: the Cursor advisor bridge executes these instances
+		// directly for native frames, and `ExtensionToolWrapper` is what keeps them on the same
+		// extension-event and file-mutation plumbing as registry dispatches. Meta-notice
 		// first, matching the registry's wrap order.
 		const advisorTools: Tool[] = built
 			.filter((tool): tool is Tool => tool != null)
@@ -3376,7 +3350,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			initialRetryFallback,
 			prewalk: options.prewalk,
-			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			initialAdvisorCosts,
@@ -3400,16 +3373,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			skillsSettings: settings.getGroup("skills"),
 			modelRegistry,
 			toolRegistry,
-			memoryAgentDir: agentDir,
-			memoryTaskDepth: taskDepth,
-			createMemoryTools: restrictToolNames
-				? undefined
-				: async () => {
-						const tools = await Promise.all(
-							MEMORY_BACKEND_TOOL_NAMES.map(name => BUILTIN_TOOLS[name](toolSession)),
-						);
-						return tools.filter((tool): tool is AgentTool => tool !== null);
-					},
 			createComputerTool: restrictToolNames
 				? undefined
 				: async () => (await BUILTIN_TOOLS.computer(toolSession)) ?? null,
@@ -3464,9 +3427,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Same `replace`-mode requirement as the primary bridge; the advisor
 			// path gates it on the advisor's own `edit` grant.
 			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner),
-			// The advisor's bridge tools are wrapped for approval, but the wrapper
-			// reads the mode and per-tool policies only from the execute-time
-			// context — the primary bridge passes the same store.
+			// The advisor's bridge tools are wrapped like registry tools, but the wrapper only
+			// forwards an execute-time context when handed one — this supplies the same store
+			// the primary bridge uses.
 			advisorGetToolContext: () => toolContextStore.getContext(),
 			// Same live connections the primary bridge reads; an advisor's
 			// resource frame would otherwise report every server as empty.
@@ -3774,19 +3737,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		const startMemoryBackend = async () => {
-			const memoryBackend = await resolveMemoryBackend(settings);
-			await memoryBackend.start({
-				session,
-				settings,
-				modelRegistry,
-				agentDir,
-				taskDepth,
-				parentHindsightSessionState: options.parentHindsightSessionState,
-				parentMnemopiSessionState: options.parentMnemopiSessionState,
-			});
-		};
-
 		const runAutoLearnCapture = createAutoLearnCaptureRunner({
 			sourceAgent: agent,
 			captureTools: autoLearnCaptureTools,
@@ -3850,24 +3800,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// startup in the background to preserve the existing startup profile.
 		//
 		// Gated on `autolearn.enabled` to match the tools: `createTools` builds the
-		// `learn`/`manage_skill` registry ONCE at session start and no settings
-		// change rebuilds it, so installing the controller while disabled would let a
-		// mid-session enable fire a nudge pointing at tools the session never built.
+		// `manage_skill` registry ONCE at session start and no settings change
+		// rebuilds it, so installing the controller while disabled would let a
+		// mid-session enable fire a nudge pointing at a tool the session never built.
 		// Activation is therefore a session-start decision for BOTH the controller
-		// and the tools; the fire-time re-check in `#onAgentEnd` still handles a
+		// and the tool; the fire-time re-check in `#onAgentEnd` still handles a
 		// mid-session DISABLE. The subscription lives for the session's lifetime; the
 		// reference is intentionally discarded (the listener retains it).
-		if (!restrictToolNames) {
-			if (settings.get("autolearn.enabled") && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
-				new AutoLearnController({
-					session,
-					settings,
-					capture: content => session.runAutolearnCapture(signal => runAutoLearnCapture(content, signal)),
-				});
-			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
-			}
+		if (!restrictToolNames && settings.get("autolearn.enabled") && taskDepth === 0) {
+			new AutoLearnController({
+				session,
+				settings,
+				capture: content => session.runAutolearnCapture(signal => runAutoLearnCapture(content, signal)),
+			});
 		}
 
 		// MCP manager wiring has two ownership models:

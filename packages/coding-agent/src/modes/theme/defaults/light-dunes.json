@@ -82,10 +82,5 @@
 		"statusLineCost": "warningGold",
 		"statusLineSubagents": "seaFoam",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#FBF3E6",
-		"cardBg": "#FFF8ED",
-		"infoBg": "#F2E3CC"
 	}
 }

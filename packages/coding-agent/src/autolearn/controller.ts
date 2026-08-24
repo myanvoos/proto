@@ -13,7 +13,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import autolearnGuidance from "../prompts/system/autolearn-guidance.md" with { type: "text" };
-import autolearnGuidanceLearn from "../prompts/system/autolearn-guidance-learn.md" with { type: "text" };
 import autolearnNudgeAutoContinue from "../prompts/system/autolearn-nudge-autocontinue.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 
@@ -21,21 +20,18 @@ const AUTOLEARN_NUDGE_AUTOCONTINUE = autolearnNudgeAutoContinue.trim();
 const DEFAULT_MIN_TOOL_CALLS = 5;
 
 /**
- * Build the standing auto-learn guidance for the system prompt from the tools
- * actually present in the active set, or null when `manage_skill` is absent.
+ * Build the standing auto-learn guidance for the system prompt, or null when
+ * `manage_skill` is absent.
  *
- * Driven by tool presence rather than live settings: the `learn`/`manage_skill`
+ * Driven by tool presence rather than live settings: the `manage_skill`
  * registry is built ONCE at session start (and only for top-level sessions), so
  * keying the guidance on `autolearn.enabled` would let a mid-session enable — or
- * a subagent that filtered the tools out — inject guidance pointing at tools the
- * session never built. The `learn` addendum is included only when the `learn`
- * tool is present (it requires a memory backend).
+ * a subagent that filtered the tool out — inject guidance pointing at a tool the
+ * session never built.
  */
-export function buildAutoLearnInstructions(available: { manageSkill: boolean; learn: boolean }): string | null {
+export function buildAutoLearnInstructions(available: { manageSkill: boolean }): string | null {
 	if (!available.manageSkill) return null;
-	const parts = [autolearnGuidance.trim()];
-	if (available.learn) parts.push(autolearnGuidanceLearn.trim());
-	return parts.join("\n\n");
+	return autolearnGuidance.trim();
 }
 
 export interface AutoLearnControllerOptions {
@@ -87,7 +83,7 @@ export class AutoLearnController {
 
 	#onAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
 		// Snapshot and reset every turn: the counter describes only the
-		// just-finished turn, so below-threshold, disabled, and plan-mode stops
+		// just-finished turn, so below-threshold, disabled, and goal-mode stops
 		// must not let tool calls accumulate into a later turn.
 		const toolCalls = this.#toolCalls;
 		this.#toolCalls = 0;
@@ -113,8 +109,6 @@ export class AutoLearnController {
 		if (!this.#settings.get("autolearn.enabled")) return;
 		const minToolCalls = this.#settings.get("autolearn.minToolCalls") ?? DEFAULT_MIN_TOOL_CALLS;
 		if (toolCalls < minToolCalls) return;
-		// Never interrupt plan-mode review.
-		if (this.#session.getPlanModeState()?.enabled) return;
 		// Never divert a goal loop. Skip when the turn STARTED in goal mode — a
 		// `goal` tool may have completed/dropped the goal before this stop — or is
 		// still in it: a passive nudge would ride the goal continuation, and

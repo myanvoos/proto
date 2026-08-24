@@ -86,10 +86,5 @@
 		"statusLineCost": 133,
 		"statusLineSubagents": "mossSage",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#f9f7f1",
-		"cardBg": "#fefdfb",
-		"infoBg": "#f5f8f3"
 	}
 }

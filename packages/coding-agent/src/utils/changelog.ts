@@ -16,7 +16,7 @@ export const RECENT_CHANGELOG_ENTRY_LIMIT = 3;
 /** Maximum Markdown source bytes allowed in automatic startup release notes. */
 export const STARTUP_CHANGELOG_MAX_BYTES = 64 * 1024;
 /** Hint appended when automatic startup release notes are truncated. */
-export const STARTUP_CHANGELOG_FULL_HINT = "Use `/changelog full` to view the complete changelog.";
+export const STARTUP_CHANGELOG_FULL_HINT = "Truncated — see CHANGELOG.md in the install for full notes.";
 
 /** Markdown generated from selected changelog entries and whether it hit a size cap. */
 export interface RenderedChangelog {
@@ -94,7 +94,7 @@ function categoryLabel(category: string, count: number): string {
 export function formatStartupChangelogSummary(selection: StartupChangelogSelection): string {
 	const latestVersion = selection.latestVersion;
 	if (!latestVersion || selection.selectedEntries === 0) {
-		return "Updated proto. Use /changelog for recent changes.";
+		return "Updated proto. See CHANGELOG.md in the install for recent changes.";
 	}
 
 	const releaseCount = selection.selectedEntries;
@@ -121,8 +121,8 @@ export function formatStartupChangelogSummary(selection: StartupChangelogSelecti
 	const omittedReleases = selection.totalUnseenEntries - selection.selectedEntries;
 	const detailHint =
 		omittedReleases > 0
-			? `+${omittedReleases} earlier ${omittedReleases === 1 ? "release" : "releases"} · Use /changelog full for history.`
-			: "Use /changelog for details.";
+			? `+${omittedReleases} earlier ${omittedReleases === 1 ? "release" : "releases"} · See CHANGELOG.md in the install for full history.`
+			: "See CHANGELOG.md in the install for details.";
 
 	return breakdown ? `${firstLine}\n${breakdown} · ${detailHint}` : `${firstLine}\n${detailHint}`;
 }

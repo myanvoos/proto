@@ -44,7 +44,6 @@ describe("AgentSession resolve reminder", () => {
 			peekQueueInvoker: () => session.peekQueueInvoker(),
 			peekPendingInvoker: () => session.peekPendingInvoker(),
 			clearPendingInvokers: () => session.clearPendingInvokers(),
-			peekPlanProposalHandler: () => session.peekPlanProposalHandler(),
 		} as unknown as ToolSession;
 
 		const agent = new Agent({

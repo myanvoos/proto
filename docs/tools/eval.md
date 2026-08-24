@@ -80,7 +80,7 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 
 ## Execution flow
 
-1. `EvalTool` builds a session-specific schema from enabled languages. It is essential, strict, `approval="exec"`, and `concurrency="exclusive"` within one agent session.
+1. `EvalTool` builds a session-specific schema from enabled languages. It is essential and `concurrency="exclusive"` within one agent session.
 2. `execute()` maps `py/js/rb/jl` to `python/js/ruby/julia`, resolves availability, and wraps the single input in the renderer-compatible internal cell list.
 3. It obtains the retained executor id from `session.getEvalSessionId?.()` or `defaultEvalSessionId(session)`, allocates the output sink/artifact, and registers the run through `trackEvalExecution?.(...)`.
 4. The timeout defaults to 30 seconds. `0` creates no watchdog. Otherwise `IdleTimeout` is combined with tool and session abort signals.
@@ -182,6 +182,6 @@ Runs one subagent through `runStructuredSubagent(...)`:
 
 - One call is one cell. Use separate calls to exploit persistence and rerun only the failed step.
 - State is isolated by language; resetting Python does not reset JS, Ruby, or Julia.
-- Current schema tokens are only `py`, `js`, `rb`, and `jl`; long language names are renderer/approval formatting aliases, not wire values.
+- Current schema tokens are only `py`, `js`, `rb`, and `jl`; long language names are renderer formatting aliases, not wire values.
 - The former multi-cell `cells` payload, `*** Cell` parser, sniffing fallback, and constrained `eval.lark` grammar are removed.
 - Parent and ordinary workers may share an inherited eval executor id; children created by eval's own `agent()` explicitly do not.

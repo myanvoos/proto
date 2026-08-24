@@ -2,10 +2,18 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
+import { HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "@oh-my-pi/hashline";
 import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir, stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../extensibility/skills";
-import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
+import {
+	InternalUrlRouter,
+	type LocalProtocolOptions,
+	resolveLocalRoot,
+	resolveLocalUrlToPath,
+	resolveVaultUrlToPath,
+} from "../internal-urls";
+import type { ToolSession } from "./index";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -471,30 +479,9 @@ export function isInternalUrlPath(filePath: string): boolean {
 }
 
 /**
- * Approval tier for a path that will be written through the file/internal-URL
- * routing layer. Internal resources are read-tier only when their handler is
- * read-only; writable handlers such as vault:// must retain write approval.
- */
-
-/**
- * True when a tool path argument references the `ssh://` scheme anywhere.
- *
- * Substring (not anchored) on purpose: it feeds the read/search/write approval
- * tier, which runs synchronously on the raw args. `search` only flattens a
- * delimited `paths: "a,ssh://h/x"` into separate entries *after* approval, so an
- * anchored check would let an embedded `ssh://` slip through at the read tier.
- * Matching the literal `ssh://` substring also tracks exactly what routes to the
- * SSH handler; over-matching only over-prompts (fail-closed).
- */
-export function pathTargetsSsh(path: string): boolean {
-	return /ssh:\/\//i.test(path);
-}
-
-/**
- * True when a path is specifically an `ssh://` URL (anchored scheme match).
- * Unlike {@link pathTargetsSsh} (substring, for the pre-expansion approval
- * scan), this is the exact per-entry check used to reject `ssh://` *before* a
- * side-effecting `InternalUrlRouter.resolve` in tools that need a local file.
+ * True when a path is specifically an `ssh://` URL (anchored scheme match),
+ * the exact per-entry check used to reject `ssh://` *before* a side-effecting
+ * `InternalUrlRouter.resolve` in tools that need a local file.
  */
 export function isSshUrl(path: string): boolean {
 	return /^ssh:\/\//i.test(path.trim());
@@ -1586,4 +1573,122 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 		missingPaths,
 		immutableSourcePaths,
 	};
+}
+
+// =============================================================================
+// Authored write-target resolution (`local://`/`vault://` schemes + hashline
+// headers) — shared by `write`, the edit modes, and ACP bridge routing.
+// =============================================================================
+
+const VAULT_SCHEME_PREFIX = "vault:";
+const LOCAL_SCHEME_PREFIX = "local:";
+const HL_TRAILING_TAG_RE = new RegExp(`${HL_FILE_HASH_SEP}[0-9A-Fa-f]{${HL_FILE_HASH_LENGTH}}$`);
+
+/** Resolve the `local://` options the session uses, preferring its own
+ *  {@link LocalProtocolOptions} (the mapping `read`/`write`/`eval` resolve
+ *  through) over the bare `getArtifactsDir`/`getSessionId` pair. Subagents and
+ *  multi-session hosts (cmux/ACP, embedded SDK) pin `local://` to a parent/foreign
+ *  root via `localProtocolOptions`; the sandbox root derived here must match
+ *  where the artifact actually lives, or tag-based path recovery onto the
+ *  sandbox would miss it. */
+function sessionLocalProtocolOptions(session: ToolSession): LocalProtocolOptions {
+	return (
+		session.localProtocolOptions ?? {
+			getArtifactsDir: () => session.getArtifactsDir?.() ?? null,
+			getSessionId: () => session.getSessionId?.() ?? null,
+		}
+	);
+}
+
+/** Resolve the absolute path of the session's `local://` artifact sandbox.
+ *  Returns `null` when the session has no artifact wiring (e.g. tests). */
+function sessionSandboxRoot(session: ToolSession): string | null {
+	try {
+		return path.resolve(resolveLocalRoot(sessionLocalProtocolOptions(session)));
+	} catch {
+		return null;
+	}
+}
+
+/** True when `absolutePath` resolves inside `root` (== root or under it). */
+function isWithinRoot(absolutePath: string, root: string): boolean {
+	if (absolutePath === root) return true;
+	const sep = `${root}${path.sep}`;
+	return absolutePath.startsWith(sep);
+}
+
+/** Strip the hashline `[path#TAG]` wrapper from a write/edit target so the inner
+ *  filesystem path drives both authorization and resolution. Only unwraps inputs
+ *  that match the strict hashline header shape (`[path]` or `[path#XXXX]` with a
+ *  4-hex tag); anything else returns the original string so the downstream
+ *  resolver surfaces the real error. Exported for callers (e.g. `write`) that
+ *  make scheme/bridge-routing decisions before {@link resolveAuthoredPath} runs. */
+export function unwrapHashlineHeaderPath(targetPath: string): string {
+	const trimmed = targetPath.trimEnd();
+	if (
+		trimmed.length < HL_FILE_PREFIX.length + HL_FILE_SUFFIX.length ||
+		trimmed[0] !== HL_FILE_PREFIX ||
+		trimmed[trimmed.length - 1] !== HL_FILE_SUFFIX
+	) {
+		return targetPath;
+	}
+	const inner = trimmed.slice(HL_FILE_PREFIX.length, trimmed.length - HL_FILE_SUFFIX.length);
+	const tagMatch = HL_TRAILING_TAG_RE.exec(inner);
+	const pathPart = tagMatch ? inner.slice(0, tagMatch.index) : inner;
+	// A valid header is exactly `PATH` or `PATH#XXXX`; reject any other shape
+	// (selectors, non-hex tags, embedded `#`) so we never silently rewrite a
+	// path the model did not author.
+	if (pathPart.length === 0 || pathPart.includes(HL_FILE_HASH_SEP)) return targetPath;
+	return pathPart;
+}
+
+/** True when `targetPath` resolves into the session-local artifact sandbox.
+ *  Routes through {@link resolveAuthoredPath} so routing checks and the eventual
+ *  write always agree on the absolute target (including bracketed hashline
+ *  headers, `local://` URLs, and bare absolute paths). Files inside the sandbox
+ *  are session-owned artifacts, not part of the working tree — tag-based path
+ *  recovery may rebind onto them. */
+export function targetsLocalSandbox(session: ToolSession, targetPath: string): boolean {
+	const root = sessionSandboxRoot(session);
+	if (!root) return false;
+	let resolved: string;
+	try {
+		resolved = resolveAuthoredPath(session, targetPath);
+	} catch {
+		return false;
+	}
+	if (!path.isAbsolute(resolved)) return false;
+	const absolute = path.resolve(resolved);
+	if (isWithinRoot(absolute, root)) return true;
+	// Compare realpath-normalized forms so that `/tmp/…` vs `/private/tmp/…`
+	// (macOS) and other symlink-collapsed roots both resolve to the same
+	// sandbox identity.
+	try {
+		const realRoot = fs.realpathSync.native(root);
+		if (isWithinRoot(absolute, realRoot)) return true;
+		const realParent = fs.realpathSync.native(path.dirname(absolute));
+		return isWithinRoot(path.join(realParent, path.basename(absolute)), realRoot);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Resolve an authored write/edit target to its absolute filesystem path,
+ * honoring the `local://` and `vault://` schemes. Plain paths resolve against
+ * the session cwd. Bracketed hashline headers (`[path#TAG]`) are unwrapped
+ * first so the inner filesystem path drives resolution.
+ */
+export function resolveAuthoredPath(session: ToolSession, targetPath: string): string {
+	const unwrapped = unwrapHashlineHeaderPath(targetPath);
+	const normalized = normalizeLocalScheme(unwrapped);
+	if (normalized.startsWith(LOCAL_SCHEME_PREFIX)) {
+		return resolveLocalUrlToPath(normalized, sessionLocalProtocolOptions(session));
+	}
+
+	if (normalized.startsWith(VAULT_SCHEME_PREFIX)) {
+		return resolveVaultUrlToPath(normalized);
+	}
+
+	return resolveToCwd(normalized, session.cwd);
 }

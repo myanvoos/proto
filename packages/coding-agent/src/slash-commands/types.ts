@@ -43,7 +43,8 @@ export interface ParsedSlashCommand {
  *   coerce `() => void` to `() => T | undefined`) as well as 6.x / tsgo.
  * - `{ consumed: true }` — explicit equivalent of the above (ACP shape).
  * - `{ prompt: string }` — command handled, pass `prompt` through as the new
- *   user input (e.g. `/force <tool> <prompt>` keeps `<prompt>` as the message).
+ *   user input (residual-prompt pass-through: the command consumes itself but
+ *   forwards remaining text as if the user had typed it).
  */
 export type SlashCommandResult = undefined | { consumed: true; agentInvoked?: boolean } | { prompt: string };
 

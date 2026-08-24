@@ -465,11 +465,6 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply xd:// prompt docs setting: ${err}`);
 				});
 				break;
-			case "memory.backend":
-				void this.ctx.session.applyMemoryBackend().catch(err => {
-					this.ctx.showError(`Failed to apply memory backend: ${err}`);
-				});
-				break;
 			case "inspect_image.mode":
 				void this.ctx.session.applyInspectImageModeChange().catch(err => {
 					this.ctx.showError(`Failed to apply vision mode: ${err}`);
@@ -637,8 +632,6 @@ export class SelectorController {
 				break;
 			}
 			case "git.enabled":
-			case "statusLinePreset":
-			case "statusLine.preset":
 			case "statusLine.separator":
 			case "statusLineShowHooks":
 			case "statusLine.showHookStatus":
@@ -1437,7 +1430,6 @@ export class SelectorController {
 			settings: this.ctx.settings,
 			getSessionFile: () => this.ctx.sessionManager.getSessionFile() ?? null,
 			getSessionSpawns: () => null,
-			getPlanModeState: () => this.ctx.session.getPlanModeState(),
 		};
 		const askTool = new AskTool(toolSession);
 		const context = this.ctx.session.buildAskReanswerContext(uiContext);
@@ -2040,14 +2032,6 @@ export class SelectorController {
 		} else {
 			this.ctx.showWarning(message);
 		}
-	}
-
-	async showDebugSelector(): Promise<void> {
-		const { DebugSelectorComponent } = await import("../../debug");
-		this.showSelector(done => {
-			const selector = new DebugSelectorComponent(this.ctx, done);
-			return { component: selector, focus: selector };
-		});
 	}
 
 	showAgentFleet(

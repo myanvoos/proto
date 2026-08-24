@@ -84,10 +84,11 @@ export class TanCommandController {
 		// Snapshot the parent session's local:// mapping when dispatching. The
 		// interactive SessionManager is mutable and may switch transcripts while
 		// this background tan is still running. Use the session-manager id (not
-		// `session.sessionId`, which can diverge after `/fresh` or a provider
-		// session override) so the tan resolves the same local root the parent's
-		// large-paste writes and `local://` reads use — notably the Windows
-		// short-root fallback keys `%TEMP%/omp-local/<id>` off this id.
+		// `session.sessionId`, which can diverge after an in-place context
+		// reset or a provider session override) so the tan resolves the same
+		// local root the parent's large-paste writes and `local://` reads use —
+		// notably the Windows short-root fallback keys `%TEMP%/omp-local/<id>`
+		// off this id.
 		const parentLocalSessionId = this.ctx.sessionManager.getSessionId();
 		const localProtocolOptions = {
 			getArtifactsDir: () => parentArtifactsDir,

@@ -71,7 +71,6 @@ async function createGoalHarness(shared: SharedFixture): Promise<GoalHarness> {
 	const settings = Settings.isolated({
 		"compaction.enabled": false,
 		"goal.enabled": true,
-		"plan.enabled": true,
 	});
 	const bootstrapToolSession = createToolSession(tempDir.path(), settings);
 	const initialTools = await createTools(bootstrapToolSession, ["read"]);
@@ -175,7 +174,7 @@ describe("InteractiveMode goal mode integration", () => {
 	it("toggles goal tool exposure when goal mode enters and pauses", async () => {
 		expect(await toolNamesFor(harness)).not.toContain("goal");
 
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 
 		expect(harness.mode.goalModeEnabled).toBe(true);
 		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
@@ -191,7 +190,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("replaces the active goal via /goal set", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		const originalGoal = harness.session.getGoalModeState()?.goal;
 		if (!originalGoal) throw new Error("expected active goal");
 
@@ -206,22 +205,25 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(await toolNamesFor(harness)).toContain("goal");
 	});
 
-	it("steers initial goal objective attachments while streaming", async () => {
+	it("queues the guided-interview kickoff behind an in-flight run with attachments", async () => {
 		Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
-		const sendGoalModeContext = vi.spyOn(harness.session, "sendGoalModeContext").mockResolvedValue();
-		const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+		const followUp = vi.spyOn(harness.session, "followUp").mockResolvedValue();
 		const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
 		const objective = "[Image #1, 10x10] Ship the release";
 
 		await harness.mode.handleGoalModeCommand(objective, { images, imageLinks: ["file:///shot.png"] });
 
-		expect(harness.session.getGoalModeState()?.goal.objective).toBe(objective);
-		expect(sendGoalModeContext).toHaveBeenCalledWith({ deliverAs: "steer" });
-		expect(promptSpy).toHaveBeenCalledWith(objective, { streamingBehavior: "steer", images });
+		// A bare /goal now starts the guided interview; while streaming the
+		// kickoff rides as a synthetic follow-up carrying the attachments.
+		expect(followUp).toHaveBeenCalledTimes(1);
+		const [kickoff, followUpImages, options] = followUp.mock.calls[0]!;
+		expect(kickoff).toContain(objective);
+		expect(followUpImages).toEqual(images);
+		expect(options).toEqual({ synthetic: true });
 	});
 
 	it("steers replacement goal objective attachments while streaming", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
 		const sendGoalModeContext = vi.spyOn(harness.session, "sendGoalModeContext").mockResolvedValue();
 		const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
@@ -234,18 +236,6 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(sendGoalModeContext).toHaveBeenCalledWith({ deliverAs: "steer" });
 		expect(promptSpy).toHaveBeenCalledWith(objective, { streamingBehavior: "steer", images });
 	});
-	it("steers plan prompt attachments while streaming", async () => {
-		Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
-		const sendPlanModeContext = vi.spyOn(harness.session, "sendPlanModeContext").mockResolvedValue();
-		const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
-		const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
-		const text = "[Image #1, 10x10] Plan this";
-
-		expect(await harness.mode.handlePlanModeCommand(text, { images, imageLinks: ["file:///shot.png"] })).toBe(true);
-
-		expect(sendPlanModeContext).toHaveBeenCalledWith({ deliverAs: "steer" });
-		expect(promptSpy).toHaveBeenCalledWith(text, { streamingBehavior: "steer", images });
-	});
 
 	const attachmentCases: Array<{
 		name: string;
@@ -257,20 +247,14 @@ describe("InteractiveMode goal mode integration", () => {
 			name: "/goal",
 			text: "[Image #1, 10x10] fix this",
 			submit: (mode: InteractiveMode, input: Pick<SubmittedUserInput, "images" | "imageLinks">) =>
-				mode.handleGoalModeCommand("[Image #1, 10x10] fix this", input),
+				mode.handleGoalModeCommand("set [Image #1, 10x10] fix this", input),
 		},
 		{
 			name: "/goal set",
 			text: "[Image #1, 10x10] replace this",
-			prepare: (mode: InteractiveMode) => mode.handleGoalModeCommand("Ship the release"),
+			prepare: (mode: InteractiveMode) => mode.handleGoalModeCommand("set Ship the release"),
 			submit: (mode: InteractiveMode, input: Pick<SubmittedUserInput, "images" | "imageLinks">) =>
 				mode.handleGoalModeCommand("set [Image #1, 10x10] replace this", input),
-		},
-		{
-			name: "/plan",
-			text: "[Image #1, 10x10] plan this",
-			submit: (mode: InteractiveMode, input: Pick<SubmittedUserInput, "images" | "imageLinks">) =>
-				mode.handlePlanModeCommand("[Image #1, 10x10] plan this", input),
 		},
 	];
 
@@ -297,7 +281,7 @@ describe("InteractiveMode goal mode integration", () => {
 		harness.mode.editor.setText(commandText);
 		harness.mode.editor.pendingImages = images;
 		harness.mode.editor.pendingImageLinks = imageLinks;
-		vi.spyOn(harness.session.goalRuntime, "createGoal").mockRejectedValueOnce(new Error("goal setup failed"));
+		vi.spyOn(harness.session, "prompt").mockRejectedValueOnce(new Error("goal setup failed"));
 		const showError = vi.spyOn(harness.mode, "showError");
 
 		await executeBuiltinSlashCommand(commandText, {
@@ -309,38 +293,6 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(harness.mode.editor.getText()).toBe(commandText);
 		expect(harness.mode.editor.pendingImages).toEqual(images);
 		expect(harness.mode.editor.pendingImageLinks).toEqual(imageLinks);
-	});
-
-	it("keeps images pasted while delayed plan setup completes in the later draft", async () => {
-		const submittedImages: ImageContent[] = [{ type: "image", data: "b2xk", mimeType: "image/png" }];
-		const submittedLinks = ["file:///submitted.png"];
-		harness.mode.editor.pendingImages = submittedImages;
-		harness.mode.editor.pendingImageLinks = submittedLinks;
-		const waiter = await armInputWaiter(harness.mode);
-		const setupStarted = Promise.withResolvers<void>();
-		const continueSetup = Promise.withResolvers<void>();
-		const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
-		vi.spyOn(harness.session, "setActiveToolsByName").mockImplementationOnce(async toolNames => {
-			setupStarted.resolve();
-			await continueSetup.promise;
-			await setActiveTools(toolNames);
-		});
-
-		const command = executeBuiltinSlashCommand("/plan [Image #1, 10x10] plan this", {
-			ctx: harness.mode,
-			input: { images: submittedImages, imageLinks: submittedLinks },
-		});
-		await setupStarted.promise;
-		const laterImage: ImageContent = { type: "image", data: "bmV3", mimeType: "image/png" };
-		harness.mode.editor.pendingImages = [laterImage];
-		harness.mode.editor.pendingImageLinks = ["file:///later.png"];
-		continueSetup.resolve();
-		await command;
-		await waiter.inputPromise;
-
-		expect(waiter.getResolvedInput()?.images).toBe(submittedImages);
-		expect(harness.mode.editor.pendingImages).toEqual([laterImage]);
-		expect(harness.mode.editor.pendingImageLinks).toEqual(["file:///later.png"]);
 	});
 
 	it("keeps a later draft when a preserve-draft submission is cancelled", () => {
@@ -363,7 +315,7 @@ describe("InteractiveMode goal mode integration", () => {
 
 	it("includes escaped live todo state in hidden goal context during continuations", async () => {
 		await harness.session.setActiveToolsByName(["read", "todo"]);
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		const phases: TodoPhase[] = [
 			{
 				name: "Planning </todo_context> & prep",
@@ -396,7 +348,7 @@ describe("InteractiveMode goal mode integration", () => {
 
 	it("renders todo context text without raw line/control characters", async () => {
 		await harness.session.setActiveToolsByName(["read", "todo"]);
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		harness.session.setTodoPhases([
 			{
 				name: "Planning\nprep\tphase\u0085",
@@ -425,7 +377,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("omits persisted todo state when todo tool is inactive", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		harness.session.setTodoPhases([
 			{
 				name: "Verification",
@@ -452,7 +404,7 @@ describe("InteractiveMode goal mode integration", () => {
 		// with a `goal-continuation` and submitInteractiveInput resurfaces
 		// AgentBusyError via promptCustomMessage. Driven with fake timers so the
 		// 800ms window is exercised deterministically without a real wall-clock wait.
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 
 		vi.useFakeTimers();
 		const waiter = await armInputWaiter(harness.mode);
@@ -471,33 +423,13 @@ describe("InteractiveMode goal mode integration", () => {
 		await waiter.inputPromise;
 	});
 
-	it("refuses /goal while plan mode is active", async () => {
-		const showWarning = vi.spyOn(harness.mode, "showWarning");
-		harness.mode.planModeEnabled = true;
-
-		await harness.mode.handleGoalModeCommand("Ship the release");
-
-		expect(showWarning).toHaveBeenCalledWith("Exit plan mode first.");
-		expect(harness.session.getGoalModeState()).toBeUndefined();
-	});
-
-	it("refuses /plan while goal mode is active", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
-		const showWarning = vi.spyOn(harness.mode, "showWarning");
-
-		await harness.mode.handlePlanModeCommand();
-
-		expect(showWarning).toHaveBeenCalledWith("Exit goal mode first.");
-		expect(harness.mode.planModeEnabled).toBe(false);
-	});
-
 	it("rejects a new /goal objective while paused", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		vi.spyOn(harness.mode, "showHookSelector").mockResolvedValue("Pause");
 		await harness.mode.handleGoalModeCommand();
 		const showWarning = vi.spyOn(harness.mode, "showWarning");
 
-		await harness.mode.handleGoalModeCommand("Replace the objective");
+		await harness.mode.handleGoalModeCommand("set Replace the objective");
 
 		expect(showWarning).toHaveBeenCalledWith(
 			"Resume the current goal first, or drop it before setting a new objective.",
@@ -508,7 +440,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("resumes the paused goal via the bare /goal menu", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		const selector = vi.spyOn(harness.mode, "showHookSelector").mockResolvedValueOnce("Pause");
 		await harness.mode.handleGoalModeCommand();
 		expect(harness.mode.goalModePaused).toBe(true);
@@ -527,7 +459,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("mutates the goal token budget via /goal budget without resetting accumulated usage", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		// Seed accumulated usage by driving the runtime directly — equivalent to a turn's flush.
 		const goal = harness.session.getGoalModeState()?.goal;
 		if (!goal) throw new Error("expected active goal");
@@ -548,7 +480,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("refuses /goal budget while only a paused goal exists (fix #5)", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		vi.spyOn(harness.mode, "showHookSelector").mockResolvedValue("Pause");
 		await harness.mode.handleGoalModeCommand();
 		expect(harness.mode.goalModePaused).toBe(true);
@@ -562,7 +494,7 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	it("returns the completion report from the goal tool and exits goal mode before the next turn rebuild", async () => {
-		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.mode.handleGoalModeCommand("set Ship the release");
 		await harness.mode.handleGoalModeCommand("budget 50");
 		const appendCustomEntry = vi.spyOn(harness.session.sessionManager, "appendCustomEntry");
 		const goalTool = (await createTools(harness.toolSession, harness.session.getActiveToolNames())).find(

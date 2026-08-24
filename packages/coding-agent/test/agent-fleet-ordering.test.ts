@@ -64,7 +64,7 @@ interface RenderedAgentRow {
 	selected: boolean;
 }
 
-const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
+const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {2}| {3})*)(?:├─ |└─ ))?(\S+)/u;
 
 function rosterCell(raw: string): string | undefined {
 	const line = Bun.stripANSI(raw);
@@ -146,14 +146,14 @@ describe("Agent fleet row ordering", () => {
 	});
 
 	it("renders a useful empty state before any worker agents exist", () => {
-		geometry = stubStdoutGeometry(120);
+		geometry = stubStdoutGeometry(140);
 		const hub = makeHub(new AgentRegistry());
 
 		try {
-			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			const rendered = Bun.stripANSI(hub.render(140).join("\n"));
 			expect(rendered).toContain("No agents in this session");
 			expect(rendered).toContain("Finished, parked, and killed subagents remain with the session");
-			expect(rendered).toContain("Resume that session with proto-dev --continue, or spawn a task here.");
+			expect(rendered).toContain("Resume that session with proto-dev --continue, or spawn a worker here.");
 		} finally {
 			hub.dispose();
 		}
@@ -416,7 +416,7 @@ describe("Agent fleet row ordering", () => {
 	it("flags a fallback badge for observer-only rows with no live session", () => {
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
-		// A collab guest / observer-only row carries no live AgentSession, so the
+		// An observer-only row carries no live AgentSession, so the
 		// badge must come from the executor-reported progress instead.
 		agents.register({ id: "GuestAgent", displayName: "Guest Agent", kind: "sub", session: null });
 
@@ -950,9 +950,9 @@ describe("Agent fleet row ordering", () => {
 
 		try {
 			hub.handleInput("t");
-			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "First", 120))).toContain("├── First");
-			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Grandchild", 120))).toContain("│   └── Grandchild");
-			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Last", 120))).toContain("└── Last");
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "First", 120))).toContain("├─ First");
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Grandchild", 120))).toContain("│  └─ Grandchild");
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Last", 120))).toContain("└─ Last");
 		} finally {
 			hub.dispose();
 		}

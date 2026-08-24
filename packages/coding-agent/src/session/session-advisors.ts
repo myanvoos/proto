@@ -72,7 +72,6 @@ import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
 import { bridgeToolMap } from "../cursor-bridge-tools";
 import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
-import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
@@ -190,11 +189,9 @@ export interface SessionAdvisorsOptions {
 	 */
 	createEditTool?(): AgentTool | undefined;
 	/**
-	 * The execute-time context the bridge's tools resolve approval from.
-	 *
-	 * `ExtensionToolWrapper` reads the approval mode, per-tool policies and
-	 * `autoApprove` only from here; with none it falls back to `yolo` and empty
-	 * policies, so a native frame would run past a configured `ask` or `deny`.
+	 * The execute-time context handed to the advisor bridge's tool executions.
+	 * `ExtensionToolWrapper` forwards it to every wrapped call; without it the
+	 * bridge tools run with no context at all.
 	 */
 	getToolContext?: () => AgentToolContext | undefined;
 	/**
@@ -239,7 +236,6 @@ export interface SessionAdvisorsHost {
 	isDisposed(): boolean;
 	abortInProgress(): boolean;
 	allowAgentInitiatedTurns(): boolean;
-	planModeState(): PlanModeState | undefined;
 	clientBridge(): ClientBridge | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
@@ -803,8 +799,8 @@ export class SessionAdvisors {
 				cwd: this.#host.sessionManager.getCwd(),
 				getCwd: () => this.#host.sessionManager.getCwd(),
 				tools: bridgeToolMap(advisorToolMap, this.#advisorCreateEditTool),
-				// Approval mode, per-tool policies and `autoApprove` live only on
-				// this context; without it every bridge tool resolves as `yolo`.
+				// Tools resolve their execute-time context only from here;
+				// without it bridge tools run with no context at all.
 				getToolContext: this.#advisorGetToolContext,
 				allowDirectFileMutation: advisorCanMutateFiles,
 				// Gated on the advisor's own grant: the factory builds a fresh
@@ -1073,14 +1069,13 @@ export class SessionAdvisors {
 		// `sendCustomMessage({ triggerTurn: true })` would silently bury the card in
 		// `#pendingNextTurnMessages` until the next user prompt — strictly worse than
 		// the visible preserved card. Preserve instead:
-		//  - Plan mode: only user-driven turns converge on ask/resolve.
 		//  - ACP bridges with `deferAgentInitiatedTurns`: the client cannot show an
 		//    agent-initiated turn as busy, so idle triggers are refused (#5628 review).
 		const cannotAutoTrigger =
 			!this.#host.agent.state.isStreaming &&
 			this.#host.clientBridge()?.deferAgentInitiatedTurns === true &&
 			!this.#host.allowAgentInitiatedTurns();
-		if (this.#host.planModeState()?.enabled || cannotAutoTrigger) {
+		if (cannotAutoTrigger) {
 			this.#host.preserveAdvisorCard({
 				role: "custom",
 				customType: "advisor",

@@ -37,10 +37,8 @@ import type { CustomTool } from "../extensibility/custom-tools/types";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
-import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
-import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
@@ -356,13 +354,6 @@ export interface ExecutorOptions {
 	assignment?: string;
 	/** Shared background rendered into the subagent's system prompt. */
 	context?: string;
-	/**
-	 * The session's active overall plan, handed off so subagents spawned during
-	 * plan execution share the same plan context as the main agent. Omitted when
-	 * the session did not start with a plan (or while plan mode is still active).
-	 */
-	planReference?: { path: string; content: string };
-	/** Pre-set UI label (e.g. eval bridge label). When absent, a tiny-model label is generated from the assignment. */
 	description?: string;
 	index: number;
 	id: string;
@@ -472,8 +463,6 @@ export interface ExecutorOptions {
 	 * artifacts directory (no per-subagent subdir).
 	 */
 	parentArtifactManager?: ArtifactManager;
-	parentHindsightSessionState?: HindsightSessionState;
-	parentMnemopiSessionState?: MnemopiSessionState;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
 	parentEvalSessionId?: string;
 	/**
@@ -901,8 +890,6 @@ export function createSubagentSettings(
 			// owner job outlives the run, so worktree capture/cleanup stays
 			// race-free (previously both were force-disabled here).
 
-			// Subagents run headless — there is no UI to confirm prompts against, so
-			// the parent task approval is the authorization boundary. Use yolo mode
 			// Subagents run unadvised by default; runSubprocess opts a spawn back in
 			// per agent (frontmatter `advisor` / `orchestrator.agentAdvisor`) via overrides.
 			"advisor.enabled": false,
@@ -3083,8 +3070,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 						agent: agent.systemPrompt,
 						context: options.context?.trim() ?? "",
-						planReference: options.planReference?.content ?? "",
-						planReferencePath: options.planReference?.path ?? "",
 						worktree: worktree ?? "",
 						outputSchema: normalizedOutputSchema,
 						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
@@ -3100,8 +3085,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				prewalk,
 				spawns: spawnsEnv,
 				taskDepth: childDepth,
-				parentHindsightSessionState: options.parentHindsightSessionState,
-				parentMnemopiSessionState: options.parentMnemopiSessionState,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
 				agentId: id,

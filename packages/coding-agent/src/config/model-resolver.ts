@@ -10,24 +10,21 @@
  *   grammar on top: trailing `:level` thinking suffixes (`splitThinkingSuffix`)
  *   and `@upstream` provider routing (`splitUpstreamRouting`).
  * - Everything else (`resolveModelFromString`, `resolveModelOverride*`,
- *   `resolveRoleSelection`, `resolveModelScope`, `resolveCliModel`,
- *   `findSmolModel`/`findSlowModel`) adapts inputs — roles, settings patterns,
- *   CLI flags, scope globs — onto that pipeline.
+ *   `resolveRoleSelection`, `resolveModelScope`, `resolveCliModel`) adapts
+ *   inputs — roles, settings patterns, CLI flags, scope globs — onto that pipeline.
  */
 
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
+import type { Api, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
-import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { parseThinkingLevel, resolveThinkingLevelForModel } from "../thinking";
 import { isAuthenticated, kNoAuth, type ModelRegistry } from "./model-registry";
@@ -453,8 +450,6 @@ export interface ModelMatchPreferences {
 
 export type ModelLookupRegistry = Pick<ModelRegistry, "getAvailable">;
 type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable">;
-type InitialModelRegistry = Pick<ModelRegistry, "getAvailable" | "find">;
-type RestorableModelRegistry = Pick<ModelRegistry, "getAvailable" | "find" | "getApiKey">;
 
 interface ModelPreferenceContext {
 	modelUsageRank: Map<string, number>;
@@ -1964,226 +1959,4 @@ export function resolveCliModel(options: {
 		warning,
 		error: undefined,
 	};
-}
-
-export interface InitialModelResult {
-	model: Model<Api> | undefined;
-	thinkingLevel?: ThinkingLevel;
-	fallbackMessage: string | undefined;
-}
-
-/**
- * Find the initial model to use based on priority:
- * 1. CLI args (provider + model)
- * 2. First model from scoped models (if not continuing/resuming)
- * 3. Restored from session (if continuing/resuming)
- * 4. Saved default from settings
- * 5. First available model with valid API key
- */
-export async function findInitialModel(options: {
-	cliProvider?: string;
-	cliModel?: string;
-	scopedModels: ScopedModel[];
-	isContinuing: boolean;
-	defaultProvider?: string;
-	defaultModelId?: string;
-	defaultThinkingSelector?: Effort;
-	modelRegistry: InitialModelRegistry;
-}): Promise<InitialModelResult> {
-	const {
-		cliProvider,
-		cliModel,
-		scopedModels,
-		isContinuing,
-		defaultProvider,
-		defaultModelId,
-		defaultThinkingSelector,
-		modelRegistry,
-	} = options;
-
-	let model: Model<Api> | undefined;
-	let thinkingLevel: Effort | undefined;
-
-	// 1. CLI args take priority
-	if (cliProvider && cliModel) {
-		const found = modelRegistry.find(cliProvider, cliModel);
-		if (!found) {
-			console.error(chalk.red(`Model ${cliProvider}/${cliModel} not found`));
-			process.exit(1);
-		}
-		return { model: found, thinkingLevel: undefined, fallbackMessage: undefined };
-	}
-
-	// 2. Use first model from scoped models (skip if continuing/resuming)
-	if (scopedModels.length > 0 && !isContinuing) {
-		const scoped = scopedModels[0];
-		const scopedThinkingSelector =
-			scoped.thinkingLevel === ThinkingLevel.Inherit
-				? defaultThinkingSelector
-				: (scoped.thinkingLevel ?? defaultThinkingSelector);
-		return {
-			model: scoped.model,
-			thinkingLevel:
-				scopedThinkingSelector === ThinkingLevel.Off
-					? ThinkingLevel.Off
-					: clampThinkingLevelForModel(scoped.model, scopedThinkingSelector),
-			fallbackMessage: undefined,
-		};
-	}
-
-	// 3. Try saved default from settings
-	if (defaultProvider && defaultModelId) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
-		if (found) {
-			model = found;
-			thinkingLevel = clampThinkingLevelForModel(found, defaultThinkingSelector);
-			return { model, thinkingLevel, fallbackMessage: undefined };
-		}
-	}
-
-	// 4. Try first available model with valid API key
-	const availableModels = modelRegistry.getAvailable();
-
-	const fallback = pickDefaultAvailableModel(availableModels);
-	if (fallback) {
-		return { model: fallback, thinkingLevel: undefined, fallbackMessage: undefined };
-	}
-
-	// 5. No model found
-	return { model: undefined, thinkingLevel: undefined, fallbackMessage: undefined };
-}
-
-/**
- * Restore model from session, with fallback to available models
- */
-export async function restoreModelFromSession(
-	savedProvider: string,
-	savedModelId: string,
-	currentModel: Model<Api> | undefined,
-	shouldPrintMessages: boolean,
-	modelRegistry: RestorableModelRegistry,
-): Promise<{ model: Model<Api> | undefined; fallbackMessage: string | undefined }> {
-	const restoredModel = modelRegistry.find(savedProvider, savedModelId);
-
-	// Check if restored model exists and has a valid API key
-	const hasApiKey = restoredModel ? !!(await modelRegistry.getApiKey(restoredModel)) : false;
-
-	if (restoredModel && hasApiKey) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Restored model: ${savedProvider}/${savedModelId}`));
-		}
-		return { model: restoredModel, fallbackMessage: undefined };
-	}
-
-	// Model not found or no API key - fall back
-	const reason = !restoredModel ? "model no longer exists" : "no API key available";
-
-	if (shouldPrintMessages) {
-		console.error(chalk.yellow(`Warning: Could not restore model ${savedProvider}/${savedModelId} (${reason}).`));
-	}
-
-	// If we already have a model, use it as fallback
-	if (currentModel) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Falling back to: ${currentModel.provider}/${currentModel.id}`));
-		}
-		return {
-			model: currentModel,
-			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${currentModel.provider}/${currentModel.id}.`,
-		};
-	}
-
-	// Try to find any available model
-	const availableModels = modelRegistry.getAvailable();
-
-	const fallbackModel = pickDefaultAvailableModel(availableModels);
-	if (fallbackModel) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Falling back to: ${fallbackModel.provider}/${fallbackModel.id}`));
-		}
-
-		return {
-			model: fallbackModel,
-			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${fallbackModel.provider}/${fallbackModel.id}.`,
-		};
-	}
-
-	// No models available
-	return { model: undefined, fallbackMessage: undefined };
-}
-
-/**
- * Find a smol/fast model using the priority chain.
- * Tries exact matches first, then fuzzy matches.
- *
- * @param modelRegistry The model registry to search
- * @param savedModel Optional saved model string from settings (provider/modelId)
- * @returns The best available smol model, or undefined if none found
- */
-export async function findSmolModel(
-	modelRegistry: ModelLookupRegistry,
-	savedModel?: string,
-): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
-	if (availableModels.length === 0) return undefined;
-
-	// 1. Try saved model from settings
-	if (savedModel) {
-		const match = resolveModelFromString(savedModel, availableModels, undefined);
-		if (match) return match;
-	}
-
-	// 2. Try priority chain
-	for (const pattern of MODEL_PRIO.smol) {
-		// Try exact match with provider prefix
-		const providerMatch = availableModels.find(m => `${m.provider}/${m.id}`.toLowerCase() === pattern);
-		if (providerMatch) return providerMatch;
-
-		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
-		if (exactMatch) return exactMatch;
-
-		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern));
-		if (fuzzyMatch) return fuzzyMatch;
-	}
-
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
-}
-
-/**
- * Find a slow/comprehensive model using the priority chain.
- * Prioritizes reasoning and codex models for thorough analysis.
- *
- * @param modelRegistry The model registry to search
- * @param savedModel Optional saved model string from settings (provider/modelId)
- * @returns The best available slow model, or undefined if none found
- */
-export async function findSlowModel(
-	modelRegistry: ModelLookupRegistry,
-	savedModel?: string,
-): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
-	if (availableModels.length === 0) return undefined;
-
-	// 1. Try saved model from settings
-	if (savedModel) {
-		const match = resolveModelFromString(savedModel, availableModels, undefined);
-		if (match) return match;
-	}
-
-	// 2. Try priority chain
-	for (const pattern of MODEL_PRIO.slow) {
-		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
-		if (exactMatch) return exactMatch;
-
-		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern.toLowerCase()));
-		if (fuzzyMatch) return fuzzyMatch;
-	}
-
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
 }

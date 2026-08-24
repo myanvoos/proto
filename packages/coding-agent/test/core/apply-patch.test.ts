@@ -808,7 +808,6 @@ describe("EditTool create-over-existing mode split", () => {
 			settings: Settings.isolated({ "edit.mode": editMode }),
 			getArtifactsDir: () => null,
 			getSessionId: () => null,
-			getPlanModeState: () => undefined,
 		} as unknown as ToolSession;
 	}
 

@@ -3,8 +3,7 @@ import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { logger, setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
-import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
+import type { HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
@@ -20,11 +19,6 @@ import type {
 	SlashCommandSpec,
 	TuiSlashCommandRuntime,
 } from "./types";
-
-function formatFreshSessionResult(result: FreshSessionResult): string {
-	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
-	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
-}
 
 export const shutdownHandlerTui = (
 	_command: ParsedSlashCommand,
@@ -81,27 +75,6 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleClearCommand();
-		},
-	},
-	{
-		name: "fresh",
-		description: "Reset provider stream state without changing the local transcript",
-		getTuiAutocompleteDescription: runtime =>
-			runtime.ctx.session.isStreaming ? "Fresh: unavailable while streaming" : "Fresh: ready",
-		handle: async (_command, runtime) => {
-			const result = runtime.session.freshSession();
-			if (!result) {
-				await runtime.output(
-					"Wait for the current response to finish or abort it before refreshing provider state.",
-				);
-				return commandConsumed();
-			}
-			await runtime.output(formatFreshSessionResult(result));
-			return commandConsumed();
-		},
-		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleFreshCommand();
 		},
 	},
 	{
@@ -364,28 +337,6 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
-		name: "omfg",
-		description: "Forge a TTSR rule from a complaint to stop a recurring behavior",
-		inlineHint: "<complaint>",
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const complaint = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleOmfgCommand(complaint);
-		},
-	},
-	{
-		name: "cleanse",
-		description: "Detect and fix project diagnostics with weighted parallel subagents",
-		inlineHint: "[request] [--all]",
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const args = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleCleanseCommand(args);
-		},
-	},
-	{
 		name: "retry",
 		description: "Retry the last failed agent turn",
 		handle: async (_command, runtime) => {
@@ -417,86 +368,6 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showStatus("Nothing to retry");
 			}
 			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "debug",
-		description: "Open debug tools selector",
-		handleTui: async (_command, runtime) => {
-			await runtime.ctx.showDebugSelector();
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "memory",
-		description: "Inspect and operate memory maintenance",
-		acpDescription: "Manage memory",
-		acpInputHint: "<subcommand>",
-		subcommands: [
-			{ name: "view", description: "Show current memory injection payload" },
-			{ name: "stats", description: "Show memory backend statistics" },
-			{ name: "diagnose", description: "Run memory backend diagnostics" },
-			{ name: "clear", description: "Clear persisted memory data and artifacts" },
-			{ name: "reset", description: "Alias for clear" },
-			{ name: "enqueue", description: "Enqueue memory consolidation maintenance" },
-			{ name: "rebuild", description: "Alias for enqueue" },
-			{ name: "mm list", description: "List mental models on the active bank" },
-			{ name: "mm show", description: "Show one mental model (id required)" },
-			{
-				name: "mm refresh",
-				description: "Refresh auto-refresh models bank-wide, or one model by id",
-			},
-			{ name: "mm history", description: "Diff the change history of a mental model" },
-			{ name: "mm seed", description: "Create any built-in mental models that are missing" },
-			{ name: "mm delete", description: "Delete a mental model from the bank (id required)" },
-			{ name: "mm reload", description: "Re-pull the cached <mental_models> block" },
-		],
-		allowArgs: true,
-		handle: async (command, runtime) => {
-			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
-			const backend = await resolveMemoryBackend(runtime.settings);
-			switch (verb) {
-				case "view": {
-					const payload = await backend.buildDeveloperInstructions(
-						runtime.settings.getAgentDir(),
-						runtime.settings,
-						runtime.session,
-					);
-					await runtime.output(payload || "Memory payload is empty.");
-					return commandConsumed();
-				}
-				case "clear":
-				case "reset": {
-					await backend.clear(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.session.refreshBaseSystemPrompt();
-					await runtime.output("Memory cleared.");
-					return commandConsumed();
-				}
-				case "enqueue":
-				case "rebuild": {
-					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output("Memory consolidation enqueued.");
-					return commandConsumed();
-				}
-				case "stats":
-				case "diagnose": {
-					const hook = verb === "stats" ? backend.stats : backend.diagnose;
-					const payload = await hook?.(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output(payload ?? memoryStatsUnavailableMessage(backend.id, verb));
-					return commandConsumed();
-				}
-				case "mm":
-					return usage(
-						"Mental-model maintenance via /memory mm is unsupported in ACP mode; use the hindsight HTTP API directly.",
-						runtime,
-					);
-				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild>", runtime);
-			}
-		},
-		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleMemoryCommand(command.text);
 		},
 	},
 	{

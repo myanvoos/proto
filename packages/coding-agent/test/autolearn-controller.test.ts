@@ -14,7 +14,6 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 class FakeSession {
 	readonly listeners: Array<(event: AgentSessionEvent) => void> = [];
 	readonly captures: string[] = [];
-	planEnabled = false;
 	goalEnabled = false;
 	captureGate: Promise<void> | undefined;
 	captureError: Error | undefined;
@@ -30,10 +29,6 @@ class FakeSession {
 		const error = this.captureError;
 		if (gate) await gate;
 		if (error) throw error;
-	}
-
-	getPlanModeState(): { enabled: boolean } | undefined {
-		return this.planEnabled ? { enabled: true } : undefined;
 	}
 
 	getGoalModeState(): { enabled: boolean } | undefined {
@@ -152,14 +147,6 @@ describe("AutoLearnController", () => {
 		expect(session.captures).toHaveLength(0);
 	});
 
-	it("does not nudge during plan mode", () => {
-		const session = new FakeSession();
-		session.planEnabled = true;
-		install(session, { "autolearn.autoContinue": true });
-		session.toolCalls(5);
-		session.agentEnd();
-		expect(session.captures).toHaveLength(0);
-	});
 	it("does not combine tool calls across separate sub-threshold turns", () => {
 		const session = new FakeSession();
 		install(session, { "autolearn.autoContinue": true });
@@ -168,18 +155,6 @@ describe("AutoLearnController", () => {
 		session.toolCalls(3);
 		session.agentEnd();
 		// Neither turn reached the threshold; the counter must not accumulate.
-		expect(session.captures).toHaveLength(0);
-	});
-
-	it("discards plan-mode tool calls instead of leaking them into the next turn", () => {
-		const session = new FakeSession();
-		session.planEnabled = true;
-		install(session, { "autolearn.autoContinue": true });
-		session.toolCalls(5);
-		session.agentEnd(); // plan mode: no fire, counter reset
-		session.planEnabled = false;
-		session.toolCalls(1);
-		session.agentEnd(); // 1 < threshold -> no fire (no plan-mode leak)
 		expect(session.captures).toHaveLength(0);
 	});
 
@@ -574,20 +549,11 @@ describe("isolated auto-learn capture", () => {
 
 describe("buildAutoLearnInstructions", () => {
 	it("returns null when manage_skill is not in the active tool set", () => {
-		expect(buildAutoLearnInstructions({ manageSkill: false, learn: false })).toBeNull();
-		// learn without manage_skill still yields no guidance (manage_skill gates it).
-		expect(buildAutoLearnInstructions({ manageSkill: false, learn: true })).toBeNull();
+		expect(buildAutoLearnInstructions({ manageSkill: false })).toBeNull();
 	});
 
-	it("includes the learn addendum when the learn tool is present", () => {
-		const text = buildAutoLearnInstructions({ manageSkill: true, learn: true });
+	it("returns the standing guidance when manage_skill is present", () => {
+		const text = buildAutoLearnInstructions({ manageSkill: true });
 		expect(text).toContain("manage_skill");
-		expect(text).toContain("long-term memory");
-	});
-
-	it("omits the learn addendum when only manage_skill is present", () => {
-		const text = buildAutoLearnInstructions({ manageSkill: true, learn: false });
-		expect(text).toContain("manage_skill");
-		expect(text).not.toContain("long-term memory");
 	});
 });

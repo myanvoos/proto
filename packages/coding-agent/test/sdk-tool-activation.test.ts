@@ -889,52 +889,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("serializes complete memory-tool replacement with late extension activation", async () => {
-		const tempDir = makeTempDir();
-		const activationEntered = Promise.withResolvers<void>();
-		const releaseActivation = Promise.withResolvers<void>();
-		const lateRegistrationExtension: ExtensionFactory = pi => {
-			pi.on("session_start", async () => {
-				await Promise.resolve();
-				pi.registerTool({
-					name: "memory_race_lifecycle_tool",
-					label: "Memory Race Lifecycle Tool",
-					description: "Lifecycle tool activated before a memory-tool replacement.",
-					parameters: type({}),
-					async execute() {
-						return { content: [{ type: "text", text: "lifecycle" }] };
-					},
-				});
-			});
-		};
-
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-			extensions: [lateRegistrationExtension],
-		});
-		const originalSetActiveToolPresentation = session.setActiveToolPresentation.bind(session);
-		vi.spyOn(session, "setActiveToolPresentation").mockImplementation(async (...args) => {
-			activationEntered.resolve();
-			await releaseActivation.promise;
-			return originalSetActiveToolPresentation(...args);
-		});
-
-		try {
-			const runner = session.extensionRunner;
-			if (!runner) throw new Error("expected extension runner");
-			const emission = runner.emit({ type: "session_start" });
-			await activationEntered.promise;
-			const memoryRefresh = session.applyMemoryBackend();
-
-			releaseActivation.resolve();
-			await Promise.all([emission, memoryRefresh]);
-			expect(session.getEnabledToolNames()).toContain("memory_race_lifecycle_tool");
-		} finally {
-			releaseActivation.resolve();
-			await session.dispose();
-		}
-	});
-
 	it("keeps an explicitly disabled tool disabled when its extension re-registers it", async () => {
 		const tempDir = makeTempDir();
 		const disabledReplacementExtension: ExtensionFactory = pi => {
@@ -1615,10 +1569,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 	});
 
 	it("activates the yield tool when requireYieldTool is set and toolNames is explicit", async () => {
-		// Regression for #1408: plan-mode subagents pass an explicit `toolNames` list
-		// (e.g. `["read", "grep", "glob", "lsp", "web_search"]`). Without this
-		// invariant, `yield` ended up registered but not active, and the model
-		// could not satisfy the idle-reminder contract that demands a `yield` call.
+		// Regression for #1408: callers that pass an explicit `toolNames` list
+		// (e.g. `["read", "grep", "glob", "lsp", "web_search"]`) still need `yield`
+		// active, or the model cannot satisfy the idle-reminder contract that
+		// demands a `yield` call.
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
@@ -1655,37 +1609,11 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("keeps the write tool registered for plan mode even when no deferrable tool is requested", async () => {
-		// Regression for #1428 (adapted to the xd://propose device): plan mode
-		// submits its finalized plan by writing the chosen slug/title to
-		// xd://propose, dispatched through the plan-proposal handler
-		// (interactive-mode.ts: `setPlanProposalHandler`). With an explicit
-		// read-only `toolNames` (e.g. `read`, `search`, `find`, `web_search`)
-		// the registry has no `write` and no `deferrable` tool; dropping it would
-		// silently activate plan mode with no way to submit the plan.
+	it("does not force write into the registry when no deferrable tool needs it", async () => {
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "grep", "glob", "web_search"],
-		});
-
-		try {
-			expect(session.getToolByName("write")).toBeDefined();
-		} finally {
-			await session.dispose();
-		}
-	});
-
-	it("does not force write into the registry when neither a deferrable tool nor plan mode needs it", async () => {
-		const tempDir = makeTempDir();
-
-		const settings = Settings.isolated();
-		settings.set("plan.enabled", false);
-
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-			settings,
 			toolNames: ["read", "grep", "glob", "web_search"],
 		});
 
@@ -1874,7 +1802,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"providers.imageOrder": ["openai"],
 				"generate_image.enabled": true,
 				"speechgen.enabled": true,
-				"memory.backend": "hindsight",
 				"autolearn.enabled": true,
 			});
 
@@ -1921,10 +1848,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			for (const name of [
 				"generate_image",
 				"tts",
-				"recall",
-				"retain",
-				"reflect",
-				"learn",
 				"manage_skill",
 				"default_active_tool",
 				"default_inactive_tool",
@@ -1958,7 +1881,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					"read",
 					"yield",
 					"generate_image",
-					"learn",
 					"manage_skill",
 					"tts",
 					"default_active_tool",
@@ -1977,9 +1899,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					"tts",
 					"default_active_tool",
 					"sdk_custom_tool",
-					"recall",
-					"retain",
-					"reflect",
 				]),
 			);
 		} finally {

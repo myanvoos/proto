@@ -67,15 +67,14 @@ describe("renderPlaceholders", () => {
 		expect(capture("[Image #1]").refs[0]?.form).toBe("marker");
 	});
 
-	it("recognizes chip tokens from every symbol preset", () => {
-		// A draft written under the nerd or ascii preset must stay a reference after
-		// the user switches presets — otherwise atomic deletion and styling break.
-		expect(capture("\uf03e #3").refs[0]).toMatchObject({ kind: "image", index: 3, form: "chip" });
-		expect(capture("img #3").refs[0]).toMatchObject({ kind: "image", index: 3, form: "chip" });
-		expect(capture("txt #2").refs[0]).toMatchObject({ kind: "paste", index: 2, form: "chip" });
+	it("recognizes chip tokens from the active symbol presets", () => {
+		// A draft written under one preset must stay a reference after the user
+		// switches presets — otherwise atomic deletion and styling break.
+		expect(capture("🖼 #3").refs[0]).toMatchObject({ kind: "image", index: 3, form: "chip" });
+		expect(capture("📄 #2").refs[0]).toMatchObject({ kind: "paste", index: 2, form: "chip" });
 	});
 
-	it("does not treat a word ending in an ascii icon as a chip token", () => {
+	it("does not treat a word ending in an icon as a chip token", () => {
 		expect(capture("boximg #1").refs).toHaveLength(0);
 	});
 });

@@ -355,7 +355,6 @@ describe("leading-colon path recovery (issue #5508)", () => {
 			getSessionSpawns: () => "*",
 			getArtifactsDir: () => null,
 			getSessionId: () => null,
-			getPlanModeState: () => undefined,
 			settings: sessionSettings,
 			...overrides,
 		} as unknown as ToolSession;

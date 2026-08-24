@@ -28,7 +28,6 @@ interface FakeAcpBuiltinSession {
 	toggleFastMode(): boolean;
 	setFastMode(enabled: boolean): boolean;
 	isFastModeEnabled(): boolean;
-	setForcedToolChoice(toolName: string): void;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
 	getLastAssistantText: () => string | undefined;
@@ -99,9 +98,6 @@ function createRuntime() {
 		},
 		isFastModeEnabled() {
 			return this.fastMode;
-		},
-		setForcedToolChoice(toolName: string) {
-			this.forcedToolChoice = toolName;
 		},
 		async listResetCredits() {
 			return [];
@@ -251,16 +247,6 @@ describe("ACP builtin slash commands", () => {
 			"Extended context disabled.",
 			"Extended context is off.",
 		]);
-	});
-
-	it("forces a tool and returns remaining prompt text", async () => {
-		const { output, runtime } = createRuntime();
-
-		const result = await executeAcpBuiltinSlashCommand("/force read inspect package.json", runtime);
-
-		expect(result).toEqual({ prompt: "inspect package.json" });
-		expect(runtime.session.forcedToolChoice).toBe("read");
-		expect(output).toEqual(["Next turn forced to use read."]);
 	});
 
 	it("renders provider usage reports when the session can fetch them", async () => {

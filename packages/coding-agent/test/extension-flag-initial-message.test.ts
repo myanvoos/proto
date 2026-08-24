@@ -80,17 +80,6 @@ describe("extension flags vs initial message", () => {
 		const parsed = parseArgs(["--spawn-peer", "@notes.md", "hello"]);
 		expect(parsed.fileArgs).toEqual(["notes.md"]);
 	});
-	it("lets a registered flag shadow a same-named built-in instead of consuming the next token (bot P2)", () => {
-		// A boolean extension flag colliding with the value-taking built-in --plan
-		// must be parsed as the extension's boolean, NOT the built-in plan-model
-		// selector — otherwise it eats the following message and corrupts result.plan.
-		const planFlags = new Map<string, { type: "boolean" | "string" }>([["plan", { type: "boolean" }]]);
-		const parsed = parseArgs(["--plan", "review the diff"], planFlags);
-		expect(parsed.unknownFlags.get("plan")).toBe(true);
-		expect(parsed.plan).toBeUndefined();
-		expect(parsed.messages).toEqual(["review the diff"]);
-	});
-
 	it("builds the initial prompt from the real message, not the flag value, when flags are known", () => {
 		const parsed = parseArgs(["--spawn-peer", "reviewer", "review the diff"], extFlags);
 
@@ -254,20 +243,10 @@ describe("applyExtensionFlags (single-parser flag resolution)", () => {
 		expect(args?.messages).toEqual(["just a prompt"]);
 		expect(runner.values.size).toBe(0);
 	});
-	it("preserves the message and built-in field for a built-in-colliding boolean flag (plan-mode --plan)", () => {
-		// Bot P2: a colliding boolean flag must not let the built-in --plan (string)
-		// branch eat the prompt or set the plan-model field. The extension flag
-		// shadows the built-in, so plan=true is delivered AND the message survives.
-		const runner = fakeRunner({ plan: "boolean" });
-		const args = applyExtensionFlags(runner, ["--plan", "review the diff"]);
-		expect(runner.values.get("plan")).toBe(true);
-		expect(args?.messages).toEqual(["review the diff"]);
-		expect(args?.plan).toBeUndefined();
-	});
 	it("does not deliver a colliding flag that was not passed", () => {
-		const runner = fakeRunner({ plan: "boolean" });
+		const runner = fakeRunner({ model: "boolean" });
 		const args = applyExtensionFlags(runner, ["just a prompt"]);
-		expect(runner.values.has("plan")).toBe(false);
+		expect(runner.values.has("model")).toBe(false);
 		expect(args?.messages).toEqual(["just a prompt"]);
 	});
 	it("shadows a colliding string built-in flag, delivering its value and keeping the message (--model)", () => {
@@ -294,13 +273,13 @@ describe("registerFlag with built-in-named flags (r3323473227)", () => {
 	it("loads an extension that registers a built-in-named flag without throwing", async () => {
 		const ext = await loadExtensionFromFactory(
 			api => {
-				api.registerFlag("plan", { type: "boolean", default: false });
+				api.registerFlag("model", { type: "boolean", default: false });
 			},
 			process.cwd(),
 			new EventBus(),
 			new ExtensionRuntime(),
 		);
-		expect(ext.flags.has("plan")).toBe(true);
+		expect(ext.flags.has("model")).toBe(true);
 	});
 	it("loads a non-colliding extension flag", async () => {
 		const ext = await loadExtensionFromFactory(

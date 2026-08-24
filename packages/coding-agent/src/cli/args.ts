@@ -34,12 +34,9 @@ export interface Args {
 	config?: string[];
 	smol?: string;
 	slow?: string;
-	plan?: string;
 	prewalk?: boolean;
 	noPrewalk?: boolean;
 	prewalkInto?: string;
-	planYolo?: boolean;
-	planYoloInto?: string;
 	maxTime?: number;
 	apiKey?: string;
 	systemPrompt?: string;
@@ -180,11 +177,9 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		}
 
 		// Extension-registered flags take precedence over built-ins: a flag an
-		// extension owns (e.g. plan-mode's boolean `--plan`) is parsed with the
-		// extension's semantics rather than falling into a built-in branch. For a
-		// value-taking built-in (`--plan`, `--model`, …) that branch would consume
-		// the following token — eating the user's message and setting the wrong
-		// built-in field — so registered flags shadow same-named built-ins here.
+		// extension owns is parsed with the extension's semantics rather than
+		// falling into a built-in branch, so registered flags shadow same-named
+		// built-ins here.
 		const extFlag = arg.startsWith("--") ? extensionFlags?.get(arg.slice(2)) : undefined;
 		if (extFlag) {
 			const flagName = arg.slice(2);
@@ -203,9 +198,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			// Built-in string flags consume the next token even when it is flag-looking
 			// (`--system-prompt --profile foo` ⇒ the prompt is the literal "--profile").
 			// The one token they must never absorb is the profile bootstrap's internal
-			// boundary sentinel: an extension-shadowable built-in like `--plan` (parsed
-			// here only when its boolean extension is NOT loaded) would otherwise swallow
-			// the marker as its value and drop the user's trailing message.
+			// boundary sentinel; swallowing it as a value would drop the user's
+			// trailing message.
 			if (i + 1 < args.length && args[i + 1] !== PROFILE_BOOTSTRAP_BOUNDARY_ARG) {
 				const consumed = consumeBuiltInStringValue(arg, args, i + 1);
 				i = consumed.index;
@@ -257,8 +251,6 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.prewalk = true;
 		} else if (arg === "--no-prewalk") {
 			result.noPrewalk = true;
-		} else if (arg === "--plan-yolo") {
-			result.planYolo = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--print-thoughts") {

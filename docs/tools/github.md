@@ -13,11 +13,10 @@
   - `packages/coding-agent/src/sdk.ts` — session artifact allocation hook.
   - `packages/coding-agent/src/session/artifacts.ts` — artifact filename format `<id>.<toolType>.log`.
 
-## Availability and approval
+## Availability
 
 - `github.enabled` defaults to `false`; enable the GitHub CLI tool in **Settings → Tools** before use.
 - The tool is discoverable and strict-schema, and is created only when `gh` is available on `PATH`. Authentication is checked by the CLI when an operation runs.
-- `repo_view`, `file_read`, every `search_*` operation, and `run_watch` request read approval. `pr_create`, `pr_checkout`, and `pr_push` request execution approval.
 
 ## Inputs
 

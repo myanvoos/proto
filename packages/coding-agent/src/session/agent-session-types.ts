@@ -37,12 +37,8 @@ import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
 
-/** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
-export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
-
 /** Options controlling session disposal. */
 export interface AgentSessionDisposeOptions {
-	mnemopiConsolidateTimeoutMs?: number;
 	/**
 	 * Deadline for the settle/drain wait before the terminal memory release
 	 * (default 5s). The bounded-teardown paths (signal handlers, tests) may
@@ -77,15 +73,6 @@ export type { ShakeMode, ShakeResult } from "./shake-types";
  * fast/cheap target after implementation begins.
  */
 export interface Prewalk {
-	target: Model;
-	thinkingLevel?: ThinkingLevel;
-}
-
-/**
- * PlanYolo starts in read-only plan mode, auto-approves the proposal, then
- * switches to a target model for implementation.
- */
-export interface PlanYolo {
 	target: Model;
 	thinkingLevel?: ThinkingLevel;
 }
@@ -136,8 +123,6 @@ export interface AgentSessionConfig {
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Prewalk from the starting model to a fast/cheap target after implementation begins. */
 	prewalk?: Prewalk;
-	/** Force read-only plan mode at start, auto-approve, then switch to the target. */
-	planYolo?: PlanYolo;
 	/** Initial per-family service tiers for the live session. */
 	serviceTierByFamily?: ServiceTierByFamily;
 	/** Prompt templates for expansion. */
@@ -155,12 +140,6 @@ export interface AgentSessionConfig {
 	/** Custom TypeScript slash commands. */
 	customCommands?: LoadedCustomCommand[];
 	skillsSettings?: SkillsSettings;
-	/** Agent directory used when changing memory backends in a live session. */
-	memoryAgentDir?: string;
-	/** Recursion depth used to suppress live backend replacement in subagents. */
-	memoryTaskDepth?: number;
-	/** Creates built-in memory tools for the current backend. */
-	createMemoryTools?: () => Promise<AgentTool[]>;
 	/** Creates the built-in `computer` tool for session-scoped runtime enablement (see {@link AgentSession.setComputerToolEnabled}). */
 	createComputerTool?: () => Promise<AgentTool | null>;
 	/** Creates the private `think` scratchpad tool for runtime setting changes. */
@@ -396,13 +375,6 @@ export interface SessionStats {
 export interface SessionOAuthAccountList {
 	provider: string;
 	accounts: OAuthAccountSummary[];
-}
-
-/** IDs for a newly created session and the session it replaced. */
-export interface FreshSessionResult {
-	previousSessionId: string;
-	sessionId: string;
-	closedProviderSessions: number;
 }
 
 /** Outcome of an in-place `/clear` conversation-context reset. */

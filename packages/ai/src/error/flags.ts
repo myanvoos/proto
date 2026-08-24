@@ -31,7 +31,6 @@ export const Flag = {
 	AccountPolicy: 0x0000_4000,
 	ContextOverflow: 0x0080_0000,
 	AuthFailed: 0x0100_0000,
-	SilentAbort: 0x0200_0000,
 	UserInterrupt: 0x0400_0000,
 	Abort: 0x0800_0000,
 	/** Strict-tool rejection (400): grammar too large, schema too complex, or structured outputs unsupported by the model/endpoint. */
@@ -57,7 +56,6 @@ const KIND_MASK =
 	Flag.AccountPolicy |
 	Flag.ContextOverflow |
 	Flag.AuthFailed |
-	Flag.SilentAbort |
 	Flag.UserInterrupt |
 	Flag.Abort |
 	Flag.Grammar |
@@ -241,7 +239,6 @@ const ERROR_KIND_LABELS: readonly [Flag, string][] = [
 	[Flag.AccountPolicy, "account-policy"],
 	[Flag.ContextOverflow, "context-overflow"],
 	[Flag.AuthFailed, "auth-failed"],
-	[Flag.SilentAbort, "silent-abort"],
 	[Flag.UserInterrupt, "user-interrupt"],
 	[Flag.Abort, "abort"],
 ];

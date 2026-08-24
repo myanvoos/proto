@@ -1,7 +1,7 @@
 /**
  * Types for the internal URL routing system.
  *
- * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `skill://`, `ssh://`, `vault://`, and `xd://`) are resolved by tools like read,
+ * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `omp://`, `pr://`, `rule://`, `skill://`, `ssh://`, `vault://`, and `xd://`) are resolved by tools like read,
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
@@ -148,7 +148,7 @@ export interface WriteContext {
 }
 
 /**
- * Handler for a specific internal URL scheme (e.g., agent://, memory://, skill://, xd://).
+ * Handler for a specific internal URL scheme (e.g., agent://, skill://, xd://).
  */
 export interface ProtocolHandler {
 	/** The scheme this handler processes (without trailing ://) */

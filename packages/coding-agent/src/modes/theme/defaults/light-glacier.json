@@ -82,10 +82,5 @@
 		"statusLineCost": "warningAmber",
 		"statusLineSubagents": "crevasseBlue",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#F2F7FA",
-		"cardBg": "#FAFDFF",
-		"infoBg": "#E6EFF4"
 	}
 }

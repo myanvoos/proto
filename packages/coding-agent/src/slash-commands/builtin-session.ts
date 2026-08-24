@@ -2,12 +2,6 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
-import {
-	getChangelogPath,
-	parseChangelog,
-	RECENT_CHANGELOG_ENTRY_LIMIT,
-	renderChangelogEntries,
-} from "../utils/changelog";
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -15,7 +9,6 @@ import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
-import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
@@ -330,50 +323,6 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /usage [show|reset [account|active]]");
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "stats",
-		description: "Launch the local stats dashboard",
-		inlineHint: "[--port <port>] [--host <host>]",
-		allowArgs: true,
-		handle: async (command, runtime) => {
-			const parsed = parseStatsDashboardArgs(command.args);
-			if ("error" in parsed) return usage(parsed.error, runtime);
-
-			await runtime.output("Syncing session files...");
-			try {
-				const result = await launchStatsDashboard(parsed);
-				await runtime.output(result.message);
-			} catch (error) {
-				await runtime.output(`Stats dashboard failed: ${errorMessage(error)}`);
-			}
-			return commandConsumed();
-		},
-	},
-	{
-		name: "changelog",
-		description: "Show changelog entries",
-		acpDescription: "Show changelog",
-		acpInputHint: "[full]",
-		subcommands: [{ name: "full", description: "Show complete changelog" }],
-		allowArgs: true,
-		handle: async (command, runtime) => {
-			const changelogPath = getChangelogPath();
-			const allEntries = await parseChangelog(changelogPath);
-			const showFull = command.args.trim().toLowerCase() === "full";
-			const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
-			if (entriesToShow.length === 0) {
-				await runtime.output("No changelog entries found.");
-				return commandConsumed();
-			}
-			await runtime.output(renderChangelogEntries(entriesToShow).markdown);
-			return commandConsumed();
-		},
-		handleTui: async (command, runtime) => {
-			const showFull = command.args.split(/\s+/).filter(Boolean).includes("full");
-			await runtime.ctx.handleChangelogCommand(showFull);
 			runtime.ctx.editor.setText("");
 		},
 	},

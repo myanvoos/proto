@@ -1,6 +1,6 @@
 /**
- * Conservative shell command tokenizer shared by the bash approval-pattern
- * matcher and the gh-cache invalidator.
+ * Conservative shell command tokenizer shared by the bash intent interceptor
+ * and the gh-cache invalidator.
  *
  * Splits a bash command into independent command segments, each a list of word
  * tokens. Handles single/double-quoted strings, backslash escapes, and the

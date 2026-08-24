@@ -87,10 +87,5 @@
 		"statusLineCost": "neonPink",
 		"statusLineSubagents": "neonMagenta",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "offWhite",
-		"cardBg": "#FFFFFF",
-		"infoBg": "purpleTint"
 	}
 }

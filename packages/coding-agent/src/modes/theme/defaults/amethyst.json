@@ -87,10 +87,5 @@
 		"statusLineCost": 213,
 		"statusLineSubagents": "amethyst",
 		"pythonMode": "gold"
-	},
-	"export": {
-		"pageBg": "caveDark",
-		"cardBg": "#1b1520",
-		"infoBg": "#251d2b"
 	}
 }

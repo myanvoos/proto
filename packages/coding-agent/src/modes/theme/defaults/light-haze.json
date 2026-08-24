@@ -81,10 +81,5 @@
 		"statusLineCost": "sun",
 		"statusLineSubagents": "honey",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#fbf6ee",
-		"cardBg": "#ffffff",
-		"infoBg": "#f3e9dc"
 	}
 }

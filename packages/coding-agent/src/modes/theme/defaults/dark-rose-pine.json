@@ -87,10 +87,5 @@
 		"statusLineCost": "rose",
 		"statusLineSubagents": "iris",
 		"pythonMode": "gold"
-	},
-	"export": {
-		"pageBg": "base",
-		"cardBg": "surface",
-		"infoBg": "overlay"
 	}
 }

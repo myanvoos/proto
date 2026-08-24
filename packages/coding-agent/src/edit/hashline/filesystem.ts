@@ -3,8 +3,8 @@
  *
  * Wires hashline's storage abstraction to the agent runtime:
  *
- * - Section paths are resolved through the plan-mode redirect so a bare
- *   `PLAN.md` lands at the canonical session artifact location.
+ * - Section paths are resolved through `resolveAuthoredPath`, honoring the
+ *   `local://`/`vault://` schemes and stripping bracketed hashline headers.
  * - Reads go through `readEditFileText` (notebook-aware) and the
  *   auto-generated-file guard.
  * - Writes go through `serializeEditFileText` (notebook-aware) and the
@@ -18,7 +18,7 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Filesystem, NotFoundError, type PreflightWriteOptions, type WriteResult } from "@oh-my-pi/hashline";
+import { Filesystem, NotFoundError, type WriteResult } from "@oh-my-pi/hashline";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
@@ -27,8 +27,7 @@ import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { deleteFileWithFallback, writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
-import { isInternalUrlPath } from "../../tools/path-utils";
-import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
+import { isInternalUrlPath, resolveAuthoredPath, targetsLocalSandbox } from "../../tools/path-utils";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
@@ -85,7 +84,7 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	resolveAbsolute(relativePath: string): string {
-		return resolvePlanPath(this.session, relativePath);
+		return resolveAuthoredPath(this.session, relativePath);
 	}
 
 	override canonicalPath(relativePath: string): string {
@@ -100,7 +99,7 @@ export class HashlineFilesystem extends Filesystem {
 		// snapshot tag uniquely names. Confine the redirect to locations a plain
 		// "write" may legitimately target:
 		//  1. the working tree (the model dropped the directory), or
-		//  2. the session `local://` sandbox where plan/scratch artifacts live —
+		//  2. the session `local://` sandbox where session artifacts live —
 		//     the snapshot tag proves the model wrote/read that exact file this
 		//     session, so a bare `plan.md#tag` should land on `local://plan.md`.
 		// The secret vault and any other out-of-tree path stay refused.
@@ -137,21 +136,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 	}
 
-	override async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
-		const fileOp = options?.fileOp;
-		if (fileOp?.kind === "rem") {
-			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
-			return;
-		}
-		if (fileOp?.kind === "move") {
-			enforcePlanModeWrite(this.session, relativePath, { op: "update", move: fileOp.dest });
-			return;
-		}
-		enforcePlanModeWrite(this.session, relativePath, { op: "update" });
-	}
-
 	override async delete(relativePath: string): Promise<void> {
-		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
 			await deleteFileWithFallback(absolutePath);
@@ -170,7 +155,6 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	override async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
-		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
 		const fromAbsolute = this.resolveAbsolute(fromRelative);
 		const toAbsolute = this.resolveAbsolute(toRelative);
 		if (content !== undefined) {

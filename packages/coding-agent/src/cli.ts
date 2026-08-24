@@ -81,39 +81,15 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 	}
 }
 const TINY_WORKER_ARG = "__proto_worker_tiny_inference";
-const STATS_SYNC_WORKER_ARG = "__proto_worker_stats_sync";
 const TAB_WORKER_ARG = "__proto_worker_tab";
 const JS_EVAL_WORKER_ARG = "__proto_worker_js_eval";
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 const STT_WORKER_ARG = "__proto_worker_stt";
 const TTS_WORKER_ARG = "__proto_worker_tts";
-const MNEMOPI_EMBED_WORKER_ARG = "__proto_worker_mnemopi_embed";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
 		await runTinyWorker();
-		return true;
-	}
-	if (arg === STATS_SYNC_WORKER_ARG) {
-		// The sync worker handles messages via `self.onmessage`, assigned during
-		// this *async* dynamic import. Bun flushes the worker's initial message
-		// buffer when the entry module's top-level evaluation finishes — before
-		// this dispatch completes — so anything the parent posted right after
-		// spawning (the smoke ping, the first parse request) would be dropped.
-		// Park early events and replay them once the module's handler is live.
-		// Worker-thread entries using `parentPort` need the same sync-prefix
-		// buffering; the computer/tab/eval cases install that inbox below.
-		const scope = globalThis as unknown as { onmessage: ((event: MessageEvent) => void) | null };
-		const pending: MessageEvent[] = [];
-		const buffer = (event: MessageEvent): void => {
-			pending.push(event);
-		};
-		scope.onmessage = buffer;
-		await import("@oh-my-pi/proto-stats/sync-worker");
-		const handler = scope.onmessage;
-		if (handler && handler !== buffer) {
-			for (const event of pending) handler.call(scope, event);
-		}
 		return true;
 	}
 	// Bun flushes messages the parent posted before spawn once this entry's
@@ -156,11 +132,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TTS_WORKER_ARG) {
 		const { startTtsWorker } = await import("./tts/tts-worker");
 		await runIpcSubprocessWorker(startTtsWorker);
-		return true;
-	}
-	if (arg === MNEMOPI_EMBED_WORKER_ARG) {
-		const { startMnemopiEmbedWorker } = await import("./mnemopi/embed-worker");
-		await runIpcSubprocessWorker(startMnemopiEmbedWorker);
 		return true;
 	}
 	if (arg === TERMINAL_OUTPUT_WORKER_ARG) {
@@ -332,10 +303,10 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 
 	// Worker-thread entry dispatch must run before the first `await`: the
-	// stats sync worker's buffering onmessage handler is installed in the
-	// synchronous prefix of `runWorkerEntrypoint`, and Bun flushes the
-	// worker's parked initial messages as soon as the entry module's
-	// top-level evaluation finishes.
+	// buffering onmessage handlers for dynamically imported workers are
+	// installed in the synchronous prefix of `runWorkerEntrypoint`, and Bun
+	// flushes parked initial messages as soon as the entry module's top-level
+	// evaluation finishes.
 	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
@@ -352,7 +323,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	// worker host. Worker-thread re-entry already returned above at the
 	// `__omp_worker_` dispatch, and importers (`runCli` in profile-CLI tests,
 	// SDK embedding) have `import.meta.main === false` — declaring there would
-	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
+	// poison `workerHostEntry()` for the whole test process, forcing eval and
 	// browser workers onto the same-realm inline fallback.
 	if (isProcessEntry) declareWorkerHostEntry();
 

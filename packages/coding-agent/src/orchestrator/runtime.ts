@@ -1443,8 +1443,6 @@ export class OrchestratorRuntime {
 			preloadedCustomToolPaths: session.customToolPaths,
 			localProtocolOptions,
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
-			parentHindsightSessionState: session.getHindsightSessionState?.(),
-			parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 			parentTelemetry: session.getTelemetry?.(),
 			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,

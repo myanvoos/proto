@@ -345,12 +345,6 @@ export class InputController {
 			if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
 				return;
 			}
-			if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
-				return;
-			}
-			if (this.ctx.hasActiveCleanse() && this.ctx.handleCleanseEscape()) {
-				return;
-			}
 
 			if (!this.ctx.focusedAgentId) {
 				const viewSession = this.ctx.viewSession;
@@ -474,8 +468,6 @@ export class InputController {
 		);
 		this.ctx.editor.onSelectModelTemporary = () => this.ctx.showModelSelector({ temporaryOnly: true });
 
-		// Global debug handler on TUI (works regardless of focus)
-		this.ctx.ui.onDebug = () => this.ctx.showDebugSelector();
 		this.ctx.editor.setActionKeys("app.model.select", this.ctx.keybindings.getKeys("app.model.select"));
 		this.ctx.editor.onSelectModel = () => this.ctx.showModelSelector();
 		this.ctx.editor.setActionKeys("app.history.search", this.ctx.keybindings.getKeys("app.history.search"));
@@ -513,11 +505,6 @@ export class InputController {
 		this.ctx.editor.clearCustomKeyHandlers();
 		// Wire up extension shortcuts
 		this.registerExtensionShortcuts();
-		const planModeKeys = this.ctx.keybindings.getKeys("app.plan.toggle");
-		for (const key of planModeKeys) {
-			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handlePlanModeCommand());
-		}
-
 		for (const key of this.ctx.keybindings.getKeys("app.session.new")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.handleClearCommand());
 		}
@@ -750,7 +737,7 @@ export class InputController {
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
 			const submittedMode = parseSlashCommand(text)?.name;
-			const draftDetached = submittedMode === "plan" || submittedMode === "goal" || submittedMode === "guided-goal";
+			const draftDetached = submittedMode === "goal";
 			if (
 				draftDetached &&
 				submittedImages?.length &&

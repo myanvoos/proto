@@ -298,10 +298,9 @@ Cancelable pre-events:
 
 ### Tool lifecycle
 
-- `tool_call` (pre-exec, may block, or revise the tool's execution `input`; for model-issued calls it fires at arg-prep time in the agent loop, so a revision is revalidated and seen by concurrency scheduling, execution events, the persisted assistant message, and the approval gate alike)
+- `tool_call` (pre-exec, may block, or revise the tool's execution `input`; for model-issued calls it fires at arg-prep time in the agent loop, so a revision is revalidated and seen by concurrency scheduling, execution events, and the persisted assistant message alike)
 - `tool_result` (post-exec, may patch content/details/isError)
 - `tool_execution_start` / `tool_execution_update` / `tool_execution_end` (observability)
-- `tool_approval_requested` / `tool_approval_resolved` (observability; emitted by `wrapper.ts` only when a tool requires approval and an approval handler is registered)
 
 `tool_result` is middleware-style: handlers run in extension order and each sees prior modifications.
 
@@ -373,11 +372,10 @@ ctx.invokeTool?<TDetails>(
 ```
 
 It runs the **native** built-in of the same name as your tool (delegation is same-tool only, so it
-cannot reach an arbitrary target or escalate past the approval already granted for this call) and
+cannot reach an arbitrary target) and
 returns its result, including the native tool's own side effects and internal bookkeeping. It is
 present only when a native built-in of that name exists — `ctx.invokeTool` is `undefined` for a
-net-new tool that shadows no built-in. The native call is not re-gated, since it is the same tool you
-are already approved as, and delegation depth is guarded against accidental self-recursion.
+net-new tool that shadows no built-in. Delegation depth is guarded against accidental self-recursion.
 
 Template:
 
@@ -411,7 +409,7 @@ pi.registerTool({
 });
 ```
 
-`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `approval` (`"exec"` by default), `strict`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
+`tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `strict`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
 
 ### File write fallback (`registerFileWriteFallback`)
 

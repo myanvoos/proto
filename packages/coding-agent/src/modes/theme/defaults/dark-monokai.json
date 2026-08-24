@@ -89,10 +89,5 @@
 		"statusLineCost": "monokaiPink",
 		"statusLineSubagents": "monokaiOrange",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "#1a1b17",
-		"cardBg": "#1e1f1c",
-		"infoBg": "#3e3d32"
 	}
 }

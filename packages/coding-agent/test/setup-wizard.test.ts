@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, vi } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { runOnboardingSetup } from "@oh-my-pi/pi-coding-agent/commands/setup";
@@ -362,22 +362,10 @@ describe("setup wizard short terminals", () => {
 		} as unknown as InteractiveModeContext;
 	}
 
-	/**
-	 * Advance the wizard's dissolve clock past SCENE_TRANSITION_MS so render()
-	 * shows the fully revealed scene without waiting real time. Activate after
-	 * the splash→scene input (the transition timestamps itself on entry).
-	 */
-	function skipDissolve(): { mockRestore(): void } {
-		const realNow = performance.now.bind(performance);
-		return vi.spyOn(performance, "now").mockImplementation(() => realNow() + 1_000);
-	}
-
 	it("keeps the selected provider row visible while navigating on a 24-row terminal", async () => {
 		await initTheme(false, false, "titanium", "light");
 		const component = new SetupWizardComponent(shortTerminalCtx(24), [providersSetupScene]);
 		void component.run();
-		component.handleInput("\r"); // splash → scene
-		const nowSpy = skipDissolve();
 		try {
 			// Walk down past a full wrap and back up; the selection must stay
 			// inside the 24-row frame on every step (the list window used to
@@ -389,7 +377,6 @@ describe("setup wizard short terminals", () => {
 				expect(frame.some(line => line.includes(`${theme.nav.cursor} `))).toBe(true);
 			}
 		} finally {
-			nowSpy.mockRestore();
 			component.dispose();
 		}
 	});
@@ -398,8 +385,6 @@ describe("setup wizard short terminals", () => {
 		await initTheme(false, false, "titanium", "light");
 		const component = new SetupWizardComponent(shortTerminalCtx(24), [themeSetupScene]);
 		void component.run();
-		component.handleInput("\r"); // splash → scene
-		const nowSpy = skipDissolve();
 		try {
 			const frame = component.render(80).map(line => Bun.stripANSI(line));
 			expect(frame.length).toBe(24);
@@ -408,7 +393,6 @@ describe("setup wizard short terminals", () => {
 				expect(frame.some(line => line.includes(label))).toBe(true);
 			}
 		} finally {
-			nowSpy.mockRestore();
 			component.dispose();
 		}
 	});

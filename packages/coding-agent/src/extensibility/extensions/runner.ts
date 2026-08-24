@@ -15,7 +15,6 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
-import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
@@ -451,7 +450,6 @@ export class ExtensionRunner {
 	#switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	#reloadHandler: () => Promise<void> = async () => {};
 	#shutdownHandler: ShutdownHandler = () => {};
-	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
 	#toolRegistrationBarrier: Promise<void> | undefined;
@@ -557,10 +555,9 @@ export class ExtensionRunner {
 	/**
 	 * Run the native built-in of `name` with `params` and return its result — the delegation target
 	 * of a same-tool `ctx.invokeTool`. Calls the unwrapped native `execute` directly with the loop's
-	 * ordinary tool context, so it inherits the caller's already-granted approval (the caller is the
-	 * same tool) rather than re-running the gate. `depth` guards a wrapper that recurses into itself;
-	 * it is per call chain (threaded from the caller), not session-global, so concurrent independent
-	 * delegations do not interfere.
+	 * ordinary tool context (same tool, so no fresh wrapper is entered). `depth` guards a wrapper
+	 * that recurses into itself; it is per call chain (threaded from the caller), not
+	 * session-global, so concurrent independent delegations do not interfere.
 	 */
 	async invokeNativeTool<TDetails = unknown>(
 		name: string,
@@ -601,13 +598,11 @@ export class ExtensionRunner {
 		_initialCwd: string,
 		private readonly sessionManager: SessionManager,
 		private readonly modelRegistry: ModelRegistry,
-		getMemory?: () => MemoryRuntimeContext | undefined,
 		private readonly settings?: Settings,
 		private readonly localProtocolOptions?: LocalProtocolOptions,
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
 	) {
 		this.#uiContext = noOpUIContext;
-		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
 	}
 
@@ -1151,7 +1146,6 @@ export class ExtensionRunner {
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
-			memory: this.#getMemoryFn?.(),
 			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#managedTimers.setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#managedTimers.clear(timer),

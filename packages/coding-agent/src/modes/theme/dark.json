@@ -91,10 +91,5 @@
 		"shareAccent": "#4A84C9",
 		"infoAccent": "#8B9099",
 		"matchHighlight": "#C9A84A"
-	},
-	"export": {
-		"pageBg": "#000000",
-		"cardBg": "#000000",
-		"infoBg": "#000000"
 	}
 }

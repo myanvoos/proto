@@ -1478,7 +1478,6 @@ describe("ExtensionRunner", () => {
 				tempDir.path(),
 				sessionManager,
 				modelRegistry,
-				undefined,
 				Settings.isolated({ "extensionHandlers.toolCallTimeoutMs": 10 }),
 			);
 			const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
@@ -1549,7 +1548,6 @@ describe("ExtensionRunner", () => {
 						tempDir.path(),
 						sessionManager,
 						modelRegistry,
-						undefined,
 						Settings.isolated({ "extensionHandlers.toolCallTimeoutMs": configuredTimeout }),
 					);
 					let settled = false;
@@ -1937,77 +1935,6 @@ describe("ExtensionRunner", () => {
 
 			expect(dialogSignal?.aborted).toBe(true);
 			expect(executed).toBe(false);
-		});
-	});
-
-	describe("memory context", () => {
-		it("exposes the lazy memory runtime after initialization", async () => {
-			const extCode = `
-				export default function(pi) {
-					pi.on("session_start", async (_event, ctx) => {
-						globalThis.__ompMemoryStatus = await ctx.memory.status();
-					});
-				}
-			`;
-			const explicitExtensionPath = path.join(tempDir.path(), "memory-context.ts");
-			fs.writeFileSync(explicitExtensionPath, extCode);
-			const globalState = globalThis as typeof globalThis & { __ompMemoryStatus?: unknown };
-			delete globalState.__ompMemoryStatus;
-
-			const result = await loadTestExtensions([explicitExtensionPath]);
-			const runner = new ExtensionRunner(
-				result.extensions,
-				result.runtime,
-				tempDir.path(),
-				sessionManager,
-				modelRegistry,
-				() => ({
-					status: async () => ({
-						backend: "mnemopi",
-						active: true,
-						writable: true,
-						searchable: true,
-					}),
-					search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
-					save: async () => ({ backend: "mnemopi", stored: 1 }),
-				}),
-			);
-			runner.initialize(
-				{
-					sendMessage: () => {},
-					sendUserMessage: () => {},
-					appendEntry: () => {},
-					setLabel: () => {},
-					getActiveTools: () => [],
-					getAllTools: () => [],
-					setActiveTools: async () => {},
-					getCommands: () => [],
-					setModel: async () => false,
-					getThinkingLevel: () => undefined,
-					setThinkingLevel: () => {},
-					getSessionName: () => undefined,
-					setSessionName: async () => {},
-				},
-				{
-					getModel: () => undefined,
-					isIdle: () => true,
-					abort: () => {},
-					hasPendingMessages: () => false,
-					shutdown: () => {},
-					getContextUsage: () => undefined,
-					compact: async () => {},
-					getSystemPrompt: () => [],
-				},
-			);
-
-			await runner.emit({ type: "session_start" });
-
-			expect(globalState.__ompMemoryStatus).toMatchObject({
-				backend: "mnemopi",
-				active: true,
-				searchable: true,
-			});
-			delete globalState.__ompMemoryStatus;
 		});
 	});
 

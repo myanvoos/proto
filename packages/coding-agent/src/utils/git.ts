@@ -1252,13 +1252,6 @@ function validateHunkSelectionsFromMap(
 	return errors;
 }
 
-export function validateHunkSelections(
-	rawDiff: string,
-	selections: readonly HunkSelection[],
-): HunkSelectionValidationError[] {
-	return createHunkSelectionValidator(rawDiff)(selections);
-}
-
 function parseStatusPorcelain(text: string): GitStatusSummary {
 	let staged = 0;
 	let unstaged = 0;

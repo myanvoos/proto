@@ -12,7 +12,7 @@
  *      stable types regardless of their tsconfig `lib`.
  *   2. Rewrite `package.json` in place — every `types`/`exports[*].types`
  *      that points at `./src/*.ts(x)` is repointed to `./dist/types/*.d.ts`,
- *      `dist/types` (plus `dist/client` for `stats`) is added to `files`,
+ *      `dist/types` is added to `files`,
  *      and packages with a `publishBin` override get their `bin` swapped to
  *      the prepack bundle (coding-agent: `src/cli.ts` → `dist/cli.js`).
  *      Packages flagged `publishJs` (omptype) additionally emit transpiled
@@ -134,21 +134,12 @@ function nativeLeafTagFromArgs(argv: readonly string[]): string | null {
 const nativeLeafTag = nativeLeafTagFromArgs(process.argv.slice(2));
 export const packages: PublishPackage[] = [
 	{ dir: "packages/utils", kind: "typescript" },
-	{ dir: "packages/wire", kind: "typescript" },
 	{ dir: "packages/omptype", kind: "typescript", publishJs: true },
 	{ dir: "packages/catalog", kind: "typescript" },
 	{ dir: "packages/ai", kind: "typescript" },
 	{ dir: "packages/natives", kind: "native" },
 	{ dir: "packages/tui", kind: "typescript" },
 	{ dir: "packages/hashline", kind: "typescript" },
-	{ dir: "packages/mnemopi", kind: "typescript" },
-	{
-		dir: "packages/stats",
-		kind: "typescript",
-		preBuild: [["bun", "run", "build"]],
-		extraFiles: ["dist/client"],
-		extraTypeConfigs: ["tsconfig.publish.client.json"],
-	},
 	{ dir: "packages/agent", kind: "typescript" },
 	{ dir: "packages/coding-agent", kind: "typescript", publishBin: { proto: "dist/cli.js" } },
 ];

@@ -58,7 +58,6 @@ function createContext(options?: {
 		showError,
 		hasActiveBtw: () => false,
 		withLocalSubmission: async (_text: string, fn: () => Promise<unknown>) => fn(),
-		hasActiveOmfg: () => false,
 	} as unknown as InteractiveModeContext;
 	return { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender, showError };
 }

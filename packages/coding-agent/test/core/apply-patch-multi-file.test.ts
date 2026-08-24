@@ -28,7 +28,6 @@ function makeApplyPatchSession(cwd: string): ToolSession {
 		settings: Settings.isolated({ "edit.mode": "apply_patch" }),
 		getArtifactsDir: () => null,
 		getSessionId: () => null,
-		getPlanModeState: () => undefined,
 	} as unknown as ToolSession;
 }
 

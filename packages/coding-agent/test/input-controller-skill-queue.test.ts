@@ -295,7 +295,7 @@ describe("InputController optimistic skill row (#8895)", () => {
 			skillCommands,
 			isStreaming: false,
 		});
-		// A slow preflight (memory recall, before_agent_start hooks, auto-thinking)
+		// A slow preflight (memory recall, before_agent_start hooks)
 		// lives inside promptCustomMessage; the row must already be painted when the
 		// dispatch begins, so it stays visible while that preflight runs.
 		const order: string[] = [];
@@ -703,14 +703,14 @@ describe("AgentSession derived queued custom display", () => {
 	it("popLastQueuedMessage drops only the popped prompt's preceding companion", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
-		// [ultrathink-notice, "first", orchestrate-notice, "second"].
+		// [ultrathink-notice, "first", workflow-notice, "second"].
 		queueMagicCompanion(session, "ultrathink-notice");
 		queueUserSteer(session, "first");
-		queueMagicCompanion(session, "orchestrate-notice");
+		queueMagicCompanion(session, "workflow-notice");
 		queueUserSteer(session, "second");
 
 		expect(session.popLastQueuedMessage()?.text).toBe("second");
-		// Only the popped prompt's companion (orchestrate-notice) leaves; the earlier
+		// Only the popped prompt's companion (workflow-notice) leaves; the earlier
 		// prompt and its own companion stay intact.
 		const remaining = session.agent.peekSteeringQueue();
 		expect(remaining.map(m => (m.role === "custom" ? m.customType : m.role))).toEqual(["ultrathink-notice", "user"]);

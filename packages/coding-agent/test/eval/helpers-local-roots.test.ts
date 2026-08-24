@@ -40,7 +40,7 @@ describe("eval js helpers internal-url resolution", () => {
 		const helpers = createHelpers(makeCtx(tmp.path(), { local: path.join(tmp.path(), "local") }));
 
 		await expect(helpers.writeFile("local://../escape.md", "x")).rejects.toThrow(/traversal|escapes/i);
-		await expect(helpers.writeFile("memory://x.md", "x")).rejects.toThrow(/not supported/i);
+		await expect(helpers.writeFile("unknown-scheme://x.md", "x")).rejects.toThrow(/not supported/i);
 		await expect(helpers.read("https://example.com/page")).rejects.toThrow(/not supported/i);
 	});
 

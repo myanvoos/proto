@@ -96,10 +96,5 @@
 		"statusLineCost": "purple",
 		"statusLineSubagents": "yellowLight",
 		"pythonMode": "yellow"
-	},
-	"export": {
-		"pageBg": "#010409",
-		"cardBg": "bg",
-		"infoBg": "bgSubtle"
 	}
 }

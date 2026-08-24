@@ -2,7 +2,7 @@
 // Shape registry — pluggable ASCII shape renderers
 // ============================================================================
 
-import type { AsciiNodeShape, Canvas, DrawingCoord, Direction } from '../types'
+import type { AsciiNodeShape, DrawingCoord, Direction } from '../types'
 import type { ShapeRenderer, ShapeDimensions, ShapeRenderOptions, ShapeRegistry } from './types'
 
 // Import all shape renderers
@@ -58,20 +58,6 @@ export const shapeRegistry: ShapeRegistry = new Map<AsciiNodeShape, ShapeRendere
  */
 export function getShapeRenderer(shape: AsciiNodeShape): ShapeRenderer {
   return shapeRegistry.get(shape) ?? rectangleRenderer
-}
-
-/**
- * Render a node shape to a canvas.
- * This is the main entry point for shape rendering.
- */
-export function renderShape(
-  shape: AsciiNodeShape,
-  label: string,
-  options: ShapeRenderOptions
-): Canvas {
-  const renderer = getShapeRenderer(shape)
-  const dimensions = renderer.getDimensions(label, options)
-  return renderer.render(label, dimensions, options)
 }
 
 /**

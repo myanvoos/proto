@@ -72,10 +72,9 @@ Argument handling:
 | --- | --- |
 | `--continue`, `-c` | Continue the previous session. |
 | `--resume [id]`, `-r`, `--session [id]` | Resume a session by ID prefix or path, or open the picker when no value is given. |
-| `--fork <session>` | Fork a saved session (by ID prefix or path) into a new session. See [session operations](./session-operations-export-share-fork-resume.md). |
+| `--fork <session>` | Fork a saved session (by ID prefix or path) into a new session. See [session operations](./session-operations.md). |
 | `--from-claude` | Import a Claude Code session into PROTO. |
 | `--from-codex` | Import a Codex session into PROTO. |
-| `--export <session>` | Export a session file to HTML and exit. |
 | `--no-title` | Disable title auto-generation (equivalent to the `PI_NO_TITLE` [environment variable](./environment-variables.md)). |
 
 #### Model selection
@@ -85,7 +84,6 @@ Argument handling:
 | `--model <id-or-role>` | Model or configured role to use (role: `slow` or `@slow`; fuzzy model match: `opus`, `gpt-5.2`, or `openai/gpt-5.2`). |
 | `--smol <id>` | Smol/fast model for lightweight tasks (or `PI_SMOL_MODEL`). |
 | `--slow <id>` | Slow/reasoning model for thorough analysis (or `PI_SLOW_MODEL`). |
-| `--plan <id>` | Plan model for architectural planning (or `PI_PLAN_MODEL`). |
 | `--models <a,b,c>` | Comma-separated model patterns for `Ctrl+P` cycling. |
 | `--provider <name>` | Provider to use (legacy; prefer `--model`). |
 | `--api-key <key>` | API key (defaults to env vars). |
@@ -104,17 +102,15 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--print-thoughts` | Include thinking blocks in print-mode text output. |
 | `--external-thinking` | Use a private scratchpad while disabling supported GPT/Claude/Gemini reasoning. Use at your own risk: providers have flagged this request shape as abuse. |
 
-#### Prewalk and plan modes
+#### Prewalk
 
 | Flag | Description |
 | --- | --- |
 | `--prewalk` | Switch to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see `prewalk.enabled`). |
 | `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set. |
 | `--prewalk-into <id>` | Target model for prewalk (default the `smol` role). |
-| `--plan-yolo` | Force read-only plan mode at start, auto-approve the plan on the model's first resolve call, then switch to `--plan-yolo-into` to implement it. |
-| `--plan-yolo-into <id>` | Target model for plan-yolo execution (default the `smol` role). |
 
-#### Tools, approvals, and runtime
+#### Tools and runtime
 
 | Flag | Description |
 | --- | --- |
@@ -122,8 +118,6 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--no-tools` | Disable all built-in tools. |
 | `--no-lsp` | Disable LSP tools, formatting, and diagnostics. |
 | `--no-pty` | Disable PTY-based interactive bash execution. |
-| `--approval-mode <mode>` | Override `tools.approvalMode` for this session (`always-ask`, `write`, or `yolo`). See [approval mode](./approval-mode.md). |
-| `--auto-approve`, `--yolo` | Auto-approve all tool calls (skip approval prompts). |
 | `--advisor` | Enable the advisor runtime (passively reviews each turn and injects notes). See [advisor / watchdog](./advisor-watchdog.md). |
 | `--max-time <duration>` | Stop the session after this duration (e.g. `600`, `10m`, `1h`). |
 
@@ -198,7 +192,7 @@ print-mode disposal semantics when the advisor runtime is enabled.
 | `json` | Structured JSON event stream, for headless/machine consumption. |
 | `rpc` | JSON-RPC server over stdio. See [RPC](./rpc.md). |
 | `rpc-ui` | RPC transport with UI extension events enabled. |
-| `acp` | Agent Client Protocol server over stdio. Equivalent to the [`acp`](#subcommands) subcommand; see [approval mode → ACP sessions](./approval-mode.md#acp-sessions). |
+| `acp` | Agent Client Protocol server over stdio. Equivalent to the [`acp`](#subcommands) subcommand. |
 
 ## Subcommands
 
@@ -207,13 +201,12 @@ Run `proto <command> --help` for each command's own flags and examples.
 | Command | Purpose | See also |
 | --- | --- | --- |
 | `launch` | Start a coding session (the default command). | [Launch flags](#launch-flags) |
-| `acp` | Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio. | [approval mode](./approval-mode.md#acp-sessions) |
+| `acp` | Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio. | |
 | `auth-broker` | Manage the proto auth-broker (credential vault). | [auth broker / gateway](./auth-broker-gateway.md) |
 | `auth-gateway` | Run an auth-gateway forward proxy backed by the configured broker. | [auth broker / gateway](./auth-broker-gateway.md) |
 | `agents` | Manage bundled worker agents. | [worker agent discovery](./worker-agent-discovery.md) |
 | `bench` | Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s). | |
 | `browser-relay` | Run the local CDP relay that lets the browser tool drive your own Chrome tabs. | [computer use](./computer-use.md) |
-| `cleanse` | Detect and fix project diagnostics with weighted parallel subagents. | |
 | `commit` | Generate a commit message and update changelogs. | |
 | `completions` | Print a shell completion script (bash, zsh, or fish). | |
 | `compress` | Rewrite a text file into the dense prompt register, reporting what it drops. | |

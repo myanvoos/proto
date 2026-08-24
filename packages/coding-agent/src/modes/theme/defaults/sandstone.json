@@ -86,10 +86,5 @@
 		"statusLineCost": 131,
 		"statusLineSubagents": "rust",
 		"pythonMode": "amber"
-	},
-	"export": {
-		"pageBg": "#f5ede3",
-		"cardBg": "#faf6f0",
-		"infoBg": "#f0e6d8"
 	}
 }

@@ -48,12 +48,10 @@
   "dependencies": {
     "@babel/parser": "catalog:",
     "@oh-my-pi/hashline": "catalog:",
-    "@oh-my-pi/proto-stats": "catalog:",
     "@oh-my-pi/omptype": "catalog:",
     "@oh-my-pi/pi-agent-core": "catalog:",
     "@oh-my-pi/pi-ai": "catalog:",
     "@oh-my-pi/pi-catalog": "catalog:",
-    "@oh-my-pi/pi-mnemopi": "catalog:",
     "@oh-my-pi/pi-natives": "catalog:",
     "@oh-my-pi/pi-tui": "catalog:",
     "@oh-my-pi/pi-utils": "catalog:",
@@ -220,10 +218,6 @@
       "types": "./src/dap/*.ts",
       "import": "./src/dap/*.ts"
     },
-    "./debug": {
-      "types": "./src/debug/index.ts",
-      "import": "./src/debug/index.ts"
-    },
     "./debug/*": {
       "types": "./src/debug/*.ts",
       "import": "./src/debug/*.ts"
@@ -275,10 +269,6 @@
     "./extensibility/custom-commands/*": {
       "types": "./src/extensibility/custom-commands/*.ts",
       "import": "./src/extensibility/custom-commands/*.ts"
-    },
-    "./extensibility/custom-commands/bundled/ci-green": {
-      "types": "./src/extensibility/custom-commands/bundled/ci-green/index.ts",
-      "import": "./src/extensibility/custom-commands/bundled/ci-green/index.ts"
     },
     "./extensibility/custom-commands/bundled/review": {
       "types": "./src/extensibility/custom-commands/bundled/review/index.ts",
@@ -384,30 +374,6 @@
       "types": "./src/mcp/transports/*.ts",
       "import": "./src/mcp/transports/*.ts"
     },
-    "./memories": {
-      "types": "./src/memories/index.ts",
-      "import": "./src/memories/index.ts"
-    },
-    "./memories/*": {
-      "types": "./src/memories/*.ts",
-      "import": "./src/memories/*.ts"
-    },
-    "./memory-backend": {
-      "types": "./src/memory-backend/index.ts",
-      "import": "./src/memory-backend/index.ts"
-    },
-    "./memory-backend/*": {
-      "types": "./src/memory-backend/*.ts",
-      "import": "./src/memory-backend/*.ts"
-    },
-    "./hindsight": {
-      "types": "./src/hindsight/index.ts",
-      "import": "./src/hindsight/index.ts"
-    },
-    "./hindsight/*": {
-      "types": "./src/hindsight/*.ts",
-      "import": "./src/hindsight/*.ts"
-    },
     "./modes": {
       "types": "./src/modes/index.ts",
       "import": "./src/modes/index.ts"
@@ -479,10 +445,6 @@
     "./orchestrator/*": {
       "types": "./src/orchestrator/*.ts",
       "import": "./src/orchestrator/*.ts"
-    },
-    "./plan-mode/*": {
-      "types": "./src/plan-mode/*.ts",
-      "import": "./src/plan-mode/*.ts"
     },
     "./prompts/*": "./src/prompts/*.md",
     "./secrets": {

@@ -82,10 +82,5 @@
 		"statusLineCost": "goldTrim",
 		"statusLineSubagents": "deepWedgwood",
 		"pythonMode": "#f0c040"
-	},
-	"export": {
-		"pageBg": "porcelainWhite",
-		"cardBg": "#ffffff",
-		"infoBg": "paleBlue"
 	}
 }

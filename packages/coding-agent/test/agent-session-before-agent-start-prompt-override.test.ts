@@ -12,8 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 // Contract: a per-turn system prompt returned by `before_agent_start`
 // ("Replace the system prompt for this turn") must reach the provider for the
 // turn. A base-prompt rebuild that fires in the prompt window — context-overflow
-// compaction/promotion, memory promotion, MCP/RPC tool refresh, or the
-// fire-and-forget hindsight MM-TTL refresh — re-sets the agent prompt to the
+// compaction/promotion, MCP/RPC tool refresh — re-sets the agent prompt to the
 // rebuilt base. It must not clobber an active override. Regression for #7755.
 
 const OVERRIDE = "OVERRIDE-SYSTEM-PROMPT-LIFEOS_ROUTE";

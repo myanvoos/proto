@@ -219,9 +219,6 @@ function colorSupport(level: ColorLevel): ColorSupport | false {
 /** Color support detected for standard output. */
 export const supportsColor = colorSupport(detectColorLevel(process.env, Boolean(process.stdout.isTTY)));
 
-/** Color support detected for standard error. */
-export const supportsColorStderr = colorSupport(detectColorLevel(process.env, Boolean(process.stderr.isTTY)));
-
 function ansi256(r: number, g: number, b: number): number {
 	if (r === g && g === b) {
 		if (r < 8) return 16;

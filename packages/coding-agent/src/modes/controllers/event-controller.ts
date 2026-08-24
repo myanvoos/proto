@@ -23,9 +23,8 @@ import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
-import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
 import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
@@ -83,7 +82,7 @@ export class EventController {
 	#lastIntent: string | undefined = undefined;
 	/** Tool calls that drove the title into `attention` (the `ask` question);
 	 *  cleared at their tool_execution_end so the title returns to `working`. */
-	#approvalAttentionToolCallIds = new Set<string>();
+	#attentionToolCallIds = new Set<string>();
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
@@ -609,7 +608,7 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#approvalAttentionToolCallIds.clear();
+		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#lastAssistantComponent = undefined;
@@ -1185,29 +1184,24 @@ export class EventController {
 			this.#toolArgsReveal.flushAll();
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
-			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
 			const ttsrSilenced = aborted && this.ctx.viewSession.isTtsrAbortPending;
-			if (aborted && !silentlyAborted && !ttsrSilenced) {
+			if (aborted && !ttsrSilenced) {
 				// Resolve the operator-facing label: a user-interrupt (Esc) abort
 				// carries USER_INTERRUPT_LABEL on errorMessage (threaded through the
 				// AbortController), which is preserved verbatim; any other abort with
 				// no threaded reason falls back to the retry-aware generic label.
-				// AgentSession.#handleAgentEvent already stamped SILENT_ABORT_MARKER for
-				// the plan-compact transition before this controller ran, so reaching
-				// this branch implies the abort was NOT a silent internal transition.
 				errorMessage = resolveAbortLabel(this.ctx.streamingMessage, this.ctx.viewSession.retryAttempt);
 				this.ctx.streamingMessage.errorMessage = errorMessage;
 			}
-			const displayMessage: AssistantMessage =
-				silentlyAborted || ttsrSilenced
-					? {
-							// Silence the streaming render by downgrading stopReason to "stop" for
-							// display only — does NOT mutate the persisted message's stopReason
-							// (the marker on errorMessage drives replay-side suppression).
-							...this.ctx.streamingMessage,
-							stopReason: "stop",
-						}
-					: this.ctx.streamingMessage;
+			const displayMessage: AssistantMessage = ttsrSilenced
+				? {
+						// Silence the streaming render by downgrading stopReason to "stop" for
+						// display only — does NOT mutate the persisted message's stopReason
+						// (the marker on errorMessage drives replay-side suppression).
+						...this.ctx.streamingMessage,
+						stopReason: "stop",
+					}
+				: this.ctx.streamingMessage;
 			const displayTimeline = splitAssistantMessageToolTimeline(displayMessage);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
 
@@ -1303,7 +1297,7 @@ export class EventController {
 			// errors are known intermediate attempts: hide them entirely while
 			// session recovery continues, but retain the component so a terminal
 			// retry-cap event can promote its final error into the one banner.
-			if (event.message.stopReason === "error" && event.message.errorMessage && !isSilentAbort(event.message)) {
+			if (event.message.stopReason === "error" && event.message.errorMessage) {
 				const recoverableEmptyOutput =
 					!event.message.errorMessage.startsWith("Retry budget exhausted") &&
 					AIError.is(AIError.classifyMessage(event.message), AIError.Flag.EmptyResponse);
@@ -1324,7 +1318,7 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
 		if (event.toolName === "ask") {
-			this.#approvalAttentionToolCallIds.add(event.toolCallId);
+			this.#attentionToolCallIds.add(event.toolCallId);
 			setTerminalTitleState("attention");
 		}
 		this.#resolveDisplaceablePoll(event.toolName);
@@ -1474,15 +1468,11 @@ export class EventController {
 		// which only fire `tool_execution_end`, never `_update` — do not leave
 		// the UI looking idle while the session keeps streaming (#3857).
 		this.#ensureWorkingLoaderWhileStreaming();
-		// Return to `working` only when the LAST outstanding user-blocking prompt
-		// resolves: with queued approval prompts (always-ask/write), the first tool
-		// to finish must not clear the attention signal while another prompt still
-		// waits. `ask` ids are in the set too (added at tool_execution_start), so
-		// the delete also covers them without leaking ids until turn end.
-		if (
-			this.#approvalAttentionToolCallIds.delete(event.toolCallId) &&
-			this.#approvalAttentionToolCallIds.size === 0
-		) {
+		// Return to `working` when the LAST outstanding user-blocking prompt
+		// resolves: the set tracks every `ask` call that raised the title
+		// (added at tool_execution_start), so the delete also clears them
+		// without leaking ids until turn end.
+		if (this.#attentionToolCallIds.delete(event.toolCallId) && this.#attentionToolCallIds.size === 0) {
 			setTerminalTitleState("working");
 		}
 		if (event.toolName === "read") {
@@ -1587,47 +1577,6 @@ export class EventController {
 				{ hideWithToolActivity: true },
 			);
 		}
-		// Plan approval rides a `write` to xd://propose: the dispatch metadata on
-		// the write details carries the approval payload as `inner`.
-		if (!event.isError) {
-			const dispatch = writeDeviceDispatch(event.toolName, event.result);
-			const details =
-				dispatch?.tool === PROPOSE_DEVICE_NAME && dispatch.mode === "execute" ? dispatch.inner : undefined;
-			if (
-				details &&
-				typeof details === "object" &&
-				"planFilePath" in details &&
-				"title" in details &&
-				"planExists" in details &&
-				typeof details.planFilePath === "string" &&
-				typeof details.title === "string" &&
-				typeof details.planExists === "boolean"
-			) {
-				// Dispatch the approval WITHOUT blocking the serialized event
-				// dispatch chain. `handlePlanApproval` -> `#approvePlan` awaits
-				// `session.prompt` for the ENTIRE approved-execution turn; awaiting
-				// it here (this handler runs inside `#runSerialized`) would hold the
-				// single dispatch link for the whole run, so the run's own
-				// agent_start / message_start / tool / coalesced message_update
-				// events queue behind it on `#dispatchTail` and the chat stays blank
-				// until execution finishes (issue #7684, follow-up to #5688 which
-				// only closed the overlay). Detaching frees the link the moment this
-				// handler returns; the approval overlay and the turn's live events
-				// then render. The approval flow surfaces its own failures via
-				// `showError`, so only an unexpected rejection is logged here.
-				void this.ctx
-					.handlePlanApproval({
-						planFilePath: details.planFilePath,
-						title: details.title,
-						planExists: details.planExists,
-					})
-					.catch(err => {
-						logger.warn("Plan approval dispatch failed", {
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-			}
-		}
 	}
 	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
 		// A superseded agent_end: the agent is already streaming a fresh turn, so
@@ -1644,13 +1593,8 @@ export class EventController {
 		// `async` job, etc.) will re-wake the loop when its result is delivered.
 		// `AgentSession` tags this on the deferred event (see `#hasPendingAsyncWake`
 		// in agent-session.ts). Skip the idle title/loader teardown so the tab keeps
-		// reading "working"; the later terminal `agent_end` performs it. Still flush
-		// a deferred model switch — the plan-mode reconciler queues it to apply once
-		// the current stream ends, and `#finishAgentEnd` is otherwise its only flush
-		// site, so the automatic continuation would otherwise run on the old
-		// model/thinking level until the terminal settle.
+		// reading "working"; the later terminal `agent_end` performs it.
 		if (event.isTerminal === false) {
-			await this.ctx.flushPendingModelSwitch();
 			// Reaching here means the first guard passed, so `isStreaming` is already
 			// false: a command issued from now on mounts immediately. Leaving earlier
 			// panels queued would render them out of order, minutes later, after the
@@ -1679,7 +1623,6 @@ export class EventController {
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
 		}
-		await this.ctx.flushPendingModelSwitch();
 		for (const toolCallId of Array.from(this.ctx.pendingTools.keys())) {
 			// A tool still pending at turn end never delivered a result; seal it so
 			// it freezes rather than lingering as a streaming preview.
@@ -1689,7 +1632,7 @@ export class EventController {
 			}
 			this.ctx.pendingTools.delete(toolCallId);
 		}
-		this.#approvalAttentionToolCallIds.clear();
+		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#toolTimelineComponents.clear();

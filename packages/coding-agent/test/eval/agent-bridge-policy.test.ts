@@ -11,7 +11,6 @@ import { executeJs } from "../../src/eval/js/executor";
 import { disposeAllKernelSessions, executePython } from "../../src/eval/py/executor";
 import { AgentProtocolHandler } from "../../src/internal-urls/agent-protocol";
 import { resetRegisteredArtifactDirsForTests } from "../../src/internal-urls/registry-helpers";
-import type { PlanModeState } from "../../src/plan-mode/state";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import type { AgentSession } from "../../src/session/agent-session";
 import * as taskDiscovery from "../../src/task/discovery";
@@ -50,7 +49,6 @@ interface SessionOptions {
 	enableLsp?: boolean;
 	settings?: Settings;
 	outputManager?: AgentOutputManager;
-	planMode?: boolean;
 	outputSchema?: unknown;
 }
 
@@ -78,13 +76,6 @@ function makeSession(options: SessionOptions = {}): ToolSession {
 		getSessionId: () => "test-session",
 		getEvalSessionId: () => "test-eval-session",
 		outputSchema: options.outputSchema,
-		getPlanModeState: options.planMode
-			? () =>
-					({
-						enabled: true,
-						planFilePath: path.join(options.cwd ?? process.cwd(), "plan.md"),
-					}) satisfies PlanModeState
-			: undefined,
 	};
 }
 
@@ -250,24 +241,6 @@ describe("runEvalAgent", () => {
 				}),
 			},
 		);
-		expect(runSpy).toHaveBeenCalledTimes(1);
-	});
-
-	it("runs plan-mode eval agents with an attenuated policy", async () => {
-		mockAgents([{ ...taskAgent, tools: ["ast_grep", "write"] }]);
-		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
-
-		await expect(
-			runEvalAgent({ prompt: "hello" }, { session: makeSession({ planMode: true }) }),
-		).resolves.toMatchObject({
-			text: "ok",
-		});
-		expect(runSpy).toHaveBeenCalledTimes(1);
-		expect(runSpy.mock.calls[0]?.[0].agent.tools).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
-		expect(runSpy.mock.calls[0]?.[0].agent.spawns).toBeUndefined();
-		await expect(
-			runEvalAgent({ prompt: "unsafe", isolated: true }, { session: makeSession({ planMode: true }) }),
-		).rejects.toThrow("isolation, apply, and merge controls are unavailable in plan mode");
 		expect(runSpy).toHaveBeenCalledTimes(1);
 	});
 

@@ -12,7 +12,7 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { resolveAuthoredPath } from "../../tools/path-utils";
 import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString, replaceText } from "../diff";
 import {
@@ -1137,13 +1137,10 @@ export async function executeReplace(
 	} = options;
 	const { old_string, new_string, replace_all } = params;
 
-	enforcePlanModeWrite(session, path);
-
 	if (old_string.length === 0) {
 		throw new Error("old_string must not be empty.");
 	}
-
-	const absolutePath = resolvePlanPath(session, path);
+	const absolutePath = resolveAuthoredPath(session, path);
 	const rawContent = await readEditFileText(absolutePath, path);
 	const { bom, text: content } = stripBom(rawContent);
 	const originalEnding = detectLineEnding(content);

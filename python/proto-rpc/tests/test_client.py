@@ -386,8 +386,6 @@ FAKE_SERVER = textwrap.dedent(
                     "cost": 0.0,
                 },
             )
-        elif command_type == "export_html":
-            respond(request_id, "export_html", {"path": command.get("outputPath") or "/tmp/session.html"})
         elif command_type == "new_session":
             respond(request_id, "new_session", {"cancelled": False})
         elif command_type == "switch_session":
@@ -1192,8 +1190,6 @@ class RpcClientTests(unittest.TestCase):
             self.assertEqual(stats.session_id, "fake-session")
             self.assertEqual(stats.tokens.total, 15)
 
-            exported = client.export_html("/tmp/custom.html")
-            self.assertEqual(str(exported), "/tmp/custom.html")
 
             new_session = client.new_session()
             switched = client.switch_session("/tmp/session.jsonl")

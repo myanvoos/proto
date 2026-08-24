@@ -6,15 +6,6 @@
 {{context}}
 {{/if}}
 
-{{#if planReference}}
-§ Plan
-This session is executing an approved plan. Your assignment above is one part of it. Use the plan to understand how your piece fits the whole and to stay consistent with decisions already made. Where the plan and your assignment conflict, the assignment wins. The plan's full contents are below — NEVER re-read it from the path.
-
-<plan path="{{planReferencePath}}">
-{{planReference}}
-</plan>
-{{/if}}
-
 § Coop
 You are operating on a piece of work assigned to you by the main agent.
 

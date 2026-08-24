@@ -16,7 +16,6 @@ import type {
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
-import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
@@ -107,8 +106,6 @@ export interface InteractiveModeContext {
 	todoContainer: Container;
 	subagentContainer: Container;
 	btwContainer: Container;
-	omfgContainer: Container;
-	cleanseContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
@@ -162,14 +159,12 @@ export interface InteractiveModeContext {
 	toolOutputExpanded: boolean;
 	hideToolActivity: boolean;
 	todoExpanded: boolean;
-	planModeEnabled: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
 	loopModePaused: boolean;
 	loopPrompt?: string;
 	loopLimit?: LoopLimitRuntime;
-	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
 	/**
 	 * Effective thinking-block visibility: true when hidden by user setting OR
@@ -274,7 +269,6 @@ export interface InteractiveModeContext {
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;
-	flushPendingModelSwitch(): Promise<void>;
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;
 	ensureLoadingAnimation(): void;
@@ -360,13 +354,11 @@ export interface InteractiveModeContext {
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
-	handleChangelogCommand(showFull?: boolean): Promise<void>;
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
 	handleContextCommand(): void;
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
-	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;
 	handleForkCommand(): Promise<void>;
@@ -383,7 +375,6 @@ export interface InteractiveModeContext {
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
 	handleRenameCommand(title: string): Promise<void>;
-	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
 	/** Start or stop the Codex-backed realtime voice session. */
 	handleLiveCommand(): Promise<void>;
@@ -416,7 +407,6 @@ export interface InteractiveModeContext {
 	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
-	showDebugSelector(): Promise<void>;
 	showAgentFleet(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	resetObserverRegistry(): void;
 
@@ -445,29 +435,16 @@ export interface InteractiveModeContext {
 		leafId: string,
 		sessionId: string,
 	): Promise<void>;
-	handleOmfgCommand(complaint: string): Promise<void>;
-	hasActiveOmfg(): boolean;
-	handleOmfgEscape(): boolean;
-	handleCleanseCommand(args: string): Promise<void>;
-	hasActiveCleanse(): boolean;
-	handleCleanseEscape(): boolean;
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
 	toggleToolOutputExpansion(): void;
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
-	handlePlanModeCommand(
-		initialPrompt?: string,
-		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
-	): Promise<boolean>;
 	handleGoalModeCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
-	handleGuidedGoalCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
 	setLoopPrompt(prompt: string): void;
 	disableLoopMode(): void;
 	pauseLoop(): void;
-	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
-	openPlanReview(): Promise<void>;
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;

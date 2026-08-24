@@ -248,30 +248,6 @@ export function getAnsiColor(role: CharRole, theme: AsciiTheme, mode: ColorMode)
 }
 
 /**
- * Get the ANSI reset sequence.
- */
-export function getAnsiReset(mode: ColorMode): string {
-  return mode === 'none' ? '' : RESET
-}
-
-/**
- * Wrap a character with ANSI color codes based on its role.
- */
-export function colorizeChar(
-  char: string,
-  role: CharRole | null,
-  theme: AsciiTheme,
-  mode: ColorMode,
-): string {
-  if (mode === 'none' || role === null || char === ' ') {
-    return char
-  }
-
-  const colorCode = getAnsiColor(role, theme, mode)
-  return `${colorCode}${char}${RESET}`
-}
-
-/**
  * Colorize an entire line efficiently by grouping consecutive same-role characters.
  * This reduces the number of escape sequences (ANSI) or span tags (HTML) in the output.
  */

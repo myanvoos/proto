@@ -3,9 +3,10 @@
  * cannot supply.
  *
  * Both bridge callsites — the primary session and the advisor roster — build
- * the same instances, and both must apply the session's approval wrapper. A
- * raw tool here silently escapes the gate every registry call goes through, so
- * the construction lives in one place rather than being repeated per callsite.
+ * the same instances, and both must wrap them in `ExtensionToolWrapper`. A raw
+ * tool here silently escapes the extension event plumbing every registry call
+ * goes through, so the construction lives in one place rather than being
+ * repeated per callsite.
  */
 
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -23,8 +24,9 @@ import { GrepTool } from "./tools";
  * `grep.contextBefore`/`grep.contextAfter`, fixed when the shared instance is
  * constructed — so honoring them needs a fresh tool per call.
  *
- * The result is wrapped exactly like a registry tool: the approval gate runs on
- * every call site, and a per-call instance is no exception.
+ * The result is wrapped exactly like a registry tool: extension events and
+ * file-mutation bookkeeping run on every call site, and a per-call instance
+ * is no exception.
  */
 export function createBridgeGrepFactory(
 	session: ToolSession,

@@ -31,16 +31,6 @@ const ALWAYS_EXTERNAL = [
 // bundled).
 const RUNTIME_EXTERNAL = ["puppeteer-core", "@babel/parser"];
 
-async function runCommand(command: string[]): Promise<void> {
-	const proc = Bun.spawn(command, {
-		cwd: packageDir,
-		stdout: "inherit",
-		stderr: "inherit",
-	});
-	const exitCode = await proc.exited;
-	if (exitCode !== 0) throw new Error(`Command failed with exit code ${exitCode}: ${command.join(" ")}`);
-}
-
 async function ensureShebang(): Promise<void> {
 	const text = await Bun.file(cliPath).text();
 	if (text.startsWith(shebang)) return;
@@ -81,44 +71,37 @@ async function cleanBundleOutputs(): Promise<void> {
 async function main(): Promise<void> {
 	const start = Bun.nanoseconds();
 	await cleanBundleOutputs();
-	// The npm bundle ships no stats dashboard sources, so embed the dashboard
-	// archive the same way compiled binaries do (scripts/build-binary.ts). Reset
-	// afterwards to keep the checked-in placeholder empty.
-	await runCommand(["bun", "--cwd=../stats", "run", "gen:stats"]);
 	// One payload for both consumers: inlined into dist/cli.js via `--define` for
 	// the bundled CLI entrypoint, and written to dist/docs-index.generated.txt so
 	// SDK consumers importing `@oh-my-pi/pi-coding-agent/*` (TypeScript source, no
 	// build-time embed) can still resolve omp:// docs (see src/internal-urls/docs-index.ts).
-	try {
-		const docsPayload = await buildDocsIndexPayload();
-		// Build in-process: the docs embed payload is far larger than Linux's
-		// 128KiB per-argv-string cap, so it can never be passed as a CLI
-		// `--define` (posix_spawn fails with E2BIG).
-		const output = await Bun.build({
-			entrypoints: [path.join(packageDir, "src/cli.ts")],
-			outdir: outDir,
-			target: "bun",
-			external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
-			define: {
-				"process.env.PI_BUNDLED": JSON.stringify("true"),
-				"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),
-			},
-			minify: {
-				whitespace: true,
-				syntax: true,
-				identifiers: true,
-				keepNames: true,
-			},
-			throw: false,
-		});
-		if (!output.success) {
-			throw new Error(`CLI bundle failed:\n${output.logs.map(log => log.message).join("\n")}`);
-		}
-		await ensureShebang();
-		await Bun.write(path.join(outDir, "docs-index.generated.txt"), docsPayload.payload);
-	} finally {
-		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);
+	const docsPayload = await buildDocsIndexPayload();
+	// Build in-process: the docs embed payload is far larger than Linux's
+	// 128KiB per-argv-string cap, so it can never be passed as a CLI
+	// `--define` (posix_spawn fails with E2BIG).
+	const output = await Bun.build({
+		entrypoints: [path.join(packageDir, "src/cli.ts")],
+		outdir: outDir,
+		target: "bun",
+		external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
+		define: {
+			"process.env.PI_BUNDLED": JSON.stringify("true"),
+			"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),
+		},
+		minify: {
+			whitespace: true,
+			syntax: true,
+			identifiers: true,
+			keepNames: true,
+		},
+		throw: false,
+	});
+	if (!output.success) {
+		throw new Error(`CLI bundle failed:\n${output.logs.map(log => log.message).join("\n")}`);
 	}
+	await ensureShebang();
+	await Bun.write(path.join(outDir, "docs-index.generated.txt"), docsPayload.payload);
+
 	const stat = await fs.stat(cliPath);
 	const elapsedMs = (Bun.nanoseconds() - start) / 1_000_000;
 	process.stdout.write(

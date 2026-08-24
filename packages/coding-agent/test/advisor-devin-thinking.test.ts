@@ -19,9 +19,6 @@ import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 // and disable the advisor session-wide with an empty
 // `Supported efforts:` warning list.
 //
-// This mirrors the `auto`-path fix already covered by
-// `auto-thinking-classifier.test.ts:145` for `clampAutoThinkingEffort`, at the
-// advisor descriptor boundary.
 describe("AgentSession advisor descriptor thinking level", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;

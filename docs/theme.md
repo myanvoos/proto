@@ -24,9 +24,7 @@ Top-level fields:
 - `name` (required)
 - `colors` (required; all color tokens required)
 - `vars` (optional; reusable color variables)
-- `export` (optional; HTML export colors)
 - `symbols` (optional)
-  - `preset` (optional: `unicode | nerd | ascii`)
   - `overrides` (optional: key/value overrides for `SymbolKey`)
 
 Color values accept:
@@ -71,27 +69,12 @@ All tokens below are required in `colors` except `thinkingMax`, which is optiona
 
 ## Optional tokens
 
-### `export` section (optional)
-
-Used for HTML export theming helpers:
-
-- `export.pageBg`
-- `export.cardBg`
-- `export.infoBg`
-
-If omitted, export code derives defaults from resolved theme colors.
-
 ### `symbols` section (optional)
 
-- `symbols.preset` sets a theme-level default symbol set.
 - `symbols.overrides` can override individual `SymbolKey` values.
-- `symbols.spinnerFrames` overrides the loading spinner frames. Accepts either a flat `string[]` (applied to both spinner types) or an object `{ "status"?: string[], "activity"?: string[] }` to override each type independently. Any type not specified falls back to the symbol preset's default frames. `status` drives the ~12.5fps spinner used by loaders and tool-execution indicators; `activity` drives the ~30fps spinner used by markdown progress bars and similar high-frequency UI.
+- `symbols.spinnerFrames` overrides the loading spinner frames. Accepts either a flat `string[]` (applied to both spinner types) or an object `{ "status"?: string[], "activity"?: string[] }` to override each type independently. Any type not specified falls back to the default `unicode` frames. `status` drives the ~12.5fps spinner used by loaders and tool-execution indicators; `activity` drives the ~30fps spinner used by markdown progress bars and similar high-frequency UI.
 
-Runtime precedence:
-
-1. settings `symbolPreset` override (if set)
-2. theme JSON `symbols.preset`
-3. fallback `"unicode"`
+The built-in symbol preset is `"unicode"`; there is no settings-level symbol preset override.
 
 Invalid override keys are ignored and logged (`logger.debug`).
 
@@ -162,7 +145,6 @@ Conversion behavior:
 
 `main.ts` initializes theme with settings:
 
-- `symbolPreset`
 - `colorBlindMode`
 - `theme.dark`
 - `theme.light`
@@ -178,7 +160,6 @@ Current defaults from settings schema:
 
 - `theme.dark = "titanium"`
 - `theme.light = "light"`
-- `symbolPreset = "unicode"`
 - `colorBlindMode = false`
 
 ### Explicit switching (`setTheme`)
@@ -233,7 +214,6 @@ Persisted keys:
 
 - `theme.dark`
 - `theme.light`
-- `symbolPreset`
 - `colorBlindMode`
 
 Legacy migration exists: old flat `theme: "name"` is migrated to nested `theme.dark` or `theme.light` based on luminance detection.
@@ -242,7 +222,7 @@ Legacy migration exists: old flat `theme: "name"` is migrated to nested `theme.d
 
 1. Create file in custom themes dir, e.g. `~/.proto/agent/themes/my-theme.json`.
 2. Include `name`, optional `vars`, and **all required** `colors` tokens.
-3. Optionally include `symbols` and `export`.
+3. Optionally include `symbols`.
 4. Select the theme in Settings (`Appearance -> Dark Theme` or `Appearance -> Light Theme`) depending on which auto slot you want.
 
 Minimal skeleton:
@@ -352,7 +332,7 @@ Use this workflow:
 ## Real constraints and caveats
 
 - All `colors` tokens are required for custom themes except optional `thinkingMax`, which falls back to `thinkingXhigh`.
-- `export` and `symbols` are optional.
+- `symbols` are optional.
 - `$schema` in theme JSON is informational; runtime validation is enforced by the ArkType schema in code.
 - `setTheme` failure falls back to `dark`; `previewTheme` failure does not replace current theme.
 - File watcher reload errors or temporary missing files keep the current loaded theme until a successful reload or explicit theme switch.

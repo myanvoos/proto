@@ -88,10 +88,5 @@
 		"shareAccent": "#5C6470",
 		"infoAccent": "#7C838E",
 		"matchHighlight": "#8F6A14"
-	},
-	"export": {
-		"pageBg": "white",
-		"cardBg": "white",
-		"infoBg": "white"
 	}
 }

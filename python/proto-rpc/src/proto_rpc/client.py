@@ -975,13 +975,6 @@ class RpcClient:
         payload = self._request("get_session_stats")
         return parse_session_stats(payload)
 
-    def export_html(self, output_path: str | Path | None = None) -> Path:
-        payload = self._request(
-            "export_html",
-            outputPath=str(output_path) if output_path is not None else None,
-        )
-        return Path(str(payload["path"]))
-
     def new_session(self, parent_session: str | None = None) -> CancellationResult:
         return parse_cancellation_result(
             self._request("new_session", parentSession=parent_session)

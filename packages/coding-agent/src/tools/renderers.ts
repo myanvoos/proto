@@ -23,7 +23,6 @@ import { githubToolRenderer } from "./gh-renderer";
 import { globToolRenderer } from "./glob";
 import { grepToolRenderer } from "./grep";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
-import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
 import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
 import { readToolRenderer } from "./read";
 import { resolveRenderer } from "./resolve";
@@ -105,9 +104,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	// through the `resolve` entry. Both devices carry the same ResolveDetails.
 	resolve: resolveRenderer as ToolRenderer,
 	reject: resolveRenderer as ToolRenderer,
-	retain: retainToolRenderer as ToolRenderer,
-	recall: recallToolRenderer as ToolRenderer,
-	reflect: reflectToolRenderer as ToolRenderer,
 	think: thinkToolRenderer as ToolRenderer,
 	todo: todoToolRenderer as ToolRenderer,
 	github: githubToolRenderer as ToolRenderer,

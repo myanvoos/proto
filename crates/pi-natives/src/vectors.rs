@@ -1,11 +1,10 @@
-//! Batch numeric vector kernels for mnemopi recall paths.
+//! Batch numeric vector kernels for recall paths.
 //!
 //! Every export processes an entire candidate batch per N-API crossing so the
 //! crossing cost is amortized over the whole recall operation. Semantics
-//! mirror the TypeScript reference implementations in
-//! `packages/mnemopi/src/core` exactly — same accumulation order, same
-//! non-finite handling, same tie-breaking — so float scores are
-//! bit-identical to the TS versions and integer results are exactly equal.
+//! match the historical TypeScript reference implementations exactly — same
+//! accumulation order, same non-finite handling, same tie-breaking — so float
+//! scores are bit-identical to the TS versions and integer results are exactly equal.
 
 use napi::{
 	Error, JsString, Result, Status,
@@ -24,7 +23,7 @@ const fn finite_or_zero(value: f64) -> f64 {
 	if value.is_finite() { value } else { 0.0 }
 }
 
-/// Cosine similarity with the exact semantics of mnemopi's TS
+/// Cosine similarity with the exact semantics of the TS
 /// `cosineSimilarity`: iterate `max(len_a, len_b)` elements, treat missing
 /// and non-finite entries as `0`, return `0` when either norm is zero.
 ///

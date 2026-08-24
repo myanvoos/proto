@@ -45,7 +45,6 @@ import {
 	pruneToolOutputs,
 	readToolSupersedeKey,
 } from "@oh-my-pi/pi-agent-core/compaction/pruning";
-import type { ProtectedToolMatcher } from "@oh-my-pi/pi-agent-core/compaction/tool-protection";
 import type { AssistantMessage, CodexCompactionContext, Message, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -56,11 +55,8 @@ import type { CompactionSettings as ConfiguredCompactionSettings, Settings } fro
 import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { GoalModeState } from "../goals/state";
-import { resolveMemoryBackend } from "../memory-backend/resolve";
-import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import type { NonMessageTokenSource } from "../modes/utils/context-usage";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
-import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import { findCompactMode } from "./compact-modes";
@@ -235,9 +231,7 @@ export interface SessionMaintenanceHost {
 	messages(): AgentMessage[];
 	baseSystemPrompt(): string[];
 	goalModeState(): GoalModeState | undefined;
-	planReferencePath(): string;
 	nonMessageTokenSource(): NonMessageTokenSource;
-	memoryBackendSession(): MemoryBackendOperationContext["session"];
 	emitSessionEvent(event: AgentSessionEvent, options?: { detachExtensions?: boolean }): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(
@@ -275,7 +269,6 @@ export interface SessionMaintenanceHost {
 	obfuscatePreparationForProvider(preparation: CompactionPreparation): CompactionPreparation;
 	closeCodexProviderSessionsForHistoryRewrite(): void;
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
-	resetPlanReference(): void;
 	syncTodoPhasesFromBranch(): void;
 	resetAdvisorRuntimes(reason?: string): void;
 	rebaseAfterCompaction(): void;
@@ -386,32 +379,18 @@ export class SessionMaintenance {
 	#emitLifecycleEvent(event: AgentSessionEvent, detach: boolean): Promise<void> {
 		return this.#host.emitSessionEvent(event, detach ? { detachExtensions: true } : undefined);
 	}
-	/**
-	 * Append plan-read protection to a prune/shake config so the active plan
-	 * file survives compaction alongside skill reads (the config defaults
-	 * already carry skill protection). The matcher reads the current plan
-	 * reference path at match time, so retitled plans are covered.
-	 */
-	#withPlanProtection<T extends { protectedTools: ProtectedToolMatcher[] }>(config: T): T {
-		const planMatcher = createPlanReadMatcher(() => this.#host.planReferencePath());
-		return { ...config, protectedTools: [...config.protectedTools, planMatcher] };
-	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
-		const result = pruneToolOutputs(
-			branchEntries,
-			this.#tokenizer,
-			this.#withPlanProtection({
-				...DEFAULT_PRUNE_CONFIG,
-				pruneUseless: this.#host.settings.getGroup("compaction").dropUseless,
-				// Cache-stable boundary: never re-write the warm, already-sent prefix
-				// (deep stale/age victims) or summarized-away entries every turn.
-				keepBoundaryId,
-				cacheWarmSuffixTokens: PRUNE_CACHE_WARM_SUFFIX_TOKENS,
-			}),
-		);
+		const result = pruneToolOutputs(branchEntries, this.#tokenizer, {
+			...DEFAULT_PRUNE_CONFIG,
+			pruneUseless: this.#host.settings.getGroup("compaction").dropUseless,
+			// Cache-stable boundary: never re-write the warm, already-sent prefix
+			// (deep stale/age victims) or summarized-away entries every turn.
+			keepBoundaryId,
+			cacheWarmSuffixTokens: PRUNE_CACHE_WARM_SUFFIX_TOKENS,
+		});
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
@@ -443,19 +422,15 @@ export class SessionMaintenance {
 		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
-		const result = pruneSupersededToolResults(
-			branchEntries,
-			this.#tokenizer,
-			this.#withPlanProtection({
-				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
-				pruneUseless: dropUseless,
-				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
-				// Never re-write summarized-away entries; only flush the whole sent
-				// region once the cache is genuinely cold (idle exceeds the 1h TTL).
-				keepBoundaryId,
-				idleFlushMs: PRUNE_IDLE_FLUSH_MS,
-			}),
-		);
+		const result = pruneSupersededToolResults(branchEntries, this.#tokenizer, {
+			supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
+			pruneUseless: dropUseless,
+			protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
+			// Never re-write summarized-away entries; only flush the whole sent
+			// region once the cache is genuinely cold (idle exceeds the 1h TTL).
+			keepBoundaryId,
+			idleFlushMs: PRUNE_IDLE_FLUSH_MS,
+		});
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
@@ -568,14 +543,14 @@ export class SessionMaintenance {
 
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
-		const config = this.#withPlanProtection({
+		const config = {
 			...(opts.config ?? AGGRESSIVE_SHAKE_CONFIG),
 			// Skip entries summarized away by the latest compaction — shaking them
 			// only churns persisted history with no prompt/cache effect. The cut is
 			// unconditional on the wire (see `buildSessionContext`), so a compaction
 			// the active model cannot replay still hides its prefix from the prompt.
 			keepBoundaryId: latestCompaction?.firstKeptEntryId,
-		});
+		};
 		const regions = collectShakeRegions(branchEntries, this.#tokenizer, config);
 		if (regions.length === 0) {
 			return { mode, toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 };
@@ -817,7 +792,7 @@ export class SessionMaintenance {
 				try {
 					const result = await this.#compactWithFallbackModel(
 						preparation,
-						options?.internalGuidance ?? customInstructions,
+						customInstructions,
 						compactionAbortController.signal,
 						{
 							promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
@@ -917,32 +892,6 @@ export class SessionMaintenance {
 				}
 				manualCompactionCleanup?.resolve();
 			}
-		}
-	}
-
-	/**
-	 * Ask the active memory backend for an extra-context block to splice into
-	 * the compaction summary prompt. Both the manual and auto compaction paths
-	 * funnel through this helper so the behaviour stays identical.
-	 *
-	 * Failures are swallowed: a memory backend going sideways MUST NOT block
-	 * compaction (which is itself the recovery path for context overflow).
-	 */
-	async #collectMemoryBackendContext(preparation: {
-		messagesToSummarize: AgentMessage[];
-		turnPrefixMessages: AgentMessage[];
-	}): Promise<string | undefined> {
-		const backend = await resolveMemoryBackend(this.#host.settings);
-		if (!backend.preCompactionContext) return undefined;
-		const messages = preparation.messagesToSummarize.concat(preparation.turnPrefixMessages);
-		try {
-			return await backend.preCompactionContext(messages, this.#host.settings, this.#host.memoryBackendSession());
-		} catch (err) {
-			logger.debug("Memory backend preCompactionContext failed", {
-				backend: backend.id,
-				error: String(err),
-			});
-			return undefined;
 		}
 	}
 
@@ -1262,7 +1211,7 @@ export class SessionMaintenance {
 	/**
 	 * Append a compaction entry and run the shared post-commit sequence:
 	 * rebuild the display context, swap live agent messages, re-anchor stats,
-	 * reset plan/advisor/todo runtime state derived from the replaced history,
+	 * reset advisor/todo runtime state derived from the replaced history,
 	 * reset provider sessions, and emit the `session_compact` extension hook.
 	 */
 	async #commitCompactionEntry(args: {
@@ -1297,10 +1246,6 @@ export class SessionMaintenance {
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
-		// Compaction discarded the conversation history that carried the approved
-		// plan reference. Clear the sent-flag so #buildPlanReferenceMessage re-reads
-		// the plan from disk and re-injects it on the next turn (issue #1246).
-		this.#host.resetPlanReference();
 		this.#host.resetAdvisorRuntimes(args.advisorResetReason);
 		this.#host.syncTodoPhasesFromBranch();
 		if (args.codexCompaction) {
@@ -2042,11 +1987,6 @@ export class SessionMaintenance {
 			hookContext = result?.context;
 			hookPrompt = result?.prompt;
 			preserveData = result?.preserveData;
-		}
-
-		const memoryBackendContext = await this.#collectMemoryBackendContext(preparation);
-		if (memoryBackendContext) {
-			hookContext = hookContext ? [...hookContext, memoryBackendContext] : [memoryBackendContext];
 		}
 
 		if (hookCompaction) {

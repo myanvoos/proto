@@ -42,8 +42,14 @@ import {
 } from "./conflict-detect";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
-import { formatPathRelativeToCwd, peelWriteUrlSelector, probeLiteralPathExists, splitPathAndSel } from "./path-utils";
-import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
+import {
+	formatPathRelativeToCwd,
+	peelWriteUrlSelector,
+	probeLiteralPathExists,
+	resolveAuthoredPath,
+	splitPathAndSel,
+	unwrapHashlineHeaderPath,
+} from "./path-utils";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
@@ -526,14 +532,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 		const fallbackCandidate = candidates[candidates.length - 1]!;
 		const fallback: ResolvedArchiveWritePath = {
-			absolutePath: resolvePlanPath(this.session, fallbackCandidate.archivePath),
+			absolutePath: resolveAuthoredPath(this.session, fallbackCandidate.archivePath),
 			archivePath: fallbackCandidate.archivePath,
 			archiveSubPath: normalizeArchiveWriteSubPath(fallbackCandidate.subPath),
 			exists: false,
 		};
 
 		for (const candidate of candidates) {
-			const absolutePath = resolvePlanPath(this.session, candidate.archivePath);
+			const absolutePath = resolveAuthoredPath(this.session, candidate.archivePath);
 			try {
 				const stat = await Bun.file(absolutePath).stat();
 				if (stat.isDirectory()) {
@@ -627,7 +633,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const fallbackCandidate = candidates[candidates.length - 1]!;
 		const fallbackTarget = parseSqliteWriteTarget(fallbackCandidate.subPath, fallbackCandidate.queryString);
 		const fallback: ResolvedSqliteWritePath = {
-			absolutePath: resolvePlanPath(this.session, fallbackCandidate.sqlitePath),
+			absolutePath: resolveAuthoredPath(this.session, fallbackCandidate.sqlitePath),
 			sqlitePath: fallbackCandidate.sqlitePath,
 			table: fallbackTarget.table,
 			key: fallbackTarget.key,
@@ -637,7 +643,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		let sawExistingNonSqlite = false;
 		for (const candidate of candidates) {
 			const target = parseSqliteWriteTarget(candidate.subPath, candidate.queryString);
-			const absolutePath = resolvePlanPath(this.session, candidate.sqlitePath);
+			const absolutePath = resolveAuthoredPath(this.session, candidate.sqlitePath);
 			try {
 				const stat = await Bun.file(absolutePath).stat();
 				if (stat.isDirectory()) {
@@ -1025,9 +1031,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		// Strip a hashline `[path#TAG]` wrapper up front so every downstream
-		// decision (scheme routing, internal-URL handler dispatch, plan-mode
-		// guard, plan path resolution, ACP bridge routing) sees the same
-		// filesystem target. Without this, a model that pastes a `read`
+		// decision (scheme routing, internal-URL handler dispatch, ACP bridge
+		// routing) sees the same filesystem target. Without this, a model that pastes a `read`
 		// header as the `path` arg would slip past `isInternalUrlPath`
 		// (which fails on a leading `[`) and the bridge router would send a
 		// `[local://scratch.md#ABCD]` write to the editor instead of the
@@ -1048,7 +1053,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					// Handler-owned writes mutate user data outside the local
 					// sandbox. xd:// dispatches retain each wrapped tool's tier.
 					if (scheme !== "xd") {
-						enforcePlanModeWrite(this.session, path, { op: "update" });
 						emitWriteProgress(onUpdate, cleanContent, path);
 					}
 					let xdResult: AgentToolResult<WriteToolDetails> | undefined;
@@ -1111,7 +1115,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				}
 				if (scheme !== "local") await internalRouter.write(path, cleanContent);
 				// local:// is backed by the session-local artifact sandbox and is
-				// resolved by resolvePlanPath below so write/read share the same root.
+				// resolved by resolveAuthoredPath below so write/read share the same root.
 			}
 
 			const conflictUri = parseConflictUri(path);
@@ -1136,10 +1140,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 			const resolvedArchivePath = await this.#resolveArchiveWritePath(path);
 			if (resolvedArchivePath) {
-				enforcePlanModeWrite(this.session, resolvedArchivePath.archivePath, {
-					op: resolvedArchivePath.exists ? "update" : "create",
-				});
-
 				emitWriteProgress(
 					onUpdate,
 					cleanContent,
@@ -1163,8 +1163,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			const resolvedSqlitePath = await this.#resolveSqliteWritePath(path);
 			if (resolvedSqlitePath) {
-				enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update" });
-
 				emitWriteProgress(onUpdate, cleanContent, path, resolvedSqlitePath.absolutePath);
 				const sqliteResult = await this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath);
 				if (stripped) {
@@ -1180,8 +1178,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 
 			await assertNotReadSelectorMisfire(path, cleanContent, this.session.cwd);
-			enforcePlanModeWrite(this.session, path, { op: "create" });
-			const absolutePath = resolvePlanPath(this.session, path);
+			const absolutePath = resolveAuthoredPath(this.session, path);
 			const batchRequest = getLspBatchRequest(context?.toolCall);
 
 			// Check if file exists and is auto-generated before overwriting
@@ -1193,7 +1190,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
-			// artifacts such as local:// plans are owned by OMP, not the editor.
+			// artifacts such as local:// sandbox files are owned by OMP, not the editor.
 			const bridgeWrite = await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal);
 			if (bridgeWrite) {
 				// `write` always replaces the whole file, so (unlike hashline's

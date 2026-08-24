@@ -447,11 +447,6 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 	return sanitizeTerminalTitlePart(baseName);
 }
 
-export function formatSessionTerminalTitle(sessionName: string | undefined, cwd?: string): string {
-	const label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
-	return label ? `${DEFAULT_TERMINAL_TITLE}: ${label}` : DEFAULT_TERMINAL_TITLE;
-}
-
 /**
  * Set the terminal title through the native Win32 API or OSC 0.
  *

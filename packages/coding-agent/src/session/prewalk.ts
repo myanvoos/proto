@@ -1,20 +1,11 @@
-import type { Agent, AgentMessage, AgentToolResult, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
+import type { Agent, AgentMessage, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
 import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { prompt } from "@oh-my-pi/pi-utils";
-import type { LocalProtocolOptions } from "../internal-urls";
-import { resolveApprovedPlan } from "../plan-mode/approved-plan";
-import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
-import type { PlanModeState } from "../plan-mode/state";
-import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with { type: "text" };
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
 import { prewalkWouldBeNoop, type ThinkingLevel } from "../thinking";
-import { isMCPToolName } from "../tools/builtin-names";
-import type { PlanProposalHandler } from "../tools/resolve";
-import { ToolError } from "../tools/tool-errors";
-import type { PlanYolo, Prewalk } from "./agent-session-types";
+import type { Prewalk } from "./agent-session-types";
 import { PREWALK_PLAN_MESSAGE_TYPE } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -29,7 +20,6 @@ const PREWALK_ACTION_TOOLS: Record<string, true> = {
 	edit: true,
 	write: true,
 };
-const PLAN_YOLO_HANDOFF_MESSAGE_TYPE = "plan-yolo-handoff";
 
 /**
  * Whether a completed tool result is the first workspace-mutating action that
@@ -54,42 +44,28 @@ export interface PrewalkCoordinatorHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	setModelTemporary(model: Model, thinkingLevel?: ThinkingLevel, options?: { ephemeral?: boolean }): Promise<void>;
 	setActiveToolsByName(names: string[]): Promise<void>;
-	setActiveToolPresentation(toolNames: string[], mountedToolNames: string[]): Promise<void>;
 	runToolRegistryMutation<T>(mutation: () => Promise<T>): Promise<T>;
 	getActiveToolNames(): string[];
 	getEnabledToolNames(): string[];
-	getSelectedMCPToolNames(): string[];
-	getMountedXdevToolNames(): string[];
-	hasBuiltInTool(name: string): boolean;
-	getPlanModeState(): PlanModeState | undefined;
-	setPlanModeState(state: PlanModeState | undefined): void;
-	getPlanReferencePath(): string;
-	setPlanProposalHandler(handler: PlanProposalHandler | null): void;
 	waitForSessionMessagePersistence(message: AgentMessage): Promise<void>;
-	localProtocolOptions(): LocalProtocolOptions;
 }
 
-/** Initial state for prewalk and plan-yolo startup flows. */
+/** Initial state for the prewalk startup flow. */
 export interface PrewalkCoordinatorOptions {
 	prewalk?: Prewalk;
-	planYolo?: PlanYolo;
 }
 
-/** Coordinates one-way model prewalks and automatic plan-yolo handoffs. */
+/** Coordinates one-way model prewalks. */
 export class PrewalkCoordinator {
 	readonly #host: PrewalkCoordinatorHost;
 	#prewalk: Prewalk | undefined;
 	#planInjected = false;
 	#continuePending = false;
 	#todoSeen = false;
-	#planYolo: PlanYolo | undefined;
-	#planYoloPreviousNonMCPPresentation: { enabled: string[]; mounted: string[] } | undefined;
-	#planYoloArmed = false;
 
 	constructor(host: PrewalkCoordinatorHost, options: PrewalkCoordinatorOptions = {}) {
 		this.#host = host;
 		this.#prewalk = options.prewalk;
-		this.#planYolo = options.planYolo;
 	}
 
 	/** Current prewalk target, if the one-way switch remains armed. */
@@ -236,26 +212,6 @@ export class PrewalkCoordinator {
 		return true;
 	}
 
-	/** Lazily enables plan-yolo's plan phase before the first prompt is built. */
-	async armPlanYoloIfNeeded(): Promise<void> {
-		if (!this.#planYolo || this.#planYoloArmed) return;
-		this.#planYoloArmed = true;
-		const previousEnabledTools = this.#host.getEnabledToolNames();
-		const previousMountedTools = this.#host.getMountedXdevToolNames();
-		const augmentations = this.#host.hasBuiltInTool("write") ? ["write"] : [];
-		await this.#host.setActiveToolsByName([...new Set([...previousEnabledTools, ...augmentations])]);
-		this.#planYoloPreviousNonMCPPresentation = {
-			enabled: previousEnabledTools.filter(name => !isMCPToolName(name)),
-			mounted: previousMountedTools.filter(name => !isMCPToolName(name)),
-		};
-		this.#host.setPlanModeState({
-			enabled: true,
-			planFilePath: this.#host.getPlanReferencePath() || "local://PLAN.md",
-			workflow: "parallel",
-		});
-		this.#host.setPlanProposalHandler(title => this.#finalizePlanYoloProposal(title));
-	}
-
 	#scrubPlanNudge(liveMessages: AgentMessage[]): void {
 		if (!this.#planInjected) return;
 		const isPlanNudge = isPrewalkPlanNudge;
@@ -267,59 +223,5 @@ export class PrewalkCoordinator {
 		const stateMessages = this.#host.agent.state.messages;
 		const filtered = stateMessages.filter(message => !isPlanNudge(message));
 		if (filtered.length !== stateMessages.length) this.#host.agent.replaceMessages(filtered);
-	}
-
-	async #finalizePlanYoloProposal(title: string): Promise<AgentToolResult<unknown>> {
-		const planYolo = this.#planYolo;
-		const state = this.#host.getPlanModeState();
-		if (!planYolo || !state?.enabled) throw new ToolError("Plan mode is not active.");
-		const { planFilePath, title: resolvedTitle } = await resolveApprovedPlan({
-			suppliedTitle: title,
-			statePlanFilePath: state.planFilePath,
-			readPlan: url =>
-				readPlanFile(url, {
-					localProtocolOptions: this.#host.localProtocolOptions(),
-					cwd: this.#host.sessionManager.getCwd(),
-				}),
-			listPlanFiles: () => listPlanFiles({ localProtocolOptions: this.#host.localProtocolOptions() }),
-		});
-		this.#host.setPlanModeState(undefined);
-		const previousPresentation = this.#planYoloPreviousNonMCPPresentation;
-		try {
-			if (previousPresentation) {
-				await this.#host.runToolRegistryMutation(async () => {
-					const liveMCP = this.#host.getSelectedMCPToolNames();
-					const liveMountedMCP = this.#host.getMountedXdevToolNames().filter(isMCPToolName);
-					await this.#host.setActiveToolPresentation(
-						[...new Set([...previousPresentation.enabled, ...liveMCP])],
-						[...new Set([...previousPresentation.mounted, ...liveMountedMCP])],
-					);
-				});
-			}
-		} catch (error) {
-			this.#host.setPlanModeState(state);
-			throw error;
-		}
-		this.#host.setPlanProposalHandler(null);
-		this.#planYolo = undefined;
-		this.#planYoloPreviousNonMCPPresentation = undefined;
-		await this.#host.setModelTemporary(planYolo.target, planYolo.thinkingLevel, { ephemeral: true });
-		this.#host.emitNotice(
-			"info",
-			`Plan-yolo: plan approved, switched to ${planYolo.target.provider}/${planYolo.target.id} to implement "${resolvedTitle}".`,
-			"plan-yolo",
-		);
-		this.#host.agent.steer({
-			role: "custom",
-			customType: PLAN_YOLO_HANDOFF_MESSAGE_TYPE,
-			content: prompt.render(planYoloHandoffPrompt, { planFilePath, title: resolvedTitle }),
-			attribution: "agent",
-			display: false,
-			timestamp: Date.now(),
-		});
-		return {
-			content: [{ type: "text", text: `Plan approved. Implementing now with ${planYolo.target.id}.` }],
-			details: { planFilePath, title: resolvedTitle, planExists: true },
-		};
 	}
 }

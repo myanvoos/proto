@@ -13,7 +13,6 @@
   - `packages/coding-agent/src/lsp/index.ts` — format-on-write and diagnostics writethrough.
   - `packages/coding-agent/src/tools/auto-generated-guard.ts` — block overwriting generated files.
   - `packages/coding-agent/src/tools/fs-cache-invalidation.ts` — invalidate shared FS scan caches after writes.
-  - `packages/coding-agent/src/tools/plan-mode-guard.ts` — resolve paths and enforce plan-mode write policy.
 
 ## Inputs
 | Field | Type | Required | Description |
@@ -57,7 +56,7 @@ Single-shot result.
 1. `WriteTool.execute()` unwraps a copied `[path#TAG]` argument and peels a valid read selector from internal URLs so write and read address the same resource. Malformed/range selectors on writable URLs are rejected.
 2. In hashline display mode it strips pasted `[PATH#HASH]` headers and `LINE:` prefixes from `content`.
 3. It validates URI-like targets. Unknown schemes and common `xd://` misspellings fail instead of becoming local filenames; prefix with `./` to deliberately create a URI-looking POSIX filename.
-4. If `path` is an internal URL whose handler exposes `write`, the tool delegates to it. `xd://` validates and dispatches JSON to the mounted tool while preserving its result and approval tier; `local://` falls through to the session-local filesystem path.
+4. If `path` is an internal URL whose handler exposes `write`, the tool delegates to it. `xd://` validates and dispatches JSON to the mounted tool while preserving its result; `local://` falls through to the session-local filesystem path.
 5. `conflict://...` is handled next. Scope reads such as `conflict://<id>/ours` are read-only; writable conflict URIs omit the scope. Registered on-disk markers are revalidated before replacement.
 6. It calls `#resolveArchiveWritePath()`. Candidate archive files are checked longest-first; when none exists, the shortest candidate archive path is used for creating a new container.
 7. Archive writes call `enforcePlanModeWrite(..., { op: exists ? "update" : "create" })`, then `#writeArchiveEntry()`.
@@ -142,7 +141,7 @@ content: ""
 
 ### Writable internal resources and tool devices
 - A registered internal handler with a `write` hook owns its resource semantics (for example, `vault://`). `local://` is instead resolved into the session-local artifact sandbox and follows the plain-file path.
-- `xd://` lists/dispatches tool devices mounted behind `write`. Read `xd://<name>` first for its generated input documentation, then pass one JSON object as `content`. The device's own schema, updates, result blocks, error flag, renderer metadata, and approval tier are preserved.
+- `xd://` lists/dispatches tool devices mounted behind `write`. Read `xd://<name>` first for its generated input documentation, then pass one JSON object as `content`. The device's own schema, updates, result blocks, error flag, and renderer metadata are preserved.
 - Unknown URI-like schemes are refused to prevent silent local-file creation. Use `./scheme://...` only when that filename is intentional.
 
 ### Merge-conflict resolution
@@ -167,7 +166,6 @@ content: ""
   - May talk to configured LSP servers through `packages/coding-agent/src/lsp/index.ts`.
 - Session state
   - Invalidates shared filesystem scan cache entries through `invalidateFsScanAfterWrite()`.
-  - Enforces plan-mode write restrictions before mutating the target.
   - Updates file mutation/snapshot state for plain files and conflict resolutions; resolved conflict ids are invalidated.
   - `xd://` dispatches a mounted tool and may therefore have that tool's documented side effects.
 - Background work / cancellation
@@ -206,5 +204,4 @@ content: ""
 - The prompt forbids two common anti-patterns: using `write` for routine edits that should use `edit`, and creating `*.md` / `README` files unless explicitly requested. It also forbids emojis unless requested.
 - Plain file and internal URL writes report `cleanContent.length` as “bytes”, which is UTF-16 code units in JS, not an on-disk byte measurement.
 - `stripWriteContent()` only removes hashline prefixes when the session’s file display mode has `hashLines` enabled; otherwise content is written unchanged.
-
-- The tool has `strict = true`, `loadMode = "essential"`, and exclusive concurrency. Its renderer shows a 12-line streaming preview and a 6-line completed preview by default; `xd://` results delegate rendering to the mounted device.
+- The tool has `loadMode = "essential"` and exclusive concurrency. Its renderer shows a 12-line streaming preview and a 6-line completed preview by default; `xd://` results delegate rendering to the mounted device.

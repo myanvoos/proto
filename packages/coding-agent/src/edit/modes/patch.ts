@@ -32,8 +32,7 @@ import {
 	invalidateFsScanAfterWrite,
 } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { resolveToCwd } from "../../tools/path-utils";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { resolveAuthoredPath, resolveToCwd } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
 import type { AppliedEditObserver } from "../blackbox";
 import {
@@ -1842,9 +1841,8 @@ export async function executePatchSingle(
 
 	const op: Operation = rawOp === "create" || rawOp === "delete" ? rawOp : "update";
 
-	enforcePlanModeWrite(session, path, { op, move: rename });
-	const resolvedPath = resolvePlanPath(session, path);
-	const resolvedRename = rename ? resolvePlanPath(session, rename) : undefined;
+	const resolvedPath = resolveAuthoredPath(session, path);
+	const resolvedRename = rename ? resolveAuthoredPath(session, rename) : undefined;
 
 	await assertEditableFile(resolvedPath, path, session.settings);
 
