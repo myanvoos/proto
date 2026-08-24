@@ -94,7 +94,7 @@ function categoryLabel(category: string, count: number): string {
 export function formatStartupChangelogSummary(selection: StartupChangelogSelection): string {
 	const latestVersion = selection.latestVersion;
 	if (!latestVersion || selection.selectedEntries === 0) {
-		return "Updated omp. Use /changelog for recent changes.";
+		return "Updated proto. Use /changelog for recent changes.";
 	}
 
 	const releaseCount = selection.selectedEntries;

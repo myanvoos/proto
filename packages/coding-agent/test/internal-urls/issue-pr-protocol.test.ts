@@ -21,8 +21,8 @@ let originalEnv: string | undefined;
 let originalGhToken: string | undefined;
 beforeEach(async () => {
 	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "issue-pr-protocol-"));
-	originalEnv = process.env.OMP_GITHUB_CACHE_DB;
-	process.env.OMP_GITHUB_CACHE_DB = path.join(tempDir, "github-cache.db");
+	originalEnv = process.env.PROTO_GITHUB_CACHE_DB;
+	process.env.PROTO_GITHUB_CACHE_DB = path.join(tempDir, "github-cache.db");
 	originalGhToken = process.env.GH_TOKEN;
 	process.env.GH_TOKEN = "test-token";
 	resetCacheForTests();
@@ -33,9 +33,9 @@ afterEach(async () => {
 	resetCacheForTests();
 	InternalUrlRouter.resetForTests();
 	if (originalEnv === undefined) {
-		delete process.env.OMP_GITHUB_CACHE_DB;
+		delete process.env.PROTO_GITHUB_CACHE_DB;
 	} else {
-		process.env.OMP_GITHUB_CACHE_DB = originalEnv;
+		process.env.PROTO_GITHUB_CACHE_DB = originalEnv;
 	}
 	if (originalGhToken === undefined) {
 		delete process.env.GH_TOKEN;

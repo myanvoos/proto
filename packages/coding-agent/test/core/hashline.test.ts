@@ -512,7 +512,7 @@ describe("hashline — filename+tag path recovery", () => {
 			const root = canonicalSnapshotKey(tempDir);
 			const inside = path.join(root, "pkg", "test", "file.ts");
 			// A sibling of the working tree stands in for the artifact sandbox / vault.
-			const outside = path.join(canonicalSnapshotKey(os.tmpdir()), "omp-artifacts", "file.ts");
+			const outside = path.join(canonicalSnapshotKey(os.tmpdir()), "proto-artifacts", "file.ts");
 
 			// Internal-URL authored targets are approved at "read"; never redirect to a "write".
 			expect(guardFs.allowTagPathRecovery("local://file.ts", inside)).toBe(false);

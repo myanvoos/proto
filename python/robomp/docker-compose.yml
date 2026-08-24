@@ -74,7 +74,7 @@ services:
       ROBOMP_REPLAY_TOKEN: ${ROBOMP_REPLAY_TOKEN:-}
 
       # --- container-fixed paths ---
-      ROBOMP_OMP_COMMAND: omp
+      ROBOMP_PROTO_COMMAND: proto
       ROBOMP_WORKSPACE_ROOT: /data/workspaces
       ROBOMP_SQLITE_PATH: /data/robomp.sqlite
       ROBOMP_LOG_DIR: /data/logs
@@ -100,7 +100,7 @@ services:
       # root-owned, world-readable files under /srv/agent-home; the agent
       # subprocess runs with HOME=/srv/agent-home, so ~/.omp and ~/.agent
       # resolve there without exposing mutable host mounts.
-      - ${HOME}/.omp/agent/models.container.yml:/srv/agent-home-stage/.omp/agent/models.yml:ro
+      - ${HOME}/.proto/agent/models.container.yml:/srv/agent-home-stage/.proto/agent/models.yml:ro
       - ${HOME}/.agent/AGENTS.md:/srv/agent-home-stage/.agent/AGENTS.md:ro
       - ${HOME}/.agent/rules:/srv/agent-home-stage/.agent/rules:ro
     ports:

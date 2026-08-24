@@ -17,9 +17,9 @@ A successful call is not memoized by JS. Repeated calls rely on the runtime's `r
 - `platformTag`: `${platform}-${process.arch}`;
 - package version and sentinel name `__piNativesV<version_with_underscores>`;
 - package-local `nativeDir` and the directory of `process.execPath`;
-- `nativesDir`, normally `~/.omp/natives`; it uses `$XDG_DATA_HOME/omp/natives` only when `$XDG_DATA_HOME/omp` exists;
+- `nativesDir`, normally `~/.proto/natives`; it uses `$XDG_DATA_HOME/proto/natives` only when `$XDG_DATA_HOME/proto` exists;
 - `versionedDir`: `<nativesDir>/<packageVersion>`;
-- legacy compiled-binary directory: `%LOCALAPPDATA%/omp` (or `~/AppData/Local/omp`) on Windows, `~/.local/bin` elsewhere;
+- legacy compiled-binary directory: `%LOCALAPPDATA%/proto` (or `~/AppData/Local/proto`) on Windows, `~/.local/bin` elsewhere;
 - workspace/install/compiled mode, optional leaf directory, Windows staging policy, CPU variant, filenames, and ordered candidates.
 
 Compiled mode is true when a populated embedded manifest exists, `PI_COMPILED` is set, or `import.meta.url` contains a Bun embedded marker (`$bunfs`, `~BUN`, or `%7EBUN`). A non-compiled `nativeDir` outside a `node_modules` path is a workspace load. Windows path classification is case-insensitive; other platforms use case-sensitive path matching.

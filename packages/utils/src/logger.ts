@@ -53,8 +53,8 @@ function emitToSinks(level: LogLevel, message: string, context: Record<string, u
 	}
 }
 
-const PROCESS_LOG_PATTERN = /^omp\.(\d{4}-\d{2}-\d{2})\.(\d+)\.log(?:\.(\d+))?$/;
-const PROCESS_AUDIT_PATTERN = /^\.omp\.(\d+)-audit\.json$/;
+const PROCESS_LOG_PATTERN = /^proto\.(\d{4}-\d{2}-\d{2})\.(\d+)\.log(?:\.(\d+))?$/;
+const PROCESS_AUDIT_PATTERN = /^\.proto\.(\d+)-audit\.json$/;
 const RETAINED_STALE_LOGS_PER_PROCESS_DAY = 1;
 const RETAINED_STALE_AUDIT_FILES = 0;
 const RETAINED_STALE_LOG_DAYS = 5;
@@ -240,11 +240,11 @@ function makeFileTransport(dir?: string): RotatingFileSink {
 	pruneStaleProcessLogs(logsDir);
 	return new RotatingFileSink({
 		directory: logsDir,
-		filenamePrefix: "omp",
+		filenamePrefix: "proto",
 		filenameSuffix: String(process.pid),
 		maxBytes: 10 * 1024 * 1024,
 		maxFiles: 5,
-		auditFile: path.join(logsDir, `.omp.${process.pid}-audit.json`),
+		auditFile: path.join(logsDir, `.proto.${process.pid}-audit.json`),
 	});
 }
 

@@ -71,7 +71,7 @@ export async function runPsCommand(cmd: PsCommandArgs): Promise<void> {
 			return;
 		}
 		if (!cmd.name) {
-			console.error(chalk.red(`${cmd.action} requires a process name. Run \`omp ps\` to list processes.`));
+			console.error(chalk.red(`${cmd.action} requires a process name. Run \`proto ps\` to list processes.`));
 			process.exitCode = 1;
 			return;
 		}

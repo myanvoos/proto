@@ -28,7 +28,7 @@ describe.skipIf(!supportsReftable)("git reftable support", () => {
 	beforeAll(async () => {
 		// Shared reftable repo: two distinct commits on two branches so ref
 		// resolution has independent main/feature-branch targets to resolve.
-		sharedRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-reftable-"));
+		sharedRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-reftable-"));
 		const initResult = await $`git init --ref-format=reftable --initial-branch=main`.cwd(sharedRepoDir).quiet();
 		if (initResult.exitCode !== 0) throw new Error(`reftable git init failed (exit ${initResult.exitCode})`);
 		await $`git config user.name "Test User"`.cwd(sharedRepoDir).quiet();
@@ -44,12 +44,12 @@ describe.skipIf(!supportsReftable)("git reftable support", () => {
 		headSha = (await $`git rev-parse HEAD`.cwd(sharedRepoDir).quiet().text()).trim();
 
 		// Linked worktree on its own branch, off the shared repo's HEAD.
-		worktreeDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-reftable-wt-"));
+		worktreeDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-reftable-wt-"));
 		await $`git worktree add ${worktreeDir} -b wt-branch`.cwd(sharedRepoDir).quiet();
 
 		// Independent reftable repo for the config-comment test (no commits needed;
 		// it only inspects/rewrites the freshly-initialized config).
-		configRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-reftable-cfg-"));
+		configRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-reftable-cfg-"));
 		const cfgInit = await $`git init --ref-format=reftable --initial-branch=main`.cwd(configRepoDir).quiet();
 		if (cfgInit.exitCode !== 0) throw new Error(`reftable git init (config) failed (exit ${cfgInit.exitCode})`);
 	});

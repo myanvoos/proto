@@ -83,8 +83,8 @@ runs:
            # repo half, every hosted job re-downloaded and re-extracted the
            # rust/LLVM/zig toolchains. Save sites must list the same paths.
            path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+              ~/.cache/proto-bazel-disk
+              ~/.cache/proto-bazel-repo
            key: ${{ steps.backend.outputs.cache-key }}
            # Order matters: exact key, same-config prefix, then any archive for
            # this scope+os+arch. The bare fallback is what keeps release version
@@ -124,7 +124,7 @@ runs:
                echo "startup --output_user_root=$RUNNER_TEMP/bazel-root"
                echo "common --config=ci"
                echo "common --repository_cache=/opt/bazel-repo-cache"
-               echo "common --repo_env=OMP_XWIN_CACHE_DIR=/opt/bazel-repo-cache/xwin"
+               echo "common --repo_env=PROTO_XWIN_CACHE_DIR=/opt/bazel-repo-cache/xwin"
                echo "common --config=cache-rw"
                echo "common --remote_cache=grpcs://bazel-remote.bazel-cache.svc.cluster.local:9092"
                echo "common --tls_certificate=infra/bazel-remote/ca.crt"
@@ -132,7 +132,7 @@ runs:
                echo "common --remote_download_toplevel"
              } > "$rc"
            else
-             mkdir -p "$HOME/.cache/omp-bazel-disk" "$HOME/.cache/omp-bazel-repo"
+             mkdir -p "$HOME/.cache/proto-bazel-disk" "$HOME/.cache/proto-bazel-repo"
              # Seeding from stale archives means entries dead source
              # generations wrote would otherwise ride along forever; drop
              # anything untouched for 14 days (tar preserves mtimes across
@@ -144,11 +144,11 @@ runs:
              # hollow external repos ("BUILD file not found" — v17.2.0
              # release run 30519253683). The repo cache is bounded by the
              # GitHub cache TTL/LRU at the archive level instead.
-             find "$HOME/.cache/omp-bazel-disk" -type f -mtime +14 -delete 2>/dev/null || true
+             find "$HOME/.cache/proto-bazel-disk" -type f -mtime +14 -delete 2>/dev/null || true
              {
                echo "common --config=ci"
-               echo "common --disk_cache=$HOME/.cache/omp-bazel-disk"
-               echo "common --repository_cache=$HOME/.cache/omp-bazel-repo"
+               echo "common --disk_cache=$HOME/.cache/proto-bazel-disk"
+               echo "common --repository_cache=$HOME/.cache/proto-bazel-repo"
              } > "$rc"
            fi
 

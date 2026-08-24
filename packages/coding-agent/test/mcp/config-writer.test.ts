@@ -9,7 +9,7 @@ describe("config-writer concurrent mutations", () => {
 	let filePath: string;
 
 	beforeEach(async () => {
-		dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-config-"));
+		dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-config-"));
 		filePath = path.join(dir, "mcp.json");
 	});
 

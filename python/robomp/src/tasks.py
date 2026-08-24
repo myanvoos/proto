@@ -361,7 +361,7 @@ async def handle_release_ci(
     active = db.get_active_release(repo_full)
     row = db.get_release(key)
     if row is None:
-        session_dir = sandbox.workspace_root(repo_full, "release") / f".omp-session-{tag}"
+        session_dir = sandbox.workspace_root(repo_full, "release") / f".proto-session-{tag}"
         row = db.upsert_release(
             repo=repo_full,
             tag=tag,

@@ -79,22 +79,15 @@ describe("bashToolRenderer", () => {
 		expect(rendered).not.toContain("\t");
 	});
 
-	it("renders the pending call as a bordered block with the command in the body", async () => {
+	it("renders the pending call as a left-rail block with the command in the body", async () => {
 		const component = bashToolRenderer.renderCall(
 			{ command: "sleep 30" },
 			{ expanded: false, isPartial: true },
 			uiTheme,
 		);
-		const lines = Bun.stripANSI(component.render(60).join("\n")).split("\n");
-		// A block frames the command: a header bar, the command row, and a bottom border.
-		expect(lines.length).toBeGreaterThanOrEqual(3);
-		const header = lines[0]!;
-		const body = lines.slice(1, -1).join("\n");
-		// Bash commands already carry a `$` prompt in the body, so the frame header
-		// stays a plain rule instead of repeating "Bash" in the title bar.
-		expect(header).not.toContain("Bash");
-		expect(header).not.toContain("sleep 30");
-		expect(body).toContain("$ sleep 30");
+		const rendered = Bun.stripANSI(component.render(60).join("\n"));
+		expect(rendered).toContain(uiTheme.symbol("block.rail"));
+		expect(rendered).toContain("$ sleep 30");
 	});
 
 	it("shows the effective timeout from result details when it differs from call args", async () => {
@@ -196,7 +189,7 @@ describe("bashToolRenderer", () => {
 		expect(rendered).toContain("boom");
 	});
 
-	it("renders a timed-out command with a warning border instead of an error border", async () => {
+	it("renders a timed-out command with warning styling instead of error styling", async () => {
 		const component = bashToolRenderer.renderResult(
 			{
 				content: [{ type: "text", text: "[Command timed out after 1 seconds]\n" }],

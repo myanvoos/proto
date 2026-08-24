@@ -36,8 +36,6 @@ import type { SettingTab, StatusLineSegmentId, StatusLineSeparatorStyle } from "
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { getTabBarTheme } from "../shared";
-import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
-import { getComposerShapeOptions } from "./composer-shape-registry";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
@@ -543,8 +541,6 @@ export interface SettingsRuntimeContext {
 	cwd: string;
 	/** Schedules a re-render after async preview work completes. */
 	requestRender?: () => void;
-	/** Live status renderer for composer-shape previews (the session's status line). */
-	composerPreviewStatus?: ComposerPreviewStatusSource;
 }
 
 /** Status line settings subset for preview */
@@ -1060,8 +1056,6 @@ export class SettingsSelectorComponent implements Component {
 			});
 		} else if (def.path === "theme.dark" || def.path === "theme.light") {
 			options = this.context.availableThemes.map(t => ({ value: t, label: t }));
-		} else if (def.path === "composer.shape") {
-			options = getComposerShapeOptions();
 		}
 		// Preview handlers
 		let onPreview: ((value: string) => void | Promise<void>) | undefined;
@@ -1084,13 +1078,6 @@ export class SettingsSelectorComponent implements Component {
 				const separator = settings.get("statusLine.separator");
 				this.callbacks.onStatusLinePreview?.({ separator });
 			};
-		} else if (def.path === "composer.shape") {
-			const shapePreview = new ComposerShapePreview(String(currentValue ?? "box"), {
-				requestRender: this.context.requestRender,
-				status: this.context.composerPreviewStatus,
-			});
-			onPreview = value => shapePreview.setValue(value);
-			footer = shapePreview;
 		}
 		// Provide status line preview for theme selection
 		const isThemeSetting = def.path === "theme.dark" || def.path === "theme.light";

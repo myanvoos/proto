@@ -37,8 +37,8 @@ describe("git helpers with git binary absent (#6169)", () => {
 		vi.spyOn(Bun, "spawn").mockImplementation(throwSpawnEnoent);
 		// A deleted cwd also makes spawn throw ENOENT; the error must name the
 		// directory, not falsely claim git is uninstalled.
-		await expect(git.diff.has("/nonexistent-omp-eval-dir")).rejects.toThrow(
-			"working directory does not exist: /nonexistent-omp-eval-dir",
+		await expect(git.diff.has("/nonexistent-proto-eval-dir")).rejects.toThrow(
+			"working directory does not exist: /nonexistent-proto-eval-dir",
 		);
 	});
 

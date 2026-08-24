@@ -1,6 +1,6 @@
 # roboomp
 
-Self-hosted GitHub triage bot. Drives [`omp --mode rpc`](https://github.com/can1357/oh-my-pi)
+Self-hosted GitHub triage bot. Drives [`proto --mode rpc`](https://github.com/can1357/oh-my-pi)
 as a subprocess against a per-issue git worktree, then writes back to GitHub
 through a sidecar that holds the PAT.
 
@@ -17,7 +17,7 @@ and branches:
 - `enhancement` / `proposal` → one comment, no PR.
 - `invalid` / `duplicate` → one brief comment.
 
-Follow-up issue comments and PR review comments resume the same omp session
+Follow-up issue comments and PR review comments resume the same proto session
 (`--continue` against the persisted JSONL transcript). On orchestrator
 restart, in-flight events are re-queued and resume the same way.
 
@@ -30,7 +30,7 @@ the next verdict until every run and the GitHub Release are green.
 
 Two containers, one trust boundary:
 
-- **robomp** — FastAPI + sqlite event queue + `WorkerPool` running `omp` in
+- **robomp** — FastAPI + sqlite event queue + `WorkerPool` running `proto` in
   per-issue worktrees under `/data/workspaces/`. Holds the HMAC key, never
   the PAT.
 - **gh-proxy** — sibling on an `internal: true` network. Holds `GITHUB_TOKEN`,
@@ -41,13 +41,13 @@ Flow: webhook → HMAC verify → `github_events.route` → sqlite `events`
 (dedup on `X-GitHub-Delivery`) → `WorkerPool` claims under
 `BEGIN IMMEDIATE` with an in-process `_inflight` set per `(owner, repo, n)`
 → `sandbox.ensure_workspace` produces a worktree on `farm/<8hex>/<slug>`
-→ `worker.run_task` spawns `omp --mode rpc` with `cwd=worktree`,
+→ `worker.run_task` spawns `proto --mode rpc` with `cwd=worktree`,
 persistent `session_dir`, model randomly drawn from `ROBOMP_MODEL` (CSV).
 
 Release events serialize under `<owner>/<repo>#release`; each tag persists its
-own `releases` row and `.omp-session-<tag>` transcript.
+own `releases` row and `.proto-session-<tag>` transcript.
 
-The agent uses omp's built-in tools (`read`/`edit`/`bash`/`lsp`, scoped to
+The agent uses proto's built-in tools (`read`/`edit`/`bash`/`lsp`, scoped to
 the worktree) plus the host tools in `src/host_tools.py` — the
 exclusive surface for GitHub writes. Every host-tool invocation is audited
 into the `tool_calls` table with credential-redacted args and results.
@@ -55,7 +55,7 @@ into the `tool_calls` table with credential-redacted args and results.
 ## Setup
 
 Requires Docker Compose v2 and a LiteLLM-style proxy on the host that your
-`~/.omp/agent/models.container.yml` points at (mounted into the container as `models.yml`; kept under a separate filename on the host so the host omp doesn't route through the gateway). roboomp lives inside the oh-my-pi
+`~/.proto/agent/models.container.yml` points at (mounted into the container as `models.yml`; kept under a separate filename on the host so the host proto doesn't route through the gateway). roboomp lives inside the oh-my-pi
 monorepo at `python/robomp/`; both the docker build context and the
 `/work/pi` bind mount default to the parent monorepo (`../..`). Override
 `PI_ROOT` only if you want a different oh-my-pi checkout backing the build
@@ -157,8 +157,8 @@ pytest -x tests/                              # unit suite, no network
 ROBOMP_INTEGRATION=1 pytest -x tests/test_worker_smoke.py
 ```
 
-The integration test spawns a real `omp --mode rpc` against an
-`httpx.MockTransport` GitHub and a local bare repo, so it needs `omp` on
+The integration test spawns a real `proto --mode rpc` against an
+`httpx.MockTransport` GitHub and a local bare repo, so it needs `proto` on
 `PATH`. `bun run test:py` runs the unit suite.
 
 ## Security posture
@@ -230,7 +230,7 @@ The integration test spawns a real `omp --mode rpc` against an
 | `bun check failed before PR creation` | Fix the reported failure and retry `gh_open_pr`. |
 | `refusing to open PR: \`bun run test\` failed before open PR` | The repo suite is red at HEAD. Fix and commit, or `skip_checks=true` if the failure pre-exists on the default branch. |
 | `Failed to load pi_natives` | Wrong arch / missing native. `bun run pi:image` then `bun run robomp:build`. |
-| `No API key found for <provider>` | `~/.omp/agent/models.container.yml` mount missing or provider id mismatch with `ROBOMP_MODEL`. |
+| `No API key found for <provider>` | `~/.proto/agent/models.container.yml` mount missing or provider id mismatch with `ROBOMP_MODEL`. |
 
 ## Layout
 
@@ -240,7 +240,7 @@ src/
   github_events.py   verify_signature + route()
   queue.py           WorkerPool, dispatch loop, per-issue _inflight serialization
   tasks.py           issue/PR handlers plus handle_release_ci and cleanup_workspace
-  worker.py          synchronous omp RPC driver, prompt assembly, env scrubbing
+  worker.py          synchronous proto RPC driver, prompt assembly, env scrubbing
   host_tools.py      issue/PR tools plus release_ci_status, release_job_log,
                      release_retag, and abort_task
   sandbox.py         clone pool + worktree lifecycle

@@ -130,7 +130,7 @@ describe("InputController.presentLargePasteMenu file attachment", () => {
 	});
 
 	it("saves the paste to local:// and inserts a clean local://paste reference", async () => {
-		dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-paste-test-"));
+		dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-paste-test-"));
 		const { controller, spies } = createContext({ choice: "Attach as local file", artifactsDir: dir });
 
 		await controller.presentLargePasteMenu("line one\nline two", 2);
@@ -143,7 +143,7 @@ describe("InputController.presentLargePasteMenu file attachment", () => {
 	});
 
 	it("does not overwrite an existing paste file", async () => {
-		dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-paste-test-"));
+		dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-paste-test-"));
 		await Bun.write(path.join(dir, "local", "paste-1.md"), "previous");
 		const { controller, spies } = createContext({ choice: "Attach as local file", artifactsDir: dir });
 

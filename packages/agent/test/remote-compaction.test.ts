@@ -1770,7 +1770,7 @@ describe("requestRemoteCompaction wire formats", () => {
 		});
 	});
 
-	test("keeps the generic omp summarizer format for other endpoints", async () => {
+	test("keeps the generic proto summarizer format for other endpoints", async () => {
 		let sentBody: unknown;
 		const fetchMock: FetchImpl = async (_input, init) => {
 			if (typeof init?.body !== "string") throw new Error("missing remote compaction request body");

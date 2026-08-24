@@ -22,15 +22,15 @@ elif [[ "${1:-}" == *"robomp.proxy"* ]]; then
     is_proxy_role=1
 fi
 
-/usr/sbin/groupadd -f -g 2000 omp
+/usr/sbin/groupadd -f -g 2000 proto
 max_slots="${ROBOMP_MAX_CONCURRENCY:-8}"
 for i in $(seq 1 "$max_slots"); do
-    user="omp-$i"
-    slot_group="omp-$i"
+    user="proto-$i"
+    slot_group="proto-$i"
     slot_id=$((2000 + i))
     /usr/sbin/groupadd -f -g "$slot_id" "$slot_group"
-    id -u "$user" >/dev/null 2>&1 || /usr/sbin/useradd -u "$slot_id" -g "$slot_group" -G omp -M -N -s /usr/sbin/nologin "$user"
-    /usr/sbin/usermod -g "$slot_group" -a -G omp "$user"
+    id -u "$user" >/dev/null 2>&1 || /usr/sbin/useradd -u "$slot_id" -g "$slot_group" -G proto -M -N -s /usr/sbin/nologin "$user"
+    /usr/sbin/usermod -g "$slot_group" -a -G proto "$user"
 done
 
 if [ "$is_proxy_role" -eq 1 ]; then
@@ -50,20 +50,20 @@ mkdir -p /data/workspaces /data/workspaces/_pool /data/logs
 # cache is workspace-private; a shared cache is unsafe across slot users
 # because bun may chmod/chown its cache root to the first writer.
 mkdir -p /data/cache/cargo /data/cache/cargo-target /data/cache/rustup /data/cache/pi-natives
-chown -R root:omp /data/cache /data/workspaces/_pool
+chown -R root:proto /data/cache /data/workspaces/_pool
 find /data/cache /data/workspaces/_pool -type d -exec chmod 2770 {} +
 find /data/cache /data/workspaces/_pool -type f -perm /111 -exec chmod 0770 {} +
 find /data/cache /data/workspaces/_pool -type f ! -perm /111 -exec chmod 0660 {} +
 chmod 0700 /data/logs
 
 
-rm -rf /srv/agent-home/.agent /srv/agent-home/.omp/agent
-mkdir -p /srv/agent-home/.agent /srv/agent-home/.omp/agent
+rm -rf /srv/agent-home/.agent /srv/agent-home/.proto/agent
+mkdir -p /srv/agent-home/.agent /srv/agent-home/.proto/agent
 if [ -e /srv/agent-home-stage/.agent ]; then
     cp -a /srv/agent-home-stage/.agent/. /srv/agent-home/.agent/
 fi
-if [ -e /srv/agent-home-stage/.omp/agent ]; then
-    cp -a /srv/agent-home-stage/.omp/agent/. /srv/agent-home/.omp/agent/
+if [ -e /srv/agent-home-stage/.proto/agent ]; then
+    cp -a /srv/agent-home-stage/.proto/agent/. /srv/agent-home/.proto/agent/
 fi
 chown -R root:root /srv/agent-home || true
 find /srv/agent-home -type d -exec chmod 0755 {} +
@@ -74,11 +74,11 @@ find /srv/agent-home -type f -exec chmod 0644 {} +
 # create and enter regardless of which slot first made them: setgid + group
 # omp keeps the whole tree group-writable (entrypoint umask 0002 carries into
 # slot processes, so new entries stay group-writable too).
-mkdir -p /srv/agent-home/.omp/run
-chgrp -R omp /srv/agent-home/.omp/run
-chmod -R g+rwX /srv/agent-home/.omp/run
-find /srv/agent-home/.omp/run -type d -exec chmod g+s {} +
-chmod 2770 /srv/agent-home/.omp/run
+mkdir -p /srv/agent-home/.proto/run
+chgrp -R proto /srv/agent-home/.proto/run
+chmod -R g+rwX /srv/agent-home/.proto/run
+find /srv/agent-home/.proto/run -type d -exec chmod g+s {} +
+chmod 2770 /srv/agent-home/.proto/run
 
 touch /data/robomp.sqlite
 chown root:root /data/robomp.sqlite

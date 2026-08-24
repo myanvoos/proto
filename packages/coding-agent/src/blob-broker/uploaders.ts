@@ -87,7 +87,7 @@ export function createCommandUploader(template: string): BlobUploader {
 		destination: "command",
 		async upload(request: BlobUploadRequest): Promise<BlobPublication> {
 			const { bytes, mimeType, extension } = request;
-			const file = path.join(os.tmpdir(), `omp-blob-upload-${crypto.randomUUID()}.${extension}`);
+			const file = path.join(os.tmpdir(), `proto-blob-upload-${crypto.randomUUID()}.${extension}`);
 			await Bun.write(file, bytes);
 			try {
 				const argv = argvTemplate.map(arg =>

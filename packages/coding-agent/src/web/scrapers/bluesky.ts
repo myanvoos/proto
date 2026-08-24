@@ -105,11 +105,11 @@ function formatPost(post: BlueskyPost, isQuote = false): string {
 	if (embed) {
 		if (embed.$type === "app.bsky.embed.external#view" && embed.external) {
 			const ext = embed.external;
-			md += `\n📎 [${ext.title || ext.uri}](${ext.uri})`;
+			md += `\n[${ext.title || ext.uri}](${ext.uri})`;
 			if (ext.description) md += `\n*${ext.description}*`;
 			md += "\n";
 		} else if (embed.$type === "app.bsky.embed.images#view" && embed.images) {
-			md += `\n🖼️ ${embed.images.length} image(s)`;
+			md += `\n${embed.images.length} image(s)`;
 			for (const img of embed.images) {
 				if (img.alt) md += `\n- Alt: "${img.alt}"`;
 			}
@@ -134,10 +134,10 @@ function formatPost(post: BlueskyPost, isQuote = false): string {
 	// Stats
 	if (!isQuote) {
 		const stats: string[] = [];
-		if (post.likeCount) stats.push(`❤️ ${formatNumber(post.likeCount)}`);
-		if (post.repostCount) stats.push(`🔁 ${formatNumber(post.repostCount)}`);
-		if (post.replyCount) stats.push(`💬 ${formatNumber(post.replyCount)}`);
-		if (post.quoteCount) stats.push(`📝 ${formatNumber(post.quoteCount)}`);
+		if (post.likeCount) stats.push(`${formatNumber(post.likeCount)} likes`);
+		if (post.repostCount) stats.push(`${formatNumber(post.repostCount)} reposts`);
+		if (post.replyCount) stats.push(`${formatNumber(post.replyCount)} replies`);
+		if (post.quoteCount) stats.push(`${formatNumber(post.quoteCount)} quotes`);
 		if (stats.length) md += `\n${stats.join(" • ")}\n`;
 	}
 

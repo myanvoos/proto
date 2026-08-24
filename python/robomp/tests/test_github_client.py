@@ -516,7 +516,7 @@ def test_tag_dereference_and_release_metadata() -> None:
                 "draft": False,
                 "prerelease": False,
                 "html_url": "https://example/releases/v1.2.3",
-                "assets": [{"name": "omp-darwin-arm64.tar.gz"}],
+                "assets": [{"name": "proto-darwin-arm64.tar.gz"}],
             },
         )
 
@@ -524,7 +524,7 @@ def test_tag_dereference_and_release_metadata() -> None:
     assert _run_async(client.get_tag_sha("octo/widget", "v1.2.3")) == "commit-sha"
     release = _run_async(client.get_release_by_tag("octo/widget", "v1.2.3"))
     assert release is not None
-    assert release.asset_names == ("omp-darwin-arm64.tar.gz",)
+    assert release.asset_names == ("proto-darwin-arm64.tar.gz",)
 
 
 def test_missing_tag_and_release_return_none() -> None:

@@ -588,7 +588,7 @@ describe("hindsightBackend live bank routing", () => {
 		// follow-up `set` writes to `#global` while `get` keeps returning the
 		// `#overrides` value — exactly the precedence the live settings UI
 		// does NOT have, since real config writes land in `#global`.
-		settings.set("hindsight.bankId", "omp");
+		settings.set("hindsight.bankId", "proto");
 		const session = makeFakeSession({ sessionId: "s-rebuild", settings });
 
 		await hindsightBackend.start({
@@ -600,7 +600,7 @@ describe("hindsightBackend live bank routing", () => {
 		});
 
 		const initial = session.getHindsightSessionState();
-		expect(initial?.bankId).toBe("omp");
+		expect(initial?.bankId).toBe("proto");
 
 		settings.set("hindsight.bankId", "Minigames");
 		// Hook is sync but the rebuild is async; yield once so the handler runs.
@@ -632,14 +632,14 @@ describe("hindsightBackend live bank routing", () => {
 		});
 
 		const initial = session.getHindsightSessionState();
-		expect(initial?.bankId).toBe("omp");
+		expect(initial?.bankId).toBe("proto");
 		expect(initial?.retainTags).toBeUndefined();
 
 		settings.set("hindsight.scoping", "per-project");
 		await Bun.sleep(0);
 
 		const next = session.getHindsightSessionState();
-		expect(next?.bankId).toBe("omp-proj");
+		expect(next?.bankId).toBe("proto-proj");
 		expect(next).not.toBe(initial);
 	});
 
@@ -652,7 +652,7 @@ describe("hindsightBackend live bank routing", () => {
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
 		});
-		settings.set("hindsight.bankId", "omp");
+		settings.set("hindsight.bankId", "proto");
 		const session = makeFakeSession({ sessionId: "s-noop", settings });
 
 		await hindsightBackend.start({
@@ -664,7 +664,7 @@ describe("hindsightBackend live bank routing", () => {
 		});
 
 		const initial = session.getHindsightSessionState();
-		settings.set("hindsight.bankId", "omp"); // unchanged
+		settings.set("hindsight.bankId", "proto"); // unchanged
 		await Bun.sleep(0);
 
 		expect(session.getHindsightSessionState()).toBe(initial);
@@ -706,19 +706,19 @@ describe("hindsightBackend live bank routing", () => {
 		expect(next).not.toBe(initial);
 		// With scoping=per-project the base falls back to the default ("omp"),
 		// so the reset bank id picks up the project suffix from cwd.
-		expect(next?.bankId).toBe("omp-_new_xengamekit");
+		expect(next?.bankId).toBe("proto-_new_xengamekit");
 
 		next!.enqueueRetain("post-reset fact", "reset routing");
 		await next!.flushRetainQueue();
 
 		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
-		expect(retainBatchSpy.mock.calls[0][0]).toBe("omp-_new_xengamekit");
+		expect(retainBatchSpy.mock.calls[0][0]).toBe("proto-_new_xengamekit");
 	});
 
 	// Companion case: when `hindsight.scoping` is `global`, clearing the
 	// non-empty bankId should restore the bare `omp` default — the operator's
 	// stated expectation in the live repro from #1902.
-	it("routes future retains to the bare omp bank when bankId is cleared in global scoping", async () => {
+	it("routes future retains to the bare proto bank when bankId is cleared in global scoping", async () => {
 		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const settings = Settings.isolated({
@@ -742,13 +742,13 @@ describe("hindsightBackend live bank routing", () => {
 		await Bun.sleep(0);
 
 		const next = session.getHindsightSessionState();
-		expect(next?.bankId).toBe("omp");
+		expect(next?.bankId).toBe("proto");
 
 		next!.enqueueRetain("post-reset global fact");
 		await next!.flushRetainQueue();
 
 		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
-		expect(retainBatchSpy.mock.calls[0][0]).toBe("omp");
+		expect(retainBatchSpy.mock.calls[0][0]).toBe("proto");
 	});
 
 	it("coalesces synchronous routing hooks so rebuilt states do not leak agent listeners", async () => {
@@ -759,7 +759,7 @@ describe("hindsightBackend live bank routing", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 			"hindsight.retainEveryNTurns": 1,
 		});
-		settings.set("hindsight.bankId", "omp");
+		settings.set("hindsight.bankId", "proto");
 		settings.set("hindsight.scoping", "global");
 		const entries = [
 			{ role: "user" as const, text: "remember this routing coalesce fact" },
@@ -873,7 +873,7 @@ describe("hindsightBackend retain queue flush on session teardown", () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
-			"hindsight.bankId": "omp",
+			"hindsight.bankId": "proto",
 		});
 		const session = makeFakeSession({ sessionId: "s-dispose-flush", settings });
 
@@ -897,7 +897,7 @@ describe("hindsightBackend retain queue flush on session teardown", () => {
 
 		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
 		const [bankId, items] = retainBatchSpy.mock.calls[0];
-		expect(bankId).toBe("omp");
+		expect(bankId).toBe("proto");
 		expect(items).toHaveLength(1);
 		expect(items[0].content).toBe("durable fact");
 		expect(items[0].timestamp).toBeInstanceOf(Date);

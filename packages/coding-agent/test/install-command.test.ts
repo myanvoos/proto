@@ -27,7 +27,7 @@ describe("install command is registered as a top-level subcommand", () => {
 
 	test("CLI runner rejects only bare reserved management words", () => {
 		expect(resolveCliArgv(["extensions"])).toEqual({
-			error: '`omp extensions` is not a management command. Use `omp plugin list` / `omp plugin install`, or run `omp launch extensions` if you meant to send "extensions" as a prompt.',
+			error: '`proto extensions` is not a management command. Use `proto plugin list` / `proto plugin install`, or run `proto launch extensions` if you meant to send "extensions" as a prompt.',
 		});
 		expect(resolveCliArgv(["extensions", "are", "not", "loading"])).toEqual({
 			argv: ["launch", "extensions", "are", "not", "loading"],
@@ -61,7 +61,7 @@ describe("looksLikeLocalPath", () => {
 	});
 
 	test("bare names that exist as a local directory are treated as local", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-install-test-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-install-test-"));
 		try {
 			fs.mkdirSync(path.join(tempDir, "vendored-ext"));
 			expect(looksLikeLocalPath("vendored-ext", tempDir)).toBe(true);

@@ -11,6 +11,24 @@ import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
 import { formatUsageRow } from "./usage-row";
 
+const MARKER_SELECTOR_RE = /^(?:raw|conflicts)$/i;
+
+function splitGroupDisplayPath(value: string): { path: string; sel?: string } {
+	const split = splitPathAndSel(value);
+	if (split.sel !== undefined) return split;
+	const colon = value.lastIndexOf(":");
+	if (colon > 0 && MARKER_SELECTOR_RE.test(value.slice(colon + 1))) {
+		return { path: value.slice(0, colon), sel: value.slice(colon + 1) };
+	}
+	return split;
+}
+
+function displaySelectorSuffix(sel: string | undefined): string {
+	if (!sel) return "";
+	const chunks = sel.split(":").filter(chunk => !MARKER_SELECTOR_RE.test(chunk));
+	return chunks.length > 0 ? `:${chunks.join(":")}` : "";
+}
+
 /**
  * Extract the read call's target path. `path` is the canonical arg; `file_path`
  * is the legacy alias still tolerated by the read tool schema.
@@ -767,8 +785,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		value: string,
 		options: { correctedFrom?: string; conflictCount?: number; line?: number; linkPath?: string } = {},
 	): string {
-		const split = splitPathAndSel(value);
-		const selectorSuffix = split.sel ? `:${split.sel}` : "";
+		const split = splitGroupDisplayPath(value);
+		const selectorSuffix = displaySelectorSuffix(split.sel);
 		const baseValue = split.sel ? split.path : value;
 		const filePath = shortenPath(baseValue);
 		let pathDisplay = filePath ? theme.fg("accent", filePath) : theme.fg("toolOutput", "…");
@@ -789,7 +807,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#formatConflictBadge(conflictCount: number | undefined): string {
 		if (!conflictCount || conflictCount <= 0) return "";
 		const n = conflictCount;
-		return ` ${theme.fg("warning", `(⚠ ${n} conflict${n === 1 ? "" : "s"})`)}`;
+		return ` ${theme.fg("warning", `(${n} conflict${n === 1 ? "" : "s"})`)}`;
 	}
 
 	/**

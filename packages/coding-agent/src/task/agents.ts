@@ -12,7 +12,6 @@ import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { t
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
-import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import workerMd from "../prompts/agents/worker.md" with { type: "text" };
 
 import type { AgentDefinition, AgentSource } from "./types";
@@ -44,7 +43,6 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "scout.md", template: scoutMd },
 	{ fileName: "designer.md", template: designerMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
-	{ fileName: "security-reviewer.md", template: securityReviewerMd },
 	{ fileName: "librarian.md", template: librarianMd },
 	{
 		fileName: "worker.md",

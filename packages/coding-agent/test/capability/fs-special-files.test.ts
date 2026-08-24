@@ -10,7 +10,7 @@ describe("capability/fs readFile on special files", () => {
 	let dir = "";
 
 	beforeAll(async () => {
-		dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-fs-special-"));
+		dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-fs-special-"));
 	});
 
 	afterAll(async () => {

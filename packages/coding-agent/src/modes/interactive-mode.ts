@@ -151,7 +151,6 @@ import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
 import { CustomEditor } from "./components/custom-editor";
-import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
 import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -163,7 +162,7 @@ import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
-import { Composer } from "./composer";
+import { buildComposerShortcuts, COMPOSER_PLACEHOLDER, Composer, ComposerShortcutsBar } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
@@ -201,7 +200,6 @@ import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "./theme/mermaid-cache";
-import { type ShimmerPalette, shimmerEnabled, shimmerSegments, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
 import {
 	getEditorTheme,
@@ -213,7 +211,6 @@ import {
 	startMacOSAppearanceReprobeFallback,
 	theme,
 } from "./theme/theme";
-import { getSlashCommandTypeIcon } from "./theme/tui-adapters";
 import type {
 	CompactionQueuedMessage,
 	InteractiveModeContext,
@@ -228,12 +225,6 @@ import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
 
-const HINT_SHIMMER_PALETTE: ShimmerPalette = {
-	low: "dim",
-	mid: "muted",
-	high: "borderAccent",
-};
-
 interface WorkingMessageAccent {
 	main: string;
 	dim: string;
@@ -243,42 +234,6 @@ interface WorkingMessageAccentCacheKey {
 	sessionName: string | undefined;
 	accentSurfaceLuminance: number | undefined;
 	sessionAccentEnabled: boolean;
-}
-
-/**
- * Intern the shimmer palettes for each `WorkingMessageAccent` so `compile()`
- * inside `shimmerSegments` sees a stable palette object between animation
- * ticks. Allocating fresh palette literals every frame guaranteed a cache miss
- * on the Symbol-keyed compiled-ANSI slot and forced `resolveTierAnsi` to walk
- * every tier open/close for the ~30fps loader redraw (issue #4377).
- */
-const workingMessagePaletteCache = new WeakMap<WorkingMessageAccent, { main: ShimmerPalette; hint: ShimmerPalette }>();
-
-function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPalette; hint: ShimmerPalette } {
-	let entry = workingMessagePaletteCache.get(accent);
-	if (!entry) {
-		entry = {
-			main: { low: "dim", mid: { ansi: accent.main }, high: { ansi: accent.main }, bold: true },
-			hint: { low: "dim", mid: { ansi: accent.dim }, high: { ansi: accent.dim } },
-		};
-		workingMessagePaletteCache.set(accent, entry);
-	}
-	return entry;
-}
-
-function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
-	const palettes = accent ? workingMessagePalettes(accent) : undefined;
-	const palette = palettes?.main;
-	const hint = interruptHint();
-	if (!message.endsWith(hint)) return shimmerText(message, theme, palette);
-	const header = message.slice(0, -hint.length);
-	return shimmerSegments(
-		[
-			{ text: header, palette },
-			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
-		],
-		theme,
-	);
 }
 
 const EDITOR_MAX_HEIGHT_MIN = 6;
@@ -303,6 +258,14 @@ export function computeEditorMaxHeight(terminalRows: number): number {
 	const rows = Number.isFinite(terminalRows) && terminalRows > 0 ? terminalRows : EDITOR_FALLBACK_ROWS;
 	const comfortable = Math.max(EDITOR_MAX_HEIGHT_MIN, Math.min(EDITOR_MAX_HEIGHT_MAX, rows - EDITOR_RESERVED_ROWS));
 	return Math.max(EDITOR_MIN_RENDERED_ROWS, Math.min(comfortable, rows - EDITOR_MIN_CHROME_ROWS));
+}
+
+class HookStatusRow implements Component {
+	constructor(private readonly line: (width: number) => readonly string[]) {}
+	render(width: number): readonly string[] {
+		return this.line(width);
+	}
+	invalidate(): void {}
 }
 
 const HUD_NOTE_SUP_DIGITS: Record<string, string> = {
@@ -557,6 +520,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
+	#hookStatusRow: HookStatusRow | undefined;
+	readonly #composerShortcuts = new ComposerShortcutsBar();
 	/** Composer attachment band (chip cards) rendered directly above the prompt box. */
 	attachmentChipsContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -798,7 +763,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.settings = session.settings;
 		const preferences = {
 			quiet: settings.get("startup.quiet"),
-			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
@@ -874,6 +838,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// unless the user opts in, and never emits raw escapes on other terminals.
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
 		this.chatContainer = new TranscriptContainer();
+		// The first conversation block ends the welcome-screen anchor split:
+		// re-home the fills so the transcript + HUD/loader stack pins to the
+		// bottom edge instead of floating above the composer (syncHomeAnchor
+		// otherwise runs only at init and on resize).
+		this.chatContainer.onFirstContent = () => {
+			this.composer.syncHomeAnchor(this.chatContainer.children.length);
+		};
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
 		this.todoContainer = new AnchoredLiveContainer();
@@ -888,6 +859,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
+		this.editor.setPlaceholder(COMPOSER_PLACEHOLDER);
 		this.syncEditorSpelling();
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.onAutocompleteCancel = () => {
@@ -909,6 +881,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// duplicated transcript copy in pane history per tmux width change.
 		this.#resizeHandler = () => {
 			this.#syncEditorMaxHeight();
+			this.composer.syncHomeAnchor(this.chatContainer.children.length);
 		};
 		process.stdout.on("resize", this.#resizeHandler);
 		try {
@@ -929,8 +902,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// path so their chip tokens become clickable again instead of degrading to dead text.
 		this.editor.draftImageLinkMaterializer = images =>
 			materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
-		this.editorContainer = new Container();
-		this.editorContainer.addChild(this.editor);
+		this.editorContainer = this.composer.editorSlot;
+		this.#hookStatusRow = new HookStatusRow(width => this.statusLine.renderHookStatus(width));
 		this.statusLine = new StatusLineComponent(session);
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
 		this.hideToolActivity = settings.get("display.hideToolActivity");
@@ -943,7 +916,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		).map(cmd => ({
 			name: cmd.name,
 			description: cmd.description ?? "(hook command)",
-			icon: getSlashCommandTypeIcon("extension"),
 			getArgumentCompletions: cmd.getArgumentCompletions,
 		}));
 
@@ -951,15 +923,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
 			name: loaded.command.name,
 			description: `${loaded.command.description} (${loaded.source})`,
-			icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
 		}));
 
 		const skillCommandList = this.#rebuildSkillCommandsFromSession();
 
-		const builtinCommands: SlashCommand[] = buildTuiBuiltinSlashCommands({ ctx: this }).map(cmd => ({
-			...cmd,
-			icon: getSlashCommandTypeIcon(cmd.icon ?? "action"),
-		}));
+		const builtinCommands: SlashCommand[] = [...buildTuiBuiltinSlashCommands({ ctx: this })];
 		// Store pending commands for init() where file commands are loaded async
 		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 
@@ -1106,11 +1074,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const headerAfter: Component[] = [];
 		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
-			headerAfter.push(
-				new DynamicBorder(),
-				new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
-				new Spacer(1),
-			);
+			headerAfter.push(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0), new Spacer(1));
 			if (settings.get("startup.changelogMode") === "summary") {
 				const summary = formatStartupChangelogSummary(this.#startupChangelog).replace(
 					/\/changelog(?: full)?/g,
@@ -1120,36 +1084,44 @@ export class InteractiveMode implements InteractiveModeContext {
 			} else {
 				headerAfter.push(new Markdown(this.#startupChangelog.markdown?.trim() ?? "", 1, 0, getMarkdownTheme()));
 			}
-			headerAfter.push(new Spacer(1), new DynamicBorder());
 		}
 		this.composer.setHeaderExtras(headerBefore, headerAfter);
 		this.statusLine.watchBranch(() => {
 			this.ui.requestRender();
 		});
+		this.statusLine.setLocationRightProvider(() => this.#footlineRightZone());
+		this.#composerShortcuts.setShortcutsProvider(() =>
+			buildComposerShortcuts(this.keybindings, {
+				busy: this.viewSession?.isStreaming ?? false,
+				hasQueue:
+					(this.viewSession?.getQueuedMessages().steering.length ?? 0) +
+						(this.viewSession?.getQueuedMessages().followUp.length ?? 0) >
+					0,
+				focused: this.focusedAgentId !== undefined,
+			}),
+		);
 		this.composer.setStatusComponent(this.statusLine);
 
-		this.composer.setRuntimeChildren([
-			this.chatContainer,
-			this.pendingMessagesContainer,
-			this.todoContainer,
-			this.subagentContainer,
-			this.btwContainer,
-			this.omfgContainer,
-			this.cleanseContainer,
-			this.errorBannerContainer,
-			this.modelCycleContainer,
-			this.deferredCommandContainer,
-			// Working loader / transient status sits below the sticky todo + subagent
-			// HUDs, just above the editor's hook-widget top margin — so it reads next to
-			// the prompt while keeping the one-line gap above the editor.
-			this.statusContainer,
-			this.attachmentChipsContainer,
-			this.hookWidgetContainerAbove,
-			this.editorContainer,
-			this.hookWidgetContainerBelow,
-		]);
+		this.composer.setRuntimeChildren(
+			[
+				this.chatContainer,
+				this.pendingMessagesContainer,
+				this.todoContainer,
+				this.subagentContainer,
+				this.btwContainer,
+				this.omfgContainer,
+				this.cleanseContainer,
+				this.errorBannerContainer,
+				this.modelCycleContainer,
+				this.deferredCommandContainer,
+				this.statusContainer,
+				this.#hookStatusRow ?? new Container(),
+				this.attachmentChipsContainer,
+				this.hookWidgetContainerAbove,
+			],
+			[this.#composerShortcuts, this.hookWidgetContainerBelow],
+		);
 		this.ui.setFocus(this.editor);
-		this.syncComposerShape();
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
@@ -1206,6 +1178,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#syncEditorMaxHeight();
+		this.composer.syncHomeAnchor(this.chatContainer.children.length);
 		this.isInitialized = true;
 		this.ui.requestRender(true);
 
@@ -1370,11 +1343,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const commands: SlashCommand[] = [];
 		this.skillCommands.clear();
 		if (this.session.skillsSettings?.enableSkillCommands !== false) {
-			const icon = getSlashCommandTypeIcon("skill");
 			for (const skill of this.session.skills) {
 				const commandName = `skill:${skill.name}`;
 				this.skillCommands.set(commandName, skill);
-				commands.push({ name: commandName, description: skill.description, icon });
+				commands.push({ name: commandName, description: skill.description });
 			}
 		}
 		return commands;
@@ -1395,11 +1367,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// init passes that result through instead of re-walking the providers.
 		const fileCommands = preloaded ? [...preloaded] : await loadSlashCommands({ cwd: basePath });
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
-		const promptIcon = getSlashCommandTypeIcon("prompt");
 		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
 			name: cmd.name,
 			description: cmd.description,
-			icon: promptIcon,
 		}));
 		// Surface discovered prompt templates in the picker. AgentSession.prompt() expands
 		// `expandSlashCommand` before `expandPromptTemplate`, and builtin command
@@ -1422,7 +1392,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				// `PromptTemplate.description` from `loadTemplatesFromDir` already includes the
 				// source suffix (e.g. "Review code (project)"), so pass it through verbatim.
 				description: template.description,
-				icon: promptIcon,
 			}));
 		this.#baseAutocompleteProvider = this.#inputController.createAutocompleteProvider(
 			[...this.#pendingSlashCommands, ...fileSlashCommands, ...promptTemplateCommands],
@@ -1964,12 +1933,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 		});
 	}
-	syncComposerShape(): void {
-		const shape = settings.get("composer.shape") ?? "box";
-		this.composer.setPreferences({ composerShape: shape });
-		this.editor.setTopBorderProvider(undefined);
-		this.updateEditorBorderColor();
-		this.ui.requestRender();
+
+	#footlineRightZone(): string | null {
+		const draft = this.editor.getText();
+		const trimmed = draft.trim();
+		if (trimmed.length === 0) return null;
+		if (trimmed.startsWith("/") && !/\s/.test(trimmed)) return null;
+		return theme.fg("matchHighlight", `~${Math.max(1, Math.round(trimmed.length / 4))} tok`);
 	}
 
 	#handleSessionAccentInputsChanged(): void {
@@ -1979,23 +1949,21 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	updateEditorBorderColor(): void {
+		const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+		const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
+		const hex = sessionName
+			? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
+			: undefined;
+		const ansi = getSessionAccentAnsi(hex);
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
+		} else if (ansi) {
+			this.editor.borderColor = (str: string) => `${ansi}${str}\x1b[39m`;
 		} else {
-			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
-			const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
-			const hex = sessionName
-				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
-				: undefined;
-			const ansi = getSessionAccentAnsi(hex);
-			if (ansi) {
-				this.editor.borderColor = (str: string) => `${ansi}${str}\x1b[39m`;
-			} else {
-				const level = this.session.thinkingLevel ?? ThinkingLevel.Off;
-				this.editor.borderColor = theme.getThinkingBorderColor(level);
-			}
+			const level = this.session.thinkingLevel ?? ThinkingLevel.Off;
+			this.editor.borderColor = theme.getThinkingBorderColor(level);
 		}
 		if (this.focusedAgentId) {
 			// Focused subagent view: faint the outline so the borrowed session is
@@ -2003,6 +1971,22 @@ export class InteractiveMode implements InteractiveModeContext {
 			const base = this.editor.borderColor;
 			this.editor.borderColor = (str: string) => `\x1b[2m${base(str)}\x1b[22m`;
 		}
+		let gutter: string;
+		if (this.isBashMode) {
+			gutter = theme.getBashModeBorderColor()("$");
+		} else if (this.isPythonMode) {
+			gutter = theme.getPythonModeBorderColor()("›");
+		} else if (this.planModeEnabled && !this.planModePaused) {
+			gutter = theme.fg("modeAccent", "◈");
+		} else {
+			const open = ansi ?? theme.getFgAnsi("borderAccent");
+			gutter = `${open}›\x1b[39m`;
+		}
+		if (this.focusedAgentId) {
+			gutter = `\x1b[2m${gutter}\x1b[22m`;
+		}
+		this.editor.setPromptGutter(`  ${gutter} `);
+		this.editor.setPromptGutterContinuation(`  ${theme.fg("dim", "┆")} `);
 		this.ui.requestRender();
 	}
 
@@ -2463,7 +2447,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
+		const lines = ["", theme.bold(theme.fg("accent", "Todo"))];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
@@ -4135,35 +4119,35 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	static #AUTOQA_CONSENT_PROMPTS: ReadonlyArray<readonly [string, string]> = [
 		[
-			"😤 Your agent is fuming about a tool.",
+			"Your agent is fuming about a tool.",
 			"Wanna let it vent to the devs? Just the tool name + what set it off, nothing personal.",
 		],
 		[
-			"😵‍💫 Your agent is having an existential crisis over a tool.",
+			"Your agent is having an existential crisis over a tool.",
 			"Forward the dread to the devs? Tool + what broke its little mind, no personal info.",
 		],
 		[
-			"😭 Your agent wants to cry about a misbehaving tool.",
+			"Your agent wants to cry about a misbehaving tool.",
 			"Let it cry to the devs? Tool + the tears, never anything personal.",
 		],
 		[
-			"🤬 Your agent is BIG MAD at one of the tools.",
+			"Your agent is BIG MAD at one of the tools.",
 			"Pass the rant along? Just the tool name and what enraged it, nothing personal.",
 		],
 		[
-			"🫠 Your agent is melting down over a tool.",
+			"Your agent is melting down over a tool.",
 			"Mop up by alerting the devs? Tool + what melted it, no personal info.",
 		],
 		[
-			"🤯 Your agent's brain broke at a tool's nonsense.",
+			"Your agent's brain broke at a tool's nonsense.",
 			"Ship the pieces to the devs? Tool name + the confusion, never anything personal.",
 		],
 		[
-			"😩 Your agent is begging to file a complaint about a tool.",
+			"Your agent is begging to file a complaint about a tool.",
 			"Hand it the form? Tool + what wronged it, nothing personal.",
 		],
 		[
-			"🥲 Your agent put on a brave face but a tool did it dirty.",
+			"Your agent put on a brave face but a tool did it dirty.",
 			"Let it tell the devs the truth? Tool name + the dirt, no personal info.",
 		],
 	];
@@ -4199,7 +4183,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
-		this.#extensionUiController.disposeComposerShapes();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
 			unsubscribe();
 		}
@@ -4322,6 +4305,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+		nextEditor.setPlaceholder(COMPOSER_PLACEHOLDER);
 		nextEditor.setSpellingFeatures({
 			typoDetection: this.settings.get("spelling.typoDetection"),
 			autocomplete: this.settings.get("spelling.autocomplete"),
@@ -4339,15 +4323,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(nextEditor));
 		this.editor = nextEditor;
 		this.composer.setEditor(nextEditor);
-		this.syncComposerShape();
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
 			nextEditor.setHistoryStorage(this.historyStorage);
 		}
 		nextEditor.setText(previousText);
-
-		this.editorContainer.clear();
-		this.editorContainer.addChild(nextEditor);
 		this.ui.setFocus(nextEditor);
 
 		this.#inputController.setupKeyHandlers();
@@ -4588,14 +4568,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loadingAnimation) {
 			this.#clearWorkingMessageAccentCache();
 			this.statusContainer.disposeChildren();
-			const messageColorFn = ((message: string) =>
-				renderWorkingMessage(message, this.#getWorkingMessageAccent())) as LoaderMessageColorFn & {
-				animated?: true;
-			};
-			// Shimmer drives the 30fps redraw; when it is disabled the working
-			// message is static, so leave `animated` unset and let the loader use
-			// the spinner-only ~12.5fps cadence instead of repainting a frozen line.
-			if (shimmerEnabled()) messageColorFn.animated = true;
+			const messageColorFn: LoaderMessageColorFn = message => theme.fg("muted", message);
 			this.loadingAnimation = new Loader(
 				this.ui,
 				spinner => {
@@ -4652,9 +4625,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.setWorkingMessage(message);
 	}
 
-	showNewVersionNotification(newVersion: string): void {
-		this.#uiHelpers.showNewVersionNotification(newVersion);
-	}
+	showNewVersionNotification(_newVersion: string): void {}
 
 	clearEditor(): void {
 		this.#uiHelpers.clearEditor();
@@ -4867,7 +4838,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#setMicCursor(color: { r: number; g: number; b: number }): void {
 		this.editor.cursorOverride = `\x1b[38;2;${color.r};${color.g};${color.b}m${theme.icon.mic}\x1b[0m`;
-		// Theme symbols can be wide (for example, 🎤), so measure the rendered override.
+		// Theme symbols can be wide, so measure the rendered override.
 		this.editor.cursorOverrideWidth = visibleWidth(this.editor.cursorOverride);
 	}
 

@@ -77,7 +77,6 @@
       "dependencies": {
         "@babel/parser": "catalog:",
         "@oh-my-pi/hashline": "catalog:",
-        "@oh-my-pi/omp-stats": "catalog:",
         "@oh-my-pi/omptype": "catalog:",
         "@oh-my-pi/pi-agent-core": "catalog:",
         "@oh-my-pi/pi-ai": "catalog:",
@@ -86,6 +85,7 @@
         "@oh-my-pi/pi-natives": "catalog:",
         "@oh-my-pi/pi-tui": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
+        "@oh-my-pi/proto-stats": "catalog:",
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/api-logs": "catalog:",
         "@opentelemetry/context-async-hooks": "catalog:",
@@ -173,10 +173,10 @@
       },
     },
     "packages/stats": {
-      "name": "@oh-my-pi/omp-stats",
+      "name": "@oh-my-pi/proto-stats",
       "version": "18.0.0",
       "bin": {
-        "omp-stats": "./src/index.ts",
+        "proto-stats": "./src/index.ts",
       },
       "dependencies": {
         "@oh-my-pi/pi-ai": "catalog:",
@@ -250,7 +250,6 @@
     "@huggingface/transformers": "^4.2.0",
     "@napi-rs/cli": "3.7.2",
     "@oh-my-pi/hashline": "18.0.0",
-    "@oh-my-pi/omp-stats": "18.0.0",
     "@oh-my-pi/omptype": "18.0.0",
     "@oh-my-pi/pi-agent-core": "18.0.0",
     "@oh-my-pi/pi-ai": "18.0.0",
@@ -260,6 +259,7 @@
     "@oh-my-pi/pi-natives": "18.0.0",
     "@oh-my-pi/pi-tui": "18.0.0",
     "@oh-my-pi/pi-utils": "18.0.0",
+    "@oh-my-pi/proto-stats": "18.0.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.220.0",
     "@opentelemetry/context-async-hooks": "^2.9.0",
@@ -619,8 +619,6 @@
 
     "@oh-my-pi/hashline": ["@oh-my-pi/hashline@workspace:packages/hashline"],
 
-    "@oh-my-pi/omp-stats": ["@oh-my-pi/omp-stats@workspace:packages/stats"],
-
     "@oh-my-pi/omptype": ["@oh-my-pi/omptype@workspace:packages/omptype"],
 
     "@oh-my-pi/pi-agent-core": ["@oh-my-pi/pi-agent-core@workspace:packages/agent"],
@@ -638,6 +636,8 @@
     "@oh-my-pi/pi-tui": ["@oh-my-pi/pi-tui@workspace:packages/tui"],
 
     "@oh-my-pi/pi-utils": ["@oh-my-pi/pi-utils@workspace:packages/utils"],
+
+    "@oh-my-pi/proto-stats": ["@oh-my-pi/proto-stats@workspace:packages/stats"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 

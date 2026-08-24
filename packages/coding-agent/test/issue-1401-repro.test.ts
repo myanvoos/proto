@@ -44,7 +44,7 @@ describe("processFileArguments", () => {
 	let testDir: string;
 
 	beforeEach(() => {
-		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-pdf-file-args-"));
+		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-pdf-file-args-"));
 	});
 
 	afterEach(() => {

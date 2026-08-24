@@ -3,13 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { CURSOR_MARKER, Editor, type EditorTheme, TUI } from "@oh-my-pi/pi-tui";
+import { CURSOR_MARKER, Editor } from "@oh-my-pi/pi-tui";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui/keybindings";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { defaultEditorTheme } from "./test-themes";
-import { VirtualTerminal } from "./virtual-terminal";
 
 describe("Editor component", () => {
 	afterEach(() => {
@@ -37,60 +36,6 @@ describe("Editor component", () => {
 
 		expect(editor.render(40).length).toBeGreaterThan(clippedRows);
 		expect(editor.getNativeScrollbackWidthEpochRevision()).toBeGreaterThan(clippedRevision);
-	});
-
-	it("advances its width-epoch revision when terminal-cursor layout adds a row", () => {
-		const editor = new Editor(defaultEditorTheme);
-		editor.focused = true;
-		editor.setText("draft");
-		editor.setImeSafeCursorLayout(true);
-		const inlineRows = editor.render(40).length;
-		const inlineRevision = editor.getNativeScrollbackWidthEpochRevision();
-
-		editor.setUseTerminalCursor(true);
-
-		expect(editor.render(40).length).toBeGreaterThan(inlineRows);
-		const terminalCursorRevision = editor.getNativeScrollbackWidthEpochRevision();
-		expect(terminalCursorRevision).toBeGreaterThan(inlineRevision);
-		editor.setUseTerminalCursor(true);
-		expect(editor.getNativeScrollbackWidthEpochRevision()).toBe(terminalCursorRevision);
-	});
-
-	it("advances its width-epoch revision when border visibility adds rows", () => {
-		const editor = new Editor(defaultEditorTheme);
-		editor.setText("draft");
-		editor.setBorderVisible(false);
-		const borderlessRows = editor.render(40).length;
-		const borderlessRevision = editor.getNativeScrollbackWidthEpochRevision();
-
-		editor.setBorderVisible(true);
-
-		expect(editor.render(40).length).toBeGreaterThan(borderlessRows);
-		const borderedRevision = editor.getNativeScrollbackWidthEpochRevision();
-		expect(borderedRevision).toBeGreaterThan(borderlessRevision);
-		editor.setBorderVisible(true);
-		expect(editor.getNativeScrollbackWidthEpochRevision()).toBe(borderedRevision);
-	});
-
-	it("tracks lazy top-border changes independently of width reflow", () => {
-		const editor = new Editor(defaultEditorTheme);
-		let status = "idle";
-		let revision = 0;
-		editor.setTopBorderProvider(availableWidth => {
-			const content = `${status}:${availableWidth}`;
-			return { content, width: visibleWidth(content), revision };
-		});
-		editor.render(40);
-		const idleRevision = editor.getNativeScrollbackWidthEpochRevision();
-
-		status = "streaming";
-		revision++;
-		editor.render(30);
-		const streamingRevision = editor.getNativeScrollbackWidthEpochRevision();
-		expect(streamingRevision).toBeGreaterThan(idleRevision);
-
-		editor.render(50);
-		expect(editor.getNativeScrollbackWidthEpochRevision()).toBe(streamingRevision);
 	});
 
 	it("advances its width-epoch revision when autocomplete changes without changing text", async () => {
@@ -947,59 +892,33 @@ describe("Editor component", () => {
 			editor.setText("Hello ✅ World");
 			const lines = editor.render(width);
 
-			// All content lines (between borders) should fit within width
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				expect(lineWidth).toBeLessThanOrEqual(width);
-			}
-		});
-
-		it("wraps long text with emojis at correct positions", () => {
-			const editor = new Editor(defaultEditorTheme);
-			const width = 10;
-
-			// Each ✅ is 2 columns. "✅✅✅✅✅" = 10 columns, fits exactly
-			// "✅✅✅✅✅✅" = 12 columns, needs wrap
-			editor.setText("✅✅✅✅✅✅");
-			const lines = editor.render(width);
-
-			// Should have 2 content lines (plus 2 border lines)
-			// First line: 5 emojis (10 cols), second line: 1 emoji (2 cols) + padding
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				expect(lineWidth).toBeLessThanOrEqual(width);
+			// All content lines should fit within width
+			for (const line of lines) {
+				expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
 			}
 		});
 
 		it("wraps CJK characters correctly (each is 2 columns wide)", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			editor.setPromptGutter("");
+			const width = 8; // 4 CJK chars fit per row
 
 			// Each CJK char is 2 columns. "日本語テスト" = 6 chars = 12 columns
 			editor.setText("日本語テスト");
 			const lines = editor.render(width);
 
-			// All content lines (including last which has bottom border) should be correct width
-			for (let i = 1; i < lines.length; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
-				expect(lineWidth).toBeLessThanOrEqual(width);
+			for (const line of lines) {
+				expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
 			}
 
-			// Verify content split correctly - extract content between borders
-			// Middle lines use "│  " and "  │", last line uses "╰─ " and " ─╯"
-			const contentLines = lines.slice(1).map(l => {
-				const stripped = stripVTControlCharacters(l);
-				// Both border styles use 3 chars on each side
-				return stripped.slice(3, -3).trim();
-			});
-			expect(contentLines.length).toBe(2);
-			expect(contentLines[0]).toBe("日本語テス"); // 5 chars = 10 columns
-			// Last line has cursor (|) which we need to strip
-			expect(contentLines[1]?.replace("|", "")).toBe("ト"); // 1 char = 2 columns (+ cursor + padding)
+			// Verify the wrap lands on a char boundary, never splitting a wide glyph
+			const rows = lines.map(l => stripVTControlCharacters(l.replaceAll(CURSOR_MARKER, "")).trimEnd());
+			expect(rows).toEqual(["日本語テ", `スト${defaultEditorTheme.symbols.inputCursor}`]);
 		});
 
 		it("handles mixed ASCII and wide characters in wrapping", () => {
 			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("");
 			const width = 15;
 
 			// "Test ✅ OK 日本" = 4 + 1 + 2 + 1 + 2 + 1 + 4 = 15 columns (fits exactly)
@@ -1007,11 +926,8 @@ describe("Editor component", () => {
 			const lines = editor.render(width);
 
 			// Should fit in one content line
-			const contentLines = lines.slice(1, -1);
-			expect(contentLines.length).toBe(1);
-
-			const lineWidth = visibleWidth(contentLines[0]!);
-			expect(lineWidth).toBeLessThanOrEqual(width);
+			expect(lines).toHaveLength(1);
+			expect(visibleWidth(lines[0]!.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
 		});
 
 		it("renders cursor correctly on wide characters", () => {
@@ -1024,31 +940,39 @@ describe("Editor component", () => {
 
 			// The software cursor should be visible without SGR blink; Ghostty/cmux
 			// can leave afterimages for blinking cells during rapid row repaints.
-			const contentLine = lines[1]!;
+			const contentLine = lines[0]!;
 			expect(contentLine).toContain(defaultEditorTheme.symbols.inputCursor);
 			expect(contentLine).not.toContain("\x1b[5m");
 			// Line should still be correct width
 			expect(visibleWidth(contentLine)).toBeLessThanOrEqual(width);
 		});
+		it("wraps long text with emojis at correct positions", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("");
+			const width = 10;
 
-		it("keeps the bordered editor inside `width` when the cursor lands past a wide trailing grapheme (#3431)", () => {
+			// Each ✅ is 2 columns. "✅✅✅✅✅" = 10 columns, fits exactly
+			// "✅✅✅✅✅✅" = 12 columns, needs wrap
+			editor.setText("✅✅✅✅✅✅");
+			const lines = editor.render(width);
+
+			expect(lines).toHaveLength(2);
+			for (const line of lines) {
+				expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
+			}
+		});
+
+		it("keeps the editor inside `width` when the cursor lands past a wide trailing grapheme (#3431)", () => {
 			// Regression: typing a fullwidth char (e.g. CJK comma `，`, U+FF0C) at the end
-			// of the input used to push the bottom-right `─╯` 1–2 cells past the terminal
-			// edge, wrapping `╯` to its own row. The end-of-line cursor glyph + wide grapheme
-			// extends into the right padding zone; the right chrome must shrink by the exact
-			// overflow cell count.
-			for (const paddingX of [1, 2]) {
-				const theme = { ...defaultEditorTheme, editorPaddingX: paddingX };
-				const minContentWidth = 2 * (paddingX + 1) + 3; // chrome + "，" (2) + cursor (1)
-				for (let width = minContentWidth; width <= minContentWidth + 6; width++) {
-					const editor = new Editor(theme);
-					editor.focused = true;
-					for (const c of "asd，") editor.handleInput(c);
-					const lines = editor.render(width);
-					for (const line of lines) {
-						const stripped = line.replaceAll(CURSOR_MARKER, "");
-						expect(visibleWidth(stripped)).toBeLessThanOrEqual(width);
-					}
+			// of the input used to push the rendered row past the terminal edge. The
+			// end-of-line cursor glyph + wide grapheme must never overflow `width`.
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			for (const c of "asd，") editor.handleInput(c);
+			for (let width = 5; width <= 12; width++) {
+				const lines = editor.render(width);
+				for (const line of lines) {
+					expect(visibleWidth(line.replaceAll(CURSOR_MARKER, ""))).toBeLessThanOrEqual(width);
 				}
 			}
 		});
@@ -1059,68 +983,31 @@ describe("Editor component", () => {
 			editor.setUseTerminalCursor(true);
 			editor.setText("ast");
 
-			const lines = editor.render(20).map(line => stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, "")));
-			expect(lines).toEqual(["+------------------+", "+- ast            -+"]);
+			const lines = editor
+				.render(20)
+				.map(line => stripVTControlCharacters(line.replaceAll(CURSOR_MARKER, "")).trimEnd());
+			expect(lines).toEqual(["❯ ast"]);
 		});
-
-		it("keeps terminal-local IME preedit from displacing the editor border (#5563)", async () => {
-			const width = 20;
-			const terminal = new VirtualTerminal(width, 6, 1_000);
-			const tui = new TUI(terminal, true);
-			const editor = new Editor(defaultEditorTheme);
-			editor.setImeSafeCursorLayout(true);
-			tui.addChild(editor);
-			tui.setFocus(editor);
-
-			try {
-				tui.start();
-				await terminal.waitForRender();
-				for (const char of "ast") editor.handleInput(char);
-				tui.requestRender();
-				await terminal.waitForRender(() => terminal.getViewport()[1]?.includes("ast") === true);
-
-				const beforePreedit = terminal.getViewport().map(row => row.trimEnd());
-				expect(beforePreedit.slice(0, 3)).toEqual(["+------------------+", "|  ast", "+------------------+"]);
-
-				// macOS Terminal renders marked text locally in insertion mode before
-				// committed bytes reach OMP. The open cursor row must not carry right
-				// chrome that the marked text can shift onto another row.
-				terminal.write("\x1b[4hast，\x1b[4l");
-				const afterPreedit = terminal.getViewport().map(row => row.trimEnd());
-				expect(afterPreedit[1]).toBe("|  astast，");
-				expect(afterPreedit[2]).toBe(beforePreedit[2]);
-			} finally {
-				tui.stop();
-			}
-		});
-
 		it("shows cursor at end before wrap and wraps on next char", () => {
-			for (const paddingX of [0, 1]) {
-				const editor = new Editor({ ...defaultEditorTheme, editorPaddingX: paddingX });
-				const width = 20;
-				const contentWidth = width - 2 * (paddingX + 1);
-				const layoutWidth = Math.max(1, contentWidth - (paddingX === 0 ? 1 : 0));
-				const cursorToken = defaultEditorTheme.symbols.inputCursor;
+			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("");
+			const width = 20;
 
-				for (let i = 0; i < layoutWidth; i++) {
-					editor.handleInput("a");
-				}
-
-				let lines = editor.render(width);
-				let contentLines = lines.slice(1);
-				expect(contentLines.length).toBe(1);
-				expect(contentLines[0]!.includes(cursorToken)).toBeTruthy();
-
+			for (let i = 0; i < width; i++) {
 				editor.handleInput("a");
-				lines = editor.render(width);
-				contentLines = lines.slice(1);
-				expect(contentLines.length).toBe(2);
 			}
+
+			let lines = editor.render(width);
+			expect(lines).toHaveLength(1);
+			expect(lines[0]!).toContain("\x1b[7m"); // cursor keeps the last cell visible at exact fit
+
+			editor.handleInput("a");
+			lines = editor.render(width);
+			expect(lines).toHaveLength(2);
 		});
 
 		it("keeps a persistent prompt gutter visible after typing in borderless mode", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setUseTerminalCursor(true);
 
@@ -1135,7 +1022,6 @@ describe("Editor component", () => {
 
 		it("pads wrapped borderless lines to the prompt gutter width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setUseTerminalCursor(true);
 			editor.setText("abcdefghij");
@@ -1148,7 +1034,6 @@ describe("Editor component", () => {
 
 		it("keeps the prompt gutter visible when it consumes the full borderless width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 
 			let lines = editor.render(1).map(line => stripVTControlCharacters(line));
@@ -1168,7 +1053,6 @@ describe("Editor component", () => {
 
 		it("keeps cursor-following movement stable when the prompt gutter consumes the full borderless width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setMaxHeight(2);
 			editor.focused = true;
@@ -1188,7 +1072,6 @@ describe("Editor component", () => {
 
 		it("keeps the prompt gutter visible at the borderless width limit", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.focused = true;
 			const width = 20;
@@ -1205,7 +1088,6 @@ describe("Editor component", () => {
 
 		it("keeps the prompt gutter visible on the first rendered row after scrolling", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setMaxHeight(3);
 			editor.setText("l0\nl1\nl2\nl3");
@@ -1219,7 +1101,6 @@ describe("Editor component", () => {
 
 		it("keeps the prompt gutter visible when scrolling starts on a wrapped continuation chunk", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setUseTerminalCursor(true);
 			editor.setMaxHeight(2);
@@ -1234,7 +1115,7 @@ describe("Editor component", () => {
 
 		it("does not overflow width in borderless mode when the cursor reaches the line edge", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			const width = 20;
 
 			for (let i = 0; i < width; i++) {
@@ -1248,7 +1129,7 @@ describe("Editor component", () => {
 
 		it("clamps the terminal cursor marker inside a full-width borderless row", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.setUseTerminalCursor(true);
 			editor.focused = true;
 			const width = 3;
@@ -1265,7 +1146,6 @@ describe("Editor component", () => {
 
 		it("clamps the terminal cursor marker inside a full-width borderless prompt-gutter row", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setUseTerminalCursor(true);
 			editor.focused = true;
@@ -1283,7 +1163,6 @@ describe("Editor component", () => {
 
 		it("does not overflow prompt-gutter wraps when a wide grapheme lands in a 1-column content area", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			const width = 3;
 			editor.setText("好a");
@@ -1296,7 +1175,6 @@ describe("Editor component", () => {
 
 		it("clamps terminal-cursor rows when a wide grapheme lands in a 1-column prompt-gutter content area", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.setUseTerminalCursor(true);
 			editor.focused = true;
@@ -1312,7 +1190,7 @@ describe("Editor component", () => {
 
 		it("keeps a visible cursor marker when a focused borderless line is full width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.focused = true;
 			const width = 20;
 
@@ -1327,7 +1205,7 @@ describe("Editor component", () => {
 
 		it("preserves cursorOverride at the borderless width limit", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.cursorOverride = "\x1b[35m~\x1b[0m";
 			editor.cursorOverrideWidth = 1;
 			editor.focused = true;
@@ -1344,7 +1222,7 @@ describe("Editor component", () => {
 
 		it("keeps the cursor marker at the full width when cursorOverride replaces a wide trailing glyph", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.cursorOverride = "\x1b[35m~\x1b[0m";
 			editor.cursorOverrideWidth = 1;
 			editor.focused = true;
@@ -1361,7 +1239,7 @@ describe("Editor component", () => {
 
 		it("preserves visible trailing text when a wide cursorOverride cannot fit on a narrow borderless line", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.cursorOverride = "好";
 			editor.cursorOverrideWidth = 2;
 			editor.focused = true;
@@ -1377,7 +1255,6 @@ describe("Editor component", () => {
 
 		it("keeps a visible fake cursor when the prompt gutter consumes the full borderless width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.focused = true;
 
@@ -1392,7 +1269,6 @@ describe("Editor component", () => {
 
 		it("renders a fitting cursorOverride after the prompt glyph in a zero-content prompt gutter row", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.cursorOverride = "\x1b[35m~\x1b[0m";
 			editor.cursorOverrideWidth = 1;
@@ -1408,7 +1284,6 @@ describe("Editor component", () => {
 
 		it("highlights the only visible prompt-gutter cell when the zero-content prompt gutter truncates to one visible cell", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			const width = 1;
 
@@ -1425,7 +1300,6 @@ describe("Editor component", () => {
 
 		it("preserves the prompt glyph when a wide cursorOverride hits the zero-content prompt gutter", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
 			editor.setPromptGutter("> ");
 			editor.cursorOverride = "好";
 			editor.cursorOverrideWidth = 2;
@@ -1444,7 +1318,7 @@ describe("Editor component", () => {
 
 		it("falls back to a visible cursor when a wide cursorOverride cannot fit on an empty narrow borderless line", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.cursorOverride = "好";
 			editor.cursorOverrideWidth = 2;
 			editor.focused = true;
@@ -1461,7 +1335,7 @@ describe("Editor component", () => {
 
 		it("falls back to the built-in cursor when a wide trailing grapheme cannot fit on a narrow borderless line", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
+			editor.setPromptGutter("");
 			editor.focused = true;
 			const width = 1;
 			editor.setText("好");
@@ -1478,8 +1352,7 @@ describe("Editor component", () => {
 
 		it("uses the full width in borderless mode when horizontal padding is zero", () => {
 			const editor = new Editor(defaultEditorTheme);
-			editor.setBorderVisible(false);
-			editor.setPaddingX(0);
+			editor.setPromptGutter("");
 			const width = 20;
 
 			for (let i = 0; i < width; i++) {
@@ -1509,18 +1382,18 @@ describe("Editor component", () => {
 
 	describe("Word wrapping", () => {
 		function renderContentLines(editor: Editor, width: number): string[] {
-			// Move cursor to start so the rendered cursor does not affect line padding/borders.
+			// Gutterless so each rendered row is pure content at exactly `width`.
+			editor.setPromptGutter("");
+			// Move cursor to start so the rendered cursor does not affect line padding.
 			editor.handleInput("\x01"); // Ctrl+A
 			const lines = editor.render(width);
-			const paddingX = defaultEditorTheme.editorPaddingX ?? 2;
-			const borderWidth = paddingX + 1;
-			return lines.slice(1).map(l => stripVTControlCharacters(l).slice(borderWidth, -borderWidth).trimEnd());
+			return lines.map(l => stripVTControlCharacters(l).trimEnd());
 		}
 
 		it("wraps at word boundaries instead of mid-word", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 40;
-
+			const width = 34;
+			editor.setPromptGutter("");
 			editor.setText("Hello world this is a test of word wrapping functionality");
 			const lines = editor.render(width);
 
@@ -1530,27 +1403,26 @@ describe("Editor component", () => {
 				expect(lineWidth).toBe(width);
 			}
 
-			// Extract text content (strip borders and control characters)
+			// Rows break by consuming one inter-word space, so re-join row content
+			// with a single space and require the exact original sentence back.
 			const allText = lines
-				.map(l => stripVTControlCharacters(l))
-				.join("")
-				.replace(/[+\-|]/g, "")
+				.map(l => stripVTControlCharacters(l).replaceAll(defaultEditorTheme.symbols.inputCursor, "").trimEnd())
+				.join(" ")
 				.replace(/\s+/g, " ")
 				.trim();
-
-			// Should contain the full text (with normalized whitespace)
 			expect(allText).toBe("Hello world this is a test of word wrapping functionality");
 		});
 
 		it("does not start lines with leading whitespace after word wrap", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 20;
+			const width = 14;
 
 			editor.setText("Word1 Word2 Word3 Word4 Word5 Word6");
-			const lines = editor.render(width);
+			editor.setPromptGutter("");
 
-			// Get content lines (between borders)
-			const contentLines = lines.slice(1, -1);
+			const lines = editor.render(width);
+			// Every rendered row is a content row in the single chrome
+			const contentLines = lines;
 
 			// No line should start with whitespace (except for padding at the end)
 			for (let i = 0; i < contentLines.length; i++) {
@@ -1565,21 +1437,21 @@ describe("Editor component", () => {
 
 		it("breaks long words (URLs) at character level", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 30;
+			const width = 24;
 
 			editor.setText("Check https://example.com/very/long/path/that/exceeds/width here");
 			const lines = editor.render(width);
 
-			// All lines should fit within width
-			for (let i = 1; i < lines.length - 1; i++) {
-				const lineWidth = visibleWidth(lines[i]!);
+			// All rows fill the width exactly
+			for (const line of lines) {
+				const lineWidth = visibleWidth(line);
 				expect(lineWidth).toBe(width);
 			}
 		});
 
 		it("uses remaining width before breaking a long token", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			editor.setText("word 一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十");
 			const contentLines = renderContentLines(editor, width);
 			expect(contentLines.length).toBeGreaterThanOrEqual(2);
@@ -1589,7 +1461,7 @@ describe("Editor component", () => {
 		});
 		it("uses remaining width before wrapping a short wide token (CJK)", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			// This CJK token fits within maxWidth, but not within the remaining width after "word ".
 			editor.setText("word 一二三四五");
 			const contentLines = renderContentLines(editor, width);
@@ -1602,7 +1474,7 @@ describe("Editor component", () => {
 		});
 		it("wraps a longer friendly Chinese sentence without wasting remaining width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			editor.setText(
 				"word 愿世界各地的朋友都被善意连接，愿每个人都拥有幸福灿烂的人生；愿AI与人类相互成就、共同成长，携手创造更美好的明天与未来。",
 			);
@@ -1614,7 +1486,7 @@ describe("Editor component", () => {
 		});
 		it("wraps Japanese kana/kanji without wasting remaining width", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			const phrase = "天気がいいから、散歩しましょう！";
 			editor.setText(`word ${phrase}${phrase}${phrase}`);
 			const contentLines = renderContentLines(editor, width);
@@ -1624,7 +1496,7 @@ describe("Editor component", () => {
 		});
 		it("uses remaining width when wrapping an emoji token", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			editor.setText("word ✅✅✅✅✅ emoji-wrap-test with friends");
 			const contentLines = renderContentLines(editor, width);
 			expect(contentLines.length).toBeGreaterThanOrEqual(2);
@@ -1634,7 +1506,7 @@ describe("Editor component", () => {
 		});
 		it("does not split narrow non-ASCII words (German)", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 14; // 6 chars for borders, 8 for content
+			const width = 8;
 			editor.setText("word über und danke fuer deine freundschaft");
 			const contentLines = renderContentLines(editor, width);
 			expect(contentLines.length).toBeGreaterThanOrEqual(2);
@@ -1644,7 +1516,7 @@ describe("Editor component", () => {
 		});
 		it("does not split narrow non-ASCII words (Russian)", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 14; // 6 chars for borders, 8 for content
+			const width = 8;
 			editor.setText("word привет мой друг и спасибо за дружбу");
 			const contentLines = renderContentLines(editor, width);
 			expect(contentLines.length).toBeGreaterThanOrEqual(2);
@@ -1654,7 +1526,7 @@ describe("Editor component", () => {
 		});
 		it("uses remaining width for mixed wide and narrow graphemes in one token", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 16; // 6 chars for borders, 10 for content
+			const width = 10;
 			editor.setText("word 一a二b三c四d五e六f七g八h九");
 			const contentLines = renderContentLines(editor, width);
 			expect(contentLines.length).toBeGreaterThanOrEqual(2);
@@ -1663,12 +1535,12 @@ describe("Editor component", () => {
 		});
 		it("preserves multiple spaces within words on same line", () => {
 			const editor = new Editor(defaultEditorTheme);
-			const width = 50;
+			const width = 44;
 
 			editor.setText("Word1   Word2    Word3");
 			const lines = editor.render(width);
 
-			const contentLine = stripVTControlCharacters(lines[1]!).trim();
+			const contentLine = stripVTControlCharacters(lines[0]!).trim();
 			// Multiple spaces should be preserved
 			expect(contentLine.includes("Word1   Word2")).toBeTruthy();
 		});
@@ -1680,20 +1552,16 @@ describe("Editor component", () => {
 			editor.setText("");
 			const lines = editor.render(width);
 
-			// Should have at least 2 lines (borders)
-			expect(lines.length).toBeGreaterThanOrEqual(2);
-
-			// All lines should fit within width
-			for (const line of lines) {
-				const lineWidth = visibleWidth(line);
-				expect(lineWidth).toBe(width);
-			}
+			// Single gutter row padded to full width
+			expect(lines).toHaveLength(1);
+			expect(visibleWidth(lines[0]!)).toBe(width);
 		});
 
 		it("handles single word that fits exactly", () => {
 			const editor = new Editor(defaultEditorTheme);
 			const width = 20;
 
+			editor.setPromptGutter("");
 			editor.setText("1234567890");
 			const lines = editor.render(width);
 
@@ -1705,9 +1573,8 @@ describe("Editor component", () => {
 
 			// Extract and verify content
 			const allText = lines
-				.map(l => stripVTControlCharacters(l))
+				.map(l => stripVTControlCharacters(l).replaceAll(defaultEditorTheme.symbols.inputCursor, ""))
 				.join("")
-				.replace(/[+\-|]/g, "")
 				.trim();
 			expect(allText).toBe("1234567890");
 		});
@@ -2245,13 +2112,13 @@ describe("Editor component", () => {
 			editor.setText("l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9");
 
 			editor.handleInput("\x1b[5~"); // PageUp
-			expect(editor.getCursor()).toEqual({ line: 6, col: 2 });
+			expect(editor.getCursor()).toEqual({ line: 4, col: 2 });
 
 			editor.handleInput("\x1b[5~"); // PageUp
-			expect(editor.getCursor()).toEqual({ line: 3, col: 2 });
+			expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
 
 			editor.handleInput("\x1b[6~"); // PageDown
-			expect(editor.getCursor()).toEqual({ line: 6, col: 2 });
+			expect(editor.getCursor()).toEqual({ line: 5, col: 2 });
 		});
 
 		it("PageUp/PageDown on an idle editor never step prompt history (#4754)", () => {
@@ -2349,6 +2216,7 @@ describe("Editor component", () => {
 
 		it("handles editor resizes when preferredVisualCol is on the same line", () => {
 			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("");
 
 			editor.setText("12345678901234567890\n\n12345678901234567890");
 
@@ -2362,7 +2230,7 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 15 });
 
 			// Render with narrower width to simulate resize
-			editor.render(17); // Width 17 -> layoutWidth 11
+			editor.render(11); // Width 11 -> layoutWidth 11
 
 			// Move down - sticky should be clamped to new width
 			editor.handleInput("\x1b[B"); // Down - line 1
@@ -2372,9 +2240,9 @@ describe("Editor component", () => {
 
 		it("handles editor resizes when preferredVisualCol is on a different line", () => {
 			const editor = new Editor(defaultEditorTheme);
-
-			// Create a line that wraps into multiple visual lines at width 10
-			// "12345678901234567890" = 20 chars, wraps to 2 visual lines at width 10
+			editor.setPromptGutter("");
+			// Create a line that wraps into multiple visual lines at width 12
+			// "12345678901234567890" = 20 chars, wraps to 2 visual lines at width 12
 			editor.setText("short\n12345678901234567890");
 
 			// Go to line 1, col 15
@@ -2388,13 +2256,12 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 5 });
 
 			// Narrow the editor
-			editor.render(15);
+			editor.render(12);
 
-			// Move down - preferredVisualCol was 15, but width is 10
-			// Should land on line 1, clamped to width (visual col 9, which is logical col 9)
+			// Move down - preferredVisualCol was 15, clamped to the last cell of the
+			// first visual row at the new 12-column layout
 			editor.handleInput("\x1b[B"); // Down to line 1
-			expect(editor.getCursor()).toEqual({ line: 1, col: 8 });
-
+			expect(editor.getCursor()).toEqual({ line: 1, col: 11 });
 			// Move up
 			editor.handleInput("\x1b[A"); // Up - should go to line 0
 			expect(editor.getCursor()).toEqual({ line: 0, col: 5 }); // Line 0 only has 5 chars
@@ -2923,132 +2790,35 @@ describe("Editor component", () => {
 		});
 	});
 
-	describe("composer border styles", () => {
-		const unicodeTheme: EditorTheme = {
-			...defaultEditorTheme,
-			borderColor: (t: string) => t,
-			symbols: {
-				cursor: "❯",
-				inputCursor: "│",
-				boxRound: {
-					topLeft: "╭",
-					topRight: "╮",
-					bottomLeft: "╰",
-					bottomRight: "╯",
-					horizontal: "─",
-					vertical: "│",
-				},
-				boxSharp: {
-					topLeft: "┌",
-					topRight: "┐",
-					bottomLeft: "└",
-					bottomRight: "┘",
-					horizontal: "─",
-					vertical: "│",
-					teeDown: "┬",
-					teeUp: "┴",
-					teeLeft: "├",
-					teeRight: "┤",
-					cross: "┼",
-				},
-				table: {
-					topLeft: "┌",
-					topRight: "┐",
-					bottomLeft: "└",
-					bottomRight: "┘",
-					horizontal: "─",
-					vertical: "│",
-					teeDown: "┬",
-					teeUp: "┴",
-					teeLeft: "├",
-					teeRight: "┤",
-					cross: "┼",
-				},
-				quoteBorder: "│",
-				hrChar: "─",
-				spinnerFrames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-			},
-		};
-
-		it("renders claude style with top and bottom horizontal rules and prompt gutter", () => {
-			const editor = new Editor(unicodeTheme);
-			editor.setBorderStyle("claude");
+	describe("composer chrome", () => {
+		it("renders the single borderless chrome by default", () => {
+			const editor = new Editor(defaultEditorTheme);
 			editor.setText("hello");
 			const lines = editor.render(20);
-			expect(lines.length).toBe(3); // top rule, content, bottom rule
-			expect(lines[0]).toBe("─".repeat(20));
-			expect(lines[1]).toContain("❯ hello");
-			expect(lines[2]).toBe("─".repeat(20));
+			expect(lines).toHaveLength(1); // no top/bottom chrome rows
+			expect(stripVTControlCharacters(lines[0]!)).toStartWith("❯ hello");
+			expect(visibleWidth(lines[0]!)).toBe(20); // row fills the full width
 		});
 
-		it("renders pi style with full-width rules, padded content, and no prompt gutter", () => {
-			const editor = new Editor(unicodeTheme);
-			editor.setBorderStyle("pi");
-			editor.setText("hello");
-			const lines = editor.render(20);
-			expect(lines.length).toBe(3); // top rule, content, bottom rule
-			expect(lines[0]).toBe("─".repeat(20));
-			expect(lines[1]).toStartWith(" hello");
-			expect(lines[1]).not.toContain(">");
-			expect(lines[2]).toBe("─".repeat(20));
-		});
-
-		it("renders borderless style without box borders", () => {
-			const editor = new Editor(unicodeTheme);
-			editor.setBorderStyle("borderless");
-			editor.setText("hello");
-			const lines = editor.render(20);
-			expect(lines.length).toBe(1); // content only
-			expect(lines[0]).toContain("❯ hello");
-		});
-
-		it("renders default box style with compact bottom border", () => {
-			const editor = new Editor(unicodeTheme);
-			editor.setText("hello");
-			const lines = editor.render(20);
-			expect(lines.length).toBe(2); // top border, bottom border with content
-			expect(lines[0]).toContain("╭");
-			expect(lines[1]).toContain("╰─ hello");
-		});
-
-		it("renders rule style as a top-rule dock without closing chrome", () => {
-			const editor = new Editor(unicodeTheme);
-			editor.setBorderStyle("rule");
-			editor.setText("hello");
-			const lines = editor.render(20);
-			expect(lines).toHaveLength(2);
-			expect(lines[0]).toBe("─".repeat(20));
-			expect(lines[1]).toStartWith("❯ hello");
-		});
-
-		it("renders field style as one filled row with accent caps", () => {
-			const editor = new Editor({
-				...unicodeTheme,
-				accentColor: text => `\x1b[35m${text}\x1b[39m`,
-				surfaceColor: text => `\x1b[44m${text}\x1b[49m`,
-			});
-			editor.setBorderStyle("field");
+		it("honors an explicit prompt gutter over the default gutter", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("> ");
 			editor.setText("hello");
 			const [line] = editor.render(20);
-			expect(stripVTControlCharacters(line)).toStartWith("▐ hello");
-			expect(stripVTControlCharacters(line)).toEndWith("▌");
-			expect(visibleWidth(line)).toBe(20);
-			expect(line).toContain("\x1b[44m");
+			expect(stripVTControlCharacters(line!)).toBe(
+				`> hello${defaultEditorTheme.symbols.inputCursor}${" ".repeat(12)}`,
+			);
+			expect(visibleWidth(line!)).toBe(20);
 		});
 
-		it("renders rail style as a full-width surface with one accent edge", () => {
-			const editor = new Editor({
-				...unicodeTheme,
-				accentColor: text => `\x1b[35m${text}\x1b[39m`,
-				surfaceColor: text => `\x1b[44m${text}\x1b[49m`,
-			});
-			editor.setBorderStyle("rail");
+		it("renders a bare gutterless row when the prompt gutter is cleared", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setPromptGutter("");
 			editor.setText("hello");
 			const [line] = editor.render(20);
-			expect(stripVTControlCharacters(line)).toStartWith("▎ hello");
-			expect(stripVTControlCharacters(line)).not.toContain("▌");
-			expect(visibleWidth(line)).toBe(20);
-			expect(line).toContain("\x1b[44m");
+			expect(stripVTControlCharacters(line!)).toBe(
+				`hello${defaultEditorTheme.symbols.inputCursor}${" ".repeat(14)}`,
+			);
 		});
 	});
 });

@@ -27,12 +27,20 @@ interface ReadRenderArgs {
 
 const INTERNAL_URL_LIKE_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
+const MARKER_SELECTOR_RE = /^(?:raw|conflicts)$/i;
+
 function splitReadRenderPath(rawPath: string): { path: string; sel?: string } {
 	if (INTERNAL_URL_LIKE_RE.test(rawPath)) {
 		const internal = splitInternalUrlSel(rawPath);
 		if (internal.sel) return internal;
 	}
-	return splitPathAndSel(rawPath);
+	const split = splitPathAndSel(rawPath);
+	if (split.sel !== undefined) return split;
+	const colon = rawPath.lastIndexOf(":");
+	if (colon > 0 && MARKER_SELECTOR_RE.test(rawPath.slice(colon + 1))) {
+		return { path: rawPath.slice(0, colon), sel: rawPath.slice(colon + 1) };
+	}
+	return split;
 }
 
 function firstReadSelectorLine(sel: string | undefined): number | undefined {
@@ -67,7 +75,7 @@ function formatReadPathLink(
 ): string {
 	const split = splitReadRenderPath(rawPath);
 	const basePath = split.path || rawPath;
-	const selectorSuffix = split.sel ? `:${split.sel}` : "";
+	const selectorSuffix = split.sel !== undefined && !MARKER_SELECTOR_RE.test(split.sel) ? `:${split.sel}` : "";
 	const plainDisplayPath = options.suffixResolution
 		? shortenPath(options.suffixResolution.to)
 		: shortenPath(basePath || options.resolvedPath || options.fallbackLabel || rawPath);
@@ -237,7 +245,7 @@ export const readToolRenderer = {
 		}
 		if (details?.conflictCount && details.conflictCount > 0) {
 			const n = details.conflictCount;
-			title += ` ${uiTheme.fg("warning", `(⚠ ${n} conflict${n === 1 ? "" : "s"})`)}`;
+			title += ` ${uiTheme.fg("warning", `(${n} conflict${n === 1 ? "" : "s"})`)}`;
 		}
 		const rawRequested = args?.raw === true || isRawSelector(parseSel(renderPath.sel));
 		const isMarkdown = details?.contentType === "text/markdown" && !rawRequested;

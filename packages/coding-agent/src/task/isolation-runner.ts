@@ -235,7 +235,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				// recoverable merge conflict into permanent loss of committed
 				// work (#8868). Delete only when nothing is at stake.
 				const baseSha = taskBaseline.root.headCommit;
-				const branchName = `omp/task/${opts.agentId}`;
+				const branchName = `proto/task/${opts.agentId}`;
 				const rescueBranch = await rescueTaskBranch(opts.context.repoRoot, branchName, baseSha);
 				const rescueNote = rescueBranch
 					? ` The agent's commits are preserved on branch ${rescueBranch} — merge or cherry-pick it manually.`

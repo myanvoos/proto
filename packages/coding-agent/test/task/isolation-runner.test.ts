@@ -46,7 +46,7 @@ async function git(repoRoot: string, ...args: string[]): Promise<string> {
 }
 
 async function seedFooRepo(finalContent: string): Promise<{ repoRoot: string; patchPath: string }> {
-	const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-merge-"));
+	const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-isolation-merge-"));
 	tempRoots.push(repoRoot);
 
 	await git(repoRoot, "init", "-q", "-b", "main");
@@ -79,7 +79,7 @@ describe("runIsolatedSubprocess", () => {
 	});
 
 	it("preserves branch-mode output as a patch when branch transfer fails", async () => {
-		const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-run-"));
+		const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-isolation-run-"));
 		tempRoots.push(repoRoot);
 		const isolationDir = path.join(repoRoot, "isolated");
 		const artifactsDir = path.join(repoRoot, "artifacts");
@@ -148,7 +148,7 @@ describe("runIsolatedSubprocess", () => {
 		expect(await Bun.file(patchPath).text()).toBe(rootPatch);
 		expect(outcome.nestedPatches).toEqual([]);
 		expect(captureSpy).toHaveBeenCalledWith(isolationDir, baseline);
-		expect(deleteSpy).toHaveBeenCalledWith(repoRoot, "omp/task/PreserveBranchFailure");
+		expect(deleteSpy).toHaveBeenCalledWith(repoRoot, "proto/task/PreserveBranchFailure");
 		expect(cleanupSpy).toHaveBeenCalledTimes(1);
 		expect(AgentRegistry.global().get("PreserveBranchFailure")?.history?.patchPath).toBe(patchPath);
 	});
@@ -159,7 +159,7 @@ describe("runIsolatedSubprocess", () => {
 		// working-tree delta. A throw from that trailing step used to delete the
 		// branch while the isolation worktree — the only other copy — was torn
 		// down in `finally`, losing committed work outright.
-		const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-rescue-"));
+		const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-isolation-rescue-"));
 		tempRoots.push(repoRoot);
 		const isolationDir = path.join(repoRoot, "isolated");
 		const artifactsDir = path.join(repoRoot, "artifacts");
@@ -219,11 +219,11 @@ describe("runIsolatedSubprocess", () => {
 			buildFailureResult: err => result({ exitCode: 1, error: String(err) }),
 		});
 
-		expect(rangeSpy).toHaveBeenCalledWith(repoRoot, "base", "omp/task/RescueBranchCommits");
-		expect(refSpy).toHaveBeenCalledWith(repoRoot, "refs/heads/omp/task/RescueBranchCommits");
+		expect(rangeSpy).toHaveBeenCalledWith(repoRoot, "base", "proto/task/RescueBranchCommits");
+		expect(refSpy).toHaveBeenCalledWith(repoRoot, "refs/heads/proto/task/RescueBranchCommits");
 		expect(deleteSpy).not.toHaveBeenCalled();
 		expect(outcome.error).toContain("git apply --3way failed");
-		expect(outcome.error).toContain("preserved on branch omp/task/RescueBranchCommits");
+		expect(outcome.error).toContain("preserved on branch proto/task/RescueBranchCommits");
 		expect(outcome.error).toContain("cherry-pick");
 		expect(cleanupSpy).toHaveBeenCalledTimes(1);
 	});
@@ -407,12 +407,12 @@ describe("mergeIsolatedChanges", () => {
 			repoRoot: "/repo",
 			mergeMode: "branch",
 			result: result({
-				error: "Merge failed: conflict. The agent's commits are preserved on branch omp/task/Rescued — merge or cherry-pick it manually.",
+				error: "Merge failed: conflict. The agent's commits are preserved on branch proto/task/Rescued — merge or cherry-pick it manually.",
 			}),
 		});
 
 		expect(outcome.changesApplied).toBe(false);
-		expect(outcome.summary).toContain("omp/task/Rescued");
+		expect(outcome.summary).toContain("proto/task/Rescued");
 		expect(outcome.summary).toContain("cherry-pick");
 	});
 

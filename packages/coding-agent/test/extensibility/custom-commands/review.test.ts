@@ -85,7 +85,7 @@ describe("ReviewCommand", () => {
 	let tmpDir: string;
 
 	beforeAll(async () => {
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-review-command-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-review-command-"));
 	});
 
 	afterEach(() => {

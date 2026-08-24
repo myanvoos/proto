@@ -3,7 +3,7 @@
   "name": "@oh-my-pi/pi-utils",
   "version": "18.0.0",
   "description": "Shared utilities for pi packages",
-  "homepage": "https://omp.sh",
+  "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "license": "MIT",
   "repository": {

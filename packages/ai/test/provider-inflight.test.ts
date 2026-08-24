@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 
 async function useIsolatedLimiterRoot(): Promise<void> {
-	limiterRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-provider-inflight-test-"));
+	limiterRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-provider-inflight-test-"));
 	__providerInFlightForTesting.setRoot(limiterRoot);
 }
 

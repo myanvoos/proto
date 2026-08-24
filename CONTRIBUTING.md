@@ -81,7 +81,7 @@ agreed scope.
 
 ## Contribution licensing
 
-A contribution intentionally submitted for inclusion in OMP is licensed under
+A contribution intentionally submitted for inclusion in PROTO is licensed under
 the MIT License.
 
 This policy does not relicense third-party or vendored code. You must have the

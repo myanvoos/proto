@@ -47,7 +47,7 @@ afterEach(async () => {
 
 describe("ensureAutoresearchBranch jj guardrails", () => {
 	it("rejects pure jj workspaces before touching git state", async () => {
-		const dir = await mkTempDir("omp-ar-purejj-");
+		const dir = await mkTempDir("proto-ar-purejj-");
 		await fs.mkdir(path.join(dir, ".jj", "repo", "store"), { recursive: true });
 
 		const result = await ensureAutoresearchBranch(stubApi, dir, "demo");
@@ -59,7 +59,7 @@ describe("ensureAutoresearchBranch jj guardrails", () => {
 	});
 
 	it("creates an autoresearch branch in a colocated jj-git workspace", async () => {
-		const dir = await mkTempDir("omp-ar-colocated-");
+		const dir = await mkTempDir("proto-ar-colocated-");
 		await initGitWithCommit(dir);
 		await fs.mkdir(path.join(dir, ".jj", "repo", "store"), { recursive: true });
 
@@ -72,7 +72,7 @@ describe("ensureAutoresearchBranch jj guardrails", () => {
 	});
 
 	it("creates an autoresearch branch in a plain git repo (unchanged behavior)", async () => {
-		const dir = await mkTempDir("omp-ar-plaingit-");
+		const dir = await mkTempDir("proto-ar-plaingit-");
 		await initGitWithCommit(dir);
 
 		const result = await ensureAutoresearchBranch(stubApi, dir, "demo");
@@ -84,7 +84,7 @@ describe("ensureAutoresearchBranch jj guardrails", () => {
 	});
 
 	it("returns the soft no-git warning for directories backed by neither tool", async () => {
-		const dir = await mkTempDir("omp-ar-empty-");
+		const dir = await mkTempDir("proto-ar-empty-");
 
 		const result = await ensureAutoresearchBranch(stubApi, dir, "demo");
 
@@ -99,7 +99,7 @@ describe("ensureAutoresearchBranch jj guardrails", () => {
 		// the pure-jj check running first, autoresearch would create
 		// `autoresearch/*` branches and commits in the surrounding git tree
 		// behind jj's back.
-		const outer = await mkTempDir("omp-ar-nested-outer-");
+		const outer = await mkTempDir("proto-ar-nested-outer-");
 		await initGitWithCommit(outer);
 		const inner = path.join(outer, "nested-jj");
 		await fs.mkdir(path.join(inner, ".jj", "repo", "store"), { recursive: true });
@@ -117,7 +117,7 @@ describe("ensureAutoresearchBranch jj guardrails", () => {
 		// .jj, but `git.repo.root(inner)` finds the inner .git, so autoresearch
 		// safely targets the nested checkout and never touches the surrounding
 		// jj tree.
-		const outer = await mkTempDir("omp-ar-outerjj-");
+		const outer = await mkTempDir("proto-ar-outerjj-");
 		await fs.mkdir(path.join(outer, ".jj", "repo", "store"), { recursive: true });
 		const inner = path.join(outer, "vendor");
 		await fs.mkdir(inner, { recursive: true });

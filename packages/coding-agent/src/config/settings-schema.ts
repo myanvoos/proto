@@ -93,51 +93,6 @@ const BLOB_BACKEND_CHOICES = BUILTIN_BLOB_DESTINATION_METADATA.filter(
 	description: destination.reason ?? destination.family,
 }));
 
-/** Composer shape id; extensions may register additional values at runtime. */
-export type ComposerShape = string;
-
-/** Built-in composer choices and their shared settings/setup copy. */
-export const BUILTIN_COMPOSER_SHAPES = [
-	{
-		value: "box",
-		label: "Rounded Box (Default)",
-		description: "Status line embedded in top border, compact 2-line prompt",
-	},
-	{
-		value: "claude",
-		label: "Claude Code",
-		description: "Full-width horizontal rules above and below, status line at bottom",
-	},
-	{
-		value: "pi",
-		label: "Pi",
-		description: "Framed horizontal rules with status line at bottom",
-	},
-	{
-		value: "borderless",
-		label: "Borderless",
-		description: "Clean prompt glyph with status line at bottom, no box borders",
-	},
-	{
-		value: "rule",
-		label: "Top Rule Dock",
-		description: "Single top rule with status docked onto it and below",
-	},
-	{
-		value: "field",
-		label: "Compact Field",
-		description: "Filled one-row field with accent end caps",
-	},
-	{
-		value: "rail",
-		label: "Accent Rail",
-		description: "Filled one-row field anchored by a single accent rail",
-	},
-] as const;
-
-/** Built-in composer ids used by tests and non-runtime consumers. */
-export const COMPOSER_SHAPE_VALUES = BUILTIN_COMPOSER_SHAPES.map(shape => shape.value);
-
 export type SettingTab =
 	| "appearance"
 	| "model"
@@ -443,7 +398,7 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
 		tool: "fleet",
 		message:
-			'Use the `fleet` tool (`op:"start"`) for services, watchers, and debuggers so other omp instances can observe and control them.',
+			'Use the `fleet` tool (`op:"start"`) for services, watchers, and debuggers so other proto instances can observe and control them.',
 	},
 	{
 		pattern:
@@ -595,7 +550,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Services",
 			label: "Max In-Flight Requests",
 			description:
-				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local OMP processes with this config root. Omitted providers are unlimited.',
+				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local PROTO processes with this config root. Omitted providers are unlimited.',
 		},
 	},
 
@@ -644,7 +599,7 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "project",
 					label: "Per-project",
-					description: "Save project role models in .omp/config.yml; missing project roles use global defaults",
+					description: "Save project role models in .proto/config.yml; missing project roles use global defaults",
 				},
 			],
 		},
@@ -665,7 +620,7 @@ export const SETTINGS_SCHEMA = {
 	// Theme
 	"theme.dark": {
 		type: "string",
-		default: "titanium",
+		default: "dark",
 		ui: {
 			tab: "appearance",
 			group: "Theme",
@@ -697,19 +652,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Use blue instead of green for diff additions",
 		},
 	},
-	// Composer
-	"composer.shape": {
-		type: "string",
-		default: "box",
-		ui: {
-			tab: "appearance",
-			group: "Composer",
-			label: "Composer Shape",
-			description: "Visual layout of the input editor and status line",
-			options: "runtime",
-		},
-	},
-
 	"statusLine.enabled": {
 		type: "boolean",
 		default: true,
@@ -2037,6 +1979,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"startup.clearScrollback": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Startup & Updates",
+			label: "Clear Scrollback on Startup",
+			description:
+				"Erase the terminal's saved scrollback when proto starts, so the session begins on an empty terminal. This also erases what was on screen before you launched, and it cannot be undone. Off still starts you on a clear screen; it just leaves your history reachable by scrolling up.",
+		},
+	},
+
 	"startup.setupWizard": {
 		type: "boolean",
 		default: true,
@@ -2055,7 +2009,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Startup & Updates",
 			label: "Check for Updates",
-			description: "Check for omp updates on startup",
+			description: "Check for proto updates on startup",
 		},
 	},
 
@@ -3017,7 +2971,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"hindsight.retainEveryNTurns": { type: "number", default: 3 },
 	"hindsight.retainOverlapTurns": { type: "number", default: 2 },
-	"hindsight.retainContext": { type: "string", default: "omp" },
+	"hindsight.retainContext": { type: "string", default: "proto" },
 
 	"hindsight.recallBudget": {
 		type: "enum",
@@ -3407,7 +3361,7 @@ export const SETTINGS_SCHEMA = {
 			group: "LSP",
 			label: "Shared Language Servers",
 			description:
-				"Share one language server per project across omp instances via the daemon broker (falls back to private servers when unavailable)",
+				"Share one language server per project across proto instances via the daemon broker (falls back to private servers when unavailable)",
 		},
 	},
 
@@ -3991,7 +3945,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "GitHub",
 			label: "GitHub View Cache",
-			description: "Cache rendered issue/PR view output in ~/.omp/cache/github-cache.db so repeated reads are free",
+			description:
+				"Cache rendered issue/PR view output in ~/.proto/cache/github-cache.db so repeated reads are free",
 		},
 	},
 
@@ -4027,18 +3982,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "Web Search",
 			description: "Enable the web_search tool for live web results",
-		},
-	},
-
-	"security.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Security",
-			description:
-				"Enable OMP-native security scan planning, execution, and the read-only security:// resource namespace",
 		},
 	},
 
@@ -4084,7 +4027,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Grep & Browser",
 			label: "Browser Relay",
 			description:
-				"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
+				"Drive your own Chrome tabs through the proto browser relay. Install the extension once (`proto browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
 		},
 	},
 
@@ -4095,7 +4038,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Grep & Browser",
 			label: "Browser Relay URL",
-			description: "omp browser relay endpoint (default http://127.0.0.1:9224).",
+			description: "proto browser relay endpoint (default http://127.0.0.1:9224).",
 		},
 	},
 
@@ -4502,7 +4445,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Worktree Base Directory",
 			description:
-				"Base directory for agent-managed worktrees — worker-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
+				"Base directory for agent-managed worktrees — worker-isolation copies, `github` PR checkouts, and `proto worktree` cleanup all live here. Unset uses ~/.proto/wt. Must be an absolute or ~-relative path; relative paths are ignored. The PROTO_WORKTREE_DIR env var overrides this.",
 		},
 	},
 
@@ -5415,7 +5358,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Extensions",
 			label: "Tool Call Handler Timeout (ms)",
 			description:
-				"Positive finite active-work timeout for extension tool_call handlers; invalid values use 30000ms, and time awaiting OMP-owned dialogs does not count",
+				"Positive finite active-work timeout for extension tool_call handlers; invalid values use 30000ms, and time awaiting PROTO-owned dialogs does not count",
 		},
 	},
 
@@ -5433,12 +5376,12 @@ export const SETTINGS_SCHEMA = {
 
 	"dev.autoqaPush.endpoint": {
 		type: "string",
-		default: "https://qa.omp.sh/v1/grievances" as const,
+		default: "https://qa.proto.sh/v1/grievances" as const,
 		ui: {
 			tab: "tools",
 			group: "Developer",
 			label: "Auto QA Push Endpoint",
-			description: "Full URL receiving Auto QA JSON reports (default https://qa.omp.sh/v1/grievances)",
+			description: "Full URL receiving Auto QA JSON reports (default https://qa.proto.sh/v1/grievances)",
 		},
 	},
 

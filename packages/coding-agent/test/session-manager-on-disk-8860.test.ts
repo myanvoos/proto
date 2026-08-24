@@ -12,7 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 
 function freshSession(): SessionManager {
-	const cwd = join("/tmp", `omp-on-disk-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const cwd = join("/tmp", `proto-on-disk-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	return SessionManager.create(cwd, join(cwd, "sessions"), new MemorySessionStorage());
 }
 

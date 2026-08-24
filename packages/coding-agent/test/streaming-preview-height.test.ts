@@ -405,23 +405,23 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 	}
 
 	function getRenderedLines(lines: readonly string[]): string[] {
+		const rail = activeTheme.symbol("block.rail");
 		return lines
 			.map(line => Bun.stripANSI(line).trim())
-			.filter(line => line.startsWith("│") && line.endsWith("│"))
-			.map(line => line.slice(1, -1).trim())
+			.filter(line => line.startsWith(rail))
+			.map(line => line.slice(rail.length).trim())
 			.filter(line => line !== "" && !line.includes("earlier lines"));
 	}
 
-	test("framed inline tool previews span the full tool width", () => {
+	test("inline tool previews render on the inset rail within the tool width", () => {
 		const width = 80;
+		const rail = activeTheme.symbol("block.rail");
 		const { lines } = renderPending("bash", { command: "echo hi" });
 		const strippedLines = lines.map(line => Bun.stripANSI(line));
-		const topBorder = strippedLines.find(line => line.includes(activeTheme.boxRound.topLeft));
+		const railRows = strippedLines.filter(line => line.startsWith(`  ${rail}`));
 
-		expect(topBorder).toBeDefined();
-		expect(topBorder?.[0]).toBe(activeTheme.boxRound.topLeft);
-		expect(topBorder?.endsWith(activeTheme.boxRound.topRight)).toBe(true);
-		expect(visibleWidth(topBorder ?? "")).toBe(width);
+		expect(railRows.length).toBeGreaterThan(0);
+		for (const line of strippedLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	});
 
 	test("bash pending previews stay short even with very long multiline args", () => {

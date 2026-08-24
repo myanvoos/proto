@@ -3,7 +3,7 @@
 These tests stay at the public-ish surface of `WorkerPool` — they exercise the
 hook registration contextvar that workers use and verify the dispatcher marks
 cancelled events as failed with the documented marker. They do NOT spin up a
-real omp subprocess; that's covered by the integration smoke test.
+real proto subprocess; that's covered by the integration smoke test.
 """
 
 from __future__ import annotations

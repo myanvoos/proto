@@ -494,7 +494,7 @@ fn hard_kind_general(c: char) -> HardKind {
 
 /// Close one class run, splitting a HARD run where the pretoken kind changes.
 /// A variation selector never opens a sub-run — it rides its base's sub-run,
-/// or `⚖️` would sever at the selector and lose its ⟨eow⟩.
+/// or `\u{26A0}\u{FE0F}` would sever at the selector and lose its ⟨eow⟩.
 fn push_run(runs: &mut Vec<Run>, s: &str, cls: Class, start: usize, end: usize) {
 	if cls != Class::Hard {
 		runs.push(Run { cls, start, end });

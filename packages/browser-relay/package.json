@@ -3,8 +3,8 @@
 	"name": "@oh-my-pi/browser-relay",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Chrome extension that lets the omp browser tool drive your existing tabs (relay server lives in the omp CLI: `omp browser-relay`)",
-	"homepage": "https://omp.sh",
+	"description": "Chrome extension that lets the proto browser tool drive your existing tabs (relay server lives in the proto CLI: `proto browser-relay`)",
+	"homepage": "https://proto.sh",
 	"author": "Stencil Labs, Inc.",
 	"license": "MIT",
 	"repository": {

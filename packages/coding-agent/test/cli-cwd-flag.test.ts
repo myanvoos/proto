@@ -33,8 +33,8 @@ describe("parseArgs — --cwd flag", () => {
 		expect(result.messages).toEqual(["hello"]);
 	});
 	it("applies --cwd before session lookup callers read the project directory", async () => {
-		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-launch-"));
-		const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-target-"));
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-cwd-launch-"));
+		const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-cwd-target-"));
 		setProjectDir(launchDir);
 
 		const parsed = parseArgs(["--cwd", targetDir, "--continue"]);
@@ -46,7 +46,7 @@ describe("parseArgs — --cwd flag", () => {
 	});
 
 	it("normalizes a relative --cwd target to the resolved absolute path", async () => {
-		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-rel-"));
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-cwd-rel-"));
 		const childName = "repo";
 		const childDir = path.join(launchDir, childName);
 		fs.mkdirSync(childDir);

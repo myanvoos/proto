@@ -17,7 +17,7 @@ describe("setProcessName", () => {
 		const probe = [
 			`import { setProcessName } from ${JSON.stringify(MODULE)};`,
 			`import * as fs from "node:fs";`,
-			`setProcessName("omp-probe");`,
+			`setProcessName("proto-probe");`,
 			`const comm = fs.readFileSync("/proc/self/comm", "utf8").trim();`,
 			`process.stdout.write(JSON.stringify({ comm, title: process.title }));`,
 		].join("\n");
@@ -26,7 +26,7 @@ describe("setProcessName", () => {
 		expect(result.exitCode).toBe(0);
 		const report = JSON.parse(result.stdout.toString()) as { comm: string; title: string };
 		// TASK_COMM_LEN caps comm at 15 chars; "omp-probe" fits whole.
-		expect(report.comm).toBe("omp-probe");
-		expect(report.title).toBe("omp-probe");
+		expect(report.comm).toBe("proto-probe");
+		expect(report.title).toBe("proto-probe");
 	});
 });

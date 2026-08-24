@@ -512,9 +512,10 @@ describe("TUI keystroke-scoped render", () => {
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 		const transcript = new CountingLines(["msg-0", "msg-1"]);
 		const editor = new Editor(defaultEditorTheme);
+		editor.setUseTerminalCursor(true);
 		tui.enableScopedInputRender(editor);
-		// 34 chars fills the first content row at width 40; the next char wraps.
-		editor.setText("x".repeat(34));
+		// 38 chars fill the first content row at width 40 (❯ gutter); the next char wraps.
+		editor.setText("x".repeat(38));
 		tui.addChild(transcript);
 		tui.addChild(editor);
 		tui.setFocus(editor);
@@ -522,26 +523,15 @@ describe("TUI keystroke-scoped render", () => {
 		try {
 			tui.start();
 			await scheduler.drain(term);
-			expect(visible(term)).toEqual([
-				"msg-0",
-				"msg-1",
-				"+--------------------------------------+",
-				"+- xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|-+",
-			]);
+			expect(visible(term)).toEqual(["msg-0", "msg-1", `❯ ${"x".repeat(38)}`]);
 			const transcriptRenders = transcript.renders;
 
 			term.sendInput("y");
 			await scheduler.drain(term);
 
-			expect(editor.getText()).toBe(`${"x".repeat(34)}y`);
+			expect(editor.getText()).toBe(`${"x".repeat(38)}y`);
 			expect(transcript.renders).toBe(transcriptRenders);
-			expect(visible(term)).toEqual([
-				"msg-0",
-				"msg-1",
-				"+--------------------------------------+",
-				"|  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  |",
-				"+- y|                                 -+",
-			]);
+			expect(visible(term)).toEqual(["msg-0", "msg-1", `❯ ${"x".repeat(38)}`, "  y|"]);
 		} finally {
 			tui.stop();
 			await term.flush();

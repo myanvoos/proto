@@ -31,7 +31,7 @@ describe("AgentStorage model perf aggregates", () => {
 	});
 
 	async function openStorage(): Promise<AgentStorage> {
-		tempDir = TempDir.createSync("@omp-agent-storage-perf-");
+		tempDir = TempDir.createSync("@proto-agent-storage-perf-");
 		return AgentStorage.open(path.join(tempDir.path(), "agent.db"));
 	}
 
@@ -61,7 +61,7 @@ describe("AgentStorage model perf aggregates", () => {
 	});
 
 	it("records worker samples in the shared model performance aggregate", async () => {
-		tempDir = TempDir.createSync("@omp-subagent-perf-");
+		tempDir = TempDir.createSync("@proto-subagent-perf-");
 		const parent = await Settings.loadIsolated({ cwd: tempDir.path(), agentDir: tempDir.path() });
 		const subagent = createSubagentSettings(parent);
 
@@ -151,7 +151,7 @@ describe("AgentStorage model perf aggregates", () => {
 		expect(storage.getModelPerf().get("openai/gpt-5")?.tps).toBeCloseTo(250, 5);
 	});
 
-	it("backfills perf aggregates from an omp stats database, excluding errored and stale turns", async () => {
+	it("backfills perf aggregates from an proto stats database, excluding errored and stale turns", async () => {
 		const storage = await openStorage();
 
 		// Minimal stats.db fixture: only the columns the backfill query reads.

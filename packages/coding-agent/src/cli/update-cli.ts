@@ -119,8 +119,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * release that no longer supports it.
  */
 export function resolveReleaseDist(manifest: unknown): ReleaseDist | undefined {
-	if (!isRecord(manifest) || !isRecord(manifest.omp)) return undefined;
-	const dist = manifest.omp.dist;
+	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
+	const dist = manifest.proto.dist;
 	if (dist === undefined) return undefined;
 	return dist === "npm" ? "npm" : "binary";
 }
@@ -143,8 +143,8 @@ export function resolveReleaseDist(manifest: unknown): ReleaseDist | undefined {
  * "already up to date" against the running build).
  */
 export function resolveReleaseRename(manifest: unknown): ReleaseRename | undefined {
-	if (!isRecord(manifest) || !isRecord(manifest.omp)) return undefined;
-	const rename = manifest.omp.rename;
+	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
+	const rename = manifest.proto.rename;
 	if (!isRecord(rename) || typeof rename.package !== "string" || rename.package.length === 0) return undefined;
 	const natives = rename.natives;
 	return {
@@ -988,7 +988,7 @@ async function pruneBunCacheAfterGlobalInstall(): Promise<BunInstallCachePruneRe
 	const packageNames = globalNodeModulesDir
 		? await collectInstalledPackageNames(globalNodeModulesDir)
 		: new Set<string>();
-	if (packageNames.size === 0 && !path.basename(cacheDir).toLowerCase().includes("omp")) return undefined;
+	if (packageNames.size === 0 && !path.basename(cacheDir).toLowerCase().includes("proto")) return undefined;
 	return await pruneBunInstallCache(cacheDir, packageNames.size === 0 ? undefined : packageNames);
 }
 
@@ -1118,7 +1118,7 @@ async function printVerification(expectedVersion: string): Promise<void> {
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
-	console.log(chalk.yellow(`You may need to reinstall: curl -fsSL https://omp.sh/install | sh`));
+	console.log(chalk.yellow(`You may need to reinstall: curl -fsSL https://proto.sh/install | sh`));
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -1421,7 +1421,7 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
 	}
 	if (!verification.ok) {
 		throw new Error(
-			`${formatVerificationFailure(verification, release.version)}; reinstall with: curl -fsSL https://omp.sh/install | sh`,
+			`${formatVerificationFailure(verification, release.version)}; reinstall with: curl -fsSL https://proto.sh/install | sh`,
 		);
 	}
 	printVerifiedVersion(release.version);
@@ -1705,8 +1705,8 @@ export async function updateViaShimTakeover(
  */
 function installerHint(): string {
 	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
+		? "& ([scriptblock]::Create((irm https://proto.sh/install.ps1))) -Binary"
+		: "curl -fsSL https://proto.sh/install | sh -s -- --binary";
 }
 
 /**
@@ -1754,7 +1754,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
 		if (target.method === "nix") {
 			console.log(chalk.yellow("This installation is managed by Nix and cannot update itself."));
-			console.log(chalk.dim("Update the flake input or profile that provides omp, then rebuild."));
+			console.log(chalk.dim("Update the flake input or profile that provides proto, then rebuild."));
 		} else if (target.method === "brew") {
 			await updateViaHomebrew(release.version, opts.force);
 		} else if (target.method === "mise") {

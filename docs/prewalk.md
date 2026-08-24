@@ -9,10 +9,10 @@ Prewalk is off by default. Its default target is the model assigned to the `@smo
 Enable prewalk persistently in the global config:
 
 ```bash
-omp config set prewalk.enabled true
+proto config set prewalk.enabled true
 ```
 
-The equivalent YAML in `~/.omp/agent/config.yml` or a project `.omp/config.yml` is:
+The equivalent YAML in `~/.proto/agent/config.yml` or a project `.proto/config.yml` is:
 
 ```yaml
 prewalk:
@@ -30,16 +30,16 @@ Session flags override the configured value:
 For example:
 
 ```bash
-omp --prewalk
-omp --prewalk-into @smol
-omp --prewalk-into openai/gpt-5-mini
+proto --prewalk
+proto --prewalk-into @smol
+proto --prewalk-into openai/gpt-5-mini
 ```
 
-At startup, OMP resolves the target with the normal model-role and model-matching rules. If the target cannot be resolved or has no configured credentials, OMP prints a warning and starts with prewalk unarmed.
+At startup, PROTO resolves the target with the normal model-role and model-matching rules. If the target cannot be resolved or has no configured credentials, PROTO prints a warning and starts with prewalk unarmed.
 
 ## Handoff trigger
 
-An armed prewalk injects a planning nudge. When the `todo` tool is active, any successful `todo` call—including the read-only `view` operation—opens the handoff gate. OMP then switches models after the first completed `edit` or `write` call.
+An armed prewalk injects a planning nudge. When the `todo` tool is active, any successful `todo` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first completed `edit` or `write` call.
 
 Calls to other tools do not trigger the handoff. A read-only `xd://` device request routed through `write`, such as LSP navigation, also does not count; only device operations classified as workspace writes or execution count.
 
@@ -47,7 +47,7 @@ The switch is one-shot: after the handoff, prewalk disarms itself. The target mo
 
 ## Arm from an active session
 
-Run the slash command to arm prewalk without restarting OMP or enabling it in config:
+Run the slash command to arm prewalk without restarting PROTO or enabling it in config:
 
 ```text
 /prewalk

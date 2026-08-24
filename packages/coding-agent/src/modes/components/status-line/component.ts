@@ -39,23 +39,11 @@ const SESSION_CLOCK_GAP = "      ";
  */
 type QuietPart = { id: string; content: string };
 
-/**
- * Shed order for the right group, as a rank rather than a boolean. Higher survives longer;
- * everything unlisted ranks 0 and sheds first, right to left, which is the ordinary case.
- *
- * `model` (5) is who is serving — on small screens it outranks everything else and
- * sheds last, because a footline that cannot name the model has nothing left to say.
- * `subagents` (4) is the persistent running count.
- * `location_right` (3) is the owner-supplied zone; it is pushed LAST so without a rank it
- * would always be the first casualty. `mode` (2) says which mode is live. `context_pct` (1)
- * is the footline's one live value and reads as a whole thought after the others are gone.
- */
 const RIGHT_PART_SHED_RANK: Record<string, number> = {
 	context_pct: 1,
 	mode: 2,
 	location_right: 3,
 	subagents: 4,
-	model: 5,
 };
 
 /** One segment's slot on the rendered quiet footline (0-based columns, end exclusive). */
@@ -315,6 +303,7 @@ export class StatusLineComponent implements Component {
 	#disposed = false;
 	#autoCompactEnabled: boolean = true;
 	#hookStatuses: Map<string, string> = new Map();
+	#locationRightProvider: (() => string | null) | undefined;
 	#subagentCount: number = 0;
 	#activeMeters: WeakMap<AgentSession, ActiveMeter> = new WeakMap();
 	#planModeStatus: { enabled: boolean; paused: boolean } | null = null;
@@ -1135,6 +1124,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	#subagentBadgeText(): string {
+		if (this.#subagentCount === 0) return "";
 		return theme.fg("statusLineSubagents", withIcon(theme.icon.agents, `${this.#subagentCount}`));
 	}
 
@@ -1171,7 +1161,6 @@ export class StatusLineComponent implements Component {
 				...effectiveSettings.segmentOptions?.path,
 				maxLength: effectiveSettings.segmentOptions?.path?.maxLength ?? 30,
 			},
-			model: { ...effectiveSettings.segmentOptions?.model, roomy: true },
 		};
 		const ctx = this.#buildSegmentContext(width, quietOptions, includePath, includeContext, includeGit, includePr);
 		const LOCATION_IDS: Record<string, true> = { path: true, git: true, pr: true };
@@ -1205,7 +1194,7 @@ export class StatusLineComponent implements Component {
 		}
 		const badgeSlot = this.#animatedBadgeSlot(badgeParts);
 		if (badgeSlot !== null) capRight.unshift({ id: "badges", content: badgeSlot });
-		capRight.unshift({ id: "subagents", content: subagentBadge });
+		if (subagentBadge) capRight.unshift({ id: "subagents", content: subagentBadge });
 		return { location, capLeft, capRight };
 	}
 
@@ -1278,7 +1267,8 @@ export class StatusLineComponent implements Component {
 		const { location, capLeft, capRight } = this.#gatherQuietSegments(Math.max(0, width - badgeWidth));
 		const sep = segmentSeparator();
 		// One cell of right margin, always — nothing kisses the terminal edge.
-		const budget = Math.max(0, width - 1 - badgeWidth);
+		const inset = 2;
+		const budget = Math.max(0, width - 1 - badgeWidth - inset);
 		if (budget === 0) {
 			this.#quietLineBounds = [];
 			return badge === "" ? null : badge;
@@ -1290,9 +1280,13 @@ export class StatusLineComponent implements Component {
 		let right = rightParts.map(part => part.content).join(sep);
 		// The run clock is comfort chrome; the capability segments are operating
 		// data. On a tight width the clock degrades FIRST, then ranked parts shed.
+		const sepWidth = visibleWidth(sep);
 		let clockStage = 0;
 		let locationShortened = false;
-		while (rightParts.length > 0 && visibleWidth(left) + visibleWidth(right) + (left && right ? 2 : 0) > budget) {
+		while (
+			rightParts.length > 0 &&
+			visibleWidth(left) + visibleWidth(right) + (left && right ? sepWidth : 0) > budget
+		) {
 			if (clockStage === 0) {
 				clockStage = 1;
 				left = this.#locationWithRunClock(locationContents, sep, "  ");
@@ -1336,7 +1330,6 @@ export class StatusLineComponent implements Component {
 			this.#quietLineBounds = [];
 			return badge === "" ? null : badge;
 		}
-		const sepWidth = visibleWidth(sep);
 		const bounds: QuietSegmentBounds[] = [];
 		if (left) {
 			let col = 0;
@@ -1346,7 +1339,7 @@ export class StatusLineComponent implements Component {
 				col += partWidth + sepWidth;
 			}
 		}
-		const rightStart = left && right ? budget - visibleWidth(right) : 0;
+		const rightStart = left && right ? visibleWidth(left) + sepWidth : 0;
 		if (right) {
 			let col = rightStart;
 			for (const part of rightParts) {
@@ -1359,13 +1352,15 @@ export class StatusLineComponent implements Component {
 			.filter(entry => entry.start < budget)
 			.map(entry => ({
 				...entry,
-				start: entry.start + badgeWidth,
-				end: Math.min(entry.end, budget) + badgeWidth,
+				start: entry.start + badgeWidth + inset,
+				end: Math.min(entry.end, budget) + badgeWidth + inset,
 			}));
 		if (left && right) {
-			return badge + left + padding(budget - visibleWidth(left) - visibleWidth(right)) + right;
+			// One contiguous run: groups join with the standard segment separator
+			// instead of an elastic filler, so no blank stretch opens mid-line.
+			return badge + padding(inset) + truncateToWidth(`${left}${sep}${right}`, budget);
 		}
-		return badge + truncateToWidth(left || right, budget);
+		return badge + padding(inset) + truncateToWidth(left || right, Math.max(0, budget));
 	}
 
 	/**
@@ -1429,22 +1424,28 @@ export class StatusLineComponent implements Component {
 
 	render(width: number): readonly string[] {
 		const rows: string[] = [];
-		const showHooks = this.#settings.showHookStatus ?? true;
-		if (showHooks && this.#hookStatuses.size > 0) {
-			const sortedStatuses = Array.from(this.#hookStatuses.entries())
-				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
-			rows.push(truncateToWidth(sortedStatuses.join(" "), width));
-		}
 		// Read per render rather than captured at construction: toggling the row
 		// in `/settings` lands on the next frame with no re-mount.
 		if (settings.get("statusLine.enabled")) {
-			const footline = this.renderQuietLine(width);
+			const footline = this.renderQuietLine(width, { locationRight: this.#locationRightProvider?.() ?? null });
 			if (footline) rows.push(footline);
 		} else {
 			const badge = this.renderFocusBadge(width);
 			if (badge) rows.push(badge);
 		}
 		return rows;
+	}
+
+	renderHookStatus(width: number): readonly string[] {
+		const showHooks = this.#settings.showHookStatus ?? true;
+		if (!showHooks || this.#hookStatuses.size === 0) return [];
+		const sortedStatuses = Array.from(this.#hookStatuses.entries())
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([, text]) => sanitizeStatusText(text));
+		return [truncateToWidth(sortedStatuses.join(" "), width)];
+	}
+
+	setLocationRightProvider(provider: (() => string | null) | undefined): void {
+		this.#locationRightProvider = provider;
 	}
 }

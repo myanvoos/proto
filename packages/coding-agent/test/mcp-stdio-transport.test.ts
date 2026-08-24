@@ -7,7 +7,7 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 describe("resolveStdioSpawnCommand", () => {
 	it("resolves bare Windows commands through PATHEXT and wraps .cmd shims with cmd.exe", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-stdio-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-stdio-"));
 		try {
 			const shim = path.join(tempDir, "codegraph.cmd");
 			await Bun.write(shim, "@echo off\r\n");
@@ -42,8 +42,8 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("prefers a project-local .cmd shim over a same-named global one when no path segment is given", async () => {
-		const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-cwd-"));
-		const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-global-"));
+		const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-cwd-"));
+		const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-global-"));
 		try {
 			const localShim = path.join(projectDir, "server.cmd");
 			const globalShim = path.join(globalDir, "server.cmd");
@@ -81,7 +81,7 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("keeps PATH-resolved npx.cmd on the cmd.exe path so npm preserves stdio semantics", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-npx-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-npx-"));
 		try {
 			const shim = path.join(tempDir, "npx.cmd");
 			await Bun.write(
@@ -139,7 +139,7 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("still launches non-npx npm .cmd shims through node so stdio stays owned by the server process", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-codegraph-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-codegraph-"));
 		try {
 			const shim = path.join(tempDir, "codegraph.cmd");
 			const entry = path.join(tempDir, "node_modules", "@colbymchenry", "codegraph", "npm-shim.js");
@@ -190,7 +190,7 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("keeps non-node cmd-shim wrappers on the cmd.exe path instead of mislaunching them via node", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-pyshim-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-pyshim-"));
 		try {
 			const shim = path.join(tempDir, "pyserver.cmd");
 			await Bun.write(
@@ -241,7 +241,7 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("neutralizes percent-delimited args so cmd.exe cannot expand them before the .cmd shim", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-percent-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-percent-"));
 		try {
 			const shim = path.join(tempDir, "codegraph.cmd");
 			await Bun.write(shim, "@echo off\r\n");
@@ -279,7 +279,7 @@ describe("resolveStdioSpawnCommand", () => {
 	});
 
 	it("doubles embedded quotes so cmd.exe delivers JSON args to the .cmd shim intact", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-quotes-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-quotes-"));
 		try {
 			const shim = path.join(tempDir, "codegraph.cmd");
 			await Bun.write(shim, "@echo off\r\n");
@@ -321,7 +321,7 @@ describe("resolveStdioSpawnCommand", () => {
 		// sibling so the launch succeeds (see #2174). The test rig pins
 		// PATHEXT to a single lowercase extension so the candidate filename
 		// matches the file we create on the case-sensitive test host.
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-abs-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-abs-"));
 		try {
 			const bare = path.join(tempDir, "codegraph");
 			const shim = `${bare}.cmd`;
@@ -473,7 +473,7 @@ describe("resolveStdioSpawnCommand", () => {
 		// file, so an un-escaped command token like C:\work\%TOKEN%\server.cmd
 		// would resolve to a different path. The command token must be escaped
 		// the same way arguments are.
-		const base = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-cmdpct-"));
+		const base = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-cmdpct-"));
 		const dir = path.join(base, "%TOKEN%");
 		try {
 			await fs.mkdir(dir, { recursive: true });
@@ -859,7 +859,7 @@ describe("StdioTransport.close", () => {
 	it.skipIf(process.platform === "win32")(
 		"is idempotent even when close() had to escalate to SIGKILL",
 		async () => {
-			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-stdio-close-escalate-"));
+			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-stdio-close-escalate-"));
 			const scriptPath = path.join(tempDir, "child.mjs");
 			const readyPath = path.join(tempDir, "ready");
 			try {

@@ -8,7 +8,7 @@ describe("readImageMetadata", () => {
 	let testDir: string;
 
 	beforeEach(() => {
-		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-image-input-"));
+		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-image-input-"));
 	});
 
 	afterEach(() => {

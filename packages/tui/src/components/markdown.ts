@@ -1185,6 +1185,7 @@ export interface MarkdownTheme {
 	code: (text: string) => string;
 	codeBlock: (text: string) => string;
 	codeBlockBorder: (text: string) => string;
+	codeBlockFence?: (lang: string | undefined, pos: "open" | "close") => string;
 	quote: (text: string) => string;
 	quoteBorder: (text: string) => string;
 	hr: (text: string) => string;
@@ -2181,6 +2182,11 @@ export class Markdown
 		return layouts;
 	}
 
+	#codeFenceRow(lang: string | undefined, pos: "open" | "close"): string {
+		if (this.#theme.codeBlockFence) return this.#theme.codeBlockFence(lang || undefined, pos);
+		return this.#theme.codeBlockBorder(pos === "open" ? `\`\`\`${lang || ""}` : "```");
+	}
+
 	#renderCodeBodyLines(token: Token, codeIndent: string): RenderedLine[] {
 		const literalCode = this.#codeBlockIndent === 0;
 		const bodyLines: RenderedLine[] = [];
@@ -2518,11 +2524,11 @@ export class Markdown
 				}
 
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
+				lines.push(renderedLine(this.#codeFenceRow(token.lang, "open")));
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push(bodyLine);
 				}
-				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
+				lines.push(renderedLine(this.#codeFenceRow(token.lang, "close")));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}
@@ -2980,11 +2986,11 @@ export class Markdown
 			} else if (token.type === "code") {
 				// Code block in list item
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push({ text: this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`), nested: false });
+				lines.push({ text: this.#codeFenceRow(token.lang, "open"), nested: false });
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push({ ...bodyLine, nested: false });
 				}
-				lines.push({ text: this.#theme.codeBlockBorder("```"), nested: false });
+				lines.push({ text: this.#codeFenceRow(token.lang, "close"), nested: false });
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

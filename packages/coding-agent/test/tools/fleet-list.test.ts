@@ -17,7 +17,7 @@ function sessionHeader(id: string): string {
 
 describe("hub list", () => {
 	it("restores persisted peers after the process registry is lost", async () => {
-		using tempDir = TempDir.createSync("@omp-hub-list-persisted-");
+		using tempDir = TempDir.createSync("@proto-hub-list-persisted-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		await Bun.write(sessionFile, `${sessionHeader("main")}\n`);

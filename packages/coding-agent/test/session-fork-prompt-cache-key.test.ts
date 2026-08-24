@@ -103,7 +103,7 @@ describe("provider prompt-cache key session affinity", () => {
 	});
 
 	it("creates an agent whose prompt-cache key can differ from provider request lineage", async () => {
-		using tempDir = TempDir.createSync("@omp-prompt-cache-sdk-");
+		using tempDir = TempDir.createSync("@proto-prompt-cache-sdk-");
 		let session: AgentSession | undefined;
 		let authStorage: AuthStorage | undefined;
 		try {
@@ -125,7 +125,7 @@ describe("provider prompt-cache key session affinity", () => {
 	});
 
 	it("initializes a full fork with child request lineage and parent prompt-cache affinity", async () => {
-		using tempDir = TempDir.createSync("@omp-prompt-cache-fork-");
+		using tempDir = TempDir.createSync("@proto-prompt-cache-fork-");
 		const source = await createSourceSessionFixture(tempDir, "parent-cache-session");
 		const forkedManager = await SessionManager.forkFrom(source.sourceFile, source.cwd, source.forkSessionDir);
 		let session: AgentSession | undefined;
@@ -172,7 +172,7 @@ describe("provider prompt-cache key session affinity", () => {
 		];
 
 		for (const entry of cases) {
-			using tempDir = TempDir.createSync(`@omp-prompt-cache-fork-${entry.name}-`);
+			using tempDir = TempDir.createSync(`@proto-prompt-cache-fork-${entry.name}-`);
 			const source = await createSourceSessionFixture(tempDir, `parent-cache-session-${entry.name}`);
 			const forkedManager = await SessionManager.forkFrom(source.sourceFile, source.cwd, source.forkSessionDir);
 			let session: AgentSession | undefined;
@@ -196,7 +196,7 @@ describe("provider prompt-cache key session affinity", () => {
 	});
 
 	it("does not pre-pin parent prompt-cache affinity when a scoped model selects the startup route", async () => {
-		using tempDir = TempDir.createSync("@omp-prompt-cache-scoped-model-");
+		using tempDir = TempDir.createSync("@proto-prompt-cache-scoped-model-");
 		const source = await createSourceSessionFixture(tempDir, "parent-cache-session-scoped");
 		const forkedManager = await SessionManager.forkFrom(source.sourceFile, source.cwd, source.forkSessionDir);
 		const authStorage = await AuthStorage.create(tempDir.join("scoped-auth.db"));

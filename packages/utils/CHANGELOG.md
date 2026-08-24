@@ -55,7 +55,7 @@
 ### Changed
 
 - Changed stale process-log retention from the newest five files globally to one newest file per completed process and day within the current and previous four local calendar days. This preserves bounded daily diagnostic coverage while continuing to remove one-use audit files.
-- Changed outbound User-Agent consumers to share the versioned `USER_AGENT` constant (`omp/<version>`).
+- Changed outbound User-Agent consumers to share the versioned `USER_AGENT` constant (`proto/<version>`).
 
 ### Fixed
 
@@ -124,7 +124,7 @@
 ### Added
 
 - Added `getSecretPlaceholderKeyPath()`, `getDaemonRuntimeDir()`, `getProviderInFlightRoot()`, and `getMarketplacesRegistryPath()` to resolve secret key, daemon runtime, provider in-flight, and marketplace registry paths under their respective XDG categories (state, data) instead of the config root.
-- Existing installs enabling XDG keep their data: a legacy `~/.omp/agent/secret-placeholder.key` or `~/.omp/marketplaces.json` is copied to its XDG location on first resolution, so persisted transcripts still deobfuscate and added marketplaces survive the move.
+- Existing installs enabling XDG keep their data: a legacy `~/.proto/agent/secret-placeholder.key` or `~/.proto/marketplaces.json` is copied to its XDG location on first resolution, so persisted transcripts still deobfuscate and added marketplaces survive the move.
 
 ### Changed
 
@@ -139,7 +139,7 @@
 ### Added
 
 - Added a `postmortem.quit` configuration option to safely handle shutdown paths when the terminal output has already disconnected.
-- Added project-keyed OMP security-state directory helpers under the user state root.
+- Added project-keyed PROTO security-state directory helpers under the user state root.
 
 ## [17.1.8] - 2026-07-28
 
@@ -244,7 +244,7 @@
 
 ### Fixed
 
-- Fixed child shell environment filtering to drop launch-directory `.env.local` values that Bun auto-loaded before OMP starts command shells. ([#4723](https://github.com/can1357/oh-my-pi/issues/4723))
+- Fixed child shell environment filtering to drop launch-directory `.env.local` values that Bun auto-loaded before PROTO starts command shells. ([#4723](https://github.com/can1357/oh-my-pi/issues/4723))
 
 ## [16.3.10] - 2026-07-06
 
@@ -380,7 +380,7 @@
 ### Added
 
 - Added profile-aware directory helpers and isolated profile state roots, while keeping the install ID shared across profiles.
-- Added a named-profile API to the `dirs` module — `setProfile()`, `getActiveProfile()`, `getProfileRootDir()`, and `normalizeProfileName()` — plus `resolveProfileEnv()`, which selects the active profile from `OMP_PROFILE` (canonical; takes precedence) then `PI_PROFILE` (legacy fallback, consulted only when `OMP_PROFILE` is unset).
+- Added a named-profile API to the `dirs` module — `setProfile()`, `getActiveProfile()`, `getProfileRootDir()`, and `normalizeProfileName()` — plus `resolveProfileEnv()`, which selects the active profile from `PROTO_PROFILE` (canonical; takes precedence) then `PI_PROFILE` (legacy fallback, consulted only when `PROTO_PROFILE` is unset).
 - Added support for a runtime `overrides` map in `RuntimeInstallSpec`, which is now written into generated runtime `package.json` manifests to force dependency pins (including transitive ones) across the runtime tree
 - Added a lightweight loop-phase breadcrumb stack (`pushLoopPhase`/`popLoopPhase`/`currentLoopPhase`, plus `takeRecentLoopPhase` which returns the live phase or the most recently popped one and clears it) so the TUI event-loop watchdog can attribute a main-thread block to the phase that caused it — including a synchronous phase already popped before the watchdog's delayed tick runs ([#2485](https://github.com/can1357/oh-my-pi/issues/2485))
 - Added `FetchWithRetryOptions.timeout` (forwarded to the underlying `fetch` call). `false` disables Bun's native ~300s pre-response timeout; a positive number overrides the ceiling. Bare browser/Node fetch ignores it ([#2422](https://github.com/can1357/oh-my-pi/issues/2422))
@@ -403,7 +403,7 @@
 ### Added
 
 - Added `runtime-install`: shared on-demand runtime dependency support — `ensureRuntimeInstalled()` (locked, idempotent `bun install` of a pinned dependency set into a cache dir) and a multi-root `installRuntimeModuleResolver()`/`resolveRuntimeModule()` for loading those graphs inside compiled binaries (Bun #1763). Extracted from the coding-agent tiny-model worker; now also backs Mnemopi's on-demand fastembed runtime ([#2389](https://github.com/can1357/oh-my-pi/issues/2389))
-- Added `getFastembedRuntimeDir()` (~/.omp/cache/fastembed-runtime) alongside `getFastembedCacheDir()`
+- Added `getFastembedRuntimeDir()` (~/.proto/cache/fastembed-runtime) alongside `getFastembedCacheDir()`
 
 ## [15.11.4] - 2026-06-12
 
@@ -452,7 +452,7 @@
 
 - Fixed `prompt.format()` so ASCII symbol replacements such as `-->` and `!=` still run on lines containing a closing HTML comment token when not inside a comment
 - `isCompiledBinary()` now also honors a define-folded `process.env.PI_COMPILED` (only `Bun.env` was checked), so builds that constant-fold `process.env` keep compiled-binary detection without relying on `import.meta.url` bunfs markers
-- `omp <cmd> --help` now loads only the requested command module instead of the entire command table, so an unrelated command whose import graph hangs or crashes can no longer take down every per-command help invocation.
+- `proto <cmd> --help` now loads only the requested command module instead of the entire command table, so an unrelated command whose import graph hangs or crashes can no longer take down every per-command help invocation.
 
 ## [15.10.8] - 2026-06-09
 
@@ -471,7 +471,7 @@
 
 ### Added
 
-- Added `getAuthBrokerSnapshotCachePath()` with `OMP_AUTH_BROKER_SNAPSHOT_CACHE` override support for isolating the encrypted broker snapshot cache.
+- Added `getAuthBrokerSnapshotCachePath()` with `PROTO_AUTH_BROKER_SNAPSHOT_CACHE` override support for isolating the encrypted broker snapshot cache.
 
 ## [15.9.1] - 2026-06-04
 
@@ -492,7 +492,7 @@
 
 ### Added
 
-- Added `getFastembedCacheDir` to return the FastEmbed model cache directory under ~/.omp/cache/fastembed
+- Added `getFastembedCacheDir` to return the FastEmbed model cache directory under ~/.proto/cache/fastembed
 
 ### Fixed
 

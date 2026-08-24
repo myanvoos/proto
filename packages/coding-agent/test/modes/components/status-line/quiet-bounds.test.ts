@@ -4,11 +4,10 @@
  * The footline is the click surface for status-line mouse routing — a click is
  * resolved to a segment purely from the bounds the line records as it renders.
  * If the recorded layout drifts from the actual assembly (a separator width
- * change, right-group alignment, a dropped part under narrow widths), clicks
- * silently hit the wrong segment or nothing. These tests lock the invariants:
- * every recorded slot maps back to its own id, slots never overlap, right-group
- * slots sit where the right group is actually painted, and the inter-group gap
- * reports null.
+ * change, a dropped part under narrow widths), clicks silently hit the wrong
+ * segment or nothing. These tests lock the invariants: every recorded slot maps
+ * back to its own id, slots never overlap, slots sit where segments are actually
+ * painted, and separator columns report null.
  */
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -87,26 +86,26 @@ describe("quiet footline segment bounds", () => {
 		}
 	});
 
-	it("right-group slots sit exactly where the painted line puts the right group", () => {
+	it("capability slots sit exactly where the painted line puts them", () => {
 		const statusLine = new StatusLineComponent(makeSession());
 		const line = statusLine.renderQuietLine(WIDTH);
 		expect(line).not.toBeNull();
-		// The line's total visible width is budget (width-1) when both groups
-		// render: the LAST slot must end exactly at the visible end of the line.
+		// Nothing sheds at this width, so the LAST slot must end exactly at the
+		// visible end of the line.
 		const bounds = [...statusLine.getQuietSegmentBounds()].sort((a, b) => a.start - b.start);
 		const last = bounds[bounds.length - 1]!;
 		expect(last.end).toBe(visibleWidth(line!));
 	});
 
-	it("the model segment is addressable and the inter-group gap is not", () => {
+	it("the model segment is addressable and separator columns are not", () => {
 		const statusLine = new StatusLineComponent(makeSession());
 		statusLine.renderQuietLine(WIDTH);
 		const bounds = statusLine.getQuietSegmentBounds();
 		const model = bounds.find(slot => slot.id === "model");
 		expect(model).toBeDefined();
 		expect(statusLine.quietSegmentAt(Math.floor((model!.start + model!.end) / 2))).toBe("model");
-		// The elastic padding between location and capability groups is dead
-		// space: a click there must resolve to nothing, not a neighbor.
+		// Separator columns between segments carry no slot: a click there must
+		// resolve to nothing, not a neighbor.
 		const sorted = [...bounds].sort((a, b) => a.start - b.start);
 		let gapCol = -1;
 		for (let i = 1; i < sorted.length; i++) {

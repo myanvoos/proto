@@ -36,7 +36,7 @@ interface OpenAIResponse {
 
 // `gpt-5.3-codex` is the model we've verified the ChatGPT-subscription Codex
 // backend accepts; older or higher-tier ids 4xx with "model not supported".
-const MODEL = Bun.env.OMP_E2E_OPENAI_RESPONSES_MODEL ?? "gpt-5.3-codex";
+const MODEL = Bun.env.PROTO_E2E_OPENAI_RESPONSES_MODEL ?? "gpt-5.3-codex";
 
 const gateway = await checkAuthGatewayE2EAvailable();
 
@@ -44,7 +44,7 @@ const gateway = await checkAuthGatewayE2EAvailable();
 // automatic-caching floor with plenty of headroom.
 const INSTRUCTIONS_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
-the omp auth-gateway's OpenAI Responses prompt-caching pipeline. The same
+the proto auth-gateway's OpenAI Responses prompt-caching pipeline. The same
 instructions block will be reused across two turns; OpenAI automatically
 caches identical prefixes ≥1024 tokens, so the second turn must see the
 same prefix bytes as the first or the cache misses silently. Always respond
@@ -118,7 +118,7 @@ describe.skipIf(!gateway.ok)("auth-gateway: openai-responses prompt caching e2e"
 		// `prompt_cache_key` is set — caching is opt-in there, unlike public
 		// OpenAI Responses which caches automatically. Reusing the same key
 		// across both turns is the contract that makes turn 2 hit.
-		const cacheKey = `omp-e2e-${nonce}`;
+		const cacheKey = `proto-e2e-${nonce}`;
 
 		// ── Turn 1 ───────────────────────────────────────────────────────
 		const turn1Input: ResponseInputMessage[] = [{ role: "user", content: "Respond with the single word: alpha" }];

@@ -39,15 +39,15 @@ import { renderDateCwdReminder } from ${JSON.stringify(
 		)};
 import { formatLocalCalendarDate } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/utils/local-date.ts"))};
 
-setSystemTime(new Date(process.env.OMP_TEST_NOW!));
+setSystemTime(new Date(process.env.PROTO_TEST_NOW!));
 try {
 	// The date/cwd reminder is built per request in the startup local timezone;
 	// the system prompt no longer embeds the date (#7404).
 	const reminder = renderDateCwdReminder(formatLocalCalendarDate(), "/cwd");
-	if (!reminder.includes(\`Today: \${process.env.OMP_EXPECTED_DATE}\`)) {
+	if (!reminder.includes(\`Today: \${process.env.PROTO_EXPECTED_DATE}\`)) {
 		throw new Error(\`Reminder did not contain expected local date:\\n\${reminder}\`);
 	}
-	if (reminder.includes(\`Today: \${process.env.OMP_REJECTED_DATE}\`)) {
+	if (reminder.includes(\`Today: \${process.env.PROTO_REJECTED_DATE}\`)) {
 		throw new Error(\`Reminder contained rejected UTC date:\\n\${reminder}\`);
 	}
 } finally {
@@ -61,9 +61,9 @@ try {
 			...process.env,
 			HOME: options.tempHomeDir,
 			TZ: options.timeZone,
-			OMP_TEST_NOW: options.now,
-			OMP_EXPECTED_DATE: options.expectedDate,
-			OMP_REJECTED_DATE: options.rejectedDate,
+			PROTO_TEST_NOW: options.now,
+			PROTO_EXPECTED_DATE: options.expectedDate,
+			PROTO_REJECTED_DATE: options.rejectedDate,
 		},
 		stdout: "pipe",
 		stderr: "pipe",

@@ -93,7 +93,7 @@ async function collectPluginsAtRoot(
 		if (!isEnoent(err)) throw err;
 	}
 
-	const lockPath = path.join(root, "omp-plugins.lock.json");
+	const lockPath = path.join(root, "proto-plugins.lock.json");
 	let runtimeConfig: PluginRuntimeConfig;
 	try {
 		runtimeConfig = normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
@@ -113,7 +113,7 @@ async function collectPluginsAtRoot(
 	const plugins: ScopedInstalledPlugin[] = [];
 	for (const name of names) {
 		const pluginPkgPath = path.join(nodeModulesPath, name, "package.json");
-		let pluginPkg: { version: string; omp?: PluginManifest; pi?: PluginManifest };
+		let pluginPkg: { version: string; proto?: PluginManifest; pi?: PluginManifest };
 		try {
 			pluginPkg = await Bun.file(pluginPkgPath).json();
 		} catch (err) {
@@ -123,7 +123,7 @@ async function collectPluginsAtRoot(
 			throw err;
 		}
 
-		const manifest: PluginManifest | undefined = pluginPkg.omp || pluginPkg.pi;
+		const manifest: PluginManifest | undefined = pluginPkg.proto || pluginPkg.pi;
 		if (!manifest) {
 			// Not an omp plugin, skip
 			continue;
@@ -264,13 +264,13 @@ function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
 	} catch {
 		return { declared: false, files: [] };
 	}
-	let pkg: { omp?: { extensions?: unknown }; pi?: { extensions?: unknown } };
+	let pkg: { proto?: { extensions?: unknown }; pi?: { extensions?: unknown } };
 	try {
-		pkg = JSON.parse(raw) as { omp?: { extensions?: unknown }; pi?: { extensions?: unknown } };
+		pkg = JSON.parse(raw) as { proto?: { extensions?: unknown }; pi?: { extensions?: unknown } };
 	} catch {
 		return { declared: false, files: [] };
 	}
-	const declared = (pkg.omp ?? pkg.pi)?.extensions;
+	const declared = (pkg.proto ?? pkg.pi)?.extensions;
 	if (!Array.isArray(declared) || declared.length === 0) {
 		return { declared: false, files: [] };
 	}

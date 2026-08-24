@@ -29,7 +29,7 @@ runs:
       - name: Build native addons
         shell: bash
         env:
-           OMP_BAZEL_RC: ${{ steps.cache.outputs.rc }}
+           PROTO_BAZEL_RC: ${{ steps.cache.outputs.rc }}
            NATIVE_TARGETS: ${{ inputs.targets }}
            NATIVE_DEST: ${{ inputs.dest }}
         run: |
@@ -45,6 +45,6 @@ runs:
         with:
            # Must mirror the restore path list in the bazel-cache action.
            path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+              ~/.cache/proto-bazel-disk
+              ~/.cache/proto-bazel-repo
            key: ${{ steps.cache.outputs.cache-key }}

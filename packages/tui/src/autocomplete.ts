@@ -186,8 +186,6 @@ export interface SlashCommand {
 	name: string;
 	aliases?: string[];
 	description?: string;
-	/** Optional type-indicator glyph shown before the command name in autocomplete */
-	icon?: string;
 	argumentHint?: string;
 	/** Whether the command consumes argument text after the command name. False means the full input stays normal prompt text once args are present. */
 	allowArgs?: boolean;
@@ -346,7 +344,6 @@ function buildSlashCommandCompletions(
 						label: "name" in cmd ? cmd.name : cmd.label,
 						score: primaryScore,
 						usage,
-						...(cmd.icon && { icon: cmd.icon }),
 						...(fullDesc && { description: fullDesc }),
 					};
 				}
@@ -362,7 +359,6 @@ function buildSlashCommandCompletions(
 							label: alias,
 							score: aliasScore,
 							usage,
-							...(cmd.icon && { icon: cmd.icon }),
 							...(fullDesc && { description: fullDesc }),
 						};
 					}
@@ -402,11 +398,9 @@ export const SKILL_NAMESPACE = "skill:";
 function collapseSkillNamespace(commands: CommandEntry[], lowerPrefix: string): CommandEntry[] {
 	if (lowerPrefix.startsWith(SKILL_NAMESPACE)) return commands;
 	let skillCount = 0;
-	let skillIcon: string | undefined;
 	const rest = commands.filter(cmd => {
 		if (!getCommandName(cmd)?.startsWith(SKILL_NAMESPACE)) return true;
 		skillCount += 1;
-		skillIcon ??= cmd.icon;
 		return false;
 	});
 	if (skillCount === 0) return commands;
@@ -414,7 +408,6 @@ function collapseSkillNamespace(commands: CommandEntry[], lowerPrefix: string): 
 	rest.push({
 		name: SKILL_NAMESPACE,
 		description: `${skillCount} skill${skillCount === 1 ? "" : "s"}`,
-		...(skillIcon && { icon: skillIcon }),
 	});
 	return rest;
 }

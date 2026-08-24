@@ -15,7 +15,7 @@ describe("issue #983: multi-file legacy Pi extensions", () => {
 	});
 
 	it("loads legacy Pi extensions whose sibling TypeScript files import each other via relative paths", async () => {
-		const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-issue-983-project-"));
+		const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-issue-983-project-"));
 		tempDirs.push(projectDir);
 		const extensionDir = path.join(projectDir, "legacy-pi-multi-file-extension");
 

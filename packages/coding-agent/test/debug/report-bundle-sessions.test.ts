@@ -35,9 +35,9 @@ async function archiveMembers(archivePath: string): Promise<string[]> {
 
 describe("report bundle sessions", () => {
 	it("bundles only the current session's subtree, not unrelated co-located sessions", async () => {
-		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-report-sessions-"));
+		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-report-sessions-"));
 		const xdgStateHome = path.join(cleanupRoot, "state");
-		await fs.mkdir(path.join(xdgStateHome, "omp"), { recursive: true });
+		await fs.mkdir(path.join(xdgStateHome, "proto"), { recursive: true });
 		process.env.XDG_STATE_HOME = xdgStateHome;
 		setAgentDir(fallbackAgentDir);
 

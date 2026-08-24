@@ -27,7 +27,7 @@ class ProcessExitSignal extends Error {
 
 describe("runRootCommand — startup --resume picker cancellation", () => {
 	it("exits cleanly (process.exit 0) when the picker is cancelled instead of returning and hanging", async () => {
-		using tempDir = TempDir.createSync("@omp-resume-cancel-");
+		using tempDir = TempDir.createSync("@proto-resume-cancel-");
 		const sessionDir = tempDir.path();
 		// One valid session so folderSessions is non-empty and the picker (not the
 		// "No sessions found" probe) is the path under test.

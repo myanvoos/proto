@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   // Load page, set dark theme, reload
   await page.goto(BASE_URL, { waitUntil: "networkidle0" });
   await page.evaluate(() => {
-    localStorage.setItem("omp-robomp-theme", "dark");
+    localStorage.setItem("proto-robomp-theme", "dark");
     document.documentElement.dataset.theme = "dark";
     document.documentElement.style.colorScheme = "dark";
   });

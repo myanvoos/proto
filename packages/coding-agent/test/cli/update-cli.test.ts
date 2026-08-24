@@ -54,12 +54,12 @@ describe("getLatestRelease rename pointers", () => {
 		return urls;
 	}
 
-	it("follows omp.rename to the new package and resolves version, dist, and names from its manifest", async () => {
+	it("follows proto.rename to the new package and resolves version, dist, and names from its manifest", async () => {
 		const urls = stubRegistry({
-			"@new/omp": { version: "999.1.0", omp: { dist: "npm" } },
+			"@new/proto": { version: "999.1.0", proto: { dist: "npm" } },
 			"@oh-my-pi/pi-coding-agent": {
 				version: "999.0.0",
-				omp: { dist: "binary", rename: { package: "@new/omp", natives: "@new/natives" } },
+				proto: { dist: "binary", rename: { package: "@new/proto", natives: "@new/natives" } },
 			},
 		});
 
@@ -67,10 +67,10 @@ describe("getLatestRelease rename pointers", () => {
 
 		expect(release.version).toBe("999.1.0");
 		expect(release.dist).toBe("npm");
-		expect(release.packages).toEqual({ pkg: "@new/omp", natives: "@new/natives" });
+		expect(release.packages).toEqual({ pkg: "@new/proto", natives: "@new/natives" });
 		expect(urls).toEqual([
 			"https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest",
-			"https://registry.npmjs.org/@new/omp/latest",
+			"https://registry.npmjs.org/@new/proto/latest",
 		]);
 	});
 
@@ -78,7 +78,7 @@ describe("getLatestRelease rename pointers", () => {
 		const urls = stubRegistry({
 			"@oh-my-pi/pi-coding-agent": {
 				version: "999.0.0",
-				omp: { rename: { package: "@oh-my-pi/pi-coding-agent" } },
+				proto: { rename: { package: "@oh-my-pi/pi-coding-agent" } },
 			},
 		});
 

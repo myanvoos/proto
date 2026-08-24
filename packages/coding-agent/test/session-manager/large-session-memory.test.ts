@@ -110,7 +110,7 @@ describe("large session memory guards", () => {
 	});
 
 	it("streams large session files without discarding historical compactions", async () => {
-		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-large-session-"));
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-large-session-"));
 		tempDirs.push(tempDir);
 		const sessionFile = path.join(tempDir, "large.jsonl");
 		const oldSummary = `old-${"x".repeat(5 * 1024 * 1024)}`;
@@ -193,7 +193,7 @@ describe("large session memory guards", () => {
 	});
 
 	it("preserves loaded compactions on every branch", async () => {
-		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-branch-load-"));
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-branch-load-"));
 		tempDirs.push(tempDir);
 		const sessionFile = path.join(tempDir, "branched.jsonl");
 		const branchASummary = `branch-a-${"x".repeat(1024)}`;

@@ -32,7 +32,7 @@ describe("standalone mcp.json oauth env expansion", () => {
 	};
 
 	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-json-"));
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-json-"));
 		process.env.PI_OAUTH_TOKEN_URL = "https://provider.example/token";
 		process.env.PI_OAUTH_CLIENT_ID = "oauth-client-id";
 		process.env.PI_OAUTH_CLIENT_SECRET = "oauth-client-secret";

@@ -44,9 +44,9 @@ import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/mo
 import { getAgentDbPath, isEnoent } from "@oh-my-pi/pi-utils";
 import SYSTEM_PROMPT from "./audit-prompt.md" with { type: "text" };
 
-const SESSIONS_ROOT = path.join(os.homedir(), ".omp", "agent", "sessions");
+const SESSIONS_ROOT = path.join(os.homedir(), ".proto", "agent", "sessions");
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
-const CACHE_PATH = path.join(os.homedir(), ".omp", "stats-audit-cache.json");
+const CACHE_PATH = path.join(os.homedir(), ".proto", "stats-audit-cache.json");
 
 // --------------------------------------------------------------------------
 // CLI
@@ -106,7 +106,7 @@ function parseCli(argv: string[]): CliOptions {
 	});
 	if (values.help) {
 		console.log(
-			`session audit — token usage analysis over ~/.omp/agent/sessions\n\n` +
+			`session audit — token usage analysis over ~/.proto/agent/sessions\n\n` +
 				`  --since <12h|3d|1w|1mo>  window by session mtime (default 1w)\n` +
 				`  --folder <substr>        only folders containing substring\n` +
 				`  --exclude <substr>       drop folders containing substring\n` +
@@ -117,7 +117,7 @@ function parseCli(argv: string[]): CliOptions {
 				`  --json <file>            write full machine-readable results\n` +
 				`  --digest-dir <dir>       dump per-session digests fed to the model\n` +
 				`  --session <substr>       classify sessions whose id/title matches (ignores --min-cost)\n` +
-				`  --no-cache               skip the verdict cache (~/.omp/stats-audit-cache.json)\n` +
+				`  --no-cache               skip the verdict cache (~/.proto/stats-audit-cache.json)\n` +
 				`  --no-llm                 scan + report only\n` +
 				`  --limit <n>              scan at most n session groups (debug)`,
 		);
@@ -1009,7 +1009,7 @@ async function openClassifier(modelSpec: string): Promise<Classifier> {
 	await storage.reload();
 	const apiKey = await storage.getApiKey(provider);
 	if (!apiKey) {
-		throw new Error(`no credentials for provider "${provider}" (omp login or env var required)`);
+		throw new Error(`no credentials for provider "${provider}" (proto login or env var required)`);
 	}
 	return { model, apiKey };
 }

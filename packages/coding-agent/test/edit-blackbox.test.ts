@@ -35,7 +35,7 @@ let session: ToolSession;
 
 beforeEach(async () => {
 	resetSettingsForTest();
-	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-blackbox-"));
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-edit-blackbox-"));
 	agentDir = path.join(tempDir, "agent");
 	logPath = path.join(agentDir, "edit-blackbox.jsonl");
 	await fs.mkdir(agentDir, { recursive: true });

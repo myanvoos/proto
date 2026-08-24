@@ -80,7 +80,7 @@ it("multiple indexed", () => {
 	expect(
 		O({
 			str: 100,
-			[sym]: "💯",
+			[sym]: "x",
 		}).toString(),
 	).toEqual(`str must be a string (was a number)
 [${symName}] must be a number (was a string)`);

@@ -19,7 +19,7 @@ describe("jj workspace detection", () => {
 	});
 
 	async function createTempDir(): Promise<string> {
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-jj-utils-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-jj-utils-"));
 		return tmpDir;
 	}
 
@@ -115,31 +115,31 @@ describe("isPureJjRepo", () => {
 	}
 
 	it("flags a pure jj workspace (no colocated git)", async () => {
-		const dir = await createTempDir("omp-jj-pure-");
+		const dir = await createTempDir("proto-jj-pure-");
 		await fs.mkdir(path.join(dir, ".jj", "repo", "store"), { recursive: true });
 		expect(await jj.isPureJjRepo(dir)).toBe(true);
 	});
 
 	it("treats a colocated jj-git workspace as non-pure", async () => {
-		const dir = await createTempDir("omp-jj-colocated-");
+		const dir = await createTempDir("proto-jj-colocated-");
 		await fs.mkdir(path.join(dir, ".jj", "repo", "store"), { recursive: true });
 		await initGit(dir);
 		expect(await jj.isPureJjRepo(dir)).toBe(false);
 	});
 
 	it("returns false for a plain git checkout (no jj metadata)", async () => {
-		const dir = await createTempDir("omp-jj-plaingit-");
+		const dir = await createTempDir("proto-jj-plaingit-");
 		await initGit(dir);
 		expect(await jj.isPureJjRepo(dir)).toBe(false);
 	});
 
 	it("returns false when neither jj nor git metadata is present", async () => {
-		const dir = await createTempDir("omp-jj-empty-");
+		const dir = await createTempDir("proto-jj-empty-");
 		expect(await jj.isPureJjRepo(dir)).toBe(false);
 	});
 
 	it("flags a jj workspace nested inside an unrelated git checkout as pure", async () => {
-		const outer = await createTempDir("omp-jj-nested-outer-");
+		const outer = await createTempDir("proto-jj-nested-outer-");
 		await initGit(outer);
 		const inner = path.join(outer, "nested");
 		await fs.mkdir(path.join(inner, ".jj", "repo", "store"), { recursive: true });
@@ -152,7 +152,7 @@ describe("isPureJjRepo", () => {
 		// `git.repo.root(inner)` returns the inner .git, so Git automation
 		// targets the nested checkout safely and never touches the surrounding
 		// jj tree — the inner git wins.
-		const outer = await createTempDir("omp-jj-nested-jj-outer-");
+		const outer = await createTempDir("proto-jj-nested-jj-outer-");
 		await fs.mkdir(path.join(outer, ".jj", "repo", "store"), { recursive: true });
 		const inner = path.join(outer, "vendor");
 		await fs.mkdir(inner, { recursive: true });

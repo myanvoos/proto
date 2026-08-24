@@ -28,7 +28,7 @@ packages/natives/native/.build/
 .wt/
 .opencode/
 .pi_config/
-.omp/plugins/
+.proto/plugins/
 
 # VCS, editors, IDEs.
 .git/
@@ -61,7 +61,7 @@ changes/
 
 # Generated, regenerated in-image.
 packages/ai/test/.temp-images/
-python/omp-rpc/src/omp_rpc.egg-info/
+python/proto-rpc/src/proto_rpc.egg-info/
 python/robomp/data/
 python/robomp/.cache/
 python/robomp/src/robomp/static/

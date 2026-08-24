@@ -848,7 +848,6 @@ export class AssistantMessageComponent extends Container {
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message, opts)) return;
 
-		// Clear content container
 		this.#contentContainer.clear();
 		this.#thinkingDots = undefined;
 		this.#hasTruncatableError = false;
@@ -877,7 +876,7 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions, 0);
+				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions);
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
@@ -898,8 +897,11 @@ export class AssistantMessageComponent extends Container {
 							(c.type === "thinking" && resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
 					);
 
-				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+				if (thinkingIndex === 0) {
+					const label = new Text(theme.fg("muted", "Thinking"), 2, 0);
+					this.#contentContainer.addChild(label);
+				}
+				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 					italic: true,
 				});

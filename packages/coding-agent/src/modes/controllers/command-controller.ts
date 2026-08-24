@@ -1020,7 +1020,7 @@ export class CommandController {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
 				this.ctx.showError(
-					`Bash command completed, but OMP failed to update its working directory: ${
+					`Bash command completed, but PROTO failed to update its working directory: ${
 						error instanceof Error ? error.message : "Unknown error"
 					}`,
 				);

@@ -8,7 +8,7 @@ describe("ArtifactManager concurrent first-use", () => {
 	const dirs: string[] = [];
 
 	function freshDir(): string {
-		const dir = path.join(os.tmpdir(), `omp-artifacts-${crypto.randomUUID()}`, "session");
+		const dir = path.join(os.tmpdir(), `proto-artifacts-${crypto.randomUUID()}`, "session");
 		dirs.push(path.dirname(dir));
 		return dir;
 	}

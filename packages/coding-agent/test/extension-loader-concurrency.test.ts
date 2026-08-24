@@ -26,7 +26,7 @@ describe("extension loader concurrency (#7615)", () => {
 	let project: TempDir | undefined;
 
 	beforeEach(() => {
-		project = TempDir.createSync("@omp-ext-concurrency-");
+		project = TempDir.createSync("@proto-ext-concurrency-");
 		eventsGlobal[EVENTS_KEY] = [];
 	});
 

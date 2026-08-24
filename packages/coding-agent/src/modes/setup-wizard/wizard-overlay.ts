@@ -8,19 +8,16 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { BINARY_NAME } from "@oh-my-pi/pi-utils";
-import { gradientLogo, PI_LOGO } from "../components/welcome";
+import { VERSION } from "@oh-my-pi/pi-utils/dirs";
+import { heroMeta, heroWordmark } from "../components/welcome";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
-import { renderSetupOutro, SETUP_OUTRO_MS } from "./scenes/outro";
 import type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
 
-type WizardPhase = "scene" | "outro" | "done";
+type WizardPhase = "scene" | "done";
 
 const SCENE_MARGIN_X = 4;
 const MIN_CONTENT_WIDTH = 20;
-/** Outro completion poll cadence; the outro frame itself is static. */
-const OUTRO_TICK_MS = 50;
 
 function centerLine(line: string, width: number): string {
 	const lineWidth = visibleWidth(line);
@@ -41,10 +38,8 @@ function indentLine(line: string, width: number, indent: number): string {
 
 export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	#phase: WizardPhase = "scene";
-	#phaseStartedAt = performance.now();
 	#sceneIndex = 0;
 	#activeScene: SetupSceneController | undefined;
-	#timer: NodeJS.Timeout | undefined;
 	#done = Promise.withResolvers<void>();
 	#disposed = false;
 	/** Screen row where the active scene's body began in the last rendered frame. */
@@ -58,18 +53,16 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 
 	run(): Promise<void> {
 		if (this.scenes.length === 0) {
-			this.#beginOutro();
+			this.#complete();
 		} else {
 			this.#mountSceneController("scene");
 		}
-		this.#startTimer();
 		this.ctx.ui.requestRender();
 		return this.#done.promise;
 	}
 
 	dispose(): void {
 		this.#disposed = true;
-		this.#stopTimer();
 		this.#unmountActiveScene();
 	}
 
@@ -91,18 +84,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 			return;
 		}
 		if (matchesKey(data, "ctrl+c")) {
-			this.#beginOutro();
-			return;
-		}
-		if (this.#phase === "outro") {
-			if (
-				matchesKey(data, "enter") ||
-				matchesKey(data, "return") ||
-				matchesKey(data, "space") ||
-				matchesKey(data, "escape")
-			) {
-				this.#complete();
-			}
+			this.#complete();
 			return;
 		}
 		this.#activeScene?.handleInput?.(data);
@@ -114,15 +96,10 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	 * so report coordinates index directly into the last rendered lines: scene
 	 * body rows start at #bodyRowStart, indented by SCENE_MARGIN_X. Scenes
 	 * that implement routeMouse get hit-tested events (wheel, hover, click);
-	 * for the rest a wheel notch falls back to an arrow key. A left click
-	 * completes the outro like Enter. Raw reports never reach scene keyboard
-	 * input.
+	 * for the rest a wheel notch falls back to an arrow key. Raw reports never
+	 * reach scene keyboard input.
 	 */
 	#routeMouseEvent(event: SgrMouseEvent): void {
-		if (this.#phase === "outro") {
-			if (event.leftClick) this.#complete();
-			return;
-		}
 		const scene = this.#activeScene;
 		if (!scene) return;
 		if (scene.routeMouse) {
@@ -139,9 +116,6 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		const height = Math.max(1, this.ctx.ui.terminal.rows);
 		let lines: string[];
 		switch (this.#phase) {
-			case "outro":
-				lines = renderSetupOutro(safeWidth, height);
-				break;
 			case "scene":
 				lines = this.#renderScene(safeWidth, height);
 				break;
@@ -152,16 +126,23 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		return this.#fitToScreen(lines, safeWidth, height);
 	}
 
+	/** Hero-card metadata source for the scene headers. */
+	#heroInfo(): { version: string; modelName?: string; providerName?: string } {
+		const model = this.ctx.session?.model;
+		return { version: VERSION, modelName: model?.id, providerName: model?.provider };
+	}
+
 	#renderScene(width: number, height: number): string[] {
 		const scene = this.scenes[this.#sceneIndex];
 		const title = this.#activeScene?.title ?? scene?.title ?? "Setup";
 		const subtitle = this.#activeScene?.subtitle;
 		const contentWidth = Math.max(MIN_CONTENT_WIDTH, width - SCENE_MARGIN_X * 2);
-		const logo = gradientLogo(PI_LOGO, 0);
+		const info = this.#heroInfo();
 		const header = [
 			"",
-			...logo.map(line => centerLine(line, width)),
-			centerLine(theme.bold(theme.fg("accent", BINARY_NAME)), width),
+			centerLine(heroWordmark(), width),
+			"",
+			centerLine(heroMeta(info.version, info.modelName, info.providerName), width),
 			centerLine(theme.fg("muted", `Setup step ${this.#sceneIndex + 1} of ${this.scenes.length}`), width),
 			"",
 			indentLine(theme.bold(title), width, SCENE_MARGIN_X),
@@ -194,28 +175,11 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		return fitted;
 	}
 
-	#startTimer(): void {
-		if (this.#timer) return;
-		this.#timer = setInterval(() => {
-			if (this.#disposed) return;
-			if (this.#phase === "outro" && performance.now() - this.#phaseStartedAt >= SETUP_OUTRO_MS) {
-				this.#complete();
-				return;
-			}
-		}, OUTRO_TICK_MS);
-	}
-
-	#stopTimer(): void {
-		if (!this.#timer) return;
-		clearInterval(this.#timer);
-		this.#timer = undefined;
-	}
-
 	#mountSceneController(targetPhase: "scene"): void {
 		if (this.#disposed) return;
 		this.#unmountActiveScene();
 		if (this.#sceneIndex >= this.scenes.length) {
-			this.#beginOutro();
+			this.#complete();
 			return;
 		}
 		const scene = this.scenes[this.#sceneIndex];
@@ -234,7 +198,6 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		};
 		this.#activeScene = scene.mount(host);
 		this.#phase = targetPhase;
-		this.#phaseStartedAt = performance.now();
 		this.#sceneFocusTarget = undefined;
 		this.ctx.ui.setFocus(this);
 		void this.#activeScene.onMount?.();
@@ -255,20 +218,9 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		this.#activeScene = undefined;
 	}
 
-	#beginOutro(): void {
-		if (this.#phase === "done") return;
-		this.#unmountActiveScene();
-		this.#phase = "outro";
-		this.#phaseStartedAt = performance.now();
-		this.ctx.ui.setFocus(this);
-		this.#startTimer();
-		this.ctx.ui.requestRender();
-	}
-
 	#complete(): void {
 		if (this.#phase === "done") return;
 		this.#phase = "done";
-		this.#stopTimer();
 		this.#done.resolve();
 	}
 }

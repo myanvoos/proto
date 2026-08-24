@@ -171,7 +171,7 @@ export class PythonKernel extends BaseKernel {
 		spawnEnv.PYTHONUNBUFFERED = "1";
 		spawnEnv.PYTHONIOENCODING = "utf-8";
 
-		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
+		const scriptPath = await stageRunnerScript("proto-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
 
 		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
@@ -208,10 +208,10 @@ function buildInitScript(cwd: string, env?: Record<string, string | undefined>):
 	const envPayload = Object.fromEntries(envEntries);
 	return [
 		"import os, sys",
-		`__omp_cwd = ${JSON.stringify(cwd)}`,
-		"os.chdir(__omp_cwd)",
-		`__omp_env = ${JSON.stringify(envPayload)}`,
-		"for __omp_key, __omp_val in __omp_env.items():\n    os.environ[__omp_key] = __omp_val",
-		"if __omp_cwd not in sys.path:\n    sys.path.insert(0, __omp_cwd)",
+		`__proto_cwd = ${JSON.stringify(cwd)}`,
+		"os.chdir(__proto_cwd)",
+		`__proto_env = ${JSON.stringify(envPayload)}`,
+		"for __proto_key, __proto_val in __proto_env.items():\n    os.environ[__proto_key] = __proto_val",
+		"if __proto_cwd not in sys.path:\n    sys.path.insert(0, __proto_cwd)",
 	].join("\n");
 }

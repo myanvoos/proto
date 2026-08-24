@@ -6,7 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "@oh-my-pi/pi-coding-agent/lsp/startup-events";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -86,15 +86,8 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		resetSettingsForTest();
 	});
 
-	it("updates the welcome banner and suppresses subsequent startup warnings when quiet", async () => {
+	it("propagates LSP startup completion to a render and suppresses failure warnings when quiet", async () => {
 		await mode.init();
-
-		const findServerLine = () =>
-			Bun.stripANSI(mode.ui.render(120).join("\n"))
-				.split("\n")
-				.find(line => line.includes("rust-analyzer")) ?? "";
-
-		expect(findServerLine()).toContain(theme.status.pending);
 
 		const requestRenderSpy = vi.spyOn(mode.ui, "requestRender");
 		const showStatusSpy = vi.spyOn(mode, "showStatus");
@@ -117,16 +110,21 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 		expect(requestRenderSpy).toHaveBeenCalled();
 		expect(showStatusSpy).not.toHaveBeenCalled();
-		expect(findServerLine()).toContain(theme.status.enabled);
-		expect(findServerLine()).not.toContain(theme.status.pending);
+		const showWarningSpy = vi.spyOn(mode, "showWarning").mockImplementation(() => {});
 
 		session.settings.set("startup.quiet", true);
-		const showWarningSpy = vi.spyOn(mode, "showWarning").mockImplementation(() => {});
 		eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, {
 			type: "failed",
 			error: "rust-analyzer timed out",
 		} satisfies LspStartupEvent);
 		expect(showWarningSpy).not.toHaveBeenCalled();
+
+		session.settings.set("startup.quiet", false);
+		eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, {
+			type: "failed",
+			error: "rust-analyzer timed out again",
+		} satisfies LspStartupEvent);
+		expect(showWarningSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("surfaces a sanitized warning when session persistence fails", async () => {

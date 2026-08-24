@@ -430,7 +430,7 @@ function extractServerMap(obj: Record<string, unknown>): Record<string, unknown>
  */
 async function resolvePluginMCPConfig(root: ClaudePluginRoot): Promise<ResolvedMCPConfig> {
 	const fallback = path.join(root.path, ".mcp.json");
-	for (const manifestDir of [".omp-plugin", ".claude-plugin"]) {
+	for (const manifestDir of [".proto-plugin", ".claude-plugin"]) {
 		const manifestPath = path.join(root.path, manifestDir, "plugin.json");
 		const raw = await readFile(manifestPath);
 		if (raw === null) continue;

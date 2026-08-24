@@ -164,7 +164,7 @@ mod tests {
 
 	#[test]
 	fn strips_directory_components() {
-		assert_eq!(basename(&["/usr/local/bin/omp"]), (0, "omp\n".to_string()));
+		assert_eq!(basename(&["/usr/local/bin/proto"]), (0, "proto\n".to_string()));
 	}
 
 	#[test]

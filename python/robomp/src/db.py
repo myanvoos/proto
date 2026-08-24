@@ -647,7 +647,7 @@ class Database:
         """Snapshot of currently-running events.
 
         Returns elapsed-time inputs (`started_at`) plus per-run telemetry:
-        - `model`: the omp model the worker picked for this run, set after
+        - `model`: the proto model the worker picked for this run, set after
           `pick_model()` so it reflects the actual pool selection.
         - `last_tool` / `last_tool_ts`: the most recent host-tool call audited
           on the same `issue_key` since `started_at`. Scoping by start time

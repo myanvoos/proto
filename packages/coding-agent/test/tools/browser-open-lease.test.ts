@@ -40,7 +40,7 @@ beforeEach(() => {
 	prevSocketPath = process.env.CMUX_SOCKET_PATH;
 	// Unique per test so the module-global browsers map (keyed by socket path)
 	// never carries a handle across tests.
-	process.env.CMUX_SOCKET_PATH = `/tmp/omp-open-lease-${process.pid}-${Math.random().toString(36).slice(2)}.sock`;
+	process.env.CMUX_SOCKET_PATH = `/tmp/proto-open-lease-${process.pid}-${Math.random().toString(36).slice(2)}.sock`;
 });
 
 afterEach(async () => {

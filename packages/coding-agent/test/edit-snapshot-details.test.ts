@@ -49,7 +49,7 @@ let tempDir: string;
 
 beforeEach(async () => {
 	resetSettingsForTest();
-	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-snapshot-"));
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-edit-snapshot-"));
 	await Settings.init({ inMemory: true, cwd: tempDir });
 });
 

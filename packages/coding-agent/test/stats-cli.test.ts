@@ -4,14 +4,14 @@ import Stats from "../src/commands/stats";
 import * as theme from "../src/modes/theme/theme";
 import { parseStatsDashboardArgs } from "../src/slash-commands/helpers/stats-dashboard";
 
-const TEST_CONFIG = { bin: "omp", version: "0.0.0-test", commands: new Map() };
+const TEST_CONFIG = { bin: "proto", version: "0.0.0-test", commands: new Map() };
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 describe("stats dashboard host arguments", () => {
-	it("forwards the real omp stats flags to the dashboard runner", async () => {
+	it("forwards the real proto stats flags to the dashboard runner", async () => {
 		vi.spyOn(theme, "initTheme").mockResolvedValue();
 		const runStatsCommand = vi.spyOn(statsCli, "runStatsCommand").mockResolvedValue();
 		const command = new Stats(["--host", "::", "--port", "3850"], TEST_CONFIG);

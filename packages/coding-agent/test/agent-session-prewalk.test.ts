@@ -552,7 +552,7 @@ describe("AgentSession prewalk", () => {
 		const sessionManager = SessionManager.inMemory();
 		sessionManager.appendCustomMessageEntry(
 			"prewalk-plan",
-			"legacy plan nudge written by an older OMP version",
+			"legacy plan nudge written by an older PROTO version",
 			false,
 			undefined,
 			"agent",

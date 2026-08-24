@@ -297,9 +297,9 @@ describe("RemoteAuthCredentialStore SSE integration", () => {
 
 		await withEnv(
 			{
-				OMP_AUTH_BROKER_URL: handle!.url,
-				OMP_AUTH_BROKER_TOKEN: token,
-				OMP_AUTH_BROKER_ACCOUNT_POOL_FILE: poolPath,
+				PROTO_AUTH_BROKER_URL: handle!.url,
+				PROTO_AUTH_BROKER_TOKEN: token,
+				PROTO_AUTH_BROKER_ACCOUNT_POOL_FILE: poolPath,
 			},
 			async () => {
 				const discovered = await discoverAuthStorage({
@@ -326,9 +326,9 @@ describe("RemoteAuthCredentialStore SSE integration", () => {
 	test("prefers a programmatic SDK account pool over the environment file", async () => {
 		await withEnv(
 			{
-				OMP_AUTH_BROKER_URL: handle!.url,
-				OMP_AUTH_BROKER_TOKEN: token,
-				OMP_AUTH_BROKER_ACCOUNT_POOL_FILE: path.join(tempDir, "missing-account-pool.json"),
+				PROTO_AUTH_BROKER_URL: handle!.url,
+				PROTO_AUTH_BROKER_TOKEN: token,
+				PROTO_AUTH_BROKER_ACCOUNT_POOL_FILE: path.join(tempDir, "missing-account-pool.json"),
 			},
 			async () => {
 				const discovered = await discoverAuthStorage({

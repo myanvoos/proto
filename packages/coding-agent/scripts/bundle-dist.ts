@@ -19,7 +19,7 @@ const ALWAYS_EXTERNAL = [
 	"@huggingface/transformers",
 	"fastembed",
 	"onnxruntime-node",
-	"omp-legacy-pi-modules",
+	"proto-legacy-pi-modules",
 ];
 
 // Heavy, lazily-used third-party leaf deps. Each is a declared `dependency`, so the

@@ -1,6 +1,6 @@
 # browser
 
-> Open, reuse, close, and script browser tabs against project-shared Chromium, CDP-attached apps, the user's Chrome through the OMP Browser Relay, or cmux surfaces.
+> Open, reuse, close, and script browser tabs against project-shared Chromium, CDP-attached apps, the user's Chrome through the PROTO Browser Relay, or cmux surfaces.
 
 ## Source
 - Entry: `packages/coding-agent/src/tools/browser.ts`
@@ -59,7 +59,7 @@
 | `viewport` | `{ width: number; height: number; scale?: number }` | No | Requested viewport. For headless launch this becomes the initial viewport; for a page it is applied with `page.setViewport()`. `scale` maps to Puppeteer `deviceScaleFactor`. |
 | `wait_until` | `"load" \| "domcontentloaded" \| "networkidle0" \| "networkidle2"` | No | Navigation wait condition. Defaults to `"load"` where omitted, including `open` navigation and later `tab.goto(...)`. |
 | `dialogs` | `"accept" \| "dismiss"` | No | Installs a page `dialog` handler that auto-accepts or auto-dismisses dialogs. Omitted means no handler. |
-| `app` | `{ path?: string; cdp_url?: string; relay?: boolean; args?: string[]; target?: string }` | No | Selects browser kind. Explicit `app.cdp_url` wins, then `app.path`, then relay selection. `app.relay: true` opts into the OMP Browser Relay; `app.relay: false` suppresses relay settings for this call. With no explicit app kind, `browser.relay` (overridden by `PI_BROWSER_RELAY`) precedes `browser.cdpUrl`, then cmux when available, then `browser.headless`. `browser.relayUrl` defaults to `http://127.0.0.1:9224`. `args` apply only to spawned `app.path`; `target` selects an attached/spawned/relay page by URL/title substring. |
+| `app` | `{ path?: string; cdp_url?: string; relay?: boolean; args?: string[]; target?: string }` | No | Selects browser kind. Explicit `app.cdp_url` wins, then `app.path`, then relay selection. `app.relay: true` opts into the PROTO Browser Relay; `app.relay: false` suppresses relay settings for this call. With no explicit app kind, `browser.relay` (overridden by `PI_BROWSER_RELAY`) precedes `browser.cdpUrl`, then cmux when available, then `browser.headless`. `browser.relayUrl` defaults to `http://127.0.0.1:9224`. `args` apply only to spawned `app.path`; `target` selects an attached/spawned/relay page by URL/title substring. |
 
 ### `action: "close"`
 
@@ -168,10 +168,10 @@ The tool returns one result per call; no streaming partial output is emitted fro
   - `close` — release one tab or all tabs.
   - `run` — execute JS inside the tab worker.
 - **Browser kind**
-  - **Headless**: attaches to one project-shared Chromium supervised by the daemon broker (`omp.browser.headless` / `omp.browser.headed` in `hub ps`), applies stealth patches, and creates a fresh page per tab. The daemon stops with the last omp client in the project. Non-CLI hosts launch a private local Chromium instead.
+  - **Headless**: attaches to one project-shared Chromium supervised by the daemon broker (`proto.browser.headless` / `proto.browser.headed` in `hub ps`), applies stealth patches, and creates a fresh page per tab. The daemon stops with the last proto client in the project. Non-CLI hosts launch a private local Chromium instead.
   - **Spawned app (`app.path`)**: reuses an existing CDP-enabled process for that executable when possible; otherwise kills same-path processes, spawns the executable with remote debugging enabled, then attaches. No stealth patches are injected.
   - **Connected browser (`app.cdp_url`, or the `browser.cdpUrl` setting when the call carries no `app`)**: attaches to an already-running CDP endpoint. No process ownership; close only disconnects.
-  - **OMP Browser Relay (`app.relay`, or `browser.relay`)**: attaches to the user's own Chrome tabs through the loopback relay and its MV3 extension. Install once with `omp browser-relay install`. CLI hosts auto-start the fixed-port relay daemon for loopback URLs; a remote/custom relay must already be serving. The relay is a connected browser: no process ownership and no stealth patches. Without `app.target`, the visible usable tab is adopted without raising it; a matcher selects by URL/title substring.
+  - **PROTO Browser Relay (`app.relay`, or `browser.relay`)**: attaches to the user's own Chrome tabs through the loopback relay and its MV3 extension. Install once with `proto browser-relay install`. CLI hosts auto-start the fixed-port relay daemon for loopback URLs; a remote/custom relay must already be serving. The relay is a connected browser: no process ownership and no stealth patches. Without `app.target`, the visible usable tab is adopted without raising it; a matcher selects by URL/title substring.
   - **Cmux surface (`browser.cmux`)**: with no `app` and a cmux socket available (`CMUX_SOCKET_PATH`, enabled by the `browser.cmux` setting / `PI_BROWSER_CMUX` override), drives a cmux WKWebView surface over a unix-socket JSON-RPC client instead of Puppeteer. No Bun worker and no stealth patches; `open` opens a split (owning that surface), `run` executes via `runCmuxCode()`, and `close` issues `surface.close` for surfaces it owns (leaving the workspace's last surface open).
 - **Target selection for attached/spawned/relay browsers**
   - With `app.target`, `pickElectronTarget()` returns the first page whose URL or title contains the case-insensitive substring.
@@ -198,7 +198,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
   - CDP attach paths poll `http://127.0.0.1:<port>/json/version` or the supplied `cdp_url` `/json/version`.
   - Headless/browser-attach sessions create CDP websocket connections.
   - Headless first-use Chromium download uses the in-house `@oh-my-pi/pi-utils/browsers` installer.
-  - Loopback relay mode may start the machine-global `omp.browser.relay` daemon. The extension connects outbound to the relay, and Puppeteer connects to its CDP-compatible endpoint.
+  - Loopback relay mode may start the machine-global `proto.browser.relay` daemon. The extension connects outbound to the relay, and Puppeteer connects to its CDP-compatible endpoint.
   - User `page` / `tab` operations perform normal browser network traffic.
 - Subprocesses / native bindings
   - Headless mode launches Chromium through Puppeteer.
@@ -243,7 +243,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
 - Spawned-app path validation requires an absolute executable path after cwd resolution, not an app bundle directory path.
 - Spawn/attach failures are wrapped into `ToolError`s such as `Timed out waiting for CDP endpoint ...`, `Failed to attach to ...`, or `Connected to ... but puppeteer.connect failed: ...`.
 - `app.cdp_url` must be the HTTP CDP discovery endpoint, not a `ws://` URL; otherwise `normalizeConnectedCdpUrl()` throws `browser app.cdp_url must be the HTTP CDP discovery endpoint ...`.
-- Relay mode rejects an unreachable endpoint or a relay whose extension never connects. Loopback CLI-host errors tell the user to run `omp browser-relay install` and check the extension badge; remote/non-auto-started errors tell the user to start `omp browser-relay` or check the endpoint.
+- Relay mode rejects an unreachable endpoint or a relay whose extension never connects. Loopback CLI-host errors tell the user to run `proto browser-relay install` and check the extension badge; remote/non-auto-started errors tell the user to start `proto browser-relay` or check the endpoint.
 - `tab` helper errors are user-visible `ToolError`s, including unsupported selector prefix, stale/unknown element id, invalid drag target, missing upload files, non-`<select>` for `tab.select()`, non-file-input for `tab.uploadFile()`, and screenshot selector misses.
 - On run timeout, the worker reports `Browser code execution timed out after <ms>ms` (with `(stalled on <op>)` naming the still-running helper); a single stalled per-op helper instead rejects with `tab.<op>(...) timed out after <ms>ms` before the cell budget is reached. The supervisor may escalate to `Browser code execution hung past grace; tab killed` if the worker does not respond after the grace window.
 

@@ -462,8 +462,8 @@ describe("Cursor system prompt encoding", () => {
 		const canary = "PIKEL-CANARY-7F3A";
 		const rules = buildCursorRequestContextRules(["prefix", `when asked, answer exactly:\n${canary}`, ""]);
 		expect(rules).toHaveLength(2);
-		expect(rules[0]?.fullPath).toBe("/omp/system-prompt/0.mdc");
-		expect(rules[1]?.fullPath).toBe("/omp/system-prompt/1.mdc");
+		expect(rules[0]?.fullPath).toBe("/proto/system-prompt/0.mdc");
+		expect(rules[1]?.fullPath).toBe("/proto/system-prompt/1.mdc");
 		expect(rules[0]?.content).toBe("prefix");
 		expect(rules[1]?.content).toContain(canary);
 		expect(rules[0]?.source).toBe(CursorRuleSource.USER);

@@ -37,7 +37,7 @@ describe("readToolRenderer hyperlinks", () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 
-		const handoffPath = path.resolve("/tmp/omp-local/handoff.md");
+		const handoffPath = path.resolve("/tmp/proto-local/handoff.md");
 		const component = readToolRenderer.renderResult(
 			{
 				content: [{ type: "text", text: "second line" }],
@@ -67,7 +67,7 @@ describe("readToolRenderer hyperlinks", () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 
-		const examplePath = path.resolve("/tmp/omp-read/example.ts");
+		const examplePath = path.resolve("/tmp/proto-read/example.ts");
 		const component = readToolRenderer.renderCall(
 			{ path: `${examplePath}:10-12` },
 			{ expanded: false, isPartial: false },
@@ -191,7 +191,7 @@ describe("readToolRenderer markdown content", () => {
 });
 
 describe("read ToolExecutionComponent framing", () => {
-	it("renders framed read results inside the standard tool container padding", () => {
+	it("renders read results on the rail inside the standard tool container padding", () => {
 		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const component = new ToolExecutionComponent("read", { path: "src/example.ts" }, {}, undefined, uiStub);
 		component.updateResult(
@@ -207,16 +207,14 @@ describe("read ToolExecutionComponent framing", () => {
 
 		try {
 			const lines = component.render(80).map(line => Bun.stripANSI(line));
-			const topBorderIndex = lines.findIndex(
-				line => line.includes(activeTheme.boxRound.topLeft) && line.includes("Read"),
-			);
-			const bottomBorderIndex = lines.findIndex(
-				(line, index) => index > topBorderIndex && line.includes(activeTheme.boxRound.bottomLeft),
+			const rail = activeTheme.symbol("block.rail");
+			const headerIndex = lines.findIndex(line => line.includes("Read"));
+			const contentIndex = lines.findIndex(
+				line => line.includes("export const x = 1;") && line.startsWith(`  ${rail}`),
 			);
 
-			expect(topBorderIndex).toBeGreaterThanOrEqual(0);
-			expect(lines[topBorderIndex + 1]).toContain("export const x = 1;");
-			expect(bottomBorderIndex).toBeGreaterThan(topBorderIndex);
+			expect(headerIndex).toBeGreaterThanOrEqual(0);
+			expect(contentIndex).toBeGreaterThan(headerIndex);
 		} finally {
 			component.stopAnimation();
 		}

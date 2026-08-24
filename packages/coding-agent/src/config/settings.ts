@@ -1374,7 +1374,7 @@ export class Settings {
 			// Capability discovery is best-effort; the native project config below
 			// remains authoritative for its model-role layer and must not be hidden.
 		}
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
+		const projectConfigPath = path.join(this.#cwd, ".proto", "config.yml");
 		const nativeProject = quarantineInvalid
 			? await this.#loadYaml(projectConfigPath)
 			: (this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false)) ??
@@ -1778,7 +1778,7 @@ export class Settings {
 					!("bankId" in hindsightObj) &&
 					typeof agentName === "string" &&
 					agentName.trim().length > 0 &&
-					agentName !== "omp"
+					agentName !== "proto"
 				) {
 					hindsightObj.bankId = agentName;
 				}
@@ -2349,7 +2349,7 @@ export class Settings {
 	async #saveProjectNow(): Promise<void> {
 		if (this.#savesCancelled || !this.#persist || this.#modifiedProjectModelRoles.size === 0) return;
 
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
+		const projectConfigPath = path.join(this.#cwd, ".proto", "config.yml");
 		const modifiedModelRoles = [...this.#modifiedProjectModelRoles];
 		this.#modifiedProjectModelRoles.clear();
 

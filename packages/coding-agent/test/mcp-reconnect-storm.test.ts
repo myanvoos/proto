@@ -28,7 +28,7 @@ describe("MCP reconnect storm (issue #1592)", () => {
 	let spawnLog: string;
 
 	beforeEach(() => {
-		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-storm-"));
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-storm-"));
 		spawnLog = path.join(workDir, "spawns.log");
 		fs.writeFileSync(spawnLog, "");
 	});
@@ -48,7 +48,7 @@ describe("MCP reconnect storm (issue #1592)", () => {
 			type: "stdio",
 			command: BUN_EXEC,
 			args: [FIXTURE_PATH],
-			env: { OMP_TEST_SPAWN_LOG: spawnLog },
+			env: { PROTO_TEST_SPAWN_LOG: spawnLog },
 		};
 
 		try {

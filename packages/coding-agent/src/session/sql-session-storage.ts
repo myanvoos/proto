@@ -94,7 +94,7 @@ interface SliceRow {
 	tail: unknown;
 }
 
-const DEFAULT_TABLE = "omp_session_files";
+const DEFAULT_TABLE = "proto_session_files";
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 const utf8Decoder = new TextDecoder("utf-8");
 

@@ -15,7 +15,7 @@ import { JAVASCRIPT_PRELUDE_SOURCE } from "../../src/eval/js/shared/prelude";
  * test runs against the real shipped helper, not a re-implementation.
  */
 function loadPrelude(callTool: (name: string, args: unknown) => Promise<unknown>): Record<string, unknown> {
-	const sandbox: Record<string, unknown> = { __omp_call_tool__: callTool };
+	const sandbox: Record<string, unknown> = { __proto_call_tool__: callTool };
 	vm.createContext(sandbox);
 	vm.runInContext(JAVASCRIPT_PRELUDE_SOURCE, sandbox);
 	return sandbox;

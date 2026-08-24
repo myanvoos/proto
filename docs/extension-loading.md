@@ -31,15 +31,15 @@ Extension loading builds a list of module entry files, imports each module with 
 
 Native `extension-module` discovery comes from:
 
-- Project directory: `<cwd>/.omp/extensions`
-- User directory: the active agent directory's `extensions/` (default `~/.omp/agent/extensions`)
-- Native legacy/settings JSON entries: `<cwd>/.omp/settings.json#extensions` and the active agent directory's `settings.json#extensions`
+- Project directory: `<cwd>/.proto/extensions`
+- User directory: the active agent directory's `extensions/` (default `~/.proto/agent/extensions`)
+- Native legacy/settings JSON entries: `<cwd>/.proto/settings.json#extensions` and the active agent directory's `settings.json#extensions`
 
-The project root is the native provider's `.omp` directory (`SOURCE_PATHS.native.projectDir`), cwd-only; it does not walk ancestors. The user root is the active profile's agent directory via `getAgentDir()`, so under `omp --profile <name>` it becomes `~/.omp/profiles/<name>/agent/extensions` (and it honors `PI_CODING_AGENT_DIR`). See [Profiles](./config-usage.md#profiles).
+The project root is the native provider's `.proto` directory (`SOURCE_PATHS.native.projectDir`), cwd-only; it does not walk ancestors. The user root is the active profile's agent directory via `getAgentDir()`, so under `proto --profile <name>` it becomes `~/.proto/profiles/<name>/agent/extensions` (and it honors `PI_CODING_AGENT_DIR`). See [Profiles](./config-usage.md#profiles).
 
 Notes:
 
-- Native auto-discovery is currently `.omp` based.
+- Native auto-discovery is currently `.proto` based.
 - Legacy `.pi` is still accepted in package manifests (`pi.extensions`) and project override lookup, but `.pi/extensions` is not a native root here.
 
 ### 2) Discovered JS/TS hook factories
@@ -52,7 +52,7 @@ Hook-capability loading already applies its own hook-specific disabled ids, so t
 
 After hook discovery, `discoverAndLoadExtensions()` appends extension entry points from enabled installed plugins via `getAllPluginExtensionPaths(cwd)`.
 
-Plugin extension entries come from package `omp.extensions` / `pi.extensions` manifests, including enabled feature entries.
+Plugin extension entries come from package `proto.extensions` / `pi.extensions` manifests, including enabled feature entries.
 
 Installed-plugin manifest resolution accepts explicit `.ts`, `.js`, `.mjs`, and `.cjs` files. For a manifest entry that names a directory, it recognizes `index.ts`, `index.js`, `index.mjs`, or `index.cjs`; extension-directory expansion uses the same four suffixes. This is broader than native and configured-directory auto-scanning, which remains limited to `.ts` and `.js`.
 
@@ -67,18 +67,18 @@ Configured path sources in the main session startup path (`sdk.ts`):
 
 Settings files:
 
-- User: the active agent directory's `config.yml` (default `~/.omp/agent/config.yml`; with `--profile <name>`, `~/.omp/profiles/<name>/agent/config.yml`; `PI_CODING_AGENT_DIR` can override the agent directory)
-- Project/native settings capability: `<cwd>/.omp/config.yml` and `<cwd>/.omp/settings.json`
+- User: the active agent directory's `config.yml` (default `~/.proto/agent/config.yml`; with `--profile <name>`, `~/.proto/profiles/<name>/agent/config.yml`; `PI_CODING_AGENT_DIR` can override the agent directory)
+- Project/native settings capability: `<cwd>/.proto/config.yml` and `<cwd>/.proto/settings.json`
 
 Native extension-module discovery also reads legacy JSON extension lists from:
 
-- The active agent directory's `settings.json` (default `~/.omp/agent/settings.json`)
-- `<cwd>/.omp/settings.json`
+- The active agent directory's `settings.json` (default `~/.proto/agent/settings.json`)
+- `<cwd>/.proto/settings.json`
 
 Examples:
 
 ```yaml
-# ~/.omp/agent/config.yml
+# ~/.proto/agent/config.yml
 extensions:
   - ~/my-exts/safety.ts
   - ./local/ext-pack
@@ -86,7 +86,7 @@ extensions:
 
 ```json
 {
-  "extensions": ["./.omp/extensions/my-extra"]
+  "extensions": ["./.proto/extensions/my-extra"]
 }
 ```
 
@@ -103,14 +103,14 @@ Behavior split:
 
 - SDK: when `disableExtensionDiscovery=true`, ambient extension factories are
   excluded, while `additionalExtensionPaths` are still resolved normally
-  (including package directories with `package.json#omp.extensions`).
+  (including package directories with `package.json#proto.extensions`).
 - CLI: `--no-extensions` follows the same explicit-only contract. Explicit
   `-e/--extension` and `--hook` paths still load, and only sibling capability
   roots from explicitly named extension packages remain eligible. Project/user
-  `extensions:` settings and installed OMP extension packages are excluded from
+  `extensions:` settings and installed PROTO extension packages are excluded from
   that sibling surface.
 
-This flag governs extension factories and OMP extension-package sibling roots;
+This flag governs extension factories and PROTO extension-package sibling roots;
 it is not a whole-process capability-isolation switch. Skills, MCP servers,
 tools, prompts, and rules owned by other discovery subsystems retain their own
 enable/disable controls.
@@ -172,13 +172,13 @@ It is used directly as a module entry candidate. Explicit `.ts`, `.js`, `.mjs`, 
 
 Resolution order:
 
-1. `package.json` in that directory with `omp.extensions` (or legacy `pi.extensions`) -> use declared entries
+1. `package.json` in that directory with `proto.extensions` (or legacy `pi.extensions`) -> use declared entries
 2. `index.ts`
 3. `index.js`
 4. Otherwise scan one level for extension entries:
    - direct `*.ts` / `*.js`
    - subdir `index.ts` / `index.js`
-   - subdir `package.json` with `omp.extensions` / `pi.extensions`
+   - subdir `package.json` with `proto.extensions` / `pi.extensions`
 
 Rules and constraints:
 
@@ -263,7 +263,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 ### User-level
 
 ```text
-~/.omp/agent/
+~/.proto/agent/
   config.yml
   extensions/
     guardrails.ts
@@ -275,7 +275,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 
 ```text
 <repo>/
-  .omp/
+  .proto/
     settings.json
     extensions/
       checks/
@@ -287,7 +287,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 
 ```json
 {
-  "omp": {
+  "proto": {
     "extensions": ["./src/check-a.ts", "./src/check-b.js"]
   }
 }

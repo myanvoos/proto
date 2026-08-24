@@ -112,7 +112,7 @@ class WorkerPool:
 
         Cleanly interrupted tasks intentionally leave their DB row in
         `running` so the next `WorkerPool.start()` re-queues them via
-        `reset_stuck_running()`. The resumed omp session then picks up via
+        `reset_stuck_running()`. The resumed proto session then picks up via
         `--continue` from the persisted JSONL transcript.
         """
         self._shutting_down = True

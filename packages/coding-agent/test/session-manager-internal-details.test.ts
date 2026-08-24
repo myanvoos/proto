@@ -39,7 +39,7 @@ describe("SessionManager.appendCustomMessageEntry (allowlist strip + persistence
 				path: "/s.md",
 				args: "bar",
 				lineCount: 10,
-				__queueChipText: "omp-cmd-1-0",
+				__queueChipText: "proto-cmd-1-0",
 			},
 			"user",
 		);

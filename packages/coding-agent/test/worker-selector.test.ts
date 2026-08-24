@@ -19,10 +19,10 @@ describe("worker selector dispatch", () => {
 	it("fails with a nonzero exit and stderr error on an unknown selector", async () => {
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-		await runCli(["__omp_worker_does_not_exist"]);
+		await runCli(["__proto_worker_does_not_exist"]);
 
 		expect(process.exitCode).toBe(1);
-		expect(stderr).toHaveBeenCalledWith("Error: unknown worker selector: __omp_worker_does_not_exist\n");
+		expect(stderr).toHaveBeenCalledWith("Error: unknown worker selector: __proto_worker_does_not_exist\n");
 	});
 
 	it("leaves normal root flags untouched", async () => {

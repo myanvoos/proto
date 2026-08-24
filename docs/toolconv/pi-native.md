@@ -1,13 +1,13 @@
 # pi-native auth-gateway transport
 
 `pi-native` is the lossless transport between a pi-ai client and an
-`omp auth-gateway`. It is **not a textual tool-call dialect**: there is no
+`proto auth-gateway`. It is **not a textual tool-call dialect**: there is no
 `<call:NAME>` grammar, parser, renderer, or `PI_DIALECT=pi-native` value in the
 current implementation. Tool calls remain canonical pi-ai `ToolCall` content
 blocks inside `Context` and `AssistantMessageEvent`.
 
 Use this transport when the client already speaks pi-ai and the gateway owns
-provider credentials—for example, a containerized omp talking to a host
+provider credentials—for example, a containerized proto talking to a host
 gateway or a robomp slot talking to its sidecar. OpenAI/Anthropic-compatible
 routes translate and can lose pi-specific fields; pi-native sends the
 canonical types directly, preserving service tier, cache markers, thinking
@@ -22,7 +22,7 @@ transport: pi-native
 baseUrl: http://gateway.internal:4000
 ```
 
-`baseUrl` MUST identify an `omp auth-gateway` (or compatible service). Missing
+`baseUrl` MUST identify an `proto auth-gateway` (or compatible service). Missing
 `baseUrl` fails with:
 
 ```text

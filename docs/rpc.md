@@ -16,7 +16,7 @@ Primary implementation:
 ## Startup
 
 ```bash
-omp --mode rpc [regular CLI options]
+proto --mode rpc [regular CLI options]
 ```
 
 Behavior notes:
@@ -465,9 +465,6 @@ Schemes are case-insensitive on the wire and normalized to lowercase before
 the response is sent. Re-sending `set_host_uri_schemes` replaces the entire
 previous set — schemes missing from the new list are unregistered.
 
-`security://` is reserved for OMP's producer-neutral software-security resource
-store. RPC hosts cannot register or shadow that scheme.
-
 ## Event Stream Schema
 
 RPC mode forwards `AgentSessionEvent` objects from `AgentSession.subscribe(...)`.
@@ -865,10 +862,10 @@ Current helper characteristics:
 
 ### Python package
 
-The bundled [`omp-rpc`](../python/omp-rpc/pyproject.toml) distribution provides the process-backed Python client. Its import package is `omp_rpc`; the package API, typed commands and events, host-tool/host-URI helpers, and orchestration examples are maintained in the [`omp-rpc` README](../python/omp-rpc/README.md).
+The bundled [`proto-rpc`](../python/proto-rpc/pyproject.toml) distribution provides the process-backed Python client. Its import package is `proto_rpc`; the package API, typed commands and events, host-tool/host-URI helpers, and orchestration examples are maintained in the [`proto-rpc` README](../python/proto-rpc/README.md).
 
 ```python
-from omp_rpc import RpcClient
+from proto_rpc import RpcClient
 
 with RpcClient(provider="anthropic", model="claude-sonnet-4-5") as client:
     state = client.get_state()
@@ -876,4 +873,4 @@ with RpcClient(provider="anthropic", model="claude-sonnet-4-5") as client:
     print(turn.require_assistant_text())
 ```
 
-By default, `RpcClient` starts `omp --mode rpc`; pass `command=[...]` to own the exact child command. It handles request correlation, typed notifications, v2 negotiation and chunk reassembly, message pagination, extension UI, and host-owned tools and URI schemes. The Python package owns that client API and process lifecycle; this document and `rpc-types.ts` remain the canonical wire contract. Use raw protocol frames when a client library does not wrap the surface you need.
+By default, `RpcClient` starts `proto --mode rpc`; pass `command=[...]` to own the exact child command. It handles request correlation, typed notifications, v2 negotiation and chunk reassembly, message pagination, extension UI, and host-owned tools and URI schemes. The Python package owns that client API and process lifecycle; this document and `rpc-types.ts` remain the canonical wire contract. Use raw protocol frames when a client library does not wrap the surface you need.

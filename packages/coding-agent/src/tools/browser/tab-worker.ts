@@ -933,7 +933,7 @@ export class WorkerCore {
 			// Puppeteer's protocol map cannot express the relay-private method; the
 			// send signature is otherwise identical.
 			const raw = session as unknown as { send(method: string): Promise<unknown> };
-			await raw.send("OMP.claimTarget");
+			await raw.send("PROTO.claimTarget");
 		} catch {
 			// Not the omp relay; nothing to claim.
 		} finally {
@@ -1710,7 +1710,7 @@ export class WorkerCore {
 					session.browserScreenshotDir,
 					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
 				)
-			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
+			: path.join(os.tmpdir(), `proto-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
 		const info: ScreenshotResult = {

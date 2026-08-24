@@ -1,10 +1,10 @@
 const NativeDate = globalThis.Date;
 
 function fixtureNow(): number {
-	const value = process.env.OMP_LOGGER_TEST_NOW;
-	if (!value) throw new Error("OMP_LOGGER_TEST_NOW is required");
+	const value = process.env.PROTO_LOGGER_TEST_NOW;
+	if (!value) throw new Error("PROTO_LOGGER_TEST_NOW is required");
 	const parsed = NativeDate.parse(value);
-	if (!Number.isFinite(parsed)) throw new Error(`invalid OMP_LOGGER_TEST_NOW: ${value}`);
+	if (!Number.isFinite(parsed)) throw new Error(`invalid PROTO_LOGGER_TEST_NOW: ${value}`);
 	return parsed;
 }
 

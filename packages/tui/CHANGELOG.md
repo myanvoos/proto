@@ -9,6 +9,7 @@
 ### Changed
 
 - Improved slash command autocompletion to chain suggestions after selecting a namespace
+- Removed all composer shapes except the default borderless layout; `Editor` now renders a single chrome and `setBorderStyle`/`getComposerStyle`/`registerComposerStyle` are gone
 
 ### Fixed
 
@@ -19,6 +20,10 @@
 - Fixed pasting an image in kitty occasionally spraying base64 text into the composer alongside the image attachment: a kitty OSC 5522 clipboard packet torn by the incomplete-escape flush is now discarded up to its terminator instead of being replayed as keystrokes.
 - Fixed Kitty OSC 66 headings activating before the host explicitly enables text sizing.
 - Markdown streaming renderer now scans only the mutable tail (not the full document) for reference-link definitions and CR on every frame, eliminating the O(n²) `RegExp.test` cost that accounted for ~26% CPU during active streaming ([#9048](https://github.com/can1357/oh-my-pi/issues/9048)).
+
+### Removed
+
+- Removed the unused decorative ASCII art helpers (`renderSunsetField`, `renderSunField`, `sunMark`) and their `components/sun` module.
 
 ## [18.0.0] - 2026-08-22
 
@@ -217,7 +222,7 @@
 
 ### Fixed
 
-- Fixed omp dying with an uncaught `setRawMode failed with errno: 2` instead of exiting 129 when the terminal disconnects. A recycled terminal pane revokes the pty, so the raw-mode restore in `stop()` hit an fd that is no longer a tty; the throw escaped `#markTerminalDisconnected()` and preempted its own SIGHUP. Terminal teardown on the disconnect path is now best-effort, matching `emergencyTerminalRestore()`, so the exit added in [#5837](https://github.com/can1357/oh-my-pi/pull/5837) always runs.
+- Fixed proto dying with an uncaught `setRawMode failed with errno: 2` instead of exiting 129 when the terminal disconnects. A recycled terminal pane revokes the pty, so the raw-mode restore in `stop()` hit an fd that is no longer a tty; the throw escaped `#markTerminalDisconnected()` and preempted its own SIGHUP. Terminal teardown on the disconnect path is now best-effort, matching `emergencyTerminalRestore()`, so the exit added in [#5837](https://github.com/can1357/oh-my-pi/pull/5837) always runs.
 - Fixed the multi-line prompt editor bypassing the keybindings registry for word/line delete and yank: `ctrl+backspace` (a declared default of `tui.editor.deleteWordBackward`) never fired and `keybindings.yml` remaps of `deleteWordBackward`, `deleteWordForward`, `deleteToLineStart`, `deleteToLineEnd`, `yank`, and `yankPop` were ignored, because those actions were matched with hardcoded chords instead of `keybindings.matches(...)` like cursor motion and the single-line `Input` already do ([#6782](https://github.com/can1357/oh-my-pi/issues/6782)).
 - Restored the Windows Terminal raw `0x08` → `ctrl+backspace` disambiguation (`WT_SESSION` set, `SSH_*` unset) by routing the exported `matchesRawBackspace` helper through the `matchesKey`/`parseKey` seam. Remote SSH/container sessions where terminal identity is unavailable can opt in with `PI_TUI_RAW_BACKSPACE_IS_CTRL=1` ([#6782](https://github.com/can1357/oh-my-pi/issues/6782)).
 - Fixed plain Backspace deleting a whole word inside tmux/GNU screen/Zellij panes launched from Windows Terminal: multiplexers inherit `WT_SESSION` but emit raw `0x08` for plain Backspace, so the automatic raw-backspace → `ctrl+backspace` heuristic misfired. The heuristic now skips multiplexer sessions (`TMUX`/`STY`/`ZELLIJ` or `TERM` starting with `tmux`/`screen`); `PI_TUI_RAW_BACKSPACE_IS_CTRL=1` remains the explicit opt-in everywhere ([#6784](https://github.com/can1357/oh-my-pi/pull/6784)).
@@ -571,7 +576,7 @@
 - Removed the 30-second OSC 11 background-color poll that ran on terminals without DEC Mode 2031 support (macOS Terminal.app, Warp, VS Code's built-in terminal, older Alacritty/WezTerm). Each poll's OSC 11 + DA1 write wiped the user's active text selection on several of those terminals, causing intermittent "can't copy" failures whenever a poll fired mid-drag — most visibly during the Ask tool dialog when the user wants to quote text back from the conversation ([#3297](https://github.com/can1357/oh-my-pi/issues/3297)). Theme detection now relies on the initial startup probe plus Mode 2031 push notifications; affected terminals pick up OS-theme changes on next launch.
 - Fixed `@`-path autocomplete failing on Windows for paths outside the cwd. Windows absolute paths (e.g. `C:\\Users\\...`) were not detected as absolute — only `/` was checked — so they were incorrectly joined with the base directory, producing invalid search paths and empty suggestions. Path-join calls also introduced backslashes into suggestion values, breaking round-trip insertion. Absolute path detection now uses `path.isAbsolute()` (handles drive letters) and suggestion paths are normalized to forward slashes (valid on all platforms).
 - Fixed settings rows crashing native text truncation when a malformed config value reaches the renderer as a non-string ([#3338](https://github.com/can1357/oh-my-pi/issues/3338)).
-- Fixed desktop notifications being silently lost under tmux on the common stack of tmux + kitty/ghostty/wezterm/iTerm2. `TERMINAL_ID` resolves to the inner terminal (whose markers leak into the tmux session env), which maps to `NotifyProtocol.Osc9` / `NotifyProtocol.Osc99`, and `sendNotification()` wrote that raw OSC straight to stdout — tmux dropped it on the floor and `monitor-bell` / `monitor-activity` never fired, so a backgrounded omp pane had no way to flag completion or `ask` blockage. Under `TMUX`, OSC-protocol notifications are now wrapped in tmux's `\x1bPtmux;…\x1b\\` DCS passthrough envelope (so users with `set -g allow-passthrough on` still get the real toast on the outer terminal) and followed by a `\x07` BEL (so `set -g monitor-bell on` reliably flags the window otherwise). The OSC 99 capability probe in `terminal.ts` is wrapped the same way so rich notifications keep working across tmux. `NotifyProtocol.Bell` paths are unchanged. ([#3395](https://github.com/can1357/oh-my-pi/issues/3395))
+- Fixed desktop notifications being silently lost under tmux on the common stack of tmux + kitty/ghostty/wezterm/iTerm2. `TERMINAL_ID` resolves to the inner terminal (whose markers leak into the tmux session env), which maps to `NotifyProtocol.Osc9` / `NotifyProtocol.Osc99`, and `sendNotification()` wrote that raw OSC straight to stdout — tmux dropped it on the floor and `monitor-bell` / `monitor-activity` never fired, so a backgrounded proto pane had no way to flag completion or `ask` blockage. Under `TMUX`, OSC-protocol notifications are now wrapped in tmux's `\x1bPtmux;…\x1b\\` DCS passthrough envelope (so users with `set -g allow-passthrough on` still get the real toast on the outer terminal) and followed by a `\x07` BEL (so `set -g monitor-bell on` reliably flags the window otherwise). The OSC 99 capability probe in `terminal.ts` is wrapped the same way so rich notifications keep working across tmux. `NotifyProtocol.Bell` paths are unchanged. ([#3395](https://github.com/can1357/oh-my-pi/issues/3395))
 
 ## [16.1.10] - 2026-06-21
 
@@ -1132,7 +1137,7 @@
 - Added `ImageBudget`, an inline-image cap that keeps only the most recent N images as live terminal graphics and demotes older ones to their text fallback. Once a new image pushes the count past the cap, the renderer hides the oldest via a full redraw plus an explicit Kitty graphics purge (`a=d,d=I`) — text-clear escapes (`CSI 2 J`/`CSI 3 J`) do not remove Kitty images. Configure the cap via `TUI#setMaxInlineImages` (`0` disables it).
 - Changed Kitty inline images to a transmit-once + placement scheme: the base64 data is sent a single time (`a=t`) keyed by a stable image id, then every repaint emits only the tiny placement (`a=p,i=…,p=…`). Repaints — including full redraws — no longer re-send image data or stack duplicate placements, and the diff/line buffers and render caches hold short placement strings instead of multi-KB base64. The `ImageBudget` doubles as the transmit store (it tracks which ids are loaded and re-transmits after a purge frees the data). iTerm2/Sixel, which have no addressable image store, keep sending inline data as before.
 - Added a renderer-level DECCARA rectangular-SGR optimizer that paints solid background panels/rows (Box/Text/Markdown fills, status bars, any full-width `theme.bg` row) as a single coalesced rectangle escape (`CSI 2*x` / `CSI Pt;Pl;Pb;Pr;<sgr>$r` / `CSI *x`) instead of emitting a full-width run of background-styled spaces on every visible row. It operates at emit time on the final ANSI strings — components are unchanged — and strips only trailing padding it can prove sits under a single non-default background span, coalescing vertically adjacent identical fills into one rectangle and falling back to the original bytes whenever the rectangle would not save bytes. Enabled only on Kitty, which implements the SGR-background extension (`docs/deccara.rst`); **Ghostty is intentionally excluded** because its `CSI $r` is unimplemented (ghostty-org/ghostty#632) and would drop the background entirely. Scrollback-bound rows and the append/scroll paths always keep the padded representation so native history preserves colored cells, and the `PI_NO_DECCARA` kill switch (plus tmux/screen/zellij detection) forces the fallback.
-- Added `CMUX_SURFACE_ID` environment variable support to `getTerminalId()`, so cmux terminal surfaces get a stable identifier alongside kitty, tmux, macOS Terminal.app, and Windows Terminal — enabling per-surface session breadcrumbs for `omp -c` in cmux.
+- Added `CMUX_SURFACE_ID` environment variable support to `getTerminalId()`, so cmux terminal surfaces get a stable identifier alongside kitty, tmux, macOS Terminal.app, and Windows Terminal — enabling per-surface session breadcrumbs for `proto -c` in cmux.
 
 ### Changed
 
@@ -1686,14 +1691,14 @@
 - Introduced `terminal-capabilities.ts` module consolidating terminal detection and image protocol support
 - Added `TerminalInfo` class with methods for detecting image lines and formatting notifications
 - Added `NotifyProtocol` enum supporting Bell, OSC 99, and OSC 9 notification protocols
-- Added `isNotificationSuppressed()` function to check `OMP_NOTIFICATIONS` environment variable
+- Added `isNotificationSuppressed()` function to check `PROTO_NOTIFICATIONS` environment variable
 - Added `TERMINAL` constant providing detected terminal capabilities at runtime
 
 ### Changed
 
-- Changed notification suppression environment variable from `OMP_NOTIFICATIONS` to `PI_NOTIFICATIONS`
-- Changed TUI write log environment variable from `OMP_TUI_WRITE_LOG` to `PI_TUI_WRITE_LOG`
-- Changed hardware cursor environment variable from `OMP_HARDWARE_CURSOR` to `PI_HARDWARE_CURSOR`
+- Changed notification suppression environment variable from `PROTO_NOTIFICATIONS` to `PI_NOTIFICATIONS`
+- Changed TUI write log environment variable from `PROTO_TUI_WRITE_LOG` to `PI_TUI_WRITE_LOG`
+- Changed hardware cursor environment variable from `PROTO_HARDWARE_CURSOR` to `PI_HARDWARE_CURSOR`
 - Updated environment variable access to use `getEnv()` utility function from `@oh-my-pi/pi-utils` for consistent handling
 - Renamed `TERMINAL_INFO` export to `TERMINAL` for clearer API semantics
 - Reorganized terminal image exports from `terminal-image` to `terminal-capabilities` module

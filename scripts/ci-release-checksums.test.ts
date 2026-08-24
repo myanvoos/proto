@@ -21,7 +21,7 @@ describe("formatChecksums", () => {
 	});
 
 	it("hashes assets and writes a sorted checksum manifest", async () => {
-		const dir = await mkdtemp(path.join(tmpdir(), "omp-release-checksums-"));
+		const dir = await mkdtemp(path.join(tmpdir(), "proto-release-checksums-"));
 		tempDirs.push(dir);
 		const aPath = path.join(dir, "proto-a");
 		const zPath = path.join(dir, "proto-z");

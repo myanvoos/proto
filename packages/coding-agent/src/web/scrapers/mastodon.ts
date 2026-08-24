@@ -92,7 +92,7 @@ function formatDate(isoDate: string): string {
 async function formatStatus(status: MastodonStatus, isReblog = false): Promise<string> {
 	// Handle reblogs (boosts)
 	if (status.reblog && !isReblog) {
-		let md = `🔁 **${status.account.display_name || status.account.username}** boosted:\n\n`;
+		let md = `**${status.account.display_name || status.account.username}** boosted:\n\n`;
 		md += await formatStatus(status.reblog, true);
 		return md;
 	}
@@ -105,14 +105,14 @@ async function formatStatus(status: MastodonStatus, isReblog = false): Promise<s
 	}
 
 	md += `**@${account.acct}**`;
-	if (account.bot) md += " 🤖";
+	if (account.bot) md += " [bot]";
 	md += ` · ${formatDate(status.created_at)}`;
 	if (status.visibility !== "public") md += ` · ${status.visibility}`;
 	md += "\n\n";
 
 	// Content warning / spoiler
 	if (status.spoiler_text) {
-		md += `> ⚠️ **CW:** ${status.spoiler_text}\n\n`;
+		md += `> **CW:** ${status.spoiler_text}\n\n`;
 	}
 
 	// Main content (convert HTML to markdown)
@@ -142,9 +142,9 @@ async function formatStatus(status: MastodonStatus, isReblog = false): Promise<s
 
 	// Stats
 	md += `---\n`;
-	md += `💬 ${formatNumber(status.replies_count)} replies · `;
-	md += `🔁 ${formatNumber(status.reblogs_count)} boosts · `;
-	md += `⭐ ${formatNumber(status.favourites_count)} favorites\n`;
+	md += `${formatNumber(status.replies_count)} replies · `;
+	md += `${formatNumber(status.reblogs_count)} boosts · `;
+	md += `${formatNumber(status.favourites_count)} favorites\n`;
 
 	return md;
 }
@@ -156,7 +156,7 @@ async function formatAccount(account: MastodonAccount): Promise<string> {
 	let md = `# ${account.display_name || account.username}\n\n`;
 
 	md += `**@${account.acct}**`;
-	if (account.bot) md += " 🤖 Bot";
+	if (account.bot) md += " · Bot";
 	md += "\n\n";
 
 	// Bio
@@ -273,7 +273,7 @@ export const handleMastodon: SpecialHandler = async (
 						md += `### ${formatDate(status.created_at)}\n\n`;
 						const content = await htmlToBasicMarkdown(status.content);
 						md += `${content}\n\n`;
-						md += `💬 ${status.replies_count} · 🔁 ${status.reblogs_count} · ⭐ ${status.favourites_count}\n\n`;
+						md += `${status.replies_count} replies · ${status.reblogs_count} boosts · ${status.favourites_count} favorites\n\n`;
 					}
 				}
 			}

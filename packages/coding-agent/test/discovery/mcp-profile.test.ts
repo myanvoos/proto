@@ -42,8 +42,8 @@ describe("native user-level MCP discovery follows the active profile", () => {
 
 	beforeEach(async () => {
 		originalHome = process.env.HOME;
-		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-profile-home-"));
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-profile-project-"));
+		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-profile-home-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-profile-project-"));
 		process.env.HOME = tempHome;
 		vi.spyOn(os, "homedir").mockReturnValue(tempHome);
 		clearFsCache();
@@ -66,12 +66,12 @@ describe("native user-level MCP discovery follows the active profile", () => {
 
 	test("active profile loads its own user server, not the default profile's", async () => {
 		// Active profile's agent dir (stand-in for ~/.omp/profiles/<name>/agent).
-		const profileAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-profile-agent-"));
+		const profileAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-profile-agent-"));
 		setAgentDir(profileAgentDir);
 
 		// Decoy: the default profile's user file at the literal-home path the old
 		// (buggy) loader read. It must NOT leak into the active profile.
-		await writeMcpJson(path.join(tempHome, ".omp", "agent"), {
+		await writeMcpJson(path.join(tempHome, ".proto", "agent"), {
 			"default-only": { command: "default-cmd" },
 		});
 		await writeMcpJson(profileAgentDir, {
@@ -92,8 +92,8 @@ describe("native user-level MCP discovery follows the active profile", () => {
 		await removeWithRetries(profileAgentDir);
 	});
 
-	test("default profile loads the user server from ~/.omp/agent", async () => {
-		const defaultAgentDir = path.join(tempHome, ".omp", "agent");
+	test("default profile loads the user server from ~/.proto/agent", async () => {
+		const defaultAgentDir = path.join(tempHome, ".proto", "agent");
 		setAgentDir(defaultAgentDir);
 		await writeMcpJson(defaultAgentDir, {
 			"default-only": { command: "default-cmd" },

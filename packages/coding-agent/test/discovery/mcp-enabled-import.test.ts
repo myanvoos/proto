@@ -97,8 +97,8 @@ describe("translated MCP importers propagate enabled: false", () => {
 
 	beforeEach(async () => {
 		originalHome = process.env.HOME;
-		tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-enabled-cwd-"));
-		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-enabled-home-"));
+		tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-enabled-cwd-"));
+		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-enabled-home-"));
 		process.env.HOME = tempHome;
 		vi.spyOn(os, "homedir").mockReturnValue(tempHome);
 	});

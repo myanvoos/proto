@@ -46,7 +46,7 @@ const IS_BUN_COMPILED =
 const IS_PREBUILT = IS_BUN_COMPILED || Boolean(process.env.PI_BUNDLED || Bun.env.PI_BUNDLED);
 const USE_EMBEDDED_CLIENT = EMBEDDED_CLIENT_ARCHIVE !== null || IS_PREBUILT;
 
-const EMBEDDED_CLIENT_DIR_ROOT = path.join(os.tmpdir(), "omp-stats-client");
+const EMBEDDED_CLIENT_DIR_ROOT = path.join(os.tmpdir(), "proto-stats-client");
 let embeddedClientDirPromise: Promise<string> | null = null;
 
 function sanitizeArchivePath(archivePath: string): string | null {
@@ -78,7 +78,7 @@ async function getEmbeddedClientDir(): Promise<string> {
 
 	if (!EMBEDDED_CLIENT_ARCHIVE) {
 		throw new Error(
-			"Embedded stats client bundle missing. Rebuild the omp binary or npm bundle with embedded stats assets.",
+			"Embedded stats client bundle missing. Rebuild the proto binary or npm bundle with embedded stats assets.",
 		);
 	}
 

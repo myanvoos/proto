@@ -116,7 +116,7 @@ describe("RpcHostToolBridge", () => {
 
 describe("RpcClient custom tools", () => {
 	it("registers host custom tools and serves tool calls over the RPC transport", async () => {
-		const scriptPath = path.join(os.tmpdir(), `omp-rpc-host-tools-${Date.now()}.js`);
+		const scriptPath = path.join(os.tmpdir(), `proto-rpc-host-tools-${Date.now()}.js`);
 		tempPaths.push(scriptPath);
 		await Bun.write(
 			scriptPath,

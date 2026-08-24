@@ -310,7 +310,7 @@ static TOKIO_RUNTIME_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// calls. Idempotent.
 #[napi(js_name = "__ompInstallTokioRuntime")]
 #[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
-pub fn omp_install_tokio_runtime() {
+pub fn proto_install_tokio_runtime() {
 	#[cfg(target_os = "windows")]
 	if TOKIO_RUNTIME_INSTALLED.swap(true, Ordering::SeqCst) {
 		return;

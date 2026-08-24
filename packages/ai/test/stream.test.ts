@@ -678,7 +678,7 @@ describe("Generate E2E Tests", () => {
 			const originalLocation = Bun.env.VERTEX_LOCATION;
 			const originalApiKey = Bun.env.GOOGLE_CLOUD_API_KEY;
 			const originalGac = Bun.env.GOOGLE_APPLICATION_CREDENTIALS;
-			const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-vertex-impersonation-"));
+			const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-vertex-impersonation-"));
 			const adcPath = path.join(tmpDir, "impersonated-adc.json");
 			await Bun.write(
 				adcPath,

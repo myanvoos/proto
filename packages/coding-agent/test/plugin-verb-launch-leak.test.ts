@@ -23,22 +23,22 @@ import { describe, expect, test } from "bun:test";
 import { isSubcommand, resolveCliArgv } from "../src/cli-commands";
 
 describe("documented-but-unregistered plugin verbs do not leak to launch (#2935)", () => {
-	test("bare `omp list` hints at `omp plugin list` instead of launching with 'list' as the prompt", () => {
+	test("bare `proto list` hints at `proto plugin list` instead of launching with 'list' as the prompt", () => {
 		const result = resolveCliArgv(["list"]);
 		// Must NOT be the old silent-launch behavior.
 		expect(result).not.toEqual({ argv: ["launch", "list"] });
 		expect(result).not.toHaveProperty("argv");
 		// Must point at the real command.
 		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("omp plugin list");
+		expect("error" in result && result.error).toContain("proto plugin list");
 	});
 
-	test("bare `omp remove` hints at `omp plugin uninstall` instead of launching with 'remove' as the prompt", () => {
+	test("bare `proto remove` hints at `proto plugin uninstall` instead of launching with 'remove' as the prompt", () => {
 		const result = resolveCliArgv(["remove"]);
 		expect(result).not.toEqual({ argv: ["launch", "remove"] });
 		expect(result).not.toHaveProperty("argv");
 		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("omp plugin uninstall");
+		expect("error" in result && result.error).toContain("proto plugin uninstall");
 	});
 
 	test("genuine multi-word prompts beginning with these verbs still route to launch", () => {
@@ -57,22 +57,22 @@ describe("documented-but-unregistered plugin verbs do not leak to launch (#2935)
 		expect(isSubcommand("remove")).toBe(false);
 	});
 
-	test("multi-word `omp marketplace add xyz` hints at `omp plugin marketplace` instead of leaking to the prompt (#4845)", () => {
+	test("multi-word `proto marketplace add xyz` hints at `proto plugin marketplace` instead of leaking to the prompt (#4845)", () => {
 		const result = resolveCliArgv(["marketplace", "add", "xyz"]);
 		expect(result).not.toEqual({ argv: ["launch", "marketplace", "add", "xyz"] });
 		expect(result).not.toHaveProperty("argv");
 		expect(result).toHaveProperty("error");
-		expect("error" in result && result.error).toContain("omp plugin marketplace");
+		expect("error" in result && result.error).toContain("proto plugin marketplace");
 	});
 
-	test("bare marketplace-family verbs hint at their `omp plugin` command (#4845)", () => {
+	test("bare marketplace-family verbs hint at their `proto plugin` command (#4845)", () => {
 		for (const [verb, hint] of [
-			["marketplace", "omp plugin marketplace"],
-			["discover", "omp plugin discover"],
-			["upgrade", "omp plugin upgrade"],
-			["uninstall", "omp plugin uninstall"],
-			["enable", "omp plugin enable"],
-			["disable", "omp plugin disable"],
+			["marketplace", "proto plugin marketplace"],
+			["discover", "proto plugin discover"],
+			["upgrade", "proto plugin upgrade"],
+			["uninstall", "proto plugin uninstall"],
+			["enable", "proto plugin enable"],
+			["disable", "proto plugin disable"],
 		] as const) {
 			const result = resolveCliArgv([verb]);
 			expect(result).not.toHaveProperty("argv");

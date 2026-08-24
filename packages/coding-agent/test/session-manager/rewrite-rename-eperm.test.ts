@@ -45,7 +45,7 @@ describe("SessionManager rewrite EPERM replacement fallback", () => {
 	let sessionDir: string;
 
 	beforeEach(async () => {
-		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-eperm-"));
+		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-eperm-"));
 	});
 
 	afterEach(async () => {
@@ -81,7 +81,7 @@ describe("SessionManager rewrite EPERM rollback failure", () => {
 	let sessionDir: string;
 
 	beforeEach(async () => {
-		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-eperm-"));
+		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-eperm-"));
 	});
 
 	afterEach(async () => {
@@ -140,7 +140,7 @@ describe("FileSessionStorage.writeTextAtomic commitGuard cleanup", () => {
 	let sessionDir: string;
 
 	beforeEach(async () => {
-		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-guard-cleanup-"));
+		sessionDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-guard-cleanup-"));
 	});
 
 	afterEach(async () => {

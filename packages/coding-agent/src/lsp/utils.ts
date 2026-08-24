@@ -382,7 +382,7 @@ function getSymbolKindIcons(): Record<SymbolKind, string> {
 	const folder = icon?.folder ?? fallback;
 	const pkg = icon?.package ?? folder;
 	const model = icon?.model ?? fallback;
-	const func = icon?.auto ?? dash;
+	const func = dash;
 
 	return {
 		1: file, // File

@@ -38,7 +38,7 @@ describe("AgentOutputManager", () => {
 	});
 
 	it("scans existing output files so a resume never clobbers prior outputs", async () => {
-		using tmp = TempDir.createSync("@omp-output-manager-");
+		using tmp = TempDir.createSync("@proto-output-manager-");
 		const dir = tmp.path();
 		await Bun.write(path.join(dir, "Anna.md"), "prior");
 		await Bun.write(path.join(dir, "Anna-2.md"), "prior");
@@ -54,7 +54,7 @@ describe("AgentOutputManager", () => {
 	});
 
 	it("awaits one disk scan before concurrent allocations", async () => {
-		using tmp = TempDir.createSync("@omp-output-manager-");
+		using tmp = TempDir.createSync("@proto-output-manager-");
 		const dir = tmp.path();
 		await Bun.write(path.join(dir, "Anna.jsonl"), "persisted child session");
 		const mgr = new AgentOutputManager(() => dir);
@@ -63,7 +63,7 @@ describe("AgentOutputManager", () => {
 	});
 
 	it("only counts files within its own prefix scope on resume", async () => {
-		using tmp = TempDir.createSync("@omp-output-manager-");
+		using tmp = TempDir.createSync("@proto-output-manager-");
 		const dir = tmp.path();
 		await Bun.write(path.join(dir, "Anna.Bob.md"), "child");
 		await Bun.write(path.join(dir, "Anna.Bob.Carol.md"), "grandchild");

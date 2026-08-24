@@ -8,14 +8,14 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 const CLI_ENTRY = path.join(import.meta.dir, "..", "src", "cli.ts");
 const FIXTURE_PATH = path.join(import.meta.dir, "fixtures", "resources-no-templates-mcp.ts");
 
-describe("omp read MCP resources", () => {
+describe("proto read MCP resources", () => {
 	let root: string;
 	let projectDir: string;
 	let agentDir: string;
 	let probePath: string;
 
 	beforeEach(async () => {
-		root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-read-mcp-"));
+		root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-read-mcp-"));
 		projectDir = path.join(root, "project");
 		agentDir = path.join(root, "agent");
 		await Promise.all([fs.mkdir(projectDir), fs.mkdir(agentDir)]);

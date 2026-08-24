@@ -1073,7 +1073,7 @@ async def test_release_read_endpoints_proxy_typed_github_shapes(proxy_settings: 
                     "draft": False,
                     "prerelease": False,
                     "html_url": "https://example.invalid/release/v1.2.3",
-                    "assets": [{"name": "omp.tar.gz"}],
+                    "assets": [{"name": "proto.tar.gz"}],
                 },
             )
         return httpx.Response(500, json={"message": f"unexpected {request.url.path}"})
@@ -1102,7 +1102,7 @@ async def test_release_read_endpoints_proxy_typed_github_shapes(proxy_settings: 
     assert jobs.json()["items"][0]["failed_steps"] == ["bun check"]
     assert log_tail.json() == {"text": "install ok\nbun check failed"}
     assert tag.json() == {"sha": "abc"}
-    assert release.json()["asset_names"] == ["omp.tar.gz"]
+    assert release.json()["asset_names"] == ["proto.tar.gz"]
     assert "head_sha=abc" in upstream[0]
 
 

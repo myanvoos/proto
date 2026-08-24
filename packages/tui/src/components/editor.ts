@@ -25,20 +25,10 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "../utils";
-import {
-	borderlessComposerStyle,
-	type ComposerChromeContext,
-	type ComposerStyle,
-	type EditorBorderStyle,
-	type EditorTopBorder,
-	getComposerStyle,
-} from "./composer";
-
-export type { EditorBorderStyle, EditorTopBorder };
-
 import { type SelectItem, SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list";
 
-const PASSTHROUGH_COLOR = (text: string): string => text;
+/** Default prompt gutter of the single composer chrome. */
+const DEFAULT_PROMPT_GUTTER = "❯ ";
 
 const AUTOCOMPLETE_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	overflowSearch: false,
@@ -395,11 +385,21 @@ interface WrapEntry {
 	chunks: TextChunk[] | null;
 }
 
+/** Pre-rendered status content a host can hand the editor for chrome embedding. */
+export interface EditorTopBorder {
+	/** The status content (already styled) */
+	content: string;
+	/** Visible width of the content */
+	width: number;
+	/** Optional logical revision that changes independently of available width. */
+	revision?: number;
+}
+
 export interface EditorTheme {
 	borderColor: (str: string) => string;
-	/** Stable accent for composer chrome that should not follow the mutable border state. */
+	/** Stable accent for composer-adjacent chrome drawn by the host. */
 	accentColor?: (str: string) => string;
-	/** Background fill used by filled composer styles. */
+	/** Background fill for composer surfaces. */
 	surfaceColor?: (str: string) => string;
 	selectList: SelectListTheme;
 	symbols: SymbolTheme;
@@ -478,7 +478,6 @@ export class Editor implements Component, Focusable {
 
 	#theme: EditorTheme;
 	#useTerminalCursor = false;
-	#imeSafeCursorLayout = false;
 
 	/** When set, replaces the normal cursor glyph at end-of-text with this ANSI-styled string. */
 	cursorOverride: string | undefined;
@@ -489,6 +488,8 @@ export class Editor implements Component, Focusable {
 	 *  to the content width rather than reflowed. Cursor glyphs and inline hints are excluded. */
 	decorateText: ((text: string, context: EditorTextDecorationContext) => string) | undefined;
 	#promptGutter: string | undefined;
+	#promptGutterContinuation: string | undefined;
+	#placeholder: string | undefined;
 
 	// Store last layout width for cursor navigation
 	#lastLayoutWidth: number = 80;
@@ -500,13 +501,8 @@ export class Editor implements Component, Focusable {
 	#wrapCache = new Map<string, WrapEntry>();
 	#wrapCacheWidth = -1;
 	#wrapCacheEpoch = -1;
-	#paddingXOverride: number | undefined;
 	#maxHeight?: number;
 	#scrollOffset: number = 0;
-	/** When true, the right border shows a scrollbar track/thumb when content
-	 *  overflows {@link #maxHeight}. Enabled by {@link HookEditorComponent} and
-	 *  other multi-line consumers; single-line consumers are unaffected. */
-	#scrollbarVisible = false;
 
 	// Emacs-style kill ring
 	#killRing = new KillRing();
@@ -586,17 +582,6 @@ export class Editor implements Component, Focusable {
 	onAutocompleteCancel?: () => void;
 	disableSubmit: boolean = false;
 
-	// Custom top border (for status line integration). Either an eager `content`
-	// (set once, reused every frame) or a `provider` that recomputes lazily just
-	// before the editor paints — the second form lets the host coalesce
-	// per-event rebuilds down to one per rendered frame (see #4145).
-	#topBorderContent?: EditorTopBorder;
-	#topBorderProvider?: (availableWidth: number) => EditorTopBorder | undefined;
-	#topBorderProviderWidth: number | undefined;
-	#topBorderProviderSignature: string | undefined;
-	#topBorderProviderRevision: number | undefined;
-	#borderVisible = true;
-	#borderStyle: EditorBorderStyle = "box";
 	constructor(theme: EditorTheme) {
 		this.#theme = theme;
 		this.borderColor = theme.borderColor;
@@ -616,78 +601,34 @@ export class Editor implements Component, Focusable {
 		this.#textAssistProvider = provider;
 		this.#widthEpochRevision++;
 	}
-
 	/**
-	 * Set custom content for the top border (e.g., status line).
-	 * Pass undefined to use the default plain border.
-	 *
-	 * Eager: the passed value is cached and reused every frame. Callers that
-	 * mutate status upstream must recompute and call this again. Prefer
-	 * {@link setTopBorderProvider} for high-frequency updates — it collapses
-	 * per-event rebuilds to one per painted frame.
+	 * Accepted for source compatibility: the editor ships a single composer
+	 * chrome, so there is no border visibility left to toggle.
 	 */
-	setTopBorder(content: EditorTopBorder | undefined): void {
-		if (this.#topBorderContent?.content === content?.content && this.#topBorderContent?.width === content?.width)
-			return;
-		this.#topBorderContent = content;
-		this.#widthEpochRevision++;
-	}
-
-	/**
-	 * Install a lazy provider invoked once per editor render with the current
-	 * `availableWidth`. Overrides any eager content set via {@link setTopBorder}
-	 * — pass `undefined` to detach and fall back to the eager slot.
-	 *
-	 * Use this when the top border derives from state that mutates far faster
-	 * than the render cadence (session events, streaming, subagent updates).
-	 * The TUI already throttles renders, so a provider is invoked exactly once
-	 * per frame and does no work between paints. Return a logical `revision` to
-	 * distinguish concurrent status mutations from pure width reflow.
-	 */
-	setTopBorderProvider(provider: ((availableWidth: number) => EditorTopBorder | undefined) | undefined): void {
-		if (this.#topBorderProvider === provider) return;
-		this.#topBorderProvider = provider;
-		this.#topBorderProviderWidth = undefined;
-		this.#topBorderProviderSignature = undefined;
-		this.#topBorderProviderRevision = undefined;
-		this.#widthEpochRevision++;
-	}
-
-	/**
-	 * Show or hide the editor border chrome.
-	 */
-	setBorderVisible(borderVisible: boolean): void {
-		if (this.#borderVisible === borderVisible) return;
-		this.#borderVisible = borderVisible;
-		this.#widthEpochRevision++;
-	}
+	setBorderVisible(_borderVisible: boolean): void {}
 
 	setPromptGutter(promptGutter: string | undefined): void {
 		this.#promptGutter = promptGutter;
 	}
-	getBorderStyle(): EditorBorderStyle {
-		return this.#borderStyle;
+
+	setPromptGutterContinuation(text: string | undefined): void {
+		this.#promptGutterContinuation = text;
 	}
 
-	setBorderStyle(style: EditorBorderStyle): void {
-		if (this.#borderStyle === style) return;
-		this.#borderStyle = style;
-		this.#widthEpochRevision++;
+	setPlaceholder(placeholder: string | undefined): void {
+		this.#placeholder = placeholder;
 	}
-
 	/** True while the autocomplete/slash-command menu is open below the editor. */
 	isAutocompleteActive(): boolean {
 		return this.#autocompleteState !== null;
 	}
 
 	/**
-	 * Get the available width for top border content given a total terminal width.
-	 * Accounts for the border characters and horizontal padding when visible.
+	 * Get the available width for overlay/status content drawn beside the
+	 * editor. The single-chrome editor owns the full terminal width.
 	 */
 	getTopBorderAvailableWidth(terminalWidth: number): number {
-		const paddingX = this.#getEditorPaddingX();
-		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
-		return Math.max(0, terminalWidth - borderWidth * 2);
+		return Math.max(0, terminalWidth);
 	}
 
 	/**
@@ -699,12 +640,9 @@ export class Editor implements Component, Focusable {
 		this.#widthEpochRevision++;
 	}
 
-	/** Render a dedicated bottom border so terminal-local IME preedit cannot shift editor chrome. */
-	setImeSafeCursorLayout(enabled: boolean): void {
-		if (this.#imeSafeCursorLayout === enabled) return;
-		this.#imeSafeCursorLayout = enabled;
-		this.#widthEpochRevision++;
-	}
+	/** No-op: IME-safe layout guarded box side chrome; the single chrome has
+	 *  none to shift. Accepted for source compatibility with existing hosts. */
+	setImeSafeCursorLayout(_enabled: boolean): void {}
 
 	getUseTerminalCursor(): boolean {
 		return this.#useTerminalCursor;
@@ -717,14 +655,9 @@ export class Editor implements Component, Focusable {
 		// Don't reset scrollOffset — #updateScrollOffset will clamp it on next render
 	}
 
-	/** Enable/disable the right-border scrollbar. Only shown when content overflows. */
-	setScrollbarVisible(visible: boolean): void {
-		this.#scrollbarVisible = visible;
-	}
-
-	setPaddingX(paddingX: number): void {
-		this.#paddingXOverride = Math.max(0, paddingX);
-	}
+	/** No-op: the scrollbar thumb rode the box right border; the single chrome
+	 *  has no rail to draw it on. Scroll behavior itself is unchanged. */
+	setScrollbarVisible(_visible: boolean): void {}
 
 	getAutocompleteMaxVisible(): number {
 		return this.#autocompleteMaxVisible;
@@ -824,70 +757,33 @@ export class Editor implements Component, Focusable {
 		// No cached state to invalidate currently
 	}
 
-	/** Active chrome style; a hidden border collapses every shape to borderless. */
-	#effectiveStyle(): ComposerStyle {
-		return this.#borderVisible ? getComposerStyle(this.#borderStyle) : borderlessComposerStyle;
-	}
-
-	#getEffectivePromptGutter(): string | undefined {
-		const style = this.#effectiveStyle();
-		// The box frame never renders a gutter; hosts that set one expect it only
-		// in borderless contexts (hook editors, agents hub).
-		if (style.sideBorders) return undefined;
-		if (this.#promptGutter !== undefined) return this.#promptGutter;
-		// Legacy `setBorderVisible(false)` callers control the gutter themselves;
-		// only an explicitly selected composer shape gets the style default.
-		if (!this.#borderVisible) return undefined;
-		return style.defaultPromptGutter;
-	}
-
-	#getEditorPaddingX(): number {
-		if (this.#paddingXOverride !== undefined) return Math.max(0, this.#paddingXOverride);
-		return this.#effectiveStyle().defaultPaddingX(this.#theme.editorPaddingX);
-	}
-
-	#getHorizontalChromeWidth(paddingX: number): number {
-		return this.#effectiveStyle().sideChromeWidth(paddingX);
-	}
-
-	#getPromptGutterWidth(width: number, paddingX: number): number {
-		const gutter = this.#getEffectivePromptGutter();
+	#getPromptGutterWidth(width: number): number {
+		const gutter = this.#promptGutter ?? DEFAULT_PROMPT_GUTTER;
 		if (!gutter) return 0;
-		const chromeWidth = 2 * this.#getHorizontalChromeWidth(paddingX);
-		const availableWidth = Math.max(0, width - chromeWidth);
-		return Math.min(visibleWidth(gutter), availableWidth);
+		return Math.min(visibleWidth(gutter), width);
 	}
 
-	#getPromptGutter(
-		width: number,
-		paddingX: number,
-	): { firstLine: string; continuation: string; width: number } | undefined {
-		const gutter = this.#getEffectivePromptGutter();
+	#getPromptGutter(width: number): { firstLine: string; continuation: string; width: number } | undefined {
+		const gutter = this.#promptGutter ?? DEFAULT_PROMPT_GUTTER;
 		if (!gutter) return undefined;
-		const gutterWidth = this.#getPromptGutterWidth(width, paddingX);
+		const gutterWidth = this.#getPromptGutterWidth(width);
 		if (gutterWidth === 0) return undefined;
 		return {
 			firstLine: sliceByColumn(gutter, 0, gutterWidth, true),
-			continuation: padding(gutterWidth),
+			continuation: this.#getContinuationGutter(gutterWidth),
 			width: gutterWidth,
 		};
 	}
 
-	#getContentWidth(width: number, paddingX: number): number {
-		const chromeWidth = 2 * this.#getHorizontalChromeWidth(paddingX);
-		return Math.max(0, width - chromeWidth - this.#getPromptGutterWidth(width, paddingX));
-	}
-
-	#getLayoutWidth(width: number, paddingX: number): number {
-		const contentWidth = this.#getContentWidth(width, paddingX);
-		const cursorReserve = this.#effectiveStyle().sideBorders && paddingX === 0 ? 1 : 0;
-		// Keep cursor/scroll layout addressable even when a borderless prompt gutter consumes every visible column.
-		return Math.max(1, contentWidth - cursorReserve);
+	#getContinuationGutter(gutterWidth: number): string {
+		if (this.#promptGutterContinuation === undefined) return padding(gutterWidth);
+		const sliced = sliceByColumn(this.#promptGutterContinuation, 0, gutterWidth, true);
+		return sliced + padding(Math.max(0, gutterWidth - visibleWidth(sliced)));
 	}
 
 	#getVisibleContentHeight(contentLines: number): number {
 		if (this.#maxHeight === undefined) return contentLines;
-		return Math.max(1, this.#maxHeight - this.#effectiveStyle().verticalChrome);
+		return Math.max(1, this.#maxHeight);
 	}
 	/** Apply the optional input decorator to a plain (ANSI-free) text segment.
 	 *  Decoration only adds zero-width SGR codes, so visible width is unchanged.
@@ -1023,16 +919,11 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): readonly string[] {
-		const style = this.#effectiveStyle();
-		const paddingX = this.#getEditorPaddingX();
-		const isSideBordered = style.sideBorders;
-		const promptGutter = this.#getPromptGutter(width, paddingX);
-		const contentAreaWidth = this.#getContentWidth(width, paddingX);
-		const layoutWidth = this.#getLayoutWidth(width, paddingX);
+		const promptGutter = this.#getPromptGutter(width);
+		const contentAreaWidth = Math.max(0, width - this.#getPromptGutterWidth(width));
+		// Keep cursor/scroll layout addressable even when a prompt gutter consumes every visible column.
+		const layoutWidth = Math.max(1, contentAreaWidth);
 		this.#lastLayoutWidth = layoutWidth;
-
-		const box = this.#theme.symbols.boxRound;
-		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
 
 		// Layout the text
 		const layoutLines = this.#layoutText(layoutWidth);
@@ -1041,63 +932,6 @@ export class Editor implements Component, Focusable {
 		const visibleLayoutLines = layoutLines.slice(this.#scrollOffset, this.#scrollOffset + visibleContentHeight);
 
 		const result: string[] = [];
-		// Scrollbar: shown only when content overflows and the caller opted in.
-		const needsScrollbar = this.#scrollbarVisible && layoutLines.length > visibleContentHeight;
-		let scrollbarThumb: { start: number; end: number } | null = null;
-		if (needsScrollbar && visibleContentHeight > 0) {
-			const thumbSize = Math.max(
-				1,
-				Math.min(
-					Math.floor((visibleContentHeight * visibleContentHeight) / layoutLines.length),
-					visibleContentHeight,
-				),
-			);
-			const travel = visibleContentHeight - thumbSize;
-			const maxOffset = Math.max(0, layoutLines.length - visibleContentHeight);
-			const start = maxOffset === 0 ? 0 : Math.round((this.#scrollOffset / maxOffset) * travel);
-			scrollbarThumb = { start, end: start + thumbSize };
-		}
-
-		// Resolve the custom top-border content once per frame; the style decides
-		// how (and whether) to draw it. Provider caching stays editor-owned so
-		// per-event rebuilds keep coalescing to one per painted frame.
-		const topFillWidth = Math.max(0, width - borderWidth * 2);
-		let topBorder: EditorTopBorder | undefined;
-		if (style.statusAttachment !== "none") {
-			if (this.#topBorderProvider) {
-				const previousWidth = this.#topBorderProviderWidth;
-				topBorder = this.#topBorderProvider(topFillWidth);
-				const signature = topBorder ? `${topBorder.width}\0${topBorder.content}` : "";
-				const revision = topBorder?.revision;
-				if (
-					(previousWidth !== undefined &&
-						revision !== undefined &&
-						this.#topBorderProviderRevision !== undefined &&
-						revision !== this.#topBorderProviderRevision) ||
-					(previousWidth === topFillWidth && signature !== this.#topBorderProviderSignature)
-				) {
-					this.#widthEpochRevision++;
-				}
-				this.#topBorderProviderWidth = topFillWidth;
-				this.#topBorderProviderSignature = signature;
-				this.#topBorderProviderRevision = revision;
-			} else {
-				topBorder = this.#topBorderContent;
-			}
-		}
-
-		const chromeCtx: ComposerChromeContext = {
-			width,
-			paddingX,
-			borderColor: (str: string) => this.borderColor(str),
-			accentColor: this.#theme.accentColor ?? this.borderColor,
-			surfaceColor: this.#theme.surfaceColor ?? PASSTHROUGH_COLOR,
-			box,
-			topBorder,
-		};
-
-		const topRow = style.renderTop(chromeCtx);
-		if (topRow !== undefined) result.push(topRow);
 
 		// Render each layout line
 		// Keep the hardware cursor at the text insertion point while autocomplete
@@ -1105,9 +939,15 @@ export class Editor implements Component, Focusable {
 		const emitCursorMarker = this.focused;
 		const lineContentWidth = contentAreaWidth;
 
-		// Compute inline hint text (dim ghost text after cursor)
 		const inlineHint = this.#getInlineHint();
 		const hintStyle = this.#theme.hintStyle ?? ((t: string) => `\x1b[2m${t}\x1b[0m`);
+		const placeholderActive =
+			inlineHint !== null &&
+			this.#placeholder !== undefined &&
+			inlineHint === this.#placeholder &&
+			this.#state.lines.length === 1 &&
+			this.#state.lines[0] === "";
+		const styleGhost = (text: string): string => (placeholderActive ? text : hintStyle(text));
 
 		for (let visibleIndex = 0; visibleIndex < visibleLayoutLines.length; visibleIndex++) {
 			const layoutLine = visibleLayoutLines[visibleIndex]!;
@@ -1118,9 +958,7 @@ export class Editor implements Component, Focusable {
 				startCol: layoutLine.sourceStartCol,
 				endCol: layoutLine.sourceStartCol + layoutLine.text.length,
 			};
-			let cursorPaddingOverflow = 0;
 			let decorated = false;
-			let imeSafeCursorTail = false;
 			const showPromptGutter = promptGutter !== undefined && visibleIndex === 0;
 			const gutterText =
 				promptGutter === undefined ? "" : showPromptGutter ? promptGutter.firstLine : promptGutter.continuation;
@@ -1129,12 +967,12 @@ export class Editor implements Component, Focusable {
 			const hasCursor = layoutLine.hasCursor && layoutLine.cursorPos !== undefined;
 			const marker = emitCursorMarker ? CURSOR_MARKER : "";
 
-			if (!isSideBordered && displayWidth > lineContentWidth) {
+			if (displayWidth > lineContentWidth) {
 				displayText = sliceByColumn(displayText, 0, lineContentWidth, true);
 				displayWidth = visibleWidth(displayText);
 			}
 
-			if (!isSideBordered && lineContentWidth === 0) {
+			if (lineContentWidth === 0) {
 				if (hasCursor && !this.#useTerminalCursor) {
 					const zeroWidthCursorBudget = visibleWidth(gutterText);
 					const zeroWidthCursorReplacement = this.cursorOverride
@@ -1177,18 +1015,13 @@ export class Editor implements Component, Focusable {
 				if (marker) {
 					const before = displayText.slice(0, layoutLine.cursorPos);
 					const after = displayText.slice(layoutLine.cursorPos);
-					if (this.#imeSafeCursorLayout && after.length === 0 && isSideBordered) {
-						// Terminal frontends render IME marked text locally before committed bytes
-						// reach the application. Keep the end-of-input cursor row empty to its
-						// right so that insertion cannot shift box chrome onto the next row.
-						displayText = before + marker;
-						imeSafeCursorTail = true;
-					} else if (after.length === 0 && inlineHint) {
-						const availWidth = Math.max(0, lineContentWidth - displayWidth);
-						const hintText = hintStyle(truncateToWidth(inlineHint, availWidth));
+					if (after.length === 0 && inlineHint) {
+						const availWidth = Math.max(0, lineContentWidth - displayWidth - 1);
+						const truncated = truncateToWidth(inlineHint, availWidth);
+						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
 						displayText = before + marker + hintText;
-						displayWidth += Math.min(visibleWidth(inlineHint), availWidth);
-					} else if (after.length === 0 && !isSideBordered && displayWidth >= lineContentWidth) {
+						displayWidth += truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0;
+					} else if (after.length === 0 && displayWidth >= lineContentWidth) {
 						displayText = this.#renderTerminalCursorMarker(before, marker, lineContentWidth);
 					} else {
 						displayText = before + marker + after;
@@ -1221,7 +1054,7 @@ export class Editor implements Component, Focusable {
 				} else if (this.cursorOverride) {
 					// Cursor override replaces the normal end-of-text cursor glyph
 					const overrideWidth = this.cursorOverrideWidth ?? 1;
-					if (!isSideBordered && displayWidth + overrideWidth > lineContentWidth) {
+					if (displayWidth + overrideWidth > lineContentWidth) {
 						// Borderless editors have no spare padding cell for an end-of-line cursor glyph.
 						// Preserve cursorOverride by replacing the tail of the line with it.
 						const widthLimitedCursor = this.#renderEndOfLineCursorAtWidthLimit(before, marker, lineContentWidth, {
@@ -1231,10 +1064,12 @@ export class Editor implements Component, Focusable {
 						displayText = widthLimitedCursor.text;
 						displayWidth = widthLimitedCursor.width;
 					} else if (inlineHint) {
-						const availWidth = Math.max(0, lineContentWidth - displayWidth - overrideWidth);
-						const hintText = hintStyle(truncateToWidth(inlineHint, availWidth));
+						const availWidth = Math.max(0, lineContentWidth - displayWidth - overrideWidth - 1);
+						const truncated = truncateToWidth(inlineHint, availWidth);
+						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
 						displayText = before + marker + this.cursorOverride + hintText;
-						displayWidth += overrideWidth + Math.min(visibleWidth(inlineHint), availWidth);
+						displayWidth +=
+							overrideWidth + (truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0);
 					} else {
 						displayText = before + marker + this.cursorOverride;
 						displayWidth += overrideWidth;
@@ -1242,23 +1077,22 @@ export class Editor implements Component, Focusable {
 				} else {
 					// Cursor is at the end - add thin cursor glyph
 					const { text: cursor, width: cursorWidth } = this.#getStyledInputCursor();
-					if (!isSideBordered && displayWidth + cursorWidth > lineContentWidth) {
+					if (displayWidth + cursorWidth > lineContentWidth) {
 						// Borderless editors have no spare padding cell for an end-of-line cursor glyph.
 						// Highlight the last grapheme so the cursor stays visible without consuming width.
 						const widthLimitedCursor = this.#renderEndOfLineCursorAtWidthLimit(before, marker, lineContentWidth);
 						displayText = widthLimitedCursor.text;
 						displayWidth = widthLimitedCursor.width;
 					} else if (inlineHint) {
-						const availWidth = Math.max(0, lineContentWidth - displayWidth - cursorWidth);
-						const hintText = hintStyle(truncateToWidth(inlineHint, availWidth));
+						const availWidth = Math.max(0, lineContentWidth - displayWidth - cursorWidth - 1);
+						const truncated = truncateToWidth(inlineHint, availWidth);
+						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
 						displayText = before + marker + cursor + hintText;
-						displayWidth += cursorWidth + Math.min(visibleWidth(inlineHint), availWidth);
+						displayWidth +=
+							cursorWidth + (truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0);
 					} else {
 						displayText = before + marker + cursor;
 						displayWidth += cursorWidth;
-					}
-					if (displayWidth > lineContentWidth && paddingX > 0) {
-						cursorPaddingOverflow = displayWidth - lineContentWidth;
 					}
 				}
 			}
@@ -1281,23 +1115,8 @@ export class Editor implements Component, Focusable {
 
 			const linePad = padding(Math.max(0, lineContentWidth - displayWidth));
 
-			result.push(
-				...style.renderRow({
-					...chromeCtx,
-					text: displayText,
-					pad: linePad,
-					gutter: gutterText,
-					isLastRow: visibleIndex === visibleLayoutLines.length - 1,
-					cursorOverflow: cursorPaddingOverflow,
-					imeSafeCursorTail,
-					scrollbarThumb:
-						scrollbarThumb !== null && visibleIndex >= scrollbarThumb.start && visibleIndex < scrollbarThumb.end,
-				}),
-			);
+			result.push(gutterText + displayText + linePad);
 		}
-
-		const bottomRow = style.renderBottom(chromeCtx);
-		if (bottomRow !== undefined) result.push(bottomRow);
 
 		// Add autocomplete list if active
 		if (this.#autocompleteState && this.#autocompleteList) {
@@ -2205,7 +2024,7 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 
-		// Synchronous inline replacement (e.g. emoji shortcodes `:joy:` → 😂).
+		// Synchronous inline replacement (e.g. emoji shortcodes like `:joy:`).
 		// Runs before autocomplete trigger so the popup doesn't briefly chase a
 		// prefix that's about to be rewritten.
 		if (char.length === 1) {
@@ -3689,6 +3508,10 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteState && this.#autocompleteList) {
 			const selected = this.#autocompleteList.getSelectedItem();
 			return selected?.hint ?? null;
+		}
+
+		if (this.#placeholder && this.#state.lines.length === 1 && this.#state.lines[0] === "") {
+			return this.#placeholder;
 		}
 
 		// Fall back to provider's getInlineHint

@@ -67,7 +67,7 @@ describe("SessionManager.moveTo", () => {
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	beforeEach(async () => {
-		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-test-"));
+		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-test-"));
 		setAgentDir(testAgentDir);
 		cwdA = path.join(testAgentDir, "cwd-a");
 		cwdB = path.join(testAgentDir, "cwd-b");

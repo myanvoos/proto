@@ -66,7 +66,7 @@ describe("ssh host shell classification", () => {
 			["/usr/bin/zsh", "zsh"],
 		];
 		for (const [shellValue, expected] of cases) {
-			const name = `omp-shellclf-${crypto.randomUUID()}`;
+			const name = `proto-shellclf-${crypto.randomUUID()}`;
 			const file = path.join(getRemoteHostDir(), `${sanitizeHostName(name)}.json`);
 			await Bun.write(file, JSON.stringify({ version: 3, os: "linux", shell: shellValue, compatEnabled: false }));
 			try {

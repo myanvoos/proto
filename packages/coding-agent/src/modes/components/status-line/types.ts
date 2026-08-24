@@ -8,8 +8,6 @@ export type { StatusLineSegmentId, StatusLineSeparatorStyle };
 export interface StatusLineSegmentOptions {
 	model?: {
 		showThinkingLevel?: boolean;
-		/** Quiet zones: a wide gap between the model name and the effort tail. */
-		roomy?: boolean;
 	};
 	path?: { abbreviate?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
 	git?: { showBranch?: boolean };

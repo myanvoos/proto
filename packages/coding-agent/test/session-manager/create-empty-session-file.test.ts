@@ -15,7 +15,7 @@ describe("SessionManager.createEmptySessionFile", () => {
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	beforeEach(async () => {
-		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-empty-session-"));
+		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-empty-session-"));
 		setAgentDir(testAgentDir);
 		cwd = path.join(testAgentDir, "project");
 		fs.mkdirSync(cwd, { recursive: true });

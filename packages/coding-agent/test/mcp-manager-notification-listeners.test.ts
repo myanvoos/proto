@@ -57,7 +57,7 @@ describe("MCPManager notification listeners", () => {
 	let workDir: string;
 
 	beforeEach(() => {
-		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-notif-"));
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-notif-"));
 	});
 
 	afterEach(() => {

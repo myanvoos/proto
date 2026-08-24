@@ -34,7 +34,7 @@ describe("wrapFetchForExtraCa", () => {
 	beforeEach(async () => {
 		__resetExtraCaCache();
 		originalEnv = Bun.env.NODE_EXTRA_CA_CERTS;
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-extra-ca-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-extra-ca-"));
 	});
 
 	afterEach(async () => {
@@ -159,7 +159,7 @@ describe("withExtraCaFetch", () => {
 	beforeEach(async () => {
 		__resetExtraCaCache();
 		originalEnv = Bun.env.NODE_EXTRA_CA_CERTS;
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-extra-ca-opts-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-extra-ca-opts-"));
 	});
 
 	afterEach(async () => {

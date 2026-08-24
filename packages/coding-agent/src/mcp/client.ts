@@ -42,7 +42,7 @@ import { MCP_PROTOCOL_VERSION } from "./types";
 
 /** Client info sent during initialization */
 const CLIENT_INFO = {
-	name: "omp-coding-agent",
+	name: "proto-coding-agent",
 	version: "1.0.0",
 };
 

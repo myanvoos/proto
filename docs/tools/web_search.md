@@ -79,7 +79,7 @@ Failure output is not thrown at the tool boundary when providers are unavailable
 
 Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `executeSearch()`, and `executeSearch()` passes it to providers. If the signal is aborted during fallback handling, `throwIfAborted(signal)` rethrows the cancellation instead of returning an `"Error: ..."` text result.
 
-Each provider search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the automatic chain records the provider failure and advances to the next candidate. The setting is not a whole-chain deadline, and providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `omp config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
+Each provider search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the automatic chain records the provider failure and advances to the next candidate. The setting is not a whole-chain deadline, and providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `proto config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
 
 ## Flow
 1. `WebSearchTool.execute()` in `packages/coding-agent/src/web/search/index.ts` delegates directly to `executeSearch()`.
@@ -235,7 +235,7 @@ Each provider search transport receives a hard timeout from `providers.webSearch
   - Provider-specific transports include JSON POST, JSON GET, SSE streaming (Perplexity OAuth/API, Gemini, Codex), and JSON-RPC over HTTP (Z.AI).
 - Subprocesses / native bindings
   - Most HTTP/API adapters spawn nothing. Google, Ecosia, and Mojeek first try a plain fetch, but failed, non-2xx, or challenged production responses can acquire the project-shared broker-owned headless Chromium. Hosts without a CLI worker entry (such as an embedded SDK host) instead launch process-local Chromium.
-  - This fallback can start a Chromium process and create its browser-profile lifecycle. On first browser use it can also download Chromium into the omp Puppeteer cache unless a system Chromium or `PUPPETEER_EXECUTABLE_PATH` is available. The search adapter itself uses no native binding.
+  - This fallback can start a Chromium process and create its browser-profile lifecycle. On first browser use it can also download Chromium into the proto Puppeteer cache unless a system Chromium or `PUPPETEER_EXECUTABLE_PATH` is available. The search adapter itself uses no native binding.
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Uses a module-global provider-instance cache in `packages/coding-agent/src/web/search/provider.ts`.
   - Uses a module-global preferred-provider setting in the same file.

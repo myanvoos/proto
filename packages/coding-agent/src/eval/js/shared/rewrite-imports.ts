@@ -110,12 +110,14 @@ async function parseProgram(code: string): Promise<{ program: { body: ReadonlyAr
 // worker-injected `__omp_import__` global does not exist. The swap therefore guards on the
 // helper's presence and falls back to native dynamic import, so serialized code keeps
 // working in foreign realms while in-worker code still resolves against the session cwd.
-const DYNAMIC_IMPORT_CALLEE = '(typeof __omp_import__ === "function" ? __omp_import__ : (s, o) => import(s, o))';
+const DYNAMIC_IMPORT_CALLEE = '(typeof __proto_import__ === "function" ? __proto_import__ : (s, o) => import(s, o))';
 
 function buildOmpImportCall(sourceLiteral: string, optionsLiteral: string | undefined): string {
 	// Route every static import through the worker-injected `__omp_import__` helper so the
 	// specifier resolves against the session cwd (and `with`-attribute imports keep working).
-	return optionsLiteral ? `__omp_import__(${sourceLiteral}, ${optionsLiteral})` : `__omp_import__(${sourceLiteral})`;
+	return optionsLiteral
+		? `__proto_import__(${sourceLiteral}, ${optionsLiteral})`
+		: `__proto_import__(${sourceLiteral})`;
 }
 
 // Walks every node in `root`, depth-first, invoking `visit` on each one. Skips Babel's
@@ -274,7 +276,7 @@ export async function rewriteModuleSourceSpecifiers(
 	return result;
 }
 
-export async function rewriteDynamicImports(code: string, callee = "__omp_import__"): Promise<string> {
+export async function rewriteDynamicImports(code: string, callee = "__proto_import__"): Promise<string> {
 	if (!code.includes("import")) return code;
 	const ast = await parseProgram(code);
 	if (!ast) return code;
@@ -429,7 +431,7 @@ async function returnFinalExpression(code: string): Promise<{ source: string; re
 		const suffix = code.slice(expression.end);
 		const semicolonMatch = statement.match(/;\s*$/);
 		const trimmedStatement = semicolonMatch ? statement.slice(0, semicolonMatch.index) : statement;
-		return { source: `${prefix}__omp_set_final_expr__((${trimmedStatement}));${suffix}`, returned: true };
+		return { source: `${prefix}__proto_set_final_expr__((${trimmedStatement}));${suffix}`, returned: true };
 	}
 	if (last?.type === "ReturnStatement") {
 		// Top-level `return value;` is otherwise swallowed: it forces the cell into an async IIFE
@@ -440,7 +442,7 @@ async function returnFinalExpression(code: string): Promise<{ source: string; re
 		const prefix = code.slice(0, ret.start);
 		const suffix = code.slice(ret.end);
 		const expr = code.slice(ret.argument.start, ret.argument.end);
-		return { source: `${prefix}__omp_set_final_expr__((${expr}));${suffix}`, returned: true };
+		return { source: `${prefix}__proto_set_final_expr__((${expr}));${suffix}`, returned: true };
 	}
 	return { source: code, returned: false };
 }

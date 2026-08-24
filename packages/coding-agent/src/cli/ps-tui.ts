@@ -282,7 +282,7 @@ class PsTopComponent implements Component {
 
 	#header(width: number, title: string): string {
 		const age = this.#lastRefresh ? `updated ${formatDuration(Date.now() - this.#lastRefresh)} ago` : "updating…";
-		const left = ` ${chalk.bold("omp ps")} ${chalk.dim("·")} ${title}`;
+		const left = ` ${chalk.bold("proto ps")} ${chalk.dim("·")} ${title}`;
 		const right = chalk.dim(age);
 		const pad = Math.max(1, width - Bun.stringWidth(left) - Bun.stringWidth(right) - 1);
 		return truncateToWidth(`${left}${" ".repeat(pad)}${right}`, width);

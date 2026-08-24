@@ -18,8 +18,8 @@ allocates a new inode and leaves the cached file untouched. Cache GC is by
 LRU on ``manifest.json.captured_at``; hardlinked workspaces keep the inode
 alive after the cache directory is rmtree'd.
 
-Ownership: cache root is provisioned ``root:omp 02770`` by ``entrypoint.sh``
-so slot subprocesses (group ``omp``) can capture under setgid inheritance.
+Ownership: cache root is provisioned ``root:proto 02770`` by ``entrypoint.sh``
+so slot subprocesses (group ``proto``) can capture under setgid inheritance.
 Same shape as ``/data/cache/cargo``.
 """
 

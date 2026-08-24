@@ -47,7 +47,7 @@ interface OpenAIResponse {
 	error?: { type?: string; message: string };
 }
 
-const MODEL = Bun.env.OMP_E2E_ANTHROPIC_MODEL ?? "claude-sonnet-4-5";
+const MODEL = Bun.env.PROTO_E2E_ANTHROPIC_MODEL ?? "claude-sonnet-4-5";
 
 const gateway = await checkAuthGatewayE2EAvailable();
 
@@ -55,7 +55,7 @@ const gateway = await checkAuthGatewayE2EAvailable();
 // cache floor for Sonnet.
 const INSTRUCTIONS_PARAGRAPH = `
 You are a precise assistant participating in an automated end-to-end test of
-the omp auth-gateway's cross-protocol prompt-caching pipeline. The request
+the proto auth-gateway's cross-protocol prompt-caching pipeline. The request
 arrives over the OpenAI Responses wire format but is fulfilled by an
 Anthropic backend, so the gateway must preserve the cached prefix across the
 translation. Always respond with extreme brevity: a single short word or

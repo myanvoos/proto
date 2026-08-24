@@ -24,11 +24,11 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { isProviderEnabled } from "../capability";
 import { findAllNearestProjectConfigDirs, getConfigDirs } from "../config";
 import { listClaudePluginRoots } from "../discovery/helpers";
-import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
+import { listOmpExtensionRoots } from "../discovery/proto-extension-roots";
 import { loadBundledAgents, parseAgent } from "./agents";
 import type { AgentDefinition, AgentSource } from "./types";
 
-const AGENT_CONFIG_SOURCE = ".omp";
+const AGENT_CONFIG_SOURCE = ".proto";
 
 /** Result of agent discovery */
 export interface DiscoveryResult {
@@ -97,7 +97,7 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	// worker discovery surface dedups identically to the sibling skills/hooks/tools
 	// surface in `discovery/omp-plugins.ts`. Gate on `omp-plugins` so
 	// disabledProviders suppresses the whole extension-package surface.
-	const extensionRoots = isProviderEnabled("omp-plugins")
+	const extensionRoots = isProviderEnabled("proto-plugins")
 		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null })
 		: [];
 	for (const root of extensionRoots) {

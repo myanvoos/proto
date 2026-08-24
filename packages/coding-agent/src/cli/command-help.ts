@@ -7,7 +7,7 @@ export const acpHelp = {
 export const agentsHelp = { description: "Manage bundled worker agents" } satisfies CommandMetadata;
 
 export const authBrokerHelp = {
-	description: "Manage the omp auth-broker (credential vault)",
+	description: "Manage the proto auth-broker (credential vault)",
 } satisfies CommandMetadata;
 
 export const authGatewayHelp = {
@@ -113,5 +113,5 @@ export const usageHelp = {
 } satisfies CommandMetadata;
 
 export const worktreeHelp = {
-	description: "List or clear agent-managed git worktrees (~/.omp/wt)",
+	description: "List or clear agent-managed git worktrees (~/.proto/wt)",
 } satisfies CommandMetadata;

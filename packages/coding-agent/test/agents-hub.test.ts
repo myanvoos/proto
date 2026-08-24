@@ -78,7 +78,7 @@ async function createHub(settings: Settings): Promise<{
 
 beforeAll(async () => {
 	await initTheme(false);
-	tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agents-hub-"));
+	tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-agents-hub-"));
 });
 
 afterAll(async () => {

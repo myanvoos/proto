@@ -36,9 +36,9 @@ describe("zod-like parsing", () => {
 			expect(typeof candidate.toJsonSchema).toBe("function");
 			expect(typeof candidate.assert).toBe("function");
 		}
-		expect(schema({ website: "https://omp.sh" })).toEqual({
+		expect(schema({ website: "https://proto.sh" })).toEqual({
 			name: "Ada",
-			website: "https://omp.sh",
+			website: "https://proto.sh",
 		});
 		expect(schema({ website: 42 })).toBeInstanceOf(type.errors);
 		expect(schema.toJsonSchema()).toEqual({
@@ -150,8 +150,14 @@ describe("zod-like parsing", () => {
 	});
 
 	it("supports string and number refinements plus nullable and optional values", () => {
-		expect(z.string().regex(/^omp$/).url().safeParse("omp").success).toBe(false);
-		expect(z.string().url().parse("https://omp.sh")).toBe("https://omp.sh");
+		expect(
+			z
+				.string()
+				.regex(/^proto$/)
+				.url()
+				.safeParse("proto").success,
+		).toBe(false);
+		expect(z.string().url().parse("https://proto.sh")).toBe("https://proto.sh");
 		expect(z.number().int().nonnegative().parse(0)).toBe(0);
 		expect(z.number().int().safeParse(1.5).success).toBe(false);
 		expect(z.number().positive().safeParse(0).success).toBe(false);

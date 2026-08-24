@@ -54,12 +54,12 @@ function changelogUtilsStubPlugin(): BunPlugin {
 }
 
 describe("bundled changelog asset path resolution", () => {
-	const moduleUrl = new URL("file:///opt/omp/dist/cli.js");
+	const moduleUrl = new URL("file:///opt/proto/dist/cli.js");
 
 	test.each([
-		["Windows drive-letter", String.raw`C:\omp\dist\CHANGELOG.md`],
-		["Windows UNC", String.raw`\\server\share\omp\CHANGELOG.md`],
-		["POSIX", "/opt/omp/dist/CHANGELOG.md"],
+		["Windows drive-letter", String.raw`C:\proto\dist\CHANGELOG.md`],
+		["Windows UNC", String.raw`\\server\share\proto\CHANGELOG.md`],
+		["POSIX", "/opt/proto/dist/CHANGELOG.md"],
 	])("preserves an absolute %s path", (_kind, nativePath) => {
 		expect(resolveBundledChangelogPath(nativePath, moduleUrl)).toBe(nativePath);
 	});
@@ -88,7 +88,7 @@ describe("changelog static import resources", () => {
 	}, 30_000);
 
 	test("reads the emitted changelog asset when run outside the bundle directory", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-changelog-bundle-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-changelog-bundle-"));
 		try {
 			const bundleDir = path.join(tempDir, "bundle");
 			const unrelatedCwd = path.join(tempDir, "cwd");
@@ -100,7 +100,7 @@ describe("changelog static import resources", () => {
 				entrypoints: [bundleProbePath],
 				outdir: bundleDir,
 				target: "bun",
-				external: ["omp-legacy-pi-modules"],
+				external: ["proto-legacy-pi-modules"],
 				plugins: [changelogUtilsStubPlugin()],
 			});
 			expect(buildOutput.success, buildOutput.logs.map(log => log.message).join("\n")).toBe(true);
@@ -122,7 +122,7 @@ describe("changelog static import resources", () => {
 	}, 30_000);
 
 	test("reads the emitted changelog asset from a compiled binary", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-changelog-compiled-"));
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-changelog-compiled-"));
 		try {
 			const binaryPath = path.join(tempDir, "changelog-probe");
 			const unrelatedCwd = path.join(tempDir, "cwd");
@@ -133,7 +133,7 @@ describe("changelog static import resources", () => {
 			const buildOutput = await Bun.build({
 				entrypoints: [bundleProbePath],
 				root: repoRoot,
-				external: ["omp-legacy-pi-modules"],
+				external: ["proto-legacy-pi-modules"],
 				plugins: [changelogUtilsStubPlugin()],
 				compile: {
 					outfile: binaryPath,

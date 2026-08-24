@@ -67,7 +67,7 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 	return { hub, doneCalls: () => doneCalls, done: done.promise, renderRequested: renderRequested.promise };
 }
 
-const ROSTER_ENTRY_PATTERN = /^(❯| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
+const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
 
 function renderedRosterEntry(hub: AgentFleetOverlayComponent, id: string, width: number): string {
 	const cells = hub.render(width).map(raw => {
@@ -185,7 +185,7 @@ describe("Agent fleet Enter activation", () => {
 	});
 
 	it("lists persisted subagent session files after restart", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-persisted-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-persisted-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		await Bun.write(sessionFile, "");
@@ -205,13 +205,13 @@ describe("Agent fleet Enter activation", () => {
 		await hub.persistedSubagentsReady;
 
 		const workerEntry = renderedRosterEntry(hub, "Worker", 120);
-		expect(workerEntry).toContain("○ Worker");
+		expect(workerEntry).toContain("▫ Worker");
 		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
 		hub.dispose();
 	});
 
 	it("stops persisted discovery when the Fleet is disposed", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-disposed-scan-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-disposed-scan-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		await Bun.write(sessionFile, "");
 		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), "");
@@ -233,7 +233,7 @@ describe("Agent fleet Enter activation", () => {
 		expect(agents.get("Worker")).toBeUndefined();
 	});
 	it("restores nested parent lineage after restart", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-persisted-tree-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-persisted-tree-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const parentSessionFile = path.join(tempDir.path(), "main", "Parent.jsonl");
 		const childSessionFile = path.join(tempDir.path(), "main", "Parent", "Child.jsonl");
@@ -261,7 +261,7 @@ describe("Agent fleet Enter activation", () => {
 	});
 
 	it("restores saved task metadata and timestamps for completed agents", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-persisted-metadata-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-persisted-metadata-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		const createdAt = "2026-07-30T01:13:37.835Z";
@@ -310,7 +310,7 @@ describe("Agent fleet Enter activation", () => {
 	});
 
 	it("restores persisted model role, usage, spend, and tool totals", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-persisted-usage-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-persisted-usage-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		const createdAt = "2026-07-30T01:13:30.000Z";
@@ -387,7 +387,7 @@ describe("Agent fleet Enter activation", () => {
 	});
 	it("yields to a macrotask at the configured streaming threshold", async () => {
 		vi.useFakeTimers();
-		using tempDir = TempDir.createSync("@omp-agent-fleet-responsive-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-responsive-");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
 		const entry = JSON.stringify({
 			type: "message",
@@ -585,7 +585,7 @@ describe("Agent fleet double-← gating", () => {
 	});
 
 	it("requireContent opens the fleet after persisted subagents load", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-require-content-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-require-content-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		await Bun.write(sessionFile, "");
@@ -602,7 +602,7 @@ describe("Agent fleet double-← gating", () => {
 	});
 
 	it("the explicit fleet opens fullscreen before persisted subagents load", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-fleet-explicit-");
+		using tempDir = TempDir.createSync("@proto-agent-fleet-explicit-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		await Bun.write(sessionFile, "");
 		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), persistedChildJsonl("worker"));

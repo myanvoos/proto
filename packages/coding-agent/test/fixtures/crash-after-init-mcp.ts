@@ -16,7 +16,7 @@
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 
-const spawnLog = Bun.env.OMP_TEST_SPAWN_LOG;
+const spawnLog = Bun.env.PROTO_TEST_SPAWN_LOG;
 if (spawnLog) {
 	fs.appendFileSync(spawnLog, `${process.pid} ${Date.now()}\n`);
 }

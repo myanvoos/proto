@@ -214,10 +214,10 @@ export function parseEnvFile(filePath: string): Record<string, string> {
 		// File doesn't exist or can't be read - return empty result
 	}
 
-	// OMP_ overrides PI_
+	// PROTO_ overrides PI_
 	for (const k in result) {
-		if (k.startsWith("OMP_")) {
-			result[`PI_${k.slice(4)}`] = result[k];
+		if (k.startsWith("PROTO_")) {
+			result[`PI_${k.slice("PROTO_".length)}`] = result[k];
 		}
 	}
 

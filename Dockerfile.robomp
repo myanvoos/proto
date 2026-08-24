@@ -67,8 +67,8 @@ RUN pip install --no-cache-dir \
 # world-readable files under /srv/agent-home; the agent subprocess runs with
 # HOME=/srv/agent-home, so ~/.omp and ~/.agent resolve there without exposing
 # mutable host mounts.
-RUN mkdir -p /srv/agent-home/.agent /srv/agent-home/.omp/agent \
-    && mkdir -p /srv/agent-home-stage/.agent /srv/agent-home-stage/.omp/agent \
+RUN mkdir -p /srv/agent-home/.agent /srv/agent-home/.proto/agent \
+    && mkdir -p /srv/agent-home-stage/.agent /srv/agent-home-stage/.proto/agent \
     && printf '[install]\nbackend = "copyfile"\n' > /srv/agent-home/.bunfig.toml
 
 COPY python/robomp/entrypoint.sh /usr/local/bin/robomp-entrypoint

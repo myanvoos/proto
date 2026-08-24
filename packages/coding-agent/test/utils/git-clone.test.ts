@@ -47,7 +47,7 @@ describe("git.clone with options.sha", () => {
 	let tipSha: string;
 
 	beforeAll(async () => {
-		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-git-clone-test-"));
+		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-git-clone-test-"));
 		const upstream = path.join(tmpRoot, "upstream");
 		await fs.mkdir(upstream, { recursive: true });
 

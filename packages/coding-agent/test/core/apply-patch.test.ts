@@ -814,7 +814,7 @@ describe("EditTool create-over-existing mode split", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-apply-patch-overwrite-"));
+		tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-apply-patch-overwrite-"));
 		await Settings.init({ inMemory: true, cwd: tempDir });
 	});
 

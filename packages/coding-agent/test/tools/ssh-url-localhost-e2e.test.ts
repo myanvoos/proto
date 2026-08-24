@@ -40,7 +40,7 @@ const sh = async (script: string) => {
 
 describe.skipIf(!SSH_OK)("ssh:// handler against a real localhost ssh", () => {
 	const handler = new SshProtocolHandler();
-	const TMP = `/tmp/omp-ssh-e2e-${process.pid}`;
+	const TMP = `/tmp/proto-ssh-e2e-${process.pid}`;
 
 	beforeAll(async () => {
 		await sh(`mkdir -p ${TMP}`);
@@ -87,7 +87,7 @@ describe.skipIf(!SSH_OK)("ssh:// handler against a real localhost ssh", () => {
 		const back = await handler.resolve(parseInternalUrl(`ssh://localhost${dest}`));
 		expect(back.content).toBe("hi\n\t!\n");
 		// The uniquely-named temp must have been renamed away (no leftovers).
-		const leftovers = await Bun.$`ssh -o BatchMode=yes localhost ls ${TMP} | grep -c omp-tmp || true`.text();
+		const leftovers = await Bun.$`ssh -o BatchMode=yes localhost ls ${TMP} | grep -c proto-tmp || true`.text();
 		expect(leftovers.trim()).toBe("0");
 	});
 
@@ -142,7 +142,7 @@ describe.skipIf(!SSH_OK)("ssh:// handler against a real localhost ssh", () => {
 		expect(kind.trim()).toBe("dir"); // directory intact, not clobbered into a file
 		// The dir-error path must remove the temp it created beside the destination.
 		const leftovers =
-			await Bun.$`ssh -o BatchMode=yes localhost ls -A ${TMP} | grep -c "wdir.omp-tmp" || true`.text();
+			await Bun.$`ssh -o BatchMode=yes localhost ls -A ${TMP} | grep -c "wdir.proto-tmp" || true`.text();
 		expect(leftovers.trim()).toBe("0");
 	});
 
@@ -169,7 +169,7 @@ describe.skipIf(!SSH_OK)("ssh:// handler against a real localhost ssh", () => {
 });
 
 describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localhost)", () => {
-	const TMP = `/tmp/omp-ssh-tools-e2e-${process.pid}`;
+	const TMP = `/tmp/proto-ssh-tools-e2e-${process.pid}`;
 
 	function createSession(): ToolSession {
 		return {
@@ -228,8 +228,8 @@ describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localho
 		expect(result.details?.files).toContain(`ssh://localhost${TMP}/read.txt`);
 		// The pure-virtual RE2 probe's scratch dir must never leak into text or metadata.
 		const detailsJson = JSON.stringify(result.details ?? {});
-		expect(out).not.toContain("omp-search-probe");
-		expect(detailsJson).not.toContain("omp-search-probe");
+		expect(out).not.toContain("proto-search-probe");
+		expect(detailsJson).not.toContain("proto-search-probe");
 	});
 
 	it("WriteTool round-trips a remote file byte-exact", async () => {

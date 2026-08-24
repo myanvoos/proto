@@ -28,7 +28,7 @@ describe("InteractiveMode long shutdown status", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tempDir = TempDir.createSync("@omp-still-closing-");
+		tempDir = TempDir.createSync("@proto-still-closing-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);

@@ -12,30 +12,30 @@
 import * as path from "node:path";
 
 /** Hidden CLI selector used to re-enter the LSP mux worker. */
-export const LSP_MUX_WORKER_ARG = "__omp_worker_lsp_mux";
+export const LSP_MUX_WORKER_ARG = "__proto_worker_lsp_mux";
 
 /** Environment key carrying the socket endpoint the mux must listen on. */
-export const LSP_MUX_SOCKET_ENV = "OMP_LSP_MUX_SOCKET";
+export const LSP_MUX_SOCKET_ENV = "PROTO_LSP_MUX_SOCKET";
 
 /** Environment key carrying the canonical project directory the mux serves. */
-export const LSP_MUX_PROJECT_DIR_ENV = "OMP_LSP_MUX_PROJECT_DIR";
+export const LSP_MUX_PROJECT_DIR_ENV = "PROTO_LSP_MUX_PROJECT_DIR";
 
 /** Stable broker daemon name for the shared LSP mux. */
-export const LSP_MUX_DAEMON_NAME = "omp.lsp.mux";
+export const LSP_MUX_DAEMON_NAME = "proto.lsp.mux";
 
 /** Broker readiness regex matched against the banner printed by the worker. */
-export const LSP_MUX_READY_PATTERN = String.raw`omp lsp mux listening on \S+`;
+export const LSP_MUX_READY_PATTERN = String.raw`proto lsp mux listening on \S+`;
 
 /** Banner printed on stdout once the mux socket accepts connections. */
 export function lspMuxReadyBanner(endpoint: string): string {
-	return `omp lsp mux listening on ${endpoint}`;
+	return `proto lsp mux listening on ${endpoint}`;
 }
 
 /** Resolve the Unix socket or Windows named pipe for one project scope. */
 export function lspMuxEndpoint(projectDir: string, runtimeDir: string): string {
 	if (process.platform === "win32") {
 		const key = Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0");
-		return `\\\\.\\pipe\\omp-lsp-mux-${key}`;
+		return `\\\\.\\pipe\\proto-lsp-mux-${key}`;
 	}
 	return path.join(runtimeDir, "lsp-mux.sock");
 }
@@ -50,13 +50,13 @@ export function lspMuxEndpoint(projectDir: string, runtimeDir: string): string {
  * result: {@link MuxConnectResult}. After the response the link carries
  * ordinary LSP traffic for that server.
  */
-export const MUX_CONNECT_METHOD = "omp/muxConnect";
+export const MUX_CONNECT_METHOD = "proto/muxConnect";
 
 /**
  * Liveness probe answered with {@link MUX_PING_RESULT} without binding the
  * link to a server. Used by the smoke probe and the ensure loop.
  */
-export const MUX_PING_METHOD = "omp/muxPing";
+export const MUX_PING_METHOD = "proto/muxPing";
 export const MUX_PING_RESULT = "pong";
 
 /**
@@ -65,7 +65,7 @@ export const MUX_PING_RESULT = "pong";
  * a plain per-session `shutdown`/`exit` is intercepted by the mux so the
  * process can linger for reuse.
  */
-export const MUX_RESTART_METHOD = "omp/muxRestartServer";
+export const MUX_RESTART_METHOD = "proto/muxRestartServer";
 
 /** Handshake parameters identifying a reusable server process. */
 export interface MuxConnectParams {

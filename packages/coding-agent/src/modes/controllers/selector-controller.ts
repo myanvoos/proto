@@ -196,7 +196,6 @@ export class SelectorController {
 					),
 					cwd: getProjectDir(),
 					requestRender: () => this.ctx.ui.requestRender(),
-					composerPreviewStatus: this.ctx.statusLine,
 				},
 				{
 					onChange: (id, value) => this.handleSettingChange(id, value),
@@ -435,9 +434,6 @@ export class SelectorController {
 			case "autoCompact":
 				this.ctx.session.setAutoCompactionEnabled(value as boolean);
 				this.ctx.statusLine.setAutoCompactEnabled(value as boolean);
-				break;
-			case "composer.shape":
-				this.ctx.syncComposerShape();
 				break;
 			case "advisor.enabled":
 				this.ctx.session.setAdvisorEnabled(value as boolean);

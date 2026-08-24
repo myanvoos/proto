@@ -1,6 +1,6 @@
 # Developing `@oh-my-pi/pi-coding-agent`
 
-This package is the `omp` CLI. This file is a **developer's map**: where things live
+This package is the `proto` CLI. This file is a **developer's map**: where things live
 in `src/`, how to run the local loops, and — for each subsystem — which document in
 the repo [`docs/`](../../docs/) tree is the authoritative reference.
 
@@ -50,7 +50,7 @@ createAgentSession(...)        ── src/sdk.ts → AgentSession
 ```
 
 `cli.ts` doubles as the worker host: it declares itself via `declareWorkerHostEntry()`
-and dispatches the hidden `__omp_worker_*` argv selectors before loading the command
+and dispatches the hidden `__proto_worker_*` argv selectors before loading the command
 registry (see `AGENTS.md` → *Worker scripts*).
 
 ## Source layout (`src/`)
@@ -147,7 +147,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - [macos-signing-notarization.md](../../docs/macos-signing-notarization.md)
 - [porting-from-pi-mono.md](../../docs/porting-from-pi-mono.md)
 
-## Extending omp
+## Extending proto
 
 | To add… | Start here |
 |---|---|

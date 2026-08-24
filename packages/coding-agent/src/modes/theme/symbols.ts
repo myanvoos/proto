@@ -107,7 +107,6 @@ export type SymbolKey =
 	| "icon.package"
 	| "icon.warning"
 	| "icon.rewind"
-	| "icon.auto"
 	| "icon.fast"
 	| "icon.extensionSkill"
 	| "icon.extensionTool"
@@ -118,52 +117,6 @@ export type SymbolKey =
 	| "icon.extensionPrompt"
 	| "icon.extensionContextFile"
 	| "icon.extensionInstruction"
-	// Slash-command type indicators (autocomplete); names without an existing
-	// icon.* equivalent — see SlashCommandIconName for the full vocabulary.
-	| "cmd.action"
-	| "cmd.prompt"
-	| "cmd.extension"
-	| "cmd.settings"
-	| "cmd.gear"
-	| "cmd.shield"
-	| "cmd.wave"
-	| "cmd.compass"
-	| "cmd.inbox"
-	| "cmd.swap"
-	| "cmd.expand"
-	| "cmd.computer"
-	| "cmd.eye"
-	| "cmd.todo"
-	| "cmd.stats"
-	| "cmd.news"
-	| "cmd.keyboard"
-	| "cmd.export"
-	| "cmd.clipboard"
-	| "cmd.share"
-	| "cmd.broadcast"
-	| "cmd.globe"
-	| "cmd.copy"
-	| "cmd.plus"
-	| "cmd.restart"
-	| "cmd.eraser"
-	| "cmd.trash"
-	| "cmd.compress"
-	| "cmd.vibrate"
-	| "cmd.handoff"
-	| "cmd.history"
-	| "cmd.question"
-	| "cmd.rocket"
-	| "cmd.stethoscope"
-	| "cmd.redo"
-	| "cmd.bug"
-	| "cmd.memory"
-	| "cmd.pencil"
-	| "cmd.folderMove"
-	| "cmd.folderPlus"
-	| "cmd.folderMinus"
-	| "cmd.hammer"
-	| "cmd.power"
-	| "cmd.cart"
 	// STT
 	| "icon.mic"
 	// Compaction divider
@@ -194,6 +147,7 @@ export type SymbolKey =
 	| "md.colorSwatch"
 	// Advisor note rail
 	| "advisor.rail"
+	| "block.rail"
 	// Language/file type icons
 	| "lang.default"
 	| "lang.typescript"
@@ -273,100 +227,23 @@ export type SymbolKey =
 	| "tool.move";
 
 export type SymbolMap = Record<SymbolKey, string>;
-/**
- * Icon vocabulary for slash-command autocomplete type indicators. Each name
- * resolves through `Theme.cmd` to either a dedicated `cmd.*` symbol or an
- * existing `icon.*` symbol shared with the rest of the UI.
- */
-export type SlashCommandIconName =
-	// Dedicated cmd.* symbols
-	| "action"
-	| "prompt"
-	| "extension"
-	| "settings"
-	| "gear"
-	| "shield"
-	| "wave"
-	| "compass"
-	| "inbox"
-	| "swap"
-	| "expand"
-	| "computer"
-	| "eye"
-	| "todo"
-	| "stats"
-	| "news"
-	| "keyboard"
-	| "export"
-	| "clipboard"
-	| "share"
-	| "broadcast"
-	| "globe"
-	| "copy"
-	| "plus"
-	| "restart"
-	| "eraser"
-	| "trash"
-	| "compress"
-	| "vibrate"
-	| "handoff"
-	| "history"
-	| "question"
-	| "rocket"
-	| "stethoscope"
-	| "redo"
-	| "bug"
-	| "memory"
-	| "pencil"
-	| "folderMove"
-	| "folderPlus"
-	| "folderMinus"
-	| "hammer"
-	| "power"
-	| "cart"
-	// Shared icon.* symbols
-	| "model"
-	| "plan"
-	| "prewalk"
-	| "goal"
-	| "pause"
-	| "loop"
-	| "session"
-	| "jobs"
-	| "gauge"
-	| "context"
-	| "agents"
-	| "branch"
-	| "tree"
-	| "signIn"
-	| "signOut"
-	| "advisor"
-	| "host"
-	| "package"
-	| "fast"
-	| "voice"
-	| "tools"
-	| "rule"
-	| "skill"
-	| "mcp"
-	| "pin";
 
 const UNICODE_SYMBOLS: SymbolMap = {
 	// Status
-	"status.success": "✔",
-	"status.error": "✘",
-	"status.warning": "⚠",
-	"status.info": "ⓘ",
-	"status.pending": "⏳",
-	"status.disabled": "⦸",
-	"status.enabled": "●",
-	"status.running": "⟳",
-	"status.shadowed": "○",
-	"status.aborted": "⏹",
-	"status.done": "•",
+	"status.success": "✓",
+	"status.error": "✗",
+	"status.warning": "!",
+	"status.info": "i",
+	"status.pending": "⋯",
+	"status.disabled": "⊗",
+	"status.enabled": "▪",
+	"status.running": "◐",
+	"status.shadowed": "▫",
+	"status.aborted": "∎",
+	"status.done": "▪",
 	// Navigation
-	"nav.cursor": "❯",
-	"nav.selected": "➤",
+	"nav.cursor": "›",
+	"nav.selected": "›",
 	"nav.expand": "▸",
 	"nav.collapse": "▾",
 	"nav.back": "⟵",
@@ -416,115 +293,69 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"sep.slash": " / ",
 	"sep.pipe": " │ ",
 	// Icons
-	"icon.model": "⬢",
-	"icon.plan": "🗺",
-	"icon.prewalk": "🏃",
-	"icon.goal": "🎯",
-	"icon.pause": "⏸",
+	"icon.model": "",
+	"icon.plan": "",
+	"icon.prewalk": "",
+	"icon.goal": "",
+	"icon.pause": "‖",
 	"icon.loop": "↻",
-	"icon.folder": "📁",
-	"icon.worktree": "🌳",
-	"icon.search": "🔍",
-	"icon.scratchFolder": "🗑",
-	"icon.file": "📄",
-	"icon.git": "⎇",
-	"icon.branch": "⑂",
-	"icon.pr": "⤴",
+	"icon.folder": "",
+	"icon.worktree": "◫",
+	"icon.search": "⌕",
+	"icon.scratchFolder": "▫",
+	"icon.file": "▤",
+	"icon.git": "",
+	"icon.branch": "",
+	"icon.pr": "",
 	"icon.pin": "📌",
-	"icon.tokens": "🪙",
-	"icon.context": "◫",
-	"icon.cost": "💲",
+	"icon.tokens": "",
+	"icon.context": "",
+	"icon.cost": "",
 	"icon.subscription": "(sub)",
 	"icon.advisor": "👁",
-	"icon.time": "⏱",
-	"icon.pi": "π",
-	"icon.ghost": "👻",
-	"icon.agents": "👥",
-	"icon.job": "⚙",
-	"icon.cache": "💾",
+	"icon.time": "",
+	"icon.pi": "",
+	"icon.ghost": "",
+	"icon.agents": "",
+	"icon.job": "",
+	"icon.cache": "",
 	"icon.cacheMiss": "⊘",
-	"icon.input": "⤵",
-	"icon.output": "⤴",
-	"icon.throughput": "⚡",
-	"icon.host": "🖥",
-	"icon.session": "🆔",
-	"icon.package": "📦",
-	"icon.warning": "⚠",
+	"icon.input": "↓",
+	"icon.output": "↑",
+	"icon.throughput": "",
+	"icon.host": "",
+	"icon.session": "",
+	"icon.package": "",
+	"icon.warning": "!",
 	"icon.rewind": "↶",
-	"icon.auto": "∞",
-	"icon.fast": "⚡",
-	"icon.extensionSkill": "✦",
-	"icon.extensionTool": "🛠",
+	"icon.fast": "",
+	"icon.extensionSkill": "*",
+	"icon.extensionTool": "",
 	"icon.extensionSlashCommand": "⌘",
-	"icon.extensionMcp": "🔌",
-	"icon.extensionRule": "⚖",
-	"icon.extensionHook": "🪝",
-	"icon.extensionPrompt": "✎",
-	"icon.extensionContextFile": "📎",
-	"icon.extensionInstruction": "📘",
-	// Slash-command type indicators
-	"cmd.action": "❯",
-	"cmd.prompt": "✎",
-	"cmd.extension": "🧩",
-	"cmd.settings": "🎛",
-	"cmd.gear": "⚙",
-	"cmd.shield": "🛡",
-	"cmd.wave": "∿",
-	"cmd.compass": "🧭",
-	"cmd.inbox": "📥",
-	"cmd.swap": "⇄",
-	"cmd.expand": "⤢",
-	"cmd.computer": "🖥",
-	"cmd.eye": "👁",
-	"cmd.todo": "☑",
-	"cmd.stats": "📊",
-	"cmd.news": "📰",
-	"cmd.keyboard": "⌨",
-	"cmd.export": "📤",
-	"cmd.clipboard": "📋",
-	"cmd.share": "↗",
-	"cmd.broadcast": "📡",
-	"cmd.globe": "🌐",
-	"cmd.copy": "⧉",
-	"cmd.plus": "✚",
-	"cmd.restart": "↻",
-	"cmd.eraser": "🧹",
-	"cmd.trash": "🗑",
-	"cmd.compress": "🗜",
-	"cmd.vibrate": "📳",
-	"cmd.handoff": "➦",
-	"cmd.history": "🕘",
-	"cmd.question": "❓",
-	"cmd.rocket": "🚀",
-	"cmd.stethoscope": "🩺",
-	"cmd.redo": "🔁",
-	"cmd.bug": "🐛",
-	"cmd.memory": "🧠",
-	"cmd.pencil": "✏",
-	"cmd.folderMove": "📂",
-	"cmd.folderPlus": "📁",
-	"cmd.folderMinus": "📁",
-	"cmd.hammer": "🔨",
-	"cmd.power": "⏻",
-	"cmd.cart": "🛒",
+	"icon.extensionMcp": "",
+	"icon.extensionRule": "",
+	"icon.extensionHook": "",
+	"icon.extensionPrompt": "¶",
+	"icon.extensionContextFile": "",
+	"icon.extensionInstruction": "",
 	// STT
-	"icon.mic": "🎤",
+	"icon.mic": "",
 	// Compaction divider
-	"icon.camera": "📷",
+	"icon.camera": "",
 	// Thinking levels
-	"thinking.minimal": "○ min",
-	"thinking.low": "◔ low",
-	"thinking.medium": "◑ med",
-	"thinking.high": "◒ high",
-	"thinking.xhigh": "◕ xhigh",
-	"thinking.max": "◉ max",
-	"thinking.autoPending": "⟳",
+	"thinking.minimal": "min",
+	"thinking.low": "low",
+	"thinking.medium": "med",
+	"thinking.high": "high",
+	"thinking.xhigh": "xhigh",
+	"thinking.max": "max",
+	"thinking.autoPending": "◐",
 	// Checkboxes
-	"checkbox.checked": "☑",
-	"checkbox.unchecked": "☐",
+	"checkbox.checked": "■",
+	"checkbox.unchecked": "□",
 	// Radio (single-choice)
-	"radio.selected": "◉",
-	"radio.unselected": "○",
+	"radio.selected": "▣",
+	"radio.unselected": "□",
 	// Formatting
 	"format.bullet": "•",
 	"format.dash": "—",
@@ -537,83 +368,84 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"md.colorSwatch": "■",
 	// Advisor note rail (heavier than md.quoteBorder so notes read as a distinct voice)
 	"advisor.rail": "▎",
+	"block.rail": "▏",
 	// Language/file icons (emoji-centric, no Nerd Font required)
-	"lang.default": "⌘",
-	"lang.typescript": "🟦",
-	"lang.javascript": "🟨",
-	"lang.python": "🐍",
-	"lang.rust": "🦀",
-	"lang.go": "🐹",
-	"lang.java": "☕",
-	"lang.c": "Ⓒ",
-	"lang.cpp": "➕",
-	"lang.csharp": "♯",
-	"lang.ruby": "💎",
-	"lang.julia": "Ⓙ",
-	"lang.php": "🐘",
-	"lang.swift": "🕊",
-	"lang.kotlin": "🅺",
-	"lang.shell": "💻",
-	"lang.html": "🌐",
-	"lang.css": "🎨",
-	"lang.json": "🧾",
-	"lang.yaml": "📋",
-	"lang.markdown": "📝",
-	"lang.sql": "🗄",
-	"lang.docker": "🐳",
-	"lang.lua": "🌙",
-	"lang.text": "🗒",
-	"lang.env": "🔧",
-	"lang.toml": "🧾",
-	"lang.xml": "⟨⟩",
-	"lang.ini": "⚙",
-	"lang.conf": "⚙",
-	"lang.log": "📜",
-	"lang.csv": "📑",
-	"lang.tsv": "📑",
-	"lang.image": "🖼",
-	"lang.pdf": "📕",
-	"lang.archive": "🗜",
-	"lang.binary": "⚙",
+	"lang.default": "",
+	"lang.typescript": "",
+	"lang.javascript": "",
+	"lang.python": "",
+	"lang.rust": "",
+	"lang.go": "",
+	"lang.java": "",
+	"lang.c": "",
+	"lang.cpp": "",
+	"lang.csharp": "",
+	"lang.ruby": "",
+	"lang.julia": "",
+	"lang.php": "",
+	"lang.swift": "",
+	"lang.kotlin": "",
+	"lang.shell": "",
+	"lang.html": "",
+	"lang.css": "",
+	"lang.json": "",
+	"lang.yaml": "",
+	"lang.markdown": "",
+	"lang.sql": "",
+	"lang.docker": "",
+	"lang.lua": "",
+	"lang.text": "",
+	"lang.env": "",
+	"lang.toml": "",
+	"lang.xml": "",
+	"lang.ini": "",
+	"lang.conf": "",
+	"lang.log": "",
+	"lang.csv": "",
+	"lang.tsv": "",
+	"lang.image": "",
+	"lang.pdf": "",
+	"lang.archive": "",
+	"lang.binary": "",
 	// Composer attachment chips
 	"chip.image": "🖼",
 	"chip.paste": "📄",
 	// Settings tabs
-	"tab.appearance": "🎨",
-	"tab.model": "🤖",
-	"tab.interaction": "⌨",
-	"tab.context": "📋",
-	"tab.files": "📁",
-	"tab.shell": "💻",
-	"tab.tools": "🔧",
-	"tab.memory": "🧠",
-	"tab.tasks": "📦",
-	"tab.providers": "🌐",
+	"tab.appearance": "",
+	"tab.model": "",
+	"tab.interaction": "",
+	"tab.context": "",
+	"tab.files": "",
+	"tab.shell": "",
+	"tab.tools": "",
+	"tab.memory": "",
+	"tab.tasks": "",
+	"tab.providers": "",
 	// Tool identity icons (per-tool signature glyph on the success header)
-	"tool.write": "✎",
+	"tool.write": "❐",
 	"tool.edit": "✎",
-	"tool.bash": "❯",
+	"tool.bash": ">",
 	"tool.ssh": "⇄",
-	"tool.lsp": "💡",
-	"tool.gh": "⎇",
+	"tool.lsp": "",
+	"tool.gh": "◈",
 	"tool.webSearch": "⌕",
-	"tool.exa": "🔭",
-	"tool.browser": "🌐",
+	"tool.exa": "",
+	"tool.browser": "N",
 	"tool.eval": "▶",
-	"tool.debug": "🐞",
-	"tool.mcp": "🔌",
-	"tool.job": "⚙",
-	"tool.launch": "🚀",
-	"tool.todo": "☑",
-	"tool.memory": "🧠",
+	"tool.debug": "",
+	"tool.mcp": "",
+	"tool.job": "",
+	"tool.launch": "",
+	"tool.todo": "",
+	"tool.memory": "R",
 	"tool.ask": "?",
 	"tool.resolve": "✓",
 	"tool.review": "◉",
-	"tool.inspectImage": "🖼",
+	"tool.inspectImage": "",
 	"tool.goal": "◎",
-	"tool.irc": "✉",
-	"tool.delete": "🗑",
-	"tool.move": "➜",
+	"tool.irc": "",
+	"tool.delete": "",
+	"tool.move": "",
 };
 
 export const SYMBOL_PRESETS = {
@@ -624,8 +456,8 @@ export type SpinnerType = "status" | "activity";
 
 export const SPINNER_FRAMES: Record<SymbolPreset, Record<SpinnerType, string[]>> = {
 	unicode: {
-		status: ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
-		activity: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+		status: ["·", ":", "░", "▒", "▓", "█", "▓", "▒", "░", ":"],
+		activity: ["·", ":", "░", "▒", "▓", "█", "▓", "▒", "░", ":"],
 	},
 };
 

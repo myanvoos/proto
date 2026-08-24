@@ -1,7 +1,7 @@
 """Graceful shutdown drain + kill behavior on WorkerPool.
 
 These tests poke `WorkerPool` directly: they don't spin up a dispatcher loop
-or omp subprocess. The contract under test is `stop()`'s drain-then-kill
+or proto subprocess. The contract under test is `stop()`'s drain-then-kill
 sequence and `_run_event`'s shutting-down branch that leaves the DB row in
 `running` so `reset_stuck_running()` can requeue it.
 """
@@ -199,7 +199,7 @@ async def test_run_event_skips_mark_event_when_shutting_down(
     )
 
     async def fake_dispatch(self: WorkerPool, r: EventRow, *, slot_uid: int | None = None) -> None:
-        raise RuntimeError("omp died")
+        raise RuntimeError("proto died")
 
     monkeypatch.setattr(WorkerPool, "_dispatch", fake_dispatch)
     await pool._run_event(_row("d-shutdown"))  # noqa: SLF001
@@ -212,7 +212,7 @@ async def test_run_event_skips_mark_event_when_shutting_down(
 
 @pytest.mark.asyncio
 async def test_stop_cancels_hookless_inflight_task(settings: Settings, db: Database) -> None:
-    """A task claimed but stuck pre-hook MUST be cancelled by stop(), not allowed to spawn omp.
+    """A task claimed but stuck pre-hook MUST be cancelled by stop(), not allowed to spawn proto.
 
     Reproduces the P1 finding: pre-fix, stop()'s kill phase iterated cancel
     hooks only, so an in-flight task without a hook (still waiting on the

@@ -18,7 +18,7 @@ describe("extension/hook loader process.exit guard (#3680)", () => {
 	let project: TempDir | undefined;
 
 	beforeEach(() => {
-		project = TempDir.createSync("@omp-exit-guard-");
+		project = TempDir.createSync("@proto-exit-guard-");
 	});
 
 	afterEach(() => {

@@ -344,7 +344,7 @@ async function packAndPublish(dir: string, name: string): Promise<void> {
 		return;
 	}
 	console.log(`Publishing ${name}…`);
-	const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-pack-"));
+	const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-pack-"));
 	try {
 		const packed = await $`bun pm pack --quiet --destination ${packDir}`.cwd(dir).quiet().nothrow();
 		const packOutput = `${packed.stdout.toString()}${packed.stderr.toString()}`.trim();

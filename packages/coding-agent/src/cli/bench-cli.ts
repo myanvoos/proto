@@ -48,7 +48,7 @@ const ERROR_WIDTH = 110;
 const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder();
 const CACHE_PREFIX_CHUNK = cachePrefixChunk;
-const CACHE_PREFIX_PLACEHOLDER = "__OMP_CACHE_BENCH_RAW_PREFIX__";
+const CACHE_PREFIX_PLACEHOLDER = "__PROTO_CACHE_BENCH_RAW_PREFIX__";
 const CACHE_PREFIX_CHUNK_BYTES = UTF8_ENCODER.encode(CACHE_PREFIX_CHUNK).byteLength;
 const RESPONSE_CACHE_STATUS_HEADERS = ["cf-aig-cache-status"] as const;
 
@@ -1067,7 +1067,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 	const now = deps.now ?? (() => performance.now());
 	const interactive = deps.stdoutIsTTY ?? process.stdout.isTTY === true;
 	if (command.models.length === 0) {
-		throw new Error("Pass at least one model selector, e.g. `omp bench opus gpt-5.2`");
+		throw new Error("Pass at least one model selector, e.g. `proto bench opus gpt-5.2`");
 	}
 	let progress: BenchLiveProgress | undefined;
 	const board = json
@@ -1135,7 +1135,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			if (!preflightKey) {
 				const failure: BenchRunFailure = {
 					ok: false,
-					error: `No credentials for provider "${model.provider}". Run \`omp\` and use /login, or set the provider API key.`,
+					error: `No credentials for provider "${model.provider}". Run \`proto\` and use /login, or set the provider API key.`,
 				};
 				results.push(failure);
 				if (!json) print(formatRunLine(failure, 0, runs));

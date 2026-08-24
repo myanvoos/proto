@@ -8,7 +8,7 @@ import { runAuthGatewayCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-gatewa
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const BROKER_TOKEN = "gateway-account-pool-token";
-const ENV_KEYS = ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN", "OMP_AUTH_BROKER_ACCOUNT_POOL_FILE"] as const;
+const ENV_KEYS = ["PROTO_AUTH_BROKER_URL", "PROTO_AUTH_BROKER_TOKEN", "PROTO_AUTH_BROKER_ACCOUNT_POOL_FILE"] as const;
 
 describe("auth-gateway account pool", () => {
 	let tempDir = "";
@@ -19,7 +19,7 @@ describe("auth-gateway account pool", () => {
 
 	beforeEach(async () => {
 		savedEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]])) as typeof savedEnv;
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-auth-gateway-pool-"));
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-auth-gateway-pool-"));
 		brokerStore = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
 		brokerStore.saveOAuth("anthropic", {
 			access: "allowed-access",
@@ -43,9 +43,9 @@ describe("auth-gateway account pool", () => {
 		});
 		const poolPath = path.join(tempDir, "account-pool.json");
 		await Bun.write(poolPath, JSON.stringify({ anthropic: ["email:allowed@example.com"] }));
-		process.env.OMP_AUTH_BROKER_URL = handle.url;
-		process.env.OMP_AUTH_BROKER_TOKEN = BROKER_TOKEN;
-		process.env.OMP_AUTH_BROKER_ACCOUNT_POOL_FILE = poolPath;
+		process.env.PROTO_AUTH_BROKER_URL = handle.url;
+		process.env.PROTO_AUTH_BROKER_TOKEN = BROKER_TOKEN;
+		process.env.PROTO_AUTH_BROKER_ACCOUNT_POOL_FILE = poolPath;
 	});
 
 	afterEach(async () => {

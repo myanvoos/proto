@@ -66,7 +66,7 @@ describe("cleanse diagnostics", () => {
 	});
 
 	test("discovers package test scripts only when test mode is enabled", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cleanse-tests-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cleanse-tests-"));
 		try {
 			await Bun.write(
 				path.join(root, "package.json"),
@@ -94,7 +94,7 @@ describe("cleanse diagnostics", () => {
 	});
 
 	test("excludes generated Bazel trees from checker discovery", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cleanse-ignore-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cleanse-ignore-"));
 		try {
 			await Bun.write(path.join(root, "src", "index.ts"), "export const value = 1;\n");
 			await Bun.write(
@@ -604,7 +604,7 @@ describe("cleanse alternative-tooling parsers", () => {
 
 describe("cleanse custom suite", () => {
 	test("builds runnable plans from discovery specs and skips unrunnable ones", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cleanse-custom-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cleanse-custom-"));
 		try {
 			await Bun.write(path.join(root, "src", "a.ts"), "export const value = 1;\n");
 			const suite = await cleanseCheckers.buildCustomCleanseSuite(root, [
@@ -634,7 +634,7 @@ describe("cleanse custom suite", () => {
 	});
 
 	test("select() narrows which checkers a run executes", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cleanse-select-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cleanse-select-"));
 		try {
 			const suite = await cleanseCheckers.buildCustomCleanseSuite(root, [
 				{ label: "first", command: ["bun", "-e", "console.log('ok')"] },
@@ -649,7 +649,7 @@ describe("cleanse custom suite", () => {
 		}
 	});
 	test("streams partial diagnostics before a long-running checker exits", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cleanse-stream-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cleanse-stream-"));
 		try {
 			await Bun.write(path.join(root, "f.ts"), "export const a = 1;\n");
 			await Bun.write(path.join(root, "g.ts"), "export const b = 2;\n");

@@ -101,7 +101,7 @@ describe("HashlineFilesystem ACP fs routing", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-hashline-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-hashline-"));
 		await Settings.init({ inMemory: true, cwd: tmpDir });
 	});
 
@@ -229,7 +229,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-hashline-e2e-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-hashline-e2e-"));
 		await Settings.init({ inMemory: true, cwd: tmpDir });
 	});
 
@@ -362,7 +362,7 @@ describe("executeReplace ACP fs routing", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-replace-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-replace-"));
 		await Settings.init({ inMemory: true, cwd: tmpDir });
 	});
 
@@ -435,7 +435,7 @@ describe("executePatchSingle ACP fs routing", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-patch-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-patch-"));
 		await Settings.init({ inMemory: true, cwd: tmpDir });
 	});
 

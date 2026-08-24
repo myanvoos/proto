@@ -162,7 +162,7 @@ export class JuliaKernel extends BaseKernel<KernelExecuteOptions> {
 			if (typeof value === "string") spawnEnv[key] = value;
 		}
 
-		const scriptPath = await stageRunnerScript("omp-julia-runner", "jl", RUNNER_SCRIPT);
+		const scriptPath = await stageRunnerScript("proto-julia-runner", "jl", RUNNER_SCRIPT);
 		const kernel = new JuliaKernel(Snowflake.next());
 
 		const proc = Bun.spawn(
@@ -204,8 +204,8 @@ function buildInitScript(cwd: string, env?: Record<string, string | undefined>):
 		if (value !== undefined) envPayload[key] = value;
 	}
 	const lines = [
-		`__omp_init_cwd = String(Base64.base64decode("${Buffer.from(cwd).toString("base64")}"))`,
-		"try cd(__omp_init_cwd) catch; end",
+		`__proto_init_cwd = String(Base64.base64decode("${Buffer.from(cwd).toString("base64")}"))`,
+		"try cd(__proto_init_cwd) catch; end",
 	];
 	for (const key in envPayload) {
 		const k_b64 = Buffer.from(key).toString("base64");
@@ -213,6 +213,6 @@ function buildInitScript(cwd: string, env?: Record<string, string | undefined>):
 		lines.push(`ENV[String(Base64.base64decode("${k_b64}"))] = String(Base64.base64decode("${v_b64}"))`);
 	}
 	// Avoid modifying LOAD_PATH if not necessary, but if needed, prepend cwd
-	lines.push("if !(__omp_init_cwd in LOAD_PATH); pushfirst!(LOAD_PATH, __omp_init_cwd); end");
+	lines.push("if !(__proto_init_cwd in LOAD_PATH); pushfirst!(LOAD_PATH, __proto_init_cwd); end");
 	return lines.join("\n");
 }

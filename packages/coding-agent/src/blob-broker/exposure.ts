@@ -58,7 +58,7 @@ export interface ActiveExposure {
 }
 
 const READY_TIMEOUT_MS = 30_000;
-const HEALTH_PATH = "/.well-known/omp-blob-health";
+const HEALTH_PATH = "/.well-known/proto-blob-health";
 const DEFAULT_HEALTH_ATTEMPTS = 5;
 const MAX_HEALTH_ATTEMPTS = 10;
 const DEFAULT_HEALTH_BACKOFF_MS = 250;
@@ -235,7 +235,7 @@ async function spawnUrlTunnel(
 	extract: (line: string) => string | null,
 	readyPattern?: RegExp,
 ): Promise<{ proc: Bun.Subprocess; baseUrl: string }> {
-	const logPath = path.join(os.tmpdir(), `omp-blob-tunnel-${Date.now().toString(36)}-${process.pid}.log`);
+	const logPath = path.join(os.tmpdir(), `proto-blob-tunnel-${Date.now().toString(36)}-${process.pid}.log`);
 	const fd = fs.openSync(logPath, "w");
 	let proc: Bun.Subprocess;
 	try {

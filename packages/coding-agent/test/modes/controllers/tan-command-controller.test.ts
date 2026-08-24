@@ -95,7 +95,7 @@ function createContext(overrides?: {
 	activeToolNames?: string[];
 	enabledToolNames?: string[];
 }) {
-	const tempDir = TempDir.createSync("@omp-tan-controller-");
+	const tempDir = TempDir.createSync("@proto-tan-controller-");
 	const parentFile = path.join(tempDir.path(), "parent.jsonl");
 	// The clone nests inside the parent's artifact directory, like a subagent.
 	const cloneFile = path.join(parentFile.slice(0, -6), "clone.jsonl");

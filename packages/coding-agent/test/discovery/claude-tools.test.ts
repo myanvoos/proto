@@ -23,7 +23,7 @@ describe("Claude Code custom tool discovery", () => {
 		originalHome = process.env.HOME;
 		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 		delete process.env.CLAUDE_CONFIG_DIR;
-		root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-claude-tools-"));
+		root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-claude-tools-"));
 		home = path.join(root, "home");
 		project = path.join(root, "project");
 		process.env.HOME = home;

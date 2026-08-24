@@ -3,7 +3,7 @@
   "name": "@oh-my-pi/pi-tui",
   "version": "18.0.0",
   "description": "Terminal User Interface library with differential rendering for efficient text-based applications",
-  "homepage": "https://omp.sh",
+  "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "contributors": [
     "Mario Zechner"

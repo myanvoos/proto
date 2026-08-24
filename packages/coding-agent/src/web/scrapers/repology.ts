@@ -27,28 +27,6 @@ interface RepologyPackage {
 }
 
 /**
- * Get emoji indicator for version status
- */
-function statusIndicator(status: string): string {
-	switch (status) {
-		case "newest":
-			return "✅"; // green check
-		case "devel":
-			return "🚧"; // construction
-		case "unique":
-			return "🔵"; // blue circle
-		case "outdated":
-			return "🔴"; // red circle
-		case "legacy":
-			return "⚠\uFE0F"; // warning
-		case "rolling":
-			return "🔄"; // arrows
-		default:
-			return "➖"; // minus
-	}
-}
-
-/**
  * Prettify repository name
  */
 function prettifyRepo(repo: string): string {
@@ -192,7 +170,7 @@ export const handleRepology: SpecialHandler = async (
 		];
 		for (const status of statusOrder) {
 			if (statusCounts[status]) {
-				md += `- ${statusIndicator(status)} **${status}**: ${statusCounts[status]} repos\n`;
+				md += `- **${status}**: ${statusCounts[status]} repos\n`;
 			}
 		}
 		md += "\n";
@@ -232,7 +210,7 @@ export const handleRepology: SpecialHandler = async (
 
 			const repoName = prettifyRepo(pkg.repo);
 			const version = pkg.origversion || pkg.version;
-			md += `| ${repoName} | \`${version}\` | ${statusIndicator(pkg.status)} ${pkg.status} |\n`;
+			md += `| ${repoName} | \`${version}\` | ${pkg.status} |\n`;
 
 			count++;
 			if (count >= 15) break;

@@ -897,7 +897,7 @@ describe("ACP event mapper", () => {
 	});
 
 	it("replays assistant tool_use input through the ACP dispatcher without wrapping", async () => {
-		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-acp-replay-contract-"));
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-acp-replay-contract-"));
 		const cwd = path.join(root, "cwd");
 		const sessionDir = path.join(root, "sessions");
 		const initialSessionDir = path.join(root, "initial-session");

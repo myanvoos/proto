@@ -36,7 +36,7 @@ export interface SharedBrowserEndpoint {
 
 /** Stable broker daemon name for the shared automation browser. */
 export function sharedBrowserDaemonName(headless: boolean): string {
-	return headless ? "omp.browser.headless" : "omp.browser.headed";
+	return headless ? "proto.browser.headless" : "proto.browser.headed";
 }
 
 function wsEndpointOf(snapshot: DaemonSnapshot | undefined): string | undefined {

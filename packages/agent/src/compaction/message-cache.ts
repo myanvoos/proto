@@ -48,7 +48,7 @@ export function registerMessageCacheInvalidator(invalidate: (message: AgentMessa
  * the tag onto derived clones — harmless, because estimate memos key on message
  * *identity* and a fresh clone starts with no memo entries anywhere.
  */
-const kEstimateVersion = Symbol("omp.messageEstimateVersion");
+const kEstimateVersion = Symbol("proto.messageEstimateVersion");
 
 interface VersionedMessage {
 	[kEstimateVersion]?: number;

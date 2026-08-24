@@ -25,12 +25,12 @@ describe("date-cwd-reminder", () => {
 
 	describe("renderDateCwdReminder", () => {
 		it("renders a system-reminder block carrying the date and cwd with a do-not-repeat instruction", () => {
-			const reminder = renderDateCwdReminder("2026-08-14", "C:/work/omp");
+			const reminder = renderDateCwdReminder("2026-08-14", "C:/work/proto");
 
 			expect(reminder.startsWith("<system-reminder>")).toBe(true);
 			expect(reminder.endsWith("</system-reminder>")).toBe(true);
 			expect(reminder).toContain("2026-08-14");
-			expect(reminder).toContain("C:/work/omp");
+			expect(reminder).toContain("C:/work/proto");
 			expect(reminder).toContain("Do not repeat");
 		});
 	});
@@ -115,13 +115,13 @@ describe("date-cwd-reminder", () => {
 				messages: [{ role: "user", content: "do the thing", timestamp: 1 }],
 			};
 
-			const out = withDateCwdReminder(context, "2026-08-14", "/work/omp");
+			const out = withDateCwdReminder(context, "2026-08-14", "/work/proto");
 
 			expect(out).not.toBe(context);
 			expect(out.systemPrompt).toBe(systemPrompt);
 			expect(out.messages[0]).toEqual({
 				role: "user",
-				content: `${renderDateCwdReminder("2026-08-14", "/work/omp")}\n\ndo the thing`,
+				content: `${renderDateCwdReminder("2026-08-14", "/work/proto")}\n\ndo the thing`,
 				timestamp: 1,
 			});
 		});

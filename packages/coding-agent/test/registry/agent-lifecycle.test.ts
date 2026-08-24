@@ -654,7 +654,7 @@ describe("AgentLifecycleManager", () => {
 	});
 
 	it("tombstone release keeps a killed ref as terminal `aborted` so a persisted-subagent rescan cannot resurrect it as parked", async () => {
-		using tempDir = TempDir.createSync("@omp-lifecycle-tombstone-");
+		using tempDir = TempDir.createSync("@proto-lifecycle-tombstone-");
 		const rootSessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerId = "Killed-Sub";
 		const workerSessionFile = path.join(tempDir.path(), "main", `${workerId}.jsonl`);

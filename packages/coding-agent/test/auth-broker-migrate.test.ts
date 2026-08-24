@@ -37,10 +37,10 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
-		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
-		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
-		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-migrate-client-"));
-		brokerAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-migrate-broker-"));
+		savedEnv.PROTO_AUTH_BROKER_URL = process.env.PROTO_AUTH_BROKER_URL;
+		savedEnv.PROTO_AUTH_BROKER_TOKEN = process.env.PROTO_AUTH_BROKER_TOKEN;
+		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-migrate-client-"));
+		brokerAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-migrate-broker-"));
 		setAgentDir(agentDir);
 
 		brokerStore = await SqliteAuthCredentialStore.open(path.join(brokerAgentDir, "agent.db"));
@@ -52,8 +52,8 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 			bearerTokens: [token],
 			disableRefresher: true,
 		});
-		process.env.OMP_AUTH_BROKER_URL = handle.url;
-		process.env.OMP_AUTH_BROKER_TOKEN = token;
+		process.env.PROTO_AUTH_BROKER_URL = handle.url;
+		process.env.PROTO_AUTH_BROKER_TOKEN = token;
 	});
 
 	afterEach(async () => {
@@ -62,7 +62,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 		brokerStore?.close();
 		await removeWithRetries(agentDir);
 		await removeWithRetries(brokerAgentDir);
-		for (const key of ["OMP_AUTH_BROKER_URL", "OMP_AUTH_BROKER_TOKEN"] as const) {
+		for (const key of ["PROTO_AUTH_BROKER_URL", "PROTO_AUTH_BROKER_TOKEN"] as const) {
 			if (savedEnv[key] === undefined) delete process.env[key];
 			else process.env[key] = savedEnv[key];
 		}

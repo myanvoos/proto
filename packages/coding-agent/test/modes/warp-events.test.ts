@@ -107,7 +107,7 @@ describe("Warp CLI-agent events", () => {
 		const expectedBody = JSON.stringify({
 			event: "stop",
 			v: 1,
-			agent: "omp",
+			agent: "proto",
 			session_id: "session-123",
 			cwd: process.cwd(),
 			project,

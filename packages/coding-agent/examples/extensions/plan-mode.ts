@@ -223,9 +223,9 @@ export default function planModeExtension(pi: ExtensionAPI) {
 	function updateStatus(ctx: ExtensionContext) {
 		if (executionMode && todoItems.length > 0) {
 			const completed = todoItems.filter(t => t.completed).length;
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
+			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `${completed}/${todoItems.length}`));
 		} else if (planModeEnabled) {
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "⏸ plan"));
+			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "paused"));
 		} else {
 			ctx.ui.setStatus("plan-mode", undefined);
 		}
@@ -235,9 +235,9 @@ export default function planModeExtension(pi: ExtensionAPI) {
 			const lines: string[] = [];
 			for (const item of todoItems) {
 				if (item.completed) {
-					lines.push(ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("dim", item.text));
+					lines.push(ctx.ui.theme.fg("success", "[x] ") + ctx.ui.theme.fg("dim", item.text));
 				} else {
-					lines.push(ctx.ui.theme.fg("muted", "☐ ") + item.text);
+					lines.push(ctx.ui.theme.fg("muted", "[ ] ") + item.text);
 				}
 			}
 			ctx.ui.setWidget("plan-todos", lines);

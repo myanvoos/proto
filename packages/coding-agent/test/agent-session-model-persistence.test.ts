@@ -456,7 +456,7 @@ describe("AgentSession model persistence", () => {
 			role: "assistant",
 			content: [],
 			stopReason: "aborted",
-			errorMessage: "Previous OMP process exited before completing the turn.",
+			errorMessage: "Previous PROTO process exited before completing the turn.",
 		});
 		expect(
 			messages.some(

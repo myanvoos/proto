@@ -23,12 +23,12 @@ section() {
 }
 
 smoke_cli() {
-   local omp_bin="$1"
+   local proto_bin="$1"
    local runtime_dir
    runtime_dir="$(mktemp -d "$WORK_DIR/compiled-runtime.XXXXXX")"
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --version
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --help >/dev/null
-   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" stats --summary >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$proto_bin" --version
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$proto_bin" --help >/dev/null
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$proto_bin" stats --summary >/dev/null
    # Spawns bundled workers and serves the stats dashboard once. Regression
    # probe for #1011/#1027 worker loading and for npm/compiled distributions
    # missing the dashboard assets that `stats --summary` never touches.
@@ -81,7 +81,7 @@ align_native_manifest() {
    mv "$WORK_DIR/natives-package.aligned.json" "$NATIVES_PACKAGE"
 }
 section "Binary install smoke"
-if [ "${OMP_INSTALL_TEST_SKIP_NATIVE_BUILD:-0}" != "1" ]; then
+if [ "${PROTO_INSTALL_TEST_SKIP_NATIVE_BUILD:-0}" != "1" ]; then
    bun --cwd=packages/natives run build
 fi
 align_native_manifest
@@ -168,7 +168,7 @@ ai_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-ai-*.tgz)"
 mnemopi_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-mnemopi-*.tgz)"
 agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-agent-core-*.tgz)"
 tui_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-tui-*.tgz)"
-stats_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-omp-stats-*.tgz)"
+stats_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-proto-stats-*.tgz)"
 coding_agent_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-pi-coding-agent-*.tgz)"
 collab_web_tgz="$(find_tarball "$TARBALL_DIR"/oh-my-pi-collab-web-*.tgz)"
 
@@ -194,7 +194,7 @@ mkdir -p "$TARBALL_APP_DIR"
 			'@oh-my-pi/pi-mnemopi': '$mnemopi_tgz',
 			'@oh-my-pi/pi-agent-core': '$agent_tgz',
 			'@oh-my-pi/pi-tui': '$tui_tgz',
-			'@oh-my-pi/omp-stats': '$stats_tgz',
+			'@oh-my-pi/proto-stats': '$stats_tgz',
 			'@oh-my-pi/pi-coding-agent': '$coding_agent_tgz',
 			'@oh-my-pi/collab-web': '$collab_web_tgz'
 		};
@@ -218,11 +218,11 @@ mkdir -p "$TARBALL_APP_DIR"
    omptype_probe="$(bun -e '
       import { type } from "@oh-my-pi/omptype";
       import { Type } from "@oh-my-pi/omptype/typebox";
-      const root = type({ name: "string", enabled: "boolean = false" }).assert({ name: "omp" });
+      const root = type({ name: "string", enabled: "boolean = false" }).assert({ name: "proto" });
       const typebox = Type.Object({ name: Type.String() }).assert({ name: "tb" });
       process.stdout.write(`${root.name}:${root.enabled}:${typebox.name}`);
    ')"
-   [ "$omptype_probe" = "omp:false:tb" ] || {
+   [ "$omptype_probe" = "proto:false:tb" ] || {
       echo "Unexpected @oh-my-pi/omptype probe result: $omptype_probe"
       exit 1
    }

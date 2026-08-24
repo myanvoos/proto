@@ -685,7 +685,7 @@ function buildApplyArgs(patchPath: string, options: PatchOptions): string[] {
 }
 
 async function writeTempPatch(content: string): Promise<string> {
-	const tempPath = path.join(os.tmpdir(), `omp-git-patch-${Snowflake.next()}.patch`);
+	const tempPath = path.join(os.tmpdir(), `proto-git-patch-${Snowflake.next()}.patch`);
 	await Bun.write(tempPath, content);
 	return tempPath;
 }

@@ -21,7 +21,7 @@ describe("recent sessions title index", () => {
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	beforeEach(() => {
-		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-recent-titles-"));
+		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-recent-titles-"));
 		cwd = path.join(testAgentDir, "cwd");
 		fs.mkdirSync(cwd, { recursive: true });
 		setAgentDir(testAgentDir);

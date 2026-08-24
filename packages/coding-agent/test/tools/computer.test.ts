@@ -269,11 +269,11 @@ describe("computer worker round trips", () => {
 		const texts = result.payload.displays.filter(block => block.type === "text");
 		const images = result.payload.displays.filter(block => block.type === "image");
 		expect(texts).toHaveLength(1);
-		expect(texts[0]?.text).toMatch(/^screenshot desktop 64×32 → .*omp-computer-.*\.png$/);
+		expect(texts[0]?.text).toMatch(/^screenshot desktop 64×32 → .*proto-computer-.*\.png$/);
 		expect(images).toEqual([{ type: "image", data: "iVBORw==", mimeType: "image/png" }]);
 		expect(result.payload.screenshots).toHaveLength(1);
 		expect(result.payload.screenshots[0]).toMatchObject({ width: 64, height: 32, target: "desktop" });
-		expect(result.payload.screenshots[0]?.path).toMatch(/omp-computer-.*\.png$/);
+		expect(result.payload.screenshots[0]?.path).toMatch(/proto-computer-.*\.png$/);
 	});
 
 	it("reports source dimensions when a screenshot is scaled", async () => {
@@ -289,7 +289,7 @@ describe("computer worker round trips", () => {
 		expect(result.payload.displays[0]).toEqual(
 			expect.objectContaining({
 				type: "text",
-				text: expect.stringMatching(/^screenshot desktop 64×32 \(scaled from 128×64\) → .*omp-computer-.*\.png$/),
+				text: expect.stringMatching(/^screenshot desktop 64×32 \(scaled from 128×64\) → .*proto-computer-.*\.png$/),
 			}),
 		);
 		expect(result.payload.screenshots[0]).toMatchObject({

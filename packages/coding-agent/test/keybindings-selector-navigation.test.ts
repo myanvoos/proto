@@ -94,7 +94,7 @@ function createExtension(id: string, displayName: string): Extension {
 }
 
 async function createHistoryStorage(prompts: string[]): Promise<HistoryStorage> {
-	const dir = TempDir.createSync("@omp-history-nav-");
+	const dir = TempDir.createSync("@proto-history-nav-");
 	tempDirs.push(dir);
 	HistoryStorage.resetInstance();
 	const storage = HistoryStorage.open(dir.join("history.db"));

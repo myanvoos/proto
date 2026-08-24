@@ -133,7 +133,7 @@ function buildGitLabDuoWorkflowGoalOverflowMessage(goalBytes: number): string {
 	return `prompt is too long: ${goalBytes} bytes exceeds the GitLab Duo Agent goal byte budget (soft ${GITLAB_DUO_WORKFLOW_GOAL_SOFT_OVERFLOW_BYTES}, hard ${GITLAB_DUO_WORKFLOW_GOAL_HARD_OVERFLOW_BYTES})`;
 }
 const GITLAB_DUO_WORKFLOW_LANGUAGE_SERVER_VERSION = "8.104.0";
-const GITLAB_DUO_WORKFLOW_AVAILABLE_MODELS_QUERY = `query omp_gitlabDuoWorkflowAvailableModels($rootNamespaceId: GroupID!) {
+const GITLAB_DUO_WORKFLOW_AVAILABLE_MODELS_QUERY = `query proto_gitlabDuoWorkflowAvailableModels($rootNamespaceId: GroupID!) {
   aiChatAvailableModels(rootNamespaceId: $rootNamespaceId) {
     defaultModel { name ref }
     selectableModels { name ref }
@@ -149,8 +149,8 @@ export const GITLAB_DUO_WORKFLOW_CLIENT_CAPABILITIES = [
 	"tool_call_approval",
 ] as const;
 
-const GITLAB_DUO_WORKFLOW_INLINE_AGENT_NAME = "omp_agent";
-const GITLAB_DUO_WORKFLOW_INLINE_PROMPT_ID = "omp_inline_prompt";
+const GITLAB_DUO_WORKFLOW_INLINE_AGENT_NAME = "proto_agent";
+const GITLAB_DUO_WORKFLOW_INLINE_PROMPT_ID = "proto_inline_prompt";
 // `on_agent_reasoning` is what makes the server tag an agent's pre-tool-call
 // commentary as `message_sub_type: "reasoning"` — the chain-of-thought the
 // official Duo CLI surfaces. An inline flow must opt in explicitly.
@@ -774,7 +774,7 @@ function mapGitLabDuoWorkflowMcpToolCall(args: Record<string, unknown>): {
 	arguments: Record<string, unknown>;
 } {
 	const rawName = stringField(args, "toolName") ?? stringField(args, "tool_name") ?? stringField(args, "name") ?? "";
-	const toolName = rawName.startsWith("mcp__omp__") ? rawName.slice("mcp__omp__".length) : rawName;
+	const toolName = rawName.startsWith("mcp__proto__") ? rawName.slice("mcp__proto__".length) : rawName;
 	const parsedArgs = parseGitLabDuoWorkflowMcpArguments(args.args ?? args.arguments);
 	if (toolName === "edit" && typeof parsedArgs.input === "string") {
 		return { name: "edit", arguments: { input: parsedArgs.input } };
@@ -2231,7 +2231,7 @@ function buildGitLabMcpToolDefinition(tool: Tool): GitLabMcpToolDefinition {
 	return {
 		name: tool.name,
 		originalToolName: tool.name,
-		serverName: "omp",
+		serverName: "proto",
 		description: tool.description || "",
 		inputSchema: JSON.stringify(
 			schema && typeof schema === "object" ? schema : { type: "object", properties: {}, required: [] },

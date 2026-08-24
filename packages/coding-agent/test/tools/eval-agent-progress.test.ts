@@ -6,11 +6,8 @@ import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval";
 
 /**
  * Defends the contract that `agent()` calls inside an eval cell surface as a
- * live, Task-tool-style progress tree drawn *below* the notebook (code cell
- * box) — not buried inside the box's collapsed "Status" list, and not deferred
- * to the final result.
  */
-describe("eval renderer: agent() progress below the cell box", () => {
+describe("eval renderer: agent() progress below the cell block", () => {
 	let theme: Theme;
 
 	beforeAll(async () => {
@@ -49,12 +46,11 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		return Bun.stripANSI(component.render(120).join("\n")).split("\n");
 	}
 
-	/** Index of the box's closing border (bottom-right corner glyph). */
-	function boxBottomIndex(lines: string[]): number {
-		return lines.findIndex(line => line.includes(theme.boxRound.bottomRight));
+	function splitAtAgentTree(lines: string[]): number {
+		return lines.findIndex(line => line.startsWith(theme.tree.branch) || line.startsWith(theme.tree.last));
 	}
 
-	it("draws a running subagent below the box with its current tool and intent", () => {
+	it("draws a running subagent below the cell block with its current tool and intent", () => {
 		const event: EvalStatusEvent = {
 			op: "agent",
 			id: "0-Scout",
@@ -73,24 +69,19 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		};
 
 		const lines = render([event]);
-		const bottom = boxBottomIndex(lines);
-		expect(bottom).toBeGreaterThanOrEqual(0);
+		const split = splitAtAgentTree(lines);
+		expect(split).toBeGreaterThan(0);
 
-		const idLine = lines.findIndex(line => line.includes("0-Scout"));
-		// The subagent id renders strictly *below* the closing box border.
-		expect(idLine).toBeGreaterThan(bottom);
-
-		const below = lines.slice(bottom + 1).join("\n");
-		const inside = lines.slice(0, bottom + 1).join("\n");
+		const below = lines.slice(split).join("\n");
+		const inside = lines.slice(0, split).join("\n");
 		expect(below).toContain("0-Scout");
 		expect(below).toContain("read");
 		expect(below).toContain("Reading config");
-		// Agent progress is NOT folded into the box's Status section.
 		expect(inside).not.toContain("0-Scout");
 		expect(inside).not.toContain("Reading config");
 	});
 
-	it("keeps full stats on a completed subagent below the box", () => {
+	it("keeps full stats on a completed subagent below the cell block", () => {
 		const event: EvalStatusEvent = {
 			op: "agent",
 			id: "0-Scout",
@@ -105,11 +96,10 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		};
 
 		const lines = render([event], "complete");
-		const bottom = boxBottomIndex(lines);
-		const idLine = lines.findIndex(line => line.includes("0-Scout"));
-		expect(idLine).toBeGreaterThan(bottom);
+		const split = splitAtAgentTree(lines);
+		expect(split).toBeGreaterThanOrEqual(0);
+		const below = lines.slice(split).join("\n");
 
-		const below = lines.slice(bottom + 1).join("\n");
 		// Cost stat survives the completed snapshot.
 		expect(below).toContain("$0.06");
 	});
@@ -122,24 +112,23 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		];
 
 		const lines = render(events);
-		const below = lines.slice(boxBottomIndex(lines) + 1).join("\n");
+		const below = lines.slice(splitAtAgentTree(lines)).join("\n");
 		expect(below).toContain("0-Alpha");
 		expect(below).toContain("1-Beta");
 		expect(below).toContain("2-Gamma");
 	});
 
-	it("still folds non-agent status events into the box Status section", () => {
+	it("still folds non-agent status events into the cell block status rows", () => {
 		const events: EvalStatusEvent[] = [
 			{ op: "read", path: "/tmp/file.ts", chars: 1200 },
 			{ op: "agent", id: "0-Scout", agent: "worker", status: "running", lastIntent: "thinking" },
 		];
 
 		const lines = render(events);
-		const bottom = boxBottomIndex(lines);
-		const inside = lines.slice(0, bottom + 1).join("\n");
-		const below = lines.slice(bottom + 1).join("\n");
+		const split = splitAtAgentTree(lines);
+		const inside = lines.slice(0, split).join("\n");
+		const below = lines.slice(split).join("\n");
 
-		// Discrete ops stay inside the box; agent progress renders below it.
 		expect(inside).toContain("read");
 		expect(inside).toContain("file.ts");
 		expect(inside).not.toContain("0-Scout");

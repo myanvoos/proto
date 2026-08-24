@@ -19,7 +19,7 @@ const expectedDocPaths = (name: string): string[] => [
 // these custom tools are not present there, so the coverage list is explicit.
 const CUSTOM_TOOL_NAMES = ["generate_image", "tts"] as const;
 
-describe("omp:// root docs coverage", () => {
+describe("proto:// root docs coverage", () => {
 	it.each([...BUILTIN_TOOL_NAMES])("documents builtin tool %s", name => {
 		const candidates = expectedDocPaths(name);
 		const present = candidates.find(candidate => fs.existsSync(candidate));

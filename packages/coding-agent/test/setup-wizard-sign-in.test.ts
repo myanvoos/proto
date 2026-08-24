@@ -17,7 +17,7 @@ afterEach(() => {
 
 describe("SignInTab", () => {
 	it("keeps the OSC8 login link and manual-code prompt above clipped wizard rows", async () => {
-		const url = `https://example.com/oauth/authorize?client_id=omp&redirect_uri=http%3A%2F%2Flocalhost%3A45454%2Fcallback&state=${"a".repeat(96)}`;
+		const url = `https://example.com/oauth/authorize?client_id=proto&redirect_uri=http%3A%2F%2Flocalhost%3A45454%2Fcallback&state=${"a".repeat(96)}`;
 		const loginGate = Promise.withResolvers<void>();
 		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
 		let focusTarget: Component | undefined;
@@ -91,7 +91,7 @@ describe("SignInTab", () => {
 	});
 
 	it("copies the active login URL from the keyboard while the setup TUI owns selection", async () => {
-		const url = "https://example.com/oauth/authorize?client_id=omp&state=copy";
+		const url = "https://example.com/oauth/authorize?client_id=proto&state=copy";
 		const loginGate = Promise.withResolvers<void>();
 		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
 

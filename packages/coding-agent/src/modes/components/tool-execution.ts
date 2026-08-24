@@ -31,6 +31,8 @@ import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
 
+const COMPOSER_INSET_COLS = 2;
+
 /**
  * Drop trailing removal/hunk-header lines that appear in a streaming diff
  * before the matching `+added` lines have arrived. Without this, a partial
@@ -480,7 +482,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// generic fallback) get top/bottom breathing room. TranscriptContainer
 		// strips PLAIN-blank edges, so framed/minimal blocks (no bg set) drop these
 		// lines and keep their tight spacing — only tinted lines survive.
-		this.#contentBox = new Box(0, 1);
+		this.#contentBox = new Box(COMPOSER_INSET_COLS, 1);
 		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
 
 		// Use Box for custom tools or built-in tools with rich renderers.
@@ -961,12 +963,15 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#spinnerFrame = undefined;
 			this.#renderState.spinnerFrame = undefined;
 		}
-		this.#stopTodoStrikeAnimation();
 		this.#editDiffAbort?.abort();
 		this.#editDiffAbort = undefined;
 		// Drop any queued rerun so the drain loop exits instead of recomputing a
 		// preview for a torn-down block after its in-flight compute is aborted.
 		this.#editDiffDirty = false;
+	}
+
+	override dispose(): void {
+		this.stopAnimation();
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -1067,22 +1072,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderState.executionStarted = this.#executionStarted;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
-		// Non-self-framing tools (custom/extension renderers and the generic
-		// fallback) get a padded, state-tinted block — built-ins that draw their
-		// own frame opt out below via the framed-component mark. A benign skip
-		// (steering/peer interrupt aborted a still-pending call) never ran, so it
-		// gets the neutral pending tint rather than the error tint (#7199).
-		const benignSkip = this.#isBenignSkip();
-		const stateBgKey =
-			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
-		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
-
 		// A benign skip is a synthetic placeholder for a call that never executed,
 		// so bypass any bespoke error frame and draw the neutral generic card —
-		// the per-tool ✘/red-border would misread normal mid-turn steering as a
+		// the per-tool error icon/red border would misread normal mid-turn steering as a
 		// failure (#7199).
+		const benignSkip = this.#isBenignSkip();
 		if (benignSkip) {
-			this.#renderBenignSkipCard(stateBgFn);
+			this.#renderBenignSkipCard();
 		} else if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
 			const tool = this.#tool;
 			const mergeCallAndResult = Boolean((tool as { mergeCallAndResult?: boolean }).mergeCallAndResult);
@@ -1169,11 +1165,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					this.#contentBox.addChild(new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0));
 				}
 			}
-			// Custom tools that draw their own frame (task) render flush; plain
-			// extension renderers get the padded, state-tinted block back.
-			const customFramed = this.#contentBox.children.some(isFramedBlockComponent);
-			this.#contentBox.setPaddingX(customFramed ? 0 : 1);
-			this.#contentBox.setBgFn(customFramed ? undefined : stateBgFn);
+			this.#contentBox.setPaddingX(COMPOSER_INSET_COLS);
+			this.#contentBox.setBgFn(undefined);
 		} else if (this.#renderer) {
 			// The active registry entry is a built-in tool with a rich renderer.
 			const renderer = this.#renderer;
@@ -1203,7 +1196,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						this.#multiFileBoxes.push(spacer);
 						this.addChild(spacer);
 					}
-					const fileBox = new Box(0, 0);
+					const fileBox = new Box(COMPOSER_INSET_COLS, 0);
 					try {
 						const resultComponent = renderer.renderResult(
 							{ content: [], details: fileResult, isError: fileResult.isError },
@@ -1231,7 +1224,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					const pendingSpacer = new Spacer(1);
 					this.#multiFileBoxes.push(pendingSpacer);
 					this.addChild(pendingSpacer);
-					const pendingBox = new Box(0, 0);
+					const pendingBox = new Box(COMPOSER_INSET_COLS, 0);
 					const spinner =
 						this.#spinnerFrame !== undefined ? formatStatusIcon("running", theme, this.#spinnerFrame) : "";
 					const pendingText = renderStatusLine(
@@ -1314,7 +1307,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
 			// instead of a fixed column cap.
-			this.#contentText.setCustomBgFn(stateBgFn);
+			this.#contentText.setCustomBgFn(undefined);
 			this.#contentText.invalidate();
 		}
 
@@ -1498,16 +1491,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");
 	}
 
-	/**
-	 * Render a benign skip as the neutral generic card, replacing any bespoke
-	 * renderer's error frame. Generic-fallback tools already route through
-	 * {@link #renderDefaultCard} (which emits the info card for a skip); they
-	 * only need the neutral tint. Bespoke-renderer tools get their content box
-	 * swapped for the same neutral card.
-	 */
-	#renderBenignSkipCard(stateBgFn: (text: string) => string): void {
+	#renderBenignSkipCard(): void {
 		if (!this.#usesContentBox) {
-			this.#contentText.setCustomBgFn(stateBgFn);
+			this.#contentText.setCustomBgFn(undefined);
 			this.#contentText.invalidate();
 			return;
 		}
@@ -1515,10 +1501,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.removeChild(box);
 		}
 		this.#multiFileBoxes = [];
+		this.#contentBox.setPaddingX(COMPOSER_INSET_COLS);
 		this.#contentBox.setBgFn(undefined);
 		this.#contentBox.clear();
-		this.#contentBox.setPaddingX(1);
-		this.#contentBox.setBgFn(stateBgFn);
 		this.#contentBox.addChild(new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 0, 0));
 	}
 }

@@ -104,7 +104,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 	it("locally: still avoids the misleading path-as-text fallback when the file is unreachable", async () => {
 		const { ctx, spies } = createContext();
 		const controller = new InputController(ctx, EMPTY_CLIPBOARD);
-		const missing = "/tmp/definitely-does-not-exist-omp-2375.png";
+		const missing = "/tmp/definitely-does-not-exist-proto-2375.png";
 
 		await controller.handleImagePathPaste(missing);
 

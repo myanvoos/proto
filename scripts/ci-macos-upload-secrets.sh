@@ -28,8 +28,8 @@ for arg in "$@"; do
 	*) DIR="$arg" ;;
 	esac
 done
-DIR="${DIR:-${OMP_SIGNING_DIR:-$HOME/omp-signing}}"
-REPO="${OMP_REPO:-can1357/oh-my-pi}"
+DIR="${DIR:-${PROTO_SIGNING_DIR:-$HOME/proto-signing}}"
+REPO="${PROTO_REPO:-can1357/oh-my-pi}"
 
 die() {
 	echo "ci-macos-upload-secrets: $1" >&2

@@ -71,13 +71,13 @@ describe("parseArgs — --max-time flag", () => {
 		const stderr = captured.join("");
 		expect(observedExitCode).toBe(2);
 		expect(stderr).toContain("Error: Invalid --max-time value");
-		expect(stderr).toContain("Run `omp --help` for available flags.");
+		expect(stderr).toContain("Run `proto --help` for available flags.");
 		expect(stderr).not.toContain("parseMaxTimeSeconds");
 		expect(stderr).not.toContain("CliUsageError");
 	});
 
 	it("converts maxTime to an absolute session deadline", async () => {
-		using tempDir = TempDir.createSync("@omp-max-time-");
+		using tempDir = TempDir.createSync("@proto-max-time-");
 		const authStorage = await AuthStorage.create(":memory:");
 		const settings = Settings.isolated({ "marketplace.autoUpdate": "off" });
 		let observedOptions: CreateAgentSessionOptions | undefined;

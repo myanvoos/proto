@@ -29,9 +29,9 @@ workflowz an adversarial review of the authentication changes
 Open `/settings` and use **Interaction → Magic Keywords**, or change settings from a shell:
 
 ```bash
-omp config set magicKeywords.enabled false
-omp config set magicKeywords.ultrathink false
-omp config set magicKeywords.workflow false
+proto config set magicKeywords.enabled false
+proto config set magicKeywords.ultrathink false
+proto config set magicKeywords.workflow false
 ```
 
 The global switch gates every notice; each keyword switch gates only its own notice. See [Settings](./settings.md) for configuration scopes and precedence.

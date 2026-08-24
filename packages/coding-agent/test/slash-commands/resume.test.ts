@@ -15,7 +15,7 @@ const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 const storage = new FileSessionStorage();
 
 beforeEach(async () => {
-	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-command-"));
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-resume-command-"));
 	setAgentDir(path.join(tempDir, "agent"));
 });
 

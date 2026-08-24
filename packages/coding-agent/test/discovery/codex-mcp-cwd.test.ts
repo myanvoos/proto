@@ -25,8 +25,8 @@ let originalHome: string | undefined;
 
 beforeEach(async () => {
 	originalHome = process.env.HOME;
-	tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-codex-mcp-home-"));
-	tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-codex-mcp-cwd-"));
+	tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-codex-mcp-home-"));
+	tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-codex-mcp-cwd-"));
 	process.env.HOME = tempHome;
 	vi.spyOn(os, "homedir").mockReturnValue(tempHome);
 	await fs.mkdir(path.join(tempHome, ".codex"), { recursive: true });

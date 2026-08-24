@@ -3,7 +3,7 @@
   "name": "@oh-my-pi/pi-coding-agent",
   "version": "18.0.0",
   "description": "Coding agent CLI with read, bash, edit, write tools and session management",
-  "homepage": "https://omp.sh",
+  "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "contributors": [
     "Mario Zechner"
@@ -48,7 +48,7 @@
   "dependencies": {
     "@babel/parser": "catalog:",
     "@oh-my-pi/hashline": "catalog:",
-    "@oh-my-pi/omp-stats": "catalog:",
+    "@oh-my-pi/proto-stats": "catalog:",
     "@oh-my-pi/omptype": "catalog:",
     "@oh-my-pi/pi-agent-core": "catalog:",
     "@oh-my-pi/pi-ai": "catalog:",

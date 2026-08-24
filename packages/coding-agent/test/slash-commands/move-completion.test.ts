@@ -10,7 +10,7 @@ describe("/move directory completion", () => {
 	const move = BUILTIN_SLASH_COMMANDS.find(c => c.name === "move");
 
 	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-completion-"));
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-move-completion-"));
 		vi.spyOn(piUtils, "getProjectDir").mockReturnValue(tempDir);
 	});
 
@@ -73,7 +73,7 @@ describe("/move directory completion", () => {
 
 	it("completes parent directory paths", async () => {
 		const parentDir = path.dirname(tempDir);
-		const siblingName = `omp-move-sibling-${path.basename(tempDir)}`;
+		const siblingName = `proto-move-sibling-${path.basename(tempDir)}`;
 		const siblingDir = path.join(parentDir, siblingName);
 		await fs.mkdir(siblingDir);
 		try {

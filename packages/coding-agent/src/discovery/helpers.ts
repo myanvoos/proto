@@ -604,8 +604,8 @@ async function readExtensionModuleManifest(
 	const content = await readFile(packageJsonPath);
 	if (!content) return null;
 
-	const pkg = tryParseJson<{ omp?: ExtensionModuleManifest; pi?: ExtensionModuleManifest }>(content);
-	const manifest = pkg?.omp ?? pkg?.pi;
+	const pkg = tryParseJson<{ proto?: ExtensionModuleManifest; pi?: ExtensionModuleManifest }>(content);
+	const manifest = pkg?.proto ?? pkg?.pi;
 	if (manifest && typeof manifest === "object") {
 		return manifest;
 	}
@@ -1065,7 +1065,7 @@ export async function listClaudePluginRoots(
 				}
 			}
 		} else {
-			warnings.push(`Failed to parse OMP plugin registry: ${ompRegistryPath}`);
+			warnings.push(`Failed to parse PROTO plugin registry: ${ompRegistryPath}`);
 		}
 	}
 

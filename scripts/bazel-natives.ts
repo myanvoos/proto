@@ -247,9 +247,9 @@ async function main(): Promise<void> {
 	const host: HostInfo = { platform: process.platform, arch: process.arch, avx2: detectHostAvx2Support() };
 	const destDir = options.dest ? path.resolve(options.dest) : path.join(repoRoot, "packages/natives/native");
 
-	const backend = Bun.env.OMP_NATIVE_BUILD_BACKEND?.trim();
+	const backend = Bun.env.PROTO_NATIVE_BUILD_BACKEND?.trim();
 	if (backend && backend !== "cargo" && backend !== "bazel") {
-		throw new Error(`Unknown OMP_NATIVE_BUILD_BACKEND "${backend}" (expected "cargo" or "bazel")`);
+		throw new Error(`Unknown PROTO_NATIVE_BUILD_BACKEND "${backend}" (expected "cargo" or "bazel")`);
 	}
 	const hostOnly = options.targets.length === 1 && options.targets[0] === "host";
 	// Backend selection: the host build defaults to the local Cargo/N-API
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
 						"(local napi build via VS Build Tools), or run this script from WSL/linux for cross targets.",
 				);
 			}
-			throw new Error("OMP_NATIVE_BUILD_BACKEND=cargo supports only the host target");
+			throw new Error("PROTO_NATIVE_BUILD_BACKEND=cargo supports only the host target");
 		}
 		await buildLocalHostAddon(host, destDir);
 		return;
@@ -298,7 +298,7 @@ async function main(): Promise<void> {
 		}
 		// CI hands cache wiring (remote or disk) through a bazelrc fragment so
 		// endpoint composition stays in .github/actions/bazel-cache.
-		const rcPath = Bun.env.OMP_BAZEL_RC?.trim();
+		const rcPath = Bun.env.PROTO_BAZEL_RC?.trim();
 		const startupArgs = rcPath ? [`--bazelrc=${rcPath}`] : [];
 
 		const buildArgs = [...startupArgs, "build", ...options.bazelArgs, "--", ...labels];

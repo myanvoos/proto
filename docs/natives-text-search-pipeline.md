@@ -72,7 +72,7 @@ Terminology follows `docs/natives-architecture.md`:
 
 ### Search/collection semantics
 
-- Matcher selection: the Rust regex engine is tried first, then PCRE2 for features such as lookaround/backreferences. `OMP_PCRE2_JIT=0`/`false` disables PCRE2 JIT and `1` enables it; when unset, JIT is enabled except on macOS.
+- Matcher selection: the Rust regex engine is tried first, then PCRE2 for features such as lookaround/backreferences. `PROTO_PCRE2_JIT=0`/`false` disables PCRE2 JIT and `1` enables it; when unset, JIT is enabled except on macOS.
 - Context resolution:
   - `contextBefore/contextAfter` override legacy `context`.
   - Non-content modes do not collect context.

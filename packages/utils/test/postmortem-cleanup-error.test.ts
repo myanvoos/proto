@@ -10,7 +10,7 @@ const postmortemModuleUrl = pathToFileURL(join(import.meta.dir, "../src/index.ts
 async function runPostmortemProbe(
 	source: string,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-	const root = await mkdtemp(join(tmpdir(), "omp-postmortem-probe-"));
+	const root = await mkdtemp(join(tmpdir(), "proto-postmortem-probe-"));
 	const probePath = join(root, "probe.ts");
 	try {
 		await Bun.write(probePath, source);
@@ -18,7 +18,7 @@ async function runPostmortemProbe(
 			cwd: process.cwd(),
 			stdout: "pipe",
 			stderr: "pipe",
-			env: { ...process.env, OMP_AGENT_DIR: join(root, "agent") },
+			env: { ...process.env, PROTO_AGENT_DIR: join(root, "agent") },
 		});
 		// Process-level regressions can hang the child; the watchdog bounds the fixture without slowing
 		// green runs (the race resolves on exit). Generous deadline: a cold bun spawn transpiling the
@@ -53,7 +53,7 @@ describe("postmortem expected cleanup errors", () => {
 		const marked = postmortem.markExpectedCleanupError(reason);
 
 		expect(marked).toBe(reason);
-		expect(Reflect.get(reason, Symbol.for("omp.expectedCleanupError"))).toBe(true);
+		expect(Reflect.get(reason, Symbol.for("proto.expectedCleanupError"))).toBe(true);
 		expect(postmortem.isExpectedCleanupError(reason)).toBe(true);
 	});
 
@@ -129,7 +129,7 @@ describe("postmortem expected cleanup errors", () => {
 
 			postmortem.registerFatalRecoveryHint(() => ({
 				label: "Main",
-				command: "omp --resume 019cafe0-dead-beef",
+				command: "proto --resume 019cafe0-dead-beef",
 			}));
 			Promise.reject(new Error("session crashed"));
 			await Promise.resolve();
@@ -137,7 +137,7 @@ describe("postmortem expected cleanup errors", () => {
 
 		expect(result.exitCode).toBe(1);
 		expect(result.stderr).toContain("[Unhandled Rejection] Error: session crashed");
-		expect(result.stderr).toContain("[Recovery]\n  Main: omp --resume 019cafe0-dead-beef");
+		expect(result.stderr).toContain("[Recovery]\n  Main: proto --resume 019cafe0-dead-beef");
 	});
 
 	it("exits after an uncaught exception when terminal stderr is revoked", async () => {

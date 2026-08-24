@@ -686,8 +686,8 @@ export function generateClaudeCloakingUserId(): string {
 	return `user_${userHash}_account_${accountId}_session_${sessionId}`;
 }
 
-const CLAUDE_DEVICE_ID_INSTALL_HASH_DOMAIN = "omp-claude-device-id-v1:";
-const CLAUDE_DEVICE_ID_ACCOUNT_HASH_DOMAIN = "omp-claude-device-id-v2";
+const CLAUDE_DEVICE_ID_INSTALL_HASH_DOMAIN = "proto-claude-device-id-v1:";
+const CLAUDE_DEVICE_ID_ACCOUNT_HASH_DOMAIN = "proto-claude-device-id-v2";
 
 export function deriveClaudeDeviceId(installId: string, accountId?: string): string {
 	const hash = nodeCrypto.createHash("sha256");

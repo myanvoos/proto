@@ -48,7 +48,7 @@ describe("discovery extra-CA fallback fetch", () => {
 		__resetExtraCaCache();
 		originalEnv = Bun.env.NODE_EXTRA_CA_CERTS;
 		originalFetch = globalThis.fetch;
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-discovery-ca-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-discovery-ca-"));
 	});
 
 	afterEach(async () => {

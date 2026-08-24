@@ -18,15 +18,15 @@ describe("CustomEditor upstream-pi constructor compatibility (#4766)", () => {
 		const editor = new CustomEditor(tui, getEditorTheme(), {});
 		editor.setText("run this workflow");
 		expect(() => editor.render(80)).not.toThrow();
-		// The rounded border glyphs from the resolved theme must reach the frame.
+		// The resolved theme renders a working single-chrome frame.
 		const frame = editor.render(80).join("\n");
-		expect(frame).toContain(getEditorTheme().symbols.boxRound.horizontal);
+		expect(frame).toContain("❯ run this workflow");
 		// The leading TUI is captured so plugin overrides calling
 		// `this.tui.requestRender()` keep working.
 		expect(editor.tui).toBe(tui);
 	});
 
-	it("still accepts omp's own (theme) constructor", async () => {
+	it("still accepts proto's own (theme) constructor", async () => {
 		await initTheme();
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setText("hello");

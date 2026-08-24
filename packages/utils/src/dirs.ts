@@ -17,13 +17,13 @@ import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
 
 /** App name (e.g. "omp") */
-export const APP_NAME: string = "omp";
+export const APP_NAME: string = "proto";
 
 /** Executable name users invoke (e.g. "proto"); distinct from APP_NAME, which brands config dirs and logs. */
 export const BINARY_NAME: string = "proto";
 
 /** Config directory name (e.g. ".omp") */
-export const CONFIG_DIR_NAME: string = ".omp";
+export const CONFIG_DIR_NAME: string = ".proto";
 
 /** Ordered main settings filenames: canonical write target first, legacy-compatible YAML fallback second. */
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
@@ -32,13 +32,13 @@ export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 export const VERSION: string = version;
 
 /** Default User-Agent header string (e.g. "omp/17.2.12") */
-export const USER_AGENT = `omp/${VERSION}`;
+export const USER_AGENT = `proto/${VERSION}`;
 
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const PROFILE_ENV_KEYS = ["OMP_PROFILE", "PI_PROFILE"] as const;
+const PROFILE_ENV_KEYS = ["PROTO_PROFILE", "PI_PROFILE"] as const;
 
 /**
  * Names Windows treats as reserved device aliases. Matches the basename
@@ -69,7 +69,7 @@ export function normalizeProfileName(profile: string | undefined): string | unde
 		WINDOWS_RESERVED_BASENAME_RE.test(normalized)
 	) {
 		throw new Error(
-			`Invalid OMP profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}, ` +
+			`Invalid PROTO profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}, ` +
 				`cannot be "." or "..", cannot end with ".", and cannot be a Windows reserved device name ` +
 				`(CON, PRN, AUX, NUL, COM0-9, LPT0-9, or any of those with an extension).`,
 		);
@@ -85,12 +85,12 @@ export function normalizeProfileName(profile: string | undefined): string | unde
  * than silently inheriting `PI_PROFILE`. Delegates validation/normalization to
  * {@link normalizeProfileName} (which throws on a syntactically invalid value).
  */
-export function resolveProfileEnv(omp: string | undefined, pi: string | undefined): string | undefined {
-	return normalizeProfileName(omp !== undefined ? omp : pi);
+export function resolveProfileEnv(proto: string | undefined, pi: string | undefined): string | undefined {
+	return normalizeProfileName(proto !== undefined ? proto : pi);
 }
 
 function getProfileFromEnv(): string | undefined {
-	return resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE);
+	return resolveProfileEnv(process.env.PROTO_PROFILE, process.env.PI_PROFILE);
 }
 
 /**
@@ -470,7 +470,7 @@ export function setProfile(profile: string | undefined): void {
 	activeProfile = next;
 	if (activeProfile) {
 		dirs = new DirResolver({ profile: activeProfile });
-		process.env.OMP_PROFILE = activeProfile;
+		process.env.PROTO_PROFILE = activeProfile;
 		process.env.PI_PROFILE = activeProfile;
 		process.env.PI_CODING_AGENT_DIR = dirs.agentDir;
 	} else {
@@ -553,7 +553,7 @@ export function getPluginsPackageJson(home?: string): string {
 
 /** Plugin lock file (~/.omp/plugins/omp-plugins.lock.json). */
 export function getPluginsLockfile(home?: string): string {
-	return path.join(getPluginsDir(home), "omp-plugins.lock.json");
+	return path.join(getPluginsDir(home), "proto-plugins.lock.json");
 }
 
 /** Get the remote mount directory (~/.omp/remote). */
@@ -605,7 +605,7 @@ export function setWorktreesDir(dir: string | undefined): string | undefined {
  * ignored and resolution falls through.
  */
 export function getWorktreesDir(): string {
-	return resolveWorktreeBase(process.env.OMP_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
+	return resolveWorktreeBase(process.env.PROTO_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
 }
 
 /** Get the SSH control socket directory (~/.omp/ssh-control). */
@@ -676,7 +676,7 @@ export function getGpuCachePath(): string {
  * cache file without touching the rest of the config root.
  */
 export function getGithubCacheDbPath(): string {
-	const override = process.env.OMP_GITHUB_CACHE_DB;
+	const override = process.env.PROTO_GITHUB_CACHE_DB;
 	if (override) return override;
 	return dirs.rootSubdir(path.join("cache", "github-cache.db"), "cache");
 }
@@ -692,7 +692,7 @@ export function getLegacyPiExtensionCacheDbPath(): string {
  * operators can isolate or relocate the cache file.
  */
 export function getAuthBrokerSnapshotCachePath(): string {
-	const override = process.env.OMP_AUTH_BROKER_SNAPSHOT_CACHE;
+	const override = process.env.PROTO_AUTH_BROKER_SNAPSHOT_CACHE;
 	if (override) return override;
 	return dirs.rootSubdir(path.join("cache", "auth-broker-snapshot.enc"), "cache");
 }
@@ -828,7 +828,7 @@ export function getTerminalSessionsDir(agentDir?: string): string {
 
 /** Get the crash log path (~/.omp/agent/omp-crash.log). */
 export function getCrashLogPath(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "omp-crash.log", "state");
+	return dirs.agentSubdir(agentDir, "proto-crash.log", "state");
 }
 
 /** Get the debug log path (~/.omp/agent/omp-debug.log). */

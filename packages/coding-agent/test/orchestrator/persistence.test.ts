@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("orchestrator worker persistence", () => {
 	it("revives a settled worker and preserves a later tombstone", async () => {
-		using tempDir = TempDir.createSync("@omp-orchestrator-persistence-");
+		using tempDir = TempDir.createSync("@proto-orchestrator-persistence-");
 		const cwd = path.join(tempDir.path(), "project");
 		await fs.mkdir(cwd, { recursive: true });
 		const manager = SessionManager.create(cwd, tempDir.path());

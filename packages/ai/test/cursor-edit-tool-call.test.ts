@@ -28,7 +28,7 @@ import { create } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 
 const EDIT_ID = "tool_7aef3020-f275-4579-887c-34106e146f7";
 const ENVELOPE_ID = "call-edit-1";
-const TARGET = "/tmp/omp-cursor-edit-probe/note.txt";
+const TARGET = "/tmp/proto-cursor-edit-probe/note.txt";
 
 function cursorAssistantMessage(): AssistantMessage {
 	return {
@@ -163,7 +163,7 @@ describe("cursor native editToolCall (StrReplace)", () => {
 					role: "toolResult",
 					toolCallId: args.toolCallId,
 					toolName: "read",
-					content: [{ type: "text", text: "Hello from OMP probe.\nThe fruit is apple.\nGoodbye.\n" }],
+					content: [{ type: "text", text: "Hello from PROTO probe.\nThe fruit is apple.\nGoodbye.\n" }],
 					isError: false,
 					timestamp: 1,
 				} satisfies ToolResultMessage;
@@ -201,7 +201,7 @@ describe("cursor native editToolCall (StrReplace)", () => {
 			execWrite({
 				path: TARGET,
 				toolCallId: EDIT_ID,
-				fileText: "Hello from OMP probe.\nThe fruit is orange.\nGoodbye.\n",
+				fileText: "Hello from PROTO probe.\nThe fruit is orange.\nGoodbye.\n",
 			}),
 			output,
 			stream,

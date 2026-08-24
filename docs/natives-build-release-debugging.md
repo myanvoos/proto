@@ -91,7 +91,7 @@ The root module intentionally omits `crate_universe`'s optional rendering lock. 
 # Addon for the current host (x64 hosts pick modern vs baseline via AVX2
 # detection), installed into packages/natives/native/. The host target builds
 # through the local cargo/napi-rs backend by default; set
-# OMP_NATIVE_BUILD_BACKEND=bazel (or pass bazel args after `--`) for bazel:
+# PROTO_NATIVE_BUILD_BACKEND=bazel (or pass bazel args after `--`) for bazel:
 bun --cwd=packages/natives run build          # = bun ../../scripts/bazel-natives.ts host --dest native
 # same, from the repo root:
 bun run build:native
@@ -107,7 +107,7 @@ bazelisk build //:natives-darwin-arm64
 bazelisk build //:natives-linux-all
 ```
 
-The driver builds `host` through the local cargo/napi-rs path (`packages/natives/scripts/build-bindings.ts`) unless bazel is requested via `OMP_NATIVE_BUILD_BACKEND=bazel` or extra bazel args. For explicit targets it runs one `bazel build` for all requested targets, locates outputs via `bazel cquery --output=files` (falling back to the `bazel-bin/natives-<t>/<canonical>.node` path convention), and copies them dereferenced into `--dest` (default `packages/natives/native`). Extra args after `--` go to bazel verbatim. It resolves `bazelisk` (or `bazel`) from `PATH` and honors an `OMP_BAZEL_RC` env var as a `--bazelrc=` startup option (that's how CI injects cache wiring).
+The driver builds `host` through the local cargo/napi-rs path (`packages/natives/scripts/build-bindings.ts`) unless bazel is requested via `PROTO_NATIVE_BUILD_BACKEND=bazel` or extra bazel args. For explicit targets it runs one `bazel build` for all requested targets, locates outputs via `bazel cquery --output=files` (falling back to the `bazel-bin/natives-<t>/<canonical>.node` path convention), and copies them dereferenced into `--dest` (default `packages/natives/native`). Extra args after `--` go to bazel verbatim. It resolves `bazelisk` (or `bazel`) from `PATH` and honors an `PROTO_BAZEL_RC` env var as a `--bazelrc=` startup option (that's how CI injects cache wiring).
 
 Building `linux-all` into one dest would clobber gnu addons with musl ones (shared basenames) — the driver refuses; use separate invocations with separate `--dest` dirs.
 
@@ -168,18 +168,18 @@ No toolchain setup steps are required for native jobs: bazelisk is on the GitHub
 
 ### `bazel-cache` action (`.github/actions/bazel-cache`)
 
-Single source of truth for cache wiring, emitted as a bazelrc fragment (its `rc` output) that consumers pass via `bazelisk --bazelrc=...` or `OMP_BAZEL_RC`. Two modes are selected via `BAZEL_REMOTE_USER`/`BAZEL_REMOTE_PASSWORD`:
+Single source of truth for cache wiring, emitted as a bazelrc fragment (its `rc` output) that consumers pass via `bazelisk --bazelrc=...` or `PROTO_BAZEL_RC`. Two modes are selected via `BAZEL_REMOTE_USER`/`BAZEL_REMOTE_PASSWORD`:
 
 | Runner        | Fragment contents                                                                                                                                                                                            |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | omp-kata pod  | A temporary output root, `--config=ci`, the PVC-backed repository/xwin caches, `--config=cache-rw`, the in-cluster TLS remote-cache endpoint and masked Basic-auth header, plus `--remote_download_toplevel` |
-| GitHub-hosted | `--config=ci`, `--disk_cache=$HOME/.cache/omp-bazel-disk`, and `--repository_cache=$HOME/.cache/omp-bazel-repo`                                                                                              |
+| GitHub-hosted | `--config=ci`, `--disk_cache=$HOME/.cache/proto-bazel-disk`, and `--repository_cache=$HOME/.cache/proto-bazel-repo`                                                                                              |
 
 Hosted disk caches use `bazel-disk-v3-<scope>-<os>-<arch>-<config-hash>-<source-hash>`. The config hash covers Cargo/Bazel/toolchain settings; the source hash covers `crates/**` and root `BUILD.bazel`. Restores fall back from the exact key to the config-scoped prefix, then to a bare `<scope>-<os>-<arch>` prefix — the bare fallback is what keeps release version bumps (which rewrite `Cargo.toml`/`Cargo.lock` and thus the config hash) from rebuilding cold; bazel's content-addressed action keys make a stale archive a partial hit, never a wrong output. An inexact restore permits one refreshed exact-key save. Before a hosted build, disk-cache files untouched for 14 days are pruned; repository-cache contents are deliberately not age-pruned because extracted files retain upstream mtimes. The remote endpoint resolves only inside the cluster.
 
 ### Native artifact actions
 
-`.github/actions/bazel-natives` is the direct builder: `bazel-cache` → `OMP_BAZEL_RC=<rc> bun scripts/bazel-natives.ts <targets> --dest <dest>`, followed by a disk-cache save after a hosted miss. `.github/actions/native-artifacts` is the no-build consumer: download `native-addons` → run the same driver with `--source`.
+`.github/actions/bazel-natives` is the direct builder: `bazel-cache` → `PROTO_BAZEL_RC=<rc> bun scripts/bazel-natives.ts <targets> --dest <dest>`, followed by a disk-cache save after a hosted miss. `.github/actions/native-artifacts` is the no-build consumer: download `native-addons` → run the same driver with `--source`.
 
 ### Release binary builds and publishing
 
@@ -294,7 +294,7 @@ In compiled mode (`PI_COMPILED`, Bun embedded URL markers, or populated embedded
 3. Runtime candidate order includes:
    - extracted versioned cache path, if available,
    - versioned cache dir,
-   - legacy compiled-binary dir (`%LOCALAPPDATA%/omp` on Windows, `~/.local/bin` elsewhere),
+   - legacy compiled-binary dir (`%LOCALAPPDATA%/proto` on Windows, `~/.local/bin` elsewhere),
    - package/executable directories.
 4. First successfully loaded addon with the expected version sentinel is returned.
 
@@ -395,7 +395,7 @@ Anything outside this input set (Bazel definition files such as `MODULE.bazel`/`
 
 ### Layout and ownership
 
-- Root: `/data/cache/pi-natives` (provisioned by `entrypoint.sh` alongside the cargo caches, owned `root:omp`, mode `02770` setgid so cached files inherit `gid=omp` and stay readable by every slot user).
+- Root: `/data/cache/pi-natives` (provisioned by `entrypoint.sh` alongside the cargo caches, owned `root:proto`, mode `02770` setgid so cached files inherit `gid=proto` and stay readable by every slot user).
 - Per-repo subdirectory: `<root>/<repo-slug>/` where the slug is `owner__repo` (mirrors `SandboxManager.pool_path`).
 - Per-entry directory: `<root>/<repo-slug>/<sha256-key>/` containing the cached files plus `manifest.json`.
 - Per-repo lockfile: `<root>/<repo-slug>/.lock` (advisory `fcntl.flock`, exclusive on capture and GC).
@@ -404,7 +404,7 @@ Anything outside this input set (Bazel definition files such as `MODULE.bazel`/`
 ### Populate and capture semantics
 
 - **Populate** (workspace ← cache) runs inside `ensure_workspace`. On a key hit the `.node` is **hardlinked** into the workspace (zero-copy, shared inode); the companion `index.d.ts` / `index.js` / `embedded-addon.js` are **copied** (independent inodes) because the bindings regeneration flow (`build-bindings.ts`'s `installGeneratedBindings` and `gen-enums.ts`) rewrites those files via `open(..., 'w')` — an in-place truncate that would otherwise propagate through a hardlink and corrupt the cache. Cross-device hardlink failures (`EXDEV`) fall back to copy.
-- **Capture** (cache ← workspace) runs from the post-task success path when the build produced a complete artifact set. Capture uses **copy**, not hardlink: hardlinking a slot-owned workspace file would preserve slot UID ownership on the cached inode and defeat the shared-group model. Copying creates a fresh root-owned, `gid=omp` inode via the setgid cache root. Capture is idempotent under the per-repo flock: a concurrent capture for the same key returns the existing entry.
+- **Capture** (cache ← workspace) runs from the post-task success path when the build produced a complete artifact set. Capture uses **copy**, not hardlink: hardlinking a slot-owned workspace file would preserve slot UID ownership on the cached inode and defeat the shared-group model. Copying creates a fresh root-owned, `gid=proto` inode via the setgid cache root. Capture is idempotent under the per-repo flock: a concurrent capture for the same key returns the existing entry.
 
 ### Garbage collection
 
@@ -420,7 +420,7 @@ Workspaces that hardlinked a `.node` before GC retain access via the kernel inod
 | Env var                                     | Default                  | Effect                                                                                              |
 | ------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------- |
 | `ROBOMP_NATIVES_CACHE_ENABLED`              | `true`                   | Master switch. When false the populate/capture hooks no-op and every workspace builds from scratch. |
-| `ROBOMP_NATIVES_CACHE_ROOT`                 | `/data/cache/pi-natives` | Cache root directory. Must be `root:omp 02770` for cross-slot reads.                                |
+| `ROBOMP_NATIVES_CACHE_ROOT`                 | `/data/cache/pi-natives` | Cache root directory. Must be `root:proto 02770` for cross-slot reads.                                |
 | `ROBOMP_NATIVES_CACHE_MAX_ENTRIES_PER_REPO` | `8`                      | LRU entry-count cap, per repo slug.                                                                 |
 | `ROBOMP_NATIVES_CACHE_MAX_BYTES`            | `4294967296` (4 GiB)     | LRU byte cap, per repo slug.                                                                        |
 | `ROBOMP_NATIVES_CACHE_GC_INTERVAL_SECONDS`  | `3600`                   | Period of the background GC loop in `WorkerPool`.                                                   |

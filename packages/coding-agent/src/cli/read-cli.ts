@@ -72,7 +72,7 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 		}
 
 		const tool = wrapToolWithMetaNotice(new ReadTool(session));
-		const result = await tool.execute("omp-read", { path: cmd.path });
+		const result = await tool.execute("proto-read", { path: cmd.path });
 
 		for (const block of result.content) {
 			if (block.type === "text") {

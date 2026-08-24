@@ -91,7 +91,7 @@ class SummaryDividerComponent implements Component {
 /**
  * Compaction point in the transcript, rendered as a slim horizontal divider:
  *
- *   ──────── 📷 remote-compacted · 256K→20K · ctrl+o ────────
+ *   ──────── remote-compacted · 256K→20K · ctrl+o ────────
  *
  * The label names the maintenance method that fired (remote/soft/handoff;
  * "compacted" for legacy or extension-provided entries) and the

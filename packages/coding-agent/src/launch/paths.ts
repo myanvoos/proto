@@ -49,7 +49,7 @@ export async function readDaemonScopeMeta(runtimeDir: string): Promise<string | 
 export function daemonBrokerEndpoint(projectDir: string, runtimeDir: string): string {
 	if (process.platform === "win32") {
 		const key = Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0");
-		return `\\\\.\\pipe\\omp-daemon-${key}`;
+		return `\\\\.\\pipe\\proto-daemon-${key}`;
 	}
 	return path.join(runtimeDir, "broker.sock");
 }

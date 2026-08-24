@@ -102,7 +102,7 @@ function Find-BashShell {
 
 function Configure-BashShell {
     try {
-        $settingsDir = Join-Path $env:USERPROFILE ".omp\agent"
+        $settingsDir = Join-Path $env:USERPROFILE ".proto\agent"
         $settingsFile = Join-Path $settingsDir "settings.json"
 
         # Check if settings.json already has a shellPath configured
@@ -151,7 +151,7 @@ function Configure-BashShell {
             Write-Host "[OK] Configured shell path in $settingsFile" -ForegroundColor Green
         } else {
             Write-Host ""
-            Write-Host "No bash shell found - OMP will use its built-in shell." -ForegroundColor Cyan
+            Write-Host "No bash shell found - PROTO will use its built-in shell." -ForegroundColor Cyan
             Write-Host "  For shell snapshots and interactive terminals, install Git for Windows:" -ForegroundColor Cyan
             Write-Host "    https://git-scm.com/download/win" -ForegroundColor Cyan
             Write-Host "  Or set a custom path in:" -ForegroundColor Cyan

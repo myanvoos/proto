@@ -187,7 +187,7 @@ async function writeSyntheticTree(
 	patches: readonly string[],
 	options: SyntheticTreeOptions = {},
 ): Promise<string> {
-	const tempIndex = path.join(os.tmpdir(), `omp-task-index-${Snowflake.next()}`);
+	const tempIndex = path.join(os.tmpdir(), `proto-task-index-${Snowflake.next()}`);
 	try {
 		await git.readTree(repoDir, baseTreeish, {
 			env: { GIT_INDEX_FILE: tempIndex },
@@ -360,7 +360,7 @@ export async function applyNestedPatches(
 		// commit only the agent delta, not the user's in-flight work.
 		const stashed =
 			(await git.status(nestedDir)).trim().length > 0
-				? await git.stash.push(nestedDir, `omp-isolation-${Snowflake.next()}`)
+				? await git.stash.push(nestedDir, `proto-isolation-${Snowflake.next()}`)
 				: false;
 		try {
 			for (const { patch } of repoPatches) {
@@ -727,7 +727,7 @@ async function replayFilteredAgentCommits(opts: FilteredAgentReplayOptions): Pro
 	const baselineSha = opts.baseline.root.headCommit;
 	await git.branch.create(opts.repoRoot, opts.branchName, baselineSha);
 
-	const tmpDir = path.join(os.tmpdir(), `omp-branch-${Snowflake.next()}`);
+	const tmpDir = path.join(os.tmpdir(), `proto-branch-${Snowflake.next()}`);
 	try {
 		await git.worktree.add(opts.repoRoot, tmpDir, opts.branchName);
 		const agentCommits = await git.revList.range(opts.isolationDir, baselineSha, opts.isolationHead);
@@ -836,7 +836,7 @@ export async function commitToBranch(
 	if (!rootPatch.trim()) return { nestedPatches };
 
 	const repoRoot = baseline.root.repoRoot;
-	const branchName = `omp/task/${taskId}`;
+	const branchName = `proto/task/${taskId}`;
 	const fallbackMessage = description || taskId;
 
 	let branchCreated = false;
@@ -873,7 +873,7 @@ export async function commitToBranch(
 				untrackedPatch: "",
 			});
 			if (leftoverPatch.trim()) {
-				const tmpDir = path.join(os.tmpdir(), `omp-branch-${Snowflake.next()}`);
+				const tmpDir = path.join(os.tmpdir(), `proto-branch-${Snowflake.next()}`);
 				try {
 					await git.worktree.add(repoRoot, tmpDir, branchName);
 					const msg = (commitMessage && (await commitMessage(leftoverPatch))) || fallbackMessage;
@@ -888,7 +888,7 @@ export async function commitToBranch(
 	} else if (rootPatch.trim()) {
 		await git.branch.create(repoRoot, branchName, baselineSha);
 		branchCreated = true;
-		const tmpDir = path.join(os.tmpdir(), `omp-branch-${Snowflake.next()}`);
+		const tmpDir = path.join(os.tmpdir(), `proto-branch-${Snowflake.next()}`);
 		try {
 			await git.worktree.add(repoRoot, tmpDir, branchName);
 
@@ -938,7 +938,7 @@ export async function mergeTaskBranches(
 
 		// Stash dirty working tree so cherry-pick can operate on a clean HEAD.
 		// Without this, cherry-pick refuses to run when uncommitted changes exist.
-		const didStash = await git.stash.push(repoRoot, "omp-worker-merge");
+		const didStash = await git.stash.push(repoRoot, "proto-worker-merge");
 
 		let conflictResult: MergeBranchResult | undefined;
 

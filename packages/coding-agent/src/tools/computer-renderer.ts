@@ -123,7 +123,6 @@ function renderComputerCell(
 			sections,
 			state: isError ? "error" : options.isPartial || !result ? "pending" : "success",
 			borderColor: isError ? "error" : "borderMuted",
-			applyBg: false,
 			width,
 		};
 	});

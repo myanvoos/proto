@@ -332,7 +332,7 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
          - name: Test workspace packages and repo scripts (TS)
            env:
-              OMP_TEST_CONCURRENCY: "4"
+              PROTO_TEST_CONCURRENCY: "4"
            run: |
               bun run ci:test:ts:workspace
               # Not `test:scripts`: scripts/musl-release.test.ts fails on main
@@ -373,7 +373,7 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
          - name: Test native/TUI/browser-ish packages (TS)
            env:
-              OMP_TEST_CONCURRENCY: "4"
+              PROTO_TEST_CONCURRENCY: "4"
            run: bun run ci:test:ts:native
 
    test_coding_agent_ui:
@@ -391,7 +391,7 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
          - name: Test coding-agent UI/TUI bucket
            env:
-              OMP_TEST_CONCURRENCY: "2"
+              PROTO_TEST_CONCURRENCY: "2"
            run: bun run ci:test:coding-agent:ui
 
    test_coding_agent_runtime:
@@ -411,7 +411,7 @@ jobs:
            # Runtime/session tests import native-backed barrels too; keep this
            # separate for concurrency, not as a native-free guardrail.
            env:
-              OMP_TEST_CONCURRENCY: "4"
+              PROTO_TEST_CONCURRENCY: "4"
            run: bun run ci:test:coding-agent:runtime
 
    test_coding_agent_native:
@@ -429,7 +429,7 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
          - name: Test coding-agent native/unit bucket
            env:
-              OMP_TEST_CONCURRENCY: "4"
+              PROTO_TEST_CONCURRENCY: "4"
            run: bun run ci:test:coding-agent:native
 
    test_smoke:
@@ -462,7 +462,7 @@ jobs:
               targets: linux-x64-baseline linux-x64-modern
          - name: Install method smoke tests
            env:
-              OMP_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
+              PROTO_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
            run: bun run ci:test:install-methods
 
    # Aggregates every validation job so publish-side release jobs gate on one
@@ -787,7 +787,7 @@ jobs:
            run: |
               bun run ci:release:checksums SHA256SUMS.txt \
                 packages/coding-agent/binaries/proto-* \
-                packages/browser-relay/dist/omp-browser-relay-extension.zip \
+                packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
          - name: Create GitHub Release
@@ -796,7 +796,7 @@ jobs:
               tag_name: ${{ needs.release_metadata.outputs.release-tag }}
               files: |
                  packages/coding-agent/binaries/proto-*
-                 packages/browser-relay/dist/omp-browser-relay-extension.zip
+                 packages/browser-relay/dist/proto-browser-relay-extension.zip
                  LICENSE
                  THIRD-PARTY-NOTICES.txt
                  SHA256SUMS.txt

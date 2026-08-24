@@ -429,7 +429,7 @@ GitHub Actions cache (once per lockfile change, `linux` scope). GitHub only
 shares caches from the default branch across pull requests, so this export
 is what keeps PR builds warm; kata jobs otherwise skip artifact downloads
 entirely (`--remote_download_toplevel`), and the xwin MSVC splat persists on
-the runner-cache PVC (`OMP_XWIN_CACHE_DIR`).
+the runner-cache PVC (`PROTO_XWIN_CACHE_DIR`).
 
 **(b) Cargo registry cache** - the scale-set pod template mounts only the
 immutable download cache and sparse index at
@@ -492,7 +492,7 @@ kubectl -n arc-runners delete secret sccache-s3
 kubectl delete namespace sccache        # removes RustFS and the rustfs-data PVC
 # then: drop the sccache tcp/9000 rule from runner-egress-lockdown, and remove
 # the sccache-s3 envFrom entry, the native-artifacts subPath mount, and
-# OMP_NATIVE_CACHE_DIR from arc-omp-values.yaml (+ helm upgrade).
+# PROTO_NATIVE_CACHE_DIR from arc-omp-values.yaml (+ helm upgrade).
 ```
 
 ---
@@ -695,7 +695,7 @@ helm install <release> \
 ```
 
 Jobs in the other repo then target `runs-on: <other-repo>-kata`. (On this host a
-convenience wrapper, `omp-add-repo-runner <OWNER>/<REPO> [label]`, performs exactly
+convenience wrapper, `proto-add-repo-runner <OWNER>/<REPO> [label]`, performs exactly
 this install.)
 
 **Uninstall** (leaves k3s/Kata in place):

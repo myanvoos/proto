@@ -15,7 +15,6 @@ import {
 	getContextUsageLevel,
 	getContextUsageThemeColor,
 } from "./context-thresholds";
-import { joinStates } from "./state-grammar";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
 
 export type { SegmentContext } from "./types";
@@ -44,11 +43,20 @@ function clampPathLength(pwd: string, maxLen: number): string {
 /**
  * Leading glyph of a thinking-level display string (e.g. "◉ xhigh" → "◉").
  * Compact mode promotes this glyph to the model-segment icon so the level
- * stays visible without the verbose " · <level>" tail.
+ * stays visible without the verbose effort tail.
  */
 function thinkingGlyph(display: string): string {
 	const space = display.indexOf(" ");
 	return space === -1 ? display : display.slice(0, space);
+}
+
+/**
+ * Chevron prefix for an effort label: one `›` through medium, `»` once the
+ * effort is high or beyond — the count itself signals how hard the model is
+ * pushed.
+ */
+function effortChevrons(level: string): string {
+	return level === "high" || level === "xhigh" || level === "max" ? "»" : "›";
 }
 
 function stripDisplayRoot(pwd: string): string {
@@ -121,9 +129,11 @@ const modelSegment: StatusLineSegment = {
 		}
 
 		let thinkingDisplay = "";
+		let effortLevel = "";
 		if (opts.showThinkingLevel !== false && state.model?.thinking) {
 			const level = state.thinkingLevel ?? ThinkingLevel.Off;
 			if (level !== ThinkingLevel.Off) {
+				effortLevel = level;
 				thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
 			}
 		}
@@ -133,7 +143,7 @@ const modelSegment: StatusLineSegment = {
 
 		let tail = "";
 		if (!compact && thinkingDisplay) {
-			tail += opts.roomy ? ` @${thinkingDisplay}` : `${theme.sep.dot}${thinkingDisplay}`;
+			tail += ` ${effortChevrons(effortLevel)} ${thinkingDisplay}`;
 		}
 
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
@@ -296,7 +306,7 @@ function renderBaseMode(ctx: SegmentContext): string {
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
-		const content = joinStates(renderBaseMode(ctx));
+		const content = renderBaseMode(ctx);
 		if (content === "") return { content: "", visible: false };
 		return { content, visible: true };
 	},
@@ -502,9 +512,8 @@ const contextPctSegment: StatusLineSegment = {
 		const remainingRatio = pct === null || pct === undefined ? 1 : Math.max(0, 100 - pct) / 100;
 		const bar = renderContextBar(remainingRatio, level, Date.now(), ctx.session.isStreaming);
 		const pctText = formatContextRemainingPercent(pct);
-		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.fg(SESSION_ACCENT, theme.icon.auto)}` : "";
 		return {
-			content: `${bar} ${theme.fg(getContextUsageThemeColor(level), pctText)}${autoIcon}`,
+			content: `${bar} ${theme.fg(getContextUsageThemeColor(level), pctText)}`,
 			visible: true,
 		};
 	},

@@ -216,22 +216,22 @@ export const commands: CommandEntry[] = [
 // fires vs. when the argv still falls through to `launch`.
 const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	extensions:
-		'`omp extensions` is not a management command. Use `omp plugin list` / `omp plugin install`, or run `omp launch extensions` if you meant to send "extensions" as a prompt.',
-	list: '`omp list` is not a top-level command. Use `omp plugin list` to list installed plugins, or run `omp launch list` if you meant to send "list" as a prompt.',
+		'`proto extensions` is not a management command. Use `proto plugin list` / `proto plugin install`, or run `proto launch extensions` if you meant to send "extensions" as a prompt.',
+	list: '`proto list` is not a top-level command. Use `proto plugin list` to list installed plugins, or run `proto launch list` if you meant to send "list" as a prompt.',
 	remove:
-		'`omp remove` is not a top-level command. Use `omp plugin uninstall <name>` to remove a plugin, or run `omp launch remove` if you meant to send "remove" as a prompt.',
+		'`proto remove` is not a top-level command. Use `proto plugin uninstall <name>` to remove a plugin, or run `proto launch remove` if you meant to send "remove" as a prompt.',
 	uninstall:
-		'`omp uninstall` is not a top-level command. Use `omp plugin uninstall <name@marketplace>` to remove a plugin, or run `omp launch uninstall` if you meant to send "uninstall" as a prompt.',
+		'`proto uninstall` is not a top-level command. Use `proto plugin uninstall <name@marketplace>` to remove a plugin, or run `proto launch uninstall` if you meant to send "uninstall" as a prompt.',
 	marketplace:
-		'`omp marketplace` is not a top-level command. Use `omp plugin marketplace <add|remove|update|list>` to manage marketplaces, or run `omp launch marketplace` if you meant to send "marketplace" as a prompt.',
+		'`proto marketplace` is not a top-level command. Use `proto plugin marketplace <add|remove|update|list>` to manage marketplaces, or run `proto launch marketplace` if you meant to send "marketplace" as a prompt.',
 	discover:
-		'`omp discover` is not a top-level command. Use `omp plugin discover [marketplace]` to browse available plugins, or run `omp launch discover` if you meant to send "discover" as a prompt.',
+		'`proto discover` is not a top-level command. Use `proto plugin discover [marketplace]` to browse available plugins, or run `proto launch discover` if you meant to send "discover" as a prompt.',
 	upgrade:
-		'`omp upgrade` is not a top-level command. Use `omp plugin upgrade [name@marketplace]` to upgrade plugins, or run `omp launch upgrade` if you meant to send "upgrade" as a prompt.',
+		'`proto upgrade` is not a top-level command. Use `proto plugin upgrade [name@marketplace]` to upgrade plugins, or run `proto launch upgrade` if you meant to send "upgrade" as a prompt.',
 	enable:
-		'`omp enable` is not a top-level command. Use `omp plugin enable <name@marketplace>` to enable a plugin, or run `omp launch enable` if you meant to send "enable" as a prompt.',
+		'`proto enable` is not a top-level command. Use `proto plugin enable <name@marketplace>` to enable a plugin, or run `proto launch enable` if you meant to send "enable" as a prompt.',
 	disable:
-		'`omp disable` is not a top-level command. Use `omp plugin disable <name@marketplace>` to disable a plugin, or run `omp launch disable` if you meant to send "disable" as a prompt.',
+		'`proto disable` is not a top-level command. Use `proto plugin disable <name@marketplace>` to disable a plugin, or run `proto launch disable` if you meant to send "disable" as a prompt.',
 };
 
 // Sub-actions that make `omp marketplace <sub>` unambiguously a management

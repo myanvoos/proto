@@ -58,7 +58,7 @@ setProcessName(BINARY_NAME);
 const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
 
 function formatLicenseOutput(): string {
-	return `OMP License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`;
+	return `PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`;
 }
 
 // Worker-host entry declaration (Worker threads and worker subprocesses
@@ -80,14 +80,14 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 		process.stdout.write(`\n${extra}\n`);
 	}
 }
-const TINY_WORKER_ARG = "__omp_worker_tiny_inference";
-const STATS_SYNC_WORKER_ARG = "__omp_worker_stats_sync";
-const TAB_WORKER_ARG = "__omp_worker_tab";
-const JS_EVAL_WORKER_ARG = "__omp_worker_js_eval";
-const JS_EVAL_PROCESS_ARG = "__omp_worker_js_eval_process";
-const STT_WORKER_ARG = "__omp_worker_stt";
-const TTS_WORKER_ARG = "__omp_worker_tts";
-const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+const TINY_WORKER_ARG = "__proto_worker_tiny_inference";
+const STATS_SYNC_WORKER_ARG = "__proto_worker_stats_sync";
+const TAB_WORKER_ARG = "__proto_worker_tab";
+const JS_EVAL_WORKER_ARG = "__proto_worker_js_eval";
+const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
+const STT_WORKER_ARG = "__proto_worker_stt";
+const TTS_WORKER_ARG = "__proto_worker_tts";
+const MNEMOPI_EMBED_WORKER_ARG = "__proto_worker_mnemopi_embed";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -109,7 +109,7 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 			pending.push(event);
 		};
 		scope.onmessage = buffer;
-		await import("@oh-my-pi/omp-stats/sync-worker");
+		await import("@oh-my-pi/proto-stats/sync-worker");
 		const handler = scope.onmessage;
 		if (handler && handler !== buffer) {
 			for (const event of pending) handler.call(scope, event);
@@ -305,12 +305,12 @@ export async function runCli(argv: string[]): Promise<void> {
 			// validation here turns `OMP_PROFILE=.. omp --version` into a clean error;
 			// calling setProfile keeps every later path helper on the env-selected
 			// profile instead of the default agent directory.
-			setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+			setProfile(resolveProfileEnv(process.env.PROTO_PROFILE, process.env.PI_PROFILE));
 		}
 		if (extracted.aliasName !== undefined) {
 			const profile = extracted.profile ?? getActiveProfile();
 			if (!profile) {
-				throw new Error("--alias requires --profile <name> or OMP_PROFILE");
+				throw new Error("--alias requires --profile <name> or PROTO_PROFILE");
 			}
 			const result = await installProfileAlias({
 				profile,

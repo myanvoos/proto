@@ -225,9 +225,9 @@ chrome.tabs.onUpdated.addListener((_tabId, _changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   post({ t: "tabRemoved", tabId });
 });
-chrome.alarms.create("omp-relay-keepalive", { periodInMinutes: 0.5 });
+chrome.alarms.create("proto-relay-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "omp-relay-keepalive")
+  if (alarm.name === "proto-relay-keepalive")
     connect();
 });
 chrome.storage.onChanged.addListener((_changes, areaName) => {

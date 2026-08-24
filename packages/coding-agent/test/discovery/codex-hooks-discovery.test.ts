@@ -24,8 +24,8 @@ describe("codex hook discovery", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		originalHome = process.env.HOME;
-		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-codex-hooks-home-"));
-		tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-codex-hooks-cwd-"));
+		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-codex-hooks-home-"));
+		tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-codex-hooks-cwd-"));
 		process.env.HOME = tempHome;
 		vi.spyOn(os, "homedir").mockReturnValue(tempHome);
 		const settings = await Settings.init({ inMemory: true, cwd: tempCwd });

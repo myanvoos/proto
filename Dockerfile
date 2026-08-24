@@ -39,7 +39,7 @@ ARG BUN_VERSION
 ENV BUN_INSTALL=/opt/bun \
     PATH=/opt/bun/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
     CARGO_TERM_COLOR=never \
-    OMP_NATIVE_CARGO_PROFILE=ci
+    PROTO_NATIVE_CARGO_PROFILE=ci
 
 # clang/libclang-dev: bindgen for pipewire-sys/libspa-sys (Linux desktop capture);
 # cmake/make/ninja-build: audiopus_sys builds bundled libopus via CMake.
@@ -104,7 +104,7 @@ RUN apt-get update \
 RUN pip install --upgrade pip build
 
 WORKDIR /src
-COPY python/omp-rpc /src
+COPY python/proto-rpc /src
 RUN python -m build --wheel --outdir /out
 
 ############################
@@ -153,10 +153,10 @@ COPY --from=natives-builder /out/pi_natives.linux-*.node /opt/bun/bin/
 
 # omp-rpc Python wheel.
 COPY --from=wheel-builder /out/*.whl /tmp/wheels/
-RUN pip install /tmp/wheels/omp_rpc-*.whl && rm -rf /tmp/wheels
+RUN pip install /tmp/wheels/proto_rpc-*.whl && rm -rf /tmp/wheels
 
 # Legal payload for the reusable SDKs and the OMP product installed in this image.
-COPY LICENSE  THIRD-PARTY-NOTICES.txt /usr/share/doc/omp/
+COPY LICENSE  THIRD-PARTY-NOTICES.txt /usr/share/doc/proto/
 
 # `omp` shim — runs the coding-agent CLI against $PI_ROOT via Bun. Derived
 # images override PI_ROOT to point at wherever their pi source lives.
@@ -169,8 +169,8 @@ RUN printf '%s\n' \
     '  exit 127' \
     'fi' \
     'exec bun "$PI_ROOT/packages/coding-agent/src/cli.ts" "$@"' \
-    > /usr/local/bin/omp \
-    && chmod +x /usr/local/bin/omp
+    > /usr/local/bin/proto \
+    && chmod +x /usr/local/bin/proto
 
 ############################
 # 4) pi-runtime — pi-base + pi source + bun install (DEFAULT)
@@ -205,5 +205,5 @@ COPY . /pi/
 # package.json's `prepare` script normally handles these on a vanilla install.
 RUN bun --cwd=packages/coding-agent run gen:tool-views
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omp"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/proto"]
 CMD ["--help"]

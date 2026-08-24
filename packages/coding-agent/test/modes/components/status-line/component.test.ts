@@ -82,4 +82,18 @@ describe("StatusLineComponent", () => {
 		// SGR codes might be included, so we check if the stripped content contains "Prewalk"
 		expect(stripAnsi(line ?? "")).toContain("Prewalk");
 	});
+
+	it("omits the subagent badge at zero and shows the count once one runs", () => {
+		const statusLine = new StatusLineComponent(makeSessionWithLastMessage(null) as unknown as AgentSession);
+		const quiet = () => stripAnsi(statusLine.renderQuietLine(200) ?? "");
+
+		statusLine.setSubagentCount(0);
+		const idle = quiet();
+		// Regression: a bare "0" used to leak into every footline via an
+		// always-rendered badge slot.
+		expect(idle.split(/\s+/)).not.toContain("0");
+
+		statusLine.setSubagentCount(2);
+		expect(quiet()).toContain("2");
+	});
 });

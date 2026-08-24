@@ -50,7 +50,7 @@ describe("SessionManager.continueRecent relocation", () => {
 	beforeEach(async () => {
 		// Force a deterministic, non-TTY terminal id so breadcrumb read/write is stable.
 		process.env.TMUX_PANE = "%relocation-test";
-		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-reloc-test-"));
+		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-reloc-test-"));
 		setAgentDir(testAgentDir);
 		cwdA = path.join(testAgentDir, "worktree-old");
 		cwdB = path.join(testAgentDir, "worktree-new");

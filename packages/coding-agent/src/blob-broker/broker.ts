@@ -128,7 +128,7 @@ export class LocalBlobBackend implements BlobBackend {
 				hostname: this.#config.bindHost,
 				port: 0,
 				fetch: request => {
-					if (new URL(request.url).pathname === "/.well-known/omp-blob-health") {
+					if (new URL(request.url).pathname === "/.well-known/proto-blob-health") {
 						return new Response(null, { status: 204 });
 					}
 					return this.#store.serve(request);

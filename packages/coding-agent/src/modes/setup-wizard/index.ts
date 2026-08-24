@@ -1,7 +1,6 @@
 import type { Settings } from "../../config/settings";
 import { CURRENT_SETUP_VERSION } from "../setup-version";
 import type { InteractiveModeContext } from "../types";
-import { composerSetupScene } from "./scenes/composer";
 import { modelSetupScene } from "./scenes/model";
 import { providersSetupScene } from "./scenes/providers";
 import { themeSetupScene } from "./scenes/theme";
@@ -15,7 +14,6 @@ export { CURRENT_SETUP_VERSION };
 export const ALL_SCENES = [
 	providersSetupScene,
 	modelSetupScene,
-	composerSetupScene,
 	themeSetupScene,
 ] as const satisfies readonly SetupScene[];
 
@@ -43,7 +41,7 @@ export async function selectSetupScenes(
 	if (!isTTY) return [];
 	if (!options.force) {
 		if (options.resuming) return [];
-		if (setupSkipEnvEnabled(options.skipEnv ?? Bun.env.OMP_SKIP_SETUP)) return [];
+		if (setupSkipEnvEnabled(options.skipEnv ?? Bun.env.PROTO_SKIP_SETUP)) return [];
 		if (options.setupWizardEnabled === false) return [];
 	}
 

@@ -142,7 +142,7 @@ Startup `--fork` is resolved before normal session creation:
 4. The forked file is created in the current cwd/session-dir scope and becomes the active session manager for startup.
 5. Full-context forks automatically seed `providerPromptCacheKey` from the source header's inherited key, falling back to the source session id. Startup drops that automatic inheritance when `--model`, `--thinking`, `--system-prompt`, `--append-system-prompt`, `--tools`, or `--no-tools` changes the provider route or prompt/tool shape.
 
-Use `--prompt-cache-key <key>` to pin the provider prompt-cache identity explicitly and independently from both the OMP session id and `--provider-session-id`. `--provider-session-id` continues to control provider session/routing headers and sticky credential selection; `--prompt-cache-key` controls the OpenAI Responses `prompt_cache_key` payload where supported.
+Use `--prompt-cache-key <key>` to pin the provider prompt-cache identity explicitly and independently from both the PROTO session id and `--provider-session-id`. `--provider-session-id` continues to control provider session/routing headers and sticky credential selection; `--prompt-cache-key` controls the OpenAI Responses `prompt_cache_key` payload where supported.
 
 ## Resume and continue
 
@@ -158,7 +158,7 @@ Without an argument:
 With an argument:
 
 - `/resume <id>` resolves an id/filename prefix with local-first, then global fallback and switches directly to the matched file; an unknown value reports `Session "<value>" not found`.
-- `/resume @claude` and `/resume @codex` open a foreign-session picker. Selecting one converts and persists it under a fresh OMP session identity, then switches to that new session.
+- `/resume @claude` and `/resume @codex` open a foreign-session picker. Selecting one converts and persists it under a fresh PROTO session identity, then switches to that new session.
 
 ## CLI `--resume`
 

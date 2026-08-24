@@ -9,7 +9,7 @@ import { createSignal } from "solid-js";
 export type SystemTheme = "light" | "dark";
 export type ThemePreference = "system" | "light" | "dark";
 
-export const STORAGE_KEY = "omp-robomp-theme";
+export const STORAGE_KEY = "proto-robomp-theme";
 const DARK_SCHEME_QUERY = "(prefers-color-scheme: dark)";
 
 function readStoredPreference(): ThemePreference {

@@ -32,7 +32,7 @@ describe("print mode + plan.defaultOnStartup (#8272)", () => {
 	const holder: { session?: AgentSession } = {};
 
 	beforeEach(async () => {
-		tempDir = path.join(os.tmpdir(), `omp-8272-${Snowflake.next()}`);
+		tempDir = path.join(os.tmpdir(), `proto-8272-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		stdoutOutput = [];
 		vi.spyOn(process.stdout, "write").mockImplementation((...args: unknown[]) => {

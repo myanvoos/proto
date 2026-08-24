@@ -9,7 +9,7 @@ const tempDirs: TempDir[] = [];
 
 async function runProbe(cacheRoot: string): Promise<string> {
 	const env: Record<string, string | undefined> = { ...process.env, XDG_CACHE_HOME: cacheRoot };
-	for (const key of ["PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR"]) {
+	for (const key of ["PI_CODING_AGENT_DIR", "PROTO_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR"]) {
 		delete env[key];
 	}
 	const proc = Bun.spawn([process.execPath, probePath], {
@@ -35,11 +35,11 @@ test("legacy extension analysis persists and reads its SQLite parse cache", asyn
 	const tempDir = TempDir.createSync("@legacy-pi-extension-cache-");
 	tempDirs.push(tempDir);
 	const cacheRoot = tempDir.path();
-	await fs.mkdir(path.join(cacheRoot, "omp"), { recursive: true });
+	await fs.mkdir(path.join(cacheRoot, "proto"), { recursive: true });
 
 	expect(await runProbe(cacheRoot)).toBe('import value from "./dependency.js?mtime=7";\n');
 
-	const cachePath = path.join(cacheRoot, "omp", "cache", "legacy-pi-extension-cache.db");
+	const cachePath = path.join(cacheRoot, "proto", "cache", "legacy-pi-extension-cache.db");
 	const db = new Database(cachePath);
 	const result = db.run(
 		"UPDATE extension_parse_cache SET [references] = '[]' WHERE [references] LIKE '%dependency.js%'",

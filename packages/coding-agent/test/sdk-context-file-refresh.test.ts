@@ -50,7 +50,7 @@ async function createContextSession(
 
 describe("context-file prompt refresh", () => {
 	it("replaces edited context-file content in the current system prompt", async () => {
-		using tempDir = TempDir.createSync("@omp-context-refresh-edit-");
+		using tempDir = TempDir.createSync("@proto-context-refresh-edit-");
 		const contextPath = tempDir.join("AGENTS.md");
 		await Bun.write(contextPath, INITIAL_CONTEXT);
 		const { session, authStorage } = await createContextSession(tempDir.path(), Settings.isolated({}));
@@ -71,7 +71,7 @@ describe("context-file prompt refresh", () => {
 	});
 
 	it("removes a disabled context file from the current system prompt", async () => {
-		using tempDir = TempDir.createSync("@omp-context-refresh-disable-");
+		using tempDir = TempDir.createSync("@proto-context-refresh-disable-");
 		await Bun.write(tempDir.join("AGENTS.md"), INITIAL_CONTEXT);
 		const settings = Settings.isolated({});
 		const { session, authStorage } = await createContextSession(tempDir.path(), settings);
@@ -90,7 +90,7 @@ describe("context-file prompt refresh", () => {
 	});
 
 	it("honors the session's own disabledExtensions, not the process-global settings", async () => {
-		using tempDir = TempDir.createSync("@omp-context-refresh-isolation-");
+		using tempDir = TempDir.createSync("@proto-context-refresh-isolation-");
 		await Bun.write(tempDir.join("AGENTS.md"), INITIAL_CONTEXT);
 		const settings = Settings.isolated({});
 		const { session, authStorage } = await createContextSession(tempDir.path(), settings);
@@ -114,7 +114,7 @@ describe("context-file prompt refresh", () => {
 	});
 
 	it("refreshes the advisor context prompt when context files change", async () => {
-		using tempDir = TempDir.createSync("@omp-context-refresh-advisor-");
+		using tempDir = TempDir.createSync("@proto-context-refresh-advisor-");
 		const contextPath = tempDir.join("AGENTS.md");
 		await Bun.write(contextPath, INITIAL_CONTEXT);
 		const { session, authStorage } = await createContextSession(tempDir.path(), Settings.isolated({}), {
@@ -139,7 +139,7 @@ describe("context-file prompt refresh", () => {
 	});
 
 	it("recomputes active repo context after the session cwd changes", async () => {
-		using tempDir = TempDir.createSync("@omp-context-refresh-cwd-");
+		using tempDir = TempDir.createSync("@proto-context-refresh-cwd-");
 		const cwdA = tempDir.join("cwd-a");
 		const cwdB = tempDir.join("cwd-b");
 		fs.mkdirSync(path.join(cwdA, "old-repo", ".git"), { recursive: true });

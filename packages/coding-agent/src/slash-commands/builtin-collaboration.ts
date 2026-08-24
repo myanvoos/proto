@@ -9,7 +9,6 @@ import type { SlashCommandSpec } from "./types";
 export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "advisor",
-		icon: "advisor",
 		description: "Toggle the advisor (a second model that reviews each turn and injects notes)",
 		acpDescription: "Toggle advisor",
 		acpInputHint: "[on|off|status|configure]",
@@ -113,7 +112,6 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "browser",
-		icon: "globe",
 		description: "Toggle browser headless vs visible mode",
 		acpInputHint: "[headless|visible]",
 		subcommands: [
@@ -189,7 +187,6 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "copy",
-		icon: "copy",
 		description: "Pick text or code from the conversation to copy",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {

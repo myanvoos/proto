@@ -24,29 +24,29 @@ describe("issue-845: resolveUpdateMethod follows symlinks/junctions", () => {
 	let ompPathViaLink: string;
 
 	beforeAll(() => {
-		tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-issue-845-"));
+		tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "proto-issue-845-"));
 		realBinDir = path.join(tmpRoot, "real", "bin");
 		fs.mkdirSync(realBinDir, { recursive: true });
-		fs.writeFileSync(path.join(realBinDir, "omp"), "#!/bin/sh\n", { mode: 0o755 });
+		fs.writeFileSync(path.join(realBinDir, "proto"), "#!/bin/sh\n", { mode: 0o755 });
 
 		linkedBinDir = path.join(tmpRoot, "link-bin");
 		fs.symlinkSync(realBinDir, linkedBinDir, "dir");
-		ompPathViaLink = path.join(linkedBinDir, "omp");
+		ompPathViaLink = path.join(linkedBinDir, "proto");
 	});
 
 	afterAll(() => {
 		removeSyncWithRetries(tmpRoot);
 	});
 
-	it("classifies omp reached through a symlinked bin dir as bun-managed", () => {
+	it("classifies proto reached through a symlinked bin dir as bun-managed", () => {
 		// $which resolves through the symlink, `bun pm bin -g` returns the real path
 		// (or vice versa). Either direction must be recognized.
 		const method = resolveUpdateMethodForTest(ompPathViaLink, realBinDir);
 		expect(method).toBe("bun");
 	});
 
-	it("classifies omp at the real bin dir as bun-managed when bunBinDir is symlinked", () => {
-		const ompAtReal = path.join(realBinDir, "omp");
+	it("classifies proto at the real bin dir as bun-managed when bunBinDir is symlinked", () => {
+		const ompAtReal = path.join(realBinDir, "proto");
 		const method = resolveUpdateMethodForTest(ompAtReal, linkedBinDir);
 		expect(method).toBe("bun");
 	});

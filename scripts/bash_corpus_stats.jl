@@ -10,7 +10,7 @@
 using SQLite, JSON3, DBInterface, Printf
 
 # ─────────────────────────── extraction ───────────────────────────
-const DB = SQLite.DB(joinpath(homedir(), ".omp", "stats.db"))
+const DB = SQLite.DB(joinpath(homedir(), ".proto", "stats.db"))
 
 field(j, k) = try
     v = get(JSON3.read(j), k, nothing); v isa AbstractString ? String(v) : nothing

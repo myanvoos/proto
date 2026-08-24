@@ -4,12 +4,12 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 it("imports the CLI entry graph without loading dotenv before profile bootstrap", async () => {
-	using tempDir = TempDir.createSync("@omp-js-process-import-");
-	await Bun.write(path.join(tempDir.path(), ".env"), "OMP_PROCESS_ENTRY_ENV_PROBE=loaded-too-early\n");
+	using tempDir = TempDir.createSync("@proto-js-process-import-");
+	await Bun.write(path.join(tempDir.path(), ".env"), "PROTO_PROCESS_ENTRY_ENV_PROBE=loaded-too-early\n");
 	const env = Object.fromEntries(
 		Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
 	);
-	delete env.OMP_PROCESS_ENTRY_ENV_PROBE;
+	delete env.PROTO_PROCESS_ENTRY_ENV_PROBE;
 	env.HOME = tempDir.path();
 	const fixture = path.resolve(import.meta.dir, "../fixtures/js-process-entry-import.ts");
 	const proc = Bun.spawn([process.execPath, fixture], {
@@ -30,7 +30,7 @@ it("imports the CLI entry graph without loading dotenv before profile bootstrap"
 async function pingComputerWorker(
 	entry: string,
 	id: string,
-	argv: string[] = ["__omp_worker_computer"],
+	argv: string[] = ["__proto_worker_computer"],
 ): Promise<unknown> {
 	const worker = new Worker(entry, {
 		type: "module",
@@ -110,7 +110,7 @@ it("dispatches the computer worker from a single npm-style host bundle", async (
 });
 
 it("keeps non-computer selectors isolated in a compiled single-entry worker host", async () => {
-	using tempDir = TempDir.createSync("@omp-compiled-worker-selector-");
+	using tempDir = TempDir.createSync("@proto-compiled-worker-selector-");
 	const packageDir = path.resolve(import.meta.dir, "../..");
 	const outfile = path.join(tempDir.path(), process.platform === "win32" ? "worker-host.exe" : "worker-host");
 	const build = Bun.spawn(

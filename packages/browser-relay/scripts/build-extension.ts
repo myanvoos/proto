@@ -41,7 +41,7 @@ for (const file of ["LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
 	await Bun.write(path.join(distExtension, file), Bun.file(path.join(repoRoot, file)));
 }
 
-const zip = await $`zip -qr ../omp-browser-relay-extension.zip .`.cwd(distExtension).nothrow();
+const zip = await $`zip -qr ../proto-browser-relay-extension.zip .`.cwd(distExtension).nothrow();
 if (zip.exitCode !== 0) {
 	console.error("zip failed:", zip.stderr.toString());
 	process.exit(1);
@@ -62,5 +62,5 @@ for (const [source, destination] of embeddedAssets) {
 
 console.log("built:");
 console.log(`  ${distExtension}`);
-console.log(`  ${path.join(dist, "omp-browser-relay-extension.zip")}`);
+console.log(`  ${path.join(dist, "proto-browser-relay-extension.zip")}`);
 console.log(`  ${assetsDir} (embedded CLI assets — commit these)`);

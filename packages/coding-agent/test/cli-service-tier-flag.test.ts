@@ -70,7 +70,7 @@ describe("--service-tier", () => {
 	});
 
 	it("persists a resumed OpenAI override without changing other families", async () => {
-		using tempDir = TempDir.createSync("@omp-service-tier-resume-");
+		using tempDir = TempDir.createSync("@proto-service-tier-resume-");
 		const authStorage = await AuthStorage.create(":memory:");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
 		const seededManager = await SessionManager.open(sessionFile, tempDir.path());

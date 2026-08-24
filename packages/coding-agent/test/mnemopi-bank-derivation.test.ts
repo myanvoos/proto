@@ -60,7 +60,7 @@ describe("computeMnemopiBankScope (#2412)", () => {
 	it("returns the same per-project bank for one cwd regardless of git state", async () => {
 		const baseDir = await TempDir.create("@mnemopi-stable-bank-");
 		try {
-			const project = baseDir.join("projects", "omp-workstation");
+			const project = baseDir.join("projects", "proto-workstation");
 			await fs.mkdir(project, { recursive: true });
 			const withoutGit = computeMnemopiBankScope(undefined, project, "per-project").bank;
 

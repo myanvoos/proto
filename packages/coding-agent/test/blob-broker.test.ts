@@ -170,7 +170,7 @@ describe("BlobRegistry lazy blobs", () => {
 describe("BlobRegistry persistence", () => {
 	let persistSeq = 0;
 	function makePersist(ttlMs: number): BlobPersistence {
-		const dir = path.join(os.tmpdir(), `omp-blob-registry-${process.pid}-${persistSeq++}`);
+		const dir = path.join(os.tmpdir(), `proto-blob-registry-${process.pid}-${persistSeq++}`);
 		fs.mkdirSync(dir, { recursive: true });
 		cleanups.push(() => void fs.promises.rm(dir, { recursive: true, force: true }));
 		return { blobsDir: dir, indexPath: path.join(dir, "urls-index.json"), ttlMs };
@@ -310,7 +310,7 @@ describe("uploaders", () => {
 	});
 
 	it("runs a command uploader end to end against a stub binary", async () => {
-		const stub = path.join(os.tmpdir(), `omp-test-uploader-${process.pid}.sh`);
+		const stub = path.join(os.tmpdir(), `proto-test-uploader-${process.pid}.sh`);
 		await Bun.write(
 			stub,
 			`#!/bin/sh\ntest -s "$2" || exit 3\necho "uploaded $2"\necho "https://files.example/abc.$3"\n`,

@@ -31,25 +31,26 @@ const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAN
  * Component that renders a user message
  */
 export class UserMessageComponent extends Container {
-	// Memoized OSC 133 zone wrapping keyed on the underlying container render
-	// (same source ref ⇒ identical rows ⇒ reuse the wrapped copy). Keeps this
-	// component reference-stable for the transcript's incremental assembly and
-	// never mutates the container's cached array.
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
+	#working = false;
+	#version = 0;
+
+	setWorking(working: boolean): void {
+		if (this.#working === working) return;
+		this.#working = working;
+		this.#version++;
+		this.#zoneSource = undefined;
+		this.#zoneLines = undefined;
+	}
+
+	getTranscriptBlockVersion(): number {
+		return this.#version;
+	}
 
 	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
 		super();
-		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
-		// but the transcript shows the same compact `<icon> #N` chip the composer used. Runs before
-		// Markdown layout so wrapping and bubble padding are computed on the visible text.
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
-		const bgColor = (value: string) => theme.bg("userMessageBg", value);
-		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
-		// bubble too — matching the live editor glow. The Markdown component routes code spans and
-		// fenced blocks through its own code styling (never `color`), so those are already excluded;
-		// `highlightMagicKeywords` additionally restores the bubble's own foreground after each
-		// painted keyword so the gradient never bleeds into the rest of the line.
 		const keywordReset = theme.getFgAnsi("userMessageText") || "\x1b[39m";
 		const baseText = synthetic
 			? (value: string) => theme.fg("dim", value)
@@ -58,8 +59,6 @@ export class UserMessageComponent extends Container {
 			renderPlaceholders(value, {
 				renderText: baseText,
 				renderReference: (label, kind, index, form) => {
-					// Chip tokens keep their composer identity color; the bubble's own
-					// foreground resumes after the token (same pattern as keywords).
 					const styled =
 						form === "chip"
 							? `${attachmentSgr(kind, index)}\x1b[1m${label}\x1b[22m${keywordReset}`
@@ -67,8 +66,7 @@ export class UserMessageComponent extends Container {
 					return kind === "image" ? imageReferenceHyperlink(label, index, imageLinks, () => styled) : styled;
 				},
 			});
-		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
-			bgColor,
+		const md = new Markdown(text, 0, 1, getMarkdownTheme(), {
 			color,
 		});
 		md.setIgnoreTight(true);
@@ -76,16 +74,24 @@ export class UserMessageComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		const lines = super.render(width);
+		const lines = super.render(Math.max(1, width - 4));
 		if (lines.length === 0) {
 			return lines;
 		}
 		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {
 			return this.#zoneLines;
 		}
-		const wrapped = lines.slice();
-		wrapped[0] = OSC133_ZONE_START + wrapped[0];
-		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
+		const gutter = `  ${theme.fg(this.#working ? "borderAccent" : "dim", "›")} `;
+		let gutterPlaced = false;
+		const wrapped = lines.map(line => {
+			if (!gutterPlaced && Bun.stripANSI(line).trim().length > 0) {
+				gutterPlaced = true;
+				return gutter + line;
+			}
+			return line.length > 0 ? `    ${line}` : line;
+		});
+		wrapped[0] = OSC133_ZONE_START + wrapped[0]!;
+		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1]! + OSC133_ZONE_CLOSE;
 		this.#zoneSource = lines;
 		this.#zoneLines = wrapped;
 		return wrapped;

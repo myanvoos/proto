@@ -79,21 +79,21 @@ describe("inspect_image.enabled migration", () => {
 		});
 
 		test("flat inspect_image.enabled migrates to mode", async () => {
-			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-vision-migration-"));
+			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-vision-migration-"));
 			fs.writeFileSync(path.join(agentDir, "config.yml"), '"inspect_image.enabled": true\n');
 			const settings = await Settings.loadReadOnly({ agentDir, cwd: agentDir });
 			expect(settings.get("inspect_image.mode")).toBe("on");
 		});
 
 		test("nested inspect_image.enabled in config.yml migrates to mode", async () => {
-			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-vision-migration-"));
+			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-vision-migration-"));
 			fs.writeFileSync(path.join(agentDir, "config.yml"), "inspect_image:\n  enabled: false\n");
 			const settings = await Settings.loadReadOnly({ agentDir, cwd: agentDir });
 			expect(settings.get("inspect_image.mode")).toBe("off");
 		});
 
 		test("flat explicit mode survives alongside a flat legacy key", async () => {
-			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-vision-migration-"));
+			agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-vision-migration-"));
 			fs.writeFileSync(
 				path.join(agentDir, "config.yml"),
 				'"inspect_image.enabled": true\n"inspect_image.mode": "off"\n',

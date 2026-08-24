@@ -35,7 +35,7 @@ describe("ModelRegistry", () => {
 	let registry: ModelRegistry;
 
 	beforeEach(() => {
-		tmpDir = mkdtempSync(path.join(os.tmpdir(), "omp-reg-"));
+		tmpDir = mkdtempSync(path.join(os.tmpdir(), "proto-reg-"));
 		// Construct with an explicit modelsPath inside the temp dir so the
 		// constructor's #loadModels read returns "not-found" rather than
 		// touching the host's ~/.omp/agent/models.yaml. isBunTestRuntime()

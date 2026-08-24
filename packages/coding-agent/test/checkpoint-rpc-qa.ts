@@ -34,7 +34,7 @@ function getLastAssistant(messages: AgentMessage[]): Extract<AgentMessage, { rol
 }
 
 async function main() {
-	const sessionDir = path.join(os.tmpdir(), `omp-checkpoint-rpc-qa-${Date.now()}`);
+	const sessionDir = path.join(os.tmpdir(), `proto-checkpoint-rpc-qa-${Date.now()}`);
 	const projectRoot = path.join(import.meta.dir, "..");
 	const client = new RpcClient({
 		cliPath: path.join(projectRoot, "src/cli.ts"),

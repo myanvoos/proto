@@ -555,7 +555,7 @@ export interface ReadToolDetails {
 		lineNumbers?: Array<number | null>;
 	};
 	summary?: { lines: number; elidedSpans: number; elidedLines: number };
-	/** Number of unresolved git conflicts surfaced by this read (TUI uses for inline `⚠ N` badge). */
+	/** Number of unresolved git conflicts surfaced by this read (TUI uses for inline warning badge). */
 	conflictCount?: number;
 	/** Paths recovered from a delimited read argument; used only by the TUI to render one call as multiple read rows. */
 	displayReadTargets?: string[];

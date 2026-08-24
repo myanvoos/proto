@@ -26,7 +26,7 @@ afterAll(async () => {
 });
 
 async function writeFixtureExtension(source: string): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-typebox-remap-"));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-typebox-remap-"));
 	tempRoots.push(dir);
 	const entry = path.join(dir, "index.ts");
 	await fs.writeFile(entry, source, "utf8");

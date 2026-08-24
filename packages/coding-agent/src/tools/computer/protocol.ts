@@ -2,7 +2,7 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
 
 /** Hidden CLI selector that re-enters the computer worker host. */
-export const COMPUTER_WORKER_ARG = "__omp_worker_computer";
+export const COMPUTER_WORKER_ARG = "__proto_worker_computer";
 
 /** Frozen run settings transferred from the tool session to the worker. */
 export interface ComputerSessionSnapshot {

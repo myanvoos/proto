@@ -168,7 +168,7 @@ describe("structured subagent primitive", () => {
 		expect(discover).not.toHaveBeenCalled();
 	});
 	it("reloads model roles before resolving an agent added during the session", async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-task-hot-reload-"));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-task-hot-reload-"));
 		const projectDir = path.join(root, "project");
 		const agentDir = path.join(root, "agent");
 		await fs.mkdir(projectDir, { recursive: true });
@@ -180,9 +180,12 @@ describe("structured subagent primitive", () => {
 		} as ToolSession;
 
 		try {
-			await Bun.write(path.join(projectDir, ".omp", "config.yml"), "modelRoles:\n  hot_worker: kimi-code/k3:max\n");
 			await Bun.write(
-				path.join(projectDir, ".omp", "agents", "hot-worker.md"),
+				path.join(projectDir, ".proto", "config.yml"),
+				"modelRoles:\n  hot_worker: kimi-code/k3:max\n",
+			);
+			await Bun.write(
+				path.join(projectDir, ".proto", "agents", "hot-worker.md"),
 				'---\nname: hot-worker\ndescription: Newly added worker.\nmodel: "@hot_worker"\n---\n\nInspect the assignment.\n',
 			);
 
@@ -348,7 +351,7 @@ describe("structured subagent primitive", () => {
 			mode: "permissive",
 			data: { ok: true },
 		});
-		expect(path.basename(settled.artifactsDir)).toStartWith("omp-worker-");
+		expect(path.basename(settled.artifactsDir)).toStartWith("proto-worker-");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 	it("uses identical non-plan LSP and IRC policy for task and eval invocations", async () => {
@@ -407,10 +410,10 @@ describe("structured subagent primitive", () => {
 	});
 
 	it("persists nested patch text with the compatible recovery path and wording", async () => {
-		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-structured-subagent-"));
+		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-structured-subagent-"));
 		const completed = result();
 		completed.patchPath = "/recovery/Worker.patch";
-		completed.branchName = "omp/task/Worker";
+		completed.branchName = "proto/task/Worker";
 		completed.nestedPatches = [{ relativePath: "sub/nested", patch: "diff --git a/file b/file\n" }];
 
 		const hint = await buildStructuredSubagentRecoveryHint(completed, artifactsDir);
@@ -418,7 +421,7 @@ describe("structured subagent primitive", () => {
 
 		expect(hint).toContain("Captured patch preserved at /recovery/Worker.patch.");
 		expect(hint).toContain(`Captured nested patch preserved at ${nestedPath}.`);
-		expect(hint).toContain("Captured branch preserved as omp/task/Worker.");
+		expect(hint).toContain("Captured branch preserved as proto/task/Worker.");
 		expect(await fs.readFile(nestedPath, "utf8")).toBe("diff --git a/file b/file\n");
 		await fs.rm(artifactsDir, { recursive: true, force: true });
 	});

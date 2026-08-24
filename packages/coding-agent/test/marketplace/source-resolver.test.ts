@@ -18,7 +18,7 @@ describe("resolvePluginSource", () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-src-res-test-"));
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-src-res-test-"));
 	});
 
 	afterEach(() => {

@@ -13,7 +13,7 @@ describe("session-pins", () => {
 	let tempDir: string;
 
 	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-session-pins-test-"));
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-session-pins-test-"));
 	});
 
 	afterEach(async () => {

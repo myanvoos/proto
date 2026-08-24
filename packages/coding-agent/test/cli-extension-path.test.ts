@@ -21,9 +21,13 @@ describe("parseArgs — Windows extension paths", () => {
 
 describe("parseArgs — trusted extension allowlist", () => {
 	it("accepts repeatable native absolute paths", () => {
-		const parsed = parseArgs(["--trusted-extension", "/opt/omp/policy.ts", "--trusted-extension=/opt/omp/audit.ts"]);
+		const parsed = parseArgs([
+			"--trusted-extension",
+			"/opt/proto/policy.ts",
+			"--trusted-extension=/opt/proto/audit.ts",
+		]);
 
-		expect(parsed.trustedExtensions).toEqual(["/opt/omp/policy.ts", "/opt/omp/audit.ts"]);
+		expect(parsed.trustedExtensions).toEqual(["/opt/proto/policy.ts", "/opt/proto/audit.ts"]);
 	});
 
 	it("ignores trusted-looking tokens outside trusted flag dispatch", () => {
@@ -35,10 +39,10 @@ describe("parseArgs — trusted extension allowlist", () => {
 		expect(() => parseArgs(["--trusted-extension"])).toThrow(/requires a non-empty/);
 		expect(() => parseArgs(["--trusted-extension="])).toThrow(/requires a non-empty/);
 		expect(() => parseArgs(["--trusted-extension", "relative.ts"])).toThrow(/absolute path/);
-		expect(() => parseArgs(["--extension", "--trusted-extension", "/opt/omp/policy.ts"])).toThrow(
+		expect(() => parseArgs(["--extension", "--trusted-extension", "/opt/proto/policy.ts"])).toThrow(
 			/requires a non-empty/,
 		);
-		expect(() => parseArgs(["--trusted-extension", "/opt/omp/policy.ts", "--hook", "/tmp/hook.ts"])).toThrow(
+		expect(() => parseArgs(["--trusted-extension", "/opt/proto/policy.ts", "--hook", "/tmp/hook.ts"])).toThrow(
 			/cannot be combined/,
 		);
 	});

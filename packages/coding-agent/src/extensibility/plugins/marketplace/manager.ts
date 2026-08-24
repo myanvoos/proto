@@ -772,7 +772,7 @@ export class MarketplaceManager {
 	}
 
 	#runtimeLockPath(scope: "user" | "project"): string {
-		return path.join(this.#runtimeRoot(scope), "omp-plugins.lock.json");
+		return path.join(this.#runtimeRoot(scope), "proto-plugins.lock.json");
 	}
 
 	async #loadRuntimeConfig(scope: "user" | "project"): Promise<PluginRuntimeConfig> {

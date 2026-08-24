@@ -12,7 +12,7 @@ describe("mountRemote", () => {
 	it("surfaces the shared ControlMaster directory guard before touching sshfs", async () => {
 		vi.spyOn(piUtils, "$which").mockImplementation(command => (command === "sshfs" ? "/bin/true" : null));
 		vi.spyOn(connectionManager, "ensureSshControlDir").mockImplementation(() => {
-			throw new Error("SSH control directory /tmp/omp-test is a symlink");
+			throw new Error("SSH control directory /tmp/proto-test is a symlink");
 		});
 
 		await expect(mountRemote({ name: "nixbox", host: "nixbox" })).rejects.toThrow("is a symlink");

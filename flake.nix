@@ -1,5 +1,5 @@
 {
-  description = "OMP coding agent and development environment";
+  description = "PROTO coding agent and development environment";
 
   nixConfig = {
     extra-substituters = [ "https://nix-community.cachix.org" ];
@@ -90,16 +90,16 @@
     {
       packages = forAllSystems (system: {
         default = packageFor system;
-        omp = packageFor system;
+        proto = packageFor system;
       });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/omp";
-          meta.description = "Run OMP";
+          program = "${self.packages.${system}.default}/bin/proto";
+          meta.description = "Run PROTO";
         };
-        omp = self.apps.${system}.default;
+        proto = self.apps.${system}.default;
       });
 
       devShells = forAllSystems (
@@ -132,8 +132,8 @@
               }
               self.homeManagerModules.default
               {
-                programs.omp.enable = true;
-                programs.omp.settings.startup.quiet = true;
+                programs.proto.enable = true;
+                programs.proto.settings.startup.quiet = true;
               }
             ];
           };
@@ -147,7 +147,7 @@
                 };
               }
               self.nixosModules.default
-              { programs.omp.enable = true; }
+              { programs.proto.enable = true; }
             ];
           };
           modulesEvaluate =
@@ -155,10 +155,10 @@
             assert homeManagerEvaluation.config.home.activation ? ompConfig;
             assert builtins.elem self.packages.${system}.default
               nixosEvaluation.config.environment.systemPackages;
-            pkgs.runCommand "omp-module-evaluation" { } "touch $out";
+            pkgs.runCommand "proto-module-evaluation" { } "touch $out";
         in
         {
-          bun-lock = pkgs.runCommand "omp-bun-lock" { nativeBuildInputs = [ pkgs.bun2nix ]; } ''
+          bun-lock = pkgs.runCommand "proto-bun-lock" { nativeBuildInputs = [ pkgs.bun2nix ]; } ''
             cp -R ${self.outPath} source
             chmod -R u+w source
             cd source
@@ -168,19 +168,19 @@
             touch "$out"
           '';
           modules = modulesEvaluate;
-          omp = self.packages.${system}.default;
+          proto = self.packages.${system}.default;
         }
       );
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
       overlays.default = _final: previous: {
-        omp = self.packages.${previous.stdenv.hostPlatform.system}.default;
+        proto = self.packages.${previous.stdenv.hostPlatform.system}.default;
       };
 
       homeManagerModules.default = import ./nix/home-manager.nix { inherit self; };
-      homeManagerModules.omp = self.homeManagerModules.default;
+      homeManagerModules.proto = self.homeManagerModules.default;
       nixosModules.default = import ./nix/nixos-module.nix { inherit self; };
-      nixosModules.omp = self.nixosModules.default;
+      nixosModules.proto = self.nixosModules.default;
     };
 }

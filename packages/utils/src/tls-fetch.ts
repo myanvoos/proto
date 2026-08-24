@@ -52,7 +52,7 @@ type BunTlsOptions = {
 
 type BunTlsRequestInit = RequestInit & { tls?: BunTlsOptions };
 
-const EXTRA_CA_FETCH_MARKER = Symbol("omp.extraCaFetch");
+const EXTRA_CA_FETCH_MARKER = Symbol("proto.extraCaFetch");
 type ExtraCaFetch = FetchImpl & { [EXTRA_CA_FETCH_MARKER]?: true };
 
 /**

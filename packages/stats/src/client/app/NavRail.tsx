@@ -37,7 +37,7 @@ export function NavRail({ activeSection, onSectionChange, className = "" }: NavR
 			</nav>
 
 			<div className="stats-nav-rail-footer">
-				<span className="stats-version-tag">OMP Stats v1.0.0</span>
+				<span className="stats-version-tag">PROTO Stats v1.0.0</span>
 			</div>
 		</aside>
 	);

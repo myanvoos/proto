@@ -42,7 +42,7 @@ let tempDir: string;
 
 beforeEach(async () => {
 	resetSettingsForTest();
-	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-diff-"));
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-edit-diff-"));
 	await Settings.init({ inMemory: true, cwd: tempDir });
 });
 

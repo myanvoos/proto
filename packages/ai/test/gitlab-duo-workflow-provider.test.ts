@@ -211,7 +211,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(GITLAB_DUO_WORKFLOW_CLIENT_CAPABILITIES).not.toContain("tool_call_pattern_approval");
 	});
 
-	it("advertises OMP tools under their bare names with the official GitLab MCP schema", () => {
+	it("advertises PROTO tools under their bare names with the official GitLab MCP schema", () => {
 		const mcpTools = buildGitLabDuoWorkflowMcpTools([...nativeTools, editTool]);
 		// Bare names: the server binds the model schema and matches tool calls under the
 		// exact wire name (no prefix stripping), so the registered name must equal the
@@ -220,7 +220,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(mcpTools[0]).toMatchObject({
 			name: "read",
 			originalToolName: "read",
-			serverName: "omp",
+			serverName: "proto",
 			isApproved: true,
 		});
 		expect(typeof mcpTools[0]?.inputSchema).toBe("string");
@@ -255,9 +255,9 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(payload.preapproved_tools).toEqual(payload.mcpTools.map(tool => tool.name));
 	});
 
-	it("puts the OMP system prompt in the inline flow system slot with reasoning events", () => {
+	it("puts the PROTO system prompt in the inline flow system slot with reasoning events", () => {
 		const systemContext: Context = {
-			systemPrompt: ["OMP authoritative operating rules. Bridge the local tools."],
+			systemPrompt: ["PROTO authoritative operating rules. Bridge the local tools."],
 			messages: context.messages,
 		};
 		const payload = buildGitLabDuoWorkflowStartRequest("workflow-1", model, systemContext, undefined, undefined, {
@@ -276,7 +276,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		const prompt = flow?.prompts.find(entry => entry.prompt_id === agent?.prompt_id);
 		expect(prompt?.unit_primitives).toEqual(["duo_agent_platform"]);
 		// The system slot carries OMP's real system prompt verbatim — no gateway preamble.
-		expect(prompt?.prompt_template.system).toContain("OMP authoritative operating rules.");
+		expect(prompt?.prompt_template.system).toContain("PROTO authoritative operating rules.");
 		expect(prompt?.prompt_template.user).toBe("{{goal}}");
 		// A single-turn goal is bare text (no ChatML markers), so the history-note that
 		// warns against mimicking transcript markers must NOT be appended.
@@ -297,7 +297,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		const sessionCookie = "_gitlab_session=0123456789abcdef0123456789abcdef";
 
 		const replayContext: Context = {
-			systemPrompt: [`OMP system instructions: preserve the local tool bridge. token ${patToken}`],
+			systemPrompt: [`PROTO system instructions: preserve the local tool bridge. token ${patToken}`],
 			messages: [
 				{
 					role: "user",
@@ -360,7 +360,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(payload.goal).not.toContain("<conversation>");
 		expect(payload.goal).not.toContain("<current_request>");
 		expect(payload.goal).not.toContain("<prior_messages>");
-		expect(payload.goal).not.toContain("OMP system instructions: preserve the local tool bridge.");
+		expect(payload.goal).not.toContain("PROTO system instructions: preserve the local tool bridge.");
 		// ChatML role turns, every turn equal-weight, ending on the last user turn.
 		expect(payload.goal).toContain("<|im_start|>user\nFirst user turn.");
 		expect(payload.goal).toContain("<|im_start|>assistant\nAssistant answer.");
@@ -397,7 +397,9 @@ describe("GitLab Duo Workflow provider protocol", () => {
 
 		// The OMP system prompt lives in the flow config system slot, not the goal.
 		const flowPrompt = payload.flowConfig?.prompts[0];
-		expect(flowPrompt?.prompt_template.system).toContain("OMP system instructions: preserve the local tool bridge.");
+		expect(flowPrompt?.prompt_template.system).toContain(
+			"PROTO system instructions: preserve the local tool bridge.",
+		);
 		expect(flowPrompt?.prompt_template.system).not.toContain(patToken);
 		expect(flowPrompt?.prompt_template.system).toContain("[gitlab_token_redacted]");
 		// This goal IS a multi-turn ChatML transcript, so the system slot appends the
@@ -405,7 +407,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		// record, not a tool-call syntax to emit.
 	});
 
-	it("strips the OMP-internal intent (i) field from replayed tool-call args", () => {
+	it("strips the PROTO-internal intent (i) field from replayed tool-call args", () => {
 		const replayContext: Context = {
 			systemPrompt: ["system"],
 			messages: [
@@ -2696,7 +2698,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 					{
 						message_type: "request",
 						content: "Read src/index.ts",
-						tool_info: { name: "mcp__omp__read", args: { path: "src/index.ts" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "src/index.ts" } },
 					},
 					{ message_type: "agent", content: "Draft" },
 				],
@@ -2794,12 +2796,12 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 					{
 						message_type: "request",
 						content: "Read src/index.ts",
-						tool_info: { name: "mcp__omp__read", args: { path: "src/index.ts" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "src/index.ts" } },
 					},
 					{
 						message_type: "tool",
 						content: "file text",
-						tool_info: { name: "mcp__omp__read", args: { path: "src/index.ts" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "src/index.ts" } },
 					},
 					{ message_type: "agent", content: "D" },
 				],
@@ -2812,12 +2814,12 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 					{
 						message_type: "request",
 						content: "Read src/index.ts",
-						tool_info: { name: "mcp__omp__read", args: { path: "src/index.ts" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "src/index.ts" } },
 					},
 					{
 						message_type: "tool",
 						content: "file text",
-						tool_info: { name: "mcp__omp__read", args: { path: "src/index.ts" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "src/index.ts" } },
 					},
 					{ message_type: "agent", content: "Done." },
 				],
@@ -3361,12 +3363,12 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 					{
 						message_type: "request",
 						content: "Read README.md",
-						tool_info: { name: "mcp__omp__read", args: { path: "README.md" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "README.md" } },
 					},
 					{
 						message_type: "tool",
 						content: "README text",
-						tool_info: { name: "mcp__omp__read", args: { path: "README.md" } },
+						tool_info: { name: "mcp__proto__read", args: { path: "README.md" } },
 					},
 					{ message_type: "agent", content: "Final answer." },
 				],
@@ -3550,7 +3552,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-mcp-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "src/index.ts" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "src/index.ts" }) },
 				}),
 			}),
 		);
@@ -3613,7 +3615,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		socket.onmessage?.(
 			new MessageEvent("message", {
 				data: JSON.stringify({
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "src/index.ts" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "src/index.ts" }) },
 				}),
 			}),
 		);
@@ -3676,7 +3678,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-a",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "a.ts" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "a.ts" }) },
 				}),
 			}),
 		);
@@ -3769,7 +3771,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -3914,7 +3916,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-stall-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "src/index.ts" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "src/index.ts" }) },
 				}),
 			}),
 		);
@@ -3998,7 +4000,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-ok-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "src/index.ts" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "src/index.ts" }) },
 				}),
 			}),
 		);
@@ -4099,7 +4101,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -4156,7 +4158,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-2",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -4256,7 +4258,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -4380,7 +4382,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-srv-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -4636,7 +4638,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);
@@ -4733,7 +4735,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 			new MessageEvent("message", {
 				data: JSON.stringify({
 					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					runMCPTool: { name: "mcp__proto__read", args: JSON.stringify({ path: "README.md" }) },
 				}),
 			}),
 		);

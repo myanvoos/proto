@@ -385,7 +385,6 @@ function renderFallbackComponent(
 			sections: out.length > 0 ? [{ lines: out }] : [],
 			state: isError ? "error" : "success",
 			borderColor: isError ? "error" : "borderMuted",
-			applyBg: false,
 			width,
 		};
 	});
@@ -471,7 +470,6 @@ export const githubToolRenderer = {
 					sections,
 					state: isError ? "error" : "success",
 					borderColor: isError ? "error" : "borderMuted",
-					applyBg: false,
 					width,
 				};
 			});

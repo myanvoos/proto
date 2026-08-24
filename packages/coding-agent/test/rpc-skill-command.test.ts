@@ -8,7 +8,7 @@ import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("tryRunRpcSkillCommand", () => {
 	test("dispatches registered /skill commands as skill prompt messages", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-rpc-skill-${Snowflake.next()}-`));
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `proto-rpc-skill-${Snowflake.next()}-`));
 		const skillPath = path.join(dir, "SKILL.md");
 		await Bun.write(
 			skillPath,
@@ -45,7 +45,7 @@ describe("tryRunRpcSkillCommand", () => {
 	});
 
 	test("honors the RPC prompt streaming behavior for registered /skill commands", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-rpc-skill-${Snowflake.next()}-`));
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `proto-rpc-skill-${Snowflake.next()}-`));
 		const skillPath = path.join(dir, "SKILL.md");
 		await Bun.write(
 			skillPath,
@@ -98,7 +98,7 @@ describe("tryRunRpcSkillCommand", () => {
 	});
 
 	test("does not steal builtin slash-command arguments that mention registered skills", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-rpc-skill-${Snowflake.next()}-`));
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `proto-rpc-skill-${Snowflake.next()}-`));
 		const skillPath = path.join(dir, "SKILL.md");
 		await Bun.write(
 			skillPath,

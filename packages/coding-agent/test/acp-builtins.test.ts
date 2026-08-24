@@ -881,7 +881,7 @@ describe("wave 5 — adapters and polish", () => {
 
 describe("/move preflight flush", () => {
 	it("aborts text-mode /move when pending settings flush fails", async () => {
-		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-"));
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-move-"));
 		try {
 			const { output, fakeSessionManager, runtime } = createRuntime();
 			spyOn(runtime.settings, "flush").mockRejectedValue(new Error("disk full"));
@@ -897,7 +897,7 @@ describe("/move preflight flush", () => {
 	});
 
 	it("completes text-mode /move when flush succeeds", async () => {
-		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-ok-"));
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-move-ok-"));
 		const originalProjectDir = process.cwd();
 		try {
 			const { output, fakeSessionManager, runtime } = createRuntime();

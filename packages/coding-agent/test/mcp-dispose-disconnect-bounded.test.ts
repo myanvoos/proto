@@ -34,7 +34,7 @@ describe("owned-manager dispose disconnect is bounded (PR #2839)", () => {
 	let workDir: string;
 
 	beforeEach(() => {
-		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-dispose-"));
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-dispose-"));
 	});
 
 	afterEach(() => {

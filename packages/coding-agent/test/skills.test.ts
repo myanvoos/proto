@@ -407,7 +407,7 @@ describe("skills", () => {
 		});
 
 		it("should skip skills disabled via frontmatter", async () => {
-			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-disabled-skill-"));
+			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-disabled-skill-"));
 			const skillDir = path.join(tempDir, "disabled-skill");
 			await fs.mkdir(skillDir, { recursive: true });
 			await fs.writeFile(
@@ -431,7 +431,7 @@ enabled: false
 		});
 
 		it("should hide skills with disable-model-invocation frontmatter (Agent Skills spec)", async () => {
-			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-dmi-skill-"));
+			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-dmi-skill-"));
 			const skillDir = path.join(tempDir, "hidden-by-spec");
 			await fs.mkdir(skillDir, { recursive: true });
 			await fs.writeFile(

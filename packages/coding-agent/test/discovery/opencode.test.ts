@@ -27,7 +27,7 @@ describe("OpenCode MCP discovery", () => {
 	let tempDir = "";
 
 	beforeEach(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-opencode-mcp-"));
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-opencode-mcp-"));
 		vi.spyOn(os, "homedir").mockReturnValue(tempDir);
 	});
 
@@ -297,8 +297,8 @@ describe("OpenCode MCP discovery", () => {
 				mcp: {
 					"env-server": {
 						type: "remote",
-						url: "https://mcp.example.xyz/{env:OMP_TEST_MCP_PATH}",
-						headers: { Authorization: "Bearer {env:OMP_TEST_MCP_KEY}" },
+						url: "https://mcp.example.xyz/{env:PROTO_TEST_MCP_PATH}",
+						headers: { Authorization: "Bearer {env:PROTO_TEST_MCP_KEY}" },
 					},
 					"file-server": {
 						type: "remote",
@@ -308,15 +308,15 @@ describe("OpenCode MCP discovery", () => {
 					"missing-server": {
 						type: "remote",
 						url: "https://mcp.example.xyz/mcp",
-						headers: { Authorization: "Bearer {env:OMP_TEST_MCP_ABSENT}" },
+						headers: { Authorization: "Bearer {env:PROTO_TEST_MCP_ABSENT}" },
 					},
 				},
 			}),
 		);
 
-		delete Bun.env.OMP_TEST_MCP_ABSENT;
-		Bun.env.OMP_TEST_MCP_KEY = "secret-token";
-		Bun.env.OMP_TEST_MCP_PATH = "mcp/server";
+		delete Bun.env.PROTO_TEST_MCP_ABSENT;
+		Bun.env.PROTO_TEST_MCP_KEY = "secret-token";
+		Bun.env.PROTO_TEST_MCP_PATH = "mcp/server";
 		try {
 			const servers = await loadOpenCodeMcpConfig(tempDir);
 			const byName = Object.fromEntries(servers.map(server => [server.name, server]));
@@ -329,8 +329,8 @@ describe("OpenCode MCP discovery", () => {
 			// Unset env expands to empty string, matching OpenCode — never the literal token.
 			expect(byName["missing-server"]?.headers).toEqual({ Authorization: "Bearer " });
 		} finally {
-			delete Bun.env.OMP_TEST_MCP_KEY;
-			delete Bun.env.OMP_TEST_MCP_PATH;
+			delete Bun.env.PROTO_TEST_MCP_KEY;
+			delete Bun.env.PROTO_TEST_MCP_PATH;
 		}
 	});
 });

@@ -68,7 +68,6 @@ import {
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
-import { SecurityScanTool } from "./security-scan";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
@@ -111,7 +110,6 @@ export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
-export * from "./security-scan";
 export * from "./think";
 export * from "./todo";
 export * from "./tts";
@@ -428,7 +426,6 @@ export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool |
  */
 export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	read: s => new ReadTool(s),
-	security_scan: s => new SecurityScanTool(s),
 	bash: s => new BashTool(s),
 	edit: s => new EditTool(s),
 	ast_grep: s => new AstGrepTool(s),
@@ -628,7 +625,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
 		if (name === "inspect_image") return isInspectImageToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
-		if (name === "security_scan") return session.settings.get("security.enabled");
 		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");

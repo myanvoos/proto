@@ -20,7 +20,7 @@ version = "18.0.0"
 edition = "2024"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]
-homepage = "https://omp.sh/"
+homepage = "https://proto.sh/"
 repository = "https://github.com/can1357/oh-my-pi"
 
 [patch.crates-io]

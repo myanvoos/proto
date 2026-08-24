@@ -6,7 +6,14 @@ import { detectColorMode, resolveThemeColors } from "./color";
 import darkThemeJson from "./dark.json" with { type: "json" };
 import { defaultThemes } from "./defaults";
 import lightThemeJson from "./light.json" with { type: "json" };
-import { type ColorMode, type ThemeBg, type ThemeColor, type ThemeJson, themeJsonSchema } from "./schema";
+import {
+	type ColorMode,
+	type ColorValue,
+	type ThemeBg,
+	type ThemeColor,
+	type ThemeJson,
+	themeJsonSchema,
+} from "./schema";
 import { normalizeSpinnerFramesOverride, type SymbolPreset } from "./symbols";
 import { Theme } from "./theme-class";
 
@@ -142,11 +149,25 @@ export interface CreateThemeOptions {
 
 /** HSV adjustment to shift green toward blue for colorblind mode (red-green colorblindness) */
 const COLORBLIND_ADJUSTMENT = { h: 60, s: 0.71 };
+const QUIET_TOKEN_DEFAULTS = {
+	sessionAccent: "accent",
+	modeAccent: "accent",
+	shareAccent: "accent",
+	infoAccent: "muted",
+	matchHighlight: "warning",
+	link: "mdLink",
+} as const satisfies Record<string, ThemeColor>;
 
 export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Theme {
 	const { mode, colorBlindMode } = options;
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
+	const backfillView = resolvedColors as Record<string, ColorValue | undefined>;
+	for (const [token, fallback] of Object.entries(QUIET_TOKEN_DEFAULTS)) {
+		if (backfillView[token] === undefined) {
+			backfillView[token] = backfillView[fallback];
+		}
+	}
 
 	if (colorBlindMode) {
 		const added = resolvedColors.toolDiffAdded;

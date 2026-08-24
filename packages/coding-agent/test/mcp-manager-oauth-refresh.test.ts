@@ -93,7 +93,7 @@ async function withSharedSQLiteAuth<T>(
 		storeB: SqliteAuthCredentialStore;
 	}) => Promise<T>,
 ): Promise<T> {
-	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-oauth-shared-refresh-"));
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-oauth-shared-refresh-"));
 	let authA: AuthStorage | undefined;
 	let authB: AuthStorage | undefined;
 	try {

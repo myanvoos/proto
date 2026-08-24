@@ -42,7 +42,7 @@ describe("/reload-plugins runtime refresh", () => {
 	let projectDir = "";
 
 	beforeEach(async () => {
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-reload-plugins-mcp-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-reload-plugins-mcp-"));
 		setProjectDir(projectDir);
 	});
 

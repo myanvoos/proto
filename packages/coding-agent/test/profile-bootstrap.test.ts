@@ -159,10 +159,10 @@ describe("extractProfileFlags", () => {
 	});
 
 	it("treats explicit launch as the default command and keeps extracting globals", () => {
-		expect(extractProfileFlags(["launch", "--profile", "work", "--alias", "omp-work"])).toEqual({
+		expect(extractProfileFlags(["launch", "--profile", "work", "--alias", "proto-work"])).toEqual({
 			argv: ["launch"],
 			profile: "work",
-			aliasName: "omp-work",
+			aliasName: "proto-work",
 		});
 	});
 
@@ -259,10 +259,10 @@ describe("extractProfileFlags", () => {
 			profile: "work",
 			aliasName: undefined,
 		});
-		expect(extractProfileFlags(["--some-ext-flag", "--alias", "omp-work"])).toEqual({
+		expect(extractProfileFlags(["--some-ext-flag", "--alias", "proto-work"])).toEqual({
 			argv: ["--some-ext-flag"],
 			profile: undefined,
-			aliasName: "omp-work",
+			aliasName: "proto-work",
 		});
 	});
 

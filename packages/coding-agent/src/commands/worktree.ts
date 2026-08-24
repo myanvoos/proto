@@ -37,11 +37,11 @@ export default class Worktree extends Command {
 	};
 
 	static examples = [
-		"omp worktree",
-		"omp worktree list --json",
-		"omp worktree clear",
-		"omp worktree clear --dry-run",
-		"omp worktree clear --all",
+		"proto worktree",
+		"proto worktree list --json",
+		"proto worktree clear",
+		"proto worktree clear --dry-run",
+		"proto worktree clear --all",
 	];
 
 	async run(): Promise<void> {

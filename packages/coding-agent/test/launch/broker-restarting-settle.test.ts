@@ -65,7 +65,7 @@ async function waitForState(
 
 describe("daemon broker restart settling", () => {
 	it("does not re-settle a restarting detached daemon on ops, keeping stop authoritative", async () => {
-		using tempDir = TempDir.createSync("@omp-launch-restart-");
+		using tempDir = TempDir.createSync("@proto-launch-restart-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);
@@ -128,7 +128,7 @@ describe("daemon broker restart settling", () => {
 	}, 20_000);
 
 	it("settles a recovered detached daemon once across concurrent refreshes", async () => {
-		using tempDir = TempDir.createSync("@omp-launch-recovered-restart-");
+		using tempDir = TempDir.createSync("@proto-launch-recovered-restart-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);

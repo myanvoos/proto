@@ -1,6 +1,6 @@
 # SDK Examples
 
-Programmatic usage of omp-coding-agent via `createAgentSession()`.
+Programmatic usage of proto-coding-agent via `createAgentSession()`.
 
 ## Examples
 
@@ -130,7 +130,7 @@ await writeTool.execute("call-1", {
 | `authStorage`               | `discoverAuthStorage()`       | Credential storage                |
 | `modelRegistry`             | `discoverModels(authStorage)` | Model registry                    |
 | `cwd`                       | `process.cwd()`               | Working directory                 |
-| `agentDir`                  | `~/.omp/agent`                | Config directory                  |
+| `agentDir`                  | `~/.proto/agent`                | Config directory                  |
 | `model`                     | From settings/first available | Model to use                      |
 | `thinkingLevel`             | From settings/"off"           | off, low, medium, high            |
 | `systemPrompt`              | Discovered                    | String or `(default) => modified` |

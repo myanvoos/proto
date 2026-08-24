@@ -11,7 +11,7 @@ describe("git reference directory fallback", () => {
 	let commitSha: string;
 
 	beforeAll(async () => {
-		repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ref-fallback-"));
+		repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-ref-fallback-"));
 		const initResult = await $`git init --initial-branch=main`.cwd(repoDir).quiet();
 		if (initResult.exitCode !== 0) throw new Error("git init failed");
 		await $`git config user.name "Test User"`.cwd(repoDir).quiet();

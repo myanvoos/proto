@@ -104,8 +104,8 @@ describe("/mcp auth commands", () => {
 	});
 
 	beforeEach(async () => {
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-reauth-project-"));
-		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-reauth-agent-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-reauth-project-"));
+		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-reauth-agent-"));
 		configPath = path.join(projectDir, ".mcp.json");
 		originalMcpHost = Bun.env.MCP_HOST;
 		Bun.env.MCP_HOST = "mcp.example.com";

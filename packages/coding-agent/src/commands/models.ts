@@ -40,7 +40,7 @@ export default class Models extends Command {
 		`# List every available model, grouped by provider\n  ${BINARY_NAME} models`,
 		`# List one provider's models (any provider name works)\n  ${BINARY_NAME} models openai-codex`,
 		`# Find models by substring\n  ${BINARY_NAME} models find minimax`,
-		`# Force a fresh catalog fetch (replaces rm -rf ~/.omp/models.db)\n  ${BINARY_NAME} models refresh`,
+		`# Force a fresh catalog fetch (replaces rm -rf ~/.proto/models.db)\n  ${BINARY_NAME} models refresh`,
 		`# Machine-readable output\n  ${BINARY_NAME} models --json`,
 	];
 

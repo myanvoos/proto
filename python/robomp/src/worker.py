@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from omp_rpc import (
+from proto_rpc import (
     MessageUpdateEvent,
     RpcClient,
     RpcError,
@@ -142,7 +142,7 @@ def _stage_agent_home() -> None:
     if not _AGENT_HOME_STAGE.exists():
         return
 
-    for rel in (Path(".agent"), Path(".omp/agent")):
+    for rel in (Path(".agent"), Path(".proto/agent")):
         src = _AGENT_HOME_STAGE / rel
         if not src.exists():
             continue
@@ -165,7 +165,7 @@ def _stage_agent_home() -> None:
     chown_to_root = os.geteuid() == 0
     for root, dirs, files in os.walk(_AGENT_HOME):
         root_path = Path(root)
-        if root_path == _AGENT_HOME / ".omp":
+        if root_path == _AGENT_HOME / ".proto":
             # ~/.omp/run is slot-writable daemon presence state, not template
             # config; keep it out of the read-only normalization below.
             dirs[:] = [d for d in dirs if d != "run"]
@@ -196,19 +196,19 @@ def _stage_agent_home() -> None:
 
 
 def _ensure_agent_run_dir() -> None:
-    """Keep ``~/.omp/run`` writable by every sandbox slot.
+    """Keep ``~/.proto/run`` writable by every sandbox slot.
 
-    omp registers daemon project presence under ``~/.omp/run`` at startup,
+    proto registers daemon project presence under ``~/.proto/run`` at startup,
     nesting per-project dirs (``daemons/<hash>/clients``) that any slot user
     must be able to create or enter regardless of which slot made them first.
-    The tree stays group ``omp``, setgid, group-writable; slot subprocesses
+    The tree stays group ``proto``, setgid, group-writable; slot subprocesses
     spawn with umask 0002 so their entries inherit group write.
     """
     if os.geteuid() != 0:
         return
-    run_dir = _AGENT_HOME / ".omp" / "run"
+    run_dir = _AGENT_HOME / ".proto" / "run"
     try:
-        gid = grp.getgrnam("omp").gr_gid
+        gid = grp.getgrnam("proto").gr_gid
     except KeyError:
         return
     try:
@@ -226,9 +226,9 @@ def _ensure_agent_run_dir() -> None:
 
 
 def _build_extra_env(settings: Settings) -> dict[str, str]:
-    """Build the env overlay passed to the omp subprocess.
+    """Build the env overlay passed to the proto subprocess.
 
-    `omp_rpc` merges this dict on top of `os.environ`, so overlaying empty
+    `proto_rpc` merges this dict on top of `os.environ`, so overlaying empty
     strings for the sensitive keys is what actually masks them in the
     child — `del` on the parent's env would not help us here.
     """
@@ -436,7 +436,7 @@ def _drive_turn(
 
 
 def _has_prior_session(session_dir: Path) -> bool:
-    """Return True iff `session_dir` already contains an omp JSONL transcript.
+    """Return True iff `session_dir` already contains an proto JSONL transcript.
 
     pi's `coding-agent` writes one `*.jsonl` per session into `--session-dir`.
     The presence of any such file is the signal that `--continue` will pick
@@ -640,7 +640,7 @@ def _run_rpc_blocking(
         )
 
     with RpcClient(
-        executable=settings.omp_command,
+        executable=settings.proto_command,
         cwd=bindings.workspace.repo_dir,
         session_dir=bindings.workspace.session_dir,
         env=rpc_env,
@@ -657,7 +657,7 @@ def _run_rpc_blocking(
         extra_args=extra_args,
         user=inputs.slot_uid,
         group=inputs.slot_uid if inputs.slot_uid is not None else None,
-        extra_groups=["omp"] if inputs.slot_uid is not None else None,
+        extra_groups=["proto"] if inputs.slot_uid is not None else None,
     ) as client:
         # Arm cancellation: from this point the API can kill the omp subprocess
         # out from under us, which makes `prompt_and_wait` raise an `RpcError`
@@ -766,12 +766,12 @@ def _run_rpc_blocking(
             finally:
                 hard_timer.cancel()
             if hard_timeout_fired.is_set():
-                raise TimeoutError("omp task exceeded hard timeout")
+                raise TimeoutError("proto task exceeded hard timeout")
             if turn is not None and turn.assistant_message is not None:
                 stop_reason = turn.assistant_message.get("stopReason")
                 if stop_reason == "error":
                     error_msg = turn.assistant_message.get("errorMessage") or "model returned error"
-                    raise RuntimeError(f"omp agent error (stopReason=error): {error_msg}")
+                    raise RuntimeError(f"proto agent error (stopReason=error): {error_msg}")
             log.info(
                 "rpc_done",
                 extra={

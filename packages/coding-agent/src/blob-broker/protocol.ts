@@ -14,23 +14,23 @@ import type { BlobBrokerSavingsStatus } from "./savings";
 import type { DestinationRuntimeConfig } from "./uploader-runtime";
 
 /** Hidden CLI selector used to re-enter the blob broker worker. */
-export const BLOB_BROKER_WORKER_ARG = "__omp_worker_blob_broker";
+export const BLOB_BROKER_WORKER_ARG = "__proto_worker_blob_broker";
 
 /** Environment key carrying the control socket path the worker listens on. */
-export const BLOB_BROKER_SOCKET_ENV = "OMP_BLOB_BROKER_SOCKET";
+export const BLOB_BROKER_SOCKET_ENV = "PROTO_BLOB_BROKER_SOCKET";
 
 /** Environment key carrying the JSON {@link BlobBrokerWorkerConfig}. */
-export const BLOB_BROKER_CONFIG_ENV = "OMP_BLOB_BROKER_CONFIG";
+export const BLOB_BROKER_CONFIG_ENV = "PROTO_BLOB_BROKER_CONFIG";
 
 /** Stable broker daemon name for the shared blob broker. */
-export const BLOB_BROKER_DAEMON_NAME = "omp.blob.broker";
+export const BLOB_BROKER_DAEMON_NAME = "proto.blob.broker";
 
 /** Broker readiness regex matched against the banner printed by the worker. */
-export const BLOB_BROKER_READY_PATTERN = String.raw`omp blob broker serving \S+`;
+export const BLOB_BROKER_READY_PATTERN = String.raw`proto blob broker serving \S+`;
 
 /** Banner printed on stdout once the exposure is up and control is listening. */
 export function blobBrokerReadyBanner(baseUrl: string): string {
-	return `omp blob broker serving ${baseUrl}`;
+	return `proto blob broker serving ${baseUrl}`;
 }
 
 /** Resolve the control socket path for one project scope. */
@@ -231,4 +231,4 @@ export interface BlobBrokerPurgeResponse {
 /** Path prefix of the session-side render callback server. */
 export const RENDER_CALLBACK_PATH = "/render/";
 /** Header carrying {@link EnsureLazyRequest.callbackToken} on render callbacks. */
-export const RENDER_CALLBACK_TOKEN_HEADER = "x-omp-blob-token";
+export const RENDER_CALLBACK_TOKEN_HEADER = "x-proto-blob-token";

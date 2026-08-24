@@ -1029,7 +1029,7 @@ export class MCPAddWizard extends OverlayPanel {
 
 				// OAuth metadata unavailable: fallback to manual API key.
 				this.#contentContainer.clear();
-				this.#contentContainer.addChild(new Text(theme.fg("warning", "⚠ Authentication required"), 0, 0));
+				this.#contentContainer.addChild(new Text(theme.fg("warning", "Authentication required"), 0, 0));
 				this.#contentContainer.addChild(new Spacer(1));
 				this.#contentContainer.addChild(new Text("OAuth parameters could not be discovered.", 0, 0));
 				this.#contentContainer.addChild(new Text("Provide API key/token manually.", 0, 0));
@@ -1240,7 +1240,7 @@ export class MCPAddWizard extends OverlayPanel {
 			if (healthPassed) {
 				healthText.setText(theme.fg("success", "✓ Health check passed"));
 			} else {
-				healthText.setText(theme.fg("warning", "⚠ Health check failed (will still save config)"));
+				healthText.setText(theme.fg("warning", "Health check failed (will still save config)"));
 				this.#contentContainer.addChild(new Spacer(1));
 				this.#contentContainer.addChild(new Text(theme.fg("muted", healthError), 0, 0));
 			}

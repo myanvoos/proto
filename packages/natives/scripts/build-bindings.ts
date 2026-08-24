@@ -208,7 +208,7 @@ const napiBin = path.join(path.dirname(napiManifestPath), napiBinEntry);
 
 // Profiles live in the root Cargo.toml; `local` trades size for iteration
 // speed, `ci` strips and drops incremental state.
-const cargoProfile = Bun.env.OMP_NATIVE_CARGO_PROFILE?.trim() || "local";
+const cargoProfile = Bun.env.PROTO_NATIVE_CARGO_PROFILE?.trim() || "local";
 
 const napiArgs = [
 	"build",

@@ -20,7 +20,7 @@ const bundledModuleKeys = new Set(bundledEntries.map(entry => entry.key));
 // a generated registry or duplicate key list.
 describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () => {
 	it("does not evaluate unrelated host modules while loading the registry", async () => {
-		using tempDir = TempDir.createSync("@omp-legacy-pi-loaders-");
+		using tempDir = TempDir.createSync("@proto-legacy-pi-loaders-");
 		const alphaPath = path.join(tempDir.path(), "alpha.ts");
 		const betaPath = path.join(tempDir.path(), "beta.ts");
 		const registryPath = path.join(tempDir.path(), "registry.ts");
@@ -64,7 +64,7 @@ export const finalBeta = Reflect.get(globalThis, "__betaLoads") ?? 0;
 
 	it("serves @oh-my-pi/pi-ai/oauth through the bundled virtual namespace in compiled mode", () => {
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
-		expect(overrides["@oh-my-pi/pi-ai/oauth"]).toBe("omp-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth");
+		expect(overrides["@oh-my-pi/pi-ai/oauth"]).toBe("proto-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth");
 	});
 
 	it("expands wildcard exports for concrete on-disk targets (issue #3442 follow-up)", () => {
@@ -76,7 +76,7 @@ export const finalBeta = Reflect.get(globalThis, "__betaLoads") ?? 0;
 		// and registers every concrete `.ts` match against the virtual namespace.
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
 		expect(overrides["@oh-my-pi/pi-ai/oauth/anthropic"]).toBe(
-			"omp-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth/anthropic",
+			"proto-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth/anthropic",
 		);
 		// Sanity: the wildcard expansion also reaches deeper subroots so plugins
 		// pinned to e.g. `@oh-my-pi/pi-ai/providers/openai` keep resolving.
@@ -121,7 +121,7 @@ export const observed = [
 		}
 
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
-		expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+		expect(overrides[key]).toBe(`proto-legacy-pi-bundled:${key}`);
 	});
 
 	it("expands web search provider wildcard exports for compiled plugin imports", () => {
@@ -135,7 +135,7 @@ export const observed = [
 
 		for (const key of providerKeys) {
 			expect(bundledModuleKeys.has(key)).toBe(true);
-			expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+			expect(overrides[key]).toBe(`proto-legacy-pi-bundled:${key}`);
 		}
 	});
 
@@ -172,7 +172,7 @@ export const observed = [
 				key === "typebox"
 			)
 				continue;
-			if (overrides[key] !== `omp-legacy-pi-bundled:${key}`) {
+			if (overrides[key] !== `proto-legacy-pi-bundled:${key}`) {
 				missing.push(key);
 			}
 		}
@@ -187,7 +187,7 @@ export const observed = [
 		// `defineTool` helpers the canonical entrypoints dropped.
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
 		expect(overrides["@oh-my-pi/pi-ai"]).toBeDefined();
-		expect(overrides["@oh-my-pi/pi-ai"]).not.toBe("omp-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth");
+		expect(overrides["@oh-my-pi/pi-ai"]).not.toBe("proto-legacy-pi-bundled:@oh-my-pi/pi-ai/oauth");
 		expect(overrides["@oh-my-pi/pi-coding-agent"]).toBeDefined();
 		expect(overrides["@oh-my-pi/pi-tui"]).toBeDefined();
 	});

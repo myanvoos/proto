@@ -3737,7 +3737,7 @@ type ScenarioTemplate = Omit<
 function writeReplayLog(scenario: Scenario, operations: readonly OperationLogEntry[]): string {
 	const filePath = path.join(
 		os.tmpdir(),
-		`omp-tui-stress-${scenario.name}-${(scenario.seed >>> 0).toString(16)}-${Date.now().toString(36)}.json`,
+		`proto-tui-stress-${scenario.name}-${(scenario.seed >>> 0).toString(16)}-${Date.now().toString(36)}.json`,
 	);
 	fs.writeFileSync(filePath, JSON.stringify(operations, null, 2));
 	return filePath;

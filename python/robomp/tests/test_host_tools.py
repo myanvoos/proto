@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
-from omp_rpc import HostToolContext, RpcCommandError
+from proto_rpc import HostToolContext, RpcCommandError
 
 from robomp import host_tools
 from robomp.config import Settings
@@ -25,7 +25,7 @@ from robomp.sandbox import LocalGitTransport, Workspace
 def _stub_workspace(tmp_path: Path) -> Workspace:
     root = tmp_path / "ws"
     repo_dir = root / "repo"
-    session_dir = root / ".omp-session"
+    session_dir = root / ".proto-session"
     context_dir = root / "context"
     artifacts_dir = root / "artifacts"
     for p in (root, repo_dir, session_dir, context_dir, context_dir / "repro", artifacts_dir):
@@ -140,9 +140,9 @@ def test_repo_command_env_scrubs_secrets_and_uses_workspace_cache(
     assert env["GITHUB_TOKEN"] == ""
     assert env["GITHUB_WEBHOOK_SECRET"] == ""
     assert env["ROBOMP_GH_PROXY_HMAC_KEY"] == ""
-    assert env["BUN_INSTALL_CACHE_DIR"] == str(bindings.workspace.root / ".omp-xdg" / "cache" / "bun-install")
-    assert env["XDG_CACHE_HOME"] == str(bindings.workspace.root / ".omp-xdg" / "cache")
-    assert env["TMPDIR"] == str(bindings.workspace.root / ".omp-tmp")
+    assert env["BUN_INSTALL_CACHE_DIR"] == str(bindings.workspace.root / ".proto-xdg" / "cache" / "bun-install")
+    assert env["XDG_CACHE_HOME"] == str(bindings.workspace.root / ".proto-xdg" / "cache")
+    assert env["TMPDIR"] == str(bindings.workspace.root / ".proto-tmp")
     assert env["GIT_CONFIG_COUNT"] == "1"
     assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
     assert env["GIT_CONFIG_VALUE_0"] == str(bindings.workspace.repo_dir)
@@ -150,7 +150,7 @@ def test_repo_command_env_scrubs_secrets_and_uses_workspace_cache(
     assert env["GIT_AUTHOR_EMAIL"] == bindings.author_email
     assert env["GIT_COMMITTER_NAME"] == bindings.author_name
     assert env["GIT_COMMITTER_EMAIL"] == bindings.author_email
-    assert (bindings.workspace.root / ".omp-tmp").is_dir()
+    assert (bindings.workspace.root / ".proto-tmp").is_dir()
 
 
 def test_run_repo_command_uses_slot_identity_kwargs(
@@ -186,7 +186,7 @@ def test_run_repo_command_uses_slot_identity_kwargs(
     assert kwargs["group"] == 2001
     assert kwargs["extra_groups"] == [2000]
     assert kwargs["umask"] == 0o002
-    assert kwargs["env"]["BUN_INSTALL_CACHE_DIR"].endswith("/.omp-xdg/cache/bun-install")
+    assert kwargs["env"]["BUN_INSTALL_CACHE_DIR"].endswith("/.proto-xdg/cache/bun-install")
 
 
 def _write_bun_repo(repo_dir: Path) -> None:
@@ -4671,7 +4671,7 @@ def _release_bindings(
     if dirty:
         (repo_dir / "fix.txt").write_text("uncommitted\n", encoding="utf-8")
 
-    session_dir = root / ".omp-session-v1.2.3"
+    session_dir = root / ".proto-session-v1.2.3"
     context_dir = root / "context"
     artifacts_dir = root / "artifacts"
     for directory in (session_dir, context_dir, context_dir / "repro", artifacts_dir):

@@ -93,7 +93,7 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 	}, 20000);
 
 	test("start() waits for a signal-ignoring worker to be reaped after stop()", async () => {
-		using tempDir = TempDir.createSync("@omp-rpc-stop-restart-");
+		using tempDir = TempDir.createSync("@proto-rpc-stop-restart-");
 		const pidFile = tempDir.join("pid");
 		using client = new RpcClient({
 			cliPath: MOCK_AGENT,
@@ -154,7 +154,7 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 	test("rejects pending requests and reaps the worker when stdout parsing fails", async () => {
 		// This awaits the real child-process grace-to-hard-kill path; fake timers
 		// cannot drive OS signal delivery or process reaping.
-		using tempDir = TempDir.createSync("@omp-rpc-reader-failure-");
+		using tempDir = TempDir.createSync("@proto-rpc-reader-failure-");
 		const pidFile = tempDir.join("pid");
 		using client = new RpcClient({
 			cliPath: MOCK_AGENT,

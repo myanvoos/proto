@@ -214,9 +214,18 @@ export class TranscriptContainer
 	// between engine frames lower it; they can never inflate it.
 	#stableRowsFloor = 0;
 	override addChild(component: Component): void {
+		const wasEmpty = this.children.length === 0;
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
+		if (wasEmpty && this.onFirstContent) this.onFirstContent();
 	}
+
+	/**
+	 * Fires when the container transitions from empty to holding at least one
+	 * block, including after a clear() + rebuild. Consumers re-anchor layout
+	 * state that was computed for the empty-transcript case.
+	 */
+	onFirstContent?: () => void;
 
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#toolActivityVisible === visible) return;

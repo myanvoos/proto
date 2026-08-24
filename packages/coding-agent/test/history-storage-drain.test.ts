@@ -7,7 +7,7 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 let tempDir = "";
 
-async function freshStorage(prefix = "omp-history-drain-"): Promise<HistoryStorage> {
+async function freshStorage(prefix = "proto-history-drain-"): Promise<HistoryStorage> {
 	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 	const dbPath = path.join(tempDir, "history.db");
 	HistoryStorage.resetInstance();

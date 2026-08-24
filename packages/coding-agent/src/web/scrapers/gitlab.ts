@@ -201,7 +201,7 @@ async function renderGitLabTree(
 	if (dirs.length > 0) {
 		md += `## Directories (${dirs.length})\n\n`;
 		for (const dir of dirs) {
-			md += `- 📁 ${dir.name}/\n`;
+			md += `- ${dir.name}/\n`;
 		}
 		md += `\n`;
 	}
@@ -209,7 +209,7 @@ async function renderGitLabTree(
 	if (files.length > 0) {
 		md += `## Files (${files.length})\n\n`;
 		for (const file of files) {
-			md += `- 📄 ${file.name}\n`;
+			md += `- ${file.name}\n`;
 		}
 	}
 

@@ -31,7 +31,7 @@ describe("MCP startup (issue #2100)", () => {
 	let workDir: string;
 
 	beforeEach(() => {
-		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-startup-"));
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-startup-"));
 	});
 
 	afterEach(() => {

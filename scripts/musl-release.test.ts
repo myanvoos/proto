@@ -54,7 +54,7 @@ describe("musl release artifacts", () => {
 	});
 
 	test("selects the musl asset when the Linux host reports musl", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-musl-install-"));
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-musl-install-"));
 		tempDirs.push(dir);
 		const binDir = path.join(dir, "bin");
 		const installDir = path.join(dir, "install");

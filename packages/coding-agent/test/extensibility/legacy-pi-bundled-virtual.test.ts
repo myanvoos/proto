@@ -33,21 +33,21 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	it("emits one ES named export per enumerable namespace key", () => {
 		const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-coding-agent", modules);
 		expect(src).toContain(
-			`const __omp_bundled = globalThis[${JSON.stringify(globalKey)}]["@oh-my-pi/pi-coding-agent"];`,
+			`const __proto_bundled = globalThis[${JSON.stringify(globalKey)}]["@oh-my-pi/pi-coding-agent"];`,
 		);
-		expect(src).toContain('export const VERSION = __omp_bundled["VERSION"];');
-		expect(src).toContain('export const defineTool = __omp_bundled["defineTool"];');
-		expect(src).toContain('export const Type = __omp_bundled["Type"];');
+		expect(src).toContain('export const VERSION = __proto_bundled["VERSION"];');
+		expect(src).toContain('export const defineTool = __proto_bundled["defineTool"];');
+		expect(src).toContain('export const Type = __proto_bundled["Type"];');
 		// Every named export emerges from a live module lookup — never the FS.
 		expect(src).not.toMatch(/\$bunfs|file:\/\//);
 	});
 
 	it("forwards `default` through `export default` so default imports survive", () => {
 		const src = __synthesizeLegacyPiBundledSourceWithModules("@oh-my-pi/pi-utils", modules);
-		expect(src).toContain("export default __omp_bundled.default;");
+		expect(src).toContain("export default __proto_bundled.default;");
 		// Default and named exports coexist on the same module.
-		expect(src).toContain('export const VERSION = __omp_bundled["VERSION"];');
-		expect(src).toContain('export const isCompiledBinary = __omp_bundled["isCompiledBinary"];');
+		expect(src).toContain('export const VERSION = __proto_bundled["VERSION"];');
+		expect(src).toContain('export const isCompiledBinary = __proto_bundled["isCompiledBinary"];');
 	});
 
 	it("omits `default` line when the registered namespace has no default export", () => {
@@ -66,7 +66,7 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 		// writes to — a rename of either side breaks every legacy extension
 		// load with a `Cannot read properties of undefined` at first import.
 		const src = __synthesizeLegacyPiBundledSourceWithModules("typebox", modules);
-		expect(src.startsWith(`const __omp_bundled = globalThis[${JSON.stringify(globalKey)}]["typebox"];`)).toBe(true);
+		expect(src.startsWith(`const __proto_bundled = globalThis[${JSON.stringify(globalKey)}]["typebox"];`)).toBe(true);
 	});
 
 	it("end-to-end: synthesized source resolves named bindings against a runtime globalThis entry", () => {
@@ -82,9 +82,9 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 			// we can read `__omp_bundled` from the returned closure.
 			const body = src
 				.split("\n")
-				.filter(line => line.startsWith("const __omp_bundled"))
+				.filter(line => line.startsWith("const __proto_bundled"))
 				.join("\n");
-			const fn = new Function(`${body}; return __omp_bundled;`);
+			const fn = new Function(`${body}; return __proto_bundled;`);
 			const live: unknown = fn();
 			if (typeof live !== "object" || live === null) {
 				throw new Error("synthetic module did not resolve an object namespace");
@@ -98,35 +98,35 @@ describe("legacy-pi bundled virtual module synthesizer (issue #3423)", () => {
 	});
 
 	it("routes Bun plugin resolution through the bundled namespace so onLoad can serve extension imports", async () => {
-		using tempDir = TempDir.createSync("@omp-legacy-pi-bundled-virtual-");
+		using tempDir = TempDir.createSync("@proto-legacy-pi-bundled-virtual-");
 		const entryPath = tempDir.join("extension-entry.ts");
 		const bundlePath = tempDir.join("extension-entry.bundle.mjs");
 
 		await Bun.write(
 			entryPath,
-			['export { legacyAnswer } from "omp-legacy-pi-bundled:@oh-my-pi/pi-utils";', ""].join("\n"),
+			['export { legacyAnswer } from "proto-legacy-pi-bundled:@oh-my-pi/pi-utils";', ""].join("\n"),
 		);
 
 		expect(resolveBundledVirtualSpecifier("@oh-my-pi/pi-utils")).toEqual({
-			namespace: "omp-legacy-pi-bundled",
+			namespace: "proto-legacy-pi-bundled",
 			path: "@oh-my-pi/pi-utils",
 		});
-		expect(resolveBundledVirtualSpecifier("omp-legacy-pi-bundled:@oh-my-pi/pi-utils")).toEqual({
-			namespace: "omp-legacy-pi-bundled",
+		expect(resolveBundledVirtualSpecifier("proto-legacy-pi-bundled:@oh-my-pi/pi-utils")).toEqual({
+			namespace: "proto-legacy-pi-bundled",
 			path: "@oh-my-pi/pi-utils",
 		});
 
 		const onLoadPaths: string[] = [];
 		const plugin: BunPlugin = {
-			name: "omp-legacy-pi-bundled-virtual-regression",
+			name: "proto-legacy-pi-bundled-virtual-regression",
 			setup(build) {
-				build.onResolve({ filter: /^omp-legacy-pi-bundled:.+$/, namespace: "file" }, args =>
+				build.onResolve({ filter: /^proto-legacy-pi-bundled:.+$/, namespace: "file" }, args =>
 					resolveBundledVirtualSpecifier(args.path),
 				);
-				build.onResolve({ filter: /.*/, namespace: "omp-legacy-pi-bundled" }, args =>
+				build.onResolve({ filter: /.*/, namespace: "proto-legacy-pi-bundled" }, args =>
 					resolveBundledVirtualSpecifier(args.path),
 				);
-				build.onLoad({ filter: /.*/, namespace: "omp-legacy-pi-bundled" }, args => {
+				build.onLoad({ filter: /.*/, namespace: "proto-legacy-pi-bundled" }, args => {
 					onLoadPaths.push(args.path);
 					return {
 						contents: `export const legacyAnswer = ${JSON.stringify(`served:${args.path}`)};`,

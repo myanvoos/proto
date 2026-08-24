@@ -26,30 +26,30 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 }
 
 test("getEnabledPlugins caches repeated discovery for the same cwd and home until plugin caches clear", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-plugin-cache-"));
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-plugin-cache-"));
 	tempRoots.push(root);
 	const home = path.join(root, "home");
 	const cwd = path.join(root, "project");
-	const pluginsDir = path.join(home, ".omp", "plugins");
-	const pluginPackageJson = path.join(pluginsDir, "node_modules", "omp-cache-repro", "package.json");
+	const pluginsDir = path.join(home, ".proto", "plugins");
+	const pluginPackageJson = path.join(pluginsDir, "node_modules", "proto-cache-repro", "package.json");
 	await fs.mkdir(path.dirname(pluginPackageJson), { recursive: true });
 	await fs.mkdir(cwd, { recursive: true });
-	await writeJson(path.join(pluginsDir, "package.json"), { dependencies: { "omp-cache-repro": "1.0.0" } });
-	await writeJson(path.join(pluginsDir, "omp-plugins.lock.json"), {
-		plugins: { "omp-cache-repro": { version: "1.0.0", enabled: true, enabledFeatures: null } },
+	await writeJson(path.join(pluginsDir, "package.json"), { dependencies: { "proto-cache-repro": "1.0.0" } });
+	await writeJson(path.join(pluginsDir, "proto-plugins.lock.json"), {
+		plugins: { "proto-cache-repro": { version: "1.0.0", enabled: true, enabledFeatures: null } },
 		settings: {},
 	});
 	await writeJson(pluginPackageJson, {
-		name: "omp-cache-repro",
+		name: "proto-cache-repro",
 		version: "1.0.0",
-		omp: { tools: "tools" },
+		proto: { tools: "tools" },
 	});
 
 	const [firstPlugin] = await getEnabledPlugins(cwd, { home });
 	await writeJson(pluginPackageJson, {
-		name: "omp-cache-repro",
+		name: "proto-cache-repro",
 		version: "2.0.0",
-		omp: { tools: "tools" },
+		proto: { tools: "tools" },
 	});
 	const [cachedPlugin] = await getEnabledPlugins(cwd, { home });
 
@@ -63,7 +63,7 @@ test("getEnabledPlugins caches repeated discovery for the same cwd and home unti
 });
 
 test("legacy bare dependency rewrites cache fallback package resolution until plugin caches clear", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-legacy-cache-"));
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-legacy-cache-"));
 	tempRoots.push(root);
 	const importer = path.join(root, "extension", "src", "entry.ts");
 	const depRoot = path.join(root, "extension", "node_modules", "left-pad");

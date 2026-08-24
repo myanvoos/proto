@@ -437,7 +437,7 @@ async function main(): Promise<void> {
   // Helper for applying theme
   const applyTheme = async (themeName: "dark" | "light") => {
     await page.evaluate((theme) => {
-      localStorage.setItem("omp-robomp-theme", theme);
+      localStorage.setItem("proto-robomp-theme", theme);
       document.documentElement.dataset.theme = theme;
       document.documentElement.style.colorScheme = theme;
     }, themeName);

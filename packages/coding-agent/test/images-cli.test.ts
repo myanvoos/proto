@@ -99,7 +99,7 @@ const status: BlobBrokerStatus = {
 };
 
 beforeEach(async () => {
-	root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-images-cli-"));
+	root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-images-cli-"));
 	socketPath = path.join(root, "images.sock");
 	requests = [];
 	routes = new Map();

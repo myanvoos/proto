@@ -46,9 +46,9 @@ describe("native user-level config discovery follows the active profile", () => 
 
 	beforeEach(async () => {
 		originalHome = process.env.HOME;
-		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-iso-home-"));
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-iso-project-"));
-		profileAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-iso-agent-"));
+		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-profile-iso-home-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-profile-iso-project-"));
+		profileAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-profile-iso-agent-"));
 		process.env.HOME = tempHome;
 		vi.spyOn(os, "homedir").mockReturnValue(tempHome);
 		setAgentDir(profileAgentDir);
@@ -58,7 +58,7 @@ describe("native user-level config discovery follows the active profile", () => 
 		await writeSkill(path.join(profileAgentDir, "skills"), "profile-skill");
 
 		// Decoy: default profile's config at the literal-home path the old loader read.
-		const defaultAgentDir = path.join(tempHome, ".omp", "agent");
+		const defaultAgentDir = path.join(tempHome, ".proto", "agent");
 		await writeFile(path.join(defaultAgentDir, "commands", "default-cmd.md"), "Default command.\n");
 		await writeSkill(path.join(defaultAgentDir, "skills"), "default-skill");
 	});

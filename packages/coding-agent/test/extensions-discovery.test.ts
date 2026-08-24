@@ -161,7 +161,7 @@ describe("extensions discovery", () => {
 			path.join(packageDir, "package.json"),
 			JSON.stringify({
 				name: "explicit-package",
-				omp: {
+				proto: {
 					extensions: ["./src/main.ts"],
 				},
 			}),
@@ -199,7 +199,7 @@ describe("extensions discovery", () => {
 			path.join(packageDir, "package.json"),
 			JSON.stringify({
 				name: "explicit-package",
-				omp: {
+				proto: {
 					extensions: ["./src/main.ts"],
 				},
 			}),
@@ -402,7 +402,7 @@ describe("extensions discovery", () => {
 		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCodeWithTool("ctk-tool"));
 		fs.writeFileSync(
 			path.join(realDir, "package.json"),
-			JSON.stringify({ name: "ctk", omp: { extensions: ["./index.ts"] } }),
+			JSON.stringify({ name: "ctk", proto: { extensions: ["./index.ts"] } }),
 		);
 		fs.symlinkSync(realDir, path.join(extensionsDir, "ctk"), "dir");
 
@@ -547,7 +547,7 @@ describe("extensions discovery", () => {
 				name: "pi-extension-with-deps",
 				version: "1.0.0",
 				type: "module",
-				omp: { extensions: ["./index.ts"] },
+				proto: { extensions: ["./index.ts"] },
 			}),
 		);
 

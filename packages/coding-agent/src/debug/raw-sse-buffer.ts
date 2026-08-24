@@ -175,10 +175,10 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 		const tailSlice = lines[j].slice(tailStart);
 		elided -= headSlice.length + tailSlice.length;
 		if (headSlice.length > 0) out.push(`${headSlice}…`);
-		out.push(`: omp-debug-elided chars=${Math.max(0, elided)}`);
+		out.push(`: proto-debug-elided chars=${Math.max(0, elided)}`);
 		if (tailSlice.length > 0) out.push(`…${tailSlice}`);
 	} else if (elided > 0) {
-		out.push(`: omp-debug-elided chars=${elided}`);
+		out.push(`: proto-debug-elided chars=${elided}`);
 	}
 	out.push(...tail);
 	return out;
@@ -206,7 +206,7 @@ function trimRawLines(raw: string[]): TrimResult {
 	} else if (lines === raw) {
 		lines = raw.slice();
 	}
-	lines.push(`: omp-debug-truncated originalChars=${originalChars}`);
+	lines.push(`: proto-debug-truncated originalChars=${originalChars}`);
 	return { raw: lines, truncated: true, originalChars, chars: countLines(lines) + 1 };
 }
 
@@ -216,7 +216,7 @@ export function formatRawSseIsoTime(timestamp: number): string {
 
 export function formatRawSseResponseComment(record: Extract<RawSseDebugRecord, { kind: "response" }>): string {
 	const fields = [
-		"omp-response",
+		"proto-response",
 		`ts=${formatRawSseIsoTime(record.timestamp)}`,
 		`status=${record.status}`,
 		record.provider ? `provider=${record.provider}` : undefined,
@@ -331,7 +331,7 @@ export class RawSseDebugBuffer {
 		const live = this.#head === 0 ? this.#records : this.#records.slice(this.#head);
 		const body = live.map(rawRecordText).join("\n");
 		if (this.#droppedRecords === 0) return body;
-		const dropped = `: omp-debug-dropped records=${this.#droppedRecords} chars=${this.#droppedChars}\n\n`;
+		const dropped = `: proto-debug-dropped records=${this.#droppedRecords} chars=${this.#droppedChars}\n\n`;
 		return body.length > 0 ? `${dropped}${body}` : dropped;
 	}
 

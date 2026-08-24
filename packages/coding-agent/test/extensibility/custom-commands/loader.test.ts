@@ -16,7 +16,7 @@ afterEach(async () => {
 
 describe("custom command loader", () => {
 	it("supports legacy and callable ArkType injection", async () => {
-		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-custom-command-loader-"));
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-custom-command-loader-"));
 		const commandDir = path.join(tempRoot, "commands", "arktype-compat");
 		await fs.mkdir(commandDir, { recursive: true });
 		const commandPath = path.join(commandDir, "index.js");

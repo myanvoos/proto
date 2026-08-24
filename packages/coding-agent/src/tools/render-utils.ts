@@ -184,7 +184,8 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
 	if (expanded) return "";
 	if (hasMore === false) return "";
-	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Expand`, theme));
+	const chevron = theme.nav?.expand ?? "▸";
+	return theme.fg("dim", `${chevron} ${expandKeyHint()} expand`);
 }
 
 /**
@@ -266,7 +267,7 @@ export function formatErrorMessage(message: string | undefined, theme: Theme): s
 
 /**
  * Error message rendered as a subordinate detail line beneath a status header
- * that already carries the error icon (e.g. `✘ Write: <path>`). The header's
+ * that already carries the error icon (e.g. `Write: <path>`). The header's
  * icon already signals failure, so this omits the redundant error symbol and
  * "Error:" prefix that `formatErrorMessage` adds for standalone single-line
  * errors, indenting two columns to sit under the header title instead.

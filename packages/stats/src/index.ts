@@ -128,10 +128,10 @@ async function main(): Promise<void> {
 
 	if (values.help) {
 		console.log(`
-omp-stats - AI Usage Statistics Dashboard
+proto-stats - AI Usage Statistics Dashboard
 
 Usage:
-  omp-stats [options]
+  proto-stats [options]
 
 Options:
   -p, --port <port>  Port for the dashboard server (default: 3847)
@@ -141,10 +141,10 @@ Options:
   -h, --help         Show this help message
 
 Examples:
-  omp-stats              # Start dashboard server
-  omp-stats --json       # Print stats as JSON
-  omp-stats --host 0.0.0.0 # Explicitly expose on all IPv4 interfaces
-  omp-stats --sync       # Sync and show summary
+  proto-stats              # Start dashboard server
+  proto-stats --json       # Print stats as JSON
+  proto-stats --host 0.0.0.0 # Explicitly expose on all IPv4 interfaces
+  proto-stats --sync       # Sync and show summary
 `);
 		return;
 	}

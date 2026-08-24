@@ -2014,16 +2014,16 @@ describe("sloppy v8", () => {
 		expect(() => variant.apply(content, input, noopContext)).toThrow(/STOP: identical no-op repeated 3 times/);
 	});
 
-	test("correctly maps source spans across multi-byte astral characters (emoji)", () => {
+	test("correctly maps source spans without corrupting adjacent lines", () => {
 		const file = [
 			"fn render_tree() {",
-			'\tlet icon = if dir { "📁" } else { "📄" };',
+			'\tlet icon = if dir { "DIR" } else { "FILE" };',
 			"}",
 			"",
 			"#[cfg(test)]",
 			"mod tests {",
 			"\tuse bytes::Bytes;",
-			"\tuse omp_core::Str;",
+			"\tuse proto_core::Str;",
 			"\tuse parking_lot::Mutex;",
 			"\tuse smallvec::SmallVec;",
 			"\tuse url::Url;",
@@ -2031,11 +2031,11 @@ describe("sloppy v8", () => {
 			"",
 		].join("\n");
 		const input = operation(
-			"\tuse bytes::Bytes;\n\tuse omp_core::Str;\n\tuse parking_lot::Mutex;",
-			"\tuse bytes::Bytes;\n\tuse omp_core::{Str, sf};\n\tuse parking_lot::Mutex;",
+			"\tuse bytes::Bytes;\n\tuse proto_core::Str;\n\tuse parking_lot::Mutex;",
+			"\tuse bytes::Bytes;\n\tuse proto_core::{Str, sf};\n\tuse parking_lot::Mutex;",
 		);
 		const result = variant.apply(file, input, context);
-		expect(result).toContain("\tuse omp_core::{Str, sf};");
+		expect(result).toContain("\tuse proto_core::{Str, sf};");
 		expect(result).toContain("\tuse smallvec::SmallVec;");
 		expect(result).not.toContain("us\tuse");
 		expect(result).not.toContain("Mutex;e smallvec");

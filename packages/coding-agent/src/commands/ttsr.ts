@@ -59,17 +59,17 @@ export default class Ttsr extends Command {
 	};
 
 	static examples = [
-		"omp ttsr list",
-		"omp ttsr test 'const x: any = 1'",
-		"omp ttsr test src/foo.ts",
-		"omp ttsr test --file src/foo.ts",
-		"omp ttsr test --file src/foo.ts --source text",
-		"omp ttsr test --rule .omp/rules/no-any.md --source tool --path src/foo.ts 'const x: any = 1'",
-		"echo 'Box::leak(&mut v)' | omp ttsr test --file - --path src/lib.rs",
-		"omp ttsr test --source tool --tool edit --path src/foo.ts 'const x: any = 1'",
-		"omp ttsr scan",
-		"omp ttsr scan src/",
-		"omp ttsr scan -r .omp/rules/no-any.md src/",
+		"proto ttsr list",
+		"proto ttsr test 'const x: any = 1'",
+		"proto ttsr test src/foo.ts",
+		"proto ttsr test --file src/foo.ts",
+		"proto ttsr test --file src/foo.ts --source text",
+		"proto ttsr test --rule .proto/rules/no-any.md --source tool --path src/foo.ts 'const x: any = 1'",
+		"echo 'Box::leak(&mut v)' | proto ttsr test --file - --path src/lib.rs",
+		"proto ttsr test --source tool --tool edit --path src/foo.ts 'const x: any = 1'",
+		"proto ttsr scan",
+		"proto ttsr scan src/",
+		"proto ttsr scan -r .proto/rules/no-any.md src/",
 	];
 
 	async run(): Promise<void> {

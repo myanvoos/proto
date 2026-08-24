@@ -50,7 +50,7 @@ describe("indexModelsByRequestId (auth-gateway catalog)", () => {
 	});
 
 	test("gateway registry ignores local models.yml credential and routing overrides", async () => {
-		using tempDir = TempDir.createSync("@omp-auth-gateway-catalog-");
+		using tempDir = TempDir.createSync("@proto-auth-gateway-catalog-");
 		const modelsPath = tempDir.join("models.yml");
 		// anthropic: a plain credential/baseUrl override (no transport) — the
 		// reviewer's leak. openai: a pi-native gateway route — the self-routing loop.

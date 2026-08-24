@@ -78,7 +78,7 @@ async function shutdown(client: DaemonBrokerClient, broker: Promise<void>, activ
 
 describe("broker list", () => {
 	it("returns active daemons first and caps recovered terminal history by real exit time", async () => {
-		using tempDir = TempDir.createSync("@omp-launch-list-");
+		using tempDir = TempDir.createSync("@proto-launch-list-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);

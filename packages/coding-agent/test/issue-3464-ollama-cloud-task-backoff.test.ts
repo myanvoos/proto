@@ -37,7 +37,7 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 	let session: AgentSession | undefined;
 
 	beforeAll(async () => {
-		tempDir = TempDir.createSync("@omp-issue-3464-");
+		tempDir = TempDir.createSync("@proto-issue-3464-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
 		authStorage.setRuntimeApiKey("openai", "openai-test-key");

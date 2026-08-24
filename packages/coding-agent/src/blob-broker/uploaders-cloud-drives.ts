@@ -295,7 +295,7 @@ function createGoogleDriveUploader(config: DestinationRuntimeConfig): BlobUpload
 	return {
 		destination: "google-drive",
 		async upload(request) {
-			const boundary = `omp-${crypto.randomUUID()}`;
+			const boundary = `proto-${crypto.randomUUID()}`;
 			const metadata: { name: string; parents?: string[] } = { name: fileNameFor(request) };
 			if (folderId) metadata.parents = [folderId];
 			const body = new Blob([

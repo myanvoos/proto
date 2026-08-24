@@ -18,7 +18,7 @@ describe("SessionManager.continueRecent /new boundary", () => {
 	beforeEach(async () => {
 		// Deterministic, non-TTY terminal id so breadcrumb read/write is stable.
 		process.env.TMUX_PANE = "%new-boundary-test";
-		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-new-boundary-"));
+		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-new-boundary-"));
 		setAgentDir(testAgentDir);
 		cwd = path.join(testAgentDir, "project");
 		fs.mkdirSync(cwd, { recursive: true });

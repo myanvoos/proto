@@ -189,7 +189,7 @@ describe("cloud-drive blob uploaders", () => {
 		expect(upload.init.method).toBe("POST");
 		expect(header(upload, "authorization")).toBe("Bearer google-token");
 		const contentType = header(upload, "content-type");
-		expect(contentType).toMatch(/^multipart\/related; boundary=omp-/);
+		expect(contentType).toMatch(/^multipart\/related; boundary=proto-/);
 		const boundary = contentType?.slice("multipart/related; boundary=".length);
 		const multipart = await upload.init.body.text();
 		expect(multipart).toContain(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8`);

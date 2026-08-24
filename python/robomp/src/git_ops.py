@@ -115,7 +115,7 @@ _BAD_OBJECT_REF_RE = re.compile(
 )
 _FETCH_PRUNE_REPAIR_ATTEMPTS = 8
 
-_SHARED_OMP_GID = 2000
+_SHARED_PROTO_GID = 2000
 _AGENT_HOME = Path("/srv/agent-home")
 
 
@@ -127,7 +127,7 @@ def _slot_subprocess_kwargs(slot_uid: int | None) -> dict[str, Any]:
     if not _slot_permissions_active(slot_uid):
         return {}
     assert slot_uid is not None
-    return {"user": slot_uid, "group": slot_uid, "extra_groups": [_SHARED_OMP_GID], "umask": 0o002}
+    return {"user": slot_uid, "group": slot_uid, "extra_groups": [_SHARED_PROTO_GID], "umask": 0o002}
 
 
 def _append_safe_directory(env: dict[str, str], repo_dir: Path) -> None:

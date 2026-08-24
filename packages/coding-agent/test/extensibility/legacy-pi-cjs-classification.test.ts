@@ -14,7 +14,7 @@ afterAll(async () => {
 });
 
 async function writePackage(files: Record<string, string>): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cjs-classification-"));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-cjs-classification-"));
 	tempRoots.push(dir);
 	for (const rel in files) {
 		const abs = path.join(dir, rel);

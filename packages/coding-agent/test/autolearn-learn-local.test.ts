@@ -24,7 +24,7 @@ describe("learned-lesson storage (local backend)", () => {
 	let learnedFile: string;
 
 	beforeEach(async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-learned-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-learned-"));
 		agentDir = path.join(tmp, "agent");
 		projCwd = path.join(tmp, "proj");
 		learnedFile = path.join(getMemoryRoot(agentDir, projCwd), "learned.md");
@@ -152,7 +152,7 @@ describe("learned-lesson read-back", () => {
 	let agentDir: string;
 
 	beforeEach(async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-learned-read-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-learned-read-"));
 		agentDir = path.join(tmp, "agent");
 	});
 	afterEach(async () => {
@@ -321,7 +321,7 @@ describe("learn tool (local backend)", () => {
 	let learnedFile: string;
 
 	beforeEach(async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-learn-local-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-learn-local-"));
 		agentDir = path.join(tmp, "agent");
 		projCwd = path.join(tmp, "proj");
 		learnedFile = path.join(getMemoryRoot(agentDir, projCwd), "learned.md");

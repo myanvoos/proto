@@ -57,8 +57,8 @@ describe("MCP server-name autocomplete", () => {
 	let agentDir = "";
 
 	beforeEach(async () => {
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-autocomplete-project-"));
-		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-autocomplete-agent-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-autocomplete-project-"));
+		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-autocomplete-agent-"));
 		setProjectDir(projectDir);
 		setAgentDir(agentDir);
 	});

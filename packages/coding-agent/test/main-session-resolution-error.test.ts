@@ -108,7 +108,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: 'Session "019ea530-0000-7000-0000-000000000000" not found.',
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("proto --resume"),
 			});
 
 			// Confirm it's the exported class so `runRootCommand`'s `instanceof` check works.
@@ -124,7 +124,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 	});
 
 	it("rejects --resume with unknown id instead of falling back to latest persisted session", async () => {
-		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-resume-unknown-id-"));
+		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-resume-unknown-id-"));
 		const sessionDir = path.join(cwd, "sessions");
 		const missingId = "019ea530-ffff-7000-8000-000000000000";
 		try {
@@ -139,7 +139,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: `Session "${missingId}" not found.`,
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("proto --resume"),
 			});
 		} finally {
 			await fsp.rm(cwd, { recursive: true, force: true });
@@ -147,7 +147,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 	});
 
 	it("rejects --continue followed by an unknown session id instead of falling back to latest", async () => {
-		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-continue-unknown-id-"));
+		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-continue-unknown-id-"));
 		const sessionDir = path.join(cwd, "sessions");
 		const missingId = "019ea530-ffff-7000-8000-000000000000";
 		try {
@@ -161,7 +161,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: `Session "${missingId}" not found.`,
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("proto --resume"),
 			});
 		} finally {
 			await fsp.rm(cwd, { recursive: true, force: true });
@@ -180,7 +180,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 			).rejects.toMatchObject({
 				name: "SessionResolutionError",
 				message: 'Session "019ea530-0000-7000-0000-000000000000" not found.',
-				hint: expect.stringContaining("omp --resume"),
+				hint: expect.stringContaining("proto --resume"),
 			});
 		} finally {
 			vi.restoreAllMocks();

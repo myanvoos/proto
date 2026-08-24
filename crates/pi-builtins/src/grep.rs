@@ -26,7 +26,7 @@ use crate::host::{Host, Utility, util};
 /// off. Unset, JIT stays on everywhere except macOS, where PCRE2's SLJIT
 /// executable allocator can fault while compiling patterns (issue #7399).
 pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
-	match host.var("OMP_PCRE2_JIT") {
+	match host.var("PROTO_PCRE2_JIT") {
 		Some(value) if !value.is_empty() => value != "0" && !value.eq_ignore_ascii_case("false"),
 		_ => !cfg!(target_os = "macos"),
 	}

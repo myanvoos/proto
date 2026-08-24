@@ -155,7 +155,7 @@ export function nativeLibraryPathOverlay(
 	platform: NodeJS.Platform,
 ): Record<string, string> {
 	if (platform !== "linux") return {};
-	const native = env.OMP_NATIVE_LIBRARY_PATH;
+	const native = env.PROTO_NATIVE_LIBRARY_PATH;
 	if (typeof native !== "string" || native.length === 0) return {};
 	const inherited = env.LD_LIBRARY_PATH;
 	return { LD_LIBRARY_PATH: inherited ? `${inherited}:${native}` : native };
@@ -322,7 +322,7 @@ interface StderrCapture {
 /** Create a file-backed stderr target that does not pin Bun's event loop. */
 function createStderrCapture(exitLabel: string): StderrCapture {
 	try {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-worker-stderr-"));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-worker-stderr-"));
 		const fd = fs.openSync(path.join(dir, "stderr.log"), "w+");
 		const cleanupOnExit = (): void => cleanupStderrCapture({ target: fd, fd, dir, cleanupOnExit: null });
 		process.once("exit", cleanupOnExit);

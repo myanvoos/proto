@@ -9,40 +9,38 @@ describe("renderOutputBlock", () => {
 		await initTheme();
 	});
 
-	it("reserves symmetric default padding inside content borders", async () => {
+	it("draws content rows on the default-padded left rail", async () => {
 		const theme = (await getThemeByName("dark"))!;
 		const lines = renderOutputBlock(
 			{
 				width: 16,
-				applyBg: false,
 				sections: [{ lines: ["abcdefghijklmnop"] }],
 			},
 			theme,
 		).map(line => stripVTControlCharacters(line));
 
-		expect(lines.filter(line => line.startsWith("│"))).toEqual(["│ abcdefghijkl │", "│ mnop         │"]);
+		expect(lines).toEqual(["▏  abcdefghijklm", "▏  nop"]);
 	});
 
-	it("keeps explicitly flush content flush on both sides", async () => {
+	it("keeps explicitly flush content flush against the rail", async () => {
 		const theme = (await getThemeByName("dark"))!;
 		const lines = renderOutputBlock(
 			{
 				width: 16,
-				applyBg: false,
 				contentPaddingLeft: 0,
 				sections: [{ lines: ["abcdefghijklmn"] }],
 			},
 			theme,
 		).map(line => stripVTControlCharacters(line));
 
-		expect(lines.filter(line => line.startsWith("│"))).toEqual(["│abcdefghijklmn│"]);
+		expect(lines).toEqual(["▏ abcdefghijklmn"]);
 	});
 
-	it("budgets collapsed Markdown rows against the padded block width", async () => {
+	it("budgets collapsed Markdown rows against the railed block width", async () => {
 		const theme = (await getThemeByName("dark"))!;
 		const lines = renderMarkdownCell(
 			{
-				content: "x".repeat(27),
+				content: "x".repeat(54),
 				contentMaxLines: 1,
 				status: "complete",
 				title: "Read",
@@ -51,7 +49,8 @@ describe("renderOutputBlock", () => {
 			theme,
 		).map(line => stripVTControlCharacters(line));
 
-		expect(lines[1]).toBe(`│ ${"x".repeat(26)} │`);
-		expect(lines[2]).toStartWith("│ … 1 more line");
+		expect(lines[0]?.trim()).toBe("▪ Read");
+		expect(lines[1]).toBe(`▏  ${"x".repeat(27)}`);
+		expect(lines.slice(2).some(line => line.startsWith("▏  … 1 more line"))).toBe(true);
 	});
 });

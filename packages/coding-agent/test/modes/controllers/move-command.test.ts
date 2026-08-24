@@ -46,8 +46,8 @@ describe("CommandController /move", () => {
 	});
 
 	it("relocates the active session before re-scoping cwd-derived state", async () => {
-		const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-source-"));
-		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-target-"));
+		const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-move-source-"));
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-move-target-"));
 		try {
 			const { ctx, state, present } = createMoveContext(sourceDir);
 			const controller = new CommandController(ctx);
@@ -69,8 +69,8 @@ describe("CommandController /move", () => {
 	});
 
 	it("aborts /move when pending settings flush fails, leaving cwd untouched", async () => {
-		const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-source-"));
-		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-move-target-"));
+		const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-move-source-"));
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-move-target-"));
 		try {
 			const { ctx, state } = createMoveContext(sourceDir, async () => {
 				throw new Error("disk full");

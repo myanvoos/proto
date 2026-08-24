@@ -15,7 +15,7 @@ import { getProjectAgentDir, getProjectDir, removeSyncWithRetries, setProjectDir
 let testTmpDir: string;
 
 beforeAll(() => {
-	testTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ttsr-tests-"));
+	testTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-ttsr-tests-"));
 });
 
 afterAll(() => {
@@ -96,7 +96,7 @@ function cleanupTmp(): void {
 	}
 }
 
-describe("omp ttsr", () => {
+describe("proto ttsr", () => {
 	afterEach(() => {
 		restoreStreams();
 		cleanupTmp();

@@ -401,7 +401,7 @@ export class RelayBridge {
 		}
 		// Relay-private claim: the omp tab worker marks the page it was spawned
 		// to drive. Never forwarded — real Chrome rejects the unknown method.
-		if (msg.method === "OMP.claimTarget") {
+		if (msg.method === "PROTO.claimTarget") {
 			this.#claimTab(conn, tabId);
 			this.#reply(conn, msg, {});
 			return;
@@ -605,7 +605,7 @@ export class RelayBridge {
 				this.#reply(conn, msg, {});
 				return;
 			case "Target.createBrowserContext":
-				this.#replyError(conn, msg, "Browser contexts are not supported by the omp browser relay");
+				this.#replyError(conn, msg, "Browser contexts are not supported by the proto browser relay");
 				return;
 			default:
 				this.#replyError(conn, msg, `'${msg.method}' wasn't found`, CDP_ERROR_METHOD_NOT_FOUND);

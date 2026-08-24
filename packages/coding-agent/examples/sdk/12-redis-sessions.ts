@@ -27,7 +27,7 @@ await redis.ping();
 // list) work without per-call network round-trips.
 const storage = await RedisSessionStorage.create({
 	client: redis,
-	prefix: "omp:sessions:", // optional, this is the default
+	prefix: "proto:sessions:", // optional, this is the default
 });
 
 const sessionDir = "/sessions/my-project";

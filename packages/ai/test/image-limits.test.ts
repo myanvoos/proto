@@ -78,7 +78,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { $which, removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { e2eApiKey } from "./oauth";
 
-const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omp-temp-images-"));
+const TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "proto-temp-images-"));
 
 /**
  * Generate a valid PNG image of specified dimensions using ImageMagick

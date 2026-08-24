@@ -55,7 +55,7 @@ function validateClaudeRegistryFormat(content: string): Record<string, unknown> 
 // Matches getConfigDirName() — single source of truth is in @oh-my-pi/pi-utils,
 // but we know the value is ".omp" and hardcoding it here keeps tests free of
 // native-addon transitive imports.
-const OMP_CONFIG_DIR = ".omp";
+const PROTO_CONFIG_DIR = ".proto";
 
 function makeEntry(installPath: string, version = "1.0.0"): InstalledPluginEntry {
 	return {
@@ -74,8 +74,8 @@ let tmpHome: string;
 let ompRegistryPath: string;
 
 beforeEach(() => {
-	tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omp-discovery-test-"));
-	ompRegistryPath = path.join(tmpHome, OMP_CONFIG_DIR, "plugins", "installed_plugins.json");
+	tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "proto-discovery-test-"));
+	ompRegistryPath = path.join(tmpHome, PROTO_CONFIG_DIR, "plugins", "installed_plugins.json");
 	fs.mkdirSync(path.dirname(ompRegistryPath), { recursive: true });
 });
 
@@ -85,18 +85,18 @@ afterEach(() => {
 
 // ── Path contract ─────────────────────────────────────────────────────────────
 
-describe("OMP registry path contract", () => {
-	it("OMP registry lives at home/.omp/plugins/installed_plugins.json", () => {
+describe("PROTO registry path contract", () => {
+	it("PROTO registry lives at home/.proto/plugins/installed_plugins.json", () => {
 		// This is the path that listClaudePluginRoots reads.
 		// Any change to this path must be reflected in helpers.ts.
-		const expected = path.join(tmpHome, ".omp", "plugins", "installed_plugins.json");
+		const expected = path.join(tmpHome, ".proto", "plugins", "installed_plugins.json");
 		expect(ompRegistryPath).toBe(expected);
 	});
 });
 
 // ── Format compatibility ───────────────────────────────────────────────────────
 
-describe("OMP registry format compatibility with Claude parser", () => {
+describe("PROTO registry format compatibility with Claude parser", () => {
 	it("empty registry written by writeInstalledPluginsRegistry passes validator", async () => {
 		await writeInstalledPluginsRegistry(ompRegistryPath, { version: 2, plugins: {} });
 
@@ -142,7 +142,7 @@ describe("OMP registry format compatibility with Claude parser", () => {
 
 // ── Round-trip ────────────────────────────────────────────────────────────────
 
-describe("OMP registry round-trip", () => {
+describe("PROTO registry round-trip", () => {
 	it("reads back what was written — single plugin", async () => {
 		const id = buildPluginId("hello-plugin", "test-marketplace");
 		const entry = makeEntry("/tmp/fake-plugin-path");
@@ -208,12 +208,12 @@ describe("OMP registry round-trip", () => {
 // plugin ID appears in both registries. We cannot call that function here, but we
 // can verify the data shapes that the replacement logic reads are correct.
 
-describe("OMP precedence contract (registry structure)", () => {
-	it("same plugin ID in both registries — OMP entry has required fields for deduplication", () => {
+describe("PROTO precedence contract (registry structure)", () => {
+	it("same plugin ID in both registries — PROTO entry has required fields for deduplication", () => {
 		// The replacement logic: roots.filter(r => r.id !== pluginId) keyed by id.
 		// OMP entries must have installPath so they can be added to roots[].
 		const id = buildPluginId("shared-plugin", "common-mkt");
-		const ompEntry = makeEntry("/omp/cached/path");
+		const ompEntry = makeEntry("/proto/cached/path");
 
 		// OMP registry entry has installPath (required by listClaudePluginRoots)
 		expect(ompEntry.installPath).toBeTruthy();

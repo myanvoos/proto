@@ -44,6 +44,13 @@ function isCommentNoise(line: string, isLastLine: boolean): boolean {
  * sentinel lines outside code fences (see {@link isCommentNoise}); prose-only
  * mode additionally elides fenced code down to a trailing ellipsis.
  */
+const ELISION_MARKER_PATTERN = /\.\.\.(?: \((\d+) lines? of code\))?$/;
+
+function elisionMarker(hidden: number): string {
+	if (hidden <= 0) return "...";
+	return `... (${hidden} ${hidden === 1 ? "line" : "lines"} of code)`;
+}
+
 export function formatThinkingForDisplay(text: string, proseOnly: boolean): string {
 	if (!text) return text;
 	const hasComment = text.includes("<!--");
@@ -59,27 +66,28 @@ export function formatThinkingForDisplay(text: string, proseOnly: boolean): stri
 	let inFence = false;
 	let fenceChar = "";
 	let fenceLen = 0;
+	let fenceHiddenLines = 0;
 
 	const FENCE = /^( {0,3})([`~]{3,})/;
-	const appendEllipsis = () => {
+	const appendElision = (hidden: number) => {
 		let lastLineIdx = resultLines.length - 1;
 		while (lastLineIdx >= 0 && resultLines[lastLineIdx]!.trim() === "") {
 			lastLineIdx--;
 		}
 
-		if (lastLineIdx >= 0) {
-			const lastLine = resultLines[lastLineIdx]!;
-			const trimmed = lastLine.trimEnd();
-			if (trimmed.endsWith("...")) {
-				resultLines[lastLineIdx] = trimmed;
-			} else if (trimmed.endsWith(".")) {
-				resultLines[lastLineIdx] = `${trimmed.slice(0, -1)}...`;
-			} else {
-				resultLines[lastLineIdx] = `${trimmed}...`;
-			}
-		} else {
-			resultLines.push("...");
+		if (lastLineIdx < 0) {
+			resultLines.push(elisionMarker(hidden));
+			return;
 		}
+		const trimmed = resultLines[lastLineIdx]!.trimEnd();
+		const existing = ELISION_MARKER_PATTERN.exec(trimmed);
+		if (existing) {
+			const already = existing[1] === undefined ? 0 : Number(existing[1]);
+			resultLines[lastLineIdx] = trimmed.slice(0, existing.index) + elisionMarker(already + hidden);
+			return;
+		}
+		const stem = trimmed.endsWith(".") ? trimmed.slice(0, -1) : trimmed;
+		resultLines[lastLineIdx] = stem + elisionMarker(hidden);
 	};
 
 	for (let i = 0; i < lines.length; i++) {
@@ -97,6 +105,12 @@ export function formatThinkingForDisplay(text: string, proseOnly: boolean): stri
 				inFence = false;
 				fenceChar = "";
 				fenceLen = 0;
+				if (proseOnly) {
+					appendElision(fenceHiddenLines);
+					fenceHiddenLines = 0;
+				}
+			} else if (proseOnly) {
+				fenceHiddenLines++;
 			}
 			// Prose mode skips all fence lines; raw mode keeps them verbatim
 			// (comment markers inside fences are code, not noise).
@@ -116,16 +130,14 @@ export function formatThinkingForDisplay(text: string, proseOnly: boolean): stri
 				inFence = true;
 				fenceChar = ch;
 				fenceLen = marker.length;
-				if (proseOnly) {
-					appendEllipsis();
-				} else {
-					resultLines.push(line);
-				}
+				fenceHiddenLines = 0;
+				if (!proseOnly) resultLines.push(line);
 				continue;
 			}
 		}
 		resultLines.push(line);
 	}
+	if (inFence && proseOnly) appendElision(fenceHiddenLines);
 
 	const formatted = resultLines.join("\n");
 	if (proseOnly) {

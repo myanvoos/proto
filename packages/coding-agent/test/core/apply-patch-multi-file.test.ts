@@ -36,7 +36,7 @@ let tempDir: string;
 
 beforeEach(async () => {
 	resetSettingsForTest();
-	tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-apply-patch-multi-"));
+	tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-apply-patch-multi-"));
 	await Settings.init({ inMemory: true, cwd: tempDir });
 });
 

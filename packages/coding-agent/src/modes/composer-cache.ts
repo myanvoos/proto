@@ -137,7 +137,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 		return undefined;
 	}
 	const quiet = field(rawPreferences, "quiet");
-	const composerShape = field(rawPreferences, "composerShape");
 	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
 	const maxInlineImages = field(rawPreferences, "maxInlineImages");
 	const scrollbackRebuild = field(rawPreferences, "scrollbackRebuild");
@@ -149,7 +148,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	const spellingAutocorrect = field(rawPreferences, "spellingAutocorrect");
 	if (
 		typeof quiet !== "boolean" ||
-		typeof composerShape !== "string" ||
 		typeof showHardwareCursor !== "boolean" ||
 		typeof maxInlineImages !== "number" ||
 		typeof scrollbackRebuild !== "boolean" ||
@@ -175,7 +173,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	return {
 		preferences: {
 			quiet,
-			composerShape,
 			showHardwareCursor,
 			maxInlineImages,
 			scrollbackRebuild,

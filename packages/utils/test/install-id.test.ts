@@ -22,7 +22,7 @@ describe("getInstallId", () => {
 	beforeEach(async () => {
 		originalAgentDir = getAgentDir();
 		originalConfigDir = process.env.PI_CONFIG_DIR;
-		const slug = `omp-install-id-${Snowflake.next()}`;
+		const slug = `proto-install-id-${Snowflake.next()}`;
 		tempRoot = path.join(os.tmpdir(), slug);
 		await fs.mkdir(tempRoot, { recursive: true });
 		// Point the resolver's config root at the temp dir. Using PI_CONFIG_DIR

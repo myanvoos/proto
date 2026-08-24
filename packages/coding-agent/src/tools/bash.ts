@@ -44,6 +44,7 @@ import { resolveToCwd } from "./path-utils";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
+	expandKeyHint,
 	formatToolWorkingDirectory,
 	previewWindowRows,
 	replaceTabs,
@@ -1340,7 +1341,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const isTimeout = details?.timedOut === true;
 			const header =
 				config.showHeader === false
-					? undefined
+					? success || isPartial
+						? undefined
+						: renderStatusLine(
+								{
+									icon: isTimeout ? "warning" : "error",
+									title: "failed",
+									titleColor: isTimeout ? "warning" : "error",
+								},
+								uiTheme,
+							)
 					: renderStatusLine(
 							success
 								? {
@@ -1476,10 +1486,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							const previewBudget = Math.min(previewLines, previewWindow);
 							const result = truncateToVisualLines(textContent, previewBudget, outputBlockContentWidth(width));
 							if (result.skippedCount > 0) {
+								const expandHint = expandKeyHint().toLowerCase();
 								outputLines.push(
 									uiTheme.fg(
 										"dim",
-										`… (${result.skippedCount} earlier lines, showing ${result.visualLines.length} of ${result.skippedCount + result.visualLines.length}) (ctrl+o to expand)`,
+										`… (${result.skippedCount} earlier lines, showing ${result.visualLines.length} of ${result.skippedCount + result.visualLines.length})${expandHint ? ` (${expandHint} to expand)` : ""}`,
 									),
 								);
 							}

@@ -16,11 +16,11 @@ describe("$which", () => {
 	});
 
 	it.skipIf(process.platform === "win32")("uses the current process PATH for each cached lookup", () => {
-		const firstDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-which-first-"));
-		const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-which-second-"));
+		const firstDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-which-first-"));
+		const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-which-second-"));
 		tempDirs.push(firstDir, secondDir);
 
-		const command = `omp-which-${process.pid}`;
+		const command = `proto-which-${process.pid}`;
 		const firstExecutable = path.join(firstDir, command);
 		const secondExecutable = path.join(secondDir, command);
 		fs.writeFileSync(firstExecutable, "#!/bin/sh\n");

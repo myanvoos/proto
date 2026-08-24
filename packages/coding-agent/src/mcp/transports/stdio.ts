@@ -343,7 +343,7 @@ export async function resolveStdioSpawnCommand(
 	// is not a batch script. Everything else (resolved .cmd/.bat, or an
 	// unresolved extensionless command) goes through cmd.exe so PATHEXT runs.
 	// Windows stdio servers stay attached so wrapper grandchildren inherit the
-	// same console session. Only hide the child when OMP itself has no console
+	// same console session. Only hide the child when PROTO itself has no console
 	// to share; CREATE_NO_WINDOW breaks console inheritance for nested wrappers.
 	const detached = false;
 	const needsCmdExe = resolved === null || isWindowsBatchCommand(resolvedCommand);

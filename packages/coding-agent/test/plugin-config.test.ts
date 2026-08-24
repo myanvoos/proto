@@ -12,9 +12,9 @@ describe("plugin config", () => {
 	let lockfile: string;
 
 	beforeEach(async () => {
-		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-plugin-config-"));
+		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "proto-plugin-config-"));
 		pluginsDir = path.join(tmpRoot, "plugins");
-		lockfile = path.join(pluginsDir, "omp-plugins.lock.json");
+		lockfile = path.join(pluginsDir, "proto-plugins.lock.json");
 
 		spyOn(piUtils, "getPluginsDir").mockReturnValue(pluginsDir);
 		spyOn(piUtils, "getPluginsLockfile").mockReturnValue(lockfile);
@@ -57,7 +57,7 @@ describe("plugin config", () => {
 	});
 
 	test("resolves marketplace settings without restoring duplicate list entries", async () => {
-		const pluginName = "omp-commit";
+		const pluginName = "proto-commit";
 		const installPath = path.join(pluginsDir, "cache", pluginName);
 		const pluginPath = path.join(pluginsDir, "node_modules", pluginName);
 		await Bun.write(
@@ -65,7 +65,7 @@ describe("plugin config", () => {
 			JSON.stringify({
 				name: pluginName,
 				version: "1.0.0",
-				omp: {
+				proto: {
 					version: "1.0.0",
 					settings: {
 						mainBranchProtection: {
@@ -83,7 +83,7 @@ describe("plugin config", () => {
 			JSON.stringify({
 				version: 2,
 				plugins: {
-					"omp-commit@market": [
+					"proto-commit@market": [
 						{
 							scope: "user",
 							installPath,
@@ -116,25 +116,25 @@ describe("plugin config", () => {
 	async function writeManifest(dir: string, manifest: Record<string, unknown>): Promise<void> {
 		await Bun.write(
 			path.join(dir, "package.json"),
-			JSON.stringify({ name: "omp-commit", version: "2.0.0", ...manifest }),
+			JSON.stringify({ name: "proto-commit", version: "2.0.0", ...manifest }),
 		);
 	}
 
 	async function installProjectMarketplacePlugin(schemaDefault: string, enabled = true): Promise<string> {
-		const installPath = path.join(tmpRoot, "cache", `omp-commit-project-${schemaDefault}`);
+		const installPath = path.join(tmpRoot, "cache", `proto-commit-project-${schemaDefault}`);
 		await writeManifest(installPath, {
-			omp: {
+			proto: {
 				version: "2.0.0",
 				settings: { splitMode: { type: "enum", values: ["auto", "manual"], default: schemaDefault } },
 			},
 		});
-		const projectRoot = path.join(tmpRoot, ".omp", "plugins");
+		const projectRoot = path.join(tmpRoot, ".proto", "plugins");
 		await fs.mkdir(path.join(projectRoot, "node_modules"), { recursive: true });
-		await fs.symlink(installPath, path.join(projectRoot, "node_modules", "omp-commit"), "dir");
+		await fs.symlink(installPath, path.join(projectRoot, "node_modules", "proto-commit"), "dir");
 		await Bun.write(
-			path.join(projectRoot, "omp-plugins.lock.json"),
+			path.join(projectRoot, "proto-plugins.lock.json"),
 			JSON.stringify({
-				plugins: { "omp-commit": { version: "2.0.0", enabledFeatures: null, enabled } },
+				plugins: { "proto-commit": { version: "2.0.0", enabledFeatures: null, enabled } },
 				settings: {},
 			}),
 		);
@@ -146,14 +146,14 @@ describe("plugin config", () => {
 
 		const manager = new PluginManager(tmpRoot);
 		expect(await manager.list()).toEqual([]);
-		expect((await manager.getPlugin("omp-commit"))?.manifest.settings?.splitMode?.default).toBe("auto");
+		expect((await manager.getPlugin("proto-commit"))?.manifest.settings?.splitMode?.default).toBe("auto");
 	});
 
 	test("prefers the active project plugin over a same-named user install", async () => {
 		// User install: same package name, different schema default.
-		const userPkg = path.join(pluginsDir, "node_modules", "omp-commit");
+		const userPkg = path.join(pluginsDir, "node_modules", "proto-commit");
 		await writeManifest(userPkg, {
-			omp: {
+			proto: {
 				version: "1.0.0",
 				settings: { splitMode: { type: "enum", values: ["auto", "manual"], default: "manual" } },
 			},
@@ -161,7 +161,7 @@ describe("plugin config", () => {
 		await Bun.write(
 			lockfile,
 			JSON.stringify({
-				plugins: { "omp-commit": { version: "1.0.0", enabledFeatures: null, enabled: true } },
+				plugins: { "proto-commit": { version: "1.0.0", enabledFeatures: null, enabled: true } },
 				settings: {},
 			}),
 		);
@@ -169,13 +169,13 @@ describe("plugin config", () => {
 		await installProjectMarketplacePlugin("auto");
 
 		const manager = new PluginManager(tmpRoot);
-		expect((await manager.getPlugin("omp-commit"))?.manifest.settings?.splitMode?.default).toBe("auto");
+		expect((await manager.getPlugin("proto-commit"))?.manifest.settings?.splitMode?.default).toBe("auto");
 	});
 
 	test("falls back to an enabled user plugin when the project copy is disabled", async () => {
-		const userPkg = path.join(pluginsDir, "node_modules", "omp-commit");
+		const userPkg = path.join(pluginsDir, "node_modules", "proto-commit");
 		await writeManifest(userPkg, {
-			omp: {
+			proto: {
 				version: "1.0.0",
 				settings: { splitMode: { type: "enum", values: ["auto", "manual"], default: "manual" } },
 			},
@@ -183,13 +183,13 @@ describe("plugin config", () => {
 		await Bun.write(
 			lockfile,
 			JSON.stringify({
-				plugins: { "omp-commit": { version: "1.0.0", enabledFeatures: null, enabled: true } },
+				plugins: { "proto-commit": { version: "1.0.0", enabledFeatures: null, enabled: true } },
 				settings: {},
 			}),
 		);
 		await installProjectMarketplacePlugin("auto", false);
 
 		const manager = new PluginManager(tmpRoot);
-		expect((await manager.getPlugin("omp-commit"))?.manifest.settings?.splitMode?.default).toBe("manual");
+		expect((await manager.getPlugin("proto-commit"))?.manifest.settings?.splitMode?.default).toBe("manual");
 	});
 });

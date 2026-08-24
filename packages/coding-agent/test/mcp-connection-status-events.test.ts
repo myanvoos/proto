@@ -14,7 +14,7 @@ describe("MCPManager connection status events", () => {
 	let workDir: string;
 
 	beforeEach(() => {
-		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-status-"));
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-status-"));
 	});
 
 	afterEach(() => {

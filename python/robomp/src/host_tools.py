@@ -1,4 +1,4 @@
-"""Host tools exposed to the agent through `omp_rpc.host_tool`.
+"""Host tools exposed to the agent through `proto_rpc.host_tool`.
 
 The agent uses these for any side effect that touches GitHub, the
 reproduction transcript store, or the orchestrator's bookkeeping.
@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
 
-from omp_rpc import HostTool, HostToolContext, RpcCommandError, host_tool
+from proto_rpc import HostTool, HostToolContext, RpcCommandError, host_tool
 
 from robomp import persona
 from robomp.config import Settings
@@ -70,7 +70,7 @@ class AbortController:
     """Mutable handoff between the `abort_task` host tool and the worker.
 
     `signal()` is called from the host-tool thread to request an irrecoverable
-    teardown of the omp subprocess. The worker pre-populates `stop` with a
+    teardown of the proto subprocess. The worker pre-populates `stop` with a
     thread-safe terminator (the same one used for queue cancellation and the
     hard-timeout watchdog), and inspects `triggered` after `prompt_and_wait`
     unblocks to decide whether the resulting `RpcError` is an intentional

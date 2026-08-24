@@ -36,7 +36,7 @@ describe("resolveExistingDirectory", () => {
 	let tmp: string;
 
 	beforeEach(async () => {
-		tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-resolve-"));
+		tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-resolve-"));
 	});
 	afterEach(async () => {
 		await fsp.rm(tmp, { recursive: true, force: true });
@@ -71,7 +71,7 @@ describe("MoveOverlay", () => {
 	});
 
 	beforeEach(async () => {
-		tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-overlay-"));
+		tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-overlay-"));
 		cwd = tmp;
 		fs.mkdirSync(path.join(tmp, "alpha"));
 		fs.mkdirSync(path.join(tmp, "beta"));
@@ -189,7 +189,7 @@ describe("MoveOverlay", () => {
 		// entry per keystroke. Populate with mostly files so the old code path
 		// would have stat'd all of them; the fix classifies via `Dirent` and only
 		// falls back to `statSync` on symlink entries.
-		const bulk = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-overlay-bulk-"));
+		const bulk = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-overlay-bulk-"));
 		try {
 			for (let i = 0; i < 60; i++) {
 				fs.writeFileSync(path.join(bulk, `f_${String(i).padStart(3, "0")}.txt`), "x");
@@ -220,7 +220,7 @@ describe("MoveOverlay", () => {
 		// whose isDirectory()/isFile()/isSymbolicLink() all report false. Those
 		// entries must fall back to statSync so /move still lists real
 		// directories on NFS/FUSE/older SMB.
-		const unknownFs = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-overlay-unknown-"));
+		const unknownFs = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-overlay-unknown-"));
 		try {
 			const realDir = path.join(unknownFs, "real-dir");
 			const realFile = path.join(unknownFs, "real-file.txt");

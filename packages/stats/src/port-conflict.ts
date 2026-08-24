@@ -7,7 +7,7 @@ import { $ } from "bun";
 const STATS_PROBE_TIMEOUT_MS = 500;
 const PROCESS_EXIT_POLL_MS = 50;
 const PROCESS_EXIT_POLLS = 10;
-const STATS_RUNTIME_IMAGES: Record<string, true> = { bun: true, node: true, omp: true, "omp-stats": true };
+const STATS_RUNTIME_IMAGES: Record<string, true> = { bun: true, node: true, proto: true, "proto-stats": true };
 
 interface PortHolder {
 	pid: number;
@@ -16,9 +16,9 @@ interface PortHolder {
 }
 
 /** Header stamped on every dashboard response so reuse probes can identify us. */
-export const STATS_DASHBOARD_HEADER = "x-omp-stats-dashboard";
+export const STATS_DASHBOARD_HEADER = "x-proto-stats-dashboard";
 /** Header recording the server's requested bind host so reuse cannot change its exposure scope. */
-export const STATS_DASHBOARD_HOSTNAME_HEADER = "x-omp-stats-hostname";
+export const STATS_DASHBOARD_HOSTNAME_HEADER = "x-proto-stats-hostname";
 
 /** Identity-header value for dashboards enforcing an explicit bind host and same-origin access. */
 export const STATS_DASHBOARD_SECURITY_VERSION = "3";
@@ -233,14 +233,14 @@ async function reclaimStatsPort(port: number): Promise<"retry"> {
 		.replace(/ \(deleted\)$/, "");
 	const normalizedCommand = holder.commandLine.toLowerCase().replaceAll("\\", "/");
 	const hasStatsIdentity =
-		normalizedImage === "omp-stats" ||
-		/(?:^|[/"'\s])omp-stats(?:\.exe)?(?:["'\s]|$)/.test(normalizedCommand) ||
+		normalizedImage === "proto-stats" ||
+		/(?:^|[/"'\s])proto-stats(?:\.exe)?(?:["'\s]|$)/.test(normalizedCommand) ||
 		/\/packages\/stats\/src\/index\.ts(?:["'\s]|$)/.test(normalizedCommand) ||
-		(normalizedImage === "omp" && /(?:^|\s)stats(?:\s|$)/.test(normalizedCommand)) ||
-		/(?:^|\/)omp(?:\.exe)?["'\s]+stats(?:["'\s]|$)/.test(normalizedCommand);
+		(normalizedImage === "proto" && /(?:^|\s)stats(?:\s|$)/.test(normalizedCommand)) ||
+		/(?:^|\/)proto(?:\.exe)?["'\s]+stats(?:["'\s]|$)/.test(normalizedCommand);
 	if (!STATS_RUNTIME_IMAGES[normalizedImage] || !hasStatsIdentity) {
 		throw new Error(
-			`Port ${port} is in use by ${holder.image} (PID ${holder.pid}), which is not identifiable as an omp stats dashboard; refusing to stop it.`,
+			`Port ${port} is in use by ${holder.image} (PID ${holder.pid}), which is not identifiable as an proto stats dashboard; refusing to stop it.`,
 		);
 	}
 

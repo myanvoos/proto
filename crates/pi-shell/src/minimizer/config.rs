@@ -132,7 +132,7 @@ impl MinimizerConfig {
 		}
 		let legacy_requested = resolve_legacy_filters(
 			opts.legacy_filters,
-			std::env::var("OMP_MINIMIZER_LEGACY_FILTERS")
+			std::env::var("PROTO_MINIMIZER_LEGACY_FILTERS")
 				.ok()
 				.as_deref(),
 		);
@@ -424,7 +424,7 @@ mod tests {
 	#[test]
 	fn explicit_disabled_option_overrides_enabled_settings_file() {
 		let path = std::env::temp_dir()
-			.join(format!("omp-minimizer-config-disabled-{}.toml", std::process::id()));
+			.join(format!("proto-minimizer-config-disabled-{}.toml", std::process::id()));
 		std::fs::write(&path, "enabled = true\n").unwrap();
 		let cfg = MinimizerConfig::from_options(&MinimizerOptions {
 			enabled: Some(false),
@@ -438,7 +438,7 @@ mod tests {
 	#[test]
 	fn explicit_legacy_true_overrides_disabled_settings_file() {
 		let path = std::env::temp_dir()
-			.join(format!("omp-minimizer-config-legacy-{}.toml", std::process::id()));
+			.join(format!("proto-minimizer-config-legacy-{}.toml", std::process::id()));
 		std::fs::write(&path, "legacy_filters = false\n").unwrap();
 		let cfg = MinimizerConfig::from_options(&MinimizerOptions {
 			enabled: Some(true),

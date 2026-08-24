@@ -95,8 +95,8 @@ describe("/mcp enable and disable", () => {
 	});
 
 	beforeEach(async () => {
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-toggle-project-"));
-		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-toggle-agent-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-toggle-project-"));
+		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-toggle-agent-"));
 		setProjectDir(projectDir);
 		setAgentDir(agentDir);
 	});

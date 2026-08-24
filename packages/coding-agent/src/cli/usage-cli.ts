@@ -550,13 +550,13 @@ function formatReloginDeadline(
 	if (remaining > RELOGIN_WARN_WINDOW_MS) return undefined;
 	const label = accountIdentityLabel(account, redaction);
 	if (remaining <= 0) {
-		return `  ${chalk.red(`⚠ ${label} — grant is past Anthropic's ~30d lifetime; re-login now`)}`;
+		return `  ${chalk.red(`${label} — grant is past Anthropic's ~30d lifetime; re-login now`)}`;
 	}
-	return `  ${chalk.yellow(`⚠ ${label} — re-login within ${formatDuration(remaining)} (Anthropic expires OAuth grants ~30d after login)`)}`;
+	return `  ${chalk.yellow(`${label} — re-login within ${formatDuration(remaining)} (Anthropic expires OAuth grants ~30d after login)`)}`;
 }
 
 /**
- * Tombstones worth a row in `omp usage`: OAuth credentials torn down
+ * Tombstones worth a row in `proto usage`: OAuth credentials torn down
  * automatically (refresh failure, upstream invalidation). Rows the user
  * replaced or deleted deliberately are lifecycle noise, not lost capacity.
  */
@@ -970,7 +970,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
 				process.stderr.write(
 					chalk.yellow(
-						`No usage history recorded${scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, omp usage).\n`,
+						`No usage history recorded${scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, proto usage).\n`,
 					),
 				);
 				process.exitCode = 1;
@@ -1071,7 +1071,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const message =
 				storedAccounts.length > 0
 					? `No usage data${scope}. Stored credentials are for providers without a usage endpoint.\n`
-					: `No credentials found${scope}. Run \`omp\` and use /login to add accounts.\n`;
+					: `No credentials found${scope}. Run \`proto\` and use /login to add accounts.\n`;
 			process.stderr.write(chalk.yellow(message));
 			process.exitCode = 1;
 			return;

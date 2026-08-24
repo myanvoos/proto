@@ -33,7 +33,7 @@ const BUN_EXEC = process.execPath;
 describe("MCP discovered-server reauth", () => {
 	describe("manager surfaces discovered configs for unconnected servers", () => {
 		it("exposes config + source for a discovered server that failed to connect", async () => {
-			const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-discovered-"));
+			const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-discovered-"));
 			const manager = new MCPManager(workDir);
 
 			// Exits before speaking MCP, so the connect attempt fails and the
@@ -82,7 +82,7 @@ describe("MCP discovered-server reauth", () => {
 		});
 
 		it("updateMCPServer round-trips a namespaced HTTP server with an oauth auth block", async () => {
-			const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-mcp-persist-"));
+			const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-mcp-persist-"));
 			const filePath = path.join(workDir, "mcp.json");
 
 			// Exactly the shape `/mcp reauth` writes: the discovered config plus

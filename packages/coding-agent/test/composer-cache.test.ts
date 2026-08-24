@@ -14,12 +14,12 @@ import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
 describe("composer startup cache", () => {
 	it("round-trips per-project UI, recent-session JSONL, and LSP speculation", async () => {
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-"));
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-composer-cache-"));
 		const otherCwd = `${cwd}-other`;
 		const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
 		const cacheDir = path.join(getAgentDir(), "cache", "composer", key);
 		try {
-			const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
+			const preferences = { ...COMPOSER_DEFAULTS, autocompleteMaxVisible: 7 };
 			const recentSessions = [{ name: "cached work", timeAgo: "3m ago" }];
 			const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
 			await Promise.all([

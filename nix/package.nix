@@ -48,7 +48,7 @@ let
         rustFlags = "-C target-cpu=x86-64-v2";
       };
     }
-    .${stdenv.hostPlatform.system} or (throw "Unsupported OMP platform: ${stdenv.hostPlatform.system}");
+    .${stdenv.hostPlatform.system} or (throw "Unsupported PROTO platform: ${stdenv.hostPlatform.system}");
   patchedDependencies = lib.mapAttrs (
     _: patch: source + "/${patch}"
   ) rootPackageJson.patchedDependencies;
@@ -57,7 +57,7 @@ let
     [ stdenv.cc.cc.lib ] ++ lib.optional (stdenv.cc.cc ? libgcc) stdenv.cc.cc.libgcc
   );
   bunRuntimeTemplate = stdenvNoCC.mkDerivation {
-    pname = "omp-bun-runtime-template";
+    pname = "proto-bun-runtime-template";
     inherit (bun) version;
     src = bun.src;
 
@@ -74,7 +74,7 @@ let
   };
 in
 stdenv.mkDerivation {
-  pname = "omp";
+  pname = "proto";
   inherit (packageJson) version;
   src = source;
 
@@ -164,7 +164,7 @@ stdenv.mkDerivation {
       signIfRequired "packages/natives/native/${platform.addon}"
     ''}
 
-    echo "Compiling OMP"
+    echo "Compiling PROTO"
     BUN_COMPILE_EXECUTABLE_PATH="${bunRuntimeTemplate}/libexec/bun" \
       bun --cwd="$PWD/packages/coding-agent" run build
 
@@ -174,9 +174,9 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 packages/coding-agent/dist/omp "$out/bin/omp"
-    install -Dm644 LICENSE "$out/share/doc/omp/LICENSE"
-    install -Dm644 THIRD-PARTY-NOTICES.txt "$out/share/doc/omp/THIRD-PARTY-NOTICES.txt"
+    install -Dm755 packages/coding-agent/dist/proto "$out/bin/proto"
+    install -Dm644 LICENSE "$out/share/doc/proto/LICENSE"
+    install -Dm644 THIRD-PARTY-NOTICES.txt "$out/share/doc/proto/THIRD-PARTY-NOTICES.txt"
 
     # The addon is gzip-compressed inside the compiled binary, so the store
     # paths it links against are invisible to the output reference scanner.
@@ -201,7 +201,7 @@ stdenv.mkDerivation {
   # inert shebang. Remove its hash before Nix scans output references; this
   # runs before Darwin's binary-signing fixup hook.
   preFixup = ''
-    remove-references-to -t ${bun} "$out/bin/omp"
+    remove-references-to -t ${bun} "$out/bin/proto"
   '';
 
   # Prebuilt addons that omp bun-installs into its cache at first use
@@ -221,9 +221,9 @@ stdenv.mkDerivation {
   # wrapProgram: the wrapper replaces $out/bin/omp with a script and moves the ELF
   # to $out/bin/.omp-wrapped.
   postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
-    patchelf --add-needed libstdc++.so.6 "$out/bin/omp"
-    wrapProgram "$out/bin/omp" \
-      --set-default OMP_NATIVE_LIBRARY_PATH "${lib.makeLibraryPath runtimeNativeLibraries}"
+    patchelf --add-needed libstdc++.so.6 "$out/bin/proto"
+    wrapProgram "$out/bin/proto" \
+      --set-default PROTO_NATIVE_LIBRARY_PATH "${lib.makeLibraryPath runtimeNativeLibraries}"
   '';
 
   disallowedReferences = [ bun ];
@@ -231,28 +231,28 @@ stdenv.mkDerivation {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    HOME="$TMPDIR" "$out/bin/omp" --smoke-test | grep -q "smoke-test: ok"
-    BUN_BE_BUN=1 "$out/bin/omp" -e \
+    HOME="$TMPDIR" "$out/bin/proto" --smoke-test | grep -q "smoke-test: ok"
+    BUN_BE_BUN=1 "$out/bin/proto" -e \
       'if (Bun.version !== "${bun.version}" || typeof Bun.Image !== "function") process.exit(1)'
     ${lib.optionalString stdenv.hostPlatform.isLinux ''
       # The addons are dlopen'd, so prove the advertised directories actually
       # resolve the libraries rather than merely carrying a plausible string.
-      env -u LD_LIBRARY_PATH BUN_BE_BUN=1 "$out/bin/omp" -e \
-        'const {dlopen}=require("bun:ffi");const dirs=(process.env.OMP_NATIVE_LIBRARY_PATH||"").split(":").filter(Boolean);const need={"libstdc++.so.6":{__cxa_demangle:{args:["ptr","ptr","ptr","ptr"],returns:"ptr"}},"libgcc_s.so.1":{_Unwind_Backtrace:{args:["ptr","ptr"],returns:"i32"}}};for(const lib of Object.keys(need)){let ok=false;for(const d of dirs){try{dlopen(d+"/"+lib,need[lib]);ok=true;break}catch(e){}}if(!ok){console.error("unresolved: "+lib);process.exit(1)}}'
+      env -u LD_LIBRARY_PATH BUN_BE_BUN=1 "$out/bin/proto" -e \
+        'const {dlopen}=require("bun:ffi");const dirs=(process.env.PROTO_NATIVE_LIBRARY_PATH||"").split(":").filter(Boolean);const need={"libstdc++.so.6":{__cxa_demangle:{args:["ptr","ptr","ptr","ptr"],returns:"ptr"}},"libgcc_s.so.1":{_Unwind_Backtrace:{args:["ptr","ptr"],returns:"i32"}}};for(const lib of Object.keys(need)){let ok=false;for(const d of dirs){try{dlopen(d+"/"+lib,need[lib]);ok=true;break}catch(e){}}if(!ok){console.error("unresolved: "+lib);process.exit(1)}}'
       # The libstdc++ preload (see postFixup) must survive: without it addons the
       # main process dlopen's directly fail to resolve libstdc++.so.6 on NixOS.
       # wrapProgram moved the real ELF to .omp-wrapped.
-      patchelf --print-needed "$out/bin/.omp-wrapped" | grep -q '^libstdc++\.so\.6$'
+      patchelf --print-needed "$out/bin/.proto-wrapped" | grep -q '^libstdc++\.so\.6$'
     ''}
     runHook postInstallCheck
   '';
 
   meta = {
     description = "Terminal-based coding agent with multi-model support";
-    homepage = "https://omp.sh";
+    homepage = "https://proto.sh";
     changelog = "https://github.com/can1357/oh-my-pi/releases/tag/v${packageJson.version}";
     license = lib.licenses.mit;
-    mainProgram = "omp";
+    mainProgram = "proto";
     platforms = [
       "aarch64-darwin"
       "aarch64-linux"

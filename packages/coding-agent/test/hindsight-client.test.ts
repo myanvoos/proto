@@ -37,7 +37,7 @@ describe("HindsightApi timestamp serialization", () => {
 		const bodies = captureRequestBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
 
-		await client.retain("omp", "evening memory", {
+		await client.retain("proto", "evening memory", {
 			timestamp: new Date(2026, 5, 12, 19, 17, 0),
 		});
 
@@ -51,7 +51,7 @@ describe("HindsightApi timestamp serialization", () => {
 		const bodies = captureRequestBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
 
-		await client.retain("omp", "evening memory", {
+		await client.retain("proto", "evening memory", {
 			timestamp: "2026-06-12T19:17:00+08:00",
 		});
 

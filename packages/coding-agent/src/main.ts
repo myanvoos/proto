@@ -52,7 +52,7 @@ import {
 	preloadPluginRoots,
 	resolveActiveProjectRegistryPath,
 } from "./discovery/helpers";
-import { injectOmpExtensionCliRoots } from "./discovery/omp-extension-roots";
+import { injectOmpExtensionCliRoots } from "./discovery/proto-extension-roots";
 import { formatExtensionLoadNotifications } from "./extensibility/extensions/load-errors";
 import { loadExtensions } from "./extensibility/extensions/loader";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
@@ -540,19 +540,13 @@ async function runInteractiveMode(
 		await setupWizard.runSetupWizard(mode, setupScenes);
 	}
 
-	if (setupWizard && setupScenes.length > 0) {
-		await setupWizard.runSetupWizard(mode, setupScenes);
-	}
-
 	// Consume failures immediately, but defer any banner until the transcript is stable.
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
-	// Cold-launch cleanup: the first paint already clears native history, and this
-	// replay replaces the welcome/startup frame with the resumed/new transcript.
-	// Every in-process session load also uses `clearTerminalHistory`; cold launch
-	// follows the same clean-cutover path instead of preserving a previous run's
-	// transcript above the fresh one.
-	await mode.renderInitialMessages({ preserveExistingChat: true, clearTerminalHistory: true });
+	await mode.renderInitialMessages({
+		preserveExistingChat: true,
+		clearTerminalHistory: settings.get("startup.clearScrollback"),
+	});
 	// A resolved version check must not insert its banner into a partial transcript.
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {
@@ -878,7 +872,7 @@ export async function createSessionManager(
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${forkSource}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.",
 			);
 		}
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
@@ -898,7 +892,7 @@ export async function createSessionManager(
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${sessionArg}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.",
 			);
 		}
 		if (match.scope === "local") {
@@ -1463,7 +1457,6 @@ export async function runRootCommand(
 
 		applyStartupComposerPreferences({
 			quiet: settingsInstance.get("startup.quiet"),
-			composerShape: settingsInstance.get("composer.shape") ?? "box",
 			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
 			scrollbackRebuild: settingsInstance.get("tui.scrollbackRebuild"),

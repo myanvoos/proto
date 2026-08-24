@@ -5014,7 +5014,7 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	it("carries attribution across a fork, which continues the conversation under a new id", async () => {
-		using tempDir = TempDir.createSync("@omp-fallback-fork-");
+		using tempDir = TempDir.createSync("@proto-fallback-fork-");
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !fallbackModel) {

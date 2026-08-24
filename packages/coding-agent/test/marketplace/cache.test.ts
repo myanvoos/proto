@@ -100,7 +100,7 @@ describe("cachePlugin, isCached, removeCachedPlugin", () => {
 	let sourceDir: string;
 
 	beforeEach(async () => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cache-test-"));
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-cache-test-"));
 		cacheDir = path.join(tmpDir, "cache");
 		sourceDir = path.join(tmpDir, "sources");
 		await fsp.mkdir(sourceDir, { recursive: true });
@@ -167,7 +167,7 @@ describe("cleanOrphanedCache", () => {
 	let sourceDir: string;
 
 	beforeEach(async () => {
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-orphan-test-"));
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-orphan-test-"));
 		cacheDir = path.join(tmpDir, "cache");
 		sourceDir = path.join(tmpDir, "sources");
 		await fsp.mkdir(sourceDir, { recursive: true });

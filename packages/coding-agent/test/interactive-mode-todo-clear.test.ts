@@ -158,7 +158,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		vi.advanceTimersByTime(999);
 		expect(renderTodos(mode)).toContain("done task");
-		expect(renderTodos(mode)).toContain("TODO");
+		expect(renderTodos(mode)).toContain("Todo");
 
 		vi.advanceTimersByTime(1);
 		expect(renderTodos(mode)).not.toContain("done task");
@@ -300,8 +300,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line === "─".repeat(80))).toBe(false);
 		// The title remains a compact anchor; overall progress colors the tree
 		// spine and tail, not the title text.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		const root = lines.find(line => line.includes("Todo"));
+		expect(root?.trim()).toBe("Todo");
 		// Active stage: highlighted header with its own task progress, expanded as a
 		// connector tree; the just-completed task stays as the lead row so progress
 		// is visible while the stage still has open work.
@@ -340,8 +340,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 			.map(line => Bun.stripANSI(line));
 		// One stage still renders the compact title; progress belongs to the
 		// tree spine and tail.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		const root = lines.find(line => line.includes("Todo"));
+		expect(root?.trim()).toBe("Todo");
 		// The stage keeps its task progress; no roman numeral for a lone stage.
 		expect(lines.some(line => line.includes("Tasks") && line.includes("0/2"))).toBe(true);
 		expect(lines.some(line => line.includes("I. Tasks"))).toBe(false);
@@ -370,8 +370,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("Six"))).toBe(false);
 		expect(lines.some(line => line.includes("2 more stages"))).toBe(true);
 		// Hidden stages do not change the compact title.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		const root = lines.find(line => line.includes("Todo"));
+		expect(root?.trim()).toBe("Todo");
 	});
 
 	it("anchors the todo HUD as a native-scrollback live region while populated", () => {

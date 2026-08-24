@@ -877,13 +877,13 @@ async function withTempBinaryFile<T>(
 }
 
 async function renderNotebookPayload(bytes: Uint8Array, displayUrl: string): Promise<string> {
-	return withTempBinaryFile("omp-url-notebook-", ".ipynb", bytes, tempPath =>
+	return withTempBinaryFile("proto-url-notebook-", ".ipynb", bytes, tempPath =>
 		readEditableNotebookText(tempPath, displayUrl),
 	);
 }
 
 async function renderSqlitePayload(bytes: Uint8Array): Promise<string> {
-	return withTempBinaryFile("omp-url-sqlite-", ".sqlite", bytes, async tempPath => {
+	return withTempBinaryFile("proto-url-sqlite-", ".sqlite", bytes, async tempPath => {
 		let db: Database | null = null;
 		try {
 			db = await openSqliteReadConnection(tempPath);
@@ -1893,7 +1893,6 @@ export function renderReadUrlResult(
 						{ label: uiTheme.fg("toolTitle", "Content Preview"), lines: contentPreviewLines },
 					],
 					width,
-					applyBg: false,
 				},
 				uiTheme,
 			);

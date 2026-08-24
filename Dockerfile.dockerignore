@@ -23,7 +23,7 @@ packages/natives/npm/
 .wt/
 .opencode/
 .pi_config/
-.omp/plugins/
+.proto/plugins/
 
 # VCS, editors, IDEs — irrelevant to the build, churn on every IDE keystroke.
 .git/
@@ -62,7 +62,7 @@ packages/natives/native/.build/
 # (Also drops the ~760 MB of dev addons a working checkout accumulates.)
 **/*.node
 packages/ai/test/.temp-images/
-python/omp-rpc/src/omp_rpc.egg-info/
+python/proto-rpc/src/proto_rpc.egg-info/
 python/robomp/data/
 python/robomp/.cache/
 python/robomp/src/robomp/static/

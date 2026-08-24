@@ -140,15 +140,8 @@ export function formatDefaultToolExecution(
 	return lines.join("\n");
 }
 
-/** Render the generic fallback as the state-tinted card used by direct custom tools. */
 export function renderDefaultToolExecution(input: DefaultToolRenderInput, uiTheme: Theme): Component {
 	const component = new WidthAwareText(contentWidth => formatDefaultToolExecution(input, contentWidth, uiTheme), 1, 1);
-	const background = input.options.isPartial
-		? "toolPendingBg"
-		: input.result?.isError
-			? "toolErrorBg"
-			: "toolSuccessBg";
-	component.setCustomBgFn(text => uiTheme.bg(background, text));
 	component.setIgnoreTight(true);
 	return component;
 }

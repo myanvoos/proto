@@ -34,7 +34,7 @@ describe("git.diff with a staged binary past the 8 MiB capture cap", () => {
 	let repo: string;
 
 	beforeAll(async () => {
-		repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-git-trunc-test-"));
+		repo = await fs.mkdtemp(path.join(os.tmpdir(), "proto-git-trunc-test-"));
 		gitRun(repo, ["init", "-q", "-b", "main"]);
 		// ~9 MiB of incompressible bytes so `--binary` (zlib + base85) alone
 		// exceeds the 8 MiB cap. Name sorts before the text file so the text
@@ -74,7 +74,7 @@ describe("git.diff with a staged binary past the 8 MiB capture cap", () => {
 	});
 
 	test("requireComplete leaves a complete diff untouched", async () => {
-		const small = await fs.mkdtemp(path.join(os.tmpdir(), "omp-git-small-test-"));
+		const small = await fs.mkdtemp(path.join(os.tmpdir(), "proto-git-small-test-"));
 		try {
 			gitRun(small, ["init", "-q", "-b", "main"]);
 			await Bun.write(path.join(small, "s.txt"), "one\ntwo\n");

@@ -50,19 +50,19 @@ import { moduleLoadBuffer } from "./timing-buffer";
 // timing lives) is uniformly TypeScript, so a TS-only filter is both safe and
 // sufficient.
 const MODULE_LOADER_FILTER = /\.[mc]?tsx?$/;
-const MODULE_COMPLETE_KEY: symbol = Symbol.for("omp.moduleLoadComplete");
-const MODULE_BODY_START_KEY: symbol = Symbol.for("omp.moduleBodyStart");
+const MODULE_COMPLETE_KEY: symbol = Symbol.for("proto.moduleLoadComplete");
+const MODULE_BODY_START_KEY: symbol = Symbol.for("proto.moduleBodyStart");
 const STATIC_IMPORT_PATTERN =
 	/\b(?:import|export)\s+(?:type\s+)?(?:[^"']*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
 
 type CompleteStore = Record<symbol, ((path: string) => void) | undefined>;
 
 function bodyStartMarker(path: string): string {
-	return `;globalThis[Symbol.for("omp.moduleBodyStart")]?.(${JSON.stringify(path)});\n`;
+	return `;globalThis[Symbol.for("proto.moduleBodyStart")]?.(${JSON.stringify(path)});\n`;
 }
 
 function completionMarker(path: string): string {
-	return `\n;globalThis[Symbol.for("omp.moduleLoadComplete")]?.(${JSON.stringify(path)});\n`;
+	return `\n;globalThis[Symbol.for("proto.moduleLoadComplete")]?.(${JSON.stringify(path)});\n`;
 }
 
 function instrumentContents(path: string, contents: string): string {

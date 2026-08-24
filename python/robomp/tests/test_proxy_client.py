@@ -867,7 +867,7 @@ async def test_release_read_payloads_deserialize() -> None:
                 "draft": False,
                 "prerelease": False,
                 "html_url": "https://example/release",
-                "asset_names": ["omp.tar.gz"],
+                "asset_names": ["proto.tar.gz"],
             },
         )
 
@@ -885,4 +885,4 @@ async def test_release_read_payloads_deserialize() -> None:
     assert jobs[0].failed_steps == ("tests",)
     assert log_tail == "failure"
     assert tag_sha == "abc"
-    assert release is not None and release.asset_names == ("omp.tar.gz",)
+    assert release is not None and release.asset_names == ("proto.tar.gz",)

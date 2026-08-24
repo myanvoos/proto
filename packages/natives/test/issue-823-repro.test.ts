@@ -93,7 +93,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 	});
 
 	it("places embedded-extracted candidates ahead of build-host candidates for linux-x64 standalone", () => {
-		const versionedDir = "/home/u/.omp/natives/14.5.2";
+		const versionedDir = "/home/u/.proto/natives/14.5.2";
 		const userDataDir = "/home/u/.local/bin";
 		const nativeDir = "/build-host/packages/natives/native";
 		const execDir = "/home/u/.local/bin";
@@ -124,7 +124,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 	});
 
 	it("does not probe user-data candidates when running outside a standalone binary", () => {
-		const versionedDir = "/home/u/.omp/natives/14.5.2";
+		const versionedDir = "/home/u/.proto/natives/14.5.2";
 		const userDataDir = "/home/u/.local/bin";
 		const candidates = resolveLoaderCandidates({
 			addonFilenames: getAddonFilenames({ tag: "linux-x64", arch: "x64", variant: "baseline" }),
@@ -147,7 +147,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 			leafPackageDir,
 			nativeDir,
 			execDir: "/app/node_modules/.bin",
-			versionedDir: "/home/u/.omp/natives/15.5.15",
+			versionedDir: "/home/u/.proto/natives/15.5.15",
 			userDataDir: "/home/u/.local/bin",
 		});
 
@@ -158,7 +158,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 	});
 
 	it("keeps Windows staging ahead of leaf package and core nativeDir candidates", () => {
-		const versionedDir = "/home/u/.omp/natives/15.5.15";
+		const versionedDir = "/home/u/.proto/natives/15.5.15";
 		const leafPackageDir = "/app/node_modules/@oh-my-pi/pi-natives-win32-x64";
 		const nativeDir = "/app/node_modules/@oh-my-pi/pi-natives/native";
 		const candidates = resolveLoaderCandidates({
@@ -169,7 +169,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 			nativeDir,
 			execDir: "/app/node_modules/.bin",
 			versionedDir,
-			userDataDir: "/home/u/AppData/Local/omp",
+			userDataDir: "/home/u/AppData/Local/proto",
 		});
 
 		const stagedBaseline = path.join(versionedDir, "pi_natives.win32-x64-baseline.node");
@@ -188,7 +188,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 			isCompiledBinary: false,
 			nativeDir,
 			execDir,
-			versionedDir: "/home/u/.omp/natives/15.5.15",
+			versionedDir: "/home/u/.proto/natives/15.5.15",
 			userDataDir: "/home/u/.local/bin",
 		});
 

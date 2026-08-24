@@ -167,7 +167,7 @@ describe("InspectImageTool", () => {
 	let imagePath: string;
 
 	beforeAll(() => {
-		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-inspect-image-"));
+		testDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-inspect-image-"));
 		imagePath = path.join(testDir, "screen.png");
 		fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
 	});

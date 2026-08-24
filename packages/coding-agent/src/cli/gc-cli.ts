@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { withStatsSyncLock } from "@oh-my-pi/omp-stats/aggregator";
 import {
 	getAgentDir,
 	getBlobsDir,
@@ -12,6 +11,7 @@ import {
 	getStatsDbPath,
 	readLines,
 } from "@oh-my-pi/pi-utils";
+import { withStatsSyncLock } from "@oh-my-pi/proto-stats/aggregator";
 import { Settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
 import { BLOB_HASH_RE } from "../session/blob-store";

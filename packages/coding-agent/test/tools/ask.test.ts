@@ -418,7 +418,7 @@ describe("AskTool option descriptions", () => {
 		const select = vi.fn(async (_prompt: string, options: ExtensionUISelectItem[]) => {
 			expect(options[0]).toEqual({
 				label: "Use local credentials",
-				description: "Authenticate with provider keys already configured under ~/.omp.",
+				description: "Authenticate with provider keys already configured under ~/.proto.",
 			});
 			expect(options[1]).toEqual({
 				label: "Set up in terminal",
@@ -439,7 +439,7 @@ describe("AskTool option descriptions", () => {
 						options: [
 							{
 								label: "Use local credentials",
-								description: "Authenticate with provider keys already configured under ~/.omp.",
+								description: "Authenticate with provider keys already configured under ~/.proto.",
 							},
 							{
 								label: "Set up in terminal",
@@ -472,7 +472,7 @@ describe("AskTool option descriptions", () => {
 				options: [
 					{
 						label: "Use local credentials",
-						description: "Authenticate with provider keys already configured under ~/.omp.",
+						description: "Authenticate with provider keys already configured under ~/.proto.",
 					},
 					{
 						label: "Set up in terminal",
@@ -1336,7 +1336,7 @@ describe("AskTool multi-question navigation", () => {
 });
 
 describe("AskTool option markers", () => {
-	it("renders single-choice call options with circular radio markers, not checkboxes", async () => {
+	it("renders single-choice options with radio markers whose selected glyph is not a checkbox", async () => {
 		const theme = darkTheme;
 		const rendered = askToolRenderer.renderCall(
 			{ question: "Pick one", options: [{ label: "Alpha" }, { label: "Beta" }] },
@@ -1345,10 +1345,30 @@ describe("AskTool option markers", () => {
 		);
 		const text = stripAnsi(rendered.render(120).join("\n"));
 		expect(text).toContain(theme!.radio.unselected);
-		expect(text).not.toContain(theme!.checkbox.unchecked);
+		const answered = askToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					results: [
+						{
+							id: "pick-one",
+							question: "Pick one",
+							options: ["Alpha", "Beta"],
+							multi: false,
+							selectedOptions: ["Alpha"],
+						},
+					],
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme!,
+		);
+		const answeredText = stripAnsi(answered.render(120).join("\n"));
+		expect(answeredText).toContain(theme!.radio.selected);
+		expect(answeredText).not.toContain(theme!.checkbox.checked);
 	});
 
-	it("renders multi-select call options with rectangular checkbox markers, not radios", async () => {
+	it("renders multi-select options with checkbox markers whose checked glyph is not a radio", async () => {
 		const theme = darkTheme;
 		const rendered = askToolRenderer.renderCall(
 			{ question: "Pick many", options: [{ label: "Alpha" }, { label: "Beta" }], multi: true },
@@ -1357,7 +1377,27 @@ describe("AskTool option markers", () => {
 		);
 		const text = stripAnsi(rendered.render(120).join("\n"));
 		expect(text).toContain(theme!.checkbox.unchecked);
-		expect(text).not.toContain(theme!.radio.unselected);
+		const answered = askToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					results: [
+						{
+							id: "pick-many",
+							question: "Pick many",
+							options: ["Alpha", "Beta"],
+							multi: true,
+							selectedOptions: ["Alpha"],
+						},
+					],
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme!,
+		);
+		const answeredText = stripAnsi(answered.render(120).join("\n"));
+		expect(answeredText).toContain(theme!.checkbox.checked);
+		expect(answeredText).not.toContain(theme!.radio.selected);
 	});
 
 	it("keeps option rows stable across repeated renders", async () => {

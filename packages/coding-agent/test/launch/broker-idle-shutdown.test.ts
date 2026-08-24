@@ -33,7 +33,7 @@ function startBroker(projectDir: string, runtimeDir: string, idleGraceMs: number
 
 describe("daemon broker idle shutdown", () => {
 	it("shuts down after its last persistent daemon exits with no clients", async () => {
-		using tempDir = TempDir.createSync("@omp-launch-idle-");
+		using tempDir = TempDir.createSync("@proto-launch-idle-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);

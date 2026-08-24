@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { $ } from "bun";
 
 /** Marker file written into a task-isolation base dir identifying its owner. */
-export const ISOLATION_OWNER_FILE = ".omp-isolation-owner.json";
+export const ISOLATION_OWNER_FILE = ".proto-isolation-owner.json";
 
 /** Recorded owner of a task-isolation sandbox. */
 export interface IsolationOwner {

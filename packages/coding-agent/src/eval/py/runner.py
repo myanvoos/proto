@@ -1,4 +1,4 @@
-"""OMP Python runner — subprocess wrapper used by the coding-agent host.
+"""PROTO Python runner — subprocess wrapper used by the coding-agent host.
 
 NDJSON protocol over stdin/stdout. Host writes one JSON object per line;
 wrapper writes typed frames back.
@@ -193,11 +193,11 @@ class _RunnerState:
 
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "omp_current_rid", default=None
+    "proto_current_rid", default=None
 )
 _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None] = (
     contextvars.ContextVar(
-        "omp_displayed_matplotlib_figure_ids",
+        "proto_displayed_matplotlib_figure_ids",
         default=None,
     )
 )
@@ -239,7 +239,7 @@ def _start_capture_drain() -> None:
     if _CAPTURE_READ_FD is None:
         return
     thread = threading.Thread(
-        target=_drain_captured_stdout, name="omp-fd1-capture", daemon=True
+        target=_drain_captured_stdout, name="proto-fd1-capture", daemon=True
     )
     thread.start()
 
@@ -284,11 +284,11 @@ def transform_cell(source: str) -> str:
 
     Rules
     -----
-    * ``%name args``              -> ``__omp_magic("name", "args")``
-    * ``var = %name args``        -> ``var = __omp_magic("name", "args")``
-    * ``!cmd``                    -> ``__omp_shell("cmd")``
-    * ``var = !cmd``              -> ``var = __omp_shell("cmd")``
-    * ``%%name args\\n<body>``    -> ``__omp_magic_cell("name", "args", "<body>")``
+    * ``%name args``              -> ``__proto_magic("name", "args")``
+    * ``var = %name args``        -> ``var = __proto_magic("name", "args")``
+    * ``!cmd``                    -> ``__proto_shell("cmd")``
+    * ``var = !cmd``              -> ``var = __proto_shell("cmd")``
+    * ``%%name args\\n<body>``    -> ``__proto_magic_cell("name", "args", "<body>")``
       (cell magic must be the first non-whitespace token of a top-level line and
       consumes the remainder of the cell)
 
@@ -316,7 +316,7 @@ def transform_cell(source: str) -> str:
             body_lines = lines[i + 1 :]
             body = "\n".join(body_lines)
             out.append(
-                f"{indent}__omp_magic_cell({_quote_arg(name)}, {_quote_arg(args)}, {_quote_arg(body)})"
+                f"{indent}__proto_magic_cell({_quote_arg(name)}, {_quote_arg(args)}, {_quote_arg(body)})"
             )
             return "\n".join(out)
 
@@ -327,7 +327,7 @@ def transform_cell(source: str) -> str:
             indent = folded[: len(folded) - len(stripped_folded)]
             head, _ = _split_magic_head(stripped_folded[1:])
             name, args = head
-            out.append(f"{indent}__omp_magic({_quote_arg(name)}, {_quote_arg(args)})")
+            out.append(f"{indent}__proto_magic({_quote_arg(name)}, {_quote_arg(args)})")
             i += consumed
             continue
 
@@ -336,7 +336,7 @@ def transform_cell(source: str) -> str:
             stripped_folded = folded.lstrip()
             indent = folded[: len(folded) - len(stripped_folded)]
             cmd = stripped_folded[1:].strip()
-            out.append(f"{indent}__omp_shell({_quote_arg(cmd)})")
+            out.append(f"{indent}__proto_shell({_quote_arg(cmd)})")
             i += consumed
             continue
 
@@ -347,7 +347,7 @@ def transform_cell(source: str) -> str:
             if rhs.startswith("!"):
                 cmd = rhs[1:].strip()
                 out.append(
-                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __omp_shell({_quote_arg(cmd)})"
+                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __proto_shell({_quote_arg(cmd)})"
                 )
                 i += 1
                 continue
@@ -355,7 +355,7 @@ def transform_cell(source: str) -> str:
                 head, _ = _split_magic_head(rhs[1:])
                 name, args = head
                 out.append(
-                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __omp_magic({_quote_arg(name)}, {_quote_arg(args)})"
+                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __proto_magic({_quote_arg(name)}, {_quote_arg(args)})"
                 )
                 i += 1
                 continue
@@ -405,7 +405,7 @@ def cell_magic(
 
 
 def _emit_status(op: str, **data: Any) -> None:
-    bundle = {"application/x-omp-status": {"op": op, **data}}
+    bundle = {"application/x-proto-status": {"op": op, **data}}
     rid = _CURRENT_RID.get()
     if rid is None:
         return
@@ -825,14 +825,14 @@ def _run_shell_body(body: str, *, shell_arg: str) -> int:
     return proc.returncode
 
 
-def __omp_magic(name: str, args: str) -> Any:
+def __proto_magic(name: str, args: str) -> Any:
     fn = _LINE_MAGICS.get(name)
     if fn is None:
         raise NameError(f"UsageError: Line magic function '%{name}' not found.")
     return fn(args)
 
 
-def __omp_magic_cell(name: str, args: str, body: str) -> Any:
+def __proto_magic_cell(name: str, args: str, body: str) -> Any:
     fn = _CELL_MAGICS.get(name)
     if fn is None:
         raise NameError(f"UsageError: Cell magic function '%%{name}' not found.")
@@ -855,7 +855,7 @@ class _ShellResult(list):
         return " ".join(self)
 
 
-def __omp_shell(cmd: str) -> _ShellResult:
+def __proto_shell(cmd: str) -> _ShellResult:
     # stdin=DEVNULL: see _run_shell_body.
     proc = subprocess.Popen(
         cmd,
@@ -984,7 +984,7 @@ def _emit_display(bundle: dict, *, kind: str = "display") -> None:
     _emit({"type": kind, "id": rid, "bundle": bundle})
 
 
-def __omp_display(value: Any, *, raw: bool = False, kind: str = "display") -> None:
+def __proto_display(value: Any, *, raw: bool = False, kind: str = "display") -> None:
     if raw:
         if not isinstance(value, dict):
             raise TypeError("display(..., raw=True) requires a MIME bundle dict")
@@ -1035,12 +1035,12 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 def _install_builtins(ns: dict) -> None:
-    ns["display"] = __omp_display
-    ns["__omp_display"] = __omp_display
-    ns["__omp_magic"] = __omp_magic
-    ns["__omp_magic_cell"] = __omp_magic_cell
-    ns["__omp_shell"] = __omp_shell
-    ns["__omp_current_run_id__"] = lambda: _CURRENT_RID.get()
+    ns["display"] = __proto_display
+    ns["__proto_display"] = __proto_display
+    ns["__proto_magic"] = __proto_magic
+    ns["__proto_magic_cell"] = __proto_magic_cell
+    ns["__proto_shell"] = __proto_shell
+    ns["__proto_current_run_id__"] = lambda: _CURRENT_RID.get()
 
 
 _install_builtins(_STATE.user_ns)
@@ -1119,12 +1119,12 @@ def _exec_source(source: str, ns: dict) -> None:
     if has_expr and expr_code is not None:
         value = _run_compiled_sync(expr_code, ns, want_value=True)
         if value is not None:
-            __omp_display(value, kind="result")
+            __proto_display(value, kind="result")
 
 
 async def _exec_source_async(source: str, ns: dict) -> None:
     """Compile + execute ``source``; if the last node is an expression, route
-    its value through ``__omp_display`` so dataframes/figures render rich.
+    its value through ``__proto_display`` so dataframes/figures render rich.
     Top-level ``await`` / ``async for`` / ``async with`` is permitted; awaited
     regions yield to other requests in the runner's persistent event loop."""
     body_code, expr_code, has_expr = _compile_source(source)
@@ -1134,7 +1134,7 @@ async def _exec_source_async(source: str, ns: dict) -> None:
     if has_expr and expr_code is not None:
         value = await _run_compiled_async(expr_code, ns, want_value=True)
         if value is not None:
-            __omp_display(value, kind="result")
+            __proto_display(value, kind="result")
 
 
 # ---------------------------------------------------------------------------
@@ -1225,7 +1225,7 @@ def _start_parent_watchdog() -> None:
                 return
             time.sleep(10)
 
-    thread = threading.Thread(target=watch, name="omp-parent-watchdog", daemon=True)
+    thread = threading.Thread(target=watch, name="proto-parent-watchdog", daemon=True)
     thread.start()
 
 
@@ -1239,7 +1239,7 @@ async def _handle_request_async(req: dict) -> None:
     token = _CURRENT_RID.set(rid)
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
     _STATE.capture_rid = rid
-    _STATE.user_ns["__omp_run_id__"] = rid
+    _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
     _STATE.execution_count += 1
     execution_count = _STATE.execution_count
@@ -1386,7 +1386,7 @@ async def _main_async() -> None:
     reader = threading.Thread(
         target=_read_stdin,
         args=(loop, queue, stdin),
-        name="omp-stdin-reader",
+        name="proto-stdin-reader",
         daemon=True,
     )
     reader.start()

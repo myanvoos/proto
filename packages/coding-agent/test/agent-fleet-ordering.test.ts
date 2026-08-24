@@ -64,7 +64,7 @@ interface RenderedAgentRow {
 	selected: boolean;
 }
 
-const ROSTER_ENTRY_PATTERN = /^(❯| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
+const ROSTER_ENTRY_PATTERN = /^(›| ) (\S+) (?:(?:(?:│ {3}| {4})*)(?:├── |└── ))?(\S+)/u;
 
 function rosterCell(raw: string): string | undefined {
 	const line = Bun.stripANSI(raw);
@@ -82,7 +82,7 @@ function renderedAgentRows(hub: AgentFleetOverlayComponent, width = 120): Render
 	for (const raw of hub.render(width)) {
 		const cell = rosterCell(raw);
 		const match = cell ? ROSTER_ENTRY_PATTERN.exec(cell) : null;
-		if (match) rows.push({ id: match[3]!, selected: match[1] === "❯" });
+		if (match) rows.push({ id: match[3]!, selected: match[1] === "›" });
 	}
 	return rows;
 }
@@ -153,7 +153,7 @@ describe("Agent fleet row ordering", () => {
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
 			expect(rendered).toContain("No agents in this session");
 			expect(rendered).toContain("Finished, parked, and killed subagents remain with the session");
-			expect(rendered).toContain("Resume that session with omp-dev --continue, or spawn a task here.");
+			expect(rendered).toContain("Resume that session with proto-dev --continue, or spawn a task here.");
 		} finally {
 			hub.dispose();
 		}
@@ -590,7 +590,7 @@ describe("Agent fleet row ordering", () => {
 			history: {
 				outputPath: "/tmp/Reviewer.md",
 				patchPath: "/tmp/Reviewer.patch",
-				branchName: "omp/task/Reviewer",
+				branchName: "proto/task/Reviewer",
 			},
 			createdAt,
 		});
@@ -657,7 +657,7 @@ describe("Agent fleet row ordering", () => {
 			expect(rendered).toContain("Output /tmp/Reviewer.md");
 			expect(rendered).toContain("Patch /tmp/Reviewer.patch");
 			hub.handleInput("\x1b[6~");
-			expect(Bun.stripANSI(hub.render(140).join("\n"))).toContain("Worktree branch omp/task/Reviewer");
+			expect(Bun.stripANSI(hub.render(140).join("\n"))).toContain("Worktree branch proto/task/Reviewer");
 		} finally {
 			hub.dispose();
 		}

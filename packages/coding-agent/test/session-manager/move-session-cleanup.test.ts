@@ -15,7 +15,7 @@ describe("move-session cleanup tracking", () => {
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	beforeEach(async () => {
-		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-cleanup-"));
+		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-move-cleanup-"));
 		setAgentDir(testAgentDir);
 		cwd = path.join(testAgentDir, "project");
 		fs.mkdirSync(cwd, { recursive: true });

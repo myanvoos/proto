@@ -87,7 +87,7 @@ RUN arch="$(dpkg --print-architecture)" \
 RUN chmod -R a+rX "$BAZELISK_HOME" \
  && rm -rf /root/.cache/bazel /root/.bazelrc
 # Pre-own ~/.cache for the runner user: kubelet otherwise creates it root-owned
-# as the parent of the omp-bazel-repo subPath mountpoint, breaking sibling dirs
+# as the parent of the proto-bazel-repo subPath mountpoint, breaking sibling dirs
 # like bazel's default output_user_root.
 RUN install -d -o 1001 -g 1001 -m 0755 /home/runner/.cache
 

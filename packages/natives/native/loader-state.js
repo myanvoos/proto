@@ -50,10 +50,10 @@ function startupMarker(text) {
 
 function getNativesDir() {
 	const xdgDataHome = process.env.XDG_DATA_HOME;
-	if (xdgDataHome && fs.existsSync(path.join(xdgDataHome, "omp"))) {
-		return path.join(xdgDataHome, "omp", "natives");
+	if (xdgDataHome && fs.existsSync(path.join(xdgDataHome, "proto"))) {
+		return path.join(xdgDataHome, "proto", "natives");
 	}
-	return path.join(os.homedir(), ".omp", "natives");
+	return path.join(os.homedir(), ".proto", "natives");
 }
 
 function resolveLeafPackageDir(platformTag) {
@@ -707,9 +707,9 @@ export function validateLoadedBindings(ctx, bindings, candidate) {
 		throw new Error(
 			`Loaded ${candidate}, which exposes the @oh-my-pi/pi-natives@${residentVersion} version ` +
 				`sentinel \`${residentSentinel}\` but not the @${ctx.packageVersion} sentinel ` +
-				`\`${ctx.versionSentinelExport}\` this loader expects. omp was upgraded to ` +
+				`\`${ctx.versionSentinelExport}\` this loader expects. proto was upgraded to ` +
 				`${ctx.packageVersion} while this session was running; the ${residentVersion} addon is ` +
-				"still resident in this process. Disk is already consistent — restart omp to pick up " +
+				"still resident in this process. Disk is already consistent — restart proto to pick up " +
 				`${ctx.packageVersion} (reinstalling changes nothing).`,
 		);
 	}
@@ -781,7 +781,7 @@ export function initLoaderContext(overrides = {}) {
 	const versionedDir = path.join(nativesDir, packageVersion);
 	const userDataDir =
 		platform === "win32"
-			? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "omp")
+			? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "proto")
 			: path.join(os.homedir(), ".local", "bin");
 
 	const isCompiledBinary =

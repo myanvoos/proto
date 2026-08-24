@@ -83,7 +83,6 @@ export const inspectImageToolRenderer = {
 					sections: [{ lines: bodyLines }],
 					state: "error",
 					borderColor: "error",
-					applyBg: false,
 					width,
 				};
 			});
@@ -124,7 +123,6 @@ export const inspectImageToolRenderer = {
 				sections: [{ lines: bodyLines }],
 				state: "success",
 				borderColor: "borderMuted",
-				applyBg: false,
 				width,
 			};
 		});

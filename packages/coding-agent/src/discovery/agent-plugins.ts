@@ -31,7 +31,7 @@ import {
 } from "./agent-plugin-format";
 import { resolveContainedPath } from "./contained-path";
 import { compareSkillOrder, createSourceMeta, listClaudePluginRoots } from "./helpers";
-import { listOmpExtensionRoots } from "./omp-extension-roots";
+import { listOmpExtensionRoots } from "./proto-extension-roots";
 
 const PROVIDER_ID = "agent-plugins";
 const DISPLAY_NAME = "Agent Plugins";

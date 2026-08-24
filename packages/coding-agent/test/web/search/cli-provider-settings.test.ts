@@ -28,7 +28,7 @@ const WEB_SEARCH_ENV_KEYS = [
 ] as const;
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-const originalOmpProfile = process.env.OMP_PROFILE;
+const originalOmpProfile = process.env.PROTO_PROFILE;
 const originalPiProfile = process.env.PI_PROFILE;
 
 let tempAgentDir: TempDir | undefined;
@@ -83,7 +83,7 @@ beforeEach(async () => {
 	resetSettingsForTest();
 	setSearchProviderOrder([]);
 	setExcludedSearchProviders([]);
-	tempAgentDir = TempDir.createSync("@omp-search-cli-");
+	tempAgentDir = TempDir.createSync("@proto-search-cli-");
 	setAgentDir(tempAgentDir.path());
 	await Settings.init({
 		inMemory: true,
@@ -105,7 +105,7 @@ afterEach(async () => {
 		restoreEnv(key, originalEnv[key]);
 	}
 	restoreEnv("PI_CODING_AGENT_DIR", originalAgentDir);
-	restoreEnv("OMP_PROFILE", originalOmpProfile);
+	restoreEnv("PROTO_PROFILE", originalOmpProfile);
 	restoreEnv("PI_PROFILE", originalPiProfile);
 	__resetDirsFromEnvForTests();
 	if (tempAgentDir) {

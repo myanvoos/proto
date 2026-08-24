@@ -59,7 +59,7 @@ describe("createSessionManager — cross-project --resume", () => {
 	let existingProject: string;
 
 	beforeEach(async () => {
-		existingProject = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-xproj-"));
+		existingProject = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-xproj-"));
 		const match = buildGlobalMatch(existingProject);
 		await Bun.write(
 			match.session.path,
@@ -103,7 +103,7 @@ describe("runRootCommand — cross-project --resume", () => {
 
 	beforeEach(async () => {
 		originalProject = getProjectDir();
-		root = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-xproj-root-"));
+		root = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-xproj-root-"));
 		launchProject = path.join(root, "launch");
 		resumedProject = path.join(root, "resumed");
 		await Promise.all([fsp.mkdir(launchProject), fsp.mkdir(resumedProject)]);
@@ -233,7 +233,7 @@ describe("createSessionManager — cross-project --resume relocation (moved work
 	let missingProject: string;
 
 	beforeEach(async () => {
-		missingRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-moved-xproj-"));
+		missingRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "proto-moved-xproj-"));
 		missingProject = path.join(missingRoot, "worktree-gone");
 	});
 

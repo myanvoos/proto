@@ -376,7 +376,7 @@ export async function applyWorkspaceEdit(
 						// source, so let fs.rename change the case in place instead.
 						const sourceStat = await fs.lstat(oldPath);
 						if (sourceStat.dev !== targetStat.dev || sourceStat.ino !== targetStat.ino) {
-							const holdDir = await fs.mkdtemp(path.join(path.dirname(newPath), ".omp-displaced-"));
+							const holdDir = await fs.mkdtemp(path.join(path.dirname(newPath), ".proto-displaced-"));
 							const holdFile = path.join(holdDir, path.basename(newPath));
 							try {
 								await fs.rename(newPath, holdFile);

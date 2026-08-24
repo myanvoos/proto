@@ -123,7 +123,7 @@ it("assert callable as standalone function", () => {
 });
 
 it("valueOf", () => {
-	//    🪦R.I.P. TS enums🪦
+	//    R.I.P. TS enums
 	//         2012-2025
 	// Killed by --erasableSyntaxOnly
 

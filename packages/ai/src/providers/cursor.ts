@@ -4561,7 +4561,7 @@ function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array):
 export function buildCursorRequestContextRules(systemPrompt: readonly string[] | undefined): CursorRule[] {
 	return normalizeSystemPrompts(systemPrompt).map((content, index) =>
 		create(CursorRuleSchema, {
-			fullPath: `/omp/system-prompt/${index}.mdc`,
+			fullPath: `/proto/system-prompt/${index}.mdc`,
 			content,
 			source: CursorRuleSource.USER,
 			type: create(CursorRuleTypeSchema, {

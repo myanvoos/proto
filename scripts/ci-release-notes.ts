@@ -33,7 +33,7 @@ import { $, Glob } from "bun";
 import { compareVersions } from "../packages/utils/src/version";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
-const REPO = process.env.OMP_REPO ?? process.env.GITHUB_REPOSITORY ?? "can1357/oh-my-pi";
+const REPO = process.env.PROTO_REPO ?? process.env.GITHUB_REPOSITORY ?? "can1357/oh-my-pi";
 
 // Canonical ordering used by `fix-changelogs`; unknown categories sort
 // alphabetically after these.
@@ -190,7 +190,7 @@ async function loadPackageName(pkgDir: string): Promise<string> {
  *     into legacy mode explicitly.
  */
 async function resolvePublishedFloorTag(targetVersion: string): Promise<string | null> {
-	const override = process.env.OMP_RELEASE_NOTES_FLOOR;
+	const override = process.env.PROTO_RELEASE_NOTES_FLOOR;
 	if (override !== undefined) {
 		const stripped = override.replace(/^v/, "").trim();
 		return stripped.length === 0 ? null : stripped;
@@ -204,7 +204,7 @@ async function resolvePublishedFloorTag(targetVersion: string): Promise<string |
 		throw new Error(
 			`gh release list exited ${res.exitCode}.\nstderr: ${stderr || "(empty)"}\n` +
 				`Hint: in GitHub Actions, pass GH_TOKEN: \${{ secrets.GITHUB_TOKEN }} to this step. ` +
-				`Locally without gh, set OMP_RELEASE_NOTES_FLOOR= to fall back to single-version notes.`,
+				`Locally without gh, set PROTO_RELEASE_NOTES_FLOOR= to fall back to single-version notes.`,
 		);
 	}
 	let raw: unknown;

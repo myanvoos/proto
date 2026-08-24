@@ -72,10 +72,10 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 	});
 
 	it("proceeds and returns true when flush succeeds", async () => {
-		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-preflight-"));
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-resume-preflight-"));
 		try {
 			const { ctx, switchSession, applyCwdChange, state } = createResumeContext({ sourceCwd: tmpDir });
-			const targetCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-target-"));
+			const targetCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-resume-target-"));
 			switchSession.mockImplementation(async () => {
 				state.cwd = targetCwd;
 				return true;
@@ -99,10 +99,10 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 	});
 
 	it("skips flush when settingsFlushed option is true", async () => {
-		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-preflight-skip-"));
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-resume-preflight-skip-"));
 		try {
 			const { ctx, switchSession, state } = createResumeContext({ sourceCwd: tmpDir });
-			const targetCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-target-skip-"));
+			const targetCwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-resume-target-skip-"));
 			switchSession.mockImplementation(async () => {
 				state.cwd = targetCwd;
 				return true;

@@ -27,7 +27,7 @@ const RESET_FG = "\x1b[39m";
  *  probe cache): Kitty's `f=100` transmit accepts only PNG, so non-PNG attachments
  *  (pastes are usually re-encoded JPEG/WebP) convert before transmit — the same pipeline
  *  the transcript uses. `null` = conversion in flight or failed. */
-const kImagePng = Symbol("omp.imagePng");
+const kImagePng = Symbol("proto.imagePng");
 
 interface ImageContentWithPng extends ImageContent {
 	[kImagePng]?: ImageContent | null;

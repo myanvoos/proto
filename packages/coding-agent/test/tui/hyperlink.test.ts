@@ -299,7 +299,7 @@ describe("tryResolveInternalUrlSync", () => {
 		expect(tryResolveInternalUrlSync("artifact://123")).toBeUndefined();
 		expect(tryResolveInternalUrlSync("agent://abc")).toBeUndefined();
 		expect(tryResolveInternalUrlSync("skill://foo")).toBeUndefined();
-		expect(tryResolveInternalUrlSync("omp://docs.md")).toBeUndefined();
+		expect(tryResolveInternalUrlSync("proto://docs.md")).toBeUndefined();
 	});
 
 	it("returns undefined when local:// resolution has no session options", () => {

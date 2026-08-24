@@ -27,4 +27,4 @@ RUN mkdir -p /root/.local/bin && \
 ENV PATH="/root/.local/bin:$PATH"
 
 # Verify
-RUN HOME=/tmp/omp-home XDG_DATA_HOME=/tmp/omp-xdg proto --version
+RUN HOME=/tmp/proto-home XDG_DATA_HOME=/tmp/proto-xdg proto --version

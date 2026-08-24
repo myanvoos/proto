@@ -44,8 +44,8 @@ coverage/
 packages/ai/test/.temp-images/
 
 # Project specific
-!.omp/
-.omp/plugins/
+!.proto/
+.proto/plugins/
 .pi_config/
 .opencode/
 .worktrees/
@@ -64,8 +64,8 @@ pi-*.html
 # Generated files
 packages/natives/npm/
 /runs/
-python/omp-rpc/src/omp_rpc.egg-info/
-python/omp-rpc/build/
+python/proto-rpc/src/proto_rpc.egg-info/
+python/proto-rpc/build/
 # parallel-agent worktrees
 .wt/
 CPU*.md

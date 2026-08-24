@@ -6,7 +6,7 @@ import { buildSkillPromptMessage, type Skill } from "@oh-my-pi/pi-coding-agent/e
 import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 async function createSkill(body: string): Promise<{ dir: string; skill: Skill }> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-skill-prompt-${Snowflake.next()}-`));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `proto-skill-prompt-${Snowflake.next()}-`));
 	const filePath = path.join(dir, "SKILL.md");
 	await Bun.write(filePath, `---\nname: reviewer\ndescription: Review code\n---\n\n${body}\n`);
 	return {

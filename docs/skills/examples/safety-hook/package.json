@@ -2,8 +2,8 @@
   "name": "safety-hook",
   "version": "1.0.0",
   "description": "oh-my-pi extension example: block rm -rf / via tool_call hook",
-  "homepage": "https://omp.sh",
-  "omp": {
+  "homepage": "https://proto.sh",
+  "proto": {
     "extensions": ["./index.ts"]
   }
 }

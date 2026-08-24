@@ -16,8 +16,8 @@ fallback is used when that role is unset.
 - **Non-FHS distros (NixOS, and any host without `libstdc++.so.6` on the loader path)**: the
   on-demand `onnxruntime-node` / `sherpa-onnx-node` / `sharp` addons are prebuilt binaries that
   `dlopen` `libstdc++.so.6` and `libgcc_s.so.1`, and they carry their own `DT_RUNPATH`, so nothing in
-  the omp executable's own RPATH can resolve them. Set `OMP_NATIVE_LIBRARY_PATH` to the
-  colon-separated directories holding those libraries; omp appends it to `LD_LIBRARY_PATH` for the
+  the proto executable's own RPATH can resolve them. Set `PROTO_NATIVE_LIBRARY_PATH` to the
+  colon-separated directories holding those libraries; proto appends it to `LD_LIBRARY_PATH` for the
   inference worker subprocesses only (never for shell/eval/daemon children). The Nix package
   (`nix/package.nix`) sets this by default.
 - **Device policy**: local tiny models default to CPU-only inference and retry once on CPU if an
@@ -83,7 +83,7 @@ fallback is used when that role is unset.
 | flan-t5-small | Rejected — just echoes the input    |
 
 **Shipped local options**: `lfm2-350m`, `qwen3-0.6b`, `gemma-270m`, `qwen2.5-0.5b`, `lfm2-700m`.
-**Default setting**: `online`. The default local download for `omp tiny-models` is `lfm2-700m`.
+**Default setting**: `online`. The default local download for `proto tiny-models` is `lfm2-700m`.
 
 ## Task 2: Mnemopi memory (`providers.memoryModel`)
 

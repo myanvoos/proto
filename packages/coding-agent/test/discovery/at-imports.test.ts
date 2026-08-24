@@ -15,7 +15,7 @@ describe("expandAtImports", () => {
 	let tmp: string;
 
 	beforeEach(async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-at-import-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-at-import-"));
 	});
 
 	afterEach(async () => {
@@ -55,7 +55,7 @@ describe("expandAtImports", () => {
 	});
 
 	test("resolves ~/path against the home override", async () => {
-		const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "omp-at-home-"));
+		const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-at-home-"));
 		try {
 			await fs.writeFile(path.join(fakeHome, "prefs.md"), "use 2 spaces");
 			const expanded = await expandAtImports("See @~/prefs.md.\n", path.join(tmp, "AGENTS.md"), {

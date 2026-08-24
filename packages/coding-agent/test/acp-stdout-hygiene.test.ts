@@ -84,7 +84,7 @@ async function readFirstFrame(stream: ReadableStream<Uint8Array>): Promise<strin
 
 describe("ACP stdout hygiene", () => {
 	it("emits a JSON-RPC initialize response as the first bytes on stdout", async () => {
-		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-acp-stdout-"));
+		const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-acp-stdout-"));
 		cleanupRoots.push(root);
 		const xdg = path.join(root, "xdg");
 		const agentDir = path.join(root, "agent");

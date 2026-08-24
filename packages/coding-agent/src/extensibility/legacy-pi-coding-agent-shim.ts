@@ -691,7 +691,7 @@ export function createLsTool(cwd: string, options?: LsToolOptions): ToolDefiniti
 export function createEditToolDefinition(cwd: string, options?: EditToolOptions): ToolDefinition {
 	if (options?.operations) {
 		throw new Error(
-			"Legacy EditToolOptions.operations is not supported: OMP's built-in edit tool writes the local " +
+			"Legacy EditToolOptions.operations is not supported: PROTO's built-in edit tool writes the local " +
 				"filesystem natively and exposes no pluggable operations seam. Register a custom edit tool via " +
 				"defineTool() instead of passing operations to createEditTool()/createEditToolDefinition().",
 		);
@@ -708,7 +708,7 @@ export function createEditTool(cwd: string, options?: EditToolOptions): ToolDefi
 export function createWriteToolDefinition(cwd: string, options?: WriteToolOptions): ToolDefinition {
 	if (options?.operations) {
 		throw new Error(
-			"Legacy WriteToolOptions.operations is not supported: OMP's built-in write tool writes the local " +
+			"Legacy WriteToolOptions.operations is not supported: PROTO's built-in write tool writes the local " +
 				"filesystem natively and exposes no pluggable operations seam. Register a custom write tool via " +
 				"defineTool() instead of passing operations to createWriteTool()/createWriteToolDefinition().",
 		);

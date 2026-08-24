@@ -87,8 +87,8 @@ describe("windows native addon staging", () => {
 	});
 
 	it("prepends versionedDir candidates ahead of node_modules when staging on Windows", () => {
-		const versionedDir = "C:\\Users\\Admin\\.omp\\natives\\15.0.1";
-		const userDataDir = "C:\\Users\\Admin\\AppData\\Local\\omp";
+		const versionedDir = "C:\\Users\\Admin\\.proto\\natives\\15.0.1";
+		const userDataDir = "C:\\Users\\Admin\\AppData\\Local\\proto";
 		const candidates = resolveLoaderCandidates({
 			addonFilenames: getAddonFilenames({ tag: "win32-x64", arch: "x64", variant: "baseline" }),
 			isCompiledBinary: false,
@@ -175,7 +175,7 @@ describe("windows native addon staging", () => {
 	it("falls back to the node_modules-only candidate list when staging is off", () => {
 		// Mirrors the non-Windows / workspace-dev path: same behavior as before
 		// the staging feature was introduced.
-		const versionedDir = "/home/u/.omp/natives/15.0.1";
+		const versionedDir = "/home/u/.proto/natives/15.0.1";
 		const candidates = resolveLoaderCandidates({
 			addonFilenames: getAddonFilenames({ tag: "linux-x64", arch: "x64", variant: "baseline" }),
 			isCompiledBinary: false,
@@ -193,7 +193,7 @@ describe("windows native addon staging", () => {
 	});
 
 	it("removes only older version directories after the current native version loads", async () => {
-		const nativesDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-natives-cache-"));
+		const nativesDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-natives-cache-"));
 		const currentMajor = Number.parseInt(packageJson.version, 10);
 		const futureVersion = `${currentMajor + 1}.0.0`;
 		const staleVersion = "15.10.11";

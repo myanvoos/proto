@@ -151,7 +151,7 @@ describe("terminal notifications", () => {
 		mutableTerminal.notifyProtocol = NotifyProtocol.Osc99;
 		const { terminal, writes, received } = setupProcessTerminal();
 		try {
-			const query = writes.find(w => w.startsWith("\x1b]99;i=omp-probe-") && w.endsWith("\x1b\\\x1b[c"));
+			const query = writes.find(w => w.startsWith("\x1b]99;i=proto-probe-") && w.endsWith("\x1b\\\x1b[c"));
 			expect(query).toBeDefined();
 			const id = query!.match(/i=([^:;]+):p=\?/u)?.[1];
 			expect(id).toBeDefined();
@@ -402,7 +402,7 @@ describe("terminal notifications", () => {
 			// tmux forwards the passthrough probe to the outer terminal but cannot
 			// route the `p=?` reply back to the sending pane, so the reply would
 			// leak into the pane as text (#5582). The probe must not fire at all.
-			const probe = writes.find(w => w.includes("]99;i=omp-probe-") && w.includes(":p=?"));
+			const probe = writes.find(w => w.includes("]99;i=proto-probe-") && w.includes(":p=?"));
 			expect(probe).toBeUndefined();
 			expect(isOsc99Supported()).toBe(false);
 		} finally {

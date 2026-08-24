@@ -6,6 +6,7 @@ import {
 	SPINNER_GLYPH_ADVANCE_MS,
 	sharedSpinnerFrame,
 } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { SPINNER_FRAMES } from "@oh-my-pi/pi-coding-agent/modes/theme/symbols";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getConfigRootDir, getCustomThemesDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
@@ -33,7 +34,7 @@ async function writeCustomTheme(name: string, extraSymbols: Record<string, unkno
 
 describe("theme symbols.spinnerFrames", () => {
 	beforeEach(async () => {
-		tmpAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-spinner-frames-"));
+		tmpAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-spinner-frames-"));
 		setAgentDir(tmpAgentDir);
 	});
 
@@ -63,7 +64,7 @@ describe("theme symbols.spinnerFrames", () => {
 		const statusFrames = ["A", "B", "C"];
 		// `unicode` preset's activity frames — the default we expect to surface
 		// when only `status` is overridden.
-		const presetActivity = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+		const presetActivity = SPINNER_FRAMES.unicode.activity;
 		await writeCustomTheme("custom-status-only", { spinnerFrames: { status: statusFrames } });
 
 		const theme = await getThemeByName("custom-status-only");

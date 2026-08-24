@@ -418,7 +418,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 		if (rows.length === 0) return { pushed: totalPushed, ok: true };
 
 		const body = JSON.stringify({
-			agent: { name: "omp", version: VERSION },
+			agent: { name: "proto", version: VERSION },
 			installId: getInstallId(),
 			// Coarse host fingerprint for triage — `darwin`/`linux`/`win32` +
 			// `arm64`/`x64`. Useful for "is this bug arch-specific?" without

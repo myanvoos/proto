@@ -8,7 +8,6 @@ import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, Sy
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveMermaidAscii } from "./mermaid-cache";
-import type { SlashCommandIconName } from "./symbols";
 import { theme } from "./theme";
 import type { Theme } from "./theme-class";
 
@@ -171,6 +170,13 @@ export function getMarkdownTheme(): MarkdownTheme {
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
+		codeBlockFence: (lang, pos) =>
+			theme.fg(
+				"mdCodeBlockBorder",
+				pos === "open" && lang
+					? `${theme.boxSharp.horizontal.repeat(2)}╴${lang}`
+					: theme.boxSharp.horizontal.repeat(2),
+			),
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),
@@ -230,15 +236,6 @@ export function getSelectListTheme(): SelectListTheme {
 		icon: (text: string) => theme.fg("muted", text),
 		hovered: (text: string) => theme.bg("selectedBg", text),
 	};
-}
-/**
- * Resolve the autocomplete type-indicator glyph for a slash command.
- * Returns `undefined` when no theme is initialized.
- */
-export function getSlashCommandTypeIcon(name: SlashCommandIconName): string | undefined {
-	if (typeof theme === "undefined") return undefined;
-	const icon = theme.cmd[name];
-	return icon.length > 0 ? icon : undefined;
 }
 
 export function getEditorTheme(): EditorTheme {

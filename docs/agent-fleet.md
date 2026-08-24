@@ -12,7 +12,7 @@ The Fleet also discovers parked subagents from the current session's persisted a
 | `Ctrl+S`       | Open or close the same Fleet through the legacy `app.session.observe` action.                    |
 | Double-tap `←` | Open the Fleet from an empty main-session editor when the current session has an agent to show.  |
 
-Run `/hotkeys` to see the active chords. Remap either action in `~/.omp/agent/keybindings.yml`:
+Run `/hotkeys` to see the active chords. Remap either action in `~/.proto/agent/keybindings.yml`:
 
 ```yaml
 app.agents.fleet: Alt+A

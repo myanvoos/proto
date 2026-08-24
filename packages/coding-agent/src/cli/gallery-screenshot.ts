@@ -62,7 +62,7 @@ export async function captureGalleryScreenshots(
 	const vhs = $which("vhs");
 	if (!vhs) {
 		throw new Error(
-			"`omp gallery --screenshot` requires VHS, which is not installed. " +
+			"`proto gallery --screenshot` requires VHS, which is not installed. " +
 				"Install it (e.g. `brew install vhs`, or see https://github.com/charmbracelet/vhs) and retry.",
 		);
 	}
@@ -77,7 +77,7 @@ export async function captureGalleryScreenshots(
 
 	const baseDir = options.out
 		? path.dirname(path.resolve(options.out))
-		: fs.mkdtempSync(path.join(os.tmpdir(), "omp-gallery-"));
+		: fs.mkdtempSync(path.join(os.tmpdir(), "proto-gallery-"));
 	await fs.promises.mkdir(baseDir, { recursive: true });
 
 	const outPaths: string[] = [];
@@ -194,7 +194,7 @@ function buildVhsTheme(): string {
 	const foreground = theme.isLight ? "#1a1a1a" : "#d4d4d4";
 	const selection = theme.isLight ? "#c8d6ff" : "#404862";
 	return JSON.stringify({
-		name: "omp-gallery",
+		name: "proto-gallery",
 		background,
 		foreground,
 		cursor: foreground,

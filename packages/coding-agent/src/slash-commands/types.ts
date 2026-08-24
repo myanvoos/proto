@@ -1,5 +1,4 @@
 import type { Settings } from "../config/settings";
-import type { SlashCommandIconName } from "../modes/theme/symbols";
 import type { InteractiveModeContext, SubmittedUserInput } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionManager } from "../session/session-manager";
@@ -17,8 +16,6 @@ export interface BuiltinSlashCommand {
 	name: string;
 	aliases?: string[];
 	description: string;
-	/** Autocomplete type-indicator icon. Defaults to "action" (generic terminal glyph). */
-	icon?: SlashCommandIconName;
 	/** Whether the command consumes text after the command name. */
 	allowArgs?: boolean;
 	/** Subcommands for dropdown completion (e.g. /mcp add, /mcp list). */

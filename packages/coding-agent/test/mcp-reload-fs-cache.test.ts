@@ -94,7 +94,7 @@ describe("/mcp reload picks up external mcp.json edits", () => {
 	});
 
 	beforeEach(async () => {
-		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-reload-project-"));
+		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-mcp-reload-project-"));
 		setProjectDir(projectDir);
 		clearCache();
 	});

@@ -15,7 +15,7 @@ describe("tool asset downloads", () => {
 	});
 
 	it("writes a completed response body to disk", async () => {
-		using tempDir = TempDir.createSync("@omp-tool-download-");
+		using tempDir = TempDir.createSync("@proto-tool-download-");
 		const dest = tempDir.join("tool.bin");
 		mockDownloadResponse(new Response("tool-bytes"));
 
@@ -25,7 +25,7 @@ describe("tool asset downloads", () => {
 	});
 
 	it("aborts a stalled response body and removes the partial file", async () => {
-		using tempDir = TempDir.createSync("@omp-tool-download-stall-");
+		using tempDir = TempDir.createSync("@proto-tool-download-stall-");
 		const dest = tempDir.join("tool.bin");
 		const stalled = Promise.withResolvers<void>();
 		const body = new ReadableStream<Uint8Array>({

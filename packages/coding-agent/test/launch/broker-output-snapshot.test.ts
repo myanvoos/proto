@@ -19,7 +19,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 describe("daemon broker log snapshots", () => {
 	it("returns the cursor captured with the PTY bytes rendered in the response", async () => {
-		using tempDir = TempDir.createSync("@omp-launch-cursor-");
+		using tempDir = TempDir.createSync("@proto-launch-cursor-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);

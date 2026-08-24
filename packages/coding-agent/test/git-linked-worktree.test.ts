@@ -24,7 +24,7 @@ describe("git linked worktree resolution", () => {
 	let tempRoot: string;
 
 	beforeEach(() => {
-		tempRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "omp-linked-worktree-")));
+		tempRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "proto-linked-worktree-")));
 	});
 
 	afterEach(() => {

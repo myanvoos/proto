@@ -13,6 +13,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { Text } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 
@@ -64,7 +65,6 @@ describe("Composer prepaint", () => {
 		settings = await Settings.init({ inMemory: true });
 		config = {
 			quiet: settings.get("startup.quiet"),
-			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
 			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
@@ -152,9 +152,9 @@ describe("Composer prepaint", () => {
 			expect(mode.editor.getExpandedText()).toBe(expectedDraft);
 			expect(mode.editor.getCursor()).toEqual(expectedCursor);
 			expect(terminal.starts).toBe(1);
-			const adoptedEditor = Bun.stripANSI(mode.editor.render(40).join("\n"));
-			expect(adoptedEditor.startsWith("+")).toBe(true);
-			expect(adoptedEditor).not.toContain("╭");
+			const adoptedEditorRows = mode.editor.render(40).map(row => Bun.stripANSI(row));
+			expect(adoptedEditorRows[0]!.trim().startsWith("›")).toBe(true);
+			expect(adoptedEditorRows.join("\n")).not.toContain("╭");
 
 			terminal.sendInput("\x03");
 			expect(mode.editor.getExpandedText()).toBe(expectedDraft);
@@ -294,7 +294,7 @@ describe("Composer prepaint", () => {
 			expect(mode.editor.getExpandedText()).toBe(draft);
 			expect(draft.split("\n")).toHaveLength(18);
 			expect(mode.editor.render(80).length).toBeLessThanOrEqual(4);
-			expect(terminal.getViewport().join("\n")).not.toContain("Starting OMP");
+			expect(terminal.getViewport().join("\n")).not.toContain("Starting PROTO");
 		} finally {
 			mode.stop();
 			lease.dispose();
@@ -351,7 +351,6 @@ describe("Composer prepaint", () => {
 	it("first frame mirrors the canonical settings-schema defaults", () => {
 		expect(COMPOSER_DEFAULTS).toEqual({
 			quiet: getDefault("startup.quiet"),
-			composerShape: getDefault("composer.shape") ?? "box",
 			showHardwareCursor: getDefault("showHardwareCursor"),
 			maxInlineImages: getDefault("tui.maxInlineImages"),
 			scrollbackRebuild: getDefault("tui.scrollbackRebuild"),
@@ -374,37 +373,32 @@ describe("Composer prepaint", () => {
 			},
 		});
 		composer.start();
-		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
-		);
+		await terminal.waitForRender(() => terminal.getViewport().some(row => Bun.stripANSI(row).includes("p r o t o")));
 
-		const output = terminal
-			.getViewport()
-			.map(r => Bun.stripANSI(r))
-			.join("\n");
-		expect(output).toContain("Welcome back!");
-		expect(output).toContain("omp");
-		expect(output).toContain("9.9.9");
+		const rows = terminal.getViewport().map(r => Bun.stripANSI(r));
+		const output = rows.join("\n");
+		expect(output).toContain("p r o t o");
+		expect(output).toContain("v9.9.9");
 		expect(output).toContain("prior work");
-		expect(output).not.toContain("Starting OMP");
-		expect(output).toContain("╭");
-		const initialEditorRow = terminal
-			.getViewport()
-			.map(row => Bun.stripANSI(row))
-			.findLastIndex(row => row.startsWith("╭"));
+		expect(output).toContain("/resume");
+		expect(output).not.toContain("Starting PROTO");
+		expect(output).not.toContain("╭");
+		const hairlineRow = rows.findLastIndex(row => row.startsWith("─"));
 		composer.updateWelcome({
-			modelName: "provider/model-with-an-authoritative-name-that-is-longer-than-the-left-column",
+			modelName: "model-with-a-very-long-authoritative-name-that-exceeds",
 			providerName: "provider-with-a-long-name",
 			lspServers: [{ name: "rust-analyzer", status: "connecting", fileTypes: [".rs"] }],
 		});
 		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("rust-analyzer")),
+			terminal.getViewport().some(row => Bun.stripANSI(row).includes("very-long-authoritative")),
 		);
-		const updatedEditorRow = terminal
-			.getViewport()
-			.map(row => Bun.stripANSI(row))
-			.findLastIndex(row => row.startsWith("╭"));
-		expect(updatedEditorRow).toBe(initialEditorRow);
+		const updatedRows = terminal.getViewport().map(r => Bun.stripANSI(r));
+		const updatedOutput = updatedRows.join("\n");
+		const updatedHairlineRow = updatedRows.findLastIndex(row => row.startsWith("─"));
+		expect(updatedHairlineRow).toBe(hairlineRow);
+		expect(updatedOutput).not.toContain("rust-analyzer");
+		expect(updatedOutput).not.toContain("provider-with-a-long-name");
+		expect(updatedOutput).toContain("…");
 		composer.stop();
 	});
 
@@ -421,14 +415,11 @@ describe("Composer prepaint", () => {
 			},
 		});
 		composer.start();
-		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
-		);
+		await terminal.waitForRender(() => terminal.getViewport().some(row => Bun.stripANSI(row).includes("p r o t o")));
 		const prepaintRows = terminal.getViewport().map(row => Bun.stripANSI(row));
 		expect(prepaintRows.join("\n")).toContain("Claude Fable 5");
 		expect(prepaintRows.join("\n")).toContain("anthropic");
-		const prepaintEditorRow = prepaintRows.findLastIndex(row => row.startsWith("╭"));
-
+		const prepaintWordmarkRow = prepaintRows.findIndex(row => row.includes("p r o t o"));
 		terminal.sendInput("draft message");
 		const lease = new ComposerLease(composer);
 		const testSession = await createTestSession({ inMemory: true });
@@ -467,13 +458,18 @@ describe("Composer prepaint", () => {
 			await terminal.waitForRender(() =>
 				terminal.getViewport().some(row => Bun.stripANSI(row).includes("real status bar *18 ?5")),
 			);
-			const welcomeMatches = (output.match(/Welcome back!/g) || []).length;
-			expect(welcomeMatches).toBe(1);
-			const adoptedEditorRow = terminal
+			const wordmarkMatches = (output.match(/p r o t o/g) || []).length;
+			expect(wordmarkMatches).toBe(1);
+			const adoptedWordmarkRow = terminal
 				.getViewport()
 				.map(row => Bun.stripANSI(row))
-				.findLastIndex(row => row.startsWith("╭"));
-			expect(adoptedEditorRow).toBe(prepaintEditorRow);
+				.findIndex(row => row.includes("p r o t o"));
+			// Handoff must not reflow the welcome: the 2/5-slack placement shifts
+			// the wordmark by the height delta between prepaint chrome (recent
+			// sessions + tip-era header) and post-init chrome — bounded, never a
+			// second wordmark.
+			expect(Math.abs(adoptedWordmarkRow - prepaintWordmarkRow)).toBeLessThanOrEqual(8);
+			expect(adoptedWordmarkRow).toBeGreaterThan(0);
 		} finally {
 			mode?.stop();
 			lease.dispose();
@@ -490,19 +486,16 @@ describe("Composer prepaint", () => {
 			version: "9.9.9",
 			cache: false,
 		});
-		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
-		);
+		await terminal.waitForRender(() => terminal.getViewport().some(row => Bun.stripANSI(row).includes("p r o t o")));
 		expect(
 			terminal
 				.getViewport()
 				.map(r => Bun.stripANSI(r))
 				.join("\n"),
-		).toContain("Welcome back!");
+		).toContain("p r o t o");
 
 		applyStartupComposerPreferences({
 			quiet: true,
-			composerShape: "box",
 			showHardwareCursor: config.showHardwareCursor,
 			maxInlineImages: config.maxInlineImages,
 			scrollbackRebuild: config.scrollbackRebuild,
@@ -520,7 +513,7 @@ describe("Composer prepaint", () => {
 			.getViewport()
 			.map(r => Bun.stripANSI(r))
 			.join("\n");
-		expect(output).not.toContain("Welcome back!");
+		expect(output).not.toContain("p r o t o");
 
 		terminal.sendInput("still editable");
 		await terminal.waitForRender();
@@ -532,7 +525,7 @@ describe("Composer prepaint", () => {
 		).toContain("still editable");
 	});
 
-	it("LSP feed fills the welcome rows", async () => {
+	it("LSP feed leaves the hero untouched", async () => {
 		const terminal = new CountingTerminal(80, 32);
 		beginStartupComposer({
 			preferences: config,
@@ -540,21 +533,63 @@ describe("Composer prepaint", () => {
 			version: "9.9.9",
 			cache: false,
 		});
-		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
-		);
+		await terminal.waitForRender(() => terminal.getViewport().some(row => Bun.stripANSI(row).includes("p r o t o")));
 
 		setStartupComposerLspServers([{ name: "rust-analyzer", status: "connecting", fileTypes: [".rs"] }]);
-		await terminal.waitForRender(() =>
-			terminal.getViewport().some(row => Bun.stripANSI(row).includes("rust-analyzer")),
-		);
+		await terminal.waitForRender();
 
 		const output = terminal
 			.getViewport()
 			.map(r => Bun.stripANSI(r))
 			.join("\n");
-		expect(output).toContain("rust-analyzer");
+		expect(output).not.toContain("rust-analyzer");
+		expect(output).toContain("p r o t o");
+		expect(output).toContain("v9.9.9");
 	});
+	it("renders components mounted into the shared editor container after init", async () => {
+		const terminal = new CountingTerminal(80, 24);
+		const composer = new Composer({ preferences: config, terminal });
+		composer.start();
+		const lease = new ComposerLease(composer);
+		const session = await createTestSession({ inMemory: true });
+		let mode: InteractiveMode | undefined;
+		try {
+			mode = new InteractiveMode(
+				session.session,
+				"9.9.9",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				lease.composer,
+			);
+			lease.adopt();
+			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+			await mode.init();
+			const rendered = mode.ui.render(80).map(row => Bun.stripANSI(row));
+			expect(rendered.filter(row => row.includes("ask anything · / for commands"))).toHaveLength(1);
+			expect(
+				rendered.filter(row => row.includes("Auto")).length,
+				"footline must not render the Auto mode rung",
+			).toBe(0);
+			mode.editorContainer.clear();
+			mode.editorContainer.addChild(new Text("DIALOG_PROBE_ROW", 1, 0));
+			await terminal.waitForRender();
+			expect(
+				terminal
+					.getViewport()
+					.map(row => Bun.stripANSI(row))
+					.join("\n"),
+			).toContain("DIALOG_PROBE_ROW");
+		} finally {
+			mode?.stop();
+			lease.dispose();
+			await session.cleanup();
+			vi.restoreAllMocks();
+		}
+	});
+
 	it("defers raw input until resolved settings arrive, adoption as fallback", async () => {
 		// Regression contract: losing the deferral re-blinds typing during the
 		// startup module-load stall; losing the enable leaves the keyboard dead

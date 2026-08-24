@@ -27,8 +27,8 @@ afterEach(() => {
 
 describe("legacy session directory migration", () => {
 	test("keeps a colliding live legacy session reachable through its path", () => {
-		const sessionsRoot = makeTempDir("omp-session-root-");
-		const cwd = makeTempDir("omp-session-cwd-");
+		const sessionsRoot = makeTempDir("proto-session-root-");
+		const cwd = makeTempDir("proto-session-cwd-");
 		const storage = new FileSessionStorage();
 		const canonicalDir = computeDefaultSessionDir(cwd, storage, sessionsRoot);
 		const legacyDir = legacySessionDir(sessionsRoot, cwd);
@@ -48,8 +48,8 @@ describe("legacy session directory migration", () => {
 	});
 
 	test("preserves writes when an older process recreates its cached legacy directory", () => {
-		const sessionsRoot = makeTempDir("omp-session-root-");
-		const cwd = makeTempDir("omp-session-cwd-");
+		const sessionsRoot = makeTempDir("proto-session-root-");
+		const cwd = makeTempDir("proto-session-cwd-");
 		const storage = new FileSessionStorage();
 		const canonicalDir = computeDefaultSessionDir(cwd, storage, sessionsRoot);
 		const legacyDir = legacySessionDir(sessionsRoot, cwd);

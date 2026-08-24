@@ -57,7 +57,7 @@ let cachedConfigPromise: Promise<AuthBrokerClientConfig | null> | null = null;
  * retried. Concurrent callers share one in-flight resolution.
  */
 export function resolveAuthBrokerConfig(): Promise<AuthBrokerClientConfig | null> {
-	const key = `${process.env.OMP_AUTH_BROKER_URL ?? ""}\u0000${process.env.OMP_AUTH_BROKER_TOKEN ?? ""}\u0000${getAgentDir()}`;
+	const key = `${process.env.PROTO_AUTH_BROKER_URL ?? ""}\u0000${process.env.PROTO_AUTH_BROKER_TOKEN ?? ""}\u0000${getAgentDir()}`;
 	if (cachedConfigPromise && cachedConfigKey === key) return cachedConfigPromise;
 	const promise = resolveAuthBrokerConfigShared({
 		agentDir: getAgentDir(),
@@ -122,9 +122,9 @@ export async function describeAuthBrokerStartupError(error: unknown): Promise<st
 	const target = url ? ` at ${url}` : "";
 	return (
 		`Auth broker${target} is unreachable (${error.message}). ` +
-		"omp is configured to use this broker for credentials and will not fall back to local credentials automatically.\n" +
-		"Start the broker with `omp auth-broker serve`, or disable it with " +
-		"`omp config reset auth.broker.url` and `omp config reset auth.broker.token` " +
-		"(or unset OMP_AUTH_BROKER_URL / OMP_AUTH_BROKER_TOKEN)."
+		"proto is configured to use this broker for credentials and will not fall back to local credentials automatically.\n" +
+		"Start the broker with `proto auth-broker serve`, or disable it with " +
+		"`proto config reset auth.broker.url` and `proto config reset auth.broker.token` " +
+		"(or unset PROTO_AUTH_BROKER_URL / PROTO_AUTH_BROKER_TOKEN)."
 	);
 }

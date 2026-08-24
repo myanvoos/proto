@@ -7,7 +7,7 @@ import { getShellArgs, getShellConfig, resolveWindowsShell } from "../src/procmg
 
 describe("getShellConfig", () => {
 	it("directs invalid custom shell paths to the canonical config file", () => {
-		const missingShell = path.join(os.tmpdir(), `omp-missing-shell-${process.pid}`, "bash");
+		const missingShell = path.join(os.tmpdir(), `proto-missing-shell-${process.pid}`, "bash");
 		const configPath = path.join(getAgentDir(), MAIN_CONFIG_FILENAMES[0]);
 		expect(() => getShellConfig(missingShell)).toThrow(
 			`Custom shell path not found: ${missingShell}\nPlease update shellPath in ${configPath}`,
@@ -49,7 +49,7 @@ describe("resolveWindowsShell", () => {
 	});
 
 	function makeGitRoot(): string {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "omp-git-root-"));
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "proto-git-root-"));
 		tempDirs.push(root);
 		fs.mkdirSync(path.join(root, "bin"), { recursive: true });
 		fs.writeFileSync(path.join(root, "bin", "bash.exe"), "");
@@ -64,7 +64,7 @@ describe("resolveWindowsShell", () => {
 	});
 
 	it("finds Git Bash in the default scoop app dir via USERPROFILE", () => {
-		const profile = fs.mkdtempSync(path.join(os.tmpdir(), "omp-profile-"));
+		const profile = fs.mkdtempSync(path.join(os.tmpdir(), "proto-profile-"));
 		tempDirs.push(profile);
 		const root = path.join(profile, "scoop", "apps", "git", "current");
 		fs.mkdirSync(path.join(root, "bin"), { recursive: true });
@@ -73,7 +73,7 @@ describe("resolveWindowsShell", () => {
 	});
 
 	it("prefers a Git for Windows install root over the cmd.exe fallback", () => {
-		const programFiles = fs.mkdtempSync(path.join(os.tmpdir(), "omp-programfiles-"));
+		const programFiles = fs.mkdtempSync(path.join(os.tmpdir(), "proto-programfiles-"));
 		tempDirs.push(programFiles);
 		const bash = path.join(programFiles, "Git", "bin", "bash.exe");
 		fs.mkdirSync(path.dirname(bash), { recursive: true });

@@ -21,7 +21,7 @@ describe("sherpa source runtime resolution", () => {
 	});
 
 	it("loads the wrapper colocated with a workspace-hoisted platform addon", async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-sherpa-source-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-sherpa-source-"));
 		const rootNodeModules = path.join(tmp, "node_modules");
 		const packageNodeModules = path.join(tmp, "packages", "coding-agent", "node_modules");
 		await writePackage(
@@ -43,7 +43,7 @@ describe("sherpa source runtime resolution", () => {
 	});
 
 	it("prefers the nearest wrapper when its nested platform addon is loadable", async () => {
-		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "omp-sherpa-source-"));
+		tmp = await fs.mkdtemp(path.join(os.tmpdir(), "proto-sherpa-source-"));
 		const rootNodeModules = path.join(tmp, "node_modules");
 		const packageNodeModules = path.join(tmp, "packages", "coding-agent", "node_modules");
 		await writePackage(
