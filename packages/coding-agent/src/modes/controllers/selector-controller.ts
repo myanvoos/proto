@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
@@ -5,7 +6,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison, VERSION } from "@oh-my-pi/pi-utils";
 import {
 	type AdvisorConfigScope,
 	discoverAdvisorConfigs,
@@ -40,7 +41,8 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
-import type { SessionOAuthAccountList } from "../../session/agent-session-types";
+import { AgentRegistry } from "../../registry/agent-registry";
+import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import {
 	createForeignSessionStore,
@@ -59,7 +61,6 @@ import {
 	type ResetUsageAccount,
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
-import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
 import { parseThinkingLevel } from "../../thinking";
 import {
 	isSearchProviderId,
@@ -76,7 +77,13 @@ import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentFleetOverlayComponent } from "../components/agent-fleet";
-import { AgentsHubComponent } from "../components/agents-hub";
+import { AgentsViewComponent } from "../components/agents-view/agents-view-mode";
+import {
+	type AgentsViewScope,
+	buildAgentsViewIndex,
+	getRecordTitle,
+	reconcileAgentsViewRecords,
+} from "../components/agents-view/agents-view-state";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
@@ -90,7 +97,6 @@ import { PluginSelectorComponent } from "../components/plugin-selector";
 import { ReadToolGroupComponent } from "../components/read-tool-group";
 import { ResetUsageSelectorComponent } from "../components/reset-usage-selector";
 import { renderSegmentTrack } from "../components/segment-track";
-import { SessionAccountSelectorComponent } from "../components/session-account-selector";
 import { SessionSelectorComponent, type SessionSelectorOptions } from "../components/session-selector";
 import { SettingsSelectorComponent } from "../components/settings-selector";
 import { ToolExecutionComponent } from "../components/tool-execution";
@@ -379,36 +385,74 @@ export class SelectorController {
 	}
 
 	/**
-	 * Fullscreen agents hub on the alternate screen (the /models idiom): scope
-	 * sidebar, agent rows, and chip strips that dive into the model browser.
+	 * Full-screen unified session + subagent browser (the /session and /agents
+	 * surface). Global scope lists every session; "current" scope roots the view
+	 * at the attached session's subtree when it has children, else falls back.
 	 */
-	async showAgentsDashboard(): Promise<void> {
+	async showAgentsView(scope: AgentsViewScope = "global"): Promise<void> {
+		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
+		let initialScopeIdentity: string | undefined;
+		let initialScopeTitle: string | undefined;
+		if (scope === "current") {
+			if (!currentSessionFile) {
+				this.ctx.showError("No session file to inspect (in-memory session)");
+				return;
+			}
+			const sessions = await SessionManager.listAll();
+			const registry = AgentRegistry.global();
+			// Seed this session's on-disk children before the has-children probe,
+			// so /agents scopes correctly right after a resume.
+			if (currentSessionFile) await registerPersistedSubagents(registry, currentSessionFile);
+			const index = buildAgentsViewIndex(reconcileAgentsViewRecords(registry.list(), sessions));
+			const identity = `file:${path.resolve(currentSessionFile)}`;
+			const root = index.byKey.get(identity);
+			if (root && (index.childrenByParent.get(root)?.length ?? 0) > 0) {
+				initialScopeIdentity = identity;
+				initialScopeTitle = getRecordTitle(root);
+			} else {
+				return this.showAgentsView("global");
+			}
+		}
 		const activeModel = this.ctx.session.model;
-		const activeModelPattern = activeModel ? `${activeModel.provider}/${activeModel.id}` : undefined;
-		const defaultModelPattern = this.ctx.settings.getModelRole("default");
 		let overlayHandle: OverlayHandle | undefined;
-		let hub: AgentsHubComponent | undefined;
 		let closed = false;
 		const done = () => {
 			if (closed) return;
 			closed = true;
-			hub?.dispose();
+			view?.dispose();
 			overlayHandle?.hide();
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
-		hub = await AgentsHubComponent.create(
-			this.ctx.ui,
-			getProjectDir(),
-			this.ctx.settings,
-			{
-				modelRegistry: this.ctx.session.modelRegistry,
-				activeModelPattern,
-				defaultModelPattern,
-			},
-			{ onCancel: () => done() },
-		);
-		overlayHandle = this.#showFullscreenMenu(hub);
+		const view = new AgentsViewComponent({
+			ui: this.ctx.ui,
+			keybindings: this.ctx.keybindings,
+			currentSessionFile,
+			cwd: this.ctx.sessionManager.getCwd(),
+			version: VERSION,
+			modelName: activeModel?.name,
+			providerName: activeModel?.provider,
+			requestRender: () => this.ctx.ui.requestRender(),
+			close: () => done(),
+			openSession: sessionPath => this.handleResumeSession(sessionPath),
+			focusAgent: id => this.ctx.focusAgentSession(id),
+			newSession: () => this.ctx.handleClearCommand(),
+			renameCurrentSession: name => this.ctx.handleRenameCommand(name),
+			deleteCurrentSession: () => this.handleSessionDeleteCommand(),
+			promptAfterResume: text =>
+				this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text)).then(() => undefined),
+			showError: message => this.ctx.showError(message),
+			showStatus: message => this.ctx.showStatus(message),
+			getTool: name => this.ctx.session.getToolByName(name),
+			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),
+			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
+			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
+			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
+			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
+			initialScopeIdentity,
+			initialScopeTitle,
+		});
+		overlayHandle = this.#showFullscreenMenu(view);
 	}
 
 	/**
@@ -1906,65 +1950,6 @@ export class SelectorController {
 					requestRender: () => {
 						this.ctx.ui.requestRender();
 					},
-				},
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
-	async showSessionPinSelector(): Promise<void> {
-		const session = this.ctx.session;
-		if (session.isStreaming) {
-			this.ctx.showStatus("Cannot pin an account while the session is streaming.");
-			return;
-		}
-		this.ctx.showStatus("Loading provider accounts…", { dim: true });
-		let accountList: SessionOAuthAccountList | undefined;
-		try {
-			accountList = await session.listCurrentProviderOAuthAccounts();
-		} catch (error) {
-			this.ctx.showError(
-				`Could not load provider accounts: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return;
-		}
-		if (!accountList) {
-			this.ctx.showStatus("Select a model before pinning a provider account.");
-			return;
-		}
-		const provider = getOAuthProviders().find(candidate => candidate.id === accountList.provider);
-		const providerName = provider?.name ?? accountList.provider;
-		const accounts = toSessionPinAccounts(accountList.accounts);
-		if (accounts.length === 0) {
-			const source = session.modelRegistry.authStorage.describeCredentialSource(
-				accountList.provider,
-				session.sessionId,
-			);
-			this.ctx.showStatus(
-				source
-					? `No stored OAuth accounts for ${providerName}. Current auth comes from ${source}.`
-					: `No stored OAuth accounts for ${providerName}. Use /login to add one.`,
-			);
-			return;
-		}
-
-		this.showSelector(done => {
-			const selector = new SessionAccountSelectorComponent(
-				providerName,
-				accounts,
-				account => {
-					done();
-					if (!session.pinCurrentProviderOAuthAccount(account.credentialId)) {
-						this.ctx.showWarning(`${account.label} is no longer available to pin.`);
-						return;
-					}
-					this.ctx.showStatus(`Pinned ${account.label} to this session for ${providerName}.`);
-					this.ctx.statusLine.invalidate();
-					this.ctx.ui.requestRender();
-				},
-				() => {
-					done();
-					this.ctx.ui.requestRender();
 				},
 			);
 			return { component: selector, focus: selector };

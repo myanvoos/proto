@@ -307,6 +307,31 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 		},
 	};
 }
+/**
+ * Raw spawn-task text recorded in a subagent transcript's `session_init`
+ * (the assignment that defines the agent), for the agents view's program
+ * reveal. Bounded prefix read; undefined when the transcript has no task.
+ */
+export async function readAgentSpawnTask(sessionFile: string): Promise<string | undefined> {
+	let task: string | undefined;
+	try {
+		await visitEntriesFromFileStream(
+			sessionFile,
+			entry => {
+				const record = recordOf(entry);
+				if (!record) return;
+				if (record.type === "session_init" && typeof record.task === "string") {
+					task = record.task.trim() || undefined;
+					return false;
+				}
+			},
+			{ maxRecords: MAX_METADATA_LINES },
+		);
+	} catch {
+		return undefined;
+	}
+	return task;
+}
 
 async function readPersistedOrchestratorWorkerIds(
 	sessionFile: string,

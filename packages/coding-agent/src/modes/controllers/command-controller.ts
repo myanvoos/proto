@@ -2,17 +2,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import {
-	getEnvApiKey,
-	getProviderDetails,
-	type ProviderDetails,
-	resolveUsedFraction,
-	type UsageLimit,
-	type UsageReport,
-} from "@oh-my-pi/pi-ai";
+import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
-import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
@@ -26,7 +18,7 @@ import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/c
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
-import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
+import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
@@ -70,111 +62,6 @@ export class CommandController {
 				`Failed to write debug transcript: ${error instanceof Error ? error.message : "Unknown error"}`,
 			);
 		}
-	}
-
-	async handleSessionCommand(): Promise<void> {
-		const stats = this.ctx.session.getSessionStats();
-		const premiumRequests =
-			"premiumRequests" in stats && typeof stats.premiumRequests === "number"
-				? stats.premiumRequests
-				: this.ctx.session.sessionManager.getUsageStatistics().premiumRequests;
-		const normalizedPremiumRequests = Math.round((premiumRequests + Number.EPSILON) * 100) / 100;
-
-		let info = `${theme.bold("Session Info")}\n\n`;
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
-		info += `\n${theme.bold("Provider")}\n`;
-		const model = this.ctx.session.model;
-		if (!model) {
-			info += `${theme.fg("dim", "No model selected")}\n`;
-		} else {
-			const authMode = resolveProviderAuthMode(this.ctx.session.modelRegistry.authStorage, model.provider);
-			const openaiWebsocketSetting = this.ctx.settings.get("providers.openaiWebsockets") ?? "auto";
-			const preferOpenAICodexWebsockets =
-				openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
-			const credentialSource = this.ctx.session.modelRegistry.authStorage.describeCredentialSource(
-				model.provider,
-				stats.sessionId,
-			);
-			const providerDetails = getProviderDetails({
-				model,
-				sessionId: stats.sessionId,
-				authMode,
-				credentialSource,
-				preferWebsockets: preferOpenAICodexWebsockets,
-				providerSessionState: this.ctx.session.providerSessionState,
-			});
-			info += renderProviderSection(providerDetails, theme);
-		}
-		info += `\n`;
-		info += `${theme.bold("Messages")}\n`;
-		info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;
-		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
-		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
-		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
-		// Append-only context
-		{
-			const setting = this.ctx.settings.get("provider.appendOnlyContext") ?? "auto";
-			const model = this.ctx.session.model;
-			const mode = shouldEnableAppendOnlyContext(setting, model);
-			const activeLabel = mode ? theme.fg("success", "active") : theme.fg("dim", "inactive");
-			const settingLabel = setting === "auto" ? `${setting} (${model?.provider ?? "?"})` : setting;
-			info += `${theme.fg("dim", "Append-Only:")} ${activeLabel} (setting: ${settingLabel})\n`;
-		}
-		info += `${theme.bold("Tokens")}\n`;
-		info += `${theme.fg("dim", "Input:")} ${stats.tokens.input.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		if (stats.tokens.cacheRead > 0) {
-			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
-		}
-		if (stats.tokens.cacheWrite > 0) {
-			info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
-		}
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
-
-		if (stats.cost > 0 || normalizedPremiumRequests > 0) {
-			info += `\n${theme.bold("Cost")}\n`;
-			if (stats.cost > 0) {
-				info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}\n`;
-			}
-			if (normalizedPremiumRequests > 0) {
-				info += `${theme.fg("dim", "Premium Requests:")} ${normalizedPremiumRequests.toLocaleString()}\n`;
-			}
-		}
-
-		if (this.ctx.lspServers && this.ctx.lspServers.length > 0) {
-			info += `\n${theme.bold("LSP Servers")}\n`;
-			for (const server of this.ctx.lspServers) {
-				const statusColor =
-					server.status === "ready"
-						? "success"
-						: server.status === "available"
-							? "dim"
-							: server.status === "connecting"
-								? "warning"
-								: "error";
-				const statusText =
-					server.status === "error" && server.error ? `${server.status}: ${server.error}` : server.status;
-				info += `${theme.fg("dim", `${server.name}:`)} ${theme.fg(statusColor, statusText)} ${theme.fg("dim", `(${server.fileTypes.join(", ")})`)}\n`;
-			}
-		}
-
-		if (this.ctx.mcpManager) {
-			const mcpServers = this.ctx.mcpManager.getConnectedServers();
-			info += `\n${theme.bold("MCP Servers")}\n`;
-			if (mcpServers.length === 0) {
-				info += `${theme.fg("dim", "None connected")}\n`;
-			} else {
-				for (const name of mcpServers) {
-					const conn = this.ctx.mcpManager.getConnection(name);
-					const toolCount = conn?.tools?.length ?? 0;
-					info += `${theme.fg("dim", `${name}:`)} ${theme.fg("success", "connected")} ${theme.fg("dim", `(${toolCount} tools)`)}\n`;
-				}
-			}
-		}
-
-		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
 	static readonly #advisorStatusGlyph: Record<string, string> = {
@@ -863,31 +750,6 @@ function formatProviderName(provider: string): string {
 
 function formatNumber(value: number, maxFractionDigits = 1): string {
 	return new Intl.NumberFormat("en-US", { maximumFractionDigits: maxFractionDigits }).format(value);
-}
-
-function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): string {
-	if (authStorage.hasOAuth(provider)) {
-		return "oauth";
-	}
-	if (authStorage.has(provider)) {
-		return "api key";
-	}
-	if (getEnvApiKey(provider)) {
-		return "env api key";
-	}
-	if (authStorage.hasAuth(provider)) {
-		return "runtime/fallback";
-	}
-	return "unknown";
-}
-
-export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<typeof theme, "fg">): string {
-	const lines: string[] = [];
-	lines.push(`${uiTheme.fg("dim", "Name:")} ${details.provider}`);
-	for (const field of details.fields) {
-		lines.push(`${uiTheme.fg("dim", `${field.label}:`)} ${field.value}`);
-	}
-	return `${lines.join("\n")}\n`;
 }
 
 function resolveProviderUsageTotal(reports: UsageReport[]): number {

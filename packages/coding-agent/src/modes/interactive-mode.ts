@@ -3421,10 +3421,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#todoCommandController.handleTodoCommand(args);
 	}
 
-	handleSessionCommand(): Promise<void> {
-		return this.#commandController.handleSessionCommand();
-	}
-
 	handleAdvisorStatusCommand(): Promise<void> {
 		return this.#commandController.handleAdvisorStatusCommand();
 	}
@@ -3540,8 +3536,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		void this.#selectorController.showExtensionsDashboard();
 	}
 
-	showAgentsDashboard(): void {
-		void this.#selectorController.showAgentsDashboard();
+	showAgentsView(scope?: "current" | "global"): void {
+		void this.#selectorController.showAgentsView(scope);
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
@@ -3589,10 +3585,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void> {
 		return this.#selectorController.showOAuthSelector(mode, providerId);
-	}
-
-	showSessionPinSelector(): Promise<void> {
-		return this.#selectorController.showSessionPinSelector();
 	}
 
 	showResetUsageSelector(): Promise<void> {

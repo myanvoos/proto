@@ -2,7 +2,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
-import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
+import { formatTokenCount } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { handleMcpAcp } from "./helpers/mcp";
@@ -218,28 +218,10 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			return usage("Usage: /session [info|delete|pin [account]]", runtime);
 		},
-		handleTui: async (command, runtime) => {
-			const { verb, rest } = parseSubcommand(command.args);
-			if (verb === "delete" && !rest) {
-				runtime.ctx.editor.setText("");
-				await runtime.ctx.handleSessionDeleteCommand();
-				return;
-			}
-			if (verb === "pin") {
-				if (rest) {
-					await handleSessionPinCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
-					refreshStatusLine(runtime.ctx);
-				} else {
-					await runtime.ctx.showSessionPinSelector();
-				}
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (!verb || (verb === "info" && !rest)) {
-				await runtime.ctx.handleSessionCommand();
-			} else {
-				runtime.ctx.showStatus("Usage: /session [info|delete|pin [account]]");
-			}
+		handleTui: (_command, runtime) => {
+			// TUI /session opens the full-screen unified session browser (global
+			// scope). The info/delete/pin verbs remain on the ACP/text `handle`.
+			runtime.ctx.showAgentsView("global");
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -391,9 +373,11 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "agents",
-		description: "Open the agents hub (per-agent model, prewalk, and advisor)",
+		description: "Open the agents view (unified session + subagent browser)",
 		handleTui: (_command, runtime) => {
-			runtime.ctx.showAgentsDashboard();
+			// Scoped at the current session's subtree when it has children
+			// (subagent view); global session list otherwise.
+			runtime.ctx.showAgentsView("current");
 			runtime.ctx.editor.setText("");
 		},
 	},

@@ -27,6 +27,8 @@
 - Plan review can save a plan to a chosen path and start a new session.
 - Optional edit parse-regression capture appends the before/after content, model, variant, and arguments to `~/.proto/agent/edit-blackbox.jsonl` when `edit.blackbox.enabled` is enabled.
 - Added `startup.clearScrollback` (off by default) to opt back into erasing the terminal's saved scrollback at launch.
+- Added the full-screen agents view, a unified session + subagent browser: Running/Idle/Inactive sections over live registry agents and persisted sessions, `re:`/phrase/fuzzy search that keeps ancestors of matches, scope drill-in/out, reply composer (steer running workers via fleet's ensureLive+prompt path; resume-then-send for saved sessions), rename (`ctrl+r`), and delete with two-second confirm (`ctrl+x`, abort+release for running workers). `/session` opens it at global scope and `/agents` scoped at the current session's subtree when it has children.
+- Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 ### Changed
 - The agent fleet roster's tree connectors now use the theme's `tree.branch`/`tree.last` glyphs (`├─ `/`└─ `) instead of hardcoded `├── `/`└── `, and the commit tool-args block uses dashed connectors.
 - Interactive startup no longer erases the terminal's scrollback; the session begins on a clear screen with prior history still reachable by scrolling up.

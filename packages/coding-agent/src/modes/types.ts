@@ -349,7 +349,6 @@ export interface InteractiveModeContext {
 
 	// Command handling
 	handleTodoCommand(args: string): Promise<void>;
-	handleSessionCommand(): Promise<void>;
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
@@ -386,7 +385,7 @@ export interface InteractiveModeContext {
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showExtensionsDashboard(): void;
-	showAgentsDashboard(): void;
+	showAgentsView(scope?: "current" | "global"): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;
@@ -396,7 +395,6 @@ export interface InteractiveModeContext {
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
-	showSessionPinSelector(): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;

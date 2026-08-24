@@ -183,6 +183,40 @@ function deriveSessionStatus(suffix: string): SessionStatus {
 	return "unknown";
 }
 
+/**
+ * First non-empty line of the session's opening user message, for reply-composer
+ * recap headers ("2m · Build the nightly data pipeline"). Walks a bounded prefix
+ * window forward to the first `message` entry; undefined when the session has no
+ * user text yet or the file is unreadable.
+ */
+export async function readOpeningUserHeadline(sessionPath: string): Promise<string | undefined> {
+	let prefix: string;
+	try {
+		const file = Bun.file(sessionPath);
+		const size = file.size;
+		const slice = await file.slice(0, Math.min(size, SESSION_LIST_SUFFIX_BYTES)).text();
+		prefix = slice;
+	} catch {
+		return undefined;
+	}
+	const lines = prefix.split("\n");
+	for (const line of lines) {
+		if (line.charCodeAt(0) !== 123) continue;
+		let entry: { type?: string; message?: TailMessage };
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (entry.type !== "message" || !entry.message || entry.message.role !== "user") continue;
+		for (const rawLine of extractTextFromContent((entry.message.content ?? []) as Message["content"]).split("\n")) {
+			const normalized = rawLine.replace(/\s+/g, " ").trim();
+			if (normalized) return normalized;
+		}
+	}
+	return undefined;
+}
+
 interface TailMessage {
 	role?: string;
 	stopReason?: string;
