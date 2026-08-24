@@ -1,9 +1,9 @@
 /**
  * Bash intent interceptor - redirects common shell patterns to proper tools.
  *
- * When an LLM calls bash with patterns like `grep`, `cat`, `find`, etc.,
- * this interceptor provides helpful error messages directing them to use
- * the specialized tools instead.
+ * When an LLM calls bash with a pattern covered by an interceptor rule
+ * (`cat`, `sed -i`, output redirection, …), this interceptor provides a
+ * helpful error message directing it to use the specialized tool instead.
  */
 import { type BashInterceptorRule, DEFAULT_BASH_INTERCEPTOR_RULES } from "../config/settings-schema";
 import { extractFlatShellCommandSegments } from "./shell-tokenize";
@@ -98,7 +98,7 @@ function interceptionCandidates(command: string): string[] {
 	const candidates = [command.trim()];
 	for (const segment of extractFlatShellCommandSegments(command)) {
 		// A segment that consumes the previous stage's stdout via `|` reads piped
-		// stdin, which no path-based dedicated tool (read/grep/glob) — nor any
+		// stdin, which no path-based dedicated tool (read) — nor any
 		// other dedicated tool — can replace, so it is not an interception
 		// candidate. Standalone and first-stage commands still match.
 		if (segment.pipedStdin) continue;

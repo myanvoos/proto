@@ -24,7 +24,6 @@
 
 pub mod appearance;
 pub mod ast;
-pub mod audio;
 pub mod block;
 pub mod clipboard;
 pub mod crash_handler;
@@ -41,7 +40,6 @@ pub mod html;
 pub mod iofs;
 pub mod js;
 pub mod keys;
-pub mod live;
 /// PDF inspection and Markdown conversion.
 pub mod pdf;
 pub mod sixel;

@@ -9,7 +9,6 @@ import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-coding-agent/session/streaming-o
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { GrepTool } from "../../src/tools/grep";
 
 function createSession(cwd: string): ToolSession {
 	return {
@@ -350,72 +349,6 @@ describe("read → edit seen-line guard", () => {
 
 		await executeHashlineSingle(execOptions(`[wide.txt#${tag}]\nPUT 2-2:\n+REPLACED`, session));
 		expect(await Bun.file(file).text()).toBe("head\nREPLACED\nfoot\n");
-	});
-});
-
-describe("search → edit seen-line guard", () => {
-	let tmpDir: string;
-
-	beforeAll(async () => {
-		await Settings.init({ inMemory: true });
-	});
-	beforeEach(async () => {
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "seen-line-search-"));
-	});
-	afterEach(async () => {
-		await removeWithRetries(tmpDir);
-	});
-
-	function searchSession(cwd: string): ToolSession {
-		return {
-			cwd,
-			hasUI: false,
-			hasEditTool: true,
-			getSessionFile: () => path.join(cwd, "session.jsonl"),
-			getSessionSpawns: () => "*",
-			getArtifactsDir: () => path.join(cwd, "artifacts"),
-			allocateOutputArtifact: async () => ({ id: "artifact-1", path: path.join(cwd, "artifact-1.log") }),
-			// Zero context so the seen set is exactly the matched lines.
-			settings: Settings.isolated({
-				"grep.contextBefore": 0,
-				"grep.contextAfter": 0,
-				"edit.enforceSeenLines": true,
-			}),
-			enableLsp: false,
-		} as ToolSession;
-	}
-
-	it("records matched lines as seen and rejects an edit on an unsearched line", async () => {
-		const file = path.join(tmpDir, "code.txt");
-		const lines = ["a", "b", "c", "NEEDLE here", "e", "f", "g", "h"];
-		await Bun.write(file, `${lines.join("\n")}\n`);
-		const session = searchSession(tmpDir);
-
-		const search = await new GrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
-		const tag = tagFromOutput(resultText(search));
-
-		const seen = getFileSnapshotStore(session).byHash(canonicalSnapshotKey(file), tag)?.seenLines;
-		expect(seen?.has(4)).toBe(true);
-		expect(seen?.has(8)).toBe(false);
-
-		// The matched line is in the seen set, so editing it applies.
-		await executeHashlineSingle(execOptions(`[code.txt#${tag}]\nPUT 4-4:\n+NEEDLE edited`, session));
-		expect(await Bun.file(file).text()).toContain("NEEDLE edited");
-	});
-
-	it("rejects editing an unsearched line under a search-minted tag", async () => {
-		const file = path.join(tmpDir, "code.txt");
-		const lines = ["a", "b", "c", "NEEDLE here", "e", "f", "g", "h"];
-		await Bun.write(file, `${lines.join("\n")}\n`);
-		const session = searchSession(tmpDir);
-
-		const search = await new GrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
-		const tag = tagFromOutput(resultText(search));
-
-		await expect(executeHashlineSingle(execOptions(`[code.txt#${tag}]\nPUT 8-8:\n+X`, session))).rejects.toThrow(
-			/never displayed \(it showed/,
-		);
-		expect(await Bun.file(file).text()).toBe(`${lines.join("\n")}\n`);
 	});
 });
 

@@ -22,7 +22,6 @@ import {
 	piEscapeRegexLiteral,
 	piGrepSkip,
 	piJoinPath,
-	piLimit,
 	piLsPath,
 	piReadPath,
 	piTimeout,
@@ -105,20 +104,6 @@ interface CursorExecBridgeOptions {
 	 * Cursor emits no local `todo` toolResult, so nothing else records it.
 	 */
 	persistTodoPhases?: (phases: TodoPhase[]) => void;
-	/**
-	 * Build a `grep` tool honoring a frame's own context width and match cap.
-	 *
-	 * The modern `pi_grep` frame carries both, and the shared `grep` instance
-	 * is fixed to the session settings at construction — so without this the
-	 * two fields are silently dropped. Callers that cannot supply it keep the
-	 * shared instance and the session's defaults.
-	 *
-	 * The returned tool is executed as-is. Callers whose registry tools are
-	 * wrapped in `ExtensionToolWrapper` MUST apply the same wrapper here, or a
-	 * frame supplying either field silently escapes the extension event
-	 * plumbing that every other call goes through.
-	 */
-	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): CursorBridgeTool | undefined;
 	/**
 	 * The session's live MCP connections, for Cursor's resource frames.
 	 *
@@ -636,50 +621,16 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	 * `literal` makes the pattern a fixed string; the local tool is regex-only,
 	 * so the pattern is escaped on the way in (same translation the legacy pi
 	 * shim does).
-	 *
-	 * `context` and `limit` are not expressible in the model-facing schema —
-	 * context width comes from settings fixed at tool construction — so the
-	 * frame's values are honored by building a per-call `grep` through
-	 * {@link CursorExecBridgeOptions.createGrepTool}. Both are `optional int32`,
-	 * so a present `0` context means "no context lines", not "use the default".
-	 * Without the factory the shared instance runs with session defaults.
 	 */
 	async piGrep(call: Parameters<NonNullable<ICursorExecHandlers["piGrep"]>>[0]) {
-		const { pattern, path, glob, ignoreCase, literal, context, limit } = call.args;
-		const scoped =
-			context !== undefined || limit !== undefined
-				? this.options.createGrepTool?.({ context, totalMatchLimit: piLimit(limit) })
-				: undefined;
+		const { pattern, path, glob, ignoreCase, literal } = call.args;
 		// Same arg mapping as the legacy `grep` handler: the local tool takes one
 		// path spec, and its `case` flag is case-SENSITIVITY, the inverse of the
 		// frame's `ignore_case`.
-		return await executeTool(
-			this.options,
-			"grep",
-			call.toolCallId,
-			{
-				pattern: literal === true ? piEscapeRegexLiteral(pattern) : pattern,
-				path: glob ? piJoinPath(path, glob) : path || ".",
-				case: ignoreCase === true ? false : undefined,
-			},
-			scoped,
-		);
-	}
-
-	/**
-	 * `pi_find` is a filename search, which is the local `glob` tool — not
-	 * `grep`. Its `pattern` is a glob, joined onto `path` because `glob` takes a
-	 * single combined path spec.
-	 *
-	 * `limit` is `optional int32`, so `0` is present rather than unset; the
-	 * reference clamps it with `Math.max(1, limit ?? 1000)`, and an unset limit
-	 * leaves the local tool's own default in place.
-	 */
-	async piFind(call: Parameters<NonNullable<ICursorExecHandlers["piFind"]>>[0]) {
-		const { pattern, path, limit } = call.args;
-		return await executeTool(this.options, "glob", call.toolCallId, {
-			path: piJoinPath(path, pattern),
-			limit: piLimit(limit),
+		return await executeTool(this.options, "grep", call.toolCallId, {
+			pattern: literal === true ? piEscapeRegexLiteral(pattern) : pattern,
+			path: glob ? piJoinPath(path, glob) : path || ".",
+			case: ignoreCase === true ? false : undefined,
 		});
 	}
 

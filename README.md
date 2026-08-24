@@ -424,11 +424,11 @@ Vuln lookups answer with vendor data, not blog summaries.
 
 [`web_search` reference ↗](https://proto.sh/docs/tools#web_search)
 
-## Roughly **~80,000** lines of Rust, doing the work other harnesses shell out for.
+## Roughly **~79,000** lines of Rust, doing the work other harnesses shell out for.
 
-Six crates, one platform-tagged N-API addon. Search, shell, AST, highlight, PTY, desktop control, image decode, BPE counting — all in-process on the libuv pool. No fork/exec on the hot path. Another ~80k lines ride along vendored: the brush bash fork, plus 58 command-line utilities — coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff, moreutils — ported into the builtins crate and compiled straight into the shell.
+Five crates, one platform-tagged N-API addon. Search, shell, AST, highlight, PTY, desktop control, image decode, BPE counting — all in-process on the libuv pool. No fork/exec on the hot path. Another ~80k lines ride along vendored: the brush bash fork, plus 58 command-line utilities — coreutils, findutils, sed, jq, ripgrep-backed grep, fd, diff, moreutils — ported into the builtins crate and compiled straight into the shell.
 
-- Crates: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-voice`, `pi-walker`
+- Crates: `pi-natives`, `pi-shell`, `pi-ast`, `pi-iso`, `pi-walker`
 - Platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64` — x64 ships dual AVX2 and baseline binaries
 
 Per crate, code lines only:
@@ -440,7 +440,6 @@ Per crate, code lines only:
 | pi-walker     | Parallel ignore-aware walker + scan cache shared by grep · glob · workspace · shell    |  5,200 |
 | pi-iso        | Workspace isolation · apfs · btrfs · zfs · reflink · overlayfs · projfs · rcopy        |  3,300 |
 | pi-ast        | tree-sitter + ast-grep matching, block resolution, structural summaries                |  2,900 |
-| pi-voice      | Audio capture/playback · Opus · live WebRTC                                            |  1,000 |
 
 Inside `pi-natives`, the per-module breakdown (glue and tests omitted):
 
@@ -625,7 +624,6 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 | **[pi-shell](crates/pi-shell)**                    | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)               |
 | **[pi-ast](crates/pi-ast)**                        | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                         |
 | **[pi-iso](crates/pi-iso)**                        | Worker isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy          |
-| **[pi-voice](crates/pi-voice)**                    | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                           |
 | **[pi-walker](crates/pi-walker)**                  | Parallel ignore-aware filesystem walker with the scan cache shared by grep, glob, and workspace     |
 | **[brush-core](crates/vendor/brush-core)**         | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution        |
 | **[pi-builtins](crates/pi-builtins)**              | Bash builtins (cd, echo, test, printf, read, export, …) plus 67 in-process command-line utilities |

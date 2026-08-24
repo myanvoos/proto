@@ -209,40 +209,6 @@ describe("default echo/printf redirect rule", () => {
 	});
 });
 
-describe("default grep rule and pipeline stdin", () => {
-	const tools = ["grep"];
-
-	it("blocks standalone file searches", () => {
-		expect(checkBashInterception("grep pattern path", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(true);
-		expect(checkBashInterception("rg pattern src", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(true);
-	});
-
-	it("blocks a first-stage grep that produces pipeline input", () => {
-		expect(checkBashInterception("grep x file | wc -l", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(true);
-	});
-
-	it("does not block grep consuming pipeline stdin", () => {
-		expect(checkBashInterception("printf 'x\\n' | grep x", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(false);
-		expect(
-			checkBashInterception("tr -d '\\r' < input.log | grep -v '^ *foo'", tools, DEFAULT_BASH_INTERCEPTOR_RULES)
-				.block,
-		).toBe(false);
-		expect(checkBashInterception("printf 'x\\n' |\n grep x", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(
-			false,
-		);
-		expect(
-			checkBashInterception("printf 'x\\n' |\n # filter\n grep x", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block,
-		).toBe(false);
-		expect(checkBashInterception("printf 'x\\n' |& grep x", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block).toBe(false);
-	});
-
-	it("still blocks a standalone grep sequenced after a pipeline", () => {
-		expect(
-			checkBashInterception("cat log | tr a b && grep err file", tools, DEFAULT_BASH_INTERCEPTOR_RULES).block,
-		).toBe(true);
-	});
-});
-
 describe("default hub start rules", () => {
 	const tools = ["fleet"];
 

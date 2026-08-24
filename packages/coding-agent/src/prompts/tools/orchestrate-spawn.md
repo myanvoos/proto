@@ -1,4 +1,4 @@
-Spawns one persistent coding-agent worker (edit, bash, grep, everything) and returns immediately.
+Spawns one persistent coding-agent worker (edit, write, bash, everything) and returns immediately.
 
 Agent type per task (any discovered type; omit for the generic `worker`):
 - `worker`: strong model; hard work (design, debugging, multi-file changes, judgment calls).

@@ -14,10 +14,9 @@ function createSession(): ToolSession {
 }
 
 describe("Read SSH guidance", () => {
-	it("advertises grep and current SSH fallbacks instead of retired tool names", () => {
+	it("advertises bash and sshfs fallbacks for unsupported remote hosts", () => {
 		const description = new ReadTool(createSession()).description;
 
-		expect(description).toContain("searchable with `grep`");
 		expect(description).toContain("use `bash` with a remote SSH command");
 		expect(description).toContain("`sshfs`");
 		expect(description).not.toContain("`search`");

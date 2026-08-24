@@ -719,8 +719,10 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	const home = homeDir ?? os.homedir();
 	if (home && filePath.startsWith(home)) {
 		const suffix = filePath.slice(home.length);
-		if (suffix === "" || suffix.startsWith("/")) {
-			return `~${suffix}`;
+		// Windows-authored paths use `\` separators; normalize them so the
+		// shortened form is always forward-slash display output.
+		if (suffix === "" || suffix.startsWith("/") || suffix.startsWith("\\")) {
+			return `~${suffix.replaceAll("\\", "/")}`;
 		}
 	}
 	return filePath;

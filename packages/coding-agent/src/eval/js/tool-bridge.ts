@@ -81,20 +81,6 @@ function summarizeToolResult(
 				path: record.path,
 				chars: typeof record.content === "string" ? record.content.length : 0,
 			});
-		case "grep":
-			return withError({
-				op: "grep",
-				pattern: record.pattern,
-				path: record.path,
-				count: details.matchCount ?? undefined,
-			});
-		case "glob":
-			return withError({
-				op: "glob",
-				pattern: record.pattern,
-				count: details.fileCount ?? undefined,
-				matches: Array.isArray(details.files) ? details.files.slice(0, 20) : undefined,
-			});
 		case "bash":
 			return withError({
 				op: "run",

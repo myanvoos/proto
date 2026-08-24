@@ -5,9 +5,7 @@ import * as url from "node:url";
 import { HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "@oh-my-pi/hashline";
 import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
-import type { Skill } from "../extensibility/skills";
 import {
-	InternalUrlRouter,
 	type LocalProtocolOptions,
 	resolveLocalRoot,
 	resolveLocalUrlToPath,
@@ -445,15 +443,6 @@ export function isInternalUrlPath(filePath: string): boolean {
 }
 
 /**
- * True when a path is specifically an `ssh://` URL (anchored scheme match),
- * the exact per-entry check used to reject `ssh://` *before* a side-effecting
- * `InternalUrlRouter.resolve` in tools that need a local file.
- */
-export function isSshUrl(path: string): boolean {
-	return /^ssh:\/\//i.test(path.trim());
-}
-
-/**
  * True when the read tool's URL parser (`parseReadUrlTarget` in fetch.ts) would
  * recognize this path as a readable external URL: a strict `http(s)://`, a
  * collapsed `http(s):/host` (Node path normalization folds `//` → `/`), or a
@@ -654,6 +643,10 @@ async function isProvenNotSymlink(target: string): Promise<boolean> {
 	}
 }
 
+function normalizePosixPath(filePath: string): string {
+	return filePath.replace(/\\/g, "/");
+}
+
 export function formatPathRelativeToCwd(
 	filePath: string,
 	cwd: string,
@@ -720,8 +713,8 @@ function parseStringEncodedPathArray(input: string): string[] | null {
 /**
  * Normalize a path argument that may arrive as a single string, a JSON-encoded
  * string array (`'["a.ts"]'`), or an actual array into a flat `string[]`.
- * Delimited single strings (`"a.ts b.ts"`) are left for
- * {@link expandDelimitedPathEntries} to split.
+ * Delimited single strings (`"a.ts b.ts"`) are split by
+ * {@link splitDelimitedPathEntry} when the parts resolve on disk.
  */
 export function toPathList(input: string | string[] | undefined): string[] {
 	if (typeof input === "string") return parseStringEncodedPathArray(input) ?? [input];
@@ -884,56 +877,11 @@ export async function splitDelimitedPathEntry(
 	);
 }
 
-/** Expand delimited entries in-place while preserving unsplit entries. */
-export async function expandDelimitedPathEntries(
-	entries: readonly string[],
-	cwd: string,
-	options: { splitter?: PathEntrySplitter } = {},
-): Promise<string[]> {
-	const expanded: string[] = [];
-	for (const entry of entries) {
-		const normalizedEntry = normalizePathLikeInput(entry);
-		const split = await splitDelimitedPathEntry(normalizedEntry, cwd, options);
-		if (split) expanded.push(...split);
-		else expanded.push(normalizedEntry);
-	}
-	return expanded;
-}
-
 export interface ParsedSearchPath {
 	basePath: string;
 	glob?: string;
 }
 
-export interface ParsedFindPattern {
-	basePath: string;
-	globPattern: string;
-	hasGlob: boolean;
-}
-
-export interface ResolvedSearchTarget {
-	basePath: string;
-	glob?: string;
-}
-
-export interface ResolvedMultiSearchPath {
-	basePath: string;
-	glob?: string;
-	scopePath: string;
-	exactFilePaths?: string[];
-	targets?: ResolvedSearchTarget[];
-}
-
-export interface ResolvedFindTarget {
-	basePath: string;
-	globPattern: string;
-	hasGlob: boolean;
-}
-
-export interface ResolvedMultiFindPattern {
-	targets: ResolvedFindTarget[];
-	scopePath: string;
-}
 export function parseSearchPath(filePath: string): ParsedSearchPath {
 	const normalizedPath = normalizePathSeparators(filePath);
 	const segments = normalizedPath.split("/");
@@ -957,284 +905,6 @@ export function parseSearchPath(filePath: string): ParsedSearchPath {
 		basePath: segments.slice(0, firstGlobIndex).join("/"),
 		glob: segments.slice(firstGlobIndex).join("/"),
 	};
-}
-
-/**
- * Async sibling of {@link parseSearchPath} that prefers literal interpretation
- * when a path containing glob metacharacters resolves to an existing entry on
- * disk. Disambiguates Next.js/SvelteKit routes like `apps/[id]/page.tsx` —
- * without this, `[id]` is parsed as a glob character class and silently
- * matches nothing.
- */
-export async function parseSearchPathPreferringLiteral(filePath: string, cwd: string): Promise<ParsedSearchPath> {
-	if (!hasGlobPathChars(filePath) || isInternalUrlPath(filePath)) return parseSearchPath(filePath);
-	try {
-		await fs.promises.stat(resolveToCwd(filePath, cwd));
-		return { basePath: normalizePathSeparators(filePath) };
-	} catch {
-		return parseSearchPath(filePath);
-	}
-}
-
-// Parse a find pattern into a base directory path and a glob pattern.
-// Examples:
-//   src/app/**/\*.tsx -> { basePath: "src/app", globPattern: "**/*.tsx", hasGlob: true }
-//   src/app/\*.tsx -> { basePath: "src/app", globPattern: "*.tsx", hasGlob: true }
-//   \*.ts -> { basePath: ".", globPattern: "**/*.ts", hasGlob: true }
-//   **/\*.json -> { basePath: ".", globPattern: "**/*.json", hasGlob: true }
-//   /abs/path/**/\*.ts -> { basePath: "/abs/path", globPattern: "**/*.ts", hasGlob: true }
-//   src/app -> { basePath: "src/app", globPattern: "**/*", hasGlob: false }
-export function parseFindPattern(pattern: string): ParsedFindPattern {
-	const normalizedPattern = normalizePathSeparators(pattern);
-	const segments = normalizedPattern.split("/");
-	let firstGlobIndex = -1;
-	for (let i = 0; i < segments.length; i++) {
-		if (hasGlobPathChars(segments[i])) {
-			firstGlobIndex = i;
-			break;
-		}
-	}
-
-	if (firstGlobIndex === -1) {
-		return { basePath: normalizedPattern, globPattern: "**/*", hasGlob: false };
-	}
-
-	if (firstGlobIndex === 0) {
-		const needsRecursive = !normalizedPattern.startsWith("**/");
-		return {
-			basePath: ".",
-			globPattern: needsRecursive ? `**/${normalizedPattern}` : normalizedPattern,
-			hasGlob: true,
-		};
-	}
-
-	return {
-		basePath: segments.slice(0, firstGlobIndex).join("/"),
-		globPattern: segments.slice(firstGlobIndex).join("/"),
-		hasGlob: true,
-	};
-}
-
-export function combineSearchGlobs(prefixGlob?: string, suffixGlob?: string): string | undefined {
-	if (!prefixGlob) return suffixGlob;
-	if (!suffixGlob) return prefixGlob;
-
-	const normalizedPrefix = prefixGlob.replace(/\/+$/, "");
-	const normalizedSuffix = suffixGlob.replace(/^\/+/, "");
-
-	return `${normalizedPrefix}/${normalizedSuffix}`;
-}
-
-function normalizePosixPath(filePath: string): string {
-	return filePath.replace(/\\/g, "/");
-}
-
-function joinRelativeGlob(basePath: string | undefined, globPattern: string): string {
-	if (!basePath || basePath === ".") return normalizePosixPath(globPattern).replace(/^\/+/, "");
-	const normalizedBase = normalizePosixPath(basePath).replace(/\/+$/, "");
-	const normalizedGlob = normalizePosixPath(globPattern).replace(/^\/+/, "");
-	return `${normalizedBase}/${normalizedGlob}`;
-}
-
-function buildBraceUnion(patterns: string[]): string | undefined {
-	const uniquePatterns = [...new Set(patterns.map(pattern => normalizePosixPath(pattern).trim()).filter(Boolean))];
-	if (uniquePatterns.length === 0) return undefined;
-	if (uniquePatterns.length === 1) return uniquePatterns[0];
-	return `{${uniquePatterns.join(",")}}`;
-}
-
-function findCommonBasePath(paths: string[]): string {
-	if (paths.length === 0) return ".";
-	let commonParts = path.resolve(paths[0]).split(path.sep);
-	for (const candidatePath of paths.slice(1)) {
-		const candidateParts = path.resolve(candidatePath).split(path.sep);
-		let sharedCount = 0;
-		const maxShared = Math.min(commonParts.length, candidateParts.length);
-		while (sharedCount < maxShared && commonParts[sharedCount] === candidateParts[sharedCount]) {
-			sharedCount += 1;
-		}
-		commonParts = commonParts.slice(0, sharedCount);
-	}
-	if (commonParts.length === 0) {
-		return path.parse(path.resolve(paths[0])).root;
-	}
-	const joined = commonParts.join(path.sep);
-	return joined || path.parse(path.resolve(paths[0])).root;
-}
-
-function toScopeDisplay(items: string[], cwd: string): string {
-	return items
-		.map(item =>
-			formatPathRelativeToCwd(item, cwd, {
-				trailingSlash: item.endsWith("/") || item.endsWith("\\"),
-			}),
-		)
-		.join(", ");
-}
-
-async function resolveSearchPathItems(
-	pathItems: string[],
-	cwd: string,
-	suffixGlob?: string,
-	fanOutFileItems = false,
-): Promise<ResolvedMultiSearchPath | undefined> {
-	if (pathItems.length < 1) {
-		return undefined;
-	}
-
-	const parsedItems = await Promise.all(
-		pathItems.map(async item => {
-			const parsedPath = await parseSearchPathPreferringLiteral(item, cwd);
-			const absoluteBasePath = resolveToCwd(parsedPath.basePath, cwd);
-			const stat = await fs.promises.stat(absoluteBasePath);
-			return { raw: item, parsedPath, absoluteBasePath, stat };
-		}),
-	);
-
-	const allExactFiles = !suffixGlob && parsedItems.every(item => !item.parsedPath.glob && item.stat.isFile());
-	const commonBasePath = findCommonBasePath(parsedItems.map(item => item.absoluteBasePath));
-	const combinedPatterns = parsedItems.map(item => {
-		const relativeBasePath = normalizePosixPath(path.relative(commonBasePath, item.absoluteBasePath)) || ".";
-		if (item.parsedPath.glob) {
-			const pathGlob = joinRelativeGlob(relativeBasePath, item.parsedPath.glob);
-			return combineSearchGlobs(pathGlob, suffixGlob) ?? pathGlob;
-		}
-		if (suffixGlob) {
-			const pathPrefix = relativeBasePath === "." ? undefined : relativeBasePath;
-			return combineSearchGlobs(pathPrefix, suffixGlob) ?? suffixGlob;
-		}
-		if (item.stat.isDirectory()) {
-			return joinRelativeGlob(relativeBasePath, "**/*");
-		}
-		return relativeBasePath === "." ? path.basename(item.absoluteBasePath) : relativeBasePath;
-	});
-	// A single walk rooted at the common ancestor is only safe when that
-	// ancestor is itself one of the requested scopes (e.g. `.` + `src/foo.ts`):
-	// the walk then covers exactly what the caller asked for. When the common
-	// ancestor is an unrequested parent (`.` + `~/.gitconfig` → `$HOME`, or
-	// disjoint trees → `/`), a collapsed walk traverses every unrelated sibling
-	// under it — fan out into per-item targets so each scan stays bounded to a
-	// requested path.
-	const commonIsRequestedScope = parsedItems.some(item => item.absoluteBasePath === commonBasePath);
-	// Walkers prune `.git` unconditionally and honor gitignore, so a plain-file
-	// item folded into a directory walk's glob union (`.` + `.git/config`) can
-	// silently never match. Callers that dedupe overlapping results opt in via
-	// `fanOutFileItems` to get explicit file targets, which bypass the walker.
-	const demotesFileItem =
-		fanOutFileItems && !allExactFiles && parsedItems.some(item => !item.parsedPath.glob && item.stat.isFile());
-	const targets =
-		parsedItems.length > 1 && (!commonIsRequestedScope || demotesFileItem)
-			? parsedItems.map(item => ({
-					basePath: item.absoluteBasePath,
-					glob: item.parsedPath.glob ? combineSearchGlobs(item.parsedPath.glob, suffixGlob) : suffixGlob,
-				}))
-			: undefined;
-
-	return {
-		basePath: commonBasePath,
-		glob: buildBraceUnion(combinedPatterns),
-		scopePath: toScopeDisplay(pathItems, cwd),
-		exactFilePaths: allExactFiles ? parsedItems.map(item => item.absoluteBasePath) : undefined,
-		targets,
-	};
-}
-
-export async function resolveExplicitSearchPaths(
-	pathItems: string[],
-	cwd: string,
-	suffixGlob?: string,
-	fanOutFileItems = false,
-): Promise<ResolvedMultiSearchPath | undefined> {
-	return resolveSearchPathItems([...new Set(pathItems)], cwd, suffixGlob, fanOutFileItems);
-}
-
-async function resolveFindPatternItems(
-	patternItems: string[],
-	cwd: string,
-): Promise<ResolvedMultiFindPattern | undefined> {
-	if (patternItems.length <= 1) {
-		return undefined;
-	}
-
-	// Each path becomes its own walk root. Collapsing to a shared common ancestor
-	// (and filtering with a brace-union glob) would force the walker to traverse
-	// and stat every unrelated sibling under that ancestor — two paths under
-	// $HOME would scan all of $HOME. The find tool fans these targets out in
-	// parallel instead, so every scan stays bounded to exactly one requested path.
-	const targets = patternItems.map(item => {
-		const parsedPattern = parseFindPattern(item);
-		return {
-			basePath: resolveToCwd(parsedPattern.basePath, cwd),
-			globPattern: parsedPattern.globPattern,
-			hasGlob: parsedPattern.hasGlob,
-		};
-	});
-
-	return {
-		targets,
-		scopePath: toScopeDisplay(patternItems, cwd),
-	};
-}
-
-export async function resolveExplicitFindPatterns(
-	patternItems: string[],
-	cwd: string,
-): Promise<ResolvedMultiFindPattern | undefined> {
-	return resolveFindPatternItems([...new Set(patternItems)], cwd);
-}
-
-/**
- * Result of partitioning a list of user-supplied paths/globs into entries whose
- * base directory currently exists on disk versus those that do not.
- *
- * Used by multi-path tools (search, find, ast_grep, ast_edit) to tolerate one
- * or more missing entries in a multi-path call: the surviving entries should
- * still be searched, with the missing entries surfaced as a non-fatal warning.
- */
-export interface PartitionedPaths {
-	/** Raw input strings whose resolved base path exists. */
-	valid: string[];
-	/** Raw input strings whose resolved base path is missing (ENOENT). */
-	missing: string[];
-}
-
-/**
- * Stat each input's base path concurrently; return entries split by existence.
- *
- * `splitter` is expected to be {@link parseFindPattern} or
- * {@link parseSearchPath}: both return a `basePath` field that this helper
- * resolves against `cwd` and stats. ENOENT is the only swallowed error — every
- * other stat failure (permission, IO, etc.) propagates so callers do not silently
- * skip paths that exist but are unreadable.
- *
- * Order of `valid` and `missing` follows the input order, so callers can rely
- * on `valid[0]` matching the first surviving user-supplied entry.
- */
-export async function partitionExistingPaths(
-	items: string[],
-	cwd: string,
-	splitter: (item: string) => { basePath: string },
-): Promise<PartitionedPaths> {
-	const settled = await Promise.all(
-		items.map(async item => {
-			const { basePath } = splitter(item);
-			const absoluteBasePath = resolveToCwd(basePath, cwd);
-			try {
-				await fs.promises.stat(absoluteBasePath);
-				return { item, exists: true } as const;
-			} catch (err) {
-				if (isEnoent(err)) return { item, exists: false } as const;
-				throw err;
-			}
-		}),
-	);
-	const valid: string[] = [];
-	const missing: string[] = [];
-	for (const entry of settled) {
-		if (entry.exists) valid.push(entry.item);
-		else missing.push(entry.item);
-	}
-	return { valid, missing };
 }
 
 export function resolveReadPath(filePath: string, cwd: string): string {
@@ -1338,207 +1008,6 @@ export async function findUniqueWorkspaceSuffixWithGlobForTest(
 	globImpl: typeof glob,
 ): Promise<{ absolutePath: string; displayPath: string } | null> {
 	return findUniqueWorkspaceSuffixWithGlob(rawPath, cwd, signal, globImpl);
-}
-
-// =============================================================================
-// Tool-scope resolution (search/ast tools)
-// =============================================================================
-
-/** Local file materialized from a readable external URL for shared tool-scope resolution. */
-export interface ResolvedExternalSearchUrl {
-	/** Absolute or cwd-relative file path to search. */
-	sourcePath: string;
-	/** True when the materialized file must not mint editable anchors. */
-	immutable?: boolean;
-}
-
-export interface ToolScopeOptions {
-	rawPaths: string[];
-	cwd: string;
-	/** Verb used in the "Cannot {action} internal URL without a backing file: …" message. */
-	internalUrlAction: string;
-	/** Collect absolute paths flagged immutable by their internal-URL handler. */
-	trackImmutableSources?: boolean;
-	/** Honor `exactFilePaths` from {@link resolveExplicitSearchPaths} (search-only). */
-	surfaceExactFilePaths?: boolean;
-	/** Fan plain-file entries out into per-target scans instead of folding them
-	 * into a directory walk's glob union (search-only: the caller must dedupe
-	 * matches from overlapping targets). */
-	fanOutFileTargets?: boolean;
-	/** Extra hint appended to "Path not found" when stat fails and the user supplied multiple paths. */
-	multipathStatHint?: string;
-	/** Calling session's settings — forwarded to the internal-URL router so caller-aware handlers (issue://, pr://) honor it. */
-	settings?: unknown;
-	/** Caller's abort signal — forwarded to the internal-URL router. */
-	signal?: AbortSignal;
-	/** Calling session's `local://` root mapping — pins resolutions to the calling session. */
-	localProtocolOptions?: LocalProtocolOptions;
-	/** Calling session's loaded skills — lets skill:// resolve without process-global state. */
-	skills?: readonly Skill[];
-	/** Materialize readable external URLs to local text files before scope derivation. */
-	resolveExternalUrl?: (rawPath: string) => Promise<ResolvedExternalSearchUrl | undefined>;
-}
-
-export interface ToolScopeResolution {
-	searchPath: string;
-	scopePath: string;
-	globFilter: string | undefined;
-	isDirectory: boolean;
-	multiTargets?: ResolvedSearchTarget[];
-	exactFilePaths?: string[];
-	missingPaths: string[];
-	immutableSourcePaths: Set<string>;
-}
-
-/**
- * Shared path-input pipeline for `search`, `ast_grep`, and `ast_edit`:
- *  1. normalize + reject empty paths,
- *  2. resolve internal URLs through {@link InternalUrlRouter} to backing files,
- *  3. partition existing vs missing when multiple paths are supplied,
- *  4. derive a single search base path / glob, or a multi-target list,
- *  5. stat the resolved base path so callers can branch on directory vs file scope.
- */
-export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<ToolScopeResolution> {
-	const { rawPaths: inputs, cwd, internalUrlAction } = opts;
-	const normalizedRawPaths = inputs.map(normalizePathLikeInput);
-	if (normalizedRawPaths.some(rawPath => rawPath.length === 0)) {
-		throw new ToolError("Search scope entries must be non-empty paths or globs");
-	}
-	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd);
-	if (rawPaths.some(rawPath => rawPath.length === 0)) {
-		throw new ToolError("Search scope entries must be non-empty paths or globs");
-	}
-	// Strict external-URL schemes. `file://` is intentionally absent: it has
-	// local-path semantics (expandPath strips it downstream), so it flows through
-	// the ordinary filesystem pipeline instead of the external-URL resolver.
-	const strictExternalUrlRe = /^(?:https?|ftp|ws|wss):\/\//i;
-	const internalRouter = InternalUrlRouter.instance();
-	const resolvedPathInputs: string[] = [];
-	const immutableSourcePaths = new Set<string>();
-	for (const rawPath of rawPaths) {
-		let externalUrl = strictExternalUrlRe.test(rawPath);
-		if (!externalUrl && isReadableUrlPath(rawPath) && !hasGlobPathChars(rawPath)) {
-			// Fuzzy spelling the read parser accepts (`www.host/…`, collapsed
-			// `https:/host/…`). An existing local path wins over URL
-			// interpretation so a directory literally named `www.foo` stays
-			// searchable; only a definitive ENOENT/ENOTDIR flips to URL handling
-			// (any other stat error means the path exists — let the local
-			// pipeline surface it).
-			try {
-				await fs.promises.stat(resolveToCwd(rawPath, cwd));
-			} catch (err) {
-				externalUrl = isEnoent(err) || isEnotdir(err);
-			}
-		}
-		if (externalUrl) {
-			const resolved = opts.resolveExternalUrl ? await opts.resolveExternalUrl(rawPath) : undefined;
-			if (resolved) {
-				resolvedPathInputs.push(resolved.sourcePath);
-				if (opts.trackImmutableSources && resolved.immutable) {
-					immutableSourcePaths.add(path.resolve(resolved.sourcePath));
-				}
-				continue;
-			}
-			// Resolver missing or declined (e.g. ftp/ws/wss): fail explicitly
-			// instead of letting the local-path fallthrough surface a confusing
-			// "Path not found" for a URL-shaped input.
-			throw new ToolError(
-				`Cannot ${internalUrlAction} external URL: ${rawPath}. Use \`read\` to fetch web content, then search the returned text.`,
-			);
-		}
-		if (!internalRouter.canHandle(rawPath)) {
-			resolvedPathInputs.push(rawPath);
-			continue;
-		}
-		if (isSshUrl(rawPath)) {
-			throw new ToolError(
-				`Cannot ${internalUrlAction} a remote ssh:// path (no local file): ${rawPath}. Use \`read ${rawPath}\` to view it, or use \`grep\` on a specific remote file.`,
-			);
-		}
-		if (hasGlobPathChars(rawPath)) {
-			throw new ToolError(`Glob patterns are not supported for internal URLs: ${rawPath}`);
-		}
-		const resource = await internalRouter.resolve(rawPath, {
-			cwd,
-			settings: opts.settings,
-			signal: opts.signal,
-			localProtocolOptions: opts.localProtocolOptions,
-			skills: opts.skills,
-			// Tool-scope resolution only needs `sourcePath`; skip content
-			// materialization so large artifacts (or any handler that separates
-			// path from content) stay searchable without OOM risk.
-			pathOnly: true,
-		});
-		if (!resource.sourcePath) {
-			throw new ToolError(`Cannot ${internalUrlAction} internal URL without a backing file: ${rawPath}`);
-		}
-		if (opts.trackImmutableSources && resource.immutable) {
-			immutableSourcePaths.add(path.resolve(resource.sourcePath));
-		}
-		resolvedPathInputs.push(resource.sourcePath);
-	}
-
-	let missingPaths: string[] = [];
-	let effectivePaths = resolvedPathInputs;
-	if (resolvedPathInputs.length > 1) {
-		const partition = await partitionExistingPaths(resolvedPathInputs, cwd, parseSearchPath);
-		if (partition.valid.length === 0) {
-			throw new ToolError(`Path not found: ${partition.missing.join(", ")}`);
-		}
-		effectivePaths = partition.valid;
-		missingPaths = partition.missing;
-	}
-
-	let searchPath: string;
-	let scopePath: string;
-	let globFilter: string | undefined;
-	let multiTargets: ResolvedSearchTarget[] | undefined;
-	let exactFilePaths: string[] | undefined;
-	if (effectivePaths.length === 1) {
-		const parsedPath = await parseSearchPathPreferringLiteral(effectivePaths[0] ?? ".", cwd);
-		searchPath = resolveToCwd(parsedPath.basePath, cwd);
-		globFilter = parsedPath.glob;
-		scopePath = formatPathRelativeToCwd(searchPath, cwd);
-	} else {
-		const multiSearchPath = await resolveExplicitSearchPaths(
-			effectivePaths,
-			cwd,
-			undefined,
-			opts.fanOutFileTargets === true,
-		);
-		if (!multiSearchPath) {
-			throw new ToolError("`paths` must contain at least one path or glob");
-		}
-		searchPath = multiSearchPath.basePath;
-		multiTargets = multiSearchPath.targets;
-		if (opts.surfaceExactFilePaths) {
-			exactFilePaths = multiSearchPath.exactFilePaths;
-			globFilter = exactFilePaths || multiTargets ? undefined : multiSearchPath.glob;
-		} else {
-			globFilter = multiTargets ? undefined : multiSearchPath.glob;
-		}
-		scopePath = multiSearchPath.scopePath;
-	}
-
-	let isDirectory: boolean;
-	try {
-		const stat = await Bun.file(searchPath).stat();
-		isDirectory = stat.isDirectory();
-	} catch {
-		const hint = opts.multipathStatHint && rawPaths.length > 1 ? opts.multipathStatHint : "";
-		throw new ToolError(`Path not found: ${scopePath}${hint}`);
-	}
-
-	return {
-		searchPath,
-		scopePath,
-		globFilter,
-		isDirectory,
-		multiTargets,
-		exactFilePaths,
-		missingPaths,
-		immutableSourcePaths,
-	};
 }
 
 // =============================================================================

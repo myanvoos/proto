@@ -8,7 +8,6 @@ import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse"
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
 import { SshProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/ssh-protocol";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 
@@ -168,7 +167,7 @@ describe.skipIf(!SSH_OK)("ssh:// handler against a real localhost ssh", () => {
 	);
 });
 
-describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localhost)", () => {
+describe.skipIf(!SSH_OK)("ssh:// through the real read/write tools (localhost)", () => {
 	const TMP = `/tmp/proto-ssh-tools-e2e-${process.pid}`;
 
 	function createSession(): ToolSession {
@@ -177,7 +176,7 @@ describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localho
 			hasUI: false,
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
-			settings: Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 }),
+			settings: Settings.isolated(),
 		};
 	}
 
@@ -216,20 +215,6 @@ describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localho
 		const range = textOf(await tool.execute("r-range", { path: `ssh://localhost${TMP}/range.txt:1-1` }));
 		expect(range).toContain("ALPHALINE");
 		expect(range).not.toContain("OMEGALINE");
-	});
-
-	it("GrepTool reports matches under the ssh:// URL with no scratch-temp leak", async () => {
-		mockEmptyHosts();
-		const tool = new GrepTool(createSession());
-		const result = await tool.execute("s", { pattern: "beta", path: `ssh://localhost${TMP}/read.txt` });
-		const out = textOf(result);
-		expect(out).toContain("beta");
-		// The resource is reported under its ssh:// URL, not a local scratch path.
-		expect(result.details?.files).toContain(`ssh://localhost${TMP}/read.txt`);
-		// The pure-virtual RE2 probe's scratch dir must never leak into text or metadata.
-		const detailsJson = JSON.stringify(result.details ?? {});
-		expect(out).not.toContain("proto-search-probe");
-		expect(detailsJson).not.toContain("proto-search-probe");
 	});
 
 	it("WriteTool round-trips a remote file byte-exact", async () => {

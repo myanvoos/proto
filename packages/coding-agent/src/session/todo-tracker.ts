@@ -16,7 +16,6 @@ const MUTATING_TOOLS: Record<string, true> = {
 	eval: true,
 	edit: true,
 	write: true,
-	ast_edit: true,
 };
 const MID_RUN_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
 const MARKDOWN_PROMPT_PREFIX_RE = /^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*/;

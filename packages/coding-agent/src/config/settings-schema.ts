@@ -330,16 +330,6 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		message: "Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.",
 	},
 	{
-		pattern: "^\\s*(grep|rg|ripgrep|ag|ack)\\s+",
-		tool: "grep",
-		message: "Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output.",
-	},
-	{
-		pattern: "^\\s*(find|fd|locate)\\s+.*(-name|-iname|-type|--type|-glob)",
-		tool: "glob",
-		message: "Use the `glob` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
-	},
-	{
 		pattern: "^\\s*sed\\s+(-i|--in-place)",
 		tool: "edit",
 		message: "Use the `edit` tool instead of sed -i. It provides diff preview and fuzzy matching.",
@@ -3127,100 +3117,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Grep, glob, and AST tools
-	"glob.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Glob",
-			description: "Enable the glob tool for glob-based file lookup",
-		},
-	},
-
-	"grep.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Grep",
-			description: "Enable the grep tool for regex content search",
-		},
-	},
-
-	"grep.contextBefore": {
-		type: "number",
-		default: 1,
-		ui: {
-			tab: "tools",
-			group: "Grep & Browser",
-			label: "Grep Context Before",
-			description: "Lines of context before each grep match",
-			options: [
-				{ value: "0", label: "0 lines" },
-				{ value: "1", label: "1 line" },
-				{ value: "2", label: "2 lines" },
-				{ value: "3", label: "3 lines" },
-				{ value: "5", label: "5 lines" },
-			],
-		},
-	},
-
-	"grep.contextAfter": {
-		type: "number",
-		default: 3,
-		ui: {
-			tab: "tools",
-			group: "Grep & Browser",
-			label: "Grep Context After",
-			description: "Lines of context after each grep match",
-			options: [
-				{ value: "0", label: "0 lines" },
-				{ value: "1", label: "1 line" },
-				{ value: "2", label: "2 lines" },
-				{ value: "3", label: "3 lines" },
-				{ value: "5", label: "5 lines" },
-				{ value: "10", label: "10 lines" },
-			],
-		},
-	},
-
-	"astGrep.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "AST Grep",
-			description: "Enable the ast_grep tool for structural AST search",
-		},
-	},
-
-	"astEdit.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "AST Edit",
-			description: "Enable the ast_edit tool for structural AST rewrites",
-		},
-	},
-
 	// Optional tools
-
-	"debug.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Debug",
-			description: "Enable the debug tool for DAP-based debugging",
-		},
-	},
 
 	"launch.enabled": {
 		type: "boolean",

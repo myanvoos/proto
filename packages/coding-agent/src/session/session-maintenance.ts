@@ -876,6 +876,8 @@ export class SessionMaintenance {
 		if (contextWindow <= 0 || this.#host.isDisposed()) return;
 		const settings = this.#host.settings.getGroup("compaction");
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings)) return;
+		// A running compaction owns the branch; speculating under it would race the rewrite.
+		if (this.isCompacting) return;
 		// Extensions that intercept compaction (cancel/replace) keep exact
 		// blocking semantics; a speculated result would bypass their veto.
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return;
@@ -935,6 +937,11 @@ export class SessionMaintenance {
 		const settings = this.#host.settings.getGroup("compaction");
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings))
 			return false;
+		// A running compaction owns the branch; speculating under it would race the
+		// rewrite. Extensions that intercept compaction (cancel/replace) keep exact
+		// blocking semantics; a speculated result would bypass their veto.
+		if (this.isCompacting) return false;
+		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return false;
 		const model = this.#model;
 		if (!model) return false;
 		const method = resolveSpeculationMethod(model, settings);

@@ -176,10 +176,12 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		return lines;
 	}
 
-	// First frame of the expanding/shrinking ✻ pulse; deterministic right after updateContent.
-	const PULSE = "✻";
+	// First frame of the expanding/shrinking braille-ring pulse; deterministic right
+	// after updateContent (see THINKING_DOTS_FRAMES in assistant-message.ts).
+	const PULSE = "⠀⠶⠀";
 	const THINKING_LABEL = "Thinking";
-	const THINKING_GLYPH_ONLY_LINE = /^[✻✼❉❊✺✹✸✶]\s*$/;
+	// Any pulse frame alone on a line: the full braille block the frames draw from.
+	const THINKING_GLYPH_ONLY_LINE = /^[⠀-⣿]+\s*$/;
 
 	it("shows a described pulse in place of hidden reasoning while thinking streams", () => {
 		const lines = liveLines(streaming([{ type: "thinking", thinking: "private reasoning" }]));

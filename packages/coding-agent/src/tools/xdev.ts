@@ -56,7 +56,6 @@ import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	todo: true,
 	ask: true,
-	grep: true,
 	web_search: true,
 };
 

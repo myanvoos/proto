@@ -137,13 +137,10 @@ Frontmatter parse severity is level-dependent:
 
 - discovered user/project commands use warning-level parsing with fallback key/value parsing
 - a capability item explicitly marked `native` would use fatal parsing
-- bundled fallback templates use fatal parsing
 
-### Bundled fallback commands
+### Bundled custom commands
 
-After filesystem/provider commands, embedded command templates are appended (`EMBEDDED_COMMAND_TEMPLATES`) if their names are not already present.
-
-Current embedded set comes from `src/task/commands.ts` and is used as a fallback (`source: "bundled"`).
+Bundled custom commands are loaded from `extensibility/custom-commands/loader.ts` (`loadBundledCommands`), which currently registers a single command: the bundled `ReviewCommand` (`bundled/review.ts`). Bundled entries carry `source: "bundled"` and load first, so user/project commands can override them by name.
 
 ## 4) Interactive mode: where command lists come from
 

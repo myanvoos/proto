@@ -5,7 +5,6 @@
 let
   inherit (pkgs) lib;
   linuxLibraries = with pkgs; [
-    libpulseaudio
     pipewire
     stdenv.cc.cc.lib
     zlib
@@ -50,7 +49,6 @@ pkgs.mkShell (
         cairo
         giflib
         libjpeg
-        libopus
         librsvg
         openssl
         pango

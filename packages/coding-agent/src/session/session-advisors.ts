@@ -175,13 +175,6 @@ export interface SessionAdvisorsOptions {
 	enabled: boolean;
 	tools?: AgentTool[];
 	/**
-	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
-	 * match cap. The advisor's tools are fixed instances carrying session
-	 * defaults, so without this an advisor running against Cursor silently
-	 * drops both fields — the same gap the primary bridge closes.
-	 */
-	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): AgentTool | undefined;
-	/**
 	 * Build the `replace`-mode `edit` a Cursor `pi_edit` frame needs. The
 	 * advisor's own instance follows the configured `edit.mode` (`hashline` by
 	 * default), whose schema the frame's `old_string`/`new_string` args do not
@@ -282,7 +275,6 @@ export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorEnabled: boolean;
 	#advisorTools: AgentTool[] | undefined;
-	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
 	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
 	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
@@ -308,7 +300,6 @@ export class SessionAdvisors {
 		this.#host = host;
 		this.#advisorEnabled = options.enabled;
 		this.#advisorTools = options.tools;
-		this.#advisorCreateGrepTool = options.createGrepTool;
 		this.#advisorCreateEditTool = options.createEditTool;
 		this.#advisorGetToolContext = options.getToolContext;
 		this.#advisorMcpResources = options.mcpResources;
@@ -803,10 +794,6 @@ export class SessionAdvisors {
 				// without it bridge tools run with no context at all.
 				getToolContext: this.#advisorGetToolContext,
 				allowDirectFileMutation: advisorCanMutateFiles,
-				// Gated on the advisor's own grant: the factory builds a fresh
-				// tool, so handing it over unconditionally would give a roster
-				// without `grep` a search tool it was denied.
-				createGrepTool: advisorToolMap.has("grep") ? this.#advisorCreateGrepTool : undefined,
 				// Advisors share the session's live MCP connections, so their
 				// resource frames answer from the same catalog the primary sees.
 				// Not gated on a tool grant: reading what a server advertises is

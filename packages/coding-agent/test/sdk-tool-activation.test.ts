@@ -1453,12 +1453,12 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		try {
 			await session.refreshMCPTools([externalMcpTool]);
 			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
-			expect(deviceNames).toEqual(expect.arrayContaining(["ast_edit", "mcp__fixture_report"]));
+			expect(deviceNames).toEqual(expect.arrayContaining(["inspect_image", "mcp__fixture_report"]));
 			expect(session.getActiveToolNames()).not.toContain("mcp__fixture_report");
 
 			const context = await session.agent.buildSideRequestContext([]);
 			const providerToolNames = context.tools?.map(tool => tool.name);
-			expect(providerToolNames).toEqual(expect.arrayContaining(["ast_edit", "mcp__fixture_report"]));
+			expect(providerToolNames).toEqual(expect.arrayContaining(["inspect_image", "mcp__fixture_report"]));
 		} finally {
 			await session.dispose();
 		}
@@ -1570,7 +1570,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("activates the yield tool when requireYieldTool is set and toolNames is explicit", async () => {
 		// Regression for #1408: callers that pass an explicit `toolNames` list
-		// (e.g. `["read", "grep", "glob", "lsp", "web_search"]`) still need `yield`
+		// (e.g. `["read", "bash", "lsp", "web_search"]`) still need `yield`
 		// active, or the model cannot satisfy the idle-reminder contract that
 		// demands a `yield` call.
 		const tempDir = makeTempDir();
@@ -1578,7 +1578,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			requireYieldTool: true,
-			toolNames: ["read", "grep", "glob", "web_search"],
+			toolNames: ["read", "bash", "web_search"],
 		});
 
 		try {
@@ -1588,22 +1588,19 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("normalizes legacy builtin toolNames before selecting the active SDK tools", async () => {
+	it("normalizes builtin toolNames casing before selecting the active SDK tools", async () => {
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "search", "find"],
+			toolNames: ["Read", "BASH"],
 		});
 
 		try {
 			const activeToolNames = session.getActiveToolNames();
 
 			expect(activeToolNames).toContain("read");
-			expect(activeToolNames).toContain("grep");
-			expect(activeToolNames).toContain("glob");
-			expect(activeToolNames).not.toContain("search");
-			expect(activeToolNames).not.toContain("find");
+			expect(activeToolNames).toContain("bash");
 		} finally {
 			await session.dispose();
 		}
@@ -1614,7 +1611,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "grep", "glob", "web_search"],
+			toolNames: ["read", "web_search"],
 		});
 
 		try {
@@ -1812,7 +1809,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(restricted.getActiveToolNames()).toEqual(["read", "lsp", "yield"]);
 			for (const name of [
 				"generate_image",
-				"tts",
 				"manage_skill",
 				"default_active_tool",
 				"default_inactive_tool",
@@ -1847,7 +1843,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					"yield",
 					"generate_image",
 					"manage_skill",
-					"tts",
 					"default_active_tool",
 					"sdk_custom_tool",
 				]),
@@ -1857,14 +1852,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(activeToolNames).not.toContain("write");
 			expect(normal.getXdevToolEntries()).toEqual([]);
 			expect(normal.getAllToolNames()).toEqual(
-				expect.arrayContaining([
-					"generate_image",
-					"read",
-					"yield",
-					"tts",
-					"default_active_tool",
-					"sdk_custom_tool",
-				]),
+				expect.arrayContaining(["generate_image", "read", "yield", "default_active_tool", "sdk_custom_tool"]),
 			);
 		} finally {
 			await normal.dispose();

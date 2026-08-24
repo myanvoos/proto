@@ -73,7 +73,6 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 | `advisor/`, `autolearn/` | Advisor/watchdog, managed skills | [advisor-watchdog.md](../../docs/advisor-watchdog.md) |
 | `internal-urls/` | Router + handlers (`agent://`, `docs://`, `rule://`, …) | [tree.md](../../docs/tree.md) |
 | `tui/` | Low-level TUI primitives | [tui.md](../../docs/tui.md) |
-| `tts/`, `stt/` | Text-to-speech / speech-to-text | — |
 | `tiny/` | Embedded tiny-model experiments | [local-models.md](../../docs/local-models.md) |
 | `async/`, `lib/`, `utils/`, `prompts/`, `edit/` | Shared plumbing, prompt assets, patch/diff engine | [tools/edit.md](../../docs/tools/edit.md) |
 
@@ -87,7 +86,6 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - [compaction.md](../../docs/compaction.md) — compaction and branch summaries
 - [ttsr-injection-lifecycle.md](../../docs/ttsr-injection-lifecycle.md)
 - [non-compaction-retry-policy.md](../../docs/non-compaction-retry-policy.md)
-- [handoff-generation-pipeline.md](../../docs/handoff-generation-pipeline.md)
 
 ### Configuration, models, providers, auth
 - [settings.md](../../docs/settings.md), [config-usage.md](../../docs/config-usage.md)
@@ -104,7 +102,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - Authoring + registry: [custom-tools.md](../../docs/custom-tools.md)
 - Output/artifacts: [blob-artifact-architecture.md](../../docs/blob-artifact-architecture.md)
 - Tool resolution devices: [resolve-tool-runtime.md](../../docs/resolve-tool-runtime.md)
-- Per-tool reference: [`docs/tools/`](../../docs/tools/) — `read`, `write`, `edit`, `ast-edit`, `ast-grep`, `grep`, `glob`, `bash`, `eval`, `fleet`, `orchestrate_*`, `lsp`, `debug`, `web_search`, `browser`, `github`, `inspect_image`, `ask`, `todo`, `recall`, `retain`, `reflect`, `checkpoint`, `rewind`
+- Per-tool reference: [`docs/tools/`](../../docs/tools/) — `read`, `write`, `edit`, `bash`, `eval`, `fleet`, `orchestrate_*`, `lsp`, `web_search`, `browser`, `github`, `inspect_image`, `ask`, `todo`, `recall`, `retain`, `reflect`, `checkpoint`, `rewind`
 
 ### Execution backends
 - [bash-tool-runtime.md](../../docs/bash-tool-runtime.md), [tools/bash.md](../../docs/tools/bash.md)

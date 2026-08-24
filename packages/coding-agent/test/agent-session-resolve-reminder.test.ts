@@ -99,8 +99,8 @@ describe("AgentSession resolve reminder", () => {
 
 	it("delivers the resolve reminder via a non-forcing soft requirement, not a steer or a forced tool_choice", () => {
 		queueResolveHandler(toolSession, {
-			label: "AST Edit: 1 replacement in 1 file",
-			sourceToolName: "ast_edit",
+			label: "Edit: 1 replacement in 1 file",
+			sourceToolName: "edit",
 			apply: async () => ({ content: [{ type: "text", text: "Applied" }] }),
 		});
 
@@ -123,8 +123,8 @@ describe("AgentSession resolve reminder", () => {
 
 	it.each(transitions)("clears a staged preview after a successful %s session boundary", async transition => {
 		queueResolveHandler(toolSession, {
-			label: "AST Edit: 1 replacement in 1 file",
-			sourceToolName: "ast_edit",
+			label: "Edit: 1 replacement in 1 file",
+			sourceToolName: "edit",
 			apply: async () => ({ content: [{ type: "text", text: "Applied" }] }),
 		});
 		expect(session.peekPendingInvoker()).toBeDefined();
@@ -139,8 +139,8 @@ describe("AgentSession resolve reminder", () => {
 	it("dispatches a staged preview through the production toolSession wiring and drains the gate", async () => {
 		let applyRuns = 0;
 		queueResolveHandler(toolSession, {
-			label: "AST Edit: 1 replacement in 1 file",
-			sourceToolName: "ast_edit",
+			label: "Edit: 1 replacement in 1 file",
+			sourceToolName: "edit",
 			apply: async () => {
 				applyRuns++;
 				return { content: [{ type: "text", text: "Applied" }] };
@@ -156,8 +156,8 @@ describe("AgentSession resolve reminder", () => {
 
 	it("drains a phantom pending gate when reject cannot dispatch", async () => {
 		queueResolveHandler(toolSession, {
-			label: "AST Edit: 1 replacement in 1 file",
-			sourceToolName: "ast_edit",
+			label: "Edit: 1 replacement in 1 file",
+			sourceToolName: "edit",
 			apply: async () => ({ content: [{ type: "text", text: "Applied" }] }),
 		});
 		expect(isSoftToolRequirement(session.nextToolChoiceDirective())).toBe(true);

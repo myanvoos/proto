@@ -48,20 +48,9 @@ describe("CompactionSummaryMessageComponent", () => {
 		expect(rule).toContain("ctrl+o");
 	});
 
-	it("labels a handoff-method compaction as handed-off", () => {
-		const component = new CompactionSummaryMessageComponent(
-			createCompactionSummaryMessage(SUMMARY, 84_000, new Date().toISOString(), { method: "handoff" }),
-		);
-		const rule = Bun.stripANSI(component.render(80)[1]);
-		expect(rule).toContain("handed-off");
-		// No tokensAfter recorded → no amount badge.
-		expect(rule).not.toContain("→");
-	});
-
 	it("does not render missing pre-compaction usage as a literal zero", () => {
 		const component = new CompactionSummaryMessageComponent(
 			createCompactionSummaryMessage(SUMMARY, 0, new Date().toISOString(), {
-				method: "handoff",
 				tokensAfter: 48_573,
 			}),
 		);

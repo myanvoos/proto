@@ -3,8 +3,7 @@
  * slash-command registry, the interactive controllers, and `AgentSession`
  * can all import the mode metadata + parser without pulling in the heavy
  * `agent-session` module graph (which would form an import cycle through the
- * slash-command registry) — same rationale as `shake-types.ts`.
- *
+ * slash-command registry).
  * Each mode is a one-off override layered on top of the configured
  * `compaction.*` settings for a single invocation; it never mutates settings.
  * Adding a mode is a single entry here: the command surface (autocomplete +

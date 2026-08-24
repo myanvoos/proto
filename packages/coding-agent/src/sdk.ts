@@ -74,7 +74,7 @@ import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
-import { createBridgeEditTool, createBridgeGrepFactory } from "./cursor-bridge-tools";
+import { createBridgeEditTool } from "./cursor-bridge-tools";
 import "./discovery";
 import { createImageUrlServiceFromSettings } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
@@ -193,8 +193,6 @@ import {
 	discoverStartupLspServers,
 	EditTool,
 	EvalTool,
-	GlobTool,
-	GrepTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
@@ -649,8 +647,6 @@ export {
 	createTools,
 	EditTool,
 	EvalTool,
-	GlobTool,
-	GrepTool,
 	HIDDEN_TOOLS,
 	ReadTool,
 	type ToolSession,
@@ -2759,12 +2755,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
-			// `pi_grep` carries its own context width and match cap, which the
-			// shared grep instance fixed at construction cannot express. Gated on
-			// the grant: the factory builds a fresh tool and `executeTool` prefers
-			// it over the registry, so installing it unconditionally would let a
-			// session without `grep` search anyway.
-			createGrepTool: toolRegistry.has("grep") ? createBridgeGrepFactory(toolSession, extensionRunner) : undefined,
 			// The native `delete` and resource-download frames mutate files
 			// without running a registry tool, so this grant is the only thing
 			// standing between a restricted session and a workspace write.
@@ -3411,10 +3401,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
-			// Same per-call `grep` seam the primary bridge gets, built against the
-			// advisor's own tool session so a `pi_grep` frame's context width and
-			// match cap are honored there too.
-			advisorCreateGrepTool: createBridgeGrepFactory(advisorToolSession, extensionRunner),
 			// Same `replace`-mode requirement as the primary bridge; the advisor
 			// path gates it on the advisor's own `edit` grant.
 			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner),

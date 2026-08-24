@@ -25,7 +25,7 @@ const AGENT: AgentDefinition = {
 	description: "Test worker",
 	systemPrompt: "Do the assigned work.",
 	source: "bundled",
-	tools: ["read", "write", "ast_grep"],
+	tools: ["read", "write", "web_search"],
 	output: { type: "object", properties: { agent: { type: "boolean" } } },
 };
 

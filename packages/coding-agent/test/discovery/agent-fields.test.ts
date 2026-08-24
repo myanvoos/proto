@@ -44,24 +44,24 @@ describe("parseAgentFields", () => {
 		expect(fields?.thinkingLevel).toBeUndefined();
 	});
 
-	test("lowercases tool names", () => {
+	test("lowercases and passes through tool names", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
 			description: "desc",
-			tools: ["Read", "Search"],
+			tools: ["Read", "Bash"],
 		});
 
-		expect(fields?.tools).toEqual(["read", "grep", "yield"]);
+		expect(fields?.tools).toEqual(["read", "bash", "yield"]);
 	});
 
-	test("maps legacy search and find tool names", () => {
+	test("keeps unknown tool names untouched for later discovery-time validation", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
 			description: "desc",
-			tools: ["Find", "Glob", "Search", "Grep"],
+			tools: ["Search", "Find"],
 		});
 
-		expect(fields?.tools).toEqual(["glob", "grep", "yield"]);
+		expect(fields?.tools).toEqual(["Search", "Find", "yield"]);
 	});
 
 	test("parses autoloadSkills from array frontmatter", () => {

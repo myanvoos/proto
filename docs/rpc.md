@@ -180,7 +180,6 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 - `{ id?, type: "get_branch_messages" }`
 - `{ id?, type: "get_last_assistant_text" }`
 - `{ id?, type: "set_session_name", name: string }`
-- `{ id?, type: "handoff", customInstructions?: string }`
 
 ### Messages
 

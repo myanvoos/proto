@@ -1,6 +1,6 @@
 Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.
 
-Use for investigations with many intermediate tool calls (`read`/`grep`/`glob`/`lsp`/etc.) to minimize subsequent context cost.
+Use for investigations with many intermediate tool calls (`read`/`lsp`/etc.) to minimize subsequent context cost.
 
 Rules:
 - MUST `rewind` before yielding after starting a checkpoint.

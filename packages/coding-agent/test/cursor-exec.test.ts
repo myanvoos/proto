@@ -23,15 +23,13 @@ import { CursorExecHandlers } from "@oh-my-pi/pi-coding-agent/cursor";
 import {
 	bridgeToolMap,
 	createBridgeEditTool,
-	createBridgeGrepFactory,
 	cursorMcpPrefersReplaceEdit,
 	normalizeCursorReplaceArgs,
 } from "@oh-my-pi/pi-coding-agent/cursor-bridge-tools";
 
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { GrepTool, ReadTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ReadTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import type { TruncationMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -66,155 +64,6 @@ function passthroughRunner(seen: string[] = []): ExtensionRunner {
 		emitToolResult: async () => undefined,
 	} as unknown as ExtensionRunner;
 }
-
-describe("CursorExecHandlers.grep bridge", () => {
-	let cwd: string;
-	let searchTool: GrepTool;
-	let handlers: CursorExecHandlers;
-
-	beforeEach(async () => {
-		cwd = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-exec-test-"));
-		await Bun.write(path.join(cwd, "sample.txt"), "Hello World\nhello world\n");
-		searchTool = new GrepTool(createTestSession(cwd));
-		handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map([["grep", searchTool as any]]),
-		});
-	});
-
-	afterEach(async () => {
-		await removeWithRetries(cwd);
-	});
-
-	it("maps caseInsensitive parameter correctly through the grep bridge", async () => {
-		// 1. By default/omitted caseInsensitive, should be case-sensitive (match count 1 for "hello")
-		const defaultResult = await handlers.grep({
-			toolCallId: "call-1",
-			path: cwd,
-			pattern: "hello",
-		} as any);
-		expect((defaultResult.details as { matchCount?: number } | undefined)?.matchCount).toBe(1);
-
-		// 2. If caseInsensitive: true, should be case-insensitive (match count 2 for "hello")
-		const insensitiveResult = await handlers.grep({
-			toolCallId: "call-2",
-			path: cwd,
-			pattern: "hello",
-			caseInsensitive: true,
-		} as any);
-		expect((insensitiveResult.details as { matchCount?: number } | undefined)?.matchCount).toBe(2);
-
-		// 3. If caseInsensitive: false, should be case-sensitive (match count 1 for "hello")
-		const sensitiveResult = await handlers.grep({
-			toolCallId: "call-3",
-			path: cwd,
-			pattern: "hello",
-			caseInsensitive: false,
-		} as any);
-		expect((sensitiveResult.details as { matchCount?: number } | undefined)?.matchCount).toBe(1);
-	});
-
-	it("honors pi_grep's requested match limit against real files", async () => {
-		// The frame's `limit` caps total surfaced matches. The model-facing schema
-		// has no such parameter, so without a per-call tool the cap is dropped and
-		// the search returns everything it found.
-		await Bun.write(path.join(cwd, "many.txt"), Array.from({ length: 10 }, (_, i) => `needle ${i}`).join("\n"));
-		const scopedHandlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>([["grep", searchTool]]),
-			createGrepTool: options => new GrepTool(createTestSession(cwd), options),
-		});
-
-		const capped = await scopedHandlers.piGrep({
-			toolCallId: "c1",
-			args: { pattern: "needle", path: cwd, limit: 3 },
-		} as never);
-		expect((capped.details as { matchCount?: number } | undefined)?.matchCount).toBe(3);
-
-		const uncapped = await scopedHandlers.piGrep({
-			toolCallId: "c2",
-			args: { pattern: "needle", path: cwd },
-		} as never);
-		expect((uncapped.details as { matchCount?: number } | undefined)?.matchCount).toBe(10);
-	});
-
-	it("honors pi_grep's requested context width against real files", async () => {
-		// `context` has no schema parameter either: the width is read from
-		// settings fixed at tool construction, so the frame's value only lands
-		// through a per-call instance.
-		await Bun.write(path.join(cwd, "ctx.txt"), "before line\nneedle here\nafter line\n");
-		const scopedHandlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>([["grep", searchTool]]),
-			createGrepTool: options => new GrepTool(createTestSession(cwd), options),
-		});
-
-		const noContext = await scopedHandlers.piGrep({
-			toolCallId: "c1",
-			args: { pattern: "needle here", path: path.join(cwd, "ctx.txt"), context: 0 },
-		} as never);
-		const noContextText = noContext.content.map(c => (c.type === "text" ? c.text : "")).join("");
-		expect(noContextText).not.toContain("before line");
-		expect(noContextText).not.toContain("after line");
-
-		const withContext = await scopedHandlers.piGrep({
-			toolCallId: "c2",
-			args: { pattern: "needle here", path: path.join(cwd, "ctx.txt"), context: 1 },
-		} as never);
-		const withContextText = withContext.content.map(c => (c.type === "text" ? c.text : "")).join("");
-		expect(withContextText).toContain("before line");
-		expect(withContextText).toContain("after line");
-	});
-
-	it("satisfies a pi_grep limit that spans more files than one page", async () => {
-		// The local tool windows results to the first 20 files and tells the
-		// caller to paginate with `skip`. `PiGrepExecArgs` has no `skip` field,
-		// so a frame asking for 100 matches across 25 one-match files would get
-		// 20, no `match_limit_reached`, and advice it cannot act on — output
-		// silently short of what it asked for and labelled complete.
-		const spread = path.join(cwd, "spread");
-		await fs.mkdir(spread, { recursive: true });
-		await Promise.all(
-			Array.from({ length: 25 }, (_, i) => Bun.write(path.join(spread, `f${i}.txt`), "needle here\n")),
-		);
-		const scopedHandlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>([["grep", searchTool]]),
-			createGrepTool: options => new GrepTool(createTestSession(cwd), options),
-		});
-
-		const wide = await scopedHandlers.piGrep({
-			toolCallId: "c1",
-			args: { pattern: "needle", path: spread, limit: 100 },
-		} as never);
-		const details = wide.details as { matchCount?: number; fileLimitReached?: number } | undefined;
-		expect(details?.matchCount).toBe(25);
-		// Nothing was clipped, so no pagination advice the frame cannot follow.
-		expect(details?.fileLimitReached).toBeUndefined();
-
-		// The cap still binds when the matches really do exceed it, and says so:
-		// `match_limit_reached` is the frame's only signal that output was cut,
-		// and one match per file makes the boundary sharp — a cap of 24 over 25
-		// files is clipped, a cap of 25 is complete. Reading only `cap` files
-		// cannot tell those apart.
-		const capped = await scopedHandlers.piGrep({
-			toolCallId: "c2",
-			args: { pattern: "needle", path: spread, limit: 24 },
-		} as never);
-		const cappedDetails = capped.details as { matchCount?: number; perFileLimitReached?: number } | undefined;
-		expect(cappedDetails?.matchCount).toBe(24);
-		expect(cappedDetails?.perFileLimitReached).toBe(24);
-
-		// Exactly at the cap is complete, not clipped.
-		const exact = await scopedHandlers.piGrep({
-			toolCallId: "c3",
-			args: { pattern: "needle", path: spread, limit: 25 },
-		} as never);
-		const exactDetails = exact.details as { matchCount?: number; perFileLimitReached?: number } | undefined;
-		expect(exactDetails?.matchCount).toBe(25);
-		expect(exactDetails?.perFileLimitReached).toBeUndefined();
-	});
-});
 
 describe("pi_bash truncation reaches the wire from a real BashTool result", () => {
 	let cwd: string;
@@ -469,10 +318,9 @@ describe("bridge tool resolution beyond the model-facing registry", () => {
 		expect(await Bun.file(target).text()).toBe("alpha\nbeta\n");
 	});
 
-	it("refuses a scoped pi_grep when no grep tool was granted", async () => {
-		// The factory builds a fresh tool and `executeTool` prefers that override
-		// over the registry, so a session that withheld `grep` must not install
-		// one — otherwise a frame carrying `context`/`limit` searches anyway.
+	it("refuses a pi_grep when no grep tool was granted", async () => {
+		// With no `grep` tool in the roster there is nothing to execute:
+		// `executeTool` must fail the frame instead of searching anyway.
 		await Bun.write(path.join(cwd, "hit.txt"), "needle\n");
 		const denied = new CursorExecHandlers({ cwd, tools: new Map<string, Tool>() });
 		const result = await denied.piGrep({
@@ -482,33 +330,6 @@ describe("bridge tool resolution beyond the model-facing registry", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.content.map(c => (c.type === "text" ? c.text : "")).join("")).toContain("not available");
-	});
-
-	it("wraps the per-call grep the real bridge factory builds", async () => {
-		// The reviewed bypass was in the factory the session hands the bridge,
-		// not in the bridge: a raw `new GrepTool(...)` there skips the approval
-		// gate every registry tool goes through. Exercise the shared factory
-		// both callsites use, so a regression in it fails here.
-		await Bun.write(path.join(cwd, "hit.txt"), "needle\n");
-		const intercepted: string[] = [];
-		const factory = createBridgeGrepFactory(createTestSession(cwd), passthroughRunner(intercepted));
-		const built = factory({ context: 0, totalMatchLimit: 5 });
-		expect(built).toBeInstanceOf(ExtensionToolWrapper);
-
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map<string, Tool>(),
-			createGrepTool: factory,
-		});
-		const result = await handlers.piGrep({
-			toolCallId: "g1",
-			args: { pattern: "needle", path: cwd, limit: 5 },
-		} as never);
-
-		// The wrapper ran (its extension hook fired) and the frame's cap still
-		// reached the underlying tool.
-		expect(intercepted).toEqual(["grep"]);
-		expect((result.details as { matchCount?: number } | undefined)?.matchCount).toBe(1);
 	});
 });
 
@@ -1582,25 +1403,6 @@ describe("CursorExecHandlers Pi frame translation", () => {
 
 		expect((calls[0] as { pattern: string }).pattern).toBe("a\\.b\\(c\\)");
 		expect((calls[1] as { pattern: string }).pattern).toBe("a.b(c)");
-	});
-
-	it("routes pi_find to glob, not grep, joining its pattern onto the path", async () => {
-		// `pi_find` searches filenames. Routing it to `grep` would search file
-		// contents for the glob text and return nothing.
-		const { handlers, calls } = recordingHandlers("glob");
-
-		await handlers.piFind({ toolCallId: "c1", args: { pattern: "*.ts", path: "src", limit: 10 } } as never);
-		await handlers.piFind({ toolCallId: "c2", args: { pattern: "*.ts", limit: 0 } } as never);
-		await handlers.piFind({ toolCallId: "c3", args: { pattern: "*.ts" } } as never);
-
-		expect(calls).toEqual([
-			{ path: "src/*.ts", limit: 10 },
-			// `optional int32`: a present 0 is clamped to 1 (as the reference
-			// does), not silently widened to the tool's default.
-			{ path: "*.ts", limit: 1 },
-			// Genuinely unset leaves the local tool's own default in place.
-			{ path: "*.ts", limit: undefined },
-		]);
 	});
 
 	it("renames pi_edit's camelCase replacements to the local tool's snake_case pairs", async () => {

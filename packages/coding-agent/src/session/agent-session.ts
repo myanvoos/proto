@@ -1382,7 +1382,6 @@ export class AgentSession {
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: this.settings.get("advisor.enabled"),
 			tools: config.advisorTools,
-			createGrepTool: config.advisorCreateGrepTool,
 			createEditTool: config.advisorCreateEditTool,
 			getToolContext: config.advisorGetToolContext,
 			mcpResources: config.advisorMcpResources,
@@ -7583,6 +7582,11 @@ export class AgentSession {
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
+			// Settle one tick before the transition completes: an advisor turn that
+			// was in flight when the recorders detached delivers its final
+			// message_end here, while the feed is still muted — it belongs to the
+			// previous session and must not bill the branched one.
+			await Promise.resolve();
 			this.#clearSessionScopedToolState();
 			this.#rehydrateCheckpointRewindState();
 			this.#todo.syncFromBranch();

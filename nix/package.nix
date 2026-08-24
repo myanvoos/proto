@@ -1,13 +1,10 @@
 {
   autoPatchelfHook,
-  alsa-lib,
   bun,
   bun2nix,
   cmake,
   darwin,
   lib,
-  libopus,
-  libpulseaudio,
   makeBinaryWrapper,
   ninja,
   pipewire,
@@ -101,16 +98,10 @@ stdenv.mkDerivation {
   ]
   ++ lib.optionals stdenv.hostPlatform.isDarwin [ darwin.autoSignDarwinBinariesHook ];
 
-  # pcre2 is vendored via PCRE2_SYS_STATIC, but opus must link the nixpkgs
-  # library: audiopus_sys' bundled cmake build installs to lib64 while its
-  # link-search hardcodes lib, so the pkg-config path is the one that works.
   # libgcc_s is resolved from the compiler's lib output during autoPatchelf.
   # All dynamic store paths are pinned into the closure via nix-support (see
   # installPhase).
-  buildInputs = [
-    libopus
-  ]
-  ++ lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib ]
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib ]
   ++ lib.optionals withWaylandScreencast [ pipewire ];
 
   strictDeps = true;
@@ -146,17 +137,6 @@ stdenv.mkDerivation {
       # The loader extracts this archived addon at runtime, so fix its
       # interpreter-independent Nix RPATH before Bun embeds it.
       autoPatchelf -- "packages/natives/native/${platform.addon}"
-      # pi-voice dlopens libpulse-simple.so.0 / libpulse.so.0 / libasound.so.2
-      # by bare name; glibc resolves those through the calling object's
-      # RUNPATH, so append the client libraries here. Nothing links them, so
-      # autoPatchelf cannot discover them on its own.
-      patchelf --add-rpath "${
-        lib.makeLibraryPath [
-          libpulseaudio
-          alsa-lib
-        ]
-      }" \
-        "packages/natives/native/${platform.addon}"
     ''}
     ${lib.optionalString stdenv.hostPlatform.isDarwin ''
       # arm64 Darwin requires even locally-built Mach-O addons to carry an
@@ -182,17 +162,10 @@ stdenv.mkDerivation {
     # paths it links against are invisible to the output reference scanner.
     # Record them in plain text to pin the libraries into the runtime closure.
     mkdir -p "$out/nix-support"
-    ${
-      if stdenv.hostPlatform.isLinux then
-        ''
-          patchelf --print-rpath "packages/natives/native/${platform.addon}" \
-            > "$out/nix-support/embedded-addon-runpath"
-        ''
-      else
-        ''
-          echo "${lib.getLib libopus}/lib" > "$out/nix-support/embedded-addon-runpath"
-        ''
-    }
+    ${lib.optionalString stdenv.hostPlatform.isLinux ''
+      patchelf --print-rpath "packages/natives/native/${platform.addon}" \
+        > "$out/nix-support/embedded-addon-runpath"
+    ''}
 
     runHook postInstall
   '';
@@ -205,7 +178,7 @@ stdenv.mkDerivation {
   '';
 
   # Prebuilt addons that omp bun-installs into its cache at first use
-  # (onnxruntime-node, sherpa-onnx-node, sharp, fastembed) are process.dlopen'd and
+  # (onnxruntime-node, sharp, fastembed) are process.dlopen'd and
   # need libstdc++.so.6 / libgcc_s.so.1, which nix glibc's default loader path lacks;
   # their own DT_RUNPATH means this executable's RPATH is never consulted for their
   # dependencies, so only LD_LIBRARY_PATH resolves them. The agent injects this value

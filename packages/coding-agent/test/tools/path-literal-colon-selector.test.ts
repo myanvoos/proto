@@ -17,7 +17,6 @@ import { GrepOutputMode } from "@oh-my-pi/pi-natives";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { runGrepCommand } from "../../src/cli/grep-cli";
 import { initTheme } from "../../src/modes/theme/theme";
-import { GrepTool } from "../../src/tools/grep";
 
 function getText(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content
@@ -30,11 +29,11 @@ const EMPTY_ZIP_EOCD = new Uint8Array([0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0,
 
 // Regression: filenames whose tail matches the read-tool selector grammar
 // (e.g. `test:1-2`, `log:raw`) used to be shredded by `splitPathAndSel` before
-// either tool checked the filesystem — see issue #4618. Both `read` and `grep`
-// must prefer a real literal file over the selector interpretation.
+// the tool checked the filesystem — see issue #4618. `read` must prefer a real
+// literal file over the selector interpretation.
 describe("literal colon filename resolution (issue #4618)", () => {
 	let tmpDir: string;
-	const sessionSettings = Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 });
+	const sessionSettings = Settings.isolated();
 
 	beforeEach(async () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "literal-colon-"));
@@ -178,11 +177,7 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			await Bun.write(absolute, `${lines}\n`);
 
 			const session = createSession({
-				settings: Settings.isolated({
-					"grep.contextBefore": 0,
-					"grep.contextAfter": 0,
-					"read.summarize.enabled": false,
-				}),
+				settings: Settings.isolated({ "read.summarize.enabled": false }),
 			});
 			const tool = new ReadTool(session);
 			const result = await tool.execute("read-selector-preserved", {
@@ -235,104 +230,16 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			expect(output).toContain("literal db-shaped file");
 		});
 	});
-
-	describe("grep tool", () => {
-		it("searches inside a literal `test:1-2` file", async () => {
-			const literal = "test:1-2";
-			const absolute = path.join(tmpDir, literal);
-			await Bun.write(absolute, "needle\n");
-
-			const tool = new GrepTool(createSession());
-			const result = await tool.execute("grep-literal", {
-				pattern: "needle",
-				path: absolute,
-			});
-			const output = getText(result);
-
-			expect(output).toContain("needle");
-			expect(output).not.toMatch(/not found/i);
-		});
-
-		it("searches a shell-escaped literal file whose name ends in a selector-shaped suffix", async () => {
-			await fs.mkdir(path.join(tmpDir, "dir"), { recursive: true });
-			await Bun.write(path.join(tmpDir, "dir", "a b:1-2"), "escaped literal needle\n");
-
-			const tool = new GrepTool(createSession());
-			const result = await tool.execute("grep-escaped-literal", {
-				pattern: "needle",
-				path: "dir/a\\ b:1-2",
-			});
-			const output = getText(result);
-
-			expect(output).toContain("escaped literal needle");
-		});
-
-		it("searches a literal file whose name contains a semicolon and selector-shaped tail (`a;b:1-2`)", async () => {
-			// Semicolon is the delimited-path separator; without a raw-literal
-			// probe in `splitDelimitedPathEntry`, expandDelimitedPathEntries would
-			// split `a;b:1-2` into `["a", "b:1-2"]` before grep saw the literal file.
-			const literal = path.join(tmpDir, "a;b:1-2");
-			await Bun.write(literal, "delimited literal needle\n");
-
-			const tool = new GrepTool(createSession());
-			const result = await tool.execute("grep-literal-semicolon-selector", {
-				pattern: "needle",
-				path: literal,
-			});
-			const output = getText(result);
-
-			expect(output).toContain("delimited literal needle");
-			expect(output).not.toMatch(/not found/i);
-		});
-
-		it("searches a literal file that looks like an archive selector (`data.zip:1-2`)", async () => {
-			// The base archive exists too; grep must not rematerialize the raw
-			// literal path as archive `data.zip` plus phantom member `1-2`.
-			const baseArchive = path.join(tmpDir, "data.zip");
-			await Bun.write(baseArchive, EMPTY_ZIP_EOCD);
-			const literal = path.join(tmpDir, "data.zip:1-2");
-			await Bun.write(literal, "literal archive needle\n");
-
-			const tool = new GrepTool(createSession());
-			const result = await tool.execute("grep-literal-zip-selector", {
-				pattern: "needle",
-				path: literal,
-			});
-			const output = getText(result);
-
-			expect(output).toContain("literal archive needle");
-		});
-
-		it("preserves `:N-M` line-range filtering when the literal file does not exist", async () => {
-			const absolute = path.join(tmpDir, "notes.txt");
-			await Bun.write(absolute, "one\ntwo\nthree\nfour\n");
-
-			const tool = new GrepTool(createSession());
-			const rangedResult = await tool.execute("grep-range-filter", {
-				pattern: ".",
-				path: `${absolute}:1-2`,
-			});
-			const rangedOutput = getText(rangedResult);
-
-			expect(rangedOutput).toContain("one");
-			expect(rangedOutput).toContain("two");
-			// Lines outside the range are filtered out.
-			expect(rangedOutput).not.toContain("three");
-			expect(rangedOutput).not.toContain("four");
-		});
-	});
 });
 
 // Regression: some models intermittently prefix an otherwise-valid path with a
 // stray leading `:` (e.g. `:/abs/path`, `:../rel`). The literal `:/abs/path`
 // does not exist on disk, so the #4618 literal-preferring probe cannot save it;
-// `expandPath` strips the mangled prefix before resolution so `read`, `grep`,
-// and `edit` all open the intended file — see issue #5508.
+// `expandPath` strips the mangled prefix before resolution so `read` and
+// `edit` both open the intended file — see issue #5508.
 describe("leading-colon path recovery (issue #5508)", () => {
 	let tmpDir: string;
 	const sessionSettings = Settings.isolated({
-		"grep.contextBefore": 0,
-		"grep.contextAfter": 0,
 		"edit.mode": "patch",
 	});
 
@@ -411,20 +318,6 @@ describe("leading-colon path recovery (issue #5508)", () => {
 		const output = getText(result);
 
 		expect(output).toContain("relative body");
-		expect(output).not.toMatch(/not found/i);
-	});
-
-	it("grep searches a file addressed with a leading colon", async () => {
-		const abs = path.join(tmpDir, "colon-grep.txt");
-		await Bun.write(abs, "needle here\nsecond line\n");
-
-		const result = await new GrepTool(createSession()).execute("grep-leading-colon", {
-			pattern: "needle",
-			path: `:${abs}`,
-		});
-		const output = getText(result);
-
-		expect(output).toContain("needle");
 		expect(output).not.toMatch(/not found/i);
 	});
 

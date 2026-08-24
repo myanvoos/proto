@@ -16,7 +16,7 @@ Implement/review UI designs; edit files, create components, run commands as need
 
 <design-system>
 Design system: foundation; UI without one becomes inconsistent. Four phases, in order:
-1. **Token-first analysis (before CSS/JSX/Svelte).** Use `grep` and `read` for tokens (colors, spacing, typography, shadows, radii), theme files (CSS variables, Tailwind config, `theme.ts`), shared primitives (Button, Card, Input, Layout). Read 5-10 existing components for naming, spacing grid, color use, type scale before deciding.
+1. **Token-first analysis (before CSS/JSX/Svelte).** Use `read` for tokens (colors, spacing, typography, shadows, radii), theme files (CSS variables, Tailwind config, `theme.ts`), shared primitives (Button, Card, Input, Layout). Read 5-10 existing components for naming, spacing grid, color use before deciding.
 2. **No coherent system? Build minimal system first.** Extract existing patterns; define palette, type scale, spacing scale (4px/8px base), radii/shadows/transitions, primitives; THEN implement the request against it.
 3. **Compose with, NEVER around, the system.** Colors: tokens/CSS variables, NEVER hardcoded hex; spacing: scale values, NEVER arbitrary px; type: scale steps; components: extend/compose existing primitives, not one-off div soup. Outside-system need: add token first, then use it; NEVER one-off override.
 4. **Verify before done.** Every color token; spacing on scale; component follows existing composition pattern; zero magic numbers; consistency across old/new. Any no → not done.

@@ -58,27 +58,11 @@ describe("createTools", () => {
 		expect(names).toContain("read");
 		expect(names).toContain("edit");
 		expect(names).toContain("write");
-		expect(names).toContain("grep");
-		expect(names).toContain("glob");
 		expect(names).toContain("lsp");
-		expect(names).toContain("task");
 		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
-	});
-
-	it("normalizes legacy explicit tool names", async () => {
-		const session = createTestSession({
-			settings: createSettingsWithOverrides({ "astGrep.enabled": false }),
-		});
-		const tools = await createTools(session, ["search", "find", "grep"]);
-		const names = tools.map(t => t.name);
-
-		expect(names.filter(name => name === "grep")).toHaveLength(1);
-		expect(names).toContain("glob");
-		expect(names).not.toContain("search");
-		expect(names).not.toContain("find");
 	});
 
 	it("includes bash and eval when both eval backends are allowed", async () => {
@@ -248,10 +232,6 @@ describe("createTools", () => {
 	it("filters disabled builtin tools by settings", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
-				"glob.enabled": false,
-				"grep.enabled": false,
-				"astGrep.enabled": false,
-				"astEdit.enabled": false,
 				"bash.enabled": false,
 				"launch.enabled": false,
 				"web_search.enabled": false,
@@ -264,10 +244,6 @@ describe("createTools", () => {
 
 		expect(names).not.toContain("bash");
 		expect(names).not.toContain("launch");
-		expect(names).not.toContain("glob");
-		expect(names).not.toContain("grep");
-		expect(names).not.toContain("ast_grep");
-		expect(names).not.toContain("ast_edit");
 		expect(names).not.toContain("web_search");
 		expect(names).not.toContain("browser");
 		expect(names).not.toContain("inspect_image");

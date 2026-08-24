@@ -88,7 +88,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 					text: [
 						"#1842  feat(tui): virtualized scrollback for tool output     openyou · 2h ago   +312 -47",
 						"#1839  fix(agent): retry stream on transient 529             dvir   · 5h ago   +18 -4",
-						"#1830  refactor(edit): unify hashline + ast_edit previews    mira   · 1d ago   +540 -210",
+						"#1830  refactor(edit): unify hashline + replace previews   mira   · 1d ago   +540 -210",
 						"#1817  docs: document gallery fixtures contract             leo    · 2d ago   +96 -0",
 						"",
 						"4 open pull requests requesting your review",

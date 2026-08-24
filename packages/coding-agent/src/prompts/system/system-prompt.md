@@ -113,8 +113,6 @@ MUST use specialized tool over shell equivalent:
 {{#has tools "edit"}}- Surgical edits → `{{toolRefs.edit}}`.{{/has}}
 {{#has tools "write"}}- Create/overwrite → `{{toolRefs.write}}`.{{/has}}
 {{#has tools "lsp"}}- Language server available → MUST use `{{toolRefs.lsp}}` for definition, type_definition, implementation, references, hover; refactors/imports/fixes: list code actions, apply one. NEVER search/manual-edit for code intelligence.{{/has}}
-{{#has tools "grep"}}- Regex search/target location → `{{toolRefs.grep}}`, not shell `grep`, `rg`, `awk`.{{/has}}
-{{#has tools "glob"}}- Structure mapping/globbing → `{{toolRefs.glob}}`, not `ls **/*.ext` or `fd`.{{/has}}
 {{#has tools "bash"}}- `{{toolRefs.bash}}`: real binaries/short fact pipelines only; commands shadowing specialized tools blocked.{{/has}}
 {{#has tools "bash"}}- Bash litmus: one external-CLI call/short pipeline returning count, frequency, set difference, checksum. For merely moving, paging, trimming fetchable bytes: tool.{{/has}}
 
@@ -129,13 +127,6 @@ MUST use specialized tool over shell equivalent:
 # Exploration
 NEVER open files hoping. AVOID unneeded files/sections.
 {{#has tools "read"}}- Use `{{toolRefs.read}}` offset/limit, not whole-file reads.{{/has}}
-
-{{#ifAny (includes tools "ast_grep") (includes tools "ast_edit")}}
-# AST
-SHOULD use syntax-aware tools before text hacks:
-{{#has tools "ast_grep"}}- Structural discovery → `{{toolRefs.ast_grep}}`.{{/has}}
-{{#has tools "ast_edit"}}- Codemods → `{{toolRefs.ast_edit}}`.{{/has}}
-{{/ifAny}}
 
 {{#has tools "orchestrate_spawn"}}
 # Orchestration

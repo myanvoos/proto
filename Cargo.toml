@@ -9,7 +9,6 @@ members = [
    "crates/pi-iso",
    "crates/pi-natives",
    "crates/pi-shell",
-   "crates/pi-voice",
    "crates/pi-walker",
    "crates/vendor/brush-core",
 ]
@@ -205,7 +204,6 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 pi-ast = { path = "crates/pi-ast" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
-pi-voice = { path = "crates/pi-voice" }
 pi-walker = { path = "crates/pi-walker" }
 brush-core = { path = "crates/vendor/brush-core" }
 pi-builtins = { path = "crates/pi-builtins" }
@@ -264,13 +262,6 @@ smallvec = { version = "1.15.1", features = [
 # Hashing
 # ──────────────────────────────────────────────────────────────────────────────
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Audio & Realtime Media
-# ──────────────────────────────────────────────────────────────────────────────
-audiopus_sys = { version = "0.2.2", features = ["static"] }
-opus = "0.3.1"
-webrtc = "0.17.2"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # System & Platform

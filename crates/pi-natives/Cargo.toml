@@ -50,7 +50,6 @@ flume.workspace = true
 pi-ast.workspace = true
 pi-iso.workspace = true
 pi-shell.workspace = true
-pi-voice.workspace = true
 pi-walker.workspace = true
 portable-pty.workspace = true
 png.workspace = true

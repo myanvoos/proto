@@ -23,8 +23,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-// xdev mounting is default-on: discoverable tools like ast_edit unmount into
-// xd://, and a plain `write xd://ast_edit` dispatches them. These guard the
+// xdev mounting is default-on: discoverable tools like lsp unmount into
+// xd://, and a plain `write xd://lsp` dispatches them. These guard the
 // resolution-device symbols write.ts pulls from ./resolve — a missing import
 // threw `ReferenceError: isResolutionDeviceName is not defined` on *every*
 // xd:// write, in both the executor (approval + execute) and the streaming
@@ -389,7 +389,6 @@ describe("xd:// and top-level calls share the canonical tool map", () => {
 	it("dispatches and documents an unmounted top-level tool, and still rejects unknown names", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-fallback-"));
 		try {
-			await Bun.write(path.join(tempDir, "haystack.txt"), "alpha\nfallback-needle\nomega\n");
 			const session = xdevSession(tempDir);
 			const tools = await createTools(session);
 			const write = tools.find(entry => entry.name === "write");
@@ -397,22 +396,20 @@ describe("xd:// and top-level calls share the canonical tool map", () => {
 			expect(write).toBeDefined();
 			expect(read).toBeDefined();
 
-			// grep is kept top-level (XDEV_KEEP_TOP_LEVEL) and thus not a mounted
-			// device — the unified namespace must still dispatch it via xd://.
-			const mounted = [...session.xdev!.mountedNames];
-			expect(mounted).not.toContain("grep");
-
-			const dispatched = await write!.execute("write-xdev-fallback-grep", {
-				path: "xd://grep",
-				content: JSON.stringify({ pattern: "fallback-needle", path: tempDir }),
+			// bash stays top-level (essential tools are never mounted) and thus
+			// not a mounted device — the unified namespace must still dispatch
+			// it via xd://.
+			const dispatched = await write!.execute("write-xdev-fallback-bash", {
+				path: "xd://bash",
+				content: JSON.stringify({ command: "echo fallback-needle" }),
 			});
 			expect(dispatched.isError).toBeUndefined();
-			expect(dispatched.details?.xdev?.tool).toBe("grep");
+			expect(dispatched.details?.xdev?.tool).toBe("bash");
 			expect(dispatched.content.find(entry => entry.type === "text")?.text).toContain("fallback-needle");
 
 			// Docs resolve through the same fallback.
-			const docs = await read!.execute("read-xdev-fallback-grep", { path: "xd://grep" });
-			expect(docs.content.find(entry => entry.type === "text")?.text).toContain("# grep");
+			const docs = await read!.execute("read-xdev-fallback-bash", { path: "xd://bash" });
+			expect(docs.content.find(entry => entry.type === "text")?.text).toContain("# bash");
 
 			// Genuinely unknown names still fail with the catalog error.
 			const unknown = await write!.execute("write-xdev-fallback-unknown", {

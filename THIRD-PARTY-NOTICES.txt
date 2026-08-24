@@ -945,14 +945,6 @@ BUNDLED/DISTRIBUTED (97)
 - scheduler 0.27.0 — MIT
 - seroval 1.5.6 — MIT
 - seroval-plugins 1.5.6 — MIT
-- sherpa-onnx 1.13.2 — Apache-2.0
-- sherpa-onnx-darwin-arm64 1.13.3 — Apache-2.0
-- sherpa-onnx-darwin-x64 1.13.5 — Apache-2.0
-- sherpa-onnx-linux-arm64 1.13.5 — Apache-2.0
-- sherpa-onnx-linux-x64 1.13.5 — Apache-2.0
-- sherpa-onnx-node 1.13.2 — Apache-2.0
-- sherpa-onnx-win-ia32 1.13.5 — Apache-2.0
-- sherpa-onnx-win-x64 1.13.5 — Apache-2.0
 - solid-js 1.9.14 — MIT
 - string-width 8.2.2 — MIT
 - strip-ansi 7.2.0 — MIT
@@ -10438,14 +10430,6 @@ Payload SHA-256: cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d3
 Used by:
 - @puppeteer/browsers@3.0.6: canonical Apache-2.0 text
 - puppeteer-core@25.3.0: canonical Apache-2.0 text
-- sherpa-onnx-darwin-arm64@1.13.3: canonical Apache-2.0 text
-- sherpa-onnx-darwin-x64@1.13.5: canonical Apache-2.0 text
-- sherpa-onnx-linux-arm64@1.13.5: canonical Apache-2.0 text
-- sherpa-onnx-linux-x64@1.13.5: canonical Apache-2.0 text
-- sherpa-onnx-node@1.13.2: canonical Apache-2.0 text
-- sherpa-onnx-win-ia32@1.13.5: canonical Apache-2.0 text
-- sherpa-onnx-win-x64@1.13.5: canonical Apache-2.0 text
-- sherpa-onnx@1.13.2: canonical Apache-2.0 text
 
 
                                  Apache License

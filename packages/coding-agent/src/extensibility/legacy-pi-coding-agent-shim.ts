@@ -23,7 +23,6 @@ import {
 	Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
 import { type AuthCredential, SqliteAuthCredentialStore, type TSchema } from "@oh-my-pi/pi-ai";
-import { piEscapeRegexLiteral, piJoinPath } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
 import { getKeybindings, type Keybinding, Text } from "@oh-my-pi/pi-tui";
 import {
 	getAgentDbPath,
@@ -45,17 +44,9 @@ import {
 	discoverSkills,
 	createAgentSession as ompCreateAgentSession,
 } from "../sdk";
-import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	type TruncationResult,
-	truncateHead,
-	truncateTail,
-} from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "../session/streaming-output";
 import type { Tool, ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
-import { GlobTool } from "../tools/glob";
-import { GrepTool } from "../tools/grep";
 import { ReadTool } from "../tools/read";
 import { formatBytes } from "../tools/render-utils";
 import { WriteTool } from "../tools/write";
@@ -67,7 +58,6 @@ import type {
 	BashToolResultEvent,
 	EditToolResultEvent,
 	ExtensionFactory,
-	GrepToolResultEvent,
 	ReadToolResultEvent,
 	ToolDefinition,
 	ToolResultEvent,
@@ -81,10 +71,9 @@ import { loadSkillsFromDir } from "./skills";
 const TOOL_DEFINITION_MARKER = "__isToolDefinition";
 const LEGACY_BUILTIN_TOOL_MARKER = "__ompLegacyBuiltinTool";
 const LEGACY_CODING_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
-const LEGACY_READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
 
 type LegacyCodingToolName = (typeof LEGACY_CODING_TOOL_NAMES)[number];
-type LegacyRegistryToolName = LegacyCodingToolName | "grep" | "glob";
+type LegacyRegistryToolName = LegacyCodingToolName;
 type LegacyBuiltinToolDefinition = ToolDefinition & { [LEGACY_BUILTIN_TOOL_MARKER]: true };
 
 type LegacySettingOverrides = Partial<Record<SettingPath, unknown>>;
@@ -124,26 +113,6 @@ export interface BashToolOptions {
 export interface ReadToolOptions {
 	/** Auto-resize large images; maps onto the `images.autoResize` setting. Default: true. */
 	autoResizeImages?: boolean;
-}
-
-export interface GrepToolOptions {
-	/**
-	 * Unsupported. The historical grep operations seam (isDirectory/readFile for
-	 * context lines) never delegated the search itself — ripgrep always ran
-	 * locally — and the built-in native grep tool exposes no filesystem seam at
-	 * all. Supplying operations throws at tool creation instead of silently
-	 * searching the local filesystem.
-	 */
-	operations?: unknown;
-}
-
-export interface FindOperations {
-	exists: (absolutePath: string) => Promise<boolean> | boolean;
-	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
-}
-
-export interface FindToolOptions {
-	operations?: FindOperations;
 }
 
 export interface LsOperations {
@@ -186,21 +155,6 @@ const legacyReadSchema = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "Maximum lines to read" })),
 });
 
-const legacyGrepSchema = Type.Object({
-	pattern: Type.String({ description: "Search pattern" }),
-	path: Type.Optional(Type.String({ description: "Directory or file to search" })),
-	glob: Type.Optional(Type.String({ description: "Glob filter" })),
-	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search" })),
-	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as a literal string" })),
-	context: Type.Optional(Type.Number({ description: "Context lines" })),
-});
-
-const legacyFindSchema = Type.Object({
-	pattern: Type.String({ description: "Glob pattern to match files" }),
-	path: Type.Optional(Type.String({ description: "Directory to search" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum results" })),
-});
-
 const legacyLsSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Directory to list" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum entries" })),
@@ -239,10 +193,6 @@ function createRegistryTool(
 			return new BashTool(session);
 		case "edit":
 			return new EditTool(session);
-		case "glob":
-			return new GlobTool(session);
-		case "grep":
-			return new GrepTool(session);
 		case "read":
 			return new ReadTool(session);
 		case "write":
@@ -288,12 +238,6 @@ function numberField(value: unknown, key: string): number | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const field = Reflect.get(value, key);
 	return typeof field === "number" ? field : undefined;
-}
-
-function booleanField(value: unknown, key: string): boolean | undefined {
-	if (value === null || typeof value !== "object") return undefined;
-	const field = Reflect.get(value, key);
-	return typeof field === "boolean" ? field : undefined;
 }
 
 function isLegacyThemeLike(value: unknown): value is LegacyThemeLike {
@@ -531,118 +475,6 @@ export function createBashTool(cwd: string, options?: BashToolOptions): ToolDefi
 	return createBashToolDefinition(cwd, options);
 }
 
-/** Create the legacy grep tool definition. */
-export function createGrepToolDefinition(cwd: string, options?: GrepToolOptions): ToolDefinition {
-	if (options?.operations) {
-		throw new Error(
-			"Legacy GrepToolOptions.operations is not supported: the built-in grep tool searches the local " +
-				"filesystem natively and exposes no pluggable filesystem seam (the historical seam only customized " +
-				"context-line reads; the search itself always ran locally). Register a custom grep tool via " +
-				"defineTool() instead of passing operations to createGrepTool()/createGrepToolDefinition().",
-		);
-	}
-	const tool = createRegistryTool(cwd, "grep");
-	return markToolDefinition({
-		name: "grep",
-		label: "grep",
-		description: "Search file contents for a pattern.",
-		parameters: legacyGrepSchema,
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			const pattern = stringField(params, "pattern") ?? "";
-			const searchPath = stringField(params, "path") ?? ".";
-			return new Text(`${themedTitle(theme, "grep")} ${themedMuted(theme, `/${pattern}/ in ${searchPath}`)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
-		execute: (toolCallId, params, signal, onUpdate) => {
-			const rawPattern = stringField(params, "pattern") ?? "";
-			const pattern = booleanField(params, "literal") ? piEscapeRegexLiteral(rawPattern) : rawPattern;
-			const searchPath = stringField(params, "path") ?? ".";
-			const glob = stringField(params, "glob");
-			const context = numberField(params, "context");
-			// The new grep reads context from settings fixed at construction; build a
-			// per-call tool when the model passes an explicit legacy `context`.
-			const grepTool =
-				context === undefined
-					? tool
-					: createRegistryTool(cwd, "grep", {
-							"grep.contextBefore": Math.max(0, Math.floor(context)),
-							"grep.contextAfter": Math.max(0, Math.floor(context)),
-						});
-			return grepTool.execute(
-				toolCallId,
-				{
-					pattern,
-					path: glob ? piJoinPath(searchPath, glob) : searchPath,
-					case: booleanField(params, "ignoreCase") ? false : undefined,
-				},
-				signal,
-				onUpdate,
-			);
-		},
-	});
-}
-
-/** Create the legacy grep tool. */
-export function createGrepTool(cwd: string, options?: GrepToolOptions): ToolDefinition {
-	return createGrepToolDefinition(cwd, options);
-}
-
-/** Create the legacy find tool definition. */
-export function createFindToolDefinition(cwd: string, options?: FindToolOptions): ToolDefinition {
-	const tool = createRegistryTool(cwd, "glob");
-	return markToolDefinition({
-		name: "find",
-		label: "find",
-		description: "Find files by glob pattern.",
-		parameters: legacyFindSchema,
-		renderCall: (params, optionsArg, themeArg) => {
-			const theme = renderTheme(optionsArg, themeArg);
-			const pattern = stringField(params, "pattern") ?? "";
-			const searchPath = stringField(params, "path") ?? ".";
-			return new Text(`${themedTitle(theme, "find")} ${themedMuted(theme, `${pattern} in ${searchPath}`)}`, 0, 0);
-		},
-		renderResult: legacyRenderResult,
-		execute: async (toolCallId, params, signal, onUpdate) => {
-			const pattern = stringField(params, "pattern") ?? "*";
-			const searchPath = stringField(params, "path") ?? ".";
-			const limit = normalizeLegacyLimit(numberField(params, "limit"), 1000);
-			const absolutePath = path.resolve(cwd, searchPath);
-			if (options?.operations) {
-				if (!(await options.operations.exists(absolutePath))) {
-					throw new Error(`Path not found: ${absolutePath}`);
-				}
-				const matches = await options.operations.glob(pattern, absolutePath, {
-					ignore: ["**/node_modules/**", "**/.git/**"],
-					limit,
-				});
-				const output = matches
-					.map(match => {
-						const rel = path.isAbsolute(match) ? path.relative(absolutePath, match) : match;
-						return rel.split(path.sep).join("/");
-					})
-					.join("\n");
-				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
-				return {
-					content: [{ type: "text", text: truncation.content || "No files found matching pattern" }],
-					details: truncation.truncated ? { truncation } : undefined,
-				};
-			}
-			return tool.execute(
-				toolCallId,
-				{ path: piJoinPath(searchPath, pattern), hidden: true, gitignore: true, limit },
-				signal,
-				onUpdate,
-			);
-		},
-	});
-}
-
-/** Create the legacy find tool. */
-export function createFindTool(cwd: string, options?: FindToolOptions): ToolDefinition {
-	return createFindToolDefinition(cwd, options);
-}
-
 /** Create the legacy ls tool definition. */
 export function createLsToolDefinition(cwd: string, options?: LsToolOptions): ToolDefinition {
 	return markToolDefinition({
@@ -726,14 +558,9 @@ export function createCodingTools(cwd: string): ToolDefinition[] {
 	return LEGACY_CODING_TOOL_NAMES.map(name => legacyBuiltinTool(cwd, name));
 }
 
-/** Create legacy read, grep, find, and ls tools. */
+/** Create legacy read and ls tools. */
 export function createReadOnlyTools(cwd: string): ToolDefinition[] {
-	return LEGACY_READ_ONLY_TOOL_NAMES.map(name => {
-		if (name === "read") return createReadTool(cwd);
-		if (name === "grep") return createGrepTool(cwd);
-		if (name === "find") return createFindTool(cwd);
-		return createLsTool(cwd);
-	});
+	return [createReadTool(cwd), createLsTool(cwd)];
 }
 
 export const SettingsManager = {
@@ -1509,19 +1336,6 @@ export function isEditToolResult(e: ToolResultEvent): e is EditToolResultEvent {
 /** Narrow a `tool_result` event to the `write` tool. */
 export function isWriteToolResult(e: ToolResultEvent): e is WriteToolResultEvent {
 	return e.toolName === "write";
-}
-
-/** Narrow a `tool_result` event to the `grep` tool. */
-export function isGrepToolResult(e: ToolResultEvent): e is GrepToolResultEvent {
-	return e.toolName === "grep";
-}
-
-/** Legacy `find` result event represented by omp's custom-event branch. */
-export type FindToolResultEvent = ToolResultEvent & { toolName: "find" };
-
-/** Narrow a `tool_result` event to the legacy `find` tool. */
-export function isFindToolResult(e: ToolResultEvent): e is FindToolResultEvent {
-	return e.toolName === "find";
 }
 
 /** Legacy `ls` result event represented by omp's custom-event branch. */

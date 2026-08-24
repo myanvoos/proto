@@ -13,30 +13,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { EditTool } from "./edit";
 import type { ExtensionRunner } from "./extensibility/extensions";
 import { ExtensionToolWrapper } from "./extensibility/extensions";
-import type { GrepToolOptions, Tool, ToolSession } from "./tools";
-import { GrepTool } from "./tools";
-
-/**
- * Build the bridge's `createGrepTool` factory for one tool session.
- *
- * A `pi_grep` frame carries its own context width and total match cap. Neither
- * is expressible in the model-facing `grep` schema — context comes from
- * `grep.contextBefore`/`grep.contextAfter`, fixed when the shared instance is
- * constructed — so honoring them needs a fresh tool per call.
- *
- * The result is wrapped exactly like a registry tool: extension events and
- * file-mutation bookkeeping run on every call site, and a per-call instance
- * is no exception.
- */
-export function createBridgeGrepFactory(
-	session: ToolSession,
-	extensionRunner: ExtensionRunner,
-): (options: GrepToolOptions) => AgentTool {
-	return options => {
-		const grepTool: Tool = new GrepTool(session, options);
-		return new ExtensionToolWrapper(grepTool, extensionRunner);
-	};
-}
+import type { Tool, ToolSession } from "./tools";
 
 /**
  * Build the `replace`-mode `edit` the bridge answers `pi_edit` with.

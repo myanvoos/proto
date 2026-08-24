@@ -11,17 +11,12 @@ import { lspToolRenderer } from "../lsp/render";
 import type { Theme } from "../modes/theme/theme";
 import { webSearchToolRenderer } from "../web/search/render";
 import { askToolRenderer } from "./ask";
-import { astEditToolRenderer } from "./ast-edit";
-import { astGrepToolRenderer } from "./ast-grep";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
 import { computerToolRenderer } from "./computer-renderer";
-import { debugToolRenderer } from "./debug";
 import { evalToolRenderer } from "./eval-render";
 import { fleetToolRenderer } from "./fleet";
 import { githubToolRenderer } from "./gh-renderer";
-import { globToolRenderer } from "./glob";
-import { grepToolRenderer } from "./grep";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
 import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
 import { readToolRenderer } from "./read";
@@ -78,17 +73,12 @@ export type ToolRenderer = {
 
 export const toolRenderers: Record<string, ToolRenderer> = {
 	ask: askToolRenderer as ToolRenderer,
-	ast_grep: astGrepToolRenderer as ToolRenderer,
-	ast_edit: astEditToolRenderer as ToolRenderer,
 	bash: bashToolRenderer as ToolRenderer,
 	browser: browserToolRenderer as ToolRenderer,
 	computer: computerToolRenderer as ToolRenderer,
-	debug: debugToolRenderer as ToolRenderer,
 	eval: evalToolRenderer as ToolRenderer,
 	edit: editToolRenderer as ToolRenderer,
 	apply_patch: editToolRenderer as ToolRenderer,
-	glob: globToolRenderer as ToolRenderer,
-	grep: grepToolRenderer as ToolRenderer,
 	lsp: lspToolRenderer as ToolRenderer,
 	inspect_image: inspectImageToolRenderer as ToolRenderer,
 	// Lazy getter: `fleetToolRenderer` lives in a module whose deps (messaging →

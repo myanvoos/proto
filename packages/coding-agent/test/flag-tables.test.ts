@@ -86,10 +86,10 @@ describe("--session-dir", () => {
 });
 
 describe("--tools validation", () => {
-	it("maps search and find to grep and glob", () => {
-		const result = parseArgs(["--tools", "search,find,grep"]);
+	it("normalizes --tools casing and preserves order", () => {
+		const result = parseArgs(["--tools", "Read,BASH,read"]);
 
-		expect(result.tools).toEqual(["grep", "glob"]);
+		expect(result.tools).toEqual(["read", "bash"]);
 	});
 
 	it("defers unknown-name validation until all session tools are discovered", () => {

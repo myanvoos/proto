@@ -85,7 +85,6 @@ describe("async speculative compaction", () => {
 			thinkingLevel: () => undefined,
 			isDisposed: () => false,
 			isStreaming: () => false,
-			isGeneratingHandoff: () => false,
 			promptGeneration: () => 0,
 			sessionId: () => sessionManager.getSessionId(),
 			messages: () => agent.state.messages,
@@ -120,14 +119,10 @@ describe("async speculative compaction", () => {
 			getContextUsage: () => undefined,
 			shake: async () => ({ modified: false, tokensRemoved: 0 }),
 			dropImages: async () => ({ removed: 0 }),
-			generateHandoffDocument: async () => undefined,
-			removeAssistantMessageFromActiveContext: () => {},
-			dropPersistedAssistantTurn: async () => undefined,
-			runRecoveryCompactionWithRollback: async () => ({ deferredHandoff: false, continuationScheduled: false }),
+			runRecoveryCompactionWithRollback: async () => ({ continuationScheduled: false }),
 			parseRetryAfterMsFromError: () => undefined,
 			setModelTemporary: async () => {},
 			abort: async () => {},
-			abortHandoff: () => {},
 		} as unknown as SessionMaintenanceHost;
 		return new SessionMaintenance(host);
 	}

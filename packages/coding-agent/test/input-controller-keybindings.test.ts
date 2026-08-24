@@ -102,7 +102,6 @@ async function createContext() {
 	const session = {
 		isStreaming: false,
 		isCompacting: false,
-		isGeneratingHandoff: false,
 		isBashRunning: false,
 		isEvalRunning: false,
 		extensionRunner: undefined,
@@ -328,73 +327,6 @@ describe("InputController keybinding setup", () => {
 
 		expect(ctx.isPythonMode).toBe(true);
 		expect(ctx.updateEditorBorderColor).toHaveBeenCalledTimes(1);
-	});
-
-	it("registers retry as an editor action and retries the failed turn", async () => {
-		const { InputController, ctx, editor, spies } = await createContext();
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-
-		expect(spies.setActionKeys).toHaveBeenCalledWith("app.retry", ["alt+r"]);
-		expect(editor.onRetry).toBeDefined();
-
-		editor.setText("draft that should clear after retry");
-		editor.onRetry?.();
-		await Promise.resolve();
-
-		expect(spies.retry).toHaveBeenCalledTimes(1);
-		expect(editor.getText()).toBe("");
-	});
-
-	it("retries the focused view session instead of the main session", async () => {
-		const { InputController, ctx, editor, spies } = await createContext();
-		const focusedRetry = vi.fn(async () => true);
-		(ctx as unknown as { focusedAgentId: string; viewSession: { retry: typeof focusedRetry } }).focusedAgentId =
-			"worker";
-		(ctx as unknown as { viewSession: { retry: typeof focusedRetry } }).viewSession = { retry: focusedRetry };
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		editor.onRetry?.();
-		await Promise.resolve();
-
-		expect(focusedRetry).toHaveBeenCalledTimes(1);
-		expect(spies.retry).not.toHaveBeenCalled();
-	});
-
-	it("keeps the draft when there is nothing to retry", async () => {
-		const { InputController, ctx, editor, spies } = await createContext();
-		spies.retry.mockResolvedValueOnce(false);
-		const showStatus = ctx.showStatus as unknown as Mock<(message: string) => void>;
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		editor.setText("draft that should survive");
-		editor.onRetry?.();
-		await Promise.resolve();
-
-		expect(showStatus).toHaveBeenCalledWith("Nothing to retry");
-		expect(editor.getText()).toBe("draft that should survive");
-	});
-
-	it("clears retry draft attachments only after retry starts", async () => {
-		const { InputController, ctx, editor } = await createContext();
-		const image: ImageContent = { type: "image", mimeType: "image/png", data: "abc" };
-		const controller = new InputController(ctx);
-
-		controller.setupKeyHandlers();
-		ctx.editor.pendingImages = [image];
-		ctx.editor.pendingImageLinks = ["local://draft.png"];
-		editor.imageLinks = ctx.editor.pendingImageLinks;
-		editor.setText("draft with image");
-		editor.onRetry?.();
-		await Promise.resolve();
-
-		expect(ctx.editor.pendingImages).toEqual([]);
-		expect(ctx.editor.pendingImageLinks).toEqual([]);
-		expect(editor.imageLinks).toBeUndefined();
-		expect(editor.getText()).toBe("");
 	});
 
 	it("routes b to branch a branchable /btw panel", async () => {

@@ -34,20 +34,15 @@ import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspec
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
-import { AstEditTool } from "./ast-edit";
-import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
-import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
 import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
-import { GlobTool } from "./glob";
-import { GrepTool } from "./grep";
 import { InspectImageTool } from "./inspect-image";
 import { ManageSkillTool } from "./manage-skill";
 import {
@@ -72,22 +67,17 @@ export * from "../session/streaming-output";
 export * from "../task";
 export * from "../web/search";
 export * from "./ask";
-export * from "./ast-edit";
-export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
 export * from "./computer";
 export * from "./computer/supervisor";
-export * from "./debug";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
 export * from "./file-write-fallback";
 export * from "./fleet";
 export * from "./gh";
-export * from "./glob";
-export * from "./grep";
 export * from "./image-gen";
 export * from "./inspect-image";
 export * from "./manage-skill";
@@ -400,14 +390,9 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	read: s => new ReadTool(s),
 	bash: s => new BashTool(s),
 	edit: s => new EditTool(s),
-	ast_grep: s => new AstGrepTool(s),
-	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
-	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
 	github: GithubTool.createIf,
-	glob: s => new GlobTool(s, { rootPathAlias: true }),
-	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
@@ -511,7 +496,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// Checkpoint and rewind are a pair: listing one without the other strands
 	// the agent (it can checkpoint but not rewind, or vice versa). Auto-include
 	// the sister tool so a one-sided frontmatter `tools:` entry still works.
-	// Unlike the AST/auto-learn convenience auto-includes below, this is a
+	// Unlike the auto-learn convenience auto-include below, this is a
 	// safety pairing — it applies to restricted sessions too.
 	if (requestedTools && session.settings.get("checkpoint.enabled")) {
 		if (requestedTools.includes("checkpoint") && !requestedTools.includes("rewind")) {
@@ -520,25 +505,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			requestedTools.push("checkpoint");
 		}
 	}
-	// Auto-include AST counterparts when their text-based sibling is present.
-	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
 		if (goalModeActive && !requestedTools.includes("goal")) {
 			requestedTools.push("goal");
-		}
-		if (
-			requestedTools.includes("grep") &&
-			!requestedTools.includes("ast_grep") &&
-			session.settings.get("astGrep.enabled")
-		) {
-			requestedTools.push("ast_grep");
-		}
-		if (
-			requestedTools.includes("edit") &&
-			!requestedTools.includes("ast_edit") &&
-			session.settings.get("astEdit.enabled")
-		) {
-			requestedTools.push("ast_edit");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
 			requestedTools.push("think");
@@ -568,14 +537,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
-		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
-		if (name === "glob") return session.settings.get("glob.enabled");
-		if (name === "grep") return session.settings.get("grep.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
-		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
-		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
 		if (name === "inspect_image") return isInspectImageToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "think") return externalThinkingActive;
@@ -669,7 +633,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		};
 		tools = kept;
 	}
-	// Staged previews from deferrable tools (e.g. ast_edit) resolve through a
+	// Staged previews from deferrable tools resolve through a
 	// `write` to xd://resolve/reject, so retain write whenever one can stage.
 	// xd:// mounting itself never registers write: sessions without a granted
 	// write tool skip mounting entirely (see xdevEnabled above).

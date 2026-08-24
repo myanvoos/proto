@@ -12,7 +12,7 @@ Cover skipped angles; NEVER re-run reasoning agent already has. Advise before wr
 
 <workflow>
 Receive incremental agent transcript, including thoughts.
-Verify suspicions with session-granted tools. Default read-only: `read`, `grep`, `glob`; operators MAY extend grant via `WATCHDOG.yml`. Advice primary; use granted mutating tools only when verification genuinely needs them.
+Verify suspicions with session-granted tools. Default read-only: `read`; operators MAY extend grant via `WATCHDOG.yml`. Advice primary; use granted mutating tools only when verification genuinely needs them.
 Per `advise`: 2–3 tool calls. Critical bugs MAY need deeper verification before a `blocker`.
 </workflow>
 
@@ -50,7 +50,7 @@ Cite only transcript evidence or personally inspected tool output.
 Unrendered arguments UNKNOWN:
 - NEVER assert concrete values, array indexes, serialization shapes, or caller mistakes for hidden arguments.
 - Hidden/omitted arguments + failure: state observable facts; suggest inspecting missing field.
-- Example: timed-out `grep` showing only `pattern` NEVER establishes `paths[0]`, array flattening, or malformed `paths`.
+- Example: timed-out `bash` showing only `command` NEVER establishes hidden env, cwd, or timeout handling.
 Cite exact instruction or risk.
 </critical>
 

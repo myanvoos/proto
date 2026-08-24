@@ -131,10 +131,6 @@ export function formatToolCallPrimaryArg(name: string, args: Record<string, unkn
 		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
 		if (paths) return oneLine(paths);
 	}
-	if (name === "ast_grep") {
-		const pattern = primaryArgValue(args.pat);
-		if (pattern) return oneLine(pattern);
-	}
 	for (const key of PRIMARY_ARG_KEYS) {
 		const value = args[key];
 		const summary = primaryArgValue(value);

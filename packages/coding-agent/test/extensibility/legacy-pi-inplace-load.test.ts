@@ -773,8 +773,6 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 				'import { Text } from "@earendil-works/pi-tui";',
 				"import {",
 				"  createBashToolDefinition,",
-				"  createFindToolDefinition,",
-				"  createGrepToolDefinition,",
 				"  createLsToolDefinition,",
 				"  createReadToolDefinition,",
 				"  DEFAULT_MAX_LINES,",
@@ -786,8 +784,6 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 				"const definitions = [",
 				"  createBashToolDefinition(cwd),",
 				"  createReadToolDefinition(cwd),",
-				"  createGrepToolDefinition(cwd),",
-				"  createFindToolDefinition(cwd),",
 				"  createLsToolDefinition(cwd),",
 				"];",
 				"const fakeTheme = { fg: (_color, text) => text, bold: text => text };",
@@ -811,7 +807,7 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 			helperValues: { maxLines: number; language: string; highlighted: number; truncated: boolean };
 		};
 
-		expect(mod.toolNames).toEqual(["bash", "read", "grep", "find", "ls"]);
+		expect(mod.toolNames).toEqual(["bash", "read", "ls"]);
 		expect(mod.helperValues).toEqual({
 			maxLines: 3000,
 			language: "typescript",
@@ -907,29 +903,6 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		});
 		expect(mod.observed.text).toBe("remote output");
 		expect(mod.observed.updates).toEqual(["remote output"]);
-	});
-
-	it("preserves relative paths from legacy find operations", async () => {
-		const dir = await writePackage({
-			"package.json": JSON.stringify({ name: "legacy-find-ops-ext", version: "1.0.0" }),
-			"index.ts": [
-				'import { createFindToolDefinition } from "@earendil-works/pi-coding-agent";',
-				"const tool = createFindToolDefinition('/remote/project', {",
-				"  operations: {",
-				"    exists: () => true,",
-				"    glob: () => ['src/a.ts', '/remote/project/src/b.ts'],",
-				"  },",
-				"});",
-				"const result = await tool.execute('call-1', { pattern: '**/*.ts', path: '.' });",
-				"const text = result.content.find(block => block.type === 'text')?.text ?? '';",
-				"export const lines = text.split('\\n');",
-				"export default function (pi) { pi.registerTool(tool); }",
-			].join("\n"),
-		});
-
-		const mod = (await loadLegacyPiModule(path.join(dir, "index.ts"))) as { lines: string[] };
-
-		expect(mod.lines).toEqual(["src/a.ts", "src/b.ts"]);
 	});
 
 	it("rewrites extension bare deps to file URLs for compiled-binary loading", async () => {

@@ -14,6 +14,8 @@
 - Removed the `/force` slash command (forcing the next turn to use a specific tool) and the `/fresh` slash command (rotating provider stream state without changing the local transcript); `/clear` still rotates provider-side session state when it drops context.
 - Removed the `/autoresearch` experiment-harness extension entirely: the command, the `init_experiment`, `run_experiment`, `log_experiment`, and `update_notes` tools, the dashboard widget, branch isolation and auto-commit handling, per-project state under `~/.proto/autoresearch/`, the `PROTO_AUTORESEARCH_DB_DIR` override, and the `@oh-my-pi/pi-coding-agent/autoresearch*` export paths. Existing session `autoresearch-control` entries are ignored on replay.
 - Removed the `/live` Codex-backed realtime voice mode and the entire speech subsystem: push-to-talk speech-to-text (hold-Space gesture, `app.stt.toggle`, all `stt.*` settings), the `tts` tool and `speechgen.enabled` gate with its `providers.tts`/`tts.localModel`/`tts.localVoice` settings, spoken-reply vocalization (`speech.enabled`, `speech.mode`, `speech.voice`, `speech.enhanced`), the `say` CLI command, `proto setup speech`, the `app.live.toggle` keybinding and `/live` command, the `@oh-my-pi/pi-coding-agent/stt*` export paths, and the `sherpa-onnx-node` dependency.
+- Removed the `/drop`, `/shake`, `/handoff`, `/pin`, `/retry`, and `/switch` slash commands along with their machinery: session deletion via `/drop`, the `shake`/`handoff` compaction methods and the auto-handoff flow (including `compaction.handoffSaveToDisk` and the RPC `handoff` request), manual retry of the last failed turn, session pinning in the resume picker, and the model-switch alias for Alt+P. Configured compaction method orders containing `shake`/`handoff` migrate to `["remote","soft"]`. Automatic retry/recovery, `/compact soft|remote`, goal/todo `drop` subcommands, and the provider-account `pin` subcommand are unchanged.
+- Removed the bundled `/init` workflow command; custom command files in project/user command directories still work.
 
 
 ### Added
@@ -23,7 +25,6 @@
 
 - Top-level agents are now always Orchestrators with persistent worker control through `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, and `orchestrate_list`.
 - Plan review can save a plan to a chosen path and start a new session.
-- Added the `/pin` slash command to pin and unpin sessions so they stay at the top of the `--resume` picker UI.
 - Optional edit parse-regression capture appends the before/after content, model, variant, and arguments to `~/.proto/agent/edit-blackbox.jsonl` when `edit.blackbox.enabled` is enabled.
 - Added `startup.clearScrollback` (off by default) to opt back into erasing the terminal's saved scrollback at launch.
 ### Changed
@@ -124,6 +125,7 @@
 - Removed the `auto` thinking level and its per-prompt difficulty classifier: `defaultThinkingLevel` no longer accepts `"auto"`, the `providers.autoThinkingModel`/`providers.autoThinkingMaxEffort` settings, the `--thinking auto` CLI value, the `:auto` model-selector suffix, and the `/thinking auto` cycle stop are gone. Configure a concrete level (`off`, `minimal`..`max`) instead; persisted configs that still say `auto` fall back to `high`.
 - Removed the shutdown exit banner: the sunset field art and its "the sun sets on this session" caption no longer print on quit.
 - Removed the shimmer highlight animation from the working/loading message text and the streaming reasoning tail; both now render in static theme colors.
+- Removed the `glob`, `grep`, `ast_grep`, `ast_edit`, and `debug` agent tools along with their settings (`glob.enabled`, `grep.enabled`, `grep.contextBefore`, `grep.contextAfter`, `astGrep.enabled`, `astEdit.enabled`, `debug.enabled`) and the DAP-based debug tooling they backed.
 
 ## [18.0.0] - 2026-08-22
 

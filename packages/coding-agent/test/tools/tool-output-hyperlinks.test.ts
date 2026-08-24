@@ -7,11 +7,9 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { editToolRenderer } from "@oh-my-pi/pi-coding-agent/edit/renderer";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { astGrepToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ast-grep";
 import { ReadTool, readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
-import { grepToolRenderer } from "../../src/tools/grep";
 
 // 1x1 PNG so the read tool takes its image branch.
 const TINY_PNG_BASE64 =
@@ -107,68 +105,6 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 		} finally {
 			removeSyncWithRetries(dir);
 		}
-	});
-
-	it("resolves scoped search links against cwd, not the (sub)scope path", async () => {
-		settings.override("tui.hyperlinks", "always");
-		const theme = (await getThemeByName("dark"))!;
-		// Scoped search: scope dir (`searchPath`) is below cwd, and the grouped
-		// display paths are cwd-relative. Resolving against searchPath would double
-		// the `src` prefix (`/proj/src/src/...`).
-		const projectRoot = path.resolve("/tmp/proto-project");
-		const srcRoot = path.join(projectRoot, "src");
-		const interactiveModePath = path.join(srcRoot, "interactive-mode.ts");
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				cwd: projectRoot,
-				searchPath: srcRoot,
-				scopePath: "src",
-				displayContent: ["# src/", "## interactive-mode.ts#abcd", "*12│const needle = true;"].join("\n"),
-			},
-		};
-		const rendered = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, theme, { pattern: "needle" })
-			.render(240)
-			.join("\n");
-		const interactiveModeUri = url.pathToFileURL(path.resolve(interactiveModePath)).href;
-		const interactiveModeLineUri = new URL(interactiveModeUri);
-		interactiveModeLineUri.searchParams.set("line", "12");
-		const uris = extractLinkUris(rendered);
-		expect(uris).toContain(interactiveModeUri);
-		expect(uris).toContain(interactiveModeLineUri.href);
-		expect(uris.some(uri => uri.includes("/src/src/"))).toBe(false);
-	});
-
-	it("resolves scoped ast-grep links against cwd, not the (sub)scope path", async () => {
-		settings.override("tui.hyperlinks", "always");
-		const theme = (await getThemeByName("dark"))!;
-		const projectRoot = path.resolve("/tmp/proto-project");
-		const srcRoot = path.join(projectRoot, "src");
-		const interactiveModePath = path.join(srcRoot, "interactive-mode.ts");
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				filesSearched: 1,
-				limitReached: false,
-				cwd: projectRoot,
-				searchPath: srcRoot,
-				scopePath: "src",
-				displayContent: ["# src/", "## interactive-mode.ts", "  *12│const needle = true;"].join("\n"),
-			},
-		};
-		const rendered = astGrepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, theme, { pat: "needle" })
-			.render(240)
-			.join("\n");
-		const interactiveModeUri = url.pathToFileURL(path.resolve(interactiveModePath)).href;
-		const uris = extractLinkUris(rendered);
-		expect(uris).toContain(interactiveModeUri);
-		expect(uris.some(uri => uri.includes("/src/src/"))).toBe(false);
 	});
 
 	it("links the edit header to the absolute details.path even when the arg path is relative", async () => {

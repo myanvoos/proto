@@ -218,12 +218,6 @@ export interface AgentSessionConfig {
 	/** Full advisor toolset built against an advisor-scoped tool session. */
 	advisorTools?: AgentTool[];
 	/**
-	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
-	 * match cap, against the advisor-scoped tool session. Without it an advisor
-	 * running on Cursor silently drops both fields.
-	 */
-	advisorCreateGrepTool?(options: { context?: number; totalMatchLimit?: number }): AgentTool | undefined;
-	/**
 	 * Build the `replace`-mode `edit` a Cursor `pi_edit` frame needs, against the
 	 * advisor-scoped tool session. The advisor's ordinary instance follows the
 	 * configured `edit.mode` and rejects the frame's `old_string`/`new_string` args.

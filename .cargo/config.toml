@@ -1,12 +1,5 @@
 # Cargo environment for the workspace.
 #
-# audiopus_sys 0.2.2 builds its vendored Opus via the `cmake` crate, and the
-# bundled opus CMakeLists still declares `cmake_minimum_required(VERSION 3.1)`.
-# CMake 4.0 removed compatibility with < 3.5, so any dev host with a modern
-# cmake fails `cargo check`/`cargo clippy` on pi-voice with
-# "Compatibility with CMake < 3.5 has been removed from CMake."
-[env]
-CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 # Store each crate's metadata only in its .rmeta instead of duplicating it into
 # every rlib. Measured on a reqwest-sized graph: 196 MB -> 130 MB target dir at
 # identical build times. Requires the pinned nightly (rust-toolchain.toml).

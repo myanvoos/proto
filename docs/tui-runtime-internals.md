@@ -193,7 +193,7 @@ Status lane ownership:
 Loader behavior:
 
 - `Loader` advances its spinner every 80ms (animated message colorizers redraw at ~30fps) and uses the direct-write path for quiet fixed-height frames, with automatic fallback to a component-scoped render when direct rewriting is unsafe.
-- Escape cancels an in-progress auto-compaction, handoff generation, or auto-retry: the editor's single `onEscape` handler dispatches on live session state (`isCompacting`/`isGeneratingHandoff`/`isRetrying`) and calls the matching abort method, rather than swapping the handler.
+- Escape cancels an in-progress auto-compaction or auto-retry: the editor's single `onEscape` handler dispatches on live session state (`isCompacting`/`isRetrying`) and calls the matching abort method, rather than swapping the handler.
 - On end/cancel paths, controllers stop/clear the loader components.
 
 ## Mode transitions and backgrounding
@@ -221,7 +221,7 @@ Primary cancellation inputs:
 
 - `Escape` during active stream loader: restores queued messages to editor and aborts agent.
 - `Escape` during bash/python execution: aborts running command.
-- `Escape` during auto-compaction, handoff generation, or auto-retry: the editor's `onEscape` dispatches on live session state (`isCompacting`/`isGeneratingHandoff`/`isRetrying`) and calls the matching abort method (`abortCompaction`/`abortHandoff`/`abortRetry`).
+- `Escape` during auto-compaction or auto-retry: the editor's `onEscape` dispatches on live session state (`isCompacting`/`isRetrying`) and calls the matching abort method (`abortCompaction`/`abortRetry`).
 - `Ctrl+C` single press: clear editor; double press within 500ms: shutdown.
 
 Cancellation is state-conditional; same key can mean abort, mode-exit, selector trigger, or no-op depending on runtime state.
