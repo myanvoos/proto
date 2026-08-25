@@ -199,6 +199,7 @@ function createContext(): {
 		updatePendingMessagesDisplay,
 		updateEditorBorderColor: vi.fn(),
 		toggleTodoExpansion: vi.fn(),
+		showAgentsView: vi.fn(),
 		showAgentFleet: vi.fn(),
 		unfocusSession: vi.fn(async () => {}),
 		focusParentSession: vi.fn(async () => {}),
@@ -740,50 +741,52 @@ describe("InputController double-tap ← gesture", () => {
 		controller.setupKeyHandlers();
 		return {
 			ctx,
+			showAgentsView: ctx.showAgentsView as Spy,
 			showAgentFleet: ctx.showAgentFleet as Spy,
 			unfocusSession: ctx.unfocusSession as Spy,
 			tap: () => editor.onLeftAtStart?.(),
 		};
 	}
 
-	it("opens the Agent Fleet on a deliberate double-tap", () => {
+	it("opens the flat session switcher on a deliberate double-tap", () => {
 		const now = vi.spyOn(Date, "now");
-		const { showAgentFleet, tap } = setup();
+		const { showAgentsView, tap } = setup();
 		now.mockReturnValue(1_000);
 		tap();
 		now.mockReturnValue(1_200); // 200ms later — a human double-tap
 		tap();
-		expect(showAgentFleet).toHaveBeenCalledTimes(1);
+		expect(showAgentsView).toHaveBeenCalledTimes(1);
+		expect(showAgentsView).toHaveBeenCalledWith("global", { hideSubagents: true });
 	});
 
 	it("ignores a terminal-synthesized burst of ← arrows arriving together", () => {
 		const now = vi.spyOn(Date, "now");
-		const { showAgentFleet, tap } = setup();
+		const { showAgentsView, tap } = setup();
 		// A "click to move cursor" burst delivers every arrow in one stdin read,
 		// so all taps share the same millisecond timestamp.
 		now.mockReturnValue(1_000);
 		for (let i = 0; i < 6; i++) tap();
-		expect(showAgentFleet).not.toHaveBeenCalled();
+		expect(showAgentsView).not.toHaveBeenCalled();
 	});
 
 	it("ignores a second tap closer than the human-plausible minimum gap", () => {
 		const now = vi.spyOn(Date, "now");
-		const { showAgentFleet, tap } = setup();
+		const { showAgentsView, tap } = setup();
 		now.mockReturnValue(1_000);
 		tap();
 		now.mockReturnValue(1_010); // 10ms later — too fast to be deliberate
 		tap();
-		expect(showAgentFleet).not.toHaveBeenCalled();
+		expect(showAgentsView).not.toHaveBeenCalled();
 	});
 
 	it("returns a focused subagent view to the main session on a deliberate double-tap", () => {
 		const now = vi.spyOn(Date, "now");
-		const { showAgentFleet, unfocusSession, tap } = setup("Agent1");
+		const { showAgentsView, unfocusSession, tap } = setup("Agent1");
 		now.mockReturnValue(1_000);
 		tap();
 		now.mockReturnValue(1_200);
 		tap();
 		expect(unfocusSession).toHaveBeenCalledTimes(1);
-		expect(showAgentFleet).not.toHaveBeenCalled();
+		expect(showAgentsView).not.toHaveBeenCalled();
 	});
 });

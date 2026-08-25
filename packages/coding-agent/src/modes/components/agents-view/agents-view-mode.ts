@@ -6,12 +6,11 @@
  *   metadata rows (agent counts, scope, depth, cwd).
  * - One inline editor doubles as live search filter, reply composer, and
  *   rename input, with mode-specific placeholders.
- * - Rows render Running / Idle / Inactive sections over the unified records
- *   from agents-view-state.ts, windowed around the selection.
+ * - Rows render Running / Idle / Current / Inactive sections over the unified
+ *   records from agents-view-state.ts, windowed around the selection.
  * - A 1s single-flight poll refreshes registry + sessions while visible;
  *   renders are driven by actual data changes.
  */
-
 import * as fs from "node:fs/promises";
 import { resolve as pathResolve } from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -31,11 +30,17 @@ import type { MessageRenderer } from "../../../extensibility/extensions/types";
 import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, getAgentTombstonePath } from "../../../registry/agent-registry";
 import { readAgentSpawnTask, registerPersistedSubagents } from "../../../registry/persisted-agents";
+import { detachedSessionHolder } from "../../../session/detached-session-holder";
 import { USER_INTERRUPT_LABEL } from "../../../session/messages";
-import { listSessions, readOpeningUserHeadline, type SessionInfo } from "../../../session/session-listing";
+import { listSessions, readLastAssistantText, type SessionInfo } from "../../../session/session-listing";
 import { SessionManager } from "../../../session/session-manager";
 import { FileSessionStorage } from "../../../session/session-storage";
 import { recordSessionTitle } from "../../../session/title-index";
+import {
+	BUILTIN_SLASH_COMMAND_RESERVED_NAMES,
+	lookupBuiltinSlashCommand,
+} from "../../../slash-commands/builtin-registry";
+import { parseSlashCommand } from "../../../slash-commands/helpers/parse";
 import { shortenPath } from "../../../tools/render-utils";
 import { getEditorTheme, getSymbolTheme, theme } from "../../theme/theme";
 import type { InteractiveModeContext } from "../../types";
@@ -44,6 +49,7 @@ import { AgentTranscriptViewer } from "../agent-transcript-viewer";
 import { heroWordmark } from "../welcome";
 import {
 	type AgentsViewIndex,
+	type AgentsViewPersistentState,
 	type AgentsViewRecord,
 	type AgentsViewRow,
 	type AgentsViewScopeFrame,
@@ -51,8 +57,10 @@ import {
 	buildAgentsViewIndex,
 	buildAgentsViewRows,
 	countAgentsBySection,
+	extractLastAssistantText,
 	filterAgentsViewRecords,
 	formatRelativeAge,
+	getRecordModelLabel,
 	getRecordSessionFile,
 	getRecordTitle,
 	hasExplicitTitle,
@@ -61,7 +69,6 @@ import {
 	resolveAgentsViewSelectionIndex,
 	scopeToRecordSubtree,
 	sectionTitle,
-	transitionAgentsViewScope,
 } from "./agents-view-state";
 import { matchSearchText, type ParsedSearchQuery, parseSearchQuery } from "./session-view-search";
 
@@ -71,11 +78,59 @@ const STATUS_MESSAGE_DURATION_MS = 4500;
 const ANIMATION_INTERVAL_MS = 120;
 
 const SEARCH_PROMPT_PLACEHOLDER = "Search sessions";
+
+// Row-targeted commands the armed composer maps onto our rename/delete
+// primitives; everything else builtin-shaped is rejected with a pointer to the
+// session itself. Unlike prime we do not forward session-owned slash commands
+// (/compact et al) as prompt text: our session.prompt would send them literally.
+const AGENTS_VIEW_COMMAND_NAMES = ["name", "kill"] as const;
+type AgentsViewCommandName = (typeof AGENTS_VIEW_COMMAND_NAMES)[number];
+const AGENTS_VIEW_COMMAND_NAME_LOOKUP: Record<string, true> = { name: true, kill: true };
+
+export interface AgentsViewCommand {
+	name: AgentsViewCommandName;
+	args: string;
+}
+
+/** Canonicalize an alias to its builtin name so /name-style aliases match. */
+function resolveBuiltinSlashCommandName(name: string): string {
+	return lookupBuiltinSlashCommand(name)?.name ?? name;
+}
+
+export function parseAgentsViewCommand(text: string): AgentsViewCommand | undefined {
+	const parsed = parseSlashCommand(text);
+	if (!parsed) return undefined;
+	const name = resolveBuiltinSlashCommandName(parsed.name);
+	if (!AGENTS_VIEW_COMMAND_NAME_LOOKUP[name]) return undefined;
+	return { name: name as AgentsViewCommandName, args: parsed.args };
+}
+
+/**
+ * Reject recognized built-ins that are neither view commands nor runnable
+ * here, so they are never sent to the model as plain prompt text.
+ */
+export function getReplyComposerCommandRejection(text: string): string | undefined {
+	const parsed = parseSlashCommand(text);
+	if (!parsed) return undefined;
+	if (AGENTS_VIEW_COMMAND_NAME_LOOKUP[resolveBuiltinSlashCommandName(parsed.name)]) return undefined;
+	if (!BUILTIN_SLASH_COMMAND_RESERVED_NAMES.has(parsed.name)) return undefined;
+	return `/${parsed.name} is not available here; open the session to run it`;
+}
+
+/** First non-empty line of the latest response, for the composer header. */
+function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
+	return text
+		?.split("\n")
+		.map(line => line.replace(/\s+/g, " ").trim())
+		.find(line => line.length > 0);
+}
+
 const REPLY_PROMPT_PLACEHOLDER = "Write a reply to this agent";
 const RESUME_PROMPT_PLACEHOLDER = "Write a prompt to resume this session";
 const RENAME_PROMPT_PLACEHOLDER = "Name this agent session";
 
 const IDLE_ROW_ICON = "●";
+const CURRENT_ROW_ICON = "◆";
 const INACTIVE_ROW_ICON = "✓";
 
 const KEY_ARROWS: Record<string, string> = { up: "\u2191", down: "\u2193", left: "\u2190", right: "\u2192" };
@@ -145,6 +200,14 @@ export interface AgentsViewDeps extends AgentsViewActions {
 	/** Open rooted at this record's subtree (/agents scoped at a subtree). */
 	initialScopeIdentity?: string;
 	initialScopeTitle?: string;
+	/**
+	 * View state shared across open/close within one process. The controller
+	 * owns the instance; omitted (tests, standalone use) starts fresh.
+	 */
+	persistentState?: AgentsViewPersistentState;
+	/** Strip every subagent row (summaries, children, code blocks): flat
+	 *  session-switcher flavor opened by the double-← gesture. */
+	hideSubagents?: boolean;
 }
 
 interface StatusMessage {
@@ -157,7 +220,7 @@ export class AgentsViewComponent implements Component {
 	#deps: AgentsViewDeps;
 	#registry: AgentRegistry;
 	#disposed = false;
-
+	#editor: Editor;
 	#records: AgentsViewRecord[] = [];
 	#index: AgentsViewIndex = { byKey: new Map(), childrenByParent: new Map() };
 	#rows: AgentsViewRow[] = [];
@@ -180,7 +243,7 @@ export class AgentsViewComponent implements Component {
 	#pendingDelete: { identity: string; timer: NodeJS.Timeout } | undefined;
 
 	#statusMessage: StatusMessage | undefined;
-	#editor: Editor;
+	#statusTimer: NodeJS.Timeout | undefined;
 	#pollTimer: NodeJS.Timeout | undefined;
 	#animationTimer: NodeJS.Timeout | undefined;
 	#animationFrame = 0;
@@ -192,6 +255,8 @@ export class AgentsViewComponent implements Component {
 	#persistedChildSessions: SessionInfo[] = [];
 	#transcriptOverlay: OverlayHandle | undefined;
 	#transcriptViewer: AgentTranscriptViewer | undefined;
+	/** Shared view state carried across close/reopen; owned by the controller. */
+	#persistentState: AgentsViewPersistentState | undefined;
 
 	constructor(deps: AgentsViewDeps) {
 		this.#deps = deps;
@@ -212,8 +277,30 @@ export class AgentsViewComponent implements Component {
 			else void this.#submitComposer(text);
 		};
 		this.#editor.onAltEnter = text => void this.#submitComposer(text, "followUp");
+		// Restore persistent view state (prime parity): scope frames, selection,
+		// expansion sets — installed as shared instances so mutations persist —
+		// and search text. An explicit initialScopeIdentity is a per-invocation
+		// request (/agents at a subtree), so it overrides carried frames; prime's
+		// initialScopeKey is static CLI context and wins there instead.
+		const persistent = deps.persistentState;
+		this.#persistentState = persistent;
 		if (deps.initialScopeIdentity) {
 			this.#scopeFrames = [{ identity: deps.initialScopeIdentity, rootTitle: deps.initialScopeTitle ?? "scoped" }];
+		} else if (persistent?.scopeFrames) {
+			this.#scopeFrames = persistent.scopeFrames;
+		}
+		if (persistent) {
+			persistent.scopeFrames = this.#scopeFrames;
+			this.#selectedIdentity = persistent.selectedRowIdentity;
+			this.#expandedParents = persistent.expandedSubagentParents ?? new Set();
+			persistent.expandedSubagentParents = this.#expandedParents;
+			this.#programShownParents = persistent.programShownParents ?? new Set();
+			persistent.programShownParents = this.#programShownParents;
+			if (persistent.query) {
+				this.#query = persistent.query;
+				this.#parsedQuery = parseSearchQuery(persistent.query);
+				this.#editor.setText(persistent.query);
+			}
 		}
 		void this.refresh();
 		this.#pollTimer = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
@@ -276,6 +363,13 @@ export class AgentsViewComponent implements Component {
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#animationTimer) clearInterval(this.#animationTimer);
 		this.#clearPendingDelete();
+		clearTimeout(this.#statusTimer);
+		this.#statusMessage = undefined;
+		if (this.#persistentState) {
+			this.#persistentState.scopeFrames = this.#scopeFrames;
+			this.#persistentState.selectedRowIdentity = this.#selectedIdentity;
+			this.#persistentState.query = this.#query;
+		}
 		const viewer = this.#transcriptViewer;
 		this.#closeTranscriptOverlay(viewer);
 	}
@@ -291,10 +385,9 @@ export class AgentsViewComponent implements Component {
 			const listed = await SessionManager.listAll();
 			if (this.#disposed) return;
 			// Parked child transcripts are not part of the global listing; merge
-			// the nested scans so refs enrich with titles/counts/status.
-			const sessions = [...listed, ...this.#persistedChildSessions].filter(
-				session => !this.#isHostSessionPath(session.path),
-			);
+			// the nested scans so refs enrich with titles/counts/status. The host
+			// session stays in the list — the view pins it under a Current section.
+			const sessions = [...listed, ...this.#persistedChildSessions];
 			const refs = this.#registry.list().filter(ref => !this.#isHostRef(ref));
 			const signature =
 				refs.map(ref => `${ref.id}:${ref.status}:${ref.lastActivity}:${ref.activity ?? ""}`).join("|") +
@@ -328,8 +421,17 @@ export class AgentsViewComponent implements Component {
 
 	#applyData(refs: readonly AgentRef[], sessions: readonly SessionInfo[]): void {
 		this.#records = reconcileAgentsViewRecords(refs, sessions);
+		// The attached host session gets its own Current section regardless of
+		// its live/persisted classification.
+		const currentFile = this.#deps.currentSessionFile;
+		if (currentFile !== null) {
+			for (const record of this.#records) {
+				const file = getRecordSessionFile(record);
+				if (file !== undefined && isCurrentSessionFile(file, currentFile)) record.section = "current";
+			}
+		}
 		this.#index = buildAgentsViewIndex(this.#records);
-		this.#scopeFrames = resolveAgentsViewScopeFrames(this.#scopeFrames, this.#index).frames;
+		this.#setScopeFrames(resolveAgentsViewScopeFrames(this.#scopeFrames, this.#index).frames);
 		this.#rebuildRows();
 	}
 
@@ -346,15 +448,32 @@ export class AgentsViewComponent implements Component {
 				this.#index,
 			);
 		}
-		this.#rows = buildAgentsViewRows(
+		let rows = buildAgentsViewRows(
 			records,
 			this.#expandedParents,
 			this.#programShownParents,
 			this.#spawnTasks,
 			scopedIdentity,
 		);
+		if (this.#deps.hideSubagents) {
+			// Flat session-switcher flavor: only top-level Inactive (persisted)
+			// and Current rows survive — Running/Idle are live-roster concepts and
+			// and message-less sessions carry no resume value here, so they go too.
+			rows = rows.filter(row => {
+				if (row.kind !== "agent" || (row.section !== "inactive" && row.section !== "current")) return false;
+				const record = row.record;
+				if (!record) return false;
+				if (record.ref?.kind === "advisor") return false;
+				if (record.session?.path.endsWith("__advisor.jsonl")) return false;
+				if (getRecordTitle(record) === "(no messages)") return false;
+				const session = record.session;
+				if (session && !session.title?.trim() && !session.firstMessage.trim()) return false;
+				return true;
+			});
+		}
+		this.#rows = rows;
 		this.#selectedIndex = resolveAgentsViewSelectionIndex(this.#rows, this.#selectedIdentity, this.#selectedIndex);
-		this.#selectedIdentity = this.#rows[this.#selectedIndex]?.identity;
+		this.#setSelectedIdentity(this.#rows[this.#selectedIndex]?.identity);
 		this.#loadSpawnTasksForExpandedRows();
 	}
 
@@ -430,12 +549,12 @@ export class AgentsViewComponent implements Component {
 			this.#moveSelection(-this.#visibleListRows());
 			return;
 		}
+		// Enter is the only open key: Right previously mirrored it but kept
+		// firing while the user reached for other keys, so it now falls through
+		// to the search editor's cursor handling. Left still pops an active
+		// scope frame.
 		if (matchesKey(data, "enter")) {
-			this.#openSelected("enter");
-			return;
-		}
-		if (matchesKey(data, "right")) {
-			this.#openSelected("right");
+			this.#openSelected();
 			return;
 		}
 		if (matchesKey(data, "left")) {
@@ -499,11 +618,11 @@ export class AgentsViewComponent implements Component {
 			if (this.#rows[index]?.selectable) remaining--;
 		}
 		this.#selectedIndex = index;
-		this.#selectedIdentity = this.#rows[index]?.identity;
+		this.#setSelectedIdentity(this.#rows[index]?.identity);
 		this.#deps.requestRender();
 	}
 
-	#openSelected(key: "enter" | "right"): void {
+	#openSelected(): void {
 		const row = this.#rows[this.#selectedIndex];
 		if (!row?.selectable) return;
 		if (row.kind === "subagent-summary") {
@@ -515,16 +634,9 @@ export class AgentsViewComponent implements Component {
 			this.#deps.requestRender();
 			return;
 		}
-		// Right drills into an agent's subtree; enter opens the session itself.
-		if (key === "right" && row.kind === "agent" && row.hasChildren) {
-			this.#scopeFrames = transitionAgentsViewScope(this.#scopeFrames, {
-				identity: row.identity,
-				rootTitle: row.title,
-			});
-			this.#rebuildRows();
-			this.#deps.requestRender();
-			return;
-		}
+		// Enter opens/focuses the row's session; scope frames are entered via
+		// Alt+A from inside a chat, never drilled in place. Left still pops an
+		// active scope frame.
 		if (row.kind === "subagent-code") return;
 		this.#activateAgentRow(row);
 	}
@@ -538,7 +650,7 @@ export class AgentsViewComponent implements Component {
 				try {
 					// ensureLive inside revives parked agents — same as fleet Enter.
 					await this.#deps.focusAgent(ref.id);
-					this.#deps.close();
+					this.#closeForChat();
 				} catch (error) {
 					this.#setStatusMessage(error instanceof Error ? error.message : String(error), "error");
 					this.#deps.requestRender();
@@ -553,23 +665,56 @@ export class AgentsViewComponent implements Component {
 		}
 		const sessionPath = record.session?.path;
 		if (!sessionPath) return;
-		this.#deps.close();
+		this.#closeForChat();
+		// Activating the host's own row just returns to its chat — resuming the
+		// attached transcript would needlessly reload the live session.
+		if (isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) return;
 		void this.#deps.openSession(sessionPath);
 	}
 
 	#drillOut(): void {
 		if (this.#scopeFrames.length === 0) return;
-		this.#scopeFrames = this.#scopeFrames.slice(0, -1);
+		this.#setScopeFrames(this.#scopeFrames.slice(0, -1));
 		this.#rebuildRows();
 		this.#deps.requestRender();
 	}
 
-	#toggleProgram(): void {
+	/** Frames changed: mirror into the controller-owned persistent state. */
+	#setScopeFrames(frames: AgentsViewScopeFrame[]): void {
+		this.#scopeFrames = frames;
+		if (this.#persistentState) this.#persistentState.scopeFrames = frames;
+	}
+
+	#setSelectedIdentity(identity: string | undefined): void {
+		this.#selectedIdentity = identity;
+		if (this.#persistentState) this.#persistentState.selectedRowIdentity = identity;
+	}
+
+	/**
+	 * Close because a chat is being opened. Prime clears the search text on
+	 * chat round-trips while keeping selection and scope frames; ours does the
+	 * same against the persistent state the next mount will restore.
+	 */
+	#closeForChat(): void {
+		this.#query = "";
+		this.#parsedQuery = parseSearchQuery("");
+		if (this.#persistentState) this.#persistentState.query = "";
+		this.#deps.close();
+	}
+
+	#programTargetIdentity(): string | undefined {
 		const row = this.#rows[this.#selectedIndex];
-		if (!row || (row.kind !== "agent" && row.kind !== "subagent")) return;
-		if (this.#childRowsOf(row.identity).length === 0 && !this.#programShownParents.has(row.identity)) return;
-		if (this.#programShownParents.has(row.identity)) this.#programShownParents.delete(row.identity);
-		else this.#programShownParents.add(row.identity);
+		if (!row) return undefined;
+		if (row.kind === "agent" || row.kind === "subagent") return row.identity;
+		return row.kind === "subagent-summary" ? row.parentIdentity : undefined;
+	}
+
+	#toggleProgram(): void {
+		const target = this.#programTargetIdentity();
+		if (!target) return;
+		if (this.#childRowsOf(target).length === 0 && !this.#programShownParents.has(target)) return;
+		if (this.#programShownParents.has(target)) this.#programShownParents.delete(target);
+		else this.#programShownParents.add(target);
 		this.#deps.requestRender();
 	}
 
@@ -606,19 +751,30 @@ export class AgentsViewComponent implements Component {
 		if (this.#viewMode === "rename") this.#exitRenameMode();
 		this.#viewMode = "reply";
 		this.#replyTarget = target;
-		this.#replyHeadline = undefined;
-		this.#replyHeadlineLoading = Boolean(target.sessionPath);
+		const liveSession = target.refId ? (this.#registry.get(target.refId)?.session ?? null) : null;
+		if (liveSession) {
+			// Live transcript: the latest assistant response reads from memory.
+			this.#replyHeadline = createAgentsViewReplyHeadline(extractLastAssistantText(liveSession.messages));
+			this.#replyHeadlineLoading = false;
+		} else {
+			// Prime seeds inactive targets with the persisted recap before the
+			// tail read refines it to the actual last assistant response.
+			const fallback = this.#replyTargetRecord(target)?.session?.firstMessage;
+			this.#replyHeadline =
+				fallback && fallback !== "(no messages)" ? createAgentsViewReplyHeadline(fallback) : undefined;
+			this.#replyHeadlineLoading = Boolean(target.sessionPath);
+		}
 		this.#editor.setPlaceholder(
 			this.#styledPlaceholder(target.isInactive ? RESUME_PROMPT_PLACEHOLDER : REPLY_PROMPT_PLACEHOLDER),
 		);
 		this.#editor.setText("");
 		const sessionPath = target.sessionPath;
-		if (sessionPath) {
-			// The transcript tail is the recap shown above the composer.
-			void readOpeningUserHeadline(sessionPath)
-				.then(headline => {
+		if (!liveSession && sessionPath) {
+			// Persisted transcript: read only a bounded tail, never whole file.
+			void readLastAssistantText(sessionPath)
+				.then(text => {
 					if (this.#disposed || this.#replyTarget !== target) return;
-					this.#replyHeadline = headline;
+					this.#replyHeadline = createAgentsViewReplyHeadline(text) ?? this.#replyHeadline;
 					this.#replyHeadlineLoading = false;
 					this.#deps.requestRender();
 				})
@@ -627,6 +783,12 @@ export class AgentsViewComponent implements Component {
 				});
 		}
 		this.#deps.requestRender();
+	}
+
+	#replyTargetRecord(target: ReplyTarget): AgentsViewRecord | undefined {
+		return this.#records.find(candidate =>
+			target.sessionPath ? candidate.session?.path === target.sessionPath : candidate.identity === target.identity,
+		);
 	}
 
 	#disarmComposer(): void {
@@ -649,6 +811,22 @@ export class AgentsViewComponent implements Component {
 		if (!trimmed) return;
 		const target = this.#replyTarget;
 		if (!target) return;
+		const viewCommand = parseAgentsViewCommand(trimmed);
+		if (viewCommand) {
+			// Stale rows mis-route the primitives after a refresh; resolve late.
+			// Success or failure, the buffer stays cleared and the primitive's
+			// own status/disarm handling is the only residue (reference parity).
+			await this.#runAgentsViewCommand(viewCommand, target);
+			return;
+		}
+		const rejection = getReplyComposerCommandRejection(trimmed);
+		if (rejection) {
+			// Every submit branch ends clean: buffer stays empty and the reason
+			// surfaces immediately as a warning toast (reference parity).
+			this.#setStatusMessage(rejection, "warning");
+			this.#deps.requestRender();
+			return;
+		}
 		if (target.refId) {
 			const refId = target.refId;
 			try {
@@ -666,10 +844,49 @@ export class AgentsViewComponent implements Component {
 		if (target.sessionPath) {
 			// Saved/inactive target: resume into the main view, then deliver.
 			const sessionPath = target.sessionPath;
-			this.#deps.close();
+			this.#closeForChat();
 			const resumed = await this.#deps.openSession(sessionPath);
 			if (resumed) await this.#deps.promptAfterResume(trimmed);
 		}
+	}
+
+	/** Map an armed-composer /name or /kill onto our row-targeted primitives. */
+	async #runAgentsViewCommand(command: AgentsViewCommand, target: ReplyTarget): Promise<boolean> {
+		const armedAtStart = this.#replyTarget;
+		const disarmIfUnchanged = () => {
+			if (armedAtStart && this.#replyTarget === armedAtStart) this.#disarmComposer();
+		};
+		try {
+			switch (command.name) {
+				case "name": {
+					const name = command.args.trim();
+					if (!name) {
+						this.#setStatusMessage("Usage: /name <session name>", "warning");
+						return false;
+					}
+					const record = this.#replyTargetRecord(target);
+					if (!record) return false;
+					return await this.#renameAgentSession(record, name);
+				}
+				case "kill": {
+					const record = this.#replyTargetRecord(target);
+					if (!record) {
+						this.#setStatusMessage("This session cannot be deleted", "warning");
+						return false;
+					}
+					await this.#executeDelete(record);
+					disarmIfUnchanged();
+					return true;
+				}
+			}
+		} catch (error) {
+			this.#setStatusMessage(
+				`Failed to run /${command.name}: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return false;
+		}
+		return false;
 	}
 
 	// ==========================================================================
@@ -716,29 +933,43 @@ export class AgentsViewComponent implements Component {
 		this.#editor.setPlaceholder(this.#styledPlaceholder(SEARCH_PROMPT_PLACEHOLDER));
 		this.#editor.setText("");
 		const name = value.trim();
-		if (!name || name === target.currentName) {
+		const identity = `file:${pathResolve(target.sessionPath)}`;
+		const record = this.#records.find(candidate => candidate.identityAliases.includes(identity));
+		if (!name || name === target.currentName || !record) {
 			this.#deps.requestRender();
 			return;
 		}
+		await this.#renameAgentSession(record, name);
+	}
+
+	/** Shared by rename mode and /name: rename via controller or storage, report. */
+	async #renameAgentSession(record: AgentsViewRecord, name: string): Promise<boolean> {
+		const sessionPath = record.session?.path ?? record.ref?.sessionFile ?? undefined;
+		if (!sessionPath) {
+			this.#setStatusMessage("This session cannot be renamed", "warning");
+			this.#deps.requestRender();
+			return false;
+		}
 		try {
-			if (target.isCurrentSession) {
+			if (isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
 				await this.#deps.renameCurrentSession(name);
 			} else {
 				const storage = new FileSessionStorage();
-				await storage.updateSessionTitle(target.sessionPath, {
+				await storage.updateSessionTitle(sessionPath, {
 					title: name,
 					source: "user",
 					updatedAt: new Date().toISOString(),
 				});
-				const identity = `file:${pathResolve(target.sessionPath)}`;
-				const sessionId = this.#records.find(record => record.identityAliases.includes(identity))?.session?.id;
-				if (sessionId) recordSessionTitle(sessionId, name);
-				this.#deps.showStatus(`Renamed to ${name}`);
+				if (record.session?.id) recordSessionTitle(record.session.id, name);
 			}
 			this.#lastSignature = "";
 			await this.refresh();
+			// Reference parity: success surfaces as a timed in-view toast.
+			this.#setStatusMessage(`Renamed to ${name}`, "muted");
+			return true;
 		} catch (error) {
 			this.#deps.showError(`Rename failed: ${error instanceof Error ? error.message : String(error)}`);
+			return false;
 		}
 	}
 
@@ -751,7 +982,7 @@ export class AgentsViewComponent implements Component {
 		if (row?.kind !== "agent" || !row.record) return;
 		const identity = row.identity;
 		if (this.#pendingDelete?.identity === identity) {
-			void this.#executeDelete(row);
+			void this.#executeDelete(row.record);
 			return;
 		}
 		this.#clearPendingDelete();
@@ -770,10 +1001,13 @@ export class AgentsViewComponent implements Component {
 		this.#pendingDelete = undefined;
 	}
 
-	async #executeDelete(row: AgentsViewRow): Promise<void> {
-		const record = row.record;
+	async #executeDelete(record: AgentsViewRecord | undefined): Promise<void> {
 		this.#clearPendingDelete();
-		if (!record) return;
+		if (!record) {
+			this.#setStatusMessage("This session cannot be deleted", "warning");
+			this.#deps.requestRender();
+			return;
+		}
 		const sessionPath = record.session?.path ?? record.ref?.sessionFile ?? undefined;
 		const ref = record.ref;
 		if (!sessionPath) {
@@ -795,10 +1029,11 @@ export class AgentsViewComponent implements Component {
 				await AgentLifecycleManager.global().release(ref.id, ref);
 				this.#registry.unregister(ref.id, ref);
 			}
+			// A parked live instance must not keep writing to a deleted file.
+			detachedSessionHolder.delete(sessionPath);
 			const storage = new FileSessionStorage();
 			await storage.deleteSessionWithArtifacts(sessionPath);
 			await fs.rm(getAgentTombstonePath(sessionPath), { force: true }).catch(() => undefined);
-			this.#lastSignature = "";
 			await this.refresh();
 			this.#setStatusMessage("Deleted", "muted");
 		} catch (error) {
@@ -887,6 +1122,17 @@ export class AgentsViewComponent implements Component {
 			tone,
 			expiresAt: Date.now() + STATUS_MESSAGE_DURATION_MS,
 		};
+		// Expire the toast even without an intervening render trigger, so a
+		// stale warning can never outlive its slot (reference parity).
+		clearTimeout(this.#statusTimer);
+		const timer = setTimeout(() => {
+			if (this.#statusMessage?.expiresAt !== undefined && Date.now() >= this.#statusMessage.expiresAt) {
+				this.#statusMessage = undefined;
+				this.#deps.requestRender();
+			}
+		}, STATUS_MESSAGE_DURATION_MS);
+		timer.unref?.();
+		this.#statusTimer = timer;
 		this.#deps.requestRender();
 	}
 
@@ -958,7 +1204,10 @@ export class AgentsViewComponent implements Component {
 			labelled("version", `v${this.#deps.version}`),
 			labelled("model", modelId ?? "\u2014"),
 			labelled("cwd", shortenPath(cwd)),
-			labelled("agents", `${counts.running} running, ${counts.idle} idle, ${counts.inactive} inactive`),
+			labelled(
+				"agents",
+				`${counts.running} running, ${counts.idle} idle, ${counts.current} current, ${counts.inactive} inactive`,
+			),
 			labelled("scope", scopeRoot ? scopeRoot.rootTitle : "global"),
 			labelled("depth", String(this.#scopeFrames.length)),
 			"",
@@ -1006,12 +1255,22 @@ export class AgentsViewComponent implements Component {
 	#renderList(width: number, maxRows: number): string[] {
 		if (maxRows <= 0) return [];
 		if (this.#rows.length === 0) {
-			return [theme.bold(sectionTitle("running")), theme.fg("dim", "  No sessions match your search.")].slice(
+			const emptyHeading = this.#deps.hideSubagents ? "inactive" : "running";
+			return [theme.bold(sectionTitle(emptyHeading)), theme.fg("dim", "  No sessions match your search.")].slice(
 				0,
 				maxRows,
 			);
 		}
-		const displayItems = buildDisplayItems(this.#rows);
+		// The Current section only exists when a host session is attached (and
+		// survives the search filter); every other heading always renders.
+		// The Current section only exists when a host session is attached (and
+		// survives the search filter); every other heading always renders.
+		const wantedSections: AgentsViewSection[] = this.#deps.hideSubagents
+			? ["current", "inactive"]
+			: ["running", "idle", "current", "inactive"];
+		const counts = countAgentsBySection(this.#rows);
+		const sections = wantedSections.filter(section => section !== "current" || counts.current > 0);
+		const displayItems = buildDisplayItems(this.#rows, sections);
 		const selectedIdentity = this.#rows[this.#selectedIndex]?.identity;
 		const selectedIndex = displayItems.findIndex(
 			item => item.type === "row" && item.row.identity === selectedIdentity,
@@ -1052,7 +1311,10 @@ export class AgentsViewComponent implements Component {
 		if (row.kind === "subagent-summary") {
 			const indent = "  ".repeat(row.depth);
 			const hint = row.hasSpawnTask ? theme.fg("dim", ` \u00b7 ${formatViewKey("ctrl+o")} show program`) : "";
-			const label = `${theme.fg("dim", `${row.expanded ? "▾" : "▸"} ${row.title}`)}${hint}`;
+			// Stable model info ahead of the variable count text (prime parity).
+			const modelSuffix = row.record ? getRecordModelLabel(row.record) : undefined;
+			const modelCell = modelSuffix ? theme.fg("dim", ` \u00b7 ${modelSuffix}`) : "";
+			const label = `${theme.fg("dim", `${row.expanded ? "▾" : "▸"} ${row.title}`)}${modelCell}${hint}`;
 			return `${SELECTED_ROW_MARKER}${padLine(truncateToWidth(`${indent}${label}`, width), width)}`;
 		}
 		const pendingDelete = row.kind === "agent" && this.#pendingDelete?.identity === row.identity;
@@ -1071,7 +1333,7 @@ export class AgentsViewComponent implements Component {
 		const title = pendingDelete ? `${formatViewKey("ctrl+x")} again to remove` : this.#styleRowTitle(row);
 		const suffixes: string[] = [];
 		if (row.kind === "subagent" && !settledChild) {
-			const modelLabel = row.record?.ref?.history?.resolvedModel;
+			const modelLabel = getRecordModelLabel(record) ?? record?.ref?.history?.resolvedModel;
 			if (modelLabel) suffixes.push(modelLabel);
 			if (!pendingDelete && row.subtitle) suffixes.push(row.subtitle);
 		}
@@ -1089,6 +1351,8 @@ export class AgentsViewComponent implements Component {
 				return theme.spinnerFrames[this.#animationFrame % theme.spinnerFrames.length] ?? "▶";
 			case "idle":
 				return IDLE_ROW_ICON;
+			case "current":
+				return CURRENT_ROW_ICON;
 			case "inactive":
 				return INACTIVE_ROW_ICON;
 		}
@@ -1100,6 +1364,8 @@ export class AgentsViewComponent implements Component {
 				return theme.bold(icon);
 			case "idle":
 				return theme.fg("warning", icon);
+			case "current":
+				return theme.fg("accent", icon);
 			case "inactive":
 				return theme.fg("dim", icon);
 		}
@@ -1156,7 +1422,6 @@ export class AgentsViewComponent implements Component {
 			selectedSummary
 				? `${this.#keyText("tui.select.confirm")} ${row?.expanded ? "collapse" : "expand"}`
 				: `${this.#keyText("tui.select.confirm")} open`,
-			selectedSummary ? undefined : `${formatViewKey("right")} open`,
 			selectedAgent ? `${formatViewKey("space")} ${row?.section === "inactive" ? "resume" : "reply"}` : undefined,
 			`${formatViewKey("ctrl+n")} new`,
 			selectedAgent ? `${formatViewKey("ctrl+r")} rename` : undefined,
@@ -1186,10 +1451,10 @@ export class AgentsViewComponent implements Component {
 	}
 
 	#selectedRowCanShowProgram(): boolean {
-		const row = this.#rows[this.#selectedIndex];
-		if (!row || (row.kind !== "agent" && row.kind !== "subagent")) return false;
-		if (this.#programShownParents.has(row.identity)) return true;
-		return this.#childRowsOf(row.identity).some(child => child.spawnTask !== undefined);
+		const target = this.#programTargetIdentity();
+		if (!target) return false;
+		if (this.#programShownParents.has(target)) return true;
+		return this.#childRowsOf(target).some(child => child.spawnTask !== undefined);
 	}
 
 	invalidate(): void {
@@ -1238,9 +1503,11 @@ function getDisplayRowsForSection(rows: readonly AgentsViewRow[], section: Agent
 	return result;
 }
 
-function buildDisplayItems(rows: readonly AgentsViewRow[]): DisplayItem[] {
+function buildDisplayItems(
+	rows: readonly AgentsViewRow[],
+	sections: readonly AgentsViewSection[] = ["running", "idle", "inactive"],
+): DisplayItem[] {
 	const items: DisplayItem[] = [];
-	const sections: AgentsViewSection[] = ["running", "idle", "inactive"];
 	for (const [index, section] of sections.entries()) {
 		if (index > 0) items.push({ type: "spacer" });
 		items.push({ type: "heading", section });

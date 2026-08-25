@@ -402,6 +402,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Automatically resume the most recent session in the current directory",
 		},
 	},
+	"session.detachedMainSessions": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Keep Thinking In Background",
+			description:
+				"When switching sessions while the agent is still thinking, keep the previous session running in the background instead of interrupting it. Re-entering that session re-attaches to the live turn.",
+		},
+	},
 
 	// macOS power assertions (caffeinate flags). No-op on other platforms.
 	"power.sleepPrevention": {

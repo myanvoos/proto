@@ -44,6 +44,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { AgentRegistry } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
+import { detachedSessionHolder } from "../../session/detached-session-holder";
 import {
 	createForeignSessionStore,
 	foreignSessionInfoToSessionInfo,
@@ -389,7 +390,7 @@ export class SelectorController {
 	 * surface). Global scope lists every session; "current" scope roots the view
 	 * at the attached session's subtree when it has children, else falls back.
 	 */
-	async showAgentsView(scope: AgentsViewScope = "global"): Promise<void> {
+	async showAgentsView(scope: AgentsViewScope = "global", opts?: { hideSubagents?: boolean }): Promise<void> {
 		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
 		let initialScopeIdentity: string | undefined;
 		let initialScopeTitle: string | undefined;
@@ -449,6 +450,7 @@ export class SelectorController {
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
+			hideSubagents: opts?.hideSubagents,
 			initialScopeIdentity,
 			initialScopeTitle,
 		});
@@ -1662,6 +1664,11 @@ export class SelectorController {
 
 	async handleResumeSession(sessionPath: string, options?: { settingsFlushed?: boolean }): Promise<boolean> {
 		const previousCwd = this.ctx.sessionManager.getCwd();
+		const previousFile = this.ctx.sessionManager.getSessionFile();
+		const wasStreaming = this.ctx.session.isStreaming;
+		const switchingToDifferentSession = previousFile
+			? path.resolve(previousFile) !== path.resolve(sessionPath)
+			: true;
 		// Flush pending settings writes before switching sessions so a save
 		// failure leaves the session, process project dir, and Settings in the
 		// source scope — the switch below mutates the SessionManager cwd.
@@ -1673,8 +1680,34 @@ export class SelectorController {
 				return false;
 			}
 		}
+		// Re-attach path: the target has a parked live instance (still thinking in
+		// background). Swap it in wholesale instead of cold-loading from disk —
+		// the provider stream keeps appending without a gap.
+		let parkedOurs = false;
+		if (wasStreaming && switchingToDifferentSession && previousFile?.endsWith(".jsonl")) {
+			detachedSessionHolder.park(previousFile, this.ctx.session, this.ctx.sessionManager);
+			parkedOurs = true;
+			if (detachedSessionHolder.has(sessionPath)) {
+				const parked = detachedSessionHolder.take(sessionPath);
+				if (parked) {
+					const mutableCtx = this.ctx as unknown as { session: unknown; sessionManager: unknown; agent: unknown };
+					mutableCtx.session = parked.session;
+					mutableCtx.sessionManager = parked.manager;
+					mutableCtx.agent = parked.session.agent;
+				}
+			}
+		} else if (detachedSessionHolder.has(sessionPath)) {
+			const parked = detachedSessionHolder.take(sessionPath);
+			if (parked) {
+				const mutableCtx = this.ctx as unknown as { session: unknown; sessionManager: unknown; agent: unknown };
+				mutableCtx.session = parked.session;
+				mutableCtx.sessionManager = parked.manager;
+				mutableCtx.agent = parked.session.agent;
+			}
+		}
 		// Switch session via AgentSession (emits hook and tool session events). The
 		// SessionManager adopts the resumed session's own cwd when it differs.
+		// AgentSession parks instead of aborting when we were streaming (detached mode).
 		await this.ctx.session.switchSession(sessionPath);
 		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
@@ -1690,7 +1723,20 @@ export class SelectorController {
 		// Clear and re-render the chat
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
-		this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
+		// LRU cap after any park; surface evictions before the resume toast.
+		const evicted = detachedSessionHolder.evictLRU(8);
+		if (evicted.length > 0) {
+			this.ctx.showStatus(
+				`Background limit reached — closed ${evicted.length} oldest session${evicted.length === 1 ? "" : "s"}`,
+			);
+		}
+		if (parkedOurs && previousFile) {
+			this.ctx.showStatus(`Parked ${shortenPath(previousFile)} — still thinking in background`);
+		} else if (wasStreaming && switchingToDifferentSession && !parkedOurs && previousFile?.endsWith(".jsonl")) {
+			this.ctx.showStatus(`Interrupted ${shortenPath(previousFile)} — it was still thinking`);
+		} else {
+			this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
+		}
 		return true;
 	}
 

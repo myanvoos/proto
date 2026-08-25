@@ -3536,8 +3536,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		void this.#selectorController.showExtensionsDashboard();
 	}
 
-	showAgentsView(scope?: "current" | "global"): void {
-		void this.#selectorController.showAgentsView(scope);
+	showAgentsView(scope?: "current" | "global", opts?: { hideSubagents?: boolean }): void {
+		void this.#selectorController.showAgentsView(scope, opts);
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {

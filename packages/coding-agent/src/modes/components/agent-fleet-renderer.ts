@@ -115,10 +115,7 @@ export function modelBadge(ref: AgentRef, observed: ObservableSession | undefine
 	}
 	const resolvedModel = progress?.resolvedModel ?? ref.history?.resolvedModel ?? serving?.selector;
 	if (resolvedModel) return formatResolvedModelBadge(resolvedModel, false, liveThinkingLevel);
-	const model = ref.session?.model;
-	if (!model) return undefined;
-	const level = model.thinking ? liveThinkingLevel : undefined;
-	return formatModelBadge(model.id, level);
+	return undefined;
 }
 
 export function formatMetricDuration(metrics: AgentMetrics): string | undefined {

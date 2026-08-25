@@ -16,7 +16,6 @@
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
-
 import type { Clipboard, InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import {
 	type AfterToolCallContext,
@@ -237,6 +236,7 @@ import {
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
 import { recordCredentialPin, seedCredentialPins } from "./credential-pin";
+import { detachedSessionHolder } from "./detached-session-holder";
 import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
 import {
 	collectPendingToolCalls,
@@ -6288,6 +6288,9 @@ export class AgentSession {
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
 		await this.abort();
+		// A parked instance for the file we just left is now stale: its writer
+		// was this session's manager and it can never be re-attached.
+		if (previousSessionFile) detachedSessionHolder.delete(previousSessionFile);
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		await this.#bash.flushPending();
@@ -7248,9 +7251,21 @@ export class AgentSession {
 				return false;
 			}
 		}
+		const isDetachedEnabled = this.settings.get("session.detachedMainSessions") !== false;
+		const canPark =
+			switchingToDifferentSession &&
+			this.isStreaming &&
+			isDetachedEnabled &&
+			!!previousSessionFile?.endsWith(".jsonl");
 
-		this.#disconnectFromAgent();
-		await this.abort({ goalReason: "internal" });
+		if (canPark && previousSessionFile) {
+			// Detach, don't abort: the in-flight turn keeps running and appending
+			// to its transcript. The holder owns the live instance until re-attach.
+			detachedSessionHolder.park(previousSessionFile, this, this.sessionManager);
+		} else {
+			this.#disconnectFromAgent();
+			await this.abort({ goalReason: "internal" });
+		}
 		await this.#beforeSessionSwitch();
 
 		await this.#bash.flushPending();

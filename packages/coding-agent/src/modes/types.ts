@@ -385,7 +385,7 @@ export interface InteractiveModeContext {
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showExtensionsDashboard(): void;
-	showAgentsView(scope?: "current" | "global"): void;
+	showAgentsView(scope?: "current" | "global", opts?: { hideSubagents?: boolean }): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;

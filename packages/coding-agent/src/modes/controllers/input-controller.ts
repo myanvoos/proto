@@ -515,20 +515,20 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentFleet());
 		}
 
-		// Double-tap left arrow on an empty editor: opens the agent fleet from the
-		// main session, or returns the focused subagent view to the main session.
-		// Focused ←← intentionally matches Esc. From the main session the gesture
-		// stays inert when there are no subagents (requireContent); the explicit
-		// hub key still opens the empty roster. `armCloseTap` hands this gesture's
-		// tap state to the hub so the same ←← that opened it also arms its close —
-		// otherwise the hub's fresh detector demands a second ←← (issue #4780).
+		// Double-tap left arrow on an empty editor: opens the flat session
+		// switcher (agents view, subagent rows hidden) from the main session, or
+		// returns the focused subagent view to the main session. Focused ←←
+		// intentionally matches Esc. Double-tap right on an empty editor opens
+		// the agent fleet; from the main session it stays inert when there are no
+		// subagents (requireContent). `armCloseTap` hands this gesture's tap state
+		// to the hub so the same ←← that opened it also arms its close.
 		this.ctx.editor.onLeftAtStart = () => {
 			if (this.ctx.focusedAgentId) {
 				this.#handleFocusedLeftTap();
 				return;
 			}
 			if (this.#detectLeftDoubleTap()) {
-				this.ctx.showAgentFleet({ requireContent: true, armCloseTap: true });
+				this.ctx.showAgentsView("global", { hideSubagents: true });
 			}
 		};
 

@@ -216,6 +216,39 @@ export async function readOpeningUserHeadline(sessionPath: string): Promise<stri
 	}
 	return undefined;
 }
+/**
+ * Last assistant text in the transcript, for reply-composer recap headers.
+ * Walks a bounded suffix window backward to the most recent `message` entry
+ * with `role: "assistant"`; undefined when no assistant text is present or
+ * the file is unreadable. Size-bounded so large transcripts never load fully.
+ */
+export async function readLastAssistantText(sessionPath: string): Promise<string | undefined> {
+	let suffix: string;
+	try {
+		const file = Bun.file(sessionPath);
+		const size = file.size;
+		const slice = await file.slice(Math.max(0, size - SESSION_LIST_SUFFIX_BYTES)).text();
+		suffix = slice;
+	} catch {
+		return undefined;
+	}
+	const lines = suffix.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i];
+		if (line.charCodeAt(0) !== 123) continue;
+		let entry: { type?: string; message?: TailMessage };
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (entry.type !== "message" || !entry.message || entry.message.role !== "assistant") continue;
+		const text = extractTextFromContent((entry.message.content ?? []) as Message["content"]);
+		if (text.trim().length === 0) continue;
+		return text;
+	}
+	return undefined;
+}
 
 interface TailMessage {
 	role?: string;

@@ -11,10 +11,11 @@
  *   which yields the parent session path without extra filesystem probes.
  */
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AgentRef } from "../../../registry/agent-registry";
 import type { SessionInfo } from "../../../session/session-listing";
 
-export type AgentsViewSection = "running" | "idle" | "inactive";
+export type AgentsViewSection = "running" | "idle" | "current" | "inactive";
 
 /** View root: every session, or the attached session's subtree. */
 export type AgentsViewScope = "current" | "global";
@@ -66,6 +67,45 @@ export interface AgentsViewRow {
 export interface AgentsViewIndex {
 	byKey: Map<string, AgentsViewRecord>;
 	childrenByParent: Map<AgentsViewRecord, AgentsViewRecord[]>;
+}
+export interface AgentsViewPersistentState {
+	scopeFrames?: AgentsViewScopeFrame[];
+	selectedRowIdentity?: string;
+	query?: string;
+	expandedSubagentParents?: Set<string>;
+	programShownParents?: Set<string>;
+}
+
+function extractTextFromMessageContent(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	let out = "";
+	for (const block of content) {
+		if (typeof block !== "object" || block === null) continue;
+		if (!("type" in block) || block.type !== "text") continue;
+		if (!("text" in block) || typeof block.text !== "string") continue;
+		out += `${block.text}\n`;
+	}
+	return out;
+}
+
+export function extractLastAssistantText(messages: readonly AgentMessage[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg?.role !== "assistant") continue;
+		const text = extractTextFromMessageContent(msg.content).trim();
+		if (text.length > 0) return text;
+	}
+	return undefined;
+}
+
+export function getRecordModelLabel(record: AgentsViewRecord | undefined): string | undefined {
+	if (!record) return undefined;
+	return record.ref?.history?.resolvedModel ?? undefined;
+}
+
+export function formatModelCellLabel(model: { provider: string; id: string }, level?: string): string {
+	if (!level || level === "off") return `${model.provider}/${model.id}`;
+	return `${model.provider}/${model.id}:${level}`;
 }
 
 function fileIdentity(sessionPath: string): string {
@@ -345,8 +385,10 @@ function sectionRank(section: AgentsViewSection): number {
 			return 0;
 		case "idle":
 			return 1;
-		case "inactive":
+		case "current":
 			return 2;
+		case "inactive":
+			return 3;
 	}
 }
 
@@ -454,11 +496,14 @@ export function resolveAgentsViewSelectionIndex(
 }
 
 export function countAgentsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
-	const agents = rows.filter(row => row.kind === "agent");
 	return {
-		running: agents.filter(row => row.section === "running").length,
-		idle: agents.filter(row => row.section === "idle").length,
-		inactive: agents.filter(row => row.section === "inactive").length,
+		running: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "running")
+			.length,
+		idle: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "idle").length,
+		current: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "current")
+			.length,
+		inactive: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "inactive")
+			.length,
 	};
 }
 
@@ -468,6 +513,8 @@ export function sectionTitle(section: AgentsViewSection): string {
 			return "Running";
 		case "idle":
 			return "Idle";
+		case "current":
+			return "Current";
 		case "inactive":
 			return "Inactive";
 	}

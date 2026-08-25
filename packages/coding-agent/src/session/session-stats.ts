@@ -329,3 +329,26 @@ export class SessionStatsTracker {
 		});
 	}
 }
+export function sumAssistantMessageUsage(messages: readonly AgentMessage[]): {
+	input: number;
+	output: number;
+	totalTokens: number;
+	cost: number;
+	toolCalls: number;
+} {
+	let input = 0;
+	let output = 0;
+	let totalTokens = 0;
+	let cost = 0;
+	let toolCalls = 0;
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		const assistant = message as AssistantMessage;
+		toolCalls += assistant.content.filter(content => content.type === "toolCall").length;
+		input += assistant.usage?.input ?? 0;
+		output += assistant.usage?.output ?? 0;
+		totalTokens += assistant.usage?.totalTokens ?? 0;
+		cost += assistant.usage?.cost?.total ?? 0;
+	}
+	return { input, output, totalTokens, cost, toolCalls };
+}
