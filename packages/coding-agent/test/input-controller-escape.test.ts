@@ -199,7 +199,7 @@ function createContext(): {
 		updatePendingMessagesDisplay,
 		updateEditorBorderColor: vi.fn(),
 		toggleTodoExpansion: vi.fn(),
-		showAgentsView: vi.fn(),
+		showAgentsView: vi.fn(async () => {}),
 		showAgentFleet: vi.fn(),
 		unfocusSession: vi.fn(async () => {}),
 		focusParentSession: vi.fn(async () => {}),
@@ -541,7 +541,7 @@ describe("InputController escape behavior", () => {
 		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
 	});
 
-	it("returns focused subagent view to main on Esc instead of aborting", () => {
+	it("returns focused subagent view to the agent browser on Esc instead of aborting", async () => {
 		const { ctx, editor, spies } = createContext();
 		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
 		const controller = new InputController(ctx);
@@ -549,11 +549,14 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		await Promise.resolve();
+		await Promise.resolve(); // browser mounts first, then unfocus runs
+		expect(ctx.showAgentsView).toHaveBeenCalledWith("current");
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("returns focused subagent view to main on Esc without aborting its active maintenance (#2819)", () => {
+	it("returns focused subagent view to main on Esc without aborting its active maintenance (#2819)", async () => {
 		const { ctx, editor } = createContext();
 		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
 		(ctx.viewSession as { isCompacting: boolean }).isCompacting = true;
@@ -565,6 +568,8 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		await Promise.resolve();
+		await Promise.resolve();
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(ctx.viewSession.abortCompaction as unknown as Spy).not.toHaveBeenCalled();
 		expect(ctx.viewSession.abortRetry as unknown as Spy).not.toHaveBeenCalled();
@@ -611,7 +616,7 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("routes a focused double-← through the global input listener like Esc", () => {
+	it("routes a focused double-← through the global input listener like Esc", async () => {
 		const now = vi.spyOn(Date, "now");
 		const { ctx, inputListeners } = createContext();
 		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
@@ -627,6 +632,9 @@ describe("InputController escape behavior", () => {
 		// Both taps are consumed; only the second completes the gesture.
 		expect(first).toEqual({ consume: true });
 		expect(second).toEqual({ consume: true });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(ctx.showAgentsView).toHaveBeenCalledWith("current");
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(ctx.focusParentSession).not.toHaveBeenCalled();
 	});
@@ -756,7 +764,7 @@ describe("InputController double-tap ← gesture", () => {
 		now.mockReturnValue(1_200); // 200ms later — a human double-tap
 		tap();
 		expect(showAgentsView).toHaveBeenCalledTimes(1);
-		expect(showAgentsView).toHaveBeenCalledWith("global", { hideSubagents: true });
+		expect(showAgentsView).toHaveBeenCalledWith("global");
 	});
 
 	it("ignores a terminal-synthesized burst of ← arrows arriving together", () => {
@@ -779,14 +787,65 @@ describe("InputController double-tap ← gesture", () => {
 		expect(showAgentsView).not.toHaveBeenCalled();
 	});
 
-	it("returns a focused subagent view to the main session on a deliberate double-tap", () => {
+	it("returns a focused subagent view to the agent browser on a deliberate double-tap", async () => {
 		const now = vi.spyOn(Date, "now");
 		const { showAgentsView, unfocusSession, tap } = setup("Agent1");
 		now.mockReturnValue(1_000);
 		tap();
 		now.mockReturnValue(1_200);
 		tap();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(showAgentsView).toHaveBeenCalledWith("current");
 		expect(unfocusSession).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InputController double-tap → gesture", () => {
+	function setupRight() {
+		const { ctx, inputListeners } = createContext();
+		const mutable = ctx as { lastRightTapTime: number };
+		mutable.lastRightTapTime = 0;
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		// Install order in setupKeyHandlers: [0] focused-←, [1] double-→.
+		const rightListener = inputListeners[1];
+		return {
+			showAgentsView: ctx.showAgentsView as Spy,
+			tap: () => rightListener("\x1b[C"),
+		};
+	}
+
+	it("opens the session-scoped subagent browser on a deliberate double-tap", () => {
+		const now = vi.spyOn(Date, "now");
+		const { showAgentsView, tap } = setupRight();
+		now.mockReturnValue(1_000);
+		tap();
+		now.mockReturnValue(1_200); // 200ms later — a human double-tap
+		tap();
+		expect(showAgentsView).toHaveBeenCalledTimes(1);
+		expect(showAgentsView).toHaveBeenCalledWith("current");
+	});
+
+	it("ignores a terminal-synthesized burst of → arrows arriving together", () => {
+		const now = vi.spyOn(Date, "now");
+		const { showAgentsView, tap } = setupRight();
+		now.mockReturnValue(1_000);
+		for (let i = 0; i < 6; i++) tap();
 		expect(showAgentsView).not.toHaveBeenCalled();
+	});
+
+	it("does not fire from a focused subagent view", () => {
+		const now = vi.spyOn(Date, "now");
+		const { ctx, inputListeners } = createContext();
+		Object.defineProperty(ctx, "focusedAgentId", { value: "Agent1", configurable: true });
+		ctx.lastRightTapTime = 0;
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		now.mockReturnValue(1_000);
+		inputListeners[1]?.("\x1b[C");
+		now.mockReturnValue(1_200);
+		inputListeners[1]?.("\x1b[C");
+		expect(ctx.showAgentsView).not.toHaveBeenCalled();
 	});
 });

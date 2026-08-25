@@ -126,6 +126,8 @@ export interface InteractiveModeContext {
 	readonly focusedAgentId: string | undefined;
 	/** Focus the main view on an agent's live session (delegates to SessionFocusController.focusAgent). */
 	focusAgentSession(id: string): Promise<void>;
+	/** Re-attach the view to a wholesale-swapped main AgentSession (detached resume). */
+	attachSessionView(target: AgentSession): Promise<void>;
 	/** Focus the focused agent's parent session, falling back to main (delegates to focusParent). */
 	focusParentSession(): Promise<void>;
 	/** Return the view to the main session (delegates to SessionFocusController.unfocus). */
@@ -205,6 +207,7 @@ export interface InteractiveModeContext {
 	/** Owns Esc for every `/mcp test` that is active or whose cancellation hint may still be visible. */
 	mcpTestEscapeHandlers: Set<() => void>;
 	lastLeftTapTime: number;
+	lastRightTapTime: number;
 	shutdownRequested: boolean;
 	/** True once `shutdown()` has started. Read-only from the context;
 	 *  controllers use this to skip work that races with teardown. */
@@ -385,7 +388,7 @@ export interface InteractiveModeContext {
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showExtensionsDashboard(): void;
-	showAgentsView(scope?: "current" | "global", opts?: { hideSubagents?: boolean }): void;
+	showAgentsView(scope?: "current" | "global"): Promise<void>;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;

@@ -67,6 +67,19 @@ export class SessionFocusController {
 		this.ctx.showStatus("Returned to main session");
 	}
 
+	/**
+	 * Re-point the view at `target` after a wholesale main-session swap
+	 * (detached-session re-attach / constructed foreground). Unlike
+	 * {@link focusAgent} this is not registry-driven: the caller has already
+	 * swapped ctx.session/sessionManager/agent and only needs the rendering,
+	 * subscription, and status-line surfaces moved onto `target`.
+	 */
+	async attachSwappedMain(target: AgentSession): Promise<void> {
+		this.#focusedAgentId = undefined;
+		this.#attachedSession = target;
+		await this.#attach(target);
+	}
+
 	dispose(): void {
 		this.#registryUnsubscribe?.();
 		this.#registryUnsubscribe = undefined;

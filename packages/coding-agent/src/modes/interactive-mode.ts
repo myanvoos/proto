@@ -407,7 +407,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
 	#startupSubmitGated: boolean;
 	session: AgentSession;
-	sessionManager: SessionManager;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: Agent;
@@ -517,6 +516,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Owns Esc for every `/mcp test` that is active or whose cancellation hint may still be visible. */
 	mcpTestEscapeHandlers = new Set<() => void>();
 	lastLeftTapTime = 0;
+	lastRightTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
 	/** True once `shutdown()` has begun teardown. Surfaced to the input
@@ -580,8 +580,26 @@ export class InteractiveMode implements InteractiveModeContext {
 	get sessionName(): string | undefined {
 		return this.session.sessionName;
 	}
+	/**
+	 * Always derived from the live `session`: wholesale main-session swaps
+	 * (detached resume) replace ctx.session, and every cached manager reference
+	 * must follow instead of going stale.
+	 */
+	get sessionManager(): SessionManager {
+		return this.session.sessionManager;
+	}
 	focusAgentSession(id: string): Promise<void> {
 		return this.#focusController.focusAgent(id);
+	}
+	/** Re-attach the view to a wholesale-swapped main AgentSession (detached resume). */
+	attachSessionView(target: AgentSession): Promise<void> {
+		const attached = this.#focusController.attachSwappedMain(target);
+		// Session-scoped subscriptions and the mode reconciler bind per
+		// AgentSession instance: a wholesale swap must re-point both or the
+		// swapped-in session renders stale welcome/command/mode state.
+		this.#subscribeToSessionScopedEvents();
+		target.setSessionSwitchReconciler?.(this.#sessionSwitchReconciler);
+		return attached;
 	}
 	focusParentSession(): Promise<void> {
 		return this.#focusController.focusParent();
@@ -621,6 +639,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerRegistry: SessionObserverRegistry;
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
+	/** Subscriptions bound to the CURRENT main session; re-pointed on wholesale swaps. */
+	#sessionEventUnsubscribers: Array<() => void> = [];
+	/**
+	 * Mode reconciler installed on every attached main session: a swapped-in
+	 * instance (detached resume) must reconcile mode on its own internal
+	 * switches exactly like the startup session did.
+	 */
+	#sessionSwitchReconciler = (): Promise<void> => this.#reconcileModeFromSession({ preserveActiveGoal: true });
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#agentRegistryUnsubscribe?: () => void;
@@ -642,7 +668,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		composer?: Composer,
 	) {
 		this.session = session;
-		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		const preferences = {
 			quiet: settings.get("startup.quiet"),
@@ -1071,7 +1096,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.initHooksAndCustomTools();
 
 		// Restore mode from session (e.g. goal mode on resume)
-		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
+		this.session.setSessionSwitchReconciler?.(this.#sessionSwitchReconciler);
 		await this.#reconcileModeFromSession();
 
 		// Restore unsent editor draft from previous session shutdown (Ctrl+D).
@@ -1091,30 +1116,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Subscribe to agent events
 		this.#subscribeToAgent();
 
-		this.#eventBusUnsubscribers.push(
-			this.session.subscribe(event => {
-				if (event.type === "model_changed") {
-					this.#updateWelcomeModel();
-				}
-				void this.#handleGoalSessionEvent(event);
-			}),
-			onStatusLineSessionAccentChanged(() => {
-				this.#syncStatusLineSettings();
-				this.#handleSessionAccentInputsChanged();
-			}),
-		);
+		this.#subscribeToSessionScopedEvents();
 		// Resync the welcome banner to the live model: the init-time
 		// reconciliation (#reconcileModeFromSession) can change the model before
 		// this subscription exists, so the model_changed events it emits are
 		// never observed by the handler above.
 		this.#updateWelcomeModel();
-		this.#eventBusUnsubscribers.push(
-			this.session.subscribeCommandMetadataChanged(() => {
-				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-				const skillCommands = this.#rebuildSkillCommandsFromSession();
-				this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
-			}),
-		);
 		// Set up theme file watcher
 		this.#eventBusUnsubscribers.push(
 			onThemeChange(event => {
@@ -2901,6 +2908,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			unsubscribe();
 		}
 		this.#eventBusUnsubscribers = [];
+		this.#unsubscribeSessionScopedEvents();
 		this.#observerRegistry.dispose();
 		this.#agentRegistryUnsubscribe?.();
 		this.#agentRegistryUnsubscribe = undefined;
@@ -3536,8 +3544,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		void this.#selectorController.showExtensionsDashboard();
 	}
 
-	showAgentsView(scope?: "current" | "global", opts?: { hideSubagents?: boolean }): void {
-		void this.#selectorController.showAgentsView(scope, opts);
+	showAgentsView(scope?: "current" | "global"): Promise<void> {
+		return this.#selectorController.showAgentsView(scope);
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
@@ -3845,5 +3853,37 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#subscribeToAgent(): void {
 		this.#eventController.subscribeToAgent();
+	}
+
+	/**
+	 * Subscribe the session-scoped UI reactions (welcome-model resync, goal
+	 * events, slash-command metadata) to the CURRENT main session. Called at
+	 * init and again after every wholesale swap (attachSessionView): these
+	 * subscriptions bind to a specific AgentSession instance, so a swapped-in
+	 * instance needs its own.
+	 */
+	#subscribeToSessionScopedEvents(): void {
+		this.#unsubscribeSessionScopedEvents();
+		this.#sessionEventUnsubscribers.push(
+			this.session.subscribe(event => {
+				if (event.type === "model_changed") {
+					this.#updateWelcomeModel();
+				}
+				void this.#handleGoalSessionEvent(event);
+			}),
+			onStatusLineSessionAccentChanged(() => {
+				this.#syncStatusLineSettings();
+				this.#handleSessionAccentInputsChanged();
+			}),
+			this.session.subscribeCommandMetadataChanged(() => {
+				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
+				const skillCommands = this.#rebuildSkillCommandsFromSession();
+				this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
+			}),
+		);
+	}
+
+	#unsubscribeSessionScopedEvents(): void {
+		for (const unsubscribe of this.#sessionEventUnsubscribers.splice(0)) unsubscribe();
 	}
 }

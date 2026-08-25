@@ -58,6 +58,13 @@
 
 ### Fixed
 
+- Fixed session switching corrupting transcripts: a background-parked session no longer shares its transcript with the newly resumed session, so each turn's output lands only in its own session file.
+- Re-entering a background-thinking session now resumes its live turn seamlessly instead of interrupting it and cold-reloading the transcript.
+- Switching sessions with "Keep Thinking In Background" disabled now honestly reports "Interrupted" instead of claiming the session was parked, and failed switches leave no stale background entry behind.
+- Deleting a session from the agents view now stops its background instance before removing files, so the deleted transcript can no longer be resurrected by stray writes; background-session eviction also waits for shutdown and surfaces its notice together with the resume toast.
+- Replying from the agents view to the current session's own row now steers the live conversation instead of resuming it and killing an in-flight turn.
+- The agents view now restores its last search query, selection, and scope across open/close in one process.
+
 - Lowered the setup-wizard version marker back to 1 now that the scenes that required version 2 are gone, so users who already walked the current wizard are not re-prompted.
 - Fixed the working spinner and transcript floating above the prompt box at the start of a session: conversation content now pins to the composer edge (the welcome screen's centered layout still applies until the first message).
 - Fixed double-Esc (session tree / branch selector) appearing dead on long sessions: opening it no longer replays the entire transcript through the terminal (which blocked for tens of seconds on PTY backpressure and cleared native scrollback), only the viewport repaints.

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { modelBadge } from "@oh-my-pi/pi-coding-agent/modes/components/agent-fleet-renderer";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 function refWith(session: Partial<AgentSession> | null, history: AgentRef["history"]): AgentRef {
 	return {

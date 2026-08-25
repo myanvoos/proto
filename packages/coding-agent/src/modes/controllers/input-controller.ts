@@ -178,6 +178,7 @@ export class InputController {
 	#enhancedPaste?: EnhancedPasteController;
 	#draftText: string | undefined;
 	#focusedLeftTapListenerInstalled = false;
+	#rightTapListenerInstalled = false;
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
@@ -188,10 +189,10 @@ export class InputController {
 		return this.#draftText ?? this.ctx.editor.getText();
 	}
 
-	// Tap counter for the double-← gesture; reset whenever a quiet gap
-	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
-	// #detectLeftDoubleTap.
-	#leftTapCount = 0;
+	// Tap counters for the double-← / double-→ gestures; each resets whenever
+	// a quiet gap (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
+	// #detectDoubleTap.
+	#tapCounts: Record<"left" | "right", number> = { left: 0, right: 0 };
 	// Sequential index for `local://paste-N.md` references created by the large-paste
 	// flow. Seeded from 0 and bumped past existing paste files.
 	#pasteCounter = 0;
@@ -259,6 +260,19 @@ export class InputController {
 				if (this.ctx.editor.getText().trim()) return undefined;
 				this.#handleFocusedLeftTap();
 				return { consume: true };
+			});
+		}
+		if (!this.#rightTapListenerInstalled) {
+			this.#rightTapListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (this.ctx.focusedAgentId) return undefined;
+				if (!matchesKey(data, "right")) return undefined;
+				if (this.ctx.editor.getText().trim()) return undefined;
+				if (this.#detectDoubleTap("right")) {
+					void this.ctx.showAgentsView("current");
+					return { consume: true };
+				}
+				return undefined;
 			});
 		}
 		if (!this.#btwBranchListenerInstalled) {
@@ -369,13 +383,13 @@ export class InputController {
 			}
 			if (this.ctx.focusedAgentId) {
 				// Esc never interrupts the focused agent's turn: clear typed text,
-				// else return the view to the main session. Interrupt via empty
-				// steer-flush submit if needed.
+				// else return to the subagent browser (same as double-←).
+				// Interrupt via empty steer-flush submit if needed.
 				if (this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText("");
 					this.ctx.ui.requestRender();
 				} else {
-					void this.ctx.unfocusSession();
+					this.#returnFocusedToAgentBrowser();
 				}
 				return; // double-escape backtrack (/tree, /branch) stays main-only
 			}
@@ -515,20 +529,21 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentFleet());
 		}
 
-		// Double-tap left arrow on an empty editor: opens the flat session
-		// switcher (agents view, subagent rows hidden) from the main session, or
-		// returns the focused subagent view to the main session. Focused ←←
-		// intentionally matches Esc. Double-tap right on an empty editor opens
-		// the agent fleet; from the main session it stays inert when there are no
-		// subagents (requireContent). `armCloseTap` hands this gesture's tap state
-		// to the hub so the same ←← that opened it also arms its close.
+		// Double-tap left arrow on an empty editor: from a focused subagent
+		// view, returns to the subagent browser (matching Esc); from the main
+		// session, opens the flat session switcher (agents view, "global" scope,
+		// subagent rows hidden). Double-tap right arrow from the main session
+		// opens the subagent browser scoped to this session. The agent fleet
+		// itself is reached via its keybinding ("app.agents.fleet" /
+		// "app.session.observe") above, which calls `showAgentFleet()` without
+		// options — no requireContent/armCloseTap here.
 		this.ctx.editor.onLeftAtStart = () => {
 			if (this.ctx.focusedAgentId) {
 				this.#handleFocusedLeftTap();
 				return;
 			}
-			if (this.#detectLeftDoubleTap()) {
-				this.ctx.showAgentsView("global", { hideSubagents: true });
+			if (this.#detectDoubleTap("left")) {
+				this.ctx.showAgentsView("global");
 			}
 		};
 
@@ -560,34 +575,46 @@ export class InputController {
 	}
 
 	#handleFocusedLeftTap(): void {
-		if (this.#detectLeftDoubleTap()) {
-			void this.ctx.unfocusSession();
+		if (this.#detectDoubleTap("left")) {
+			this.#returnFocusedToAgentBrowser();
 		}
 	}
 
 	/**
-	 * Detect a deliberate double-← gesture, rejecting terminal-synthesized arrow
-	 * bursts. Returns true only on the *second* tap of a fresh sequence when it
-	 * lands a human-plausible interval after the first
-	 * (`[LEFT_DOUBLE_TAP_MIN_GAP_MS, LEFT_DOUBLE_TAP_MAX_GAP_MS)`). Taps closer
-	 * than the lower bound, or any third-and-later tap before a quiet gap, are a
-	 * burst and never fire — so a stray click that makes the terminal emit a run
-	 * of ← keys can no longer pop the Agent Fleet.
+	 * Leave a focused subagent session and reopen the subagent browser scoped
+	 * to its parent (the same view the focus gesture was launched from).
+	 * Double-← and Esc share this path so both keys behave identically.
+	 * The browser mounts BEFORE unfocusing so the main-transcript repaint
+	 * happens underneath the fullscreen overlay — no intermediate flash.
 	 */
-	#detectLeftDoubleTap(): boolean {
+	#returnFocusedToAgentBrowser(): void {
+		void this.ctx.showAgentsView("current").then(() => this.ctx.unfocusSession());
+	}
+
+	/**
+	 * Detect a deliberate double-← / double-→ gesture, rejecting
+	 * terminal-synthesized arrow bursts. Returns true only on the second tap
+	 * of a fresh sequence when it lands a human-plausible interval after the
+	 * first (`[LEFT_DOUBLE_TAP_MIN_GAP_MS, LEFT_DOUBLE_TAP_MAX_GAP_MS)`). Taps
+	 * closer than the lower bound, or any third-and-later tap before a quiet
+	 * gap, are a burst and never fire — so a stray click that makes the
+	 * terminal emit a run of arrow keys can no longer pop an overlay.
+	 */
+	#detectDoubleTap(direction: "left" | "right"): boolean {
 		const now = Date.now();
-		const sinceLast = now - this.ctx.lastLeftTapTime;
-		this.ctx.lastLeftTapTime = now;
+		const lastTimeField = direction === "left" ? "lastLeftTapTime" : "lastRightTapTime";
+		const sinceLast = now - this.ctx[lastTimeField];
+		this.ctx[lastTimeField] = now;
 		if (sinceLast >= LEFT_DOUBLE_TAP_MAX_GAP_MS) {
 			// Quiet gap: this tap starts a fresh sequence.
-			this.#leftTapCount = 1;
+			this.#tapCounts[direction] = 1;
 			return false;
 		}
-		this.#leftTapCount += 1;
-		if (this.#leftTapCount === 2 && sinceLast >= LEFT_DOUBLE_TAP_MIN_GAP_MS) {
+		this.#tapCounts[direction] += 1;
+		if (this.#tapCounts[direction] === 2 && sinceLast >= LEFT_DOUBLE_TAP_MIN_GAP_MS) {
 			// Exactly two taps, the second a human-plausible interval after the first.
-			this.#leftTapCount = 0;
-			this.ctx.lastLeftTapTime = 0;
+			this.#tapCounts[direction] = 0;
+			this.ctx[lastTimeField] = 0;
 			return true;
 		}
 		return false;

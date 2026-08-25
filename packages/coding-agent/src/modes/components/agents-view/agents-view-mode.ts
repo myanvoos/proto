@@ -228,6 +228,10 @@ export class AgentsViewComponent implements Component {
 	#selectedIdentity: string | undefined;
 
 	#scopeFrames: AgentsViewScopeFrame[] = [];
+	/** Mounted with a per-invocation scope (/agents) — not user navigation. */
+	#scopedAtMount = false;
+	/** Scope frames carried in persistent state when this instance mounted. */
+	#carriedScopeFrames: AgentsViewScopeFrame[] | undefined;
 	#expandedParents = new Set<string>();
 	#programShownParents = new Set<string>();
 	#spawnTasks = new Map<string, string>();
@@ -284,13 +288,17 @@ export class AgentsViewComponent implements Component {
 		// initialScopeKey is static CLI context and wins there instead.
 		const persistent = deps.persistentState;
 		this.#persistentState = persistent;
+		this.#carriedScopeFrames = persistent?.scopeFrames;
 		if (deps.initialScopeIdentity) {
+			// Per-invocation scope (/agents at a subtree): never seed the shared
+			// persistent state with it — a later plain open must not restore it.
+			this.#scopedAtMount = true;
 			this.#scopeFrames = [{ identity: deps.initialScopeIdentity, rootTitle: deps.initialScopeTitle ?? "scoped" }];
 		} else if (persistent?.scopeFrames) {
 			this.#scopeFrames = persistent.scopeFrames;
+			persistent.scopeFrames = this.#scopeFrames;
 		}
 		if (persistent) {
-			persistent.scopeFrames = this.#scopeFrames;
 			this.#selectedIdentity = persistent.selectedRowIdentity;
 			this.#expandedParents = persistent.expandedSubagentParents ?? new Set();
 			persistent.expandedSubagentParents = this.#expandedParents;
@@ -366,7 +374,12 @@ export class AgentsViewComponent implements Component {
 		clearTimeout(this.#statusTimer);
 		this.#statusMessage = undefined;
 		if (this.#persistentState) {
-			this.#persistentState.scopeFrames = this.#scopeFrames;
+			// A per-invocation /agents scope that the user never navigated is not
+			// theirs — restore whatever the state carried at mount so a later
+			// plain open doesn't land inside it. (#setScopeFrames write-through
+			// during refresh normalization may have persisted it meanwhile.)
+			const teleported = this.#scopedAtMount && this.#scopeFrames.length === 1;
+			this.#persistentState.scopeFrames = teleported ? this.#carriedScopeFrames : this.#scopeFrames;
 			this.#persistentState.selectedRowIdentity = this.#selectedIdentity;
 			this.#persistentState.query = this.#query;
 		}
@@ -594,17 +607,11 @@ export class AgentsViewComponent implements Component {
 				this.#exitRenameMode();
 				return;
 			case "browse":
-				break;
+				// Esc always returns to the main session — no query-clear or
+				// drill-out intermediate screens. Left arrow still pops a scope.
+				this.#deps.close();
+				return;
 		}
-		if (this.#query.length > 0) {
-			this.#setQuery("");
-			return;
-		}
-		if (this.#scopeFrames.length > 0) {
-			this.#drillOut();
-			return;
-		}
-		this.#deps.close();
 	}
 
 	#moveSelection(delta: number): void {
@@ -674,7 +681,14 @@ export class AgentsViewComponent implements Component {
 
 	#drillOut(): void {
 		if (this.#scopeFrames.length === 0) return;
-		this.#setScopeFrames(this.#scopeFrames.slice(0, -1));
+		const frames = this.#scopeFrames.slice(0, -1);
+		if (frames.length === 0 && !this.#deps.hideSubagents) {
+			// Popping the last frame of a "current"-scoped view would expose the
+			// removed global hierarchical browser — close back to the chat.
+			this.#deps.close();
+			return;
+		}
+		this.#setScopeFrames(frames);
 		this.#rebuildRows();
 		this.#deps.requestRender();
 	}
@@ -842,11 +856,17 @@ export class AgentsViewComponent implements Component {
 			return;
 		}
 		if (target.sessionPath) {
-			// Saved/inactive target: resume into the main view, then deliver.
 			const sessionPath = target.sessionPath;
 			this.#closeForChat();
-			const resumed = await this.#deps.openSession(sessionPath);
-			if (resumed) await this.#deps.promptAfterResume(trimmed);
+			// Replying to the host's own Current row steers the live session —
+			// resuming the attached transcript would route through
+			// switchSession's abort path and kill its in-flight turn (same guard
+			// as #activateAgentRow).
+			if (!isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
+				const resumed = await this.#deps.openSession(sessionPath);
+				if (!resumed) return;
+			}
+			await this.#deps.promptAfterResume(trimmed);
 		}
 	}
 
@@ -1029,8 +1049,10 @@ export class AgentsViewComponent implements Component {
 				await AgentLifecycleManager.global().release(ref.id, ref);
 				this.#registry.unregister(ref.id, ref);
 			}
-			// A parked live instance must not keep writing to a deleted file.
-			detachedSessionHolder.delete(sessionPath);
+			// A parked live instance must not keep writing to a deleted file:
+			// take the entry and await its abort so artifact deletion cannot
+			// race further appends (which would resurrect the .jsonl).
+			await detachedSessionHolder.stopAndRemove(sessionPath);
 			const storage = new FileSessionStorage();
 			await storage.deleteSessionWithArtifacts(sessionPath);
 			await fs.rm(getAgentTombstonePath(sessionPath), { force: true }).catch(() => undefined);

@@ -7251,21 +7251,14 @@ export class AgentSession {
 				return false;
 			}
 		}
-		const isDetachedEnabled = this.settings.get("session.detachedMainSessions") !== false;
-		const canPark =
-			switchingToDifferentSession &&
-			this.isStreaming &&
-			isDetachedEnabled &&
-			!!previousSessionFile?.endsWith(".jsonl");
-
-		if (canPark && previousSessionFile) {
-			// Detach, don't abort: the in-flight turn keeps running and appending
-			// to its transcript. The holder owns the live instance until re-attach.
-			detachedSessionHolder.park(previousSessionFile, this, this.sessionManager);
-		} else {
-			this.#disconnectFromAgent();
-			await this.abort({ goalReason: "internal" });
-		}
+		// Switching always tears the in-flight turn down first. Background
+		// continuation is a caller-level hand-off (see SelectorController's
+		// handleResumeSession): parking `this` here would put the live instance
+		// in the holder and then repurpose that same instance for the target
+		// session, so the parked turn would append to the wrong transcript and
+		// has()/peek()/take() would return the foreground session.
+		this.#disconnectFromAgent();
+		await this.abort({ goalReason: "internal" });
 		await this.#beforeSessionSwitch();
 
 		await this.#bash.flushPending();

@@ -265,6 +265,57 @@ describe("agents view persistent state", () => {
 		expect(out.includes("child title")).toBe(true);
 		expect(out.includes("parent title")).toBe(false);
 	});
+
+	it("Esc from a /agents-scoped mount closes straight back to the main session and does not persist the teleported scope", async () => {
+		const parent = makeSessionInfo("parent");
+		const child = makeSessionInfo("child", { parentSessionPath: parent.path });
+		spyListAll([parent, child]);
+		const persistentState: AgentsViewPersistentState = {};
+
+		const deps = makeDeps(persistentState);
+		const view = mount({
+			...deps,
+			initialScopeIdentity: `file:${path.resolve(parent.path)}`,
+			initialScopeTitle: "ScopedRoot",
+		} as AgentsViewDeps);
+		await waitFor(() => rendered(view).includes("child title"), "scoped rows loaded");
+
+		view.handleInput("\x1b"); // esc — one press must close, not drill out
+		expect(deps.calls.closeCount).toBe(1);
+		view.dispose();
+		expect(persistentState.scopeFrames).toBeUndefined();
+	});
+
+	it("Esc in plain browse mode closes immediately even with an active search query", async () => {
+		spyListAll([makeSessionInfo("alpha"), makeSessionInfo("beta")]);
+		const persistentState: AgentsViewPersistentState = {};
+		const deps = makeDeps(persistentState);
+		const view = mount(deps);
+		await waitFor(() => rendered(view).includes("beta title"), "rows loaded");
+		await type(view, "alpha");
+		await waitFor(() => rendered(view).includes("alpha title"), "query applied");
+
+		view.handleInput("\x1b"); // esc — closes instead of clearing the query first
+		expect(deps.calls.closeCount).toBe(1);
+		view.dispose();
+	});
+
+	it("single ← from a /agents-scoped mount closes instead of revealing the global hierarchical browser", async () => {
+		const parent = makeSessionInfo("parent");
+		const child = makeSessionInfo("child", { parentSessionPath: parent.path });
+		spyListAll([parent, child]);
+
+		const deps = makeDeps();
+		const view = mount({
+			...deps,
+			initialScopeIdentity: `file:${path.resolve(parent.path)}`,
+			initialScopeTitle: "ScopedRoot",
+		} as AgentsViewDeps);
+		await waitFor(() => rendered(view).includes("child title"), "scoped rows loaded");
+
+		view.handleInput("\x1b[D"); // left — pops the last frame
+		expect(deps.calls.closeCount).toBe(1);
+	});
 });
 
 // ---------------------------------------------------------------------------

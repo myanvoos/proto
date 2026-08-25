@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import {
+	DetachedSessionHolder,
+	detachedSessionHolder,
+} from "@oh-my-pi/pi-coding-agent/session/detached-session-holder";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { DetachedSessionHolder, detachedSessionHolder } from "@oh-my-pi/pi-coding-agent/session/detached-session-holder";
 
 type MockSession = {
 	abort: Mock<(...args: Array<unknown>) => unknown>;
@@ -153,7 +156,7 @@ describe("DetachedSessionHolder", () => {
 	});
 
 	describe("evictLRU", () => {
-		it("park 9 files with different lastActivity, evictLRU(8) returns 1 oldest, aborts it, size 8, peek oldest missing", () => {
+		it("park 9 files with different lastActivity, evictLRU(8) returns 1 oldest, aborts it, size 8, peek oldest missing", async () => {
 			const holder = new DetachedSessionHolder();
 			const base = Date.now();
 			for (let i = 0; i < 9; i++) {
@@ -177,7 +180,7 @@ describe("DetachedSessionHolder", () => {
 				nowSpy.mockRestore();
 			}
 
-			const evicted = holder2.evictLRU(8);
+			const evicted = await holder2.evictLRU(8);
 			expect(evicted.length).toBe(1);
 			expect(holder2.size()).toBe(8);
 			expect(evicted[0]).toBe(path.resolve("/tmp/evict2/0.jsonl"));
@@ -187,22 +190,26 @@ describe("DetachedSessionHolder", () => {
 			expect(holder2.has("/tmp/evict2/8.jsonl")).toBe(true);
 		});
 
-		it("evictLRU does nothing when size <= limit", () => {
+		it("evictLRU does nothing when size <= limit", async () => {
 			const holder = new DetachedSessionHolder();
 			const base = Date.now();
 			for (let i = 0; i < 3; i++) {
 				const spy = vi.spyOn(Date, "now").mockReturnValue(base + i);
-				holder.park(`/tmp/small/${i}.jsonl`, makeSession() as unknown as AgentSession, makeManager() as unknown as SessionManager);
+				holder.park(
+					`/tmp/small/${i}.jsonl`,
+					makeSession() as unknown as AgentSession,
+					makeManager() as unknown as SessionManager,
+				);
 				spy.mockRestore();
 			}
-			const evicted = holder.evictLRU(5);
+			const evicted = await holder.evictLRU(5);
 			expect(evicted.length).toBe(0);
 			expect(holder.size()).toBe(3);
 		});
 	});
 
 	describe("LRU ordering with touch", () => {
-		it("park 3 files, touch middle, evictLRU(2) should evict oldest not touched", () => {
+		it("park 3 files, touch middle, evictLRU(2) should evict oldest not touched", async () => {
 			const holder = new DetachedSessionHolder();
 			const base = Date.now();
 			const sessions: Record<string, MockSession> = {};
@@ -215,7 +222,11 @@ describe("DetachedSessionHolder", () => {
 				const spy = vi.spyOn(Date, "now").mockReturnValue(base + offset);
 				const s = makeSession();
 				sessions[name] = s;
-				holder.park(`/tmp/lru/${name}.jsonl`, s as unknown as AgentSession, makeManager(name) as unknown as SessionManager);
+				holder.park(
+					`/tmp/lru/${name}.jsonl`,
+					s as unknown as AgentSession,
+					makeManager(name) as unknown as SessionManager,
+				);
 				spy.mockRestore();
 			}
 
@@ -223,29 +234,37 @@ describe("DetachedSessionHolder", () => {
 			holder.touch("/tmp/lru/b.jsonl");
 			touchSpy.mockRestore();
 
-			const evicted = holder.evictLRU(2);
+			const evicted = await holder.evictLRU(2);
 			expect(evicted.length).toBe(1);
 			expect(evicted[0]).toBe(path.resolve("/tmp/lru/a.jsonl"));
-			expect(sessions["a"].abort).toHaveBeenCalledWith({ goalReason: "internal" });
+			expect(sessions.a.abort).toHaveBeenCalledWith({ goalReason: "internal" });
 			expect(holder.has("/tmp/lru/a.jsonl")).toBe(false);
 			expect(holder.has("/tmp/lru/b.jsonl")).toBe(true);
 			expect(holder.has("/tmp/lru/c.jsonl")).toBe(true);
 			expect(holder.size()).toBe(2);
 		});
 
-		it("touch updates lastActivity so eviction skips touched entry", () => {
+		it("touch updates lastActivity so eviction skips touched entry", async () => {
 			const holder = new DetachedSessionHolder();
 			const base = Date.now();
 			const sA = makeSession();
 			const sB = makeSession();
 			{
 				const spy = vi.spyOn(Date, "now").mockReturnValue(base);
-				holder.park("/tmp/touch/a.jsonl", sA as unknown as AgentSession, makeManager("a") as unknown as SessionManager);
+				holder.park(
+					"/tmp/touch/a.jsonl",
+					sA as unknown as AgentSession,
+					makeManager("a") as unknown as SessionManager,
+				);
 				spy.mockRestore();
 			}
 			{
 				const spy = vi.spyOn(Date, "now").mockReturnValue(base + 1000);
-				holder.park("/tmp/touch/b.jsonl", sB as unknown as AgentSession, makeManager("b") as unknown as SessionManager);
+				holder.park(
+					"/tmp/touch/b.jsonl",
+					sB as unknown as AgentSession,
+					makeManager("b") as unknown as SessionManager,
+				);
 				spy.mockRestore();
 			}
 			{
@@ -253,7 +272,7 @@ describe("DetachedSessionHolder", () => {
 				holder.touch("/tmp/touch/a.jsonl");
 				spy.mockRestore();
 			}
-			const evicted = holder.evictLRU(1);
+			const evicted = await holder.evictLRU(1);
 			expect(evicted.length).toBe(1);
 			expect(evicted[0]).toBe(path.resolve("/tmp/touch/b.jsonl"));
 			expect(sB.abort).toHaveBeenCalled();
@@ -263,7 +282,11 @@ describe("DetachedSessionHolder", () => {
 		it("touch on missing file is no-op", () => {
 			const holder = new DetachedSessionHolder();
 			const s = makeSession();
-			holder.park("/tmp/touch/exists.jsonl", s as unknown as AgentSession, makeManager() as unknown as SessionManager);
+			holder.park(
+				"/tmp/touch/exists.jsonl",
+				s as unknown as AgentSession,
+				makeManager() as unknown as SessionManager,
+			);
 			holder.touch("/tmp/touch/missing.jsonl");
 			expect(holder.size()).toBe(1);
 		});
@@ -275,7 +298,11 @@ describe("DetachedSessionHolder", () => {
 			const base = 1_000_000;
 			{
 				const spy = vi.spyOn(Date, "now").mockReturnValue(base);
-				holder.park("/tmp/touch2/file.jsonl", makeSession() as unknown as AgentSession, makeManager() as unknown as SessionManager);
+				holder.park(
+					"/tmp/touch2/file.jsonl",
+					makeSession() as unknown as AgentSession,
+					makeManager() as unknown as SessionManager,
+				);
 				spy.mockRestore();
 			}
 			const beforeEntry = holder.peek("/tmp/touch2/file.jsonl");
@@ -287,6 +314,77 @@ describe("DetachedSessionHolder", () => {
 			}
 			const afterEntry = holder.peek("/tmp/touch2/file.jsonl");
 			expect(afterEntry?.lastActivity).toBe(base + 9999);
+		});
+	});
+
+	describe("stopAndRemove", () => {
+		it("takes the entry, awaits its abort, and reports existence", async () => {
+			const holder = new DetachedSessionHolder();
+			const s = makeSession();
+			holder.park("/tmp/stop/a.jsonl", s as unknown as AgentSession, makeManager("a") as unknown as SessionManager);
+
+			const existed = await holder.stopAndRemove("/tmp/stop/a.jsonl");
+
+			expect(existed).toBe(true);
+			expect(s.abort).toHaveBeenCalledWith({ goalReason: "internal" });
+			expect(holder.has("/tmp/stop/a.jsonl")).toBe(false);
+			expect(holder.size()).toBe(0);
+		});
+
+		it("returns false without aborting anything when no entry exists", async () => {
+			const holder = new DetachedSessionHolder();
+			const s = makeSession();
+			holder.park("/tmp/stop/keep.jsonl", s as unknown as AgentSession, makeManager() as unknown as SessionManager);
+
+			const existed = await holder.stopAndRemove("/tmp/stop/other.jsonl");
+
+			expect(existed).toBe(false);
+			expect(s.abort).not.toHaveBeenCalled();
+			expect(holder.has("/tmp/stop/keep.jsonl")).toBe(true);
+		});
+
+		it("survives a rejecting abort: entry is still removed", async () => {
+			const holder = new DetachedSessionHolder();
+			const s = makeSession();
+			(s.abort as unknown as { mockRejectedValue(value: unknown): void }).mockRejectedValue(
+				new Error("abort refused"),
+			);
+			holder.park("/tmp/stop/bad.jsonl", s as unknown as AgentSession, makeManager() as unknown as SessionManager);
+
+			const existed = await holder.stopAndRemove("/tmp/stop/bad.jsonl");
+
+			expect(existed).toBe(true);
+			expect(holder.has("/tmp/stop/bad.jsonl")).toBe(false);
+		});
+	});
+
+	describe("evictLRU rejection safety", () => {
+		it("resolves and drops entries even when an evicted session's abort rejects", async () => {
+			const holder = new DetachedSessionHolder();
+			const bad = makeSession();
+			(bad.abort as unknown as { mockRejectedValue(value: unknown): void }).mockRejectedValue(new Error("boom"));
+			const good = makeSession();
+			const base = Date.now();
+			const spy1 = vi.spyOn(Date, "now").mockReturnValue(base);
+			holder.park(
+				"/tmp/evict-bad/bad.jsonl",
+				bad as unknown as AgentSession,
+				makeManager("bad") as unknown as SessionManager,
+			);
+			spy1.mockRestore();
+			const spy2 = vi.spyOn(Date, "now").mockReturnValue(base + 1000);
+			holder.park(
+				"/tmp/evict-bad/good.jsonl",
+				good as unknown as AgentSession,
+				makeManager("good") as unknown as SessionManager,
+			);
+			spy2.mockRestore();
+
+			const evicted = await holder.evictLRU(1);
+
+			expect(evicted).toEqual([path.resolve("/tmp/evict-bad/bad.jsonl")]);
+			expect(bad.abort).toHaveBeenCalled();
+			expect(holder.has("/tmp/evict-bad/good.jsonl")).toBe(true);
 		});
 	});
 });

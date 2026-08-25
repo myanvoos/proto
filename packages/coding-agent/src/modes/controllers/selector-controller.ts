@@ -41,8 +41,10 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
-import { AgentRegistry } from "../../registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
+import { createAgentSession } from "../../sdk";
+import type { AgentSession } from "../../session/agent-session";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
 import {
@@ -79,6 +81,7 @@ import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentFleetOverlayComponent } from "../components/agent-fleet";
 import { AgentsViewComponent } from "../components/agents-view/agents-view-mode";
+import type { AgentsViewPersistentState } from "../components/agents-view/agents-view-state";
 import {
 	type AgentsViewScope,
 	buildAgentsViewIndex,
@@ -110,6 +113,14 @@ import { buildCopyTargets } from "../utils/copy-targets";
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
 export class SelectorController {
+	/**
+	 * Agents-view state shared across open/close within this process
+	 * (query, selection, scope frames). Created lazily on first open and handed
+	 * to every AgentsViewComponent construction, honoring the component's
+	 * documented controller-owned persistence semantics.
+	 */
+	#agentsViewState: AgentsViewPersistentState | undefined;
+
 	constructor(private ctx: InteractiveModeContext) {}
 	/**
 	 * Mount a primary fullscreen menu through the one polished modal path shared
@@ -387,10 +398,11 @@ export class SelectorController {
 
 	/**
 	 * Full-screen unified session + subagent browser (the /session and /agents
-	 * surface). Global scope lists every session; "current" scope roots the view
-	 * at the attached session's subtree when it has children, else falls back.
+	 * surface). Global scope is the flat session switcher; "current" scope roots
+	 * the hierarchical view at the attached session's subtree, or no-ops when it
+	 * has no subagents.
 	 */
-	async showAgentsView(scope: AgentsViewScope = "global", opts?: { hideSubagents?: boolean }): Promise<void> {
+	async showAgentsView(scope: AgentsViewScope = "global"): Promise<void> {
 		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
 		let initialScopeIdentity: string | undefined;
 		let initialScopeTitle: string | undefined;
@@ -411,7 +423,10 @@ export class SelectorController {
 				initialScopeIdentity = identity;
 				initialScopeTitle = getRecordTitle(root);
 			} else {
-				return this.showAgentsView("global");
+				// No subagents to browse: no-op. There is deliberately no
+				// fallback — the only global view is the double-← flat switcher.
+				this.ctx.showStatus("No subagents in this session");
+				return;
 			}
 		}
 		const activeModel = this.ctx.session.model;
@@ -425,9 +440,11 @@ export class SelectorController {
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
+		this.#agentsViewState ??= {};
 		const view = new AgentsViewComponent({
 			ui: this.ctx.ui,
 			keybindings: this.ctx.keybindings,
+			persistentState: this.#agentsViewState,
 			currentSessionFile,
 			cwd: this.ctx.sessionManager.getCwd(),
 			version: VERSION,
@@ -450,7 +467,9 @@ export class SelectorController {
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
-			hideSubagents: opts?.hideSubagents,
+			// The only global-scope view is the flat session switcher; the
+			// hierarchical browser exists solely inside a "current" scope.
+			hideSubagents: scope === "global",
 			initialScopeIdentity,
 			initialScopeTitle,
 		});
@@ -1680,35 +1699,61 @@ export class SelectorController {
 				return false;
 			}
 		}
-		// Re-attach path: the target has a parked live instance (still thinking in
-		// background). Swap it in wholesale instead of cold-loading from disk —
-		// the provider stream keeps appending without a gap.
+		const canPark =
+			switchingToDifferentSession &&
+			wasStreaming &&
+			!!previousFile?.endsWith(".jsonl") &&
+			this.ctx.settings.get("session.detachedMainSessions") !== false;
+
+		// Park BEFORE any mutation: the holder takes ownership of the live
+		// instance untouched — same agent, same manager, still appending to its
+		// own transcript. The foreground role moves to a different session
+		// below; a parked entry never aliases it.
 		let parkedOurs = false;
-		if (wasStreaming && switchingToDifferentSession && previousFile?.endsWith(".jsonl")) {
+		if (canPark && previousFile) {
 			detachedSessionHolder.park(previousFile, this.ctx.session, this.ctx.sessionManager);
 			parkedOurs = true;
-			if (detachedSessionHolder.has(sessionPath)) {
-				const parked = detachedSessionHolder.take(sessionPath);
-				if (parked) {
-					const mutableCtx = this.ctx as unknown as { session: unknown; sessionManager: unknown; agent: unknown };
-					mutableCtx.session = parked.session;
-					mutableCtx.sessionManager = parked.manager;
-					mutableCtx.agent = parked.session.agent;
-				}
-			}
-		} else if (detachedSessionHolder.has(sessionPath)) {
-			const parked = detachedSessionHolder.take(sessionPath);
-			if (parked) {
-				const mutableCtx = this.ctx as unknown as { session: unknown; sessionManager: unknown; agent: unknown };
-				mutableCtx.session = parked.session;
-				mutableCtx.sessionManager = parked.manager;
-				mutableCtx.agent = parked.session.agent;
-			}
 		}
-		// Switch session via AgentSession (emits hook and tool session events). The
-		// SessionManager adopts the resumed session's own cwd when it differs.
-		// AgentSession parks instead of aborting when we were streaming (detached mode).
-		await this.ctx.session.switchSession(sessionPath);
+
+		// Re-attach path: the target has a parked live instance (still thinking
+		// in background). Swap it in wholesale instead of cold-loading from disk.
+		// The swap must NOT route through switchSession: on the taken instance
+		// previousSessionFile === sessionPath, so switchSession would
+		// disconnect+abort+cold-reload the very turn the park preserved.
+		const parkedTarget = switchingToDifferentSession ? detachedSessionHolder.take(sessionPath) : undefined;
+
+		// ctx.sessionManager is a live getter over ctx.session — assigning the
+		// session is sufficient; writing it directly throws (getter-only).
+		const mutableCtx = this.ctx as unknown as { session: unknown; agent: unknown };
+		let swappedIn = false;
+		if (parkedTarget) {
+			mutableCtx.session = parkedTarget.session;
+			mutableCtx.agent = parkedTarget.session.agent;
+			await this.ctx.attachSessionView(parkedTarget.session);
+			AgentRegistry.global().attachSession(MAIN_AGENT_ID, parkedTarget.session, sessionPath);
+			swappedIn = true;
+		} else if (!parkedOurs) {
+			// Nothing to preserve: switch the live instance in place (aborts any
+			// in-flight turn first). Emits hook/tool session events; the
+			// SessionManager adopts the resumed session's own cwd when it differs.
+			await this.ctx.session.switchSession(sessionPath);
+		} else if (previousFile) {
+			// Parked ours, cold target: build a fresh foreground pair for the
+			// target instead of repurposing the parked instance. If construction
+			// fails, hand the parked entry back — no stale holder state mapping
+			// the still-live previous session.
+			let created: AgentSession;
+			try {
+				created = await this.#createResumedForegroundSession(sessionPath);
+			} catch (error) {
+				detachedSessionHolder.delete(previousFile);
+				throw error;
+			}
+			mutableCtx.session = created;
+			mutableCtx.agent = created.agent;
+			await this.ctx.attachSessionView(created);
+			swappedIn = true;
+		}
 		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
@@ -1720,24 +1765,56 @@ export class SelectorController {
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
-		// Clear and re-render the chat
-		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		// Clear and re-render the chat. Wholesale swap-ins already rendered the
+		// attached instance's transcript inside attachSessionView; only cold
+		// in-place loads need an explicit replay here.
+		if (!swappedIn) {
+			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		}
 		await this.ctx.reloadTodos();
-		// LRU cap after any park; surface evictions before the resume toast.
-		const evicted = detachedSessionHolder.evictLRU(8);
-		if (evicted.length > 0) {
-			this.ctx.showStatus(
-				`Background limit reached — closed ${evicted.length} oldest session${evicted.length === 1 ? "" : "s"}`,
-			);
-		}
+		// LRU cap after any park. Merge any eviction notice into the single
+		// status toast: back-to-back showStatus calls coalesce into one line and
+		// would silently hide whichever came first.
+		const evicted = await detachedSessionHolder.evictLRU(8);
+		const evictionNote =
+			evicted.length > 0
+				? ` · background limit reached — closed ${evicted.length} oldest session${evicted.length === 1 ? "" : "s"}`
+				: "";
+		let status: string;
 		if (parkedOurs && previousFile) {
-			this.ctx.showStatus(`Parked ${shortenPath(previousFile)} — still thinking in background`);
+			status = `Parked ${shortenPath(previousFile)} — still thinking in background`;
 		} else if (wasStreaming && switchingToDifferentSession && !parkedOurs && previousFile?.endsWith(".jsonl")) {
-			this.ctx.showStatus(`Interrupted ${shortenPath(previousFile)} — it was still thinking`);
+			status = `Interrupted ${shortenPath(previousFile)} — it was still thinking`;
 		} else {
-			this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
+			status = movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session";
 		}
+		this.ctx.showStatus(`${status}${evictionNote}`);
 		return true;
+	}
+
+	/**
+	 * Build a foreground session pair for a cold resume target while the
+	 * previous main session stays parked in the detached holder. Shares the
+	 * process-level runtime (model registry, MCP manager, event bus, settings)
+	 * with the current session and re-wires extension tool UI context when the
+	 * view already initialized it.
+	 */
+	async #createResumedForegroundSession(sessionPath: string): Promise<AgentSession> {
+		const manager = await SessionManager.open(sessionPath, undefined, undefined, {
+			initialCwd: this.ctx.sessionManager.getCwd(),
+		});
+		const created = await createAgentSession({
+			cwd: manager.getCwd(),
+			sessionManager: manager,
+			settings: this.ctx.settings,
+			modelRegistry: this.ctx.session.modelRegistry,
+			eventBus: this.ctx.eventBus,
+			mcpManager: this.ctx.mcpManager,
+			hasUI: true,
+		});
+		const uiContext = this.ctx.getToolUIContext();
+		if (uiContext) created.setToolUIContext(uiContext, true);
+		return created.session;
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
