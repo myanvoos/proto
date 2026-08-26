@@ -9,20 +9,12 @@ export interface CmuxKind {
 	surface?: string;
 }
 
-export interface CmuxOpenSplitResult {
-	surface_id?: unknown;
-	url?: unknown;
-	workspace_id?: unknown;
-	created_split?: unknown;
-	placement_strategy?: unknown;
-}
-
-export interface CmuxSnapshotRef {
+interface CmuxSnapshotRef {
 	role?: unknown;
 	name?: unknown;
 }
 
-export interface CmuxSnapshotPage {
+interface CmuxSnapshotPage {
 	title?: unknown;
 	url?: unknown;
 	ready_state?: unknown;
@@ -175,7 +167,7 @@ export function mapWaitUntil(waitUntil: string | undefined): "interactive" | "co
 	return waitUntil === "domcontentloaded" ? "interactive" : "complete";
 }
 
-export interface ResolveCmuxKindOptions {
+interface ResolveCmuxKindOptions {
 	surface?: string;
 	settingEnabled?: boolean;
 }

@@ -430,9 +430,9 @@ export type {
  * Handler function type for each event.
  * Handlers can return R, undefined, or void (bare return statements).
  */
-export type HookHandler<E, R = undefined> = (event: E, ctx: HookContext) => Promise<R | void> | R | void;
+type HookHandler<E, R = undefined> = (event: E, ctx: HookContext) => Promise<R | void> | R | void;
 
-export interface HookMessageRenderOptions {
+interface HookMessageRenderOptions {
 	/** Whether the view is expanded */
 	expanded: boolean;
 }

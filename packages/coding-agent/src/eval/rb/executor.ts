@@ -31,7 +31,7 @@ import {
 } from "./kernel";
 import { resolveExplicitRubyRuntime } from "./runtime";
 
-export interface RubyExecutorOptions {
+interface RubyExecutorOptions {
 	/** Working directory for command execution */
 	cwd?: string;
 	/** Timeout in milliseconds */
@@ -83,11 +83,11 @@ export interface RubyExecutorOptions {
 	bridge?: { url: string; token: string };
 }
 
-export interface RubyKernelExecutor {
+interface RubyKernelExecutor {
 	execute: (code: string, options?: KernelExecuteOptions) => Promise<KernelExecuteResult>;
 }
 
-export interface RubyResult {
+interface RubyResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;

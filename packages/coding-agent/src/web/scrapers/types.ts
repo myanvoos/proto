@@ -64,7 +64,7 @@ export function finalizeOutput(content: string): { content: string; truncated: b
 	};
 }
 
-export interface LoadPageOptions {
+interface LoadPageOptions {
 	timeout?: number;
 	headers?: Record<string, string>;
 	method?: string;
@@ -79,7 +79,7 @@ export interface LoadPageOptions {
 	skipBodyForContentType?: (contentType: string) => boolean;
 }
 
-export interface LoadPageResult {
+interface LoadPageResult {
 	content: string;
 	contentType: string;
 	finalUrl: string;

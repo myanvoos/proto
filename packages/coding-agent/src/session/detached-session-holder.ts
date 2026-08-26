@@ -2,7 +2,7 @@ import * as path from "node:path";
 import type { AgentSession } from "./agent-session";
 import type { SessionManager } from "./session-manager";
 
-export interface DetachedEntry {
+interface DetachedEntry {
 	session: AgentSession;
 	manager: SessionManager;
 	lastActivity: number;

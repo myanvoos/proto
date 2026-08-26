@@ -27,7 +27,7 @@ type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
 
 const WORKER_ISOLATION_MOUNT_DIRS = ["m", "merged"] as const;
 
-export interface WorktreeEntry {
+interface WorktreeEntry {
 	/** Absolute path to the worktree dir (or stray container) under `~/.omp/wt/`. */
 	path: string;
 	/** Classification of what we found on disk. */

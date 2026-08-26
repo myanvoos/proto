@@ -236,12 +236,7 @@ function shellSingleQuote(value: string): string {
  * `out`); multiple images gain a zero-padded `-NN` suffix so they sort and never
  * collide.
  */
-export function resolveScreenshotOutputPath(
-	out: string | undefined,
-	baseDir: string,
-	index: number,
-	total: number,
-): string {
+function resolveScreenshotOutputPath(out: string | undefined, baseDir: string, index: number, total: number): string {
 	if (total === 1) {
 		return out ? path.resolve(out) : path.join(baseDir, "gallery.png");
 	}
@@ -260,7 +255,7 @@ export function resolveScreenshotOutputPath(
  * single section larger than the budget gets its own (taller) image rather than
  * being split mid-renderer.
  */
-export function chunkGallerySections(sections: GallerySection[], rowBudget: number): GallerySection[][] {
+function chunkGallerySections(sections: GallerySection[], rowBudget: number): GallerySection[][] {
 	const chunks: GallerySection[][] = [];
 	let current: GallerySection[] = [];
 	let currentRows = 0;

@@ -51,7 +51,7 @@ export interface PrewalkCoordinatorHost {
 }
 
 /** Initial state for the prewalk startup flow. */
-export interface PrewalkCoordinatorOptions {
+interface PrewalkCoordinatorOptions {
 	prewalk?: Prewalk;
 }
 

@@ -52,7 +52,7 @@ export interface GhApiUser {
 export interface GhApiLabel {
 	name?: string;
 }
-export interface GhApiPullRequestRef {
+interface GhApiPullRequestRef {
 	merged_at?: string | null;
 }
 export interface GhApiSearchIssueItem {
@@ -76,7 +76,7 @@ export interface GhApiSearchCodeItem {
 	repository?: { full_name?: string } | null;
 	text_matches?: Array<{ fragment?: string; property?: string }>;
 }
-export interface GhApiSearchCommitGitActor {
+interface GhApiSearchCommitGitActor {
 	name?: string;
 	email?: string;
 	date?: string;
@@ -129,16 +129,16 @@ export interface GhComment {
 	minimizedReason?: string | null;
 }
 
-export interface GhRepoTopic {
+interface GhRepoTopic {
 	name?: string;
 	topic?: { name?: string };
 }
 
-export interface GhRepoLanguage {
+interface GhRepoLanguage {
 	name?: string;
 }
 
-export interface GhRepoBranch {
+interface GhRepoBranch {
 	name?: string;
 }
 
@@ -197,7 +197,7 @@ export interface GhPrViewData extends GhIssueViewData {
 	reviewDecision?: string;
 }
 
-export interface GhPrReviewCommit {
+interface GhPrReviewCommit {
 	oid?: string | null;
 }
 
@@ -241,7 +241,7 @@ export interface GhBranchApiResponse {
 	} | null;
 }
 
-export interface GhSearchRepository {
+interface GhSearchRepository {
 	nameWithOwner?: string;
 }
 
@@ -257,7 +257,7 @@ export interface GhSearchResult {
 	url?: string;
 }
 
-export interface GhSearchCodeTextMatch {
+interface GhSearchCodeTextMatch {
 	fragment?: string;
 	property?: string;
 }
@@ -270,13 +270,13 @@ export interface GhSearchCodeResult {
 	url?: string;
 }
 
-export interface GhSearchCommitGitActor {
+interface GhSearchCommitGitActor {
 	name?: string;
 	email?: string;
 	date?: string;
 }
 
-export interface GhSearchCommitDetail {
+interface GhSearchCommitDetail {
 	author?: GhSearchCommitGitActor | null;
 	committer?: GhSearchCommitGitActor | null;
 	message?: string;

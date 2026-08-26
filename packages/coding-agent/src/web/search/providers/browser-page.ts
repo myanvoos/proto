@@ -23,7 +23,7 @@ interface BrowserFallbackOptions {
 }
 
 /** Controls a browser-profiled fetch and its optional headless-browser fallback. */
-export interface BrowserFetchOptions {
+interface BrowserFetchOptions {
 	fetch?: FetchImpl;
 	signal: AbortSignal;
 	timeoutMs?: number;

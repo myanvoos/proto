@@ -5,7 +5,7 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
 import { Hasher, type RenderCache } from "./utils";
 
-export interface OutputBlockOptions {
+interface OutputBlockOptions {
 	header?: string;
 	headerMeta?: string;
 	state?: State;
@@ -19,7 +19,7 @@ export interface OutputBlockOptions {
 
 const FRAMED_BLOCK_COMPONENT = Symbol("framedBlockComponent");
 
-export type FramedBlockComponent = Component & { [FRAMED_BLOCK_COMPONENT]?: true };
+type FramedBlockComponent = Component & { [FRAMED_BLOCK_COMPONENT]?: true };
 
 export function markFramedBlockComponent<T extends Component>(component: T): T & FramedBlockComponent {
 	(component as T & FramedBlockComponent)[FRAMED_BLOCK_COMPONENT] = true;

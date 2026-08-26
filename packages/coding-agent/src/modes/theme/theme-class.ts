@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
-import { colorLuma, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
+import { colorLuma, logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { bgAnsi, colorToAnsi, fgAnsi, resolveToHex } from "./color";
 import type { ColorMode, ThemeBg, ThemeColor } from "./schema";
@@ -142,13 +142,10 @@ export class Theme {
 	/**
 	 * Perceptual luma (0..1) of the status-line background — used to classify the
 	 * theme light/dark. Undefined when it can't be resolved. Classified against the
-	 * status line (the surface session accents render on) rather than the chat bubble
-	 * (`userMessageBg`), which some themes (e.g. `porcelain`) style dark on an
-	 * otherwise-light theme.
+	 * status line rather than the chat bubble (`userMessageBg`), which some themes
+	 * (e.g. `porcelain`) style dark on an otherwise-light theme.
 	 */
 	readonly statusLineLuminance: number | undefined;
-	/** WCAG relative luminance of the status-line background — basis for accent contrast. */
-	readonly #statusLineContrastLuminance: number | undefined;
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
 		bgColors: Record<ThemeBg, string | number>,
@@ -158,7 +155,6 @@ export class Theme {
 		spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>> = {},
 	) {
 		this.statusLineLuminance = colorLuma(bgColors.statusLineBg);
-		this.#statusLineContrastLuminance = relativeLuminance(bgColors.statusLineBg);
 		const slIsLight = this.statusLineLuminance !== undefined && this.statusLineLuminance > 0.5;
 
 		this.#fgColors = {} as Record<ThemeColor, string>;
@@ -192,14 +188,6 @@ export class Theme {
 	}
 
 	/**
-	 * Surface luminance to size session accents against on light themes; undefined on
-	 * dark themes so accents stay vivid. Pass straight to `getSessionAccentHex`.
-	 */
-	get accentSurfaceLuminance(): number | undefined {
-		return this.isLight ? this.#statusLineContrastLuminance : undefined;
-	}
-
-	/**
 	 * Get the resolved CSS hex string for a foreground theme color.
 	 */
 	getColorHex(color: ThemeColor): string {
@@ -223,39 +211,6 @@ export class Theme {
 		return hexes;
 	}
 
-	/**
-	 * Get the most visually dominant theme colors as CSS hex strings — accent,
-	 * border, success, error, warning, heading, link, diff markers, etc.
-	 * These are the colors the session accent could visually clash with.
-	 * Skips colors resolved to the default terminal color (unstyled).
-	 */
-	getMajorThemeColorHexes(): string[] {
-		const majors: ThemeColor[] = [
-			"accent",
-			"border",
-			"borderAccent",
-			"borderMuted",
-			"success",
-			"error",
-			"warning",
-			"mdHeading",
-			"mdLink",
-			"mdCode",
-			"mdCodeBlock",
-			"mdQuoteBorder",
-			"mdListBullet",
-			"toolDiffAdded",
-			"toolDiffRemoved",
-			"customMessageLabel",
-			"thinkingText",
-		];
-		const hexes: string[] = [];
-		for (const key of majors) {
-			const hex = this.#hexFgColors[key];
-			if (hex) hexes.push(hex);
-		}
-		return hexes;
-	}
 	/**
 	 * Get the resolved CSS hex string for the theme's accent color.
 	 */

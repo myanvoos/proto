@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { getBuiltinThemes, loadThemeSync } from "../src/modes/theme/loader";
 import type { Theme } from "../src/modes/theme/theme-class";
 
-const QUIET_TOKENS = ["sessionAccent", "modeAccent", "shareAccent", "infoAccent", "matchHighlight", "link"] as const;
+const QUIET_TOKENS = ["modeAccent", "shareAccent", "infoAccent", "matchHighlight", "link"] as const;
 
 describe("theme loader quiet token backfill", () => {
 	it("resolves quiet tokens on builtins whose JSON omits them", () => {
@@ -31,7 +31,6 @@ describe("theme loader quiet token backfill", () => {
 	it("backs titanium modeAccent down to accent", () => {
 		const theme = loadThemeSync("titanium");
 		expect(theme.getColorHex("modeAccent").toLowerCase()).toBe(theme.getColorHex("accent").toLowerCase());
-		expect(theme.getColorHex("sessionAccent").toLowerCase()).toBe(theme.getColorHex("accent").toLowerCase());
 	});
 
 	it("backs titanium link down to mdLink", () => {

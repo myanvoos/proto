@@ -13,7 +13,7 @@ interface LocalModuleEntry {
 	loaded?: Promise<void>;
 }
 
-export type LocalImportResolution = { mode: "local"; value: unknown } | { mode: "external"; target: string };
+type LocalImportResolution = { mode: "local"; value: unknown } | { mode: "external"; target: string };
 
 const LOCAL_MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts"]);
 

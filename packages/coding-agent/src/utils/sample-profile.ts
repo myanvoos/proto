@@ -53,7 +53,7 @@ const WAIT_SYMBOLS: Record<string, true> = {
 };
 
 /** One frame in the sampled call tree. Counts are sample hits (subtree total). */
-export interface SampleFrame {
+interface SampleFrame {
 	count: number;
 	symbol: string;
 	module?: string;
@@ -61,7 +61,7 @@ export interface SampleFrame {
 }
 
 /** One sampled thread: `Thread_<id>` root plus its call tree. */
-export interface SampleThread {
+interface SampleThread {
 	id: string;
 	name?: string;
 	total: number;
@@ -69,7 +69,7 @@ export interface SampleThread {
 }
 
 /** Metadata from the report preamble (everything before `Call graph:`). */
-export interface SampleProfileHeader {
+interface SampleProfileHeader {
 	process: string;
 	pid: number;
 	intervalMs: number;
@@ -81,7 +81,7 @@ export interface SampleProfileHeader {
 }
 
 /** Parsed macOS sample report. */
-export interface SampleProfile {
+interface SampleProfile {
 	header: SampleProfileHeader;
 	threads: SampleThread[];
 }

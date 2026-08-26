@@ -674,17 +674,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"statusLine.sessionAccent": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "appearance",
-			group: "Status Line",
-			label: "Session Accent",
-			description: "Use the session name color for the editor border and status line gap",
-		},
-	},
-
 	"statusLine.transparent": {
 		type: "boolean",
 		default: false,

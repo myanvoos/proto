@@ -10,7 +10,7 @@ import * as git from "./git";
 // ════════════════════════════════════════════════════════════════════════════
 
 /** Result from a completed `jj` subprocess invocation. */
-export interface JjCommandResult {
+interface JjCommandResult {
 	/** Process exit code reported by `jj`. */
 	exitCode: number;
 	/** Captured standard output as UTF-8 text. */
@@ -20,7 +20,7 @@ export interface JjCommandResult {
 }
 
 /** Resolved Jujutsu workspace metadata. */
-export interface JjRepository {
+interface JjRepository {
 	/** Root directory containing the `.jj` workspace metadata. */
 	repoRoot: string;
 	/** Path to the shared workspace store directory, resolved through `.jj/repo`'s file indirection for non-default workspaces. */
@@ -36,7 +36,7 @@ export interface DiffOptions extends JjCommandOptions {
 }
 
 /** Options for a bounded `jj` subprocess query. */
-export interface JjCommandOptions {
+interface JjCommandOptions {
 	/** Optional cancellation signal for the subprocess. */
 	readonly signal?: AbortSignal;
 	/** Deadline in milliseconds. Defaults to {@link JJ_COMMAND_TIMEOUT_MS}. */
@@ -44,14 +44,14 @@ export interface JjCommandOptions {
 }
 
 /** Default finite deadline for local jj subprocesses. */
-export const JJ_COMMAND_TIMEOUT_MS = 5_000;
+const JJ_COMMAND_TIMEOUT_MS = 5_000;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Error
 // ════════════════════════════════════════════════════════════════════════════
 
 /** Error thrown when a checked `jj` command exits non-zero. */
-export class JjCommandError extends Error {
+class JjCommandError extends Error {
 	/** Arguments passed after the common `jj --no-pager --color=never` prefix. */
 	readonly args: readonly string[];
 	/** Captured command result that caused the failure. */

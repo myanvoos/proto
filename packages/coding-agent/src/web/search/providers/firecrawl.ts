@@ -53,7 +53,7 @@ function resolveSearchUrl(): string {
 	return url.toString();
 }
 
-export interface FirecrawlSearchParams {
+interface FirecrawlSearchParams {
 	query: string;
 	num_results?: number;
 	recency?: SearchParams["recency"];

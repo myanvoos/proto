@@ -26,7 +26,7 @@ export const CODE_MODE_KEEP_TOOLS: Record<string, true> = {
 	__concurrency__: true,
 };
 
-export interface CodeModeResolution {
+interface CodeModeResolution {
 	active: boolean;
 	/** Names that remain directly model-visible. All enabled names when inactive. */
 	directToolNames: Set<string>;
@@ -57,7 +57,7 @@ export function resolveCodeMode(args: {
 }
 
 /** codex-rs TurnToolFunctionInfo shape (snake_case on the wire). */
-export interface ToolNamespaceFunctionInfo {
+interface ToolNamespaceFunctionInfo {
 	name: string;
 	direct: boolean;
 	code_mode_name: string | null;

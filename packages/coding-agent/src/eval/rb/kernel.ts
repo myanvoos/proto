@@ -51,7 +51,7 @@ export interface KernelExecuteOptions {
 	storeHistory?: boolean;
 }
 
-export interface RubyKernelAvailability {
+interface RubyKernelAvailability {
 	ok: boolean;
 	rubyPath?: string;
 	reason?: string;

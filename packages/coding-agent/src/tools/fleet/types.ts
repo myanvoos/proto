@@ -14,7 +14,7 @@ import type { LaunchParams, LaunchToolDetails } from "./launch";
  * (`wait`/`cancel`/`jobs`), and process supervision (`start`/`ps`/`logs`/
  * `stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`).
  */
-export type FleetOp =
+type FleetOp =
 	| "send"
 	| "wait"
 	| "inbox"
@@ -29,7 +29,7 @@ export type FleetOp =
 	| "describe";
 
 /** Peer row surfaced by `op:"list"`. */
-export interface FleetPeerInfo {
+interface FleetPeerInfo {
 	id: string;
 	displayName: string;
 	kind: string;
@@ -53,7 +53,7 @@ export interface JobSnapshot {
 	errorText?: string;
 }
 
-export type CancelStatus = "cancelled" | "not_found" | "already_completed";
+type CancelStatus = "cancelled" | "not_found" | "already_completed";
 
 export interface CancelOutcome {
 	id: string;

@@ -5,7 +5,6 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
-import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { withIcon } from "../../theme/icon-label";
 import { type ThemeColor, theme } from "../../theme/theme";
@@ -22,8 +21,6 @@ export type { SegmentContext } from "./types";
 // Every mode label reads in the cool arc's mode hue so "what mode am I in" is
 // one color everywhere; proto's palette resolves that hue through `accent`.
 const MODE_ACCENT: ThemeColor = "accent";
-// Session identity reads in the cool arc's session hue; same resolution.
-const SESSION_ACCENT: ThemeColor = "accent";
 
 function normalizePremiumRequests(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -550,7 +547,7 @@ const sessionSegment: StatusLineSegment = {
 		const sessionId = sessionManager?.getSessionId?.();
 		const display = sessionId?.slice(0, 8) || "new";
 
-		return { content: theme.fg(SESSION_ACCENT, withIcon(theme.icon.session, display)), visible: true };
+		return { content: theme.fg("accent", withIcon(theme.icon.session, display)), visible: true };
 	},
 };
 
@@ -624,14 +621,10 @@ const sessionNameSegment: StatusLineSegment = {
 		const sessionManager = ctx.session.sessionManager;
 		const name = sessionManager?.getSessionName() ?? ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
-		const ansi =
-			getSessionAccentAnsi(
-				getSessionAccentHex(name, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance),
-			) ?? theme.getFgAnsi("accent");
 		// Clamp: auto-generated titles are sentence-length and an unclamped chip
 		// dominates the shared footline.
 		const label = truncateToWidth(sanitizeStatusText(name), TRUNCATE_LENGTHS.SHORT);
-		return { content: `${ansi}${label}\x1b[39m`, visible: true };
+		return { content: theme.fg("accent", label), visible: true };
 	},
 };
 

@@ -1,7 +1,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 
 /** How the computer tool is represented to the active model. */
-export type ComputerExposureMode = "function" | "unavailable";
+type ComputerExposureMode = "function" | "unavailable";
 
 /**
  * Report the computer tool's callable representation.

@@ -28,7 +28,7 @@ const RECENCY_MINUTES: Record<NonNullable<SearchParams["recency"]>, number> = {
 	year: 525600,
 };
 
-export interface TinyFishSearchParams {
+interface TinyFishSearchParams {
 	query: string;
 	num_results?: number;
 	recency?: SearchParams["recency"];

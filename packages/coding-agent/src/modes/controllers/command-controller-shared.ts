@@ -17,7 +17,7 @@ import type { InteractiveModeContext } from "../types";
 
 export type ScopeValue = "project" | "user";
 
-export type ScopeFlagResult = { ok: true; scope: ScopeValue } | { ok: false; error: string };
+type ScopeFlagResult = { ok: true; scope: ScopeValue } | { ok: false; error: string };
 
 /**
  * Validate the value following a `--scope` flag.
@@ -29,9 +29,9 @@ export function readScopeFlag(value: string | undefined): ScopeFlagResult {
 	return { ok: true, scope: value };
 }
 
-export type RemoveArgs = { name: string | undefined; scope: ScopeValue };
+type RemoveArgs = { name: string | undefined; scope: ScopeValue };
 
-export type ParseRemoveResult = { ok: true; value: RemoveArgs } | { ok: false; error: string };
+type ParseRemoveResult = { ok: true; value: RemoveArgs } | { ok: false; error: string };
 
 /**
  * Parse the argument tail of `/<cmd> remove <name> [--scope project|user]`.

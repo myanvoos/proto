@@ -233,7 +233,7 @@ export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh 
 	}
 }
 
-export interface TerminalBreadcrumb {
+interface TerminalBreadcrumb {
 	cwd: string;
 	sessionFile: string;
 	/** The recorded session file exists on disk right now. */

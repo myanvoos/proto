@@ -18,24 +18,24 @@ export interface GoalRuntimeHost {
 	now?(): number;
 }
 
-export interface GoalTurnSnapshot {
+interface GoalTurnSnapshot {
 	turnId: string;
 	baselineUsage: GoalTokenUsage;
 	activeGoalId?: string;
 }
 
-export interface GoalWallClockSnapshot {
+interface GoalWallClockSnapshot {
 	lastAccountedAt: number;
 	activeGoalId?: string;
 }
 
-export interface GoalRuntimeSnapshot {
+interface GoalRuntimeSnapshot {
 	turnSnapshot?: GoalTurnSnapshot;
 	wallClock: GoalWallClockSnapshot;
 	budgetReportedFor?: string;
 }
 
-export type GoalPromptKind = "active" | "continuation" | "budget-limit";
+type GoalPromptKind = "active" | "continuation" | "budget-limit";
 
 function cloneGoal(goal: Goal): Goal {
 	return { ...goal };

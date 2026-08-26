@@ -28,11 +28,11 @@ import { ToolAbortError } from "./tool-errors";
 // Storage layer
 // ────────────────────────────────────────────────────────────────────────────
 
-export type CacheKind = "issue" | "pr" | "pr-diff";
+type CacheKind = "issue" | "pr" | "pr-diff";
 
 const DEFAULT_CACHE_AUTH_KEY = "default";
 
-export interface CachedView<T = unknown> {
+interface CachedView<T = unknown> {
 	authKey: string;
 	repo: string;
 	kind: CacheKind;
@@ -286,7 +286,7 @@ export function getCached<T = unknown>(
 	}
 }
 
-export interface PutCachedInput<T = unknown> {
+interface PutCachedInput<T = unknown> {
 	authKey?: string;
 	repo: string;
 	kind: CacheKind;
@@ -429,13 +429,13 @@ export function resetForTests(): void {
 // Cache-aware lookup wrapper
 // ────────────────────────────────────────────────────────────────────────────
 
-export interface FreshResult<T> {
+interface FreshResult<T> {
 	rendered: string;
 	sourceUrl: string | undefined;
 	payload: T;
 }
 
-export interface CacheLookupOptions<T> {
+interface CacheLookupOptions<T> {
 	repo: string;
 	kind: CacheKind;
 	number: number;
@@ -453,7 +453,7 @@ export interface CacheLookupOptions<T> {
 
 export type CacheStatus = "miss" | "fresh" | "refreshed" | "stale" | "disabled";
 
-export interface CacheLookupResult<T> {
+interface CacheLookupResult<T> {
 	rendered: string;
 	sourceUrl: string | undefined;
 	payload: T;
@@ -484,13 +484,13 @@ function readBooleanSetting(settings: Settings | undefined, key: string, fallbac
 	return fallback;
 }
 
-export interface CacheTtl {
+interface CacheTtl {
 	softMs: number;
 	hardMs: number;
 	enabled: boolean;
 }
 
-export function resolveCacheTtl(settings?: Settings): CacheTtl {
+function resolveCacheTtl(settings?: Settings): CacheTtl {
 	const softSec = readNumberSetting(settings, "github.cache.softTtlSec", DEFAULT_SOFT_TTL_SEC);
 	const hardSec = readNumberSetting(settings, "github.cache.hardTtlSec", DEFAULT_HARD_TTL_SEC);
 	const enabled = readBooleanSetting(settings, "github.cache.enabled", true);

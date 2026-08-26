@@ -58,7 +58,7 @@ export interface ArchiveGcResult {
 	errors: string[];
 }
 
-export interface WalCheckpointResult {
+interface WalCheckpointResult {
 	dbPath: string;
 	walBytes: number;
 	wouldCheckpoint: boolean;
@@ -68,7 +68,7 @@ export interface WalCheckpointResult {
 	checkpointedFrames: number;
 }
 
-export interface WalGcResult {
+interface WalGcResult {
 	databases: WalCheckpointResult[];
 	walBytes: number;
 	wouldCheckpoint: boolean;

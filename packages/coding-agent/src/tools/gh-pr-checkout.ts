@@ -26,7 +26,7 @@ import { invalidateAllForNumber } from "./github-cache";
 import { ToolError, throwIfAborted } from "./tool-errors";
 
 export const GH_REPO_CLONE_FIELDS = ["nameWithOwner", "sshUrl", "url"];
-export const GH_PR_CHECKOUT_FIELDS = [
+const GH_PR_CHECKOUT_FIELDS = [
 	"baseRefName",
 	"headRefName",
 	"headRefOid",
@@ -39,7 +39,7 @@ export const GH_PR_CHECKOUT_FIELDS = [
 	"url",
 ];
 
-export function sanitizeRemoteName(value: string): string {
+function sanitizeRemoteName(value: string): string {
 	const sanitized = value
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
@@ -49,13 +49,13 @@ export function sanitizeRemoteName(value: string): string {
 }
 
 /** Maximum disambiguation suffixes we try before giving up on a worktree path. */
-export const WORKTREE_PATH_MAX_SUFFIX = 100;
+const WORKTREE_PATH_MAX_SUFFIX = 100;
 
-export function toLocalBranchRef(value: string): string {
+function toLocalBranchRef(value: string): string {
 	return `refs/heads/${value}`;
 }
 
-export async function requireGitRepoRoot(cwd: string, signal?: AbortSignal): Promise<string> {
+async function requireGitRepoRoot(cwd: string, signal?: AbortSignal): Promise<string> {
 	const repoRoot = await git.repo.root(cwd, signal);
 	if (!repoRoot) {
 		throw new ToolError("Current git repository is unavailable.");
@@ -64,7 +64,7 @@ export async function requireGitRepoRoot(cwd: string, signal?: AbortSignal): Pro
 	return repoRoot;
 }
 
-export async function requirePrimaryGitRepoRoot(cwd: string, signal?: AbortSignal): Promise<string> {
+async function requirePrimaryGitRepoRoot(cwd: string, signal?: AbortSignal): Promise<string> {
 	const primaryRepoRoot = await git.repo.primaryRoot(cwd, signal);
 	if (!primaryRepoRoot) {
 		throw new ToolError("Current git repository is unavailable.");
@@ -84,7 +84,7 @@ export async function requirePrimaryGitRepoRoot(cwd: string, signal?: AbortSigna
  * `git worktree add`, and the (vanishingly unlikely) `hashPath` collision
  * between two repos that happen to produce the same 7-hex digest.
  */
-export async function resolveAvailableWorktreePath(
+async function resolveAvailableWorktreePath(
 	basePath: string,
 	existingWorktrees: git.GitWorktreeEntry[],
 ): Promise<string> {
@@ -107,7 +107,7 @@ export async function resolveAvailableWorktreePath(
 	);
 }
 
-export function selectPrCloneUrl(originUrl: string | undefined, repo: Pick<GhRepoViewData, "url" | "sshUrl">): string {
+function selectPrCloneUrl(originUrl: string | undefined, repo: Pick<GhRepoViewData, "url" | "sshUrl">): string {
 	if (originUrl?.startsWith("http://") || originUrl?.startsWith("https://")) {
 		return normalizeOptionalString(repo.url) ?? normalizeOptionalString(repo.sshUrl) ?? "";
 	}
@@ -115,7 +115,7 @@ export function selectPrCloneUrl(originUrl: string | undefined, repo: Pick<GhRep
 	return normalizeOptionalString(repo.sshUrl) ?? normalizeOptionalString(repo.url) ?? "";
 }
 
-export async function getRemoteUrls(repoRoot: string, signal?: AbortSignal): Promise<Map<string, string>> {
+async function getRemoteUrls(repoRoot: string, signal?: AbortSignal): Promise<Map<string, string>> {
 	const remotes = await git.remote.list(repoRoot, signal);
 	const urls = new Map<string, string>();
 	for (const remoteName of remotes) {
@@ -127,7 +127,7 @@ export async function getRemoteUrls(repoRoot: string, signal?: AbortSignal): Pro
 	return urls;
 }
 
-export async function ensurePrRemote(
+async function ensurePrRemote(
 	repoRoot: string,
 	data: GhPrViewData,
 	signal?: AbortSignal,
@@ -182,7 +182,7 @@ export async function ensurePrRemote(
 	};
 }
 
-export async function resolvePrBranchPushTarget(
+async function resolvePrBranchPushTarget(
 	repoRoot: string,
 	localBranch: string,
 	signal?: AbortSignal,
@@ -228,7 +228,7 @@ export async function resolvePrBranchPushTarget(
 	};
 }
 
-export function formatPrCheckoutResult(options: {
+function formatPrCheckoutResult(options: {
 	data: GhPrViewData;
 	localBranch: string;
 	worktreePath: string;
@@ -260,7 +260,7 @@ export function formatPrCheckoutResult(options: {
 	return lines.join("\n").trim();
 }
 
-export function formatPrPushResult(options: {
+function formatPrPushResult(options: {
 	localBranch: string;
 	remoteName: string;
 	remoteBranch: string;
@@ -280,7 +280,7 @@ export function formatPrPushResult(options: {
 	return lines.join("\n").trim();
 }
 
-export function joinSections(sections: string[]): string[] {
+function joinSections(sections: string[]): string[] {
 	return sections.flatMap((section, idx) => (idx === 0 ? [section] : ["", "---", "", section]));
 }
 
@@ -352,13 +352,13 @@ export async function executePrCheckout(
 	});
 }
 
-export interface PrCheckoutOptions {
+interface PrCheckoutOptions {
 	prRef: string | undefined;
 	repo: string | undefined;
 	force: boolean;
 }
 
-export interface PrCheckoutOutcome {
+interface PrCheckoutOutcome {
 	data: GhPrViewData;
 	localBranch: string;
 	worktreePath: string;
@@ -368,7 +368,7 @@ export interface PrCheckoutOutcome {
 	reused: boolean;
 }
 
-export async function checkoutPullRequest(
+async function checkoutPullRequest(
 	session: ToolSession,
 	signal: AbortSignal | undefined,
 	options: PrCheckoutOptions,
@@ -481,7 +481,7 @@ export async function checkoutPullRequest(
 	);
 }
 
-export function outcomeToSummary(outcome: PrCheckoutOutcome): GhPrCheckoutSummary {
+function outcomeToSummary(outcome: PrCheckoutOutcome): GhPrCheckoutSummary {
 	return {
 		prNumber: typeof outcome.data.number === "number" ? outcome.data.number : undefined,
 		url: outcome.data.url ?? undefined,
@@ -642,7 +642,7 @@ export async function executePrCreate(
 	}
 }
 
-export function formatPrCreateResult(options: {
+function formatPrCreateResult(options: {
 	url: string;
 	prNumber?: number;
 	data?: GhPrViewData;

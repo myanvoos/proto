@@ -29,7 +29,7 @@ const manageSkillSchema = type({
 		ctx.mustBe('used with both "description" and "body" for "create" and "update"'),
 );
 
-export type ManageSkillParams = typeof manageSkillSchema.infer;
+type ManageSkillParams = typeof manageSkillSchema.infer;
 
 /**
  * Direct create/update/delete of isolated managed skills. Gated behind

@@ -21,14 +21,14 @@ import {
  */
 export const CONVERTIBLE_EXTENSIONS: ReadonlySet<string> = new Set([".pdf", ".docx", ".pptx", ".xlsx", ".epub"]);
 
-export interface MarkitConversionResult {
+interface MarkitConversionResult {
 	content: string;
 	ok: boolean;
 	error?: string;
 	cache?: MarkitConversionCacheStatus;
 }
 
-export interface MarkitFileConversionOptions {
+interface MarkitFileConversionOptions {
 	/**
 	 * Directory converters may use for extracted image or diagram files. Since
 	 * those files are conversion side effects, conversions using this option

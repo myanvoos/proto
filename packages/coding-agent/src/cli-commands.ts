@@ -231,7 +231,7 @@ const MARKETPLACE_SUBCOMMANDS: Record<string, true> = { add: true, remove: true,
  * Flags (`-…`) and `@file` arguments in the verb slot are never management
  * commands; those fall through to the default `launch` command.
  */
-export function reservedTopLevelWordMessage(argv: readonly string[]): string | undefined {
+function reservedTopLevelWordMessage(argv: readonly string[]): string | undefined {
 	const first = argv[0];
 	if (!first || first.startsWith("-") || first.startsWith("@")) return undefined;
 	const hint = RESERVED_TOP_LEVEL_WORDS[first];
@@ -257,7 +257,7 @@ export function isSubcommand(first: string | undefined): boolean {
 	return commands.some(entry => entry.name === first || entry.aliases?.includes(first));
 }
 
-export type ResolvedCliArgv = { argv: string[] } | { error: string };
+type ResolvedCliArgv = { argv: string[] } | { error: string };
 
 /**
  * Index of the first argv token that names a registered subcommand, skipping

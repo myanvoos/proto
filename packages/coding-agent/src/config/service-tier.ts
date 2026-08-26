@@ -16,8 +16,8 @@ export const SERVICE_TIER_GOOGLE_VALUES = ["none", "flex", "priority"] as const;
 export const PRIORITY_TIER_LABEL = "priority";
 
 export type ServiceTierOpenAISettingValue = (typeof SERVICE_TIER_OPENAI_VALUES)[number];
-export type ServiceTierAnthropicSettingValue = (typeof SERVICE_TIER_ANTHROPIC_VALUES)[number];
-export type ServiceTierGoogleSettingValue = (typeof SERVICE_TIER_GOOGLE_VALUES)[number];
+type ServiceTierAnthropicSettingValue = (typeof SERVICE_TIER_ANTHROPIC_VALUES)[number];
+type ServiceTierGoogleSettingValue = (typeof SERVICE_TIER_GOOGLE_VALUES)[number];
 
 /** Whether a runtime value is a supported OpenAI service-tier setting. */
 export function isServiceTierOpenAISettingValue(value: string): value is ServiceTierOpenAISettingValue {
@@ -65,7 +65,7 @@ export const SERVICE_TIER_INHERIT_SETTING_VALUES = [
 	"priority",
 ] as const;
 
-export type ServiceTierInheritSettingValue = (typeof SERVICE_TIER_INHERIT_SETTING_VALUES)[number];
+type ServiceTierInheritSettingValue = (typeof SERVICE_TIER_INHERIT_SETTING_VALUES)[number];
 
 export const SERVICE_TIER_OPENAI_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTierOpenAISettingValue>> = [
 	{ value: "none", label: "None", description: "Omit service_tier (standard processing)" },

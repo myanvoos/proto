@@ -262,7 +262,7 @@ async function getReleaseBinaryAsset(
 	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName);
 }
 
-export interface VerifiedBinaryDownloadOptions {
+interface VerifiedBinaryDownloadOptions {
 	url: string;
 	targetPath: string;
 	expectedSize: number;
@@ -1613,26 +1613,4 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 		console.error(chalk.red(`Update failed: ${err}`));
 		process.exit(1);
 	}
-}
-
-/**
- * Print update command help.
- */
-export function printUpdateHelp(): void {
-	console.log(`${chalk.bold(`${BINARY_NAME} update`)} - Check for and install updates
-
-${chalk.bold("Usage:")}
-  ${BINARY_NAME} update [options]
-
-${chalk.bold("Options:")}
-  -c, --check     Check for updates without installing
-  -f, --force     Force reinstall even if up to date
-  -l, --plugins   Update installed plugins
-
-${chalk.bold("Examples:")}
-  ${BINARY_NAME} update              Update to latest version
-  ${BINARY_NAME} update --check      Check if updates are available
-  ${BINARY_NAME} update --force      Force reinstall
-  ${BINARY_NAME} update -l           Update installed plugins
-`);
 }

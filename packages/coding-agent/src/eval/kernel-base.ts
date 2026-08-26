@@ -54,7 +54,7 @@ export interface KernelStartOptions {
 }
 
 /** Per-language configuration handed to {@link BaseKernel} by each subclass. */
-export interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
+interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
 	/** Human-readable language label used in log messages and errors. */
 	languageName: string;
 	/** When true, every IPC frame is logged at debug level. */

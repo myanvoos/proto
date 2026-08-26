@@ -12,7 +12,7 @@ const MIME_LISTING_TARGET = ".";
 
 type PasteReadKind = "image" | "text";
 
-export interface Osc5522Packet {
+interface Osc5522Packet {
 	metadata: Map<string, string>;
 	payload: string;
 }
@@ -34,14 +34,14 @@ interface PasteReadState {
 
 type PasteState = PasteListingState | PasteReadState;
 
-export interface EnhancedPasteHandlers {
+interface EnhancedPasteHandlers {
 	write(data: string): void;
 	pasteText(text: string): void;
 	pasteImage(image: ImageContent): void | Promise<void>;
 	showStatus(message: string): void;
 }
 
-export function isOsc5522Packet(data: string): boolean {
+function isOsc5522Packet(data: string): boolean {
 	return data.startsWith(OSC5522_PREFIX) && (data.endsWith(OSC_TERMINATOR_ST) || data.endsWith(OSC_TERMINATOR_BEL));
 }
 
@@ -63,7 +63,7 @@ function parseMetadata(raw: string): Map<string, string> {
 	return metadata;
 }
 
-export function parseOsc5522Packet(data: string): Osc5522Packet | undefined {
+function parseOsc5522Packet(data: string): Osc5522Packet | undefined {
 	if (!isOsc5522Packet(data)) return undefined;
 	const bodyEnd = data.endsWith(OSC_TERMINATOR_BEL) ? data.length - 1 : data.length - OSC_TERMINATOR_ST.length;
 	const body = data.slice(OSC5522_PREFIX.length, bodyEnd);

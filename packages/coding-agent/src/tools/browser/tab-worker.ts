@@ -168,7 +168,7 @@ const ZERO_MATCH_POLL_MS = 250;
 /** Cleanup must settle inside the supervisor's 750ms post-run grace window. */
 const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
 
-export interface OpTimeouts {
+interface OpTimeouts {
 	/** Largest per-op deadline allowed — strictly below the cell budget. */
 	budgetBound: number;
 	/** Ceiling for quick page reads. */
@@ -317,7 +317,7 @@ function asElementHandle(handle: unknown): ElementHandle | null {
 }
 
 /** ElementHandle enriched with the `fill()` the tool docs promise on handles from `tab.id()`/`tab.ref()`/`tab.waitFor()`. */
-export type ActionableHandle = ElementHandle & { fill(value: string): Promise<void> };
+type ActionableHandle = ElementHandle & { fill(value: string): Promise<void> };
 
 /**
  * Attach `fill()` to a puppeteer ElementHandle before handing it to user code.

@@ -57,7 +57,7 @@ export type SourceMeta =
 /**
  * LSP diagnostic info (for edit/write tools).
  */
-export interface DiagnosticMeta {
+interface DiagnosticMeta {
 	summary: string;
 	messages: string[];
 }
@@ -420,26 +420,6 @@ export function stripRawOutputArtifactNotice(text: string): { text: string; arti
 		text: trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd(),
 		artifactId,
 	};
-}
-
-function isGeneratedOutputNoticeLine(line: string): boolean {
-	if (!line.startsWith("[") || !line.endsWith("]")) return false;
-	const body = line.slice(1, -1);
-	return (
-		body.startsWith("Showing ") ||
-		/^\d+ matches limit reached\. Use limit=\d+ for more/u.test(body) ||
-		/^\d+ results limit reached\. Use limit=\d+ for more/u.test(body) ||
-		body.startsWith("Some lines truncated to ")
-	);
-}
-
-/** Remove a trailing generated output notice when metadata is unavailable. */
-export function stripGeneratedOutputNotice(text: string): string {
-	const trimmed = text.trimEnd();
-	const lineStart = trimmed.lastIndexOf("\n");
-	const candidateStart = lineStart === -1 ? 0 : lineStart + 1;
-	if (!isGeneratedOutputNoticeLine(trimmed.slice(candidateStart))) return text;
-	return trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd();
 }
 
 export function formatTruncationMetaNotice(truncation: TruncationMeta): string {

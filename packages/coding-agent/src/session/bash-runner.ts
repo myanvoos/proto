@@ -10,13 +10,13 @@ import type { BashExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
 /** Destination that owns a bash result after a session or branch transition. */
-export type BashAppendDestination =
+type BashAppendDestination =
 	| { kind: "current"; manager: SessionManager }
 	| { kind: "detached"; manager: SessionManager }
 	| { kind: "branch"; manager: SessionManager; parentId: string | null };
 
 /** Reference-counted session target captured when a bash execution starts. */
-export interface BashSessionTarget {
+interface BashSessionTarget {
 	sessionId: string;
 	refs: number;
 	destination?: BashAppendDestination;
@@ -29,7 +29,7 @@ interface PendingBashMessage {
 }
 
 /** Ownership snapshot spanning a session or branch transition. */
-export interface BashSessionTransition {
+interface BashSessionTransition {
 	oldTarget: BashSessionTarget;
 	newTarget: BashSessionTarget;
 	oldSessionId: string;

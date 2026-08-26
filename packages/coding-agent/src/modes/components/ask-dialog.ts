@@ -66,7 +66,7 @@ function promptTitleContentWidth(): number {
 
 /** Bound a prompt editor title to a fixed row/width budget so long or
  *  multi-line questions stay usable inside the small prompt overlay. */
-export function boundPromptTitle(prefix: string, question: string): string {
+function boundPromptTitle(prefix: string, question: string): string {
 	const width = promptTitleContentWidth();
 	const flat = normalizedInlineInput(`${prefix}${question}`);
 	const wrapped = wrapTextWithAnsi(flat, width);

@@ -23,7 +23,7 @@ import { initializeWithSettings, loadCapability } from "../discovery";
 import { buildRuleFromMarkdown, createSourceMeta } from "../discovery/helpers";
 import type { TtsrManager } from "../export/ttsr";
 
-export type TtsrAction = "test" | "list" | "scan";
+type TtsrAction = "test" | "list" | "scan";
 
 export const TTSR_ACTIONS: TtsrAction[] = ["test", "list", "scan"];
 export const TTSR_SOURCES: TtsrMatchSource[] = ["text", "thinking", "tool"];

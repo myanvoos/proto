@@ -14,13 +14,13 @@ import packageJson from "../../package.json" with { type: "json" };
  * that ships new markdown from `src/markit/converters/*` auto-invalidates the
  * cache without a manual bump here.
  */
-export const MARKIT_CONVERSION_CACHE_VERSION = 1;
-export const MAX_MARKIT_CONVERSION_CACHE_BYTES = 256 * 1024 * 1024;
+const MARKIT_CONVERSION_CACHE_VERSION = 1;
+const MAX_MARKIT_CONVERSION_CACHE_BYTES = 256 * 1024 * 1024;
 /** `.tmp` files older than this are treated as orphaned writes and swept. */
 const TMP_ORPHAN_MAX_AGE_MS = 5 * 60 * 1000;
 export type MarkitConversionCacheStatus = "hit" | "miss" | "skipped";
 
-export type MarkitConversionCacheReadResult = { status: "hit"; content: string } | { status: "miss" };
+type MarkitConversionCacheReadResult = { status: "hit"; content: string } | { status: "miss" };
 
 interface MarkitConversionCacheEntry {
 	version: number;

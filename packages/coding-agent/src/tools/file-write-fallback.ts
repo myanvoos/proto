@@ -175,7 +175,7 @@ export type FileWriteFallbackHandler = (req: FileWriteFallbackRequest, ctx: Exte
 type BoundFileWriteFallbackHandler = (req: FileWriteFallbackRequest) => Promise<boolean>;
 
 /** A denied unlink, captured for a registered fallback to perform through a privileged channel. */
-export interface FileDeleteFallbackRequest {
+interface FileDeleteFallbackRequest {
 	/**
 	 * Absolute, symlink-resolved path the unlink was denied for.
 	 *

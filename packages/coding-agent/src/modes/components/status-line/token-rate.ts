@@ -1,4 +1,4 @@
-export const MIN_RATE_DURATION_MS = 100;
+const MIN_RATE_DURATION_MS = 100;
 
 export function tokensPerSecond(outputTokens: number, durationMs: number | null | undefined): number | null {
 	if (!Number.isFinite(outputTokens) || outputTokens <= 0) return null;

@@ -19,7 +19,7 @@ const SummaryTool = {
 	parameters: SummaryToolSchema,
 };
 
-export interface SummaryInput {
+interface SummaryInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

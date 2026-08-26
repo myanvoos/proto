@@ -163,7 +163,7 @@ async function callGoogleHtml(params: SearchParams, numResults: number): Promise
 }
 
 /** Execute a Google web search with fetch-first loading and a headless-browser fallback. */
-export async function searchGoogle(params: SearchParams): Promise<SearchResponse> {
+async function searchGoogle(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callGoogleHtml(params, numResults);
 	const parsed = parseHtmlResults(html);

@@ -48,7 +48,7 @@ const AT_IMPORT_REGEX = /(^|[ \t])@([./~A-Za-z0-9_-][^\s]*)/g;
  */
 const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 
-export interface ExpandAtImportsOptions {
+interface ExpandAtImportsOptions {
 	/** Maximum hop depth (default: {@link MAX_AT_IMPORT_DEPTH}). */
 	maxDepth?: number;
 	/** Override the home directory used to resolve `~/...` (default: `os.homedir()`). */

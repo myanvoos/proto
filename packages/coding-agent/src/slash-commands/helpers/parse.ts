@@ -1,13 +1,13 @@
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 
-export interface ParsedSubcommand {
+interface ParsedSubcommand {
 	verb: string;
 	rest: string;
 }
 
-export type ConfigScope = "user" | "project";
+type ConfigScope = "user" | "project";
 
-export interface NamedScopeArgs {
+interface NamedScopeArgs {
 	name?: string;
 	scope: ConfigScope;
 	error?: string;

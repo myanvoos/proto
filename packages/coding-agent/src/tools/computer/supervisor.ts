@@ -39,7 +39,7 @@ export interface ComputerWorkerHandle {
 }
 
 /** Startup and shutdown deadlines for a computer worker. */
-export interface ComputerSupervisorTimeouts {
+interface ComputerSupervisorTimeouts {
 	startMs: number;
 	closeMs: number;
 }
@@ -50,14 +50,14 @@ const DEFAULT_TIMEOUTS: ComputerSupervisorTimeouts = {
 };
 
 /** Dispatches a tool call requested from desktop JavaScript. */
-export type ComputerSessionToolCaller = (
+type ComputerSessionToolCaller = (
 	name: string,
 	args: unknown,
 	options: { session: ToolSession; signal?: AbortSignal; emitStatus?: () => void },
 ) => Promise<unknown>;
 
 /** Creates an isolated computer worker handle. */
-export type ComputerWorkerFactory = () => ComputerWorkerHandle;
+type ComputerWorkerFactory = () => ComputerWorkerHandle;
 
 interface PendingRun {
 	resolve(value: ComputerRunOk): void;
@@ -98,7 +98,7 @@ function wrapWorker(worker: Worker): ComputerWorkerHandle {
 }
 
 /** Spawns the computer worker through the active CLI host when available. */
-export function spawnComputerWorker(): ComputerWorkerHandle {
+function spawnComputerWorker(): ComputerWorkerHandle {
 	const hostEntry = workerHostEntry();
 	const worker = hostEntry
 		? new Worker(hostEntry, { type: "module", argv: [COMPUTER_WORKER_ARG] })

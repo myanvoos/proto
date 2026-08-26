@@ -94,7 +94,7 @@ export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: st
  * here to cancel it (#8634). Hiding it would match the badge count to nothing
  * and remove the only discovery path for the id.
  */
-export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
+function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
 	const registry = session.agentRegistry;
 	if (!registry) return [];
 	const selfId = session.getAgentId?.() ?? undefined;

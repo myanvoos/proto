@@ -70,7 +70,7 @@ async function callSyntheticSearch(
 }
 
 /** Execute Synthetic web search. */
-export async function searchSynthetic(params: SearchParamsWithFetch): Promise<SearchResponse> {
+async function searchSynthetic(params: SearchParamsWithFetch): Promise<SearchResponse> {
 	const keyOrResolver: ApiKey = params.authStorage.resolver("synthetic", {
 		sessionId: params.sessionId,
 	});

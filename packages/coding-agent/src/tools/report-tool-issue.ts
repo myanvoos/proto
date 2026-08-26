@@ -45,20 +45,11 @@ import { ToolError } from "./tool-errors";
 import type { XdevDispatch } from "./xdev";
 
 export const REPORT_ISSUE_DEVICE_NAME = "report_issue";
-export const REPORT_ISSUE_DEVICE_PATH = `xd://${REPORT_ISSUE_DEVICE_NAME}`;
+const REPORT_ISSUE_DEVICE_PATH = `xd://${REPORT_ISSUE_DEVICE_NAME}`;
 
 /** Usage text for `read xd://report_issue`. */
 export function reportIssueDeviceUsage(): string {
 	return `Write \`<tool>: <concise description>\` as plain text to ${REPORT_ISSUE_DEVICE_PATH}. A two-line fallback also works: tool name on line 1, report body below.`;
-}
-
-/** Whether a tool call writes to `xd://report_issue`. */
-export function isReportIssueToolCall(toolCall: { name: string; arguments?: Record<string, unknown> }): boolean {
-	if (toolCall.name !== "write") return false;
-	const args = toolCall.arguments;
-	const path =
-		typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : undefined;
-	return path === REPORT_ISSUE_DEVICE_PATH || path === `${REPORT_ISSUE_DEVICE_PATH}/`;
 }
 
 /** Call preview for an `xd://report_issue` write. */
@@ -135,7 +126,7 @@ export function isAutoQaEnabled(settings?: Settings): boolean {
  * tests, non-interactive runs) consent defaults to `false` — the explicit
  * "don't collect by default" stance.
  */
-export type AutoQaConsentHandler = () => Promise<boolean | null>;
+type AutoQaConsentHandler = () => Promise<boolean | null>;
 
 let consentHandler: AutoQaConsentHandler | null = null;
 /**
@@ -314,7 +305,7 @@ export interface FlushResult {
  * progress to a TTY and to skip the user-facing consent gate (manual
  * pushes are the user's explicit intent, not a side effect of a device write).
  */
-export interface FlushOptions {
+interface FlushOptions {
 	/**
 	 * Skip the `dev.autoqaConsent === "granted"` gate in
 	 * {@link resolvePushConfig}. Endpoint configuration is still required.

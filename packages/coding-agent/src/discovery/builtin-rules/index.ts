@@ -37,7 +37,7 @@ import tsRedundantClearGuard from "./ts-redundant-clear-guard.md" with { type: "
 import tsSetMap from "./ts-set-map.md" with { type: "text" };
 
 /** A bundled rule's stable name and raw markdown (frontmatter + body). */
-export interface BuiltinRuleSource {
+interface BuiltinRuleSource {
 	name: string;
 	content: string;
 }

@@ -32,7 +32,7 @@ import { clampTimeout } from "./tool-timeouts";
 export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
 
 /** Language tokens the eval tool accepts, in stable display order. */
-export type EvalLanguageToken = "py" | "js" | "rb" | "jl";
+type EvalLanguageToken = "py" | "js" | "rb" | "jl";
 const EVAL_LANGUAGE_ORDER: readonly EvalLanguageToken[] = ["py", "js", "rb", "jl"];
 const EVAL_LANGUAGE_RUNTIME: Record<EvalLanguageToken, string> = {
 	py: '"py" for the IPython kernel',
@@ -103,13 +103,12 @@ const evalCellCommonFields = {
  * the full language union for typing; {@link buildEvalSchema} narrows the wire
  * copy per session so disabled backends are never advertised to the model.
  */
-export const evalSchema = type({
+const evalSchema = type({
 	language: type("'py' | 'js' | 'rb' | 'jl'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
 	...evalCellCommonFields,
 	code: type("string").describe(describeCodeField(EVAL_LANGUAGE_ORDER)),
 });
-export type EvalToolParams = typeof evalSchema.infer;
-export type EvalCellInput = EvalToolParams;
+type EvalToolParams = typeof evalSchema.infer;
 
 /**
  * Build a session-scoped copy of the eval schema whose `language` enum and field
@@ -127,12 +126,12 @@ function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema
 	return schema as unknown as typeof evalSchema;
 }
 
-export type EvalToolResult = {
+type EvalToolResult = {
 	content: Array<{ type: "text"; text: string }>;
 	details: EvalToolDetails | undefined;
 };
 
-export type EvalProxyExecutor = (params: EvalToolParams, signal?: AbortSignal) => Promise<EvalToolResult>;
+type EvalProxyExecutor = (params: EvalToolParams, signal?: AbortSignal) => Promise<EvalToolResult>;
 
 /** Cap per `display()` value sent back to the model. */
 const MAX_DISPLAY_TEXT_BYTES = 8000;
@@ -166,7 +165,7 @@ function formatDisplayOutputsForText(outputs: EvalDisplayOutput[]): string {
 	return chunks.join("\n\n");
 }
 
-export interface EvalToolDescriptionOptions {
+interface EvalToolDescriptionOptions {
 	py?: boolean;
 	js?: boolean;
 	rb?: boolean;
@@ -198,7 +197,7 @@ export function getEvalToolDescription(options: EvalToolDescriptionOptions = {})
 	});
 }
 
-export interface EvalToolOptions {
+interface EvalToolOptions {
 	proxyExecutor?: EvalProxyExecutor;
 }
 

@@ -20,47 +20,39 @@ export type JTDPrimitive =
 	| "int32"
 	| "uint32";
 
-export interface JTDType {
+interface JTDType {
 	type: JTDPrimitive;
 }
 
-export interface JTDEnum {
+interface JTDEnum {
 	enum: string[];
 }
 
-export interface JTDElements {
+interface JTDElements {
 	elements: JTDSchema;
 }
 
-export interface JTDValues {
+interface JTDValues {
 	values: JTDSchema;
 }
 
-export interface JTDProperties {
+interface JTDProperties {
 	properties?: Record<string, JTDSchema>;
 	optionalProperties?: Record<string, JTDSchema>;
 }
 
-export interface JTDDiscriminator {
+interface JTDDiscriminator {
 	discriminator: string;
 	mapping: Record<string, JTDProperties>;
 }
 
-export interface JTDRef {
+interface JTDRef {
 	ref: string;
 }
 
-export interface JTDEmpty {}
+interface JTDEmpty {}
 
-export type JTDSchema =
-	| JTDType
-	| JTDEnum
-	| JTDElements
-	| JTDValues
-	| JTDProperties
-	| JTDDiscriminator
-	| JTDRef
-	| JTDEmpty;
+type JTDSchema = JTDType | JTDEnum | JTDElements | JTDValues | JTDProperties | JTDDiscriminator | JTDRef | JTDEmpty;
 
 // Type guards
 

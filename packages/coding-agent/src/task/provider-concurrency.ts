@@ -33,7 +33,7 @@ const providerSemaphores = new Map<string, ProviderSemaphoreEntry>();
  * "unlimited" and maps to `Infinity` — still a tracked ceiling, so every run
  * holds a slot and a later finite resize counts work started while unlimited.
  */
-export function getProviderConcurrencyLimit(settings: Settings, provider: string): number | undefined {
+function getProviderConcurrencyLimit(settings: Settings, provider: string): number | undefined {
 	const settingPath = PROVIDER_MAX_CONCURRENCY_SETTINGS[provider];
 	if (!settingPath) return undefined;
 	const raw = settings.get(settingPath);
@@ -47,7 +47,7 @@ export function getProviderConcurrencyLimit(settings: Settings, provider: string
  * semaphore would orphan in-flight slots on the old instance and let a
  * runtime or mixed limit value exceed the cap (issue #3464 review feedback).
  */
-export function getProviderSemaphore(settings: Settings, provider: string): Semaphore | undefined {
+function getProviderSemaphore(settings: Settings, provider: string): Semaphore | undefined {
 	const limit = getProviderConcurrencyLimit(settings, provider);
 	if (limit === undefined) return undefined;
 	const existing = providerSemaphores.get(provider);

@@ -17,7 +17,7 @@ const MIN_TREE_ROWS = 3;
 /** Fixed chrome rows: top border, two dividers, footer, bottom border. */
 const CHROME_ROWS = 5;
 
-export interface CopySelectorCallbacks {
+interface CopySelectorCallbacks {
 	/** A copy target was chosen — copy its `content`. */
 	onPick: (target: CopyTarget) => void;
 	/** The picker was dismissed. */

@@ -31,7 +31,7 @@ interface CategoryInfo {
 	glyph: string;
 }
 
-export interface ContextBreakdown {
+interface ContextBreakdown {
 	model: Model | undefined;
 	contextWindow: number;
 	categories: CategoryInfo[];
@@ -41,7 +41,7 @@ export interface ContextBreakdown {
 }
 
 /** Percent positions (0–100 of the context window) for the auto-compaction boundaries. */
-export interface CompactionBoundaries {
+interface CompactionBoundaries {
 	/** Where auto-compaction fires. */
 	thresholdPercent: number;
 	/**

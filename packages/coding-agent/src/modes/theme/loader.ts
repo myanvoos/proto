@@ -150,7 +150,6 @@ export interface CreateThemeOptions {
 /** HSV adjustment to shift green toward blue for colorblind mode (red-green colorblindness) */
 const COLORBLIND_ADJUSTMENT = { h: 60, s: 0.71 };
 const QUIET_TOKEN_DEFAULTS = {
-	sessionAccent: "accent",
 	modeAccent: "accent",
 	shareAccent: "accent",
 	infoAccent: "muted",

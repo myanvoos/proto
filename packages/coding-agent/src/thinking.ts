@@ -10,7 +10,7 @@ export { CLI_THINKING_LEVELS } from "./cli/thinking-levels";
 /**
  * Metadata used to render thinking selector values in the coding-agent UI.
  */
-export interface ThinkingLevelMetadata {
+interface ThinkingLevelMetadata {
 	value: ThinkingLevel;
 	label: string;
 	description: string;

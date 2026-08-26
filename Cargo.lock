@@ -4359,7 +4359,6 @@ version = "18.0.0"
 dependencies = [
  "anyhow",
  "ast-grep-core",
- "globset",
  "ignore",
  "phf 0.13.1",
  "serde",
@@ -4448,7 +4447,6 @@ dependencies = [
  "flume",
  "foldhash 0.2.0",
  "fs_extra",
- "futures",
  "glob",
  "globset",
  "grep-cli",
@@ -4495,7 +4493,6 @@ dependencies = [
  "similar 3.2.0",
  "smallvec",
  "strum",
- "strum_macros",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4523,13 +4520,10 @@ dependencies = [
 name = "pi-natives"
 version = "18.0.0"
 dependencies = [
- "anyhow",
  "arboard",
  "ashpd",
  "ast-grep-core",
  "atspi",
- "base64 0.22.1",
- "clap",
  "core-graphics",
  "fancy-regex 0.16.2",
  "flume",
@@ -4543,7 +4537,6 @@ dependencies = [
  "heapless",
  "html-to-markdown-rs",
  "icy_sixel",
- "ignore",
  "image",
  "inferno",
  "libc",
@@ -4564,7 +4557,6 @@ dependencies = [
  "pi-shell",
  "pi-walker",
  "pipewire",
- "png",
  "portable-pty",
  "rayon",
  "regex",
@@ -4576,8 +4568,6 @@ dependencies = [
  "tempfile",
  "tiktoken-rs",
  "tokio",
- "tokio-util",
- "toml",
  "x11rb",
  "xcap",
  "xkeysym",
@@ -4595,7 +4585,6 @@ dependencies = [
  "brush-core",
  "brush-parser 0.3.0",
  "bytes",
- "clap",
  "flume",
  "jiff",
  "libc",
@@ -4620,7 +4609,6 @@ dependencies = [
  "globset",
  "ignore",
  "libc",
- "parking_lot",
  "rayon",
 ]
 

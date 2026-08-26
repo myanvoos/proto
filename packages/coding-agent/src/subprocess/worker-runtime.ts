@@ -26,7 +26,7 @@ import packageJson from "../../package.json" with { type: "json" };
  * concrete transport satisfies them.
  */
 
-export const TRANSFORMERS_PACKAGE = "@huggingface/transformers";
+const TRANSFORMERS_PACKAGE = "@huggingface/transformers";
 const COMPILED_TRANSFORMERS_VERSION = process.env.PI_TINY_TRANSFORMERS_VERSION;
 const ONNX_RUNTIME_NODE_PACKAGE = "onnxruntime-node";
 const ONNX_RUNTIME_CUDA_INSTALL = "cuda12";
@@ -51,10 +51,10 @@ export function errorMessage(error: unknown): string {
 
 // ── Structured logging ──────────────────────────────────────────────
 
-export type WorkerLogLevel = "debug" | "warn" | "error";
+type WorkerLogLevel = "debug" | "warn" | "error";
 
 /** Minimal transport surface a worker exposes for forwarding log lines. */
-export interface WorkerLogTransport {
+interface WorkerLogTransport {
 	send(message: { type: "log"; level: WorkerLogLevel; msg: string; meta?: Record<string, unknown> }): void;
 }
 
@@ -74,7 +74,7 @@ export function sendLog(
  * shape with its own `modelKey` type; this is the parameterized version the
  * shared helpers emit, structurally assignable to each protocol's event.
  */
-export interface WorkerProgressEvent<K> {
+interface WorkerProgressEvent<K> {
 	modelKey: K;
 	status: "initiate" | "download" | "progress" | "progress_total" | "done" | "ready" | "error";
 	name?: string;
@@ -88,7 +88,7 @@ export interface WorkerProgressEvent<K> {
 }
 
 /** Minimal transport surface a worker exposes for emitting progress events. */
-export interface WorkerProgressTransport<K> {
+interface WorkerProgressTransport<K> {
 	send(message: { type: "progress"; id: string; event: WorkerProgressEvent<K> }): void;
 }
 
@@ -164,7 +164,7 @@ export function replayCachedReady<K, M>(
  * runtime's bare requires resolve against its own `node_modules`. Returns the
  * runtime's `node_modules` directory.
  */
-export async function installSharpStubResolver(runtimeDir: string): Promise<string> {
+async function installSharpStubResolver(runtimeDir: string): Promise<string> {
 	const nodeModules = path.join(runtimeDir, "node_modules");
 	const sharpStub = path.join(runtimeDir, "proto-sharp-stub.cjs");
 	await Bun.write(sharpStub, "module.exports = {};\n");

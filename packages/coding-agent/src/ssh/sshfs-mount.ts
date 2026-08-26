@@ -76,7 +76,7 @@ async function unmountPath(path: string): Promise<boolean> {
 	return result.exitCode === 0;
 }
 
-export function hasSshfs(): boolean {
+function hasSshfs(): boolean {
 	return $which("sshfs") !== null;
 }
 
@@ -130,21 +130,6 @@ export async function mountRemote(host: SSHConnectionTarget, remotePath = "/"): 
 
 	mountedPaths.add(mountPath);
 	return mountPath;
-}
-
-export async function unmountRemote(host: SSHConnectionTarget): Promise<boolean> {
-	const mountPath = getMountPath(host);
-	if (!(await isMounted(mountPath))) {
-		mountedPaths.delete(mountPath);
-		return false;
-	}
-
-	const success = await unmountPath(mountPath);
-	if (success) {
-		mountedPaths.delete(mountPath);
-	}
-
-	return success;
 }
 
 export async function unmountAll(): Promise<void> {

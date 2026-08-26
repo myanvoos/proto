@@ -10,7 +10,6 @@ import {
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
 	onModelRolesChanged,
-	onStatusLineSessionAccentChanged,
 	resetSettingsForTest,
 	type SettingPath,
 	Settings,
@@ -605,38 +604,6 @@ describe("Settings", () => {
 			expect(Settings.isolated({ inlineToolDescriptors: true }).get("inlineToolDescriptors")).toBe("on");
 			expect(Settings.isolated({ inlineToolDescriptors: false }).get("inlineToolDescriptors")).toBe("off");
 			expect(Settings.isolated().get("inlineToolDescriptors")).toBe("auto");
-		});
-	});
-
-	describe("statusLine.sessionAccent hooks", () => {
-		it("notifies subscribers only when the effective value changes", () => {
-			const isolated = Settings.isolated();
-			const values: boolean[] = [];
-			const unsubscribe = onStatusLineSessionAccentChanged(() => {
-				values.push(isolated.get("statusLine.sessionAccent"));
-			});
-
-			try {
-				isolated.set("statusLine.sessionAccent", true);
-				expect(values).toEqual([]);
-
-				isolated.set("statusLine.sessionAccent", false);
-				expect(values).toEqual([false]);
-
-				isolated.override("statusLine.sessionAccent", false);
-				expect(values).toEqual([false]);
-
-				isolated.override("statusLine.sessionAccent", true);
-				expect(values).toEqual([false, true]);
-
-				isolated.clearOverride("statusLine.sessionAccent");
-				expect(values).toEqual([false, true, false]);
-			} finally {
-				unsubscribe();
-			}
-
-			isolated.set("statusLine.sessionAccent", true);
-			expect(values).toEqual([false, true, false]);
 		});
 	});
 

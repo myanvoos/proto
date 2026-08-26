@@ -13,7 +13,6 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import {
 	type AnyUiMetadata,
-	getDefault,
 	getEnumValues,
 	getPathsForTab,
 	getType,
@@ -49,35 +48,35 @@ interface BaseSettingDef {
 	condition?: () => boolean;
 }
 
-export interface BooleanSettingDef extends BaseSettingDef {
+interface BooleanSettingDef extends BaseSettingDef {
 	type: "boolean";
 }
 
-export interface EnumSettingDef extends BaseSettingDef {
+interface EnumSettingDef extends BaseSettingDef {
 	type: "enum";
 	values: readonly string[];
 }
 
 type OptionList = ReadonlyArray<SubmenuOption>;
 
-export interface SubmenuSettingDef extends BaseSettingDef {
+interface SubmenuSettingDef extends BaseSettingDef {
 	type: "submenu";
 	options: OptionList;
 	onPreview?: (value: string) => void;
 	onPreviewCancel?: (originalValue: string) => void;
 }
 
-export interface TextInputSettingDef extends BaseSettingDef {
+interface TextInputSettingDef extends BaseSettingDef {
 	type: "text";
 	secret: boolean;
 }
 
-export interface ProviderLimitsSettingDef extends BaseSettingDef {
+interface ProviderLimitsSettingDef extends BaseSettingDef {
 	type: "providerLimits";
 }
 
 /** Array-of-enum setting edited as a toggle list; `ordered` lists render positions and support reordering. */
-export interface MultiSelectSettingDef extends BaseSettingDef {
+interface MultiSelectSettingDef extends BaseSettingDef {
 	type: "multiselect";
 	options: OptionList;
 	ordered: boolean;
@@ -206,7 +205,7 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 let cachedDefs: SettingDef[] | null = null;
 
 /** Get all setting definitions with UI */
-export function getAllSettingDefs(): SettingDef[] {
+function getAllSettingDefs(): SettingDef[] {
 	if (cachedDefs) return cachedDefs;
 
 	const defs: SettingDef[] = [];
@@ -239,12 +238,4 @@ export function getSettingsForTab(tab: SettingTab): SettingDef[] {
 /** Get a setting definition by path */
 export function getSettingDef(path: SettingPath): SettingDef | undefined {
 	return getAllSettingDefs().find(def => def.path === path);
-}
-
-/** Get default value for display */
-export function getDisplayDefault(path: SettingPath): string {
-	const value = getDefault(path);
-	if (value === undefined) return "";
-	if (typeof value === "boolean") return value ? "true" : "false";
-	return String(value);
 }

@@ -226,9 +226,7 @@ pub struct WalkFilter {
 enum WalkFilterKind {
 	All,
 	Files,
-	Dirs,
 }
-
 impl Default for WalkFilter {
 	fn default() -> Self {
 		Self::all()
@@ -292,17 +290,6 @@ impl WalkFilter {
 		}
 	}
 
-	/// Return a filter that emits only directories.
-	pub const fn dirs_only() -> Self {
-		Self {
-			kind: WalkFilterKind::Dirs,
-			max_file_size: None,
-			skip_node_modules_unless_seen: false,
-			mentions_node_modules: false,
-			glob: None,
-		}
-	}
-
 	/// Limit emitted regular files to `max_file_size` bytes.
 	pub const fn max_file_size(mut self, max_file_size: u64) -> Self {
 		self.max_file_size = Some(max_file_size);
@@ -344,12 +331,12 @@ impl WalkFilter {
 		}) {
 			return false;
 		}
-		let accepts_kind = match self.kind {
-			WalkFilterKind::All => true,
-			WalkFilterKind::Files => entry.file_type == FileType::File,
-			WalkFilterKind::Dirs => entry.file_type == FileType::Dir,
-		};
-		accepts_kind && self.accepts_path(&entry.path)
+		match self.kind {
+			WalkFilterKind::All => self.accepts_path(&entry.path),
+			WalkFilterKind::Files => {
+				entry.file_type == FileType::File && self.accepts_path(&entry.path)
+			},
+		}
 	}
 
 	fn stream_decision(&self, meta: &EntryMeta<'_>) -> WalkDecision {
@@ -374,7 +361,6 @@ impl WalkFilter {
 		let accepts_kind = match self.kind {
 			WalkFilterKind::All => true,
 			WalkFilterKind::Files => meta.file_type == FileType::File,
-			WalkFilterKind::Dirs => meta.file_type == FileType::Dir,
 		};
 		if !accepts_kind {
 			return WalkDecision::Skip;
@@ -443,19 +429,6 @@ pub struct EntryMeta<'a> {
 }
 
 impl<'a> EntryMeta<'a> {
-	/// Build metadata for an owned collected entry.
-	pub fn from_collected(root: &'a Path, entry: &'a CollectedEntry) -> Self {
-		Self {
-			root,
-			absolute_path: Cow::Owned(entry.absolute_path(root)),
-			relative_path: &entry.path,
-			file_type: entry.file_type,
-			mtime: entry.mtime,
-			size: entry.size,
-			depth: entry.depth(),
-		}
-	}
-
 	/// Build metadata for a borrowed streaming entry.
 	pub const fn from_entry(root: &'a Path, entry: &Entry<'a>) -> Self {
 		Self {
@@ -738,12 +711,6 @@ impl WalkRequest {
 		self
 	}
 
-	/// Remove any high-level entry limit.
-	pub const fn no_limit(mut self) -> Self {
-		self.limit = None;
-		self
-	}
-
 	/// Set empty cached-result revalidation policy.
 	pub const fn empty_recheck(mut self, empty_recheck: EmptyRecheck) -> Self {
 		self.empty_recheck = empty_recheck;
@@ -781,19 +748,6 @@ impl WalkRequest {
 		self.collect_with_rank_and_limit(None, self.limit, heartbeat)
 	}
 
-	/// Collect owned entries, apply high-level filters, rank, then truncate to
-	/// `limit`.
-	///
-	/// The request's stored [`WalkRequest::limit`] is intentionally not applied
-	/// before ranking; `limit` is the top-N bound for this ranked collection.
-	pub fn collect_ranked(
-		&self,
-		rank: WalkRank,
-		limit: usize,
-	) -> std::result::Result<WalkOutcome, WalkError<String>> {
-		self.collect_ranked_with_heartbeat(rank, limit, || Ok::<(), Infallible>(()))
-	}
-
 	/// Collect owned entries with a caller-supplied heartbeat, apply high-level
 	/// filters, rank, then truncate to `limit`.
 	///
@@ -813,11 +767,6 @@ impl WalkRequest {
 		self.collect_with_rank_and_limit(Some(rank), Some(limit), heartbeat)
 	}
 
-	/// Collect regular files accepted by this request.
-	pub fn collect_files(&self) -> std::result::Result<Vec<CollectedEntry>, WalkError<String>> {
-		self.collect_files_with_heartbeat(|| Ok::<(), Infallible>(()))
-	}
-
 	/// Collect regular files accepted by this request with a caller-supplied
 	/// heartbeat.
 	pub fn collect_files_with_heartbeat<E, H>(
@@ -834,11 +783,6 @@ impl WalkRequest {
 			.into_iter()
 			.filter(CollectedEntry::is_file)
 			.collect())
-	}
-
-	/// Collect directories accepted by this request.
-	pub fn collect_dirs(&self) -> std::result::Result<Vec<CollectedEntry>, WalkError<String>> {
-		self.collect_dirs_with_heartbeat(|| Ok::<(), Infallible>(()))
 	}
 
 	/// Collect directories accepted by this request with a caller-supplied
@@ -901,33 +845,6 @@ impl WalkRequest {
 		H: FnMut() -> std::result::Result<(), V::Error>,
 	{
 		self.stream_with_predicate_and_heartbeat(visitor, IncludeAllPredicate, heartbeat)
-	}
-
-	/// Stream accepted entries through a closure after applying high-level
-	/// filters and limits.
-	///
-	/// This is the closure-based counterpart to [`WalkRequest::stream`]. The
-	/// closure receives borrowed [`EntryMeta`] for each entry that passes this
-	/// request's static [`WalkFilter`] and dynamic request limit, then returns a
-	/// [`WalkDecision`] to control traversal. [`WalkDecision::Include`] and
-	/// [`WalkDecision::Skip`] both continue because the entry has already been
-	/// delivered to the closure; [`WalkDecision::SkipDescend`] prunes the
-	/// current directory's descendants, and [`WalkDecision::Stop`] stops
-	/// traversal.
-	///
-	/// Directory-open errors are ignored and traversal continues when
-	/// [`WalkOptions::directory_errors`] is [`DirectoryErrorMode::Visit`]. Use
-	/// [`WalkRequest::for_each_entry_with_heartbeat`] to observe those errors or
-	/// provide a heartbeat.
-	pub fn for_each_entry<E, V>(&self, visit: V) -> std::result::Result<WalkStatus, WalkError<E>>
-	where
-		V: for<'entry> FnMut(EntryMeta<'entry>) -> std::result::Result<WalkDecision, E>,
-	{
-		self.for_each_entry_with_heartbeat(
-			|| Ok::<(), E>(()),
-			visit,
-			|_| Ok::<WalkDecision, E>(WalkDecision::Include),
-		)
 	}
 
 	/// Stream accepted entries through closures with a caller-supplied
@@ -996,17 +913,6 @@ impl WalkRequest {
 		walk_entries(&self.root, options, &mut adapter, &mut heartbeat)
 	}
 
-	/// Run `operation` for each accepted regular file.
-	pub fn for_each_file<E>(
-		&self,
-		operation: impl Fn(&Path) -> std::result::Result<(), E> + Send + Sync,
-	) -> std::result::Result<WalkStats, WalkError<String>>
-	where
-		E: fmt::Display + Send,
-	{
-		self.for_each_file_with_heartbeat(operation, || Ok::<(), Infallible>(()))
-	}
-
 	/// Run `operation` for each accepted regular file with a caller-supplied
 	/// heartbeat.
 	pub fn for_each_file_with_heartbeat<E, HE, H>(
@@ -1020,17 +926,6 @@ impl WalkRequest {
 		HE: fmt::Display,
 	{
 		self.for_each_file_candidate_with_heartbeat(|candidate| operation(&candidate.path), heartbeat)
-	}
-
-	/// Run `operation` for each accepted regular-file candidate.
-	pub fn for_each_file_candidate<E>(
-		&self,
-		operation: impl Fn(&FileCandidate) -> std::result::Result<(), E> + Send + Sync,
-	) -> std::result::Result<WalkStats, WalkError<String>>
-	where
-		E: fmt::Display + Send,
-	{
-		self.for_each_file_candidate_with_heartbeat(operation, || Ok::<(), Infallible>(()))
 	}
 
 	/// Run `operation` for each accepted regular-file candidate with a
@@ -1792,13 +1687,6 @@ pub fn sort_collected_depth_first(entries: &mut [CollectedEntry]) {
 	entries.sort_unstable_by(|left, right| compare_depth_first_paths(&left.path, &right.path));
 }
 
-/// Return whether `relative` is below any pruned normalized directory path.
-pub fn is_under_pruned_relative_dir(relative: &str, pruned_dirs: &[String]) -> bool {
-	pruned_dirs
-		.iter()
-		.any(|dir| is_relative_ancestor(dir, relative))
-}
-
 /// Return the root device id used by same-filesystem traversal filters.
 ///
 /// Non-Unix platforms return `None`, making same-filesystem filtering a no-op.
@@ -2439,14 +2327,6 @@ where
 			.sort_unstable_by(|a, b| a.path.cmp(&b.path));
 	}
 	Ok(CollectedEntries { entries: collector.entries, cache_age_ms: 0 })
-}
-
-/// Scans entries without cancellation using platform syscalls when supported.
-pub fn collect_entries_without_heartbeat(
-	root: &Path,
-	options: WalkOptions,
-) -> std::result::Result<CollectedEntries, WalkError<String>> {
-	collect_entries(root, options, || Ok::<(), Infallible>(()))
 }
 
 /// Streams entries using the native scanner for every [`WalkOptions`]

@@ -25,7 +25,7 @@ export interface RetryFallbackSelector {
 }
 
 /** Minimal model lookup needed by fallback-chain resolution. */
-export interface RetryFallbackModelLookup {
+interface RetryFallbackModelLookup {
 	find(provider: string, id: string): Model | undefined;
 	hasProvider(provider: string): boolean;
 }

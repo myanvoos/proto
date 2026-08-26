@@ -75,7 +75,7 @@ export interface NativeDesktopSession {
 }
 
 /** Creates the native session co-located with the computer worker runtime. */
-export type NativeDesktopSessionFactory = (options: DesktopSessionOptions) => NativeDesktopSession;
+type NativeDesktopSessionFactory = (options: DesktopSessionOptions) => NativeDesktopSession;
 
 type WindowFilter = { app?: string; title?: string };
 type DeliveryOptions = { delivery?: string };

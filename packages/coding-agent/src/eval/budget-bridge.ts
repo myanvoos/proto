@@ -12,7 +12,7 @@ import type { JsStatusEvent } from "./js/shared/types";
 /** Synthetic bridge name reserved for the `budget` helper across both runtimes. */
 export const EVAL_BUDGET_BRIDGE_NAME = "__budget__";
 
-export interface EvalBudgetBridgeOptions {
+interface EvalBudgetBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;

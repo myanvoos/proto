@@ -80,12 +80,12 @@ export interface ExposureHealthProbeOptions {
 const SSH_READY_GRACE_MS = 1_500;
 
 /** First `https://<sub>.trycloudflare.com` origin in a cloudflared log line. */
-export function parseCloudflaredUrl(line: string): string | null {
+function parseCloudflaredUrl(line: string): string | null {
 	return /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(line)?.[0] ?? null;
 }
 
 /** Public URL from an ngrok `--log-format json` line (`started tunnel`). */
-export function parseNgrokUrl(line: string): string | null {
+function parseNgrokUrl(line: string): string | null {
 	if (!line.includes('"url"')) return null;
 	try {
 		const parsed = JSON.parse(line) as { msg?: string; url?: string };
@@ -97,7 +97,7 @@ export function parseNgrokUrl(line: string): string | null {
 }
 
 /** Funnel URL from `tailscale funnel` foreground output. */
-export function parseTailscaleUrl(line: string): string | null {
+function parseTailscaleUrl(line: string): string | null {
 	const match = /https:\/\/[a-z0-9.-]+\.ts\.net[^\s|]*/.exec(line);
 	return match ? match[0].replace(/\/+$/, "") : null;
 }

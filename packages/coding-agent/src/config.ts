@@ -28,7 +28,7 @@ const priorityList = [
  * resolves to `/$bunfs/root` and no owning package is locatable — issue
  * #1423). Production callers should use {@link getPackageDir} instead.
  */
-export function walkUpForPackageDir(startDir: string): string | undefined {
+function walkUpForPackageDir(startDir: string): string | undefined {
 	let dir = startDir;
 	while (dir !== path.dirname(dir)) {
 		if (fs.existsSync(path.join(dir, "package.json"))) {

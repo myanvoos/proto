@@ -38,7 +38,7 @@ type AgentDurationKind = "active" | "span" | "unknown";
  *   attribution and Agent Fleet observability, but never a peer — hidden from
  *   agent-facing rosters (`fleet`, `history://`) and not messageable/revivable.
  */
-export type AgentKind = "main" | "sub" | "advisor";
+type AgentKind = "main" | "sub" | "advisor";
 
 /** Persisted per-agent totals reconstructed from the child session transcript. */
 export interface AgentMetricsSummary {
@@ -96,7 +96,7 @@ export type RegistryEvent =
 
 type RegistryListener = (event: RegistryEvent) => void;
 
-export interface RegisterInput {
+interface RegisterInput {
 	id: string;
 	displayName: string;
 	kind: AgentKind;

@@ -35,7 +35,7 @@ import type { ProviderDiscovery } from "./models-config-schema";
 // mid-stream when models hit the cap on legitimate large tool calls (see
 // issue #1528: `write` payloads >~5KB on deepseek-v4-pro surfaced as
 // "socket connection was closed unexpectedly").
-export const DISCOVERY_DEFAULT_CONTEXT_WINDOW = OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW;
+const DISCOVERY_DEFAULT_CONTEXT_WINDOW = OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 export const DISCOVERY_DEFAULT_MAX_TOKENS = OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS;
 
 /**
@@ -143,7 +143,7 @@ export function getOllamaContextLengthOverride(): number | undefined {
 const DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC = 8_192;
 
 /** Routes discovered-model `maxTokens` defaults around Anthropic's 3× output divisor. */
-export function discoveryDefaultMaxTokens(api: Api | undefined): number {
+function discoveryDefaultMaxTokens(api: Api | undefined): number {
 	return api === "anthropic-messages" ? DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC : DISCOVERY_DEFAULT_MAX_TOKENS;
 }
 
@@ -805,7 +805,7 @@ function extractOpenAIModelsListInputCapabilities(item: {
 	return modalities.has("image") ? ["text", "image"] : ["text"];
 }
 
-export async function discoverOpenAIModelsList(
+async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
@@ -991,7 +991,7 @@ export async function discoverLiteLLMModels(
  * trailing `/v1` itself before appending `/v1/messages`, so the discovery
  * URL (which ends in `/v1`) round-trips correctly.
  */
-export async function discoverProxyModels(
+async function discoverProxyModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
@@ -1114,7 +1114,7 @@ export function normalizeLiteLLMDiscoveryBaseUrl(baseUrl?: string): string {
 	return normalizeOpenAIModelsListBaseUrl(baseUrl ?? "http://localhost:4000/v1");
 }
 
-export function normalizeOpenAIModelsListBaseUrl(baseUrl?: string): string {
+function normalizeOpenAIModelsListBaseUrl(baseUrl?: string): string {
 	const defaultBaseUrl = "http://127.0.0.1:1234/v1";
 	const raw = baseUrl || defaultBaseUrl;
 	try {

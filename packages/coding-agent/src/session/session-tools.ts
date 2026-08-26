@@ -77,24 +77,24 @@ interface SessionToolsOptions {
 	skillsReloadable?: boolean;
 }
 
-export interface MountedMCPToolRouteSource {
+interface MountedMCPToolRouteSource {
 	readonly name: string;
 	readonly mcpServerName?: unknown;
 	readonly mcpToolName?: unknown;
 }
 
-export interface MountedMCPToolRoute {
+interface MountedMCPToolRoute {
 	readonly mcpServerName: string;
 	readonly mcpToolName: string;
 	readonly name: string;
 }
 
-export interface MCPXdevGuidanceMapping extends MountedMCPToolRoute {
+interface MCPXdevGuidanceMapping extends MountedMCPToolRoute {
 	readonly label: string;
 	readonly path: string;
 }
 
-export interface MCPXdevGuidanceProjection {
+interface MCPXdevGuidanceProjection {
 	readonly mappings: readonly MCPXdevGuidanceMapping[];
 	readonly hasOmittedMappings: boolean;
 }

@@ -46,7 +46,7 @@ function getExtension(filePath: string): string {
 	return dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : "";
 }
 
-export function generateFallbackAnalysis(numstat: NumstatEntry[]): ConventionalAnalysis {
+function generateFallbackAnalysis(numstat: NumstatEntry[]): ConventionalAnalysis {
 	const type = inferTypeFromFiles(numstat);
 	const details = numstat.slice(0, 3).map(e => ({
 		text: `Updated ${path.basename(e.path)}`,
@@ -61,7 +61,7 @@ export function generateFallbackAnalysis(numstat: NumstatEntry[]): ConventionalA
 	};
 }
 
-export function generateFallbackSummary(type: CommitType, numstat: NumstatEntry[]): string {
+function generateFallbackSummary(type: CommitType, numstat: NumstatEntry[]): string {
 	const verbMap: Record<string, string> = {
 		test: "updated tests for",
 		docs: "updated documentation for",

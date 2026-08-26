@@ -42,7 +42,7 @@ const SOFT_DEADLINE_MS = 5_000;
 const HARD_DEADLINE_MS = 30_000;
 
 /** Deadline overrides — test seam; production callers use the defaults. */
-export interface PublicWebDeadlines {
+interface PublicWebDeadlines {
 	softMs?: number;
 	hardMs?: number;
 }

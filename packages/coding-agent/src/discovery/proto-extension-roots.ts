@@ -42,7 +42,7 @@ interface InjectedRoot {
 	level: "user" | "project";
 }
 
-export type OmpExtensionRootMode = "merge" | "explicit-only";
+type OmpExtensionRootMode = "merge" | "explicit-only";
 
 interface InvocationRootScope {
 	/** Raw SDK spellings, resolved against the LoadContext that performs discovery. */
@@ -55,7 +55,7 @@ const invocationRootScope = new AsyncLocalStorage<InvocationRootScope>();
 let injectedCliRoots: InjectedRoot[] = [];
 let injectedCliRootMode: OmpExtensionRootMode = "merge";
 
-export interface InjectOmpExtensionCliRootOptions {
+interface InjectOmpExtensionCliRootOptions {
 	/**
 	 * `explicit-only` exposes only roots named by this CLI invocation. Use it
 	 * with `--no-extensions` so configured and installed packages cannot

@@ -81,7 +81,7 @@ export function toSkillFrontmatter(name: string, description: string): string {
 	return `---\n${frontmatter}\n---\n`;
 }
 
-export interface WriteManagedSkillInput {
+interface WriteManagedSkillInput {
 	action: "create" | "update";
 	name: string;
 	description: string;

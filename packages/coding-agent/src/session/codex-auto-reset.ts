@@ -64,22 +64,22 @@ import type { CodexAutoRedeemMode } from "../config/settings-schema";
 import { reportMatchesActiveAccount } from "../slash-commands/helpers/active-oauth-account";
 
 /** A chat window counts as exhausted at `usedFraction >= 0.999` (used_percent >= 99.9). */
-export const WINDOW_EXHAUSTED_MIN_FRACTION = 0.999;
+const WINDOW_EXHAUSTED_MIN_FRACTION = 0.999;
 /** A weekly reset can never be more than one window length (7d) away; +1h slack for skew. */
-export const MAX_PLAUSIBLE_WEEKLY_REMAINING_MS = 7 * 24 * 3_600_000 + 60 * 60_000;
+const MAX_PLAUSIBLE_WEEKLY_REMAINING_MS = 7 * 24 * 3_600_000 + 60 * 60_000;
 /** A 5h reset can never be more than one window length (5h) away; +1h slack for skew. */
-export const MAX_PLAUSIBLE_PRIMARY_REMAINING_MS = 5 * 3_600_000 + 60 * 60_000;
+const MAX_PLAUSIBLE_PRIMARY_REMAINING_MS = 5 * 3_600_000 + 60 * 60_000;
 /** Below this usage on BOTH chat windows a salvaged reset restores too little to bother (and risks a `nothing_to_reset` no-op). */
 export const SALVAGE_MIN_USED_FRACTION = 0.25;
 /** Retry spacing after a non-terminal consume outcome (`nothing_to_reset`, transport failure). */
 export const REDEEM_RETRY_DEFER_MS = 30 * 60_000;
 
 /** Report must be no older than the 5-min usage cache TTL plus slack. */
-export const REPORT_FRESHNESS_MS = 10 * 60_000;
+const REPORT_FRESHNESS_MS = 10 * 60_000;
 /** Per-account cooldown that catches attempt-key drift across a minute boundary. */
-export const ATTEMPT_COOLDOWN_MS = 60_000;
+const ATTEMPT_COOLDOWN_MS = 60_000;
 /** Minute bucket for attempt keys, absorbing `reset_after_seconds`/expiry jitter. */
-export const DEBOUNCE_BUCKET_MS = 60_000;
+const DEBOUNCE_BUCKET_MS = 60_000;
 /** Floor between salvage sweeps; dedupe keys make sweeps idempotent, this just avoids useless re-planning. */
 export const SWEEP_MIN_INTERVAL_MS = 60_000;
 
@@ -95,7 +95,7 @@ export function shouldPromptCodexAutoRedeem(mode: CodexAutoRedeemMode): boolean 
 export type CodexResetTrigger = "blocked" | "sweep";
 
 /** Why one account produced no action (or, with `accountKey: "*"`, a whole rule was off). */
-export type CodexResetSkipReason =
+type CodexResetSkipReason =
 	| "disabled"
 	| "wrong-provider"
 	| "spark-model"
@@ -180,7 +180,7 @@ export interface CodexResetAction {
 	active: boolean;
 }
 
-export interface CodexResetSkip {
+interface CodexResetSkip {
 	/** Normalized account key, or `"*"` for a rule-wide gate. */
 	accountKey: string;
 	rule: "blocked-account" | "expiring-credit" | "account";

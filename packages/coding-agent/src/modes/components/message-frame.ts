@@ -14,7 +14,7 @@ import { Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, type Theme, type ThemeColor, theme } from "../../modes/theme/theme";
 
 /** Message shape consumed by the shared frame. */
-export interface FramedMessage {
+interface FramedMessage {
 	customType: string;
 	content: string | (TextContent | { type: string })[];
 }
@@ -24,13 +24,13 @@ export interface FramedMessage {
  * `HookMessageRenderer` (hooks). Both narrow `message` to their own type;
  * this signature is the structural intersection callers can hand off here.
  */
-export type FramedRenderer<M extends FramedMessage> = (
+type FramedRenderer<M extends FramedMessage> = (
 	message: M,
 	options: { expanded: boolean },
 	theme: Theme,
 ) => Component | undefined;
 
-export interface RebuildFrameOptions<M extends FramedMessage> {
+interface RebuildFrameOptions<M extends FramedMessage> {
 	message: M;
 	box: Box;
 	expanded: boolean;

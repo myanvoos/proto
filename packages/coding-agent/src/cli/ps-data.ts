@@ -95,7 +95,7 @@ async function canonicalRuntimeDir(dir: string): Promise<string> {
 }
 
 /** Every scope on this machine: hash-keyed project scopes plus global service scopes. */
-export async function discoverScopes(): Promise<PsScope[]> {
+async function discoverScopes(): Promise<PsScope[]> {
 	const scopes: PsScope[] = [];
 	for (const entry of await readdirQuiet(getDaemonRuntimeRoot())) {
 		if (!entry.isDirectory() || !PROJECT_SCOPE_KEY.test(entry.name)) continue;
@@ -206,7 +206,7 @@ function processAlive(pid: number | undefined): boolean {
  * to exited (their broker took them down with it) and flagging detached
  * survivors as unsupervised.
  */
-export async function collectScope(scope: PsScope): Promise<PsScopeReport> {
+async function collectScope(scope: PsScope): Promise<PsScopeReport> {
 	const persisted = await readPersistedDaemons(scope.runtimeDir);
 	if (scope.brokerPid !== undefined) {
 		try {
@@ -287,7 +287,7 @@ export function daemonLabel(daemon: DaemonSnapshot): string {
 }
 
 /** Colored STATE cell, e.g. `ready`, `exited(143)`. */
-export function stateCell(row: PsDaemonRow): string {
+function stateCell(row: PsDaemonRow): string {
 	const { snapshot } = row;
 	let text: string = snapshot.state;
 	if (TERMINAL_STATES[snapshot.state] && snapshot.exitCode !== undefined) text += `(${snapshot.exitCode})`;
@@ -302,7 +302,7 @@ export function stateCell(row: PsDaemonRow): string {
 	return paint(text);
 }
 
-export function flagsCell(row: PsDaemonRow): string {
+function flagsCell(row: PsDaemonRow): string {
 	const parts: string[] = [];
 	if (row.snapshot.detached) parts.push("detached");
 	else if (row.snapshot.persist) parts.push("persist");
@@ -310,7 +310,7 @@ export function flagsCell(row: PsDaemonRow): string {
 	return parts.join(",");
 }
 
-export function uptimeCell(snapshot: DaemonSnapshot): string {
+function uptimeCell(snapshot: DaemonSnapshot): string {
 	if (TERMINAL_STATES[snapshot.state]) return "-";
 	return formatDuration(Date.now() - snapshot.startedAt);
 }

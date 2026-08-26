@@ -22,7 +22,7 @@ export function getEditorCommand(): string | undefined {
 	return undefined;
 }
 
-export interface OpenInEditorOptions {
+interface OpenInEditorOptions {
 	/** File extension for the temp file (default: ".md"). */
 	extension?: string;
 	/** Keep the file's trailing newline instead of trimming it from the returned text. */
@@ -30,7 +30,7 @@ export interface OpenInEditorOptions {
 }
 
 /** Resolves shell argv without letting the host runtime re-quote the editor command. */
-export function resolveEditorSpawnCommand(editorCmd: string, tmpFile: string): string[] {
+function resolveEditorSpawnCommand(editorCmd: string, tmpFile: string): string[] {
 	return [$which("sh") ?? "sh", "-c", `${editorCmd} "$1"`, "sh", tmpFile];
 }
 

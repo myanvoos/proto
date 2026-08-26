@@ -26,7 +26,7 @@ export type ExtensionState = "active" | "disabled" | "shadowed";
 /**
  * Reason why an extension is disabled.
  */
-export type DisabledReason = "provider-disabled" | "item-disabled" | "shadowed";
+type DisabledReason = "provider-disabled" | "item-disabled" | "shadowed";
 
 /**
  * Unified extension representation for the dashboard.
@@ -66,7 +66,7 @@ export interface Extension {
 /**
  * Tree node types for sidebar hierarchy.
  */
-export type TreeNodeType = "provider" | "kind" | "item";
+type TreeNodeType = "provider" | "kind" | "item";
 
 /**
  * Sidebar tree node.
@@ -96,11 +96,6 @@ export interface FlatTreeItem {
 	depth: number;
 	index: number;
 }
-
-/**
- * Focus region in the tabbed dashboard.
- */
-export type FocusRegion = "tabs" | "list";
 
 /**
  * Provider tab representation.
@@ -144,34 +139,10 @@ export interface DashboardState {
 }
 
 /**
- * Callbacks from dashboard to parent.
- */
-export interface DashboardCallbacks {
-	/** Called when provider is toggled */
-	onProviderToggle: (providerId: string, enabled: boolean) => void;
-	/** Called when extension item is toggled */
-	onExtensionToggle: (extensionId: string, enabled: boolean) => void;
-	/** Called when dashboard is closed */
-	onClose: () => void;
-}
-
-/**
  * Create extension ID from kind and name.
  */
 export function makeExtensionId(kind: ExtensionKind, name: string): string {
 	return `${kind}:${name}`;
-}
-
-/**
- * Parse extension ID into kind and name.
- */
-export function parseExtensionId(id: string): { kind: ExtensionKind; name: string } | null {
-	const colonIdx = id.indexOf(":");
-	if (colonIdx === -1) return null;
-	return {
-		kind: id.slice(0, colonIdx) as ExtensionKind,
-		name: id.slice(colonIdx + 1),
-	};
 }
 
 /**

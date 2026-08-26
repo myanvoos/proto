@@ -190,7 +190,7 @@ export class SearchProviderError extends Error {
 }
 
 /** Anthropic API response types */
-export interface AnthropicSearchResult {
+interface AnthropicSearchResult {
 	type: "web_search_result";
 	title: string;
 	url: string;
@@ -206,7 +206,7 @@ export interface AnthropicCitation {
 	encrypted_index: string;
 }
 
-export interface AnthropicContentBlock {
+interface AnthropicContentBlock {
 	type: string;
 	/** Text content (for type="text") */
 	text?: string;
@@ -234,65 +234,65 @@ export interface AnthropicApiResponse {
 }
 
 /** Perplexity API types */
-export type PerplexityChatMessageRole = "system" | "user" | "assistant" | "tool";
+type PerplexityChatMessageRole = "system" | "user" | "assistant" | "tool";
 
-export interface PerplexityUrl {
+interface PerplexityUrl {
 	url: string;
 }
 
-export interface PerplexityVideoUrl {
+interface PerplexityVideoUrl {
 	url: string;
 	frame_interval?: string | number;
 }
 
-export interface PerplexityContentTextChunk {
+interface PerplexityContentTextChunk {
 	type: "text";
 	text: string;
 }
 
-export interface PerplexityContentImageChunk {
+interface PerplexityContentImageChunk {
 	type: "image_url";
 	image_url: PerplexityUrl | string;
 }
 
-export interface PerplexityContentFileChunk {
+interface PerplexityContentFileChunk {
 	type: "file_url";
 	file_url: PerplexityUrl | string;
 	file_name?: string | null;
 }
 
-export interface PerplexityContentPdfChunk {
+interface PerplexityContentPdfChunk {
 	type: "pdf_url";
 	pdf_url: PerplexityUrl | string;
 }
 
-export interface PerplexityContentVideoChunk {
+interface PerplexityContentVideoChunk {
 	type: "video_url";
 	video_url: PerplexityVideoUrl | string;
 }
 
-export type PerplexityContentChunk =
+type PerplexityContentChunk =
 	| PerplexityContentTextChunk
 	| PerplexityContentImageChunk
 	| PerplexityContentFileChunk
 	| PerplexityContentPdfChunk
 	| PerplexityContentVideoChunk;
 
-export interface PerplexitySearchStepDetails {
+interface PerplexitySearchStepDetails {
 	search_results: PerplexitySearchResult[];
 	search_keywords: string[];
 }
 
-export interface PerplexityFetchUrlContentStepDetails {
+interface PerplexityFetchUrlContentStepDetails {
 	contents: PerplexitySearchResult[];
 }
 
-export interface PerplexityExecutePythonStepDetails {
+interface PerplexityExecutePythonStepDetails {
 	code: string;
 	result: string;
 }
 
-export interface PerplexityReasoningStepInput {
+interface PerplexityReasoningStepInput {
 	thought: string;
 	type?: string | null;
 	web_search?: PerplexitySearchStepDetails | null;
@@ -300,26 +300,18 @@ export interface PerplexityReasoningStepInput {
 	execute_python?: PerplexityExecutePythonStepDetails | null;
 }
 
-export interface PerplexityReasoningStepOutput {
-	thought: string;
-	type?: string | null;
-	web_search?: PerplexitySearchStepDetails | null;
-	fetch_url_content?: PerplexityFetchUrlContentStepDetails | null;
-	execute_python?: PerplexityExecutePythonStepDetails | null;
-}
-
-export interface PerplexityToolCallFunction {
+interface PerplexityToolCallFunction {
 	name?: string | null;
 	arguments?: string | null;
 }
 
-export interface PerplexityToolCall {
+interface PerplexityToolCall {
 	id?: string | null;
 	type?: "function" | null;
 	function?: PerplexityToolCallFunction | null;
 }
 
-export interface PerplexityMessageInput {
+interface PerplexityMessageInput {
 	role: PerplexityChatMessageRole;
 	content: string | PerplexityContentChunk[] | null;
 	reasoning_steps?: PerplexityReasoningStepInput[] | null;
@@ -327,69 +319,59 @@ export interface PerplexityMessageInput {
 	tool_call_id?: string | null;
 }
 
-export interface PerplexityMessageOutput {
-	role: PerplexityChatMessageRole;
-	content: string | PerplexityContentChunk[] | null;
-	reasoning_steps?: PerplexityReasoningStepOutput[] | null;
-	tool_calls?: PerplexityToolCall[] | null;
-	tool_call_id?: string | null;
-}
-
-export type PerplexityMessage = PerplexityMessageInput;
-
-export interface PerplexityResponseFormatText {
+interface PerplexityResponseFormatText {
 	type: "text";
 }
 
-export interface PerplexityJSONSchema {
+interface PerplexityJSONSchema {
 	schema: Record<string, unknown>;
 	name?: string | null;
 	description?: string | null;
 	strict?: boolean | null;
 }
 
-export interface PerplexityResponseFormatJSONSchema {
+interface PerplexityResponseFormatJSONSchema {
 	type: "json_schema";
 	json_schema: PerplexityJSONSchema;
 }
 
-export interface PerplexityRegexSchema {
+interface PerplexityRegexSchema {
 	regex: string;
 	name?: string | null;
 	description?: string | null;
 	strict?: boolean | null;
 }
 
-export interface PerplexityResponseFormatRegex {
+interface PerplexityResponseFormatRegex {
 	type: "regex";
 	regex: PerplexityRegexSchema;
 }
 
-export type PerplexityResponseFormat =
+type PerplexityResponseFormat =
 	| PerplexityResponseFormatText
 	| PerplexityResponseFormatJSONSchema
 	| PerplexityResponseFormatRegex;
 
-export interface PerplexityParameterSpec {
+interface PerplexityParameterSpec {
 	type: string;
 	properties: Record<string, unknown>;
 	required?: string[] | null;
 	additional_properties?: boolean | null;
 }
 
-export interface PerplexityFunctionSpec {
+interface PerplexityFunctionSpec {
 	name: string;
 	description: string;
 	parameters: PerplexityParameterSpec;
 	strict?: boolean | null;
 }
 
-export interface PerplexityToolSpec {
+interface PerplexityToolSpec {
 	type: "function";
 	function: PerplexityFunctionSpec;
 }
 
-export interface PerplexityUserLocation {
+interface PerplexityUserLocation {
 	latitude?: number | null;
 	longitude?: number | null;
 	country?: string | null;
@@ -397,7 +379,7 @@ export interface PerplexityUserLocation {
 	region?: string | null;
 }
 
-export interface PerplexitySearchOptions {
+interface PerplexitySearchOptions {
 	search_context_size?: "low" | "medium" | "high";
 	search_type?: "fast" | "pro" | "auto" | null;
 	user_location?: PerplexityUserLocation | null;
@@ -469,50 +451,4 @@ export interface PerplexitySearchResult {
 	last_updated?: string | null;
 	snippet?: string;
 	source?: "web" | "attachment";
-}
-
-export interface PerplexityCost {
-	input_tokens_cost: number;
-	output_tokens_cost: number;
-	reasoning_tokens_cost?: number | null;
-	request_cost?: number | null;
-	citation_tokens_cost?: number | null;
-	search_queries_cost?: number | null;
-	total_cost: number;
-}
-
-export interface PerplexityUsageInfo {
-	prompt_tokens: number;
-	completion_tokens: number;
-	total_tokens: number;
-	search_context_size?: string | null;
-	citation_tokens?: number | null;
-	num_search_queries?: number | null;
-	reasoning_tokens?: number | null;
-	cost: PerplexityCost;
-}
-
-export type PerplexityCompletionResponseType = "message" | "info" | "end_of_stream";
-
-export type PerplexityCompletionResponseStatus = "PENDING" | "COMPLETED";
-
-export interface PerplexityChoice {
-	index: number;
-	finish_reason?: "stop" | "length" | null;
-	message: PerplexityMessageOutput;
-	delta: PerplexityMessageOutput;
-}
-
-export interface PerplexityResponse {
-	id: string;
-	model: string;
-	created: number;
-	usage?: PerplexityUsageInfo | null;
-	object?: string;
-	choices: PerplexityChoice[];
-	citations?: string[] | null;
-	search_results?: PerplexitySearchResult[] | null;
-	related_questions?: string[] | null;
-	type?: PerplexityCompletionResponseType | null;
-	status?: PerplexityCompletionResponseStatus | null;
 }

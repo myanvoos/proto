@@ -36,7 +36,7 @@ const KIMI_QUERY_SYNTAX: QuerySyntax = {
 	filetype: true,
 };
 
-export interface KimiSearchParams {
+interface KimiSearchParams {
 	query: string;
 	parsedQuery?: StructuredQuery;
 	num_results?: number;

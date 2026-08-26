@@ -39,7 +39,7 @@ const DESCRIPTION_UNAVAILABLE_NOTE =
 	"[Image description unavailable: the vision model returned no usable text. The image was saved for further analysis.]";
 
 /** Registry surface needed to resolve a vision model and authorize requests. */
-export type VisionFallbackRegistry = Pick<ModelRegistry, "getAvailable" | "getApiKey" | "resolver">;
+type VisionFallbackRegistry = Pick<ModelRegistry, "getAvailable" | "getApiKey" | "resolver">;
 
 export interface DescribeAttachedImagesDeps {
 	/** Active (text-only) model the prompt is destined for. */

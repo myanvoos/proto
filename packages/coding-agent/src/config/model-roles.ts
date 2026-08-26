@@ -53,7 +53,7 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"advisor",
 ];
 
-export type RoleInfo = ModelRoleInfo;
+type RoleInfo = ModelRoleInfo;
 
 /**
  * Return the canonical set of known roles for selector/carousel UI.

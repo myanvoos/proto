@@ -11,7 +11,7 @@ const TRIM_MARKER_RESERVE = 200;
 const MAX_TOOL_SCHEMA_CHARS = 200;
 const MAX_TOOL_DESCRIPTION_CHARS = 200;
 
-export type RawSseDebugRecord =
+type RawSseDebugRecord =
 	| {
 			kind: "response";
 			sequence: number;
@@ -36,7 +36,7 @@ export type RawSseDebugRecord =
 			originalChars: number;
 	  };
 
-export interface RawSseDebugSnapshot {
+interface RawSseDebugSnapshot {
 	records: readonly RawSseDebugRecord[];
 	droppedRecords: number;
 	droppedChars: number;
@@ -210,11 +210,11 @@ function trimRawLines(raw: string[]): TrimResult {
 	return { raw: lines, truncated: true, originalChars, chars: countLines(lines) + 1 };
 }
 
-export function formatRawSseIsoTime(timestamp: number): string {
+function formatRawSseIsoTime(timestamp: number): string {
 	return new Date(timestamp).toISOString();
 }
 
-export function formatRawSseResponseComment(record: Extract<RawSseDebugRecord, { kind: "response" }>): string {
+function formatRawSseResponseComment(record: Extract<RawSseDebugRecord, { kind: "response" }>): string {
 	const fields = [
 		"proto-response",
 		`ts=${formatRawSseIsoTime(record.timestamp)}`,
@@ -228,7 +228,7 @@ export function formatRawSseResponseComment(record: Extract<RawSseDebugRecord, {
 	return `: ${fields.join(" ")}`;
 }
 
-export function rawSseRecordLines(record: RawSseDebugRecord): string[] {
+function rawSseRecordLines(record: RawSseDebugRecord): string[] {
 	if (record.kind === "response") return [formatRawSseResponseComment(record)];
 	return record.raw;
 }
@@ -415,27 +415,4 @@ export class RawSseDebugBuffer {
 			}
 		}
 	}
-}
-
-const globalFallbackBuffer = new RawSseDebugBuffer();
-const kRawSseDebugBuffer = Symbol("debug.rawSseBuffer");
-type OwnerWithBuffer = object & { rawSseDebugBuffer?: unknown; [kRawSseDebugBuffer]?: RawSseDebugBuffer };
-
-export function resolveRawSseDebugBuffer(owner?: object): RawSseDebugBuffer {
-	if (!owner) return globalFallbackBuffer;
-
-	const tagged = owner as OwnerWithBuffer;
-	const declared = tagged.rawSseDebugBuffer;
-	if (declared instanceof RawSseDebugBuffer) return declared;
-
-	const existing = tagged[kRawSseDebugBuffer];
-	if (existing) return existing;
-
-	const buffer = new RawSseDebugBuffer();
-	try {
-		tagged[kRawSseDebugBuffer] = buffer;
-	} catch {
-		// Non-extensible owner: caller gets a fresh buffer on each call.
-	}
-	return buffer;
 }

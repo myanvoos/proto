@@ -37,18 +37,18 @@ import type {
 } from "./gh-types";
 import { ToolError, throwIfAborted } from "./tool-errors";
 
-export const RUN_WATCH_INTERVAL_DEFAULT = 3;
-export const RUN_WATCH_INTERVAL_SLOW = 15;
-export const RUN_WATCH_FAST_WINDOW_MS = 60_000;
-export const RUN_WATCH_NO_RUNS_GIVE_UP_MS = 90_000;
-export const RUN_WATCH_MAX_POLL_FAILURES = 5;
-export const RUN_WATCH_GRACE_DEFAULT = 5;
-export const RUN_WATCH_TAIL_DEFAULT = 15;
-export const RUN_WATCH_TAIL_MAX = 200;
+const RUN_WATCH_INTERVAL_DEFAULT = 3;
+const RUN_WATCH_INTERVAL_SLOW = 15;
+const RUN_WATCH_FAST_WINDOW_MS = 60_000;
+const RUN_WATCH_NO_RUNS_GIVE_UP_MS = 90_000;
+const RUN_WATCH_MAX_POLL_FAILURES = 5;
+const RUN_WATCH_GRACE_DEFAULT = 5;
+const RUN_WATCH_TAIL_DEFAULT = 15;
+const RUN_WATCH_TAIL_MAX = 200;
 
-export const RUN_JOBS_PAGE_SIZE = 100;
+const RUN_JOBS_PAGE_SIZE = 100;
 
-export function resolveTailLimit(value: number | undefined): number {
+function resolveTailLimit(value: number | undefined): number {
 	if (value === undefined) {
 		return RUN_WATCH_TAIL_DEFAULT;
 	}
@@ -60,18 +60,12 @@ export function resolveTailLimit(value: number | undefined): number {
 	return Math.min(Math.floor(value), RUN_WATCH_TAIL_MAX);
 }
 
-export const RUN_URL_PATTERN = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)(?:\/.*)?$/;
-export const RUN_SUCCESS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
-export const RUN_FAILURE_CONCLUSIONS = new Set([
-	"failure",
-	"timed_out",
-	"cancelled",
-	"action_required",
-	"startup_failure",
-]);
-export const JOB_FAILURE_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+const RUN_URL_PATTERN = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)(?:\/.*)?$/;
+const RUN_SUCCESS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+const RUN_FAILURE_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
+const JOB_FAILURE_CONCLUSIONS = new Set(["failure", "timed_out", "cancelled", "action_required"]);
 
-export function parseRunReference(value: string | undefined): GhRunReference {
+function parseRunReference(value: string | undefined): GhRunReference {
 	const run = normalizeOptionalString(value);
 	if (!run) {
 		return {};
@@ -92,7 +86,7 @@ export function parseRunReference(value: string | undefined): GhRunReference {
 	};
 }
 
-export function normalizeRunJob(job: GhActionsJobApi): GhRunJobSnapshot | null {
+function normalizeRunJob(job: GhActionsJobApi): GhRunJobSnapshot | null {
 	if (typeof job.id !== "number") {
 		return null;
 	}
@@ -108,7 +102,7 @@ export function normalizeRunJob(job: GhActionsJobApi): GhRunJobSnapshot | null {
 	};
 }
 
-export function normalizeRunSnapshot(run: GhActionsRunApi, jobs: GhRunJobSnapshot[]): GhRunSnapshot {
+function normalizeRunSnapshot(run: GhActionsRunApi, jobs: GhRunJobSnapshot[]): GhRunSnapshot {
 	if (typeof run.id !== "number") {
 		throw new ToolError("GitHub Actions run response did not include a run ID.");
 	}
@@ -128,7 +122,7 @@ export function normalizeRunSnapshot(run: GhActionsRunApi, jobs: GhRunJobSnapsho
 	};
 }
 
-export function getRunOutcome(value: string | undefined): "success" | "failure" | "pending" {
+function getRunOutcome(value: string | undefined): "success" | "failure" | "pending" {
 	if (!value) {
 		return "pending";
 	}
@@ -144,7 +138,7 @@ export function getRunOutcome(value: string | undefined): "success" | "failure" 
 	return "pending";
 }
 
-export function getRunSnapshotOutcome(run: GhRunSnapshot): "success" | "failure" | "pending" {
+function getRunSnapshotOutcome(run: GhRunSnapshot): "success" | "failure" | "pending" {
 	if (run.status !== "completed") {
 		return "pending";
 	}
@@ -152,7 +146,7 @@ export function getRunSnapshotOutcome(run: GhRunSnapshot): "success" | "failure"
 	return getRunOutcome(run.conclusion);
 }
 
-export function getRunCollectionOutcome(runs: GhRunSnapshot[]): "success" | "failure" | "pending" {
+function getRunCollectionOutcome(runs: GhRunSnapshot[]): "success" | "failure" | "pending" {
 	if (runs.length === 0) {
 		return "pending";
 	}
@@ -175,32 +169,32 @@ export function getRunCollectionOutcome(runs: GhRunSnapshot[]): "success" | "fai
 	return pending ? "pending" : "success";
 }
 
-export function getRunCollectionSignature(runs: GhRunSnapshot[]): string {
+function getRunCollectionSignature(runs: GhRunSnapshot[]): string {
 	return runs
 		.map(run => run.id)
 		.sort((left, right) => left - right)
 		.join(",");
 }
 
-export function isFailedJob(job: GhRunJobSnapshot): boolean {
+function isFailedJob(job: GhRunJobSnapshot): boolean {
 	return job.conclusion !== undefined && JOB_FAILURE_CONCLUSIONS.has(job.conclusion);
 }
 
-export const GH_RATE_LIMIT_ERROR_PATTERN = /rate limit|HTTP 429|abuse detection/i;
+const GH_RATE_LIMIT_ERROR_PATTERN = /rate limit|HTTP 429|abuse detection/i;
 
 /**
  * Rate-limit / secondary-limit gh failures are transient; the run_watch poll
  * loops back off and retry them instead of discarding the whole watch.
  */
-export function isRateLimitedGhError(err: unknown): boolean {
+function isRateLimitedGhError(err: unknown): boolean {
 	return err instanceof ToolError && GH_RATE_LIMIT_ERROR_PATTERN.test(err.message);
 }
 
-export function formatJobState(job: GhRunJobSnapshot): string {
+function formatJobState(job: GhRunJobSnapshot): string {
 	return job.conclusion ?? job.status ?? "unknown";
 }
 
-export function parseTimestampMs(value: string | undefined): number | undefined {
+function parseTimestampMs(value: string | undefined): number | undefined {
 	if (!value) {
 		return undefined;
 	}
@@ -209,7 +203,7 @@ export function parseTimestampMs(value: string | undefined): number | undefined 
 	return Number.isNaN(timestamp) ? undefined : timestamp;
 }
 
-export function getJobDurationSeconds(job: GhRunJobSnapshot, observedAtMs: number): number | undefined {
+function getJobDurationSeconds(job: GhRunJobSnapshot, observedAtMs: number): number | undefined {
 	const startedAtMs = parseTimestampMs(job.startedAt);
 	if (startedAtMs === undefined) {
 		return undefined;
@@ -219,7 +213,7 @@ export function getJobDurationSeconds(job: GhRunJobSnapshot, observedAtMs: numbe
 	return Math.max(0, Math.floor((completedAtMs - startedAtMs) / 1000));
 }
 
-export function buildRunWatchJobDetails(job: GhRunJobSnapshot, observedAtMs: number): GhRunWatchJobDetails {
+function buildRunWatchJobDetails(job: GhRunJobSnapshot, observedAtMs: number): GhRunWatchJobDetails {
 	return {
 		id: job.id,
 		name: job.name,
@@ -230,7 +224,7 @@ export function buildRunWatchJobDetails(job: GhRunJobSnapshot, observedAtMs: num
 	};
 }
 
-export function buildRunWatchRunDetails(run: GhRunSnapshot, observedAtMs: number): GhRunWatchRunDetails {
+function buildRunWatchRunDetails(run: GhRunSnapshot, observedAtMs: number): GhRunWatchRunDetails {
 	return {
 		id: run.id,
 		workflowName: run.workflowName,
@@ -244,7 +238,7 @@ export function buildRunWatchRunDetails(run: GhRunSnapshot, observedAtMs: number
 	};
 }
 
-export function buildFailedLogDetails(failedJobLogs: GhFailedJobLog[]): GhRunWatchFailedLogDetails[] {
+function buildFailedLogDetails(failedJobLogs: GhFailedJobLog[]): GhRunWatchFailedLogDetails[] {
 	return failedJobLogs.map(entry => ({
 		runId: entry.run.id,
 		workflowName: entry.run.workflowName,
@@ -255,7 +249,7 @@ export function buildFailedLogDetails(failedJobLogs: GhFailedJobLog[]): GhRunWat
 	}));
 }
 
-export function renderJobsSection(jobs: GhRunJobSnapshot[]): string[] {
+function renderJobsSection(jobs: GhRunJobSnapshot[]): string[] {
 	if (jobs.length === 0) {
 		return ["## Jobs", "", "No jobs reported yet."];
 	}
@@ -277,7 +271,7 @@ export function renderJobsSection(jobs: GhRunJobSnapshot[]): string[] {
 	return lines;
 }
 
-export function renderFailedJobLogs(
+function renderFailedJobLogs(
 	failedJobLogs: GhFailedJobLog[],
 	options: { mode: "tail"; tail: number } | { mode: "full" },
 ): string[] {
@@ -315,7 +309,7 @@ export function renderFailedJobLogs(
 	return lines;
 }
 
-export function renderRunSection(run: GhRunSnapshot): string[] {
+function renderRunSection(run: GhRunSnapshot): string[] {
 	const label = run.workflowName ? `### Run #${run.id} - ${run.workflowName}` : `### Run #${run.id}`;
 	const lines: string[] = [label, ""];
 	pushLine(lines, "Title", run.displayTitle ?? undefined);
@@ -331,7 +325,7 @@ export function renderRunSection(run: GhRunSnapshot): string[] {
 	return lines;
 }
 
-export function formatRunWatchSnapshot(
+function formatRunWatchSnapshot(
 	repo: string,
 	run: GhRunSnapshot,
 	pollCount: number,
@@ -368,7 +362,7 @@ export function formatRunWatchSnapshot(
 	return lines.join("\n").trim();
 }
 
-export function formatRunWatchResult(
+function formatRunWatchResult(
 	repo: string,
 	run: GhRunSnapshot,
 	failedJobLogs: GhFailedJobLog[],
@@ -406,7 +400,7 @@ export function formatRunWatchResult(
 	return lines.join("\n").trim();
 }
 
-export function formatCommitRunWatchSnapshot(
+function formatCommitRunWatchSnapshot(
 	repo: string,
 	headSha: string,
 	branch: string | undefined,
@@ -444,7 +438,7 @@ export function formatCommitRunWatchSnapshot(
 	return lines.join("\n").trim();
 }
 
-export function formatCommitRunWatchResult(
+function formatCommitRunWatchResult(
 	repo: string,
 	headSha: string,
 	branch: string | undefined,
@@ -482,7 +476,7 @@ export function formatCommitRunWatchResult(
 	return lines.join("\n").trim();
 }
 
-export function buildGhDetails(repo: string, run: GhRunSnapshot): GhToolDetails {
+function buildGhDetails(repo: string, run: GhRunSnapshot): GhToolDetails {
 	return {
 		repo,
 		branch: run.branch,
@@ -495,7 +489,7 @@ export function buildGhDetails(repo: string, run: GhRunSnapshot): GhToolDetails 
 	};
 }
 
-export function buildRunWatchDetails(
+function buildRunWatchDetails(
 	repo: string,
 	run: GhRunSnapshot,
 	options?: {
@@ -522,7 +516,7 @@ export function buildRunWatchDetails(
 	};
 }
 
-export function buildGhRunCollectionDetails(
+function buildGhRunCollectionDetails(
 	repo: string,
 	headSha: string,
 	branch: string | undefined,
@@ -542,7 +536,7 @@ export function buildGhRunCollectionDetails(
 	};
 }
 
-export function buildCommitRunWatchDetails(
+function buildCommitRunWatchDetails(
 	repo: string,
 	headSha: string,
 	branch: string | undefined,
@@ -571,7 +565,7 @@ export function buildCommitRunWatchDetails(
 	};
 }
 
-export async function resolveGitHubBranchHead(
+async function resolveGitHubBranchHead(
 	cwd: string,
 	repo: string,
 	branch: string,
@@ -586,7 +580,7 @@ export async function resolveGitHubBranchHead(
 	return requireNonEmpty(response.commit?.sha, `head SHA for branch ${branch}`);
 }
 
-export async function fetchRunsForCommit(
+async function fetchRunsForCommit(
 	cwd: string,
 	repo: string,
 	headSha: string,
@@ -702,7 +696,7 @@ export async function fetchRunSnapshot(
 	return normalizeRunSnapshot(run, jobs);
 }
 
-export function tailLogLines(log: string, tail: number): string | undefined {
+function tailLogLines(log: string, tail: number): string | undefined {
 	const normalized = normalizeBlock(log);
 	if (!normalized) {
 		return undefined;
@@ -712,7 +706,7 @@ export function tailLogLines(log: string, tail: number): string | undefined {
 	return lines.slice(-tail).join("\n").trimEnd();
 }
 
-export async function fetchFailedJobLogs(
+async function fetchFailedJobLogs(
 	cwd: string,
 	repo: string,
 	failedJobs: Array<{ run: GhRunSnapshot; job: GhRunJobSnapshot }>,

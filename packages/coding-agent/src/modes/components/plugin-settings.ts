@@ -67,7 +67,7 @@ export type PluginListEntry =
 	| { kind: "npm"; plugin: InstalledPlugin }
 	| { kind: "marketplace"; plugin: InstalledPluginSummary };
 
-export interface PluginListCallbacks {
+interface PluginListCallbacks {
 	onNpmSelect: (plugin: InstalledPlugin) => void;
 	onMarketplaceSelect: (plugin: InstalledPluginSummary) => void;
 	onCancel: () => void;
@@ -266,7 +266,7 @@ export class PluginListComponent extends OverlayPanel {
 // Plugin Detail Component
 // =============================================================================
 
-export interface PluginDetailCallbacks {
+interface PluginDetailCallbacks {
 	onEnabledChange: (enabled: boolean) => void;
 	onFeatureChange: (feature: string, enabled: boolean) => void;
 	onConfigChange: (key: string, value: unknown) => void;
@@ -279,7 +279,7 @@ export interface PluginDetailCallbacks {
  * - Feature toggles
  * - Config settings
  */
-export class PluginDetailComponent extends OverlayPanel {
+class PluginDetailComponent extends OverlayPanel {
 	#settingsList!: SettingsList;
 
 	constructor(
@@ -384,7 +384,7 @@ export class PluginDetailComponent extends OverlayPanel {
 // Marketplace Plugin Detail Component
 // =============================================================================
 
-export interface MarketplacePluginDetailCallbacks {
+interface MarketplacePluginDetailCallbacks {
 	onEnabledChange: (enabled: boolean) => void;
 	onConfigChange: (pluginName: string, key: string, value: unknown) => void;
 	/** Schedules a TUI frame after asynchronous manifest settings load. */
@@ -606,7 +606,7 @@ class ConfigInputSubmenu extends OverlayPanel {
 // Main Plugin Settings Selector
 // =============================================================================
 
-export interface PluginSettingsCallbacks {
+interface PluginSettingsCallbacks {
 	onClose: () => void;
 	onPluginChanged: () => void | Promise<void>;
 	/** Schedules a TUI frame after asynchronous plugin data loads. */

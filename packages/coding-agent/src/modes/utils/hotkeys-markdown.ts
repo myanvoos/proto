@@ -1,6 +1,6 @@
 import { type AppKeybinding, type KeybindingsManager, keyHintPlatform, modifierLabel } from "../../config/keybindings";
 
-export interface HotkeysMarkdownBindings {
+interface HotkeysMarkdownBindings {
 	keybindings: Pick<KeybindingsManager, "getDisplayString">;
 }
 

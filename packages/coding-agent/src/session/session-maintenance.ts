@@ -74,7 +74,7 @@ import type { CompactionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
 
-export type CompactionCheckResult = Readonly<{
+type CompactionCheckResult = Readonly<{
 	continuationScheduled: boolean;
 	automaticContinuationBlocked?: boolean;
 	historyRewritten?: boolean;

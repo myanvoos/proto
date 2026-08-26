@@ -27,7 +27,7 @@ export interface WorkspaceTree extends DirectoryTree {
 	agentsMdFiles: string[];
 }
 
-export interface BuildDirectoryTreeOptions {
+interface BuildDirectoryTreeOptions {
 	/** Directory depth below the root to include. Root itself is depth 0. Default: 1. */
 	maxDepth?: number;
 	/** Per-directory child cap. `null` disables the cap. Default: `null`. */
@@ -38,7 +38,7 @@ export interface BuildDirectoryTreeOptions {
 	lineCap?: number | null;
 }
 
-export interface BuildWorkspaceTreeOptions {
+interface BuildWorkspaceTreeOptions {
 	/** Abort the native workspace scan after this many milliseconds. */
 	timeoutMs?: number;
 }

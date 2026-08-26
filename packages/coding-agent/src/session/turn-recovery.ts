@@ -150,7 +150,7 @@ export interface TurnRecoveryHost {
 }
 
 /** Construction-time retry state restored from model selection. */
-export interface TurnRecoveryOptions {
+interface TurnRecoveryOptions {
 	initialRetryFallback?: InitialRetryFallbackState;
 }
 

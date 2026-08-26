@@ -32,7 +32,7 @@ import type {
 import { type CacheStatus, getOrFetchView, resolveGithubCacheAuthKey } from "./github-cache";
 import { ToolError } from "./tool-errors";
 
-export const GH_REPO_FIELDS = [
+const GH_REPO_FIELDS = [
 	"nameWithOwner",
 	"description",
 	"url",
@@ -48,7 +48,7 @@ export const GH_REPO_FIELDS = [
 	"viewerPermission",
 	"visibility",
 ];
-export const GH_ISSUE_FIELDS = [
+const GH_ISSUE_FIELDS = [
 	"author",
 	"body",
 	"comments",
@@ -61,7 +61,7 @@ export const GH_ISSUE_FIELDS = [
 	"updatedAt",
 	"url",
 ];
-export const GH_ISSUE_FIELDS_NO_COMMENTS = [
+const GH_ISSUE_FIELDS_NO_COMMENTS = [
 	"author",
 	"body",
 	"createdAt",
@@ -74,14 +74,14 @@ export const GH_ISSUE_FIELDS_NO_COMMENTS = [
 	"url",
 ];
 
-export const GH_ISSUE_STATE_REASON_FIELD = "stateReason";
+const GH_ISSUE_STATE_REASON_FIELD = "stateReason";
 
-export function ghJsonErrorNamesField(err: unknown, field: string): boolean {
+function ghJsonErrorNamesField(err: unknown, field: string): boolean {
 	if (!(err instanceof Error) || !err.message.includes("Unknown JSON field")) return false;
 	return err.message.includes(`"${field}"`) || err.message.includes(`'${field}'`) || err.message.includes(field);
 }
 
-export function dropJsonField(args: readonly string[], field: string): string[] | undefined {
+function dropJsonField(args: readonly string[], field: string): string[] | undefined {
 	const next = [...args];
 	const jsonIndex = next.indexOf("--json");
 	if (jsonIndex < 0) return undefined;
@@ -111,7 +111,7 @@ export async function githubIssueJsonWithStateReasonFallback<T>(
 	}
 }
 
-export const GH_PR_FIELDS = [
+const GH_PR_FIELDS = [
 	"author",
 	"baseRefName",
 	"body",
@@ -150,9 +150,9 @@ export const GH_PR_FIELDS_NO_COMMENTS = [
 ];
 export const GH_REPO_CLONE_FIELDS = ["nameWithOwner", "sshUrl", "url"];
 
-export const REVIEW_COMMENTS_PAGE_SIZE = 100;
+const REVIEW_COMMENTS_PAGE_SIZE = 100;
 
-export function normalizePrReviewComment(comment: GhPrReviewCommentApi): GhPrReviewComment | null {
+function normalizePrReviewComment(comment: GhPrReviewCommentApi): GhPrReviewComment | null {
 	if (typeof comment.id !== "number") {
 		return null;
 	}
@@ -171,7 +171,7 @@ export function normalizePrReviewComment(comment: GhPrReviewCommentApi): GhPrRev
 	};
 }
 
-export async function fetchPrReviewComments(
+async function fetchPrReviewComments(
 	cwd: string,
 	repo: string,
 	prNumber: number,
@@ -214,7 +214,7 @@ export async function fetchPrReviewComments(
 	return reviewComments;
 }
 
-export function formatCommentsSection(comments: GhComment[] | undefined): string[] {
+function formatCommentsSection(comments: GhComment[] | undefined): string[] {
 	if (!comments || comments.length === 0) {
 		return [];
 	}
@@ -250,7 +250,7 @@ export function formatCommentsSection(comments: GhComment[] | undefined): string
 	return lines;
 }
 
-export function formatReviewsSection(reviews: GhPrReview[] | undefined): string[] {
+function formatReviewsSection(reviews: GhPrReview[] | undefined): string[] {
 	if (!reviews || reviews.length === 0) {
 		return [];
 	}
@@ -273,7 +273,7 @@ export function formatReviewsSection(reviews: GhPrReview[] | undefined): string[
 	return lines;
 }
 
-export function formatReviewCommentLocation(comment: GhPrReviewComment): string | undefined {
+function formatReviewCommentLocation(comment: GhPrReviewComment): string | undefined {
 	if (!comment.path) {
 		return undefined;
 	}
@@ -282,7 +282,7 @@ export function formatReviewCommentLocation(comment: GhPrReviewComment): string 
 	return line === undefined ? comment.path : `${comment.path}:${line}`;
 }
 
-export function formatReviewCommentsSection(comments: GhPrReviewComment[] | undefined): string[] {
+function formatReviewCommentsSection(comments: GhPrReviewComment[] | undefined): string[] {
 	if (!comments || comments.length === 0) {
 		return [];
 	}
@@ -305,7 +305,7 @@ export function formatReviewCommentsSection(comments: GhPrReviewComment[] | unde
 	return lines;
 }
 
-export function formatRepoView(data: GhRepoViewData, input: { repo?: string; branch?: string }): string {
+function formatRepoView(data: GhRepoViewData, input: { repo?: string; branch?: string }): string {
 	const lines: string[] = [];
 	const name = data.nameWithOwner ?? input.repo ?? "GitHub Repository";
 	lines.push(`# ${name}`);
@@ -332,10 +332,7 @@ export function formatRepoView(data: GhRepoViewData, input: { repo?: string; bra
 	return lines.join("\n").trim();
 }
 
-export function formatIssueView(
-	data: GhIssueViewData,
-	input: { issue: string; repo?: string; comments?: boolean },
-): string {
+function formatIssueView(data: GhIssueViewData, input: { issue: string; repo?: string; comments?: boolean }): string {
 	const lines: string[] = [];
 	const issueNumber = data.number ?? input.issue;
 	lines.push(`# Issue #${issueNumber}: ${data.title ?? "Untitled"}`);
@@ -363,7 +360,7 @@ export function formatIssueView(
 	return lines.join("\n").trim();
 }
 
-export function formatPrFiles(files: GhPrFile[] | undefined): string[] {
+function formatPrFiles(files: GhPrFile[] | undefined): string[] {
 	if (!files || files.length === 0) return [];
 
 	const lines: string[] = [`## Files (${files.length})`, ""];
@@ -381,7 +378,7 @@ export function formatPrFiles(files: GhPrFile[] | undefined): string[] {
 	return lines;
 }
 
-export function formatPrView(data: GhPrViewData, input: { pr?: string; repo?: string; comments?: boolean }): string {
+function formatPrView(data: GhPrViewData, input: { pr?: string; repo?: string; comments?: boolean }): string {
 	const lines: string[] = [];
 	const prIdentifier = data.number ?? input.pr ?? "current";
 	lines.push(`# Pull Request #${prIdentifier}: ${data.title ?? "Untitled"}`);
@@ -494,7 +491,7 @@ export interface ViewLookupResult<T> {
 	fetchedAt: number;
 }
 
-export async function fetchIssueViewFresh(
+async function fetchIssueViewFresh(
 	cwd: string,
 	repo: string | undefined,
 	identifier: string,
@@ -511,7 +508,7 @@ export async function fetchIssueViewFresh(
 	return { rendered, sourceUrl: data.url, payload: data };
 }
 
-export async function fetchPrViewFresh(
+async function fetchPrViewFresh(
 	cwd: string,
 	repo: string,
 	number: number,

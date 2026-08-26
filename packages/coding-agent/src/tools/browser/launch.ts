@@ -342,7 +342,7 @@ async function resolveSystemChromium(): Promise<string | undefined> {
 }
 
 /** Options shared by headless Chromium consumers. */
-export interface LaunchHeadlessOptions {
+interface LaunchHeadlessOptions {
 	headless: boolean;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	/** Additional Chromium arguments merged with the centralized launch defaults. */
@@ -352,7 +352,7 @@ export interface LaunchHeadlessOptions {
 }
 
 /** Result of a headless Chromium launch. */
-export interface LaunchHeadlessResult {
+interface LaunchHeadlessResult {
 	browser: Browser;
 	/**
 	 * OMP-owned temporary Chromium profile directory to remove after the browser
@@ -367,7 +367,7 @@ export interface LaunchHeadlessResult {
  * broker-owned shared browser: sandbox/stealth flags, window size, and
  * PUPPETEER_PROXY* env-derived proxy flags.
  */
-export function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): string[] {
+function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): string[] {
 	const launchArgs = [
 		"--no-sandbox",
 		"--disable-setuid-sandbox",
@@ -434,7 +434,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 }
 
 /** Fully resolved executable and argv for a broker-spawned shared Chromium. */
-export interface SharedBrowserLaunchSpec {
+interface SharedBrowserLaunchSpec {
 	executablePath: string;
 	args: string[];
 }
@@ -693,11 +693,6 @@ async function sendUserAgentOverride(client: PuppeteerCdpClient, override: UserA
 	}
 }
 
-export interface UserAgentSession {
-	override: UserAgentOverride;
-	browserSession: CDPSession | null;
-}
-
 /** Configure UA override on the browser + auto-attach to new targets. */
 async function configureUserAgentTargets(
 	browser: Browser,
@@ -907,11 +902,6 @@ async function injectStealthScripts(page: Page): Promise<void> {
 	await page.evaluateOnNewDocument(buildStealthInjectionScript());
 }
 
-/** Builds the browser-page stealth bootstrap source for regression tests. */
-export function buildStealthInjectionScriptForTest(scripts: readonly string[] = STEALTH_PATCH_SCRIPTS): string {
-	return buildStealthInjectionScript(scripts);
-}
-
 /** Apply stealth patches + UA override to a headless page. Idempotent within a tab. */
 export async function applyStealthPatches(
 	browser: Browser,
@@ -930,32 +920,4 @@ export async function applyStealthPatches(
 	await configureUserAgentTargets(browser, targetState);
 	state.browserSession = targetState.browserSession;
 	await injectStealthScripts(page);
-}
-
-/** Exposes executable candidates for detection tests. */
-export function systemChromiumCandidatesForTest(
-	platform: NodeJS.Platform = process.platform,
-	home?: string,
-	which?: (name: string) => string | null | undefined,
-): string[] {
-	return systemChromiumCandidates(platform, home, which);
-}
-
-export async function chromiumExecutableProbeForTest(executablePath: string): Promise<boolean> {
-	return isChromiumExecutable(executablePath);
-}
-
-export function stealthIgnoreDefaultArgsForTest(executablePath: string | undefined): string[] {
-	return stealthIgnoreDefaultArgs(executablePath);
-}
-
-export function targetSupportsUserAgentOverrideForTest(target: Target): boolean {
-	return targetSupportsUserAgentOverride(target);
-}
-export async function configureUserAgentTargetsForTest(
-	browser: Browser,
-	state: { browserSession: CDPSession | null; override: UserAgentOverride },
-	targetTimeoutMs?: number,
-): Promise<void> {
-	await configureUserAgentTargets(browser, state, targetTimeoutMs);
 }

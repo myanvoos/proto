@@ -27,7 +27,7 @@ const PROBE_TIMEOUT_MS = 1_500;
 const ENSURE_ATTEMPTS = 3;
 
 /** Broker-owned browser endpoint one omp process can attach to. */
-export interface SharedBrowserEndpoint {
+interface SharedBrowserEndpoint {
 	wsEndpoint: string;
 	daemonName: string;
 	/** Canonical project directory owning the broker (used to address later stop requests). */
@@ -35,7 +35,7 @@ export interface SharedBrowserEndpoint {
 }
 
 /** Stable broker daemon name for the shared automation browser. */
-export function sharedBrowserDaemonName(headless: boolean): string {
+function sharedBrowserDaemonName(headless: boolean): string {
 	return headless ? "proto.browser.headless" : "proto.browser.headed";
 }
 

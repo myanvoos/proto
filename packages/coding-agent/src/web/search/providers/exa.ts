@@ -109,7 +109,7 @@ type ExaSearchType = "neural" | "fast" | "auto" | "deep";
 
 type ExaSearchParamType = ExaSearchType | "keyword";
 
-export interface ExaSearchParams {
+interface ExaSearchParams {
 	query: string;
 	num_results?: number;
 	type?: ExaSearchParamType;

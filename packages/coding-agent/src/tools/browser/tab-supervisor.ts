@@ -78,22 +78,22 @@ interface TabSessionBase<TBrowser extends BrowserHandle = BrowserHandle> {
 	ownerSessionId?: string;
 }
 
-export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle> {
+interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle> {
 	backend: "worker";
 	worker: WorkerHandle;
 	activateForScreenshot: boolean;
 }
 
-export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
+interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 	backend: "cmux";
 	cmuxTab: CmuxTab;
 	cmuxOwnsSurface: boolean;
 	cmuxAttachedSurface?: string;
 }
 
-export type TabSession = WorkerTabSession | CmuxTabSession;
+type TabSession = WorkerTabSession | CmuxTabSession;
 
-export interface AcquireTabOptions {
+interface AcquireTabOptions {
 	url?: string;
 	waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
@@ -115,14 +115,14 @@ export interface AcquireTabResult {
 	created: boolean;
 }
 
-export interface RunInTabOptions {
+interface RunInTabOptions {
 	code: string;
 	timeoutMs: number;
 	signal?: AbortSignal;
 	session: ToolSession;
 }
 
-export interface ReleaseTabOptions {
+interface ReleaseTabOptions {
 	kill?: boolean;
 	/** Maximum time for each asynchronous cleanup resource before close fails with diagnostics. */
 	timeoutMs?: number;

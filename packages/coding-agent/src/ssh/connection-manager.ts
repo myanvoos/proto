@@ -12,11 +12,11 @@ export interface SSHConnectionTarget {
 	compat?: boolean;
 }
 
-export type SSHHostOs = "windows" | "linux" | "macos" | "unknown";
+type SSHHostOs = "windows" | "linux" | "macos" | "unknown";
 export type SSHHostShell = "cmd" | "powershell" | "bash" | "zsh" | "sh" | "unknown";
-export type SshPlatform = typeof process.platform;
+type SshPlatform = typeof process.platform;
 
-export interface SSHHostInfo {
+interface SSHHostInfo {
 	version: number;
 	os: SSHHostOs;
 	shell: SSHHostShell;
@@ -223,16 +223,6 @@ export function assertOwnerPrivateDir(dir: string): void {
 
 function getHostInfoPath(name: string): string {
 	return path.join(HOST_INFO_DIR, `${sanitizeHostName(name)}.json`);
-}
-
-async function deleteHostInfoFromDisk(hostName: string): Promise<void> {
-	const path = getHostInfoPath(hostName);
-	try {
-		await fs.promises.unlink(path);
-	} catch (err) {
-		if (isEnoent(err)) return;
-		logger.warn("Failed to delete SSH host info", { host: hostName, error: String(err) });
-	}
 }
 
 async function validateKeyPermissions(keyPath?: string): Promise<void> {
@@ -659,43 +649,6 @@ export async function getHostInfo(hostName: string): Promise<SSHHostInfo | undef
 	return loadHostInfoFromDiskByName(hostName);
 }
 
-export async function getHostInfoForHost(host: SSHConnectionTarget): Promise<SSHHostInfo | undefined> {
-	const cached = hostInfoCache.get(host.name);
-	if (cached) {
-		const resolved = applyCompatOverride(host, cached);
-		if (resolved !== cached) hostInfoCache.set(host.name, resolved);
-		return resolved;
-	}
-	return await loadHostInfoFromDisk(host);
-}
-
-/**
- * Synchronous, probe-free host info lookup for startup paths.
- *
- * Checks the in-memory cache, then falls back to a synchronous read of the
- * persisted host-info cache file. Never opens a connection or probes the
- * remote host — callers get `undefined` when nothing is cached yet.
- */
-export function getCachedHostInfoSync(host: SSHConnectionTarget): SSHHostInfo | undefined {
-	const cached = hostInfoCache.get(host.name);
-	if (cached) {
-		const resolved = applyCompatOverride(host, cached);
-		if (resolved !== cached) hostInfoCache.set(host.name, resolved);
-		return resolved;
-	}
-	try {
-		const parsed = parseHostInfo(JSON.parse(fs.readFileSync(getHostInfoPath(host.name), "utf-8")));
-		if (!parsed) return undefined;
-		const resolved = applyCompatOverride(host, parsed);
-		hostInfoCache.set(host.name, resolved);
-		return resolved;
-	} catch (err) {
-		if (isEnoent(err)) return undefined;
-		logger.warn("Failed to load SSH host info", { host: host.name, error: String(err) });
-		return undefined;
-	}
-}
-
 export async function ensureHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const cached = hostInfoCache.get(host.name);
 	if (cached) {
@@ -772,30 +725,9 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 	}
 }
 
-export async function invalidateHostMetadata(hostNames: Iterable<string>): Promise<void> {
-	const names = [...hostNames];
-	for (const hostName of names) {
-		hostInfoCache.delete(hostName);
-		await deleteHostInfoFromDisk(hostName);
-	}
-	for (const hostName of names) {
-		const activeHost = activeHosts.get(hostName);
-		if (activeHost) {
-			await closeConnectionInternal(activeHost);
-			activeHosts.delete(hostName);
-			continue;
-		}
-		await closeConnectionInternal({ name: hostName, host: hostName });
-	}
-}
-
 async function closeConnectionInternal(host: SSHConnectionTarget): Promise<void> {
 	const target = buildSshTarget(host.username, host.host);
 	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target]);
-}
-
-export async function closeConnection(hostName: string): Promise<void> {
-	await invalidateHostMetadata([hostName]);
 }
 
 export async function closeAllConnections(): Promise<void> {

@@ -1,15 +1,8 @@
 import type { TinyLocalModelKey, TinyTitleLocalModelKey } from "./models";
 
-export type TinyTitleProgressStatus =
-	| "initiate"
-	| "download"
-	| "progress"
-	| "progress_total"
-	| "done"
-	| "ready"
-	| "error";
+type TinyTitleProgressStatus = "initiate" | "download" | "progress" | "progress_total" | "done" | "ready" | "error";
 
-export interface TinyTitleProgressFileState {
+interface TinyTitleProgressFileState {
 	loaded: number;
 	total: number;
 }

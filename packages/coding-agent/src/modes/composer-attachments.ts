@@ -2,7 +2,7 @@ import { SYMBOL_PRESETS } from "./theme/symbols";
 import { theme } from "./theme/theme";
 
 /** Attachment chip kinds staged in the composer: pasted images and large text pastes. */
-export type ChipKind = "image" | "paste";
+type ChipKind = "image" | "paste";
 
 const CHIP_ICON_KEY = { image: "chip.image", paste: "chip.paste" } as const;
 
@@ -50,7 +50,7 @@ export function attachmentSgr(kind: ChipKind, n: number): string {
 }
 
 /** Matches expanded image and paste markers, including optional marker metadata. */
-export const PLACEHOLDER_REGEX = /\[(Image|Paste) #([1-9]\d*)(?:,[^\]\n]*)?\]/g;
+const PLACEHOLDER_REGEX = /\[(Image|Paste) #([1-9]\d*)(?:,[^\]\n]*)?\]/g;
 /** Matches either an expanded attachment marker or a compact composer chip token. */
 export const COMPOSER_TOKEN_REGEX = new RegExp(`${PLACEHOLDER_REGEX.source}|${CHIP_TOKEN_SOURCE}`, "gu");
 
@@ -117,7 +117,7 @@ export function compactImageMarkers(text: string, imageCount: number): { text: s
 export type PlaceholderKind = "image" | "paste";
 
 /** Rendering callbacks for plain text and parsed attachment references. */
-export interface PlaceholderRenderers {
+interface PlaceholderRenderers {
 	/** Renders text outside attachment references. */
 	renderText: (text: string) => string;
 	/** Renders one parsed marker or compact chip token. */

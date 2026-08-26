@@ -34,7 +34,7 @@ type ModelPerfRow = {
 };
 
 /** One completed request's timing, folded into the per-model aggregates. */
-export interface ModelPerfSample {
+interface ModelPerfSample {
 	/** Output tokens the provider reported for the turn. */
 	outputTokens: number;
 	/** Total request duration in milliseconds. */

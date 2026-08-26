@@ -32,7 +32,7 @@ const ANSWER_MAX_TOKENS = 16;
  */
 const ONLINE_REASONING_SAFE_MAX_TOKENS = 4096;
 
-export interface ClassifyUnexpectedStopDeps {
+interface ClassifyUnexpectedStopDeps {
 	settings: Settings;
 	registry: ModelRegistry;
 	sessionId: string;

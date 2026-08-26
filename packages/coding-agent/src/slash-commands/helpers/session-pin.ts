@@ -2,7 +2,7 @@ import type { OAuthAccountSummary } from "../../session/auth-storage";
 import { formatActiveAccountLabel } from "./active-oauth-account";
 
 /** Stored OAuth account rendered and matched by `/session pin`. */
-export interface SessionPinAccount extends OAuthAccountSummary {
+interface SessionPinAccount extends OAuthAccountSummary {
 	label: string;
 }
 

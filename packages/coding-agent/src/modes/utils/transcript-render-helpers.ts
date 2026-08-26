@@ -235,7 +235,7 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 	return args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 }
 
-export type AssistantErrorPresentation =
+type AssistantErrorPresentation =
 	| { kind: "none" }
 	| { kind: "full"; text: string; isError: true }
 	| { kind: "compact-recovered"; text: string; isError: false };

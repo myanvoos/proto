@@ -13,7 +13,7 @@ import {
 import { outputBlockContentWidth, renderOutputBlock } from "./output-block";
 import type { State } from "./types";
 
-export interface CodeCellOptions {
+interface CodeCellOptions {
 	code: string;
 	language?: string;
 	index?: number;
@@ -200,7 +200,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
 }
 
-export interface MarkdownCellOptions {
+interface MarkdownCellOptions {
 	content: string;
 	index?: number;
 	total?: number;

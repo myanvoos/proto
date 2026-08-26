@@ -9,7 +9,7 @@ export interface EvalBackendsAllowance {
 }
 
 /** Read per-backend allowance from settings (py/js default on; rb/jl opt-in, default off). */
-export function readEvalBackendsAllowance(session: ToolSession): EvalBackendsAllowance {
+function readEvalBackendsAllowance(session: ToolSession): EvalBackendsAllowance {
 	return {
 		python: session.settings.get("eval.py") ?? true,
 		js: session.settings.get("eval.js") ?? true,

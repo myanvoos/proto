@@ -8,10 +8,9 @@ import { $which } from "@oh-my-pi/pi-utils";
 
 // Secret-shaped names that must never leak into eval cells even when they fall
 // under a broad allow-prefix.
-export const SECRET_KEY_PATTERN =
-	/API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
+const SECRET_KEY_PATTERN = /API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
 
-export interface EnvFilterOptions {
+interface EnvFilterOptions {
 	allowList: string[];
 	denyList: string[];
 	allowPrefixes: string[];

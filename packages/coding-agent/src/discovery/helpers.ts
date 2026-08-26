@@ -84,7 +84,7 @@ export const SOURCE_PATHS = {
 	},
 } as const;
 
-export type SourceId = keyof typeof SOURCE_PATHS;
+type SourceId = keyof typeof SOURCE_PATHS;
 
 /**
  * Get user-level path for a source.
@@ -132,7 +132,7 @@ export function createSourceMeta(provider: string, filePath: string, level: "use
 	};
 }
 
-export function parseBoolean(value: unknown): boolean | undefined {
+function parseBoolean(value: unknown): boolean | undefined {
 	if (typeof value === "boolean") return value;
 	if (typeof value === "string") {
 		const normalized = value.trim().toLowerCase();
@@ -165,7 +165,7 @@ export function parseCSV(value: string): string[] {
  * Parse a value that may be an array of strings or a comma-separated string.
  * Returns undefined if the result would be empty.
  */
-export function parseArrayOrCSV(value: unknown): string[] | undefined {
+function parseArrayOrCSV(value: unknown): string[] | undefined {
 	if (Array.isArray(value)) {
 		const filtered = value.filter((item): item is string => typeof item === "string");
 		return filtered.length > 0 ? filtered : undefined;
@@ -224,7 +224,7 @@ export function buildRuleFromMarkdown(
 /**
  * Parse model field into a prioritized list.
  */
-export function parseModelList(value: unknown): string[] | undefined {
+function parseModelList(value: unknown): string[] | undefined {
 	const parsed = parseArrayOrCSV(value);
 	if (!parsed) return undefined;
 	const normalized = parsed.map(entry => entry.trim()).filter(Boolean);
@@ -232,7 +232,7 @@ export function parseModelList(value: unknown): string[] | undefined {
 }
 
 /** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
-export interface ParsedAgentFields {
+interface ParsedAgentFields {
 	name: string;
 	description: string;
 	tools?: string[];
@@ -338,7 +338,7 @@ async function globIf(
 	}
 }
 
-export interface ScanSkillsFromDirOptions {
+interface ScanSkillsFromDirOptions {
 	dir: string;
 	providerId: string;
 	level: "user" | "project";
@@ -757,7 +757,7 @@ export function buildExtensionModuleItems(
 /**
  * Entry for an installed Claude Code plugin.
  */
-export interface ClaudePluginEntry {
+interface ClaudePluginEntry {
 	/** Claude registry scope; project and local entries are restricted to their project path. */
 	scope?: "user" | "project" | "local";
 	installPath: string;

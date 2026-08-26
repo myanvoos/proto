@@ -1,4 +1,4 @@
-export type LoopLimitConfig =
+type LoopLimitConfig =
 	| {
 			kind: "iterations";
 			iterations: number;
@@ -40,7 +40,7 @@ const TIME_UNITS_MS = new Map<string, number>([
 
 const LOOP_USAGE = "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
 
-export interface ParsedLoopArgs {
+interface ParsedLoopArgs {
 	/** Iteration/duration budget, when the user supplied a leading limit token. */
 	limit?: LoopLimitConfig;
 	/** Inline loop prompt: text after the limit, or the whole argument when no limit was given. */

@@ -171,7 +171,7 @@ interface AdvisorRuntimeDescriptor {
 }
 
 /** Inputs that configure the advisor roster owned by a session. */
-export interface SessionAdvisorsOptions {
+interface SessionAdvisorsOptions {
 	enabled: boolean;
 	tools?: AgentTool[];
 	/**
@@ -206,7 +206,7 @@ export interface SessionAdvisorsOptions {
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
-export interface AdvisorMessageDeliveryOptions {
+interface AdvisorMessageDeliveryOptions {
 	triggerTurn?: boolean;
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 	queueChipText?: string;

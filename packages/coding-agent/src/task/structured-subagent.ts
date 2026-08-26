@@ -47,14 +47,8 @@ export type StructuredSubagentSchemaMode = "permissive" | "strict";
 /** Where an effective output schema came from. */
 export type StructuredSubagentSchemaSource = "caller" | "agent" | "session" | "none";
 
-/** Final structured completion metadata returned for a schema-bearing run. */
-export type StructuredSubagentSchemaResult = StructuredSubagentOutput;
-
-/** A schema validation or extraction error attached to structured completion metadata. */
-export type StructuredSubagentSchemaError = NonNullable<StructuredSubagentOutput["error"]>;
-
 /** A selected schema paired with its source and enforcement mode. */
-export interface StructuredSubagentSchemaResolution {
+interface StructuredSubagentSchemaResolution {
 	schema: unknown;
 	source: StructuredSubagentSchemaSource;
 	mode: StructuredSubagentSchemaMode;
@@ -62,14 +56,14 @@ export interface StructuredSubagentSchemaResolution {
 }
 
 /** Isolation controls shared by the task and eval surfaces. */
-export interface StructuredSubagentIsolationControls {
+interface StructuredSubagentIsolationControls {
 	requested?: boolean;
 	merge?: "patch" | "branch";
 	apply?: boolean;
 }
 
 /** Identity and presentation metadata supplied by the calling surface. */
-export interface StructuredSubagentIdentity {
+interface StructuredSubagentIdentity {
 	/** A previously reserved output/registry id. */
 	id?: string;
 	/** Stable user-facing label used when allocating a new id. */
@@ -115,7 +109,7 @@ export interface StructuredSubagentRequest {
 }
 
 /** A normalized preflight result, reusable by tests and adapters. */
-export interface EffectiveSubagentPolicy {
+interface EffectiveSubagentPolicy {
 	discovery: DiscoveryResult;
 	agentName: string;
 	agent: AgentDefinition;
@@ -133,7 +127,7 @@ export interface EffectiveSubagentPolicy {
 }
 
 /** Settled child execution plus data needed by the frontends' own rendering. */
-export interface StructuredSubagentResult {
+interface StructuredSubagentResult {
 	result: SingleResult;
 	policy: EffectiveSubagentPolicy;
 	mergeSummary: string;
@@ -294,7 +288,7 @@ export async function resolveEffectiveSubagentPolicy(
 }
 
 /** Reserve a session-global agent id only after preflight has succeeded. */
-export async function reserveStructuredSubagentId(
+async function reserveStructuredSubagentId(
 	session: ToolSession,
 	identity: StructuredSubagentIdentity | undefined,
 ): Promise<string> {

@@ -28,7 +28,7 @@ interface InvokeSkillCommandOptions {
 }
 
 /** Built custom-message payload and delivery options for a `/skill:` command. */
-export interface BuiltSkillCommandPrompt {
+interface BuiltSkillCommandPrompt {
 	message: SkillPromptMessage;
 	options: SkillPromptOptions;
 }

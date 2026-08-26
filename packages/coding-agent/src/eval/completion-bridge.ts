@@ -50,13 +50,13 @@ const completionArgsSchema = type({
 	"schema?": { "[string]": "unknown" },
 });
 
-export interface EvalCompletionBridgeOptions {
+interface EvalCompletionBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 }
 
-export interface EvalCompletionResult {
+interface EvalCompletionResult {
 	text: string;
 	details: { model: string; tier: CompletionTier; structured: boolean };
 }

@@ -14,7 +14,7 @@ export type KeywordHighlighter = (text: string, resetTo?: string, phase?: number
 const FG_RESET = "\x1b[39m";
 
 /** Declarative spec for {@link createGradientHighlighter}. */
-export interface GradientHighlightSpec {
+interface GradientHighlightSpec {
 	/** Cheap, stateless presence probe used to skip the boundary regex on most lines. Must be non-global. */
 	probe: RegExp;
 	/** Global, word-bounded match regex walked by `.replace`. */

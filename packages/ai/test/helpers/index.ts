@@ -75,7 +75,7 @@ export function createCodexModel(
 	});
 }
 
-export interface AuthGatewayE2EStatus {
+interface AuthGatewayE2EStatus {
 	ok: boolean;
 	token?: string;
 	reason?: string;

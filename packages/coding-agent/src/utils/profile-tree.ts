@@ -38,7 +38,7 @@ export function mergeInto(a: ProfileNode, b: ProfileNode): void {
  * into it (their children promoted and merged), so a 15-deep recursive spine
  * renders as one annotated node.
  */
-export function flattenRecursion(node: ProfileNode): void {
+function flattenRecursion(node: ProfileNode): void {
 	while (node.children.some(child => child.key === node.key)) {
 		node.recursion++;
 		const next: ProfileNode[] = [];

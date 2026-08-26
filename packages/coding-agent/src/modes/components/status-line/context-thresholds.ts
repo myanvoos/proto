@@ -21,12 +21,6 @@ export function formatContextUsage(usedTokens: number, limitTokens: number): str
 	return `${formatNumber(used)}/${formatNumber(limitTokens)}`;
 }
 
-export function formatContextRemaining(usedTokens: number, limitTokens: number): string {
-	if (!Number.isFinite(limitTokens) || limitTokens <= 0) return "? left";
-	const used = Number.isFinite(usedTokens) && usedTokens > 0 ? usedTokens : 0;
-	return `${formatNumber(Math.max(0, Math.round(limitTokens - used)))} left`;
-}
-
 export function formatContextRemainingPercent(usedPercent: number | null | undefined): string {
 	if (usedPercent === null || usedPercent === undefined || !Number.isFinite(usedPercent)) return "? left";
 	return `${Math.max(0, Math.min(100, Math.round(100 - usedPercent)))}% left`;

@@ -42,7 +42,7 @@ export function substitutePluginRoot<T>(value: T, rootPath: string): T {
  *   subprocess's working directory, which is the Codex `config.toml` contract:
  *   `cwd = "server"`, `command = "./bin/mcp"` → `<configDir>/server/bin/mcp`.
  */
-export type StdioCommandBase = "config-dir" | "cwd";
+type StdioCommandBase = "config-dir" | "cwd";
 
 /**
  * Rebase relative filesystem values in a discovered stdio server config against

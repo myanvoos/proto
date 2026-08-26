@@ -1,6 +1,6 @@
 import type { Tool } from "../../tools";
 
-export interface ToolsMarkdownBindings {
+interface ToolsMarkdownBindings {
 	tools: ReadonlyArray<Pick<Tool, "description" | "name">>;
 	/** Tools mounted under `xd://` URLs, listed after the active set. */
 	xdevTools?: ReadonlyArray<{ name: string; summary: string }>;

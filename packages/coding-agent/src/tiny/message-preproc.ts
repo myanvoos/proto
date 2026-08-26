@@ -39,12 +39,12 @@ export function stripAnsi(message: string): string {
  * `<div>`) are left in place — only fully paired blocks, whose contents would
  * otherwise dominate the title, are dropped.
  */
-export function stripXmlBlocks(message: string): string {
+function stripXmlBlocks(message: string): string {
 	return message.replace(XML_BLOCK, " ");
 }
 
 /** Truncate full commit-hash-like hex runs (≥12 chars) to a short 7-char prefix. */
-export function shortenHashes(message: string): string {
+function shortenHashes(message: string): string {
 	return message.replace(LONG_HEX_RUN, match => match.slice(0, SHORT_HASH_CHARS));
 }
 
@@ -52,7 +52,7 @@ export function shortenHashes(message: string): string {
  * Middle-truncate cleaned text, preserving 2/3 of the available space from the
  * head and 1/3 from the tail. The omission marker counts toward the bound.
  */
-export function truncateTinyMessage(message: string): string {
+function truncateTinyMessage(message: string): string {
 	if (message.length <= MAX_TINY_MESSAGE_CHARS) return message;
 	let omitted = message.length - MAX_TINY_MESSAGE_CHARS;
 	let marker = "";

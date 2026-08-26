@@ -24,7 +24,7 @@ import { discoverAuthStorage } from "../sdk";
 
 const BAR_WIDTH = 28;
 
-export interface UsageCommandArgs {
+interface UsageCommandArgs {
 	action?: string;
 	json?: boolean;
 	provider?: string;
@@ -894,7 +894,7 @@ function collectStoredAccounts(authStorage: AuthStorage): UsageAccountIdentity[]
  * `omp usage --provider xai` can still confirm the stored credential has no
  * usage endpoint.
  */
-export function selectReportableAccounts(
+function selectReportableAccounts(
 	accounts: UsageAccountIdentity[],
 	hasUsageProvider: (provider: string) => boolean,
 	explicitProvider?: string,

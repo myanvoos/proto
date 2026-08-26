@@ -174,7 +174,7 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 	}
 }
 
-export function mapToolKind(toolName: string, args?: unknown): ToolKind {
+function mapToolKind(toolName: string, args?: unknown): ToolKind {
 	// An xd:// device write executes the mounted tool — "edit" would make ACP
 	// clients render it as a file modification to a nonexistent path (and
 	// auto-approve it under edit-tier policies). Reads stay "read": listing

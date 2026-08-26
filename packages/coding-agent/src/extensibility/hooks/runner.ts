@@ -37,7 +37,7 @@ import type {
 /**
  * Listener for hook errors.
  */
-export type HookErrorListener = (error: HookError) => void;
+type HookErrorListener = (error: HookError) => void;
 
 // Re-export execCommand for backward compatibility
 export { execCommand } from "../../exec/exec";

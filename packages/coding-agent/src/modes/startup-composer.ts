@@ -15,7 +15,7 @@ import {
 import { initThemeSync } from "./theme/theme";
 
 /** Inputs available at the CLI prepaint boundary before command modules load. */
-export interface PrepaintComposerOptions {
+interface PrepaintComposerOptions {
 	readonly terminal?: Terminal;
 	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
@@ -28,7 +28,7 @@ export interface PrepaintComposerOptions {
 }
 
 /** Final settings pushed into the live composer after Settings and the theme resolve. */
-export interface PrepaintComposerPreferences extends ComposerPreferences {
+interface PrepaintComposerPreferences extends ComposerPreferences {
 	readonly theme: ComposerThemePreferences;
 }
 

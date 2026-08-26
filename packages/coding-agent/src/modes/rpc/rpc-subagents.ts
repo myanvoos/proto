@@ -20,7 +20,7 @@ import type {
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
-export interface RpcSubagentTranscriptSelector {
+interface RpcSubagentTranscriptSelector {
 	subagentId?: string;
 	sessionFile?: string;
 	fromByte?: number;

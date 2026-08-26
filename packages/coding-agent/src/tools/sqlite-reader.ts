@@ -114,20 +114,20 @@ interface SqliteTableInfoRow {
 	pk: number;
 }
 
-export interface SqlitePathCandidate {
+interface SqlitePathCandidate {
 	sqlitePath: string;
 	subPath: string;
 	queryString: string;
 }
 
-export type SqliteSelector =
+type SqliteSelector =
 	| { kind: "list" }
 	| { kind: "schema"; table: string; sampleLimit: number }
 	| { kind: "row"; table: string; key: string }
 	| { kind: "query"; table: string; limit: number; offset: number; order?: string; where?: string }
 	| { kind: "raw"; sql: string };
 
-export type SqliteRowLookup = { kind: "pk"; column: string; type: string } | { kind: "rowid" };
+type SqliteRowLookup = { kind: "pk"; column: string; type: string } | { kind: "rowid" };
 
 /**
  * Row count for a table in the listing.
@@ -136,12 +136,12 @@ export type SqliteRowLookup = { kind: "pk"; column: string; type: string } | { k
  *   scan, so this may be stale.
  * - `atLeast`: a lower bound; counting was capped before reaching the end.
  */
-export type TableRowCount =
+type TableRowCount =
 	| { kind: "exact"; rows: number }
 	| { kind: "estimate"; rows: number }
 	| { kind: "atLeast"; rows: number };
 
-export interface SqliteTableSummary {
+interface SqliteTableSummary {
 	name: string;
 	count: TableRowCount;
 }
@@ -688,16 +688,6 @@ export function getTableSchema(db: Database, table: string): string {
 		throw new ToolError(`SQLite schema for table '${table}' is unavailable`);
 	}
 	return row.sql;
-}
-
-export function getTablePrimaryKey(db: Database, table: string): { column: string; type: string } | null {
-	const primaryKeyColumns = getPrimaryKeyColumns(db, table);
-	if (primaryKeyColumns.length !== 1) {
-		return null;
-	}
-
-	const column = primaryKeyColumns[0]!;
-	return { column: column.name, type: column.type };
 }
 
 export function resolveTableRowLookup(db: Database, table: string): SqliteRowLookup {

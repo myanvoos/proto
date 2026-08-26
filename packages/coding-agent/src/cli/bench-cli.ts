@@ -828,7 +828,7 @@ function benchTableColumns(models: BenchModelReport[]): BenchTableColumn[] {
  * ingest rate); the winner's model cell is highlighted. Medians (not means)
  * so one queue hiccup cannot reorder rows.
  */
-export function formatBenchTable(summary: BenchSummary): string {
+function formatBenchTable(summary: BenchSummary): string {
 	const rank = (report: BenchModelReport): number =>
 		report.byChallenge.chat?.tokensPerSecond.p50 ??
 		report.byChallenge.generation?.tokensPerSecond.p50 ??

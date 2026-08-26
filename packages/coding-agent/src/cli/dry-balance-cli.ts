@@ -327,7 +327,7 @@ function renderBenchStatusLine(
 	}
 }
 
-export function createBenchProgressSink(
+function createBenchProgressSink(
 	total: number,
 	write: (text: string) => void,
 	interactive: boolean,
@@ -722,7 +722,7 @@ function formatRows(rows: Array<{ count: number; percent: number; label: string 
 	});
 }
 
-export function formatDryBalanceText(summary: DryBalanceSummary): string {
+function formatDryBalanceText(summary: DryBalanceSummary): string {
 	const accountRows = summary.success.accounts.map(row => ({
 		count: row.count,
 		percent: row.percent,

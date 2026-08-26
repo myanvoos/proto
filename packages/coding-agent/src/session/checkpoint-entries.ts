@@ -24,10 +24,10 @@ export function reportFromRewindReportContent(content: string): string {
 }
 
 /** Checkpoint-domain tool names normalized from native and xdev calls. */
-export type SemanticCheckpointToolName = "checkpoint" | "rewind";
+type SemanticCheckpointToolName = "checkpoint" | "rewind";
 
 /** Normalized checkpoint-domain tool result. */
-export interface SemanticToolResult {
+interface SemanticToolResult {
 	toolName: SemanticCheckpointToolName;
 	details?: unknown;
 }

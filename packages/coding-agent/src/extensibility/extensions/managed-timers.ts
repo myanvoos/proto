@@ -17,7 +17,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 
 /** Callback invoked when a managed timer's callback throws or rejects. */
-export type ManagedTimerErrorHandler = (event: string, error: string, stack?: string) => void;
+type ManagedTimerErrorHandler = (event: string, error: string, stack?: string) => void;
 
 export class ManagedTimers {
 	readonly #timers = new Set<Timer>();

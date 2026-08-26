@@ -17,7 +17,7 @@ const WORKER_ISOLATION_MOUNT_DIR = "m";
 type IsoBackendKind = natives.IsoBackendKind;
 
 /** Baseline state for a single git repository. */
-export interface RepoBaseline {
+interface RepoBaseline {
 	repoRoot: string;
 	headCommit: string;
 	staged: string;
@@ -289,7 +289,7 @@ function patchTouchedFiles(patch: string): string[] {
 	return [...files];
 }
 
-export interface DeltaPatchResult {
+interface DeltaPatchResult {
 	rootPatch: string;
 	nestedPatches: NestedRepoPatch[];
 }
@@ -402,7 +402,7 @@ export async function applyNestedPatches(
  * the PAL's `iso_resolve` then falls back through the kind order
  * whenever the hint isn't available on the current host.
  */
-export type WorkerIsolationMode =
+type WorkerIsolationMode =
 	| "none"
 	| "auto"
 	| "apfs"
@@ -546,7 +546,7 @@ export async function cleanupIsolation(handle: IsolationHandle): Promise<void> {
 // Branch-mode isolation
 // ═══════════════════════════════════════════════════════════════════════════
 
-export interface CommitToBranchResult {
+interface CommitToBranchResult {
 	branchName?: string;
 	nestedPatches: NestedRepoPatch[];
 	/**
@@ -900,7 +900,7 @@ export async function commitToBranch(
 	};
 }
 
-export interface MergeBranchResult {
+interface MergeBranchResult {
 	merged: string[];
 	failed: string[];
 	conflict?: string;

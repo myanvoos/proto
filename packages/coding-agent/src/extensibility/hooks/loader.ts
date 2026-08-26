@@ -61,7 +61,7 @@ export interface LoadedHook {
 /**
  * Result of loading hooks.
  */
-export interface LoadHooksResult {
+interface LoadHooksResult {
 	/** Successfully loaded hooks */
 	hooks: LoadedHook[];
 	/** Errors encountered during loading */

@@ -301,7 +301,7 @@ export function markHandled<T>(promise: Promise<T>): Promise<T> {
 export const CELL_BUDGET_SLACK_MS = 1_000;
 
 /** Default poll deadline for `wait(predicate)` before clamping to the cell budget. */
-export const DEFAULT_PREDICATE_TIMEOUT_MS = 30_000;
+const DEFAULT_PREDICATE_TIMEOUT_MS = 30_000;
 
 /** Options for the predicate form of the run-scoped `wait()` helper. */
 export interface WaitPredicateOptions {

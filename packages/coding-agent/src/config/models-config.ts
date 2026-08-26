@@ -7,7 +7,7 @@ import { ConfigFile } from "./config-file";
 import type { ModelsConfig, ProviderAuthMode, ProviderDiscovery } from "./models-config-schema";
 import { getModelsConfigSchema } from "./models-config-schema-bundle";
 
-export type ProviderValidationMode = "models-config" | "runtime-register";
+type ProviderValidationMode = "models-config" | "runtime-register";
 
 export interface ProviderValidationModel {
 	id: string;
@@ -17,7 +17,7 @@ export interface ProviderValidationModel {
 	maxTokens?: number;
 }
 
-export interface ProviderValidationConfig {
+interface ProviderValidationConfig {
 	baseUrl?: string;
 	headers?: Record<string, string>;
 	apiKey?: string;

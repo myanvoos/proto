@@ -13,13 +13,13 @@ export interface ComposerThemePreferences {
 }
 
 /** Last authoritative model labels shown in the welcome component. */
-export interface ComposerWelcomeCache {
+interface ComposerWelcomeCache {
 	readonly modelName: string;
 	readonly providerName: string;
 }
 
 /** Speculative composer state read before the settings/session graph is available. */
-export interface ComposerStartupCache {
+interface ComposerStartupCache {
 	readonly preferences?: ComposerPreferences;
 	readonly theme?: ComposerThemePreferences;
 	readonly welcome?: ComposerWelcomeCache;

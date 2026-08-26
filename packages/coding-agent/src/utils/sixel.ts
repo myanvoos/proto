@@ -18,7 +18,7 @@ export function isSixelPassthroughEnabled(): boolean {
 	return forcedProtocol === "sixel" && $flag("PI_ALLOW_SIXEL_PASSTHROUGH");
 }
 /** Returns true when the text contains a SIXEL start sequence. */
-export function containsSixelSequence(text: string): boolean {
+function containsSixelSequence(text: string): boolean {
 	return SIXEL_START_REGEX.test(text);
 }
 
@@ -39,11 +39,6 @@ export function getSixelLineMask(lines: string[]): boolean[] {
 		}
 		return isSixelLine;
 	});
-}
-
-/** Returns true when the line contains a SIXEL start sequence. */
-export function isSixelLine(line: string): boolean {
-	return containsSixelSequence(line);
 }
 
 /**

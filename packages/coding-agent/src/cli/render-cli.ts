@@ -29,7 +29,7 @@ import { AuthStorage, SqliteAuthCredentialStore } from "../session/auth-storage"
 import { findMostRecentSession, resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 
-export interface RenderCommandArgs {
+interface RenderCommandArgs {
 	/** Session file path or id prefix; default: most recent session for cwd. */
 	session?: string;
 	/** Terminal width in columns. Default: current terminal width, else 120. */

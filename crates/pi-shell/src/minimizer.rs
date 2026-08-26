@@ -108,12 +108,6 @@ impl MinimizerOutput {
 		self.text = text;
 		self
 	}
-
-	/// Byte count saved by this filter (0 for passthrough).
-	#[must_use]
-	pub const fn bytes_saved(&self) -> usize {
-		self.input_bytes.saturating_sub(self.output_bytes)
-	}
 }
 
 /// Aggregate output for a segmented chain.

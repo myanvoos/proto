@@ -37,7 +37,7 @@ function resolveTierAnsi(theme: ShimmerTheme, tier: ShimmerPaletteTier): string 
 }
 
 /** Three-tier color stack a shimmer character cycles through as the band sweeps. */
-export interface ShimmerPalette {
+interface ShimmerPalette {
 	/** Color for chars outside / at the edge of the band (intensity < ~0.22). */
 	low: ShimmerPaletteTier;
 	/** Color for chars approaching the crest (~0.22 ≤ intensity < ~0.65). */
@@ -49,7 +49,7 @@ export interface ShimmerPalette {
 }
 
 /** One run of text that shares a palette inside a larger shimmer sweep. */
-export interface ShimmerSegment {
+interface ShimmerSegment {
 	text: string;
 	palette?: ShimmerPalette;
 }

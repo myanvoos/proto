@@ -5,7 +5,7 @@ import { type MermaidAsciiRenderOptions, renderMermaidAsciiSafe } from "@oh-my-p
  * Extends the raw render options (theme, color mode, spacing, `useAscii`) with a
  * viewport-fitting hint.
  */
-export interface MermaidResolveOptions extends MermaidAsciiRenderOptions {
+interface MermaidResolveOptions extends MermaidAsciiRenderOptions {
 	/**
 	 * Maximum display width (terminal columns) the diagram should occupy. A
 	 * layout that overflows this width is re-rendered in the perpendicular

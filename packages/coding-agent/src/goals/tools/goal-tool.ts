@@ -20,15 +20,15 @@ const goalSchema = type({
 	"token_budget?": type("number.integer").describe("token budget"),
 });
 
-export type GoalToolInput = typeof goalSchema.infer;
+type GoalToolInput = typeof goalSchema.infer;
 
-export interface GoalToolResponse {
+interface GoalToolResponse {
 	goal: Goal | null;
 	remainingTokens: number | null;
 	completionBudgetReport: string | null;
 }
 
-export function buildGoalToolResponse(
+function buildGoalToolResponse(
 	goal: Goal | null | undefined,
 	options?: { includeCompletionReport?: boolean },
 ): GoalToolResponse {

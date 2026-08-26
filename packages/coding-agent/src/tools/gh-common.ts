@@ -16,7 +16,7 @@ export function normalizeBlock(value: string | null | undefined): string {
 	return (value ?? "").replaceAll("\r\n", "\n").replaceAll("\r", "\n").replaceAll("\t", "    ").trimEnd();
 }
 
-export function looksLikeGitHubUrl(value: string | undefined): boolean {
+function looksLikeGitHubUrl(value: string | undefined): boolean {
 	return value?.startsWith("https://github.com/") ?? false;
 }
 
@@ -182,8 +182,8 @@ export async function resolveGitHubRepo(
  * signal is honored at the wait point via `untilAborted` instead, so an abort
  * unwinds only that caller.
  */
-export const DEFAULT_REPO_RESOLVED = new Map<string, string>();
-export const DEFAULT_REPO_INFLIGHT = new Map<string, Promise<string>>();
+const DEFAULT_REPO_RESOLVED = new Map<string, string>();
+const DEFAULT_REPO_INFLIGHT = new Map<string, Promise<string>>();
 
 export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSignal): Promise<string> {
 	const key = path.resolve(cwd);
@@ -261,7 +261,7 @@ export async function saveArtifactText(
 	return artifactId;
 }
 
-export function appendArtifactReference(text: string, artifactId: string | undefined, label: string): string {
+function appendArtifactReference(text: string, artifactId: string | undefined, label: string): string {
 	if (!artifactId) {
 		return text;
 	}

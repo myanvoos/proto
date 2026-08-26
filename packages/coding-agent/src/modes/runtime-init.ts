@@ -13,9 +13,9 @@ import type { AgentSession } from "../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 
 /** Action name for an extension-originated send failure. */
-export type ExtensionSendAction = "extension_send" | "extension_send_user";
+type ExtensionSendAction = "extension_send" | "extension_send_user";
 
-export interface InitializeExtensionsOptions {
+interface InitializeExtensionsOptions {
 	/** Reports an error thrown by an extension-initiated send. */
 	reportSendError: (action: ExtensionSendAction, error: Error) => void;
 	/** Reports a runtime error surfaced through {@link ExtensionRunner.onError}. */

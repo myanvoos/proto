@@ -21,7 +21,7 @@ const changelogEntriesSchema = type({
 	"Security?": "string[]",
 });
 
-export const changelogTool = {
+const changelogTool = {
 	name: "create_changelog_entries",
 	description: "Generate changelog entries grouped by Keep a Changelog categories.",
 	parameters: type({ entries: changelogEntriesSchema }),

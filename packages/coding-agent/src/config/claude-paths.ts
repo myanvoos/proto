@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 /** Paths to Claude Code's user data and configuration file. */
-export interface ClaudePaths {
+interface ClaudePaths {
 	configDir: string;
 	configFile: string;
 }

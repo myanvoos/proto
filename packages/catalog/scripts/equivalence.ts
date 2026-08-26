@@ -5,33 +5,33 @@ import {
 } from "../src/identity/id";
 import type { Api, Model } from "../src/types";
 
-export type CanonicalModelSource = "override" | "bundled" | "heuristic" | "fallback";
+type CanonicalModelSource = "override" | "bundled" | "heuristic" | "fallback";
 
-export interface ModelEquivalenceConfig {
+interface ModelEquivalenceConfig {
 	overrides?: Record<string, string>;
 	exclude?: string[];
 }
 
-export interface CanonicalModelVariant {
+interface CanonicalModelVariant {
 	canonicalId: string;
 	selector: string;
 	model: Model<Api>;
 	source: CanonicalModelSource;
 }
 
-export interface CanonicalModelRecord {
+interface CanonicalModelRecord {
 	id: string;
 	name: string;
 	variants: CanonicalModelVariant[];
 }
 
-export interface CanonicalModelIndex {
+interface CanonicalModelIndex {
 	records: CanonicalModelRecord[];
 	byId: Map<string, CanonicalModelRecord>;
 	bySelector: Map<string, string>;
 }
 
-export interface CanonicalReferenceData {
+interface CanonicalReferenceData {
 	references: ReadonlyMap<string, Model<Api>>;
 	officialIds: ReadonlySet<string>;
 	suffixAliases: ReadonlyMap<string, string>;
@@ -148,7 +148,7 @@ function getCanonicalSuffixAliasKey(candidate: string): string {
 	return PENALTY_HAS_UPPERCASE.test(candidate) ? normalizeCanonicalIdKey(candidate) : candidate;
 }
 
-export function formatCanonicalVariantSelector(model: Model<Api>): string {
+function formatCanonicalVariantSelector(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }
 

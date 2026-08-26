@@ -13,7 +13,7 @@ import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize";
 
 export const MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024;
-export const SUPPORTED_INPUT_IMAGE_MIME_TYPES = SUPPORTED_IMAGE_MIME_TYPES;
+const SUPPORTED_INPUT_IMAGE_MIME_TYPES = SUPPORTED_IMAGE_MIME_TYPES;
 const MODEL_BOUNDARY_IMAGE_CACHE_MAX_SIZE = 64 * 1024 * 1024;
 const MODEL_BOUNDARY_IMAGE_CACHE_MAX_ENTRIES = 128;
 type NormalizedImagePayload = Pick<ImageContent, "data" | "mimeType">;
@@ -167,7 +167,7 @@ export function webpExclusionForModel(model: Pick<Model, "provider" | "api"> | u
 	return modelLacksWebpSupport(model) ? true : undefined;
 }
 
-export interface LoadImageInputOptions {
+interface LoadImageInputOptions {
 	path: string;
 	cwd: string;
 	autoResize: boolean;
@@ -179,7 +179,7 @@ export interface LoadImageInputOptions {
 }
 
 /** Options for loading an in-memory chat image attachment as a vision-model input. */
-export interface LoadImageAttachmentInputOptions {
+interface LoadImageAttachmentInputOptions {
 	image: ImageContent;
 	label: string;
 	uri: string;
@@ -228,7 +228,7 @@ export async function ensureSupportedImageInput(image: ImageContent): Promise<Im
 	}
 }
 
-export interface NormalizeModelContextImagesOptions {
+interface NormalizeModelContextImagesOptions {
 	/** Model the images are bound for; used to derive encoder constraints (WebP exclusion for Ollama). */
 	model?: Model;
 	resize?: ImageResizeOptions;

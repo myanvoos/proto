@@ -19,7 +19,7 @@ const DEFAULT_NUM_RESULTS = 5;
 const MAX_NUM_RESULTS = 20;
 type SearchParamsWithFetch = SearchParams & { fetch?: FetchImpl };
 
-export interface JinaSearchParams {
+interface JinaSearchParams {
 	query: string;
 	authStorage: AuthStorage;
 	sessionId?: string;
@@ -92,7 +92,7 @@ async function callJinaSearch(
 }
 
 /** Execute Jina web search. */
-export async function searchJina(params: JinaSearchParams): Promise<SearchResponse> {
+async function searchJina(params: JinaSearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const keyOrResolver: ApiKey = params.authStorage.resolver("jina", {
 		sessionId: params.sessionId,

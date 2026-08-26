@@ -76,7 +76,6 @@ const themeColorsSchema = type({
 	statusLineOutput: "string | number",
 	statusLineCost: "string | number",
 	statusLineSubagents: "string | number",
-	"sessionAccent?": "string | number",
 	"modeAccent?": "string | number",
 	"shareAccent?": "string | number",
 	"infoAccent?": "string | number",
@@ -180,7 +179,6 @@ export type ThemeColor =
 	| "statusLineOutput"
 	| "statusLineCost"
 	| "statusLineSubagents"
-	| "sessionAccent"
 	| "modeAccent"
 	| "shareAccent"
 	| "infoAccent"
@@ -249,7 +247,6 @@ const THEME_COLOR_RECORD = {
 	statusLineOutput: true,
 	statusLineCost: true,
 	statusLineSubagents: true,
-	sessionAccent: true,
 	modeAccent: true,
 	shareAccent: true,
 	infoAccent: true,

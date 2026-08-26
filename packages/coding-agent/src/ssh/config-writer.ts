@@ -45,7 +45,7 @@ export async function readSSHConfigFile(filePath: string): Promise<SSHConfigFile
  * Write an SSH config file atomically.
  * Creates parent directories if they don't exist.
  */
-export async function writeSSHConfigFile(filePath: string, config: SSHConfigFile): Promise<void> {
+async function writeSSHConfigFile(filePath: string, config: SSHConfigFile): Promise<void> {
 	// Ensure parent directory exists
 	const dir = path.dirname(filePath);
 	await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -63,7 +63,7 @@ export async function writeSSHConfigFile(filePath: string, config: SSHConfigFile
  * Validate host name.
  * @returns Error message if invalid, undefined if valid
  */
-export function validateHostName(name: string): string | undefined {
+function validateHostName(name: string): string | undefined {
 	if (!name) {
 		return "Host name cannot be empty";
 	}
@@ -116,40 +116,6 @@ export async function addSSHHost(filePath: string, name: string, hostConfig: SSH
 }
 
 /**
- * Update an existing SSH host in a config file.
- * If the host doesn't exist, this will add it.
- *
- * @throws Error if validation fails
- */
-export async function updateSSHHost(filePath: string, name: string, hostConfig: SSHHostConfig): Promise<void> {
-	// Validate host name
-	const nameError = validateHostName(name);
-	if (nameError) {
-		throw new Error(nameError);
-	}
-
-	// Validate host field
-	if (!hostConfig.host) {
-		throw new Error("Host address cannot be empty");
-	}
-
-	// Read existing config
-	const existing = await readSSHConfigFile(filePath);
-
-	// Update host
-	const updated: SSHConfigFile = {
-		...existing,
-		hosts: {
-			...existing.hosts,
-			[name]: hostConfig,
-		},
-	};
-
-	// Write back
-	await writeSSHConfigFile(filePath, updated);
-}
-
-/**
  * Remove an SSH host from a config file.
  *
  * @throws Error if host doesn't exist
@@ -172,12 +138,4 @@ export async function removeSSHHost(filePath: string, name: string): Promise<voi
 
 	// Write back
 	await writeSSHConfigFile(filePath, updated);
-}
-
-/**
- * List all host names in a config file.
- */
-export async function listSSHHosts(filePath: string): Promise<string[]> {
-	const config = await readSSHConfigFile(filePath);
-	return Object.keys(config.hosts ?? {});
 }

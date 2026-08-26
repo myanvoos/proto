@@ -11,7 +11,7 @@ import type { JsStatusEvent } from "./js/shared/types";
 /** Synthetic bridge name reserved for the parallel-pool ceiling across both runtimes. */
 export const EVAL_CONCURRENCY_BRIDGE_NAME = "__concurrency__";
 
-export interface EvalConcurrencyBridgeOptions {
+interface EvalConcurrencyBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;

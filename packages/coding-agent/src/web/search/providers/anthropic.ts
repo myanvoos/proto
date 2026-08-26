@@ -91,7 +91,7 @@ function planQuery(rawQuery: string, parsed: StructuredQuery): AnthropicQueryPla
 	};
 }
 
-export interface AnthropicSearchParams {
+interface AnthropicSearchParams {
 	query: string;
 	system_prompt?: string;
 	num_results?: number;

@@ -41,21 +41,21 @@ async function ensurePosixRemote(target: SSHConnectionTarget): Promise<"sh" | "b
 	return info.transferShell;
 }
 
-export interface RemoteFileReadOptions {
+interface RemoteFileReadOptions {
 	/** Maximum bytes to materialize; the helper fetches one extra byte to detect truncation. */
 	maxBytes: number;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }
 
-export interface RemoteFileReadResult {
+interface RemoteFileReadResult {
 	/** Raw file bytes, capped at `maxBytes`. */
 	bytes: Uint8Array;
 	/** True when the remote file was larger than `maxBytes` (`bytes` is the prefix). */
 	truncated: boolean;
 }
 
-export interface RemoteFileWriteOptions {
+interface RemoteFileWriteOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }

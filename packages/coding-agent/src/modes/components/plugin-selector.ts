@@ -9,12 +9,12 @@ import { getSelectListTheme } from "../theme/theme";
 import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
-export interface PluginSelectorCallbacks {
+interface PluginSelectorCallbacks {
 	onSelect: (pluginName: string, marketplace: string, scope?: "user" | "project") => void;
 	onCancel: () => void;
 }
 
-export interface PluginItem {
+interface PluginItem {
 	plugin: { name: string; version?: string; description?: string };
 	marketplace: string;
 	/** Scope of this entry. When set, appended to the label and forwarded to onSelect. */

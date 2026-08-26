@@ -66,7 +66,7 @@ const TEARDOWN_GRACE_MS = 5_000;
 const ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE = "orchestrator-worker-lifecycle";
 const WORKER_LIFECYCLE_VERSION = 1;
 
-export interface OwnerScope {
+interface OwnerScope {
 	ownerId: string;
 	parentSessionId: string;
 	parentSessionFile: string | null;
@@ -221,7 +221,7 @@ export interface WorkerScreen {
 	lastActivityAt: number;
 }
 
-export interface SpawnOutcome {
+interface SpawnOutcome {
 	id: string;
 	jobId: string;
 }
@@ -393,7 +393,7 @@ function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 }
 
 /** Thrown from a turn job body so the job manager marks the job failed while carrying the formatted result. */
-export class WorkerTurnError extends Error {}
+class WorkerTurnError extends Error {}
 
 /**
  * Process-global registry of orchestrator workers, scoped by both owner agent

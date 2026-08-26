@@ -11,7 +11,3 @@ export function stateSeparator(): string {
 export function segmentSeparator(): string {
 	return theme.fg("dim", `  ${dot()}  `);
 }
-
-export function joinStates(...states: (string | null | undefined | false)[]): string {
-	return states.filter((state): state is string => typeof state === "string" && state !== "").join(stateSeparator());
-}

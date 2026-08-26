@@ -96,7 +96,7 @@ export function recoverAskQuestions(toolCallArguments: unknown): AskToolInput["q
 }
 
 /** Result for a single question */
-export interface QuestionResult {
+interface QuestionResult {
 	id: string;
 	question: string;
 	options: string[];

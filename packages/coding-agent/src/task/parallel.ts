@@ -2,7 +2,7 @@
  * Parallel execution with concurrency control.
  */
 /** Result of parallel execution */
-export interface ParallelResult<R> {
+interface ParallelResult<R> {
 	/** Results array - undefined entries indicate tasks that were skipped due to abort */
 	results: (R | undefined)[];
 	/** Whether execution was aborted before all tasks completed */
@@ -84,7 +84,7 @@ export async function mapWithConcurrencyLimit<T, R>(
 }
 
 /** Result of a concurrency-limited operation that waits for every launched item. */
-export interface ParallelSettledResult<R> {
+interface ParallelSettledResult<R> {
 	/** Settled results in original input order; absent entries were never launched after cancellation. */
 	results: (PromiseSettledResult<R> | undefined)[];
 	/** Whether cancellation prevented scheduling all items. */

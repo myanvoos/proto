@@ -11,7 +11,7 @@ import { buildPathTree, isUrlLikePath, type PathTreeInput, walkPathTree } from "
  * by `formatGroupedFiles` (one `#` per nesting level); use `headerSuffix` to tack
  * on extras like ` (1 replacement)`.
  */
-export interface GroupedFileSection {
+interface GroupedFileSection {
 	/** Optional suffix appended to the file header. */
 	headerSuffix?: string;
 	/** Body lines emitted into the textual model output. */
@@ -22,7 +22,7 @@ export interface GroupedFileSection {
 	skip?: boolean;
 }
 
-export interface GroupedFilesOutput {
+interface GroupedFilesOutput {
 	model: string[];
 	display: string[];
 }
@@ -94,7 +94,7 @@ const HEADER_SUFFIX_RE = /\s+\([^)]*\)\s*$/;
 const HEADER_HASH_TAG_RE = /#[0-9a-f]+$/i;
 
 /** Per-line classification of grouped output, used by renderers for hyperlinks. */
-export interface GroupedLineContext {
+interface GroupedLineContext {
 	/** Directory header, file header, or any non-header body/content line. */
 	kind: "dir" | "file" | "content";
 	/** Number of leading `#` for headers; 0 for content lines. */

@@ -112,8 +112,8 @@ export type RpcSessionChangeResult =
 
 export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
 
-export type RpcSkillCommandSession = Pick<AgentSession, "promptCustomMessage" | "skills" | "skillsSettings">;
-export type RpcSkillCommandResult = { agentInvoked: true };
+type RpcSkillCommandSession = Pick<AgentSession, "promptCustomMessage" | "skills" | "skillsSettings">;
+type RpcSkillCommandResult = { agentInvoked: true };
 
 export async function tryRunRpcSkillCommand(
 	session: RpcSkillCommandSession,
@@ -464,7 +464,7 @@ export class RpcShutdownCoordinator {
 	}
 }
 
-export type RpcSubagentResetRegistry = Pick<RpcSubagentRegistry, "clear">;
+type RpcSubagentResetRegistry = Pick<RpcSubagentRegistry, "clear">;
 
 export async function handleRpcSessionChange(
 	session: RpcSessionChangeSession,

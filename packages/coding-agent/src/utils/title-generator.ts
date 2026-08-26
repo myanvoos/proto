@@ -163,7 +163,7 @@ export async function generateSessionTitle(
 	}
 }
 
-export async function generateTitleOnline(
+async function generateTitleOnline(
 	firstMessage: string,
 	registry: ModelRegistry,
 	settings: Settings,
@@ -427,7 +427,7 @@ export function setExtensionTerminalTitle(title: string): void {
 	emitTerminalTitle();
 }
 
-export type TerminalTitleState = "idle" | "working" | "attention";
+type TerminalTitleState = "idle" | "working" | "attention";
 
 const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TITLE_SPINNER_INTERVAL_MS = 80;

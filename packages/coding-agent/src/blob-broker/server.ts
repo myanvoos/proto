@@ -75,7 +75,7 @@ async function backendStatus(
 }
 
 /** Serve the control plane against a backend; exported for the smoke probe and tests. */
-export function createControlHandler(
+function createControlHandler(
 	backend: LocalBlobBackend,
 	config: BlobBrokerWorkerConfig,
 	baseUrl: string,

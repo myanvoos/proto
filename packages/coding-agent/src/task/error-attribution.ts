@@ -13,7 +13,7 @@
  */
 
 /** Minimal shape of the assistant message a failed turn leaves behind. */
-export interface FailedAssistantModelInfo {
+interface FailedAssistantModelInfo {
 	provider?: string;
 	model?: string;
 }

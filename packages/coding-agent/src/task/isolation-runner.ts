@@ -103,7 +103,7 @@ export async function prepareIsolationContext(cwd: string): Promise<IsolationCon
 }
 
 /** Build a commit-message callback for branch/nested commits; `undefined` ⇒ fall back to generic message. */
-export type BuildCommitMessage = () => undefined | ((diff: string) => Promise<string | null>);
+type BuildCommitMessage = () => undefined | ((diff: string) => Promise<string | null>);
 
 /**
  * Construct the commit-message factory used by isolation branch commits and
@@ -127,7 +127,7 @@ export function makeIsolationCommitMessage(session: ToolSession): BuildCommitMes
 	};
 }
 
-export interface IsolatedRunOptions {
+interface IsolatedRunOptions {
 	/**
 	 * Base run options handed to the subagent subprocess. This helper sets
 	 * `worktree`, clears `preloadedExtensionPaths` / `preloadedCustomToolPaths`
@@ -297,13 +297,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 	}
 }
 
-export interface IsolationMergeOptions {
+interface IsolationMergeOptions {
 	result: SingleResult;
 	repoRoot: string;
 	mergeMode: "patch" | "branch";
 }
 
-export interface IsolationMergeOutcome {
+interface IsolationMergeOutcome {
 	/** Trailing summary appended to the subagent's result text. May be empty. */
 	summary: string;
 	/**
@@ -449,7 +449,7 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 	}
 }
 
-export interface NestedPatchApplyOptions {
+interface NestedPatchApplyOptions {
 	/** Subagent result carrying `nestedPatches`/`exitCode`/`aborted`. */
 	result: SingleResult;
 	repoRoot: string;

@@ -13,7 +13,7 @@ import { clampSelection, contentRowWidth, renderScrollableList, searchableChar }
 import { applyFilter } from "./state-manager";
 import type { Extension, ExtensionKind, ExtensionState } from "./types";
 
-export interface ExtensionListCallbacks {
+interface ExtensionListCallbacks {
 	/** Called when selection changes */
 	onSelectionChange?: (extension: Extension | null) => void;
 	/** Called when extension is toggled */

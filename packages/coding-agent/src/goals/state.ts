@@ -34,4 +34,3 @@ export type GoalRuntimeEvent =
 export type GoalTokenUsage = Pick<UsageStatistics, "input" | "output" | "cacheRead" | "cacheWrite">;
 
 export type GoalBudgetSteering = "allowed" | "suppressed";
-export type GoalTerminalMetricEmission = "emit" | "suppress";

@@ -21,7 +21,7 @@ const GITHUB_REF_KINDS = [
 	{ qualifier: "issue", scheme: "issue", label: "Issue", description: "GitHub issue" },
 ] as const;
 
-export interface GithubRefContext {
+interface GithubRefContext {
 	/** Text to replace on accept: `#3164`, or `pr #3164` when a qualifier precedes it. */
 	prefix: string;
 	/** Type the user named (`pr`/`pull` → `pr`, `issue` → `issue`), or null to offer both. */

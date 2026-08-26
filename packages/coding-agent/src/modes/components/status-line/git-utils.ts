@@ -1,14 +1,3 @@
-export function parseGitHubRepo(remoteUrl: string): string | null {
-	const match = remoteUrl.match(/github\.com[:/]([^/]+\/[^/]+)/);
-	if (!match) return null;
-	return match[1].replace(/\.git$/, "");
-}
-
-export function parseDefaultBranch(ref: string): string {
-	const slash = ref.indexOf("/");
-	return slash >= 0 ? ref.slice(slash + 1) : ref;
-}
-
 export interface PrCacheContext {
 	branch: string;
 	repoId: string | null;

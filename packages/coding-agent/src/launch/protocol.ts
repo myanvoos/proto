@@ -21,7 +21,7 @@ export const DAEMON_IDLE_GRACE_ENV = "PROTO_DAEMON_IDLE_GRACE_MS";
 export type DaemonState = "starting" | "running" | "ready" | "restarting" | "stopping" | "exited" | "failed";
 
 /** Restart behavior applied after an unexpected daemon exit. */
-export type DaemonRestartPolicy = "no" | "on-failure" | "always";
+type DaemonRestartPolicy = "no" | "on-failure" | "always";
 
 /** Readiness conditions; every configured condition must pass. */
 export interface DaemonReadySpec {
@@ -133,7 +133,7 @@ export interface DaemonWireRequest {
 }
 
 /** Response envelope kept raw until matched with its pending operation. */
-export type DaemonWireResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
+type DaemonWireResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
 /** Unsolicited terminal completion sent to the socket that owns a daemon. */
 export interface DaemonCompletionNotification {
@@ -316,7 +316,7 @@ export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 }
 
 /** Decode a socket response envelope before resolving a pending call. */
-export function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
+function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	const source = record(value, "daemon response");
 	const id = stringValue(source.id, "response.id");
 	if (source.ok === true) return { id, ok: true, result: source.result };

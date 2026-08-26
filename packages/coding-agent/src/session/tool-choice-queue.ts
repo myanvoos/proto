@@ -14,9 +14,9 @@ export interface RejectInfo {
 }
 
 /** Controls whether rejection replays a yield, drops it, or drops its remaining sequence. */
-export type RejectOutcome = "requeue" | "drop" | "drop_sequence";
+type RejectOutcome = "requeue" | "drop" | "drop_sequence";
 
-export interface DirectiveCallbacks {
+interface DirectiveCallbacks {
 	/** Fires when the yield completed; onInvoked directives require the requested tool to run first. */
 	onResolved?: (info: ResolveInfo) => void;
 	/**
@@ -55,7 +55,7 @@ export interface PushOptions {
 
 // ── Generators ──────────────────────────────────────────────────────────────
 
-export function* onceGen(choice: ToolChoice): Generator<ToolChoice, void, unknown> {
+function* onceGen(choice: ToolChoice): Generator<ToolChoice, void, unknown> {
 	yield choice;
 }
 

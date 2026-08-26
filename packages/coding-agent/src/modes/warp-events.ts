@@ -18,7 +18,7 @@ export function isWarpCliAgentProtocolActive(): boolean {
 	return Number(process.env.WARP_CLI_AGENT_PROTOCOL_VERSION) >= WARP_CLI_AGENT_PROTOCOL_VERSION;
 }
 
-export type WarpEventValue =
+type WarpEventValue =
 	| string
 	| number
 	| boolean
@@ -27,14 +27,14 @@ export type WarpEventValue =
 	| { readonly [key: string]: WarpEventValue | undefined };
 
 /** Fields added to the Warp CLI-agent event envelope by the event bridge. */
-export type WarpEvent = Readonly<Record<string, WarpEventValue | undefined>>;
+type WarpEvent = Readonly<Record<string, WarpEventValue | undefined>>;
 
-export interface WarpEventEmitterOptions {
+interface WarpEventEmitterOptions {
 	sessionId: string;
 	getCwd?: () => string;
 }
 
-export interface WarpEventEmitter {
+interface WarpEventEmitter {
 	emit(event: WarpEvent): void;
 }
 

@@ -5,8 +5,6 @@
  */
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome, ResetCreditTarget } from "../../session/auth-storage";
 
-export const CODEX_PROVIDER_ID = "openai-codex";
-
 /** One Codex account row for the reset-usage selector. */
 export interface ResetUsageAccount {
 	/** Display label (email, else account id). */

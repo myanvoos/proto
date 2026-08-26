@@ -4,13 +4,13 @@
 
 import { resolveEditMode } from "./edit-mode";
 
-export interface FileDisplayMode {
+interface FileDisplayMode {
 	lineNumbers: boolean;
 	hashLines: boolean;
 }
 
 /** Session-like object providing settings and tool availability for display mode resolution. */
-export interface FileDisplayModeSession {
+interface FileDisplayModeSession {
 	/** Whether the edit tool is available. Hashlines are suppressed without it. */
 	hasEditTool?: boolean;
 	settings: {

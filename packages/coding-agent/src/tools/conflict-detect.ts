@@ -26,7 +26,7 @@ const BASE_PREFIX = "|||||||";
 const SEPARATOR = "=======";
 const THEIRS_PREFIX = ">>>>>>>";
 
-export interface ConflictBlock {
+interface ConflictBlock {
 	/** 1-indexed line of the `<<<<<<<` marker. */
 	startLine: number;
 	/** 1-indexed line of the `=======` separator. */
@@ -320,7 +320,7 @@ export function parseConflictUri(raw: string): ParsedConflictUri | null {
 }
 
 /** Result of {@link spliceConflict}: the new file text plus any boundary-echo repair applied. */
-export interface ConflictSplice {
+interface ConflictSplice {
 	text: string;
 	/** Replacement lines dropped because they duplicated the context directly above the region. */
 	trimmedLeading: number;
@@ -656,7 +656,7 @@ const PREVIEW_SIDE_LINES = 6;
  * them; when a section body equals another section's body the redundant
  * body is collapsed to `≡ <other>`.
  */
-export interface FormatConflictWarningOptions {
+interface FormatConflictWarningOptions {
 	/**
 	 * Total number of conflicts in the underlying file. If greater than
 	 * `entries.length` the header notes how many are visible vs the total

@@ -44,7 +44,7 @@ export interface KernelExecuteOptions {
 	onDisplay?: (output: KernelDisplayOutput) => void | Promise<void>;
 }
 
-export interface JuliaKernelAvailability {
+interface JuliaKernelAvailability {
 	ok: boolean;
 	juliaPath?: string;
 	runtime?: JuliaRuntime;

@@ -1,6 +1,6 @@
 import type { CommitType } from "../../commit/types";
 
-export interface TrivialChangeResult {
+interface TrivialChangeResult {
 	isTrivial: true;
 	type: CommitType;
 	summary: string;

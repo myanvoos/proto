@@ -1,7 +1,7 @@
 import * as path from "node:path";
 
 /** Synthetic plugin root for a --plugin-dir path. Shape-compatible with ClaudePluginRoot. */
-export interface PluginDirRoot {
+interface PluginDirRoot {
 	id: string;
 	marketplace: string;
 	plugin: string;

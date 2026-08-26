@@ -321,7 +321,7 @@ function sourcesFromTextPayload(text: string | undefined): SearchSource[] {
 	}
 	return sources;
 }
-export interface PerplexitySearchParams {
+interface PerplexitySearchParams {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	query: string;

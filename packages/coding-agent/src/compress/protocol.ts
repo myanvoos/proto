@@ -41,7 +41,7 @@ const approveSchema = type({
 }).describe("accept the newest draft as the final output");
 
 /** Transcript details for one `rewrite` call. */
-export interface RewriteDetails {
+interface RewriteDetails {
 	round: number;
 	draftTokens: number;
 	losses: number;

@@ -51,7 +51,7 @@ function parseCommandTemplate(
 	return { description, body };
 }
 
-export interface LoadSlashCommandsOptions {
+interface LoadSlashCommandsOptions {
 	/** Working directory for project-local commands. Default: getProjectDir() */
 	cwd?: string;
 }

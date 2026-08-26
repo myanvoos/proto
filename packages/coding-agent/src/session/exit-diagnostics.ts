@@ -11,7 +11,7 @@ export const SESSION_EXIT_CUSTOM_TYPE = "session_exit";
  * so `appendArgumentSummary` can name the command/path in resume warnings
  * without duplicating whole argument payloads into the session JSONL.
  */
-export interface ToolArgumentSummary {
+interface ToolArgumentSummary {
 	command?: string;
 	path?: string;
 }
@@ -26,7 +26,7 @@ export interface ToolExecutionStartData {
 }
 
 /** Tool call left without a matching toolResult at the end of a branch. */
-export interface PendingToolCallDiagnostic {
+interface PendingToolCallDiagnostic {
 	toolCallId?: string;
 	toolName: string;
 	args?: unknown;
@@ -54,7 +54,7 @@ interface ToolCallContent {
 	arguments?: unknown;
 }
 
-export interface AssistantModelMetadata {
+interface AssistantModelMetadata {
 	api: AssistantMessage["api"];
 	provider: string;
 	model: string;

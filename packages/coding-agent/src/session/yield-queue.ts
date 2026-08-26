@@ -1,7 +1,7 @@
 import { type AgentMessage, ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 
-export interface YieldDispatcher<P> {
+interface YieldDispatcher<P> {
 	/** Drop entries already delivered through another path. Called per-entry at flush time. */
 	isStale?(entry: P): boolean;
 	/** Produce one batched AgentMessage from non-stale entries. Return null to skip. */
@@ -10,7 +10,7 @@ export interface YieldDispatcher<P> {
 	skipIdleFlush?: boolean;
 }
 
-export interface YieldQueueOptions {
+interface YieldQueueOptions {
 	isStreaming: () => boolean;
 	injectStreaming?(msg: AgentMessage): void;
 	injectIdle(messages: AgentMessage[]): Promise<void>;

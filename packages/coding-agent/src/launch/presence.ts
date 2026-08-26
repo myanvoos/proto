@@ -28,7 +28,7 @@ const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}$/;
 const DAEMON_RUNTIME_STALE_GRACE_MS = 5 * 60_000;
 
 /** Handle keeping one omp process registered in a project daemon scope. */
-export interface DaemonProjectPresence {
+interface DaemonProjectPresence {
 	close(): Promise<void>;
 }
 

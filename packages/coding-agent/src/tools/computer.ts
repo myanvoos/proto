@@ -66,7 +66,7 @@ export interface ComputerToolDetails {
 }
 
 /** Creates the session-scoped controller used by the computer tool. */
-export type ComputerControllerFactory = (session: ToolSession) => ComputerController;
+type ComputerControllerFactory = (session: ToolSession) => ComputerController;
 /** Executes persistent desktop JavaScript through one lazy worker session. */
 export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";

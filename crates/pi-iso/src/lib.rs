@@ -269,11 +269,6 @@ pub fn backend(kind: BackendKind) -> &'static dyn IsolationBackend {
 	}
 }
 
-/// Convenience accessor for [`default_backend`]'s [`BackendKind`].
-pub fn backend_kind() -> BackendKind {
-	default_backend().kind()
-}
-
 /// Backend preference order for automatic isolation on this build target.
 ///
 /// The order is intentionally broader than [`BackendKind::native`]: it tries

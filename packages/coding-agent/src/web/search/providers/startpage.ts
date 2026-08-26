@@ -189,7 +189,7 @@ async function callStartpageHtml(params: SearchParams): Promise<string> {
 }
 
 /** Execute a Startpage web search via the homepage-token form flow. */
-export async function searchStartpage(params: SearchParams): Promise<SearchResponse> {
+async function searchStartpage(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callStartpageHtml(params);
 	const parsed = parseHtmlResults(html);

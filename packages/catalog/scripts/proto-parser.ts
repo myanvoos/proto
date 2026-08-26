@@ -21,7 +21,7 @@ export type ProtoScalarType =
 	| "sfixed64"
 	| "string";
 
-export const PROTO_SCALAR_TYPES: Record<string, true> = {
+const PROTO_SCALAR_TYPES: Record<string, true> = {
 	bool: true,
 	bytes: true,
 	double: true,
@@ -1054,7 +1054,7 @@ function normalizeScalarType(t: string): ProtoScalarType {
 }
 
 /** Converts snake_case protobuf identifiers to camelCase TypeScript property names. */
-export function protoToCamelCase(name: string): string {
+function protoToCamelCase(name: string): string {
 	if (!name.includes("_")) return name;
 	return name.replace(/_([a-zA-Z0-9])/g, (_, ch: string) => ch.toUpperCase());
 }
@@ -1276,7 +1276,7 @@ export class ProtoContext {
 	}
 }
 
-export interface GenerateProtoOptions {
+interface GenerateProtoOptions {
 	packagePrefix?: string;
 	protobufImportPath?: string;
 	stripEnumPrefixes?: boolean;

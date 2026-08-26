@@ -19,17 +19,12 @@ import {
 } from "../kernel-session-registry";
 import { ensurePyToolBridge, type PyToolBridgeInfo } from "../py/tool-bridge";
 import type { EvalDisplayOutput, EvalStatusEvent } from "../types";
-import {
-	checkJuliaKernelAvailability,
-	JuliaKernel,
-	type KernelExecuteOptions,
-	type KernelExecuteResult,
-} from "./kernel";
+import { checkJuliaKernelAvailability, JuliaKernel } from "./kernel";
 import { resolveExplicitJuliaRuntime } from "./runtime";
 
 const SHUTDOWN_GRACE_MS = 1_000;
 
-export interface JuliaExecutorOptions {
+interface JuliaExecutorOptions {
 	cwd?: string;
 	sessionId?: string;
 	sessionFile?: string;
@@ -50,11 +45,7 @@ export interface JuliaExecutorOptions {
 	artifactId?: string;
 }
 
-export interface JuliaKernelExecutor {
-	execute: (code: string, options?: KernelExecuteOptions) => Promise<KernelExecuteResult>;
-}
-
-export interface JuliaResult {
+interface JuliaResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
@@ -219,14 +210,6 @@ export async function disposeAllJuliaKernelSessions(): Promise<void> {
 
 export async function disposeJuliaKernelSessionsByOwner(ownerId: string): Promise<void> {
 	await sessionRegistry.disposeByOwner(ownerId);
-}
-
-export async function executeJuliaWithKernel(
-	kernel: JuliaKernel,
-	code: string,
-	options?: JuliaExecutorOptions,
-): Promise<JuliaResult> {
-	return await executeWithKernel(kernel, code, options);
 }
 
 export async function executeJulia(code: string, options?: JuliaExecutorOptions): Promise<JuliaResult> {

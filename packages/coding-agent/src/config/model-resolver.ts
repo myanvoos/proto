@@ -335,7 +335,7 @@ const UPSTREAM_ROUTING_SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
  * `@` or the suffix is not a bare provider slug, so model ids that legitimately
  * contain `@` (`claude-opus-4-8@default`, `workers-ai/@cf/...`) are never split.
  */
-export function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
+function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
 	const at = pattern.lastIndexOf("@");
 	if (at <= 0) return undefined;
 	const rest = pattern.slice(at + 1);
@@ -439,7 +439,7 @@ export function resolveProviderModelReference(
 	return undefined;
 }
 
-export interface ModelMatchPreferences {
+interface ModelMatchPreferences {
 	/** Most-recently-used model keys (provider/modelId) to prefer when ambiguous. */
 	usageOrder?: string[];
 	/** Provider precedence used for ambiguous unqualified model patterns. */
@@ -774,7 +774,7 @@ function matchModel(
 	return pickPreferredModel(topCandidates, context);
 }
 
-export interface ParsedModelResult {
+interface ParsedModelResult {
 	model: Model<Api> | undefined;
 	/** Thinking level if explicitly specified in pattern, undefined otherwise */
 	thinkingLevel?: ThinkingLevel;
@@ -949,7 +949,7 @@ function getModelRoleAlias(value: string, settings?: ModelRoleLookup): string | 
 }
 
 /** Normalize comma-separated or array model selectors into an ordered pattern list. */
-export function normalizeModelPatternList(value: string | string[] | undefined): string[] {
+function normalizeModelPatternList(value: string | string[] | undefined): string[] {
 	if (!value) return [];
 	const patterns = Array.isArray(value) ? value.flatMap(pattern => pattern.split(",")) : value.split(",");
 	return patterns.map(pattern => pattern.trim()).filter(Boolean);
@@ -1112,7 +1112,7 @@ export function resolveConfiguredModelPatterns(
 		return resolved ?? [];
 	});
 }
-export interface AgentModelPatternResolutionOptions {
+interface AgentModelPatternResolutionOptions {
 	/** Highest-priority request selector, when supplied by a caller. */
 	requestModel?: string | string[];
 	settingsOverride?: string | string[];
@@ -1162,7 +1162,7 @@ function resolveEffectiveAgentModelSelection(
 }
 
 /** Effective agent model patterns paired with the pre-expansion role alias behind them. */
-export interface AgentModelSelection {
+interface AgentModelSelection {
 	/** Expanded model patterns to spawn with. */
 	patterns: string[];
 	/** Role alias the patterns came from (`@worker` -> `worker`), when the source named one. */
@@ -1188,7 +1188,7 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 /** Default prewalk hand-off target when no explicit target is configured. */
 export const DEFAULT_PREWALK_TARGET = "@smol";
 
-export interface AgentPrewalkResolutionOptions {
+interface AgentPrewalkResolutionOptions {
 	/** `orchestrator.agentPrewalk` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
 	settingsOverride?: string;
 	/** Agent definition `prewalk` frontmatter: `true` = default target, string = custom target pattern. */
@@ -1217,7 +1217,7 @@ export function resolveAgentPrewalkPattern(options: AgentPrewalkResolutionOption
 	return agentPattern;
 }
 
-export interface AgentAdvisorResolutionOptions {
+interface AgentAdvisorResolutionOptions {
 	/** `orchestrator.agentAdvisor` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
 	settingsOverride?: string;
 	/** Agent definition `advisor` frontmatter: `true` = default advisor-role model, string = custom model pattern. */
@@ -1225,7 +1225,7 @@ export interface AgentAdvisorResolutionOptions {
 }
 
 /** Effective advisor for one spawned agent: absent `model` resolves through the `advisor` role. */
-export interface AgentAdvisorSelection {
+interface AgentAdvisorSelection {
 	model?: string;
 }
 
@@ -1742,7 +1742,7 @@ function findExactCliModel(
 		: allModels.find(m => isFlatMatch(m) && !isProviderLockedCrossMatch(selector, m));
 }
 
-export interface ResolveCliModelResult {
+interface ResolveCliModelResult {
 	model: Model<Api> | undefined;
 	/** configuredPatterns contains the role's ordered primary candidates. */
 	configuredPatterns?: string[];

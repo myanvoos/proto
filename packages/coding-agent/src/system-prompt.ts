@@ -374,7 +374,7 @@ export async function resolvePromptInput(input: string | undefined, description:
 	}
 }
 
-export interface LoadContextFilesOptions {
+interface LoadContextFilesOptions {
 	/** Working directory to start walking up from. Default: getProjectDir() */
 	cwd?: string;
 	/** Disabled extension IDs to honor instead of the process-global settings. */
@@ -490,7 +490,7 @@ export interface SystemPromptToolMetadata {
 	examples?: readonly ToolExample[];
 }
 
-export type SystemPromptToolMetadataProjection =
+type SystemPromptToolMetadataProjection =
 	| {
 			mode: "compact";
 			toolNames: readonly string[];

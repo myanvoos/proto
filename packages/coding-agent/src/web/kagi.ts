@@ -32,7 +32,7 @@ export interface KagiSearchRequest {
 }
 
 /** Individual V1 result item. */
-export interface KagiSearchResultItem {
+interface KagiSearchResultItem {
 	url: string;
 	title: string;
 	snippet?: string;
@@ -45,7 +45,7 @@ export interface KagiSearchResultItem {
 }
 
 /** V1 categorizes results into named buckets; only consumed buckets are typed. */
-export interface KagiSearchData {
+interface KagiSearchData {
 	search?: KagiSearchResultItem[];
 	video?: KagiSearchResultItem[];
 	news?: KagiSearchResultItem[];
@@ -56,7 +56,7 @@ export interface KagiSearchData {
 }
 
 /** V1 error entry. */
-export interface KagiErrorEntry {
+interface KagiErrorEntry {
 	code?: number;
 	url?: string;
 	message?: string;
@@ -65,7 +65,7 @@ export interface KagiErrorEntry {
 }
 
 /** V1 success response. */
-export interface KagiSearchResponse {
+interface KagiSearchResponse {
 	meta?: {
 		trace?: string;
 		id?: string;
@@ -76,7 +76,7 @@ export interface KagiSearchResponse {
 }
 
 /** V1 error response. */
-export interface KagiErrorResponse {
+interface KagiErrorResponse {
 	meta?: Record<string, unknown>;
 	error?: string | KagiErrorEntry[];
 	message?: string;
@@ -182,7 +182,7 @@ function parseKagiSuccessResponse(statusCode: number, responseText: string): Kag
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface KagiSearchOptions {
+interface KagiSearchOptions {
 	limit?: number;
 	recency?: "day" | "week" | "month" | "year";
 	sessionId?: string;
@@ -191,14 +191,14 @@ export interface KagiSearchOptions {
 	fetch?: FetchImpl;
 }
 
-export interface KagiSearchSource {
+interface KagiSearchSource {
 	title: string;
 	url: string;
 	snippet?: string;
 	publishedDate?: string;
 }
 
-export interface KagiSearchResult {
+interface KagiSearchResult {
 	requestId: string;
 	sources: KagiSearchSource[];
 	relatedQuestions: string[];

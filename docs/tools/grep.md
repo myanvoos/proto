@@ -8,7 +8,6 @@
 - Key collaborators:
   - `packages/coding-agent/src/tools/match-line-format.ts` — model-facing anchor formatting.
   - `packages/coding-agent/src/tools/path-utils.ts` — path normalization, glob splitting, internal URL resolution.
-  - `packages/coding-agent/src/tools/file-recorder.ts` — file ordering for grouped output.
   - `packages/coding-agent/src/tools/grouped-file-output.ts` — grouped per-file text layout.
   - `packages/coding-agent/src/session/streaming-output.ts` — line truncation and final byte truncation.
   - `packages/coding-agent/src/config/settings-schema.ts` — default context lines.

@@ -7,12 +7,12 @@ export const PARALLEL_SEARCH_URL = `${PARALLEL_API_URL}/v1beta/search`;
 const PARALLEL_EXTRACT_URL = `${PARALLEL_API_URL}/v1beta/extract`;
 export const PARALLEL_BETA_HEADER = "search-extract-2025-10-10";
 
-export interface ParallelUsageItem {
+interface ParallelUsageItem {
 	name?: string;
 	count?: number;
 }
 
-export interface ParallelSearchSource {
+interface ParallelSearchSource {
 	title: string;
 	url: string;
 	snippet?: string;
@@ -27,7 +27,7 @@ export interface ParallelSearchResult {
 	usage: ParallelUsageItem[];
 }
 
-export interface ParallelExtractDocument {
+interface ParallelExtractDocument {
 	url: string;
 	title?: string;
 	publishedDate?: string;
@@ -35,14 +35,14 @@ export interface ParallelExtractDocument {
 	fullContent?: string;
 }
 
-export interface ParallelExtractErrorEntry {
+interface ParallelExtractErrorEntry {
 	url: string;
 	errorType?: string;
 	httpStatusCode?: number;
 	content?: string;
 }
 
-export interface ParallelExtractResult {
+interface ParallelExtractResult {
 	requestId: string;
 	results: ParallelExtractDocument[];
 	errors: ParallelExtractErrorEntry[];
@@ -50,14 +50,14 @@ export interface ParallelExtractResult {
 	usage: ParallelUsageItem[];
 }
 
-export interface ParallelSearchOptions {
+interface ParallelSearchOptions {
 	mode?: "fast" | "research";
 	maxCharsPerResult?: number;
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
 }
 
-export interface ParallelExtractOptions {
+interface ParallelExtractOptions {
 	objective?: string;
 	searchQueries?: string[];
 	excerpts?: boolean;

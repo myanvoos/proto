@@ -49,7 +49,7 @@ function braveFreshness(parsed: StructuredQuery, recency?: keyof typeof RECENCY_
 	return recency ? RECENCY_MAP[recency] : undefined;
 }
 
-export interface BraveSearchParams {
+interface BraveSearchParams {
 	query: string;
 	num_results?: number;
 	recency?: "day" | "week" | "month" | "year";

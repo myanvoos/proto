@@ -19,7 +19,7 @@ import type {
 	PythonExecutionMessage,
 } from "./messages";
 
-export interface HistoryFormatOptions {
+interface HistoryFormatOptions {
 	/** Optional H1 prepended to the transcript. */
 	title?: string;
 	/** Render assistant thinking blocks (default: elided). */

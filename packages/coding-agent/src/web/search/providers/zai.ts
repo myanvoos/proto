@@ -34,7 +34,7 @@ const ZAI_QUERY_SYNTAX: QuerySyntax = {
 	filetype: true,
 };
 
-export interface ZaiSearchParams {
+interface ZaiSearchParams {
 	query: string;
 	num_results?: number;
 	signal?: AbortSignal;

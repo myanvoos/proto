@@ -13,7 +13,7 @@ import { $ } from "bun";
 export const ISOLATION_OWNER_FILE = ".proto-isolation-owner.json";
 
 /** Recorded owner of a task-isolation sandbox. */
-export interface IsolationOwner {
+interface IsolationOwner {
 	/** PID of the omp process that created and owns the sandbox. */
 	pid: number;
 	/** Task id the sandbox was materialised for. */

@@ -19,7 +19,7 @@ export const STARTUP_CHANGELOG_MAX_BYTES = 64 * 1024;
 export const STARTUP_CHANGELOG_FULL_HINT = "Truncated — see CHANGELOG.md in the install for full notes.";
 
 /** Markdown generated from selected changelog entries and whether it hit a size cap. */
-export interface RenderedChangelog {
+interface RenderedChangelog {
 	markdown: string;
 	truncated: boolean;
 }
@@ -293,7 +293,7 @@ function compareChangelogEntries(v1: ChangelogEntry, v2: ChangelogEntry): number
 /**
  * Parse an omp changelog marker version into comparable parts.
  */
-export function parseChangelogVersion(version: string | undefined): ChangelogEntry | undefined {
+function parseChangelogVersion(version: string | undefined): ChangelogEntry | undefined {
 	const match = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
 	if (!match) {
 		return undefined;

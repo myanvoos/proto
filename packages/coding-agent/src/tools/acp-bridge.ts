@@ -20,11 +20,7 @@ import { ToolError } from "./tool-errors";
  * sandbox paths — both are OMP-internal artifacts that must stay off the
  * editor's buffer.
  */
-export function shouldRouteWriteThroughBridge(
-	session: ToolSession,
-	requestedPath: string,
-	absolutePath: string,
-): boolean {
+function shouldRouteWriteThroughBridge(session: ToolSession, requestedPath: string, absolutePath: string): boolean {
 	if (isInternalUrlPath(requestedPath)) return false;
 	// OMP-owned session artifacts must stay off the editor buffer even when
 	// addressed by their absolute sandbox path — e.g. after tag-based path
@@ -48,7 +44,7 @@ export function shouldRouteWriteThroughBridge(
  * back as unrelated whole-file corruption on the *next* edit. Reading the
  * file back and reporting what's actually there keeps callers honest.
  */
-export interface BridgeWriteResult {
+interface BridgeWriteResult {
 	/** Content actually present on disk immediately after the bridge write. */
 	text: string;
 	/** `true` when `text` differs from the content the tool asked to write. */

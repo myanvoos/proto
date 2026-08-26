@@ -51,7 +51,7 @@ export interface ParseDeps {
 	thinkingEfforts: readonly string[];
 }
 
-export type StringSetter = (result: Args, value: string, deps: ParseDeps) => void;
+type StringSetter = (result: Args, value: string, deps: ParseDeps) => void;
 
 /**
  * Setter for a flag that may or may not consume the next argv token.

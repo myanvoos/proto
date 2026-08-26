@@ -19,7 +19,7 @@ export type InspectImageMode = "auto" | "on" | "off";
 export const INSPECT_IMAGE_MODES = ["auto", "on", "off"] as const;
 
 /** Minimal session surface needed to resolve the effective inspect_image state. */
-export interface InspectImageModeContext {
+interface InspectImageModeContext {
 	settings: Pick<Settings, "get">;
 	getActiveModel?: () => Model | undefined;
 	getInspectImageModeOverride?: () => InspectImageMode | undefined;

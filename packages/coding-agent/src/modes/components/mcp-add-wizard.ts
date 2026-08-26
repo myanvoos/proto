@@ -45,7 +45,7 @@ type WizardStep =
  * into the final `mcp.json` entry. Refresh material (including any DCR client
  * secret) is embedded in the stored credential, never written to config files.
  */
-export interface MCPAddWizardOAuthResult {
+interface MCPAddWizardOAuthResult {
 	credentialId: string;
 	clientId?: string;
 	resource?: string;

@@ -19,7 +19,7 @@
 import type { SearchSource } from "./types";
 
 /** One free-text token of the query (everything that is not a recognized directive). */
-export interface QueryTerm {
+interface QueryTerm {
 	/** Term text without quotes or operator prefixes. */
 	text: string;
 	/** Quoted exact phrase (`"like this"`) or verbatim-required (`+term`). */
@@ -126,7 +126,7 @@ export const GOOGLE_QUERY_SYNTAX: QuerySyntax = {
 };
 
 /** Result of {@link applyQueryConstraints}. */
-export interface ConstraintFilterResult {
+interface ConstraintFilterResult {
 	/** Sources surviving the lenient filter — never empty when the input was non-empty. */
 	sources: SearchSource[];
 	/**

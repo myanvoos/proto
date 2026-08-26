@@ -46,7 +46,7 @@ type AsyncResultJobDetails = {
 	durationMs?: number;
 };
 
-export type AsyncResultDetails = {
+type AsyncResultDetails = {
 	jobs: AsyncResultJobDetails[];
 };
 

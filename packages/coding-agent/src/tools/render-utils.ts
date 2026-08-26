@@ -305,7 +305,7 @@ export function formatCodeFrameLine(
 export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";
 export type ToolUIColor = "success" | "error" | "warning" | "accent" | "muted";
 
-export interface ToolUITitleOptions {
+interface ToolUITitleOptions {
 	bold?: boolean;
 }
 
@@ -523,14 +523,6 @@ export function getDiffStats(diffText: string): DiffStats {
 	}
 
 	return { added, removed, hunks, lines: lines.length };
-}
-
-export function formatDiffStats(added: number, removed: number, hunks: number, theme: Theme): string {
-	const parts: string[] = [];
-	if (added > 0) parts.push(theme.fg("toolDiffAdded", `+${added}`));
-	if (removed > 0) parts.push(theme.fg("toolDiffRemoved", `-${removed}`));
-	if (hunks > 0) parts.push(theme.fg("dim", `${hunks} hunk${hunks !== 1 ? "s" : ""}`));
-	return parts.join(theme.fg("dim", " / "));
 }
 
 interface DiffSegment {
@@ -902,39 +894,6 @@ export function cachedRenderedString(
 	return value;
 }
 
-/**
- * Append the indented bullet list of parse errors (capped at
- * {@link PARSE_ERRORS_LIMIT}) to `lines`, with an overflow summary line if the
- * total exceeds the cap. No-op when `parseErrors` is empty.
- */
-export function appendParseErrorsBulletList(
-	lines: string[],
-	parseErrors: readonly string[] | undefined,
-	theme: Theme,
-	total?: number,
-): void {
-	if (!parseErrors || parseErrors.length === 0) return;
-	const fullCount = total ?? parseErrors.length;
-	const capped = parseErrors.slice(0, PARSE_ERRORS_LIMIT);
-	for (const err of capped) {
-		lines.push(theme.fg("warning", `  - ${err}`));
-	}
-	if (fullCount > capped.length) {
-		lines.push(theme.fg("dim", `  … ${fullCount - capped.length} more`));
-	}
-}
-
-/**
- * Human-readable summary string for the parse-issues count, capped by
- * {@link PARSE_ERRORS_LIMIT}.
- */
-export function formatParseErrorsCountLabel(parseErrors: readonly string[], total?: number): string {
-	const fullCount = total ?? parseErrors.length;
-	return fullCount > PARSE_ERRORS_LIMIT
-		? `${PARSE_ERRORS_LIMIT} / ${fullCount} parse issues`
-		: `${fullCount} parse issue${fullCount !== 1 ? "s" : ""}`;
-}
-
 // =============================================================================
 // LSP Batching
 // =============================================================================
@@ -958,13 +917,4 @@ export function getLspBatchRequest(toolCall: ToolCallContext | undefined): LspBa
 	}
 	const hasLaterWrites = toolCall.toolCalls.slice(toolCall.index + 1).some(call => LSP_BATCH_TOOLS.has(call.name));
 	return { id: toolCall.batchId, flush: !hasLaterWrites };
-}
-
-/** Max characters of prompt-context text (paths, code) echoed back into prompts. */
-export const DEFAULT_PROMPT_TRUNCATE_CHARS = 2000;
-
-export function truncateForPrompt(value: string, maxChars = DEFAULT_PROMPT_TRUNCATE_CHARS): string {
-	if (value.length <= maxChars) return value;
-	const omitted = value.length - maxChars;
-	return `${value.slice(0, maxChars)}[…${omitted}ch elided…]`;
 }

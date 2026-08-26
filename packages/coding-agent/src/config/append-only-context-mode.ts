@@ -1,7 +1,7 @@
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
 
 /** Provider metadata needed to resolve append-only context mode. */
-export interface AppendOnlyContextModel {
+interface AppendOnlyContextModel {
 	provider: string;
 	baseUrl: string;
 	/** Verbatim sparse compat config (explicit user intent), never the resolved record. */

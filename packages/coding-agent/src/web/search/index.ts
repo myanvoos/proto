@@ -39,7 +39,7 @@ import {
 } from "./types";
 
 /** Web search tool parameters schema */
-export const webSearchSchema = type({
+const webSearchSchema = type({
 	query: "string",
 	recency: "'day' | 'week' | 'month' | 'year'?",
 	limit: "number?",
@@ -350,7 +350,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 }
 
 /** Web search tool as CustomTool (for TUI rendering support) */
-export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRenderDetails> = {
+const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRenderDetails> = {
 	name: "web_search",
 	label: "Web Search",
 	description: prompt.render(webSearchDescription),

@@ -222,27 +222,6 @@ pub fn parse_cached(code: &str, lang: SupportLang) -> Result<Option<Tree>> {
 	Ok(Some(tree))
 }
 
-/// Occupancy and counters, for diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ParseCacheStats {
-	pub entries:      usize,
-	pub source_bytes: usize,
-	pub hits:         u64,
-	pub misses:       u64,
-	pub evictions:    u64,
-}
-
-pub fn parse_cache_stats() -> ParseCacheStats {
-	let cache = lock();
-	ParseCacheStats {
-		entries:      cache.entries.len(),
-		source_bytes: cache.source_bytes,
-		hits:         cache.hits,
-		misses:       cache.misses,
-		evictions:    cache.evictions,
-	}
-}
-
 /// Drop every cached tree and zero the counters.
 pub fn clear_parse_cache() {
 	lock().clear();

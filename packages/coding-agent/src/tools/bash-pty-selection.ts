@@ -1,7 +1,7 @@
 import { $env } from "@oh-my-pi/pi-utils/env";
 
 /** Minimal UI-capability fields needed to decide whether bash can use the local PTY overlay. */
-export interface BashPtyContext {
+interface BashPtyContext {
 	hasUI?: boolean;
 	ui?: unknown;
 }

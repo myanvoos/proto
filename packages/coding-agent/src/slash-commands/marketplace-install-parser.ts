@@ -1,6 +1,6 @@
 const USAGE = "Usage: /marketplace install [--force] [--scope user|project] <name@marketplace>";
 
-export interface MarketplaceInstallArgs {
+interface MarketplaceInstallArgs {
 	force: boolean;
 	scope: "user" | "project";
 	installSpec: string;
@@ -56,7 +56,7 @@ export function parseMarketplaceInstallArgs(rest: string): MarketplaceInstallArg
 
 // ── Shared scope+id parser for uninstall / upgrade / enable / disable ───────
 
-export interface PluginScopeArgs {
+interface PluginScopeArgs {
 	pluginId: string;
 	scope?: "user" | "project";
 }

@@ -4,7 +4,7 @@
  * Handles `omp setup` for onboarding and `omp setup <component>` for optional dependencies.
  */
 import * as path from "node:path";
-import { BINARY_NAME, getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
+import { getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
@@ -20,47 +20,7 @@ export interface SetupCommandArgs {
 	};
 }
 
-const VALID_COMPONENTS: SetupComponent[] = ["python"];
-
 const MANAGED_PYTHON_ENV = getPythonEnvDir();
-
-/**
- * Parse setup subcommand arguments.
- * Returns undefined if not a setup command.
- */
-export function parseSetupArgs(args: string[]): SetupCommandArgs | undefined {
-	if (args.length === 0 || args[0] !== "setup") {
-		return undefined;
-	}
-
-	if (args.length < 2) {
-		console.error(chalk.red(`Usage: ${BINARY_NAME} setup <component>`));
-		console.error(`Valid components: ${VALID_COMPONENTS.join(", ")}`);
-		process.exit(1);
-	}
-
-	const component = args[1];
-	if (!VALID_COMPONENTS.includes(component as SetupComponent)) {
-		console.error(chalk.red(`Unknown component: ${component}`));
-		console.error(`Valid components: ${VALID_COMPONENTS.join(", ")}`);
-		process.exit(1);
-	}
-
-	const flags: SetupCommandArgs["flags"] = {};
-	for (let i = 2; i < args.length; i++) {
-		const arg = args[i];
-		if (arg === "--json") {
-			flags.json = true;
-		} else if (arg === "--check" || arg === "-c") {
-			flags.check = true;
-		}
-	}
-
-	return {
-		component: component as SetupComponent,
-		flags,
-	};
-}
 
 export interface PythonCheckResult {
 	available: boolean;
@@ -135,28 +95,4 @@ async function handlePythonSetup(flags: { json?: boolean; check?: boolean }): Pr
 
 	console.error(chalk.red(`\n${theme.status.error} Python interpreter reported failure`));
 	process.exit(1);
-}
-
-/**
- * Print setup command help.
- */
-export function printSetupHelp(): void {
-	console.log(`${chalk.bold(`${BINARY_NAME} setup`)} - Run onboarding or install dependencies for optional features
-
-${chalk.bold("Usage:")}
-  ${BINARY_NAME} setup                     Run the onboarding wizard
-  ${BINARY_NAME} setup <component> [options]
-
-${chalk.bold("Components:")}
-  python    Verify a Python 3 interpreter is reachable for code execution
-
-${chalk.bold("Options:")}
-  -c, --check   Check if dependencies are installed without installing
-  --json        Output status as JSON
-
-${chalk.bold("Examples:")}
-  ${BINARY_NAME} setup                  Run the onboarding wizard
-  ${BINARY_NAME} setup python           Check Python execution dependencies
-  ${BINARY_NAME} setup python --check   Check if Python execution is available
-`);
 }

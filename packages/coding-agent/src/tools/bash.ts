@@ -1206,7 +1206,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 // =============================================================================
 // TUI Renderer
 // =============================================================================
-export interface BashRenderArgs {
+interface BashRenderArgs {
 	command?: string;
 	env?: Record<string, unknown>;
 	timeout?: number;
@@ -1215,7 +1215,7 @@ export interface BashRenderArgs {
 	[key: string]: unknown;
 }
 
-export interface BashRenderContext {
+interface BashRenderContext {
 	/** Raw output text */
 	output?: string;
 	/** Whether output came from artifact storage */
@@ -1228,7 +1228,7 @@ export interface BashRenderContext {
 	timeout?: number;
 }
 
-export interface ShellRendererConfig<TArgs> {
+interface ShellRendererConfig<TArgs> {
 	resolveTitle: (args: TArgs | undefined, options: RenderResultOptions) => string;
 	resolveCommand?: (args: TArgs | undefined) => string | undefined;
 	resolveCwd?: (args: TArgs | undefined) => string | undefined;
@@ -1242,7 +1242,7 @@ function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | undefined {
+function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | undefined {
 	// The parsed args don't always mirror the exact current stream prefix, so recover
 	// env from the raw JSON buffer to surface `NAME="..." cmd` in the preview as it
 	// streams rather than only once the args object finishes.
@@ -1258,7 +1258,7 @@ export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unkno
  * reset SGR state at line boundaries, which made the previous single-string
  * `theme.fg("dim", ...)` form render only the first line as dim.
  */
-export function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
+function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
 	const command = replaceTabs(args.command || "…");
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);

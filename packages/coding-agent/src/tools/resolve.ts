@@ -34,15 +34,7 @@ export const REJECT_DEVICE_NAME = "reject";
 export const RESOLVE_DEVICE_PATH = `${XD_URL_PREFIX}${RESOLVE_DEVICE_NAME}`;
 export const REJECT_DEVICE_PATH = `${XD_URL_PREFIX}${REJECT_DEVICE_NAME}`;
 
-/**
- * Model-visible banner prepended to a staged preview's tool result text. The
- * TUI badge (`⟨proposed⟩`) never reaches the model, and preview diffs are
- * byte-identical to applied-edit output — without this line the model reads
- * the result as an already-applied change.
- */
-export const PREVIEW_PENDING_NOTICE = `Staged as a proposal — files NOT modified yet. To apply: write a one-sentence reason to ${RESOLVE_DEVICE_PATH}. To discard: write to ${REJECT_DEVICE_PATH}.`;
-
-export type ResolutionDeviceName = typeof RESOLVE_DEVICE_NAME | typeof REJECT_DEVICE_NAME;
+type ResolutionDeviceName = typeof RESOLVE_DEVICE_NAME | typeof REJECT_DEVICE_NAME;
 
 /** Whether an xd:// device name is one of the plain-text resolution devices. */
 export function isResolutionDeviceName(name: string): name is ResolutionDeviceName {

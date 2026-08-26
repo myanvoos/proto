@@ -5,7 +5,7 @@ import type { Theme, ThemeColor } from "../modes/theme/theme";
 import type { ToolUIStatus } from "../tools/render-utils";
 import { formatStatusIcon } from "../tools/render-utils";
 
-export interface StatusLineOptions {
+interface StatusLineOptions {
 	icon?: ToolUIStatus;
 	/** Pre-rendered glyph that replaces the status icon (e.g. a magnifier for
 	 * search-family tools). Takes precedence over `icon`. */

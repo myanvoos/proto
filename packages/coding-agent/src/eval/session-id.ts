@@ -1,6 +1,6 @@
 import type { ToolSession } from "../tools";
 
-export type EvalSessionSource = Pick<ToolSession, "cwd" | "getSessionFile">;
+type EvalSessionSource = Pick<ToolSession, "cwd" | "getSessionFile">;
 
 export function defaultEvalSessionId(session: EvalSessionSource): string {
 	const sessionFile = session.getSessionFile?.() ?? undefined;

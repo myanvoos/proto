@@ -1,9 +1,9 @@
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 
-export type NotebookCellType = "code" | "markdown" | "raw";
+type NotebookCellType = "code" | "markdown" | "raw";
 
-export interface NotebookCell {
+interface NotebookCell {
 	cell_type: NotebookCellType;
 	source?: string | string[];
 	metadata?: Record<string, unknown>;
@@ -12,7 +12,7 @@ export interface NotebookCell {
 	[key: string]: unknown;
 }
 
-export interface NotebookDocument {
+interface NotebookDocument {
 	cells: NotebookCell[];
 	metadata: Record<string, unknown>;
 	nbformat: number;
@@ -60,7 +60,7 @@ function sourceToText(source: string | string[] | undefined): string {
 	return source.join("");
 }
 
-export function splitNotebookSource(content: string): string[] {
+function splitNotebookSource(content: string): string[] {
 	if (content.length === 0) return [];
 	return content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 }
@@ -107,7 +107,7 @@ function validateNotebook(value: unknown, displayPath: string): NotebookDocument
 	return value as unknown as NotebookDocument;
 }
 
-export async function readNotebookDocument(absolutePath: string, displayPath: string): Promise<NotebookDocument> {
+async function readNotebookDocument(absolutePath: string, displayPath: string): Promise<NotebookDocument> {
 	try {
 		return validateNotebook(await Bun.file(absolutePath).json(), displayPath);
 	} catch (error) {
@@ -117,7 +117,7 @@ export async function readNotebookDocument(absolutePath: string, displayPath: st
 	}
 }
 
-export function notebookToEditableText(notebook: NotebookDocument): string {
+function notebookToEditableText(notebook: NotebookDocument): string {
 	return notebook.cells
 		.map((cell, index) => {
 			const source = escapeMarkerLikeSourceLines(sourceToText(cell.source));
@@ -182,11 +182,7 @@ function parseNotebookEditableText(text: string, displayPath: string): ParsedVir
 	return cells;
 }
 
-export function applyNotebookEditableText(
-	notebook: NotebookDocument,
-	text: string,
-	displayPath: string,
-): NotebookDocument {
+function applyNotebookEditableText(notebook: NotebookDocument, text: string, displayPath: string): NotebookDocument {
 	const parsedCells = parseNotebookEditableText(text, displayPath);
 	const usedOriginalCells = new Set<number>();
 	const nextNotebook = structuredClone(notebook);

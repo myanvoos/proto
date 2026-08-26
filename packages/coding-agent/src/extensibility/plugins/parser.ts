@@ -9,7 +9,7 @@
  * - "@scope/plugin@1.2.3[feat]" -> scoped with version and features
  */
 
-export interface ParsedPluginSpec {
+interface ParsedPluginSpec {
 	/** Package name (may include version specifier like @1.0.0) */
 	packageName: string;
 	/**
@@ -61,28 +61,6 @@ export function parsePluginSpec(spec: string): ParsedPluginSpec {
 		.filter(Boolean);
 
 	return { packageName, features };
-}
-
-/**
- * Format a parsed plugin spec back to string form.
- *
- * @example
- * formatPluginSpec({ packageName: "pkg", features: null }) // "pkg"
- * formatPluginSpec({ packageName: "pkg", features: "*" }) // "pkg[*]"
- * formatPluginSpec({ packageName: "pkg", features: [] }) // "pkg[]"
- * formatPluginSpec({ packageName: "pkg", features: ["a", "b"] }) // "pkg[a,b]"
- */
-export function formatPluginSpec(spec: ParsedPluginSpec): string {
-	if (spec.features === null) {
-		return spec.packageName;
-	}
-	if (spec.features === "*") {
-		return `${spec.packageName}[*]`;
-	}
-	if (spec.features.length === 0) {
-		return `${spec.packageName}[]`;
-	}
-	return `${spec.packageName}[${spec.features.join(",")}]`;
 }
 
 /**

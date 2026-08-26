@@ -14,7 +14,7 @@ export interface FileEntry {
 	meta?: string;
 }
 
-export interface FileListOptions {
+interface FileListOptions {
 	files: FileEntry[];
 	expanded?: boolean;
 	maxCollapsed?: number;

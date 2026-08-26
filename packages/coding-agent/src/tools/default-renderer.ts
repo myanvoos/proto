@@ -16,7 +16,7 @@ import {
 import { formatExpandHint, replaceTabs, truncateToWidth } from "./render-utils";
 
 /** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
-export interface DefaultToolRenderInput {
+interface DefaultToolRenderInput {
 	/** Human-readable tool label. */
 	label: string;
 	/** Tool arguments, shown inline when collapsed and as a tree when expanded. */

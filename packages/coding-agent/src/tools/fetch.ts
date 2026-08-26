@@ -146,7 +146,7 @@ function normalizeUrl(url: string): string {
 // like `host:port`, add a trailing slash before the selector (e.g. `https://example.com/:80`
 // to read line 80 of the document at `https://example.com/`).
 
-export interface ParsedReadUrlTarget {
+interface ParsedReadUrlTarget {
 	path: string;
 	raw: boolean;
 	offset?: number;
@@ -591,7 +591,7 @@ function parseJinaReaderContent(responseBody: string): string | null {
 }
 
 /** Reader backends for {@link renderHtmlToText}, in default priority order. */
-export type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "jina";
+type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "jina";
 
 const FETCH_PROVIDER_ORDER: readonly FetchProvider[] = ["native", "trafilatura", "lynx", "parallel", "jina"];
 
@@ -1609,28 +1609,6 @@ async function ensureReadUrlArtifact(session: ToolSession, entry: ReadUrlEntry):
 	return artifact?.id ? { ...entry, artifactId: artifact.id, artifactPath: artifact.path } : entry;
 }
 
-function readUrlContentExtension(finalUrl: string): string {
-	try {
-		const ext = getFilenameExtensionHint(new URL(finalUrl).pathname);
-		return ext && /^\.[a-z0-9][a-z0-9+.-]{0,15}$/i.test(ext) ? ext : ".txt";
-	} catch {
-		return ".txt";
-	}
-}
-
-async function materializeReadUrlContent(session: ToolSession, entry: ReadUrlEntry, raw: boolean): Promise<string> {
-	const root = session.getArtifactsDir?.();
-	if (!root) {
-		throw new ToolError("Cannot search URL output because this session cannot materialize read artifacts.");
-	}
-	const dir = path.join(root, "url-search");
-	await fs.mkdir(dir, { recursive: true });
-	const hash = Bun.hash(`${raw ? "raw" : "rendered"}:${entry.details.finalUrl}`).toString(36);
-	const contentPath = path.join(dir, `${hash}${readUrlContentExtension(entry.details.finalUrl)}`);
-	await Bun.write(contentPath, entry.content);
-	return contentPath;
-}
-
 /** Fetch and render a URL for a read or search operation. */
 export async function fetchReadUrl(
 	session: ToolSession,
@@ -1676,20 +1654,6 @@ export async function fetchReadUrl(
 		output,
 		content: result.content,
 	};
-}
-
-/** Materialize rendered URL body text to a local file for tools that require filesystem paths. */
-export async function materializeReadUrlToFile(
-	session: ToolSession,
-	params: { path: string; raw?: boolean },
-	signal?: AbortSignal,
-): Promise<{ path: string; details: ReadUrlToolDetails }> {
-	if (!session.settings.get("fetch.enabled")) {
-		throw new ToolError("URL reads are disabled by settings.");
-	}
-	const entry = await fetchReadUrl(session, params, signal);
-	const contentPath = await materializeReadUrlContent(session, entry, params.raw ?? false);
-	return { path: contentPath, details: entry.details };
 }
 
 function buildUrlReadOutput(result: FetchRenderResult, content: string): string {

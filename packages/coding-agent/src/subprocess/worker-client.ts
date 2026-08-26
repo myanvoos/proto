@@ -18,11 +18,8 @@ import type { Subprocess } from "bun";
  * teardown semantics.
  */
 
-/** Minimal inbound contract shared by every worker: a correlated `ping`. */
-export type WorkerInboundBase = { type: "ping"; id: string };
-
 /** Structured log line forwarded from a worker to the parent logger. */
-export type WorkerLogMessage = {
+type WorkerLogMessage = {
 	type: "log";
 	level: "debug" | "warn" | "error";
 	msg: string;
@@ -30,7 +27,7 @@ export type WorkerLogMessage = {
 };
 
 /** Minimal outbound contract shared by every worker: `pong`, `error`, `log`. */
-export type WorkerOutboundBase =
+type WorkerOutboundBase =
 	| { type: "pong"; id: string }
 	| { type: "error"; id: string; error: string }
 	| WorkerLogMessage;
@@ -86,7 +83,7 @@ export interface SpawnedSubprocess<Outbound> {
  */
 const STDERR_TAIL_LIMIT_BYTES = 16 * 1024;
 
-export interface WorkerSpawnCommand {
+interface WorkerSpawnCommand {
 	cmd: string[];
 	cwd?: string;
 }

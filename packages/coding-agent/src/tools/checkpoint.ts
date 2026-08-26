@@ -38,13 +38,13 @@ const rewindSchema = type({
 
 type RewindParams = typeof rewindSchema.infer;
 
-export interface CheckpointToolDetails {
+interface CheckpointToolDetails {
 	goal: string;
 	startedAt: string;
 	meta?: OutputMeta;
 }
 
-export interface RewindToolDetails {
+interface RewindToolDetails {
 	report: string;
 	rewound: boolean;
 	meta?: OutputMeta;

@@ -29,12 +29,12 @@ type PendingRequest =
 	| { kind: "complete"; modelKey: TinyMemoryLocalModelKey; resolve: (text: string | null) => void }
 	| { kind: "download"; modelKey: TinyLocalModelKey; resolve: (result: TinyTitleDownloadResult) => void };
 
-export interface TinyTitleDownloadResult {
+interface TinyTitleDownloadResult {
 	ok: boolean;
 	error?: string;
 }
 
-export interface TinyTitleDownloadOptions {
+interface TinyTitleDownloadOptions {
 	signal?: AbortSignal;
 	onProgress?: (event: TinyTitleProgressEvent) => void;
 }
@@ -45,12 +45,12 @@ export interface TinyTitleDownloadOptions {
  * Carries the optional abort signal and title-system-prompt override used by
  * callers that customize automatic session-title generation.
  */
-export interface TinyTitleGenerateOptions {
+interface TinyTitleGenerateOptions {
 	signal?: AbortSignal;
 	systemPrompt?: string;
 }
 
-export interface TinyModelCompletionOptions {
+interface TinyModelCompletionOptions {
 	maxTokens?: number;
 	signal?: AbortSignal;
 	systemPrompt?: string;
@@ -112,7 +112,7 @@ export function tinyWorkerEnvOverlay(
  * Resolved once at spawn (pipelines are cached for the lifetime of the
  * subprocess).
  */
-export function tinyWorkerEnv(): Record<string, string> {
+function tinyWorkerEnv(): Record<string, string> {
 	return inferenceWorkerEnv(
 		tinyWorkerEnvOverlay(
 			$env,

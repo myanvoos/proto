@@ -9,7 +9,7 @@ import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "./builtin-registry";
 
 export type AvailableSlashCommandSource = "builtin" | "skill" | "extension" | "custom" | "mcp_prompt" | "file";
 
-export interface InternalAvailableSlashCommand {
+interface InternalAvailableSlashCommand {
 	name: string;
 	aliases?: string[];
 	description?: string;
@@ -18,7 +18,7 @@ export interface InternalAvailableSlashCommand {
 	source: AvailableSlashCommandSource;
 }
 
-export interface AvailableCommandsSession {
+interface AvailableCommandsSession {
 	readonly extensionRunner?: ExtensionRunner;
 	readonly customCommands: ReadonlyArray<LoadedCustomCommand>;
 	readonly mcpPromptCommands?: ReadonlyArray<LoadedCustomCommand>;

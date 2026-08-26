@@ -38,7 +38,7 @@ const inspectImageSchema = type({
 	"+": "reject",
 });
 
-export type InspectImageParams = typeof inspectImageSchema.infer;
+type InspectImageParams = typeof inspectImageSchema.infer;
 
 interface ImageAttachmentReference {
 	index: number;
@@ -89,7 +89,7 @@ async function loadAttachmentReferenceInput(options: {
 	});
 }
 
-export interface InspectImageToolDetails {
+interface InspectImageToolDetails {
 	model: string;
 	imagePath: string;
 	mimeType: string;

@@ -31,14 +31,14 @@ interface PendingRequest {
 }
 
 /** Broker location and lifecycle overrides used by smoke tests and isolated consumers. */
-export interface DaemonBrokerClientOptions {
+interface DaemonBrokerClientOptions {
 	/** Runtime directory override; defaults to the project-scoped config path. */
 	runtimeDir?: string;
 	/** Last-client shutdown grace override in milliseconds. */
 	idleGraceMs?: number;
 }
 
-export interface DaemonCompletionUnregisterOptions {
+interface DaemonCompletionUnregisterOptions {
 	/** Detach this process without deleting broker-persisted pending notifications. */
 	preservePending?: boolean;
 }

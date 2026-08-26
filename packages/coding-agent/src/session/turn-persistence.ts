@@ -97,7 +97,7 @@ export function sameMessageContent(left: AgentMessage, right: AgentMessage): boo
  * already persisted — the caller bails so it does not silently splice a
  * stale message between newer entries on the live branch.
  */
-export type TurnPersistencePlan =
+type TurnPersistencePlan =
 	| { kind: "ok"; toPersist: readonly number[] }
 	| { kind: "out-of-order"; messageIndex: number };
 

@@ -66,14 +66,14 @@ async function loadCommandModule(
 	}
 }
 
-export interface DiscoverCustomCommandsOptions {
+interface DiscoverCustomCommandsOptions {
 	/** Current working directory. Default: getProjectDir() */
 	cwd?: string;
 	/** Agent config directory. Default: from getAgentDir() */
 	agentDir?: string;
 }
 
-export interface DiscoverCustomCommandsResult {
+interface DiscoverCustomCommandsResult {
 	/** Paths to command modules */
 	paths: Array<{ path: string; source: CustomCommandSource }>;
 }
@@ -140,7 +140,7 @@ export async function discoverCustomCommands(
 	return { paths };
 }
 
-export interface LoadCustomCommandsOptions {
+interface LoadCustomCommandsOptions {
 	/** Current working directory. Default: getProjectDir() */
 	cwd?: string;
 	/** Agent config directory. Default: from getAgentDir() */

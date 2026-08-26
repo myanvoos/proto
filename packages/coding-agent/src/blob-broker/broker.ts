@@ -69,7 +69,7 @@ const SERVE_KINDS: Readonly<Partial<Record<BlobDestinationId, true>>> = {
 };
 
 /** Whether a destination exposes the local blob server. */
-export function isServeKind(kind: BlobDestinationId): kind is ExposureKind {
+function isServeKind(kind: BlobDestinationId): kind is ExposureKind {
 	return SERVE_KINDS[kind] === true;
 }
 

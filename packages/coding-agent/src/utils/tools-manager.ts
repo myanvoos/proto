@@ -141,7 +141,7 @@ const PYTHON_TOOLS: Record<string, PythonPackageToolConfig> = {
 export type ToolName = "sd" | "sg" | "yt-dlp" | "trafilatura";
 
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: ToolName): string | null {
+function getToolPath(tool: ToolName): string | null {
 	// Check uv/pip-installed CLI packages first
 	const pythonConfig = PYTHON_TOOLS[tool];
 	if (pythonConfig) {

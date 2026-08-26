@@ -213,13 +213,6 @@ impl<'a, U: Unit> Cursor<'a, U> {
 		(self.pos < self.units.len()).then(|| U::decode(self.units, self.pos))
 	}
 
-	/// Codepoint after `(cp, len)` from `peek` (one-codepoint lookahead).
-	#[inline]
-	pub fn peek2(&self, first_len: usize) -> Option<(char, usize)> {
-		let j = self.pos + first_len;
-		(j < self.units.len()).then(|| U::decode(self.units, j))
-	}
-
 	#[inline]
 	pub const fn advance(&mut self, n: usize) {
 		self.pos += n;

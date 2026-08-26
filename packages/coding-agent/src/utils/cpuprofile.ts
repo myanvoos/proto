@@ -23,14 +23,14 @@ export function isCpuProfilePath(filePath: string): boolean {
 }
 
 /** Call-site metadata of one profile node. `lineNumber` is 0-based. */
-export interface CpuProfileCallFrame {
+interface CpuProfileCallFrame {
 	functionName: string;
 	url?: string;
 	lineNumber?: number;
 }
 
 /** One node in the flat profile tree; `children` are node ids. */
-export interface CpuProfileNode {
+interface CpuProfileNode {
 	id: number;
 	callFrame: CpuProfileCallFrame;
 	hitCount?: number;
@@ -38,7 +38,7 @@ export interface CpuProfileNode {
 }
 
 /** Parsed V8 CPU profile. `startTime`/`endTime`/`timeDeltas` are microseconds. */
-export interface CpuProfile {
+interface CpuProfile {
 	nodes: CpuProfileNode[];
 	startTime: number;
 	endTime: number;

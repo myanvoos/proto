@@ -74,7 +74,7 @@ interface GeminiToolParams {
 	url_context?: Record<string, unknown>;
 }
 
-export interface GeminiSearchParams extends GeminiToolParams {
+interface GeminiSearchParams extends GeminiToolParams {
 	query: string;
 	/** Pre-parsed structured query; falls back to parsing `query` when omitted. */
 	parsedQuery?: StructuredQuery;
@@ -134,7 +134,7 @@ interface GeminiSearchResult {
  * routing internally; this helper never touches refresh tokens directly.
  * The resolved access seeds `withOAuthAccess` so the happy path resolves once.
  */
-export async function findGeminiAuth(
+async function findGeminiAuth(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
 	signal: AbortSignal | undefined,

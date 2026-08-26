@@ -20,7 +20,7 @@ import { throwIfAborted } from "../../tool-errors";
 import { probeCdpStatus } from "../attach";
 
 /** Stable broker daemon name for the relay server. */
-export const RELAY_DAEMON_NAME = "proto.browser.relay";
+const RELAY_DAEMON_NAME = "proto.browser.relay";
 const RELAY_BROKER_SCOPE = "browser-relay";
 /** Matches the serve banner (`omp browser relay listening on http://…`). */
 const READY_LOG_PATTERN = String.raw`browser relay listening on http://\S+`;

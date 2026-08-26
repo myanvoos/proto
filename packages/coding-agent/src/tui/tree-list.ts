@@ -8,7 +8,7 @@ import { formatMoreItems } from "../tools/render-utils";
 import type { TreeContext } from "./types";
 import { getTreeBranch, getTreeContinuePrefix } from "./utils";
 
-export interface TreeListOptions<T> {
+interface TreeListOptions<T> {
 	items: T[];
 	expanded?: boolean;
 	maxCollapsed?: number;

@@ -113,7 +113,7 @@ export interface ImagesCliDependencies {
 	readonly writeStderr: (text: string) => void;
 }
 
-export interface SafeDaemonStatus {
+interface SafeDaemonStatus {
 	readonly state: "running" | "stopped";
 	readonly baseUrl?: string;
 	readonly lazy?: boolean;

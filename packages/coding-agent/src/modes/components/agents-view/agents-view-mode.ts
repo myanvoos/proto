@@ -87,7 +87,7 @@ const AGENTS_VIEW_COMMAND_NAMES = ["name", "kill"] as const;
 type AgentsViewCommandName = (typeof AGENTS_VIEW_COMMAND_NAMES)[number];
 const AGENTS_VIEW_COMMAND_NAME_LOOKUP: Record<string, true> = { name: true, kill: true };
 
-export interface AgentsViewCommand {
+interface AgentsViewCommand {
 	name: AgentsViewCommandName;
 	args: string;
 }
@@ -97,7 +97,7 @@ function resolveBuiltinSlashCommandName(name: string): string {
 	return lookupBuiltinSlashCommand(name)?.name ?? name;
 }
 
-export function parseAgentsViewCommand(text: string): AgentsViewCommand | undefined {
+function parseAgentsViewCommand(text: string): AgentsViewCommand | undefined {
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return undefined;
 	const name = resolveBuiltinSlashCommandName(parsed.name);
@@ -109,7 +109,7 @@ export function parseAgentsViewCommand(text: string): AgentsViewCommand | undefi
  * Reject recognized built-ins that are neither view commands nor runnable
  * here, so they are never sent to the model as plain prompt text.
  */
-export function getReplyComposerCommandRejection(text: string): string | undefined {
+function getReplyComposerCommandRejection(text: string): string | undefined {
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return undefined;
 	if (AGENTS_VIEW_COMMAND_NAME_LOOKUP[resolveBuiltinSlashCommandName(parsed.name)]) return undefined;
@@ -167,7 +167,7 @@ interface RenameTarget {
 }
 
 /** Controller-provided actions; keeps this component decoupled from the full context. */
-export interface AgentsViewActions {
+interface AgentsViewActions {
 	close: () => void;
 	openSession: (sessionPath: string) => Promise<boolean>;
 	focusAgent: (id: string) => Promise<void>;

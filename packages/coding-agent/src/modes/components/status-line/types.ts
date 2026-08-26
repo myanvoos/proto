@@ -25,7 +25,6 @@ export interface StatusLineSettings {
 	separator?: StatusLineSeparatorStyle;
 	segmentOptions?: StatusLineSegmentOptions;
 	showHookStatus?: boolean;
-	sessionAccent?: boolean;
 	/**
 	 * DEAD since the top-border removal: there is no filled bar to make
 	 * transparent. Same blocker as `separator` above.

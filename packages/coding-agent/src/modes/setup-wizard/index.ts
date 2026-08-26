@@ -17,7 +17,7 @@ export const ALL_SCENES = [
 	themeSetupScene,
 ] as const satisfies readonly SetupScene[];
 
-export interface SetupSceneSelectionOptions {
+interface SetupSceneSelectionOptions {
 	resuming?: boolean;
 	isTTY?: boolean;
 	skipEnv?: string;
@@ -65,7 +65,7 @@ export async function markSetupWizardComplete(
 	await settings.flush();
 }
 
-export interface RunSetupWizardOptions {
+interface RunSetupWizardOptions {
 	markComplete?: boolean;
 }
 

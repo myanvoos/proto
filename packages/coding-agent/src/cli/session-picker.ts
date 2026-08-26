@@ -7,7 +7,7 @@ import { SessionManager } from "../session/session-manager";
 import { FileSessionStorage } from "../session/session-storage";
 
 /** Presentation and capability controls for the standalone session picker. */
-export interface SessionPickerOptions {
+interface SessionPickerOptions {
 	allSessions?: SessionInfo[];
 	title?: string;
 	scopeLabel?: string | false;

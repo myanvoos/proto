@@ -18,11 +18,11 @@ export type CompactMode = "soft" | "remote";
  * Per-invocation ordered methods merged over the configured
  * `compaction.methodOrder` for this run.
  */
-export interface CompactionOverride {
+interface CompactionOverride {
 	methodOrder?: CompactionMethod[];
 }
 
-export interface CompactModeDef {
+interface CompactModeDef {
 	readonly name: CompactMode;
 	/** One-line description surfaced in autocomplete + help. */
 	readonly description: string;
@@ -50,7 +50,7 @@ export function findCompactMode(name: string): CompactModeDef | undefined {
 }
 
 /** Parsed `/compact` arguments: an optional mode plus optional focus text. */
-export interface ParsedCompactArgs {
+interface ParsedCompactArgs {
 	mode?: CompactMode;
 	instructions?: string;
 }

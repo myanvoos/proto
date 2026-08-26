@@ -255,7 +255,7 @@ const RESPONSE_OBSERVER_SCRIPT = String.raw`
 })()
 `;
 
-export interface RunCmuxCodeOptions {
+interface RunCmuxCodeOptions {
 	code: string;
 	timeoutMs: number;
 	signal?: AbortSignal;

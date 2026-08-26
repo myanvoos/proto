@@ -59,7 +59,7 @@ function parseRelayCredentials(relayIdValue: unknown, relayTokenValue: unknown):
 	return { relayId, relayToken };
 }
 
-export function formatCmuxError(error: CmuxErrorPayload | undefined): string {
+function formatCmuxError(error: CmuxErrorPayload | undefined): string {
 	const code = typeof error?.code === "string" && error.code.length > 0 ? error.code : "error";
 	const message = typeof error?.message === "string" && error.message.length > 0 ? error.message : "cmux error";
 	const details = error?.details === undefined ? "" : ` details=${JSON.stringify(error.details)}`;

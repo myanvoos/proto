@@ -35,21 +35,12 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import {
-	$env,
-	adjustHsv,
-	getProjectDir,
-	logger,
-	postmortem,
-	prompt,
-	sanitizeText,
-	setProjectDir,
-} from "@oh-my-pi/pi-utils";
+import { $env, getProjectDir, logger, postmortem, prompt, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
+import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -103,7 +94,6 @@ import { renderTreeList } from "../tui/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import type { EventBus } from "../utils/event-bus";
 import { resumeCommand } from "../utils/resume-command";
-import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import {
 	disposeTerminalTitleState,
@@ -184,17 +174,6 @@ import type {
 import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
-
-interface WorkingMessageAccent {
-	main: string;
-	dim: string;
-}
-
-interface WorkingMessageAccentCacheKey {
-	sessionName: string | undefined;
-	accentSurfaceLuminance: number | undefined;
-	sessionAccentEnabled: boolean;
-}
 
 const EDITOR_MAX_HEIGHT_MIN = 6;
 const EDITOR_MAX_HEIGHT_MAX = 18;
@@ -493,9 +472,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
-	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
-	#workingMessageAccentCacheValue?: WorkingMessageAccent;
-	#workingMessageAccentCacheHasValue = false;
 	get #defaultWorkingMessage(): string {
 		return `Working…${interruptHint()}`;
 	}
@@ -1071,7 +1047,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 			this.sessionManager.onSessionNameChanged(() => {
 				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-				this.#handleSessionAccentInputsChanged();
 			}),
 		);
 		this.#syncEditorMaxHeight();
@@ -1125,7 +1100,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Set up theme file watcher
 		this.#eventBusUnsubscribers.push(
 			onThemeChange(event => {
-				this.#clearWorkingMessageAccentCache();
 				clearRenderCache();
 				clearMermaidCache();
 				this.ui.invalidate();
@@ -1768,19 +1742,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	#syncStatusLineSettings(): void {
-		this.statusLine.updateSettings({
-			leftSegments: settings.get("statusLine.leftSegments"),
-			rightSegments: settings.get("statusLine.rightSegments"),
-			separator: settings.get("statusLine.separator"),
-			showHookStatus: settings.get("statusLine.showHookStatus"),
-			sessionAccent: settings.get("statusLine.sessionAccent"),
-			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
-			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-		});
-	}
-
 	#footlineRightZone(): string | null {
 		const draft = this.editor.getText();
 		const trimmed = draft.trim();
@@ -1789,25 +1750,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return theme.fg("matchHighlight", `~${Math.max(1, Math.round(trimmed.length / 4))} tok`);
 	}
 
-	#handleSessionAccentInputsChanged(): void {
-		this.#clearWorkingMessageAccentCache();
-		this.statusLine.invalidate();
-		this.updateEditorBorderColor();
-	}
-
 	updateEditorBorderColor(): void {
-		const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
-		const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
-		const hex = sessionName
-			? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
-			: undefined;
-		const ansi = getSessionAccentAnsi(hex);
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
-		} else if (ansi) {
-			this.editor.borderColor = (str: string) => `${ansi}${str}\x1b[39m`;
 		} else {
 			const level = this.session.thinkingLevel ?? ThinkingLevel.Off;
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
@@ -1824,7 +1771,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (this.isPythonMode) {
 			gutter = theme.getPythonModeBorderColor()("›");
 		} else {
-			const open = ansi ?? theme.getFgAnsi("borderAccent");
+			const open = theme.getFgAnsi("borderAccent");
 			gutter = `${open}›\x1b[39m`;
 		}
 		if (this.focusedAgentId) {
@@ -3230,68 +3177,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.updateWelcome({ lspServers: this.#getWelcomeLspServers() });
 	}
 
-	#clearWorkingMessageAccentCache(): void {
-		this.#workingMessageAccentCacheKey = undefined;
-		this.#workingMessageAccentCacheValue = undefined;
-		this.#workingMessageAccentCacheHasValue = false;
-	}
-
-	#buildWorkingMessageAccentCacheKey(): WorkingMessageAccentCacheKey {
-		const sessionAccentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
-		return {
-			sessionAccentEnabled,
-			sessionName: sessionAccentEnabled ? this.sessionManager.getSessionName() : undefined,
-			accentSurfaceLuminance: theme.accentSurfaceLuminance,
-		};
-	}
-
-	#workingMessageAccentCacheKeyEquals(a: WorkingMessageAccentCacheKey, b: WorkingMessageAccentCacheKey): boolean {
-		return (
-			a.sessionName === b.sessionName &&
-			a.accentSurfaceLuminance === b.accentSurfaceLuminance &&
-			a.sessionAccentEnabled === b.sessionAccentEnabled
-		);
-	}
-
-	#cacheWorkingMessageAccent(
-		key: WorkingMessageAccentCacheKey,
-		value: WorkingMessageAccent | undefined,
-	): WorkingMessageAccent | undefined {
-		this.#workingMessageAccentCacheKey = key;
-		this.#workingMessageAccentCacheValue = value;
-		this.#workingMessageAccentCacheHasValue = true;
-		return value;
-	}
-
-	#getWorkingMessageAccent(): WorkingMessageAccent | undefined {
-		const key = this.#buildWorkingMessageAccentCacheKey();
-		if (
-			this.#workingMessageAccentCacheHasValue &&
-			this.#workingMessageAccentCacheKey &&
-			this.#workingMessageAccentCacheKeyEquals(key, this.#workingMessageAccentCacheKey)
-		) {
-			return this.#workingMessageAccentCacheValue;
-		}
-		if (!key.sessionAccentEnabled || !key.sessionName) {
-			return this.#cacheWorkingMessageAccent(key, undefined);
-		}
-		const hex = getSessionAccentHex(key.sessionName, theme.getMajorThemeColorHexes(), key.accentSurfaceLuminance);
-		const main = getSessionAccentAnsi(hex);
-		const dim = getSessionAccentAnsi(adjustHsv(hex, { s: 0.55, v: 0.65 }));
-		return this.#cacheWorkingMessageAccent(key, main && dim ? { main, dim } : undefined);
-	}
-
 	ensureLoadingAnimation(): void {
 		if (!this.loadingAnimation) {
-			this.#clearWorkingMessageAccentCache();
 			this.statusContainer.disposeChildren();
 			const messageColorFn: LoaderMessageColorFn = message => theme.fg("muted", message);
 			this.loadingAnimation = new Loader(
 				this.ui,
-				spinner => {
-					const accent = this.#getWorkingMessageAccent();
-					return accent ? `${accent.main}${spinner}\x1b[39m` : theme.fg("accent", spinner);
-				},
+				spinner => theme.fg("accent", spinner),
 				messageColorFn,
 				this.#defaultWorkingMessage,
 				getSymbolTheme().spinnerFrames,
@@ -3309,7 +3201,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loadingAnimation) return;
 		this.loadingAnimation.stop();
 		this.loadingAnimation = undefined;
-		this.#clearWorkingMessageAccentCache();
 		if (clearStatusContainer) {
 			this.statusContainer.disposeChildren();
 		}
@@ -3870,10 +3761,6 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.#updateWelcomeModel();
 				}
 				void this.#handleGoalSessionEvent(event);
-			}),
-			onStatusLineSessionAccentChanged(() => {
-				this.#syncStatusLineSettings();
-				this.#handleSessionAccentInputsChanged();
 			}),
 			this.session.subscribeCommandMetadataChanged(() => {
 				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));

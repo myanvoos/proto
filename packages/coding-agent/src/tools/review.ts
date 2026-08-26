@@ -7,30 +7,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { isRecord } from "@oh-my-pi/pi-utils";
-import type { ThemeColor } from "../modes/theme/theme";
-export type FindingPriority = "P0" | "P1" | "P2" | "P3";
 
-export interface FindingPriorityInfo {
-	ord: 0 | 1 | 2 | 3;
-	symbol: "status.error" | "status.warning" | "status.info";
-	color: ThemeColor;
-}
+type FindingPriority = "P0" | "P1" | "P2" | "P3";
 
-const PRIORITY_INFO: Record<FindingPriority, FindingPriorityInfo> = {
-	P0: { ord: 0, symbol: "status.error", color: "error" },
-	P1: { ord: 1, symbol: "status.warning", color: "warning" },
-	P2: { ord: 2, symbol: "status.warning", color: "muted" },
-	P3: { ord: 3, symbol: "status.info", color: "accent" },
-};
-
-export const PRIORITY_LABELS: FindingPriority[] = ["P0", "P1", "P2", "P3"];
-
-export function isFindingPriority(value: unknown): value is FindingPriority {
+function isFindingPriority(value: unknown): value is FindingPriority {
 	return value === "P0" || value === "P1" || value === "P2" || value === "P3";
-}
-
-export function getPriorityInfo(priority: FindingPriority): FindingPriorityInfo {
-	return PRIORITY_INFO[priority] ?? { ord: 3, symbol: "status.info", color: "muted" };
 }
 interface FindingDetails {
 	title: string;
@@ -90,12 +71,6 @@ export function parseFindingDetails(value: unknown): FindingDetails | undefined 
 		line_start: lineStart,
 		line_end: lineEnd,
 	};
-}
-/** SubmitReviewDetails - used for rendering review results from yield tool */
-export interface SubmitReviewDetails {
-	overall_correctness: "correct" | "incorrect";
-	explanation: string;
-	confidence: number;
 }
 
 // Re-export the finding shape for the reviewer render path.

@@ -80,7 +80,7 @@ function stringArg(args: Record<string, unknown>, key: string): string | undefin
 	return typeof value === "string" ? value : undefined;
 }
 
-export function isCursorStrReplaceMcpName(name: string): boolean {
+function isCursorStrReplaceMcpName(name: string): boolean {
 	return CURSOR_STRREPLACE_MCP_NAMES.has(name);
 }
 

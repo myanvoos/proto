@@ -1,8 +1,8 @@
 /** Default agent used when a session has unrestricted spawning. */
-export const DEFAULT_SPAWN_AGENT = "worker";
+const DEFAULT_SPAWN_AGENT = "worker";
 
 /** Spawn policy derived from a parent agent's `spawns` frontmatter. */
-export interface ResolvedSpawnPolicy {
+interface ResolvedSpawnPolicy {
 	/** True when at least one subagent may be spawned. */
 	enabled: boolean;
 	/** Agent used when the caller omits the agent field. */

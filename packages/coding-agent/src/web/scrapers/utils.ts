@@ -20,13 +20,13 @@ export function asNumber(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export interface BinaryFetchSuccess {
+interface BinaryFetchSuccess {
 	ok: true;
 	buffer: Uint8Array;
 	contentDisposition?: string;
 }
 
-export type BinaryFetchResult = BinaryFetchSuccess | { ok: false; error?: string };
+type BinaryFetchResult = BinaryFetchSuccess | { ok: false; error?: string };
 
 async function readResponseWithLimit(response: Response, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
 	const reader = response.body?.getReader();

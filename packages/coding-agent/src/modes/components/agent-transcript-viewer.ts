@@ -30,7 +30,7 @@ import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
 import { formatContextUsage } from "./status-line/context-thresholds";
 
-export interface AgentTranscriptViewerDeps {
+interface AgentTranscriptViewerDeps {
 	agentId: string;
 	registry: AgentRegistry;
 	/** Progress/cost snapshot source for the stats line. */

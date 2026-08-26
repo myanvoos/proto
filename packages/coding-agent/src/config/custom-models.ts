@@ -18,7 +18,7 @@ export interface CustomModelDefinitionLike extends ModelPatch {
 	cost?: Model<Api>["cost"];
 }
 
-export interface CustomModelBuildOptions {
+interface CustomModelBuildOptions {
 	useDefaults: boolean;
 }
 

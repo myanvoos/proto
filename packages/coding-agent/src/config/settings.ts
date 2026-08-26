@@ -585,9 +585,6 @@ export class Settings {
 
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
 		if (Object.is(value, prev)) return;
-		if (path === "statusLine.sessionAccent") {
-			statusLineSessionAccentSignal.fire();
-		}
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
 		}
@@ -689,7 +686,6 @@ export class Settings {
 			const mutationGeneration = this.#persistedMutationGeneration;
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
-				sessionAccent: this.get("statusLine.sessionAccent"),
 			};
 			const previousCodeModeValues = this.#codeModeSignalSnapshot();
 			const previousHookValues = new Map<SettingPath, unknown>();
@@ -719,14 +715,6 @@ export class Settings {
 			const nextModelRoles = this.get("modelRoles");
 			if (!Bun.deepEquals(nextModelRoles, previousSignaledValues.modelRoles)) {
 				this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousSignaledValues.modelRoles);
-			}
-			const nextSessionAccent = this.get("statusLine.sessionAccent");
-			if (!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)) {
-				this.#fireEffectiveSettingChanged(
-					"statusLine.sessionAccent",
-					nextSessionAccent,
-					previousSignaledValues.sessionAccent,
-				);
 			}
 			this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
 			for (const [key, previous] of previousHookValues) {
@@ -2437,15 +2425,6 @@ const extendedContextSignal = new SettingSignal("extendedContext");
  * Returns an unsubscribe function.
  */
 export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);
-
-/** Fires when `statusLine.sessionAccent` changes at runtime. */
-const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccent");
-
-/**
- * Subscribe to session-accent setting changes.
- * Returns an unsubscribe function. Callers should re-read settings in the callback.
- */
-export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Global Singleton

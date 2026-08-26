@@ -138,17 +138,6 @@ function shouldRetryWithNextDefaultModel(error: unknown): boolean {
 	);
 }
 
-export interface CodexSearchParams {
-	signal?: AbortSignal;
-	timeoutMs?: number;
-	fetch?: FetchImpl;
-	query: string;
-	system_prompt?: string;
-	num_results?: number;
-	/** Search context size: controls how much web content to include */
-	search_context_size?: "low" | "medium" | "high";
-}
-
 /** Codex API response structure */
 interface CodexWebSearchSource {
 	url?: string;

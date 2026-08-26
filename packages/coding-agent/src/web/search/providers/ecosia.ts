@@ -147,7 +147,7 @@ async function callEcosiaHtml(params: SearchParams): Promise<string> {
 }
 
 /** Execute an Ecosia web search and parse the server-rendered result page. */
-export async function searchEcosia(params: SearchParams): Promise<SearchResponse> {
+async function searchEcosia(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callEcosiaHtml(params);
 	const parsed = parseHtmlResults(html);

@@ -29,7 +29,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Format a scalar value for inline display.
  */
-export function formatScalar(value: unknown, maxLen: number): string {
+function formatScalar(value: unknown, maxLen: number): string {
 	if (value === null) return "null";
 	if (value === undefined) return "undefined";
 	if (typeof value === "boolean") return String(value);

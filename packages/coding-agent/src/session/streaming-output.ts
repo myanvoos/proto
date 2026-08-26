@@ -17,9 +17,9 @@ export const DEFAULT_MAX_COLUMN = 512; // Max chars per grep match line
  * `0` means unbounded: by default, `artifact://<id>` references preserve the
  * complete raw stream instead of a capped head/tail sample.
  */
-export const ARTIFACT_DEFAULT_MAX_BYTES = 0;
+const ARTIFACT_DEFAULT_MAX_BYTES = 0;
 /** Default head budget; the remainder becomes the rolling tail window. */
-export const ARTIFACT_DEFAULT_HEAD_BYTES = 3 * 1024 * 1024; // 3 MiB
+const ARTIFACT_DEFAULT_HEAD_BYTES = 3 * 1024 * 1024; // 3 MiB
 
 const NL = "\n";
 const CR = "\r";
@@ -126,18 +126,18 @@ export interface TruncationOptions {
 }
 
 /** Result from byte-level truncation helpers. */
-export interface ByteTruncationResult {
+interface ByteTruncationResult {
 	text: string;
 	bytes: number;
 }
 
-export interface TailTruncationNoticeOptions {
+interface TailTruncationNoticeOptions {
 	fullOutputPath?: string;
 	originalContent?: string;
 	suffix?: string;
 }
 
-export interface HeadTruncationNoticeOptions {
+interface HeadTruncationNoticeOptions {
 	startLine?: number;
 	totalFileLines?: number;
 }
@@ -585,7 +585,7 @@ export function truncateMiddle(content: string, options: TruncationOptions = {})
 // =============================================================================
 
 /** Options for {@link enforceInlineByteCap}. */
-export interface InlineByteCapOptions {
+interface InlineByteCapOptions {
 	/** Inline byte budget. Defaults to {@link DEFAULT_MAX_BYTES}. */
 	maxBytes?: number;
 	/**

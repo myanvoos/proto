@@ -1,4 +1,4 @@
-export interface ToolTimeoutConfig {
+interface ToolTimeoutConfig {
 	/** Default timeout in seconds when agent omits the field */
 	default: number;
 	/** Minimum allowed timeout in seconds */
@@ -18,7 +18,7 @@ export const TOOL_TIMEOUTS = {
 	debug: { default: 30, min: 5, max: 300 },
 } as const satisfies Record<string, ToolTimeoutConfig>;
 
-export type ToolWithTimeout = keyof typeof TOOL_TIMEOUTS;
+type ToolWithTimeout = keyof typeof TOOL_TIMEOUTS;
 
 /**
  * Clamp a raw timeout to the allowed range for a tool.

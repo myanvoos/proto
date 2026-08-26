@@ -30,7 +30,7 @@ import {
 } from "../render-utils";
 import { type CoordinationDetails, type FleetRenderArgs, fleetErrorResult } from "./types";
 
-export const DEFAULT_IRC_TIMEOUT_MS = 120_000;
+const DEFAULT_IRC_TIMEOUT_MS = 120_000;
 
 /**
  * Messaging is always available to the top-level orchestrator. Workers keep
@@ -40,7 +40,7 @@ export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
 	return true;
 }
 
-export function formatIncoming(msg: IrcMessage): string {
+function formatIncoming(msg: IrcMessage): string {
 	const replyTag = msg.replyTo ? ` (reply to ${msg.replyTo})` : "";
 	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
 }
@@ -54,7 +54,7 @@ export function normalizeIrcTimeoutMs(value: number): number {
 }
 
 /** Effective message-wait timeout: explicit param wins, then `irc.timeoutMs`. */
-export function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number {
+function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number {
 	if (explicit !== undefined) return normalizeIrcTimeoutMs(explicit);
 	return normalizeIrcTimeoutMs(settings.get("irc.timeoutMs"));
 }
@@ -127,7 +127,7 @@ export async function executeList(
 	};
 }
 
-export interface FleetSendParams {
+interface FleetSendParams {
 	to?: string;
 	message?: string;
 	replyTo?: string;

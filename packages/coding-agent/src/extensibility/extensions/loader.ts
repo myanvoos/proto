@@ -621,7 +621,7 @@ async function discoverHooksInPackageRoot(root: string): Promise<string[]> {
  * `LoadExtensionsResult` directly would reuse handlers/tools/commands that
  * closed over the parent's `cwd` and event bus.
  */
-export interface DiscoverExtensionPathOptions {
+interface DiscoverExtensionPathOptions {
 	/** Include ambient native extensions, hooks, and installed plugins. */
 	ambient?: boolean;
 	/** Include ambient hook factories. Disable for read-only catalog commands. */

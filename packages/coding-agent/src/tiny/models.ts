@@ -16,7 +16,7 @@ export interface TinyTitleLocalModelSpec {
 	unsupportedReason?: string;
 }
 
-export const TINY_TITLE_LOCAL_MODELS = [
+const TINY_TITLE_LOCAL_MODELS = [
 	{
 		key: "lfm2-350m",
 		repo: "onnx-community/LFM2-350M-ONNX",
@@ -69,7 +69,7 @@ export const TINY_TITLE_MODEL_VALUES = [
 	"lfm2-700m",
 ] as const;
 
-export type TinyTitleModelKey = (typeof TINY_TITLE_MODEL_VALUES)[number];
+type TinyTitleModelKey = (typeof TINY_TITLE_MODEL_VALUES)[number];
 export type TinyTitleLocalModelKey = (typeof TINY_TITLE_LOCAL_MODELS)[number]["key"];
 
 type MissingTinyTitleModelValue = Exclude<
@@ -110,8 +110,6 @@ export function getTinyTitleModelSpec(key: TinyTitleLocalModelKey): (typeof TINY
 
 /** Default memory model: the online path (the configured smol / remote LLM; no local download). */
 export const ONLINE_MEMORY_MODEL_KEY = "online";
-/** Recommended local model for memory tasks when none is named. */
-export const DEFAULT_MEMORY_LOCAL_MODEL_KEY = "lfm2-1.2b";
 
 /**
  * Local models for structured generation beyond titles (classification, extraction).
@@ -119,7 +117,7 @@ export const DEFAULT_MEMORY_LOCAL_MODEL_KEY = "lfm2-1.2b";
  * faithful summarization need more capacity than 3-6 word titles. All q4.
  * Ranking/recipe rationale lives in docs/local-models.md.
  */
-export const TINY_MEMORY_LOCAL_MODELS = [
+const TINY_MEMORY_LOCAL_MODELS = [
 	{
 		key: "qwen3-1.7b",
 		repo: "onnx-community/Qwen3-1.7B-ONNX",
@@ -176,7 +174,7 @@ export const TINY_MEMORY_MODEL_VALUES = [
 	"lfm2-1.2b",
 ] as const;
 
-export type TinyMemoryModelKey = (typeof TINY_MEMORY_MODEL_VALUES)[number];
+type TinyMemoryModelKey = (typeof TINY_MEMORY_MODEL_VALUES)[number];
 export type TinyMemoryLocalModelKey = (typeof TINY_MEMORY_LOCAL_MODELS)[number]["key"];
 
 type MissingTinyMemoryModelValue = Exclude<
@@ -207,18 +205,6 @@ export const TINY_MEMORY_MODEL_OPTIONS = [
 
 export function isTinyMemoryLocalModelKey(value: string): value is TinyMemoryLocalModelKey {
 	return TINY_MEMORY_LOCAL_MODELS.some(model => model.key === value);
-}
-
-export function getTinyMemoryModelSpec(key: TinyMemoryLocalModelKey): (typeof TINY_MEMORY_LOCAL_MODELS)[number] {
-	const spec = TINY_MEMORY_LOCAL_MODELS.find(model => model.key === key);
-	if (!spec) throw new Error(`Unknown tiny memory model: ${key}`);
-	return spec;
-}
-
-/** Return whether a memory local model may emit reasoning tokens before answers. */
-export function isTinyMemoryReasoningModelKey(key: TinyMemoryLocalModelKey): boolean {
-	const spec = getTinyMemoryModelSpec(key);
-	return "reasoning" in spec && spec.reasoning === true;
 }
 
 /** Any local model key (title or memory), used by the shared inference worker. */

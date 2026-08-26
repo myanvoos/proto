@@ -262,15 +262,6 @@ export function selectorLineRanges(sel: string | undefined): [LineRange, ...Line
 	return undefined;
 }
 
-/** Return `true` when `lineNumber` (1-indexed) falls in any of the supplied ranges. */
-export function isLineInRanges(lineNumber: number, ranges: readonly LineRange[]): boolean {
-	for (const range of ranges) {
-		if (lineNumber < range.startLine) continue;
-		if (range.endLine === undefined || lineNumber <= range.endLine) return true;
-	}
-	return false;
-}
-
 export function splitPathAndSel(rawPath: string): { path: string; sel?: string } {
 	const colon = rawPath.lastIndexOf(":");
 	if (colon <= 0) return { path: rawPath };
@@ -723,7 +714,7 @@ export function toPathList(input: string | string[] | undefined): string[] {
 
 const GLOB_PATH_CHARS = ["*", "?", "[", "{"] as const;
 
-export function hasGlobPathChars(filePath: string): boolean {
+function hasGlobPathChars(filePath: string): boolean {
 	return GLOB_PATH_CHARS.some(char => filePath.includes(char));
 }
 
@@ -877,7 +868,7 @@ export async function splitDelimitedPathEntry(
 	);
 }
 
-export interface ParsedSearchPath {
+interface ParsedSearchPath {
 	basePath: string;
 	glob?: string;
 }
@@ -998,16 +989,6 @@ export async function findUniqueWorkspaceSuffix(
 	signal?: AbortSignal,
 ): Promise<{ absolutePath: string; displayPath: string } | null> {
 	return findUniqueWorkspaceSuffixWithGlob(rawPath, cwd, signal, glob);
-}
-
-/** Exercise the post-native cancellation boundary without a real filesystem walk. */
-export async function findUniqueWorkspaceSuffixWithGlobForTest(
-	rawPath: string,
-	cwd: string,
-	signal: AbortSignal | undefined,
-	globImpl: typeof glob,
-): Promise<{ absolutePath: string; displayPath: string } | null> {
-	return findUniqueWorkspaceSuffixWithGlob(rawPath, cwd, signal, globImpl);
 }
 
 // =============================================================================

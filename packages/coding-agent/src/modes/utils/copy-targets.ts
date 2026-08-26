@@ -10,7 +10,7 @@ export interface CodeBlock {
 }
 
 /** A blockquote block: a maximal run of `>`-prefixed lines from markdown. */
-export interface QuoteBlock {
+interface QuoteBlock {
 	/** Block body with each line's `>` marker (and one optional space) removed. */
 	text: string;
 }
@@ -19,7 +19,7 @@ export interface QuoteBlock {
 export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } & QuoteBlock);
 
 /** A runnable command found in the transcript. */
-export interface LastCommand {
+interface LastCommand {
 	kind: "bash" | "eval";
 	code: string;
 	/** Highlight language: "bash" for bash, or the resolved eval language ("python"/"javascript"/"ruby"/"julia"). */

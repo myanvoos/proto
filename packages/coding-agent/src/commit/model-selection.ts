@@ -12,7 +12,7 @@ import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 
-export interface ResolvedCommitModel {
+interface ResolvedCommitModel {
 	model: Model<Api>;
 	/**
 	 * Resolver for the model's bearer: re-resolves on 401 / usage-limit so the

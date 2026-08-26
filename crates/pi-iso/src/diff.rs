@@ -36,24 +36,6 @@ impl Diff {
 	pub const fn is_empty(&self) -> bool {
 		self.files.is_empty()
 	}
-
-	/// Concatenated unified-diff text for every text-representable entry.
-	/// Binary entries are skipped — enumerate via [`files`](Self::files)
-	/// and copy them out-of-band if you need their contents.
-	pub fn unified_text(&self) -> String {
-		let mut out = String::new();
-		for file in &self.files {
-			let Some(diff) = &file.diff else { continue };
-			if diff.is_empty() {
-				continue;
-			}
-			if !out.is_empty() && !out.ends_with('\n') {
-				out.push('\n');
-			}
-			out.push_str(diff);
-		}
-		out
-	}
 }
 
 /// One entry in a [`Diff`].

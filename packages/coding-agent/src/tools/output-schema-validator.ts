@@ -18,7 +18,7 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import { jtdToJsonSchema, normalizeSchema } from "./jtd-to-json-schema";
 
 /** A validator bound to a specific output schema. */
-export interface OutputValidator {
+interface OutputValidator {
 	/** Run JSON Schema validation; returns the raw `success`/`issues` shape so callers may inspect every failure. */
 	validate(value: unknown): JsonSchemaValidationResult;
 	/** Top-level required property names. Empty if the schema has no `required` array at root. */
@@ -38,7 +38,7 @@ export interface OutputValidator {
 	isKnownSection(label: string): boolean;
 }
 
-export interface BuildOutputValidatorResult {
+interface BuildOutputValidatorResult {
 	/** Present when the schema produced a usable validator (i.e. constraining schemas). Absent for missing/unconstrained schemas. */
 	validator?: OutputValidator;
 	/** Raw JSON Schema produced by `jtdToJsonSchema`. Available alongside the validator so callers can derive related artifacts (strict-mode probe, dereference, hint text). */

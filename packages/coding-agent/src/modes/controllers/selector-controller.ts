@@ -231,7 +231,6 @@ export class SelectorController {
 							rightSegments: settings.get("statusLine.rightSegments"),
 							separator: settings.get("statusLine.separator"),
 							showHookStatus: settings.get("statusLine.showHookStatus"),
-							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 							...previewSettings,
@@ -259,7 +258,6 @@ export class SelectorController {
 							rightSegments: settings.get("statusLine.rightSegments"),
 							separator: settings.get("statusLine.separator"),
 							showHookStatus: settings.get("statusLine.showHookStatus"),
-							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 						});
@@ -699,7 +697,6 @@ export class SelectorController {
 			case "statusLine.separator":
 			case "statusLineShowHooks":
 			case "statusLine.showHookStatus":
-			case "statusLine.sessionAccent":
 			case "statusLine.transparent":
 			case "statusLine.compactThinkingLevel":
 			case "statusLineSegments":
@@ -718,7 +715,6 @@ export class SelectorController {
 					rightSegments: settings.get("statusLine.rightSegments"),
 					separator: settings.get("statusLine.separator"),
 					showHookStatus: settings.get("statusLine.showHookStatus"),
-					sessionAccent: settings.get("statusLine.sessionAccent"),
 					transparent: settings.get("statusLine.transparent"),
 					segmentOptions: settings.get("statusLine.segmentOptions"),
 					compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),

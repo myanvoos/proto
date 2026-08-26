@@ -54,7 +54,7 @@ async function persistAgentTombstone(sessionFile: string): Promise<void> {
  */
 export type PersistedSubagentReviverFactory = (ref: AgentRef) => Promise<AgentReviver | undefined>;
 
-export interface AdoptOptions {
+interface AdoptOptions {
 	/** TTL before an idle agent is parked. <= 0 disables parking. */
 	idleTtlMs: number;
 	/** Recreates a live AgentSession from the ref's sessionFile. Absent => not resumable after park (e.g. isolated runs). */

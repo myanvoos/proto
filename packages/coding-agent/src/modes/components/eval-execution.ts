@@ -19,7 +19,7 @@ import {
 const PREVIEW_LINES = 20;
 const MAX_DISPLAY_LINE_CHARS = 4000;
 
-export type EvalExecutionLanguage = "python" | "js";
+type EvalExecutionLanguage = "python" | "js";
 
 export class EvalExecutionComponent extends Container {
 	#outputLines: string[] = [];

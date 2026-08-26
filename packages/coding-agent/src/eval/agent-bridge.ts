@@ -45,13 +45,13 @@ interface EvalAgentArgs {
 	handle?: boolean;
 }
 
-export interface EvalAgentBridgeOptions {
+interface EvalAgentBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 }
 
-export interface EvalAgentResult {
+interface EvalAgentResult {
 	text: string;
 	/** Parsed structured data returned by the child executor. */
 	data?: unknown;

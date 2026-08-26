@@ -18,7 +18,7 @@ import { ensureRelayDaemon, isLoopbackRelayUrl } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { ensureSharedBrowser } from "./shared-daemon";
 
-export type PuppeteerBrowserKind =
+type PuppeteerBrowserKind =
 	| { kind: "headless"; headless: boolean }
 	| { kind: "spawned"; path: string }
 	| { kind: "connected"; cdpUrl: string }
@@ -69,7 +69,7 @@ export interface CmuxBrowserHandle extends BrowserHandleCommon {
 export type BrowserHandle = PuppeteerBrowserHandle | CmuxBrowserHandle;
 
 /** Controls bounded browser-handle teardown and identifies the owning resource in timeout diagnostics. */
-export interface ReleaseBrowserOptions {
+interface ReleaseBrowserOptions {
 	kill: boolean;
 	timeoutMs?: number;
 	resource?: string;
@@ -94,7 +94,7 @@ function browserKey(kind: BrowserKind): string {
 	}
 }
 
-export interface AcquireBrowserOptions {
+interface AcquireBrowserOptions {
 	cwd: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	appArgs?: string[];

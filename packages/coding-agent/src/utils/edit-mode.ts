@@ -20,7 +20,7 @@ export function normalizeEditMode(mode?: string | null): EditMode | undefined {
 	return EDIT_MODE_IDS[mode as keyof typeof EDIT_MODE_IDS];
 }
 
-export interface EditModeSettingsLike {
+interface EditModeSettingsLike {
 	get(key: "edit.mode"): unknown;
 	getEditVariantForModel?(model: string | undefined): EditMode | null;
 }

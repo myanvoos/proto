@@ -53,11 +53,11 @@ function migrateJsonToYml(jsonPath: string, ymlPath: string) {
 	}
 }
 
-export type ConfigSchemaSource =
+type ConfigSchemaSource =
 	| { readonly kind: "eager"; readonly schema: Type }
 	| { readonly kind: "deferred"; readonly resolve: () => Type };
 
-export interface IConfigFile<T> {
+interface IConfigFile<T> {
 	readonly id: string;
 	readonly schema: Type;
 	path?(): string;

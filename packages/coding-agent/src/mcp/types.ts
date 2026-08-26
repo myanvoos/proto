@@ -165,13 +165,13 @@ export interface MCPConfigFile {
 export const MCP_PROTOCOL_VERSION = "2025-11-25";
 
 /** MCP implementation info */
-export interface MCPImplementation {
+interface MCPImplementation {
 	name: string;
 	version: string;
 }
 
 /** MCP client capabilities */
-export interface MCPClientCapabilities {
+interface MCPClientCapabilities {
 	roots?: { listChanged?: boolean };
 	sampling?: Record<string, never>;
 	experimental?: Record<string, unknown>;
@@ -226,7 +226,7 @@ export interface MCPToolCallParams {
 }
 
 /** Content types in tool results */
-export interface MCPTextContent {
+interface MCPTextContent {
 	type: "text";
 	text: string;
 }
@@ -237,7 +237,7 @@ export interface MCPImageContent {
 	mimeType: string;
 }
 
-export interface MCPResourceContent {
+interface MCPResourceContent {
 	type: "resource";
 	resource: {
 		uri: string;
@@ -301,9 +301,6 @@ export interface MCPTransport {
 	onRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
-/** Transport factory function */
-export type TransportFactory = (config: MCPServerConfig) => Promise<MCPTransport>;
-
 // =============================================================================
 // MCP Client Types
 // =============================================================================
@@ -332,12 +329,6 @@ export interface MCPServerConnection {
 	instructions?: string;
 	/** Cached prompts (populated on demand) */
 	prompts?: MCPPrompt[];
-}
-
-/** MCP tool with server context */
-export interface MCPToolWithServer {
-	server: MCPServerConnection;
-	tool: MCPToolDefinition;
 }
 
 // =============================================================================
@@ -385,7 +376,7 @@ export interface MCPResourceTemplatesListResult {
 }
 
 /** A single content item from resources/read */
-export interface MCPResourceContentItem {
+interface MCPResourceContentItem {
 	uri: string;
 	mimeType?: string;
 	text?: string;
@@ -412,7 +403,7 @@ export interface MCPResourceSubscribeParams {
 // =============================================================================
 
 /** An argument definition for an MCP prompt */
-export interface MCPPromptArgument {
+interface MCPPromptArgument {
 	name: string;
 	description?: string;
 	required?: boolean;
@@ -440,10 +431,10 @@ export interface MCPAudioContent {
 }
 
 /** Content type union for prompt messages */
-export type MCPPromptContent = MCPTextContent | MCPImageContent | MCPAudioContent | MCPResourceContent;
+type MCPPromptContent = MCPTextContent | MCPImageContent | MCPAudioContent | MCPResourceContent;
 
 /** A single message in a prompt result */
-export interface MCPPromptMessage {
+interface MCPPromptMessage {
 	role: "user" | "assistant";
 	content: MCPPromptContent | MCPPromptContent[];
 }

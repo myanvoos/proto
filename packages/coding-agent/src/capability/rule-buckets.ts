@@ -13,7 +13,7 @@
 import type { TtsrManager } from "../export/ttsr";
 import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "./rule";
 
-export interface RuleBuckets {
+interface RuleBuckets {
 	rulebookRules: Rule[];
 	alwaysApplyRules: Rule[];
 }

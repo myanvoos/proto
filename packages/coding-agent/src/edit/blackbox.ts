@@ -8,7 +8,7 @@ import type { EditMode } from "../utils/edit-mode";
 const EDIT_BLACKBOX_FILE = "edit-blackbox.jsonl";
 
 /** Full source transition committed by one edit operation. */
-export interface AppliedEditSnapshot {
+interface AppliedEditSnapshot {
 	/** Path used to select the tree-sitter language. */
 	path: string;
 	/** File content immediately before the operation. */

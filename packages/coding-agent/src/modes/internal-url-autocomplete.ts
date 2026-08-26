@@ -20,7 +20,7 @@ const MAX_URL_SUGGESTIONS = 25;
 const URL_TOKEN_RE = /(?:^|[\s"'`(<=])([a-z][a-z0-9+.-]*:\/{1,2}[^\s"'`()<>]*)$/i;
 const SCHEME_SPLIT_RE = /^([a-z][a-z0-9+.-]*):\/{1,2}(.*)$/i;
 
-export interface InternalUrlContext {
+interface InternalUrlContext {
 	/** Lowercased scheme (e.g. `local`). */
 	scheme: string;
 	/** Text typed after the slashes so far (host + path); may be empty. */

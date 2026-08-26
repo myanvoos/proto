@@ -68,7 +68,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.
 
-export class AgentParsingError extends Error {
+class AgentParsingError extends Error {
 	constructor(
 		error: Error,
 		readonly source?: unknown,
@@ -138,22 +138,4 @@ export function loadBundledAgents(): AgentDefinition[] {
  */
 export function getBundledAgent(name: string): AgentDefinition | undefined {
 	return loadBundledAgents().find(a => a.name === name);
-}
-
-/**
- * Get all bundled agents as a map keyed by name.
- */
-export function getBundledAgentsMap(): Map<string, AgentDefinition> {
-	const map = new Map<string, AgentDefinition>();
-	for (const agent of loadBundledAgents()) {
-		map.set(agent.name, agent);
-	}
-	return map;
-}
-
-/**
- * Clear the bundled agents cache (for testing).
- */
-export function clearBundledAgentsCache(): void {
-	bundledAgentsCache = null;
 }

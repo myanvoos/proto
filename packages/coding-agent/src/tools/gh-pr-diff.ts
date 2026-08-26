@@ -6,8 +6,8 @@ import type { ViewLookupResult } from "./gh-view";
 import { getOrFetchView, resolveGithubCacheAuthKey } from "./github-cache";
 import { ToolError } from "./tool-errors";
 
-export const PR_DIFF_FILES_PAGE_SIZE = 100;
-export const PR_DIFF_FILES_MAX = 3000;
+const PR_DIFF_FILES_PAGE_SIZE = 100;
+const PR_DIFF_FILES_MAX = 3000;
 
 // ────────────────────────────────────────────────────────────────────────────
 // PR diff fetcher
@@ -77,18 +77,18 @@ export function parsePrUnifiedDiff(text: string): PrDiffPayload {
 	return { unified: text, files };
 }
 
-export interface ParsedDiffHeaderToken {
+interface ParsedDiffHeaderToken {
 	value: string;
 	nextIndex: number;
 }
 
-export function skipDiffHeaderSpaces(text: string, index: number): number {
+function skipDiffHeaderSpaces(text: string, index: number): number {
 	let i = index;
 	while (text.charAt(i) === " ") i += 1;
 	return i;
 }
 
-export function parseDiffQuotedEscape(text: string, slashIndex: number): ParsedDiffHeaderToken {
+function parseDiffQuotedEscape(text: string, slashIndex: number): ParsedDiffHeaderToken {
 	const next = text.charAt(slashIndex + 1);
 	if (next === "") return { value: "\\", nextIndex: slashIndex + 1 };
 
@@ -128,7 +128,7 @@ export function parseDiffQuotedEscape(text: string, slashIndex: number): ParsedD
 	}
 }
 
-export function parseDiffQuotedToken(text: string, startIndex: number): ParsedDiffHeaderToken | undefined {
+function parseDiffQuotedToken(text: string, startIndex: number): ParsedDiffHeaderToken | undefined {
 	if (text.charAt(startIndex) !== '"') return undefined;
 	let value = "";
 	for (let i = startIndex + 1; i < text.length; i += 1) {
@@ -145,7 +145,7 @@ export function parseDiffQuotedToken(text: string, startIndex: number): ParsedDi
 	return undefined;
 }
 
-export function parseDiffHeaderToken(text: string, startIndex: number): ParsedDiffHeaderToken | undefined {
+function parseDiffHeaderToken(text: string, startIndex: number): ParsedDiffHeaderToken | undefined {
 	const start = skipDiffHeaderSpaces(text, startIndex);
 	if (start >= text.length) return undefined;
 	const quoted = parseDiffQuotedToken(text, start);
@@ -155,11 +155,11 @@ export function parseDiffHeaderToken(text: string, startIndex: number): ParsedDi
 	return { value: text.slice(start, end), nextIndex: end };
 }
 
-export function stripPrDiffPathPrefix(value: string, prefix: "a/" | "b/"): string | undefined {
+function stripPrDiffPathPrefix(value: string, prefix: "a/" | "b/"): string | undefined {
 	return value.startsWith(prefix) ? value.slice(prefix.length) : undefined;
 }
 
-export function parsePrDiffHeaderPaths(header: string): { oldPath?: string; newPath?: string } {
+function parsePrDiffHeaderPaths(header: string): { oldPath?: string; newPath?: string } {
 	const trail = header.slice("diff --git ".length);
 	if (trail.startsWith('"')) {
 		const oldToken = parseDiffQuotedToken(trail, 0);
@@ -182,7 +182,7 @@ export function parsePrDiffHeaderPaths(header: string): { oldPath?: string; newP
 	return {};
 }
 
-export function isPrDiffFileHeaderLine(line: string): boolean {
+function isPrDiffFileHeaderLine(line: string): boolean {
 	return (
 		line === "--- /dev/null" ||
 		line === "+++ /dev/null" ||
@@ -193,7 +193,7 @@ export function isPrDiffFileHeaderLine(line: string): boolean {
 	);
 }
 
-export function parsePrDiffSection(section: string, startOffset: number, endOffset: number): PrDiffFile {
+function parsePrDiffSection(section: string, startOffset: number, endOffset: number): PrDiffFile {
 	const lines = section.split("\n");
 	const header = lines[0] ?? "";
 	const headerPaths = parsePrDiffHeaderPaths(header);
@@ -268,7 +268,7 @@ export function parsePrDiffSection(section: string, startOffset: number, endOffs
  * absent for binary files and for individual file diffs GitHub deems too large
  * to render.
  */
-export interface GhPrFileApi {
+interface GhPrFileApi {
 	filename?: string;
 	previous_filename?: string;
 	status?: string;
@@ -277,7 +277,7 @@ export interface GhPrFileApi {
 	patch?: string;
 }
 
-export interface GhPrApi {
+interface GhPrApi {
 	changed_files?: number;
 }
 
@@ -286,7 +286,7 @@ export interface GhPrApi {
  * exceeds 20,000 lines. Detect that specific failure so the caller can fall
  * back to the per-file endpoint instead of aborting the whole review.
  */
-export function isPrDiffTooLargeError(err: unknown): boolean {
+function isPrDiffTooLargeError(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
 	return (
 		/\bHTTP 406\b/.test(message) ||
@@ -295,7 +295,7 @@ export function isPrDiffTooLargeError(err: unknown): boolean {
 	);
 }
 
-export function formatSyntheticDiffPath(prefix: "a/" | "b/", path: string): string {
+function formatSyntheticDiffPath(prefix: "a/" | "b/", path: string): string {
 	const prefixedPath = `${prefix}${path}`;
 	if (!/[\u0000-\u001F\s"\\]/.test(prefixedPath)) return prefixedPath;
 
@@ -334,7 +334,7 @@ export function formatSyntheticDiffPath(prefix: "a/" | "b/", path: string): stri
  * boundaries and byte offsets. Files whose `patch` is omitted (binary or
  * too-large) stay visible with an explicit marker rather than being dropped.
  */
-export function buildSyntheticDiffSection(file: GhPrFileApi): string | undefined {
+function buildSyntheticDiffSection(file: GhPrFileApi): string | undefined {
 	const newPath = file.filename;
 	if (!newPath) return undefined;
 	const status = file.status ?? "modified";
@@ -367,7 +367,7 @@ export function buildSyntheticDiffSection(file: GhPrFileApi): string | undefined
  * The per-file patches are not subject to that aggregate cap, so even very
  * large PRs can be reassembled into a synthetic unified diff.
  */
-export async function fetchPrDiffViaFilesApi(
+async function fetchPrDiffViaFilesApi(
 	cwd: string,
 	repo: string,
 	number: number,
@@ -417,7 +417,7 @@ export async function fetchPrDiffViaFilesApi(
 	return sections.length > 0 ? `${sections.join("\n")}\n` : "";
 }
 
-export async function fetchPrDiffFresh(
+async function fetchPrDiffFresh(
 	cwd: string,
 	repo: string,
 	number: number,

@@ -16,13 +16,13 @@ import { registerPyToolBridge } from "./py/tool-bridge";
 export type CancelledErrorClass = new (timedOut: boolean) => Error & { timedOut: boolean };
 
 /** Managed-env values a kernel patch may carry (`null` clears, `undefined` skips). */
-export type KernelEnvPatch = Record<string, string | null | undefined>;
+type KernelEnvPatch = Record<string, string | null | undefined>;
 
 /**
  * Options every kernel-backed language executor shares. Per-language option
  * interfaces structurally extend this; the base executor only reads these.
  */
-export interface KernelExecutorBaseOptions {
+interface KernelExecutorBaseOptions {
 	cwd?: string;
 	timeoutMs?: number;
 	deadlineMs?: number;
@@ -38,7 +38,7 @@ export interface KernelExecutorBaseOptions {
 }
 
 /** Normalised execution result produced by {@link executeWithKernelBase}. */
-export interface KernelExecutionResult {
+interface KernelExecutionResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
@@ -265,7 +265,7 @@ export function createCancelledKernelResult(output: string): KernelExecutionResu
 // Managed environment helpers
 // ---------------------------------------------------------------------------
 
-export const MANAGED_KERNEL_ENV_KEYS = [
+const MANAGED_KERNEL_ENV_KEYS = [
 	"PI_SESSION_FILE",
 	"PI_ARTIFACTS_DIR",
 	"PI_TOOL_BRIDGE_URL",
@@ -398,7 +398,7 @@ export function resolveOwnerScopedSessionKey(options: {
 // Base executor implementation
 // ---------------------------------------------------------------------------
 
-export interface ExecuteWithKernelBaseParams<
+interface ExecuteWithKernelBaseParams<
 	TOptions extends KernelExecutorBaseOptions,
 	TEnv extends KernelEnvPatch = Record<string, string | null>,
 > {

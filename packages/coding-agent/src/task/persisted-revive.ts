@@ -21,7 +21,7 @@ import type { AgentDefinition } from "./types";
  * move is followed rather than snapshotted; auth/models/settings are
  * process-stable and captured by reference.
  */
-export interface PersistedSubagentReviveContext {
+interface PersistedSubagentReviveContext {
 	session: AgentSession;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;

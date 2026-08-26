@@ -1,10 +1,10 @@
 import type { AuthStorage, OAuthAccess } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 
-export const PERPLEXITY_CHAT_BASE_URL = "https://api.perplexity.ai";
-export const PERPLEXITY_RESPONSES_BASE_URL = "https://api.perplexity.ai/v1";
-export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-export const OAUTH_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const PERPLEXITY_CHAT_BASE_URL = "https://api.perplexity.ai";
+const PERPLEXITY_RESPONSES_BASE_URL = "https://api.perplexity.ai/v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const OAUTH_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 export interface ApiConfig {
 	type: "api_key";
@@ -16,7 +16,7 @@ export interface ApiConfig {
 	useResponses: boolean;
 }
 
-export type PerplexityAuth =
+type PerplexityAuth =
 	| ApiConfig
 	| {
 			type: "oauth";
@@ -30,13 +30,13 @@ export type PerplexityAuth =
 			type: "anonymous";
 	  };
 
-export interface PerplexityAuthOptions {
+interface PerplexityAuthOptions {
 	signal?: AbortSignal;
 	forceRefresh?: boolean;
 }
 
 /** Detect API-key endpoints to try in priority order (Perplexity direct, then OpenRouter). */
-export async function getApiConfigs(
+async function getApiConfigs(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
 	options?: PerplexityAuthOptions,
@@ -87,7 +87,7 @@ export async function getApiConfigs(
  * token has no `exp` (which is the common case — Perplexity sessions are
  * server-side and effectively non-expiring from the client's POV).
  */
-export function jwtExpiryMs(token: string): number | undefined {
+function jwtExpiryMs(token: string): number | undefined {
 	const parts = token.split(".");
 	if (parts.length !== 3) return undefined;
 	const payload = parts[1];

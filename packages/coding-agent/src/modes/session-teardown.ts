@@ -12,7 +12,7 @@
 import { logger, type postmortem } from "@oh-my-pi/pi-utils";
 
 /** Dependencies the teardown captures at construction time. */
-export interface SessionTeardownDeps {
+interface SessionTeardownDeps {
 	/** Snapshot the current editor text; called once, before disposal touches session state. */
 	getDraftText: () => string;
 	/**

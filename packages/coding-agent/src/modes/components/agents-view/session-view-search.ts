@@ -12,7 +12,7 @@ export interface ParsedSearchQuery {
 	error?: string;
 }
 
-export interface MatchResult {
+interface MatchResult {
 	matches: boolean;
 	/** Lower is better; only meaningful when matches === true */
 	score: number;
@@ -20,11 +20,6 @@ export interface MatchResult {
 
 function normalizeWhitespaceLower(text: string): string {
 	return text.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-/** Join arbitrary session fields into the common search corpus. */
-export function createSessionSearchText(parts: readonly (string | undefined | null)[]): string {
-	return parts.filter(part => typeof part === "string" && part.length > 0).join(" ");
 }
 
 export function parseSearchQuery(query: string): ParsedSearchQuery {
@@ -230,9 +225,4 @@ export function matchSearchText(text: string, parsed: ParsedSearchQuery): MatchR
 	}
 
 	return { matches: true, score: totalScore };
-}
-
-export function matchesSearchText(text: string, query: string): boolean {
-	const parsed = parseSearchQuery(query);
-	return !parsed.error && matchSearchText(text, parsed).matches;
 }

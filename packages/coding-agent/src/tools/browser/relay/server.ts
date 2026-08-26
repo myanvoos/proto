@@ -15,7 +15,7 @@
 import { RelayBridge } from "./bridge";
 
 /** Options for {@link startRelayServer}. */
-export interface RelayServerOptions {
+interface RelayServerOptions {
 	port: number;
 	/** Shared secret the extension must present as `?token=`; unset disables the check. */
 	token?: string;

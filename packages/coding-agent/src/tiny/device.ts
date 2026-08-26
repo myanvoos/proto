@@ -3,7 +3,7 @@ import { $env } from "@oh-my-pi/pi-utils";
 
 export type TinyModelDevice = DeviceType;
 
-export interface TinyModelDevicePreference {
+interface TinyModelDevicePreference {
 	device: TinyModelDevice;
 	raw: string | undefined;
 }

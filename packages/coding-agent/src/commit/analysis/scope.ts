@@ -26,7 +26,7 @@ const PLACEHOLDER_DIRS = new Set([
 
 const SKIP_DIRS = new Set(["test", "tests", "benches", "examples", "target", "build", "node_modules", ".github"]);
 
-export interface ScopeCandidatesResult {
+interface ScopeCandidatesResult {
 	scopeCandidates: string;
 	isWide: boolean;
 }

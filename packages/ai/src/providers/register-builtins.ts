@@ -5,10 +5,6 @@
  * This avoids eagerly importing heavy SDK dependencies (e.g., openai) at
  * startup. The loaded module promise is cached so subsequent calls
  * reuse the same import.
- *
- * NOTE: stream.ts currently imports providers directly, so this file is not yet
- * wired into the main streaming path. It provides the infrastructure for lazy
- * loading that can be integrated when stream.ts is refactored.
  */
 
 import type { CompatOf } from "@oh-my-pi/pi-catalog/types";

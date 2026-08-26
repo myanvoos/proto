@@ -32,7 +32,7 @@ export interface AgentsViewRecord {
 	searchableText: string;
 }
 
-export type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent" | "subagent-code";
+type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent" | "subagent-code";
 
 // Hard cap on spawn-task lines shown so a large assignment never floods the view.
 const MAX_SPAWN_TASK_LINES = 10;
@@ -157,7 +157,7 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 }
 
 /** Classify a merged record into Running / Idle / Inactive. */
-export function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref">): AgentsViewSection {
+function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref">): AgentsViewSection {
 	if (!record.ref) return "inactive";
 	switch (record.ref.status) {
 		case "running":
@@ -446,7 +446,7 @@ export function getRecordTitle(record: AgentsViewRecord): string {
 	return "(no messages)";
 }
 
-export function getStatusLabel(record: AgentsViewRecord): string {
+function getStatusLabel(record: AgentsViewRecord): string {
 	const ref = record.ref;
 	if (ref?.activity) return ref.activity;
 	if (ref) {
@@ -528,16 +528,6 @@ export interface AgentsViewScopeFrame {
 	identity: string;
 	/** Title captured when the frame was pushed, so the header survives refreshes. */
 	rootTitle: string;
-}
-
-/** Push a scope frame; re-pushing the current top replaces it. */
-export function transitionAgentsViewScope(
-	frames: readonly AgentsViewScopeFrame[],
-	frame: AgentsViewScopeFrame,
-): AgentsViewScopeFrame[] {
-	const top = frames.at(-1);
-	if (top?.identity === frame.identity) return [...frames.slice(0, -1), frame];
-	return [...frames, frame];
 }
 
 /** Drop frames whose root record vanished; keeps the deepest surviving chain. */

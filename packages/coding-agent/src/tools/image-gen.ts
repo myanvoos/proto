@@ -47,7 +47,8 @@ const IMAGE_SYSTEM_INSTRUCTION =
 	"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.";
 
 export type { ImageProvider } from "./image-providers";
-export type ImageProviderPreference = ImageProvider | "auto";
+
+type ImageProviderPreference = ImageProvider | "auto";
 
 interface ImageApiKey {
 	provider: ImageProvider;
@@ -60,7 +61,6 @@ const COMMON_IMAGE_ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"] as cons
 const XAI_IMAGE_ASPECT_RATIOS = [...COMMON_IMAGE_ASPECT_RATIOS, "3:2", "2:3"] as const;
 const COMMON_IMAGE_ASPECT_RATIO_SET = new Set<string>(COMMON_IMAGE_ASPECT_RATIOS);
 const IMAGE_PROVIDER_REQUEST_CHOICES = ["auto", ...AUTO_IMAGE_PROVIDER_ORDER] as const;
-const IMAGE_PROVIDER_PREFERENCES = new Set<string>(IMAGE_PROVIDER_REQUEST_CHOICES);
 
 const responseModalitySchema = type('"IMAGE" | "TEXT"');
 
@@ -77,7 +77,7 @@ const imageProviderSchema = type
 	.enumerated(...IMAGE_PROVIDER_REQUEST_CHOICES)
 	.describe("image provider for this request; overrides the providers.imageOrder setting (default: use the setting)");
 
-export const imageGenSchema = type({
+const imageGenSchema = type({
 	subject: type("string").describe("main subject"),
 	"action?": type("string").describe("what subject is doing"),
 	"scene?": type("string").describe("location or environment"),
@@ -91,8 +91,8 @@ export const imageGenSchema = type({
 	"input?": inputImageSchema.array().describe("input images"),
 	"provider?": imageProviderSchema,
 });
-export type ImageGenParams = typeof imageGenSchema.infer;
-export type GeminiResponseModality = typeof responseModalitySchema.infer;
+type ImageGenParams = typeof imageGenSchema.infer;
+type GeminiResponseModality = typeof responseModalitySchema.infer;
 
 /**
  * Assembles a structured prompt from the provided parameters.
@@ -442,10 +442,6 @@ function extractOpenRouterImageUrls(message: OpenRouterMessage | undefined): str
 
 /** Configured provider priority set via `providers.imageOrder` (default: none). */
 let configuredImageProviderOrder: readonly ImageProvider[] = [];
-
-export function isImageProviderPreference(value: unknown): value is ImageProviderPreference {
-	return typeof value === "string" && IMAGE_PROVIDER_PREFERENCES.has(value);
-}
 
 /** Set the configured image-provider priority from settings; invalid IDs are dropped. */
 export function setImageProviderOrder(providers: readonly string[]): void {

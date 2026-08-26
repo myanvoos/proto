@@ -8,7 +8,7 @@
 import { type BashInterceptorRule, DEFAULT_BASH_INTERCEPTOR_RULES } from "../config/settings-schema";
 import { extractFlatShellCommandSegments } from "./shell-tokenize";
 
-export interface InterceptionResult {
+interface InterceptionResult {
 	/** If true, the bash command should be blocked */
 	block: boolean;
 	/** Error message to return instead of executing */

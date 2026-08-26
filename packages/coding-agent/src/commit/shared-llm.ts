@@ -19,7 +19,7 @@ const detailItem = t({
 	"user_visible?": "boolean",
 });
 
-export const conventionalAnalysisParameters = t({
+const conventionalAnalysisParameters = t({
 	type: "'feat' | 'fix' | 'refactor' | 'docs' | 'test' | 'chore' | 'style' | 'perf' | 'build' | 'ci' | 'revert'",
 	scope: t("string").or("null"),
 	details: detailItem.array(),

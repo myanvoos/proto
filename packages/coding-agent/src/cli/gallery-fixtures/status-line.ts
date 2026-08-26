@@ -63,7 +63,6 @@ function renderFootlineVariant(tokens: number, width: number): string {
 	component.updateSettings({
 		leftSegments: ["model", "mode", "path", "git", "context_pct"],
 		rightSegments: ["session_name"],
-		sessionAccent: false,
 	});
 	try {
 		return component.renderQuietLine(width, { previewTitle: "gallery" }) ?? "";

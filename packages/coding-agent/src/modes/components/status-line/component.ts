@@ -354,7 +354,6 @@ export class StatusLineComponent implements Component {
 			separator: settings.get("statusLine.separator"),
 			showHookStatus: settings.get("statusLine.showHookStatus"),
 			segmentOptions: settings.getGroup("statusLine").segmentOptions,
-			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 		};

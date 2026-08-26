@@ -32,11 +32,11 @@ import type {
 } from "./gh-types";
 import { ToolError } from "./tool-errors";
 
-export const SEARCH_LIMIT_DEFAULT = 10;
-export const SEARCH_LIMIT_MAX = 50;
+const SEARCH_LIMIT_DEFAULT = 10;
+const SEARCH_LIMIT_MAX = 50;
 export const FILE_PREVIEW_LIMIT = 50;
 
-export function resolveSearchLimit(value: number | undefined): number {
+function resolveSearchLimit(value: number | undefined): number {
 	if (value === undefined) {
 		return SEARCH_LIMIT_DEFAULT;
 	}
@@ -48,9 +48,9 @@ export function resolveSearchLimit(value: number | undefined): number {
 	return Math.min(Math.floor(value), SEARCH_LIMIT_MAX);
 }
 
-export const RELATIVE_DURATION_PATTERN = /^(\d+)\s*(m|h|d|w|mo|y)$/i;
-export const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-export const FIXED_UNIT_MS: Record<string, number> = {
+const RELATIVE_DURATION_PATTERN = /^(\d+)\s*(m|h|d|w|mo|y)$/i;
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const FIXED_UNIT_MS: Record<string, number> = {
 	m: 60_000,
 	h: 3_600_000,
 	d: 86_400_000,
@@ -128,7 +128,7 @@ export function buildSearchDateQualifier(
 	return undefined;
 }
 
-export function resolveSearchDateField(
+function resolveSearchDateField(
 	command: "issues" | "prs" | "commits" | "repos",
 	requested: "created" | "updated" | undefined,
 ): string {
@@ -142,7 +142,7 @@ export function resolveSearchDateField(
 	return dateField;
 }
 
-export function composeSearchQuery(parts: ReadonlyArray<string | undefined>): string {
+function composeSearchQuery(parts: ReadonlyArray<string | undefined>): string {
 	const cleaned: string[] = [];
 	for (const part of parts) {
 		const trimmed = part?.trim();
@@ -154,7 +154,7 @@ export function composeSearchQuery(parts: ReadonlyArray<string | undefined>): st
 	return cleaned.join(" ");
 }
 
-export function buildGhApiSearchArgs(
+function buildGhApiSearchArgs(
 	endpoint: "issues" | "code" | "commits" | "repositories",
 	query: string,
 	limit: number,
@@ -167,12 +167,12 @@ export function buildGhApiSearchArgs(
 	return args;
 }
 
-export function repoFromRepositoryUrl(value: string | undefined): string | undefined {
+function repoFromRepositoryUrl(value: string | undefined): string | undefined {
 	if (!value?.startsWith(REPO_API_URL_PREFIX)) return undefined;
 	return value.slice(REPO_API_URL_PREFIX.length);
 }
 
-export function apiUserToGhUser(user: GhApiUser | null | undefined): GhUser | undefined {
+function apiUserToGhUser(user: GhApiUser | null | undefined): GhUser | undefined {
 	if (!user) return undefined;
 	const login = user.login ?? undefined;
 	const name = user.name ?? undefined;
@@ -180,11 +180,11 @@ export function apiUserToGhUser(user: GhApiUser | null | undefined): GhUser | un
 	return { login, name };
 }
 
-export function apiLabelsToGhLabels(labels: GhApiLabel[] | undefined): GhLabel[] {
+function apiLabelsToGhLabels(labels: GhApiLabel[] | undefined): GhLabel[] {
 	return labels?.map(label => ({ name: label.name })) ?? [];
 }
 
-export function apiIssueToSearchResult(item: GhApiSearchIssueItem): GhSearchResult {
+function apiIssueToSearchResult(item: GhApiSearchIssueItem): GhSearchResult {
 	const merged = Boolean(item.pull_request?.merged_at);
 	return {
 		author: apiUserToGhUser(item.user) ?? null,
@@ -199,7 +199,7 @@ export function apiIssueToSearchResult(item: GhApiSearchIssueItem): GhSearchResu
 	};
 }
 
-export function apiCodeToSearchResult(item: GhApiSearchCodeItem): GhSearchCodeResult {
+function apiCodeToSearchResult(item: GhApiSearchCodeItem): GhSearchCodeResult {
 	return {
 		path: item.path,
 		repository: { nameWithOwner: item.repository?.full_name },
@@ -209,7 +209,7 @@ export function apiCodeToSearchResult(item: GhApiSearchCodeItem): GhSearchCodeRe
 	};
 }
 
-export function apiCommitToSearchResult(item: GhApiSearchCommitItem): GhSearchCommitResult {
+function apiCommitToSearchResult(item: GhApiSearchCommitItem): GhSearchCommitResult {
 	return {
 		author: apiUserToGhUser(item.author) ?? null,
 		commit: item.commit
@@ -227,7 +227,7 @@ export function apiCommitToSearchResult(item: GhApiSearchCommitItem): GhSearchCo
 	};
 }
 
-export function apiRepoToSearchResult(item: GhApiSearchRepoItem): GhSearchRepoResult {
+function apiRepoToSearchResult(item: GhApiSearchRepoItem): GhSearchRepoResult {
 	return {
 		createdAt: item.created_at,
 		description: item.description,
@@ -254,7 +254,7 @@ export function apiRepoToSearchResult(item: GhApiSearchRepoItem): GhSearchRepoRe
  * Only the leading `repo:`/`org:`/`user:`/`owner:` token is treated as a
  * scope marker; arbitrary substrings (e.g. inside quoted text) are ignored.
  */
-export const REPO_SCOPE_QUALIFIER_PATTERN = /(?:^|\s)-?(?:repo|org|user|owner):\S/i;
+const REPO_SCOPE_QUALIFIER_PATTERN = /(?:^|\s)-?(?:repo|org|user|owner):\S/i;
 
 /**
  * Resolve the effective `repo:` scope for a search op. Returns the explicit
@@ -264,7 +264,7 @@ export const REPO_SCOPE_QUALIFIER_PATTERN = /(?:^|\s)-?(?:repo|org|user|owner):\
  * configured remote) silently fall back to `undefined` so the search proceeds
  * across all of GitHub instead of throwing.
  */
-export async function resolveSearchRepoScope(
+async function resolveSearchRepoScope(
 	cwd: string,
 	repo: string | undefined,
 	query: string | undefined,
@@ -306,7 +306,7 @@ export function formatSearchResults(
 	return lines.join("\n").trim();
 }
 
-export function formatSearchCodeResults(query: string, repo: string | undefined, items: GhSearchCodeResult[]): string {
+function formatSearchCodeResults(query: string, repo: string | undefined, items: GhSearchCodeResult[]): string {
 	const lines: string[] = [`# GitHub code search`, "", `Query: ${query}`];
 	pushLine(lines, "Repository", repo);
 	pushLine(lines, "Results", items.length);
@@ -332,17 +332,13 @@ export function formatSearchCodeResults(query: string, repo: string | undefined,
 	return lines.join("\n").trim();
 }
 
-export function formatSearchCommitMessage(message: string | undefined): string | undefined {
+function formatSearchCommitMessage(message: string | undefined): string | undefined {
 	if (!message) return undefined;
 	const firstLine = normalizeText(message).split("\n", 1)[0];
 	return firstLine || undefined;
 }
 
-export function formatSearchCommitsResults(
-	query: string,
-	repo: string | undefined,
-	items: GhSearchCommitResult[],
-): string {
+function formatSearchCommitsResults(query: string, repo: string | undefined, items: GhSearchCommitResult[]): string {
 	const lines: string[] = [`# GitHub commits search`, "", `Query: ${query}`];
 	pushLine(lines, "Repository", repo);
 	pushLine(lines, "Results", items.length);
@@ -367,7 +363,7 @@ export function formatSearchCommitsResults(
 	return lines.join("\n").trim();
 }
 
-export function formatSearchReposResults(query: string, items: GhSearchRepoResult[]): string {
+function formatSearchReposResults(query: string, items: GhSearchRepoResult[]): string {
 	const lines: string[] = [`# GitHub repositories search`, "", `Query: ${query}`];
 	pushLine(lines, "Results", items.length);
 
