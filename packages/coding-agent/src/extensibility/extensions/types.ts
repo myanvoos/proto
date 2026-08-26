@@ -9,7 +9,6 @@
  */
 
 import type { type as ArkType } from "@oh-my-pi/omptype";
-import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type {
 	AgentMessage,
@@ -486,7 +485,7 @@ export interface ExtensionContext {
 
 	/**
 	 * Whether project-local inputs for the current working directory (extensions, settings,
-	 * skills, resources) are trusted. Upstream `@earendil-works/pi-coding-agent` (>=0.79) asks the
+	 * skills, resources) are trusted. Upstream pi-coding-agent (>=0.79) asks the
 	 * user once per directory before loading project-local inputs and exposes the saved decision
 	 * here; extensions written against that API (e.g. Plannotator) feature-detect this method to
 	 * decide whether project-local config is safe to load, and warn when it is absent.
@@ -619,7 +618,7 @@ export type SourceOrigin = "package" | "top-level";
 
 /**
  * Provenance metadata describing where a registered tool came from. Mirrors the
- * `@earendil-works/pi-coding-agent` `SourceInfo` contract so extensions authored
+ * pi-coding-agent `SourceInfo` contract so extensions authored
  * against upstream pi (e.g. gentle-pi) can read `sourceInfo.source` unchanged.
  */
 export interface SourceInfo {
@@ -1114,9 +1113,6 @@ export interface ExtensionAPI {
 
 	/** File logger for error/warning/debug messages */
 	logger: typeof PiLogger;
-
-	/** Injected TypeBox shim for legacy `Type.Object(...)` parameter authoring. */
-	typebox: typeof TypeBox;
 
 	/** Injected omptype schema builder for extension tools. */
 	arktype: typeof ArkType;

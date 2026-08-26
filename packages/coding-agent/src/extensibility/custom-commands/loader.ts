@@ -14,7 +14,6 @@ import { getConfigDirs } from "../../config";
 import { execCommand } from "../../exec/exec";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
-import * as typebox from "../legacy-typebox";
 import { ReviewCommand } from "./bundled/review";
 import type {
 	CustomCommand,
@@ -181,7 +180,6 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 		cwd,
 		exec: (command: string, args: string[], execOptions) =>
 			execCommand(command, args, execOptions?.cwd ?? cwd, execOptions),
-		typebox,
 		arktype,
 		zod,
 		pi: PiCodingAgent,

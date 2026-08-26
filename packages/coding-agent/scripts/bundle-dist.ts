@@ -12,14 +12,14 @@ const shebang = "#!/usr/bin/env bun\n";
 const legacyHtmlExportAssetPattern = /^(?:template-[^.]+\.(?:css|html|js)|tool-views\.generated-[^.]+\.js)$/;
 
 // Native / optional / platform-specific deps are loaded from installed files.
-// `omp-legacy-pi-modules` exists only in compiled binaries via the build plugin;
+// `proto-host-modules` exists only in compiled binaries via the build plugin;
 // the npm bundle never executes that `isCompiledBinary()` branch.
 const ALWAYS_EXTERNAL = [
 	"@oh-my-pi/pi-natives",
 	"@huggingface/transformers",
 	"fastembed",
 	"onnxruntime-node",
-	"proto-legacy-pi-modules",
+	"proto-host-modules",
 ];
 
 // Heavy, lazily-used third-party leaf deps. Each is a declared `dependency`, so the

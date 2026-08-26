@@ -85,7 +85,7 @@ export interface RetryPolicy {
 Large restructure — MATCH, `»`, final text:
 ```text
 §src/render.ts
-function legacyPipeline(input: Frame): Frame {
+function previousPipeline(input: Frame): Frame {
 	const staged = stage(input);
 	return commit(staged);
 }

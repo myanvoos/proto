@@ -30,8 +30,7 @@ import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import { EventBus } from "../../utils/event-bus";
-import * as TypeBox from "../legacy-typebox";
-import { installLegacyPiSpecifierShim, loadLegacyPiModule } from "../plugins/legacy-pi-compat";
+import { installHostModuleResolution, loadHostModule } from "../plugins/host-module-compat";
 import { getAllPluginExtensionPaths } from "../plugins/loader";
 
 import { resolvePath, withHostGuard } from "../utils";
@@ -50,7 +49,7 @@ import type {
 	ToolInfo,
 } from "./types";
 
-installLegacyPiSpecifierShim();
+installHostModuleResolution();
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 type LoadedExtensionModule = ExtensionFactory | { default?: ExtensionFactory };
@@ -151,7 +150,6 @@ export class ExtensionRuntime implements IExtensionRuntime {
  */
 class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	readonly logger = logger;
-	readonly typebox = TypeBox;
 	readonly arktype = type;
 	readonly zod = zod;
 	readonly flagValues = new Map<string, boolean | string>();
@@ -371,9 +369,8 @@ interface ImportedExtensionModule {
 async function importExtensionModule(extensionPath: string, cwd: string): Promise<ImportedExtensionModule> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
-		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
+		const module = (await withHostGuard(() => loadHostModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
-
 		if (typeof factory !== "function") {
 			return {
 				factory: null,

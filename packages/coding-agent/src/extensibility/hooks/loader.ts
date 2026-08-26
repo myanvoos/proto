@@ -11,7 +11,6 @@ import { loadCapability } from "../../discovery";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
-import * as typebox from "../legacy-typebox";
 import { resolvePath, withHostGuard } from "../utils";
 import { execCommand } from "./runner";
 import type { ExecOptions, HookAPI, HookFactory, HookMessageRenderer, RegisteredCommand } from "./types";
@@ -121,7 +120,6 @@ async function createHookAPI(
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 		logger,
-		typebox,
 		arktype: type,
 		zod,
 		pi: PiCodingAgent,

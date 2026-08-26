@@ -464,7 +464,7 @@ export class SessionTools {
 	 *
 	 * Backs the `getAllTools()` ExtensionAPI method. Returns {@link ToolInfo}
 	 * objects (not bare names) so extensions authored against upstream
-	 * `@earendil-works/pi-coding-agent` — which promises `ToolInfo[]` — can read
+	 * pi-coding-agent — which promises `ToolInfo[]` — can read
 	 * `sourceInfo.source` unchanged.
 	 */
 	getAllToolInfos(): ToolInfo[] {

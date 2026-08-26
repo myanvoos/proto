@@ -1,5 +1,5 @@
 import { buildDocsIndexPayload } from "./generate-docs-index";
-import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
+import { createHostVirtualModulePlugin } from "./host-virtual-module";
 
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
 export const COMPILED_EXTERNAL_DEPENDENCIES: readonly string[] = Object.freeze(["fastembed", "onnxruntime-node"]);
@@ -25,8 +25,8 @@ export interface CodingAgentCompileOptions {
 }
 
 /**
- * Compile the coding-agent executable with its legacy Pi compatibility module
- * graph supplied by an in-memory build plugin rather than generated files.
+ * Compile the coding-agent executable with its host module registry supplied
+ * by an in-memory build plugin rather than generated files.
  */
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
@@ -47,7 +47,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
 			},
-			plugins: [await createLegacyPiVirtualModulePlugin()],
+			plugins: [await createHostVirtualModulePlugin()],
 			compile: {
 				...(options.executablePath
 					? { executablePath: options.executablePath }

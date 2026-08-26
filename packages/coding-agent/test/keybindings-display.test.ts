@@ -4,8 +4,6 @@ import {
 	KeybindingsManager,
 	setKeyHintPlatform,
 } from "@oh-my-pi/pi-coding-agent/config/keybindings";
-import { keyText } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
-import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
 
 describe("KeybindingsManager.getDisplayString", () => {
 	beforeEach(() => setKeyHintPlatform("linux"));
@@ -61,26 +59,6 @@ describe("KeybindingsManager.getDisplayString", () => {
 
 		expect(keybindings.getDisplayString("app.display.reset")).toBe("Alt+L");
 		expect(keybindings.getDisplayString("app.clipboard.pasteImage")).toBe("Ctrl+V/Super+V");
-	});
-});
-
-describe("legacy keyText", () => {
-	let previous: TuiKeybindingsManager;
-
-	beforeEach(() => {
-		previous = getKeybindings();
-		setKeyHintPlatform("linux");
-	});
-
-	afterEach(() => {
-		setKeybindings(previous);
-		setKeyHintPlatform(undefined);
-	});
-
-	it("formats the active binding for legacy extensions", () => {
-		setKeybindings(KeybindingsManager.inMemory({ "app.tools.expand": "alt+e" }));
-
-		expect(keyText("app.tools.expand")).toBe("Alt+E");
 	});
 });
 

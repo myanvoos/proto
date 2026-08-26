@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
-describe("issue #5879: legacy provider compatibility", () => {
+describe("issue #5879: extension-triggered agent database creation", () => {
 	it("creates a fresh agent database while loading historical auth exports", async () => {
 		const projectDir = TempDir.createSync("@issue-5879-");
 		const freshAgentDir = projectDir.join("fresh", "agent");
@@ -16,8 +16,8 @@ describe("issue #5879: legacy provider compatibility", () => {
 		await Bun.write(
 			extensionPath,
 			[
-				'import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";',
-				'import { AuthStorage } from "@earendil-works/pi-coding-agent";',
+				'import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";',
+				'import { AuthStorage } from "@oh-my-pi/pi-coding-agent";',
 				"",
 				"export default function() {",
 				"\tconst stream = createAssistantMessageEventStream();",

@@ -17,7 +17,6 @@ import type { HookUIContext } from "../../extensibility/hooks/types";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
-import * as typebox from "../legacy-typebox";
 import { createNoOpUIContext, resolvePath, withHostGuard } from "../utils";
 import type { CustomToolAPI, CustomToolFactory, LoadedCustomTool, ToolLoadError } from "./types";
 
@@ -147,7 +146,6 @@ export class CustomToolLoader {
 			ui: createNoOpUIContext(),
 			hasUI: false,
 			logger,
-			typebox,
 			arktype: type,
 			zod,
 			pi,

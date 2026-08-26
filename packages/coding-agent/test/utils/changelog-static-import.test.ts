@@ -100,7 +100,6 @@ describe("changelog static import resources", () => {
 				entrypoints: [bundleProbePath],
 				outdir: bundleDir,
 				target: "bun",
-				external: ["proto-legacy-pi-modules"],
 				plugins: [changelogUtilsStubPlugin()],
 			});
 			expect(buildOutput.success, buildOutput.logs.map(log => log.message).join("\n")).toBe(true);
@@ -133,7 +132,6 @@ describe("changelog static import resources", () => {
 			const buildOutput = await Bun.build({
 				entrypoints: [bundleProbePath],
 				root: repoRoot,
-				external: ["proto-legacy-pi-modules"],
 				plugins: [changelogUtilsStubPlugin()],
 				compile: {
 					outfile: binaryPath,

@@ -197,13 +197,10 @@
       "types": "./src/config/*.ts",
       "import": "./src/config/*.ts"
     },
-    "./dap": {
-      "types": "./src/dap/index.ts",
-      "import": "./src/dap/index.ts"
-    },
-    "./dap/*": {
-      "types": "./src/dap/*.ts",
-      "import": "./src/dap/*.ts"
+    "./*.js": "./src/*.ts",
+    "./web/search/providers/*": {
+      "types": "./src/web/search/providers/*.ts",
+      "import": "./src/web/search/providers/*.ts"
     },
     "./debug/*": {
       "types": "./src/debug/*.ts",
@@ -509,11 +506,6 @@
     "./web/search/*": {
       "types": "./src/web/search/*.ts",
       "import": "./src/web/search/*.ts"
-    },
-    "./web/search/providers/*": {
-      "types": "./src/web/search/providers/*.ts",
-      "import": "./src/web/search/providers/*.ts"
-    },
-    "./*.js": "./src/*.ts"
+    }
   }
 }

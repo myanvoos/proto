@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Breaking Changes
+- Removed the legacy Pi specifier shim for extensions and plugins: old third-party package names (`@badlogic/pi-*` and other pre-rename scopes) are no longer aliased, while current `@oh-my-pi/*` imports continue to resolve to the running host's modules; extensions must import current package names.
 - Dropped Windows support: no Windows binary, npm artifact, or installer is published anymore (`install.ps1` removed), and Windows-only code paths are gone — TUI console/codepage and ConPTY input handling, Windows spawn/console-probe options, `ProjFS`/`block-clone` isolation backends, PowerShell profile detection for `proto profile`, and Windows case-insensitive path/env special-casing. Linux and macOS behavior is unchanged; SSH sessions to Windows hosts keep working.
 - Removed the built-in long-term memory system: the `off`/`local`/Hindsight/Mnemopi backends (`memory.backend`), the `retain`, `recall`, `reflect`, `memory_edit`, and `learn` tools, the `memory://` internal URL scheme and `/memory` slash command, all `mnemopi.*`/`hindsight.*`/`memory.*`/`memories.*` settings, the extension-API `memory` runtime context, and the `@oh-my-pi/pi-mnemopi` dependency. Data previously written under the agent memories directory is simply no longer read.
 

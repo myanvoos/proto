@@ -6,7 +6,6 @@
  */
 
 import type { type as ArkType } from "@oh-my-pi/omptype";
-import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type { AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
@@ -59,8 +58,6 @@ export interface CustomToolAPI {
 	hasUI: boolean;
 	/** File logger for error/warning/debug messages */
 	logger: typeof PiLogger;
-	/** Injected typebox shim (legacy/compat — arktype-authored tools are preferred). */
-	typebox: typeof TypeBox;
 	/** Injected arktype module for arktype-authored custom tools. */
 	arktype: typeof ArkType;
 	/** Injected Zod-compatible omptype builder for custom tools. */
