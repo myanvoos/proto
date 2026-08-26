@@ -26,7 +26,7 @@ function bulletList(items: number): string {
 		lines.push(
 			`- \`packages/tui/src/components/markdown_component_${i}.ts\` handles the ` +
 				`stable_prefix_freeze_path_${i} and re-lexes only the unfrozen tail, see ` +
-				`https://github.com/can1357/oh-my-pi/issues/${1000 + i} for details on token_${i}.`,
+				`https://proto.sh${1000 + i} for details on token_${i}.`,
 		);
 	}
 	return `${lines.join("\n")}\n\n`;

@@ -1,6 +1,6 @@
 // PoC: evaluate which candidate fix prevents advisor full-transcript replays.
 // Scenarios reproduce the production triggers observed in the live session
-// (omp 17.2.2, omp-cop-sticky / gpt-5.6-terra):
+// (proto 17.2.2, proto-cop-sticky / gpt-5.6-terra):
 //   A. delivered message replaced by a clone differing only in unrendered
 //      fields (timestamp/usage)  -> full-JSON fingerprint mismatch
 //   B. delivered message content rewritten to a `[shaken ...]` placeholder

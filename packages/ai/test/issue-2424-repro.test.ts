@@ -9,7 +9,7 @@
  * `/oauth/token`. When the overrides are absent, the bundled defaults remain
  * in effect.
  *
- * @see https://github.com/can1357/oh-my-pi/issues/2424
+ * @see https://proto.sh
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { loginGitLabDuo, refreshGitLabDuoToken } from "@oh-my-pi/pi-ai/registry/oauth/gitlab-duo";

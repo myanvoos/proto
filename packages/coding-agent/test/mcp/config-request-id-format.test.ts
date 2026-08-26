@@ -8,7 +8,7 @@
  * transports read. A field missing from either step silently degrades to the
  * snowflake-string default, which is the hang the option exists to avoid.
  *
- * Both OMP-native loaders are covered: `.omp/mcp.json` (native provider) and a
+ * Both PROTO-native loaders are covered: `.proto/mcp.json` (native provider) and a
  * standalone project-root `.mcp.json` (mcp-json provider).
  *
  * Separately, `isSameMCPConnection` treats two differently-named entries with the

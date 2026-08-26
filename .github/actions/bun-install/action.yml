@@ -2,8 +2,8 @@ name: "bun install (shared cache)"
 description: >
    Ensure bun is on PATH, then run `bun install --frozen-lockfile` with a shared
    package store. bun setup is skipped when the runner image already ships it
-   (the preloaded omp-kata image), and only fetched on runners that lack it
-   (e.g. GitHub-hosted). Self-hosted omp-kata runners use the mounted Bun store
+   (the preloaded proto-kata image), and only fetched on runners that lack it
+   (e.g. GitHub-hosted). Self-hosted proto-kata runners use the mounted Bun store
    PVC; GitHub-hosted runners use the stock actions/cache backend.
 
 runs:
@@ -13,7 +13,7 @@ runs:
         id: env
         shell: bash
         run: |
-           # bun is baked into the omp-kata runner image — only fetch it when the
+           # bun is baked into the proto-kata runner image — only fetch it when the
            # runner doesn't already provide it (GitHub-hosted), so we don't
            # re-download bun from GitHub releases on every job.
            if command -v bun >/dev/null 2>&1; then
@@ -24,7 +24,7 @@ runs:
            fi
            # Infra detection keys "are we on can.internal infra?" off
            # $BAZEL_REMOTE_USER — a legacy-named secret that is envFrom-injected
-           # into every omp-kata runner pod; only its presence is consulted.
+           # into every proto-kata runner pod; only its presence is consulted.
            # RUNNER_ENVIRONMENT is empty on ARC pods, so it is not a usable
            # signal here. On infra, the ARC pod mounts the shared Bun store
            # at the default cache path; off infra, actions/cache restores it.
@@ -62,7 +62,7 @@ runs:
            restore-keys: |
               bun-${{ runner.os }}-
 
-      # On-infra (omp-kata): the pod mounts a shared PVC at bun's store path.
+      # On-infra (proto-kata): the pod mounts a shared PVC at bun's store path.
       - name: Prepare mounted bun store
         if: steps.env.outputs.cache == 'mounted'
         shell: bash
@@ -71,7 +71,7 @@ runs:
       - name: Install dependencies
         shell: bash
         run: |
-           # The shared bun store (mounted PVC on omp-kata, actions/cache
+           # The shared bun store (mounted PVC on proto-kata, actions/cache
            # elsewhere) can hand a job a corrupt or partially written tarball
            # when parallel jobs touch the same cache entry, so `bun install`
            # aborts with `Fail extracting tarball for "<pkg>"`. That blob is

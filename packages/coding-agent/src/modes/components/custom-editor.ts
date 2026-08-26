@@ -326,7 +326,7 @@ export function extractImagePathFromText(text: string): string | undefined {
 
 /**
  * Resolve the {@link EditorTheme} from a `CustomEditor`/`Editor` constructor
- * argument list, tolerating both the omp `(theme)` and upstream-pi
+ * argument list, tolerating both the proto `(theme)` and upstream-pi
  * `(tui, theme, keybindings)` conventions (see {@link CustomEditor}'s
  * constructor). A real `EditorTheme` is identified structurally — it exposes a
  * `borderColor` function and a `symbols` object — so a `TUI` passed in the first
@@ -389,7 +389,7 @@ export class CustomEditor extends Editor {
 
 	/**
 	 * The host {@link TUI}, captured when a plugin constructs this editor through
-	 * the upstream-pi `(tui, theme, keybindings)` convention. Undefined for omp's
+	 * the upstream-pi `(tui, theme, keybindings)` convention. Undefined for proto's
 	 * own `new CustomEditor(theme)` callers (they drive repaints through the
 	 * interactive-mode wiring instead). Plugins that call `this.tui.requestRender()`
 	 * in their overrides read it here (issue #4766).
@@ -397,7 +397,7 @@ export class CustomEditor extends Editor {
 	tui?: TUI;
 
 	/**
-	 * Accept both the omp constructor convention — `new CustomEditor(theme)` —
+	 * Accept both the proto constructor convention — `new CustomEditor(theme)` —
 	 * and the upstream-pi `Editor` convention — `new Editor(tui, theme, keybindings)`
 	 * — that {@link ExtensionUIContext.setEditorComponent}'s factory contract
 	 * advertises `(tui, theme, keybindings)`. Plugins written against upstream pi

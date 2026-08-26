@@ -422,7 +422,7 @@ function extractServerMap(obj: Record<string, unknown>): Record<string, unknown>
  * Resolve where a plugin's MCP servers come from, honoring the manifest's
  * `mcpServers` field before the conventional root `.mcp.json`.
  *
- * `.omp-plugin/plugin.json` takes precedence over `.claude-plugin/plugin.json`.
+ * `.proto-plugin/plugin.json` takes precedence over `.claude-plugin/plugin.json`.
  * The field may be an inline object (the server map itself) or a string path to
  * a config file within the plugin root; a path escaping the root is rejected
  * with a warning. When no manifest declares the field, `<root>/.mcp.json` is the
@@ -532,7 +532,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				continue;
 			}
 			// Two file shapes are supported:
-			//   nested: { "mcpServers": { name: cfg, ... } }   (OMP/Claude Code project shape)
+			//   nested: { "mcpServers": { name: cfg, ... } }   (PROTO/Claude Code project shape)
 			//   flat:   { name: cfg, ... }                      (Claude marketplace plugin shape)
 			if (!isRecord(parsed)) continue;
 			servers = extractServerMap(parsed);

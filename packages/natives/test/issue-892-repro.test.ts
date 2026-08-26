@@ -1,5 +1,5 @@
 /**
- * Repro for https://github.com/can1357/oh-my-pi/issues/892
+ * Repro for https://proto.sh
  *
  * The old CommonJS fix depended on Bun's CJS-to-ESM analyzer statically
  * scanning `module.exports.<Name> = …` assignments. The loader is now ESM,

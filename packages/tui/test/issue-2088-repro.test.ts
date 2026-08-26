@@ -12,7 +12,7 @@ import {
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import { VirtualTerminal } from "./virtual-terminal";
 
-// Regression test for https://github.com/can1357/oh-my-pi/issues/2088
+// Regression test for https://proto.sh
 //
 // Closing a tmux horizontal split widens the surviving pane. SIGWINCH fires
 // on the host process before tmux finishes repainting the pane buffer at

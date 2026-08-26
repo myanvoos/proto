@@ -25,7 +25,7 @@ describe("PI_CONFIG_DIR", () => {
 		};
 		// Native user config follows the active profile through getAgentDir(), not
 		// ctx.home, so it stays in sync with builtin.ts and getMCPConfigPath("user").
-		// The old behavior joined ctx.home + ".omp/agent" and leaked the default
+		// The old behavior joined ctx.home + ".proto/agent" and leaked the default
 		// profile's config into every profile.
 		expect(getUserPath(ctx, "native", "commands")).toBe(path.join(getAgentDir(), "commands"));
 		expect(getUserPath(ctx, "native", "commands")).not.toContain(ctx.home);

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-// Regression coverage for #8897: `omp commit` split-commit captured the staged
+// Regression coverage for #8897: `proto commit` split-commit captured the staged
 // diff with `git diff --cached --binary`, whose stdout is hard-capped at
 // GIT_COMMAND_OUTPUT_LIMIT_BYTES (8 MiB). A single large binary (base85-encoded
 // inline) pushed the diff past the cap; readCappedText silently truncated it and

@@ -125,7 +125,7 @@ function buildRequestsLimits(payload: UmansUsagePayload, provider: string): Usag
 	// authoritative counter — weighted when available, else raw — drives the
 	// single row and CAN exhaust at the limit. Raw burst traffic above the
 	// limit still never drives exhaustion on its own: weighted headroom stays
-	// decisive (https://github.com/can1357/oh-my-pi/issues/7858).
+	// decisive (https://proto.sh).
 	if (weightedUsed === undefined || hardCap === undefined) {
 		const amount = buildAmount({
 			used: weightedUsed ?? rawUsed,
@@ -149,7 +149,7 @@ function buildRequestsLimits(payload: UmansUsagePayload, provider: string): Usag
 	// 0.5), so the weighted counters are the authoritative utilization against
 	// the soft `limit`; the raw counters include burst/superseded traffic and
 	// read as exhausted mid-window while the account still has weighted
-	// headroom (https://github.com/can1357/oh-my-pi/issues/7858). Soft cap hits
+	// headroom (https://proto.sh). Soft cap hits
 	// warn; only the burst ceiling (`hard_cap`, raw counts) can exhaust.
 	const softAmount = buildAmount({ used: weightedUsed, limit, remaining: weightedRemaining, unit: "requests" });
 	const limits: UsageLimit[] = [

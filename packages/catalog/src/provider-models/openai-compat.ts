@@ -410,7 +410,7 @@ async function fetchOllamaNativeModels(
  * Ollama's cloud catalog reports for stock models.
  */
 const OLLAMA_FALLBACK_CONTEXT_WINDOW = 128_000;
-/** Cap max output tokens at a value that matches OMP's other openai-responses defaults. */
+/** Cap max output tokens at a value that matches PROTO's other openai-responses defaults. */
 const OLLAMA_DEFAULT_MAX_TOKENS = 8192;
 
 interface OllamaResolvedMetadata {
@@ -1922,7 +1922,7 @@ export function zhipuCodingPlanModelManagerOptions(
  * deployment, but Kimi K2 (instruct / thinking / turbo) on Fireworks is
  * documented to ship long reasoning traces that should be bounded — capping
  * at 32,768 prevents handing callers a budget the router cannot honor.
- * See https://github.com/can1357/oh-my-pi/issues/1849.
+ * See https://proto.sh
  */
 export const FIREWORKS_KIMI_MAX_TOKENS = 32_768;
 
@@ -3675,7 +3675,7 @@ function toSyntheticStringList(value: unknown): readonly string[] {
 
 /**
  * Translate Synthetic's per-model `reasoning_effort` vocabulary into an effort
- * ladder. Every advertised value that names an OMP tier maps verbatim; `none`
+ * ladder. Every advertised value that names an PROTO tier maps verbatim; `none`
  * is the thinking-off state rather than a tier of its own, so it backs the
  * `minimal` selector through the wire map (same shape as the Fireworks
  * `minimal → none` map) and gives these routes a real no-thinking tier.
@@ -3887,10 +3887,10 @@ export function basetenModelManagerOptions(
 			const features = Array.isArray(raw.supported_features) ? raw.supported_features : [];
 			const modalities = Array.isArray(raw.input_modalities) ? raw.input_modalities : [];
 
-			// Baseten's discovery flags are not enough to enable OMP reasoning for every
+			// Baseten's discovery flags are not enough to enable PROTO reasoning for every
 			// model. Only models with a verified Baseten reasoning policy are enabled
 			// here; an unknown model may use a different reasoning wire shape or effort
-			// vocabulary, which OMP must not guess.
+			// vocabulary, which PROTO must not guess.
 			const isSupportedBasetenReasoningModel =
 				isKimiK3ModelId(defaults.id) ||
 				defaults.id === "openai/gpt-oss-120b" ||

@@ -1,5 +1,5 @@
 /**
- * `omp auth-broker` command handlers.
+ * `proto auth-broker` command handlers.
  *
  * Sub-verbs:
  *   - `serve [--bind=…]` — boots the broker against the local SQLite store.
@@ -124,9 +124,9 @@ async function ensureToken(): Promise<string> {
 }
 
 /**
- * OAuth refresh handler for `omp auth-broker serve`'s {@link AuthStorage}.
+ * OAuth refresh handler for `proto auth-broker serve`'s {@link AuthStorage}.
  *
- * The vault holds provider OAuth rows AND OMP-managed `mcp_oauth:*` rows.
+ * The vault holds provider OAuth rows AND PROTO-managed `mcp_oauth:*` rows.
  * Provider rows refresh through the per-provider registry. MCP rows are
  * self-describing — the embedded token endpoint and client credentials are the
  * only refresh material — so they refresh with a generic `refresh_token` grant.
@@ -154,7 +154,7 @@ export function refreshBrokerOAuthCredential(
 async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	// The broker is a long-running headless service: route structured logs to
 	// stdout so a process supervisor (pm2, journald, k8s) captures them, and
-	// skip the rotating ~/.omp/logs/ file the TUI default would have used.
+	// skip the rotating ~/.proto/logs/ file the TUI default would have used.
 	setLoggerTransports({ console: true, file: false });
 
 	const bind = flags.bind ?? DEFAULT_AUTH_BROKER_BIND;
@@ -260,12 +260,12 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 			onAuth({ url, launchUrl, instructions }) {
 				process.stdout.write("\nOpen this URL in your browser:\n");
 				// Full URL first so the CLI works from any machine, including SSH
-				// sessions where a `launchUrl` (loopback `/launch` on the OMP
+				// sessions where a `launchUrl` (loopback `/launch` on the PROTO
 				// host) would resolve against the caller's browser and fail.
 				// Headless capture is unaffected: it reads the first URL line.
 				process.stdout.write(`${url}\n`);
 				if (launchUrl && launchUrl !== url) {
-					// Local shortcut for the machine running OMP. Terminals or
+					// Local shortcut for the machine running PROTO. Terminals or
 					// screen-scrapers narrower than the full URL still get an
 					// unbroken copy target here.
 					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
@@ -458,7 +458,7 @@ async function runList(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 // ─── CLIProxyAPI import ─────────────────────────────────────────────────
 
 /**
- * Maps the `type` field of a CLIProxyAPI credential JSON to the omp provider id.
+ * Maps the `type` field of a CLIProxyAPI credential JSON to the proto provider id.
  * The filename also encodes the type (e.g. `claude-foo@bar.json`), but the
  * in-file `type` is authoritative — we only fall back to filename if absent.
  */

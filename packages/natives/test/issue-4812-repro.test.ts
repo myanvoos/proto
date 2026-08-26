@@ -1,7 +1,7 @@
 /**
- * Repro for https://github.com/can1357/oh-my-pi/issues/4812
+ * Repro for https://proto.sh
  *
- * A long-lived omp session that survives an in-place `bun install -g` upgrade
+ * A long-lived proto session that survives an in-place `bun install -g` upgrade
  * keeps the previous pi-natives NAPI addon resident in the process. A tab
  * worker spawned afterwards runs the freshly-installed JS loader, which expects
  * the new sentinel (e.g. `__piNativesV16_3_11`), but `require` returns the

@@ -276,7 +276,7 @@ function copilotCustomInstructionDirs(): string[] {
  * GitHub documents this layout for Copilot Agent Skills and matches the
  * non-recursive shape `scanSkillsFromDir` already expects. `requireDescription`
  * is on to match the Agent Skills spec (name + description are mandatory) and
- * the sibling `native`/`omp-plugins` providers.
+ * the sibling `native`/`proto-plugins` providers.
  *
  * @see https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills
  */

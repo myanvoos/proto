@@ -1,5 +1,5 @@
 /**
- * Regression test for `omp plugin config validate` (#9106).
+ * Regression test for `proto plugin config validate` (#9106).
  *
  * `handleConfigValidate` used to enumerate only `PluginManager.list()`, which
  * intentionally omits marketplace runtime packages — so an invalid constrained

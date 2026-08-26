@@ -1,17 +1,17 @@
 /**
  * Regression test for `loadCliExtensionProviders`.
  *
- * One-shot CLIs (`omp bench`, dry-balance) build a bare `ModelRegistry` that
+ * One-shot CLIs (`proto bench`, dry-balance) build a bare `ModelRegistry` that
  * only knows built-in catalog providers. Before the helper existed they never
  * loaded extensions, so a provider contributed by an extension
  * (`pi.registerProvider(...)`, e.g. a custom OpenAI-compatible gateway under
- * `~/.omp/agent/extensions/`) was invisible to model resolution and
- * `omp bench <provider>/<model>` failed with "Model not found".
+ * `~/.proto/agent/extensions/`) was invisible to model resolution and
+ * `proto bench <provider>/<model>` failed with "Model not found".
  *
  * Contract under test: after `loadCliExtensionProviders` drains the extension's
  * provider registrations into the registry, a `provider/id` selector for that
  * extension provider resolves. Discovery is disabled and the extension path is
- * passed explicitly so the test never touches the developer's real `~/.omp`.
+ * passed explicitly so the test never touches the developer's real `~/.proto`.
  */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";

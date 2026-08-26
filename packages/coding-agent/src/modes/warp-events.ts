@@ -55,7 +55,7 @@ export function createWarpEventEmitter(options: WarpEventEmitterOptions): WarpEv
 			const body = {
 				...event,
 				v: WARP_CLI_AGENT_PROTOCOL_VERSION,
-				// Warp resolves this via CLIAgent.command_prefix(); OhMyPi is "omp".
+				// Warp resolves this via CLIAgent.command_prefix(); OhMyPi is "proto".
 				agent: "proto",
 				session_id: options.sessionId,
 				cwd,

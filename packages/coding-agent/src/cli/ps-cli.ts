@@ -1,8 +1,8 @@
 /**
- * CLI handler for `omp ps` — inspect and control processes supervised by the
+ * CLI handler for `proto ps` — inspect and control processes supervised by the
  * daemon broker from outside the harness.
  *
- * A bare `omp ps` on a TTY opens the interactive alt-screen monitor
+ * A bare `proto ps` on a TTY opens the interactive alt-screen monitor
  * (`ps-tui.ts`); `--plain`, `--json`, and non-TTY outputs use the static
  * listing. Actions (`stop`, `kill`, `restart`, `logs`, `info`) connect through
  * the regular client, which revives a dead broker so it can re-adopt detached

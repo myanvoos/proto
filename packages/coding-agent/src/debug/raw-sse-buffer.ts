@@ -3,7 +3,7 @@ import type { Model, ProviderResponseMetadata, RawSseEvent } from "@oh-my-pi/pi-
 const MAX_RAW_SSE_EVENTS = 1_000;
 const MAX_RAW_SSE_CHARS = 512_000;
 const MAX_RAW_SSE_EVENT_CHARS = 64_000;
-// Reserve room for the `: omp-debug-truncated` / `: omp-debug-elided` marker
+// Reserve room for the `: proto-debug-truncated` / `: proto-debug-elided` marker
 // lines so a trimmed event stays within MAX_RAW_SSE_EVENT_CHARS overall.
 const TRIM_MARKER_RESERVE = 200;
 // Caps applied to individual tool entries when compacting a `tools` array
@@ -138,7 +138,7 @@ function compactToolLines(raw: readonly string[]): string[] | null {
 
 // Keeps the first and last portions of an over-budget event and drops the
 // middle, so leading fields (id/model/status) AND trailing fields
-// (usage/finish_reason) both stay visible. A `: omp-debug-elided` comment
+// (usage/finish_reason) both stay visible. A `: proto-debug-elided` comment
 // marks the cut; split lines carry `…` at the cut edge.
 function headTailTrim(lines: string[], budget: number, elidedTotal: number): string[] {
 	const headBudget = budget >> 1;
@@ -190,7 +190,7 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 //   2. over budget → compact tool schemas inside `data:` JSON payloads;
 //      if that alone fits, the payload stays parseable JSON.
 //   3. still over → head+tail trim (middle elided).
-// Any trimmed result ends with the `: omp-debug-truncated` marker carrying
+// Any trimmed result ends with the `: proto-debug-truncated` marker carrying
 // the original size.
 function trimRawLines(raw: string[]): TrimResult {
 	const originalChars = countLines(raw);

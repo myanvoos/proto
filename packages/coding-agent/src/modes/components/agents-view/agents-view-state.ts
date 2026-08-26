@@ -12,7 +12,7 @@
  */
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AgentRef } from "../../../registry/agent-registry";
+import { type AgentRef, MAIN_AGENT_ID } from "../../../registry/agent-registry";
 import type { SessionInfo } from "../../../session/session-listing";
 
 export type AgentsViewSection = "running" | "idle" | "current" | "inactive";
@@ -248,8 +248,15 @@ function parentKeys(record: AgentsViewRecord): string[] {
 	}
 	if (record.session?.parentSessionPath) keys.push(fileIdentity(record.session.parentSessionPath));
 	// `active:<parentId>` last: a parked worker's parentId can be the generic
-	// MAIN_AGENT_ID owner rather than the transcript parent.
-	if (record.ref?.parentId) keys.push(`active:${record.ref.parentId}`);
+	// MAIN_AGENT_ID owner rather than the transcript parent. A MAIN_AGENT_ID
+	// parent never narrows the record into anyone's subtree: the live main ref
+	// answers to that alias, so honoring it would graft unrelated parked
+	// transcripts (any sibling of a seeded nested transcript parks under Main)
+	// onto whatever session is attached — an empty session then reports
+	// phantom children and the scoped browser mounts instead of no-op'ing.
+	if (record.ref?.parentId && record.ref.parentId !== MAIN_AGENT_ID) {
+		keys.push(`active:${record.ref.parentId}`);
+	}
 	return keys;
 }
 

@@ -4,7 +4,7 @@
  * `LocalBlobBackend` runs everything in-process — either a loopback HTTP
  * server behind a tunnel/direct exposure (serve mode) or a push-once uploader
  * (upload mode). The daemon-shared variant in `daemon.ts` implements the same
- * {@link BlobBackend} contract over the project blob daemon so every omp
+ * {@link BlobBackend} contract over the project blob daemon so every proto
  * process reuses one exposure and one URL per blob.
  *
  * Design invariants:

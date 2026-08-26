@@ -1,6 +1,6 @@
 # @oh-my-pi/pi-utils
 
-Shared utilities for [oh-my-pi](https://github.com/can1357/oh-my-pi) packages. Zero ceremony, Bun-first.
+Shared utilities for the proto packages. Zero ceremony, Bun-first.
 
 ## Notable modules
 
@@ -32,5 +32,4 @@ Ships TypeScript source directly (no build step); requires Bun ≥ 1.3.14.
 
 ## References
 
-- [Monorepo README](https://github.com/can1357/oh-my-pi#readme)
 - [CHANGELOG](./CHANGELOG.md)

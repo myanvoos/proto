@@ -1,22 +1,22 @@
 /**
- * Protocol handler for omp:// URLs.
+ * Protocol handler for proto:// URLs.
  *
  * Serves statically embedded documentation files bundled at build time.
  *
  * URL forms:
- * - omp:// - Lists all available documentation files
- * - omp://<file>.md - Reads a specific documentation file
+ * - proto:// - Lists all available documentation files
+ * - proto://<file>.md - Reads a specific documentation file
  */
 import * as path from "node:path";
 import { getDocFilenames, getEmbeddedDoc } from "./docs-index";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 /**
- * Handler for omp:// URLs.
+ * Handler for proto:// URLs.
  *
  * Resolves documentation file names to their content, or lists available docs.
  */
-export class OmpProtocolHandler implements ProtocolHandler {
+export class ProtoProtocolHandler implements ProtocolHandler {
 	readonly scheme = "proto";
 	readonly immutable = true;
 

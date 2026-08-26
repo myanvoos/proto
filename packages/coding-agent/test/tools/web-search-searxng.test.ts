@@ -74,11 +74,11 @@ describe("SearXNG web search provider", () => {
 		};
 
 		await searchSearXNG({
-			query: "site:github.com/can1357/oh-my-pi inurl:releases site:github.com 17.1.1 release",
+			query: "site:proto.sh inurl:releases site:github.com 17.1.1 release",
 			fetch: fetchMock,
 		});
 
-		expect(captured.q).toBe("17.1.1 release github.com/can1357/oh-my-pi releases site:github.com");
+		expect(captured.q).toBe("17.1.1 release proto.sh releases site:github.com");
 	});
 
 	it("maps lang: to the language param and re-emits remaining directives in q", async () => {

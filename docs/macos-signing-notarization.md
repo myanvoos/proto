@@ -3,7 +3,7 @@
 The compiled macOS `proto` binaries shipped on GitHub Releases can be signed with a
 **Developer ID Application** certificate and **notarized** by Apple. This makes
 them Gatekeeper-acceptable and is the prerequisite for an official Homebrew
-submission (see [#776](https://github.com/can1357/oh-my-pi/issues/776)).
+submission (see #776).
 
 Signing happens in CI in the `release_binary_darwin` matrix legs
 (`.github/workflows/ci.yml`), via `scripts/ci-macos-sign.sh`. The workflow step
@@ -101,7 +101,7 @@ over stdin — no secret is ever printed to the terminal, argv, or shell history
 ```sh
 scripts/ci-macos-upload-secrets.sh ~/proto-signing --dry-run   # validate first
 scripts/ci-macos-upload-secrets.sh ~/proto-signing             # upload all five
-gh secret list --repo can1357/oh-my-pi                       # confirm
+gh secret list --repo can1357/proto                       # confirm
 ```
 
 Re-run it whenever the certificate is renewed.

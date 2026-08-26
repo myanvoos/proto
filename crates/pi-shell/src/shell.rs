@@ -5098,7 +5098,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	/// Regression for the `suspended (tty input)` bug: an **interactive child
 	/// inside a pipeline** (`zsh -i ... | awk`) used to stay in the host
 	/// session, open `/dev/tty`, `tcsetpgrp` itself to the foreground, and
-	/// leave the embedded host (OMP) stopped on its next tty read. The earlier
+	/// leave the embedded host (PROTO) stopped on its next tty read. The earlier
 	/// embedded-host fix carved pipelines out of `detach_session` because a
 	/// later stage that `setpgid`-joined a detached leader failed with EPERM.
 	///

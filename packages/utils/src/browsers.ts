@@ -206,7 +206,7 @@ export async function getInstalledBrowsers(options: { cacheDir: string }): Promi
 					}),
 				});
 			} catch {
-				// Other browser products are not part of the surface used by OMP.
+				// Other browser products are not part of the surface used by PROTO.
 			}
 		}
 	}

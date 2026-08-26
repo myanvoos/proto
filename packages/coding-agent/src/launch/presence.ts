@@ -21,18 +21,18 @@ const DAEMONS_DIR = "daemons";
 const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}$/;
 /**
  * Grace before a dead daemon runtime dir becomes prune-eligible. Guards against
- * deleting a scope whose owning omp process is mid-startup (token written, broker
+ * deleting a scope whose owning proto process is mid-startup (token written, broker
  * not yet spawned, presence not yet registered). The leak this reclaims is a
  * weeks-scale accumulation, so a few minutes of slack costs nothing.
  */
 const DAEMON_RUNTIME_STALE_GRACE_MS = 5 * 60_000;
 
-/** Handle keeping one omp process registered in a project daemon scope. */
+/** Handle keeping one proto process registered in a project daemon scope. */
 interface DaemonProjectPresence {
 	close(): Promise<void>;
 }
 
-/** Register this omp process so project daemons survive while it remains alive. */
+/** Register this proto process so project daemons survive while it remains alive. */
 export async function registerDaemonProjectPresence(
 	projectDir: string,
 	runtimeOverride?: string,
@@ -56,7 +56,7 @@ export async function registerDaemonProjectPresence(
 	return { close };
 }
 
-/** Return whether a registered omp process in this runtime directory is still alive. */
+/** Return whether a registered proto process in this runtime directory is still alive. */
 export async function hasLiveDaemonProjectPresence(runtimeDir: string): Promise<boolean> {
 	const clientsDir = path.join(runtimeDir, CLIENTS_DIR);
 	let entries: string[];

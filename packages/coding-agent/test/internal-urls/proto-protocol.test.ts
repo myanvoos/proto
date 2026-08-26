@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 
-describe("OmpProtocolHandler", () => {
+describe("ProtoProtocolHandler", () => {
 	it("treats proto://docs as the documentation root", async () => {
 		const resource = await InternalUrlRouter.instance().resolve("proto://docs");
 

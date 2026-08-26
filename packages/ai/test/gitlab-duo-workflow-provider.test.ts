@@ -215,7 +215,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		const mcpTools = buildGitLabDuoWorkflowMcpTools([...nativeTools, editTool]);
 		// Bare names: the server binds the model schema and matches tool calls under the
 		// exact wire name (no prefix stripping), so the registered name must equal the
-		// bare name OMP's own tool docs use.
+		// bare name PROTO's own tool docs use.
 		expect(mcpTools.map(tool => tool.name)).toEqual(["read", "write", "grep", "glob", "bash", "lsp", "todo", "edit"]);
 		expect(mcpTools[0]).toMatchObject({
 			name: "read",
@@ -275,7 +275,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(agent?.ui_log_events).toContain("on_agent_reasoning");
 		const prompt = flow?.prompts.find(entry => entry.prompt_id === agent?.prompt_id);
 		expect(prompt?.unit_primitives).toEqual(["duo_agent_platform"]);
-		// The system slot carries OMP's real system prompt verbatim — no gateway preamble.
+		// The system slot carries PROTO's real system prompt verbatim — no gateway preamble.
 		expect(prompt?.prompt_template.system).toContain("PROTO authoritative operating rules.");
 		expect(prompt?.prompt_template.user).toBe("{{goal}}");
 		// A single-turn goal is bare text (no ChatML markers), so the history-note that
@@ -354,7 +354,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 
 		expect(payload.additional_context).toEqual([]);
 		// The goal is now ONLY the bare ChatML transcript — no envelope, no preamble,
-		// no <instructions>. The OMP system prompt rides the flow config's system slot.
+		// no <instructions>. The PROTO system prompt rides the flow config's system slot.
 		expect(payload.goal).not.toContain("<client_prompt_envelope>");
 		expect(payload.goal).not.toContain("<instructions>");
 		expect(payload.goal).not.toContain("<conversation>");
@@ -372,7 +372,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		// `<ran NAME>{args}</ran>` record (NOT the `{name,arguments}` live-call shape, so
 		// the model does not mimic it as emittable grammar), and the following tool turn
 		// renders `<ran:result>`. The pair is linked by ADJACENCY (1 call/turn, result
-		// rides the very next turn), so the OMP-internal call id is omitted from the
+		// rides the very next turn), so the PROTO-internal call id is omitted from the
 		// transcript — it is dead weight the model never reads.
 		expect(payload.goal).toContain('<ran read>{"path":"src/main.ts"}</ran>');
 		expect(payload.goal).not.toContain("<tool_call>");
@@ -395,7 +395,7 @@ describe("GitLab Duo Workflow provider protocol", () => {
 		expect(payload.goal).toContain("First user turn. token");
 		expect(payload.goal.indexOf("<|im_start|>user")).toBe(0);
 
-		// The OMP system prompt lives in the flow config system slot, not the goal.
+		// The PROTO system prompt lives in the flow config system slot, not the goal.
 		const flowPrompt = payload.flowConfig?.prompts[0];
 		expect(flowPrompt?.prompt_template.system).toContain(
 			"PROTO system instructions: preserve the local tool bridge.",
@@ -4571,7 +4571,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		expect(goal).toContain("It contains ALPHA.");
 		expect(goal).toContain("Now summarize it.");
 		// The prior tool call and its result are paired by ADJACENCY (call turn followed
-		// by its tool-result turn); the OMP-internal id is omitted from the transcript.
+		// by its tool-result turn); the PROTO-internal id is omitted from the transcript.
 		// The call is a past-tense `<ran NAME>{args}</ran>` record, the result `<ran:result>`.
 		expect(goal).toContain('<ran read>{"path":"a.ts"}</ran>');
 		expect(goal).toContain("<ran:result>");

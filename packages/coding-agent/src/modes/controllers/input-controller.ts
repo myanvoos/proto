@@ -256,6 +256,10 @@ export class InputController {
 			this.#focusedLeftTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (!this.ctx.focusedAgentId) return undefined;
+				// Raw listeners run before the focused component sees keys; while a
+				// fullscreen surface holds focus (model hub, selectors, viewers) the
+				// gesture must not yank it away — arrows belong to that surface.
+				if (this.ctx.ui.hasOverlay()) return undefined;
 				if (!matchesKey(data, "left")) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
 				this.#handleFocusedLeftTap();
@@ -266,6 +270,8 @@ export class InputController {
 			this.#rightTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (this.ctx.focusedAgentId) return undefined;
+				// Same overlay rule as the double-← listener above.
+				if (this.ctx.ui.hasOverlay()) return undefined;
 				if (!matchesKey(data, "right")) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
 				if (this.#detectDoubleTap("right")) {
@@ -1103,15 +1109,15 @@ export class InputController {
 			// for a given SignalKind permanently replaces the kernel-default
 			// handler for the lifetime of the process. So once the user has
 			// issued even one bash command — e.g. `/usr/bin/true` — SIGTSTP no
-			// longer stops omp: tokio swallows it and the TUI ends up torn down
+			// longer stops proto: tokio swallows it and the TUI ends up torn down
 			// while the process keeps running with no live terminal (issue
 			// [#3461]). SIGSTOP cannot be caught, blocked, or ignored, so the
 			// kernel stops the process regardless of installed handlers.
 			//
-			// pid=0 (foreground process group, not just our PID): omp is not
+			// pid=0 (foreground process group, not just our PID): proto is not
 			// always the shell's direct child. Package-manager launchers (`npx`,
 			// `pnpm exec`, `bunx`, …) wait on the real CLI from a parent shim
-			// that shares omp's process group, and a `omp … | tee log` style
+			// that shares proto's process group, and a `proto … | tee log` style
 			// pipeline puts a sibling foreground job member in the same group
 			// too. The shell sees the job as stopped only when its direct
 			// child / pipeline leader is stopped, so suspending only our PID

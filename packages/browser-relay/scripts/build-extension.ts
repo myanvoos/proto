@@ -1,9 +1,9 @@
 /**
  * Builds the browser relay extension and its distribution artifacts:
  * - `dist/extension/` — unpacked extension (load via chrome://extensions)
- * - `dist/omp-browser-relay-extension.zip` — packaged extension for GH releases
+ * - `dist/proto-browser-relay-extension.zip` — packaged extension for GH releases
  * - `../coding-agent/src/tools/browser/relay/extension-assets/*.txt` —
- *   generated text assets embedded into the omp CLI so `omp browser-relay
+ *   generated text assets embedded into the proto CLI so `proto browser-relay
  *   install` works from the compiled binary (same committed-generated-output
  *   pattern as tool-views.generated.js). Re-run this script after touching
  *   anything under `extension/` and commit the regenerated assets.

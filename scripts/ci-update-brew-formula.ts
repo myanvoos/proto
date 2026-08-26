@@ -11,7 +11,7 @@
 
 import { $ } from "bun";
 
-const REPO = process.env.PROTO_REPO ?? "can1357/oh-my-pi";
+const REPO = process.env.PROTO_REPO ?? "can1357/proto";
 const HOMEPAGE = "https://proto.sh";
 const DESC = "Coding agent with the IDE wired in";
 
@@ -63,7 +63,7 @@ export function renderFormula(version: string, sums: Record<string, string>): st
 	//
 	// `with_env(HOME: buildpath)` redirects the CLI's `os.homedir()` lookup to
 	// the writable staging dir so `generate_completions_from_executable` does
-	// not touch the real `/Users/<user>/.omp` (denied by Homebrew's sandbox
+	// not touch the real `/Users/<user>/.proto` (denied by Homebrew's sandbox
 	// profile, which would otherwise fail the popen).
 	return `class Proto < Formula
   desc "${DESC}"

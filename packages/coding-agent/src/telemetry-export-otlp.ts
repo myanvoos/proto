@@ -42,13 +42,13 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { TelemetrySignalConfig } from "./telemetry-export";
 
 /**
- * Periodic flush interval. A long-lived `omp` process (the ACP server is
+ * Periodic flush interval. A long-lived `proto` process (the ACP server is
  * spawned once and reused across many turns) would otherwise hold finished
  * telemetry until a batch window elapses or the process exits.
  */
 const FLUSH_INTERVAL_MS = 30_000;
 
-const SERVICE_NAME = "oh-my-pi";
+const SERVICE_NAME = "proto";
 
 type OtelLogLevel = "none" | logger.LogLevel;
 

@@ -94,8 +94,8 @@ describe("ProcessTerminal headless suppression", () => {
 		}
 	});
 
-	// #6374: arrows stopped working inside omp and stayed broken in the shell
-	// after exit — a missing cursor-key/keypad reset. omp owns the TTY and emits
+	// #6374: arrows stopped working inside proto and stayed broken in the shell
+	// after exit — a missing cursor-key/keypad reset. proto owns the TTY and emits
 	// a full private-mode reset menu, but never restored normal cursor-key
 	// (DECCKM) / numeric-keypad mode (terminfo `rmkx` = "\x1b[?1l\x1b>"). If the
 	// terminal was left in application-cursor-keys mode, arrows arrived as SS3

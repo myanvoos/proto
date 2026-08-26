@@ -126,8 +126,8 @@ pub fn read_image_from_clipboard() -> task::Promise<Option<ClipboardImage>> {
 					mime_type: "image/png".to_string(),
 				}))
 			},
-		Err(ClipboardError::ContentNotAvailable) => Ok(None),
-		Err(err) => Err(Error::from_reason(format!("Failed to read clipboard image: {err}"))),
+			Err(ClipboardError::ContentNotAvailable) => Ok(None),
+			Err(err) => Err(Error::from_reason(format!("Failed to read clipboard image: {err}"))),
 		}
 	})
 }

@@ -3,7 +3,7 @@
  *
  * `ExtensionRunner.emit({ type: "session_shutdown" })` uses the generic
  * 30s extension handler timeout, so a single hung handler (in the wild:
- * `omp-discord-presence` waiting on a Discord IPC pipe that never replied)
+ * `proto-discord-presence` waiting on a Discord IPC pipe that never replied)
  * holds Ctrl+C teardown hostage for the full window. `session_shutdown` is
  * fire-and-forget by contract — extensions can't observe the result — so it
  * MUST run on a tight, dedicated budget so dispose() returns quickly.

@@ -1,7 +1,7 @@
 /**
  * CDP façade over `chrome.debugger`.
  *
- * Puppeteer clients (the omp browser tool: one supervisor connection plus one
+ * Puppeteer clients (the proto browser tool: one supervisor connection plus one
  * per tab worker) connect to this bridge as if it were Chrome's browser
  * debugging endpoint. Chrome only allows a single debugger attachment per tab,
  * so the bridge owns ONE `chrome.debugger` attachment per tab (via the
@@ -55,7 +55,7 @@ class CdpConnection {
 	autoAttach = false;
 	/** Minted pseudo-sessions owned by this connection. */
 	readonly sessions = new Map<string, SessionRef>();
-	/** Tabs this connection claimed as drive targets (`OMP.claimTarget` / `Target.createTarget`). */
+	/** Tabs this connection claimed as drive targets (`PROTO.claimTarget` / `Target.createTarget`). */
 	readonly claims = new Set<number>();
 
 	constructor(
@@ -87,12 +87,12 @@ class TabState {
 	/** Whether targets for this tab were announced to discovering connections. */
 	announced = false;
 	attaching: Promise<boolean> | null = null;
-	/** True after the relay put this tab in the omp group; `ompGroupId` holds that group. */
+	/** True after the relay put this tab in the proto group; `ompGroupId` holds that group. */
 	grouped = false;
 	/** Group RPC in flight — suppresses duplicate requests from load-time tabUpdated bursts. */
 	grouping = false;
 	ompGroupId: number | undefined;
-	/** User pulled the tab out of the omp group — never re-group it. */
+	/** User pulled the tab out of the proto group — never re-group it. */
 	groupOptOut = false;
 	/** Real Chrome session ids (OOPIF/worker children) living under this tab's root session. */
 	readonly realSessions = new Set<string>();
@@ -230,7 +230,7 @@ export class RelayBridge {
 		for (const tab of this.#tabs.values()) {
 			tab.attached = false;
 			tab.attaching = null;
-			// The extension dissolves omp groups on disconnect (or died along
+			// The extension dissolves proto groups on disconnect (or died along
 			// with them); grouping state is unknowable until the next hello.
 			// Without this reset, the next hello's groupId=-1 snapshots would
 			// read as the user dragging every tab out (permanent opt-out).
@@ -328,7 +328,7 @@ export class RelayBridge {
 		const touched = new Set<number>();
 		for (const ref of conn.sessions.values()) touched.add(ref.tabId);
 		conn.sessions.clear();
-		// Tabs this client claimed leave the omp group unless another claimant
+		// Tabs this client claimed leave the proto group unless another claimant
 		// remains — session holders don't count: the long-lived registry
 		// connection holds sessions on every tab without driving any of them.
 		for (const tabId of conn.claims) {
@@ -399,7 +399,7 @@ export class RelayBridge {
 			this.#reply(conn, msg, {});
 			return;
 		}
-		// Relay-private claim: the omp tab worker marks the page it was spawned
+		// Relay-private claim: the proto tab worker marks the page it was spawned
 		// to drive. Never forwarded — real Chrome rejects the unknown method.
 		if (msg.method === "PROTO.claimTarget") {
 			this.#claimTab(conn, tabId);
@@ -661,7 +661,7 @@ export class RelayBridge {
 		tab.attaching = null;
 		tab.banned = true;
 		// The user dismissed the debugger infobar (or the attach was torn
-		// down): release the tab's omp-group membership too.
+		// down): release the tab's proto-group membership too.
 		this.#syncTabGrouping(tab);
 		this.#retractTab(tab);
 	}
@@ -681,7 +681,7 @@ export class RelayBridge {
 			this.#tabs.set(snap.tabId, tab);
 		} else {
 			if (tab.url !== snap.url) tab.banned = false;
-			// The user dragging a tab out of the omp group is an opt-out; the
+			// The user dragging a tab out of the proto group is an opt-out; the
 			// relay never fights the user over grouping.
 			if (tab.grouped && tab.ompGroupId !== undefined && snap.groupId !== tab.ompGroupId) {
 				tab.grouped = false;
@@ -722,7 +722,7 @@ export class RelayBridge {
 
 	// ---- tab grouping -----------------------------------------------------------
 
-	/** A tab belongs in the omp group when claimed by a client, controllable, unpinned, not user-opted-out, and not already in a user group. */
+	/** A tab belongs in the proto group when claimed by a client, controllable, unpinned, not user-opted-out, and not already in a user group. */
 	#groupWorthy(tab: TabState): boolean {
 		if (!this.#claimed(tab.tabId) || !this.#eligible(tab) || tab.pinned || tab.groupOptOut) return false;
 		return tab.grouped || tab.groupId === -1;
@@ -752,7 +752,7 @@ export class RelayBridge {
 	/**
 	 * Queue tabs for grouping and drain serially. Overlapping group RPCs race
 	 * the extension's non-atomic query→create→set-title sequence and mint
-	 * duplicate omp groups, so at most one group RPC is ever in flight.
+	 * duplicate proto groups, so at most one group RPC is ever in flight.
 	 */
 	#requestGroup(tabs: TabState[]): void {
 		if (!this.#group) return;

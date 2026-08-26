@@ -131,7 +131,7 @@ describe("HashlineFilesystem ACP fs routing", () => {
 
 	it("keeps a local sandbox artifact addressed by absolute path off the ACP bridge", async () => {
 		// Tag-based path recovery rebinds a bare artifact edit onto its absolute
-		// local-sandbox path. OMP-owned artifacts must be written to disk, never
+		// local-sandbox path. PROTO-owned artifacts must be written to disk, never
 		// pushed to the editor.
 		const { bridge, spy: bridgeSpy } = makeBridge();
 		const session = createSession(tmpDir, { bridge });

@@ -1,12 +1,12 @@
 /**
- * Regression test for issue #2100: omp startup blocked >25s while connecting
+ * Regression test for issue #2100: proto startup blocked >25s while connecting
  * to MCP servers.
  *
  * The scenario: a configured MCP server is reachable at the transport layer
  * but never answers `initialize`. Before the fix `MCPManager.connectServers`
  * awaited every still-pending server that had no cached tools with an
  * unbounded `Promise.allSettled`, so the slowest server's per-request timeout
- * (`OMP_MCP_TIMEOUT_MS`, default 30 000 ms) gated the entire UI.
+ * (`PROTO_MCP_TIMEOUT_MS`, default 30 000 ms) gated the entire UI.
  *
  * Contract this test defends: when an MCP server stalls and has no cached
  * tools, `connectServers` MUST return inside the bounded startup window

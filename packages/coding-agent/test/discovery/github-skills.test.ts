@@ -1,5 +1,5 @@
 /**
- * Regression for https://github.com/can1357/oh-my-pi/issues/1906
+ * Regression for https://proto.sh
  *
  * The `github` discovery provider previously registered only context-files and
  * instructions, leaving `.github/skills/<name>/SKILL.md` — the layout GitHub

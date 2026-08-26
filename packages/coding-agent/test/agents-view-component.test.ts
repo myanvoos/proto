@@ -24,11 +24,14 @@ import {
 	type AgentsViewDeps,
 } from "@oh-my-pi/pi-coding-agent/modes/components/agents-view/agents-view-mode";
 import {
+	type AgentsViewIndex,
 	type AgentsViewPersistentState,
+	buildAgentsViewIndex,
 	formatModelCellLabel,
+	reconcileAgentsViewRecords,
 } from "@oh-my-pi/pi-coding-agent/modes/components/agents-view/agents-view-state";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { sumAssistantMessageUsage } from "@oh-my-pi/pi-coding-agent/session/session-stats";
@@ -666,5 +669,56 @@ describe("formatModelCellLabel", () => {
 		expect(formatModelCellLabel(model, "high")).toBe("anthropic/claude-opus-4:high");
 		expect(formatModelCellLabel(model, "off")).toBe("anthropic/claude-opus-4");
 		expect(formatModelCellLabel(model, "minimal")).toBe("anthropic/claude-opus-4:minimal");
+	});
+});
+
+describe("agents view hierarchy lineage", () => {
+	const hostId = "01890a5d-ac96-774b-bcce-b302099a8057";
+
+	function makeRef(overrides: Partial<AgentRef> & Pick<AgentRef, "id">): AgentRef {
+		return {
+			displayName: overrides.id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			status: "parked",
+			session: null,
+			sessionFile: null,
+			createdAt: Date.now(),
+			lastActivity: Date.now(),
+			...overrides,
+		};
+	}
+
+	function childIdentities(index: AgentsViewIndex, identity: string): string[] {
+		const record = index.byKey.get(identity);
+		if (!record) throw new Error(`no record for ${identity}`);
+		return (index.childrenByParent.get(record) ?? []).map(child => child.identity);
+	}
+
+	it("never grafts Main-parented parked refs onto the attached session's subtree", () => {
+		// Regression: seeding parks every sibling transcript of a nested
+		// transcript under parentId=Main; the live main ref owns the
+		// `active:Main` alias, so honoring that key made an empty session report
+		// phantom children and mounted the scoped browser instead of no-op'ing
+		// (`/agents`, double-→).
+		const hostFile = path.join(tempDir.path(), "host.jsonl");
+		const host = makeRef({ id: MAIN_AGENT_ID, kind: "main", parentId: undefined, sessionFile: hostFile });
+		const foreignParked = makeRef({
+			id: "unused-exports.dead-w1",
+			sessionFile: path.join(tempDir.path(), "other-project", "nested", "unused-exports.dead-w1.jsonl"),
+		});
+		const records = reconcileAgentsViewRecords([host, foreignParked], [makeSessionInfo(hostId, { path: hostFile })]);
+		expect(childIdentities(buildAgentsViewIndex(records), `file:${path.resolve(hostFile)}`)).toHaveLength(0);
+	});
+
+	it("still nests a real subagent transcript under its parent via transcript layout", () => {
+		const hostFile = path.join(tempDir.path(), "host.jsonl");
+		const workerFile = path.join(tempDir.path(), "host", "spawned-worker.jsonl");
+		const host = makeRef({ id: MAIN_AGENT_ID, kind: "main", parentId: undefined, sessionFile: hostFile });
+		const worker = makeRef({ id: "spawned-worker", parentId: MAIN_AGENT_ID, sessionFile: workerFile });
+		const records = reconcileAgentsViewRecords([host, worker], [makeSessionInfo(hostId)]);
+		expect(childIdentities(buildAgentsViewIndex(records), `file:${path.resolve(hostFile)}`)).toEqual([
+			`file:${path.resolve(workerFile)}`,
+		]);
 	});
 });

@@ -1,5 +1,5 @@
 /**
- * Issue #2113 — `kimik2 does not work on the latest omp`
+ * Issue #2113 — `kimik2 does not work on the latest proto`
  *
  * Reporter: with only `MOONSHOT_API_KEY` set, selecting `kimi-k2.6` and
  * sending any text leaves the agent stuck on "Working..." with no output.

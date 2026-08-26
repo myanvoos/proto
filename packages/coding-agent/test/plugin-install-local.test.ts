@@ -1,5 +1,5 @@
 /**
- * Routing tests for `omp plugin install <local-path>` (#1945).
+ * Routing tests for `proto plugin install <local-path>` (#1945).
  *
  * Two layers of coverage:
  *  1. Spy-based: `runPluginCommand` with a local path calls
@@ -125,7 +125,7 @@ describe("runPluginCommand({ action: 'install', args: [<local>] })", () => {
 		// End-to-end: stage a real plugin folder, route through plugin-cli
 		// (no spies on PluginManager.link), and verify the resulting symlink
 		// + lockfile entry. Pins the contract that local-path installs
-		// symlink rather than copy-install, matching `omp plugin link`.
+		// symlink rather than copy-install, matching `proto plugin link`.
 		const localPlugin = await createLocalPlugin(tmpRoot);
 
 		await runPluginCommand({ action: "install", args: [localPlugin], flags: { json: true } });

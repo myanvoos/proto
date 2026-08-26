@@ -4555,7 +4555,7 @@ function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array):
 /**
  * Cursor AgentService reconstructs the model prompt from `requestContext.rules`,
  * not from the client-supplied `rootPromptMessagesJson` system blobs. Map each
- * OMP system-prompt entry to a global CursorRule so always-apply rules survive
+ * PROTO system-prompt entry to a global CursorRule so always-apply rules survive
  * that reconstruction.
  */
 export function buildCursorRequestContextRules(systemPrompt: readonly string[] | undefined): CursorRule[] {
@@ -5160,7 +5160,7 @@ function extractImages(content: (TextContent | ImageContent)[]) {
  * Resolve the Cursor Run wire model id and its parameter list.
  *
  * Cursor's `GetUsableModels` lists reasoning models as per-effort sibling
- * slugs (`gpt-5.4-mini-low`, `gpt-5.6-sol-high`), and OMP copies those ids 1:1.
+ * slugs (`gpt-5.4-mini-low`, `gpt-5.6-sol-high`), and PROTO copies those ids 1:1.
  * The Run endpoint rejects a sibling slug as the wire `model_id` with
  * `resource_exhausted` (errorId 528384); the official `cursor-agent` splits the
  * slug into its base model id plus a `reasoning` effort parameter. Mirror that

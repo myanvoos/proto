@@ -179,7 +179,7 @@ async function createPrFixture(): Promise<PrFixture> {
 /**
  * Stub `os.homedir()` AND rebuild the cached `dirs` resolver in pi-utils so
  * `getWorktreesDir()` resolves under an isolated temp home instead of the
- * user's real `~/.omp/wt`. Returns the temp home and a cleanup hook.
+ * user's real `~/.proto/wt`. Returns the temp home and a cleanup hook.
  */
 interface TempHome {
 	home: string;
@@ -190,7 +190,7 @@ async function setupTempHome(): Promise<{ home: string; cleanup: () => Promise<v
 	const home = await fs.mkdtemp(path.join(os.tmpdir(), "gh-pr-tool-home-"));
 	vi.spyOn(os, "homedir").mockReturnValue(home);
 	// Clear XDG_*_HOME so the rebuilt resolver routes `dirs.rootSubdir("wt", "data")`
-	// through the spied homedir instead of `$XDG_DATA_HOME/omp/wt` (CI sets these).
+	// through the spied homedir instead of `$XDG_DATA_HOME/proto/wt` (CI sets these).
 	const xdgKeys = ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"] as const;
 	const xdgPrevious: Partial<Record<(typeof xdgKeys)[number], string | undefined>> = {};
 	for (const key of xdgKeys) {
@@ -442,7 +442,7 @@ describe("github tool", () => {
 			encoding: "base64",
 			size: 20,
 			content: Buffer.from('{"version":"16.3.11"}\n').toString("base64"),
-			html_url: "https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/package.json",
+			html_url: "https://proto.sh",
 		});
 		const tool = new GithubTool(createSession());
 		const result = await tool.execute("file-read", {

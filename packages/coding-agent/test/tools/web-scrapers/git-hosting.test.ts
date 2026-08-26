@@ -210,12 +210,12 @@ describe.skipIf(SKIP)("handleGitHubGist", () => {
 
 describe("parseGitHubUrl — Actions", () => {
 	it("classifies a workflow run URL", () => {
-		const gh = parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions/runs/27070071296");
+		const gh = parseGitHubUrl("https://proto.sh");
 		expect(gh).toEqual({ type: "actions-run", owner: "can1357", repo: "oh-my-pi", runId: 27070071296 });
 	});
 
 	it("classifies a job URL using the web-form singular `job` segment", () => {
-		const gh = parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions/runs/27070071296/job/79897931171");
+		const gh = parseGitHubUrl("https://proto.sh");
 		expect(gh).toEqual({
 			type: "actions-job",
 			owner: "can1357",
@@ -226,18 +226,18 @@ describe("parseGitHubUrl — Actions", () => {
 	});
 
 	it("classifies a job URL using the API-form plural `jobs` segment", () => {
-		const gh = parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions/runs/27070071296/jobs/79897931171");
+		const gh = parseGitHubUrl("https://proto.sh");
 		expect(gh?.type).toBe("actions-job");
 		expect(gh?.jobId).toBe(79897931171);
 	});
 
 	it("does not treat non-run Actions URLs (e.g. workflow files) as runs/jobs", () => {
-		expect(parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions/workflows/ci.yml")?.type).toBe("other");
-		expect(parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions")?.type).toBe("other");
+		expect(parseGitHubUrl("https://proto.sh")?.type).toBe("other");
+		expect(parseGitHubUrl("https://proto.sh")?.type).toBe("other");
 	});
 
 	it("does not misparse a run URL with a non-numeric id", () => {
-		expect(parseGitHubUrl("https://github.com/can1357/oh-my-pi/actions/runs/latest")?.type).toBe("other");
+		expect(parseGitHubUrl("https://proto.sh")?.type).toBe("other");
 	});
 
 	it("returns null for non-github hosts", () => {
@@ -247,7 +247,7 @@ describe("parseGitHubUrl — Actions", () => {
 
 describe("parseGitHubUrl — commit", () => {
 	it("classifies a commit URL with a full SHA", () => {
-		const gh = parseGitHubUrl("https://github.com/can1357/oh-my-pi/commit/c1a1cb6149e73b345919dd4cf629b0d9ac74fb57");
+		const gh = parseGitHubUrl("https://proto.sh");
 		expect(gh).toEqual({
 			type: "commit",
 			owner: "can1357",
@@ -257,7 +257,7 @@ describe("parseGitHubUrl — commit", () => {
 	});
 
 	it("accepts an abbreviated SHA", () => {
-		expect(parseGitHubUrl("https://github.com/can1357/oh-my-pi/commit/c1a1cb6")).toEqual({
+		expect(parseGitHubUrl("https://proto.sh")).toEqual({
 			type: "commit",
 			owner: "can1357",
 			repo: "oh-my-pi",
@@ -266,7 +266,7 @@ describe("parseGitHubUrl — commit", () => {
 	});
 
 	it("falls back to `other` for a bare /commit segment with no SHA", () => {
-		expect(parseGitHubUrl("https://github.com/can1357/oh-my-pi/commit")?.type).toBe("other");
+		expect(parseGitHubUrl("https://proto.sh")?.type).toBe("other");
 	});
 });
 

@@ -53,8 +53,8 @@ describe("resolveActiveProjectRegistryPath", () => {
 	});
 
 	it("walk-up finds nearest .proto/ directory", async () => {
-		// Layout: tmpDir/.omp/   +   tmpDir/sub/nested/  (cwd)
-		// Resolver must climb from cwd → sub → tmpDir and find .omp/ there.
+		// Layout: tmpDir/.proto/   +   tmpDir/sub/nested/  (cwd)
+		// Resolver must climb from cwd → sub → tmpDir and find .proto/ there.
 		fs.mkdirSync(path.join(tmpDir, ".proto"), { recursive: true });
 		const cwd = path.join(tmpDir, "sub", "nested");
 		fs.mkdirSync(cwd, { recursive: true });
@@ -65,8 +65,8 @@ describe("resolveActiveProjectRegistryPath", () => {
 	});
 
 	it("walk-up stops at the nearest .proto/ — does not skip to a more distant one", async () => {
-		// Layout: tmpDir/.omp/   +   tmpDir/sub/.omp/   +   tmpDir/sub/nested/  (cwd)
-		// Resolver must stop at tmpDir/sub/.omp/, not climb further to tmpDir/.omp/.
+		// Layout: tmpDir/.proto/   +   tmpDir/sub/.proto/   +   tmpDir/sub/nested/  (cwd)
+		// Resolver must stop at tmpDir/sub/.proto/, not climb further to tmpDir/.proto/.
 		fs.mkdirSync(path.join(tmpDir, ".proto"), { recursive: true });
 		fs.mkdirSync(path.join(tmpDir, "sub", ".proto"), { recursive: true });
 		const cwd = path.join(tmpDir, "sub", "nested");
@@ -79,7 +79,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 
 	it("falls back to .git root when no .proto/ exists", async () => {
 		// Layout: tmpDir/.git/   +   tmpDir/sub/  (cwd)
-		// No .omp/ anywhere → second pass finds .git/ at tmpDir.
+		// No .proto/ anywhere → second pass finds .git/ at tmpDir.
 		// Returned path is relative to the .git root, not .git itself.
 		fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
 		const cwd = path.join(tmpDir, "sub");
@@ -91,7 +91,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 	});
 
 	it("returns null when neither .proto/ nor .git/ found anywhere in the tree", async () => {
-		// Start at the filesystem root — guaranteed to have no .omp/ or .git/ ancestors.
+		// Start at the filesystem root — guaranteed to have no .proto/ or .git/ ancestors.
 		const result = await resolveActiveProjectRegistryPath(path.sep);
 
 		expect(result).toBeNull();
@@ -99,7 +99,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 
 	it("does not treat ~/.git as a project root (pass-2 home-dir guard)", async () => {
 		// Simulate a dotfiles repo managed with a bare-git technique: ~/.git exists.
-		// resolveActiveProjectRegistryPath must NOT return ~/.omp/.../installed_plugins.json.
+		// resolveActiveProjectRegistryPath must NOT return ~/.proto/.../installed_plugins.json.
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-proj-scope-home-"));
 		vi.spyOn(os, "homedir").mockReturnValue(homeDir);
 		const fakeHomeGit = path.join(homeDir, ".git");
@@ -135,7 +135,7 @@ describe("resolveActiveProjectRegistryPath", () => {
 describe("listClaudePluginRoots — project shadows user", () => {
 	let tmpHome: string;
 	let tmpProject: string;
-	/** Path where listClaudePluginRoots reads the user OMP registry. */
+	/** Path where listClaudePluginRoots reads the user PROTO registry. */
 	let userRegPath: string;
 	/** Path where listClaudePluginRoots reads the project registry (resolved from tmpProject). */
 	let projectRegPath: string;
@@ -144,7 +144,7 @@ describe("listClaudePluginRoots — project shadows user", () => {
 		tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "proto-shadow-home-"));
 		tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), "proto-shadow-proj-"));
 
-		// Create .omp/ in project so resolveActiveProjectRegistryPath finds it.
+		// Create .proto/ in project so resolveActiveProjectRegistryPath finds it.
 		fs.mkdirSync(path.join(tmpProject, ".proto", "plugins"), { recursive: true });
 
 		userRegPath = path.join(tmpHome, ".proto", "plugins", "installed_plugins.json");

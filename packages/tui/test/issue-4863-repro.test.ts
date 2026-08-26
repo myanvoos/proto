@@ -5,7 +5,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 
 withoutTerminalMultiplexer();
 
-// Regression probe for https://github.com/can1357/oh-my-pi/issues/4863
+// Regression probe for https://proto.sh
 //
 // On ConPTY hosts (native Windows + WSL) a full paint over a large transcript
 // is bounded by #truncateLargeConptyFrame: it keeps only the tail and replaces

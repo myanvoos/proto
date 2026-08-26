@@ -9,6 +9,8 @@ export * from "./config/config-file";
 
 const priorityList = [
 	{ dir: CONFIG_DIR_NAME, globalAgentDir: getConfigAgentDirName },
+	// Legacy pi config dirs (pre-proto installs): same layout under `.pi`.
+	{ dir: ".pi", globalAgentDir: () => ".pi/agent" },
 	{ dir: ".claude" },
 	{ dir: ".codex" },
 	{ dir: ".gemini" },
@@ -50,8 +52,8 @@ function walkUpForPackageDir(startDir: string): string | undefined {
  *
  * Callers MUST treat `undefined` as "no package assets available" and skip the
  * lookup. NEVER fall back to the user's `cwd` here: that conflates the host
- * project with omp's own assets and was the source of issue #1423 (the host
- * project's `CHANGELOG.md` rendered as omp's startup changelog).
+ * project with proto's own assets and was the source of issue #1423 (the host
+ * project's `CHANGELOG.md` rendered as proto's startup changelog).
  */
 export function getPackageDir(): string | undefined {
 	const envDir = process.env.PI_PACKAGE_DIR;
@@ -62,7 +64,7 @@ export function getPackageDir(): string | undefined {
 }
 
 /**
- * Path to omp's own `CHANGELOG.md`, or `undefined` when the package directory
+ * Path to proto's own `CHANGELOG.md`, or `undefined` when the package directory
  * cannot be resolved (e.g. inside `bun --compile` binaries that don't bundle
  * package assets). Callers MUST skip changelog parsing when this is undefined;
  * see issue #1423.
@@ -77,8 +79,8 @@ export function getChangelogPath(): string | undefined {
 // =============================================================================
 
 /**
- * User-level: ~/.omp/agent, Claude's active config directory, ~/.codex, ~/.gemini
- * Project-level: .omp, .claude, .codex, .gemini
+ * User-level: ~/.proto/agent, Claude's active config directory, ~/.codex, ~/.gemini
+ * Project-level: .proto, .claude, .codex, .gemini
  */
 const USER_CONFIG_BASES = priorityList.map(({ dir, globalAgentDir }) => ({
 	base: () =>
@@ -93,14 +95,14 @@ const PROJECT_CONFIG_BASES = priorityList.map(({ dir }) => ({
 
 interface ConfigDirEntry {
 	path: string;
-	source: string; // e.g., ".omp", ".claude"
+	source: string; // e.g., ".proto", ".claude"
 	level: "user" | "project";
 }
 
 interface GetConfigDirsOptions {
-	/** Include user-level directories (~/.omp/agent/...). Default: true */
+	/** Include user-level directories (~/.proto/agent/...). Default: true */
 	user?: boolean;
-	/** Include project-level directories (.omp/...). Default: true */
+	/** Include project-level directories (.proto/...). Default: true */
 	project?: boolean;
 	/** Current working directory for project paths. Default: getProjectDir() */
 	cwd?: string;
@@ -118,7 +120,7 @@ interface GetConfigDirsOptions {
  * @example
  * // Get all command directories
  * getConfigDirs("commands")
- * // → [{ path: "~/.omp/agent/commands", source: ".omp", level: "user" }, ...]
+ * // → [{ path: "~/.proto/agent/commands", source: ".proto", level: "user" }, ...]
  *
  * @example
  * // Get only existing project skill directories
@@ -208,7 +210,7 @@ export function findConfigFileWithMeta(
 
 /**
  * Find all nearest config directories by walking up from cwd.
- * Returns one entry per config base (.omp, .claude) - the nearest one found.
+ * Returns one entry per config base (.proto, .claude) - the nearest one found.
  * Results are in priority order (highest first).
  */
 export function findAllNearestProjectConfigDirs(subpath: string, cwd: string = getProjectDir()): ConfigDirEntry[] {

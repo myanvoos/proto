@@ -7,7 +7,7 @@
  *
  * Pipeline under test:
  *   client → POST /v1/responses (OpenAI shape)
- *     → openai-responses parser → omp Context
+ *     → openai-responses parser → proto Context
  *     → pi-ai anthropic provider (auto cache_control via cacheRetention)
  *     → upstream Anthropic (Messages API)
  *     → assistant stream → openai-responses encoder
@@ -20,11 +20,11 @@
  * mutates the cached prefix bytes.
  *
  * Skips unless a local gateway is reachable at the default `127.0.0.1:4000`
- * (override via `OMP_E2E_GATEWAY_URL`) AND the bearer token file exists at
- * `~/.omp/auth-gateway.token`.
+ * (override via `PROTO_E2E_GATEWAY_URL`) AND the bearer token file exists at
+ * `~/.proto/auth-gateway.token`.
  *
  * To run: `bun --cwd packages/ai test test/auth-gateway-cross-protocol-caching.test.ts`
- * with the gateway live (`omp auth-gateway serve` or pm2).
+ * with the gateway live (`proto auth-gateway serve` or pm2).
  */
 import { describe, expect, it } from "bun:test";
 import { AUTH_GATEWAY_E2E_URL, checkAuthGatewayE2EAvailable } from "./helpers";

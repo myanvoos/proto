@@ -75,7 +75,7 @@ export interface UsageLimit {
  * Populated when the provider's listing endpoint returns individual credit
  * metadata (e.g. OpenAI Codex `wham/rate-limit-reset-credits`). Callers that
  * only need the count can ignore this; display layers use `expiresAt` to show
- * when banked resets expire ([#3339](https://github.com/can1357/oh-my-pi/issues/3339)).
+ * when banked resets expire (#3339).
  */
 export interface UsageResetCreditDetail {
 	/** ISO timestamp when the credit was granted. */
@@ -109,7 +109,7 @@ export interface UsageReport {
 	resetCredits?: UsageResetCredits;
 	/**
 	 * Provider-wide disclaimers shown once above per-account sections.
-	 * Use this for caveats that apply to every limit (e.g. "OMP-observed
+	 * Use this for caveats that apply to every limit (e.g. "PROTO-observed
 	 * spend only"). Per-limit notes that differ per window (e.g. "Overage
 	 * requests: N") stay on {@link UsageLimit.notes}.
 	 */

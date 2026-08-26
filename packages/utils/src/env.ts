@@ -150,7 +150,7 @@ export function filterChildShellEnv(
 		}
 		if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
 			// Strong provenance: the launch environment is known and this name is
-			// absent from it, or OMP itself injected the value — either way it came
+			// absent from it, or PROTO itself injected the value — either way it came
 			// from a project dotenv file, not the parent shell.
 			delete result[key];
 		} else if (
@@ -380,7 +380,7 @@ export function setInteractiveHost(interactive: boolean): boolean {
  * history.db, stats.db).
  *
  * Interactive hosts tolerate a longer synchronous wait on lock contention
- * (SQLITE_BUSY during WAL recovery/checkpoint — see oh-my-pi#2421): the
+ * (SQLITE_BUSY during WAL recovery/checkpoint — see #2421): the
  * operator sees a brief freeze and the statement eventually completes.
  * Headless hosts (print/RPC/ACP/eval/SDK) run a protocol on the same thread —
  * a multi-second synchronous busy-wait freezes their event loop and stalls

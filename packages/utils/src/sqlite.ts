@@ -1,7 +1,7 @@
 /**
  * Shared classifiers for `bun:sqlite` error result codes.
  *
- * Every omp SQLite store (`agent.db` credential/usage store, `models.db` model
+ * Every proto SQLite store (`agent.db` credential/usage store, `models.db` model
  * cache, `history.db`) needs the same two distinctions: a transient BUSY that
  * clears by retrying, and an unrecoverable corruption that never does. Keeping
  * one implementation here prevents the classifiers from drifting between the

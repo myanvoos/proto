@@ -16,7 +16,7 @@ let prevAgentDir: string | undefined;
 
 beforeAll(() => {
 	tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-logger-error-"));
-	// `getLogsDir()` honors OMP_AGENT_DIR / HOME for its base; pin to our tmp.
+	// `getLogsDir()` honors PROTO_AGENT_DIR / HOME for its base; pin to our tmp.
 	// Restore only this key on teardown — reassigning `process.env` wholesale
 	// would replace the live binding with a plain object, diverging it from
 	// `Bun.env` and poisoning every env-reading test that runs afterwards.

@@ -3,8 +3,8 @@
  *
  * `connectSharedLspTransport` ensures the per-project mux daemon is running
  * under the daemon broker (same lifecycle as the shared Chromium: started on
- * first use, stopped when the last omp process in the project exits), dials
- * its socket, performs the `omp/muxConnect` handshake, and returns an
+ * first use, stopped when the last proto process in the project exits), dials
+ * its socket, performs the `proto/muxConnect` handshake, and returns an
  * {@link LspTransport} the ordinary LSP client machinery drives exactly like
  * a locally spawned server. Every failure degrades to `null` so callers fall
  * back to a process-local spawn.

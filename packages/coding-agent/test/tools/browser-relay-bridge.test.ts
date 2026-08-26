@@ -108,7 +108,7 @@ async function attachPage(
 }
 
 /**
- * Emulate the omp tab worker adopting a tab: attach to its page target, then
+ * Emulate the proto tab worker adopting a tab: attach to its page target, then
  * claim it as this connection's drive target.
  */
 async function claimTab(
@@ -251,7 +251,7 @@ describe("RelayBridge tab grouping", () => {
 		await claimTab(bridge, ext, cdp, connId, 1);
 		expect(ext.rpcs("group")).toHaveLength(1);
 		// Concurrent group RPCs race Chrome's non-atomic query→create→set-title
-		// and mint duplicate "omp" groups; the second request must queue.
+		// and mint duplicate "proto" groups; the second request must queue.
 		await claimTab(bridge, ext, cdp, connId, 2);
 		expect(ext.rpcs("group")).toHaveLength(1);
 		ack(bridge, ext, "group", { grouped: { "1": 42 } });
@@ -270,7 +270,7 @@ describe("RelayBridge tab grouping", () => {
 		await claimTab(bridge, ext, cdp, connId, 1);
 		ack(bridge, ext, "group", { grouped: { "1": 42 } });
 		await flush();
-		// Relay/extension link drops: the extension dissolves the omp group on
+		// Relay/extension link drops: the extension dissolves the proto group on
 		// disconnect, so the next hello reports groupId -1 for every tab.
 		bridge.extClosed(ext);
 		const ext2 = new FakeExtSocket();

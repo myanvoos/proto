@@ -3,7 +3,7 @@
  *
  * The MV3 extension can only dial OUT (service workers cannot listen on
  * sockets), so a native process must own the relay port. Instead of making
- * the user run `omp browser-relay` by hand, the relay kind lazily starts one
+ * the user run `proto browser-relay` by hand, the relay kind lazily starts one
  * under a profile-independent, machine-global daemon broker. Every relay
  * consumer holds a connection to that broker, so one project exiting cannot
  * tear down the fixed-port singleton while another project still uses it.
@@ -22,7 +22,7 @@ import { probeCdpStatus } from "../attach";
 /** Stable broker daemon name for the relay server. */
 const RELAY_DAEMON_NAME = "proto.browser.relay";
 const RELAY_BROKER_SCOPE = "browser-relay";
-/** Matches the serve banner (`omp browser relay listening on http://…`). */
+/** Matches the serve banner (`proto browser relay listening on http://…`). */
 const READY_LOG_PATTERN = String.raw`browser relay listening on http://\S+`;
 const READY_TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 1_500;

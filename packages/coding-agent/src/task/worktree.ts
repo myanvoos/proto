@@ -490,7 +490,7 @@ export async function ensureIsolation(
 		// Claim ownership before the backend materialises `m`. Backends only
 		// create/replace `mergedDir` (and overlay upper/work), never the base
 		// dir, so the marker survives `isoStart` — and a concurrent
-		// `omp worktree clear` never sees this sandbox without a live owner,
+		// `proto worktree clear` never sees this sandbox without a live owner,
 		// even while a large clone is still in progress.
 		await fs.mkdir(baseDir, { recursive: true });
 		await writeIsolationOwner(baseDir, id);
@@ -794,7 +794,7 @@ async function replayFilteredAgentCommits(opts: FilteredAgentReplayOptions): Pro
 
 /**
  * Capture task-only changes from the isolation worktree onto a parent-repo
- * branch named `omp/task/${taskId}`. Only root-repo changes go on the branch;
+ * branch named `proto/task/${taskId}`. Only root-repo changes go on the branch;
  * nested-repo patches are returned separately because the parent git can't
  * track files inside gitlinks.
  *

@@ -88,7 +88,7 @@ export function selectMcpOAuthRefreshMaterial(
  * Refresh material is taken from the credential itself (self-contained modern
  * credentials embed `tokenUrl`/`clientId`/`clientSecret`/`resource`) or, for
  * legacy credentials that carry none, the server's `auth` block. Shared by the
- * local MCP manager and the `omp auth-broker serve` refresh path so a broker
+ * local MCP manager and the `proto auth-broker serve` refresh path so a broker
  * with no access to the MCP config can still refresh `mcp_oauth:*` credentials
  * from the vault.
  *

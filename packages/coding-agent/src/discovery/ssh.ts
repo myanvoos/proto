@@ -1,7 +1,7 @@
 /**
  * SSH JSON Provider
  *
- * Discovers SSH hosts from managed omp config paths and legacy root ssh.json files.
+ * Discovers SSH hosts from managed proto config paths and legacy root ssh.json files.
  * Priority: 5 (low, project/user config discovery)
  */
 import * as path from "node:path";

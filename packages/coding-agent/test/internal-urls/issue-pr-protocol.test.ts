@@ -1,7 +1,7 @@
 /**
  * `issue://` / `pr://` protocol handler tests.
  *
- * Every test isolates `OMP_GITHUB_CACHE_DB` to a temp file and resets the
+ * Every test isolates `PROTO_GITHUB_CACHE_DB` to a temp file and resets the
  * cache + router singletons. `git.github.json` / `git.github.text` are spied
  * per-test and restored in `afterEach`.
  */

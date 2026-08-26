@@ -1,11 +1,11 @@
 /**
  * Shared automation Chromium owned by the per-project daemon broker.
  *
- * Instead of every omp process launching (and sometimes orphaning) a private
+ * Instead of every proto process launching (and sometimes orphaning) a private
  * Chromium, the headless browser kind attaches to one broker-supervised Chrome
  * per project directory — sessions and subagents each open their own tabs in
- * it. The broker stops the daemon when the last omp client in the project
- * exits, so Chrome can never outlive omp, and concurrent acquisitions across
+ * it. The broker stops the daemon when the last proto client in the project
+ * exits, so Chrome can never outlive proto, and concurrent acquisitions across
  * processes converge on a single launch instead of a launch storm.
  */
 import * as fs from "node:fs/promises";
@@ -26,7 +26,7 @@ const PROBE_TIMEOUT_MS = 1_500;
 /** describe→start rounds before giving up; bounds cross-process start races and wedged-Chrome replacement. */
 const ENSURE_ATTEMPTS = 3;
 
-/** Broker-owned browser endpoint one omp process can attach to. */
+/** Broker-owned browser endpoint one proto process can attach to. */
 interface SharedBrowserEndpoint {
 	wsEndpoint: string;
 	daemonName: string;

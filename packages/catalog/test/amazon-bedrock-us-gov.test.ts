@@ -5,7 +5,7 @@ import { MODELS_DEV_PROVIDER_DESCRIPTORS, mapModelsDevToModels } from "@oh-my-pi
  * Contract: bare Anthropic Claude foundation rows from models.dev/stencil.so
  * must produce a `us-gov.<foundation-id>` Bedrock inference-profile selector.
  * GovCloud accounts expose system profiles under that geo prefix; without it,
- * `omp --model amazon-bedrock/us-gov.…` fails model resolution even though
+ * `proto --model amazon-bedrock/us-gov.…` fails model resolution even though
  * AWS CLI and ARN-based selectors work.
  */
 const CLAUDE_FOUNDATION_ID = "anthropic.claude-sonnet-4-5-20250929-v1:0";

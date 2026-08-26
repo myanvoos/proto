@@ -1,11 +1,11 @@
 /**
  * Regression tests for #1496.
  *
- * The native `omp` discovery provider only walks `.omp/` and `~/.omp/agent/`.
+ * The native `proto` discovery provider only walks `.proto/` and `~/.proto/agent/`.
  * Extension packages registered via `extensions:` in settings or
  * `--extension` on the CLI ship their own `skills/`, `hooks/`, `tools/`,
- * `commands/`, `rules/`, `prompts/`, and `.mcp.json`. The `omp-plugins`
- * provider (`src/discovery/omp-plugins.ts`) is what wires those sub-trees
+ * `commands/`, `rules/`, `prompts/`, and `.mcp.json`. The `proto-plugins`
+ * provider (`src/discovery/proto-plugins.ts`) is what wires those sub-trees
  * into the standard capability surfaces.
  *
  * The provider is invoked directly so the `LoadContext` uses a tempdir as
@@ -404,9 +404,9 @@ test("installed plugins under `<plugins>/node_modules/` are surfaced (e.g. via `
 		path.join(pluginsDir, "package.json"),
 		JSON.stringify({ name: "proto-plugins", dependencies: { "my-installed-ext": "1.0.0" } }),
 	);
-	// Plugin's own package.json must carry an `omp`/`pi` manifest for the
+	// Plugin's own package.json must carry an `proto`/`pi` manifest for the
 	// loader to recognise it; the buildExtensionPackage fixture already wrote
-	// one with `omp.extensions`, which is sufficient.
+	// one with `proto.extensions`, which is sufficient.
 
 	const skills = await loadFromPlugin<{ name: string; path: string }>(skillCapability.id, ctx());
 	const found = skills.find(s => s.name === "my-skill" && s.path.includes("my-installed-ext"));
@@ -453,10 +453,10 @@ test("disabled installed plugins do not contribute sub-discovery", async () => {
 });
 
 test("linked plugins (only in lockfile, not in package.json#dependencies) are surfaced", async () => {
-	// `omp plugin link ./local-ext` creates a symlink under
+	// `proto plugin link ./local-ext` creates a symlink under
 	// `<plugins>/node_modules/<pkg>` plus a lockfile entry, but it never
 	// touches `<plugins>/package.json#dependencies`. The discovery path must
-	// still find the package — otherwise the documented `omp install
+	// still find the package — otherwise the documented `proto install
 	// ./local-extension` workflow leaves the sibling skills/hooks/tools
 	// invisible (see PR #1498 review).
 	const pluginsDir = path.join(home, ".proto", "plugins");

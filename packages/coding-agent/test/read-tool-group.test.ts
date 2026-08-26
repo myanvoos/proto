@@ -364,7 +364,7 @@ describe("readArgsCollapseIntoGroup", () => {
 		["skill://my-skill/file.md"],
 		["proto://docs/tools/read.md"],
 		["issue://123"],
-		["pr://can1357/oh-my-pi/456"],
+		["pr://can1357/proto/456"],
 		["agent://abc"],
 		["artifact://abc"],
 		["rule://name"],

@@ -60,7 +60,7 @@ export function bridgeToolMap(
 }
 
 /**
- * Server-injected Cursor CLI edit names that are not in the OMP registry.
+ * Server-injected Cursor CLI edit names that are not in the PROTO registry.
  *
  * Native Ultra edits arrive as `editToolCall`. If that frame is absent, the
  * model still follows the injected instructions and calls these as MCP — which

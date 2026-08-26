@@ -65,7 +65,7 @@ describe("createAgentSession skills option", () => {
 
 	beforeEach(() => {
 		tempDir = path.join(os.tmpdir(), `pi-sdk-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		// Create skill in .omp/skills/ for native project-level discovery
+		// Create skill in .proto/skills/ for native project-level discovery
 		skillsDir = path.join(tempDir, ".proto", "skills", "test-skill");
 		fs.mkdirSync(skillsDir, { recursive: true });
 		originalHome = process.env.HOME;

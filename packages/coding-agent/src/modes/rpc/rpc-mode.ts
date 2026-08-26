@@ -1472,7 +1472,7 @@ export async function runRpcMode(
 			// reaper (releaseTabsForOwner) and other bounded teardown run before
 			// the process exits. dispose() also emits `session_shutdown`, so we
 			// must NOT emit it separately here or the event fires twice. Skipping
-			// dispose left OMP-owned Chromium alive after RPC shutdown (#5643).
+			// dispose left PROTO-owned Chromium alive after RPC shutdown (#5643).
 			await session.dispose();
 			process.exit(0);
 		},

@@ -706,10 +706,10 @@ export class PluginManager {
 
 	/**
 	 * Resolve a plugin from the active project plugin root
-	 * (`<anchor>/.omp/plugins`). Project npm/link/marketplace installs all record
+	 * (`<anchor>/.proto/plugins`). Project npm/link/marketplace installs all record
 	 * their runtime state and `node_modules` symlink there — invisible to the
 	 * user-root lookup — so this reads the project's own `package.json`
-	 * dependencies plus `omp-plugins.lock.json`, and resolves the package from
+	 * dependencies plus `proto-plugins.lock.json`, and resolves the package from
 	 * the project `node_modules`. Returns undefined when there is no active
 	 * project, when it coincides with the user root, or when the package is not
 	 * installed there.

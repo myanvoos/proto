@@ -42,7 +42,7 @@ export interface DiscoverAuthStorageOptions {
 	accountPool?: AuthBrokerAccountPool;
 }
 
-/** Path to the local bearer token file. Created by `omp auth-broker token`. */
+/** Path to the local bearer token file. Created by `proto auth-broker token`. */
 export function getAuthBrokerTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-broker.token");
 }
@@ -180,7 +180,7 @@ function resolveSnapshotTtlMs(): number {
 /**
  * Resolve broker connection configuration using the same precedence as the TUI:
  *
- * 1. `OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN` env vars.
+ * 1. `PROTO_AUTH_BROKER_URL` / `PROTO_AUTH_BROKER_TOKEN` env vars.
  * 2. `auth.broker.url` / `auth.broker.token` in `<agentDir>/config.yml` or `<agentDir>/config.yaml`.
  * 3. `<config-root>/auth-broker.token` file (paired with a URL from env/config).
  *

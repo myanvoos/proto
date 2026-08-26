@@ -19,7 +19,7 @@
  *   > the entire reasoning content from the context.
  *
  * Without `keep: "all"` the Moonshot backend silently drops every prior turn's
- * `reasoning_content` even though omp already sends it on the wire (the Kimi
+ * `reasoning_content` even though proto already sends it on the wire (the Kimi
  * compat path sets `requiresReasoningContentForToolCalls`). K2.6 then has to
  * re-derive its full chain-of-thought from the user prompt on every iteration
  * of an agent loop, which the reporter sees as the agent "stops in between

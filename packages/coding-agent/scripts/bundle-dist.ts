@@ -74,7 +74,7 @@ async function main(): Promise<void> {
 	// One payload for both consumers: inlined into dist/cli.js via `--define` for
 	// the bundled CLI entrypoint, and written to dist/docs-index.generated.txt so
 	// SDK consumers importing `@oh-my-pi/pi-coding-agent/*` (TypeScript source, no
-	// build-time embed) can still resolve omp:// docs (see src/internal-urls/docs-index.ts).
+	// build-time embed) can still resolve proto:// docs (see src/internal-urls/docs-index.ts).
 	const docsPayload = await buildDocsIndexPayload();
 	// Build in-process: the docs embed payload is far larger than Linux's
 	// 128KiB per-argv-string cap, so it can never be passed as a CLI

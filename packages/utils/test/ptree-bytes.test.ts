@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { spawn } from "@oh-my-pi/pi-utils/ptree";
 
 describe("ptree.ChildProcess.bytes()", () => {
-	// Regression for https://github.com/can1357/oh-my-pi/issues/3712:
+	// Regression for https://proto.sh:
 	// `Response(stream).bytes()` returns the raw `ArrayBuffer` once the body
 	// arrives in more than one chunk (which happens for subprocess stdout past
 	// ~128 KB). Downstream code — e.g. the SSH read path's `decodeUtf8Text` —

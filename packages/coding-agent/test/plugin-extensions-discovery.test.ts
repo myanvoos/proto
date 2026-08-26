@@ -15,12 +15,12 @@ describe("plugin extension discovery", () => {
 	beforeEach(() => {
 		projectDir = TempDir.createSync("@pi-plugin-ext-");
 		// Redirect the whole config root to an isolated temp home so plugin discovery
-		// resolves into `<tempHome>/.omp/plugins` on every platform. Two things are needed:
-		//  - mock os.homedir() so configRoot = `<tempHome>/.omp` (the previous
+		// resolves into `<tempHome>/.proto/plugins` on every platform. Two things are needed:
+		//  - mock os.homedir() so configRoot = `<tempHome>/.proto` (the previous
 		//    XDG_DATA_HOME redirect was a no-op on Windows, where these tests then wrote
-		//    into and rm'd the developer's real `~/.omp/plugins`);
+		//    into and rm'd the developer's real `~/.proto/plugins`);
 		//  - clear the XDG_* vars, because on Linux/macOS the resolver prefers
-		//    `$XDG_DATA_HOME/omp` over the home config root when that dir exists, so an
+		//    `$XDG_DATA_HOME/proto` over the home config root when that dir exists, so an
 		//    XDG-migrated environment would otherwise still resolve the real plugins dir.
 		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-plugin-home-"));
 		for (const key of xdgVars) {
@@ -33,7 +33,7 @@ describe("plugin extension discovery", () => {
 		const pluginsDir = getPluginsDir();
 		// Safety gate: never write fixtures outside the temp home. This is the exact
 		// failure mode being fixed — a resolver/mock regression that resolves to the real
-		// ~/.omp must fail loudly here instead of clobbering the developer's plugins.
+		// ~/.proto must fail loudly here instead of clobbering the developer's plugins.
 		if (!pluginsDir.startsWith(tempHome + path.sep)) {
 			throw new Error(`plugin isolation failed: getPluginsDir() resolved outside the temp home: ${pluginsDir}`);
 		}

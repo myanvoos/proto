@@ -6,7 +6,7 @@
  * "No models available". Those providers ship no bundled models, so the
  * static+cached catalog the SDK resolves against at startup is empty on a
  * cache-cold boot; the online discovery pass in `main.ts` runs only AFTER
- * `createAgentSession` returns. `omp models` (which awaits discovery) listed the
+ * `createAgentSession` returns. `proto models` (which awaits discovery) listed the
  * models, but the interactive session degraded. The SDK now awaits one
  * cache-aware discovery pass and retries resolution when the initial fallback
  * fails and discoverable providers exist.

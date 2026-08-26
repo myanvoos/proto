@@ -5,7 +5,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 
 withoutTerminalMultiplexer();
 
-// Regression test for https://github.com/can1357/oh-my-pi/issues/2115
+// Regression test for https://proto.sh
 //
 // Large session resumes on ConPTY hosts used to feed the terminal a full
 // synchronized paint for the entire transcript. ProcessTerminal split that

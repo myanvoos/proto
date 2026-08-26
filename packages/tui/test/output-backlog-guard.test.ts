@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "bun:test";
 import { OutputBacklogGuard, ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
-// Regression test for https://github.com/can1357/oh-my-pi/issues/6854
+// Regression test for https://proto.sh
 //
 // A stalled-but-alive PTY consumer never throws, so ProcessTerminal.#safeWrite
 // has no error to catch: process.stdout.write() just returns false and queues

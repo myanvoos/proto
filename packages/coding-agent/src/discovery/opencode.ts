@@ -81,7 +81,7 @@ async function loadJsonConfig(
  * OpenCode expands `{env:VAR}` (the env value, or an empty string when unset)
  * and `{file:path}` (file contents, trimmed and JSON-escaped) at load time,
  * before the JSON is parsed — see opencode `packages/opencode/src/config/variable.ts`.
- * OMP loads the same config files, so it MUST honor the same syntax; the generic
+ * PROTO loads the same config files, so it MUST honor the same syntax; the generic
  * `${VAR}` expansion used elsewhere never matches, leaving a header like
  * `Bearer {env:MCP_KEY}` to reach the MCP server verbatim and 401 (#8778).
  *

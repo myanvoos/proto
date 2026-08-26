@@ -83,7 +83,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 			});
 
 			try {
-				// Bug: omp falls back to anthropic Haiku here, ignoring the
+				// Bug: proto falls back to anthropic Haiku here, ignoring the
 				// path-scoped enabledModels allow-list.
 				expect(session.model?.provider).not.toBe("anthropic");
 				expect(session.model?.provider).not.toBe("github-copilot");

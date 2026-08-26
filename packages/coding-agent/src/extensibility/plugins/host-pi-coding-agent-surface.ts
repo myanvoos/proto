@@ -18,7 +18,7 @@ export * from "../../index";
 /**
  * Synchronous auth storage surface for extensions.
  *
- * Modern OMP auth storage is asynchronous, while extensions call
+ * Modern PROTO auth storage is asynchronous, while extensions call
  * `AuthStorage.create().get()` during module initialization. The facade opens
  * the shared agent database per call, so credentials written by the host stay
  * visible and credential writes from the extension land in the same store.

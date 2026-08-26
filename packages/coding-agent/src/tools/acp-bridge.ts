@@ -4,7 +4,7 @@
  * When an ACP client (e.g. Zed) advertises the `fs.writeTextFile` capability,
  * all write-mode tools must route through it so the editor's open buffer is
  * updated immediately. Internal artifacts (session `local://` sandbox paths,
- * other scheme URLs) are always written directly to disk — those are OMP-owned
+ * other scheme URLs) are always written directly to disk — those are PROTO-owned
  * and should never be pushed into the editor.
  */
 
@@ -17,12 +17,12 @@ import { ToolError } from "./tool-errors";
 /**
  * Return `true` when an ACP client bridge write is appropriate for this path.
  * Returns `false` for internal-URL paths and for session-local artifact
- * sandbox paths — both are OMP-internal artifacts that must stay off the
+ * sandbox paths — both are PROTO-internal artifacts that must stay off the
  * editor's buffer.
  */
 function shouldRouteWriteThroughBridge(session: ToolSession, requestedPath: string, absolutePath: string): boolean {
 	if (isInternalUrlPath(requestedPath)) return false;
-	// OMP-owned session artifacts must stay off the editor buffer even when
+	// PROTO-owned session artifacts must stay off the editor buffer even when
 	// addressed by their absolute sandbox path — e.g. after tag-based path
 	// recovery rebinds a bare `scratch.md#tag` onto the `local://` artifact,
 	// `requestedPath` is the absolute path, not the URL.

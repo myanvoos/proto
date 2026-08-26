@@ -151,7 +151,7 @@ function getApiLimitDisplayName(scope: unknown): string | undefined {
  * binding limit active (an account pinned at a 100% Fable cap reports its 77%
  * shared weekly row as `is_active: false`), so it signals severity ranking,
  * not bucket existence. Filtering on it hid real utilization — a scoped row
- * at 5% with a live reset rendered as `not reported` in `omp usage`.
+ * at 5% with a live reset rendered as `not reported` in `proto usage`.
  */
 function parseApiLimitEntries(raw: unknown): ParsedApiLimitEntry[] {
 	if (!Array.isArray(raw)) return [];

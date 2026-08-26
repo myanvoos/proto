@@ -922,8 +922,8 @@ export class WorkerCore {
 	}
 
 	/**
-	 * Tell the omp browser relay this worker drives the adopted page, so the
-	 * relay adds it to the per-window "omp" tab group. Best-effort: plain CDP
+	 * Tell the proto browser relay this worker drives the adopted page, so the
+	 * relay adds it to the per-window "proto" tab group. Best-effort: plain CDP
 	 * backends (real Chrome, cmux) reject the relay-private method.
 	 */
 	async #claimRelayTarget(page: Page): Promise<void> {
@@ -935,7 +935,7 @@ export class WorkerCore {
 			const raw = session as unknown as { send(method: string): Promise<unknown> };
 			await raw.send("PROTO.claimTarget");
 		} catch {
-			// Not the omp relay; nothing to claim.
+			// Not the proto relay; nothing to claim.
 		} finally {
 			await session?.detach().catch(() => undefined);
 		}

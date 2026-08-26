@@ -4,11 +4,11 @@
  * The Codex `config.toml` MCP importer in `packages/coding-agent/src/discovery/codex.ts`
  * used to copy only `command`/`args`/`url` into the returned `MCPServer`, dropping
  * `cwd` and leaving relative `command` values verbatim. MCP stdio spawning then
- * resolved those relative values against the OMP session cwd, so the bundled Codex
+ * resolved those relative values against the PROTO session cwd, so the bundled Codex
  * Computer Use server (a relative `command` with `cwd = "."`) failed with ENOENT.
  *
  * The importer now roots relative `command`/`cwd` at the config directory via
- * `resolvePluginStdioPaths`, matching the claude-plugins/omp-plugins fix in #5481.
+ * `resolvePluginStdioPaths`, matching the claude-plugins/proto-plugins fix in #5481.
  */
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";

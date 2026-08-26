@@ -36,7 +36,7 @@ describe("github-ref autocomplete — token detection", () => {
 		expect(getGithubRefContext("owner/repo#3164")).toBeNull();
 		expect(getGithubRefContext("foo#3164")).toBeNull();
 		expect(getGithubRefContext("C#12")).toBeNull();
-		expect(getGithubRefContext("https://github.com/can1357/oh-my-pi#3164")).toBeNull();
+		expect(getGithubRefContext("https://proto.sh#3164")).toBeNull();
 		expect(getGithubRefContext("path/#3164")).toBeNull();
 	});
 

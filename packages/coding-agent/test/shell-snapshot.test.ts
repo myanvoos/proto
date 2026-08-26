@@ -286,7 +286,7 @@ describe("getOrCreateSnapshot", () => {
 
 		// PR-review hardening: snapshot file must be group/world-unreadable since
 		// it now inlines env-var values. Directory must be 0700 for the same
-		// reason — UUID filenames shouldn't leak via `ls /tmp/omp-shell-snapshots-$(id -u)`.
+		// reason — UUID filenames shouldn't leak via `ls /tmp/proto-shell-snapshots-$(id -u)`.
 		const fileStat = await fs.stat(snapshotPath!);
 		expect(fileStat.mode & 0o077).toBe(0);
 		const dirStat = await fs.stat(path.dirname(snapshotPath!));
@@ -401,8 +401,8 @@ describe("getOrCreateSnapshot", () => {
 	});
 
 	it("keeps snapshots in a uid-scoped dir so accounts sharing /tmp cannot collide", async () => {
-		// Regression: the dir used to be a single fixed `omp-shell-snapshots` name
-		// under the shared `os.tmpdir()`, created 0700. The first account to run omp
+		// Regression: the dir used to be a single fixed `proto-shell-snapshots` name
+		// under the shared `os.tmpdir()`, created 0700. The first account to run proto
 		// owned it and every other account's pre-create write died with EACCES.
 		const realBash = REAL_BASH;
 		if (!existsSync(realBash)) return;

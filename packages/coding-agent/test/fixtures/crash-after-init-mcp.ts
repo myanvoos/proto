@@ -11,7 +11,7 @@
  * agent's `bun` PID.
  *
  * Each invocation atomically appends the PID + timestamp to the path in
- * `$OMP_TEST_SPAWN_LOG`, so the test can count spawns without racing.
+ * `$PROTO_TEST_SPAWN_LOG`, so the test can count spawns without racing.
  */
 import * as fs from "node:fs";
 import * as readline from "node:readline";

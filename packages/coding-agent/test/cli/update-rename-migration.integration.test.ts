@@ -1,5 +1,5 @@
 /**
- * Real package-manager seam for `omp.rename` migrations.
+ * Real package-manager seam for `proto.rename` migrations.
  *
  * The unit tests in test/update-cli.test.ts prove the orchestration order of
  * migrateRenamedInstall with injected steps; these fixtures prove the two
@@ -53,7 +53,7 @@ afterAll(async () => {
 	await fixtureDir.remove();
 });
 
-/** Two shared, read-only packages that expose the same `omp` bin. */
+/** Two shared, read-only packages that expose the same `proto` bin. */
 async function makeFixtures(root: string): Promise<{ oldDir: string; newDir: string }> {
 	const mkpkg = async (name: string, version: string): Promise<string> => {
 		const dir = path.join(root, name);

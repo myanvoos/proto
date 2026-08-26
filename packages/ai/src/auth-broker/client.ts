@@ -1,8 +1,8 @@
 /**
- * HTTP client for the omp auth-broker server.
+ * HTTP client for the proto auth-broker server.
  *
  * Used by {@link RemoteAuthCredentialStore} (snapshot pulls) and by
- * `omp auth-broker status` (liveness checks). All endpoints except
+ * `proto auth-broker status` (liveness checks). All endpoints except
  * `/v1/healthz` require a bearer token.
  */
 

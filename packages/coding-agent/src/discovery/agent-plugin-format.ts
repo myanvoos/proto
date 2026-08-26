@@ -7,7 +7,7 @@
  * expansion (spec §9.2), and package-boundary containment (spec §4.1).
  *
  * The discovery provider in `./agent-plugins.ts` wires this into the
- * capability registry; `./claude-plugins.ts` and `./omp-plugins.ts` consult
+ * capability registry; `./claude-plugins.ts` and `./proto-plugins.ts` consult
  * {@link classifyAgentPluginRoot} so roots governed by the standard are not
  * double-loaded through legacy conventions.
  */
@@ -537,7 +537,7 @@ export function classifyAgentPluginRoot(rootPath: string): Promise<AgentPluginRo
 }
 
 /**
- * Whether a legacy plugin provider (claude-plugins, omp-plugins) may process a
+ * Whether a legacy plugin provider (claude-plugins, proto-plugins) may process a
  * root for the given surface. Roots governed by the Agent Plugins standard keep
  * their portable components (`skills`, `mcp`) exclusive to the standard loader,
  * while client-specific surfaces (commands, hooks, tools, …) still load from

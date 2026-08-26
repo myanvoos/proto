@@ -4,7 +4,7 @@
  * Where the OpenAI / Anthropic / Responses route modules translate foreign
  * wire shapes through pi-ai's canonical {@link Context}, this module accepts
  * the canonical shape *directly* — for clients that already speak pi-ai
- * (containerized omp, sidecar auth-gateway clients).
+ * (containerized proto, sidecar auth-gateway clients).
  * Skipping the wire-format → Context → wire-format round-trip cuts
  * per-request CPU but, more importantly, avoids the quantization that those
  * translations impose on first-class pi-ai fields (service tier, cache
@@ -42,7 +42,7 @@ export interface PiNativeParsedRequest {
  * provider-session map) and gateway-owned controls (`apiKey`, `signal`) are
  * intentionally absent — those are server-side concerns. Anything outside this
  * allow-list is dropped silently rather than 400ing, so clients can forward
- * `SimpleStreamOptions` from older / newer omp builds without per-version
+ * `SimpleStreamOptions` from older / newer proto builds without per-version
  * conditionals.
  */
 const ALLOWED_OPTION_KEYS: ReadonlySet<keyof SimpleStreamOptions> = new Set([

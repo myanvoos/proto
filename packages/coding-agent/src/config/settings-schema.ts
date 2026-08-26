@@ -385,9 +385,9 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	setupVersion: { type: "number", default: 0 },
 
-	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
+	// Auth broker — credentials proxied through a remote `proto auth-broker serve`
 	// host. Hidden from the UI; populate via env vars or hand-edited config.yml.
-	// Env (`OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN`) takes precedence so
+	// Env (`PROTO_AUTH_BROKER_URL` / `PROTO_AUTH_BROKER_TOKEN`) takes precedence so
 	// per-machine overrides remain trivial.
 	"auth.broker.url": { type: "string", default: undefined },
 	"auth.broker.token": { type: "string", default: undefined, credential: true },
@@ -2432,7 +2432,7 @@ export const SETTINGS_SCHEMA = {
 	"branchSummary.reserveTokens": { type: "number", default: 16384 },
 
 	// Auto-Learn (experimental): post-stop nudge to capture lessons as managed
-	// skills under ~/.omp/agent/managed-skills. Master flag is default-off → zero
+	// skills under ~/.proto/agent/managed-skills. Master flag is default-off → zero
 	// footprint; sub-flags gate behaviour.
 	"autolearn.enabled": {
 		type: "boolean",

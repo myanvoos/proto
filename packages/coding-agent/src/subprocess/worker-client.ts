@@ -130,12 +130,12 @@ export function workerEnvFromParent(overlay?: Record<string, string>): Record<st
 
 /**
  * `LD_LIBRARY_PATH` overlay that lets a dlopen'd native addon find its C++
- * runtime. The ONNX addons installed on demand under `~/.omp/agent/cache/**`
+ * runtime. The ONNX addons installed on demand under `~/.proto/agent/cache/**`
  * are `process.dlopen`'d and need `libstdc++.so.6` / `libgcc_s.so.1`; because
  * each addon carries its own `DT_RUNPATH`, an RPATH on our executable cannot
  * satisfy them, so the path has to come from the environment. On distros where
  * those libraries are outside the loader's default search path (NixOS) the
- * packaged build exports `OMP_NATIVE_LIBRARY_PATH` (see `nix/package.nix`).
+ * packaged build exports `PROTO_NATIVE_LIBRARY_PATH` (see `nix/package.nix`).
  * Appended last so an inherited `LD_LIBRARY_PATH` keeps precedence.
  * Pure for testability; see {@link inferenceWorkerEnv} for the spawn-time glue.
  */

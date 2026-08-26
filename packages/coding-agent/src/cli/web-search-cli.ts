@@ -1,7 +1,7 @@
 /**
  * Web search CLI command handlers.
  *
- * Handles `omp q`/`omp web-search` subcommands for testing web search providers.
+ * Handles `proto q`/`proto web-search` subcommands for testing web search providers.
  */
 
 import { getProjectDir } from "@oh-my-pi/pi-utils";

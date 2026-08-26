@@ -198,7 +198,7 @@ describe("flushGrievances", () => {
 		]);
 
 		// Rows are retained for inspection — `pushed=1` flips, but the data
-		// stays so users can browse what they've shipped via `omp grievances`.
+		// stays so users can browse what they've shipped via `proto grievances`.
 		expect(selectIds(db)).toEqual([1, 2]);
 		expect(selectPushedIds(db)).toEqual([1, 2]);
 		expect(selectUnpushedIds(db)).toEqual([]);

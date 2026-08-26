@@ -21,7 +21,7 @@ interface SSHHostInfo {
 	os: SSHHostOs;
 	shell: SSHHostShell;
 	/**
-	 * Shell name OMP verified can execute the POSIX transfer snippets
+	 * Shell name PROTO verified can execute the POSIX transfer snippets
 	 * (`head`/`cat`/`mv`/`test`/`ls`) `ssh://` uses. Probed by running
 	 * `sh -lc` / `bash -lc` / `zsh -lc` against the remote and keeping the
 	 * first one that round-trips a known marker. Independent of `shell`

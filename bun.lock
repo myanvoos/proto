@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "omp",
+      "name": "proto",
       "devDependencies": {
         "@biomejs/biome": "catalog:",
         "@types/bun": "catalog:",

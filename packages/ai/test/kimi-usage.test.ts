@@ -24,7 +24,7 @@ describe("kimi usage provider", () => {
 	it("surfaces the 5h limit reset time from the limit detail onto the window", async () => {
 		// Live payload shape: `resetTime` lives on `detail`, while `window`
 		// carries only duration/timeUnit. The 5h row must still render
-		// "resets in …" in `omp usage`.
+		// "resets in …" in `proto usage`.
 		const detailReset = "2026-07-18T05:43:35.355947Z";
 		const usageReset = "2026-07-21T07:43:35.355947Z";
 		const report = await kimiUsageProvider.fetchUsage!(

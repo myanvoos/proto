@@ -1,18 +1,18 @@
 /**
  * Regression test for #2935 and #4845: the plugins/marketplace docs advertise
- * `omp list` / `omp remove` / `omp marketplace <sub>` / `omp uninstall …` etc.
- * as top-level commands, but only `omp install` is registered. Before the fix,
+ * `proto list` / `proto remove` / `proto marketplace <sub>` / `proto uninstall …` etc.
+ * as top-level commands, but only `proto install` is registered. Before the fix,
  * `resolveCliArgv(["list"])` rewrote the bare verb to `["launch", "list"]`, so
- * `omp list` silently started an interactive agent session with "list" as the
+ * `proto list` silently started an interactive agent session with "list" as the
  * initial LLM prompt instead of managing plugins (the real command is
- * `omp plugin list`). #4845 extended the same footgun to the multi-word
- * documented grammar: `omp marketplace add xyz` leaked the whole argv to the
+ * `proto plugin list`). #4845 extended the same footgun to the multi-word
+ * documented grammar: `proto marketplace add xyz` leaked the whole argv to the
  * model as a prompt.
  *
  * These tests pin the chosen bugfix: a documented plugin/marketplace verb that
  * is bare, or that follows the documented grammar (a marketplace sub-action or a
  * `name@marketplace` plugin id), yields a helpful hint pointing at the real
- * `omp plugin <action>` command rather than leaking to the model — while
+ * `proto plugin <action>` command rather than leaking to the model — while
  * genuine prose prompts that merely begin with one of these words still fall
  * through to `launch`.
  *

@@ -5,7 +5,7 @@
  * `sessionManager.buildSessionContext()` — the LLM-context builder — must not be
  * consulted for display.
  *
- * Also guards the cold-launch terminal cleanup: `omp` / `omp -c` leave the
+ * Also guards the cold-launch terminal cleanup: `proto` / `proto -c` leave the
  * previous run's transcript in native scrollback because the TUI's initial
  * paint preserves it, so the cold-launch render must request a
  * scrollback-clearing repaint (`clearTerminalHistory`).

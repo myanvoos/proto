@@ -6,7 +6,7 @@
  * built by the same shell driver with explicit target names. Host target
  * only — no cross-compilation.
  *
- * `OMP_NATIVE_CARGO_PROFILE` selects the cargo profile (default `local`:
+ * `PROTO_NATIVE_CARGO_PROFILE` selects the cargo profile (default `local`:
  * incremental, unstripped). Image builds set `ci` for a stripped addon.
  */
 

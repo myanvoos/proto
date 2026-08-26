@@ -1,18 +1,18 @@
 /**
- * OMP extension package roots.
+ * PROTO extension package roots.
  *
  * An "extension package root" is a directory configured via either
  * `extensions:` in user/project settings or the `--extension`/`-e` CLI flag
  * that points to a packaged extension on disk. The package's standard
  * sub-directories (`skills/`, `hooks/`, `tools/`, `commands/`, `rules/`,
- * `prompts/`, `.mcp.json`) are wired into discovery by `omp-plugins.ts`.
+ * `prompts/`, `.mcp.json`) are wired into discovery by `proto-plugins.ts`.
  *
  * CLI-provided paths are injected via {@link injectOmpExtensionCliRoots}
  * before discovery runs; settings paths are read lazily from
  * `<scope>/settings.json` in {@link listOmpExtensionRoots} to mirror what
  * `loadExtensionModules` already does.
  *
- * @see ./omp-plugins.ts
+ * @see ./proto-plugins.ts
  * @see ./builtin.ts `loadExtensionModules`
  */
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -59,7 +59,7 @@ interface InjectOmpExtensionCliRootOptions {
 	/**
 	 * `explicit-only` exposes only roots named by this CLI invocation. Use it
 	 * with `--no-extensions` so configured and installed packages cannot
-	 * contribute sibling capabilities through the `omp-plugins` provider.
+	 * contribute sibling capabilities through the `proto-plugins` provider.
 	 */
 	mode?: OmpExtensionRootMode;
 	/** Replace roots from an earlier invocation instead of extending them. */
@@ -168,10 +168,10 @@ async function isDirectory(p: string): Promise<boolean> {
  *
  * 1. Invocation-scoped SDK roots, when present; otherwise CLI roots injected
  *    via {@link injectOmpExtensionCliRoots}
- * 2. Project `<cwd>/.omp/settings.json#extensions`
- * 3. User `~/.omp/agent/settings.json#extensions`
+ * 2. Project `<cwd>/.proto/settings.json#extensions`
+ * 3. User `~/.proto/agent/settings.json#extensions`
  * 4. Enabled npm/link plugins installed under `<plugins>/node_modules/` (for
- *    `omp install <pkg>` / `omp plugin install` / `omp plugin link`). Marketplace
+ *    `proto install <pkg>` / `proto plugin install` / `proto plugin link`). Marketplace
  *    installs are loaded by the `claude-plugins` provider and are excluded here.
  * Only entries that resolve to a directory on disk are returned; file
  * entrypoints contribute zero sub-discovery surface and are filtered out.
@@ -230,7 +230,7 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
  * Marketplace installs also create runtime symlinks for enable-state persistence,
  * but their resources are discovered through the `claude-plugins` provider.
  * Filtering them here prevents `/status` from showing the same plugin under both
- * "Claude Code Marketplace" and "OMP Extension Packages".
+ * "Claude Code Marketplace" and "PROTO Extension Packages".
  */
 async function realpathOrResolved(p: string): Promise<string> {
 	try {

@@ -9,14 +9,6 @@
     "Mario Zechner"
   ],
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
-    "directory": "packages/ai"
-  },
-  "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
-  },
   "keywords": [
     "ai",
     "llm",

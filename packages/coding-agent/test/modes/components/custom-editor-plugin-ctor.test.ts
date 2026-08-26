@@ -5,7 +5,7 @@ import { getEditorTheme, initTheme } from "../../../src/modes/theme/theme";
 
 /**
  * Regression for issue #4766: plugins written against upstream pi subclass
- * `CustomEditor`/`Editor` and forward `super(tui, theme, keybindings)`. omp's
+ * `CustomEditor`/`Editor` and forward `super(tui, theme, keybindings)`. proto's
  * `setEditorComponent` factory contract advertises exactly that arg order, so
  * the base constructor must resolve the real theme by shape (not position) or
  * every render throws `undefined is not an object (evaluating

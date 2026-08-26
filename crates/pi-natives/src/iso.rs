@@ -32,12 +32,12 @@ const ISO_UNAVAILABLE_WITH_LEADING_SPACE: &str = " ISO_UNAVAILABLE:";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi]
 pub enum IsoBackendKind {
-	Apfs              = 0,
-	Btrfs             = 1,
-	Zfs               = 2,
-	LinuxReflink      = 3,
-	Overlayfs         = 4,
-	Rcopy             = 7,
+	Apfs         = 0,
+	Btrfs        = 1,
+	Zfs          = 2,
+	LinuxReflink = 3,
+	Overlayfs    = 4,
+	Rcopy        = 7,
 }
 
 /// How a single file changed between `lower` and `merged`.

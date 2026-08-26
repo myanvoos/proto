@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { chunkForConPTY, ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
-// Regression test for https://github.com/can1357/oh-my-pi/issues/2034
+// Regression test for https://proto.sh
 //
 // ConPTY ties viewport tracking to per-`WriteFile` boundaries: when
 // a single `process.stdout.write` exceeds ~32-64 KB, the pseudo-console

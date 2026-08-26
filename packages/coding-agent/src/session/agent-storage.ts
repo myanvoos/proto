@@ -172,7 +172,7 @@ ON CONFLICT(name) DO UPDATE SET count = command_usage.count + 1, last_used_at = 
 	#initializeSchema(): void {
 		// Install the busy handler BEFORE any lock-taking statement (incl.
 		// `PRAGMA journal_mode=WAL`, which acquires an exclusive lock during WAL
-		// recovery). Without this, concurrent omp startups can crash here with
+		// recovery). Without this, concurrent proto startups can crash here with
 		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. See issue #2421. Headless
 		// hosts bound the wait so lock contention cannot freeze the protocol
 		// loop for the full interactive timeout.

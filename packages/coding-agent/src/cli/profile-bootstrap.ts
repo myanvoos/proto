@@ -11,7 +11,7 @@
  * contract as `args.ts`: known string-valued flags usually consume the next
  * token even when it starts with `-`. Optional-value
  * flags (`--resume`, `--session`, `-r`) consume the next token only when it
- * doesn't look like another flag. Without this, `omp --system-prompt --profile
+ * doesn't look like another flag. Without this, `proto --system-prompt --profile
  * foo` silently activates profile `foo`
  * instead of passing the literal `--profile` to the system prompt and `foo`
  * as a positional message.
@@ -27,9 +27,9 @@
  * a boolean extension flag consumes nothing. So the successor is forwarded
  * untouched (and never read as a global `--profile`/`--alias`) only when it is
  * value-like; a flag-looking successor is left for normal processing, so
- * `omp --some-ext-flag --profile work` still selects a profile. Known value-less
+ * `proto --some-ext-flag --profile work` still selects a profile. Known value-less
  * launch flags ({@link VALUELESS_FLAGS}) are exempt so a trailing profile after
- * them also activates (`omp --print --profile work`).
+ * them also activates (`proto --print --profile work`).
  */
 
 import { isSubcommand, LAUNCH_FLAG_COMMANDS } from "../cli-commands";
@@ -60,10 +60,10 @@ interface ProfileBootstrapResult {
  * Global flag extraction stops only when the first residual argv token names a
  * registered command that owns its own flags (e.g. `grep`): everything from
  * that token onward is forwarded verbatim so a subcommand's own flags and
- * positionals are never stolen (`omp grep --profile <path>` greps for
+ * positionals are never stolen (`proto grep --profile <path>` greps for
  * `--profile`; it does not select a profile). `launch` and `acp` are explicit
- * spellings of launch-shaped commands, so `omp launch --profile work` and
- * `omp acp --profile work` still select profile `work`.
+ * spellings of launch-shaped commands, so `proto launch --profile work` and
+ * `proto acp --profile work` still select profile `work`.
  *
  * Throws when either flag is supplied without a value.
  */
@@ -171,15 +171,15 @@ export function extractProfileFlags(argv: readonly string[]): ProfileBootstrapRe
 		// extension flags (./args.ts): a string extension flag consumes its successor
 		// ONLY when that successor is value-like (does not start with `-`), and a
 		// boolean extension flag consumes nothing. So protect (forward + skip) the
-		// successor only when it is value-like — `omp --bar val --profile work` keeps
+		// successor only when it is value-like — `proto --bar val --profile work` keeps
 		// `val` with `--bar` and still extracts the trailing profile — and otherwise
 		// forward just the flag, letting the loop process a flag-looking successor so
-		// a trailing global flag still applies (`omp --some-ext-bool --profile work`
+		// a trailing global flag still applies (`proto --some-ext-bool --profile work`
 		// selects profile `work`). A `--` successor is deliberately NOT protected
 		// here: it falls through to the end-of-options arm above, keeping `--` a
 		// single, consistent meaning instead of being swallowed as a flag value.
 		// Known value-less launch flags are exempt so a trailing profile still
-		// activates (`omp --print --profile work`).
+		// activates (`proto --print --profile work`).
 		if (isUnknownLongValueCandidate(arg)) {
 			canDispatchSubcommand = false;
 			stripped.push(arg);

@@ -925,10 +925,10 @@ export async function requestOpenAiRemoteCompaction(
 /**
  * Generic remote-compaction POST. Two wire shapes are auto-selected by
  * endpoint suffix so a single `compaction.remoteEndpoint` setting can point at
- * either a purpose-built omp summarizer (`{systemPrompt, prompt}` → `{summary}`)
+ * either a purpose-built proto summarizer (`{systemPrompt, prompt}` → `{summary}`)
  * or any OpenAI-compatible chat-completions server (`/chat/completions`,
  * `/v1/chat/completions`, …) as reported for llama.cpp / vLLM / etc. in
- * issue #4630: without this, the omp payload was rejected with
+ * issue #4630: without this, the proto payload was rejected with
  * HTTP 400 `"'messages' is required"`, compaction silently fell back to
  * local summarization, and context grew unbounded.
  *

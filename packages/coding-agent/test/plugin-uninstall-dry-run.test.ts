@@ -1,5 +1,5 @@
 /**
- * Regression tests for `omp plugin uninstall <plugin> --dry-run` (#8178).
+ * Regression tests for `proto plugin uninstall <plugin> --dry-run` (#8178).
  *
  * `--dry-run` must be non-mutating: it reports what would be removed and
  * leaves the installed plugin list untouched. Before the fix, `handleUninstall`

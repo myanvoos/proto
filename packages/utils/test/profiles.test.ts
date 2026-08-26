@@ -164,14 +164,14 @@ describe("profile directories", () => {
 		process.env.XDG_STATE_HOME = path.join(tempRoot, "state");
 		process.env.XDG_CACHE_HOME = path.join(tempRoot, "cache");
 
-		// Fresh install: XDG vars are set (typical Linux) but no $XDG/omp exists yet.
+		// Fresh install: XDG vars are set (typical Linux) but no $XDG/proto exists yet.
 		// First activation must land in ~/<config-dir>/profiles/work because
 		// the profile-specific XDG path does not exist.
 		setProfile("work");
 		const firstAgentDir = getAgentDir();
 		expect(firstAgentDir).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
 
-		// Later, the base XDG app dir materializes (e.g. via `omp config init-xdg`
+		// Later, the base XDG app dir materializes (e.g. via `proto config init-xdg`
 		// migrating only the default-profile data). The named profile must stay
 		// in its original location until the user explicitly migrates it.
 		await fs.mkdir(path.join(process.env.XDG_DATA_HOME, "proto"), { recursive: true });
@@ -227,7 +227,7 @@ describe("profile directories", () => {
 	});
 
 	it("does not restore a profile-derived agent dir as the default baseline", () => {
-		// Reproduces a child process that inherited OMP_PROFILE=work plus the
+		// Reproduces a child process that inherited PROTO_PROFILE=work plus the
 		// profile-derived PI_CODING_AGENT_DIR that setProfile propagates to
 		// children. The module-load snapshot must not capture that profile dir as
 		// the default baseline, or setProfile(undefined) would resolve default
@@ -237,7 +237,7 @@ describe("profile directories", () => {
 		expect(getAgentDir()).toBe(workAgentDir);
 		expect(process.env.PI_CODING_AGENT_DIR).toBe(workAgentDir);
 
-		// Re-snapshot exactly as module load would, now that OMP_PROFILE and the
+		// Re-snapshot exactly as module load would, now that PROTO_PROFILE and the
 		// profile-derived PI_CODING_AGENT_DIR are present in the environment.
 		__resetProfileSnapshotForTests();
 
@@ -250,11 +250,11 @@ describe("profile directories", () => {
 
 describe("profile env + name validation", () => {
 	it("honors PROTO_PROFILE precedence and treats empty/default as the default profile", () => {
-		// OMP_PROFILE is canonical and wins over the legacy PI_PROFILE fallback.
+		// PROTO_PROFILE is canonical and wins over the legacy PI_PROFILE fallback.
 		expect(resolveProfileEnv("work", "other")).toBe("work");
-		// PI_PROFILE is consulted only when OMP_PROFILE is undefined.
+		// PI_PROFILE is consulted only when PROTO_PROFILE is undefined.
 		expect(resolveProfileEnv(undefined, "work")).toBe("work");
-		// An explicitly-empty OMP_PROFILE selects the default profile; it must NOT
+		// An explicitly-empty PROTO_PROFILE selects the default profile; it must NOT
 		// fall through to the lower-precedence PI_PROFILE.
 		expect(resolveProfileEnv("", "work")).toBeUndefined();
 		expect(resolveProfileEnv("   ", "work")).toBeUndefined();

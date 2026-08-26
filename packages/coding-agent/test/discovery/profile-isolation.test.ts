@@ -1,14 +1,14 @@
 /**
- * Regression: OMP-native user-level config discovery must follow the active
- * profile. A profile relocates the agent directory to ~/.omp/profiles/<name>/agent;
+ * Regression: PROTO-native user-level config discovery must follow the active
+ * profile. A profile relocates the agent directory to ~/.proto/profiles/<name>/agent;
  * the native provider used to read user config (commands, skills, rules, etc.)
- * from the literal home (~/.omp/agent) via `ctx.home`, leaking the default
+ * from the literal home (~/.proto/agent) via `ctx.home`, leaking the default
  * profile's config into every profile. Discovery now resolves the user scope
  * through getAgentDir(), so a profile sees only its own config.
  *
  * Covers two code paths: getConfigDirs() (slash commands) and a direct
  * getAgentDir() join (skills). `os.homedir()` is mocked so the old code path
- * (ctx.home + ".omp/agent") points at the tempdir decoys below; without the fix
+ * (ctx.home + ".proto/agent") points at the tempdir decoys below; without the fix
  * each test would load the default-profile fixture instead of the profile one.
  *
  * MCP has its own regression in mcp-profile.test.ts (separate paths array).

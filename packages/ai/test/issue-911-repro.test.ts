@@ -31,7 +31,7 @@ function baseContext(): Context {
 	};
 }
 
-// Repro for https://github.com/can1357/oh-my-pi/issues/911
+// Repro for https://proto.sh
 //
 // Mistral Medium 3.5 (mistral-medium-2604) streams `delta.content` as an array of typed
 // content parts (e.g. `[{ type: "text", text: "Hello" }]`) instead of a plain string.

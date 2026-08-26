@@ -73,7 +73,7 @@ const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * fallback — so the ACP path preserves `bash` tool semantics (`$VAR`, `$(...)`,
  * `source`, POSIX quoting, `-l`) wherever a POSIX shell is available.
  * The agent host's shell path is used as a proxy for the client's, matching the
- * near-universal ACP deployment shape of an editor spawning omp as a co-hosted
+ * near-universal ACP deployment shape of an editor spawning proto as a co-hosted
  * subprocess.
  */
 export function wrapShellLineForClientTerminal(
@@ -750,7 +750,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 
 		// A timeout of 0 is an explicit long-running-command contract: the user
-		// must still cancel the call or job, but OMP does not impose a deadline.
+		// must still cancel the call or job, but PROTO does not impose a deadline.
 		const requestedTimeoutSec = rawTimeout;
 		const timeoutDisabled = requestedTimeoutSec === 0;
 		const maxTimeout = this.session.settings.get("tools.maxTimeout");

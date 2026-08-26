@@ -1,5 +1,5 @@
 /**
- * CLI handler for `omp grievances` — view, clean, and manually push reported tool issues.
+ * CLI handler for `proto grievances` — view, clean, and manually push reported tool issues.
  */
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
@@ -155,7 +155,7 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Manual push (`omp grievances push`)
+// Manual push (`proto grievances push`)
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
@@ -195,7 +195,7 @@ function makeProgressBar(total: number, width = 30): ProgressBar {
  * ignoring the user-facing consent gate (manual push is the user's
  * explicit "yes ship these now" intent).
  *
- * Requires endpoint configuration (default `qa.omp.sh/v1/grievances`).
+ * Requires endpoint configuration (default `qa.proto.sh/v1/grievances`).
  */
 export async function pushGrievances(options: PushGrievancesOptions): Promise<void> {
 	const db = openAutoQaDb();

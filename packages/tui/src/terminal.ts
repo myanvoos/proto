@@ -269,7 +269,7 @@ export function emergencyTerminalRestore(): void {
 		const terminal = activeTerminal;
 		if (terminal) {
 			// Keyboard enhancement state is screen-local: pop the alt-screen
-			// frame before leaving it, then let stop() pop omp's main-screen frame.
+			// frame before leaving it, then let stop() pop proto's main-screen frame.
 			if (altScreenActive) {
 				const keyboardExit =
 					terminal.keyboardEnhancementExitSequence ?? (terminal.kittyEnableSequence ? "\x1b[<u" : "");
@@ -768,7 +768,7 @@ export class ProcessTerminal implements Terminal {
 		this.#safeWrite("\x1b[?2004h");
 
 		// Force normal cursor-key (DECCKM) and numeric-keypad mode (terminfo
-		// `rmkx` = "\x1b[?1l\x1b>"). omp decodes both CSI ("\x1b[A") and SS3
+		// `rmkx` = "\x1b[?1l\x1b>"). proto decodes both CSI ("\x1b[A") and SS3
 		// ("\x1bOA") arrow encodings, so it never enables application mode
 		// itself — but a prior program that left the TTY in application-cursor-
 		// keys mode makes arrows arrive as SS3. Normalizing on entry keeps input
@@ -812,7 +812,7 @@ export class ProcessTerminal implements Terminal {
 		// gates the renderer's begin/end markers; 2048 (in-band resize) is enabled
 		// only after the terminal confirms support; 2031 (appearance change
 		// notifications) drives mid-session theme tracking. Xterm ?1010/?1011
-		// are disabled while OMP owns the TTY so typing in the editor does not
+		// are disabled while PROTO owns the TTY so typing in the editor does not
 		// force a reader scrolled into native history back to the tail. Each probe
 		// rides the shared DA1 sentinel, so terminals that ignore DECRQM resolve as
 		// unsupported when the DA1 reply arrives.
@@ -1486,7 +1486,7 @@ export class ProcessTerminal implements Terminal {
 		// `rmkx`). Symmetric with the normalize in start(): a TTY-sharing child
 		// can leave the terminal in application-cursor-keys mode, and without
 		// this reset the parent shell inherits SS3 arrows so Up/Down history
-		// navigation stays broken after omp exits (#6374).
+		// navigation stays broken after proto exits (#6374).
 		this.#safeWrite("\x1b[?1l\x1b>");
 
 		// Disable bracketed paste mode

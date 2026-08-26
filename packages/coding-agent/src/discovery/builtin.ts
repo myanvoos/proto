@@ -1,7 +1,7 @@
 /**
- * Builtin Provider (.omp)
+ * Builtin Provider (.proto)
  *
- * Primary provider for OMP native configs. Supports all capabilities.
+ * Primary provider for PROTO native configs. Supports all capabilities.
  */
 import * as path from "node:path";
 import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
@@ -63,7 +63,7 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 		result.push({ dir: projectDir, level: "project" });
 	}
 	// Native user config is profile-scoped: getAgentDir() points at the active
-	// profile's agent dir (~/.omp/profiles/<name>/agent), like sessions and MCP.
+	// profile's agent dir (~/.proto/profiles/<name>/agent), like sessions and MCP.
 	const userDir = await ifNonEmptyDir(getAgentDir());
 	if (userDir) {
 		result.push({ dir: userDir, level: "user" });
@@ -280,7 +280,7 @@ registerProvider<SystemPrompt>(systemPromptCapability.id, {
 
 // Skills
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
-	// Walk up from cwd finding .omp/skills/ in ancestors (closest first)
+	// Walk up from cwd finding .proto/skills/ in ancestors (closest first)
 	const ancestors = getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home);
 	const projectScans = ancestors.map(({ dir }) =>
 		scanSkillsFromDir(ctx, {
@@ -291,7 +291,7 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		}),
 	);
 
-	// User-level scan from ~/.omp/agent/skills/
+	// User-level scan from ~/.proto/agent/skills/
 	const userScan = scanSkillsFromDir(ctx, {
 		dir: path.join(getAgentDir(), "skills"),
 		providerId: PROVIDER_ID,
@@ -385,10 +385,10 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	}
 
 	// Top-level RULES.md is a sticky always-apply rule. Documented in
-	// https://omp.sh/docs/context-files as the file that gets "re-injected near
+	// https://proto.sh/docs/context-files as the file that gets "re-injected near
 	// the current turn so they keep hold across long conversations".
-	// User scope:    ~/.omp/agent/RULES.md
-	// Project scope: nearest .omp/RULES.md walking up from cwd to repoRoot
+	// User scope:    ~/.proto/agent/RULES.md
+	// Project scope: nearest .proto/RULES.md walking up from cwd to repoRoot
 	const userRulesFile = path.join(getAgentDir(), "RULES.md");
 	const userRule = await loadStickyRulesFile(userRulesFile, "user");
 	if (userRule) items.push(userRule);

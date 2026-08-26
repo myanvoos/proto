@@ -174,7 +174,7 @@ async function writeIsolationPatch(
 /**
  * Run a subagent inside an isolation worktree and capture its changes.
  *
- * Branch mode: on success, commits the diff onto `omp/task/${agentId}` and
+ * Branch mode: on success, commits the diff onto `proto/task/${agentId}` and
  * returns `branchName` + `nestedPatches`. On commit failure the still-live
  * isolation diff is written to `${artifactsDir}/${agentId}.patch`, the task
  * branch is kept when it already carries commits (deleted otherwise), and
@@ -226,7 +226,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 			} catch (mergeErr) {
 				// Agent succeeded but the branch commit failed. `commitToBranch`
 				// is not atomic: the clean-baseline path fetches the agent's
-				// commits into the parent ODB and creates `omp/task/<id>` before
+				// commits into the parent ODB and creates `proto/task/<id>` before
 				// it commits the leftover working-tree delta, so a throw from
 				// that trailing step leaves behind a branch that already holds
 				// every commit the agent made. The isolation worktree — the only

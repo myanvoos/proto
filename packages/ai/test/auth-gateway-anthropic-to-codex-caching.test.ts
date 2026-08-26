@@ -5,7 +5,7 @@
  *
  * Pipeline under test:
  *   client → POST /v1/messages (Anthropic shape, cache_control markers)
- *     → anthropic-messages parser → omp Context (cacheRetention derived)
+ *     → anthropic-messages parser → proto Context (cacheRetention derived)
  *     → pi-ai openai-codex-responses provider
  *     → upstream Codex (ChatGPT-subscription Responses API)
  *     → assistant stream → anthropic-messages encoder
@@ -19,8 +19,8 @@
  * implicit session reuse). If that path breaks, this test catches it.
  *
  * Skips unless a local gateway is reachable at the default `127.0.0.1:4000`
- * (override via `OMP_E2E_GATEWAY_URL`) AND the bearer token file exists at
- * `~/.omp/auth-gateway.token`.
+ * (override via `PROTO_E2E_GATEWAY_URL`) AND the bearer token file exists at
+ * `~/.proto/auth-gateway.token`.
  *
  * To run: `bun --cwd packages/ai test test/auth-gateway-anthropic-to-codex-caching.test.ts`
  */

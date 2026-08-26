@@ -24,8 +24,8 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://proto.sh/"
-Repository = "https://github.com/can1357/oh-my-pi"
-Documentation = "https://github.com/can1357/oh-my-pi/blob/main/docs/rpc.md"
+Repository = "https://proto.sh"
+Documentation = "https://proto.sh"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

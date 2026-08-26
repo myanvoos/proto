@@ -1448,11 +1448,11 @@ mod tests {
 	/// pid until termination.
 	///
 	/// Before the fix, `SpawnRegistry` stored only the raw pid; `build_targets`
-	/// called `Process::from_pid` at cancellation time. Pids recycle aggressively
-	/// on busy systems, so an exited child's pid could be reassigned to an
-	/// unrelated process; `Process::from_pid` at cancel time would happily open
-	/// that unrelated process, and `signal_tree` would then signal its entire
-	/// foreign subtree.
+	/// called `Process::from_pid` at cancellation time. Pids recycle
+	/// aggressively on busy systems, so an exited child's pid could be
+	/// reassigned to an unrelated process; `Process::from_pid` at cancel time
+	/// would happily open that unrelated process, and `signal_tree` would then
+	/// signal its entire foreign subtree.
 	///
 	/// A cross-platform Rust test cannot literally trigger pid recycling, but it
 	/// can prove the observable defense: a recorded process reference survives

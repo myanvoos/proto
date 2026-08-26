@@ -1,5 +1,5 @@
 /**
- * Data layer shared by the `omp ps` renderers (plain CLI and interactive TUI):
+ * Data layer shared by the `proto ps` renderers (plain CLI and interactive TUI):
  * broker-scope discovery, daemon snapshot collection, and display cells.
  *
  * Collection never spawns a broker: live scopes are queried over the broker

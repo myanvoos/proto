@@ -1,5 +1,5 @@
 /**
- * Regression for https://github.com/can1357/oh-my-pi/issues/4324
+ * Regression for https://proto.sh
  *
  * The Kokoro TTS worker crash-loops with `exit code 7`, but every worker
  * subprocess was spawned with `stderr: "ignore"` — so the native crash message
@@ -11,7 +11,7 @@
  * after `onExit`, it drains the pipe, keeps the last 16 KiB in a bounded ring,
  * and appends that tail to the `Error` surfaced to `onError` handlers. These
  * tests pin that contract so the exit-code-7 crash (and the next one) actually
- * shows up in `~/.omp/logs/omp.log` without regressing idle-worker shutdown.
+ * shows up in `~/.proto/logs/proto.log` without regressing idle-worker shutdown.
  */
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";

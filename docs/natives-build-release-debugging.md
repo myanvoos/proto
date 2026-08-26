@@ -114,7 +114,7 @@ This runs the napi CLI (host-only, local cargo profile) against `crates/pi-nativ
 
 **Pull requests never build or validate Rust.** Native-affecting PRs are rare enough that they don't warrant a PR-side addon build: `rust_validate` is skipped entirely (`if: github.event_name != 'pull_request'`), and `native_addons` fetches the latest release's Linux x64 addon pair from the `@oh-my-pi/pi-natives-linux-x64` npm leaf, smoke-loads both, and uploads them as the `native-addons` workflow artifact. The loader skips its version sentinel for workspace loads, so release-versioned addons load fine under a newer checkout. A PR whose TypeScript tests depend on changed native behavior fails visibly (and CI emits a notice on any native-touching PR); the Rust side is validated post-merge on main and again at release.
 
-On non-PR events both jobs run on `omp-kata` pods. `rust_validate` runs plain cargo, with an actions/cache entry over `~/.cargo/registry`, `~/.cargo/git`, and the shared `target/` dir keyed on the `Cargo.lock` hash:
+On non-PR events both jobs run on `proto-kata` pods. `rust_validate` runs plain cargo, with an actions/cache entry over `~/.cargo/registry`, `~/.cargo/git`, and the shared `target/` dir keyed on the `Cargo.lock` hash:
 
 ```bash
 bun run test:rs                                            # nextest + doctests via scripts/run-rs-task.ts

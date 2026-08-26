@@ -1,5 +1,5 @@
 /**
- * ACP stdout-hygiene smoke: launching `omp acp` must not leak any banner,
+ * ACP stdout-hygiene smoke: launching `proto acp` must not leak any banner,
  * progress text, or stray non-JSON bytes onto stdout — that channel is owned
  * by the JSON-RPC protocol. We spawn the CLI as a subprocess, send a single
  * `initialize` frame, and assert the first stdout line parses cleanly as a

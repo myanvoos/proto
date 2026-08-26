@@ -1,5 +1,5 @@
 /**
- * `omp browser-relay` implementation: serve the local CDP relay and install
+ * `proto browser-relay` implementation: serve the local CDP relay and install
  * its Chrome extension. Standalone CLI command — console output here is
  * intentional user-facing output.
  */
@@ -22,9 +22,9 @@ interface BrowserRelayCommandArgs {
 	action: BrowserRelayAction;
 	port: number;
 	token?: string;
-	/** Install target directory; defaults to ~/.omp/browser-relay/extension. */
+	/** Install target directory; defaults to ~/.proto/browser-relay/extension. */
 	dir?: string;
-	/** Gather tabs the agent actively drives into an 'omp' Chrome tab group (default true). */
+	/** Gather tabs the agent actively drives into an 'proto' Chrome tab group (default true). */
 	group?: boolean;
 	verbose?: boolean;
 }

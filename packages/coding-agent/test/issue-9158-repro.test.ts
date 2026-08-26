@@ -1,5 +1,5 @@
 /**
- * Regression for https://github.com/can1357/oh-my-pi/issues/9158
+ * Regression for https://proto.sh
  *
  * `createWorkerSubprocess` spawns every worker with `serialization: "advanced"`.
  * When a child sends a malformed or truncated advanced-IPC frame, Bun raises the

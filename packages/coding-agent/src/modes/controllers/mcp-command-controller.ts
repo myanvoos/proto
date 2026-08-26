@@ -206,7 +206,7 @@ function wrapUrlRows(label: string, url: string, width: number): string[] {
 /**
  * Renders the MCP OAuth fallback URL. Always shows the full authorization URL
  * as the primary `Copy URL:` target — that works from any machine, including
- * SSH/WSL/headless sessions where the OMP-hosted `/launch` loopback URL would
+ * SSH/WSL/headless sessions where the PROTO-hosted `/launch` loopback URL would
  * resolve against the user's local browser and fail.
  *
  * The render is `width`-aware: on any viewport narrower than the composed row
@@ -936,9 +936,9 @@ export class MCPCommandController {
 						openPath(info.url);
 						// Stage the FULL authorization URL on the clipboard via OSC 52.
 						// The full URL works from any machine (unlike `launchUrl`, which
-						// only resolves against the OMP host), and OSC 52 is a
+						// only resolves against the PROTO host), and OSC 52 is a
 						// wire-level protocol — the terminal writes it to the user's
-						// LOCAL clipboard even when OMP is on a remote SSH box.
+						// LOCAL clipboard even when PROTO is on a remote SSH box.
 						// Best-effort: falls back to the visible copy-URL rows below
 						// whether or not the terminal honors OSC 52.
 						void copyToClipboard(info.url).catch(() => {});
@@ -1151,7 +1151,7 @@ export class MCPCommandController {
 	/**
 	 * Resolve a server for an auth/test operation.
 	 *
-	 * Unlike {@link #findConfiguredServer} (which only reads writable OMP config
+	 * Unlike {@link #findConfiguredServer} (which only reads writable PROTO config
 	 * files), this also recognizes runtime-discovered servers that `/mcp list`
 	 * surfaces but that live in no writable config — e.g. servers from a Claude
 	 * Code marketplace plugin (`cloudflare:cloudflare-api`), `.cursor/mcp.json`,
@@ -1195,7 +1195,7 @@ export class MCPCommandController {
 		config: MCPServerConfig,
 		authChallenge?: MCPAuthChallenge,
 	): Promise<OAuthEndpoints> {
-		// Stdio servers manage credentials inside the child process; OMP's OAuth
+		// Stdio servers manage credentials inside the child process; PROTO's OAuth
 		// flow only applies to http/sse transports. Without this guard the
 		// unauthenticated preflight below spawns the child, which happily reuses
 		// its own cached tokens (e.g. mcp-remote's machine-wide ~/.mcp-auth) and

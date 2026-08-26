@@ -205,7 +205,7 @@ describe("live completion surface", () => {
 		expect(stdout).toContain("_proto_cmd_commit");
 		expect(stdout).toContain("'completions:");
 		// zsh routes single-value dynamic flags through the _omp_call action, which
-		// itself shells out to `omp __complete $kind`.
+		// itself shells out to `proto __complete $kind`.
 		expect(stdout).toContain("_proto_call models");
 		expect(stdout).toContain("_proto_call sessions");
 		expect(stdout).toContain("command proto __complete $kind");

@@ -16,7 +16,7 @@ const GITLAB_COM_URL = "https://gitlab.com";
  *   credentials with `GITLAB_CLIENT_ID` + `GITLAB_REDIRECT_URI`, or
  * - skip OAuth entirely and supply a Personal Access Token via `GITLAB_TOKEN`.
  *
- * @see https://github.com/can1357/oh-my-pi/issues/2424
+ * @see https://proto.sh
  */
 const DEFAULT_CLIENT_ID = "da4edff2e6ebd2bc3208611e2768bc1c1dd7be791dc5ff26ca34ca9ee44f7d4b";
 const OAUTH_SCOPES = ["api"];

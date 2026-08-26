@@ -1,5 +1,5 @@
 /**
- * Resolve auth-broker connection configuration for the local omp client.
+ * Resolve auth-broker connection configuration for the local proto client.
  *
  * This is a thin coding-agent wrapper around the shared resolver in
  * `@oh-my-pi/pi-ai/auth-broker/discover` that preserves the process-lifetime
@@ -7,10 +7,10 @@
  * (including `!command` config indirection) from coding-agent's config layer.
  *
  * Precedence (highest first):
- *   1. `OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN` env vars.
- *   2. `auth.broker.url` / `auth.broker.token` in `~/.omp/agent/config.yml`
+ *   1. `PROTO_AUTH_BROKER_URL` / `PROTO_AUTH_BROKER_TOKEN` env vars.
+ *   2. `auth.broker.url` / `auth.broker.token` in `~/.proto/agent/config.yml`
  *      (hidden from the settings UI; `!command` resolution supported).
- *   3. Token file `~/.omp/auth-broker.token` (paired with URL from env or config).
+ *   3. Token file `~/.proto/auth-broker.token` (paired with URL from env or config).
  *
  * Returns null when no broker URL is configured — caller falls back to the
  * local SQLite store.
@@ -39,7 +39,7 @@ export { type AuthBrokerClientConfig, getAuthBrokerTokenFilePath };
 /**
  * Process-lifetime memo for {@link resolveAuthBrokerConfig}. Keyed on the env
  * inputs (plus agent dir, which decides which config.yml is read) so tests
- * that flip `OMP_AUTH_BROKER_*` between cases still observe the change, while
+ * that flip `PROTO_AUTH_BROKER_*` between cases still observe the change, while
  * repeated resolution within one CLI invocation (startup, subagent sessions)
  * skips the config.yml read and any `!command` token resolution.
  */

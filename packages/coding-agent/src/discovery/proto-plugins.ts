@@ -1,19 +1,19 @@
 /**
- * OMP extension-package sub-discovery provider.
+ * PROTO extension-package sub-discovery provider.
  *
  * When a user configures an extension via `extensions:` (in settings) or
  * `--extension`/`-e` (on the CLI), the docs promise that the package's
  * sibling directories — `skills/`, `hooks/pre|post/`, `tools/`, `commands/`,
- * `rules/`, `prompts/`, and `.mcp.json` — are picked up by omp's standard
- * discovery surfaces. The native `omp` provider in `builtin.ts` only walks
- * `.omp/` and `~/.omp/agent/`, so without this provider those sub-trees are
+ * `rules/`, `prompts/`, and `.mcp.json` — are picked up by proto's standard
+ * discovery surfaces. The native `proto` provider in `builtin.ts` only walks
+ * `.proto/` and `~/.proto/agent/`, so without this provider those sub-trees are
  * silently ignored.
  *
- * Provider priority is set below the native `omp` provider (100) so an
- * extension package never shadows the user's own `.omp/` configuration on
+ * Provider priority is set below the native `proto` provider (100) so an
+ * extension package never shadows the user's own `.proto/` configuration on
  * dedup.
  *
- * @see ./omp-extension-roots.ts
+ * @see ./proto-extension-roots.ts
  * @see ../../docs/extension-loading.md
  */
 import * as path from "node:path";

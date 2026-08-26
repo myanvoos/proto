@@ -25,7 +25,7 @@ describe("managed-skills discovery", () => {
 		originalAgentDir = getAgentDir();
 		tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "proto-managed-disco-home-"));
 		// cwd MUST live under the fake home so loadSkills' ancestor walk is bounded
-		// and cannot pick up ambient /tmp/.omp or /.omp fixtures (full-suite-safe).
+		// and cannot pick up ambient /tmp/.proto or /.proto fixtures (full-suite-safe).
 		tempCwd = path.join(tempHome, "work");
 		await fs.mkdir(tempCwd, { recursive: true });
 		spyOn(os, "homedir").mockReturnValue(tempHome);

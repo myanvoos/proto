@@ -1,4 +1,4 @@
-# OMP Julia prelude helpers (loaded once into the runner's top-level scope).
+# Proto Julia prelude helpers (loaded once into the runner's top-level scope).
 
 if !isdefined(Main, :__proto_prelude_loaded)
     global __proto_prelude_loaded = true

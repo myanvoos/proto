@@ -201,7 +201,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | Command | Purpose | See also |
 | --- | --- | --- |
 | `launch` | Start a coding session (the default command). | [Launch flags](#launch-flags) |
-| `acp` | Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio. | |
+| `acp` | Run Proto as an ACP (Agent Client Protocol) server over stdio. | |
 | `auth-broker` | Manage the proto auth-broker (credential vault). | [auth broker / gateway](./auth-broker-gateway.md) |
 | `auth-gateway` | Run an auth-gateway forward proxy backed by the configured broker. | [auth broker / gateway](./auth-broker-gateway.md) |
 | `agents` | Manage bundled worker agents. | [worker agent discovery](./worker-agent-discovery.md) |

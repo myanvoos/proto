@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Preloaded omp-kata runner image.
+# Preloaded proto-kata runner image.
 #
 # Stock GitHub Actions runner (Ubuntu 24.04) with the dependencies CI installs
 # on every job baked in, so each ephemeral Kata microVM boots with them already
@@ -12,7 +12,7 @@
 #   - cmake/ninja + musl/aarch64 cross tools for the host-native addon builds
 #   - rust nightly (pinned) + clippy/rustfmt/rust-analyzer + linux-arm64 target
 #
-# Rebuild + reimport (see /root/omp-kata-runner.md) after bumping the ARGs below
+# Rebuild + reimport (see /root/proto-kata-runner.md) after bumping the ARGs below
 # or the apt set. Keep the apt set in sync with .github/actions/setup-system-deps.
 FROM ghcr.io/actions/actions-runner:latest
 

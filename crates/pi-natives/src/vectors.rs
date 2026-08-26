@@ -4,7 +4,8 @@
 //! crossing cost is amortized over the whole recall operation. Semantics
 //! match the historical TypeScript reference implementations exactly — same
 //! accumulation order, same non-finite handling, same tie-breaking — so float
-//! scores are bit-identical to the TS versions and integer results are exactly equal.
+//! scores are bit-identical to the TS versions and integer results are exactly
+//! equal.
 
 use napi::{
 	Error, JsString, Result, Status,

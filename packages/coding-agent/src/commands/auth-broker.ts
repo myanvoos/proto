@@ -1,5 +1,5 @@
 /**
- * `omp auth-broker` — manage the omp credential vault.
+ * `proto auth-broker` — manage the proto credential vault.
  */
 
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";

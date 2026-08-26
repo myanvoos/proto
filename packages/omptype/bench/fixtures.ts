@@ -1,4 +1,4 @@
-/** Benchmark fixtures modeled on real omp tool-parameter schemas. */
+/** Benchmark fixtures modeled on real proto tool-parameter schemas. */
 import type { Def } from "./ir";
 
 export interface Fixture {

@@ -1,7 +1,7 @@
 /**
  * HTTP + WebSocket server for the browser relay.
  *
- * Impersonates Chrome's CDP discovery endpoint so the omp browser tool (and
+ * Impersonates Chrome's CDP discovery endpoint so the proto browser tool (and
  * any puppeteer client) can connect with a plain `browserURL`:
  * - `GET /json/version` → 200 with `webSocketDebuggerUrl` once the extension
  *   is connected, 503 before that (clients like `waitForCdp` keep polling).
@@ -41,7 +41,7 @@ type RelayWebSocket = Bun.ServerWebSocket<SocketData>;
 const WS_KEEPALIVE_MS = 30_000;
 /** Screenshots travel base64-encoded through both websocket legs. */
 const MAX_PAYLOAD_BYTES = 256 * 1024 * 1024;
-/** Default appearance of the omp tab group. */
+/** Default appearance of the proto tab group. */
 const DEFAULT_GROUP = { title: "proto", color: "cyan" } as const;
 
 /** Start the relay server on 127.0.0.1. Throws if the port is taken. */

@@ -20,7 +20,7 @@ edition = "2024"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]
 homepage = "https://proto.sh/"
-repository = "https://github.com/can1357/oh-my-pi"
+repository = "https://proto.sh"
 
 [patch.crates-io]
 brush-core = { path = "crates/vendor/brush-core" }

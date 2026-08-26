@@ -20,10 +20,10 @@
 //! - Backtraces are captured via [`Backtrace::force_capture`], so they work
 //!   regardless of `RUST_BACKTRACE`.
 //! - The crash log path mirrors the JS side (`packages/utils/src/dirs.ts`):
-//!   `$XDG_STATE_HOME/omp/logs/` on Linux / macOS when the user has migrated to
-//!   XDG (i.e. that directory already exists and `PI_CODING_AGENT_DIR` isn't
+//!   `$XDG_STATE_HOME/proto/logs/` on Linux / macOS when the user has migrated
+//!   to XDG (i.e. that directory already exists and `PI_CODING_AGENT_DIR` isn't
 //!   pointed somewhere custom), otherwise `<home>/<PI_CONFIG_DIR>/logs/`
-//!   (defaulting to `~/.omp/logs/`).
+//!   (defaulting to `~/.proto/logs/`).
 //! - Hook installation is idempotent across repeated module loads.
 
 use std::{
@@ -44,11 +44,11 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Default directory name for OMP's per-user state (overridable via
+/// Default directory name for PROTO's per-user state (overridable via
 /// `PI_CONFIG_DIR`, matching `packages/utils/src/dirs.ts`).
 const DEFAULT_CONFIG_DIR: &str = ".proto";
 
-/// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/omp/`),
+/// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/proto/`),
 /// matching `APP_NAME` in `packages/utils/src/dirs.ts`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const APP_NAME: &str = "proto";
@@ -276,7 +276,7 @@ fn resolve_logs_dir(
 	config_dir_override: Option<&OsStr>,
 	xdg_state_logs: Option<PathBuf>,
 ) -> PathBuf {
-	// XDG takes precedence so users who migrated to `$XDG_STATE_HOME/omp/logs/`
+	// XDG takes precedence so users who migrated to `$XDG_STATE_HOME/proto/logs/`
 	// see native crash reports in the same directory the JS logger rotates.
 	if let Some(p) = xdg_state_logs {
 		return p;
@@ -290,7 +290,7 @@ fn resolve_logs_dir(
 
 /// Compute the XDG-state logs dir if the runtime environment matches the
 /// JS-side eligibility rules in `packages/utils/src/dirs.ts`: linux/macos,
-/// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/omp` exists on disk, and
+/// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/proto` exists on disk, and
 /// `PI_CODING_AGENT_DIR` is unset or pointing at the default agent dir.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
@@ -307,7 +307,7 @@ fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> 
 
 /// Pure XDG-eligibility computation extracted for unit testing — no env
 /// reads, no fs reads. `omp_dir_exists` decides whether the candidate
-/// `<xdg_state_home>/omp` actually lives on disk.
+/// `<xdg_state_home>/proto` actually lives on disk.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs(
 	xdg_state_home: Option<&OsStr>,

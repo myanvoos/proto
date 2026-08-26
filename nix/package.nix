@@ -177,7 +177,7 @@ stdenv.mkDerivation {
     remove-references-to -t ${bun} "$out/bin/proto"
   '';
 
-  # Prebuilt addons that omp bun-installs into its cache at first use
+  # Prebuilt addons that proto bun-installs into its cache at first use
   # (onnxruntime-node, sharp, fastembed) are process.dlopen'd and
   # need libstdc++.so.6 / libgcc_s.so.1, which nix glibc's default loader path lacks;
   # their own DT_RUNPATH means this executable's RPATH is never consulted for their
@@ -191,8 +191,8 @@ stdenv.mkDerivation {
   # soname from the already-loaded set, regardless of the addon's own DT_RUNPATH.
   # stdenv.cc.cc.lib is already in buildInputs, so the autoPatchelfHook pass that
   # follows resolves the new dependency and sets the RPATH. patchelf must run before
-  # wrapProgram: the wrapper replaces $out/bin/omp with a script and moves the ELF
-  # to $out/bin/.omp-wrapped.
+  # wrapProgram: the wrapper replaces $out/bin/proto with a script and moves the ELF
+  # to $out/bin/.proto-wrapped.
   postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
     patchelf --add-needed libstdc++.so.6 "$out/bin/proto"
     wrapProgram "$out/bin/proto" \
@@ -214,7 +214,7 @@ stdenv.mkDerivation {
         'const {dlopen}=require("bun:ffi");const dirs=(process.env.PROTO_NATIVE_LIBRARY_PATH||"").split(":").filter(Boolean);const need={"libstdc++.so.6":{__cxa_demangle:{args:["ptr","ptr","ptr","ptr"],returns:"ptr"}},"libgcc_s.so.1":{_Unwind_Backtrace:{args:["ptr","ptr"],returns:"i32"}}};for(const lib of Object.keys(need)){let ok=false;for(const d of dirs){try{dlopen(d+"/"+lib,need[lib]);ok=true;break}catch(e){}}if(!ok){console.error("unresolved: "+lib);process.exit(1)}}'
       # The libstdc++ preload (see postFixup) must survive: without it addons the
       # main process dlopen's directly fail to resolve libstdc++.so.6 on NixOS.
-      # wrapProgram moved the real ELF to .omp-wrapped.
+      # wrapProgram moved the real ELF to .proto-wrapped.
       patchelf --print-needed "$out/bin/.proto-wrapped" | grep -q '^libstdc++\.so\.6$'
     ''}
     runHook postInstallCheck
@@ -223,7 +223,7 @@ stdenv.mkDerivation {
   meta = {
     description = "Terminal-based coding agent with multi-model support";
     homepage = "https://proto.sh";
-    changelog = "https://github.com/can1357/oh-my-pi/releases/tag/v${packageJson.version}";
+    changelog = "https://proto.sh${packageJson.version}";
     license = lib.licenses.mit;
     mainProgram = "proto";
     platforms = [

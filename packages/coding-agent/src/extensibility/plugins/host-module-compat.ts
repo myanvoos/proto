@@ -609,7 +609,7 @@ export function __getHostBundledModulesGlobal(): string {
 // Canonical scope for in-process pi packages. Plugins published against any of
 // the aliased scopes below (mariozechner's original publish, earendil-works'
 // fork, or the canonical @oh-my-pi scope itself) are remapped to this scope and
-// resolved against the bundled copy that ships inside the omp binary. This
+// resolved against the bundled copy that ships inside the proto binary. This
 // keeps plugins running against the exact runtime state of the host (single
 const resolvedSpecifierFallbacks = new Map<string, string>();
 const realpathCache = new Map<string, Promise<string>>();
@@ -723,7 +723,7 @@ function toImportSpecifier(resolvedPath: string): string {
 }
 
 /**
- * Rewrite the extension-owned specifiers OMP must host-resolve — current
+ * Rewrite the extension-owned specifiers PROTO must host-resolve — current
  * `@oh-my-pi/*` package imports — to absolute `file://` URLs or compiled-mode
  * virtual specifiers. Relative siblings and built-in modules are left
  * untouched so Bun resolves them from the extension's real on-disk location.
@@ -837,7 +837,7 @@ interface ExtensionModuleGraph {
 
 /**
  * Walk the extension's import graph starting at `entryRealPath`, returning the
- * realpath of every reachable source module OMP must rewrite at load time.
+ * realpath of every reachable source module PROTO must rewrite at load time.
  * Only relative imports are graph-owned: host `@oh-my-pi/*` imports are
  * rewritten per module without being followed, and everything else resolves
  * natively from the extension's own location.

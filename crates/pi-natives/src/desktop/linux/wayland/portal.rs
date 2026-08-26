@@ -33,8 +33,8 @@ pub(super) fn portal_runtime() -> CoreResult<&'static Runtime> {
 /// #7884 dropped the restore-token path.
 const ORPHANED_REMOTE_DESKTOP_TOKEN: &str = "remote-desktop-token";
 
-/// Resolves the `omp` state directory (`$XDG_STATE_HOME/omp` or
-/// `~/.local/state/omp`) that holds portal tokens.
+/// Resolves the `proto` state directory (`$XDG_STATE_HOME/proto` or
+/// `~/.local/state/proto`) that holds portal tokens.
 fn proto_state_dir() -> Option<PathBuf> {
 	let base = std::env::var_os("XDG_STATE_HOME")
 		.map(PathBuf::from)

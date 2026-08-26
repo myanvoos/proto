@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sign and notarize a compiled macOS `omp` binary with a Developer ID identity.
+# Sign and notarize a compiled macOS `proto` binary with a Developer ID identity.
 #
 # The release build (`ci:release:build-binaries`) ad-hoc signs the binary so it
 # runs locally. This script *replaces* that signature with a real Developer ID

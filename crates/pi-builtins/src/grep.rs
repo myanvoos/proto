@@ -22,7 +22,7 @@ use grep_searcher::{
 };
 use crate::host::{Host, Utility, util};
 
-/// PCRE2 JIT toggle: `OMP_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
+/// PCRE2 JIT toggle: `PROTO_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
 /// off. Unset, JIT stays on everywhere except macOS, where PCRE2's SLJIT
 /// executable allocator can fault while compiling patterns (issue #7399).
 pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {

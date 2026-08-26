@@ -155,7 +155,7 @@ describe("runIsolatedSubprocess", () => {
 
 	it("keeps the task branch when it already carries the agent's commits", async () => {
 		// Regression for #8868: `commitToBranch` fetches the agent's commits into
-		// the parent ODB and creates `omp/task/<id>` before it commits the leftover
+		// the parent ODB and creates `proto/task/<id>` before it commits the leftover
 		// working-tree delta. A throw from that trailing step used to delete the
 		// branch while the isolation worktree — the only other copy — was torn
 		// down in `finally`, losing committed work outright.

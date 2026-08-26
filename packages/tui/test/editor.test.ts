@@ -2548,7 +2548,7 @@ describe("Editor component", () => {
 		// terminals render the precomposed syllable at 2 cells, so without
 		// normalization the cursor column drifts past the visible filename
 		// and subsequent input renders into the wrong row. The earlier fix
-		// landed on the legacy `Input` component; OMP's interactive prompt
+		// landed on the legacy `Input` component; PROTO's interactive prompt
 		// uses `Editor`, so the fix has to live here too.
 
 		it("normalizes NFD Korean bracketed-paste to NFC", () => {

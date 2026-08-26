@@ -41,7 +41,7 @@ export interface WriteAuthBrokerSnapshotCacheOptions {
 /**
  * Cheap structural guard for a decrypted cache payload. The bytes are already
  * AES-256-GCM authenticated, so this only rejects shape/version drift (a cache
- * written by a different omp build, or a buggy write) — not tampering. A
+ * written by a different proto build, or a buggy write) — not tampering. A
  * mismatch returns null so the caller refetches a fresh snapshot.
  */
 function isSnapshotResponseShape(v: unknown): v is SnapshotResponse {

@@ -2,7 +2,7 @@
  * Repro for #2375: remote (SSH) image attachment surfaces only the local path.
  *
  * When a user attaches an image in their LOCAL terminal (e.g. drag/drop into
- * iTerm2 on macOS) while the omp process actually runs on a remote host (Pi
+ * iTerm2 on macOS) while the proto process actually runs on a remote host (Pi
  * over SSH), the terminal forwards a bracketed-paste containing the local
  * macOS path. The remote `handleImagePathPaste` tries to read that path on
  * the remote filesystem, fails (ENOENT), then falls through to pasting the
@@ -142,7 +142,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 	it("locally: attaches the clipboard image when the pasted path is a stale transient file (Win+Shift+S)", async () => {
 		// Windows 11 Win+Shift+S leaves the bitmap on the clipboard, but the
 		// terminal pastes the snip's packaged-app TempState path, which is
-		// already gone by the time omp reads it. The bytes are still on the
+		// already gone by the time proto reads it. The bytes are still on the
 		// clipboard, so the paste must succeed from there instead of dead-ending
 		// on "Image not found".
 		const { ctx, spies } = createContext();

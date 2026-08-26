@@ -7,7 +7,7 @@
  * settings. The original `--list-models` short-circuit in `runRootCommand`
  * exited before extensions were loaded.
  *
- * Contract under test: the `omp models` listing entry point loads extensions
+ * Contract under test: the `proto models` listing entry point loads extensions
  * (CLI `-e` paths and configured `settings.extensions`) before listing, so
  * extension-registered providers/models appear in the output.
  */

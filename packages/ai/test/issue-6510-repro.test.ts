@@ -16,7 +16,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
  * same api-key login flow already send `X-Api-Key`.
  *
  * Secondary: once auth works, thinking requests through Zen 400 on several
- * model families because omp unconditionally attaches `context_management`
+ * model families because proto unconditionally attaches `context_management`
  * (`clear_thinking_20251015`), which the Zen Anthropic proxy rejects as an
  * unrecognized field — the same failure mode already handled for Copilot.
  */

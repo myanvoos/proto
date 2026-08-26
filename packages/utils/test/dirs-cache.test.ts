@@ -153,7 +153,7 @@ describe("legacy file adoption on XDG paths", () => {
 		const xdgData = path.join(tempRoot, "xdg-data");
 		await fs.mkdir(path.join(xdgState, "proto"), { recursive: true });
 		await fs.mkdir(path.join(xdgData, "proto"), { recursive: true });
-		// Legacy layout: key under ~/.omp/agent, registry under ~/.omp.
+		// Legacy layout: key under ~/.proto/agent, registry under ~/.proto.
 		await fs.mkdir(path.join(tempRoot, ".proto", "agent"), { recursive: true });
 		await fs.writeFile(path.join(tempRoot, ".proto", "agent", "secret-placeholder.key"), "legacy-key");
 		await fs.writeFile(path.join(tempRoot, ".proto", "marketplaces.json"), '{"legacy":true}');

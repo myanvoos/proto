@@ -1,7 +1,7 @@
 /**
  * Issue #2123 — `Error while using Claude Opus models`
  *
- * Reporter (omp 15.10.4, Windows, Claude Pro/Max OAuth): a fresh chat on
+ * Reporter (proto 15.10.4, Windows, Claude Pro/Max OAuth): a fresh chat on
  * Claude Opus 4.6 fails immediately with
  *   `400 ... clear_thinking_20251015 strategy requires thinking to be enabled or adaptive`.
  *

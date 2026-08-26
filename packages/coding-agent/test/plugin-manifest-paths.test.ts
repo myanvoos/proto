@@ -25,7 +25,7 @@ describe("plugin manifest path resolution", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-manifest-paths-"));
 		try {
 			// The package declares both extensions and a directory-based tool entry.
-			// `omp.extensions` and the sub-extension scan are extensions-specific and
+			// `proto.extensions` and the sub-extension scan are extensions-specific and
 			// must not hijack the `tools: "."` directory entry (regression: the shared
 			// directory resolver returned the extension module for every key).
 			fs.writeFileSync(

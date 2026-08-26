@@ -919,7 +919,7 @@ describe("boundary-balance repair through stale-snapshot recovery", () => {
 	});
 });
 
-// Regressions from a live omp-ar refactor session: two hashline edits broke a
+// Regressions from a live proto-ar refactor session: two hashline edits broke a
 // Rust file with zero feedback. Both must now surface a warning in the same
 // response, and correctly authored edits on the same shapes must stay silent.
 describe("rust lifetime delimiter counting (the extension() incident)", () => {

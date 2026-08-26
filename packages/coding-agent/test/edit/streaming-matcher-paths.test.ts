@@ -5,7 +5,7 @@
  * (a hashline section header, an apply_patch envelope marker) rather than as
  * a top-level `path` / `paths` argument.
  *
- * Regression: see https://github.com/can1357/oh-my-pi/issues/3646. Before the
+ * Regression: see https://proto.sh Before the
  * fix, the path-scoped rule `tool:edit(*.ts)` did not match hashline edits
  * because `agent-session`'s argument scan only saw the top-level
  * `{ input: "<hashline payload>" }` and never inspected the section header.

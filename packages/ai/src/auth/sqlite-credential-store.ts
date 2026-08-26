@@ -511,7 +511,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 		}
 
-		// Concurrent omp startups can race against WAL recovery and the schema
+		// Concurrent proto startups can race against WAL recovery and the schema
 		// init's first lock-taking statement. Bun's default `busy_timeout` is 0,
 		// so retry the open on `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY` with bounded
 		// exponential backoff before surfacing the failure. See issue #2421.
@@ -568,7 +568,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	 * Install the per-connection busy handler so lock-taking statements wait for
 	 * a contended writer instead of failing immediately (Bun defaults
 	 * `busy_timeout` to 0). MUST run before the first lock-taking statement on
-	 * the connection: concurrent omp startups race WAL recovery and the leases
+	 * the connection: concurrent proto startups race WAL recovery and the leases
 	 * DDL. Uses the centralized timeout so headless hosts keep their bounded
 	 * busy wait instead of the interactive 5s value. See issues #2421, #7298.
 	 */
@@ -579,7 +579,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#initializeSchema(): void {
 		// Install the busy handler BEFORE any lock-taking statement (incl.
 		// `PRAGMA journal_mode=WAL`, which acquires an exclusive lock during WAL
-		// recovery). Without this, concurrent omp startups can crash here with
+		// recovery). Without this, concurrent proto startups can crash here with
 		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. Re-setting when opened via
 		// `open()` (which already installed it) is idempotent. See issue #2421.
 		SqliteAuthCredentialStore.#installBusyTimeout(this.#db);

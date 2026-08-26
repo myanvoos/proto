@@ -6,14 +6,6 @@
   "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/can1357/oh-my-pi.git",
-    "directory": "packages/hashline"
-  },
-  "bugs": {
-    "url": "https://github.com/can1357/oh-my-pi/issues"
-  },
   "keywords": [
     "patch",
     "diff",

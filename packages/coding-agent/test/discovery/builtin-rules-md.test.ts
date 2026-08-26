@@ -2,7 +2,7 @@
  * Regression tests for top-level `RULES.md` sticky rules.
  *
  * `RULES.md` (singular, top-level) MUST be loaded as a sticky always-apply rule
- * from both `~/.omp/agent/RULES.md` (user) and the nearest `.omp/RULES.md`
+ * from both `~/.proto/agent/RULES.md` (user) and the nearest `.proto/RULES.md`
  * (project, walked up from cwd to repoRoot).
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -150,7 +150,7 @@ test("alwaysApply is forced even when frontmatter says false", async () => {
 });
 
 test("absent RULES.md does not produce a rule", async () => {
-	// No RULES.md anywhere — only a sibling .omp/rules/ to make sure the directory exists.
+	// No RULES.md anywhere — only a sibling .proto/rules/ to make sure the directory exists.
 	writeFile(path.join(home, ".proto", "agent", "rules", "other.md"), "# Unrelated rule\n");
 
 	const rules = await loadNativeRules({ cwd: project, home, repoRoot: project });

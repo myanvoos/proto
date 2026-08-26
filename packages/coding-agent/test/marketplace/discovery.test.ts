@@ -1,13 +1,13 @@
 /**
- * Discovery integration tests for OMP plugin registry reading.
+ * Discovery integration tests for PROTO plugin registry reading.
  *
  * NOTE: listClaudePluginRoots() lives in discovery/helpers.ts which imports
  * @oh-my-pi/pi-natives (native Rust addon via glob). We cannot call it here.
  *
  * Instead these tests validate the structural contract that listClaudePluginRoots
  * depends on:
- *   1. OMP registry lives at path.join(home, ".omp", "plugins", "installed_plugins.json")
- *      (matches getConfigDirName() == ".omp")
+ *   1. PROTO registry lives at path.join(home, ".proto", "plugins", "installed_plugins.json")
+ *      (matches getConfigDirName() == ".proto")
  *   2. The registry format passes the same validator that parseClaudePluginsRegistry uses
  *   3. readInstalledPluginsRegistry / writeInstalledPluginsRegistry produce files that
  *      satisfy that validator
@@ -53,7 +53,7 @@ function validateClaudeRegistryFormat(content: string): Record<string, unknown> 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 // Matches getConfigDirName() — single source of truth is in @oh-my-pi/pi-utils,
-// but we know the value is ".omp" and hardcoding it here keeps tests free of
+// but we know the value is ".proto" and hardcoding it here keeps tests free of
 // native-addon transitive imports.
 const PROTO_CONFIG_DIR = ".proto";
 
@@ -70,7 +70,7 @@ function makeEntry(installPath: string, version = "1.0.0"): InstalledPluginEntry
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 let tmpHome: string;
-/** ~/.omp/plugins/installed_plugins.json inside tmpHome */
+/** ~/.proto/plugins/installed_plugins.json inside tmpHome */
 let ompRegistryPath: string;
 
 beforeEach(() => {
@@ -204,18 +204,18 @@ describe("PROTO registry round-trip", () => {
 
 // ── Precedence contract (structural) ─────────────────────────────────────────
 //
-// listClaudePluginRoots must replace Claude entries with OMP entries when the same
+// listClaudePluginRoots must replace Claude entries with PROTO entries when the same
 // plugin ID appears in both registries. We cannot call that function here, but we
 // can verify the data shapes that the replacement logic reads are correct.
 
 describe("PROTO precedence contract (registry structure)", () => {
 	it("same plugin ID in both registries — PROTO entry has required fields for deduplication", () => {
 		// The replacement logic: roots.filter(r => r.id !== pluginId) keyed by id.
-		// OMP entries must have installPath so they can be added to roots[].
+		// PROTO entries must have installPath so they can be added to roots[].
 		const id = buildPluginId("shared-plugin", "common-mkt");
 		const ompEntry = makeEntry("/proto/cached/path");
 
-		// OMP registry entry has installPath (required by listClaudePluginRoots)
+		// PROTO registry entry has installPath (required by listClaudePluginRoots)
 		expect(ompEntry.installPath).toBeTruthy();
 		expect(typeof ompEntry.installPath).toBe("string");
 		// ID parses correctly with lastIndexOf("@")

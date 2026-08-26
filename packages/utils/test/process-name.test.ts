@@ -25,7 +25,7 @@ describe("setProcessName", () => {
 		const result = await Bun.$`bun -e ${probe}`.quiet();
 		expect(result.exitCode).toBe(0);
 		const report = JSON.parse(result.stdout.toString()) as { comm: string; title: string };
-		// TASK_COMM_LEN caps comm at 15 chars; "omp-probe" fits whole.
+		// TASK_COMM_LEN caps comm at 15 chars; "proto-probe" fits whole.
 		expect(report.comm).toBe("proto-probe");
 		expect(report.title).toBe("proto-probe");
 	});

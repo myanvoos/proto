@@ -9,7 +9,7 @@ import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-// Regression for https://github.com/can1357/oh-my-pi/issues/4579.
+// Regression for https://proto.sh
 //
 // When the advisor role resolves to a reasoning model without a controllable
 // effort surface (Devin `devin-agent`: `reasoning: true`, `thinking: undefined`

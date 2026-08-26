@@ -1,7 +1,7 @@
 import * as path from "node:path";
 
 /**
- * Recursively substitute ${CLAUDE_PLUGIN_ROOT} and ${OMP_PLUGIN_ROOT}
+ * Recursively substitute ${CLAUDE_PLUGIN_ROOT} and ${PROTO_PLUGIN_ROOT}
  * with the actual plugin root path in strings, arrays, and plain objects.
  */
 // Use concatenation to avoid noTemplateCurlyInString lint rule on literal placeholder names

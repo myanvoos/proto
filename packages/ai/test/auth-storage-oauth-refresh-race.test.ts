@@ -52,7 +52,7 @@ describe("AuthStorage OAuth refresh race", () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
 
 		// Seed the shared DB with one expired OAuth credential; this simulates the
-		// state two cooperating omp processes both load from the persisted row.
+		// state two cooperating proto processes both load from the persisted row.
 		await authStorage.set("anthropic", [
 			{
 				type: "oauth",

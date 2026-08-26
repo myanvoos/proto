@@ -6,12 +6,12 @@ import { resolveUpdateMethodForTest } from "@oh-my-pi/pi-coding-agent/cli/update
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 // Issue #845: on Windows with Bun installed via Scoop, ~/.bun is a junction
-// to scoop\persist\Oven-sh.Bun\.bun. `bun pm bin -g` and the omp path that
+// to scoop\persist\Oven-sh.Bun\.bun. `bun pm bin -g` and the proto path that
 // $which finds may end up referring to the same directory through different
 // path strings (one through the junction, one through the real target).
 // `isPathInDirectory` did purely lexical comparison via path.resolve, which
-// does not follow filesystem links, so it misclassified Bun-installed omp
-// as "binary" and tried to swap omp.exe in place – which fails on Windows
+// does not follow filesystem links, so it misclassified Bun-installed proto
+// as "binary" and tried to swap proto.exe in place – which fails on Windows
 // because Bun has the file open (EPERM on unlink of .bak).
 //
 // We reproduce the realpath-resolution bug with a symlink (works on macOS /

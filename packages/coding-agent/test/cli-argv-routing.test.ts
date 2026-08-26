@@ -1,7 +1,7 @@
 /**
  * Leading global option flags must not hide a subcommand from the CLI runner.
  *
- * #2970: `omp --approval-mode=yolo acp` was rewritten to
+ * #2970: `proto --approval-mode=yolo acp` was rewritten to
  * `launch --approval-mode=yolo acp`, swallowing `acp` as a launch prompt so the
  * yolo override never reached the ACP command path. The resolver now skips
  * leading global flags (using the launch parser's value-consumption contract)

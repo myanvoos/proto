@@ -1,5 +1,5 @@
 /**
- * `omp browser-relay` — drive the user's own Chrome tabs.
+ * `proto browser-relay` — drive the user's own Chrome tabs.
  */
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import {

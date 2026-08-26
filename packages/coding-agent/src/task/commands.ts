@@ -24,7 +24,7 @@ function getString(frontmatter: Record<string, unknown>, key: string): string {
 /**
  * Discover all available commands.
  *
- * Precedence (highest wins): .omp > .pi > .claude (project before user)
+ * Precedence (highest wins): .proto > .pi > .claude (project before user)
  */
 export async function discoverCommands(cwd: string): Promise<WorkflowCommand[]> {
 	const resolvedCwd = path.resolve(cwd);

@@ -154,7 +154,7 @@ async function executeSearch(
 	const parsedQuery = parseSearchQuery(params.query);
 
 	// Invariant across providers; read once and tolerate an uninitialized
-	// Settings singleton (e.g. `omp q ...` CLI path, unit tests) so the
+	// Settings singleton (e.g. `proto q ...` CLI path, unit tests) so the
 	// provider-fallback loop never aborts before any provider runs.
 	let antigravityEndpointMode: "auto" | "production" | "sandbox" | undefined;
 	try {
@@ -285,7 +285,7 @@ async function executeSearch(
  * Execute a web search query for CLI/testing workflows.
  *
  * `authStorage` may be omitted; in that case we discover one via the standard
- * factory (`discoverAuthStorage`), which honours `OMP_AUTH_BROKER_URL` and
+ * factory (`discoverAuthStorage`), which honours `PROTO_AUTH_BROKER_URL` and
  * otherwise opens the local SQLite credential store.
  */
 export async function runSearchQuery(

@@ -1,7 +1,7 @@
 /**
  * Usage CLI command handler.
  *
- * Handles `omp usage` — fetches provider usage reports for every
+ * Handles `proto usage` — fetches provider usage reports for every
  * authenticated account and prints a detailed per-account breakdown
  * (limits, windows, reset times, plan metadata). Accounts whose
  * credentials produced no usage report are listed too, so the output
@@ -891,7 +891,7 @@ function collectStoredAccounts(authStorage: AuthStorage): UsageAccountIdentity[]
  * `hasUsageProvider` is injected (in practice {@link AuthStorage.usageProviderFor})
  * so custom/broker resolvers stay authoritative — no provider list is duplicated
  * here. An explicit `--provider` request bypasses the cull, so
- * `omp usage --provider xai` can still confirm the stored credential has no
+ * `proto usage --provider xai` can still confirm the stored credential has no
  * usage endpoint.
  */
 function selectReportableAccounts(

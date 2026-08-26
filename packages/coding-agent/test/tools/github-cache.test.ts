@@ -2,7 +2,7 @@
  * Cache-layer tests for `github-cache` (storage + TTL semantics) and for the
  * `getOrFetchIssue` / `getOrFetchPr` wrappers wired into `gh.ts`.
  *
- * Each test isolates `OMP_GITHUB_CACHE_DB` to a temp file and clears
+ * Each test isolates `PROTO_GITHUB_CACHE_DB` to a temp file and clears
  * `git.github.json` / `git.github.text` mocks between cases.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";

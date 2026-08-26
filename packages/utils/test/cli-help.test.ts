@@ -23,7 +23,7 @@ class BenchLikeCommand extends Command {
 }
 
 describe("run() per-command help", () => {
-	// Contract: `omp <cmd> --help` must load only the requested command module.
+	// Contract: `proto <cmd> --help` must load only the requested command module.
 	// Loading the whole table would let any unrelated command whose import
 	// hangs or crashes take down every per-command help invocation.
 	it("loads only the requested command", async () => {
@@ -57,7 +57,7 @@ describe("run() per-command help", () => {
 describe("run() root help", () => {
 	// Contract: root help renders registered metadata without importing command
 	// implementations. Heavy or unavailable optional commands must not make
-	// `omp --help` slow or crash.
+	// `proto --help` slow or crash.
 	it("renders static metadata without loading command modules", async () => {
 		let loads = 0;
 		const commands: CommandEntry[] = [
