@@ -12,7 +12,7 @@
  * parseQuery(".foo.bar[0]") // ["foo", "bar", 0]
  * parseQuery(".foo['special-key']") // ["foo", "special-key"]
  */
-export function parseQuery(query: string): Array<string | number> {
+function parseQuery(query: string): Array<string | number> {
 	let input = query.trim();
 	if (!input) return [];
 	if (input.startsWith(".")) input = input.slice(1);

@@ -22,7 +22,7 @@ export const GALLERY_STATES = ["streaming", "progress", "success", "error"] as c
 export type GalleryState = (typeof GALLERY_STATES)[number];
 
 /** User-facing labels printed above each rendered lifecycle state. */
-export const GALLERY_STATE_LABELS: Record<GalleryState, string> = {
+const GALLERY_STATE_LABELS: Record<GalleryState, string> = {
 	streaming: "streaming args",
 	progress: "in progress",
 	success: "done",
@@ -57,7 +57,7 @@ export function parseGalleryStates(states: readonly string[] | undefined): Galle
 	return parsed;
 }
 
-export interface GalleryCommandArgs {
+interface GalleryCommandArgs {
 	/** Render width in columns (defaults to terminal width, clamped). */
 	width?: number;
 	/** Restrict to a single tool name. */

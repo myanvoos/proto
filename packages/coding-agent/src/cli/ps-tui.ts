@@ -40,7 +40,7 @@ interface FlatRow {
 type PsTopView = "table" | "info" | "logs";
 
 /** Options accepted by the interactive monitor: scope selection from the list flags. */
-export interface PsTopOptions extends PsTarget {
+interface PsTopOptions extends PsTarget {
 	all: boolean;
 }
 

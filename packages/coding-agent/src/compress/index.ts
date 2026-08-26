@@ -28,7 +28,7 @@ const DEFAULT_CONCURRENCY = 4;
 const LOSS_PREVIEW = 200;
 
 /** User-facing options for `omp compress`. */
-export interface CompressCommandOptions {
+interface CompressCommandOptions {
 	/** Files and glob patterns to compress. */
 	files: string[];
 	/** Model selector; defaults to the configured session model. */

@@ -16,7 +16,7 @@ const MAP_PHASE_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 3;
 const RETRY_BACKOFF_MS = 1000;
 
-export interface MapPhaseInput {
+interface MapPhaseInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

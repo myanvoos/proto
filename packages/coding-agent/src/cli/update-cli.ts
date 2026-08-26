@@ -65,16 +65,16 @@ function currentNativeTag(): string {
 }
 
 /** Distribution channel advertised by a release's published npm manifest. */
-export type ReleaseDist = "npm" | "binary";
+type ReleaseDist = "npm" | "binary";
 
 /** npm package names a release installs: the agent package and its natives companion. */
-export interface ReleasePackages {
+interface ReleasePackages {
 	pkg: string;
 	natives: string;
 }
 
 /** Parsed `omp.rename` pointer: the new agent package name and optional new natives name. */
-export interface ReleaseRename {
+interface ReleaseRename {
 	pkg: string;
 	natives?: string;
 }
@@ -90,7 +90,7 @@ export interface ReleaseInfo {
 	packages: ReleasePackages;
 }
 
-export interface ReleaseBinaryAsset {
+interface ReleaseBinaryAsset {
 	url: string;
 	size: number;
 	digest: string;
@@ -340,7 +340,7 @@ export interface InstalledVersionVerification {
 }
 
 /** Paths and verifier used while replacing a downloaded binary update. */
-export interface BinaryReplacementOptions {
+interface BinaryReplacementOptions {
 	targetPath: string;
 	tempPath: string;
 	backupPath: string;

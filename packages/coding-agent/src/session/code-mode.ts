@@ -14,7 +14,7 @@ import { logger } from "@oh-my-pi/pi-utils";
  * registered tool sharing one of those names is only reachable while it stays
  * on the direct surface.
  */
-export const CODE_MODE_KEEP_TOOLS: Record<string, true> = {
+const CODE_MODE_KEEP_TOOLS: Record<string, true> = {
 	eval: true,
 	ask: true,
 	todo: true,

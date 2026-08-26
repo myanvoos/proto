@@ -47,7 +47,7 @@ export interface ModelBrowserItem {
 }
 
 /** Resolved role assignment as displayed by the browser and the hub. */
-export interface RoleAssignment {
+interface RoleAssignment {
 	model: Model;
 	thinkingLevel: ThinkingLevel;
 	/** True when the role has no configured value and fell back to auto-selection. */
@@ -156,7 +156,7 @@ function computeModelRank(model: Model, roles: RoleAssignments): number {
 }
 
 /** Options for {@link sortModelItems}. */
-export interface SortModelItemsOptions {
+interface SortModelItemsOptions {
 	roles?: RoleAssignments;
 	mruOrder?: ReadonlyArray<string>;
 	/**
@@ -263,7 +263,7 @@ export function thinkingLevelGlyph(level: ThinkingLevel): string {
  * eats the label's first character (`● default` renders as `●efault`).
  * Mirrors the spacing already used for `status.success` in model-hub.
  */
-export function formatRoleChip(role: string, assignment: RoleAssignment, settings: Settings): string {
+function formatRoleChip(role: string, assignment: RoleAssignment, settings: Settings): string {
 	const info = getRoleInfo(role, settings);
 	const label = (info.tag ?? info.name ?? role).toLowerCase();
 	const glyph = thinkingLevelGlyph(assignment.thinkingLevel);
@@ -317,7 +317,7 @@ function padLeftVisible(text: string, width: number): string {
 }
 
 /** Behavior switches for {@link ModelBrowser}. */
-export interface ModelBrowserOptions {
+interface ModelBrowserOptions {
 	/** Render the dim `provider/` prefix before model ids. Default true. */
 	showProvider?: boolean;
 	/** Session token count used to flag models whose context window is exceeded. */

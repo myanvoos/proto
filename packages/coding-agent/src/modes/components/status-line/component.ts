@@ -47,7 +47,7 @@ const RIGHT_PART_SHED_RANK: Record<string, number> = {
 };
 
 /** One segment's slot on the rendered quiet footline (0-based columns, end exclusive). */
-export interface QuietSegmentBounds {
+interface QuietSegmentBounds {
 	id: string;
 	start: number;
 	end: number;
@@ -76,7 +76,7 @@ function structuralTextSize(value: unknown): number {
 	return 1;
 }
 
-export function messageFingerprint(msg: AgentMessage): string {
+function messageFingerprint(msg: AgentMessage): string {
 	const role = (msg as { role?: string }).role ?? "";
 	const ts = (msg as { timestamp?: number }).timestamp ?? 0;
 	let textLen = 0;

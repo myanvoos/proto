@@ -5,7 +5,7 @@ import { isEvalTimeoutControlEvent } from "../bridge-timeout";
 import { executeInVmContext, type JsDisplayOutput } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
-export interface JsExecutorOptions {
+interface JsExecutorOptions {
 	cwd?: string;
 	timeoutMs?: number;
 	deadlineMs?: number;

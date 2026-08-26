@@ -297,7 +297,7 @@ export type ExecutedWorkspaceChange =
 	| { kind: "delete"; uri: string };
 
 /** What {@link applyWorkspaceEdit} did: human-readable summaries plus the ops that really ran. */
-export interface WorkspaceEditResult {
+interface WorkspaceEditResult {
 	applied: string[];
 	/** Ops that mutated the filesystem — skipped `ignoreIfExists`/`ignoreIfNotExists` ops are excluded. */
 	executed: ExecutedWorkspaceChange[];

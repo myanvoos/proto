@@ -1,11 +1,11 @@
 /** Operational classification of a built-in blob destination. */
-export type BlobDestinationStatus = "available" | "requires-account" | "incompatible" | "defunct";
+type BlobDestinationStatus = "available" | "requires-account" | "incompatible" | "defunct";
 
 /** Supported value shapes for destination configuration fields. */
-export type BlobDestinationFieldType = "string" | "boolean" | "number" | "select";
+type BlobDestinationFieldType = "string" | "boolean" | "number" | "select";
 
 /** A non-secret configuration field accepted by a destination. */
-export interface BlobDestinationOptionDescriptor {
+interface BlobDestinationOptionDescriptor {
 	/** Stable key stored below `images.urls.options`. */
 	readonly key: string;
 	/** Human-readable field label. */
@@ -21,7 +21,7 @@ export interface BlobDestinationOptionDescriptor {
 }
 
 /** A secret or account identifier accepted by a destination. */
-export interface BlobDestinationCredentialDescriptor {
+interface BlobDestinationCredentialDescriptor {
 	/** Stable key stored below `images.urls.credentials`. */
 	readonly key: string;
 	/** Human-readable field label. */
@@ -843,15 +843,3 @@ export const BUILTIN_BLOB_DESTINATIONS = {
 
 /** Identifier of any built-in blob destination, derived from registry keys. */
 export type BlobDestinationId = keyof typeof BUILTIN_BLOB_DESTINATIONS;
-
-/** Exhaustive mapping of ShareX `ImageDestination` members to registry entries. */
-export const SHAREX_IMAGE_DESTINATIONS = {
-	Imgur: "imgur",
-	ImageShack: "imageshack",
-	Flickr: "flickr",
-	Photobucket: "photobucket",
-	Chevereto: "chevereto",
-	Vgyme: "vgyme",
-	CustomImageUploader: "custom-image-uploader",
-	FileUploader: "file-uploader",
-} as const satisfies Record<string, BlobDestinationId>;

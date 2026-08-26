@@ -71,7 +71,7 @@ export function getDefaultPasteImageKeys(platform: NodeJS.Platform = process.pla
 /**
  * All keybindings definitions: TUI + app-specific.
  */
-export const KEYBINDINGS = {
+const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
 	"app.interrupt": {
 		defaultKeys: "escape",
@@ -370,7 +370,7 @@ interface KeybindingsConfigPaths {
 }
 
 /** Controls inherited keybinding lookup when creating a manager for a named profile. */
-export interface KeybindingsCreateOptions {
+interface KeybindingsCreateOptions {
 	/** Default-profile agent directory whose keybindings are merged before profile-specific bindings. */
 	inheritedAgentDir?: string;
 }
@@ -496,11 +496,6 @@ function loadKeybindingsConfig(
 	}
 
 	return { config: migratedConfig, persistedPath: filePath };
-}
-
-function migrateKeybindingsConfigFile(agentDir: string): void {
-	const { readPath, writeBackPath } = resolveKeybindingsConfigPaths(agentDir);
-	loadKeybindingsConfig(readPath, writeBackPath);
 }
 
 const FOLLOW_UP_KEYBINDING: AppKeybinding = "app.message.followUp";
@@ -711,7 +706,7 @@ function formatKeyPart(part: string, platform: NodeJS.Platform): string {
 	return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
 }
 
-export function formatKeyHint(key: KeyId): string {
+function formatKeyHint(key: KeyId): string {
 	const platform = keyHintPlatform();
 	return key
 		.split("+")
@@ -725,4 +720,3 @@ export function formatKeyHints(keys: KeyId | KeyId[]): string {
 }
 
 export type { Keybinding, KeybindingsConfig, KeyId };
-export { migrateKeybindingsConfigFile };

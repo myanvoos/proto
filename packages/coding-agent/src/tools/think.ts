@@ -46,7 +46,7 @@ const thinkSchema = type({
 
 type ThinkParams = typeof thinkSchema.infer;
 
-export type ThinkRenderArgs = {
+type ThinkRenderArgs = {
 	thoughts?: string;
 };
 

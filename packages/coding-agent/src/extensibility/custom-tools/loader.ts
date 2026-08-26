@@ -122,7 +122,7 @@ export interface ToolPathWithSource {
  * execution context, UI, logger, and injected dependencies. The UI context can be
  * updated after loading via setUIContext().
  */
-export class CustomToolLoader {
+class CustomToolLoader {
 	tools: LoadedCustomTool[] = [];
 	errors: ToolLoadError[] = [];
 	#sharedApi: CustomToolAPI;

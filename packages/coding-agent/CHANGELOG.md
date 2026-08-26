@@ -33,6 +33,8 @@
 - Added the full-screen agents view, a unified session + subagent browser: Running/Idle/Inactive sections over live registry agents and persisted sessions, `re:`/phrase/fuzzy search that keeps ancestors of matches, scope drill-in/out, reply composer (steer running workers via fleet's ensureLive+prompt path; resume-then-send for saved sessions), rename (`ctrl+r`), and delete with two-second confirm (`ctrl+x`, abort+release for running workers). `/session` opens it at global scope and `/agents` scoped at the current session's subtree when it has children.
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 ### Changed
+- Dropped the legacy raw-text PTY replay fallback in `launch` logs: clients no longer re-render `terminalText` from brokers that do not return `terminalRows`; the terminal-output isolation worker (`terminal-output-worker*`, `TERMINAL_OUTPUT_WORKER_ARG` CLI selector) and its fixtures/tests are gone, while the broker's rendered-rows path is unchanged.
+- The byte-safe UTF-8 truncation helpers `truncateHeadBytes`/`truncateTailBytes` moved to `@oh-my-pi/pi-utils` (`bytes` module); streaming-output and all tool/CLI consumers now import them from there.
 - The agent fleet roster's tree connectors now use the theme's `tree.branch`/`tree.last` glyphs (`├─ `/`└─ `) instead of hardcoded `├── `/`└── `, and the commit tool-args block uses dashed connectors.
 - Interactive startup no longer erases the terminal's scrollback; the session begins on a clear screen with prior history still reachable by scrolling up.
 - The welcome header drops the sun banner art; the wordmark, version, and model line remain.
@@ -127,6 +129,8 @@
 ### Removed
 - Removed the opt-in security workflow: the `/security` slash command and its handler, the `security_scan` tool and `security_publish` publication tool, the `src/security` module (coordinator, store, cloud client, importers, SARIF/provenance/remediation), the read-only `security://` internal-URL protocol handler, the bundled `security-reviewer` agent, and the `security.enabled` setting. The scheme is no longer reserved against RPC host URI registration.
 - Removed the inert `--yolo` and `--auto-approve` CLI flags; passing them now fails with an unknown-flag error instead of being silently ignored.
+- Removed the unused `review` tool and its `parseFindingDetails` helper; no user-facing or extension surface depended on them.
+- Removed the internal TUI `file-list` module (`renderFileList`), which had no remaining callers.
 
 - Removed the big TUI hero animations: the animated welcome intro (gradient/shine sweep on the startup logo), the full-screen animated startup/setup splash (water/starfield scene and the `startup.showSplash` setting), and the Codex reset fireworks overlay (and its `tui.codexResetFireworks` setting). Startup now renders the static gradient logo and the setup wizard opens directly on the first scene; the setup outro is a static frame. Small indicators (spinners, thinking pulse, editor shimmer) are unchanged.
 - Removed /share, `proto share`, /export, and `--export` along with their HTML template/tool-view bundle, custom-share hook, `share.*` settings, and the `export_html` RPC method.

@@ -9,6 +9,7 @@
 ### Added
 
 - Collapsed individual skill commands into a `/skill:` namespace entry to declutter suggestions
+- Added `truncateStartToWidth` for width-aware left-truncation with a leading ellipsis
 
 ### Changed
 

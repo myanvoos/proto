@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { BINARY_NAME, normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
 
-export type ProfileAliasShell = "bash" | "zsh" | "fish" | "powershell" | "pwsh";
+type ProfileAliasShell = "bash" | "zsh" | "fish" | "powershell" | "pwsh";
 
 function quoteForShell(pathValue: string): string {
 	return `'${pathValue.replace(/'/g, `'"'"'`)}'`;
@@ -12,7 +12,7 @@ function quoteForPowerShell(pathValue: string): string {
 	return `'${pathValue.replace(/'/g, `''`)}'`;
 }
 
-export interface ProfileAliasCommand {
+interface ProfileAliasCommand {
 	display: string;
 	posix: string;
 	fish: string;
@@ -20,7 +20,7 @@ export interface ProfileAliasCommand {
 }
 
 /** Process inputs used to select the installed command or preserve a source invocation. */
-export interface ProfileAliasProcessOptions {
+interface ProfileAliasProcessOptions {
 	argv?: readonly string[];
 	cwd?: string;
 	compiled?: boolean;
@@ -34,7 +34,7 @@ const DEFAULT_ALIAS_COMMAND: ProfileAliasCommand = {
 	powerShell: BINARY_NAME,
 };
 
-export interface ProfileAliasInstallOptions {
+interface ProfileAliasInstallOptions {
 	profile: string;
 	aliasName: string;
 	shellPath?: string;
@@ -46,7 +46,7 @@ export interface ProfileAliasInstallOptions {
 	writeFile?: (filePath: string, content: string) => Promise<void>;
 }
 
-export interface ProfileAliasInstallResult {
+interface ProfileAliasInstallResult {
 	shell: ProfileAliasShell;
 	configPath: string;
 	aliasName: string;

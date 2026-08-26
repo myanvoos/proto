@@ -223,7 +223,7 @@ class SafeToolRendererComponent implements Component {
  * (repaintable) region. Implemented by `TranscriptContainer`; injected rather
  * than imported so the component stays decoupled from the transcript.
  */
-export interface TranscriptLiveRegionProbe {
+interface TranscriptLiveRegionProbe {
 	isBlockInLiveRegion(component: Component): boolean;
 	/**
 	 * Whether none of the block's rows have entered native scrollback (see
@@ -242,7 +242,7 @@ export interface ToolExecutionUi {
 	imageBudget?: TUI["imageBudget"];
 }
 
-export interface ToolExecutionOptions {
+interface ToolExecutionOptions {
 	snapshots?: SnapshotStore;
 	/** Session-persistent edit clipboard register, forked per preview frame. */
 	clipboard?: Clipboard;

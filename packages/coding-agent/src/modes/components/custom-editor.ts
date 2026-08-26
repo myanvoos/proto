@@ -295,11 +295,6 @@ export function extractBracketedImagePastePaths(data: string): string[] | undefi
 	return payload === undefined ? undefined : extractImagePastePathsFromText(payload);
 }
 
-export function extractBracketedImagePastePath(data: string): string | undefined {
-	const paths = extractBracketedImagePastePaths(data);
-	return paths?.length === 1 ? paths[0] : undefined;
-}
-
 /**
  * Return a single image file path when `text` is exactly one explicit path
  * pointing at a supported image extension (`.png`, `.jpg`/`.jpeg`, `.gif`,

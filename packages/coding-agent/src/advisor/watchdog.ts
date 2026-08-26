@@ -34,7 +34,7 @@ export function formatAdvisorContextPrompt(
  * A readable config candidate discovered on the watchdog/advisor search path,
  * with raw (un-expanded) content and its position metadata.
  */
-export interface ConfigCandidate {
+interface ConfigCandidate {
 	path: string;
 	content: string;
 	level: "user" | "project";

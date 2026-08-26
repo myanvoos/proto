@@ -33,7 +33,7 @@ import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
 
-export interface HashlineFilesystemOptions {
+interface HashlineFilesystemOptions {
 	session: ToolSession;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;

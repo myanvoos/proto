@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { TERMINAL, truncateStartToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
@@ -28,13 +28,6 @@ function normalizePremiumRequests(value: number): number {
 
 function clamp01(value: number): number {
 	return Math.min(1, Math.max(0, value));
-}
-
-/** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
-function clampPathLength(pwd: string, maxLen: number): string {
-	if (pwd.length <= maxLen) return pwd;
-	const ellipsis = "…";
-	return `${ellipsis}${pwd.slice(-Math.max(0, maxLen - ellipsis.length))}`;
 }
 
 /**
@@ -167,7 +160,7 @@ const GOAL_SPINNER_PERIOD_MS = 120;
 const GOAL_NEAR_BUDGET_FRACTION = 0.9;
 
 /** Compact filled/empty unicode bar for a 0..1 fraction (clamped). */
-export function goalProgressBar(fraction: number): string {
+function goalProgressBar(fraction: number): string {
 	const clamped = clamp01(fraction);
 	const filled = Math.round(clamped * GOAL_BAR_WIDTH);
 	return `${"▰".repeat(filled)}${"▱".repeat(GOAL_BAR_WIDTH - filled)}`;
@@ -243,7 +236,7 @@ interface BaseModeState {
 	render(ctx: SegmentContext): string;
 }
 
-export const BASE_MODE_STATES: readonly BaseModeState[] = [
+const BASE_MODE_STATES: readonly BaseModeState[] = [
 	{
 		id: "prewalk",
 		render(ctx) {
@@ -295,7 +288,7 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			const content = withIcon(theme.icon.worktree, truncateStartToWidth(label, opts.maxLength ?? 40));
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
@@ -314,8 +307,7 @@ const pathSegment: StatusLineSegment = {
 		if (opts.abbreviate !== false) {
 			pwd = shortenPath(pwd);
 		}
-
-		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
+		pwd = truncateStartToWidth(pwd, opts.maxLength ?? 40);
 		if (repoSuffix) {
 			pwd = `${pwd}${repoSuffix}`;
 		}
@@ -454,7 +446,7 @@ const CONTEXT_BAR_TIP_STEP_URGENT_MS = 500;
  * still available, in the usage-level hue, spent cells dim. The caller passes
  * REMAINING room, so the bar empties as the session grows.
  */
-export function renderContextBar(ratio: number, level: ContextUsageLevel, nowMs: number, live: boolean): string {
+function renderContextBar(ratio: number, level: ContextUsageLevel, nowMs: number, live: boolean): string {
 	const clamped = clamp01(Number.isFinite(ratio) ? ratio : 0);
 	const filled = Math.min(CONTEXT_BAR_CELLS, Math.round(clamped * CONTEXT_BAR_CELLS));
 	const levelColor = getContextUsageThemeColor(level);
@@ -722,5 +714,3 @@ export function renderSegment(id: StatusLineSegmentId, ctx: SegmentContext): Ren
 	}
 	return segment.render(ctx);
 }
-
-export const ALL_SEGMENT_IDS: StatusLineSegmentId[] = Object.keys(SEGMENTS) as StatusLineSegmentId[];

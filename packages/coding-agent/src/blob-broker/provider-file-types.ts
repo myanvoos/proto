@@ -80,7 +80,7 @@ export interface ProviderFileCacheStatus {
 }
 
 /** Optional timing controls for a provider-file cache. */
-export interface ProviderFileCacheOptions {
+interface ProviderFileCacheOptions {
 	/** Delay used to coalesce index writes. Defaults to 250 milliseconds. */
 	readonly saveDebounceMs?: number;
 	/** Clock override for deterministic consumers and tests. */

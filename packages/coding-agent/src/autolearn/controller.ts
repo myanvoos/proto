@@ -34,7 +34,7 @@ export function buildAutoLearnInstructions(available: { manageSkill: boolean }):
 	return autolearnGuidance.trim();
 }
 
-export interface AutoLearnControllerOptions {
+interface AutoLearnControllerOptions {
 	session: AgentSession;
 	settings: Settings;
 	capture: (content: string) => Promise<void>;

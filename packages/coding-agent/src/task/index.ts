@@ -136,8 +136,3 @@ export async function refreshAgentDiscovery(cwd: string): Promise<void> {
 		discoverySnapshots.set(key, agents);
 	}
 }
-
-/** Latest published discovered-agent snapshot for a cwd (create-time memo). */
-export function getDiscoveredAgentSnapshot(cwd: string): AgentDefinition[] {
-	return discoverySnapshots.get(path.resolve(cwd)) ?? [];
-}

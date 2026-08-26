@@ -5,7 +5,7 @@ export * from "./agent-loop";
 // Append-only context mode
 export * from "./append-only-context";
 // Compaction
-export * from "./compaction";
+export * from "./compaction/index";
 // Process-global pause gate
 export * from "./pause";
 // Proxy utilities

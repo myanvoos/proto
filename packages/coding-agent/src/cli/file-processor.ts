@@ -16,12 +16,12 @@ import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 const MAX_CLI_TEXT_BYTES = 5 * 1024 * 1024; // 5MB
 const MAX_CLI_IMAGE_BYTES = 25 * 1024 * 1024; // 25MB
 
-export interface ProcessedFiles {
+interface ProcessedFiles {
 	text: string;
 	images: ImageContent[];
 }
 
-export interface ProcessFileOptions {
+interface ProcessFileOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
 }

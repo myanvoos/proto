@@ -21,7 +21,7 @@ export interface DestinationRuntimeConfig {
 }
 
 /** Additional durable metadata exposed by a destination after upload. */
-export interface PublicationExtras {
+interface PublicationExtras {
 	/** Unix epoch milliseconds after which the publication may disappear. */
 	readonly expiresAt?: number;
 	/** Replayable remote deletion request. */

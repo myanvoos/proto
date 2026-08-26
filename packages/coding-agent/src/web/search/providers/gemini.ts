@@ -10,7 +10,7 @@
  */
 import { type AuthStorage, type FetchImpl, type OAuthAccess, withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { getAntigravityUserAgent, getGeminiCliHeaders } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
-import { fetchWithRetry, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { fetchWithRetry, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 
 import type { SearchCitation, SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -208,102 +208,75 @@ async function parseGeminiSearchStream(
 	let model = fallbackModel;
 	let usage: { inputTokens: number; outputTokens: number; totalTokens: number } | undefined;
 
-	const reader = body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
+	for await (const chunk of readSseJson<CloudCodeResponseChunk & GeminiModelResponse>(body, undefined, undefined, {
+		malformed: "skip",
+	})) {
+		const responseData = chunk.response ?? chunk;
+		const candidate = responseData.candidates?.[0];
 
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
-
-			for (const line of lines) {
-				if (!line.startsWith("data:")) continue;
-
-				const jsonStr = line.slice(5).trim();
-				if (!jsonStr) continue;
-
-				let chunk: CloudCodeResponseChunk & GeminiModelResponse;
-				try {
-					chunk = JSON.parse(jsonStr) as CloudCodeResponseChunk & GeminiModelResponse;
-				} catch {
-					continue;
-				}
-
-				const responseData = chunk.response ?? chunk;
-				const candidate = responseData.candidates?.[0];
-
-				if (candidate?.content?.parts) {
-					for (const part of candidate.content.parts) {
-						if (part.text) {
-							answerParts.push(part.text);
-						}
-					}
-				}
-
-				const groundingMetadata = candidate?.groundingMetadata;
-				if (groundingMetadata) {
-					if (groundingMetadata.groundingChunks) {
-						for (const grChunk of groundingMetadata.groundingChunks) {
-							if (grChunk.web?.uri) {
-								const sourceUrl = grChunk.web.uri;
-								if (!seenUrls.has(sourceUrl)) {
-									seenUrls.add(sourceUrl);
-									sources.push({
-										title: grChunk.web.title ?? sourceUrl,
-										url: sourceUrl,
-									});
-								}
-							}
-						}
-					}
-
-					if (groundingMetadata.groundingSupports && groundingMetadata.groundingChunks) {
-						for (const support of groundingMetadata.groundingSupports) {
-							const citedText = support.segment?.text;
-							const chunkIndices = support.groundingChunkIndices ?? [];
-
-							for (const idx of chunkIndices) {
-								const grChunk = groundingMetadata.groundingChunks[idx];
-								if (grChunk?.web?.uri) {
-									citations.push({
-										url: grChunk.web.uri,
-										title: grChunk.web.title ?? grChunk.web.uri,
-										citedText,
-									});
-								}
-							}
-						}
-					}
-
-					if (groundingMetadata.webSearchQueries) {
-						for (const q of groundingMetadata.webSearchQueries) {
-							if (!searchQueries.includes(q)) {
-								searchQueries.push(q);
-							}
-						}
-					}
-				}
-
-				if (responseData.usageMetadata) {
-					usage = {
-						inputTokens: responseData.usageMetadata.promptTokenCount ?? 0,
-						outputTokens: responseData.usageMetadata.candidatesTokenCount ?? 0,
-						totalTokens: responseData.usageMetadata.totalTokenCount ?? 0,
-					};
-				}
-
-				if (responseData.modelVersion) {
-					model = responseData.modelVersion;
+		if (candidate?.content?.parts) {
+			for (const part of candidate.content.parts) {
+				if (part.text) {
+					answerParts.push(part.text);
 				}
 			}
 		}
-	} finally {
-		reader.releaseLock();
+
+		const groundingMetadata = candidate?.groundingMetadata;
+		if (groundingMetadata) {
+			if (groundingMetadata.groundingChunks) {
+				for (const grChunk of groundingMetadata.groundingChunks) {
+					if (grChunk.web?.uri) {
+						const sourceUrl = grChunk.web.uri;
+						if (!seenUrls.has(sourceUrl)) {
+							seenUrls.add(sourceUrl);
+							sources.push({
+								title: grChunk.web.title ?? sourceUrl,
+								url: sourceUrl,
+							});
+						}
+					}
+				}
+			}
+
+			if (groundingMetadata.groundingSupports && groundingMetadata.groundingChunks) {
+				for (const support of groundingMetadata.groundingSupports) {
+					const citedText = support.segment?.text;
+					const chunkIndices = support.groundingChunkIndices ?? [];
+
+					for (const idx of chunkIndices) {
+						const grChunk = groundingMetadata.groundingChunks[idx];
+						if (grChunk?.web?.uri) {
+							citations.push({
+								url: grChunk.web.uri,
+								title: grChunk.web.title ?? grChunk.web.uri,
+								citedText,
+							});
+						}
+					}
+				}
+			}
+
+			if (groundingMetadata.webSearchQueries) {
+				for (const q of groundingMetadata.webSearchQueries) {
+					if (!searchQueries.includes(q)) {
+						searchQueries.push(q);
+					}
+				}
+			}
+		}
+
+		if (responseData.usageMetadata) {
+			usage = {
+				inputTokens: responseData.usageMetadata.promptTokenCount ?? 0,
+				outputTokens: responseData.usageMetadata.candidatesTokenCount ?? 0,
+				totalTokens: responseData.usageMetadata.totalTokenCount ?? 0,
+			};
+		}
+
+		if (responseData.modelVersion) {
+			model = responseData.modelVersion;
+		}
 	}
 
 	return {

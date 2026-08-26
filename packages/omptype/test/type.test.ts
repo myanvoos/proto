@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import { OmpErrors, Type, type } from "../src";
-import { scope as arkScope } from "../src/ark";
 
 /** Call count that guarantees the JIT has kicked in (threshold is 3). */
 const JIT = 5;
@@ -327,17 +326,6 @@ describe("error contract", () => {
 });
 
 describe("advanced ArkType compatibility", () => {
-	it("re-exports recursive scopes through the Ark compatibility facade", () => {
-		const schemas = arkScope({ Node: { value: "number", "next?": "Node" } }, { jitless: true }).export();
-		expect(schemas.Node({ value: 1, next: { value: 2 } })).toEqual({
-			value: 1,
-			next: { value: 2 },
-		});
-		const invalid = schemas.Node({ value: 1, next: { value: "two" } });
-		expect(invalid).toBeInstanceOf(OmpErrors);
-		if (invalid instanceof OmpErrors) expect(invalid[0].path).toEqual(["next", "value"]);
-	});
-
 	it("resolves recursive scopes, modules, utility generics, and runtime generics", () => {
 		const schemas = type
 			.scope({

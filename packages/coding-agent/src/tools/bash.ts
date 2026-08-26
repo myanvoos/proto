@@ -154,8 +154,6 @@ export interface BashToolDetails {
 	};
 }
 
-export interface BashToolOptions {}
-
 type ManagedBashJobCompletion =
 	| {
 			kind: "completed";

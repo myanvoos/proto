@@ -12,6 +12,7 @@ import {
 	logger,
 	prompt,
 	readImageMetadata,
+	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
 import {
 	canonicalSnapshotKey,
@@ -33,7 +34,6 @@ import {
 	DEFAULT_MAX_LINES,
 	type TruncationResult,
 	truncateHead,
-	truncateHeadBytes,
 	truncateLine,
 } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext, lineEntriesToPlainText } from "../utils/block-context";

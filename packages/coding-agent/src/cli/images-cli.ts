@@ -68,14 +68,14 @@ export interface ImagesResolvedConfig {
 	readonly savingsJournalPath: string;
 }
 
-export interface ImagesProviderFileSnapshot {
+interface ImagesProviderFileSnapshot {
 	readonly entries: readonly ProviderFileCacheEntry[];
 	readonly lastError?: string;
 }
 
-export type ImagesDoctorSeverity = "ok" | "warn" | "error";
+type ImagesDoctorSeverity = "ok" | "warn" | "error";
 
-export interface ImagesDoctorCheck {
+interface ImagesDoctorCheck {
 	readonly name: string;
 	readonly severity: ImagesDoctorSeverity;
 	readonly detail: string;
@@ -121,7 +121,7 @@ interface SafeDaemonStatus {
 	readonly recentFetches?: BlobBrokerStatus["recentFetches"];
 }
 
-export interface ImagesStatusResult {
+interface ImagesStatusResult {
 	readonly action: "status";
 	readonly exitCode: 0;
 	readonly projectDir: string;
@@ -132,7 +132,7 @@ export interface ImagesStatusResult {
 	readonly savings: BlobBrokerSavingsStatus;
 }
 
-export interface ImagesDoctorResult {
+interface ImagesDoctorResult {
 	readonly action: "doctor";
 	readonly exitCode: 0 | 1;
 	readonly projectDir: string;
@@ -140,7 +140,7 @@ export interface ImagesDoctorResult {
 	readonly checks: readonly ImagesDoctorCheck[];
 }
 
-export interface ImagesProbeResult {
+interface ImagesProbeResult {
 	readonly action: "probe";
 	readonly exitCode: 0 | 1;
 	readonly projectDir: string;
@@ -151,7 +151,7 @@ export interface ImagesProbeResult {
 	readonly detail: string;
 }
 
-export interface ImagesDaemonPurgeResult {
+interface ImagesDaemonPurgeResult {
 	readonly applied: boolean;
 	readonly purgedBlobs: number;
 	readonly reclaimedBytes: number;
@@ -160,7 +160,7 @@ export interface ImagesDaemonPurgeResult {
 	readonly errors: readonly string[];
 }
 
-export interface ImagesProviderPurgeResult {
+interface ImagesProviderPurgeResult {
 	readonly selected: number;
 	readonly bytes: number;
 	readonly deleted: number;
@@ -168,7 +168,7 @@ export interface ImagesProviderPurgeResult {
 	readonly errors: readonly string[];
 }
 
-export interface ImagesPurgeResult {
+interface ImagesPurgeResult {
 	readonly action: "purge";
 	readonly exitCode: 0 | 1;
 	readonly projectDir: string;
@@ -178,13 +178,13 @@ export interface ImagesPurgeResult {
 	readonly providerFiles: ImagesProviderPurgeResult;
 }
 
-export interface ImagesErrorResult {
+interface ImagesErrorResult {
 	readonly action: ImagesAction;
 	readonly exitCode: 1 | 2;
 	readonly error: string;
 }
 
-export type ImagesCommandResult =
+type ImagesCommandResult =
 	| ImagesStatusResult
 	| ImagesDoctorResult
 	| ImagesProbeResult

@@ -41,7 +41,7 @@ export class DiagnosticsLedger {
 	}
 }
 
-export interface DiagnosticsLedgerOwner {
+interface DiagnosticsLedgerOwner {
 	diagnosticsLedger?: DiagnosticsLedger;
 }
 

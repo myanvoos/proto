@@ -53,7 +53,7 @@ function assertRuntimePackageName(name: string): string {
 
 // ── Options ──────────────────────────────────────────────────────────────────
 
-export interface MarketplaceManagerOptions {
+interface MarketplaceManagerOptions {
 	marketplacesRegistryPath: string;
 	installedRegistryPath: string;
 	/**

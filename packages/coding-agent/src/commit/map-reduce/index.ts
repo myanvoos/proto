@@ -11,7 +11,7 @@ import { estimateTokens } from "./utils";
 const MIN_FILES_FOR_MAP_REDUCE = 4;
 const MAX_FILE_TOKENS = 50_000;
 
-export interface MapReduceSettings {
+interface MapReduceSettings {
 	enabled?: boolean;
 	minFiles?: number;
 	maxFileTokens?: number;
@@ -19,7 +19,7 @@ export interface MapReduceSettings {
 	timeoutMs?: number;
 }
 
-export interface MapReduceInput {
+interface MapReduceInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

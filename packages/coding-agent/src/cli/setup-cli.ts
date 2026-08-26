@@ -22,7 +22,7 @@ export interface SetupCommandArgs {
 
 const MANAGED_PYTHON_ENV = getPythonEnvDir();
 
-export interface PythonCheckResult {
+interface PythonCheckResult {
 	available: boolean;
 	pythonPath?: string;
 	usingManagedEnv?: boolean;

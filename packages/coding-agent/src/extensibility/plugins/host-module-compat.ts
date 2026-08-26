@@ -1048,8 +1048,3 @@ export function installHostModuleResolution(): void {
 		},
 	});
 }
-
-/** Test seam: clears the memoized canonical specifier resolutions. */
-export function __resetHostResolutionCache(): void {
-	clearHostResolutionCaches();
-}

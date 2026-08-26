@@ -104,7 +104,7 @@ export type SmitherySearchResult = {
 	}>;
 };
 
-export interface SmitherySearchOptions {
+interface SmitherySearchOptions {
 	limit?: number;
 	apiKey?: string;
 	includeSemantic?: boolean;

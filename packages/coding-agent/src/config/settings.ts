@@ -88,7 +88,7 @@ type ConfigOverlayReadResult = {
 	shellPathSource: string | undefined;
 };
 
-export interface SettingsOptions {
+interface SettingsOptions {
 	/** Current working directory for project settings discovery */
 	cwd?: string;
 	/** Agent directory for config.yml/config.yaml storage */

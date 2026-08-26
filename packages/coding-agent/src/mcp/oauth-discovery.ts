@@ -83,7 +83,7 @@ export function extractOAuthChallengeScopes(error: Error): string | undefined {
  * Extract OAuth endpoints from error response.
  * Looks for WWW-Authenticate header format or JSON error bodies.
  */
-export function extractOAuthEndpoints(error: Error): OAuthEndpoints | null {
+function extractOAuthEndpoints(error: Error): OAuthEndpoints | null {
 	const errorMsg = error.message;
 
 	const readEndpointsFromObject = (obj: Record<string, unknown>): OAuthEndpoints | null => {

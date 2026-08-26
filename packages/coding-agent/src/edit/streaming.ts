@@ -39,7 +39,7 @@ export interface PerFileDiffPreview {
 	error?: string;
 }
 
-export interface StreamingDiffContext {
+interface StreamingDiffContext {
 	cwd: string;
 	signal: AbortSignal;
 	snapshots: SnapshotStore;
@@ -67,7 +67,7 @@ export interface StreamingDiffContext {
  * matchers (TTSR) evaluate each file in isolation — a `tool:edit(*.ts)` rule
  * never fires on text that actually belongs to a sibling `README.md` hunk.
  */
-export interface EditMatcherEntry {
+interface EditMatcherEntry {
 	readonly path: string;
 	readonly digest: string;
 }

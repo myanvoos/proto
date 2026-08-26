@@ -21,7 +21,7 @@ const SESSION_SUFFIX = ".jsonl";
 const COMPRESSED_SESSION_SUFFIX = ".jsonl.gz";
 const GC_LOCK_BREAKER_SUFFIX = ".break";
 
-export interface GcCommandFlags {
+interface GcCommandFlags {
 	apply?: boolean;
 	json?: boolean;
 	agentDir?: string;
@@ -37,7 +37,7 @@ export interface GcCommandArgs {
 	flags: GcCommandFlags;
 }
 
-export interface BlobGcResult {
+interface BlobGcResult {
 	referenced: number;
 	candidates: number;
 	wouldDelete: number;
@@ -46,7 +46,7 @@ export interface BlobGcResult {
 	errors: string[];
 }
 
-export interface ArchiveGcResult {
+interface ArchiveGcResult {
 	scanned: number;
 	skippedActive: number;
 	keptNewestGlobal: number;
@@ -75,7 +75,7 @@ interface WalGcResult {
 	checkpointed: boolean;
 }
 
-export interface GcResult {
+interface GcResult {
 	agentDir: string;
 	apply: boolean;
 	blobs?: BlobGcResult;

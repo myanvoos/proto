@@ -61,8 +61,8 @@
       "import": "./src/index.ts"
     },
     "./compaction": {
-      "types": "./src/compaction.ts",
-      "import": "./src/compaction.ts"
+      "types": "./src/compaction/index.ts",
+      "import": "./src/compaction/index.ts"
     },
     "./compaction/*": {
       "types": "./src/compaction/*.ts",

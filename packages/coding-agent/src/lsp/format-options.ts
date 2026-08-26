@@ -17,7 +17,7 @@
 import { getEditorConfigFormatting } from "@oh-my-pi/pi-utils";
 
 /** Subset of the LSP `FormattingOptions` we send. */
-export interface LspFormattingOptions {
+interface LspFormattingOptions {
 	tabSize: number;
 	insertSpaces: boolean;
 	trimTrailingWhitespace: boolean;

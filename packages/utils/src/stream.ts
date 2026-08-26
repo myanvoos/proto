@@ -57,6 +57,53 @@ export async function* readJsonl<T>(stream: ReadableStream<Uint8Array>, signal?:
 }
 
 // =============================================================================
+// Byte-limited reads
+// =============================================================================
+
+export interface ReadBytesLimitResult {
+	/** Bytes read from the stream, capped at `maxBytes`. */
+	bytes: Uint8Array;
+	/** True when the stream produced more than `maxBytes` and the tail was discarded. */
+	truncated: boolean;
+}
+
+/**
+ * Read a binary stream up to `maxBytes`. Once the cap is exceeded the source
+ * reader is cancelled (propagating HTTP-client disconnects to the backend) and
+ * {@link ReadBytesLimitResult.truncated} is set; nothing is thrown for an
+ * over-long stream. Aborts via `signal` reject with {@link AbortError}.
+ */
+export async function readBytesWithLimit(
+	stream: ReadableStream<Uint8Array>,
+	maxBytes: number,
+	signal?: AbortSignal,
+): Promise<ReadBytesLimitResult> {
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let truncated = false;
+	for await (const chunk of abortableSource(stream, signal)) {
+		if (total + chunk.byteLength > maxBytes) {
+			const accepted = maxBytes - total;
+			if (accepted > 0) {
+				chunks.push(chunk.subarray(0, accepted));
+				total += accepted;
+			}
+			truncated = true;
+			break;
+		}
+		chunks.push(chunk);
+		total += chunk.byteLength;
+	}
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return { bytes, truncated };
+}
+
+// =============================================================================
 // SSE (Server-Sent Events)
 // =============================================================================
 
@@ -236,10 +283,20 @@ function isRecoverableTrailingJson(data: string): boolean {
 	return typeof recovered === "object" && recovered !== null;
 }
 
+export interface ReadSseJsonOptions {
+	/**
+	 * How to handle a `data:` payload that fails strict `JSON.parse`:
+	 * `"throw"` (default) surfaces the SyntaxError; `"skip"` drops the event
+	 * and continues, tolerating lightly malformed third-party streams.
+	 */
+	malformed?: "skip" | "throw";
+}
+
 export async function* readSseJson<T>(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
 	onEvent?: SseEventObserver,
+	options?: ReadSseJsonOptions,
 ): AsyncGenerator<T> {
 	for await (const sse of readSseEvents(stream, signal)) {
 		const isTrailing = trailingEvents.has(sse);
@@ -254,6 +311,9 @@ export async function* readSseJson<T>(
 		} catch (err) {
 			if (err instanceof SyntaxError && isTrailing && isRecoverableTrailingJson(data)) {
 				return;
+			}
+			if (err instanceof SyntaxError && options?.malformed === "skip") {
+				continue;
 			}
 			throw err;
 		}

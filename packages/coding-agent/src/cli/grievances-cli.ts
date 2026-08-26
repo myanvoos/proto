@@ -13,13 +13,13 @@ interface GrievanceRow {
 	report: string;
 }
 
-export interface ListGrievancesOptions {
+interface ListGrievancesOptions {
 	limit: number;
 	tool?: string;
 	json: boolean;
 }
 
-export interface CleanGrievancesOptions {
+interface CleanGrievancesOptions {
 	/** Delete a single grievance by id. */
 	id?: number;
 	/** Delete every grievance recorded for this tool name. */
@@ -30,7 +30,7 @@ export interface CleanGrievancesOptions {
 	json?: boolean;
 }
 
-export interface PushGrievancesOptions {
+interface PushGrievancesOptions {
 	/** Emit the {@link FlushResult} as JSON instead of a status line. */
 	json?: boolean;
 }

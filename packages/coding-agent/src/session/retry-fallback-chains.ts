@@ -96,17 +96,17 @@ export function parseRetryFallbackSelector(
 }
 
 /** Whether a fallback-chain key is a model selector rather than a role. */
-export function isRetryFallbackModelKey(key: string): boolean {
+function isRetryFallbackModelKey(key: string): boolean {
 	return key.includes("/");
 }
 
 /** Whether a fallback-chain key or entry is a provider wildcard. */
-export function isRetryFallbackWildcardKey(key: string): boolean {
+function isRetryFallbackWildcardKey(key: string): boolean {
 	return key.endsWith("/*");
 }
 
 /** Splits a wildcard selector into provider and optional model-id prefix. */
-export function parseRetryFallbackWildcard(
+function parseRetryFallbackWildcard(
 	key: string,
 	isKnownProvider: (provider: string) => boolean,
 ): { provider: string; idPrefix: string | undefined } {

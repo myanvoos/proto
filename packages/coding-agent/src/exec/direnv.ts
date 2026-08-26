@@ -4,7 +4,7 @@ import { $which, logger } from "@oh-my-pi/pi-utils";
 
 /** Default cap on a single `direnv` invocation. The first export for a devenv
  *  `.envrc` can build a shell; callers may raise this via `bash.direnvLoadTimeoutMs`. */
-export const DEFAULT_DIRENV_TIMEOUT_MS = 30_000;
+const DEFAULT_DIRENV_TIMEOUT_MS = 30_000;
 
 /** Walk up from `startDir` to the nearest directory containing an `.envrc`. */
 export async function findEnvrc(startDir: string): Promise<string | null> {
@@ -22,7 +22,7 @@ export async function findEnvrc(startDir: string): Promise<string | null> {
 	}
 }
 
-export interface DirenvExportDiff {
+interface DirenvExportDiff {
 	/** Variables direnv sets to a concrete value. */
 	set: Record<string, string>;
 	/** Variables direnv removes (JSON `null`). */

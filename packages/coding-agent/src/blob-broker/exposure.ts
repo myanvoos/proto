@@ -67,7 +67,7 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 3_000;
 const MAX_HEALTH_TIMEOUT_MS = 30_000;
 
 /** Retry and timeout limits for an exposure edge-to-origin health probe. */
-export interface ExposureHealthProbeOptions {
+interface ExposureHealthProbeOptions {
 	/** Maximum fetch attempts before the exposure is rejected. */
 	attempts?: number;
 	/** Delay between attempts, in milliseconds. */

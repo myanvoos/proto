@@ -347,7 +347,7 @@ export function generateDiffString(
 // Replace Mode Logic
 // ═══════════════════════════════════════════════════════════════════════════
 
-export interface ReplaceOptions {
+interface ReplaceOptions {
 	/** Allow fuzzy matching */
 	fuzzy: boolean;
 	/** Replace all occurrences */
@@ -356,7 +356,7 @@ export interface ReplaceOptions {
 	threshold?: number;
 }
 
-export interface ReplaceResult {
+interface ReplaceResult {
 	/** The new content after replacements */
 	content: string;
 	/** Number of replacements made */

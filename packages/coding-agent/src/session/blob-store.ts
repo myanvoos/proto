@@ -206,16 +206,6 @@ export function isImageDataUrl(data: string): boolean {
 	return data.startsWith("data:image/") && data.includes(";base64,");
 }
 
-/**
- * Externalize a provider image data URL to the blob store, returning a blob reference.
- * The full data URL string is preserved so transport-native history can be reconstructed on resume.
- */
-export async function externalizeImageDataUrl(blobStore: BlobStore, dataUrl: string): Promise<string> {
-	if (isBlobRef(dataUrl)) return dataUrl;
-	const { ref } = await blobStore.put(Buffer.from(dataUrl, "utf8"));
-	return ref;
-}
-
 /** Synchronous variant of {@link externalizeImageDataUrl}. */
 export function externalizeImageDataUrlSync(blobStore: BlobStore, dataUrl: string): string {
 	if (isBlobRef(dataUrl)) return dataUrl;

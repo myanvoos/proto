@@ -11,7 +11,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
-export interface PyToolBridgeEntry {
+interface PyToolBridgeEntry {
 	toolSession: ToolSession;
 	/**
 	 * Turn-cancel handed to the tool implementation. Raw and never deferred, so

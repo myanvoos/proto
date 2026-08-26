@@ -63,7 +63,6 @@ import { notifyProviderResponse } from "../utils/provider-response";
 import { getHeadersFromError, getRetryAfterMsFromHeaders } from "../utils/retry-after";
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
-import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { isForcedToolChoice } from "../utils/tool-choice";
 import {
@@ -1793,6 +1792,25 @@ export function maybeAddReplayUnsignedThinkingHint(model: Model<"anthropic-messa
 	if (model.compatConfig?.replayUnsignedThinking !== undefined) return message;
 	const hint = `Provider "${model.provider}" looks like an Anthropic-compatible signing proxy: it rejected a replayed unsigned thinking block. Set \`compat.replayUnsignedThinking: false\` under \`providers.${model.provider}\` in your models.yml and retry. See https://github.com/can1357/oh-my-pi/issues/4297.`;
 	return `${hint}\n\n${message}`;
+}
+
+/**
+ * Per-request SDK options combining the abort signal with the optional
+ * first-event timeout as the SDK transport `timeout`. The hint is not a
+ * watchdog — it narrows the "stuck pre-stream request" window so a hung
+ * connect fails fast instead of waiting on the default multi-minute SDK
+ * timeout; once the stream starts, callers must abort to interrupt silence.
+ * When the hint is usable, retries are pinned to zero so the SDK cannot
+ * silently extend the caller's explicit deadline by re-attempting.
+ */
+function createSdkStreamRequestOptions(
+	signal: AbortSignal,
+	streamFirstEventTimeoutMs: number | undefined,
+): { signal: AbortSignal; timeout?: number; maxRetries?: number } {
+	if (streamFirstEventTimeoutMs === undefined) return { signal };
+	if (!Number.isFinite(streamFirstEventTimeoutMs)) return { signal };
+	if (streamFirstEventTimeoutMs <= 0) return { signal };
+	return { signal, timeout: Math.trunc(streamFirstEventTimeoutMs), maxRetries: 0 };
 }
 
 const streamAnthropicOnce = (

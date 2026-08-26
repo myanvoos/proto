@@ -6,7 +6,7 @@
  * Feature definition for selective plugin installation.
  * Features allow plugins to expose optional functionality.
  */
-export interface PluginFeature {
+interface PluginFeature {
 	/** Human-readable description */
 	description?: string;
 	/** Whether this feature is enabled by default */
@@ -52,7 +52,7 @@ export interface PluginManifest {
 // Plugin Settings Schema Types
 // =============================================================================
 
-export type PluginSettingType = "string" | "number" | "boolean" | "enum";
+type PluginSettingType = "string" | "number" | "boolean" | "enum";
 
 interface PluginSettingBase {
 	/** Setting type */
@@ -65,12 +65,12 @@ interface PluginSettingBase {
 	env?: string;
 }
 
-export interface StringSetting extends PluginSettingBase {
+interface StringSetting extends PluginSettingBase {
 	type: "string";
 	default?: string;
 }
 
-export interface NumberSetting extends PluginSettingBase {
+interface NumberSetting extends PluginSettingBase {
 	type: "number";
 	default?: number;
 	min?: number;
@@ -78,12 +78,12 @@ export interface NumberSetting extends PluginSettingBase {
 	step?: number;
 }
 
-export interface BooleanSetting extends PluginSettingBase {
+interface BooleanSetting extends PluginSettingBase {
 	type: "boolean";
 	default?: boolean;
 }
 
-export interface EnumSetting extends PluginSettingBase {
+interface EnumSetting extends PluginSettingBase {
 	type: "enum";
 	/** Allowed values */
 	values: string[];
@@ -125,7 +125,7 @@ export interface InstalledPlugin {
 /**
  * Per-plugin runtime state stored in lock file.
  */
-export interface PluginRuntimeState {
+interface PluginRuntimeState {
 	/** Installed version */
 	version: string;
 	/** Enabled features (null = defaults) */

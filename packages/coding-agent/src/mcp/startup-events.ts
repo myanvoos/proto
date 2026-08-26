@@ -14,7 +14,7 @@ export type McpConnectionStatusEvent =
 	| { type: "connected"; serverName: string }
 	| ({ type: "failed" } & McpConnectionFailure);
 
-export type McpConnectionStatusSnapshot = {
+type McpConnectionStatusSnapshot = {
 	pendingServers: readonly string[];
 	connectedServers: readonly string[];
 	failedServers: readonly McpConnectionFailure[];

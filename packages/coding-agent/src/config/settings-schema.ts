@@ -304,14 +304,14 @@ type SettingDef =
 // Schema Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
-export interface ModelTagDef {
+interface ModelTagDef {
 	name: string;
 	color?: string;
 	/** If true, the role is functional but not shown in the model selector UI. */
 	hidden?: boolean;
 }
 
-export interface ModelTagsSettings {
+interface ModelTagsSettings {
 	[key: string]: ModelTagDef;
 }
 
@@ -4714,16 +4714,16 @@ export interface CompactionSettings {
 	dropUseless: boolean;
 }
 
-export interface RecapSettings {
+interface RecapSettings {
 	enabled: boolean;
 	idleSeconds: number;
 }
 
-export interface TitleSettings {
+interface TitleSettings {
 	refreshOnReplan: boolean;
 }
 
-export interface ContextPromotionSettings {
+interface ContextPromotionSettings {
 	enabled: boolean;
 }
 export interface RetrySettings {
@@ -4737,7 +4737,7 @@ export interface RetrySettings {
 	usageReservePolicy: "confirm" | "auto" | "fail-closed";
 }
 
-export interface MemoriesSettings {
+interface MemoriesSettings {
 	enabled: boolean;
 	maxRolloutsPerStartup: number;
 	maxRolloutAgeDays: number;
@@ -4755,7 +4755,7 @@ export interface MemoriesSettings {
 	summaryInjectionTokenLimit: number;
 }
 
-export interface BranchSummarySettings {
+interface BranchSummarySettings {
 	enabled: boolean;
 	reserveTokens: number;
 }
@@ -4776,7 +4776,7 @@ export interface SkillsSettings {
 	disabledExtensions?: string[];
 }
 
-export interface CommitSettings {
+interface CommitSettings {
 	mapReduceEnabled: boolean;
 	mapReduceMinFiles: number;
 	mapReduceMaxFileTokens: number;
@@ -4797,7 +4797,7 @@ export interface TtsrSettings {
 	disabledRules?: string[];
 }
 
-export interface ExaSettings {
+interface ExaSettings {
 	enabled: boolean;
 	searchDelayMs: number;
 }
@@ -4812,7 +4812,7 @@ export interface StatusLineSettings {
 	segmentOptions: Record<string, unknown>;
 }
 
-export interface ThinkingBudgetsSettings {
+interface ThinkingBudgetsSettings {
 	minimal: number;
 	low: number;
 	medium: number;
@@ -4839,14 +4839,14 @@ export interface ShellMinimizerSettings {
 }
 export type CodexAutoRedeemMode = "unset" | "yes" | "no";
 
-export interface CodexResetsSettings {
+interface CodexResetsSettings {
 	autoRedeem: CodexAutoRedeemMode;
 	minBlockedMinutes: number;
 	keepCredits: number;
 	salvageHorizonHours: number;
 }
 
-export interface GcSettings {
+interface GcSettings {
 	blobs: boolean;
 	archive: boolean;
 	wal: boolean;

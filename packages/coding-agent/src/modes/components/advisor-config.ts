@@ -56,7 +56,7 @@ import {
 } from "./overlay-box";
 
 /** Host callbacks: all disk + live-runtime effects flow through these. */
-export interface AdvisorConfigCallbacks {
+interface AdvisorConfigCallbacks {
 	/** Load a scope's `WATCHDOG.yml` into an editable doc (empty when absent). */
 	loadDoc: (scope: AdvisorConfigScope) => Promise<WatchdogConfigDoc>;
 	/** Persist the doc to the scope's file and rebuild the live advisors. */

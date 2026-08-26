@@ -9,9 +9,7 @@
 import { padding } from "@oh-my-pi/pi-tui";
 
 export {
-	type BomResult,
 	detectLineEnding,
-	type LineEnding,
 	normalizeToLF,
 	restoreLineEndings,
 	stripBom,
@@ -57,7 +55,7 @@ export function minIndent(text: string): number {
 }
 
 /** Detect the indentation character used in text (space or tab) */
-export function detectIndentChar(text: string): string {
+function detectIndentChar(text: string): string {
 	const lines = text.split("\n");
 	for (const line of lines) {
 		const ws = getLeadingWhitespace(line);

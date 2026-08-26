@@ -14,7 +14,7 @@ import { normalizePluginRuntimeConfig } from "./runtime-config";
 import type { InstalledPlugin, PluginManifest, PluginRuntimeConfig, ProjectPluginOverrides } from "./types";
 
 /** Installed plugin plus the root scope that supplied its runtime metadata. */
-export interface ScopedInstalledPlugin extends InstalledPlugin {
+interface ScopedInstalledPlugin extends InstalledPlugin {
 	scope: "user" | "project";
 }
 

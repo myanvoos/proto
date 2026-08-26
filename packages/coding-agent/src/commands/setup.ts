@@ -11,7 +11,7 @@ import { initTheme } from "../modes/theme/theme";
 
 const COMPONENTS: SetupComponent[] = ["python"];
 
-export interface OnboardingSetupDependencies {
+interface OnboardingSetupDependencies {
 	runRoot?: typeof runRootCommand;
 	stdinIsTTY?: boolean;
 	stdoutIsTTY?: boolean;

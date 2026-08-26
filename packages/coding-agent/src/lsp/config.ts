@@ -173,7 +173,7 @@ function applyRuntimeDefaults(servers: Record<string, ServerConfig>): Record<str
 /**
  * Check if any root marker file exists in the directory
  */
-export function hasRootMarkers(cwd: string, markers: string[]): boolean {
+function hasRootMarkers(cwd: string, markers: string[]): boolean {
 	let entries: string[] | null = null;
 	for (const marker of markers) {
 		// Handle glob-like patterns (e.g., "*.cabal"). Root markers live at the
@@ -263,7 +263,7 @@ function resolveCommandFromLocalRoot(command: string, cwd: string): string | nul
 }
 
 /** Controls project-local and PATH executable lookup. */
-export interface ResolveCommandOptions extends Pick<WhichOptions, "cache" | "PATH"> {
+interface ResolveCommandOptions extends Pick<WhichOptions, "cache" | "PATH"> {
 	/** Ordered project roots checked before PATH; defaults to the command cwd. */
 	localRoots?: readonly string[];
 }
@@ -519,14 +519,4 @@ export function getServersForFile(config: LspConfig, filePath: string): Array<[s
 export function getServerForFile(config: LspConfig, filePath: string): [string, ServerConfig] | null {
 	const servers = getServersForFile(config, filePath);
 	return servers.length > 0 ? servers[0] : null;
-}
-
-/**
- * Check if a server has a specific capability
- */
-export function hasCapability(
-	config: ServerConfig,
-	capability: keyof NonNullable<ServerConfig["capabilities"]>,
-): boolean {
-	return config.capabilities?.[capability] === true;
 }

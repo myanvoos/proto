@@ -26,7 +26,7 @@ export interface MCPToolsLoadResult {
 }
 
 /** Options for loading MCP tools */
-export interface MCPToolsLoadOptions {
+interface MCPToolsLoadOptions {
 	/** Called when MCP server connection state changes. */
 	onStatus?: (event: McpConnectionStatusEvent) => void;
 	/** Whether to load project-level config (default: true) */

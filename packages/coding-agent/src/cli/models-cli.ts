@@ -22,9 +22,9 @@ import { discoverAuthStorage } from "../sdk";
 import { SessionManager } from "../session/session-manager";
 import { EventBus } from "../utils/event-bus";
 
-export type ModelsAction = "ls" | "find" | "refresh";
+type ModelsAction = "ls" | "find" | "refresh";
 
-export interface ModelsCommandArgs {
+interface ModelsCommandArgs {
 	action: ModelsAction;
 	/** Search substring for `find`, or optional filter for `ls`. */
 	pattern?: string;
@@ -266,7 +266,7 @@ function renderProviderModels(
  * and discovers their providers before rendering so extension-contributed models
  * appear (issue #905). The caller is responsible for refreshing built-in providers.
  */
-export interface RunModelsListingOptions {
+interface RunModelsListingOptions {
 	modelRegistry: ModelRegistry;
 	cwd: string;
 	action?: ModelsAction;

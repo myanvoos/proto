@@ -39,7 +39,7 @@ export const ADVISOR_RENDER_OPTIONS = {
 	expandEditDiffs: true,
 } as const;
 
-export interface RenderAdvisorDeltaChunksOptions {
+interface RenderAdvisorDeltaChunksOptions {
 	wip: boolean;
 	includeThinking: boolean;
 	obfuscator?: AdvisorObfuscator;

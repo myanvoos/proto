@@ -34,7 +34,7 @@ import { renderSegmentTrack } from "./segment-track";
  *  detail line (e.g. the resolved model name) shown beneath the track while
  *  the segment is active. Segment colors come from the track's theme palette,
  *  assigned by position. */
-export interface HookSelectorSliderSegment {
+interface HookSelectorSliderSegment {
 	label: string;
 	/** Secondary line rendered under the track when this segment is selected. */
 	detail?: string;
@@ -86,12 +86,12 @@ export interface HookSelectorOptions {
 	markableCount?: number;
 }
 
-export interface HookSelectorOption {
+interface HookSelectorOption {
 	label: string;
 	description?: string;
 }
 
-export type HookSelectorOptionInput = string | HookSelectorOption;
+type HookSelectorOptionInput = string | HookSelectorOption;
 
 function normalizeHookSelectorOption(option: HookSelectorOptionInput): HookSelectorOption {
 	if (typeof option === "string") return { label: option };

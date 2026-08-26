@@ -156,7 +156,7 @@ function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): bool
 }
 
 /** Authentication material returned to legacy extensions for one model request. */
-export type ResolvedRequestAuth =
+type ResolvedRequestAuth =
 	| {
 			ok: true;
 			apiKey?: string;

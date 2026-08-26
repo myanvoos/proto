@@ -9,7 +9,7 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { SessionStats } from "../../session/agent-session";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type {
@@ -131,20 +131,6 @@ export interface RpcAvailableSlashCommand {
 export interface RpcAvailableCommandsUpdateFrame {
 	type: "available_commands_update";
 	commands: RpcAvailableSlashCommand[];
-}
-
-export interface RpcPromptResultFrame {
-	type: "prompt_result";
-	id?: string;
-	agentInvoked: boolean;
-}
-
-export interface RpcReadyFrame {
-	type: "ready";
-	protocolVersion: 1;
-	supportedProtocolVersions: [1, 2];
-	maxFrameBytes: number;
-	maxReassembledFrameBytes: number;
 }
 
 export interface RpcChunkFrame {
@@ -354,8 +340,6 @@ export interface RpcSubagentEventFrame {
 
 export type RpcSubagentFrame = RpcSubagentLifecycleFrame | RpcSubagentProgressFrame | RpcSubagentEventFrame;
 
-export type RpcSessionEventFrame = AgentSessionEvent | RpcSubagentFrame;
-
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
@@ -491,9 +475,7 @@ export interface RpcHostUriSchemeDefinition {
 	immutable?: boolean;
 }
 
-export type RpcHostUriOperation = "read" | "write";
-
-/** Emitted by the RPC server when it needs the host to satisfy a URI operation. */
+type RpcHostUriOperation = "read" | "write";
 export interface RpcHostUriRequest {
 	type: "host_uri_request";
 	id: string;
@@ -540,9 +522,3 @@ export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true; timedOut?: boolean };
-
-// ============================================================================
-// Helper type for extracting command types
-// ============================================================================
-
-export type RpcCommandType = RpcCommand["type"];

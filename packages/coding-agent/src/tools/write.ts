@@ -288,7 +288,7 @@ const writeSchema = type({
 export type WriteToolInput = typeof writeSchema.infer;
 
 /** Details returned by the write tool for TUI rendering */
-export interface WriteToolDetails {
+interface WriteToolDetails {
 	diagnostics?: FileDiagnosticsResult;
 	meta?: OutputMeta;
 	/** Set when the file was auto-chmod'd because content begins with a `#!` shebang. */
@@ -1487,7 +1487,7 @@ function renderContentPreview(
 }
 
 /** Render context for the write tool: resolves an `xd://`-mounted tool so its live renderer drives device dispatch previews. */
-export interface WriteRenderContext {
+interface WriteRenderContext {
 	resolveXdevMounted?: (name: string) => AgentTool | undefined;
 }
 

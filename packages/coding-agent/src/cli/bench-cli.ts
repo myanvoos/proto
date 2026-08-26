@@ -16,7 +16,7 @@ import type {
 import { resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, getProjectDir, prompt } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, prompt, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { ApiKeyResolverModel } from "../config/api-key-resolver";
 import { ModelRegistry } from "../config/model-registry";
@@ -46,7 +46,6 @@ const DEFAULT_CACHE_CONCURRENCY = 1;
 const DEFAULT_PREFILL_BYTES = 32_768;
 const ERROR_WIDTH = 110;
 const UTF8_ENCODER = new TextEncoder();
-const UTF8_DECODER = new TextDecoder();
 const CACHE_PREFIX_CHUNK = cachePrefixChunk;
 const CACHE_PREFIX_PLACEHOLDER = "__PROTO_CACHE_BENCH_RAW_PREFIX__";
 const CACHE_PREFIX_CHUNK_BYTES = UTF8_ENCODER.encode(CACHE_PREFIX_CHUNK).byteLength;
@@ -60,10 +59,10 @@ const RESPONSE_CACHE_STATUS_HEADERS = ["cf-aig-cache-status"] as const;
  * - `generation`: tiny prompt, long forced output — isolates sustained decode
  *   throughput.
  */
-export type BenchChallengeKind = "chat" | "prefill" | "generation";
+type BenchChallengeKind = "chat" | "prefill" | "generation";
 
 /** `mix` (the default) rotates through every challenge kind; a kind name isolates one. */
-export type BenchProfile = "mix" | BenchChallengeKind;
+type BenchProfile = "mix" | BenchChallengeKind;
 
 const CHALLENGE_KINDS = ["chat", "prefill", "generation"] as const;
 
@@ -99,7 +98,7 @@ const GENERATION_TOPICS = [
 	"the history of shipbuilding",
 ] as const;
 
-export interface BenchCommandArgs {
+interface BenchCommandArgs {
 	models: string[];
 	flags: {
 		runs?: number;
@@ -129,13 +128,13 @@ export interface BenchModelRegistry {
 	hasConfiguredAuth?(model: Model<Api>): boolean;
 }
 
-export interface BenchRuntime {
+interface BenchRuntime {
 	modelRegistry: BenchModelRegistry;
 	settings?: Settings;
 	close?: () => void;
 }
 
-export interface BenchRunSuccess {
+interface BenchRunSuccess {
 	ok: true;
 	/** Challenge kind this run exercised; absent in `--cache` mode. */
 	challenge?: BenchChallengeKind;
@@ -161,22 +160,22 @@ export interface BenchRunSuccess {
 	cost: number;
 }
 
-export interface BenchRunFailure {
+interface BenchRunFailure {
 	ok: false;
 	/** Challenge kind this run exercised; absent in `--cache` mode. */
 	challenge?: BenchChallengeKind;
 	error: string;
 }
 
-export type BenchRunResult = BenchRunSuccess | BenchRunFailure;
+type BenchRunResult = BenchRunSuccess | BenchRunFailure;
 
-export type CacheObservation =
+type CacheObservation =
 	| "prompt_cache_read_observed"
 	| "prompt_cache_write_observed"
 	| "response_cache_hit_observed"
 	| "no_provider_proof";
 
-export interface BenchCacheUsage {
+interface BenchCacheUsage {
 	inputTokens: number;
 	outputTokens: number;
 	cacheReadTokens: number;
@@ -185,7 +184,7 @@ export interface BenchCacheUsage {
 	cost: number;
 }
 
-export interface BenchCacheRunReport {
+interface BenchCacheRunReport {
 	phase: "cold" | "warm";
 	result: BenchRunResult;
 	usage?: BenchCacheUsage;
@@ -193,7 +192,7 @@ export interface BenchCacheRunReport {
 	observations: CacheObservation[];
 }
 
-export interface BenchCachePairReport {
+interface BenchCachePairReport {
 	cold: BenchCacheRunReport;
 	warm: BenchCacheRunReport;
 	/** The nominal cold request showed cache reuse, so it is not a true cold baseline. */
@@ -209,7 +208,7 @@ export interface BenchCachePairReport {
 }
 
 /** Distribution summary over successful runs. */
-export interface MetricStats {
+interface MetricStats {
 	mean: number;
 	min: number;
 	/** Median (nearest-rank). */
@@ -220,7 +219,7 @@ export interface MetricStats {
 }
 
 /** Aggregates over successful runs. */
-export interface BenchStats {
+interface BenchStats {
 	ttftMs: MetricStats;
 	durationMs: MetricStats;
 	tokensPerSecond: MetricStats;
@@ -234,7 +233,7 @@ export interface BenchStats {
 	cost: number;
 }
 
-export interface BenchModelReport {
+interface BenchModelReport {
 	/** Selector as the user typed it (e.g. "opus" or "gemini-3.5:low"). */
 	selector: string;
 	/** Resolved `provider/id`. */
@@ -271,7 +270,7 @@ type BenchStreamSimple = (
 	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
-export interface BenchDependencies {
+interface BenchDependencies {
 	createRuntime?: () => Promise<BenchRuntime>;
 	randomSessionId?: () => string;
 	writeStdout?: (text: string) => void;
@@ -414,42 +413,13 @@ function cacheRunReport(
 	};
 }
 
-function truncateUtf8ByteLength(bytes: Uint8Array, maxBytes: number): number {
-	const end = Math.min(bytes.byteLength, maxBytes);
-	if (end === 0) return 0;
-
-	let sequenceStart = end - 1;
-	while (sequenceStart > 0 && (bytes[sequenceStart]! & 0b1100_0000) === 0b1000_0000) sequenceStart--;
-
-	const leadingByte = bytes[sequenceStart]!;
-	const sequenceLength =
-		leadingByte <= 0b0111_1111
-			? 1
-			: leadingByte >= 0b1100_0010 && leadingByte <= 0b1101_1111
-				? 2
-				: leadingByte >= 0b1110_0000 && leadingByte <= 0b1110_1111
-					? 3
-					: leadingByte >= 0b1111_0000 && leadingByte <= 0b1111_0100
-						? 4
-						: 1;
-	return sequenceLength > end - sequenceStart ? sequenceStart : end;
-}
-
 async function readBoundedUtf8File(path: string, maxBytes: number): Promise<string> {
-	const file = Bun.file(path);
-	const bytes = new Uint8Array(await file.slice(0, maxBytes).arrayBuffer());
-	const end = truncateUtf8ByteLength(bytes, maxBytes);
-	return UTF8_DECODER.decode(bytes.subarray(0, end));
-}
-
-function truncateUtf8(text: string, maxBytes: number): string {
-	const bytes = UTF8_ENCODER.encode(text);
-	const end = truncateUtf8ByteLength(bytes, maxBytes);
-	return end === bytes.byteLength ? text : UTF8_DECODER.decode(bytes.subarray(0, end));
+	const bytes = new Uint8Array(await Bun.file(path).slice(0, maxBytes).arrayBuffer());
+	return truncateHeadBytes(bytes, maxBytes).text;
 }
 
 function generatedCachePrefix(bytes: number): string {
-	return truncateUtf8(CACHE_PREFIX_CHUNK.repeat(Math.ceil(bytes / CACHE_PREFIX_CHUNK_BYTES)), bytes);
+	return truncateHeadBytes(CACHE_PREFIX_CHUNK.repeat(Math.ceil(bytes / CACHE_PREFIX_CHUNK_BYTES)), bytes).text;
 }
 
 function renderCacheBenchmarkPrefix(prefix: string, namespace: string): string {
@@ -475,7 +445,7 @@ async function resolveCachePrefix(
 	const prefix = flags.cachePrefixFile
 		? await readTextFile(flags.cachePrefixFile, bytes)
 		: generatedCachePrefix(bytes);
-	return truncateUtf8(prefix, bytes);
+	return truncateHeadBytes(prefix, bytes).text;
 }
 
 function cacheBenchmarkMessages(stablePrefix: string, suffix: string): Context["messages"] {

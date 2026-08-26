@@ -33,7 +33,7 @@ const COMPACTION_METHODS: Record<CompactionMethod, true> = {
 };
 
 /** Whether an unknown configuration value names a supported compaction method. */
-export function isCompactionMethod(value: unknown): value is CompactionMethod {
+function isCompactionMethod(value: unknown): value is CompactionMethod {
 	return typeof value === "string" && Object.hasOwn(COMPACTION_METHODS, value);
 }
 

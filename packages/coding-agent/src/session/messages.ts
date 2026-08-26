@@ -311,13 +311,13 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 }
 
 /** Fallback type for extension-injected messages that omit a custom type. */
-export const DEFAULT_CUSTOM_MESSAGE_TYPE = "custom-message";
+const DEFAULT_CUSTOM_MESSAGE_TYPE = "custom-message";
 
 /** Custom message carrying a coding request delegated by the live voice model. */
 export const LIVE_DELEGATION_MESSAGE_TYPE = "live-delegation";
 
 /** Content shape accepted for extension-injected messages. */
-export type CustomMessageContent = string | (TextContent | ImageContent)[];
+type CustomMessageContent = string | (TextContent | ImageContent)[];
 
 /** Public input accepted by `pi.sendMessage` and `AgentSession.sendCustomMessage`. */
 export type CustomMessagePayload<T = unknown> =
@@ -325,7 +325,7 @@ export type CustomMessagePayload<T = unknown> =
 	| Partial<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">>;
 
 /** Custom message payload after applying runtime defaults. */
-export type NormalizedCustomMessagePayload<T = unknown> = Pick<
+type NormalizedCustomMessagePayload<T = unknown> = Pick<
 	CustomMessage<T>,
 	"customType" | "content" | "display" | "details" | "attribution"
 >;
@@ -345,7 +345,7 @@ export interface InterruptedThinkingDetails {
 }
 
 /** Pure helper result for persisting interrupted thinking outside the assistant turn. */
-export interface DemotedInterruptedThinking {
+interface DemotedInterruptedThinking {
 	reasoning: string;
 	strippedContent: AssistantMessage["content"];
 	blockCount: number;
@@ -554,7 +554,7 @@ export function assistantTurnProducedOutput(message: Pick<AssistantMessage, "sto
 
 /** Sentinel `errorMessage` the agent stamps on any abort that carried no custom
  *  reason (bare `abort()`). Renderers treat it as "no specific reason given". */
-export const GENERIC_ABORT_SENTINEL = "Request was aborted";
+const GENERIC_ABORT_SENTINEL = "Request was aborted";
 
 /** Resolve the operator-facing label for an aborted assistant turn. A custom
  *  abort reason threaded onto `errorMessage` is returned verbatim; aborts with
@@ -980,7 +980,7 @@ declare module "@oh-my-pi/pi-agent-core" {
 /**
  * Convert a BashExecutionMessage to user message text for LLM context.
  */
-export function bashExecutionToText(msg: BashExecutionMessage): string {
+function bashExecutionToText(msg: BashExecutionMessage): string {
 	let text = `Ran \`${msg.command}\`\n`;
 	if (msg.output) {
 		text += `\`\`\`\n${msg.output}\n\`\`\``;
@@ -999,7 +999,7 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 /**
  * Convert a PythonExecutionMessage to user message text for LLM context.
  */
-export function pythonExecutionToText(msg: PythonExecutionMessage): string {
+function pythonExecutionToText(msg: PythonExecutionMessage): string {
 	let text = `Ran Python:\n\`\`\`python\n${msg.code}\n\`\`\`\n`;
 	if (msg.output) {
 		text += `Output:\n\`\`\`\n${msg.output}\n\`\`\``;

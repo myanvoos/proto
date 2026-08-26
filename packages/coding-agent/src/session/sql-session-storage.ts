@@ -10,7 +10,7 @@ import type { SessionTitleUpdate } from "./session-title-slot";
  * `client.options.adapter`; we detect it once at construction and pick the
  * correct DDL / upsert / concat / byte-slice syntax for the underlying engine.
  */
-export type SqlSessionStorageAdapter = "postgres" | "mysql" | "sqlite";
+type SqlSessionStorageAdapter = "postgres" | "mysql" | "sqlite";
 
 /**
  * Minimal subset of the `Bun.SQL` instance surface used by
@@ -31,7 +31,7 @@ export interface SqlSessionStorageClient {
 	end?(): Promise<void>;
 }
 
-export interface SqlSessionStorageOptions {
+interface SqlSessionStorageOptions {
 	/** Connected `Bun.SQL` instance (PostgreSQL, MySQL, or SQLite). */
 	client: SqlSessionStorageClient;
 	/**

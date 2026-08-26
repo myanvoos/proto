@@ -7,7 +7,7 @@ import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
 import { OverlayPanel } from "./overlay-box";
 
-export interface HookInputOptions {
+interface HookInputOptions {
 	tui?: TUI;
 	timeout?: number;
 	onTimeout?: () => void;

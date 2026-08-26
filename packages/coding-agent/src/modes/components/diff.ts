@@ -94,7 +94,7 @@ function renderIntraLineDiff(oldContent: string, newContent: string): { removedL
 	return { removedLine, addedLine };
 }
 
-export interface RenderDiffOptions {
+interface RenderDiffOptions {
 	/** File path used to resolve indentation (.editorconfig + defaults) */
 	filePath?: string;
 }

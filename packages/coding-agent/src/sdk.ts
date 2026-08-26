@@ -1106,7 +1106,7 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 }
 
 /** Dependencies used to construct an isolated auto-learn capture agent. */
-export interface AutoLearnCaptureRunnerOptions {
+interface AutoLearnCaptureRunnerOptions {
 	sourceAgent: Agent;
 	captureTools: AgentTool[];
 	createAgent: (options: AgentOptions) => Agent;

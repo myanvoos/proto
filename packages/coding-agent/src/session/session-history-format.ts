@@ -110,7 +110,7 @@ function primaryArgValue(value: unknown): string {
 }
 
 /** Pick the most informative scalar argument of a tool call. */
-export function formatToolCallPrimaryArg(name: string, args: Record<string, unknown> | undefined): string {
+function formatToolCallPrimaryArg(name: string, args: Record<string, unknown> | undefined): string {
 	if (!args || typeof args !== "object") return "";
 	// Advisor note is the most informative summary; preserve severity too.
 	if (name === "advise") {
@@ -154,7 +154,7 @@ export function formatToolCallPrimaryArg(name: string, args: Record<string, unkn
 	}
 }
 
-export function formatToolCallIntentPreview(args: Record<string, unknown> | undefined): string | undefined {
+function formatToolCallIntentPreview(args: Record<string, unknown> | undefined): string | undefined {
 	const intent = args?.[INTENT_FIELD];
 	return typeof intent === "string" && intent.trim() ? oneLine(intent, 80) : undefined;
 }

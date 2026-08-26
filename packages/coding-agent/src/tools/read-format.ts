@@ -6,17 +6,12 @@ import {
 	splitAddressableFileLines,
 } from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import { canonicalSnapshotKey, getFileSnapshotStore, recordSeenLines } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
-import {
-	DEFAULT_MAX_BYTES,
-	noTruncResult,
-	type TruncationResult,
-	truncateHead,
-	truncateHeadBytes,
-} from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, noTruncResult, type TruncationResult, truncateHead } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { formatPathRelativeToCwd, type LineRange } from "./path-utils";

@@ -18,7 +18,7 @@ interface RuleBuckets {
 	alwaysApplyRules: Rule[];
 }
 
-export interface BucketRulesOptions {
+interface BucketRulesOptions {
 	/** Rule names to drop entirely (bundled defaults and user rules alike). */
 	disabledRules?: readonly string[];
 	/** When false, drop every rule from the bundled `builtin-defaults` provider. */

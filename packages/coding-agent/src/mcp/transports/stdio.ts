@@ -14,7 +14,7 @@ import { RequestIdAllocator } from "../request-id";
 import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 
 /** Subprocess argv and platform-derived spawn flags for an MCP stdio server. */
-export interface StdioSpawnCommand {
+interface StdioSpawnCommand {
 	cmd: string[];
 	/**
 	 * Run the subprocess in its own session when the platform can safely do so.
@@ -33,7 +33,7 @@ export interface StdioSpawnCommand {
 }
 
 /** Inputs used to resolve platform-specific stdio spawn behavior. */
-export interface ResolveStdioSpawnOptions {
+interface ResolveStdioSpawnOptions {
 	platform?: NodeJS.Platform;
 }
 

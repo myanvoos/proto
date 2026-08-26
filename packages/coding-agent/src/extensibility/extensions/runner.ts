@@ -79,7 +79,7 @@ interface BeforeAgentStartCombinedResult {
 	systemPrompt?: string[];
 }
 
-export type ExtensionErrorListener = (error: ExtensionError) => void;
+type ExtensionErrorListener = (error: ExtensionError) => void;
 
 export const EXTENSION_HANDLER_TIMEOUT_MS = 30_000;
 let extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
@@ -372,7 +372,7 @@ export type { BranchHandler, NavigateTreeHandler, NewSessionHandler };
 
 export type SwitchSessionHandler = (sessionPath: string) => Promise<{ cancelled: boolean }>;
 
-export type ShutdownHandler = () => void;
+type ShutdownHandler = () => void;
 
 /**
  * Emit `session_shutdown`, dispose file-write-fallback registrations, and clear

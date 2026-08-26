@@ -69,12 +69,12 @@ export interface RpcClientOptions {
 
 export type ModelInfo = Pick<Model, "provider" | "id" | "contextWindow" | "reasoning" | "thinking">;
 
-export type RpcEventListener = (event: AgentEvent) => void;
-export type RpcSessionEventListener = (event: AgentSessionEvent) => void;
-export type RpcSubagentLifecycleListener = (payload: RpcSubagentLifecycleFrame["payload"]) => void;
-export type RpcSubagentProgressListener = (payload: RpcSubagentProgressFrame["payload"]) => void;
-export type RpcSubagentEventListener = (payload: RpcSubagentEventFrame["payload"]) => void;
-export type RpcAvailableCommandsUpdateListener = (commands: RpcAvailableSlashCommand[]) => void;
+type RpcEventListener = (event: AgentEvent) => void;
+type RpcSessionEventListener = (event: AgentSessionEvent) => void;
+type RpcSubagentLifecycleListener = (payload: RpcSubagentLifecycleFrame["payload"]) => void;
+type RpcSubagentProgressListener = (payload: RpcSubagentProgressFrame["payload"]) => void;
+type RpcSubagentEventListener = (payload: RpcSubagentEventFrame["payload"]) => void;
+type RpcAvailableCommandsUpdateListener = (commands: RpcAvailableSlashCommand[]) => void;
 
 export interface RpcClientToolContext<TDetails = unknown> {
 	toolCallId: string;
@@ -82,7 +82,7 @@ export interface RpcClientToolContext<TDetails = unknown> {
 	sendUpdate(partialResult: RpcClientToolResult<TDetails>): void;
 }
 
-export type RpcClientToolResult<TDetails = unknown> = AgentToolResult<TDetails> | string;
+type RpcClientToolResult<TDetails = unknown> = AgentToolResult<TDetails> | string;
 
 export interface RpcClientCustomTool<
 	TParams extends Record<string, unknown> = Record<string, unknown>,

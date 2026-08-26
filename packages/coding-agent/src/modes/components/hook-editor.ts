@@ -17,7 +17,7 @@ import {
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { OverlayPanel } from "./overlay-box";
 
-export interface HookEditorOptions {
+interface HookEditorOptions {
 	/** When true, use prompt-style keybindings with the legacy ask prompt chrome. */
 	promptStyle?: boolean;
 	/**

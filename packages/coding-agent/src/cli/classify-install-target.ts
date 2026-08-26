@@ -47,7 +47,7 @@ function isLocalPathSpec(spec: string): boolean {
 	return false;
 }
 
-export type ClassifiedInstallTarget =
+type ClassifiedInstallTarget =
 	| { type: "local"; path: string }
 	| { type: "marketplace"; name: string; marketplace: string }
 	| { type: "npm"; spec: string };

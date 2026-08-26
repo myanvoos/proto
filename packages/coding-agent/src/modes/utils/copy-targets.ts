@@ -67,7 +67,7 @@ const QUOTE_LINE_RE = /^>(.*)$/;
  * code block is never mistaken for a quote. An unclosed fence is treated as
  * ordinary text, matching the fenced-block grammar.
  */
-export function extractBlocks(text: string): MessageBlock[] {
+function extractBlocks(text: string): MessageBlock[] {
 	const blocks: MessageBlock[] = [];
 	const lines = text.split("\n");
 	let quote: string[] | undefined;

@@ -42,7 +42,7 @@ export interface SplitCommitPlan {
 	warnings: string[];
 }
 
-export interface ChangelogProposal {
+interface ChangelogProposal {
 	entries: Array<{
 		path: string;
 		entries: Record<string, string[]>;

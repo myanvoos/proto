@@ -15,16 +15,11 @@ import {
 } from "@oh-my-pi/hashline";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { formatAge, formatBytes, isProbablyBinary, readImageMetadata } from "@oh-my-pi/pi-utils";
+import { formatAge, formatBytes, isProbablyBinary, readImageMetadata, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import type { FileMentionMessage } from "../session/messages";
-import {
-	DEFAULT_MAX_BYTES,
-	formatHeadTruncationNotice,
-	truncateHead,
-	truncateHeadBytes,
-} from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../session/streaming-output";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, resizeImage } from "./image-resize";
 

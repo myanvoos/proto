@@ -103,7 +103,7 @@ const WORKER_ABORT_CLEANUP_GRACE_MS = 10_000;
  * lower an agent's budget, never raise it above its bundled entry (0 disables
  * the guard entirely).
  */
-export const SOFT_REQUEST_BUDGET: Record<string, number> = {
+const SOFT_REQUEST_BUDGET: Record<string, number> = {
 	scout: 100,
 	lightbot: 100,
 	default: 200,
@@ -122,10 +122,10 @@ export function resolveSoftRequestBudget(agentName: string, configuredBudget: nu
 }
 
 /** Extra requests allowed after a budget stop for the forced yield to land before the run is hard-aborted. */
-export const BUDGET_STOP_GRACE_REQUESTS = 5;
+const BUDGET_STOP_GRACE_REQUESTS = 5;
 
 /** Steering notice injected when a subagent crosses its soft request budget. */
-export function buildBudgetNotice(requests: number, budget: number): string {
+function buildBudgetNotice(requests: number, budget: number): string {
 	return `[budget notice] You have used ${requests} requests in this run (soft budget: ${budget}). Wrap up now: finish the current step and yield your final report. At ${Math.ceil(budget * 1.5)} requests the run is force-stopped and you will be asked to yield whatever you have.`;
 }
 
@@ -2253,7 +2253,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 }
 
 /** Inputs for {@link attachIrcWakeTurnMonitor}. */
-export interface IrcWakeTurnMonitorOptions {
+interface IrcWakeTurnMonitorOptions {
 	/** Registry id of the kept-alive subagent whose autonomous IRC wake turns are monitored. */
 	id: string;
 	index?: number;
@@ -2500,7 +2500,7 @@ export async function finalizeSubagentLifecycle(args: {
 }
 
 /** Options for {@link runSubagentFollowUpTurn}. */
-export interface FollowUpTurnOptions {
+interface FollowUpTurnOptions {
 	/** Registry id of the (live or parked) subagent to continue. */
 	id: string;
 	/** Agent definition the session was originally spawned with (drives progress labels + finalize). */

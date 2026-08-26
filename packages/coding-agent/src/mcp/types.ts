@@ -336,7 +336,7 @@ export interface MCPServerConnection {
 // =============================================================================
 
 /** Annotations for resources, templates, and content blocks */
-export interface MCPAnnotations {
+interface MCPAnnotations {
 	audience?: ("user" | "assistant")[];
 	priority?: number;
 	lastModified?: string;
@@ -424,7 +424,7 @@ export interface MCPPromptsListResult {
 }
 
 /** Audio content in prompt messages */
-export interface MCPAudioContent {
+interface MCPAudioContent {
 	type: "audio";
 	data: string;
 	mimeType: string;

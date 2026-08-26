@@ -20,7 +20,7 @@ export type StructuredSubagentSchemaMode = "permissive" | "strict";
 export type StructuredSubagentSchemaSource = "caller" | "agent" | "session" | "none";
 
 /** Final validation state of a structured subagent invocation. */
-export type StructuredSubagentValidationStatus = "valid" | "invalid" | "unavailable";
+type StructuredSubagentValidationStatus = "valid" | "invalid" | "unavailable";
 
 /**
  * Parsed structured completion and its schema-validation metadata.
@@ -104,7 +104,7 @@ export interface SubagentLifecyclePayload {
 }
 
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
-export const LABEL_MAX = 80;
+const LABEL_MAX = 80;
 
 /**
  * One-line, length-capped label safe for a single roster line, a registry
@@ -131,30 +131,6 @@ export function oneLineLabel(text: string, max = LABEL_MAX): string {
  */
 export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): boolean {
 	return maxRecursionDepth < 0 || taskDepth === 0 || taskDepth <= maxRecursionDepth;
-}
-
-/** A code review finding reported by the reviewer agent */
-export interface ReviewFinding {
-	title: string;
-	body: string;
-	priority: number;
-	confidence: number;
-	file_path: string;
-	line_start: number;
-	line_end: number;
-}
-
-/** Review summary submitted by the reviewer agent */
-export interface ReviewSummary {
-	overall_correctness: "correct" | "incorrect";
-	explanation: string;
-	confidence: number;
-}
-
-/** Structured review data extracted from reviewer agent */
-export interface ReviewData {
-	findings: ReviewFinding[];
-	summary?: ReviewSummary;
 }
 
 /** Agent definition (bundled or discovered) */

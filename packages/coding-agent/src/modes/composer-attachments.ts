@@ -24,7 +24,7 @@ const CHIP_TOKEN_SOURCE = `(?:${[...CHIP_ICONS.image, ...CHIP_ICONS.paste]
 	.join("|")}) #[1-9]\\d*`;
 
 /** Infers an attachment kind from a chip label emitted by any configured symbol preset. */
-export function chipLabelKind(label: string): ChipKind {
+function chipLabelKind(label: string): ChipKind {
 	return CHIP_ICONS.image.some(icon => label.startsWith(icon)) ? "image" : "paste";
 }
 
@@ -38,7 +38,7 @@ const ATTACHMENT_PALETTE: readonly [number, number, number][] = [
 ];
 
 /** Stable RGB color assigned to attachment `n`; image and paste sequences use different offsets. */
-export function attachmentRgb(kind: ChipKind, n: number): readonly [number, number, number] {
+function attachmentRgb(kind: ChipKind, n: number): readonly [number, number, number] {
 	const index = kind === "image" ? (n - 1) % ATTACHMENT_PALETTE.length : (n + 2) % ATTACHMENT_PALETTE.length;
 	return ATTACHMENT_PALETTE[index];
 }

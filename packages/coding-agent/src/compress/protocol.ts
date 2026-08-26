@@ -48,7 +48,7 @@ interface RewriteDetails {
 }
 
 /** Transcript details for one `approve` call. */
-export interface ApproveDetails {
+interface ApproveDetails {
 	round: number;
 }
 

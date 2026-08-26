@@ -255,7 +255,7 @@ function isActiveTodo<T extends { status: TodoStatus }>(task: T, isMatched: (tas
 
 /** Result of {@link selectCollapsedTodos}: the rows to render plus an optional
  *  summary line (empty string ⇒ no summary row). */
-export interface CollapsedTodoSelection<T> {
+interface CollapsedTodoSelection<T> {
 	items: T[];
 	summary: string;
 }
@@ -949,7 +949,7 @@ const ROMAN_PAIRS: Array<[number, string]> = [
 ];
 
 /** One-based ASCII roman numeral for display (I, II, III, IV, …). */
-export function phaseRomanNumeral(oneBasedIndex: number): string {
+function phaseRomanNumeral(oneBasedIndex: number): string {
 	if (oneBasedIndex <= 0) return "";
 	let out = "";
 	let rem = oneBasedIndex;
@@ -986,7 +986,7 @@ export function formatPhaseDisplayName(name: string, oneBasedIndex: number): str
 }
 
 export const TODO_STRIKE_HOLD_FRAMES = 2;
-export const TODO_STRIKE_REVEAL_FRAMES = 12;
+const TODO_STRIKE_REVEAL_FRAMES = 12;
 export const TODO_STRIKE_TOTAL_FRAMES = TODO_STRIKE_HOLD_FRAMES + TODO_STRIKE_REVEAL_FRAMES;
 const EMPTY_COMPLETION_KEYS = new Set<string>();
 const STRIKE_START = "\x1b[9m";

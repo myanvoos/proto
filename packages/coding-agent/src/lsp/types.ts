@@ -62,7 +62,7 @@ export interface LocationLink {
 
 export type DiagnosticSeverity = 1 | 2 | 3 | 4; // error, warning, info, hint
 
-export interface DiagnosticRelatedInformation {
+interface DiagnosticRelatedInformation {
 	location: Location;
 	message: string;
 }
@@ -100,19 +100,15 @@ export interface TextEdit {
 	insertTextFormat?: 1 | 2;
 }
 
-export interface AnnotatedTextEdit extends TextEdit {
+interface AnnotatedTextEdit extends TextEdit {
 	annotationId?: string;
 }
 
-export interface TextDocumentIdentifier {
+interface TextDocumentIdentifier {
 	uri: string;
 }
 
-export interface VersionedTextDocumentIdentifier extends TextDocumentIdentifier {
-	version: number | null;
-}
-
-export interface OptionalVersionedTextDocumentIdentifier extends TextDocumentIdentifier {
+interface OptionalVersionedTextDocumentIdentifier extends TextDocumentIdentifier {
 	version?: number | null;
 }
 
@@ -159,7 +155,7 @@ export interface DeleteFile {
 	options?: DeleteFileOptions;
 }
 
-export type DocumentChange = TextDocumentEdit | CreateFile | RenameFile | DeleteFile;
+type DocumentChange = TextDocumentEdit | CreateFile | RenameFile | DeleteFile;
 
 export interface WorkspaceEdit {
 	changes?: Record<string, TextEdit[]>;
@@ -171,7 +167,7 @@ export interface WorkspaceEdit {
 // Code Actions
 // =============================================================================
 
-export type CodeActionKind =
+type CodeActionKind =
 	| "quickfix"
 	| "refactor"
 	| "refactor.extract"
@@ -237,35 +233,6 @@ export type SymbolKind =
 	| 25 // Operator
 	| 26; // TypeParameter
 
-export const SYMBOL_KIND_NAMES: Record<SymbolKind, string> = {
-	1: "File",
-	2: "Module",
-	3: "Namespace",
-	4: "Package",
-	5: "Class",
-	6: "Method",
-	7: "Property",
-	8: "Field",
-	9: "Constructor",
-	10: "Enum",
-	11: "Interface",
-	12: "Function",
-	13: "Variable",
-	14: "Constant",
-	15: "String",
-	16: "Number",
-	17: "Boolean",
-	18: "Array",
-	19: "Object",
-	20: "Key",
-	21: "Null",
-	22: "EnumMember",
-	23: "Struct",
-	24: "Event",
-	25: "Operator",
-	26: "TypeParameter",
-};
-
 export interface DocumentSymbol {
 	name: string;
 	detail?: string;
@@ -290,12 +257,12 @@ export interface SymbolInformation {
 // Hover
 // =============================================================================
 
-export interface MarkupContent {
+interface MarkupContent {
 	kind: "plaintext" | "markdown";
 	value: string;
 }
 
-export type MarkedString = string | { language: string; value: string };
+type MarkedString = string | { language: string; value: string };
 
 export interface Hover {
 	contents: MarkupContent | MarkedString | MarkedString[];
@@ -322,13 +289,13 @@ export interface LinterClient {
 }
 
 /** Factory function to create a LinterClient */
-export type LinterClientFactory = (config: ServerConfig, cwd: string) => LinterClient;
+type LinterClientFactory = (config: ServerConfig, cwd: string) => LinterClient;
 
 // =============================================================================
 // Server Configuration
 // =============================================================================
 
-export interface ServerCapabilities {
+interface ServerCapabilities {
 	flycheck?: boolean;
 	ssr?: boolean;
 	expandMacro?: boolean;
@@ -412,7 +379,7 @@ export interface PendingRequest {
 	method: string;
 }
 
-export interface LspServerCapabilities {
+interface LspServerCapabilities {
 	renameProvider?: boolean | { prepareProvider?: boolean };
 	codeActionProvider?: boolean | { resolveProvider?: boolean };
 	hoverProvider?: boolean;

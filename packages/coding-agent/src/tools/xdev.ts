@@ -32,12 +32,11 @@
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
-import { parseStreamingJson } from "@oh-my-pi/pi-utils";
+import { parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
-import { truncateHeadBytes } from "../session/streaming-output";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
 import { replaceTabs } from "./render-utils";
@@ -66,10 +65,10 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
  * device unreachable (issue #5764), so they stay top-level regardless of a
  * declared `loadMode`.
  */
-export const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, write: true };
+const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, write: true };
 
 /** Controls which mounted-device docs are inlined into the system prompt. */
-export type XdevDocsMode = "inline" | "builtins" | "catalog";
+type XdevDocsMode = "inline" | "builtins" | "catalog";
 
 /**
  * Whether an enabled tool is presented under `xd://` (rather than top-level)
@@ -254,7 +253,7 @@ export const XDEV_DOCS_PER_DEVICE_CAP = 10_000;
 export const XDEV_EXTERNAL_DESCRIPTION_CAP = 200;
 
 /** Resolve any enabled tool through the canonical session map. */
-export function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
+function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
 	if (!state.mountedNames.has(name) && !state.isActive(name)) return undefined;
 	return state.tools.get(name);
 }

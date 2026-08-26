@@ -59,7 +59,7 @@ async function waitForSSERetry(ms: number, signal: AbortSignal): Promise<void> {
  * MCP timeout surface. Otherwise caps the wait at one second and scales below
  * short request timeouts so connect-time never exceeds the request budget.
  */
-export function resolveSSEConnectTimeoutMs(configTimeout?: number): number {
+function resolveSSEConnectTimeoutMs(configTimeout?: number): number {
 	const requestTimeout = resolveMCPTimeoutMs(configTimeout);
 	if (!isMCPTimeoutEnabled(requestTimeout)) return 0;
 	const boundedTimeout = Math.min(HTTP_SSE_CONNECT_TIMEOUT_MS, Math.floor(requestTimeout / 4));

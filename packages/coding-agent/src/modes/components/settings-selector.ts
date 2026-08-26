@@ -528,7 +528,7 @@ function getSettingsTabs(): Tab[] {
  * Dynamic context for settings that need runtime data.
  * Some settings (like thinking level) are managed by the session, not Settings.
  */
-export interface SettingsRuntimeContext {
+interface SettingsRuntimeContext {
 	/** Available thinking levels (from session) */
 	availableThinkingLevels: Effort[];
 	/** Current thinking level (from session) */
@@ -544,7 +544,7 @@ export interface SettingsRuntimeContext {
 }
 
 /** Status line settings subset for preview */
-export interface StatusLinePreviewSettings {
+interface StatusLinePreviewSettings {
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
@@ -552,7 +552,7 @@ export interface StatusLinePreviewSettings {
 	compactThinkingLevel?: boolean;
 }
 
-export interface SettingsCallbacks {
+interface SettingsCallbacks {
 	/** Called when any setting value changes */
 	onChange: (path: SettingPath, newValue: unknown) => void;
 	/** Called for theme preview while browsing */

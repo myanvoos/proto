@@ -25,7 +25,7 @@ const docsEmbed = process.env.PI_DOCS_EMBED ?? "";
 
 const gunzipAsync = promisify(gunzip);
 
-export interface DocsIndex {
+interface DocsIndex {
 	/** Sorted documentation file names, relative to `docs/`. */
 	readonly filenames: readonly string[];
 	/** Resolve a doc body by path; inflates the embedded bodies off-thread, lazily, on first call. */

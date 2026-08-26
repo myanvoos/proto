@@ -167,7 +167,7 @@ export interface MCPLoadResult {
 }
 
 /** Options for discovering and connecting to MCP servers */
-export interface MCPDiscoverOptions {
+interface MCPDiscoverOptions {
 	/** Whether to load project-level config (default: true) */
 	enableProjectConfig?: boolean;
 	/** Whether to filter out Exa MCP servers (default: true) */
@@ -179,7 +179,7 @@ export interface MCPDiscoverOptions {
 }
 
 /** Handles an MCP `WWW-Authenticate` challenge and returns refreshed config. */
-export type MCPAuthHandler = (serverName: string, challenge: MCPAuthChallenge) => Promise<MCPServerConfig | undefined>;
+type MCPAuthHandler = (serverName: string, challenge: MCPAuthChallenge) => Promise<MCPServerConfig | undefined>;
 
 /**
  * MCP Server Manager.
@@ -1565,20 +1565,4 @@ export class MCPManager {
 
 		return resolved;
 	}
-}
-
-/**
- * Create an MCP manager and discover servers.
- * Convenience function for quick setup.
- */
-export async function createMCPManager(
-	cwd: string,
-	options?: MCPDiscoverOptions,
-): Promise<{
-	manager: MCPManager;
-	result: MCPLoadResult;
-}> {
-	const manager = new MCPManager(cwd);
-	const result = await manager.discoverAndConnect(options);
-	return { manager, result };
 }

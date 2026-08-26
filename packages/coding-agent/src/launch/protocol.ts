@@ -83,7 +83,7 @@ export type DaemonOperation =
 			grep?: string;
 			follow: boolean;
 			cursor?: number;
-			/** Ask an upgraded broker to replay PTY output; absent preserves legacy raw-text responses. */
+			/** Ask the broker to replay PTY output as virtual terminal rows. */
 			renderTerminalRows?: boolean;
 			timeoutMs: number;
 	  }
@@ -105,7 +105,7 @@ export type DaemonRpcResult =
 			text: string;
 			/** Virtual PTY rows reconstructed by the broker for terminal display. */
 			terminalRows?: string[];
-			/** Raw PTY bytes returned by legacy brokers and to clients that did not request rendered rows. */
+			/** Raw PTY bytes returned when rendered rows were not produced (failed replay or non-rendering client). */
 			terminalText?: string;
 			cursor: number;
 			timedOut: boolean;

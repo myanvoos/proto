@@ -18,7 +18,7 @@ const stagedPaths = new Map<string, string>();
 /**
  * Stage `script` under `os.tmpdir()/<dirName>` and return the runner path.
  *
- * The staged path is memoized per `dirName` but re-checked with `fs.existsSync`
+ * The staged path is memoized per `dirName` but re-checked with `Bun.file.exists()`
  * before reuse, so a runner deleted mid-session is re-written on the next call
  * instead of handing back a path to a missing file (issue #8140).
  *
@@ -28,14 +28,12 @@ const stagedPaths = new Map<string, string>();
  */
 export async function stageRunnerScript(dirName: string, ext: string, script: string): Promise<string> {
 	const memoized = stagedPaths.get(dirName);
-	if (memoized && fs.existsSync(memoized)) return memoized;
+	if (memoized && (await Bun.file(memoized).exists())) return memoized;
 	const dir = path.join(os.tmpdir(), dirName);
 	await fs.promises.mkdir(dir, { recursive: true });
 	const hash = Bun.hash(script).toString(36);
 	const target = path.join(dir, `runner-${hash}.${ext}`);
-	if (!fs.existsSync(target)) {
-		await Bun.write(target, script);
-	}
+	await Bun.write(target, script);
 	stagedPaths.set(dirName, target);
 	return target;
 }

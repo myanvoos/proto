@@ -20,7 +20,7 @@ export interface BlobBrokerSavingsRecord {
 }
 
 /** Additive counters shared by the total and per-destination status views. */
-export interface BlobBrokerSavingsCounters {
+interface BlobBrokerSavingsCounters {
 	readonly entries: number;
 	readonly imageCount: number;
 	readonly inlineBytes: number;

@@ -50,7 +50,7 @@ export function parsePluginId(id: string): { name: string; marketplace: string }
 
 // ── Marketplace catalog (from marketplace.json in a marketplace repo) ─
 
-export interface MarketplaceCatalogOwner {
+interface MarketplaceCatalogOwner {
 	name: string;
 	email?: string;
 }
@@ -69,7 +69,7 @@ export interface MarketplaceCatalog {
 	plugins: MarketplacePluginEntry[];
 }
 
-export interface MarketplacePluginAuthor {
+interface MarketplacePluginAuthor {
 	name: string;
 	email?: string;
 }
@@ -104,21 +104,21 @@ export type PluginSource =
 	| PluginSourceGitSubdir
 	| PluginSourceNpm;
 
-export interface PluginSourceGitHub {
+interface PluginSourceGitHub {
 	source: "github";
 	repo: string;
 	ref?: string;
 	sha?: string;
 }
 
-export interface PluginSourceUrl {
+interface PluginSourceUrl {
 	source: "url";
 	url: string;
 	ref?: string;
 	sha?: string;
 }
 
-export interface PluginSourceGitSubdir {
+interface PluginSourceGitSubdir {
 	source: "git-subdir";
 	url: string;
 	path: string;
@@ -126,7 +126,7 @@ export interface PluginSourceGitSubdir {
 	sha?: string;
 }
 
-export interface PluginSourceNpm {
+interface PluginSourceNpm {
 	source: "npm";
 	package: string;
 	version?: string;

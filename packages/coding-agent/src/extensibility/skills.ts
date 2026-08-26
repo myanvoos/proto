@@ -81,7 +81,7 @@ export function isNameClaimedByAuthoredSkill(name: string): boolean {
 	);
 }
 
-export interface LoadSkillsFromDirOptions {
+interface LoadSkillsFromDirOptions {
 	/** Directory to scan for skills */
 	dir: string;
 	/** Source identifier for these skills */
@@ -117,7 +117,7 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 	};
 }
 
-export interface LoadSkillsOptions extends SkillsSettings {
+interface LoadSkillsOptions extends SkillsSettings {
 	/** Working directory for project-local skills. Default: getProjectDir() */
 	cwd?: string;
 }
@@ -400,7 +400,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	};
 }
 
-export interface BuiltSkillPromptMessage {
+interface BuiltSkillPromptMessage {
 	message: string;
 	details: SkillPromptDetails;
 }
@@ -415,7 +415,7 @@ export function getSkillSlashCommandName(skill: Pick<Skill, "name">): string {
  * mid-prompt. For the mid-prompt form the surrounding prose is threaded
  * through as `args` so the skill sees the full user request.
  */
-export interface ParsedSkillInvocation {
+interface ParsedSkillInvocation {
 	/** Bare skill name without the leading `skill:` prefix. */
 	name: string;
 	/** User-supplied arguments (everything outside the `/skill:<name>` token). */
@@ -486,7 +486,7 @@ function startsWithLocalExecutionPrefix(trimmedStart: string): boolean {
 	return next === 32 /* space */ || next === 9 /* tab */ || next === 10 /* LF */ || next === 13 /* CR */;
 }
 
-export type SkillInvocationKind = "user" | "autoload";
+type SkillInvocationKind = "user" | "autoload";
 
 export async function buildSkillPromptMessage(
 	skill: Pick<Skill, "name" | "filePath" | "baseDir">,

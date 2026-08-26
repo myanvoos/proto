@@ -19,7 +19,7 @@ import description from "./sloppy.md" with { type: "text" };
 import { pruneOversizedEditSnapshots } from "./snapshot-details";
 
 /** Context handed to a {@link SloppyVariant} apply call. */
-export interface SloppyApplyContext {
+interface SloppyApplyContext {
 	/** Workspace-relative display path of the file being edited — for error messages. */
 	readonly path: string;
 	/** Sink for post-apply advisories (e.g. deletion callouts) shown with the success text. */
@@ -30,7 +30,7 @@ export interface SloppyApplyContext {
  * The sloppy-format implementation contract: a pure text transformer — no
  * file I/O, no tool state.
  */
-export interface SloppyVariant {
+interface SloppyVariant {
 	/** Stable format identifier. */
 	readonly id: string;
 	/** Tool-description markdown teaching the model the payload grammar. */
@@ -3580,7 +3580,7 @@ export const sloppyVariant: SloppyVariant = { id: "sloppy", description, apply }
 /** Lark grammar for constrained decoding, in the active marker alphabet. */
 export const sloppyGrammar: string = sloppyGrammarSource;
 
-export interface ExecuteSloppyOptions {
+interface ExecuteSloppyOptions {
 	session: ToolSession;
 	/** Payload sections with display paths already workspace-resolved. */
 	sections: SloppySection[];

@@ -12,7 +12,6 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { type DaemonBrokerClient, DaemonBrokerRejectedError, daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
-import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import type { ToolSession } from "..";
@@ -346,20 +345,7 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	}
 }
 
-/** Resolve display rows while keeping legacy raw replay outside the client process. */
-export async function renderLaunchLogTerminalRows(
-	result: Extract<DaemonRpcResult, { op: "logs" }>,
-	params: Pick<LaunchParams, "head" | "lines">,
-): Promise<string[] | undefined> {
-	if (result.terminalRows !== undefined) return result.terminalRows;
-	if (result.terminalText === undefined) return undefined;
-	return renderTerminalOutputIsolated(result.terminalText, {
-		head: params.head ?? false,
-		maxRows: Math.min(1_000, Math.floor(params.lines ?? 100)),
-	});
-}
-
-async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promise<LaunchToolDetails> {
+async function toolDetails(result: DaemonRpcResult): Promise<LaunchToolDetails> {
 	switch (result.op) {
 		case "start":
 			return { op: "start", daemon: result.daemon, timedOut: result.readyTimedOut };
@@ -369,9 +355,8 @@ async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promi
 			return {
 				op: "logs",
 				cursor: result.cursor,
-				timedOut: result.timedOut,
+				terminalRows: result.terminalRows,
 				state: result.state,
-				terminalRows: await renderLaunchLogTerminalRows(result, params).catch(() => undefined),
 			};
 		case "wait":
 			return { op: "wait", daemon: result.daemon, timedOut: result.timedOut, matched: result.matched };
@@ -419,7 +404,7 @@ export async function executeLaunch(
 		else completionLease?.retain();
 		return {
 			content: [{ type: "text", text: replaceTabs(toolContent(result, params)) }],
-			details: await toolDetails(result, params),
+			details: await toolDetails(result),
 		};
 	} catch (error) {
 		if (error instanceof DaemonBrokerRejectedError && owner) {

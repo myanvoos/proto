@@ -26,7 +26,7 @@ import type {
 export { rewriteImports, wrapCode } from "./shared/rewrite-imports";
 export type { JsDisplayOutput } from "./worker-protocol";
 
-export interface VmRunState {
+interface VmRunState {
 	signal?: AbortSignal;
 	onText?: (chunk: string) => void;
 	onDisplay?: (output: JsDisplayOutput) => void;
@@ -102,26 +102,8 @@ const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 // emitted its `close` event is force-terminated. Defaults to the production floor;
 // tests override it (and restore it) to exercise the close-timeout -> terminate
 // path without a real wall-clock wait.
-let workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
-let useWorkerThreadForTests = false;
-
-/**
- * Test-only seam: override the graceful-close grace period (ms). Returns the
- * previous value so callers can restore it. Production always uses
- * {@link WORKER_CLOSE_TIMEOUT_MS}; never call this outside tests.
- */
-export function setWorkerCloseTimeoutMsForTests(ms: number): number {
-	const previous = workerCloseTimeoutMs;
-	workerCloseTimeoutMs = ms;
-	return previous;
-}
-
-/** Test-only seam for the legacy Worker lifecycle mocks. */
-export function setJsEvalWorkerThreadForTests(enabled: boolean): boolean {
-	const previous = useWorkerThreadForTests;
-	useWorkerThreadForTests = enabled;
-	return previous;
-}
+const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
+const useWorkerThreadForTests = false;
 
 export async function executeInVmContext(options: {
 	sessionKey: string;
@@ -177,7 +159,7 @@ export async function executeInVmContext(options: {
 	return await runOnce(session, options);
 }
 
-export async function resetVmContext(sessionKey: string): Promise<void> {
+async function resetVmContext(sessionKey: string): Promise<void> {
 	const session = sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.promise.catch(() => undefined));
 	if (!session) return;
 	sessions.delete(sessionKey);

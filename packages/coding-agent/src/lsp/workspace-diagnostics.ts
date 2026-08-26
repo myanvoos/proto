@@ -1,9 +1,8 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 
 /** Project type detection result */
-export interface ProjectType {
+interface ProjectType {
 	type: "rust" | "typescript" | "go" | "python" | "unknown";
 	command?: string[];
 	description: string;
@@ -104,30 +103,30 @@ async function resolveGoWorkspaceDiagnosticsCommand(cwd: string, signal?: AbortS
  */
 export async function detectProjectTypes(cwd: string, signal?: AbortSignal): Promise<ProjectType[]> {
 	const detected: ProjectType[] = [];
-	const marker = (name: string) => fs.existsSync(path.join(cwd, name));
+	const marker = (name: string) => Bun.file(path.join(cwd, name)).exists();
 
-	if (marker("Cargo.toml")) {
+	if (await marker("Cargo.toml")) {
 		const command = ["cargo", "check", "--message-format=short"];
 		detected.push({ type: "rust", command, description: "Rust (cargo check)" });
 	}
 
-	if (marker("tsconfig.json")) {
+	if (await marker("tsconfig.json")) {
 		const command = ["npx", "tsc", "--noEmit"];
 		detected.push({ type: "typescript", command, description: "TypeScript (tsc --noEmit)" });
 	}
 
 	// Check for Go workspaces before single-module Go projects.
-	if (marker("go.work")) {
+	if (await marker("go.work")) {
 		detected.push({
 			type: "go",
 			command: await resolveGoWorkspaceDiagnosticsCommand(cwd, signal),
 			description: "Go workspace (go build)",
 		});
-	} else if (marker("go.mod")) {
+	} else if (await marker("go.mod")) {
 		detected.push({ type: "go", command: ["go", "build", "./..."], description: "Go (go build)" });
 	}
 
-	if (marker("pyproject.toml") || marker("pyrightconfig.json")) {
+	if ((await marker("pyproject.toml")) || (await marker("pyrightconfig.json"))) {
 		detected.push({ type: "python", command: ["pyright"], description: "Python (pyright)" });
 	}
 

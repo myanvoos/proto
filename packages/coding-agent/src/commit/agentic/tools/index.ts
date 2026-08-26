@@ -12,7 +12,7 @@ import { createProposeCommitTool } from "./propose-commit";
 import { createRecentCommitsTool } from "./recent-commits";
 import { createSplitCommitTool } from "./split-commit";
 
-export interface CommitToolOptions {
+interface CommitToolOptions {
 	cwd: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;

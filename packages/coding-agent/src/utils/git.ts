@@ -40,12 +40,12 @@ export interface GitStatusSummary {
 	untracked: number;
 }
 
-export type HunkSelection = {
+type HunkSelection = {
 	path: string;
 	hunks: { type: "all" } | { type: "indices"; indices: number[] } | { type: "lines"; start: number; end: number };
 };
 
-export interface StageHunksOptions {
+interface StageHunksOptions {
 	readonly diffCached?: boolean;
 	readonly rawDiff?: string;
 	readonly signal?: AbortSignal;
@@ -71,7 +71,7 @@ export interface DiffOptions {
 	readonly requireComplete?: boolean;
 }
 
-export interface StatusOptions {
+interface StatusOptions {
 	readonly pathspecs?: readonly string[];
 	readonly porcelainV1?: boolean;
 	readonly signal?: AbortSignal;
@@ -85,12 +85,12 @@ export interface CommitAuthor {
 	readonly name: string;
 }
 
-export interface CommitDetails {
+interface CommitDetails {
 	readonly author: CommitAuthor;
 	readonly message: string;
 }
 
-export interface CommitOptions {
+interface CommitOptions {
 	readonly allowEmpty?: boolean;
 	readonly author?: CommitAuthor;
 	readonly files?: readonly string[];
@@ -104,7 +104,7 @@ export interface PushOptions {
 	readonly signal?: AbortSignal;
 }
 
-export interface PatchOptions {
+interface PatchOptions {
 	readonly cached?: boolean;
 	readonly check?: boolean;
 	readonly env?: Record<string, string | undefined>;
@@ -113,7 +113,7 @@ export interface PatchOptions {
 	readonly signal?: AbortSignal;
 }
 
-export interface RestoreOptions {
+interface RestoreOptions {
 	readonly files?: readonly string[];
 	readonly signal?: AbortSignal;
 	readonly source?: string;
@@ -121,13 +121,13 @@ export interface RestoreOptions {
 	readonly worktree?: boolean;
 }
 
-export interface FetchOptions {
+interface FetchOptions {
 	readonly signal?: AbortSignal;
 	/** Deadline for the network transfer. Defaults to {@link GIT_NETWORK_TIMEOUT_MS}. */
 	readonly timeoutMs?: number;
 }
 
-export interface CloneOptions {
+interface CloneOptions {
 	readonly ref?: string;
 	readonly sha?: string;
 	readonly signal?: AbortSignal;
@@ -139,19 +139,19 @@ interface GitHeadBase extends GitRepository {
 	headContent: string;
 }
 
-export interface GitRefHead extends GitHeadBase {
+interface GitRefHead extends GitHeadBase {
 	branchName: string | null;
 	commit: string | null;
 	kind: "ref";
 	ref: string;
 }
 
-export interface GitDetachedHead extends GitHeadBase {
+interface GitDetachedHead extends GitHeadBase {
 	commit: string | null;
 	kind: "detached";
 }
 
-export type GitHeadState = GitRefHead | GitDetachedHead;
+type GitHeadState = GitRefHead | GitDetachedHead;
 
 export interface GitWorktreeEntry {
 	branch?: string;
@@ -241,7 +241,7 @@ export const GIT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
  * {@link GIT_COMMAND_TIMEOUT_MS}, so they get a wider deadline; local plumbing
  * commands keep the short one.
  */
-export const GIT_NETWORK_TIMEOUT_MS = 30 * 60 * 1000;
+const GIT_NETWORK_TIMEOUT_MS = 30 * 60 * 1000;
 /** Maximum captured stdout or stderr bytes retained from git and gh subprocesses. */
 export const GIT_COMMAND_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 /**
@@ -251,12 +251,12 @@ export const GIT_COMMAND_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
  * is killed and reported as {@link GIT_COMMAND_TIMEOUT_EXIT_CODE} so the caller
  * degrades instead of freezing the UI indefinitely.
  */
-export const GIT_SPAWN_SYNC_TIMEOUT_MS = 5_000;
+const GIT_SPAWN_SYNC_TIMEOUT_MS = 5_000;
 /**
  * Stat-poll interval for {@link head.watch}. One `stat` per interval keeps an
  * always-on status line cheap while surfacing a branch switch within a second.
  */
-export const HEAD_WATCH_INTERVAL_MS = 1000;
+const HEAD_WATCH_INTERVAL_MS = 1000;
 
 const GIT_COMMAND_TIMEOUT_EXIT_CODE = 124;
 // Exit code returned when the `git` binary cannot be launched at all (spawn
@@ -590,6 +590,23 @@ async function tryText(
 	const result = await git(cwd, args, options);
 	if (result.exitCode !== 0) return undefined;
 	return result.stdout;
+}
+
+/** Options for {@link runUnchecked} — a subset of the internal command options. */
+type GitRunOptions = Pick<CommandOptions, "env" | "maxOutputBytes" | "signal" | "stdin" | "timeoutMs">;
+
+/**
+ * Run a `git` command without checking the exit code, returning the raw
+ * result (`exitCode`/`stdout`/`stderr`) so probing callers can branch on
+ * failure instead of catching {@link GitCommandError}. A missing `git`
+ * binary is reported as exit code 127 rather than thrown.
+ */
+export async function runUnchecked(
+	cwd: string,
+	args: readonly string[],
+	options: GitRunOptions = {},
+): Promise<GitCommandResult> {
+	return await git(cwd, args, options);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1489,7 +1506,7 @@ export async function writeTree(cwd: string, options: Pick<CommandOptions, "env"
 // ════════════════════════════════════════════════════════════════════════════
 
 /** Outcome of {@link detachGitDir}. */
-export type DetachGitDirResult =
+type DetachGitDirResult =
 	/** `worktreeRoot` had no `.git`; nothing to detach. */
 	| "no-git"
 	/** `.git` already resolves to an independent object DB — left untouched. */
@@ -2457,7 +2474,7 @@ async function resolveHead(cwd: string, signal?: AbortSignal): Promise<GitHeadSt
 // API: github (GitHub CLI)
 // ════════════════════════════════════════════════════════════════════════════
 
-export interface GhCommandResult {
+interface GhCommandResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;

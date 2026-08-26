@@ -21,7 +21,7 @@ import type { ScopedModelItem } from "./model-hub";
 import { bottomBorder, row, topBorder } from "./overlay-box";
 import { resolveSegmentPalette } from "./segment-track";
 
-export interface ModelPickerCallbacks {
+interface ModelPickerCallbacks {
 	/**
 	 * A model was chosen for a session-only switch. `selector` is `provider/id`.
 	 * `overContext` is true when the session transcript exceeds the model's

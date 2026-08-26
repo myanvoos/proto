@@ -18,7 +18,7 @@ import { type RelayServer, startRelayServer } from "../tools/browser/relay/serve
 export const BROWSER_RELAY_ACTIONS = ["serve", "install"] as const;
 export type BrowserRelayAction = (typeof BROWSER_RELAY_ACTIONS)[number];
 
-export interface BrowserRelayCommandArgs {
+interface BrowserRelayCommandArgs {
 	action: BrowserRelayAction;
 	port: number;
 	token?: string;

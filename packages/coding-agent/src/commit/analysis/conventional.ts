@@ -12,7 +12,7 @@ const ConventionalAnalysisTool = createConventionalAnalysisTool(
 	"Analyze a diff and return conventional commit classification.",
 );
 
-export interface ConventionalAnalysisInput {
+interface ConventionalAnalysisInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

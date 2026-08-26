@@ -15,7 +15,6 @@ import type {
 	Location,
 	SymbolInformation,
 	SymbolKind,
-	TextEdit,
 	WorkspaceEdit,
 } from "./types";
 
@@ -116,7 +115,7 @@ const SEVERITY_NAMES: Record<DiagnosticSeverity, string> = {
 /**
  * Convert diagnostic severity number to string name.
  */
-export function severityToString(severity?: DiagnosticSeverity): string {
+function severityToString(severity?: DiagnosticSeverity): string {
 	return SEVERITY_NAMES[severity ?? 1] ?? "unknown";
 }
 
@@ -136,27 +135,6 @@ export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
 		if (aCol !== bCol) return aCol - bCol;
 		return a.message.localeCompare(b.message);
 	});
-}
-
-/**
- * Get icon for diagnostic severity.
- */
-export function severityToIcon(severity?: DiagnosticSeverity): string {
-	const currentTheme = theme as Theme | undefined;
-	const fallback = currentTheme?.format?.bullet ?? "*";
-	const status = currentTheme?.status;
-	switch (severity ?? 1) {
-		case 1:
-			return status?.error ?? fallback;
-		case 2:
-			return status?.warning ?? fallback;
-		case 3:
-			return status?.info ?? fallback;
-		case 4:
-			return currentTheme?.format?.bullet ?? fallback;
-		default:
-			return status?.error ?? fallback;
-	}
 }
 
 /**
@@ -299,13 +277,6 @@ export function formatLocation(location: Location, cwd: string): string {
 	return `${file}:${line}:${col}`;
 }
 
-/**
- * Format a position as line:col.
- */
-export function formatPosition(line: number, col: number): string {
-	return `${line}:${col}`;
-}
-
 // =============================================================================
 // WorkspaceEdit Formatting
 // =============================================================================
@@ -349,18 +320,6 @@ export function formatWorkspaceEdit(edit: WorkspaceEdit, cwd: string): string[] 
 	}
 
 	return results;
-}
-
-/**
- * Format a text edit as a preview.
- */
-export function formatTextEdit(edit: TextEdit, maxLength = 50): string {
-	const range = `${edit.range.start.line + 1}:${edit.range.start.character + 1}`;
-	const preview =
-		edit.newText.length > maxLength
-			? `${edit.newText.slice(0, maxLength).replace(/\n/g, "\\n")}…`
-			: edit.newText.replace(/\n/g, "\\n");
-	return `line ${range} ${theme.nav.cursor} "${preview}"`;
 }
 
 // =============================================================================
@@ -416,41 +375,6 @@ export function symbolKindToIcon(kind: SymbolKind): string {
 	const currentTheme = theme as Theme | undefined;
 	const bullet = currentTheme?.format?.bullet ?? "*";
 	return getSymbolKindIcons()[kind] ?? bullet;
-}
-
-/**
- * Get name for symbol kind.
- */
-export function symbolKindToName(kind: SymbolKind): string {
-	const names: Record<number, string> = {
-		1: "File",
-		2: "Module",
-		3: "Namespace",
-		4: "Package",
-		5: "Class",
-		6: "Method",
-		7: "Property",
-		8: "Field",
-		9: "Constructor",
-		10: "Enum",
-		11: "Interface",
-		12: "Function",
-		13: "Variable",
-		14: "Constant",
-		15: "String",
-		16: "Number",
-		17: "Boolean",
-		18: "Array",
-		19: "Object",
-		20: "Key",
-		21: "Null",
-		22: "EnumMember",
-		23: "Struct",
-		24: "Event",
-		25: "Operator",
-		26: "TypeParameter",
-	};
-	return names[kind] ?? "Unknown";
 }
 
 /**
@@ -517,13 +441,13 @@ export function formatCodeAction(action: CodeAction | Command, index: number): s
 	return `${index}: [${kind}] ${action.title}${preferred}${disabled}`;
 }
 
-export interface CodeActionApplyDependencies {
+interface CodeActionApplyDependencies {
 	resolveCodeAction?: (action: CodeAction) => Promise<CodeAction>;
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => Promise<string[]>;
 	executeCommand: (command: Command) => Promise<void>;
 }
 
-export interface AppliedCodeActionResult {
+interface AppliedCodeActionResult {
 	title: string;
 	edits: string[];
 	executedCommands: string[];

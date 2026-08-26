@@ -17,7 +17,7 @@ import { parseApplyPatch } from "./parser";
 
 export * from "./parser";
 
-export interface ApplyCodexPatchResult {
+interface ApplyCodexPatchResult {
 	/** Single-file apply results in the order they were attempted. */
 	results: ApplyPatchResult[];
 	/** Affected file paths grouped by operation, for the §9.1 summary. */
@@ -73,15 +73,4 @@ function recordAffected(
 			affected.modified.push(hunk.path);
 			break;
 	}
-}
-
-/**
- * Format the A/M/D summary described in spec §9.1.
- */
-export function formatApplyCodexPatchSummary(affected: ApplyCodexPatchResult["affected"]): string {
-	const lines = ["Success. Updated the following files:"];
-	for (const p of affected.added) lines.push(`A ${p}`);
-	for (const p of affected.modified) lines.push(`M ${p}`);
-	for (const p of affected.deleted) lines.push(`D ${p}`);
-	return lines.join("\n");
 }

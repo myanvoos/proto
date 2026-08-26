@@ -19,8 +19,8 @@ import { theme } from "../modes/theme/theme";
 import type { GallerySection } from "./gallery-cli";
 
 /** Nerd Font family so the gallery's icon glyphs (PUA) render instead of tofu. */
-export const DEFAULT_SCREENSHOT_FONT = "JetBrainsMono Nerd Font";
-export const DEFAULT_SCREENSHOT_FONT_SIZE = 18;
+const DEFAULT_SCREENSHOT_FONT = "JetBrainsMono Nerd Font";
+const DEFAULT_SCREENSHOT_FONT_SIZE = 18;
 
 /** Inner padding (px) VHS leaves around the terminal grid. */
 const PADDING = 14;
@@ -36,7 +36,7 @@ const CELL_HEIGHT_RATIO = 1.5;
 /** Keep each image well under headless-Chromium's tall-canvas limits. */
 const MAX_IMAGE_HEIGHT_PX = 8000;
 
-export interface GalleryScreenshotOptions {
+interface GalleryScreenshotOptions {
 	/** Gallery render width in columns (matches the ANSI line width). */
 	width: number;
 	/** VHS `FontFamily`. */

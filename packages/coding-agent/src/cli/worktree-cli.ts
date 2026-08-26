@@ -40,11 +40,11 @@ interface WorktreeEntry {
 	orphanReason?: string;
 }
 
-export interface ListWorktreesOptions {
+interface ListWorktreesOptions {
 	json: boolean;
 }
 
-export interface ClearWorktreesOptions {
+interface ClearWorktreesOptions {
 	/** Remove every entry, including live PR-checkout worktrees. */
 	all: boolean;
 	/** Print what would be removed without touching the filesystem. */

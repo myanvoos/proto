@@ -27,7 +27,7 @@ const TEXT_DECODER = new TextDecoder();
 // Debug-only local MITM certificate. Claude is launched with
 // NODE_TLS_REJECT_UNAUTHORIZED=0, so the certificate has no trust value; it only
 // lets Node's TLS stack complete the CONNECT tunnel handshake.
-export const CLAUDE_TRACE_DEBUG_CERT = `-----BEGIN CERTIFICATE-----
+const CLAUDE_TRACE_DEBUG_CERT = `-----BEGIN CERTIFICATE-----
 MIIDFzCCAf+gAwIBAgIUAe9omAqLbydZc5ZYZGhwbbpMSF0wDQYJKoZIhvcNAQEL
 BQAwGzEZMBcGA1UEAwwQb21wLWNsYXVkZS10cmFjZTAeFw0yNjA2MDIwODA2MjFa
 Fw0zNjA1MzAwODA2MjFaMBsxGTAXBgNVBAMMEG9tcC1jbGF1ZGUtdHJhY2UwggEi
@@ -47,7 +47,7 @@ AQQJETQjPkKeTDX4jdSAlOeKwfyjfdfgeQuMkzX8xafisJa66MLPzOVbIuGbvbWD
 QVCd76iYPcfNK+JZUhmAUvTHSuwgJMZ6+NgI
 -----END CERTIFICATE-----`;
 
-export const CLAUDE_TRACE_DEBUG_KEY = `-----BEGIN PRIVATE KEY-----
+const CLAUDE_TRACE_DEBUG_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCmpGe5T8B0oA2L
 82Rn5JJdXOBSZX0DyBjiIK+Tqe8T3oAr41XDLnweqtrMDSBDYbVqAoKjNbaTUSYY
 cxSm0MAVs63w08SfJmShZM9pElfANqXqMiyhksFgji7JEyt/rbbId207a7s5KvRv
@@ -76,7 +76,7 @@ FbkpRZC0Kfi9PLzDV4IawoIINYthOJxIKJg+yrmrUWCggXxwdzYIYKLRIskMXoYs
 mNMXfUstElEcKO7+DKiPi6U=
 -----END PRIVATE KEY-----`;
 
-export interface HeaderEntry {
+interface HeaderEntry {
 	name: string;
 	value: string;
 }
@@ -89,7 +89,7 @@ export interface CapturedRequest {
 	body: string;
 }
 
-export interface CapturedResponse {
+interface CapturedResponse {
 	statusCode: number | undefined;
 	statusMessage: string;
 	version: string;
@@ -97,13 +97,13 @@ export interface CapturedResponse {
 	body: string;
 }
 
-export interface CapturedMessagesExchange {
+interface CapturedMessagesExchange {
 	target: string;
 	request: CapturedRequest;
 	response: CapturedResponse;
 }
 
-export interface ClaudeMessagesProxyOptions {
+interface ClaudeMessagesProxyOptions {
 	host?: string;
 	port?: number;
 	upstreamTlsRejectUnauthorized?: boolean;
@@ -457,7 +457,7 @@ function formatCapturedMessagesExchange(exchange: CapturedMessagesExchange): str
 	].join("\n");
 }
 
-export class ClaudeMessagesProxy {
+class ClaudeMessagesProxy {
 	readonly #host: string;
 	readonly #requestedPort: number;
 	readonly #upstreamTlsRejectUnauthorized: boolean;

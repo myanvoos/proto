@@ -1,7 +1,7 @@
 const BAR_WIDTH = 16;
 
 /** Minimal output contract used by the interactive progress reporter. */
-export interface ProgressOutput {
+interface ProgressOutput {
 	isTTY?: boolean;
 	write(text: string): boolean;
 }

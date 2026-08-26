@@ -35,7 +35,7 @@ export interface FuzzyMatch {
 	confidence: number;
 }
 
-export interface MatchOutcome {
+interface MatchOutcome {
 	match?: FuzzyMatch;
 	closest?: FuzzyMatch;
 	occurrences?: number;
@@ -45,7 +45,7 @@ export interface MatchOutcome {
 	dominantFuzzy?: boolean;
 }
 
-export type SequenceMatchStrategy =
+type SequenceMatchStrategy =
 	| "exact"
 	| "trim-trailing"
 	| "trim"
@@ -65,7 +65,7 @@ export interface SequenceSearchResult {
 	strategy?: SequenceMatchStrategy;
 }
 
-export type ContextMatchStrategy = "exact" | "trim" | "unicode" | "prefix" | "substring" | "fuzzy";
+type ContextMatchStrategy = "exact" | "trim" | "unicode" | "prefix" | "substring" | "fuzzy";
 
 export interface ContextLineResult {
 	index: number | undefined;
@@ -1106,7 +1106,7 @@ export interface ReplaceBatchParams {
 	edits: Omit<ReplaceParams, "path">[];
 }
 
-export interface ExecuteReplaceOptions {
+interface ExecuteReplaceOptions {
 	session: ToolSession;
 	path: string;
 	params: Omit<ReplaceParams, "path">;

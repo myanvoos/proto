@@ -10,7 +10,7 @@ import { createConventionalAnalysisTool, parseConventionalAnalysisResponse } fro
 
 const ReduceTool = createConventionalAnalysisTool("Synthesize file observations into a conventional commit analysis.");
 
-export interface ReducePhaseInput {
+interface ReducePhaseInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

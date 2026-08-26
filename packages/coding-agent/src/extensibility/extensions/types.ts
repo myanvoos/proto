@@ -113,7 +113,7 @@ export type { AgentToolResult, AgentToolUpdateCallback };
 // UI Context
 // ============================================================================
 
-export interface ExtensionUISelectOption {
+interface ExtensionUISelectOption {
 	label: string;
 	description?: string;
 }
@@ -154,7 +154,7 @@ export interface ExtensionAskDialogSubmitResult {
 /** Chat-redirect result: the user chose "Chat about this" instead of
  *  answering. Distinct from `undefined` (cancel) so AskTool can hand off to
  *  the chat loop rather than aborting. */
-export interface ExtensionAskDialogChatResult {
+interface ExtensionAskDialogChatResult {
 	kind: "chat";
 }
 
@@ -541,7 +541,7 @@ export interface ExtensionCommandContext extends ExtensionContext {
 // ============================================================================
 
 /** Rendering options for tool results */
-export interface ToolRenderResultOptions {
+interface ToolRenderResultOptions {
 	/** Whether the result view is expanded */
 	expanded: boolean;
 	/** Whether this is a partial/streaming result */
@@ -611,10 +611,10 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 }
 
 /** Whether a tool's source is scoped to the user, the project, or a transient runtime session. */
-export type SourceScope = "user" | "project" | "temporary";
+type SourceScope = "user" | "project" | "temporary";
 
 /** Whether a tool's source came from an installed package or a top-level (loose) file. */
-export type SourceOrigin = "package" | "top-level";
+type SourceOrigin = "package" | "top-level";
 
 /**
  * Provenance metadata describing where a registered tool came from. Mirrors the
@@ -857,17 +857,17 @@ interface ToolCallEventBase {
 	toolCallId: string;
 }
 
-export interface BashToolCallEvent extends ToolCallEventBase {
+interface BashToolCallEvent extends ToolCallEventBase {
 	toolName: "bash";
 	input: BashToolInput;
 }
 
-export interface ReadToolCallEvent extends ToolCallEventBase {
+interface ReadToolCallEvent extends ToolCallEventBase {
 	toolName: "read";
 	input: ReadToolInput;
 }
 
-export interface EditToolCallEvent extends ToolCallEventBase {
+interface EditToolCallEvent extends ToolCallEventBase {
 	toolName: "edit";
 	input: Record<string, unknown>;
 }
@@ -877,7 +877,7 @@ export interface WriteToolCallEvent extends ToolCallEventBase {
 	input: WriteToolInput;
 }
 
-export interface CustomToolCallEvent extends ToolCallEventBase {
+interface CustomToolCallEvent extends ToolCallEventBase {
 	toolName: string;
 	input: Record<string, unknown>;
 }
@@ -1053,7 +1053,7 @@ export type {
 // Message Rendering
 // ============================================================================
 
-export interface MessageRenderOptions {
+interface MessageRenderOptions {
 	expanded: boolean;
 }
 
@@ -1063,7 +1063,7 @@ export type MessageRenderer<T = unknown> = (
 	theme: Theme,
 ) => Component | undefined;
 
-export interface AssistantThinkingRenderContext {
+interface AssistantThinkingRenderContext {
 	contentIndex: number;
 	thinkingIndex: number;
 	text: string;
@@ -1094,7 +1094,7 @@ export interface RegisteredCommand {
 // ============================================================================
 
 /** Handler function type for events */
-export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
+type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
 
 /** Service tiers accepted by each provider family. */
 export type ExtensionServiceTier<Family extends ServiceTierFamily> = Family extends "anthropic"
@@ -1459,7 +1459,7 @@ export interface ProviderConfig {
 }
 
 /** Configuration for a model within a provider. */
-export interface ProviderModelConfig {
+interface ProviderModelConfig {
 	/** Model ID (e.g., "claude-sonnet-4@20250514"). */
 	id: string;
 	/** Display name (e.g., "Claude Sonnet 4 (Vertex)"). */
@@ -1535,26 +1535,26 @@ export type SendUserMessageHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
-export type GetActiveToolsHandler = () => string[];
+type GetActiveToolsHandler = () => string[];
 
-export type GetAllToolsHandler = () => ToolInfo[];
+type GetAllToolsHandler = () => ToolInfo[];
 
-export type GetCommandsHandler = () => SlashCommandInfo[];
+type GetCommandsHandler = () => SlashCommandInfo[];
 
-export type SetActiveToolsHandler = (toolNames: string[]) => Promise<void>;
+type SetActiveToolsHandler = (toolNames: string[]) => Promise<void>;
 
-export type SetModelHandler = (model: Model) => Promise<boolean>;
+type SetModelHandler = (model: Model) => Promise<boolean>;
 
-export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
+type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
 
-export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
+type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
 
-export type GetServiceTiersHandler = () => ServiceTierByFamily;
+type GetServiceTiersHandler = () => ServiceTierByFamily;
 
-export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
+type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
 
 /** Shared state created by loader, used during registration and runtime. */
-export interface ExtensionRuntimeState {
+interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;

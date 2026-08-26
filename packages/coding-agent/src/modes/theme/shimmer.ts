@@ -54,7 +54,7 @@ interface ShimmerSegment {
 	palette?: ShimmerPalette;
 }
 
-export const DEFAULT_SHIMMER_PALETTE: ShimmerPalette = {
+const DEFAULT_SHIMMER_PALETTE: ShimmerPalette = {
 	low: "dim",
 	mid: "muted",
 	high: "accent",
@@ -176,7 +176,7 @@ export function shimmerEnabled(): boolean {
  *   - One ANSI open/close pair per **run of same-tier chars**, not per char.
  *   - No per-char allocations beyond the run buffer.
  */
-export function shimmerSegments(segments: readonly ShimmerSegment[], theme: ShimmerTheme): string {
+function shimmerSegments(segments: readonly ShimmerSegment[], theme: ShimmerTheme): string {
 	const mode = resolveMode();
 
 	// Pre-scan: total code-point count (positions the band) and resolved palette.

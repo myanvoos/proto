@@ -21,7 +21,7 @@ import { buildOutputValidator, formatAllValidationIssues } from "./output-schema
 const YIELD_RESULT_FORMAT_HINT =
 	'Submit success as {"result":{"data":<your output>}} or failure as {"result":{"error":"message"}}.';
 
-export interface YieldDetails {
+interface YieldDetails {
 	/** Successful result payload, or omitted when `useLastTurn` requests last-turn extraction. */
 	data?: unknown;
 	status: "success" | "aborted";

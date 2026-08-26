@@ -200,23 +200,6 @@ export async function removeMCPServer(filePath: string, name: string): Promise<v
 }
 
 /**
- * Get a specific server config from a file.
- * Returns undefined if server doesn't exist.
- */
-export async function getMCPServer(filePath: string, name: string): Promise<MCPServerConfig | undefined> {
-	const config = await readMCPConfigFile(filePath);
-	return config.mcpServers?.[name];
-}
-
-/**
- * List all server names in a config file.
- */
-export async function listMCPServers(filePath: string): Promise<string[]> {
-	const config = await readMCPConfigFile(filePath);
-	return Object.keys(config.mcpServers ?? {});
-}
-
-/**
  * Read the disabled servers list from a config file.
  */
 export async function readDisabledServers(filePath: string): Promise<string[]> {
@@ -266,7 +249,7 @@ export async function readEnabledServers(filePath: string): Promise<string[]> {
  * The list overrides a discovered server's `enabled: false` flag but does
  * NOT override the `disabledServers` denylist.
  */
-export async function setServerForceEnabled(filePath: string, name: string, force: boolean): Promise<void> {
+async function setServerForceEnabled(filePath: string, name: string, force: boolean): Promise<void> {
 	// Serialize the read-modify-write (see addMCPServer).
 	await withConfigLock(filePath, async () => {
 		const config = await readMCPConfigFile(filePath);
@@ -292,7 +275,7 @@ export async function setServerForceEnabled(filePath: string, name: string, forc
 }
 
 /** Paths and target state for toggling one MCP server across known config files. */
-export interface SetMcpServerEnabledOptions {
+interface SetMcpServerEnabledOptions {
 	userPath: string;
 	projectPath: string;
 	/**

@@ -57,7 +57,7 @@ type StringSetter = (result: Args, value: string, deps: ParseDeps) => void;
  * Setter for a flag that may or may not consume the next argv token.
  * Receives `undefined` for the bare form (`--resume` with no value, etc.).
  */
-export type OptionalSetter = (result: Args, value: string | undefined) => void;
+type OptionalSetter = (result: Args, value: string | undefined) => void;
 
 /**
  * Per-flag optional-value consumption policy.
@@ -71,7 +71,7 @@ export type OptionalSetter = (result: Args, value: string | undefined) => void;
  *   gets consumed as the session prefix and downstream resolution can match
  *   every session.
  */
-export interface OptionalFlagConfig {
+interface OptionalFlagConfig {
 	set: OptionalSetter;
 	rejectEmpty?: boolean;
 }

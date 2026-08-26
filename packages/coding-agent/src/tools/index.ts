@@ -85,7 +85,6 @@ export * from "./orchestrate";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
-export * from "./review";
 export * from "./think";
 export * from "./todo";
 export * from "./write";
@@ -380,7 +379,7 @@ export interface ToolSession {
 	getImageAttachments?: () => ImageAttachmentEntry[];
 }
 
-export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
+type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
 /**
  * Public callable factory map. External callers may invoke `BUILTIN_TOOLS.read(session)` or

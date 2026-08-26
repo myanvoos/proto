@@ -66,9 +66,9 @@ export interface AsyncJob {
 }
 
 /** Delivery callback for a settled job's result text. */
-export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
 
-export interface AsyncJobManagerOptions {
+interface AsyncJobManagerOptions {
 	/**
 	 * Delivery sink for UNOWNED completions (jobs registered without an
 	 * `ownerId`). Owned deliveries route exclusively through
@@ -99,7 +99,7 @@ export interface AsyncJobDeliveryState {
 	pendingJobIds: string[];
 }
 
-export interface AsyncJobReapResult {
+interface AsyncJobReapResult {
 	settled: boolean;
 	pendingJobIds: string[];
 	completion: Promise<void>;
@@ -121,7 +121,7 @@ export interface AsyncJobRegisterOptions {
  * restricted to jobs registered by that agent (registry id from
  * `AgentRegistry`, e.g. "Main", "AuthLoader").
  */
-export interface AsyncJobFilter {
+interface AsyncJobFilter {
 	ownerId?: string;
 }
 

@@ -104,10 +104,7 @@ async function checkServerRunning(binaryPath: string): Promise<boolean> {
 			stderr: "pipe",
 		});
 
-		const exited = await Promise.race([
-			proc.exited,
-			new Promise<null>(resolve => setTimeout(() => resolve(null), LIVENESS_TIMEOUT_MS)),
-		]);
+		const exited = await Promise.race([proc.exited, Bun.sleep(LIVENESS_TIMEOUT_MS).then(() => null)]);
 
 		if (exited === null) {
 			proc.kill();
@@ -170,7 +167,7 @@ export function isLspmuxSupported(command: string): boolean {
 	return DEFAULT_SUPPORTED_SERVERS.has(baseName);
 }
 
-export interface LspmuxWrappedCommand {
+interface LspmuxWrappedCommand {
 	command: string;
 	args: string[];
 	env?: Record<string, string>;
@@ -184,7 +181,7 @@ export interface LspmuxWrappedCommand {
  * @param state - lspmux state from detectLspmux()
  * @returns Wrapped command, args, and env vars; or original if lspmux unavailable
  */
-export function wrapWithLspmux(
+function wrapWithLspmux(
 	originalCommand: string,
 	originalArgs: string[] | undefined,
 	state: LspmuxState,

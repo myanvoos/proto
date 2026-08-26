@@ -44,7 +44,7 @@ export type AdvisorRuntimeStatus = "running" | "paused" | "quota_exhausted" | "e
  * deduped advisor roster plus the concatenated top-level `instructions` baseline
  * that is prepended (alongside `WATCHDOG.md`) to every advisor.
  */
-export interface DiscoveredAdvisors {
+interface DiscoveredAdvisors {
 	advisors: AdvisorConfig[];
 	sharedInstructions: string | undefined;
 }

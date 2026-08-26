@@ -31,7 +31,7 @@ export function formatRoleModelValue(
 }
 
 /** Resolves a configured model target relative to the current provider. */
-export function resolveConfiguredModelTarget(
+function resolveConfiguredModelTarget(
 	configuredTarget: string | undefined,
 	currentModel: Model,
 	availableModels: Model[],

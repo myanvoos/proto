@@ -155,7 +155,7 @@ interface ApplyPatchRenderSummary {
 }
 
 /** Extended context for edit tool rendering */
-export interface EditRenderContext {
+interface EditRenderContext {
 	/** Edit mode resolved by the caller; lets the renderer dispatch without shape-sniffing */
 	editMode?: EditMode;
 	/** Pre-computed diff preview (computed before tool executes) */

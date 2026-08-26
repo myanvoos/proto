@@ -1,14 +1,14 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { Args } from "./args";
 
-export interface InitialMessageInput {
+interface InitialMessageInput {
 	parsed: Args;
 	fileText?: string;
 	fileImages?: ImageContent[];
 	stdinContent?: string;
 }
 
-export interface InitialMessageResult {
+interface InitialMessageResult {
 	initialMessage?: string;
 	initialImages?: ImageContent[];
 }

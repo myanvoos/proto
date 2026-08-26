@@ -66,7 +66,7 @@ const VAULT_OPS: Record<VaultOp, true> = {
 	property: true,
 };
 
-export interface VaultReference {
+interface VaultReference {
 	vault: string | null;
 	active: boolean;
 	forwardVault: boolean;
@@ -81,13 +81,13 @@ export type ParsedVaultUrl =
 	| { kind: "file-op"; url: string; ref: VaultReference; relativePath: string; op: FileOp; params: VaultParams }
 	| { kind: "vault-op"; url: string; ref: VaultReference; op: VaultOp; params: VaultParams };
 
-export interface ObsidianSpawnResult {
+interface ObsidianSpawnResult {
 	stdout: string;
 	stderr: string;
 	exitCode: number;
 }
 
-export interface VaultProtocolHandlerOptions {
+interface VaultProtocolHandlerOptions {
 	spawnObsidian?: typeof spawnObsidian;
 	resolveObsidianBinary?: () => string | null;
 }
@@ -515,9 +515,7 @@ function validateQueryPath(params: VaultParams, name: string): string | undefine
 	return value;
 }
 
-export function buildObsidianCliInvocation(
-	parsed: Extract<ParsedVaultUrl, { kind: "file-op" | "vault-op" }>,
-): CliInvocation {
+function buildObsidianCliInvocation(parsed: Extract<ParsedVaultUrl, { kind: "file-op" | "vault-op" }>): CliInvocation {
 	if (parsed.kind === "file-op") {
 		const pathArg = `path=${parsed.relativePath}`;
 		switch (parsed.op) {

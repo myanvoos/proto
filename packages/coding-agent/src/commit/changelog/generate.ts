@@ -27,7 +27,7 @@ const changelogTool = {
 	parameters: type({ entries: changelogEntriesSchema }),
 };
 
-export interface ChangelogPromptInput {
+interface ChangelogPromptInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
 	thinkingLevel?: ThinkingLevel;

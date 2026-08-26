@@ -82,7 +82,7 @@ export function resolveToHex(value: string | number, isLight: boolean): string {
  * Indices 16-231: 6x6x6 color cube
  * Indices 232-255: grayscale ramp
  */
-export function ansi256ToHex(index: number): string {
+function ansi256ToHex(index: number): string {
 	// Basic colors (0-15) - approximate common terminal values
 	const basicColors = [
 		"#000000",

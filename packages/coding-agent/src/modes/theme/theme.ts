@@ -82,7 +82,7 @@ export function getCurrentThemeName(): string | undefined {
 export function fgOrPlain(color: ThemeColor, text: string, styledText: string = text): string {
 	return typeof theme === "undefined" ? text : theme.fg(color, styledText);
 }
-export interface ThemeChangeEvent {
+interface ThemeChangeEvent {
 	/** Preview/presentation-only changes should repaint live UI without replacing native scrollback. */
 	ephemeral?: boolean;
 }
@@ -275,13 +275,6 @@ export async function setColorBlindMode(enabled: boolean): Promise<void> {
 		if (requestId !== themeLoadRequestId) return;
 	}
 	notifyThemeChange({ ephemeral: true });
-}
-
-/**
- * Get the current color blind mode setting.
- */
-export function getColorBlindMode(): boolean {
-	return currentColorBlindMode;
 }
 
 export function onThemeChange(callback: (event: ThemeChangeEvent) => void): () => void {

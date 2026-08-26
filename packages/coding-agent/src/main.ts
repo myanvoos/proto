@@ -268,7 +268,7 @@ function resumeStartupWatchdog(): void {
 	if (startupWatchdogActive) armStartupWatchdog();
 }
 
-export interface InteractiveModeNotify {
+interface InteractiveModeNotify {
 	kind: "warn" | "error" | "info";
 	message: string;
 }
@@ -360,7 +360,7 @@ interface AcpSessionHandle {
 
 type AcpSessionFactory = (cwd: string, options?: { interactivePrompts?: boolean }) => Promise<AcpSessionHandle>;
 
-export interface AcpSessionFactoryOptions {
+interface AcpSessionFactoryOptions {
 	baseOptions: CreateAgentSessionOptions;
 	settings: Settings;
 	sessionDir?: string;

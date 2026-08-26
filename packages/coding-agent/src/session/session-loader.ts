@@ -17,7 +17,7 @@ const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
 
-export interface VisitEntriesFromFileStreamOptions {
+interface VisitEntriesFromFileStreamOptions {
 	/** Stop after the visitor returns `false`. */
 	shouldContinue?: () => boolean;
 	/** Stop after this many valid or malformed JSONL records have been consumed. */

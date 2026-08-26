@@ -12,7 +12,7 @@ const CHANGELOG_SECTIONS = CHANGELOG_CATEGORIES;
 
 const DEFAULT_MAX_DIFF_CHARS = 120_000;
 
-export interface ChangelogFlowInput {
+interface ChangelogFlowInput {
 	cwd: string;
 	model: Model<Api>;
 	apiKey: ApiKey;
@@ -23,7 +23,7 @@ export interface ChangelogFlowInput {
 	onProgress?: (message: string) => void;
 }
 
-export interface ChangelogProposalInput {
+interface ChangelogProposalInput {
 	cwd: string;
 	proposals: Array<{
 		path: string;

@@ -46,7 +46,7 @@ function needsBoundaryAfterGlobalStrip(stripped: readonly string[]): boolean {
 	return previous !== undefined && (OPTIONAL_VALUE_FLAGS.has(previous) || isUnknownLongValueCandidate(previous));
 }
 
-export interface ProfileBootstrapResult {
+interface ProfileBootstrapResult {
 	argv: string[];
 	profile?: string;
 	aliasName?: string;

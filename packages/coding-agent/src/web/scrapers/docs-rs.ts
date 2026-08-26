@@ -1,7 +1,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { getDocsRsCacheDir, isEnoent, logger, ptree, tryParseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
+import {
+	getDocsRsCacheDir,
+	isEnoent,
+	logger,
+	ptree,
+	readBytesWithLimit,
+	tryParseJson,
+	USER_AGENT,
+} from "@oh-my-pi/pi-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, MAX_BYTES } from "./types";
@@ -285,14 +293,13 @@ export const MAX_RUSTDOC_GUNZIP_BYTES = 256 * 1024 * 1024;
 
 /** Decompress a docs.rs rustdoc gzip payload with the output-size cap applied.
  *  `maxOutputLength` is overridable only for tests exercising the cap contract. */
-export function gunzipRustdocJson(compressed: Buffer, maxOutputLength: number = MAX_RUSTDOC_GUNZIP_BYTES): string {
+export function gunzipRustdocJson(compressed: Uint8Array, maxOutputLength: number = MAX_RUSTDOC_GUNZIP_BYTES): string {
 	return gunzipSync(compressed, { maxOutputLength }).toString("utf-8");
 }
 
 function sanitizeCacheSegment(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
-
 function getDocsRsCacheVersionSegment(version: string, now = new Date()): string {
 	if (version !== "latest") return sanitizeCacheSegment(version);
 	return now.toISOString().slice(0, 10);
@@ -393,23 +400,9 @@ export const handleDocsRs: SpecialHandler = async (
 		});
 		if (!response.ok) return null;
 
-		const reader = response.body?.getReader();
-		if (!reader) return null;
+		if (!response.body) return null;
 
-		const chunks: Uint8Array[] = [];
-		let totalSize = 0;
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value);
-			totalSize += value.length;
-			if (totalSize > MAX_BYTES) {
-				reader.cancel();
-				break;
-			}
-		}
-
-		const compressed = Buffer.concat(chunks);
+		const { bytes: compressed } = await readBytesWithLimit(response.body, MAX_BYTES);
 		const jsonStr = gunzipRustdocJson(compressed);
 		crate_ = tryParseJson<RustdocCrate>(jsonStr);
 		if (crate_?.index) {

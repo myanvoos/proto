@@ -56,7 +56,7 @@ export interface ComposerWelcomeUpdate {
 }
 
 /** Optional dependencies and initial state for a standalone composer. */
-export interface ComposerOptions {
+interface ComposerOptions {
 	readonly terminal?: Terminal;
 	/** Extra TUI construction options (render scheduler injection for tests and `omp render`). */
 	readonly tuiOptions?: TUIOptions;
@@ -67,7 +67,7 @@ export interface ComposerOptions {
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
-export interface ComposerStartOptions {
+interface ComposerStartOptions {
 	readonly clearScrollback?: boolean;
 	/**
 	 * Paint without owning stdin: the tty keeps cooked-mode echo/editing so
@@ -91,7 +91,7 @@ class StatusHost implements Component {
 	}
 }
 
-export class ComposerHairline implements Component {
+class ComposerHairline implements Component {
 	suppressed = false;
 
 	render(width: number): string[] {
@@ -102,7 +102,7 @@ export class ComposerHairline implements Component {
 	invalidate(): void {}
 }
 
-export class CardPadRow implements Component {
+class CardPadRow implements Component {
 	render(): string[] {
 		return [""];
 	}
@@ -418,13 +418,13 @@ export class Composer {
 	}
 }
 
-export interface ComposerShortcutContext {
+interface ComposerShortcutContext {
 	busy: boolean;
 	hasQueue: boolean;
 	focused: boolean;
 }
 
-export interface ComposerShortcutChip {
+interface ComposerShortcutChip {
 	id: "interrupt" | "dequeue";
 	label: string;
 }

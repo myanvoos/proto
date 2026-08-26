@@ -1691,7 +1691,7 @@ export async function computePatchDiff(
 	}
 }
 
-export const patchEditEntrySchema = type({
+const patchEditEntrySchema = type({
 	"op?": "'create' | 'delete' | 'update'",
 	"rename?": "string",
 	"diff?": "string",
@@ -1706,7 +1706,7 @@ export const patchEditSchema = type({
 
 export type PatchParams = typeof patchEditSchema.infer;
 
-export interface ExecutePatchSingleOptions {
+interface ExecutePatchSingleOptions {
 	session: ToolSession;
 	path: string;
 	params: PatchEditEntry;

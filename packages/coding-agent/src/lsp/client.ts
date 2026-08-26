@@ -218,7 +218,7 @@ export enum FileChangeType {
 }
 
 /** Filesystem change authored by the harness and announced to active LSP clients. */
-export interface WatchedFileChange {
+interface WatchedFileChange {
 	filePath: string;
 	type: FileChangeType;
 }
@@ -1394,7 +1394,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
  * @returns `true` when the client is gone (already absent or confirmed exited),
  * `false` if a live process outlived the shutdown budget.
  */
-export async function shutdownClient(key: string): Promise<boolean> {
+async function shutdownClient(key: string): Promise<boolean> {
 	const client = clients.get(key);
 	if (!client) return true;
 	return await shutdownClientInstance(client);

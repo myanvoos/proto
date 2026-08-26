@@ -25,7 +25,7 @@ export function resolveAutoBackgroundWaitMs(thresholdMs: number, timeoutMs: numb
 }
 
 /** Non-settled outcomes of {@link raceJobSettlement}. */
-export type JobWaitInterrupt = { kind: "running" } | { kind: "steer" } | { kind: "aborted" };
+type JobWaitInterrupt = { kind: "running" } | { kind: "steer" } | { kind: "aborted" };
 
 /**
  * Race a managed job's settlement against the auto-background threshold, the

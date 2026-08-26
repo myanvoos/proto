@@ -395,7 +395,7 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 	return capMCPToolNameLength(`mcp__${sanitizedServerName}_${normalizedToolName}`);
 }
 
-export interface MCPToolOriginSource {
+interface MCPToolOriginSource {
 	readonly name: string;
 	readonly mcpServerName?: unknown;
 	readonly mcpToolName?: unknown;

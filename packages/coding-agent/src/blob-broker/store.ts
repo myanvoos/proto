@@ -111,7 +111,7 @@ export const EXT_BY_MIME: Record<string, string> = {
 	"image/gif": "gif",
 };
 
-export const BLOB_PATH_PATTERN = /^\/([0-9a-f]{32})\.[a-z0-9]{1,5}$/;
+const BLOB_PATH_PATTERN = /^\/([0-9a-f]{32})\.[a-z0-9]{1,5}$/;
 /** Resident-byte budget before least-recently-served blobs shed RAM bytes. */
 const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
 const INDEX_SAVE_DEBOUNCE_MS = 500;

@@ -91,13 +91,13 @@ const PROJECT_CONFIG_BASES = priorityList.map(({ dir }) => ({
 	name: dir,
 }));
 
-export interface ConfigDirEntry {
+interface ConfigDirEntry {
 	path: string;
 	source: string; // e.g., ".omp", ".claude"
 	level: "user" | "project";
 }
 
-export interface GetConfigDirsOptions {
+interface GetConfigDirsOptions {
 	/** Include user-level directories (~/.omp/agent/...). Default: true */
 	user?: boolean;
 	/** Include project-level directories (.omp/...). Default: true */
@@ -159,7 +159,7 @@ export function getConfigDirPaths(subpath: string, options: GetConfigDirsOptions
 	return getConfigDirs(subpath, options).map(e => e.path);
 }
 
-export interface ConfigFileResult<T> {
+interface ConfigFileResult<T> {
 	path: string;
 	source: string;
 	level: "user" | "project";

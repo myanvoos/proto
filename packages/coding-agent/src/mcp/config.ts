@@ -13,7 +13,7 @@ import { readDisabledServers, readEnabledServers } from "./config-writer";
 import type { MCPServerConfig } from "./types";
 
 /** Options for loading MCP configs */
-export interface LoadMCPConfigsOptions {
+interface LoadMCPConfigsOptions {
 	/** Whether to load project-level config (default: true) */
 	enableProjectConfig?: boolean;
 	/** Whether to filter out Exa MCP servers (default: true) */
@@ -164,7 +164,7 @@ const EXA_API_KEY_PATTERN = /exaApiKey=([^&\s]+)/i;
 /**
  * Check if a server config is an Exa MCP server.
  */
-export function isExaMCPServer(name: string, config: MCPServerConfig): boolean {
+function isExaMCPServer(name: string, config: MCPServerConfig): boolean {
 	// Check by server name
 	if (name.toLowerCase() === "exa") {
 		return true;
@@ -192,7 +192,7 @@ export function isExaMCPServer(name: string, config: MCPServerConfig): boolean {
 /**
  * Extract Exa API key from an MCP server config.
  */
-export function extractExaApiKey(config: MCPServerConfig): string | undefined {
+function extractExaApiKey(config: MCPServerConfig): string | undefined {
 	// Check URL for HTTP/SSE servers
 	if (config.type === "http" || config.type === "sse") {
 		const httpConfig = config as { url?: string };
@@ -262,7 +262,7 @@ function getRequestedExaMcpTools(config: MCPServerConfig): string[] | null {
 }
 
 /** Result of filtering Exa MCP servers */
-export interface ExaFilterResult {
+interface ExaFilterResult {
 	/** Configs with Exa servers removed */
 	configs: Record<string, MCPServerConfig>;
 	/** Extracted Exa API keys (if any) */

@@ -33,7 +33,7 @@ export type { ExecOptions, ExecResult } from "../../exec/exec";
 export type { AgentToolResult, AgentToolUpdateCallback };
 
 /** Pending action entry consumed by the hidden resolve tool */
-export interface CustomToolPendingAction {
+interface CustomToolPendingAction {
 	/** Human-readable preview label shown in resolve flow */
 	label: string;
 	/** Apply callback invoked when resolve(action="apply") is called */
@@ -269,12 +269,4 @@ export interface ToolLoadError {
 	path: string;
 	error: string;
 	source?: { provider: string; providerName: string; level: "user" | "project" };
-}
-
-/** Result from loading custom tools */
-export interface CustomToolsLoadResult {
-	tools: LoadedCustomTool[];
-	errors: ToolLoadError[];
-	/** Update the UI context for all loaded tools. Call when mode initializes. */
-	setUIContext(uiContext: CustomToolUIContext, hasUI: boolean): void;
 }

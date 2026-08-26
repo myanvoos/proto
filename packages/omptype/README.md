@@ -84,9 +84,6 @@ const ZodUser = z.object({ name: z.string() });
 const user = ZodUser.parse({ name: "Ada" });
 ```
 
-`@oh-my-pi/omptype/ark` provides the repository's ArkType compatibility facade
-and re-exports the same `type` and `scope` implementations.
-
 ## Performance
 
 Run the benchmark from the repository root:

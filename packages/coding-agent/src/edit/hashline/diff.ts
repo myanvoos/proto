@@ -39,7 +39,7 @@ import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { readEditFileText } from "../read-file";
 import { nativeBlockResolver } from "./block-resolver";
 
-export interface HashlineDiffOptions {
+interface HashlineDiffOptions {
 	/**
 	 * Use the streaming-tolerant applier ({@link PatchSection.applyPartialTo})
 	 * so trailing in-flight ops do not throw or emit phantom edits. Streaming

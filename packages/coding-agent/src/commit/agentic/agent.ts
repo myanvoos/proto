@@ -15,7 +15,7 @@ import agentSystemPrompt from "./prompts/system.md" with { type: "text" };
 import type { CommitAgentState } from "./state";
 import { createCommitTools } from "./tools";
 
-export interface CommitAgentInput {
+interface CommitAgentInput {
 	cwd: string;
 	model: Model<Api>;
 	thinkingLevel?: ThinkingLevel;

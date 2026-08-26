@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import * as path from "node:path";
 /**
  * `omp ttsr` — inspect and test Time-Traveling Stream Rules.
@@ -83,7 +82,7 @@ export default class Ttsr extends Command {
 		let snippet = args.snippet;
 		if (action === "test" && snippet && !file) {
 			const resolved = path.resolve(snippet);
-			if (existsSync(resolved)) {
+			if (await Bun.file(resolved).exists()) {
 				file = resolved;
 				snippet = undefined;
 			}

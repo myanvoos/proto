@@ -10,7 +10,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import type { Theme } from "../modes/theme/theme";
 
 /** Event from subprocess tool execution (parsed from JSONL) */
-export interface SubprocessToolEvent {
+interface SubprocessToolEvent {
 	toolName: string;
 	toolCallId: string;
 	args?: Record<string, unknown>;
@@ -22,7 +22,7 @@ export interface SubprocessToolEvent {
 }
 
 /** Handler for subprocess tool events */
-export interface SubprocessToolHandler<TData = unknown> {
+interface SubprocessToolHandler<TData = unknown> {
 	/**
 	 * Extract structured data from tool result.
 	 * Extracted data is accumulated in progress.extractedToolData[toolName][].
@@ -83,6 +83,3 @@ class SubprocessToolRegistryImpl {
 
 /** Singleton registry instance */
 export const subprocessToolRegistry = new SubprocessToolRegistryImpl();
-
-/** Type helper for extracted tool data in progress/result */
-export type ExtractedToolData = Record<string, unknown[]>;

@@ -16,7 +16,7 @@ export interface MCPOAuthCredentialLookup {
 	credential: MCPStoredOAuthCredential;
 }
 
-export type MCPOAuthRefreshMaterial = MCPStoredOAuthCredential | MCPAuthConfig | undefined;
+type MCPOAuthRefreshMaterial = MCPStoredOAuthCredential | MCPAuthConfig | undefined;
 
 export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined): string[] {
 	if (!serverUrl) return [];
@@ -28,7 +28,7 @@ export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined)
 	return ids;
 }
 
-export function hasMcpAuthorizationHeader(config: MCPServerConfig): boolean {
+function hasMcpAuthorizationHeader(config: MCPServerConfig): boolean {
 	if (config.type !== "http" && config.type !== "sse") return false;
 	return Object.keys(config.headers ?? {}).some(header => header.toLowerCase() === "authorization");
 }

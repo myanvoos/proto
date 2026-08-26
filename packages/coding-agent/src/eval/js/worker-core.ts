@@ -27,7 +27,7 @@ type RunResult = Extract<WorkerOutbound, { type: "result" }>;
 
 export type RejectionInterceptor = (handler: (reason: unknown) => boolean) => () => void;
 
-export type WorkerCoreOptions =
+type WorkerCoreOptions =
 	| {
 			mode: "isolated";
 			/**

@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
 import {
 	parseJsonlLenient,
+	readBytesWithLimit,
 	readJsonl,
 	readLines,
 	readSseEvents,
@@ -479,5 +480,34 @@ describe("readSseEvents", () => {
 		expect(events[1999].data).toBe("1999");
 		// Generous bound: the previous quadratic implementation needed >5s here.
 		expect(elapsed).toBeLessThan(2000);
+	});
+});
+
+describe("readBytesWithLimit", () => {
+	it("reads a stream that fits within the limit", async () => {
+		const stream = bytesStreamFromChunks([encoder.encode("hello "), encoder.encode("world")]);
+		const result = await readBytesWithLimit(stream, 100);
+		expect(result.truncated).toBe(false);
+		expect(new TextDecoder().decode(result.bytes)).toBe("hello world");
+	});
+
+	it("caps at the limit and flags truncation without throwing", async () => {
+		const stream = bytesStreamFromChunks([new Uint8Array(64).fill(65), new Uint8Array(64).fill(66)]);
+		const result = await readBytesWithLimit(stream, 96);
+		expect(result.truncated).toBe(true);
+		expect(result.bytes.length).toBe(96);
+	});
+});
+
+describe("readSseJson malformed handling", () => {
+	it("throws on malformed data by default", async () => {
+		const stream = bytesStreamFromChunks([encoder.encode('data: {"a":1}\n\ndata: oops\n\n')]);
+		await expect(collectAsync(readSseJson(stream))).rejects.toThrow(SyntaxError);
+	});
+
+	it("skips malformed data when configured", async () => {
+		const stream = bytesStreamFromChunks([encoder.encode('data: {"a":1}\n\ndata: oops\n\ndata: {"b":2}\n\n')]);
+		const events = await collectAsync(readSseJson(stream, undefined, undefined, { malformed: "skip" }));
+		expect(events).toEqual([{ a: 1 }, { b: 2 }]);
 	});
 });

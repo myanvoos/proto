@@ -293,7 +293,7 @@ function filterResourceIndicator(
 	return resource;
 }
 
-export interface MCPOAuthConfig {
+interface MCPOAuthConfig {
 	/** Authorization endpoint URL */
 	authorizationUrl: string;
 	/** Token endpoint URL */
@@ -775,7 +775,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
  * Options for {@link refreshMCPOAuthToken}. Carried via the trailing object
  * so positional callers keep working.
  */
-export interface RefreshMCPOAuthTokenOptions {
+interface RefreshMCPOAuthTokenOptions {
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
 	/**

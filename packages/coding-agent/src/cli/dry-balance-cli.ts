@@ -36,7 +36,7 @@ const BENCH_ERROR_WIDTH = 110;
 const BENCH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const DRY_BALANCE_BENCH_PROMPT = dryBalanceBenchPrompt.trim();
 
-export interface DryBalanceCommandArgs {
+interface DryBalanceCommandArgs {
 	model?: string;
 	flags: {
 		model?: string;
@@ -47,13 +47,13 @@ export interface DryBalanceCommandArgs {
 	};
 }
 
-export interface DryBalanceAuthOptions {
+interface DryBalanceAuthOptions {
 	baseUrl?: string;
 	modelId?: string;
 	signal?: AbortSignal;
 }
 
-export interface DryBalanceAuthStorage {
+interface DryBalanceAuthStorage {
 	getOAuthAccess(
 		provider: string,
 		sessionId?: string,
@@ -75,25 +75,25 @@ export interface DryBalanceModelRegistry {
 	getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined>;
 }
 
-export interface DryBalanceRuntime {
+interface DryBalanceRuntime {
 	modelRegistry: DryBalanceModelRegistry;
 	settings?: Settings;
 	close?: () => void;
 }
 
-export interface DryBalanceAccountStat {
+interface DryBalanceAccountStat {
 	account: string;
 	count: number;
 	percent: number;
 }
 
-export interface DryBalanceFailureStat {
+interface DryBalanceFailureStat {
 	reason: string;
 	count: number;
 	percent: number;
 }
 
-export interface DryBalanceBenchSuccessResult {
+interface DryBalanceBenchSuccessResult {
 	ok: true;
 	account: string;
 	ttftMs: number;
@@ -102,15 +102,15 @@ export interface DryBalanceBenchSuccessResult {
 	tokensPerSecond: number;
 }
 
-export interface DryBalanceBenchFailureResult {
+interface DryBalanceBenchFailureResult {
 	ok: false;
 	account?: string;
 	error: string;
 }
 
-export type DryBalanceBenchResult = DryBalanceBenchSuccessResult | DryBalanceBenchFailureResult;
+type DryBalanceBenchResult = DryBalanceBenchSuccessResult | DryBalanceBenchFailureResult;
 
-export interface DryBalanceBenchSummary {
+interface DryBalanceBenchSummary {
 	total: number;
 	success: {
 		total: number;
@@ -124,7 +124,7 @@ export interface DryBalanceBenchSummary {
 	results: DryBalanceBenchResult[];
 }
 
-export interface DryBalanceSummary {
+interface DryBalanceSummary {
 	model: string;
 	provider: string;
 	samples: number;
@@ -146,7 +146,7 @@ type DryBalanceStreamSimple = (
 	options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
-export interface DryBalanceDependencies {
+interface DryBalanceDependencies {
 	createRuntime?: () => Promise<DryBalanceRuntime>;
 	randomSessionId?: () => string;
 	writeStdout?: (text: string) => void;

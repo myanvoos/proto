@@ -45,7 +45,7 @@ function formatSessionStatus(status: SessionStatus | undefined): string | undefi
 }
 
 /** Returns the IDs of sessions whose recorded prompts match a query, best first. */
-export type SessionHistoryMatcher = (query: string) => string[];
+type SessionHistoryMatcher = (query: string) => string[];
 
 function sessionSearchText(session: SessionInfo): string {
 	const parts = [

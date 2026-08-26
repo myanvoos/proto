@@ -128,7 +128,7 @@ export async function loadThemeJson(name: string): Promise<ThemeJson> {
 }
 
 /** Load a theme definition synchronously for the first terminal frame. */
-export function loadThemeJsonSync(name: string): ThemeJson {
+function loadThemeJsonSync(name: string): ThemeJson {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
 		return builtinThemes[name];

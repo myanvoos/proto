@@ -6,7 +6,7 @@ import { writeDeviceDispatch } from "../tools/resolve";
 import type { SessionEntry } from "./session-entries";
 
 /** Extracts text from custom message content. */
-export function customMessageContentText(content: string | (TextContent | ImageContent)[]): string {
+function customMessageContentText(content: string | (TextContent | ImageContent)[]): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
 	for (const part of content) {
@@ -16,7 +16,7 @@ export function customMessageContentText(content: string | (TextContent | ImageC
 }
 
 /** Extracts the report body from persisted rewind-report content. */
-export function reportFromRewindReportContent(content: string): string {
+function reportFromRewindReportContent(content: string): string {
 	const marker = "\nReport:\n";
 	const index = content.lastIndexOf(marker);
 	const report = index >= 0 ? content.slice(index + marker.length) : content;

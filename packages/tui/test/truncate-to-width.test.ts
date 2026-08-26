@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Ellipsis, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import { Ellipsis, truncateStartToWidth, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
 describe("truncateToWidth", () => {
 	it("keeps output within width for very large unicode input", () => {
@@ -45,5 +45,24 @@ describe("truncateToWidth", () => {
 describe("visibleWidth", () => {
 	it("counts tabs inline and skips ANSI inline", () => {
 		expect(visibleWidth("\t\x1b[31m界\x1b[0m")).toBe(5);
+	});
+});
+
+describe("truncateStartToWidth", () => {
+	it("returns text unchanged when it fits", () => {
+		expect(truncateStartToWidth("short.txt", 20)).toBe("short.txt");
+		expect(truncateStartToWidth("", 5)).toBe("");
+	});
+
+	it("keeps the tail and prefixes an ellipsis when clipped", () => {
+		const out = truncateStartToWidth("/very/long/path/to/file.txt", 12);
+		expect(out.startsWith("…")).toBe(true);
+	});
+
+	it("never exceeds the width budget, including wide characters", () => {
+		for (const width of [1, 2, 3, 5, 8, 13]) {
+			const out = truncateStartToWidth("ああああああああ", width);
+			expect(visibleWidth(out)).toBeLessThanOrEqual(width);
+		}
 	});
 });

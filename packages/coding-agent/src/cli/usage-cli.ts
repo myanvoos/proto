@@ -475,7 +475,7 @@ function formatMissingLimitLine(template: ProviderLimitTemplate, labelWidth: num
 }
 
 /** Per-window capacity stat: how much account quota is burned and left. */
-export interface ProviderWindowStat {
+interface ProviderWindowStat {
 	/** Compact window label, e.g. "5h", "7d". */
 	window: string;
 	durationMs?: number;

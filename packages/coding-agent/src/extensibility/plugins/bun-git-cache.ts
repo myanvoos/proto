@@ -2,28 +2,8 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { runUnchecked } from "../../utils/git";
 import type { GitSource } from "./git-url";
-
-interface CommandResult {
-	readonly exitCode: number;
-	readonly stdout: string;
-	readonly stderr: string;
-}
-
-async function runCommand(command: string[], cwd: string): Promise<CommandResult> {
-	const proc = Bun.spawn(command, {
-		cwd,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [exitCode, stdout, stderr] = await Promise.all([
-		proc.exited,
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-	]);
-	return { exitCode, stdout, stderr };
-}
 
 function normalizeRepositoryUrl(repository: string): string {
 	const withoutFragment = repository.replace(/^git\+/i, "").replace(/#.*$/, "");
@@ -43,9 +23,30 @@ function normalizeRepositoryUrl(repository: string): string {
 	}
 }
 
+interface CommandResult {
+	readonly exitCode: number;
+	readonly stdout: string;
+	readonly stderr: string;
+}
+
+async function runBunCommand(command: string[], cwd: string): Promise<CommandResult> {
+	const proc = Bun.spawn(command, {
+		cwd,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [exitCode, stdout, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
+	return { exitCode, stdout, stderr };
+}
+
 /** Fetches current heads and tags into Bun's matching cached bare clone before a plugin update. */
 export async function refreshBunGitCache(source: GitSource, cwd: string): Promise<void> {
-	const cacheResult = await runCommand(["bun", "pm", "cache"], cwd);
+	const cacheResult = await runBunCommand(["bun", "pm", "cache"], cwd);
 	if (cacheResult.exitCode !== 0) {
 		throw new Error(`bun pm cache failed: ${cacheResult.stderr}`);
 	}
@@ -66,23 +67,17 @@ export async function refreshBunGitCache(source: GitSource, cwd: string): Promis
 	for (const entry of entries) {
 		if (!entry.isDirectory() || !entry.name.endsWith(".git")) continue;
 		const repositoryDir = path.join(cacheDir, entry.name);
-		const originResult = await runCommand(["git", "-C", repositoryDir, "config", "--get", "remote.origin.url"], cwd);
+		const originResult = await runUnchecked(repositoryDir, ["config", "--get", "remote.origin.url"]);
 		if (originResult.exitCode !== 0 || normalizeRepositoryUrl(originResult.stdout.trim()) !== repositoryUrl) continue;
 
-		const fetchResult = await runCommand(
-			[
-				"git",
-				"-C",
-				repositoryDir,
-				"fetch",
-				"--force",
-				"--prune",
-				"origin",
-				"+refs/heads/*:refs/heads/*",
-				"+refs/tags/*:refs/tags/*",
-			],
-			cwd,
-		);
+		const fetchResult = await runUnchecked(repositoryDir, [
+			"fetch",
+			"--force",
+			"--prune",
+			"origin",
+			"+refs/heads/*:refs/heads/*",
+			"+refs/tags/*:refs/tags/*",
+		]);
 		if (fetchResult.exitCode !== 0) {
 			throw new Error(`Failed to refresh Bun's git cache for ${source.host}/${source.path}: ${fetchResult.stderr}`);
 		}

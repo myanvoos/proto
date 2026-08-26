@@ -27,7 +27,7 @@ export interface RedisSessionStorageClient {
 	hdel(key: string, ...fields: string[]): Promise<unknown>;
 }
 
-export interface RedisSessionStorageOptions {
+interface RedisSessionStorageOptions {
 	/** A connected `bun:redis` RedisClient (or any compatible adapter). */
 	client: RedisSessionStorageClient;
 	/**

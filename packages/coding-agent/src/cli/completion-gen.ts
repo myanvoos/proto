@@ -30,7 +30,7 @@ export type ValueSource =
 	| { kind: "file" }
 	| { kind: "dir" };
 
-export interface CompletionFlag {
+interface CompletionFlag {
 	/** Long name without the leading `--`. */
 	name: string;
 	/** Short character without the leading `-`. */
@@ -41,13 +41,13 @@ export interface CompletionFlag {
 	repeatable: boolean;
 }
 
-export interface CompletionArg {
+interface CompletionArg {
 	name: string;
 	description: string;
 	value: ValueSource;
 }
 
-export interface CompletionCommand {
+interface CompletionCommand {
 	name: string;
 	aliases: readonly string[];
 	description: string;

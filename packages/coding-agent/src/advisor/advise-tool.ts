@@ -17,11 +17,11 @@ const adviseSchema = type({
 	"severity?": type("'nit' | 'concern' | 'blocker'").describe("How strongly to weigh this. Omit for a plain nit."),
 });
 
-export type AdviseParams = typeof adviseSchema.infer;
+type AdviseParams = typeof adviseSchema.infer;
 
 export type AdvisorSeverity = "nit" | "concern" | "blocker";
 
-export interface AdviseDetails {
+interface AdviseDetails {
 	note: string;
 	severity?: AdvisorSeverity;
 	/** Which configured advisor produced this note (omitted for the default advisor). */
@@ -76,7 +76,7 @@ export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): b
 }
 
 /** How an advisor note is routed to the primary. */
-export type AdvisorDeliveryChannel = "aside" | "steer" | "preserve";
+type AdvisorDeliveryChannel = "aside" | "steer" | "preserve";
 /** Half-open turn-count fence for the post-interrupt cooldown. */
 export function isAdvisorInterruptImmuneTurnActive(opts: {
 	completedTurns: number;

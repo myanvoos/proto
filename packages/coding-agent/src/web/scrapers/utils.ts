@@ -1,4 +1,4 @@
-import { isRecord, ptree } from "@oh-my-pi/pi-utils";
+import { isRecord, ptree, readBytesWithLimit } from "@oh-my-pi/pi-utils";
 
 export { isRecord };
 
@@ -29,35 +29,10 @@ interface BinaryFetchSuccess {
 type BinaryFetchResult = BinaryFetchSuccess | { ok: false; error?: string };
 
 async function readResponseWithLimit(response: Response, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
-	const reader = response.body?.getReader();
-	if (!reader) return new Uint8Array(0);
-
-	const chunks: Buffer[] = [];
-	let totalBytes = 0;
-
-	try {
-		while (true) {
-			if (signal?.aborted) {
-				await reader.cancel();
-				throw new ToolAbortError();
-			}
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value || value.byteLength === 0) continue;
-
-			totalBytes += value.byteLength;
-			if (totalBytes > maxBytes) {
-				await reader.cancel();
-				throw new Error(`response exceeds ${maxBytes} bytes`);
-			}
-
-			chunks.push(Buffer.from(value));
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	return new Uint8Array(Buffer.concat(chunks, totalBytes));
+	if (!response.body) return new Uint8Array(0);
+	const { bytes, truncated } = await readBytesWithLimit(response.body, maxBytes, signal);
+	if (truncated) throw new Error(`response exceeds ${maxBytes} bytes`);
+	return bytes;
 }
 
 /**

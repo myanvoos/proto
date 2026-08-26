@@ -22,7 +22,7 @@ export interface LiveBoardOutput {
 }
 
 /** Live repaint handle returned by {@link createLiveBoard}. */
-export interface LiveBoard {
+interface LiveBoard {
 	readonly interactive: boolean;
 	/** Print a permanent line above the board; plain write when non-interactive. */
 	log(text: string): void;

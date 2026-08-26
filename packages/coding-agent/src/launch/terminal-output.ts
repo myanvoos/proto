@@ -6,7 +6,7 @@ import { DAEMON_PTY_COLUMNS, DAEMON_PTY_ROWS } from "./protocol";
 const VIRTUAL_SCROLLBACK_ROWS = 4_096;
 
 /** Controls which virtual terminal rows a launch log exposes. */
-export interface TerminalOutputOptions {
+interface TerminalOutputOptions {
 	head: boolean;
 	maxRows: number;
 }

@@ -175,6 +175,22 @@ export function truncateToWidth(
 	);
 }
 
+/**
+ * Left-truncate `text` so it fits within `maxWidth` terminal cells, keeping
+ * the tail and prefixing an ellipsis when clipped (e.g. long paths in a
+ * fixed-width status segment). Width-aware: grapheme clusters are never split
+ * mid-cluster and wide characters count their full cell width.
+ */
+export function truncateStartToWidth(text: string, maxWidth: number): string {
+	maxWidth = Math.max(0, maxWidth | 0);
+	const total = visibleWidth(text);
+	if (total <= maxWidth) return text;
+	const ellipsis = "…";
+	const budget = maxWidth - visibleWidth(ellipsis);
+	if (budget < 1) return maxWidth === 0 ? "" : ellipsis;
+	return ellipsis + sliceByColumn(text, total - budget, budget);
+}
+
 export function wrapTextWithAnsi(text: string, width: number): string[] {
 	return nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
 }

@@ -277,7 +277,7 @@ function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIRespon
 }
 
 /** Dispatch side-channel frames that must overtake the serialized command queue. */
-export function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): boolean {
+function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): boolean {
 	if (isRpcExtensionUIResponse(parsed)) {
 		const pending = deps.pendingExtensionRequests.get(parsed.id);
 		if (pending) pending.resolve(parsed);

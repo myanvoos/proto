@@ -15,7 +15,7 @@ import systemPrompt from "./prompts/system.md" with { type: "text" };
 import type { CompressProtocol } from "./protocol";
 
 /** A live compress session plus the resolved model label used in reporting. */
-export interface CompressSession {
+interface CompressSession {
 	session: AgentSession;
 	model: string;
 }
