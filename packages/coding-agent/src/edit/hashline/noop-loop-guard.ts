@@ -50,7 +50,7 @@ export function getNoopLoopGuard(session: NoopLoopGuardOwner): NoopLoopGuard {
 }
 
 /** Result of recording one no-op against the guard. */
-interface NoopRecordResult {
+export interface NoopRecordResult {
 	/** Consecutive identical no-op count, including the current one. */
 	count: number;
 	/** True once `count >= NOOP_HARD_LIMIT` and the caller MUST escalate. */

@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { atomicWriteFilePreservingMode, clampLow, errorMessage, isEnoent } from "@oh-my-pi/pi-utils";
 import {
 	type FileDiagnosticsResult,
 	flushLspWritethroughBatch,
@@ -21,20 +21,14 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
 import {
-	deleteFileWithFallback,
-	hasFileWriteFallback,
-	isPermissionDeniedError,
-	writeFileWithFallback,
-} from "../../tools/file-write-fallback";
-import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
 	invalidateFsScanAfterWrite,
 } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { resolveAuthoredPath, resolveToCwd } from "../../tools/path-utils";
+import { resolveToCwd } from "../../tools/path-utils";
+import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { ToolError } from "../../tools/tool-errors";
-import type { AppliedEditObserver } from "../blackbox";
 import {
 	ApplyPatchError,
 	type DiffHunk,
@@ -43,11 +37,21 @@ import {
 	parseDiffHunks,
 } from "../diff";
 import {
+	type ContextLineResult,
+	DEFAULT_FUZZY_THRESHOLD,
+	findClosestSequenceMatch,
+	findContextLine,
+	findMatch,
+	type SequenceSearchResult,
+	seekSequence,
+} from "../match";
+import {
 	adjustIndentation,
 	convertLeadingTabsToSpaces,
 	countLeadingWhitespace,
 	detectLineEnding,
 	getLeadingWhitespace,
+	hasUtf8Bom,
 	normalizeForFuzzy,
 	normalizeToLF,
 	restoreLineEndings,
@@ -56,15 +60,6 @@ import {
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
-import {
-	type ContextLineResult,
-	DEFAULT_FUZZY_THRESHOLD,
-	findClosestSequenceMatch,
-	findContextLine,
-	findMatch,
-	type SequenceSearchResult,
-	seekSequence,
-} from "./replace";
 
 export type Operation = "create" | "delete" | "update";
 
@@ -117,26 +112,6 @@ export interface ApplyPatchOptions {
 // Default File System
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Create a patch target's parent directory, tolerating a permission denial when a
- * file-write fallback is registered.
- *
- * `apply_patch` mkdirs the parent before writing, so under a sandbox that denies
- * the out-of-tree path this throws before the write — and therefore before
- * {@link writeFileWithFallback} — is ever reached, leaving the fallback unable to
- * broker a `create` or a rename-move into a new directory. Swallowing only a
- * permission denial, and only with a handler installed, hands control to the write,
- * which reports the denial through the seam. Without a handler the error propagates
- * exactly as before.
- */
-async function mkdirAllowingFallback(dir: string): Promise<void> {
-	try {
-		await fs.promises.mkdir(dir, { recursive: true });
-	} catch (error) {
-		if (!hasFileWriteFallback() || !isPermissionDeniedError(error)) throw error;
-	}
-}
-
 /** Default filesystem implementation using Bun APIs */
 export const defaultFileSystem: FileSystem = {
 	async exists(path: string): Promise<boolean> {
@@ -149,13 +124,21 @@ export const defaultFileSystem: FileSystem = {
 		return fs.promises.readFile(path);
 	},
 	async write(path: string, content: string): Promise<void> {
-		await writeFileWithFallback(path, await serializeEditFileText(path, path, content));
+		// Crash-atomic: write a sibling temp and rename it over the target so a
+		// death mid-write (SIGINT, OOM-kill, full disk) can never leave the user's
+		// source truncated. The interactive editor overrides this with the LSP
+		// writethrough (also atomic); this default backs every programmatic /
+		// SDK apply_patch caller that does not pass its own filesystem, so the
+		// shipped default must be as safe as the interactive path. Mode is carried
+		// forward because the rename swaps the inode (a bare atomic write would
+		// otherwise strip a script's +x); new files default to 0o644.
+		await atomicWriteFilePreservingMode(path, await serializeEditFileText(path, path, content));
 	},
 	async delete(path: string): Promise<void> {
-		await deleteFileWithFallback(path);
+		await fs.promises.unlink(path);
 	},
 	async mkdir(path: string): Promise<void> {
-		await mkdirAllowingFallback(path);
+		await fs.promises.mkdir(path, { recursive: true });
 	},
 };
 
@@ -1111,7 +1094,7 @@ function computeReplacements(
 		const allowAggressiveFallbacks = hunk.changeContext !== undefined || lineHint !== undefined || hunk.isEndOfFile;
 		const fallbackVariants = filterFallbackVariants(buildFallbackVariants(hunk), allowAggressiveFallbacks);
 		if (lineHint !== undefined && hunk.changeContext === undefined && !hunk.hasContextLines) {
-			lineIndex = Math.max(0, Math.min(lineHint - 1, originalLines.length - 1));
+			lineIndex = clampLow(lineHint - 1, 0, originalLines.length - 1);
 		}
 
 		// If hunk has a changeContext, find it and adjust lineIndex
@@ -1598,12 +1581,10 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 
 	const originalContent = await readExistingPatchFile(fs, absolutePath, input.path);
 	const { bom: bomFromText, text: strippedContent } = stripBom(originalContent);
+	// The text read drops a leading UTF-8 BOM, so recover it from the raw bytes.
 	let bom = bomFromText;
-	if (!bom && fs.readBinary) {
-		const bytes = await fs.readBinary(absolutePath);
-		if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-			bom = "\uFEFF";
-		}
+	if (!bom && fs.readBinary && hasUtf8Bom(await fs.readBinary(absolutePath))) {
+		bom = "\uFEFF";
 	}
 	const lineEnding = detectLineEnding(strippedContent);
 	const normalizedContent = normalizeToLF(strippedContent);
@@ -1687,11 +1668,11 @@ export async function computePatchDiff(
 			path: result.change.newPath ?? result.change.path,
 		});
 	} catch (err) {
-		return { error: err instanceof Error ? err.message : String(err) };
+		return { error: errorMessage(err) };
 	}
 }
 
-const patchEditEntrySchema = type({
+export const patchEditEntrySchema = type({
 	"op?": "'create' | 'delete' | 'update'",
 	"rename?": "string",
 	"diff?": "string",
@@ -1706,7 +1687,7 @@ export const patchEditSchema = type({
 
 export type PatchParams = typeof patchEditSchema.infer;
 
-interface ExecutePatchSingleOptions {
+export interface ExecutePatchSingleOptions {
 	session: ToolSession;
 	path: string;
 	params: PatchEditEntry;
@@ -1718,8 +1699,6 @@ interface ExecutePatchSingleOptions {
 	allowCreateOverwrite?: boolean;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
-	/** Observes a committed content transition before result snapshots are pruned. */
-	onApplied?: AppliedEditObserver;
 }
 
 class LspFileSystem implements FileSystem {
@@ -1781,7 +1760,7 @@ class LspFileSystem implements FileSystem {
 	}
 
 	async delete(path: string): Promise<void> {
-		await deleteFileWithFallback(path, this.#getFile(path));
+		await this.#getFile(path).unlink();
 		if (this.session.enableLsp ?? true) {
 			await notifyWorkspaceWatchedFiles(
 				this.session.cwd,
@@ -1792,7 +1771,7 @@ class LspFileSystem implements FileSystem {
 	}
 
 	async mkdir(path: string): Promise<void> {
-		await mkdirAllowingFallback(path);
+		await fs.promises.mkdir(path, { recursive: true });
 	}
 
 	getDiagnostics(): FileDiagnosticsResult | undefined {
@@ -1835,16 +1814,16 @@ export async function executePatchSingle(
 		allowCreateOverwrite,
 		writethrough,
 		beginDeferredDiagnosticsForPath,
-		onApplied,
 	} = options;
 	const { op: rawOp, rename, diff } = params;
 
 	const op: Operation = rawOp === "create" || rawOp === "delete" ? rawOp : "update";
 
-	const resolvedPath = resolveAuthoredPath(session, path);
-	const resolvedRename = rename ? resolveAuthoredPath(session, rename) : undefined;
+	enforcePlanModeWrite(session, path, { op, move: rename });
+	const resolvedPath = resolvePlanPath(session, path);
+	const resolvedRename = rename ? resolvePlanPath(session, rename) : undefined;
 
-	await assertEditableFile(resolvedPath, path, session.settings);
+	await assertEditableFile(resolvedPath, path);
 
 	// Capture pre-edit content so we can verify the write actually hit disk.
 	// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
@@ -1963,13 +1942,6 @@ export async function executePatchSingle(
 
 	const oldText = result.change.type !== "create" ? result.change.oldContent : undefined;
 	const newText = result.change.type !== "delete" ? result.change.newContent : undefined;
-	if (oldText !== undefined && newText !== undefined) {
-		await onApplied?.({
-			path: result.change.newPath ?? resolvedPath,
-			prev: oldText,
-			next: newText,
-		});
-	}
 
 	return {
 		content: [{ type: "text", text: resultText }],

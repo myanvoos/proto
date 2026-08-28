@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-	forkClipboard,
-	formatHashlineHeader,
-	InMemorySnapshotStore,
-	missingSnapshotTagMessage,
-} from "@oh-my-pi/hashline";
+import { formatHashlineHeader, InMemorySnapshotStore, missingSnapshotTagMessage } from "@oh-my-pi/hashline";
 import {
 	adjustIndentation,
 	computeEditDiff,
@@ -263,12 +258,12 @@ describe("computeHashlineDiff", () => {
 		const line = "unchanged content";
 		await Bun.write(sourcePath, `${line}\n`);
 
-		// `PUT 1-1:` with the same line in the body is a true no-op: the edit
+		// `SWAP 1.=1:` with the same line in the body is a true no-op: the edit
 		// fires through computeHashlineDiff but produces identical content.
 		const text = `${line}\n`;
 		const snapshotStore = new InMemorySnapshotStore();
 		const tag = snapshotStore.record(sourcePath, text);
-		const input = `${formatHashlineHeader(sourcePath, tag)}\nPUT 1-1:\n+${line}\n`;
+		const input = `${formatHashlineHeader(sourcePath, tag)}\nSWAP 1.=1:\n+${line}\n`;
 		const result = await computeHashlineDiff({ input }, tempDir, snapshotStore);
 		expect("error" in result).toBe(true);
 		if ("error" in result) {
@@ -291,68 +286,6 @@ describe("computeHashlineDiff", () => {
 		expect("diff" in result).toBe(true);
 		if ("diff" in result) {
 			expect(result.diff).toContain("second");
-		}
-	});
-
-	test("previews a same-file CUT + PASTE as the moved content", async () => {
-		const sourcePath = path.join(tempDir, "source.txt");
-		const text = "l1\nl2\nl3\n";
-		await Bun.write(sourcePath, text);
-
-		const snapshotStore = new InMemorySnapshotStore();
-		const tag = snapshotStore.record(sourcePath, text);
-		const result = await computeHashlineDiff(
-			{ input: `${formatHashlineHeader(sourcePath, tag)}\nCUT 1-1\nPUT >$` },
-			tempDir,
-			snapshotStore,
-		);
-		expect("diff" in result).toBe(true);
-		if ("diff" in result) {
-			expect(result.diff).toContain("-1|l1");
-			expect(result.diff).toContain("+3|l1");
-		}
-	});
-
-	test("previews a PASTE from a forked session register without touching the source", async () => {
-		const sourcePath = path.join(tempDir, "source.txt");
-		const text = "l1\n";
-		await Bun.write(sourcePath, text);
-
-		const snapshotStore = new InMemorySnapshotStore();
-		const tag = snapshotStore.record(sourcePath, text);
-		// Mirror the streaming-strategy contract: the session register is forked
-		// once per preview frame; sections then thread the fork in patch order.
-		const sessionRegister = { lines: ["carried"] };
-		const result = await computeHashlineDiff(
-			{ input: `${formatHashlineHeader(sourcePath, tag)}\nPUT >$` },
-			tempDir,
-			snapshotStore,
-			{ clipboard: forkClipboard(sessionRegister) },
-		);
-		expect("diff" in result).toBe(true);
-		if ("diff" in result) {
-			expect(result.diff).toContain("|carried");
-		}
-		expect(sessionRegister.lines).toEqual(["carried"]);
-	});
-
-	test("streams paste rows in the natural-order preview", async () => {
-		const sourcePath = path.join(tempDir, "source.txt");
-		const text = "l1\nl2\nl3\n";
-		await Bun.write(sourcePath, text);
-
-		const snapshotStore = new InMemorySnapshotStore();
-		const tag = snapshotStore.record(sourcePath, text);
-		const result = await computeHashlineDiff(
-			{ input: `${formatHashlineHeader(sourcePath, tag)}\nCUT 2-2\nPUT <1` },
-			tempDir,
-			snapshotStore,
-			{ streaming: true, skipHashValidation: true },
-		);
-		expect("diff" in result).toBe(true);
-		if ("diff" in result) {
-			expect(result.diff).toContain("-2|l2");
-			expect(result.diff).toContain("+1|l2");
 		}
 	});
 
@@ -405,7 +338,7 @@ describe("computeHashlineDiff", () => {
 		const tag = snapshotStore.record(sourcePath, SNAPSHOT_TEXT);
 
 		const result = await computeHashlineDiff(
-			{ input: `${formatHashlineHeader(sourcePath, tag)}\nPUT 2-2:\n+edited live` },
+			{ input: `${formatHashlineHeader(sourcePath, tag)}\nSWAP 2.=2:\n+edited live` },
 			tempDir,
 			snapshotStore,
 		);

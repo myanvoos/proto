@@ -13,6 +13,7 @@
 ### Changed
 
 - Added the `bytes` module with `truncateHeadBytes`/`truncateTailBytes` byte-safe UTF-8 truncation helpers (consolidated from coding-agent), and removed the unused `getLegacyPiExtensionCacheDbPath`.
+- Changed the default `User-Agent` sent by proto's HTTP requests (LLM APIs, web tools) from `proto/<version>` to pi-mono's format: `pi (linux <kernel-release>; <arch>)`.
 
 ### Fixed
 

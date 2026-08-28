@@ -1,9 +1,11 @@
 import * as path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+// Owners, not the `@oh-my-pi/pi-utils` barrel: 2 modules against 74.
+import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
+import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
 
-type NotebookCellType = "code" | "markdown" | "raw";
+export type NotebookCellType = "code" | "markdown" | "raw";
 
-interface NotebookCell {
+export interface NotebookCell {
 	cell_type: NotebookCellType;
 	source?: string | string[];
 	metadata?: Record<string, unknown>;
@@ -12,7 +14,7 @@ interface NotebookCell {
 	[key: string]: unknown;
 }
 
-interface NotebookDocument {
+export interface NotebookDocument {
 	cells: NotebookCell[];
 	metadata: Record<string, unknown>;
 	nbformat: number;
@@ -46,10 +48,6 @@ export function isNotebookPath(filePath: string): boolean {
 	return path.extname(filePath).toLowerCase() === ".ipynb";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isCellType(value: unknown): value is NotebookCellType {
 	return value === "code" || value === "markdown" || value === "raw";
 }
@@ -60,7 +58,7 @@ function sourceToText(source: string | string[] | undefined): string {
 	return source.join("");
 }
 
-function splitNotebookSource(content: string): string[] {
+export function splitNotebookSource(content: string): string[] {
 	if (content.length === 0) return [];
 	return content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 }
@@ -107,7 +105,7 @@ function validateNotebook(value: unknown, displayPath: string): NotebookDocument
 	return value as unknown as NotebookDocument;
 }
 
-async function readNotebookDocument(absolutePath: string, displayPath: string): Promise<NotebookDocument> {
+export async function readNotebookDocument(absolutePath: string, displayPath: string): Promise<NotebookDocument> {
 	try {
 		return validateNotebook(await Bun.file(absolutePath).json(), displayPath);
 	} catch (error) {
@@ -117,7 +115,7 @@ async function readNotebookDocument(absolutePath: string, displayPath: string): 
 	}
 }
 
-function notebookToEditableText(notebook: NotebookDocument): string {
+export function notebookToEditableText(notebook: NotebookDocument): string {
 	return notebook.cells
 		.map((cell, index) => {
 			const source = escapeMarkerLikeSourceLines(sourceToText(cell.source));
@@ -182,7 +180,11 @@ function parseNotebookEditableText(text: string, displayPath: string): ParsedVir
 	return cells;
 }
 
-function applyNotebookEditableText(notebook: NotebookDocument, text: string, displayPath: string): NotebookDocument {
+export function applyNotebookEditableText(
+	notebook: NotebookDocument,
+	text: string,
+	displayPath: string,
+): NotebookDocument {
 	const parsedCells = parseNotebookEditableText(text, displayPath);
 	const usedOriginalCells = new Set<number>();
 	const nextNotebook = structuredClone(notebook);

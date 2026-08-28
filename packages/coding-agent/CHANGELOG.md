@@ -37,6 +37,7 @@
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 
 ### Changed
+- Trimmed ~75 tokens of duplication from the system prompt: the clean-cutover and yield-before-delivery rules are each stated once, with terser `history://` discovery and Orchestration wording.
 - Completed the proto rebrand across user-facing surfaces: desktop/terminal notification titles, OAuth dynamic-registration client name, OTLP service name, Exa source tag, ACP agent name, and cloud-upload mail bodies now identify as proto; PR-checkout now stores branch metadata under `branch.<name>.protoPr*` git-config keys instead of `ompPr*`; binary updates and mise/homebrew installs target the renamed repository.
 - Dropped the legacy raw-text PTY replay fallback in `launch` logs: clients no longer re-render `terminalText` from brokers that do not return `terminalRows`; the terminal-output isolation worker (`terminal-output-worker*`, `TERMINAL_OUTPUT_WORKER_ARG` CLI selector) and its fixtures/tests are gone, while the broker's rendered-rows path is unchanged.
 - The byte-safe UTF-8 truncation helpers `truncateHeadBytes`/`truncateTailBytes` moved to `@oh-my-pi/pi-utils` (`bytes` module); streaming-output and all tool/CLI consumers now import them from there.

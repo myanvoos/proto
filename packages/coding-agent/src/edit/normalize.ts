@@ -9,7 +9,10 @@
 import { padding } from "@oh-my-pi/pi-tui";
 
 export {
+	type BomResult,
 	detectLineEnding,
+	hasUtf8Bom,
+	type LineEnding,
 	normalizeToLF,
 	restoreLineEndings,
 	stripBom,
@@ -55,7 +58,7 @@ export function minIndent(text: string): number {
 }
 
 /** Detect the indentation character used in text (space or tab) */
-function detectIndentChar(text: string): string {
+export function detectIndentChar(text: string): string {
 	const lines = text.split("\n");
 	for (const line of lines) {
 		const ws = getLeadingWhitespace(line);
@@ -166,32 +169,29 @@ export function convertLeadingTabsToSpaces(text: string, spacesPerTab: number): 
 // Unicode Normalization
 // ═══════════════════════════════════════════════════════════════════════════
 
-const NON_ASCII_RE = /[^\x00-\x7F]/;
-const UNICODE_REPLACEMENT_RE = /[\u00A0\u00BD\u2002-\u200D\u2010-\u201F\u202F\u205F\u2212\u2260\u3000\uFEFF]/g;
-
-function replaceUnicodeCharacter(character: string): string {
-	const codePoint = character.charCodeAt(0);
-	if ((codePoint >= 0x2010 && codePoint <= 0x2015) || codePoint === 0x2212) return "-";
-	if (codePoint >= 0x2018 && codePoint <= 0x201b) return "'";
-	if (codePoint >= 0x201c && codePoint <= 0x201f) return '"';
-	if (
-		codePoint === 0x00a0 ||
-		(codePoint >= 0x2002 && codePoint <= 0x200a) ||
-		codePoint === 0x202f ||
-		codePoint === 0x205f ||
-		codePoint === 0x3000
-	) {
-		return " ";
-	}
-	if (codePoint === 0x2260) return "!=";
-	if (codePoint === 0x00bd) return "1/2";
-	return "";
-}
+const UNICODE_REPLACEMENTS: [RegExp, string][] = [
+	// Various dash/hyphen code-points → ASCII '-'
+	[/[\u2010-\u2015\u2212]/g, "-"],
+	// Fancy single quotes → '
+	[/[\u2018-\u201B]/g, "'"],
+	// Fancy double quotes → "
+	[/[\u201C-\u201F]/g, '"'],
+	// Non-breaking space and other odd spaces → normal space
+	[/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " "],
+	// Not-equal sign → !=
+	[/\u2260/g, "!="],
+	// Vulgar fraction ½ → 1/2
+	[/\u00BD/g, "1/2"],
+	// Zero-width characters → remove
+	[/[\u200B-\u200D\uFEFF]/g, ""],
+];
 
 export function normalizeUnicode(s: string): string {
-	const trimmed = s.trim();
-	if (!NON_ASCII_RE.test(trimmed)) return trimmed;
-	return trimmed.replace(UNICODE_REPLACEMENT_RE, replaceUnicodeCharacter).normalize("NFC");
+	let result = s.trim();
+	for (const [pattern, replacement] of UNICODE_REPLACEMENTS) {
+		result = result.replace(pattern, replacement);
+	}
+	return result.normalize("NFC");
 }
 
 /**
@@ -202,11 +202,24 @@ export function normalizeForFuzzy(line: string): string {
 	const trimmed = line.trim();
 	if (trimmed.length === 0) return "";
 
+	// Fold the same curly-quote and dash ranges as normalizeUnicode so straight
+	// and smart punctuation compare equal. The ranges cover the COMMON smart
+	// quotes (U+201C/U+201D “ ”, U+2018/U+2019 ‘ ’) that an earlier hand-listed
+	// class silently omitted, plus the low/reversed-9 variants, guillemets, and
+	// the full dash range including U+2015 ―. The final two passes reach whitespace
+	// parity with normalizeUnicode: strip the zero-width characters (U+200B–U+200D,
+	// U+FEFF) it removes, then collapse runs of ASCII space/tab AND the exotic
+	// spaces it folds (non-breaking U+00A0, en/em/thin/hair U+2002–U+200A, and the
+	// narrow/math/ideographic spaces U+202F/U+205F/U+3000) to a single space. Without
+	// this, a line spaced with a non-breaking or zero-width character failed to
+	// fuzzy-match its plain-ASCII twin even though normalizeUnicode treats them as
+	// equal — the same normalizer-parity gap the quote fix above closed.
 	return trimmed
-		.replace(/[""„‟«»]/g, '"')
-		.replace(/[''‚‛`´]/g, "'")
-		.replace(/[‐‑‒–—−]/g, "-")
-		.replace(/[ \t]+/g, " ");
+		.replace(/[“-‟«»]/g, '"')
+		.replace(/[‘-‛`´]/g, "'")
+		.replace(/[‐-―−]/g, "-")
+		.replace(/[\u200B-\u200D\uFEFF]/g, "")
+		.replace(/[ \t\u00A0\u2002-\u200A\u202F\u205F\u3000]+/g, " ");
 }
 
 function isIndentationOnlyRewrite(oldText: string, newText: string): boolean {

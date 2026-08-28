@@ -1,9 +1,9 @@
-import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
+import { MismatchError as HashlineMismatchError, HL_MOVE_KEYWORD } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { isEnoent, isEnotdir, prompt } from "@oh-my-pi/pi-utils";
+import { errorMessage, isCancellation, prompt } from "@oh-my-pi/pi-utils";
 import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
@@ -11,38 +11,32 @@ import applyPatchDescription from "../prompts/tools/apply-patch.md" with { type:
 import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
 import type { ToolSession } from "../tools";
-import { findUniqueWorkspaceSuffix, isInternalUrlPath, resolveAuthoredPath } from "../tools/path-utils";
+import { abortedPartway } from "../tools/aborted-partway";
+import { isInternalUrlPath } from "../tools/path-utils";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
-import { type AppliedEditObserver, createEditBlackboxObserver } from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
-import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEditSchema } from "./modes/replace";
+import { executeReplaceSingle, type ReplaceEditEntry, type ReplaceParams, replaceEditSchema } from "./modes/replace";
 import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, type LspBatchRequest } from "./renderer";
-import {
-	executeSloppy,
-	type SloppyParams,
-	type SloppySection,
-	sloppyEditSchema,
-	sloppyGrammar,
-	sloppyVariant,
-	splitSloppySections,
-} from "./sloppy";
 import { pruneOversizedEditSnapshots } from "./snapshot-details";
 import { EDIT_MODE_STRATEGIES } from "./streaming";
 
+export * from "@oh-my-pi/hashline";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 export * from "./apply-patch";
 export * from "./diff";
 export * from "./file-snapshot-store";
 export * from "./hashline";
+// The matching engine moved out of `./modes/replace` to break a cycle with
+// `./diff`; re-exported here so the barrel surface is unchanged.
+export * from "./match";
 export * from "./modes/apply-patch";
 export * from "./modes/patch";
 export * from "./modes/replace";
 export * from "./normalize";
 export * from "./renderer";
-export * from "./sloppy";
 export * from "./snapshot-details";
 export * from "./streaming";
 
@@ -50,12 +44,11 @@ type TInput =
 	| typeof replaceEditSchema
 	| typeof patchEditSchema
 	| typeof hashlineEditParamsSchema
-	| typeof applyPatchSchema
-	| typeof sloppyEditSchema;
+	| typeof applyPatchSchema;
 
 type HashlineParams = typeof hashlineEditParamsSchema.infer;
 
-type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
+type EditParams = ReplaceParams | PatchParams | HashlineParams | ApplyPatchParams;
 
 type EditModeDefinition = {
 	description: (session: ToolSession) => string;
@@ -66,7 +59,6 @@ type EditModeDefinition = {
 		params: EditParams,
 		signal: AbortSignal | undefined,
 		batchRequest: LspBatchRequest | undefined,
-		onApplied: AppliedEditObserver | undefined,
 		onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 	) => Promise<AgentToolResult<EditToolDetails, TInput>>;
 };
@@ -78,28 +70,10 @@ function resolveConfiguredEditMode(rawEditMode: string): EditMode | undefined {
 
 	const editMode = normalizeEditMode(rawEditMode);
 	if (!editMode) {
-		throw new Error(`Invalid PI_EDIT_VARIANT: ${rawEditMode}`);
+		throw new Error(`Invalid VEYYON_EDIT_VARIANT: ${rawEditMode}`);
 	}
 
 	return editMode;
-}
-
-async function resolveEditPath(
-	session: ToolSession,
-	authoredPath: string,
-	options: { mustExist: boolean; signal?: AbortSignal },
-): Promise<string> {
-	if (!options.mustExist || isInternalUrlPath(authoredPath)) return authoredPath;
-
-	try {
-		await Bun.file(resolveAuthoredPath(session, authoredPath)).stat();
-		return authoredPath;
-	} catch (error) {
-		if (!isEnoent(error) && !isEnotdir(error)) throw error;
-	}
-
-	const match = await findUniqueWorkspaceSuffix(authoredPath, session.cwd, options.signal);
-	return match?.displayPath ?? authoredPath;
 }
 
 function resolveAllowFuzzy(session: ToolSession, rawValue: string): boolean {
@@ -113,7 +87,7 @@ function resolveAllowFuzzy(session: ToolSession, rawValue: string): boolean {
 		case "auto":
 			return session.settings.get("edit.fuzzyMatch");
 		default:
-			throw new Error(`Invalid PI_EDIT_FUZZY: ${rawValue}`);
+			throw new Error(`Invalid VEYYON_EDIT_FUZZY: ${rawValue}`);
 	}
 }
 
@@ -124,18 +98,28 @@ function resolveFuzzyThreshold(session: ToolSession, rawValue: string): number {
 
 	const threshold = Number.parseFloat(rawValue);
 	if (Number.isNaN(threshold) || threshold < 0 || threshold > 1) {
-		throw new Error(`Invalid PI_EDIT_FUZZY_THRESHOLD: ${rawValue}`);
+		throw new Error(`Invalid VEYYON_EDIT_FUZZY_THRESHOLD: ${rawValue}`);
 	}
 
 	return threshold;
 }
 
+/**
+ * The edit tool's disk-commit path, wrapped in the session tree's write
+ * budget.
+ *
+ * Every hashline apply writes through this one callback, including the batch
+ * and multi-file paths, so the budget sees a whole `edit` call's bytes
+ * whatever shape it took. It has to be counted here rather than by the group:
+ * the harness process is deliberately not a member of its own budget group,
+ * so an edit is invisible to `io.stat` and to `/proc/<pid>/io`.
+ */
 function createEditWritethrough(session: ToolSession): WritethroughCallback {
 	const enableLsp = session.enableLsp ?? true;
 	const enableDiagnostics = enableLsp && session.settings.get("lsp.diagnosticsOnEdit");
 	const enableFormat = enableLsp && session.settings.get("lsp.formatOnWrite");
 	const dedup = enableDiagnostics && session.settings.get("lsp.diagnosticsDeduplicate");
-	return enableLsp
+	const commit = enableLsp
 		? createLspWritethrough(session.cwd, {
 				enableFormat,
 				enableDiagnostics,
@@ -144,6 +128,59 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 					: undefined,
 			})
 		: writethroughNoop;
+	return commit;
+}
+
+/**
+ * The error a multi-step edit throws when it is cancelled partway through.
+ *
+ * A multi-step edit is the one place where "was it aborted" and "what happened
+ * to my files" are the same question. Both loops below used to fold an abort
+ * into the ordinary error result, which lost two things at once. The caller
+ * could not tell a cancellation from a failed match, so the agent loop treated
+ * an interrupted edit as a mistake worth retrying rather than as the operator
+ * saying stop. And the partial-application summary, which is the only record of
+ * which files were already rewritten, was reachable only by reading the result
+ * text of something that looked like an ordinary failure.
+ *
+ * So the abort keeps its type AND carries the summary in its message. The
+ * sentence itself is built by `tools/aborted-partway.ts`, which `pr_checkout`
+ * and `retain` also use: the per-file loop and the per-entry loop must not word
+ * this differently, and neither must the other tools that can stop halfway. This
+ * function supplies the nouns and the advice, which are the parts only the edit
+ * tool can know.
+ */
+function editAbortedPartway(
+	unit: "file" | "entry",
+	applied: readonly string[],
+	pending: readonly string[],
+	cause: unknown,
+) {
+	return abortedPartway(
+		{
+			operation: "Edit",
+			unit: unit === "file" ? { one: "file", many: "files" } : { one: "entry", many: "entries" },
+			done: applied,
+			pending,
+			doneLabel: "already applied",
+			pendingLabel: "NOT applied",
+			advice: "re-read the affected files before re-issuing",
+		},
+		cause,
+	);
+}
+
+/**
+ * Finalize the files a cancelled multi-step edit already wrote.
+ *
+ * Deliberately flushes WITHOUT the signal. The batch holds files that are
+ * already on disk, and flushing is what finalizes them; passing the signal that
+ * just fired would abort the flush and leave them in an unfinalized batch, which
+ * is the state this call exists to prevent.
+ */
+async function flushAfterAbort(batchRequest: LspBatchRequest | undefined, cwd: string): Promise<void> {
+	if (!batchRequest?.flush) return;
+	await flushLspWritethroughBatch(batchRequest.id, cwd);
 }
 
 /** Run apply_patch file operations and aggregate their multi-file result. */
@@ -166,8 +203,18 @@ async function executeApplyPatchPerFile(
 	const contentTexts: string[] = [];
 	let hasError = false;
 
+	const filePaths = fileEntries.map(entry => entry.path);
 	for (let i = 0; i < fileEntries.length; i++) {
 		const { path, run } = fileEntries[i];
+		// Do not START another file once the operator has cancelled. Without this
+		// the loop relied on the innermost atomic write noticing the signal, which
+		// covers a content rewrite and nothing else: a delete or a move in the same
+		// patch does not go through that path and would have been carried out after
+		// the cancellation.
+		if (signal?.aborted) {
+			await flushAfterAbort(outerBatchRequest, cwd);
+			throw editAbortedPartway("file", filePaths.slice(0, i), filePaths.slice(i), signal.reason);
+		}
 		const isLast = i === fileEntries.length - 1;
 		// Per-file writes join the outer LSP write batch; only the last entry
 		// flushes it, so cross-file writes coalesce into a single
@@ -196,7 +243,15 @@ async function executeApplyPatchPerFile(
 			const text = result.content?.find(c => c.type === "text")?.text ?? "";
 			if (text) contentTexts.push(text);
 		} catch (err) {
-			const errorText = err instanceof Error ? err.message : String(err);
+			// A cancellation is not an edit failure and must not be reported as
+			// one: the caller has to be able to stop rather than re-issue. The
+			// applied/skipped summary travels in the abort's message so nothing is
+			// lost by keeping the type.
+			if (isCancellation(err)) {
+				await flushAfterAbort(outerBatchRequest, cwd);
+				throw editAbortedPartway("file", filePaths.slice(0, i), filePaths.slice(i), err);
+			}
+			const errorText = errorMessage(err);
 			const displayErrorText = err instanceof HashlineMismatchError ? err.displayMessage : undefined;
 			perFileResults.push({ path, diff: "", isError: true, errorText, displayErrorText });
 			contentTexts.push(`Error editing ${path}: ${errorText}`);
@@ -292,7 +347,16 @@ async function executeSinglePathEntries(
 	// snapshots and stamp the marker so ACP/downstream can degrade cleanly.
 	let snapshotsPruned = false;
 
+	// Entries are numbered rather than named: they all target the same path, so a
+	// list of paths would say the same thing `runs.length` times.
+	const entryLabels = runs.map((_, index) => `entry ${index + 1}`);
 	for (let i = 0; i < runs.length; i++) {
+		// Same reason as the per-file loop: stop before starting the next entry,
+		// rather than trusting the innermost write to refuse.
+		if (signal?.aborted) {
+			await flushAfterAbort(outerBatchRequest, cwd);
+			throw editAbortedPartway("entry", entryLabels.slice(0, i), entryLabels.slice(i), signal.reason);
+		}
 		const isLast = i === runs.length - 1;
 		const batchRequest: LspBatchRequest | undefined = outerBatchRequest
 			? { id: outerBatchRequest.id, flush: isLast && outerBatchRequest.flush }
@@ -318,7 +382,11 @@ async function executeSinglePathEntries(
 			const text = result.content?.find(c => c.type === "text")?.text ?? "";
 			if (text) contentTexts.push(text);
 		} catch (err) {
-			const errorText = err instanceof Error ? err.message : String(err);
+			if (isCancellation(err)) {
+				await flushAfterAbort(outerBatchRequest, cwd);
+				throw editAbortedPartway("entry", entryLabels.slice(0, i), entryLabels.slice(i), err);
+			}
+			const errorText = errorMessage(err);
 			contentTexts.push(`Error editing ${path} (entry ${i + 1} of ${runs.length}): ${errorText}`);
 			if (i > 0) {
 				contentTexts.push(i === 1 ? `Entry 1 was already applied.` : `Entries 1-${i} were already applied.`);
@@ -374,12 +442,76 @@ async function executeSinglePathEntries(
 	};
 }
 
+function extractApprovalPath(args: unknown): string {
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	const input = typeof record.input === "string" ? record.input : undefined;
+	if (input) {
+		const hashlineMatch = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/m.exec(input);
+		if (hashlineMatch?.[1]) return hashlineMatch[1];
+
+		const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(input);
+		if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
+	}
+
+	const targetPath = record.path;
+	return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : "(unknown)";
+}
+
+const DEFAULT_PROMPT_TRUNCATE_CHARS = 2000;
+
+export function truncateForPrompt(value: string, maxChars = DEFAULT_PROMPT_TRUNCATE_CHARS): string {
+	if (value.length <= maxChars) return value;
+	const omitted = value.length - maxChars;
+	return `${value.slice(0, maxChars)}[…${omitted}ch elided…]`;
+}
+
 /**
- * Every target path a payload will touch, for display.
- * Multi-file hashline / apply_patch / sloppy payloads report one entry per
- * section so a mixed internal+workspace call lists each target.
+ * Every real filesystem path an edit call would touch, for the cwd boundary
+ * (see cwd-boundary.ts). Unlike {@link extractApprovalPath} (which returns a
+ * single display path), this collects ALL targets: the `path` arg plus every
+ * file named by an apply-patch body (`*** Add|Update|Delete File:`), since one
+ * apply-patch call can mutate several files. Hashline `[path#TAG]` wrappers are
+ * unwrapped so they cannot dodge the boundary. A move/rename DESTINATION is
+ * collected too (both formats can move: the apply-patch `*** Move to: <dest>`
+ * and the hashline `MV <dest>` line), because a move writes the file to a NEW
+ * path that may escape cwd even when the source file is inside it. Selector/
+ * scheme filtering is left to the boundary.
  */
+export function editFilesystemTargets(args: unknown): string[] {
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	const targets: string[] = [];
+	if (typeof record.path === "string" && record.path.length > 0) targets.push(record.path);
+	const input = typeof record.input === "string" ? record.input : undefined;
+	if (input) {
+		for (const match of input.matchAll(/^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/gm)) {
+			if (match[1]) targets.push(match[1]);
+		}
+		for (const match of input.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) {
+			if (match[1]) targets.push(match[1].trim());
+		}
+		// Move/rename destinations. Over-matching only over-prompts (fail-closed);
+		// missing one would let an out-of-cwd move dodge the boundary.
+		for (const match of input.matchAll(/^\*\*\* Move to:\s*(.+)$/gm)) {
+			if (match[1]) targets.push(match[1].trim());
+		}
+		for (const match of input.matchAll(new RegExp(String.raw`^\s*${HL_MOVE_KEYWORD}\s+(.+)$`, "gm"))) {
+			if (match[1]) targets.push(match[1].trim());
+		}
+	}
+	return targets;
+}
+
 export class EditTool implements AgentTool<TInput> {
+	readonly approval = (args: unknown) => {
+		const targetPath = extractApprovalPath(args);
+		return targetPath !== "(unknown)" && isInternalUrlPath(targetPath) ? "read" : "write";
+	};
+	readonly formatApprovalDetails = (args: unknown): string[] => [
+		`File: ${truncateForPrompt(extractApprovalPath(args))}`,
+	];
+	// The cwd boundary gates out-of-cwd edits in non-yolo modes; an apply-patch
+	// body can touch several files, so all are reported. See cwd-boundary.ts.
+	readonly filesystemTargets = (args: unknown): string[] => editFilesystemTargets(args);
 	readonly name = "edit";
 	readonly label = "Edit";
 	readonly loadMode = "essential";
@@ -392,24 +524,14 @@ export class EditTool implements AgentTool<TInput> {
 	readonly #editMode?: EditMode;
 	readonly #deferredDiagnostics: DeferredDiagnostics;
 
-	/**
-	 * `mode` pins the edit variant for this instance, for callers whose protocol
-	 * fixes the shape of an edit. The Cursor `pi_edit` frame carries
-	 * `old_string`/`new_string` args, which only `replace` accepts — under the
-	 * default `hashline` mode those args do not match the schema at all. Left
-	 * unset, the env/settings resolution applies as before.
-	 */
-	constructor(
-		private readonly session: ToolSession,
-		mode?: EditMode,
-	) {
+	constructor(private readonly session: ToolSession) {
 		const {
-			PI_EDIT_FUZZY: editFuzzy = "auto",
-			PI_EDIT_FUZZY_THRESHOLD: editFuzzyThreshold = "auto",
-			PI_EDIT_VARIANT: envEditVariant = "auto",
+			VEYYON_EDIT_FUZZY: editFuzzy = "auto",
+			VEYYON_EDIT_FUZZY_THRESHOLD: editFuzzyThreshold = "auto",
+			VEYYON_EDIT_VARIANT: envEditVariant = "auto",
 		} = Bun.env;
 
-		this.#editMode = mode ?? resolveConfiguredEditMode(envEditVariant);
+		this.#editMode = resolveConfiguredEditMode(envEditVariant);
 		this.#allowFuzzy = resolveAllowFuzzy(session, editFuzzy);
 		this.#fuzzyThreshold = resolveFuzzyThreshold(session, editFuzzyThreshold);
 		const deduplicateDiagnostics =
@@ -446,7 +568,6 @@ export class EditTool implements AgentTool<TInput> {
 	get customFormat(): { syntax: "lark"; definition: string } | undefined {
 		if (this.mode === "apply_patch") return { syntax: "lark", definition: applyPatchGrammar };
 		if (this.mode === "hashline") return { syntax: "lark", definition: hashlineGrammar };
-		if (this.mode === "sloppy") return { syntax: "lark", definition: sloppyGrammar };
 		return undefined;
 	}
 
@@ -499,12 +620,11 @@ export class EditTool implements AgentTool<TInput> {
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<EditToolDetails, TInput>> {
 		const modeDefinition = this.#getModeDefinition();
-		const onApplied = createEditBlackboxObserver(this.session, this.mode, params);
-		return modeDefinition.execute(this, params, signal, getLspBatchRequest(context?.toolCall), onApplied, onUpdate);
+		return modeDefinition.execute(this, params, signal, getLspBatchRequest(context?.toolCall), onUpdate);
 	}
 
 	#getModeDefinition(): EditModeDefinition {
-		const definitions = {
+		return {
 			patch: {
 				description: () => prompt.render(patchDescription),
 				parameters: patchEditSchema,
@@ -541,24 +661,19 @@ export class EditTool implements AgentTool<TInput> {
 						note: "All entries in one call apply to the top-level `path`; use separate calls for different files.",
 					},
 				] satisfies readonly ToolExample<PatchParams>[],
-				execute: async (
+				execute: (
 					tool: EditTool,
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
-					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { edits, path } = params as PatchParams;
-					const targetPath = await resolveEditPath(tool.session, path, {
-						mustExist: (edits[0]?.op ?? "update") !== "create",
-						signal,
-					});
 					const runs = (edits as PatchEditEntry[]).map(
 						entry => (br: LspBatchRequest | undefined) =>
 							executePatchSingle({
 								session: tool.session,
-								path: targetPath,
+								path,
 								params: entry,
 								signal,
 								batchRequest: br,
@@ -569,10 +684,9 @@ export class EditTool implements AgentTool<TInput> {
 								allowCreateOverwrite: true,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
-								onApplied,
 							}),
 					);
-					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
+					return executeSinglePathEntries(path, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
 			apply_patch: {
@@ -591,30 +705,17 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
-					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const entries = expandApplyPatchToEntries(params as ApplyPatchParams);
-					// Resolve each authored path once per patch so paired hunks (e.g. delete
-					// then re-add of the same file) share the same workspace target.
-					const resolvedTargets = new Map<string, Promise<string>>();
-					const resolveOnce = (path: string, mustExist: boolean): Promise<string> => {
-						let pending = resolvedTargets.get(path);
-						if (!pending) {
-							pending = resolveEditPath(tool.session, path, { mustExist, signal });
-							resolvedTargets.set(path, pending);
-						}
-						return pending;
-					};
 					const perFile = entries.map(entry => {
 						const { path, ...patchParams } = entry;
 						return {
 							path,
-							run: async (br: LspBatchRequest | undefined) => {
-								const targetPath = await resolveOnce(path, patchParams.op !== "create");
-								return executePatchSingle({
+							run: (br: LspBatchRequest | undefined) =>
+								executePatchSingle({
 									session: tool.session,
-									path: targetPath,
+									path,
 									params: patchParams,
 									signal,
 									batchRequest: br,
@@ -622,9 +723,7 @@ export class EditTool implements AgentTool<TInput> {
 									fuzzyThreshold: tool.#fuzzyThreshold,
 									writethrough: tool.#writethrough,
 									beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
-									onApplied,
-								});
-							},
+								}),
 						};
 					});
 					return executeApplyPatchPerFile(perFile, batchRequest, tool.session.cwd, signal, onUpdate);
@@ -638,7 +737,6 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
-					onApplied: AppliedEditObserver | undefined,
 					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { input } = params as HashlineParams;
@@ -649,76 +747,25 @@ export class EditTool implements AgentTool<TInput> {
 						batchRequest,
 						writethrough: tool.#writethrough,
 						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
-						onApplied,
-					});
-				},
-			},
-			sloppy: {
-				description: () => prompt.render(sloppyVariant.description),
-				parameters: sloppyEditSchema,
-				execute: async (
-					tool: EditTool,
-					params: EditParams,
-					signal: AbortSignal | undefined,
-					batchRequest: LspBatchRequest | undefined,
-					onApplied: AppliedEditObserver | undefined,
-					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
-				) => {
-					const { input } = params as SloppyParams;
-					// `[path]` headers open per-file sections; the first line MUST be one.
-					const sections = splitSloppySections(input);
-					if (sections.length === 0) {
-						throw new Error("Missing file header: start the payload with `§relative/path.ts`.");
-					}
-					const resolved: SloppySection[] = [];
-					for (const section of sections) {
-						resolved.push({
-							path: await resolveEditPath(tool.session, section.path, { mustExist: true, signal }),
-							body: section.body,
-						});
-					}
-					return executeSloppy({
-						session: tool.session,
-						sections: resolved,
-						signal,
-						batchRequest,
-						writethrough: tool.#writethrough,
-						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
-						onApplied,
 					});
 				},
 			},
 			replace: {
 				description: () => prompt.render(replaceDescription),
 				parameters: replaceEditSchema,
-				execute: async (
+				execute: (
 					tool: EditTool,
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
-					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
-					// `edits` is the internal `ReplaceBatchParams` form only the Cursor
-					// exec bridge produces (multi-replacement `pi_edit` frames run as one
-					// lifecycle); model calls always arrive in the single-edit schema shape.
-					const replaceParams = params as ReplaceParams | ReplaceBatchParams;
-					const entries =
-						"edits" in replaceParams
-							? replaceParams.edits
-							: [
-									{
-										old_string: replaceParams.old_string,
-										new_string: replaceParams.new_string,
-										replace_all: replaceParams.replace_all,
-									},
-								];
-					const targetPath = await resolveEditPath(tool.session, replaceParams.path, { mustExist: true, signal });
-					const runs = entries.map(
+					const { edits, path } = params as ReplaceParams;
+					const runs = (edits as ReplaceEditEntry[]).map(
 						entry => (br: LspBatchRequest | undefined) =>
-							executeReplace({
+							executeReplaceSingle({
 								session: tool.session,
-								path: targetPath,
+								path,
 								params: entry,
 								signal,
 								batchRequest: br,
@@ -726,13 +773,11 @@ export class EditTool implements AgentTool<TInput> {
 								fuzzyThreshold: tool.#fuzzyThreshold,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
-								onApplied,
 							}),
 					);
-					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
+					return executeSinglePathEntries(path, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
-		};
-		return definitions[this.mode];
+		}[this.mode];
 	}
 }

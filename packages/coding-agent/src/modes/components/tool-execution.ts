@@ -1,4 +1,4 @@
-import type { Clipboard, SnapshotStore } from "@oh-my-pi/hashline";
+import type { SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	Box,
@@ -244,8 +244,6 @@ export interface ToolExecutionUi {
 
 interface ToolExecutionOptions {
 	snapshots?: SnapshotStore;
-	/** Session-persistent edit clipboard register, forked per preview frame. */
-	clipboard?: Clipboard;
 	showImages?: boolean; // default: true (only used if terminal supports images)
 	/** Allow the name-keyed renderer registry only when the active tool is the built-in implementation. */
 	useBuiltInRenderer?: boolean;
@@ -363,7 +361,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#editFuzzyThreshold: number | undefined;
 	#editAllowFuzzy: boolean | undefined;
 	#snapshots?: SnapshotStore;
-	#clipboard?: Clipboard;
 	#isPartial = true;
 	#resultVersion = 0;
 	// Post-finalize mutation counter (see FinalizableBlock.getTranscriptBlockVersion):
@@ -469,7 +466,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#editFuzzyThreshold = options.editFuzzyThreshold;
 		this.#editAllowFuzzy = options.editAllowFuzzy;
 		this.#snapshots = options.snapshots;
-		this.#clipboard = options.clipboard;
 		this.#liveRegion = options.liveRegion;
 		this.#tool = tool;
 		this.#ui = ui;
@@ -612,7 +608,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const isStreaming = !this.#argsComplete;
 		let effectiveArgs: unknown;
 		try {
-			effectiveArgs = strategy.extractCompleteEdits(previewArgs, partialJson, isStreaming);
+			effectiveArgs = strategy.extractCompleteEdits(previewArgs, partialJson);
 		} catch {
 			effectiveArgs = previewArgs;
 		}
@@ -650,7 +646,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				cwd: this.#cwd,
 				signal: controller.signal,
 				snapshots: this.#snapshots!,
-				clipboard: this.#clipboard,
 				fuzzyThreshold: this.#editFuzzyThreshold,
 				allowFuzzy: this.#editAllowFuzzy,
 				isStreaming,

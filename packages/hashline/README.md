@@ -1,11 +1,8 @@
 # @oh-my-pi/hashline
 
-A compact, line-anchored patch language and applier.
+Line-anchored patch language and application engine.
 
-Hashline is a diff format designed for LLM-driven file edits. It binds every
-hunk to a file-content hash so stale anchors are rejected before they corrupt
-code, and it abstracts over the filesystem so the same patcher works on disk,
-in memory, over the network, or against any custom backend.
+Diff format for model-driven code edits. Hunks are bound to a content hash snapshot to detect and reject stale file anchors before modifications are applied.
 
 ## Quick start
 
@@ -26,7 +23,7 @@ await fs.writeText("hello.ts", before);
 const tag = snapshots.record("hello.ts", before);
 const patcher = new Patcher({ fs, snapshots });
 const patch = Patch.parse(String.raw`[hello.ts#${tag}]
-PUT 1.=1:
+SWAP 1.=1:
 +const greeting = "hello";`);
 const result = await patcher.apply(patch);
 
@@ -36,48 +33,43 @@ console.log(await fs.readText("hello.ts"));
 
 ## Format
 
-See [`src/prompt.md`](./src/prompt.md) for the user-facing description and
-[`src/grammar.lark`](./src/grammar.lark) for the formal grammar.
+Specifications:
+- [`src/prompt.md`](./src/prompt.md): Prompt documentation.
+- [`src/grammar.lark`](./src/grammar.lark): Formal Lark grammar.
 
-Each file section starts with `[PATH#TAG]`. The tag is a 4-hex
-content hash of the full normalized file text recorded by the
-`SnapshotStore`, and it is not meaningful outside that store. The patcher
-protects against stale anchors by resolving the tag, verifying the live file
-still matches the recorded content hash, and refusing or attempting
-session-aware recovery on mismatch.
+Access prompt definitions programmatically:
 
-Inside a section:
-- `PUT A.=B:` — replace lines A through B (inclusive) with following `+TEXT` body rows.
-- `PUT A*:` — replace the syntactic block beginning on line A.
-- `PUT <A:` / `PUT >A:` — insert following body rows before/after line A (`<1` = head, `>$` = tail).
-- `PUT >A*:` — insert following body rows after the resolved block's last line.
-- `PUT <A` / `PUT >A` / `PUT A.=B @name` / `PUT A* @name` — paste a captured register at a gap, over a range, or over a resolved block (no `:` header or body rows; `@name` is optional only at gaps).
-- `CUT A.=B` / `CUT A*` — delete concrete lines or a resolved block and capture them (anonymous, or `@name` when given).
-- `REM` — delete the whole file named by the section header.
-- `MV DEST` — move/rename the section file to `DEST` (optionally after line edits).
-- `+TEXT` — literal body row (use `+` alone for a blank line).
+```ts
+import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
+const description = hashlineDescription;
+const description = hashlineDescription;
+```
 
-## Abstractions
+Each section begins with `[PATH#TAG]`, where `TAG` is a 4-character hex snapshot identifier recorded by `SnapshotStore`.
+
+### Operations
+
+- `SWAP A.=B:`: Replace line range A through B with following `+TEXT` body rows.
+- `SWAP.BLK A:`: Replace syntactic block beginning on line A.
+- `DEL A.=B` / `DEL.BLK A`: Delete line range or syntactic block.
+- `INS.PRE A:` / `INS.POST A:` / `INS.HEAD:` / `INS.TAIL:`: Insert body rows before/after line A, or at file start/end.
+- `INS.BLK.POST A:`: Insert body rows after the end of syntactic block beginning on line A.
+- `REM`: Delete file. Refused if current file content does not match section tag.
+- `MV DEST`: Rename or move file to `DEST`. Refused if `DEST` exists as a different file.
+- `+TEXT`: Literal content row (bare `+` inserts an empty line).
+
+## Core classes
 
 ### `Filesystem`
 
-Read and write text by path. The default implementations:
-
-- `InMemoryFilesystem` — backed by a `Map`. Tests, sandboxes.
-- `NodeFilesystem` — disk-backed via `Bun.file`/`Bun.write`. Default for CLIs.
-
-Subclass `Filesystem` to wire hashline into any storage: VFS, S3, an LSP
-text-document protocol, a Git tree, anything.
+Filesystem interface for reading and writing files. Built-in implementations:
+- `InMemoryFilesystem`: In-memory `Map`-backed storage for testing.
+- `NodeFilesystem`: Disk storage using atomic temporary file writes and renames.
 
 ### `SnapshotStore`
 
-Required. Hashline tags are full-file content hashes recorded per path, so
-`Patcher` must receive the store that observed them. Recovery replays edits
-against the cached pre-edit snapshot and 3-way-merges onto current content
-when the live file diverged.
+Tracks file content hashes by path to validate patch tags and support 3-way merge recovery when files diverge.
 
 ### `Patcher`
 
-The orchestration class. Reads, normalizes line endings + BOM, applies edits,
-restores line endings, and writes via the configured `Filesystem`. Multi-section
-patches are preflighted up front so a partial batch never lands.
+Applies parsed patches against a `Filesystem` and `SnapshotStore`. Preflights multi-section patches before writing changes.

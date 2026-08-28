@@ -6,19 +6,17 @@
  * Recovery fails closed when the target changed or became ambiguous. The
  * patcher then returns a mismatch with fresh context instead of guessing.
  */
-import { diffLineRuns } from "@oh-my-pi/pi-natives";
-import { applyEdits } from "./apply";
+import * as Diff from "diff";
+import { applyEdits, collectEditAnchorLines } from "./apply";
 import { RECOVERY_EXTERNAL_WARNING, RECOVERY_LINE_REMAP_WARNING, RECOVERY_SESSION_CHAIN_WARNING } from "./messages";
 import type { SnapshotStore } from "./snapshots";
-import type { Anchor, ApplyResult, Clipboard, Edit } from "./types";
+import type { Anchor, ApplyResult, Edit } from "./types";
 
 export interface RecoveryArgs {
 	path: string;
 	currentText: string;
 	fileHash: string;
 	edits: readonly Edit[];
-	/** Shared clipboard register for `cut`/`paste` edits, threaded into the replay apply. */
-	clipboard?: Clipboard;
 }
 
 export interface RecoveryResult {
@@ -30,45 +28,16 @@ export interface RecoveryResult {
 	warnings: string[];
 }
 
-function collectAnchorLines(edits: readonly Edit[]): number[] {
-	const lines: number[] = [];
-	for (const edit of edits) {
-		for (const anchor of getEditAnchors(edit)) lines.push(anchor.line);
-	}
-	return lines;
-}
-
-function getEditAnchors(edit: Edit): Anchor[] {
-	if (edit.kind === "delete") return [edit.anchor];
-	// Recovery only ever receives already-resolved edits (no `block`); this arm
-	// exists for type-exhaustiveness over the full `Edit` union.
-	if (edit.kind === "block") return [edit.anchor];
-	if (edit.kind === "cut") {
-		// Every captured line is an anchor: changed interior content is unsafe.
-		const anchors: Anchor[] = [];
-		for (let line = edit.range.start.line; line <= edit.range.end.line; line++) anchors.push({ line });
-		return anchors;
-	}
-	if (edit.kind === "paste") {
-		if (edit.at.kind === "span") {
-			const anchors: Anchor[] = [];
-			for (let line = edit.at.range.start.line; line <= edit.at.range.end.line; line++) anchors.push({ line });
-			return anchors;
-		}
-		const cursor = edit.at.cursor;
-		return cursor.kind === "before_anchor" || cursor.kind === "after_anchor" ? [cursor.anchor] : [];
-	}
-	return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor" ? [edit.cursor.anchor] : [];
-}
-
 function buildLineMap(previousText: string, currentText: string): Map<number, number> {
-	const changes = diffLineRuns(previousText, currentText);
+	const previousLines = previousText.split("\n");
+	const currentLines = currentText.split("\n");
+	const changes = Diff.diffArrays(previousLines, currentLines);
 	const map = new Map<number, number>();
 	let previousLine = 1;
 	let currentLine = 1;
 
 	for (const change of changes) {
-		const count = change.count;
+		const count = change.value.length;
 		if (change.added) {
 			currentLine += count;
 			continue;
@@ -99,9 +68,9 @@ function collectDuplicatedValues(lines: readonly string[]): Set<string> {
 }
 
 interface AnchorNeighbors {
-	/** Nearest non-anchor line below the anchor's run, or `undefined` at the file edge. */
+	/** Nearest non-anchor line above the anchor's run (`start - 1`), or `undefined` at the file edge. */
 	before: number | undefined;
-	/** Nearest non-anchor line above the anchor's run, or `undefined` at the file edge. */
+	/** Nearest non-anchor line below the anchor's run (`end + 1`), or `undefined` at the file edge. */
 	after: number | undefined;
 }
 
@@ -167,7 +136,7 @@ function validateRemappedAnchorContext(
 ): boolean {
 	const previousLines = previousText.split("\n");
 	const currentLines = currentText.split("\n");
-	const anchorLines = new Set(collectAnchorLines(edits));
+	const anchorLines = new Set(collectEditAnchorLines(edits));
 	// Precompute once per validation pass: which line values are duplicated,
 	// and each anchor's nearest non-anchor context. The per-anchor forms —
 	// indexOf/lastIndexOf full-file scans plus directional walks across
@@ -230,70 +199,23 @@ function remapEditsToCurrent(previousText: string, currentText: string, edits: r
 			remapped.push({ ...edit, anchor });
 			continue;
 		}
-		if (edit.kind === "cut") {
-			// Map every captured line; an unmapped interior line means the
-			// content drifted and cannot be moved safely. Uniform offsets keep
-			// the mapped range contiguous.
-			const start = mapLine(edit.range.start.line);
-			if (start === null) return null;
-			let end = start;
-			for (let line = edit.range.start.line + 1; line <= edit.range.end.line; line++) {
-				const mapped = mapLine(line);
-				if (mapped === null) return null;
-				end = mapped;
-			}
-			remapped.push({ ...edit, range: { start: { line: start }, end: { line: end } } });
+
+		let blockStart = edit.blockStart;
+		if (blockStart !== undefined) {
+			const mappedBlockStart = mapLine(blockStart);
+			if (mappedBlockStart === null) return null;
+			blockStart = mappedBlockStart;
+		}
+
+		const cursor = edit.cursor;
+		if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
+			remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
 			continue;
 		}
-		if (edit.kind === "paste") {
-			let blockStart = edit.blockStart;
-			if (blockStart !== undefined) {
-				const mappedBlockStart = mapLine(blockStart);
-				if (mappedBlockStart === null) return null;
-				blockStart = mappedBlockStart;
-			}
-			if (edit.at.kind === "span") {
-				const start = mapLine(edit.at.range.start.line);
-				if (start === null) return null;
-				let end = start;
-				for (let line = edit.at.range.start.line + 1; line <= edit.at.range.end.line; line++) {
-					const mapped = mapLine(line);
-					if (mapped === null) return null;
-					end = mapped;
-				}
-				remapped.push({
-					...edit,
-					at: { kind: "span", range: { start: { line: start }, end: { line: end } } },
-					blockStart,
-				});
-				continue;
-			}
-			const cursor = edit.at.cursor;
-			if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
-				remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
-				continue;
-			}
-			const anchor = mapAnchor(cursor.anchor);
-			if (anchor === null) return null;
-			remapped.push({ ...edit, at: { kind: "gap", cursor: { kind: cursor.kind, anchor } }, blockStart });
-			continue;
-		}
-		if (edit.kind === "insert") {
-			let blockStart = edit.blockStart;
-			if (blockStart !== undefined) {
-				const mappedBlockStart = mapLine(blockStart);
-				if (mappedBlockStart === null) return null;
-				blockStart = mappedBlockStart;
-			}
-			const cursor = edit.cursor;
-			if (cursor.kind !== "before_anchor" && cursor.kind !== "after_anchor") {
-				remapped.push(blockStart === edit.blockStart ? edit : { ...edit, blockStart });
-				continue;
-			}
-			const anchor = mapAnchor(cursor.anchor);
-			if (anchor === null) return null;
-			remapped.push({ ...edit, cursor: { kind: cursor.kind, anchor }, blockStart });
-		}
+
+		const anchor = mapAnchor(cursor.anchor);
+		if (anchor === null) return null;
+		remapped.push({ ...edit, cursor: { kind: cursor.kind, anchor }, blockStart });
 	}
 
 	if (offsets.length === 0) return null;
@@ -307,18 +229,16 @@ function replayRemappedAnchorsOnCurrent(
 	currentText: string,
 	edits: readonly Edit[],
 	recoveryWarning: string,
-	clipboard: Clipboard | undefined,
-	path: string,
 ): RecoveryResult | null {
 	const remapped = remapEditsToCurrent(previousText, currentText, edits);
 	if (remapped === null) return null;
 	let applied: ApplyResult;
 	try {
-		applied = applyEdits(currentText, remapped.edits, {
-			...(clipboard === undefined ? {} : { clipboard }),
-			path,
-		});
+		applied = applyEdits(currentText, remapped.edits);
 	} catch {
+		// Recovery is an ATTEMPT: null means "these edits could not be replayed onto the current text", which
+		// is the same answer a failed remap gives above, and the caller then reports the original conflict to
+		// the user rather than a recovery failure. Applying half of them would corrupt the file.
 		return null;
 	}
 	if (applied.text === currentText) return null;
@@ -345,13 +265,13 @@ export class Recovery {
 	 * caller should then surface a {@link MismatchError}.
 	 */
 	tryRecover(args: RecoveryArgs): RecoveryResult | null {
-		const { path, currentText, fileHash, edits, clipboard } = args;
+		const { path, currentText, fileHash, edits } = args;
 		// When retained texts collide on the 16-bit tag, use the latest one.
 		// Recovery still requires its anchors and context to map unambiguously.
 		const snapshot = this.store.byHash(path, fileHash);
 		if (!snapshot) return null;
 		const recoveryWarning =
 			this.store.head(path) === snapshot ? RECOVERY_EXTERNAL_WARNING : RECOVERY_SESSION_CHAIN_WARNING;
-		return replayRemappedAnchorsOnCurrent(snapshot.text, currentText, edits, recoveryWarning, clipboard, path);
+		return replayRemappedAnchorsOnCurrent(snapshot.text, currentText, edits, recoveryWarning);
 	}
 }

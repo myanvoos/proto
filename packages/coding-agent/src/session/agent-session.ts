@@ -16,7 +16,7 @@
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
-import type { Clipboard, InMemorySnapshotStore } from "@oh-my-pi/hashline";
+import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import {
 	type AfterToolCallContext,
 	type AfterToolCallResult,
@@ -431,8 +431,6 @@ export class AgentSession {
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
 	fileSnapshotStore?: InMemorySnapshotStore;
-	/** Per-session `CUT`/`PASTE` clipboard register shared across edit calls. */
-	editClipboard?: Clipboard;
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
 

@@ -1,4 +1,4 @@
-import type { Clipboard, InMemorySnapshotStore } from "@oh-my-pi/hashline";
+import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -335,8 +335,6 @@ export interface ToolSession {
 	fileSnapshotStore?: InMemorySnapshotStore;
 
 	/** Per-session `CUT`/`PASTE` clipboard register shared across edit
-	 *  calls. Lazily initialized by `getEditClipboard`. */
-	editClipboard?: Clipboard;
 
 	/** Per-session log of unresolved git merge conflict regions surfaced by
 	 *  `read`. Each entry gets a stable id N referenced by `write conflict://N`

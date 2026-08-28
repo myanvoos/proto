@@ -10,7 +10,7 @@ import {
 	type EditToolDetails,
 	executeHashlineSingle,
 	executePatchSingle,
-	executeReplace,
+	executeReplaceSingle,
 	type hashlineEditParamsSchema,
 } from "@oh-my-pi/pi-coding-agent/edit";
 import { HashlineFilesystem } from "@oh-my-pi/pi-coding-agent/edit/hashline/filesystem";
@@ -228,7 +228,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+    const v0 = 100;`,
+			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+    const v0 = 100;`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -252,7 +252,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 		const nextTag = extractTag(text);
 		const followUp = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${nextTag}]\nPUT 1-1:\n+function g() {`,
+			input: `[${relPath}#${nextTag}]\nSWAP 1.=1:\n+function g() {`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -273,7 +273,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+earth`,
+			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+earth`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -304,7 +304,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+print('new')`,
+			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+print('new')`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -314,7 +314,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 		const nextTag = extractTag(text);
 		const followUp = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${nextTag}]\nPUT 2-2:\n+print('newer')`,
+			input: `[${relPath}#${nextTag}]\nSWAP 2.=2:\n+print('newer')`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -325,9 +325,9 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 	});
 });
 
-// ─── executeReplace ─────────────────────────────────────────────────────────
+// ─── executeReplaceSingle ─────────────────────────────────────────────────────────
 
-describe("executeReplace ACP fs routing", () => {
+describe("executeReplaceSingle ACP fs routing", () => {
 	let tmpDir: string;
 
 	beforeEach(async () => {
@@ -349,10 +349,10 @@ describe("executeReplace ACP fs routing", () => {
 		const { writethrough, spy: writeSpy } = makeWritethroughMock();
 		const session = createSession(tmpDir, { bridge });
 
-		await executeReplace({
+		await executeReplaceSingle({
 			session,
 			path: filePath,
-			params: { old_string: "old content", new_string: "new content", replace_all: false },
+			params: { old_text: "old content", new_text: "new content", all: false },
 			allowFuzzy: false,
 			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
 			writethrough,

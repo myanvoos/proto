@@ -285,15 +285,19 @@ export const isOpenAISamplingRestrictedModelId = memo((modelId: string): boolean
 
 /**
  * Reasoning-capable GLM coding SKUs: glm-4.5 and up on the base / `-air` /
- * `-turbo` lines. Excludes the vision (`…v`) shape, the non-reasoning
- * `-flash`/`-flashx`/`-preview` variants, and pre-4.5 ids. Matching the family
- * keeps newly-bumped integers (`glm-5.3`, `glm-6`, …) covered without a per-id
- * allowlist.
+ * `-turbo` lines, plus the `-flash` line from glm-5.3 on (flash joined the
+ * reasoning family with 5.3's uniform low/high/max template). Excludes the
+ * vision (`…v`) shape, `-flashx`/`-preview`, and pre-4.5 ids. Matching the
+ * family keeps newly-bumped integers (`glm-5.3`, `glm-6`, …) covered without
+ * a per-id allowlist.
  */
 export const isReasoningGlmModelId = memo((modelId: string): boolean => {
 	const glm = parseGlmModel(bareModelId(modelId));
 	if (!glm || glm.vision) {
 		return false;
+	}
+	if (glm.variant === "flash") {
+		return semverGte(glm.version, "5.3");
 	}
 	if (glm.variant !== "base" && glm.variant !== "air" && glm.variant !== "turbo") {
 		return false;
@@ -317,16 +321,17 @@ export const isGlm52ReasoningEffortModelId = memo((modelId: string): boolean => 
  * GLM-5.3+ coding SKUs. Unlike GLM-5.2 (whose reasoning_effort dialect is
  * host-specific), GLM-5.3+ exposes a uniform wire-exact `low`/`high`/`max`
  * ladder on every host, and thinking can no longer be disabled —
- * `thinking.type` must always be `enabled`. Matching the family keeps future
- * bumps (`glm-5.4`, `glm-6`, …) covered while excluding the vision (`…v`)
- * shape and the non-reasoning `-flash`/`-flashx`/`-preview` variants.
+ * `thinking.type` must always be `enabled`. The `-flash` line is in scope
+ * from 5.3 on (it ships the same always-on template); `-flashx`/`-preview`
+ * and the vision (`…v`) shape stay out. Matching the family keeps future
+ * bumps (`glm-5.4`, `glm-6`, …) covered without a per-id allowlist.
  */
 export const isGlm53ReasoningEffortModelId = memo((modelId: string): boolean => {
 	const glm = parseGlmModel(bareModelId(modelId));
 	if (!glm || glm.vision) {
 		return false;
 	}
-	if (glm.variant !== "base" && glm.variant !== "air" && glm.variant !== "turbo") {
+	if (glm.variant !== "base" && glm.variant !== "air" && glm.variant !== "turbo" && glm.variant !== "flash") {
 		return false;
 	}
 	return semverGte(glm.version, "5.3");

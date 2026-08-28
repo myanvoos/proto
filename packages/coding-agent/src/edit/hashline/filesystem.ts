@@ -3,8 +3,8 @@
  *
  * Wires hashline's storage abstraction to the agent runtime:
  *
- * - Section paths are resolved through `resolveAuthoredPath`, honoring the
- *   `local://`/`vault://` schemes and stripping bracketed hashline headers.
+ * - Section paths are resolved through the plan-mode redirect so a bare
+ *   `PLAN.md` lands at the canonical session artifact location.
  * - Reads go through `readEditFileText` (notebook-aware) and the
  *   auto-generated-file guard.
  * - Writes go through `serializeEditFileText` (notebook-aware) and the
@@ -18,22 +18,28 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Filesystem, NotFoundError, type WriteResult } from "@oh-my-pi/hashline";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import {
+	Filesystem,
+	NotFoundError,
+	type PreflightWriteOptions,
+	sameExistingFile,
+	type WriteResult,
+} from "@oh-my-pi/hashline";
+import { atomicWriteFilePreservingMode, isEnoent } from "@oh-my-pi/pi-utils";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
-import { deleteFileWithFallback, writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
-import { isInternalUrlPath, resolveAuthoredPath, targetsLocalSandbox } from "../../tools/path-utils";
+import { isInternalUrlPath } from "../../tools/path-utils";
+import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
 
-interface HashlineFilesystemOptions {
+export interface HashlineFilesystemOptions {
 	session: ToolSession;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
@@ -84,7 +90,7 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	resolveAbsolute(relativePath: string): string {
-		return resolveAuthoredPath(this.session, relativePath);
+		return resolvePlanPath(this.session, relativePath);
 	}
 
 	override canonicalPath(relativePath: string): string {
@@ -99,7 +105,7 @@ export class HashlineFilesystem extends Filesystem {
 		// snapshot tag uniquely names. Confine the redirect to locations a plain
 		// "write" may legitimately target:
 		//  1. the working tree (the model dropped the directory), or
-		//  2. the session `local://` sandbox where session artifacts live —
+		//  2. the session `local://` sandbox where plan/scratch artifacts live —
 		//     the snapshot tag proves the model wrote/read that exact file this
 		//     session, so a bare `plan.md#tag` should land on `local://plan.md`.
 		// The secret vault and any other out-of-tree path stay refused.
@@ -121,7 +127,7 @@ export class HashlineFilesystem extends Filesystem {
 			throw error;
 		}
 		// Refuse edits against generated files (lockfiles, models.json, …).
-		assertEditableFileContent(content, relativePath, this.session.settings);
+		assertEditableFileContent(content, relativePath);
 		return content;
 	}
 
@@ -136,10 +142,24 @@ export class HashlineFilesystem extends Filesystem {
 		}
 	}
 
+	override async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
+		const fileOp = options?.fileOp;
+		if (fileOp?.kind === "rem") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
+			return;
+		}
+		if (fileOp?.kind === "move") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "update", move: fileOp.dest });
+			return;
+		}
+		enforcePlanModeWrite(this.session, relativePath, { op: "update" });
+	}
+
 	override async delete(relativePath: string): Promise<void> {
+		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
-			await deleteFileWithFallback(absolutePath);
+			await fs.rm(absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
@@ -155,16 +175,28 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	override async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
+		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
 		const fromAbsolute = this.resolveAbsolute(fromRelative);
 		const toAbsolute = this.resolveAbsolute(toRelative);
 		if (content !== undefined) {
-			// The one `edit` write that does not pass through the writethrough, so it
-			// routes to the fallback seam directly. `patcher.ts` always supplies
-			// `content` for a hashline `MV`, making this the live branch. The source
-			// unlink is a separate primitive with its own seam, so a move out of the
-			// workspace and a move out of denied territory both complete.
-			await writeFileWithFallback(toAbsolute, content);
-			await deleteFileWithFallback(fromAbsolute);
+			// A content-move writes the destination then removes the source. When
+			// `from` and `to` are the SAME underlying file — a case-only rename on a
+			// case-insensitive volume, or a destination reached through a symlink —
+			// the `rm` would erase the bytes just written. The patcher's MV guard
+			// compares realpath-collapsed keys and normally catches this, but the
+			// primitive must not depend on one caller's check: detect same-file here
+			// by device + inode and skip the removal.
+			//
+			// The destination write is atomic (temp + rename) so a crash mid-write
+			// cannot corrupt a pre-existing file the move overwrites, and it carries
+			// that file's mode forward. The same-file guard still holds: for a
+			// symlinked `to`, the atomic write resolves the link and replaces the
+			// shared target, so `sameExistingFile` compares the post-rename inode of
+			// both names, sees they match, and correctly skips the `rm`.
+			await atomicWriteFilePreservingMode(toAbsolute, content);
+			if (!(await sameExistingFile(fromAbsolute, toAbsolute))) {
+				await fs.rm(fromAbsolute);
+			}
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}
@@ -188,33 +220,9 @@ export class HashlineFilesystem extends Filesystem {
 		const finalContent = await serializeEditFileText(absolutePath, relativePath, content);
 
 		// Route through ACP bridge when available; skips internal artifacts.
-		// `finalContent` is storage-space (e.g. a notebook's full JSON); the
-		// bridge may also report content that diverges from it (e.g. the
-		// client reformatted on save). `WriteResult.text` must stay in
-		// view-space — the same space `readText` returns — so a follow-up
-		// `readText` sees exactly what this write reports.
-		const bridgeResult = await routeWriteThroughBridge(
-			this.session,
-			relativePath,
-			absolutePath,
-			finalContent,
-			this.#signal,
-		);
-		if (bridgeResult) {
+		if (await routeWriteThroughBridge(this.session, relativePath, absolutePath, finalContent, this.#signal)) {
 			this.#diagnosticsByPath.set(relativePath, undefined);
-			if (!bridgeResult.driftedFromRequest) {
-				// No client-side transform: the view we sent is what's on disk.
-				return { text: content };
-			}
-			// Drifted (e.g. format-on-save): re-derive the view from what
-			// actually landed on disk instead of assuming `content` still
-			// matches. Falls back to `content` if the drifted file can't be
-			// re-read as a valid view (e.g. a formatter broke notebook JSON).
-			try {
-				return { text: await readEditFileText(absolutePath, relativePath) };
-			} catch {
-				return { text: content };
-			}
+			return { text: finalContent };
 		}
 
 		const diagnostics = await this.#writethrough(
@@ -227,7 +235,7 @@ export class HashlineFilesystem extends Filesystem {
 		);
 		invalidateFsScanAfterWrite(absolutePath);
 		this.#diagnosticsByPath.set(relativePath, diagnostics);
-		return { text: content };
+		return { text: finalContent };
 	}
 
 	override async exists(relativePath: string): Promise<boolean> {

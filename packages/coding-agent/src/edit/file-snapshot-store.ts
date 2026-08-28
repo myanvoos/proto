@@ -66,6 +66,40 @@ export function canonicalSnapshotKey(absolutePath: string): string {
 }
 
 /**
+ * The 1-indexed line numbers `count` lines from `startLine`, inclusive.
+ *
+ * ONE owner for a calculation three producers need: range reads, raw reads and
+ * the post-write snapshot all have to say WHICH lines their content covered,
+ * and each of them previously either hand-rolled the loop or skipped the
+ * argument entirely. Callers pass the result as a snapshot's `seenLines`.
+ */
+export function contiguousLineNumbers(startLine: number, count: number): number[] {
+	const lines: number[] = [];
+	for (let offset = 0; offset < count; offset++) lines.push(startLine + offset);
+	return lines;
+}
+
+/**
+ * Every line of `normalizedText`, as `seenLines` for a snapshot the model
+ * authored in full.
+ *
+ * WHY A WRITE RECORDS THIS RATHER THAN NOTHING. The hashline patcher's
+ * unseen-anchor gate reads `snapshot.seenLines` and returns early when the set
+ * is absent or empty, so a snapshot recorded without provenance has the gate
+ * switched OFF rather than satisfied. A write is the one case where the model
+ * demonstrably saw every byte -- it produced them -- so the honest record is
+ * "all lines seen", and the gate then RUNS and passes. The observable behaviour
+ * is the same today; what changes is that post-write edits stop depending on an
+ * implicit "empty means skip" reading that a future change to the gate could
+ * silently invert into "no lines seen, refuse every anchor".
+ */
+export function allLineNumbers(normalizedText: string): number[] {
+	let lines = 1;
+	for (let i = 0; i < normalizedText.length; i++) if (normalizedText.charCodeAt(i) === 10) lines++;
+	return contiguousLineNumbers(1, lines);
+}
+
+/**
  * Read the full text of `absolutePath` (within {@link SNAPSHOT_MAX_BYTES}),
  * record it as a version snapshot, and return its content-hash tag. Returns
  * `undefined` when the file exceeds the cap or cannot be read — callers then
@@ -77,18 +111,35 @@ export function canonicalSnapshotKey(absolutePath: string): string {
  * validates whenever the live file is byte-identical to what was read. Raw
  * reads pass `seenLines` even though they do not emit a header, letting a prior
  * or later same-content hashline tag inherit the raw range's provenance.
+ *
+ * `normalizedText` is the file's text a caller has ALREADY read and normalized in
+ * this same operation. Passing it makes the tag fingerprint the bytes the caller
+ * displayed rather than whatever a second read finds, and saves that read: a
+ * bounded range read of a 3.5MiB file used to touch it three times, once here.
  */
 export async function recordFileSnapshot(
 	session: FileSnapshotStoreOwner,
 	absolutePath: string,
 	seenLines?: Iterable<number>,
+	normalizedText?: string,
 ): Promise<string | undefined> {
 	try {
+		if (normalizedText !== undefined) {
+			// The cap is one rule, not one per path: a caller that read the file itself is held to the
+			// same ceiling as the read below, so an over-size file yields no tag either way.
+			if (Buffer.byteLength(normalizedText) > SNAPSHOT_MAX_BYTES) return undefined;
+			return getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalizedText, seenLines);
+		}
 		const file = Bun.file(absolutePath);
 		if (file.size > SNAPSHOT_MAX_BYTES) return undefined;
 		const normalized = normalizeToLF(await file.text());
 		return getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized, seenLines);
 	} catch {
+		// A snapshot is taken BEFORE an edit so the edit can be described against it, and a file that does
+		// not exist yet is the ordinary case for a write. Undefined means "no snapshot to compare against",
+		// which the caller already handles the same way it handles the over-size case on the line above:
+		// the edit proceeds and is described without a before-image. The edit itself never depends on this,
+		// and a file the reader cannot read will fail loudly at the edit instead.
 		return undefined;
 	}
 }
@@ -131,18 +182,27 @@ export function recordSeenLines(
 }
 
 /**
- * Attach the lines a read displayed to the snapshot it minted, so the patcher's
- * (opt-in) seen-line guard can reject edits anchored on lines the model never
- * saw. Best-effort: a no-op when the body has no numbered rows or the snapshot
- * already aged out. `tag` must be the tag returned when this exact content was
- * recorded. Every displayed `NN:` row counts as seen, including column-clipped
- * rows — the guard no longer distinguishes full-width from truncated display.
+ * Attach the lines a read displayed to the snapshot it minted, so the patcher
+ * can reject edits anchored on lines the model never saw. Best-effort: a no-op
+ * when the body has no numbered rows or the snapshot already aged out. `tag`
+ * must be the tag returned when this exact content was recorded.
+ *
+ * `excludedLines` prunes 1-indexed line numbers whose displayed text was
+ * column-truncated (or otherwise not shown in full). A column-clipped row
+ * still carries a `NN:` prefix — the parser sees the number and would
+ * otherwise mark the line "seen" even though only its prefix ever reached
+ * the model. Producers that apply per-line column truncation MUST supply
+ * the clipped line set so the patcher's seen-line guard keeps rejecting
+ * edits against those lines until a full-width read of them occurs.
  */
 export function recordSeenLinesFromBody(
 	session: FileSnapshotStoreOwner,
 	absolutePath: string,
 	tag: string,
 	body: string,
+	excludedLines?: ReadonlySet<number>,
 ): void {
-	recordSeenLines(session, absolutePath, tag, parseSeenLinesFromHashlineBody(body));
+	const parsed = parseSeenLinesFromHashlineBody(body);
+	const filtered = excludedLines && excludedLines.size > 0 ? parsed.filter(line => !excludedLines.has(line)) : parsed;
+	recordSeenLines(session, absolutePath, tag, filtered);
 }

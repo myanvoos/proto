@@ -531,7 +531,7 @@ describe("Coding Agent Tools", () => {
 	});
 
 	beforeEach(() => {
-		// Force replace mode for edit tool tests using old_string/new_string
+		// Force replace mode for edit tool tests using old_text/new_text
 		originalEditVariant = Bun.env.PI_EDIT_VARIANT;
 		Bun.env.PI_EDIT_VARIANT = "replace";
 
@@ -666,8 +666,7 @@ describe("Coding Agent Tools", () => {
 
 			await noLspEditTool.execute("test-edit-ipynb", {
 				path: notebookPath,
-				old_string: "print('old')",
-				new_string: "print('new')",
+				edits: [{ old_text: "print('old')", new_text: "print('new')" }],
 			});
 
 			const updated = JSON.parse(fs.readFileSync(notebookPath, "utf-8"));
@@ -1794,8 +1793,7 @@ describe("Coding Agent Tools", () => {
 
 			const result = await editTool.execute("test-call-5", {
 				path: testFile,
-				old_string: "world",
-				new_string: "testing",
+				edits: [{ old_text: "world", new_text: "testing" }],
 			});
 			const details = result.details as { diff?: string } | undefined;
 
@@ -1810,8 +1808,7 @@ describe("Coding Agent Tools", () => {
 			await expect(
 				editTool.execute("test-call-6", {
 					path: testFile,
-					old_string: "nonexistent",
-					new_string: "testing",
+					edits: [{ old_text: "nonexistent", new_text: "testing" }],
 				}),
 			).rejects.toThrow(/Could not find/);
 		});
@@ -1824,21 +1821,18 @@ describe("Coding Agent Tools", () => {
 			await expect(
 				editTool.execute("test-call-7", {
 					path: testFile,
-					old_string: "foo",
-					new_string: "bar",
+					edits: [{ old_text: "foo", new_text: "bar" }],
 				}),
 			).rejects.toThrow(/Found 3 occurrences/);
 		});
 
-		it("should replace all occurrences with replace_all: true", async () => {
+		it("should replace all occurrences with all: true", async () => {
 			const testFile = path.join(testDir, "edit-all-test.txt");
 			fs.writeFileSync(testFile, "foo bar foo baz foo");
 
 			const result = await editTool.execute("test-all-1", {
 				path: testFile,
-				old_string: "foo",
-				new_string: "qux",
-				replace_all: true,
+				edits: [{ old_text: "foo", new_text: "qux", all: true }],
 			});
 
 			expect(getTextOutput(result)).toContain("Successfully replaced 3 occurrences");
@@ -1846,7 +1840,7 @@ describe("Coding Agent Tools", () => {
 			expect(content).toBe("qux bar qux baz qux");
 		});
 
-		it("should reject replace_all: true when multiple fuzzy matches are ambiguous", async () => {
+		it("should reject all: true when multiple fuzzy matches are ambiguous", async () => {
 			const testFile = path.join(testDir, "edit-all-fuzzy.txt");
 			// File has two similar blocks with different indentation
 			fs.writeFileSync(
@@ -1868,36 +1862,30 @@ function b() {
 			await expect(
 				editTool.execute("test-all-fuzzy", {
 					path: testFile,
-					old_string: "if (x) {\n  doThing();\n}",
-					new_string: "if (y) {\n  doOther();\n}",
-					replace_all: true,
+					edits: [{ old_text: "if (x) {\n  doThing();\n}", new_text: "if (y) {\n  doOther();\n}", all: true }],
 				}),
 			).rejects.toThrow(/Found 2 high-confidence matches/);
 		});
 
-		it("should fail with replace_all: true if no matches found", async () => {
+		it("should fail with all: true if no matches found", async () => {
 			const testFile = path.join(testDir, "edit-all-nomatch.txt");
 			fs.writeFileSync(testFile, "hello world");
 
 			await expect(
 				editTool.execute("test-all-nomatch", {
 					path: testFile,
-					old_string: "nonexistent",
-					new_string: "bar",
-					replace_all: true,
+					edits: [{ old_text: "nonexistent", new_text: "bar", all: true }],
 				}),
 			).rejects.toThrow(/Could not find/);
 		});
 
-		it("should replace multiline text with replace_all: true", async () => {
+		it("should replace multiline text with all: true", async () => {
 			const testFile = path.join(testDir, "edit-all-multiline.txt");
 			fs.writeFileSync(testFile, "start\nfoo\nbar\nend\nstart\nfoo\nbar\nend");
 
 			const result = await editTool.execute("test-all-multiline", {
 				path: testFile,
-				old_string: "foo\nbar",
-				new_string: "replaced",
-				replace_all: true,
+				edits: [{ old_text: "foo\nbar", new_text: "replaced", all: true }],
 			});
 
 			expect(getTextOutput(result)).toContain("Successfully replaced 2 occurrences");
@@ -1905,15 +1893,13 @@ function b() {
 			expect(content).toBe("start\nreplaced\nend\nstart\nreplaced\nend");
 		});
 
-		it("should work with replace_all: true when only one occurrence exists", async () => {
+		it("should work with all: true when only one occurrence exists", async () => {
 			const testFile = path.join(testDir, "edit-all-single.txt");
 			fs.writeFileSync(testFile, "hello world");
 
 			const result = await editTool.execute("test-all-single", {
 				path: testFile,
-				old_string: "world",
-				new_string: "universe",
-				replace_all: true,
+				edits: [{ old_text: "world", new_text: "universe", all: true }],
 			});
 
 			expect(getTextOutput(result)).toContain("Successfully replaced text");
@@ -1931,8 +1917,8 @@ function b() {
 			const result = await editTool.execute("test-batch-1", {
 				path: testFile,
 				edits: [
-					{ old_string: "alpha", new_string: "ALPHA" },
-					{ old_string: "beta", new_string: "BETA" },
+					{ old_text: "alpha", new_text: "ALPHA" },
+					{ old_text: "beta", new_text: "BETA" },
 				],
 			});
 
@@ -2498,7 +2484,7 @@ describe("edit tool CRLF handling", () => {
 	let originalEditVariant: string | undefined;
 
 	beforeEach(() => {
-		// Force replace mode for edit tool tests using old_string/new_string
+		// Force replace mode for edit tool tests using old_text/new_text
 		originalEditVariant = Bun.env.PI_EDIT_VARIANT;
 		Bun.env.PI_EDIT_VARIANT = "replace";
 
@@ -2518,15 +2504,14 @@ describe("edit tool CRLF handling", () => {
 		}
 	});
 
-	it("should match LF old_string against CRLF file content", async () => {
+	it("should match LF old_text against CRLF file content", async () => {
 		const testFile = path.join(testDir, "crlf-test.txt");
 
 		fs.writeFileSync(testFile, "line one\r\nline two\r\nline three\r\n");
 
 		const result = await editTool.execute("test-crlf-1", {
 			path: testFile,
-			old_string: "line two\n",
-			new_string: "replaced line\n",
+			edits: [{ old_text: "line two\n", new_text: "replaced line\n" }],
 		});
 
 		expect(getTextOutput(result)).toContain("Successfully replaced");
@@ -2538,8 +2523,7 @@ describe("edit tool CRLF handling", () => {
 
 		await editTool.execute("test-crlf-2", {
 			path: testFile,
-			old_string: "second\n",
-			new_string: "REPLACED\n",
+			edits: [{ old_text: "second\n", new_text: "REPLACED\n" }],
 		});
 
 		const content = await Bun.file(testFile).text();
@@ -2552,8 +2536,7 @@ describe("edit tool CRLF handling", () => {
 
 		await editTool.execute("test-lf-1", {
 			path: testFile,
-			old_string: "second\n",
-			new_string: "REPLACED\n",
+			edits: [{ old_text: "second\n", new_text: "REPLACED\n" }],
 		});
 
 		const content = await Bun.file(testFile).text();
@@ -2568,8 +2551,7 @@ describe("edit tool CRLF handling", () => {
 		await expect(
 			editTool.execute("test-crlf-dup", {
 				path: testFile,
-				old_string: "hello\nworld\n",
-				new_string: "replaced\n",
+				edits: [{ old_text: "hello\nworld\n", new_text: "replaced\n" }],
 			}),
 		).rejects.toThrow(/Found 2 occurrences/);
 	});
@@ -2581,8 +2563,7 @@ describe("edit tool CRLF handling", () => {
 
 		await editTool.execute("test-bom", {
 			path: testFile,
-			old_string: "second\n",
-			new_string: "REPLACED\n",
+			edits: [{ old_text: "second\n", new_text: "REPLACED\n" }],
 		});
 
 		const content = await Bun.file(testFile).text();

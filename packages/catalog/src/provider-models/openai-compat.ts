@@ -12,6 +12,7 @@ import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-mo
 import { getBundledModelReferenceIndex } from "../identity/bundled";
 import {
 	anthropicModelSupportsThinking,
+	isGlm53ReasoningEffortModelId,
 	isGlmVisionModelId,
 	isGrokReasoningEffortCapable,
 	isKimiK3ModelId,
@@ -5273,10 +5274,15 @@ export function vllmModelManagerOptions(config?: VllmModelManagerConfig): ModelM
 						...model,
 						contextWindow: toPositiveNumber(entry.max_model_len, model.contextWindow),
 						// vLLM's /v1/models reports no reasoning capability. Qwen 3.8+
-						// open weights always think (the template cannot disable it), so
-						// light up the effort dial; buildModel derives the template
-						// ladder from the id + local-backend compat.
-						reasoning: model.reasoning || isQwen38PlusTemplateEffortModelId(model.id),
+						// open weights always think (the template cannot disable it),
+						// and GLM-5.3+ (the `-flash` line included) always thinks with
+						// a wire-exact low/high/max ladder — light up the effort dial;
+						// buildModel derives the template ladder from the id +
+						// local-backend compat.
+						reasoning:
+							model.reasoning ||
+							isQwen38PlusTemplateEffortModelId(model.id) ||
+							isGlm53ReasoningEffortModelId(model.id),
 					};
 				},
 				fetch: config?.fetch,

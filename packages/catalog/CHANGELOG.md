@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed GLM-5.3 flash SKUs (e.g. a vLLM-served `LibertAIDAI/GLM-5.3-Flash-NVFP4`) classifying as non-reasoning. The `-flash` line now joins the GLM-5.3 reasoning family with the wire-exact `low`/`high`/`max` ladder, mandatory thinking, and default level `max`.
 - Fixed `opencode-go/ox-alpha-free` sending `reasoning_effort: "xhigh"` for the top thinking tier, which the OpenCode Go gateway rejects; the model now uses the gateway's wire-exact `low`/`high`/`max` ladder with mandatory thinking so `--thinking max` reaches the real max tier (#9349).
 - Fixed Venice-hosted Qwen models (e.g. `venice/qwen3-6-35b-a3b`) failing with `400 Invalid request parameters`. Reasoning levels now use the accepted OpenAI-style `reasoning_effort` field, while Thinking Off sends Venice's explicit `venice_parameters.disable_thinking` flag (#9345).
 - Fixed gateway-first OpenCode Zen and Go models missing context, output, image, and reasoning metadata by enriching live discovery from the current stencil catalog (#9272).

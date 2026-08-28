@@ -111,3 +111,14 @@ export function pluralize(label: string, count: number): string {
 export function formatPercent(ratio: number): string {
 	return `${(ratio * 100).toFixed(1)}%`;
 }
+
+/**
+ * It returns the COUNTED PHRASE only, without the leading ellipsis or the trailing
+ * expand hint, because the surfaces frame it differently on purpose: some wrap it in
+ * parentheses, some in brackets with a continuation offset, some append the expand
+ * key. Folding the decoration in would force nineteen callers to share a shape they
+ * do not share, which is how a helper gets copied instead of called.
+ */
+export function formatMoreLines(count: number): string {
+	return `${count} more ${pluralize("line", count)}`;
+}

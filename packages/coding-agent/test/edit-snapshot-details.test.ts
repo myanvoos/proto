@@ -11,7 +11,7 @@ import {
 	type EditToolDetails,
 	executeHashlineSingle,
 	executePatchSingle,
-	executeReplace,
+	executeReplaceSingle,
 	getFileSnapshotStore,
 	MAX_EDIT_SNAPSHOT_TEXT_CHARS,
 	pruneOversizedEditSnapshots,
@@ -155,14 +155,14 @@ describe("executePatchSingle on oversized files", () => {
 	});
 });
 
-describe("executeReplace on oversized files", () => {
+describe("executeReplaceSingle on oversized files", () => {
 	test("prunes oldText / newText while keeping diff", async () => {
 		await Bun.write(path.join(tempDir, "big.txt"), `${FILLER}LINE A\n${FILLER}`);
 
-		const result = await executeReplace({
+		const result = await executeReplaceSingle({
 			session: makeSession(tempDir),
 			path: "big.txt",
-			params: { old_string: "LINE A", new_string: "LINE B" },
+			params: { old_text: "LINE A", new_text: "LINE B" },
 			allowFuzzy: false,
 			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
 			writethrough: writethroughNoop,
@@ -243,7 +243,7 @@ describe("executeHashlineSingle multi-section aggregate cap", () => {
 		}
 
 		const sections = tags.map((tag, i) =>
-			[formatHashlineHeader(`f${i}.ts`, tag), "PUT 1-1:", `+HEADER${i}`].join("\n"),
+			[formatHashlineHeader(`f${i}.ts`, tag), "SWAP 1.=1:", `+HEADER${i}`].join("\n"),
 		);
 		const input = sections.join("\n");
 

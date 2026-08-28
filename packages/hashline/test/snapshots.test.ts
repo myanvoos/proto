@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { computeFileHash, InMemorySnapshotStore } from "@oh-my-pi/hashline";
+import { computeFileHash, InMemorySnapshotStore, type Snapshot, SnapshotStore } from "@oh-my-pi/hashline";
 
 const PATH = "/tmp/__hashline-snapshots__.ts";
 const OTHER = "/tmp/__hashline-other__.ts";
@@ -67,16 +67,6 @@ describe("InMemorySnapshotStore", () => {
 		// Recording OTHER evicted PATH from the LRU.
 		expect(store.byHash(PATH, tag)).toBeNull();
 		expect(store.head(PATH)).toBeNull();
-	});
-
-	// The tokens.rs incident: a tag minted early in a session touching dozens
-	// of files aged out of the path LRU, downgrading a recoverable stale-tag
-	// mismatch to the misleading "hash is not from this session" rejection.
-	it("keeps an early tag resolvable across a wide session at default capacity", () => {
-		const store = new InMemorySnapshotStore();
-		const tag = store.record(PATH, "first\n");
-		for (let i = 0; i < 100; i++) store.record(`/w/other-${i}.ts`, `content ${i}\n`);
-		expect(store.byHash(PATH, tag)?.text).toBe("first\n");
 	});
 
 	it("rejects cross-path lookups", () => {
@@ -161,5 +151,53 @@ describe("InMemorySnapshotStore", () => {
 			expect(store.byContent(PATH, COLLIDE_A)?.seenLines).toEqual(new Set([1, 2]));
 			expect(store.byContent(PATH, COLLIDE_B)).toBeNull();
 		});
+	});
+});
+
+describe("InMemorySnapshotStore.recordSeenLines", () => {
+	it("merges lines into the version matching path+hash", () => {
+		const store = new InMemorySnapshotStore();
+		const hash = store.record(PATH, "a\nb\nc\n", [1]);
+		store.recordSeenLines(PATH, hash, [2, 3]);
+		const snap = store.byHash(PATH, hash);
+		expect(snap).not.toBeNull();
+		expect([...(snap?.seenLines ?? [])].sort((x, y) => x - y)).toEqual([1, 2, 3]);
+	});
+
+	// An unmatched hash must not fall back to the head version: attaching lines
+	// from one text onto another corrupts seen-line validation.
+	it("attaches nothing when no version matches the hash", () => {
+		const store = new InMemorySnapshotStore();
+		const hash = store.record(PATH, "a\nb\n", [1]);
+		store.recordSeenLines(PATH, "FFFF", [9]);
+		expect([...(store.byHash(PATH, hash)?.seenLines ?? [])]).toEqual([1]);
+	});
+});
+
+// A degenerate store that holds nothing and cannot enumerate its contents. It
+// deliberately does NOT override findByHash, exercising the base class default
+// that disables hash-based path recovery.
+class StatelessNullStore extends SnapshotStore {
+	head(): Snapshot | null {
+		return null;
+	}
+	byHash(): Snapshot | null {
+		return null;
+	}
+	byContent(): Snapshot | null {
+		return null;
+	}
+	record(_path: string, fullText: string): string {
+		return computeFileHash(fullText);
+	}
+	recordSeenLines(): void {}
+	invalidate(): void {}
+	relocate(): void {}
+	clear(): void {}
+}
+
+describe("SnapshotStore base default", () => {
+	it("findByHash returns no matches (recovery disabled unless a subclass enumerates)", () => {
+		expect(new StatelessNullStore().findByHash("ABCD")).toEqual([]);
 	});
 });

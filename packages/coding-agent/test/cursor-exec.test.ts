@@ -358,7 +358,7 @@ describe("Cursor MCP StrReplace fallback", () => {
 		expect(cursorMcpPrefersReplaceEdit("StrReplace", { path: "a", old_string: "x", new_string: "y" })).toBe(true);
 		expect(cursorMcpPrefersReplaceEdit("Edit", { path: "a", old_text: "x", new_text: "y" })).toBe(true);
 		expect(cursorMcpPrefersReplaceEdit("edit", { path: "a", old_string: "x", new_string: "y" })).toBe(true);
-		expect(cursorMcpPrefersReplaceEdit("edit", { input: "[a#0000]\nPUT 1.=1:\n+x\n" })).toBe(false);
+		expect(cursorMcpPrefersReplaceEdit("edit", { input: "[a#0000]\nSWAP 1.=1:\n+x\n" })).toBe(false);
 		expect(cursorMcpPrefersReplaceEdit("write", { path: "a", old_string: "x", new_string: "y" })).toBe(false);
 	});
 
@@ -431,7 +431,7 @@ describe("Cursor MCP StrReplace fallback", () => {
 			providerIdentifier: "pi-agent",
 			toolName: "edit",
 			toolCallId: "e-hl",
-			args: { input: "[missing.txt]\nPUT 1.=1:\n+x\n" },
+			args: { input: "[missing.txt]\nSWAP 1.=1:\n+x\n" },
 			rawArgs: {},
 		});
 

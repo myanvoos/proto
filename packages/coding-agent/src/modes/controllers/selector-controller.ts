@@ -58,6 +58,7 @@ import type { SessionEntry } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
+import { buildSessionTrajectory } from "../../session/trajectory/session-source";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import {
 	describeRedeemOutcome,
@@ -104,6 +105,7 @@ import { renderSegmentTrack } from "../components/segment-track";
 import { SessionSelectorComponent, type SessionSelectorOptions } from "../components/session-selector";
 import { SettingsSelectorComponent } from "../components/settings-selector";
 import { ToolExecutionComponent } from "../components/tool-execution";
+import { TrajectoryView } from "../components/trajectory-view";
 import { TranscriptBlock } from "../components/transcript-container";
 import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
@@ -470,6 +472,34 @@ export class SelectorController {
 			hideSubagents: scope === "global",
 			initialScopeIdentity,
 			initialScopeTitle,
+		});
+		overlayHandle = this.#showFullscreenMenu(view);
+	}
+
+	/**
+	 * Open the fullscreen trajectory ledger for the current session
+	 * (`/trajectory`). Snapshot at open time — live growth is not tailed.
+	 */
+	showTrajectoryView(): void {
+		const trajectory = buildSessionTrajectory(this.ctx.sessionManager);
+		if (trajectory.steps.length === 0) {
+			this.ctx.showStatus("Trajectory is empty — nothing logged yet");
+			return;
+		}
+		let overlayHandle: OverlayHandle | undefined;
+		let closed = false;
+		const done = () => {
+			if (closed) return;
+			closed = true;
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		const view = new TrajectoryView({
+			trajectory,
+			ui: this.ctx.ui,
+			requestRender: () => this.ctx.ui.requestRender(),
+			close: () => done(),
 		});
 		overlayHandle = this.#showFullscreenMenu(view);
 	}

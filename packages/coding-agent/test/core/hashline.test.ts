@@ -87,7 +87,7 @@ function hashlineExecuteOptions(
 describe("hashline executor", () => {
 	it("rejects file creation and directs to the write tool", async () => {
 		await withTempDir(async tempDir => {
-			const input = `[new.ts]\nPUT <1:\n${repl("export const x = 1;")}\n`;
+			const input = `[new.ts]\nINS.PRE 1:\n${repl("export const x = 1;")}\n`;
 			await expect(executeHashlineSingle(hashlineExecuteOptions(tempDir, input))).rejects.toThrow(/write tool/);
 			expect(await Bun.file(path.join(tempDir, "new.ts")).exists()).toBe(false);
 		});
@@ -317,14 +317,14 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 	it("tolerates provider extra fields without declaring `path`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
 			path: "x.ts",
-			input: `[x.ts]\nPUT <1:\n${repl("x")}`,
+			input: `[x.ts]\nINS.PRE 1:\n${repl("x")}`,
 		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects `_input` as an alias for `input`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
-			_input: `[x.ts]\nPUT <1:\n${repl("x")}`,
+			_input: `[x.ts]\nINS.PRE 1:\n${repl("x")}`,
 		});
 		expect(result.success).toBe(false);
 	});

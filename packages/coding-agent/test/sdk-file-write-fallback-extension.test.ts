@@ -220,7 +220,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 				// (not a temp path the fallback happened to route through).
 				const editTool = session.getToolByName("edit") as AgentTool | undefined;
 				expect(editTool).toBeDefined();
-				const editInput = `${headerLine}\nPUT 1-1:\n+export const value = 43;\n`;
+				const editInput = `${headerLine}\nSWAP 1.=1:\n+export const value = 43;\n`;
 				const editResult = await editTool!.execute("call-edit-1", { input: editInput });
 
 				expect(editResult.isError).not.toBe(true);
@@ -270,7 +270,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 
 				const editTool = session.getToolByName("edit") as AgentTool | undefined;
 				expect(editTool).toBeDefined();
-				const editInput = `${readHeaderLine}\nPUT 1-1:\n+export const enabled = true;\n`;
+				const editInput = `${readHeaderLine}\nSWAP 1.=1:\n+export const enabled = true;\n`;
 				const editResult = await editTool!.execute("call-edit-2", { input: editInput });
 
 				expect(editResult.isError).not.toBe(true);
@@ -323,7 +323,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 
 			const editTool = session.getToolByName("edit") as AgentTool | undefined;
 			expect(editTool).toBeDefined();
-			const editInput = [readHeaderLine, "PUT 1-1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n");
+			const editInput = [readHeaderLine, "SWAP 1.=1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n");
 			const editResult = await editTool!.execute("call-edit-mv", { input: editInput });
 
 			expect(editResult.isError).not.toBe(true);
@@ -358,7 +358,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 			expect(HASHLINE_HEADER_LINE.test(readHeaderLine)).toBe(true);
 
 			const editTool = session.getToolByName("edit") as AgentTool | undefined;
-			const editInput = [readHeaderLine, "PUT 1-1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n");
+			const editInput = [readHeaderLine, "SWAP 1.=1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n");
 			const editResult = await editTool!.execute("call-edit-plain-mv", { input: editInput });
 
 			expect(editResult.isError).not.toBe(true);
@@ -569,7 +569,7 @@ describe("registerFileWriteFallback end-to-end (real extension, real session)", 
 
 				const editTool = session.getToolByName("edit") as AgentTool | undefined;
 				const editResult = await editTool!.execute("call-edit-mv-out", {
-					input: [readHeaderLine, "PUT 1-1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n"),
+					input: [readHeaderLine, "SWAP 1.=1:", "+export const stage = 2;", `MV ${destPath}`, ""].join("\n"),
 				});
 
 				expect(editResult.isError).not.toBe(true);

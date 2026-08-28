@@ -24,8 +24,7 @@
  */
 import * as path from "node:path";
 import { applyEdits } from "./apply";
-import { hasBlockEdit, resolveBlockEdits } from "./block";
-import { commitClipboard, forkClipboard, startClipboardBatch, validateClipboardSequence } from "./clipboard";
+import { hasAnchorScopedEdit, hasBlockEdit, resolveBlockEdits } from "./block";
 import { computeFileHash, formatHashlineHeader } from "./format";
 import type { Filesystem, WriteResult } from "./fs";
 import { isNotFound } from "./fs";
@@ -36,14 +35,19 @@ import {
 	pathRecoveredFromTagMessage,
 	type RevealedLine,
 	unseenLinesMessage,
-	writeDriftWarning,
 } from "./messages";
 import { MismatchError } from "./mismatch";
-import { detectLineEnding, type LineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
-import { InvalidAbsoluteRangeError } from "./parser";
+import {
+	detectLineEnding,
+	hasUtf8Bom,
+	type LineEnding,
+	normalizeToLF,
+	restoreLineEndings,
+	stripBom,
+} from "./normalize";
 import { Recovery, type RecoveryResult } from "./recovery";
 import type { Snapshot, SnapshotStore } from "./snapshots";
-import type { ApplyResult, BlockResolution, BlockResolver, BlockSpan, Clipboard, Edit, FileOp } from "./types";
+import type { ApplyResult, BlockResolution, BlockResolver, Edit, FileOp } from "./types";
 
 /**
  * Upper bound on the number of unseen anchor lines whose actual file content
@@ -76,18 +80,6 @@ export interface PatcherOptions {
 	 * host did not wire a resolver). Plain line-range ops never need it.
 	 */
 	blockResolver?: BlockResolver;
-	/**
-	 * Enforce the seen-line guard: reject anchored edits on lines the read/search
-	 * that minted the tag never displayed. Defaults to `true`. When `false`, tags
-	 * validate on content hash alone and any anchor into the tagged content applies.
-	 */
-	enforceSeenLines?: boolean;
-	/**
-	 * Host-owned clipboard register shared across batches, so `CUT` content
-	 * can be `PASTE`d by a later {@link Patcher.apply} call. Each batch works
-	 * on a fork and publishes it back only after writes land.
-	 */
-	clipboard?: Clipboard;
 }
 
 /** Per-section result returned by {@link Patcher.apply} / {@link Patcher.commit}. */
@@ -106,13 +98,7 @@ export interface PatchSectionResult {
 	persisted: string;
 	/** Final text that the {@link Filesystem} actually wrote (may differ if the FS transformed it). */
 	written: string;
-	/**
-	 * 4-hex content-hash tag. Hashes the content the {@link Filesystem}
-	 * reports actually landed on disk (see `written`), which normally equals
-	 * `after` but can diverge when the write path transforms content (e.g. an
-	 * ACP-bridge write reformatted by the client's format-on-save). Use to
-	 * anchor follow-up edits.
-	 */
+	/** 4-hex content-hash tag for `after`. Use to anchor follow-up edits. */
 	fileHash: string;
 	/** Hashline section header (`[path#tag]`) of the post-edit content. */
 	header: string;
@@ -123,8 +109,9 @@ export interface PatchSectionResult {
 	/** Destination path when this section includes `MV DEST`. */
 	moveDest?: string;
 	/**
-	 * Resolved spans for block ops, present when the apply matched the tagged
-	 * content. Undefined for patches with no block ops and for drift recovery.
+	 * Resolved spans for any `replace_block`/`delete_block` ops, present when the
+	 * apply matched the tagged content. Undefined for patches with no block ops
+	 * (and for resolutions routed through drift recovery, where numbers shift).
 	 */
 	blockResolutions?: BlockResolution[];
 }
@@ -159,17 +146,6 @@ export class PreparedSection {
 	}
 }
 
-function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
-	return edits.some(edit => {
-		if (edit.kind === "delete" || edit.kind === "block" || edit.kind === "cut") return true;
-		if (edit.kind === "paste") {
-			if (edit.at.kind === "span") return true;
-			return edit.at.cursor.kind === "before_anchor" || edit.at.cursor.kind === "after_anchor";
-		}
-		return edit.cursor.kind === "before_anchor" || edit.cursor.kind === "after_anchor";
-	});
-}
-
 function assertSectionHashPresent(sectionPath: string, fileHash: string | undefined): void {
 	if (fileHash !== undefined) return;
 	throw new Error(missingSnapshotTagMessage(sectionPath));
@@ -191,11 +167,18 @@ function mergeWarnings(...sources: ReadonlyArray<readonly string[] | undefined>)
 	return out;
 }
 
-function hasUtf8Bom(bytes: Uint8Array | undefined): boolean {
-	return bytes !== undefined && bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
-}
-
-function assertUniqueCanonicalPaths(prepared: readonly PreparedSection[]): void {
+/**
+ * Refuse a patch whose sections resolve to one file.
+ *
+ * Two headers naming the same file through different spellings (a relative path and an absolute one, a
+ * symlink and its target) would have their ops applied independently against the same content, so the
+ * second write would silently discard the first. Failing here is the only safe answer, and the message
+ * names both spellings so the caller can merge them.
+ *
+ * Exported because the coding agent's hashline edit path had a byte-identical copy of this, including
+ * the message: the check belongs to the patcher that defines {@link PreparedSection}.
+ */
+export function assertUniqueCanonicalPaths(prepared: readonly PreparedSection[]): void {
 	const seen = new Map<string, string>();
 	for (const entry of prepared) {
 		const previous = seen.get(entry.canonicalPath);
@@ -219,8 +202,6 @@ export class Patcher {
 	readonly snapshots: SnapshotStore;
 	readonly recovery: Recovery;
 	readonly blockResolver: BlockResolver | undefined;
-	readonly clipboard: Clipboard | undefined;
-	readonly #enforceSeenLines: boolean;
 
 	constructor(options: PatcherOptions) {
 		if (!options.snapshots) {
@@ -230,8 +211,6 @@ export class Patcher {
 		this.snapshots = options.snapshots;
 		this.recovery = new Recovery(options.snapshots);
 		this.blockResolver = options.blockResolver;
-		this.clipboard = options.clipboard;
-		this.#enforceSeenLines = options.enforceSeenLines ?? true;
 	}
 
 	/**
@@ -241,34 +220,16 @@ export class Patcher {
 	 * {@link PatchSectionResult} per section in the original patch order.
 	 */
 	async apply(patch: Patch): Promise<PatcherApplyResult> {
-		// One register per batch: `CUT` in one section feeds `PASTE` in a later
-		// one, so content can move across files. A host-owned register
-		// (see PatcherOptions.clipboard) additionally persists across batches:
-		// work on a fork and publish it per landed section, so a failed batch
-		// never poisons the persistent register and a mid-batch failure still
-		// preserves content already cut from disk.
-		const clipboard = startClipboardBatch(this.clipboard);
-
 		// Single-section fast path.
 		if (patch.sections.length === 1) {
-			const prepared = await this.prepare(patch.sections[0], clipboard);
-			const result = await this.commit(prepared);
-			if (this.clipboard !== undefined) commitClipboard(clipboard, this.clipboard);
-			return { sections: [result] };
+			const prepared = await this.prepare(patch.sections[0]);
+			return { sections: [await this.commit(prepared)] };
 		}
 
 		// Prepare every section first so any failure (stale hash, missing
 		// file, parse error, in-memory no-op) surfaces before any write.
 		const prepared: PreparedSection[] = [];
-		// Register state after each section's prepare. Commits are non-atomic:
-		// when a later write fails, the sections before it are already on disk,
-		// so the host register must reflect exactly the landed prefix — content
-		// a landed CUT deleted would otherwise be lost.
-		const sectionStates: Clipboard[] = [];
-		for (const section of patch.sections) {
-			prepared.push(await this.prepare(section, clipboard));
-			sectionStates.push(forkClipboard(clipboard));
-		}
+		for (const section of patch.sections) prepared.push(await this.prepare(section));
 		assertUniqueCanonicalPaths(prepared);
 		for (const entry of prepared) {
 			if (entry.isNoop) {
@@ -294,7 +255,6 @@ export class Patcher {
 					{ cause: error },
 				);
 			}
-			if (this.clipboard !== undefined) commitClipboard(sectionStates[index], this.clipboard);
 		}
 		return { sections: results };
 	}
@@ -304,34 +264,13 @@ export class Patcher {
 	 * No writes hit the filesystem. Use for CI checks and dry runs.
 	 */
 	async preflight(patch: Patch): Promise<void> {
-		// Dry run: fork the register and never publish it back.
-		const clipboard = startClipboardBatch(this.clipboard);
 		const prepared: PreparedSection[] = [];
-		for (const section of patch.sections) prepared.push(await this.prepare(section, clipboard));
+		for (const section of patch.sections) prepared.push(await this.prepare(section));
 		assertUniqueCanonicalPaths(prepared);
 		for (const entry of prepared) {
 			if (entry.isNoop) {
 				throw new Error(`Edits to ${entry.section.path} resulted in no changes being made.`);
 			}
-		}
-	}
-
-	async #parseWithRangeDiagnostics(section: PatchSection) {
-		try {
-			return section.parse();
-		} catch (error) {
-			if (!(error instanceof InvalidAbsoluteRangeError) || !this.blockResolver) throw error;
-			let span: BlockSpan | null = null;
-			try {
-				const read = await this.#tryRead(section.path);
-				if (read.exists) {
-					const normalized = normalizeToLF(stripBom(read.rawContent).text);
-					span = this.blockResolver({ path: section.path, text: normalized, line: error.startLine });
-				}
-			} catch {
-				// Source-aware enrichment is best-effort; preserve the actionable parser error.
-			}
-			throw span?.start === error.startLine && span.end > span.start ? error.withBlock(span) : error;
 		}
 	}
 
@@ -341,14 +280,11 @@ export class Patcher {
 	 * {@link PreparedSection} which can be fed to {@link commit} to land
 	 * the result on the filesystem.
 	 *
-	 * `clipboard` is the register shared by `CUT`/`PASTE` ops. Pass the batch
-	 * register when preparing several sections so content can move across files.
-	 *
 	 * Throws on parse error, missing-file-for-anchored-edit, or unrecovered
 	 * tag mismatch ({@link MismatchError}).
 	 */
-	async prepare(section: PatchSection, clipboard?: Clipboard): Promise<PreparedSection> {
-		const parsed = await this.#parseWithRangeDiagnostics(section);
+	async prepare(section: PatchSection): Promise<PreparedSection> {
+		const parsed = section.parse();
 		const parseWarnings = [...parsed.warnings];
 		const fileOp = parsed.fileOp;
 		assertSectionHashPresent(section.path, section.fileHash);
@@ -389,12 +325,48 @@ export class Patcher {
 			throw new Error(`MV destination is the same as ${target.path}.`);
 		}
 
+		// Refuse to move onto an existing DIFFERENT file. `fs.move` overwrites its
+		// destination unconditionally, so without this guard `MV a -> b` where `b`
+		// already holds the user's real content silently destroys `b` and leaves no
+		// trace — a destructive fs op the model can trigger by naming a wrong or
+		// hallucinated destination. Fail loudly here, during prepare, so a
+		// multi-section batch aborts before any write lands (all-or-nothing). A
+		// rename that only respells one file (case-only on a case-insensitive
+		// volume, or through a symlink) is NOT a clobber: isSameExistingFile
+		// recognises it by identity and lets it through, matching the same-file
+		// guard fs.move uses to avoid deleting the file it just wrote.
+		if (fileOp?.kind === "move" && (await this.fs.exists(fileOp.dest))) {
+			if (!(await this.fs.isSameExistingFile(target.path, fileOp.dest))) {
+				throw new Error(
+					`MV destination ${fileOp.dest} already exists; refusing to overwrite it. ` +
+						`Edit ${fileOp.dest} directly, or remove it first, then move.`,
+				);
+			}
+		}
+
 		const { bom: bomFromText, text } = stripBom(read.rawContent);
 		const bom = bomFromText || (await this.#readBinaryBom(target.path));
 		const lineEnding = detectLineEnding(text);
 		const normalized = normalizeToLF(text);
 
-		const register = clipboard ?? {};
+		// Deleting a whole file is irreversible, so REM must be the STRICTEST op about
+		// the content tag, not the most lenient. Without this check a REM whose live
+		// content no longer hashes to its tag (the file changed since the model read
+		// it — an external edit, or a stale/fabricated tag) slips through
+		// #applyWithRecovery: empty edits carry no anchor, so the "head/tail inserts
+		// are position-stable" branch treats the drift as non-fatal and returns with a
+		// soft warning, and commit then deletes the drifted file — destroying content
+		// the model never saw. Reject on drift and force a re-read, exactly as an
+		// anchored edit on a drifted file does. A 16-bit tag match (liveMatches) is the
+		// same trust boundary every other op uses.
+		if (fileOp?.kind === "rem") {
+			const expected = target.fileHash as string;
+			if (computeFileHash(normalized) !== expected) {
+				const hashRecognized = this.snapshots.byHash(canonicalPath, expected) !== null;
+				throw this.#mismatchError(target, canonicalPath, normalized, expected, hashRecognized);
+			}
+		}
+
 		const applyResult =
 			fileOp?.kind === "rem"
 				? this.#applyWithRecovery({
@@ -403,7 +375,6 @@ export class Patcher {
 						exists: read.exists,
 						normalized,
 						edits: [],
-						clipboard: register,
 					})
 				: this.#applyWithRecovery({
 						section: target,
@@ -411,7 +382,6 @@ export class Patcher {
 						exists: read.exists,
 						normalized,
 						edits: parsed.edits,
-						clipboard: register,
 					});
 
 		return new PreparedSection(
@@ -532,31 +502,8 @@ export class Patcher {
 		}
 
 		const write: WriteResult = await this.fs.writeText(section.path, persisted);
+		const fileHash = this.#recordFullSnapshot(canonicalPath, after);
 		const op = exists ? "update" : "create";
-
-		// `write.text` is the FS adapter's report of what actually landed on
-		// disk (see `WriteResult`), which for an ACP-bridge write can diverge
-		// from `after` when the client transforms content on save (e.g.
-		// format-on-save reformatting indentation the tool never touched).
-		// Keying the snapshot on `after` unconditionally would record a hash
-		// for content that no longer exists on disk: the next `read` sees the
-		// drifted file, tag validation misses, and hunk resolution proceeds
-		// against a baseline the file has already left — the mechanism behind
-		// "single-line edit reformats the whole file". Re-derive the recorded
-		// text from what was actually persisted and hash THAT.
-		//
-		// Deliberately does NOT touch `after` (or the diff/`newText` derived
-		// from it downstream): `after` stays the content this section asked
-		// for, so the model-visible diff stays scoped to the intended hunk
-		// instead of ballooning to a whole-file diff against a formatter's
-		// output on every drifted write. The drift itself is a warning, not a
-		// diff — an O(1) signal instead of an O(file-size) one. Comparing the
-		// normalized forms (rather than raw `write.text`/`persisted`) avoids a
-		// false "drift" purely from BOM/line-ending restoration asymmetry.
-		const recorded = normalizeToLF(stripBom(write.text).text);
-		const driftedOnWrite = recorded !== after;
-		const fileHash = this.#recordFullSnapshot(canonicalPath, recorded);
-		const allWarnings = driftedOnWrite ? [...warnings, writeDriftWarning(section.path)] : warnings;
 
 		return {
 			path: section.path,
@@ -570,7 +517,7 @@ export class Patcher {
 			header: formatHashlineHeader(section.path, fileHash),
 			firstChangedLine: applyResult.firstChangedLine,
 			blockResolutions: applyResult.blockResolutions,
-			warnings: allWarnings,
+			warnings,
 		};
 	}
 
@@ -641,7 +588,16 @@ export class Patcher {
 				revealed.push({ line, text: source });
 			}
 		}
-		const truncated = unseen.length > revealed.length || columnTruncated;
+		const overCap = unseen.length > revealed.length;
+		// Whether ANY unseen line is too wide, not just one inside the reveal.
+		// `columnTruncated` above only sees the first `SEEN_LINE_REVEAL_CAP`, so a
+		// wide line past that index left `columnClipped` false, the message named
+		// a plain ranged re-read, and running it re-clipped that line and the
+		// retry was rejected again. The scan is a length check over at most a few
+		// hundred already-in-memory strings.
+		const anyUnseenTooWide =
+			columnTruncated || unseen.some(line => (sourceLines[line - 1]?.length ?? 0) > SEEN_LINE_REVEAL_MAX_COLUMNS);
+		const truncated = overCap || anyUnseenTooWide;
 		// Only merge when the reveal covered every unseen anchor line in full
 		// width. A prefix-truncated reveal would let the model split a blind
 		// edit into <=cap-line retries and land it without ever running the
@@ -650,7 +606,17 @@ export class Patcher {
 		if (!truncated) {
 			for (const { line } of revealed) seen.add(line);
 		}
-		throw new Error(unseenLinesMessage(section.path, unseen, expected, { lines: revealed, truncated }));
+		// `columnClipped` wins over `overCap` in the message, because `:raw` clears
+		// both and a plain ranged read clears only the second. See
+		// `UnseenLinesReveal`.
+		throw new Error(
+			unseenLinesMessage(section.path, unseen, expected, {
+				lines: revealed,
+				truncated,
+				overCap,
+				columnClipped: anyUnseenTooWide,
+			}),
+		);
 	}
 	#mismatchError(
 		section: PatchSection,
@@ -676,9 +642,8 @@ export class Patcher {
 		exists: boolean;
 		normalized: string;
 		edits: readonly Edit[];
-		clipboard: Clipboard;
 	}): ApplyResult {
-		const { section, canonicalPath, exists, normalized, edits, clipboard } = args;
+		const { section, canonicalPath, exists, normalized, edits } = args;
 		const expected = exists ? section.fileHash : undefined;
 		// The 4-hex tag is content-derived: when the live text hashes to it,
 		// trust the match and apply directly. `storedSnapshotForTag` feeds the
@@ -711,11 +676,6 @@ export class Patcher {
 				onWarning: warning => resolveWarnings.push(warning),
 			});
 		}
-		// Surface clipboard sequencing mistakes (`PASTE` before any capture,
-		// capturing over un-pasted `CUT` content) with their targeted message
-		// before the recovery path below, which swallows apply failures and
-		// re-surfaces them as tag-mismatch errors.
-		validateClipboardSequence(resolved, clipboard);
 		const withResolveWarnings = (result: ApplyResult): ApplyResult =>
 			resolveWarnings.length === 0
 				? result
@@ -729,10 +689,8 @@ export class Patcher {
 			// The line numbers in `edits` index the exact content the tag names.
 			// Reject any anchor the read never displayed: editing lines the model
 			// has not seen is the off-by-memory mistake that mangles files.
-			if (expected !== undefined && this.#enforceSeenLines) {
-				this.#assertSeenLines(section, expected, matchedSnapshot);
-			}
-			const result = applyEdits(normalized, resolved, { clipboard, path: canonicalPath });
+			if (expected !== undefined) this.#assertSeenLines(section, expected, matchedSnapshot);
+			const result = applyEdits(normalized, resolved);
 			return withResolveWarnings(blockResolutions.length > 0 ? { ...result, blockResolutions } : result);
 		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
@@ -740,7 +698,7 @@ export class Patcher {
 		// content and warn instead of hard-failing — unlike an anchored
 		// mismatch, which cannot be safely relocated and must reject.
 		if (!hasAnchorScopedEdit(resolved)) {
-			const result = applyEdits(normalized, resolved, { clipboard, path: canonicalPath });
+			const result = applyEdits(normalized, resolved);
 			return withResolveWarnings({ ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] });
 		}
 		// File drifted: map every anchor from the tagged snapshot to unchanged
@@ -750,7 +708,6 @@ export class Patcher {
 			currentText: normalized,
 			fileHash: expected,
 			edits: resolved,
-			clipboard,
 		});
 		if (recovered) return withResolveWarnings(recoveryToApplyResult(recovered));
 		const hashRecognized = this.snapshots.byHash(canonicalPath, expected) !== null;

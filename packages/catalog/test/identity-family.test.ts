@@ -3,6 +3,7 @@ import {
 	hasOpus47ApiRestrictions,
 	isClaudeModelId,
 	isGeminiModelId,
+	isGlm53ReasoningEffortModelId,
 	isGlmVisionModelId,
 	isGrokModelId,
 	isGrokMultiAgentModelId,
@@ -275,7 +276,7 @@ describe("isOpenAIModelId", () => {
 });
 
 describe("isReasoningGlmModelId", () => {
-	test("matches the glm-4.5+ base / air / turbo reasoning lines", () => {
+	test("matches the glm-4.5+ base / air / turbo lines plus the glm-5.3+ flash line", () => {
 		expect(isReasoningGlmModelId("glm-4.5")).toBe(true);
 		expect(isReasoningGlmModelId("glm-4.5-air")).toBe(true);
 		expect(isReasoningGlmModelId("glm-4.6")).toBe(true);
@@ -286,16 +287,20 @@ describe("isReasoningGlmModelId", () => {
 		expect(isReasoningGlmModelId("glm-5.2")).toBe(true);
 		// Family match is future-proof: new integers need no allowlist entry.
 		expect(isReasoningGlmModelId("glm-5.3")).toBe(true);
+		// The -flash line joined the reasoning family with 5.3.
+		expect(isReasoningGlmModelId("glm-5.3-flash")).toBe(true);
 		expect(isReasoningGlmModelId("glm-6")).toBe(true);
 		// Namespaced ids are stripped before classification.
 		expect(isReasoningGlmModelId("z-ai/glm-5-turbo")).toBe(true);
 	});
 
-	test("excludes pre-4.5, vision, flash, and preview SKUs", () => {
+	test("excludes pre-4.5, vision, pre-5.3 flash, flashx, and preview SKUs", () => {
 		expect(isReasoningGlmModelId("glm-4")).toBe(false);
 		expect(isReasoningGlmModelId("glm-4.4")).toBe(false);
 		expect(isReasoningGlmModelId("glm-5-preview")).toBe(false);
 		expect(isReasoningGlmModelId("glm-4.5-flash")).toBe(false);
+		// Flash joins the reasoning family only at 5.3.
+		expect(isReasoningGlmModelId("glm-5.2-flash")).toBe(false);
 		expect(isReasoningGlmModelId("glm-4.7-flashx")).toBe(false);
 		expect(isReasoningGlmModelId("glm-4.5v")).toBe(false);
 		expect(isReasoningGlmModelId("qwen3.5")).toBe(false);
@@ -310,6 +315,23 @@ describe("isReasoningGlmModelId", () => {
 		expect(isReasoningGlmModelId("zai-org/GLM-5-Turbo")).toBe(true);
 		// Vision SKUs are still excluded even in uppercase.
 		expect(isReasoningGlmModelId("zai-org/GLM-4.5V")).toBe(false);
+	});
+});
+describe("isGlm53ReasoningEffortModelId", () => {
+	test("matches 5.3+ base / air / turbo / flash SKUs", () => {
+		expect(isGlm53ReasoningEffortModelId("glm-5.3")).toBe(true);
+		expect(isGlm53ReasoningEffortModelId("glm-5.3-flash")).toBe(true);
+		expect(isGlm53ReasoningEffortModelId("zai-org/GLM-5.3-Flash-NVFP4")).toBe(true);
+		expect(isGlm53ReasoningEffortModelId("glm-5.4")).toBe(true);
+		expect(isGlm53ReasoningEffortModelId("glm-6")).toBe(true);
+	});
+
+	test("excludes 5.2, flashx, preview, and vision SKUs", () => {
+		expect(isGlm53ReasoningEffortModelId("glm-5.2")).toBe(false);
+		expect(isGlm53ReasoningEffortModelId("glm-5.2-flash")).toBe(false);
+		expect(isGlm53ReasoningEffortModelId("glm-5.3-flashx")).toBe(false);
+		expect(isGlm53ReasoningEffortModelId("glm-5.3-preview")).toBe(false);
+		expect(isGlm53ReasoningEffortModelId("glm-5.3v")).toBe(false);
 	});
 });
 

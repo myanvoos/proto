@@ -78,7 +78,7 @@ describe("read tool single-pass file access", () => {
 			}),
 			snapshots: getFileSnapshotStore(session),
 		});
-		const applied = await patcher.apply(Patch.parse(`${header}\nPUT 2.=2:\n+export const b = 22;`, { cwd: tmpDir }));
+		const applied = await patcher.apply(Patch.parse(`${header}\nSWAP 2.=2:\n+export const b = 22;`, { cwd: tmpDir }));
 
 		expect(applied.sections[0]?.warnings).toEqual([]);
 		// The BOM survives the write; only the addressed line changed.

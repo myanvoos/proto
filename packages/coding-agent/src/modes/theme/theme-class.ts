@@ -571,6 +571,14 @@ export class Theme {
 	}
 
 	/**
+	 * The muted language badge AND the space after it, or `""` when the preset has none.
+	 */
+	langBadge(lang: string | undefined): string {
+		const icon = this.getLangIcon(lang);
+		return icon ? `${this.fg("muted", icon)} ` : "";
+	}
+
+	/**
 	 * Language icon tinted with the language's brand color (see
 	 * {@link LANG_BRAND_COLORS}). Falls back to the muted theme color for
 	 * languages without a brand entry, and returns the bare (possibly empty)

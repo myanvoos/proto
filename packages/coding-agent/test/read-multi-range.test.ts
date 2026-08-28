@@ -306,7 +306,7 @@ describe("read tool multi-range selector", () => {
 		expect(text).toContain("1:first\n2:");
 		expect(text).not.toContain("\n4:");
 
-		const patch = Patch.parse(`${header}\nCUT 2`, { cwd: tmpDir });
+		const patch = Patch.parse(`${header}\nDEL 2`, { cwd: tmpDir });
 		const filesystem = new HashlineFilesystem({
 			session,
 			writethrough: writethroughNoop,

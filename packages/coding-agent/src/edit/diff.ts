@@ -4,12 +4,16 @@
  * Provides diff string generation and the replace-mode edit logic
  * used when not in patch mode.
  */
-import { diffLines, structuredPatchHunks } from "@oh-my-pi/pi-natives";
+
+import { errorMessage } from "@oh-my-pi/pi-utils";
+import * as Diff from "diff";
 import { resolveToCwd } from "../tools/path-utils";
-import { type BlockContextSource, findBlockContextLines } from "../utils/block-context";
-import { DEFAULT_FUZZY_THRESHOLD, EditMatchError, findMatch } from "./modes/replace";
+import { type BlockContextSource, exceedsBlockContextScanCeiling, findBlockContextLines } from "../utils/block-context";
+import { parseUnifiedHunkHeader } from "../utils/unified-hunk-header";
+import { EOF_MARKER, FILE_OP_MARKERS, PATCH_WRAPPER_MARKERS } from "./apply-patch/markers";
+import { DEFAULT_FUZZY_THRESHOLD, EditMatchError, findMatch } from "./match";
 import { adjustIndentation, normalizeToLF, stripBom } from "./normalize";
-import { readEditFileText } from "./read-file";
+import { readPreviewText } from "./preview-text-cache";
 
 export interface DiffResult {
 	diff: string;
@@ -173,10 +177,16 @@ function insertBracketContextRows(
  */
 function addMatchingBracketContextRows(
 	rows: string[],
-	oldLines: readonly string[],
-	newLines: readonly string[],
+	oldText: string,
+	newText: string,
 	source: BlockContextSource,
 ): void {
+	// Ask before splitting: each side of a large pair is a whole-file array, and
+	// on a source over the boundary-scan ceiling the lookup below returns
+	// nothing regardless.
+	if (exceedsBlockContextScanCeiling(oldText) || exceedsBlockContextScanCeiling(newText)) return;
+	const oldLines = oldText.split("\n");
+	const newLines = newText.split("\n");
 	const oldVisible: number[] = [];
 	const newVisible: number[] = [];
 	const seenRows = new Set(rows);
@@ -216,8 +226,11 @@ function addMatchingBracketContextRows(
 		return newLineNumber - shift;
 	};
 
-	const contextRows = findBlockContextLines(oldLines, oldVisible, source);
-	for (const [lineNumber, text] of findBlockContextLines(newLines, newVisible, source)) {
+	// Each side hands its own text down: the lookup joins the line array back
+	// into a source when it is not given one, which is a copy of the whole file
+	// per side per call, and this caller is holding both strings already.
+	const contextRows = findBlockContextLines(oldLines, oldVisible, { ...source, text: oldText });
+	for (const [lineNumber, text] of findBlockContextLines(newLines, newVisible, { ...source, text: newText })) {
 		const oldLineNumber = toOldLineNumber(lineNumber);
 		if (!contextRows.has(oldLineNumber)) contextRows.set(oldLineNumber, text);
 	}
@@ -235,7 +248,7 @@ export function generateDiffString(
 	contextLines = 2,
 	source: BlockContextSource = {},
 ): DiffResult {
-	const parts = diffLines(oldContent, newContent);
+	const parts = Diff.diffLines(oldContent, newContent);
 	const output: string[] = [];
 
 	let oldLineNum = 1;
@@ -338,7 +351,7 @@ export function generateDiffString(
 		}
 	}
 
-	addMatchingBracketContextRows(output, oldContent.split("\n"), newContent.split("\n"), source);
+	addMatchingBracketContextRows(output, oldContent, newContent, source);
 
 	return { diff: output.join("\n"), firstChangedLine };
 }
@@ -347,7 +360,7 @@ export function generateDiffString(
 // Replace Mode Logic
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface ReplaceOptions {
+export interface ReplaceOptions {
 	/** Allow fuzzy matching */
 	fuzzy: boolean;
 	/** Replace all occurrences */
@@ -356,7 +369,7 @@ interface ReplaceOptions {
 	threshold?: number;
 }
 
-interface ReplaceResult {
+export interface ReplaceResult {
 	/** The new content after replacements */
 	content: string;
 	/** Number of replacements made */
@@ -373,10 +386,10 @@ export function generateUnifiedDiffString(
 	contextLines = 3,
 	source: BlockContextSource = {},
 ): DiffResult {
-	const hunks = structuredPatchHunks(oldContent, newContent, contextLines);
+	const patch = Diff.structuredPatch("", "", oldContent, newContent, "", "", { context: contextLines });
 	const output: string[] = [];
 	let firstChangedLine: number | undefined;
-	for (const hunk of hunks) {
+	for (const hunk of patch.hunks) {
 		output.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
 		let oldLine = hunk.oldStart;
 		let newLine = hunk.newStart;
@@ -403,22 +416,20 @@ export function generateUnifiedDiffString(
 		}
 	}
 
-	addMatchingBracketContextRows(output, oldContent.split("\n"), newContent.split("\n"), source);
+	addMatchingBracketContextRows(output, oldContent, newContent, source);
 
 	return { diff: output.join("\n"), firstChangedLine };
 }
 
-const EOF_MARKER = "*** End of File";
 const CHANGE_CONTEXT_MARKER = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER = "@@";
-const UNIFIED_HUNK_HEADER_REGEX = /^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@(?:\s*(.*))?$/;
 const LINE_HINT_REGEX = /^lines?\s+(\d+)(?:\s*-\s*(\d+))?(?:\s*@@)?$/i;
 const TOP_OF_FILE_REGEX = /^(top|start|beginning)\s+of\s+file$/i;
-const MULTI_FILE_MARKERS = ["*** Update File:", "*** Add File:", "*** Delete File:", "diff --git "];
+// `diff --git ` is git's own marker, not part of the apply-patch envelope, so it is
+// added here rather than kept in the shared marker list.
+const MULTI_FILE_MARKERS = [...FILE_OP_MARKERS, "diff --git "];
 const DIFF_METADATA_PREFIXES = [
-	"*** Update File:",
-	"*** Add File:",
-	"*** Delete File:",
+	...FILE_OP_MARKERS,
 	"diff --git ",
 	"index ",
 	"--- ",
@@ -432,7 +443,7 @@ const DIFF_METADATA_PREFIXES = [
 	"old mode ",
 	"new mode ",
 ];
-const PATCH_WRAPPER_PREFIXES = ["*** Begin Patch", "*** End Patch"];
+const PATCH_WRAPPER_PREFIXES = PATCH_WRAPPER_MARKERS;
 const MAX_OCCURRENCE_PREVIEWS = 5;
 
 function isDiffContentLine(line: string): boolean {
@@ -447,7 +458,9 @@ function isDiffContentLine(line: string): boolean {
 	return false;
 }
 
-function matchesTrimmedPrefix(line: string, prefixes: string[]): boolean {
+// `readonly` because this only reads: the shared marker lists are frozen tuples, and a
+// mutable parameter type would have forced a copy at every call site to satisfy it.
+function matchesTrimmedPrefix(line: string, prefixes: readonly string[]): boolean {
 	return prefixes.some(prefix => line.startsWith(prefix));
 }
 
@@ -514,33 +527,6 @@ export function normalizeCreateContent(content: string): string {
 	return content;
 }
 
-interface UnifiedHunkHeader {
-	oldStartLine: number;
-	oldLineCount: number;
-	newStartLine: number;
-	newLineCount: number;
-	changeContext?: string;
-}
-
-function parseUnifiedHunkHeader(line: string): UnifiedHunkHeader | undefined {
-	const match = line.match(UNIFIED_HUNK_HEADER_REGEX);
-	if (!match) return undefined;
-
-	const oldStartLine = Number(match[1]);
-	const oldLineCount = match[2] ? Number(match[2]) : 1;
-	const newStartLine = Number(match[3]);
-	const newLineCount = match[4] ? Number(match[4]) : 1;
-	const changeContext = match[5]?.trim();
-
-	return {
-		oldStartLine,
-		oldLineCount,
-		newStartLine,
-		newLineCount,
-		changeContext: changeContext && changeContext.length > 0 ? changeContext : undefined,
-	};
-}
-
 function isUnifiedDiffMetadataLine(line: string): boolean {
 	return matchesTrimmedPrefix(
 		line,
@@ -572,14 +558,14 @@ function parseOneHunk(lines: string[], lineNumber: number, allowMissingContext: 
 	if (isHeaderLine && (headerTrimmed === EMPTY_CHANGE_CONTEXT_MARKER || isEmptyContextMarker)) {
 		startIndex = 1;
 	} else if (unifiedHeader) {
-		if (unifiedHeader.oldStartLine < 1 || unifiedHeader.newStartLine < 1) {
+		if (unifiedHeader.oldStart < 1 || unifiedHeader.newStart < 1) {
 			throw new ParseError("Line numbers in @@ header must be >= 1", lineNumber);
 		}
 		if (unifiedHeader.changeContext) {
 			changeContexts.push(unifiedHeader.changeContext);
 		}
-		oldStartLine = unifiedHeader.oldStartLine;
-		newStartLine = unifiedHeader.newStartLine;
+		oldStartLine = unifiedHeader.oldStart;
+		newStartLine = unifiedHeader.newStart;
 		startIndex = 1;
 	} else if (isHeaderLine && headerTrimmed.startsWith(CHANGE_CONTEXT_MARKER)) {
 		const contextValue = headerTrimmed.slice(CHANGE_CONTEXT_MARKER.length);
@@ -791,14 +777,8 @@ function extractMarkerPath(line: string): string | undefined {
 		if (!candidate) return undefined;
 		return candidate.replace(/^(a|b)\//, "");
 	}
-	if (line.startsWith("*** Update File:")) {
-		return line.slice("*** Update File:".length).trim();
-	}
-	if (line.startsWith("*** Add File:")) {
-		return line.slice("*** Add File:".length).trim();
-	}
-	if (line.startsWith("*** Delete File:")) {
-		return line.slice("*** Delete File:".length).trim();
+	for (const marker of FILE_OP_MARKERS) {
+		if (line.startsWith(marker)) return line.slice(marker.length).trim();
 	}
 	return undefined;
 }
@@ -855,6 +835,7 @@ export function replaceText(content: string, oldText: string, newText: string, o
 	let normalizedContent = normalizeToLF(content);
 	const normalizedOldText = normalizeToLF(oldText);
 	const normalizedNewText = normalizeToLF(newText);
+	let count = 0;
 
 	if (options.all) {
 		// Check for exact matches first
@@ -866,13 +847,11 @@ export function replaceText(content: string, oldText: string, newText: string, o
 			};
 		}
 
-		// Match against the immutable source so inserted replacement text cannot become a later candidate.
-		const replacements: Array<{ startIndex: number; endIndex: number; text: string }> = [];
+		// No exact matches - try fuzzy matching iteratively
 		while (true) {
 			const matchOutcome = findMatch(normalizedContent, normalizedOldText, {
 				allowFuzzy: options.fuzzy,
 				threshold,
-				excludedRanges: replacements,
 			});
 
 			const shouldUseClosest =
@@ -889,22 +868,14 @@ export function replaceText(content: string, oldText: string, newText: string, o
 			if (adjustedNewText === match.actualText) {
 				break;
 			}
-			replacements.push({
-				startIndex: match.startIndex,
-				endIndex: match.startIndex + Math.max(match.actualText.length, 1),
-				text: adjustedNewText,
-			});
+			normalizedContent =
+				normalizedContent.substring(0, match.startIndex) +
+				adjustedNewText +
+				normalizedContent.substring(match.startIndex + match.actualText.length);
+			count++;
 		}
 
-		replacements.sort((a, b) => a.startIndex - b.startIndex);
-		const parts: string[] = [];
-		let sourceIndex = 0;
-		for (const replacement of replacements) {
-			parts.push(normalizedContent.substring(sourceIndex, replacement.startIndex), replacement.text);
-			sourceIndex = replacement.endIndex;
-		}
-		parts.push(normalizedContent.substring(sourceIndex));
-		return { content: parts.join(""), count: replacements.length };
+		return { content: normalizedContent, count };
 	}
 
 	// Single replacement mode
@@ -938,16 +909,20 @@ export function replaceText(content: string, oldText: string, newText: string, o
 /**
  * Compute the diff for an edit operation without applying it.
  * Used for preview rendering in the TUI before the tool executes.
+ *
+ * `options.streaming` marks a pass computed while the tool's arguments are
+ * still arriving: the target file is then read through the preview cache, so a
+ * stream of chunks against one large file reads it once instead of once per
+ * chunk. The args-complete pass leaves it unset and reads fresh.
  */
 export async function computeEditDiff(
 	path: string,
 	oldText: string,
 	newText: string,
 	cwd: string,
-	fuzzy = true,
-	all = false,
-	threshold?: number,
+	options: { fuzzy?: boolean; all?: boolean; threshold?: number; streaming?: boolean } = {},
 ): Promise<DiffResult | DiffError> {
+	const { fuzzy = true, all = false, threshold, streaming } = options;
 	if (oldText.length === 0) {
 		return { error: "oldText must not be empty." };
 	}
@@ -956,12 +931,11 @@ export async function computeEditDiff(
 		const absolutePath = resolveToCwd(path, cwd);
 		let rawContent: string;
 		try {
-			rawContent = await readEditFileText(absolutePath, path);
+			rawContent = await readPreviewText(absolutePath, path, streaming);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = errorMessage(error);
 			return { error: message || `Unable to read ${path}` };
 		}
-
 		const { text: content } = stripBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
 		const normalizedOldText = normalizeToLF(oldText);
@@ -1003,6 +977,6 @@ export async function computeEditDiff(
 
 		return generateDiffString(normalizedContent, result.content, undefined, { path });
 	} catch (err) {
-		return { error: err instanceof Error ? err.message : String(err) };
+		return { error: errorMessage(err) };
 	}
 }

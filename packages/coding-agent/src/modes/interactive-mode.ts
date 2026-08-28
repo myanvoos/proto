@@ -3438,6 +3438,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	showAgentsView(scope?: "current" | "global"): Promise<void> {
 		return this.#selectorController.showAgentsView(scope);
 	}
+	showTrajectoryView(): void {
+		this.#selectorController.showTrajectoryView();
+	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
 		this.#selectorController.showModelSelector(options);

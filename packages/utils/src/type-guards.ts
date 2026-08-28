@@ -15,3 +15,17 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
 export function toError(value: unknown): Error {
 	return value instanceof Error ? value : new Error(String(value));
 }
+
+/**
+ * The one owner of "turn an unknown thrown value into one readable line".
+ *
+ * An `Error` reports its message, falling back to its constructor name when the
+ * message is empty: `throw new TypeError()` used to yield `""`, and a caller
+ * splicing that into a sentence produced text that trailed off after the colon
+ * and told the reader nothing. Anything else reports its string form, so a thrown
+ * string, number, or object still says something.
+ */
+export function errorMessage(value: unknown): string {
+	if (!(value instanceof Error)) return String(value);
+	return value.message || value.name;
+}

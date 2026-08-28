@@ -176,7 +176,7 @@ describe("read tool column truncation vs hashline snapshot", () => {
 			tmpDir,
 			filePath,
 			header,
-			patchBody: "PUT 3-3:\n+epilogue\n",
+			patchBody: "SWAP 3.=3:\n+epilogue\n",
 		});
 
 		const after = await fs.readFile(filePath, "utf8");
@@ -198,7 +198,7 @@ describe("read tool column truncation vs hashline snapshot", () => {
 			tmpDir,
 			filePath,
 			header,
-			patchBody: "CUT 2\n",
+			patchBody: "DEL 2\n",
 		});
 
 		expect(await fs.readFile(filePath, "utf8")).toBe("first\nlast\n");

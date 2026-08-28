@@ -18,7 +18,7 @@ function createSession(cwd: string): ToolSession {
 		getSessionSpawns: () => "*",
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		allocateOutputArtifact: async () => ({ id: "artifact-1", path: path.join(cwd, "artifact-1.log") }),
-		settings: Settings.isolated({ "edit.enforceSeenLines": true }),
+		settings: Settings.isolated(),
 		enableLsp: false,
 	} as ToolSession;
 }
@@ -105,7 +105,7 @@ describe("read → edit seen-line guard", () => {
 		const tag = tagFromOutput(resultText(read));
 
 		await expect(
-			executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 12-12:\n+EDITED`, session)),
+			executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 12.=12:\n+EDITED`, session)),
 		).rejects.toThrow(/never displayed \(it showed/);
 		// The reject left the file untouched.
 		expect(await Bun.file(file).text()).toBe(CONTENT);
@@ -119,7 +119,7 @@ describe("read → edit seen-line guard", () => {
 		const read = await new ReadTool(session).execute("r1", { path: `${file}:1-3` });
 		const tag = tagFromOutput(resultText(read));
 
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 2-2:\n+EDITED`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 2.=2:\n+EDITED`, session));
 		expect(await Bun.file(file).text()).toContain("EDITED");
 	});
 
@@ -142,7 +142,7 @@ describe("read → edit seen-line guard", () => {
 		expect(seen?.has(6)).toBe(true);
 		expect(seen?.has(10)).toBe(false);
 
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 5-5:\n+RAW EDITED`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 5.=5:\n+RAW EDITED`, session));
 		const edited = await Bun.file(file).text();
 		expect(edited).toContain("line 4\nRAW EDITED\nline 6");
 		expect(edited).not.toContain("line 5");
@@ -168,11 +168,11 @@ describe("read → edit seen-line guard", () => {
 		expect(seen?.has(5)).toBe(false);
 
 		await expect(
-			executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 5-5:\n+OUTSIDE`, session)),
+			executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 5.=5:\n+OUTSIDE`, session)),
 		).rejects.toThrow(/never displayed \(it showed/);
 		expect(await Bun.file(file).text()).toBe(CONTENT);
 
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 7-7:\n+RAW RANGE EDITED`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 7.=7:\n+RAW RANGE EDITED`, session));
 		const edited = await Bun.file(file).text();
 		expect(edited).toContain("line 6\nRAW RANGE EDITED\nline 8");
 		expect(edited).not.toContain("line 7");
@@ -196,7 +196,7 @@ describe("read → edit seen-line guard", () => {
 		expect(seen?.has(4)).toBe(true);
 
 		await expect(
-			executeHashlineSingle(execOptions(`[wide-raw.txt#${tag}]\nPUT 1-1:\n+REPLACED`, session)),
+			executeHashlineSingle(execOptions(`[wide-raw.txt#${tag}]\nSWAP 1.=1:\n+REPLACED`, session)),
 		).rejects.toThrow(/never displayed \(it showed/);
 		expect(await Bun.file(file).text()).toBe(content);
 	});
@@ -213,7 +213,7 @@ describe("read → edit seen-line guard", () => {
 
 		const seen = store.byHash(canonicalSnapshotKey(file), tag)?.seenLines;
 		expect(seen?.has(2)).toBe(true);
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT >2:\n+EDITED`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nINS.POST 2:\n+EDITED`, session));
 		expect(await Bun.file(file).text()).toContain("line 2\nEDITED");
 	});
 
@@ -235,7 +235,7 @@ describe("read → edit seen-line guard", () => {
 		expect(seen?.has(1)).toBe(true);
 		expect(seen?.has(2)).toBe(true);
 
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 1-1:\n+RAW BLANK EDITED`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 1.=1:\n+RAW BLANK EDITED`, session));
 		expect(await Bun.file(file).text()).toBe("RAW BLANK EDITED");
 	});
 
@@ -261,7 +261,7 @@ describe("read → edit seen-line guard", () => {
 		expect(seen?.has(1122)).toBe(true);
 		await executeHashlineSingle(
 			execOptions(
-				`[src/main.c#${tag}]\nPUT >1122:\n+\tbeep_3k8hz_on();\n+\tk_sleep(K_MSEC(300));\n+\tbeep_3k8hz_off();\nCUT 1288-1291`,
+				`[src/main.c#${tag}]\nINS.POST 1122:\n+\tbeep_3k8hz_on();\n+\tk_sleep(K_MSEC(300));\n+\tbeep_3k8hz_off();\nDEL 1288.=1291`,
 				session,
 			),
 		);
@@ -280,7 +280,7 @@ describe("read → edit seen-line guard", () => {
 
 		let message: string | undefined;
 		try {
-			await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 10-12:\n+X10\n+X11\n+X12`, session));
+			await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 10.=12:\n+X10\n+X11\n+X12`, session));
 		} catch (err) {
 			message = (err as Error).message;
 		}
@@ -295,7 +295,7 @@ describe("read → edit seen-line guard", () => {
 
 		// The revealed lines are now in the snapshot's seen set, so a straight
 		// retry with the same `[path#tag]` header succeeds without a re-read.
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 10-12:\n+X10\n+X11\n+X12`, session));
+		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nSWAP 10.=12:\n+X10\n+X11\n+X12`, session));
 		const after = await Bun.file(file).text();
 		expect(after).toContain("X10\nX11\nX12");
 		expect(after).not.toContain("line 10");
@@ -312,7 +312,7 @@ describe("read → edit seen-line guard", () => {
 		const tag = tagFromOutput(resultText(read));
 
 		// Anchor 60 unseen lines — deliberately over the 40-line cap.
-		const dels = Array.from({ length: 60 }, (_, i) => `CUT ${100 + i}`).join("\n");
+		const dels = Array.from({ length: 60 }, (_, i) => `DEL ${100 + i}`).join("\n");
 		let message: string | undefined;
 		try {
 			await executeHashlineSingle(execOptions(`[long.txt#${tag}]\n${dels}`, session));
@@ -330,11 +330,12 @@ describe("read → edit seen-line guard", () => {
 		expect(await Bun.file(file).text()).toBe(`${lines.join("\n")}\n`);
 	});
 
-	it("marks column-clipped read lines as seen (clipped-line check removed)", async () => {
+	it("does not mark column-clipped read lines as seen", async () => {
 		// A 4KB single line — the read tool's column cap (default 512 chars)
-		// clips this into `<prefix>…` in the numbered output. The clipped-line
-		// exclusion was removed, so the displayed line counts as seen and a
-		// follow-up edit anchored there applies even with the guard enabled.
+		// clips this into `<prefix>…` in the numbered output. The clipped line
+		// number MUST stay out of the tag's seenLines, or a subsequent edit
+		// anchored there would slip past the seen-line guard having seen only
+		// the first 512 chars.
 		const file = path.join(tmpDir, "wide.txt");
 		const wide = "a".repeat(4096);
 		const content = `head\n${wide}\nfoot\n`;
@@ -345,37 +346,122 @@ describe("read → edit seen-line guard", () => {
 		const tag = tagFromOutput(resultText(read));
 
 		const seen = getFileSnapshotStore(session).byHash(canonicalSnapshotKey(file), tag)?.seenLines;
-		expect(seen?.has(2)).toBe(true);
+		expect(seen?.has(2)).toBe(false);
 
-		await executeHashlineSingle(execOptions(`[wide.txt#${tag}]\nPUT 2-2:\n+REPLACED`, session));
+		// A straight edit anchored at the clipped line 2 is still rejected —
+		// the seen-line guard fires because the model only saw the prefix.
+		await expect(
+			executeHashlineSingle(execOptions(`[wide.txt#${tag}]\nSWAP 2.=2:\n+REPLACED`, session)),
+		).rejects.toThrow(/never displayed \(it showed/);
+		expect(await Bun.file(file).text()).toBe(content);
+	});
+
+	/**
+	 * The rejection on a column-clipped line must name a re-read that can
+	 * actually clear the gate.
+	 *
+	 * THE LOOP THIS LOCKS OUT. A line wider than the read tool's column cap is
+	 * clipped on display and deliberately withheld from `seenLines`, so an edit
+	 * anchored there is refused. The refusal used to say "re-read the remainder
+	 * with `file:N`" for every truncated reveal, and on this line that command
+	 * cannot succeed: a ranged read applies the SAME column cap, clips the line
+	 * again, withholds it again, and the next attempt is refused identically.
+	 * The tool named a remedy, the remedy reproduced the failure, and nothing in
+	 * the message ever mentioned the one selector that works. Observed live: the
+	 * same edit refused three times in a row against a 1.1KB changelog line.
+	 */
+	it("points a column-clipped anchor at a raw re-read rather than a ranged one", async () => {
+		const file = path.join(tmpDir, "wide-advice.txt");
+		const wide = "a".repeat(4096);
+		const content = `head\n${wide}\nfoot\n`;
+		await Bun.write(file, content);
+		const session = createSession(tmpDir);
+
+		const read = await new ReadTool(session).execute("r1", { path: `${file}:2` });
+		const tag = tagFromOutput(resultText(read));
+
+		let message: string | undefined;
+		try {
+			await executeHashlineSingle(execOptions(`[wide-advice.txt#${tag}]\nSWAP 2.=2:\n+REPLACED`, session));
+		} catch (err) {
+			message = (err as Error).message;
+		}
+
+		expect(message).toMatch(/never displayed \(it showed/);
+		expect(message).toContain("wide-advice.txt:2:raw");
+		// And NOT the ranged form, which is the command that loops here.
+		expect(message).not.toContain("re-read the remainder with `wide-advice.txt:2`");
+		expect(await Bun.file(file).text()).toBe(content);
+	});
+
+	/**
+	 * And the advice works: following it lands the edit.
+	 *
+	 * The case above proves the message CHANGED; this one proves the message is
+	 * TRUE. Without it the guidance could name any plausible-looking command and
+	 * still dead-end, which is exactly the failure being fixed.
+	 */
+	it("lets a raw re-read of the clipped line clear the guard", async () => {
+		const file = path.join(tmpDir, "wide-recover.txt");
+		const wide = "a".repeat(4096);
+		const content = `head\n${wide}\nfoot\n`;
+		await Bun.write(file, content);
+		const session = createSession(tmpDir);
+
+		await new ReadTool(session).execute("r1", { path: `${file}:2` });
+		// The remedy the message names, run verbatim.
+		await new ReadTool(session).execute("r2", { path: `${file}:2:raw` });
+		const reread = await new ReadTool(session).execute("r3", { path: `${file}:1-3` });
+		const tag = tagFromOutput(resultText(reread));
+
+		await executeHashlineSingle(execOptions(`[wide-recover.txt#${tag}]\nSWAP 2.=2:\n+REPLACED`, session));
+
 		expect(await Bun.file(file).text()).toBe("head\nREPLACED\nfoot\n");
+	});
+
+	/**
+	 * A wide line PAST the reveal cap still gets the `:raw` advice.
+	 *
+	 * The width check only looked at the lines it actually revealed, which is the
+	 * first `SEEN_LINE_REVEAL_CAP` of them. Anchor more than that many unseen
+	 * lines with a wide one further down and the message took the over-cap
+	 * branch, naming a plain ranged re-read; running it re-clipped the wide line
+	 * and the next attempt was rejected identically. The two reasons are not
+	 * exclusive, and `:raw` is the one that clears both.
+	 */
+	it("names a raw re-read when a wide line sits past the inline reveal cap", async () => {
+		const file = path.join(tmpDir, "wide-far.txt");
+		const lines = Array.from({ length: 120 }, (_, i) => `line ${i + 1}`);
+		lines[60] = "w".repeat(4096);
+		await Bun.write(file, `${lines.join("\n")}\n`);
+		const session = createSession(tmpDir);
+
+		const read = await new ReadTool(session).execute("r1", { path: `${file}:1-5` });
+		const tag = tagFromOutput(resultText(read));
+
+		let message: string | undefined;
+		try {
+			await executeHashlineSingle(execOptions(`[wide-far.txt#${tag}]\nSWAP 10.=110:\n+X`, session));
+		} catch (err) {
+			message = (err as Error).message;
+		}
+
+		expect(message).toMatch(/never displayed \(it showed/);
+		expect(message).toContain(":raw");
+		expect(message).not.toContain("re-read the remainder with `wide-far.txt:10-110`");
 	});
 });
 
-describe("seen-line guard disabled by default", () => {
+describe("search → edit seen-line guard", () => {
 	let tmpDir: string;
 
 	beforeAll(async () => {
 		await Settings.init({ inMemory: true });
 	});
 	beforeEach(async () => {
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "seen-line-off-"));
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "seen-line-search-"));
 	});
 	afterEach(async () => {
 		await removeWithRetries(tmpDir);
-	});
-
-	it("applies an edit on an unseen line when edit.enforceSeenLines is off (default)", async () => {
-		const file = path.join(tmpDir, "notes.txt");
-		await Bun.write(file, CONTENT);
-		// createSession enables the guard; a default session leaves it off.
-		const session = { ...createSession(tmpDir), settings: Settings.isolated() } as ToolSession;
-
-		const read = await new ReadTool(session).execute("r1", { path: `${file}:1-3` });
-		const tag = tagFromOutput(resultText(read));
-
-		// Line 12 was never displayed, but the guard is disabled, so it applies.
-		await executeHashlineSingle(execOptions(`[notes.txt#${tag}]\nPUT 12-12:\n+EDITED`, session));
-		expect(await Bun.file(file).text()).toContain("EDITED");
 	});
 });

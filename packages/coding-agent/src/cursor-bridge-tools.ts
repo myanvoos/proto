@@ -29,7 +29,7 @@ import type { Tool, ToolSession } from "./tools";
  * hands a restricted agent a mutating tool it was denied (issue #5680).
  */
 export function createBridgeEditTool(session: ToolSession, extensionRunner: ExtensionRunner): AgentTool {
-	const editTool: Tool = new EditTool(session, "replace");
+	const editTool: Tool = new EditTool(session);
 	return new ExtensionToolWrapper(editTool, extensionRunner);
 }
 
