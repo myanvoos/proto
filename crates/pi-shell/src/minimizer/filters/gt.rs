@@ -1,5 +1,3 @@
-//! Graphite (`gt`) output filters.
-
 use std::fmt::Write as _;
 
 use super::git;
@@ -122,13 +120,6 @@ fn compact_noisy_command(input: &str, exit_code: i32) -> String {
 	primitives::head_tail_lines(&candidate, 80, 40)
 }
 
-/// FAST PATH: collapse a clean `gt sync` to one dense line.
-///
-/// Re-derived against DEFAULT `gt sync` output (no injection): `Synced ...
-/// branch` lines and `Deleted branch <name>` lines. Returns `None` (so the
-/// caller falls back to `compact_noisy_command`) on a non-zero exit, on any
-/// error line, or when nothing recognizable was synced/deleted — error
-/// visibility is preserved.
 fn dense_sync_summary(input: &str, exit_code: i32) -> Option<String> {
 	if exit_code != 0 {
 		return None;
@@ -146,9 +137,7 @@ fn dense_sync_summary(input: &str, exit_code: i32) -> Option<String> {
 		if is_error_line(line) {
 			return None;
 		}
-		// Real `gt sync` emits the top-level confirmation `Synced with remote`
-		// (no "branch" token); per-branch forms read `Synced ... branch`. Count
-		// both so a successful sync never reports `0 synced`.
+
 		if line.starts_with("Synced with remote")
 			|| (line.contains("Synced") && line.contains("branch"))
 		{
@@ -165,12 +154,6 @@ fn dense_sync_summary(input: &str, exit_code: i32) -> Option<String> {
 
 	let mut summary = format!("ok sync: {synced} synced, {deleted} deleted");
 	if !deleted_names.is_empty() {
-		// Cap the inline name list: a long-lived stack cleanup can delete hundreds
-		// of merged branches at once, and this fast path bypasses the
-		// head_tail_lines bound that compact_noisy_command (the fallback) applies.
-		// Without a cap every name lands on one unbounded line, defeating the
-		// minimizer's bounding guarantee. Show the first DELETED_NAME_CAP names and
-		// summarize the rest as `[…N names elided…]` (the count above stays exact).
 		const DELETED_NAME_CAP: usize = 20;
 		let shown = deleted_names.len().min(DELETED_NAME_CAP);
 		let names = deleted_names[..shown].join(", ");
@@ -184,11 +167,6 @@ fn dense_sync_summary(input: &str, exit_code: i32) -> Option<String> {
 	Some(summary)
 }
 
-/// FAST PATH: collapse a clean `gt restack` to one dense line.
-///
-/// Re-derived against DEFAULT `gt restack` output: lines reporting a restacked
-/// branch. Returns `None` (caller falls back to `compact_noisy_command`) on a
-/// non-zero exit, on any error line, or when no branch was restacked.
 fn dense_restack_summary(input: &str, exit_code: i32) -> Option<String> {
 	if exit_code != 0 {
 		return None;
@@ -214,8 +192,6 @@ fn dense_restack_summary(input: &str, exit_code: i32) -> Option<String> {
 	Some(format!("ok restacked {restacked} branches\n"))
 }
 
-/// Extract the branch name from a `Deleted branch <name>` / `deleted branch
-/// <name>` line.
 fn deleted_branch_name(line: &str) -> Option<String> {
 	let lower = line.to_ascii_lowercase();
 	let marker = "deleted branch ";

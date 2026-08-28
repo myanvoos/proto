@@ -1,27 +1,12 @@
-/**
- * Protocol handler for proto:// URLs.
- *
- * Serves statically embedded documentation files bundled at build time.
- *
- * URL forms:
- * - proto:// - Lists all available documentation files
- * - proto://<file>.md - Reads a specific documentation file
- */
 import * as path from "node:path";
 import { getDocFilenames, getEmbeddedDoc } from "./docs-index";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
-/**
- * Handler for proto:// URLs.
- *
- * Resolves documentation file names to their content, or lists available docs.
- */
 export class ProtoProtocolHandler implements ProtocolHandler {
 	readonly scheme = "proto";
 	readonly immutable = true;
 
 	async resolve(url: InternalUrl): Promise<InternalResource> {
-		// Extract filename from host + path
 		const host = url.rawHost || url.hostname;
 		const pathname = url.rawPathname ?? url.pathname;
 		const filename = host ? (pathname && pathname !== "/" ? host + pathname : host) : "";
@@ -55,7 +40,6 @@ export class ProtoProtocolHandler implements ProtocolHandler {
 	}
 
 	async #readDoc(filename: string, url: InternalUrl): Promise<InternalResource> {
-		// Validate: no traversal, no absolute paths
 		if (path.isAbsolute(filename)) {
 			throw new Error("Absolute paths are not allowed in proto:// URLs");
 		}

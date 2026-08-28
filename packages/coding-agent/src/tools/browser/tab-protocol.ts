@@ -38,7 +38,7 @@ export interface ScreenshotResult {
 export interface SessionSnapshot {
 	cwd: string;
 	browserScreenshotDir?: string;
-	/** Force non-WebP screenshot encoding (e.g. for Ollama). Unset honors `PROTO_NO_WEBP`. */
+
 	excludeWebP?: boolean;
 }
 
@@ -62,16 +62,9 @@ export type WorkerInitPayload =
 			url?: string;
 			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 			timeoutMs: number;
-			/**
-			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
-			 * stop a pending navigation so a blocked target cannot stall worker init (which
-			 * previously force-killed the tab). Never set for first-time Electron attach.
-			 */
+
 			recover?: boolean;
-			/**
-			 * Whether the worker may raise this tab before capturing a screenshot. Unset
-			 * behaves as `true`; the supervisor clears it for browsers we did not launch.
-			 */
+
 			activateForScreenshot?: boolean;
 	  };
 
@@ -103,7 +96,7 @@ export interface RunErrorPayload {
 	stack?: string;
 	isToolError: boolean;
 	isAbort: boolean;
-	/** The worker could not restore tab-scoped browser state and must be recycled. */
+
 	recoverTab?: boolean;
 }
 

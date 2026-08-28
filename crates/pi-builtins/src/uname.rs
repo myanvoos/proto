@@ -1,6 +1,6 @@
-//! `uname` builtin: print selected system information.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -75,12 +75,12 @@ impl UNameOutput {
 		let machine = (opts.machine || opts.all).then(|| uname.machine().to_owned());
 		let os = (opts.os || opts.all).then(|| uname.osname().to_owned());
 
-		// This option is unsupported on modern Linux systems.
-		// See: https://lists.gnu.org/archive/html/bug-coreutils/2005-09/msg00063.html
+
+
 		let processor = opts.processor.then(|| "unknown".into());
 
-		// This option is unsupported on modern Linux systems.
-		// See: https://lists.gnu.org/archive/html/bug-coreutils/2005-09/msg00063.html
+
+
 		let hardware_platform = opts.hardware_platform.then(|| "unknown".into());
 
 		Ok(Self {
@@ -108,7 +108,7 @@ struct Options {
 	os:                bool,
 }
 
-/// Parsed `uname` invocation.
+
 pub(crate) struct Uname {
 	matches: ArgMatches,
 }
@@ -240,7 +240,7 @@ fn uu_app() -> Command {
 		)
 }
 
-/// Creates the `uname` builtin registration.
+
 pub(crate) fn uname_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Uname, SE>()
 }

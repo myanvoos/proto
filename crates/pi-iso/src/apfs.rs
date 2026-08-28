@@ -1,12 +1,3 @@
-//! macOS APFS clonefile-based isolation.
-//!
-//! `clonefile(2)` recursively reflinks an entire directory tree in a single
-//! syscall. Both paths share the same on-disk blocks until either side is
-//! modified; the kernel handles per-block copy-on-write. The destination is
-//! a fully independent directory tree from the caller's perspective — there
-//! is no mount to undo, so [`stop`](IsolationBackend::stop) is a recursive
-//! remove.
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -81,7 +72,7 @@ mod imp {
 				IsoError::other(format!("unable to create parent of {}: {err}", merged.display()))
 			})?;
 		}
-		// `clonefile` refuses to overwrite. Drop any stale tree first.
+
 		if merged.exists() {
 			fs::remove_dir_all(merged).map_err(|err| {
 				IsoError::other(format!("unable to clear {} before clone: {err}", merged.display()))
@@ -91,10 +82,6 @@ mod imp {
 		let src_c = to_cstring(lower.as_os_str().as_bytes(), "lower")?;
 		let dst_c = to_cstring(merged.as_os_str().as_bytes(), "merged")?;
 
-		// SAFETY: both pointers are valid CStrings whose backing storage lives
-		// until after the call. `clonefile` with `flags = 0` performs a
-		// recursive reflink clone and does not retain the pointers past the
-		// syscall.
 		let rc = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
 		if rc == 0 {
 			return Ok(());

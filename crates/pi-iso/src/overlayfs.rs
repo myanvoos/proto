@@ -1,19 +1,3 @@
-//! Linux overlayfs-based isolation.
-//!
-//! Tries to stack a kernel `overlay` filesystem at `merged` over the
-//! read-only `lower` tree. The mount uses sibling `upper` and `work`
-//! directories derived from `merged.parent()` so a single caller-owned base
-//! directory cleans up with one `rm -rf`.
-//!
-//! When the kernel rejects the mount (typically `EPERM` outside a user
-//! namespace, or `ENODEV` if the module is absent) we fall back to
-//! `fuse-overlayfs(1)` because that is what the project shipped before and
-//! existing user environments rely on it.
-//!
-//! Backend selection is remembered per-mount so
-//! [`stop`](IsolationBackend::stop) dispatches to the correct teardown path
-//! (`umount2` vs `fusermount[3] -u`).
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -156,19 +140,13 @@ mod imp {
 			let flavor = ACTIVE_MOUNTS.lock().remove(&merged);
 			match flavor {
 				Some(MountFlavor::Fuse) => fuse_umount(&merged),
-				Some(MountFlavor::Kernel) | None => {
-					// `None` covers callers that skipped `start` (probe-style flow)
-					// or processes that re-attached after a crash; try a kernel
-					// umount first, fall back to fusermount so we don't silently
-					// leak a mount.
-					kernel_umount(&merged).or_else(|err| {
-						if err.is_unavailable() {
-							fuse_umount(&merged)
-						} else {
-							Err(err)
-						}
-					})
-				},
+				Some(MountFlavor::Kernel) | None => kernel_umount(&merged).or_else(|err| {
+					if err.is_unavailable() {
+						fuse_umount(&merged)
+					} else {
+						Err(err)
+					}
+				}),
 			}
 		};
 		result?;
@@ -186,7 +164,6 @@ mod imp {
 		let fstype = CString::new("overlay").expect("static fstype");
 		let opts_c = to_cstring(opts.as_bytes(), "overlay options")?;
 
-		// SAFETY: all pointers are valid CString-backed and outlive the call.
 		let rc = unsafe {
 			libc::mount(
 				source.as_ptr(),
@@ -214,17 +191,14 @@ mod imp {
 
 	fn kernel_umount(merged: &Path) -> IsoResult<()> {
 		let target = to_cstring(merged.as_os_str().as_bytes(), "merged")?;
-		// SAFETY: `target` lives until after the syscall returns.
+
 		let rc = unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) };
 		if rc == 0 {
 			return Ok(());
 		}
 		let err = std::io::Error::last_os_error();
 		match err.raw_os_error() {
-			Some(libc::EINVAL | libc::ENOENT) => {
-				// Nothing mounted there — already torn down.
-				Ok(())
-			},
+			Some(libc::EINVAL | libc::ENOENT) => Ok(()),
 			Some(libc::EPERM | libc::EACCES) => {
 				Err(IsoError::unavailable(format!("kernel umount denied: {err}")))
 			},
@@ -281,8 +255,7 @@ mod imp {
 				Err(err) => return Err(IsoError::other(format!("spawn {binary}: {err}"))),
 			}
 		}
-		// Last resort — try the lazy kernel umount; it works for both kernel
-		// overlay and any fuse mount the user can reach.
+
 		kernel_umount(merged)
 	}
 

@@ -70,16 +70,7 @@ interface RenderInitialMessagesOptions {
 
 const TRANSCRIPT_RENDER_CHUNK_MESSAGES = 32;
 const TRANSCRIPT_RENDER_CHUNK_MS = 8;
-/**
- * Upper bound on full-transcript replay restarts inside
- * {@link UiHelpers.renderInitialMessages}. Each restart discards the staged
- * tree and replays every message from scratch, so on a large resumed session
- * (issue #7811: ~6k entries) a single pass takes longer than the interval
- * between entries persisted by background sources — the restart condition
- * becomes permanently true and an unbounded loop livelocks at 100% CPU.
- * Entries that land after the final accepted pass are
- * durable in the session file and reach the display on the next rebuild.
- */
+
 const TRANSCRIPT_REPLAY_MAX_ATTEMPTS = 5;
 
 function waitForImmediate(): Promise<void> {
@@ -112,7 +103,6 @@ function imageLinksForMessage(
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
 
-	/** Extract text content from a user message */
 	getUserMessageText(message: Message): string {
 		if (message.role !== "user") return "";
 		const textBlocks =
@@ -122,19 +112,12 @@ export class UiHelpers {
 		return textBlocks.map(block => block.text).join("");
 	}
 
-	/**
-	 * Show a status message in the chat.
-	 *
-	 * If multiple status messages are emitted back-to-back (without anything else being added to the chat),
-	 * we update the previous status line instead of appending new ones to avoid log spam.
-	 */
 	showStatus(message: string, options?: { dim?: boolean }): void {
 		const children = this.ctx.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
 		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
 		const useDim = options?.dim ?? true;
-		// Resolve the dim color lazily so a later theme change re-shapes the line
-		// instead of leaving the palette that was active when it was presented.
+
 		const styleFn = useDim ? (t: string) => theme.fg("dim", t) : undefined;
 
 		if (last && secondLast && last === this.ctx.lastStatusText && secondLast === this.ctx.lastStatusSpacer) {
@@ -225,7 +208,7 @@ export class UiHelpers {
 						break;
 					}
 					const renderer = this.ctx.viewSession.extensionRunner?.getMessageRenderer(message.customType);
-					// Both HookMessage and CustomMessage have the same structure, cast for compatibility
+
 					const component = new CustomMessageComponent(message as CustomMessage<unknown>, renderer);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
@@ -245,7 +228,6 @@ export class UiHelpers {
 				break;
 			}
 			case "fileMention": {
-				// Render compact file mention display
 				const block = buildFileMentionBlock(message.files, 0);
 				if (block.children.length > 0) this.ctx.chatContainer.addChild(block);
 				break;
@@ -290,7 +272,6 @@ export class UiHelpers {
 				break;
 			}
 			case "toolResult": {
-				// Tool results are rendered inline with tool calls, handled separately
 				break;
 			}
 			default: {
@@ -300,18 +281,11 @@ export class UiHelpers {
 		return [];
 	}
 
-	/**
-	 * Render session context to chat. Used for initial load and rebuild after compaction.
-	 * @param sessionContext Session context to render
-	 * @param options.updateFooter Update footer state
-	 * @param options.populateHistory Add user messages to editor history
-	 */
 	renderSessionContext(sessionContext: SessionContext, options: RenderSessionContextOptions = {}): void {
 		const steps = this.#renderSessionContextSteps(sessionContext, options);
 		while (!steps.next().done) {}
 	}
 
-	/** Build a session context in bounded chunks so terminal input runs between event-loop turns. */
 	async renderSessionContextIncrementally(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions,
@@ -339,10 +313,8 @@ export class UiHelpers {
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions = {},
 	): Generator<void, void, void> {
-		// Preserved: message_start handler owns this lifecycle (see #783)
 		this.ctx.pendingTools.clear();
-		// Reseed the cache-invalidation baseline: this rebuild re-derives every
-		// turn's marker from usage, and the last turn becomes the live baseline.
+
 		this.ctx.lastAssistantUsage = undefined;
 
 		if (options.updateFooter) {
@@ -353,9 +325,7 @@ export class UiHelpers {
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
-		// Defer per-turn metrics until the turn's tool results have materialized.
-		// Read-only invisible turns attach the metrics to their shared compact
-		// group; every other turn keeps the standalone row below its tool blocks.
+
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
 		let pendingUsageTtft: number | undefined;
@@ -386,10 +356,7 @@ export class UiHelpers {
 			pendingUsageTimestamp = undefined;
 			pendingReadUsageCallIds = undefined;
 		};
-		// Rebuild-time mirror of the event controller's displaceable-poll
-		// bookkeeping: a `fleet` wait that found every watched job still running is
-		// superseded by the next `fleet` call, so a rebuilt transcript collapses a
-		// repeated-poll run to its final snapshot instead of replaying the spam.
+
 		let waitingPoll: ToolExecutionComponent | null = null;
 		const resolveWaitingPoll = (nextToolName?: string) => {
 			const previous = waitingPoll;
@@ -402,8 +369,7 @@ export class UiHelpers {
 			) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
-			// Sealing freezes the block and stops the waiting-poll spinner that
-			// updateResult armed.
+
 			previous.seal();
 		};
 		let todoSnapshot: ToolExecutionComponent | null = null;
@@ -429,17 +395,10 @@ export class UiHelpers {
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
-			// Yield BEFORE each message (except the first) rather than after: the
-			// per-message body has several early `continue` paths (preserved live
-			// results, image-only and grouped `read` results), and a trailing yield
-			// is skipped by all of them. A large parallel-read batch is entirely
-			// such results, so an after-body yield never trips the chunk counter and
-			// the whole batch replays in one event-loop turn. Yielding at the top of
-			// the next iteration is reached no matter how the prior message exited.
 			if (i > 0) yield;
 			const message = messages[i]!;
 			if (message.role !== "toolResult") flushPendingUsage();
-			// Assistant messages need special handling for tool calls
+
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
@@ -458,10 +417,6 @@ export class UiHelpers {
 				}
 				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 				if (hasVisibleAssistantContent) {
-					// Rebuild reconstructs immutable history; seal (not finalize) so the
-					// group freezes even if a read's result was never persisted —
-					// finalize alone keeps a pending entry live and would stop the whole
-					// transcript below it from committing to native scrollback.
 					readGroup?.seal();
 					readGroup = null;
 				}
@@ -474,7 +429,6 @@ export class UiHelpers {
 					this.ctx.chatContainer.addChild(component);
 				};
 
-				// Render tool call components
 				for (const content of message.content) {
 					if (content.type !== "toolCall") {
 						continue;
@@ -529,11 +483,7 @@ export class UiHelpers {
 					readGroup = null;
 					const tool = this.ctx.viewSession.getToolByName(content.name);
 					const partialJson = getStreamingPartialJson(content);
-					// Mid-stream rebuild (theme change, settings, focus replay): decode
-					// display args from the raw stream exactly like the live reveal path.
-					// The provider-parsed `arguments` lag the stream by up to a throttled
-					// parse window, so spreading them alone would freeze a long write/edit
-					// preview at its last full parse.
+
 					const rawInput = content.customWireName !== undefined;
 					const renderArgs = partialJson
 						? decodeStreamedToolArgs(partialJson, {
@@ -572,11 +522,7 @@ export class UiHelpers {
 					}
 					appendAssistantSegment(afterToolSegment);
 				}
-				// Dangling toolCalls (no result on the resolved path — failed or
-				// retried turns, results on sibling branches) were stripped by the
-				// context build; surface a placeholder so the turn's activity is
-				// visibly elided instead of silently vanishing (the "bare thinking
-				// lines" transcript trap).
+
 				const strippedToolCalls = (message as AgentMessage & StrippedToolCallsMarker).strippedToolCalls ?? 0;
 				if (strippedToolCalls > 0) {
 					this.ctx.chatContainer.addChild(
@@ -634,7 +580,6 @@ export class UiHelpers {
 					continue;
 				}
 
-				// Match tool results to pending tool components
 				const component = this.ctx.pendingTools.get(message.toolCallId);
 				if (component) {
 					component.updateResult(message, false, message.toolCallId);
@@ -650,9 +595,6 @@ export class UiHelpers {
 						component instanceof ToolExecutionComponent &&
 						component.canBeDisplacedBy("todo")
 					) {
-						// A successful todo result supersedes the prior live snapshot. Failed
-						// follow-ups return false from canBeDisplacedBy("todo"), so the
-						// last-good panel stays on screen.
 						resolveTodoSnapshot("todo");
 						todoSnapshot = component;
 					}
@@ -660,27 +602,19 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
-				// A user prompt closes the displacement window, same as the live path.
+
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
-				// All other messages use standard rendering
+
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 			}
 		}
 		flushPendingUsage();
 
-		// The trailing read run has no following break to close it; seal so the
-		// rebuilt group freezes (even with a never-persisted result) and commits to
-		// native scrollback like every other historical block.
 		readGroup?.seal();
-		// A trailing waiting poll is final history on rebuild; seal it so it
-		// freezes (and its spinner timer stops) like every other block.
+
 		resolveWaitingPoll();
-		// A trailing todo snapshot is live state, not history: when the rebuild
-		// runs mid-turn (settings overlay close, focus attach during streaming),
-		// hand it back to the controller so a follow-up `todo` update keeps
-		// displacing instead of stacking. Idle rebuilds (resume / compaction)
-		// fall through to the seal path so the snapshot freezes as history.
+
 		if (todoSnapshot && this.ctx.viewSession.isStreaming) {
 			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
 			todoSnapshot = null;
@@ -688,18 +622,6 @@ export class UiHelpers {
 			resolveTodoSnapshot();
 		}
 
-		// Entries still in `pendingTools` are toolCalls whose result never landed
-		// during the replay — with `keepDanglingToolCalls` these are exactly the
-		// turn's in-flight calls (assistant turn persisted at message_end, tool
-		// still executing). While the viewed session streams, keep them tracked so
-		// the live event stream routes `tool_execution_update`/`_end` into the
-		// rebuilt components instead of dropping the result; their args are final,
-		// so mark them complete. Idle rebuilds have no result coming: seal so the
-		// blocks freeze as history instead of pinning the live region, then clear
-		// so reconstructed historical components never leak into live tracking.
-		// (`rebuildChatFromMessages` builds its context WITHOUT dangling calls and
-		// restores its own preserved live components afterwards — for that caller
-		// the map is empty here either way.)
 		if (this.ctx.viewSession.isStreaming) {
 			for (const [toolCallId, component] of this.ctx.pendingTools) {
 				component.setArgsComplete(toolCallId);
@@ -716,22 +638,9 @@ export class UiHelpers {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Fast-path history rewind (esc-esc branch, /tree rewind to an ancestor):
-	 * drop the rendered components at/after `message` in place instead of the
-	 * destructive clear-scrollback replay. Rows already committed to native
-	 * scrollback are immutable, so the drop is expressible only while every
-	 * affected block is still wholly inside the visible window; returns false
-	 * when the caller must fall back to
-	 * `renderInitialMessages({ clearTerminalHistory: true })`.
-	 *
-	 * Callers must have already rewound the session so that `message` and
-	 * everything after it are no longer part of the view session's transcript.
-	 */
 	truncateTranscriptFromMessage(message: AgentMessage): boolean {
 		if (!this.ctx.initialChatRendered || this.ctx.focusedAgentId || this.ctx.viewSession.isStreaming) return false;
-		// In-flight blocks route future events into their components; a rewind
-		// with any of them live takes the full-replay path instead.
+
 		if (
 			this.ctx.pendingTools.size > 0 ||
 			this.ctx.pendingBashComponents.length > 0 ||
@@ -744,15 +653,11 @@ export class UiHelpers {
 		if (!cut) return false;
 		const index = chat.children.indexOf(cut);
 		if (index < 0) return false;
-		// Every dropped block must still be uncommitted: removing rows already on
-		// the tape is an interior deletion of committed history the render engine
-		// cannot express (see TranscriptContainer.isBlockUncommitted).
+
 		for (let i = index; i < chat.children.length; i++) {
 			if (!chat.isBlockUncommitted(chat.children[i]!)) return false;
 		}
-		// Ground truth for the surviving prefix. The cut message still present
-		// means the session was not actually rewound past it — bail before
-		// mutating anything.
+
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 		});
@@ -765,18 +670,14 @@ export class UiHelpers {
 			chat.removeChild(child);
 			child.dispose?.();
 		}
-		// Prune the settled-component cache to the surviving messages — dropped
-		// entries stay strongly reachable through the session tree and would
-		// otherwise pin their components' layout caches (same rationale as
-		// rebuildChatFromMessages).
+
 		const retained = new WeakMap<AgentMessage, Component>();
 		for (const remaining of context.messages) {
 			const component = this.ctx.transcriptMessageComponents.get(remaining);
 			if (component) retained.set(remaining, component);
 		}
 		this.ctx.transcriptMessageComponents = retained;
-		// Reseed the cache-invalidation baseline from the surviving transcript
-		// (mirrors the replay path's billed-usage rule).
+
 		let baseline: Usage | undefined;
 		for (let i = context.messages.length - 1; i >= 0; i--) {
 			const candidate = context.messages[i]!;
@@ -795,9 +696,6 @@ export class UiHelpers {
 	}
 
 	async renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
-		// Build against a detached container. Incremental construction still yields
-		// to terminal input, while paints keep using the complete visible transcript
-		// until the replacement is ready to swap in.
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
 		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
@@ -816,12 +714,6 @@ export class UiHelpers {
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		// Live display collapses to the compacted transcript tail unless the
-		// user opted into the full inline history; export/resume callers can
-		// still request either mode. Mid-turn rebuilds
-		// (focus attach/unfocus while a tool executes) keep dangling toolCalls so
-		// the in-flight call re-renders as pending instead of vanishing;
-		// renderSessionContext then keeps it in `pendingTools` for live routing.
 		let context = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
@@ -836,8 +728,6 @@ export class UiHelpers {
 		try {
 			while (true) {
 				if (this.ctx.viewSession.isStreaming) {
-					// Live events mutate the same component maps; keep their replay atomic so
-					// a delta cannot land halfway through rebuilding its pending tool block.
 					this.ctx.renderSessionContext(context, renderOptions);
 				} else {
 					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
@@ -847,9 +737,6 @@ export class UiHelpers {
 				}
 				replayAttempts++;
 				if (replayAttempts >= TRANSCRIPT_REPLAY_MAX_ATTEMPTS) {
-					// A source keeps persisting entries faster than a full replay pass
-					// completes. Accept the transcript just replayed instead of
-					// restarting forever (see TRANSCRIPT_REPLAY_MAX_ATTEMPTS).
 					logger.warn("renderInitialMessages: transcript replay did not converge; accepting current replay", {
 						attempts: replayAttempts,
 						replayEntryCount,
@@ -857,10 +744,7 @@ export class UiHelpers {
 					});
 					break;
 				}
-				// An extension persisted a display message while the transcript replay
-				// yielded. The display callback stayed gated by initialChatRendered;
-				// discard the stale partial tree and replay the current session once
-				// more instead of letting a reentrant synchronous rebuild interleave.
+
 				stagedChatContainer.disposeChildren();
 				this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 				this.ctx.pendingTools.clear();
@@ -891,7 +775,6 @@ export class UiHelpers {
 			}
 			committed = true;
 
-			// Show compaction info if session was compacted.
 			const allEntries = this.ctx.viewSession.sessionManager.getEntries();
 			let compactionCount = 0;
 			for (const entry of allEntries) {
@@ -1091,17 +974,9 @@ export class UiHelpers {
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
 			for (const message of preCommands) {
-				// preCommands are all slash commands; #deliverQueuedMessage handles
-				// that branch (no local-submission marking needed since slash
-				// commands don't generate a matching user message_start).
 				await this.#deliverQueuedMessage(message);
 			}
 
-			// First prompt is fire-and-forget — its rejection is funneled through
-			// `restoreQueue` rather than rethrown. Plain prompts use primitive
-			// recordLocalSubmission and dispose manually in the catch. Skill prompts
-			// are rebuilt as user-attributed custom messages so queued `/skill:` text
-			// is not sent as a literal prompt after compaction.
 			let promptPromise: Promise<unknown>;
 			if (isKnownSkillCommand(this.ctx, firstPrompt.text)) {
 				const built = await buildSkillCommandPrompt(
@@ -1139,7 +1014,6 @@ export class UiHelpers {
 		}
 	}
 
-	/** Move pending bash components from pending area to chat */
 	flushPendingBashComponents(): void {
 		for (const component of this.ctx.pendingBashComponents) {
 			this.ctx.pendingMessagesContainer.removeChild(component);

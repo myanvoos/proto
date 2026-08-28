@@ -1,4 +1,4 @@
-//! Implements a shell variable environment.
+
 
 use std::{
 	borrow::Cow,
@@ -10,28 +10,28 @@ use crate::{
 	variables::{self, ShellValue, ShellValueUnsetType, ShellVariable},
 };
 
-/// Represents the policy for looking up variables in a shell environment.
+
 #[derive(Clone, Copy)]
 pub enum EnvironmentLookup {
-	/// Look anywhere.
+
 	Anywhere,
-	/// Look only in the global scope.
+
 	OnlyInGlobal,
-	/// Look only in the current local scope.    
+
 	OnlyInCurrentLocal,
-	/// Look only in local scopes.
+
 	OnlyInLocal,
 }
 
-/// Represents a shell environment scope.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EnvironmentScope {
-	/// Scope local to a function instance
+
 	Local,
-	/// Globals
+
 	Global,
-	/// Transient overrides for a command invocation
+
 	Command,
 }
 
@@ -45,8 +45,8 @@ impl std::fmt::Display for EnvironmentScope {
 	}
 }
 
-/// A guard that pushes a scope onto a shell environment and pops it when
-/// dropped.
+
+
 pub(crate) struct ScopeGuard<'a, SE: extensions::ShellExtensions> {
 	scope_type: EnvironmentScope,
 	shell:      &'a mut crate::Shell<SE>,
@@ -54,24 +54,24 @@ pub(crate) struct ScopeGuard<'a, SE: extensions::ShellExtensions> {
 }
 
 impl<'a, SE: extensions::ShellExtensions> ScopeGuard<'a, SE> {
-	/// Creates a new scope guard, pushing the given scope type onto the
-	/// environment.
-	///
-	/// # Arguments
-	///
-	/// * `shell` - The shell whose environment to modify.
-	/// * `scope_type` - The type of scope to push.
+
+
+
+
+
+
+
 	pub fn new(shell: &'a mut crate::Shell<SE>, scope_type: EnvironmentScope) -> Self {
 		shell.env_mut().push_scope(scope_type);
 		Self { scope_type, shell, detached: false }
 	}
 
-	/// Returns a mutable reference to the shell.
+
 	pub const fn shell(&mut self) -> &mut crate::Shell<SE> {
 		self.shell
 	}
 
-	/// Detaches the guard, preventing it from popping the scope on drop.
+
 	pub const fn detach(&mut self) {
 		self.detached = true;
 	}
@@ -85,15 +85,15 @@ impl<SE: extensions::ShellExtensions> Drop for ScopeGuard<'_, SE> {
 	}
 }
 
-/// Represents the shell variable environment, composed of a stack of scopes.
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellEnvironment {
-	/// Stack of scopes, with the top of the stack being the current scope.
+
 	scopes: Vec<(EnvironmentScope, ShellVariableMap)>,
-	/// Whether or not to auto-export variables on creation or modification.
+
 	export_variables_on_modification: bool,
-	/// Count of total entries (may include duplicates with shadowed variables).
+
 	entry_count: usize,
 }
 
@@ -104,7 +104,7 @@ impl Default for ShellEnvironment {
 }
 
 impl ShellEnvironment {
-	/// Returns a new shell environment.
+
 	pub fn new() -> Self {
 		Self {
 			scopes: vec![(EnvironmentScope::Global, ShellVariableMap::default())],
@@ -113,24 +113,24 @@ impl ShellEnvironment {
 		}
 	}
 
-	/// Pushes a new scope of the given type onto the environment's scope stack.
-	///
-	/// # Arguments
-	///
-	/// * `scope_type` - The type of scope to push.
+
+
+
+
+
 	pub fn push_scope(&mut self, scope_type: EnvironmentScope) {
 		self.scopes.push((scope_type, ShellVariableMap::default()));
 	}
 
-	/// Pops the top-most scope off the environment's scope stack.
-	///
-	/// # Arguments
-	///
-	/// * `expected_scope_type` - The type of scope that is expected to be atop
-	///   the stack.
+
+
+
+
+
+
 	pub fn pop_scope(&mut self, expected_scope_type: EnvironmentScope) -> Result<(), error::Error> {
-		// TODO(env): Should we panic instead on failure? It's effectively a broken
-		// invariant.
+
+
 		match self.scopes.pop() {
 			Some((actual_scope_type, _)) if actual_scope_type == expected_scope_type => Ok(()),
 			Some((actual_scope_type, _)) => Err(
@@ -144,20 +144,20 @@ impl ShellEnvironment {
 		}
 	}
 
-	//
-	// Iterators/Getters
-	//
 
-	/// Returns an iterator over all exported variables defined in the variable.
+
+
+
+
 	pub fn iter_exported(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
-		// We won't actually need to store all entries, but we expect it should be
-		// within the same order.
+
+
 		let mut visible_vars: HashMap<&String, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
 		for (_, var_map) in self.scopes.iter().rev() {
 			for (name, var) in var_map.iter().filter(|(_, v)| v.is_exported()) {
-				// Only insert the variable if it hasn't been seen yet.
+
 				if let hash_map::Entry::Vacant(entry) = visible_vars.entry(name) {
 					entry.insert(var);
 				}
@@ -167,23 +167,23 @@ impl ShellEnvironment {
 		visible_vars.into_iter()
 	}
 
-	/// Returns an iterator over all the variables defined in the environment.
+
 	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
 		self.iter_using_policy(EnvironmentLookup::Anywhere)
 	}
 
-	/// Returns an iterator over all the variables defined in the environment,
-	/// using the given lookup policy.
-	///
-	/// # Arguments
-	///
-	/// * `lookup_policy` - The policy to use when looking up variables.
+
+
+
+
+
+
 	pub fn iter_using_policy(
 		&self,
 		lookup_policy: EnvironmentLookup,
 	) -> impl Iterator<Item = (&String, &ShellVariable)> {
-		// We won't actually need to store all entries, but we expect it should be
-		// within the same order.
+
+
 		let mut visible_vars: HashMap<&String, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
@@ -213,7 +213,7 @@ impl ShellEnvironment {
 			}
 
 			for (name, var) in var_map.iter() {
-				// Only insert the variable if it hasn't been seen yet.
+
 				if let hash_map::Entry::Vacant(entry) = visible_vars.entry(name) {
 					entry.insert(var);
 				}
@@ -229,14 +229,14 @@ impl ShellEnvironment {
 		visible_vars.into_iter()
 	}
 
-	/// Tries to retrieve an immutable reference to the variable with the given
-	/// name in the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
+
+
+
+
+
+
 	pub fn get<S: AsRef<str>>(&self, name: S) -> Option<(EnvironmentScope, &ShellVariable)> {
-		// Look through scopes, from the top of the stack on down.
+
 		for (scope_type, map) in self.scopes.iter().rev() {
 			if let Some(var) = map.get(name.as_ref()) {
 				return Some((*scope_type, var));
@@ -246,17 +246,17 @@ impl ShellEnvironment {
 		None
 	}
 
-	/// Tries to retrieve a mutable reference to the variable with the given name
-	/// in the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
+
+
+
+
+
+
 	pub fn get_mut<S: AsRef<str>>(
 		&mut self,
 		name: S,
 	) -> Option<(EnvironmentScope, &mut ShellVariable)> {
-		// Look through scopes, from the top of the stack on down.
+
 		for (scope_type, map) in self.scopes.iter_mut().rev() {
 			if let Some(var) = map.get_mut(name.as_ref()) {
 				return Some((*scope_type, var));
@@ -266,13 +266,13 @@ impl ShellEnvironment {
 		None
 	}
 
-	/// Tries to retrieve the string value of the variable with the given name in
-	/// the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
-	/// * `shell` - The shell owning the environment.
+
+
+
+
+
+
+
 	pub fn get_str<S: AsRef<str>, SE: extensions::ShellExtensions>(
 		&self,
 		name: S,
@@ -283,11 +283,11 @@ impl ShellEnvironment {
 			.map(|(_, v)| v.value().to_cow_str(shell))
 	}
 
-	/// Checks if a variable of the given name is set in the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to check.
+
+
+
+
+
 	pub fn is_set<S: AsRef<str>>(&self, name: S) -> bool {
 		if let Some((_, var)) = self.get(name) {
 			!matches!(var.value(), ShellValue::Unset(_))
@@ -296,16 +296,16 @@ impl ShellEnvironment {
 		}
 	}
 
-	//
-	// Setters
-	//
 
-	/// Tries to unset the variable with the given name in the environment,
-	/// returning whether or not such a variable existed.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to unset.
+
+
+
+
+
+
+
+
+
 	pub fn unset(&mut self, name: &str) -> Result<Option<ShellVariable>, error::Error> {
 		let mut local_count = 0;
 		for (scope_type, map) in self.scopes.iter_mut().rev() {
@@ -316,12 +316,12 @@ impl ShellEnvironment {
 			let unset_result = Self::try_unset_in_map(map, name)?;
 
 			if unset_result.is_some() {
-				// If we end up finding a local in the top-most local frame, then we replace
-				// it with a placeholder.
+
+
 				if matches!(scope_type, EnvironmentScope::Local) && local_count == 1 {
 					map.set(name, ShellVariable::new(ShellValue::Unset(ShellValueUnsetType::Untyped)));
 				} else if self.entry_count > 0 {
-					// Entry count should never be 0 here, but we're being defensive.
+
 					self.entry_count -= 1;
 				}
 
@@ -332,14 +332,14 @@ impl ShellEnvironment {
 		Ok(None)
 	}
 
-	/// Tries to unset an array element from the environment, using the given
-	/// name and element index for lookup. Returns whether or not an element was
-	/// unset.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the array variable to unset an element from.
-	/// * `index` - The index of the element to unset.
+
+
+
+
+
+
+
+
 	pub fn unset_index(&mut self, name: &str, index: &str) -> Result<bool, error::Error> {
 		if let Some((_, var)) = self.get_mut(name) {
 			var.unset_index(index)
@@ -359,13 +359,13 @@ impl ShellEnvironment {
 		}
 	}
 
-	/// Tries to retrieve an immutable reference to a variable from the
-	/// environment, using the given name and lookup policy.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
-	/// * `lookup_policy` - The policy to use when looking up the variable.
+
+
+
+
+
+
+
 	pub fn get_using_policy<N: AsRef<str>>(
 		&self,
 		name: N,
@@ -410,13 +410,13 @@ impl ShellEnvironment {
 		None
 	}
 
-	/// Tries to retrieve a mutable reference to a variable from the environment,
-	/// using the given name and lookup policy.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
-	/// * `lookup_policy` - The policy to use when looking up the variable.
+
+
+
+
+
+
+
 	pub fn get_mut_using_policy<N: AsRef<str>>(
 		&mut self,
 		name: N,
@@ -461,18 +461,18 @@ impl ShellEnvironment {
 		None
 	}
 
-	/// Update a variable in the environment, or add it if it doesn't already
-	/// exist.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to update or add.
-	/// * `value` - The value to assign to the variable.
-	/// * `updater` - A function to call to update the variable after assigning
-	///   the value.
-	/// * `lookup_policy` - The policy to use when looking up the variable.
-	/// * `scope_if_creating` - The scope to create the variable in if it doesn't
-	///   already exist.
+
+
+
+
+
+
+
+
+
+
+
+
 	pub fn update_or_add<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -502,19 +502,19 @@ impl ShellEnvironment {
 		}
 	}
 
-	/// Update an array element in the environment, or add it if it doesn't
-	/// already exist.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to update or add.
-	/// * `index` - The index of the element to update or add.
-	/// * `value` - The value to assign to the variable.
-	/// * `updater` - A function to call to update the variable after assigning
-	///   the value.
-	/// * `lookup_policy` - The policy to use when looking up the variable.
-	/// * `scope_if_creating` - The scope to create the variable in if it doesn't
-	///   already exist.
+
+
+
+
+
+
+
+
+
+
+
+
+
 	pub fn update_or_add_array_element<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -544,13 +544,13 @@ impl ShellEnvironment {
 		}
 	}
 
-	/// Adds a variable to the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to add.
-	/// * `var` - The variable to add.
-	/// * `target_scope` - The scope to add the variable to.
+
+
+
+
+
+
+
 	pub fn add<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -575,12 +575,12 @@ impl ShellEnvironment {
 		Err(error::ErrorKind::MissingScopeForNewVariable.into())
 	}
 
-	/// Sets a global variable in the environment.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to set.
-	/// * `var` - The variable to set.
+
+
+
+
+
+
 	pub fn set_global<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -590,7 +590,7 @@ impl ShellEnvironment {
 	}
 }
 
-/// Represents a map from names to shell variables.
+
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellVariableMap {
@@ -598,61 +598,61 @@ pub struct ShellVariableMap {
 }
 
 impl ShellVariableMap {
-	//
-	// Iterators/Getters
-	//
 
-	/// Returns an iterator over all the variables in the map.
+
+
+
+
 	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
 		self.variables.iter()
 	}
 
-	/// Tries to retrieve an immutable reference to the variable with the given
-	/// name.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
+
+
+
+
+
+
 	pub fn get(&self, name: &str) -> Option<&ShellVariable> {
 		self.variables.get(name)
 	}
 
-	/// Tries to retrieve a mutable reference to the variable with the given
-	/// name.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to retrieve.
+
+
+
+
+
+
 	pub fn get_mut(&mut self, name: &str) -> Option<&mut ShellVariable> {
 		self.variables.get_mut(name)
 	}
 
-	//
-	// Setters
-	//
 
-	/// Tries to unset the variable with the given name, returning the removed
-	/// variable or None if it was not already set.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to unset.
+
+
+
+
+
+
+
+
+
 	pub fn unset(&mut self, name: &str) -> Option<ShellVariable> {
 		self.variables.remove(name)
 	}
 
-	/// Sets a variable in the map.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the variable to set.
-	/// * `var` - The variable to set.
+
+
+
+
+
+
 	pub fn set<N: Into<String>>(&mut self, name: N, var: ShellVariable) -> Option<ShellVariable> {
 		self.variables.insert(name.into(), var)
 	}
 }
 
-/// Checks if the given name is a valid variable name.
+
 pub fn valid_variable_name(s: &str) -> bool {
 	let mut cs = s.chars();
 	match cs.next() {

@@ -1,6 +1,3 @@
-/**
- * CLI argument parsing and help display
- */
 import * as path from "node:path";
 import { $env, BINARY_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -24,7 +21,7 @@ export type Mode = "text" | "json" | "rpc" | "acp" | "rpc-ui";
 
 export interface Args {
 	cwd?: string;
-	/** Workspace directories beyond cwd for this session (repeatable `--add-dir`). */
+
 	addDir?: string[];
 	profile?: string;
 	alias?: string;
@@ -76,27 +73,12 @@ export interface Args {
 	noTitle?: boolean;
 	messages: string[];
 	fileArgs: string[];
-	/** Extension-registered flags this parse recognized — name to value. */
+
 	unknownFlags: Map<string, boolean | string>;
-	/**
-	 * `--`/`-` prefixed tokens this parse could not match against any built-in
-	 * or {@link extensionFlags} entry. The startup parse runs *before*
-	 * extensions load, so it always lists every extension-registered flag here;
-	 * the post-extension reparse in {@link applyExtensionFlags} clears those
-	 * once the real flag set is known. Anything still present after that
-	 * reparse is a genuine typo or stale flag and {@link reportUnrecognizedFlags}
-	 * surfaces it as a hard error so the agent does not silently start a
-	 * session with the misparsed positionals as a prompt (issue #2459).
-	 */
+
 	unrecognizedFlags: string[];
 }
 
-/**
- * Runtime dependencies the data-driven setters need. Constructed once at
- * module load and passed to every {@link STRING_SETTERS} call so the
- * setter table itself can stay free of `@oh-my-pi/pi-utils` runtime imports
- * (which would otherwise trip the profile bootstrap's env-init ordering).
- */
 const PARSE_DEPS: ParseDeps = {
 	logger,
 	parseThinking: parseCliThinkingLevel,
@@ -134,10 +116,6 @@ function consumeBuiltInStringValue(flag: string, args: string[], valueIndex: num
 }
 
 export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { type: "boolean" | "string" }>): Args {
-	// Work on a copy: the `--option=value` handling below splices the value
-	// into the array, and callers reuse the same argv (the post-extension
-	// reparse in `runRootCommand` parses it a second time). Mutating the input
-	// would corrupt that later parse, so never touch the caller's array.
 	const args = [...inputArgs];
 	const parseDeps = PARSE_DEPS;
 	const result: Args = {
@@ -148,8 +126,6 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		sessionDir: $env.PI_CODING_AGENT_SESSION_DIR || undefined,
 	};
 
-	// `--` ends option parsing (POSIX end-of-options). Everything after it is
-	// literal positional text, so flag-shaped messages are not parsed or rejected.
 	let sawSeparator = false;
 	let trustedFlagCount = 0;
 	for (let i = 0; i < args.length; i++) {
@@ -163,10 +139,6 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		}
 		const flagIndex = i;
 
-		// Support --flag=value syntax (e.g. --tools=ask,read). The value is
-		// spliced in as the next token so value-consuming flags pick it up via
-		// `args[++i]`; a non-consuming flag (e.g. a boolean) leaves it behind and
-		// the post-loop guard drops it so it is not mistaken for a message.
 		let equalsValueIndex = -1;
 		if (arg.startsWith("--") && arg.includes("=")) {
 			const eqIdx = arg.indexOf("=");
@@ -176,30 +148,19 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			equalsValueIndex = i + 1;
 		}
 
-		// Extension-registered flags take precedence over built-ins: a flag an
-		// extension owns is parsed with the extension's semantics rather than
-		// falling into a built-in branch, so registered flags shadow same-named
-		// built-ins here.
 		const extFlag = arg.startsWith("--") ? extensionFlags?.get(arg.slice(2)) : undefined;
 		if (extFlag) {
 			const flagName = arg.slice(2);
 			if (extFlag.type === "boolean") {
 				result.unknownFlags.set(flagName, true);
 			} else if (extFlag.type === "string" && i + 1 < args.length) {
-				// Consume the value in `--flag=value` form or when the next token is not
-				// flag-looking. A standalone `--` remains the end-of-options marker; use
-				// `--flag=--` when an extension needs a literal "--" string value.
 				if (equalsValueIndex !== -1 || !args[i + 1].startsWith("-")) {
 					result.unknownFlags.set(flagName, args[++i]);
 				}
 			}
 		} else if (STRING_VALUE_FLAGS.has(arg)) {
 			if (arg === "--trusted-extension") trustedFlagCount++;
-			// Built-in string flags consume the next token even when it is flag-looking
-			// (`--system-prompt --profile foo` ⇒ the prompt is the literal "--profile").
-			// The one token they must never absorb is the profile bootstrap's internal
-			// boundary sentinel; swallowing it as a value would drop the user's
-			// trailing message.
+
 			if (i + 1 < args.length && args[i + 1] !== PROFILE_BOOTSTRAP_BOUNDARY_ARG) {
 				const consumed = consumeBuiltInStringValue(arg, args, i + 1);
 				i = consumed.index;
@@ -218,8 +179,6 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		} else if (arg === "--allow-home") {
 			result.allowHome = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {
-			// Normally stripped by `extractProfileFlags` before parseArgs sees it;
-			// kept here as a fallback for direct parseArgs callers.
 			result.profile = args[++i];
 		} else if (arg.startsWith("--profile=")) {
 			result.profile = arg.slice("--profile=".length);
@@ -272,25 +231,13 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			}
 			result.fileArgs.push(filePath);
 		} else if (!arg.startsWith("-") || arg === "-") {
-			// Plain positional or lone `-` (stdin marker) — pass through as a
-			// message rather than flagging it.
 			result.messages.push(arg);
 		} else if (arg === "--") {
-			// POSIX positional separator: drop the token and switch the loop
-			// into "everything from here is a positional" mode. The guard at
-			// the top of the loop body handles the remaining tokens.
 			sawSeparator = true;
 		} else {
-			// Flag-shaped (`-x`, `--name`) but unrecognized at this parse. Record
-			// it so the post-extension reparse can decide whether to surface it
-			// as a hard error. `--flag=value` already split `value` into the next
-			// slot; the standard "drop unconsumed equals value" guard below
-			// removes it so it does not leak into messages (issue #2459).
 			result.unrecognizedFlags.push(arg);
 		}
-		// Drop an unconsumed `--flag=value` value (e.g. a boolean flag): when no
-		// branch advanced past the spliced token, remove it so it does not fall
-		// through to a later iteration and become a positional message.
+
 		if (equalsValueIndex !== -1 && i === flagIndex) {
 			args.splice(equalsValueIndex, 1);
 		}
@@ -317,7 +264,6 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	return result;
 }
 
-/** Reject requested tool names absent from the fully discovered session registry. */
 export function validateToolNames(requested: readonly string[] | undefined, known: readonly string[]): void {
 	if (!requested) return;
 	const knownNames = new Set(known);
@@ -328,12 +274,6 @@ export function validateToolNames(requested: readonly string[] | undefined, know
 	);
 }
 
-/**
- * Emit a stderr error listing the unrecognized flags and return `true` when
- * there were any. Caller is expected to exit with a non-zero status. Splitting
- * the print from the exit keeps the helper unit-testable without forking a
- * process (issue #2459).
- */
 export function reportUnrecognizedFlags(
 	args: Pick<Args, "unrecognizedFlags">,
 	write: (text: string) => void = text => process.stderr.write(text),
@@ -346,7 +286,6 @@ export function reportUnrecognizedFlags(
 	return true;
 }
 
-/** Emit a clean CLI usage error without an internal stack trace. */
 export function reportCliUsageError(
 	error: unknown,
 	write: (text: string) => void = text => process.stderr.write(text),

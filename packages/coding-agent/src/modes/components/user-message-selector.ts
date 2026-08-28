@@ -13,32 +13,26 @@ import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../m
 import { OverlayPanel } from "./overlay-box";
 
 interface UserMessageItem {
-	id: string; // Entry ID in the session
-	text: string; // The message text
-	timestamp?: string; // Optional timestamp if available
+	id: string;
+	text: string;
+	timestamp?: string;
 }
 
-/**
- * Custom user message list component with selection
- */
 class UserMessageList implements Component {
 	#filteredMessages: UserMessageItem[];
 	#searchQuery = "";
 	#selectedIndex: number = 0;
 	onSelect?: (entryId: string) => void;
 	onCancel?: () => void;
-	#maxVisible: number = 10; // Max messages visible
+	#maxVisible: number = 10;
 
 	constructor(private readonly messages: UserMessageItem[]) {
-		// Store messages in chronological order (oldest to newest)
 		this.#filteredMessages = messages;
-		// Start with the last (most recent) message selected
+
 		this.#selectedIndex = Math.max(0, this.#filteredMessages.length - 1);
 	}
 
-	invalidate(): void {
-		// No cached state to invalidate currently
-	}
+	invalidate(): void {}
 
 	#isSearchEnabled(): boolean {
 		return this.messages.length > this.#maxVisible;
@@ -91,14 +85,12 @@ class UserMessageList implements Component {
 
 		const total = this.#filteredMessages.length;
 
-		// Calculate visible range with scrolling
 		const startIndex = Math.max(
 			0,
 			Math.min(this.#selectedIndex - Math.floor(this.#maxVisible / 2), total - this.#maxVisible),
 		);
 		const endIndex = Math.min(startIndex + this.#maxVisible, total);
 
-		// Render visible messages (2 lines per message + blank line)
 		const overflow = total > this.#maxVisible;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 		const messageLines: string[] = [];
@@ -107,23 +99,20 @@ class UserMessageList implements Component {
 			if (!message) continue;
 			const isSelected = i === this.#selectedIndex;
 
-			// Normalize message to single line
 			const normalizedMessage = message.text.replace(/\n/g, " ").trim();
 
-			// First line: cursor + message
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
-			const maxMsgWidth = rowWidth - 2; // Account for cursor (2 chars)
+			const maxMsgWidth = rowWidth - 2;
 			const truncatedMsg = truncateToWidth(normalizedMessage, maxMsgWidth);
 			const messageLine = cursor + (isSelected ? theme.bold(truncatedMsg) : truncatedMsg);
 
 			messageLines.push(messageLine);
 
-			// Second line: metadata (position in history)
 			const position = this.messages.indexOf(message) + 1;
 			const metadata = `  Message ${position} of ${this.messages.length}`;
 			const metadataLine = theme.fg("muted", metadata);
 			messageLines.push(metadataLine);
-			messageLines.push(""); // Blank line between messages
+			messageLines.push("");
 		}
 
 		if (total === 0) {
@@ -141,7 +130,6 @@ class UserMessageList implements Component {
 			lines.push(...sv.render(width));
 		}
 
-		// Add search indicator if needed
 		if (this.#shouldRenderSearchStatus()) {
 			lines.push(this.#renderStatusLine(total));
 		}
@@ -150,7 +138,6 @@ class UserMessageList implements Component {
 	}
 
 	handleInput(keyData: string): void {
-		// Escape / cancel
 		if (matchesSelectCancel(keyData)) {
 			if (this.onCancel) {
 				this.onCancel();
@@ -162,22 +149,17 @@ class UserMessageList implements Component {
 			return;
 		}
 
-		// Up arrow - go to previous (older) message, wrap to bottom when at top
 		if (matchesSelectUp(keyData)) {
 			if (this.#filteredMessages.length > 0) {
 				this.#selectedIndex =
 					this.#selectedIndex === 0 ? this.#filteredMessages.length - 1 : this.#selectedIndex - 1;
 			}
-		}
-		// Down arrow - go to next (newer) message, wrap to top when at bottom
-		else if (matchesSelectDown(keyData)) {
+		} else if (matchesSelectDown(keyData)) {
 			if (this.#filteredMessages.length > 0) {
 				this.#selectedIndex =
 					this.#selectedIndex === this.#filteredMessages.length - 1 ? 0 : this.#selectedIndex + 1;
 			}
-		}
-		// Enter - select message and branch
-		else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			const selected = this.#filteredMessages[this.#selectedIndex];
 			if (selected && this.onSelect) {
 				this.onSelect(selected.id);
@@ -186,9 +168,6 @@ class UserMessageList implements Component {
 	}
 }
 
-/**
- * Component that renders a user message selector for branching
- */
 export class UserMessageSelectorComponent extends OverlayPanel {
 	#messageList: UserMessageList;
 
@@ -198,7 +177,6 @@ export class UserMessageSelectorComponent extends OverlayPanel {
 		this.addChild(new Text(theme.fg("muted", "Select a message to create a new branch from that point"), 0, 0));
 		this.addChild(new Spacer(1));
 
-		// Create message list
 		this.#messageList = new UserMessageList(messages);
 		this.#messageList.onSelect = onSelect;
 		this.#messageList.onCancel = onCancel;
@@ -207,7 +185,6 @@ export class UserMessageSelectorComponent extends OverlayPanel {
 
 		this.addChild(new Spacer(1));
 
-		// Auto-cancel if no messages
 		if (messages.length === 0) {
 			setTimeout(() => onCancel(), 100);
 		}

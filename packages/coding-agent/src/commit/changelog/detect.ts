@@ -29,9 +29,7 @@ async function findNearestChangelog(cwd: string, filePath: string): Promise<stri
 		try {
 			await fs.promises.access(candidate);
 			return candidate;
-		} catch {
-			// not found, continue traversal
-		}
+		} catch {}
 		if (current === root) return null;
 		const parent = path.dirname(current);
 		if (parent === current) return null;

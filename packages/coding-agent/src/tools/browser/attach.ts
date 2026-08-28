@@ -7,11 +7,6 @@ import { ToolError, throwIfAborted } from "../tool-errors";
 const ATTACH_TARGET_SKIP_PATTERN =
 	/request[\s_-]?handler|devtools|background[\s_-]?(?:page|host)|service[\s_-]?worker/i;
 
-/**
- * Allocate an unused TCP port on 127.0.0.1 by binding to port 0 and reading
- * back the kernel-assigned port. There's a small race between close and the
- * subsequent bind in the launched app, but Chromium's listener will retry.
- */
 export async function findFreeCdpPort(): Promise<number> {
 	const { promise, resolve, reject } = Promise.withResolvers<number>();
 	const server = net.createServer();
@@ -30,18 +25,6 @@ export async function findFreeCdpPort(): Promise<number> {
 	return promise;
 }
 
-/**
- * Loopback HTTP/1.1 GET that never routes through a proxy, resolving to the
- * response status code (or null when the endpoint is unreachable, aborted,
- * malformed, or slow past `timeoutMs`).
- *
- * Chrome's DevTools endpoint listens on loopback and speaks plain HTTP/1.1.
- * Both `fetch` and Bun's `node:http` honor `HTTP_PROXY`/`HTTPS_PROXY` and
- * forward even `127.0.0.1` requests to the proxy unless `NO_PROXY` covers them,
- * so a local proxy that 502s internal addresses makes a healthy daemon look
- * dead and the CDP readiness checks tear it down (issue #8567). Talking to the
- * socket over raw TCP sidesteps proxy env entirely.
- */
 export async function probeCdpStatus(
 	url: string,
 	opts: { timeoutMs: number; signal?: AbortSignal },
@@ -65,9 +48,7 @@ export async function probeCdpStatus(
 		opts.signal?.removeEventListener("abort", onAbort);
 		try {
 			socket?.end();
-		} catch {
-			// socket already torn down
-		}
+		} catch {}
 		resolve(status);
 	};
 	const onAbort = () => finish(null);
@@ -101,7 +82,6 @@ export async function probeCdpStatus(
 	return promise;
 }
 
-/** Poll `${cdpUrl}/json/version` until it responds with 200, with abort + timeout support. */
 export async function waitForCdp(cdpUrl: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	const probeUrl = `${cdpUrl.replace(/\/+$/, "")}/json/version`;
@@ -119,11 +99,6 @@ export async function waitForCdp(cdpUrl: string, timeoutMs: number, signal?: Abo
 	);
 }
 
-/**
- * Pull a `--remote-debugging-port=<n>` value out of an argv array (Chromium
- * accepts both `--flag=value` and `--flag value`). Returns null if absent or
- * malformed.
- */
 function findCdpPortInArgs(args: string[]): number | null {
 	for (const arg of args) {
 		const m = /^--remote-debugging-port=(\d+)$/.exec(arg);
@@ -141,17 +116,11 @@ function findCdpPortInArgs(args: string[]): number | null {
 	return null;
 }
 
-/** One-shot probe: returns true when `/json/version` answers 200 within the timeout. */
 async function probeCdpAt(port: number, signal?: AbortSignal): Promise<boolean> {
 	const status = await probeCdpStatus(`http://127.0.0.1:${port}/json/version`, { timeoutMs: 1500, signal });
 	return status !== null && status >= 200 && status < 300;
 }
 
-/**
- * If any running instance of `exe` was launched with `--remote-debugging-port`
- * and that endpoint actually answers, return it so attach can reuse it instead
- * of killing and respawning. Idempotent re-attaches are the common case.
- */
 export async function findReusableCdp(
 	exe: string,
 	signal?: AbortSignal,
@@ -177,15 +146,6 @@ export function shouldPreserveConnectedBrowserFocus(target?: string): boolean {
 	return !target;
 }
 
-/**
- * Pick the best page target on an attached browser. Prefer discoverable page
- * targets first so Chromium/Edge attach flows that hide pages from
- * `browser.pages()` can still return a usable tab.
- *
- * `preferVisible` is for attaching to a browser a human is using: among equally
- * usable tabs, take the one that is actually foregrounded rather than whichever
- * target CDP happens to enumerate first.
- */
 export async function pickElectronTarget(
 	browser: Browser,
 	options: { matcher?: string; preferVisible?: boolean } = {},
@@ -231,7 +191,6 @@ async function pickPageFromList(pages: Page[], options: { matcher?: string; pref
 		p => !ATTACH_TARGET_SKIP_PATTERN.test(p.url) && !ATTACH_TARGET_SKIP_PATTERN.test(p.title),
 	);
 	if (options.preferVisible && usable.length > 1) {
-		// Best-effort foreground probe; a tab that cannot answer counts as hidden.
 		const visibility = await Promise.all(
 			usable.map(async p => {
 				try {
@@ -247,20 +206,12 @@ async function pickPageFromList(pages: Page[], options: { matcher?: string; pref
 	return usable[0]?.page ?? enriched[0]!.page;
 }
 
-/**
- * SIGTERM the process tree, wait briefly, then SIGKILL anything still alive.
- * Single-process variant for our own spawned children.
- */
 export async function gracefulKillTreeOnce(pid: number, gracePeriodMs = 2000): Promise<void> {
 	const process = Process.fromPid(pid);
 	if (!process) return;
 	await process.terminate({ gracefulMs: gracePeriodMs, timeoutMs: 500 });
 }
 
-/**
- * Multi-process variant for attach: find every PID running `executablePath`
- * (single-instance apps may keep an orphan around) and tear them all down.
- */
 export async function killExistingByPath(executablePath: string, signal?: AbortSignal): Promise<number> {
 	const processes = Process.fromPath(executablePath);
 	if (!processes.length) return 0;

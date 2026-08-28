@@ -1,4 +1,4 @@
-//! Async pipe reading utilities for Unix.
+
 
 use std::{io, os::unix::io::OwnedFd};
 

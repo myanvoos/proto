@@ -40,15 +40,14 @@ export class SkillMessageComponent extends Container {
 		this.removeChild(this.#box);
 		this.addChild(this.#box);
 		this.#box.clear();
-		// Re-read symbols every rebuild so a runtime theme/preset switch refreshes the outline.
+
 		this.#box.setBorder({ chars: theme.boxRound, color: t => theme.fg("borderMuted", t) });
 
 		const details = this.message.details;
 		const name = details?.name?.trim() || "unknown";
-		// Collapse args to one line: a stray newline/tab in user-supplied args would split the header.
+
 		const args = details?.args?.replace(/\s+/g, " ").trim() ?? "";
 
-		// Header: icon-tag + skill name, with the invocation args trailing dimmed.
 		const tag = theme.fg("customMessageLabel", theme.bold(`${theme.icon.extensionSkill} skill`));
 		let header = `${tag} ${theme.fg("customMessageText", theme.bold(name))}`;
 		if (args) {
@@ -80,7 +79,6 @@ export class SkillMessageComponent extends Container {
 		this.#box.addChild(this.#contentComponent);
 	}
 
-	/** Sub-line under the header: home-shortened (clickable) accent path · muted prompt size. */
 	#metaLine(details: SkillPromptDetails | undefined): string | undefined {
 		const parts: string[] = [];
 

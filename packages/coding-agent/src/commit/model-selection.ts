@@ -14,17 +14,9 @@ import MODEL_PRIO from "../priority.json" with { type: "json" };
 
 interface ResolvedCommitModel {
 	model: Model<Api>;
-	/**
-	 * Resolver for the model's bearer: re-resolves on 401 / usage-limit so the
-	 * whole commit pipeline (analysis, map/reduce, changelog) inherits the
-	 * central force-refresh + account-rotation policy.
-	 */
+
 	apiKey: ApiKey;
-	/**
-	 * Commit-time inference is stateless: session-level auto classification
-	 * isn't available, so an explicit `:auto` selector collapses to "no
-	 * override" and the model's own default level fills in.
-	 */
+
 	thinkingLevel?: ThinkingLevel;
 }
 

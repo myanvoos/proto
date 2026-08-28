@@ -1,26 +1,22 @@
-//! Resolve the syntactic block beginning on a source line (tree-sitter).
-
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 #[napi(object)]
 pub struct BlockRangeOptions {
-	/// Source code to inspect.
 	pub code: String,
-	/// Language alias (e.g. "rust", "typescript") used before path inference.
+
 	pub lang: Option<String>,
-	/// File path used to infer language by extension when `lang` is omitted.
+
 	pub path: Option<String>,
-	/// 1-indexed source line the block must begin on.
+
 	pub line: u32,
 }
 
 #[napi(object)]
 pub struct BlockRange {
-	/// 1-indexed inclusive first line of the resolved block.
 	pub start_line: u32,
-	/// 1-indexed inclusive last line of the resolved block.
-	pub end_line:   u32,
+
+	pub end_line: u32,
 }
 
 impl From<pi_ast::block::BlockRange> for BlockRange {
@@ -29,11 +25,6 @@ impl From<pi_ast::block::BlockRange> for BlockRange {
 	}
 }
 
-/// Find the outermost named tree-sitter node that begins on `options.line`.
-///
-/// Returns its 1-indexed inclusive line span, or `null` when the language is
-/// unrecognized, the line is out of range / blank, no node begins on that line,
-/// or the resolved subtree contains a syntax error.
 #[napi]
 pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> {
 	pi_ast::block::block_range_at(pi_ast::block::BlockRangeOptions {
@@ -48,12 +39,11 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 
 #[napi(object)]
 pub struct NodeSpan {
-	/// 1-indexed inclusive first line of the node.
 	pub start_line: u32,
-	/// 1-indexed inclusive last content line of the node.
-	pub end_line:   u32,
-	/// Tree-sitter grammar node kind (e.g. `attribute_item`, `function_item`).
-	pub kind:       String,
+
+	pub end_line: u32,
+
+	pub kind: String,
 }
 
 impl From<pi_ast::block::NodeSpan> for NodeSpan {
@@ -62,13 +52,6 @@ impl From<pi_ast::block::NodeSpan> for NodeSpan {
 	}
 }
 
-/// Named-node chain containing `options.line`, innermost-first, excluding the
-/// whole-file root.
-///
-/// Single-line nodes beginning on the line (attributes, decorators) come
-/// first, followed by every enclosing construct. ERROR/MISSING recovery nodes
-/// are skipped. Returns `null` when the language is unrecognized, the line is
-/// out of range / blank, or the source fails to parse entirely.
 #[napi]
 pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>> {
 	pi_ast::block::node_chain_at(pi_ast::block::BlockRangeOptions {
@@ -83,34 +66,22 @@ pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>
 
 #[napi(object)]
 pub struct LineRange {
-	/// 1-indexed inclusive first visible line.
 	pub start_line: u32,
-	/// 1-indexed inclusive last visible line.
-	pub end_line:   u32,
+
+	pub end_line: u32,
 }
 
 #[napi(object)]
 pub struct EnclosingBoundaryOptions {
-	/// Source code to inspect.
-	pub code:   String,
-	/// Language alias (e.g. "rust", "typescript") used before path inference.
-	pub lang:   Option<String>,
-	/// File path used to infer language by extension when `lang` is omitted.
-	pub path:   Option<String>,
-	/// 1-indexed inclusive visible line ranges (the lines actually shown).
+	pub code: String,
+
+	pub lang: Option<String>,
+
+	pub path: Option<String>,
+
 	pub ranges: Vec<LineRange>,
 }
 
-/// Matching-bracket context for an arbitrary tree-sitter language.
-///
-/// For each multi-line named node whose span crosses the visible window, return
-/// the boundary line sitting *outside* that window (the closer when the opener
-/// is shown, the opener when the closer is shown). Covers brace and indentation
-/// languages alike using real syntactic spans.
-///
-/// Returns `null` when the language is unrecognized or the source fails to
-/// parse / carries a syntax error (caller should fall back to a lexical scan);
-/// a sorted, unique list of 1-indexed boundary lines otherwise.
 #[napi]
 pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<Option<Vec<u32>>> {
 	pi_ast::block::enclosing_block_boundaries(pi_ast::block::EnclosingBoundaryOptions {

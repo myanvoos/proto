@@ -10,7 +10,6 @@ import {
 
 const segmenter = new Intl.Segmenter();
 
-/** Construction options supported by the headless virtual terminal. */
 export interface TerminalOptions {
 	cols?: number;
 	rows?: number;
@@ -19,17 +18,14 @@ export interface TerminalOptions {
 	disableStdin?: boolean;
 }
 
-/** Disposable event subscription. */
 export interface Disposable {
 	dispose(): void;
 }
 
-/** Observable terminal modes used by interactive input normalization. */
 export interface TerminalModes {
 	applicationCursorKeysMode: boolean;
 }
 
-/** Buffer collection exposed by the virtual terminal. */
 export interface TerminalBuffers {
 	readonly active: BufferView;
 	readonly normal: BufferView;
@@ -56,15 +52,13 @@ function cloneCell(cell: CellData): CellData {
 	return { chars: cell.chars, width: cell.width, attrs: { ...cell.attrs } };
 }
 
-/** Behavior-compatible reimplementation of @xterm/headless's used surface. */
 export class Terminal {
-	/** Current terminal column count. */
 	cols: number;
-	/** Current terminal row count. */
+
 	rows: number;
-	/** Normal, alternate, and active buffer views. */
+
 	readonly buffer: TerminalBuffers;
-	/** Currently active input modes. */
+
 	readonly modes: TerminalModes = { applicationCursorKeysMode: false };
 
 	#scrollback: number;
@@ -108,7 +102,6 @@ export class Terminal {
 		};
 	}
 
-	/** Parses terminal output and invokes the callback after the write is committed. */
 	write(data: string | Uint8Array, callback?: () => void): void {
 		if (this.#disposed) return;
 		const text = typeof data === "string" ? data : this.#decoder.decode(data, { stream: true });
@@ -116,7 +109,6 @@ export class Terminal {
 		if (callback) queueMicrotask(callback);
 	}
 
-	/** Changes the terminal grid and reflows wrapped normal-buffer lines. */
 	resize(columns: number, rows: number): void {
 		if (this.#disposed) return;
 		const nextColumns = Math.max(2, Math.floor(columns));
@@ -132,13 +124,11 @@ export class Terminal {
 		this.#pendingWrap = this.#active.cursorX >= this.cols;
 	}
 
-	/** Subscribes to terminal-generated input replies. */
 	onData(listener: (data: string) => void): Disposable {
 		this.#dataListeners.add(listener);
 		return { dispose: () => this.#dataListeners.delete(listener) };
 	}
 
-	/** Releases parser state and event listeners. */
 	dispose(): void {
 		this.#disposed = true;
 		this.#dataListeners.clear();

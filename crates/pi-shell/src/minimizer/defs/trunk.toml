@@ -1,5 +1,5 @@
-# trunk.io check / fmt output.
-# Strip download / install chatter, keep issues + summary.
+
+
 
 [filters.trunk]
 description = "Compact trunk check / fmt output"

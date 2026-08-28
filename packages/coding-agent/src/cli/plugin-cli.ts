@@ -1,9 +1,3 @@
-/**
- * Plugin CLI command handlers.
- *
- * Handles `proto plugin <command>` subcommands for plugin lifecycle management.
- */
-
 import { BINARY_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { resolveOrDefaultProjectRegistryPath } from "../discovery/helpers";
@@ -18,10 +12,6 @@ import {
 } from "../extensibility/plugins/marketplace/index.js";
 import type { InstalledPlugin } from "../extensibility/plugins/types";
 import { theme } from "../modes/theme/theme";
-
-// =============================================================================
-// Types
-// =============================================================================
 
 export type PluginAction =
 	| "install"
@@ -53,21 +43,10 @@ export interface PluginCommandArgs {
 	};
 }
 
-// =============================================================================
-// Argument Parser
-// =============================================================================
-
 import { classifyInstallTarget } from "./classify-install-target";
 
 export { classifyInstallTarget } from "./classify-install-target";
 
-// =============================================================================
-// Command Handlers
-// =============================================================================
-
-/**
- * Run a plugin command.
- */
 export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
 	const manager = new PluginManager();
 
@@ -110,10 +89,6 @@ export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
 			break;
 	}
 }
-
-// =============================================================================
-// Marketplace Handlers
-// =============================================================================
 
 async function makeMarketplaceManager(): Promise<MarketplaceManager> {
 	return new MarketplaceManager({
@@ -280,7 +255,6 @@ async function handleInstall(
 		process.exit(1);
 	}
 
-	// Build known marketplace set for classification
 	const mktMgr = await makeMarketplaceManager();
 	const knownMarketplaces = new Set((await mktMgr.listMarketplaces()).map(m => m.name));
 
@@ -306,9 +280,6 @@ async function handleInstall(
 		}
 
 		if (target.type === "local") {
-			// Local paths route to link(): symlink the directory into the plugins
-			// node_modules tree so source edits show up without a reinstall. Matches
-			// `proto plugin link <path>` so users can use either verb interchangeably.
 			if (flags.scope) {
 				console.error(
 					chalk.yellow(
@@ -348,7 +319,6 @@ async function handleInstall(
 			continue;
 		}
 
-		// --scope only applies to marketplace installs; warn when it would be silently no-op'd for npm.
 		if (flags.scope) {
 			console.error(
 				chalk.yellow(
@@ -357,7 +327,6 @@ async function handleInstall(
 			);
 		}
 
-		// npm path
 		try {
 			const result = await manager.install(spec, { force: flags.force, dryRun: flags.dryRun });
 
@@ -393,8 +362,6 @@ async function handleUninstall(
 		process.exit(1);
 	}
 
-	// For uninstall, check the installed plugins registry directly.
-	// This works even if the marketplace entry was later removed from marketplaces.json.
 	const mktMgr = await makeMarketplaceManager();
 	const installedPlugins = new Set((await mktMgr.listInstalledPlugins()).map(p => p.id));
 
@@ -411,7 +378,6 @@ async function handleUninstall(
 				}
 			}
 
-			// Marketplace dry-runs validate the requested scope before reporting.
 			if (flags.json) {
 				console.log(
 					JSON.stringify({
@@ -428,7 +394,6 @@ async function handleUninstall(
 		}
 
 		if (viaMarketplace) {
-			// Exact match against installed marketplace plugin IDs (name@marketplace)
 			try {
 				await mktMgr.uninstallPlugin(name, flags.scope);
 				console.log(chalk.green(`${theme.status.success} Uninstalled ${name}`));
@@ -439,7 +404,6 @@ async function handleUninstall(
 			continue;
 		}
 
-		// npm path
 		try {
 			await manager.uninstall(name);
 			if (flags.json) {
@@ -588,12 +552,10 @@ async function handleFeatures(
 		process.exit(1);
 	}
 
-	// Handle modifications
 	if (flags.enable || flags.disable || flags.set) {
 		let currentFeatures = new Set((await manager.getEnabledFeatures(pluginName)) ?? []);
 
 		if (flags.set) {
-			// --set replaces all features
 			currentFeatures = new Set(
 				flags.set
 					.split(",")
@@ -623,7 +585,6 @@ async function handleFeatures(
 		console.log(chalk.green(`${theme.status.success} Updated features for ${pluginName}`));
 	}
 
-	// Display current state
 	const updatedFeatures = await manager.getEnabledFeatures(pluginName);
 
 	if (flags.json) {
@@ -674,7 +635,6 @@ async function handleConfig(
 
 	const [subcommand, pluginName, key, ...valueArgs] = args;
 
-	// Special case: validate doesn't need a plugin name
 	if (subcommand === "validate") {
 		await handleConfigValidate(manager, flags);
 		return;
@@ -751,12 +711,10 @@ async function handleConfig(
 			const valueStr = valueArgs.join(" ");
 			const schema = plugin.manifest.settings?.[key];
 
-			// Parse value according to type
 			let value: unknown = valueStr;
 			if (schema) {
 				value = parseSettingValue(valueStr, schema);
 
-				// Validate
 				const validation = validateSetting(value, schema);
 				if (!validation.valid) {
 					console.error(chalk.red(validation.error!));
@@ -787,13 +745,6 @@ async function handleConfig(
 	}
 }
 
-/**
- * Enumerate every installed plugin to validate — npm/link plugins from
- * {@link PluginManager.list} plus marketplace runtime packages, which `list()`
- * intentionally omits. Marketplace summaries are resolved through their trusted
- * install path; deduped by resolved package name using the same active-scope
- * precedence as runtime loading.
- */
 async function collectPluginsForValidation(manager: PluginManager): Promise<InstalledPlugin[]> {
 	const byName = new Map<string, InstalledPlugin>();
 	for (const plugin of await manager.list()) {
@@ -908,10 +859,6 @@ async function handleSetEnabled(
 		}
 	}
 }
-
-// =============================================================================
-// Help
-// =============================================================================
 
 export function printPluginHelp(): void {
 	console.log(`${chalk.bold(`${BINARY_NAME} plugin`)} - Plugin lifecycle management

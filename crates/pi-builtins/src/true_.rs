@@ -1,6 +1,6 @@
 use brush_core::{ExecutionResult, builtins};
 
-/// No-op command. Same with :.
+
 pub(crate) struct TrueCommand {}
 
 const MAN_PAGE: &str = "\

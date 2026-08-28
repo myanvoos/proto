@@ -1,30 +1,14 @@
-/**
- * HTTP + WebSocket server for the browser relay.
- *
- * Impersonates Chrome's CDP discovery endpoint so the proto browser tool (and
- * any puppeteer client) can connect with a plain `browserURL`:
- * - `GET /json/version` → 200 with `webSocketDebuggerUrl` once the extension
- *   is connected, 503 before that (clients like `waitForCdp` keep polling).
- * - `GET /json` / `/json/list` → attachable page targets (debugging aid).
- * - `WS /cdp` → downstream CDP clients (puppeteer).
- * - `WS /ext` → the Chrome extension (token-gated when configured).
- *
- * Binds loopback only: anything that can reach this port can drive the
- * user's logged-in browser.
- */
 import { RelayBridge } from "./bridge";
 
-/** Options for {@link startRelayServer}. */
 interface RelayServerOptions {
 	port: number;
-	/** Shared secret the extension must present as `?token=`; unset disables the check. */
+
 	token?: string;
-	/** Group tabs the agent actively drives under one per-window Chrome tab group (default on); `false` disables. */
+
 	group?: boolean | { title: string; color: string };
 	log?: (message: string, data?: Record<string, unknown>) => void;
 }
 
-/** A running relay server. */
 export interface RelayServer {
 	bridge: RelayBridge;
 	port: number;
@@ -39,12 +23,11 @@ interface SocketData {
 type RelayWebSocket = Bun.ServerWebSocket<SocketData>;
 
 const WS_KEEPALIVE_MS = 30_000;
-/** Screenshots travel base64-encoded through both websocket legs. */
+
 const MAX_PAYLOAD_BYTES = 256 * 1024 * 1024;
-/** Default appearance of the proto tab group. */
+
 const DEFAULT_GROUP = { title: "proto", color: "cyan" } as const;
 
-/** Start the relay server on 127.0.0.1. Throws if the port is taken. */
 export function startRelayServer(opts: RelayServerOptions): RelayServer {
 	const log = opts.log ?? (() => {});
 	const group =
@@ -59,8 +42,6 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 			const url = new URL(req.url);
 			const path = url.pathname.replace(/\/+$/, "") || "/";
 			if (path === "/cdp") {
-				// Browsers set Origin on websocket upgrades; native CDP clients
-				// don't. Reject any Origin so a web page can't drive the relay.
 				if (req.headers.get("origin")) return new Response("Forbidden", { status: 403 });
 				const data: SocketData = { role: "cdp" };
 				if (srv.upgrade(req, { data })) return undefined;
@@ -92,8 +73,7 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 		},
 		websocket: {
 			maxPayloadLength: MAX_PAYLOAD_BYTES,
-			// Disabled: Bun caps idleTimeout at 255s, and the keepalive pings
-			// below already detect dead peers via the websocket close path.
+
 			idleTimeout: 0,
 			open(ws: RelayWebSocket): void {
 				sockets.add(ws);
@@ -122,8 +102,6 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 		},
 	});
 
-	// Puppeteer connections go silent while the agent is idle; protocol-level
-	// pings count as activity and keep them under the idle timeout.
 	const keepalive = setInterval(() => {
 		for (const ws of sockets) ws.ping();
 	}, WS_KEEPALIVE_MS);

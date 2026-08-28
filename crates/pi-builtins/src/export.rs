@@ -9,25 +9,25 @@ use brush_core::{
 use clap::Parser;
 use itertools::Itertools;
 
-/// Add or update exported shell variables.
+
 #[derive(Parser)]
 pub(crate) struct ExportCommand {
-	/// Names are treated as function names.
+
 	#[arg(short = 'f')]
 	names_are_functions: bool,
 
-	/// Un-export the names.
+
 	#[arg(short = 'n')]
 	unexport: bool,
 
-	/// Display all exported names.
+
 	#[arg(short = 'p')]
 	display_exported_names: bool,
 
-	//
-	// Declarations
-	//
-	// N.B. These are skipped by clap, but filled in by the BuiltinDeclarationCommand trait.
+
+
+
+
 	#[clap(skip)]
 	declarations: Vec<brush_core::CommandArg>,
 }
@@ -70,10 +70,10 @@ impl ExportCommand {
 	) -> Result<ExecutionResult, brush_core::Error> {
 		match decl {
 			brush_core::CommandArg::String(s) => {
-				// See if this is supposed to be a function name.
+
 				if self.names_are_functions {
-					// Try to find the function already present; if we find it, then mark it
-					// exported.
+
+
 					if let Some(func) = context.shell.func_mut(s) {
 						if self.unexport {
 							func.unexport();
@@ -85,8 +85,8 @@ impl ExportCommand {
 						return Ok(ExecutionExitCode::InvalidUsage.into());
 					}
 				}
-				// Try to find the variable already present; if we find it, then mark it
-				// exported.
+
+
 				else if let Some((_, variable)) = context.shell.env_mut().get_mut(s) {
 					if self.unexport {
 						variable.unexport();
@@ -115,7 +115,7 @@ impl ExportCommand {
 					},
 				};
 
-				// Update the variable with the provided value and then mark it exported.
+
 				context.shell.env_mut().update_or_add(
 					name,
 					value,
@@ -140,7 +140,7 @@ impl ExportCommand {
 fn display_all_exported_vars(
 	context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 ) -> Result<(), brush_core::Error> {
-	// Enumerate variables, sorted by key.
+
 	for (name, variable) in context.shell.env().iter().sorted_by_key(|v| v.0) {
 		if variable.is_exported() {
 			let value = variable.value().try_get_cow_str(context.shell);

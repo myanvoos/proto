@@ -14,8 +14,6 @@ import type {
 import { isRecord } from "../utils";
 import { parseIsoTimestamp, usageStatus } from "./shared";
 
-// (Refresh is the sole responsibility of AuthStorage; no provider-direct refresh here.)
-
 const DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1";
 const USAGE_PATH = "usages";
 
@@ -82,12 +80,6 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-/**
- * Status-line and ranking consumers match on canonical window ids ("5h",
- * "7d"), so derive the id from the reported span: the 300-minute burst window
- * surfaces as "5h" instead of "300time_unit_minute". Mirrors the
- * intervalWindowId convention in minimax-code.ts.
- */
 function canonicalWindowId(durationMs: number): string {
 	if (durationMs > 0 && durationMs % DAY_MS === 0) return `${durationMs / DAY_MS}d`;
 	if (durationMs > 0 && durationMs % HOUR_MS === 0) return `${durationMs / HOUR_MS}h`;
@@ -157,10 +149,6 @@ function buildUsageAmount(row: KimiUsageRow): UsageAmount {
 }
 
 function toUsageLimit(row: KimiUsageRow, provider: string, index: number, accountId?: string): UsageLimit {
-	// Kimi puts `resetTime` on the limit `detail`, not on `window`, so a
-	// window built from `duration`/`timeUnit` alone carries no resetsAt.
-	// Fall back to the row-level reset so `proto usage` can render
-	// "resets in …" for the 5h window too.
 	const window: UsageWindow | undefined = row.window
 		? row.window.resetsAt !== undefined || row.resetsAt === undefined
 			? row.window
@@ -197,9 +185,6 @@ function parseUsagePayload(payload: unknown, nowMs: number): { rows: KimiUsageRo
 	if (isRecord(data.usage)) {
 		const summary = buildUsageRow(data.usage, "Total quota", nowMs);
 		if (summary) {
-			// Kimi Code's aggregate quota resets weekly, but the payload carries
-			// only `resetTime` and no duration. Attach the canonical weekly
-			// window explicitly so status-line/ranking consumers recognize it.
 			summary.window = { id: "7d", label: "7 Day", resetsAt: summary.resetsAt };
 			rows.push(summary);
 		}
@@ -243,10 +228,7 @@ export const kimiUsageProvider: UsageProvider = {
 		if (!accessToken) return null;
 
 		const nowMs = Date.now();
-		// AuthStorage refreshes OAuth credentials pre-emptively (60s skew). If the
-		// usage probe lands with an expired token, short-circuit rather than POST
-		// the broker sentinel back to Kimi — the next cycle will carry a freshly
-		// refreshed credential.
+
 		if (credential.expiresAt !== undefined && credential.expiresAt <= nowMs) {
 			ctx.logger?.debug("Kimi usage token expired; skipping probe", { provider: params.provider });
 			return null;
@@ -296,7 +278,6 @@ export const kimiUsageProvider: UsageProvider = {
 	},
 };
 
-/** Ranks Kimi OAuth accounts by the canonical 5-hour and 7-day quota windows. */
 export const kimiRankingStrategy: CredentialRankingStrategy = {
 	findWindowLimits: report => ({
 		primary: report.limits.find(limit => limit.window?.id === "5h"),

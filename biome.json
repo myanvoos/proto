@@ -29,7 +29,15 @@
 				"noControlCharactersInRegex": "off",
 				"noEmptyInterface": "off",
 				"noConstEnum": "off",
-				"noConfusingVoidType": "off"
+				"noConfusingVoidType": "off",
+				"noThenProperty": "off",
+				"noShadowRestrictedNames": "off"
+			},
+			"security": {
+				"noGlobalEval": "off"
+			},
+			"complexity": {
+				"noBannedTypes": "off"
 			}
 		}
 	},
@@ -68,5 +76,17 @@
 			"!.wt/**/*"
 		]
 	},
-	"assist": { "actions": { "source": { "organizeImports": "on" } } }
+	"assist": { "actions": { "source": { "organizeImports": "on" } } },
+	"overrides": [
+		{
+			"includes": ["packages/coding-agent/src/cli/gallery-fixtures/**"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noTemplateCurlyInString": "off"
+					}
+				}
+			}
+		}
+	]
 }

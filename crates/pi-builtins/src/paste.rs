@@ -1,6 +1,6 @@
-//! `paste` builtin: merge corresponding or successive lines of files.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	cell::RefCell,
@@ -25,7 +25,7 @@ mod options {
 	pub const ZERO_TERMINATED: &str = "zero-terminated";
 }
 
-/// Parsed `paste` invocation.
+
 pub(crate) struct Paste {
 	matches: ArgMatches,
 }
@@ -64,7 +64,7 @@ impl Utility for Paste {
 	}
 }
 
-/// The `paste` argument model.
+
 fn app() -> Command {
 	Command::new(Paste::NAME)
 		.version("0.8.0")
@@ -369,7 +369,7 @@ fn strip_errno(error: &io::Error) -> String {
 	message
 }
 
-/// Creates the `paste` builtin registration.
+
 pub(crate) fn paste_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Paste, SE>()
 }

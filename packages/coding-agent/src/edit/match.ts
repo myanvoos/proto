@@ -1,27 +1,6 @@
 import { levenshteinDistance } from "@oh-my-pi/pi-utils";
 import { countLeadingWhitespace, normalizeForFuzzy, normalizeUnicode } from "./normalize";
 
-/**
- * Finding text inside a file: exact, whitespace-tolerant, unicode-normalized and
- * fuzzy matching, plus the error an unmatched edit reports.
- *
- * WHY THIS IS NOT IN `./modes/replace`, WHERE IT USED TO LIVE. `./diff` needs
- * `findMatch`, `EditMatchError` and `DEFAULT_FUZZY_THRESHOLD` to apply an edit,
- * and `./modes/replace` needs `generateDiffString` and `replaceText` from
- * `./diff` to report one. That is a cycle, and a cycle is instantiated as one
- * unit, so both modules cost the sum of the pair wherever either is imported.
- *
- * It is also the better home on its own terms. None of this is about the replace
- * TOOL: it takes strings and returns match positions, it touches no session, no
- * filesystem and no tool result, and the other edit modes want it too. What is
- * left in `./modes/replace` is the tool, and this file is what the tool matches
- * with.
- *
- * KEEP THIS MODULE AT THE BOTTOM. It may import `./normalize` and `@oh-my-pi/pi-utils`
- * and nothing else from the package. An import of `./diff` or of any tool module
- * puts the cycle back.
- */
-
 export interface FuzzyMatch {
 	actualText: string;
 	startIndex: number;
@@ -129,12 +108,6 @@ function findFirstDifferentLine(oldLines: string[], newLines: string[]): { oldLi
 	return { oldLine: oldLines[0] ?? "", newLine: newLines[0] ?? "" };
 }
 
-/**
- * The message for an edit whose search text matched more than once. Exported
- * because the replace tool raises this case itself, after deciding an ambiguous
- * match is not something it can resolve; the wording belongs next to the matcher
- * that produced the outcome so the two cannot drift.
- */
 export function formatOccurrenceError(path: string, matchOutcome: MatchOutcome): string {
 	const previews = matchOutcome.occurrencePreviews?.join("\n\n") ?? "";
 	const moreMsg =
@@ -144,41 +117,26 @@ export function formatOccurrenceError(path: string, matchOutcome: MatchOutcome):
 	return `Found ${matchOutcome.occurrences} occurrences in ${path}${moreMsg}:\n\n${previews}\n\nAdd more context lines to disambiguate.`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Default similarity threshold for fuzzy matching */
 export const DEFAULT_FUZZY_THRESHOLD = 0.95;
 
-/** Threshold for sequence-based fuzzy matching */
 const SEQUENCE_FUZZY_THRESHOLD = 0.92;
 
-/** Fallback threshold for line-based matching */
 const FALLBACK_THRESHOLD = 0.8;
 
-/** Threshold for context line matching */
 const CONTEXT_FUZZY_THRESHOLD = 0.8;
 
-/** Minimum length for partial/substring matching */
 const PARTIAL_MATCH_MIN_LENGTH = 6;
 
-/** Minimum ratio of pattern to line length for substring match */
 const PARTIAL_MATCH_MIN_RATIO = 0.3;
 
-/** Context lines to show before/after an ambiguous match preview */
 const OCCURRENCE_PREVIEW_CONTEXT = 5;
 
-/** Maximum line length for ambiguous match previews */
 const OCCURRENCE_PREVIEW_MAX_LEN = 80;
 
-/** Maximum number of match indices or previews to retain for diagnostics */
 const MAX_RECORDED_MATCHES = 5;
 
-/** Minimum confidence for a dominant fuzzy match to be auto-selected */
 const DOMINANT_FUZZY_MIN_CONFIDENCE = 0.97;
 
-/** Minimum score gap between the best and second-best fuzzy matches */
 const DOMINANT_FUZZY_DELTA = 0.08;
 
 interface IndexedMatches {
@@ -301,11 +259,6 @@ function findExactMatchOutcome(content: string, target: string): MatchOutcome | 
 	};
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Core Algorithms
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Compute similarity score between two strings (0 to 1) */
 export function similarity(a: string, b: string): number {
 	if (a.length === 0 && b.length === 0) return 1;
 	const maxLen = Math.max(a.length, b.length);
@@ -314,11 +267,6 @@ export function similarity(a: string, b: string): number {
 	return 1 - distance / maxLen;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Line-Based Utilities
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Compute relative indent depths for lines */
 function computeRelativeIndentDepths(lines: string[]): number[] {
 	const indents = lines.map(countLeadingWhitespace);
 	const nonEmptyIndents: number[] = [];
@@ -339,7 +287,6 @@ function computeRelativeIndentDepths(lines: string[]): number[] {
 	});
 }
 
-/** Normalize lines for matching, optionally including indent depth */
 function normalizeLines(lines: string[], includeDepth = true): string[] {
 	const indentDepths = includeDepth ? computeRelativeIndentDepths(lines) : null;
 	return lines.map((line, index) => {
@@ -350,21 +297,16 @@ function normalizeLines(lines: string[], includeDepth = true): string[] {
 	});
 }
 
-/** Compute character offsets for each line in content */
 function computeLineOffsets(lines: string[]): number[] {
 	const offsets: number[] = [];
 	let offset = 0;
 	for (let i = 0; i < lines.length; i++) {
 		offsets.push(offset);
 		offset += lines[i].length;
-		if (i < lines.length - 1) offset += 1; // newline
+		if (i < lines.length - 1) offset += 1;
 	}
 	return offsets;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Character-Level Fuzzy Match (for replace mode)
-// ═══════════════════════════════════════════════════════════════════════════
 
 interface BestFuzzyMatchResult {
 	best?: FuzzyMatch;
@@ -430,7 +372,6 @@ function findBestFuzzyMatch(content: string, target: string, threshold: number):
 	const offsets = computeLineOffsets(contentLines);
 	let result = findBestFuzzyMatchCore(contentLines, targetLines, offsets, threshold, true);
 
-	// Retry without indent depth if match is close but below threshold
 	if (result.best && result.best.confidence < threshold && result.best.confidence >= FALLBACK_THRESHOLD) {
 		const noDepthResult = findBestFuzzyMatchCore(contentLines, targetLines, offsets, threshold, false);
 		if (noDepthResult.best && noDepthResult.best.confidence > result.best.confidence) {
@@ -441,10 +382,6 @@ function findBestFuzzyMatch(content: string, target: string, threshold: number):
 	return result;
 }
 
-/**
- * Find a match for target text within content.
- * Used primarily for replace-mode edits.
- */
 export function findMatch(
 	content: string,
 	target: string,
@@ -459,7 +396,6 @@ export function findMatch(
 		return exactMatch;
 	}
 
-	// Try fuzzy match
 	const threshold = options.threshold ?? DEFAULT_FUZZY_THRESHOLD;
 	const { best, aboveThresholdCount, secondBestScore } = findBestFuzzyMatch(content, target, threshold);
 
@@ -483,11 +419,6 @@ export function findMatch(
 	return { closest: best, fuzzyMatches: aboveThresholdCount };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Line-Based Sequence Match (for patch mode)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Check if pattern matches lines starting at index using comparison function */
 function matchesAt(lines: string[], pattern: string[], i: number, compare: (a: string, b: string) => boolean): boolean {
 	for (let j = 0; j < pattern.length; j++) {
 		if (!compare(lines[i + j], pattern[j])) {
@@ -497,16 +428,6 @@ function matchesAt(lines: string[], pattern: string[], i: number, compare: (a: s
 	return true;
 }
 
-/**
- * Compute average similarity score for pre-normalized pattern lines at
- * position `i` of pre-normalized file lines.
- *
- * `minScore` is a bail threshold: when even perfect similarity on the
- * remaining lines cannot lift the average to `minScore`, returns the partial
- * average early (always ≤ the true score). The length-difference lower bound
- * on Levenshtein distance is used to skip the DP entirely for line pairs the
- * bail test already rules out.
- */
 function fuzzyScoreAt(linesNorm: string[], patternNorm: string[], i: number, minScore = 0): number {
 	const count = patternNorm.length;
 	let totalScore = 0;
@@ -519,7 +440,7 @@ function fuzzyScoreAt(linesNorm: string[], patternNorm: string[], i: number, min
 		}
 		const remaining = count - j - 1;
 		const maxLen = Math.max(lineNorm.length, patNorm.length);
-		// similarity ≤ 1 − |lenA−lenB|/maxLen: test the bound before the DP.
+
 		const upperBound = 1 - Math.abs(lineNorm.length - patNorm.length) / maxLen;
 		if ((totalScore + upperBound + remaining) / count < minScore) return totalScore / count;
 		if (upperBound > 0) totalScore += similarity(lineNorm, patNorm);
@@ -528,13 +449,11 @@ function fuzzyScoreAt(linesNorm: string[], patternNorm: string[], i: number, min
 	return totalScore / count;
 }
 
-/** Check if pre-normalized line starts with pre-normalized pattern */
 function normStartsWith(lineNorm: string, patternNorm: string): boolean {
 	if (patternNorm.length === 0) return lineNorm.length === 0;
 	return lineNorm.startsWith(patternNorm);
 }
 
-/** Check if pre-normalized line contains pre-normalized pattern as significant substring */
 function normIncludes(lineNorm: string, patternNorm: string): boolean {
 	if (patternNorm.length === 0) return lineNorm.length === 0;
 	if (patternNorm.length < PARTIAL_MATCH_MIN_LENGTH) return false;
@@ -562,23 +481,6 @@ function stripCommentPrefix(line: string): string {
 	return trimmed.trimStart();
 }
 
-/**
- * Find a sequence of pattern lines within content lines.
- *
- * Attempts matches with decreasing strictness:
- * 1. Exact match
- * 2. Trailing whitespace ignored
- * 3. All whitespace trimmed
- * 4. Unicode punctuation normalized
- * 5. Prefix match (pattern is prefix of line)
- * 6. Substring match (pattern is substring of line)
- * 7. Fuzzy similarity match
- *
- * @param lines - The lines of the file content
- * @param pattern - The lines to search for
- * @param start - Starting index for the search
- * @param eof - If true, prefer matching at end of file first
- */
 export function seekSequence(
 	lines: string[],
 	pattern: string[],
@@ -587,22 +489,18 @@ export function seekSequence(
 	options?: { allowFuzzy?: boolean },
 ): SequenceSearchResult {
 	const allowFuzzy = options?.allowFuzzy ?? true;
-	// Empty pattern matches immediately
+
 	if (pattern.length === 0) {
 		return { index: start, confidence: 1.0, strategy: "exact" };
 	}
 
-	// Pattern longer than available content cannot match
 	if (pattern.length > lines.length) {
 		return { index: undefined, confidence: 0 };
 	}
 
-	// Determine search start position
 	const searchStart = eof && lines.length >= pattern.length ? lines.length - pattern.length : start;
 	const maxStart = lines.length - pattern.length;
 
-	// Fuzzy and partial passes compare normalizeForFuzzy forms; normalize the
-	// file and pattern once per call instead of once per candidate position.
 	let linesNormCache: string[] | undefined;
 	let patternNormCache: string[] | undefined;
 	const getLinesNorm = () => (linesNormCache ??= lines.map(normalizeForFuzzy));
@@ -679,7 +577,6 @@ export function seekSequence(
 		return { index: undefined, confidence: 0 };
 	}
 
-	// Pass 7: Fuzzy matching - find best match above threshold
 	let bestScore = 0;
 	let secondBestScore = 0;
 	let bestIndex: number | undefined;
@@ -691,8 +588,7 @@ export function seekSequence(
 
 	const fuzzyLinesNorm = getLinesNorm();
 	const fuzzyPatternNorm = getPatternNorm();
-	// Positions scoring below this can neither become a fuzzy match nor affect
-	// the dominant-fuzzy gap test; let fuzzyScoreAt bail early on them.
+
 	const fuzzyBail = SEQUENCE_FUZZY_THRESHOLD - DOMINANT_FUZZY_DELTA;
 	const scoreFuzzyRange = (from: number, to: number): void => {
 		for (let i = from; i <= to; i++) {
@@ -718,7 +614,6 @@ export function seekSequence(
 
 	scoreFuzzyRange(searchStart, maxStart);
 
-	// Also search from start if eof mode started from end
 	if (eof && searchStart > start) {
 		scoreFuzzyRange(start, searchStart - 1);
 	}
@@ -746,8 +641,6 @@ export function seekSequence(
 		};
 	}
 
-	// Pass 8: Character-based fuzzy matching via findMatch
-	// This is the final fallback for when line-based matching fails
 	const CHARACTER_MATCH_THRESHOLD = 0.92;
 	const patternText = pattern.join("\n");
 	const contentText = lines.slice(start).join("\n");
@@ -757,7 +650,6 @@ export function seekSequence(
 	});
 
 	if (matchOutcome.match) {
-		// Convert character index back to line index
 		const matchedContent = contentText.substring(0, matchOutcome.match.startIndex);
 		const lineIndex = start + matchedContent.split("\n").length - 1;
 		const fallbackMatchCount = matchOutcome.occurrences ?? matchOutcome.fuzzyMatches ?? 1;
@@ -795,8 +687,6 @@ export function findClosestSequenceMatch(
 	let bestIndex: number | undefined;
 	let bestScore = 0;
 
-	// Passing the running best as the bail threshold is exact: a bailed
-	// position returns a value strictly below it, so it can never win.
 	for (let i = searchStart; i <= maxStart; i++) {
 		const score = fuzzyScoreAt(linesNorm, patternNorm, i, bestScore);
 		if (score > bestScore) {
@@ -818,13 +708,6 @@ export function findClosestSequenceMatch(
 	return { index: bestIndex, confidence: bestScore, strategy: "fuzzy" };
 }
 
-/**
- * Find a context line in the file using progressive matching strategies.
- *
- * @param lines - The lines of the file content
- * @param context - The context line to search for
- * @param startFrom - Starting index for the search
- */
 export function findContextLine(
 	lines: string[],
 	context: string,
@@ -852,7 +735,6 @@ export function findContextLine(
 		}
 	}
 
-	// Pass 3: Unicode normalization match
 	const normalizedContext = normalizeUnicode(context);
 	const unicodeMatches = collectIndexedMatches(
 		startFrom,
@@ -868,7 +750,6 @@ export function findContextLine(
 		return { index: undefined, confidence: 0 };
 	}
 
-	// Pass 4: Prefix match (file line starts with context)
 	const contextNorm = normalizeForFuzzy(context);
 	if (contextNorm.length > 0) {
 		const prefixMatches = collectIndexedMatches(startFrom, endIndex, i =>
@@ -880,10 +761,6 @@ export function findContextLine(
 		}
 	}
 
-	// Pass 5: Substring match (file line contains context)
-	// First pass: find all substring matches (ignoring ratio)
-	// If exactly one match exists, accept it (uniqueness is sufficient)
-	// If multiple matches, apply ratio filter to disambiguate
 	if (contextNorm.length >= PARTIAL_MATCH_MIN_LENGTH) {
 		const allSubstringMatches: Array<{ index: number; ratio: number }> = [];
 		for (let i = startFrom; i < lines.length; i++) {
@@ -895,7 +772,6 @@ export function findContextLine(
 		}
 		const matchIndices = allSubstringMatches.slice(0, 5).map(match => match.index);
 
-		// If exactly one substring match, accept it regardless of ratio
 		if (allSubstringMatches.length === 1) {
 			return {
 				index: allSubstringMatches[0].index,
@@ -906,7 +782,6 @@ export function findContextLine(
 			};
 		}
 
-		// Multiple matches: filter by ratio to disambiguate
 		let firstMatch: number | undefined;
 		let matchCount = 0;
 		for (const match of allSubstringMatches) {
@@ -919,8 +794,6 @@ export function findContextLine(
 			return { index: firstMatch, confidence: 0.94, matchCount, matchIndices, strategy: "substring" };
 		}
 
-		// If we had substring matches but none passed ratio filter,
-		// return ambiguous result so caller knows matches exist
 		if (allSubstringMatches.length > 1) {
 			return {
 				index: allSubstringMatches[0].index,
@@ -932,7 +805,6 @@ export function findContextLine(
 		}
 	}
 
-	// Pass 6: Fuzzy match using similarity
 	let bestIndex: number | undefined;
 	let bestScore = 0;
 	const fuzzyMatches: IndexedMatches = {

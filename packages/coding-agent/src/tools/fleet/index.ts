@@ -1,20 +1,3 @@
-/**
- * Fleet tool — the single agent-coordination surface: peer messaging over the
- * IrcBus, lifecycle control for async background jobs, and supervision of
- * project-scoped long-running processes (launch).
- *
- * Op families:
- * - messaging: `send` (with `to`), `inbox`, `list`, `wait` (with `from`);
- * - jobs: `wait` (bare or with `ids`), `cancel`, `jobs`;
- * - processes: `start`, `ps`, `logs`, `stop`, `restart`, `describe`, plus
- *   `send`/`wait` when they carry a process `name`.
- *
- * The unified `wait` blocks until the FIRST of: a matching peer message, a
- * watched job settling, the wait window elapsing, or a steering interrupt.
- * Job results always deliver themselves when they finish — `wait` exists for
- * when the agent has nothing else to do.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
@@ -202,7 +185,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		this.description = prompt.render(fleetDescription);
 	}
 
-	/** Messaging deps when this session can address peers; null otherwise. */
 	#messaging(): MessagingDeps | null {
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? null;
@@ -269,7 +251,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		}
 	}
 
-	/** Job visibility scope: everything the calling agent owns (tests/SDK without an agent id see all). */
 	#ownerId(): string | undefined {
 		return this.session.getAgentId?.() ?? undefined;
 	}
@@ -281,7 +262,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		};
 	}
 
-	/** Route a process-supervision op to the launch broker, honoring `launch.enabled`. */
 	async #launch(
 		params: FleetParams,
 		op: LaunchParams["op"],
@@ -294,13 +274,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		return executeLaunch(this.session, { ...rest, op }, signal);
 	}
 
-	/**
-	 * Unified wait: race the caller's running jobs against incoming peer
-	 * messages. Returns on the FIRST settled job, the first matching message,
-	 * window expiry, or abort — never "when everything finishes"; the model
-	 * re-issues to keep waiting. With no job legs it degrades to a pure
-	 * message wait; with no messaging it is exactly the old job poll.
-	 */
 	async #executeWait(
 		params: FleetParams,
 		signal?: AbortSignal,
@@ -311,15 +284,11 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const ownerId = this.#ownerId();
 		const from = params.from?.trim() || undefined;
 
-		// A message already buffered on the session satisfies the wait first.
 		if (messaging) {
 			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from);
 			if (pending) return messageResult(messaging.senderId, pending);
 		}
 
-		// Resolve which jobs to watch:
-		// - explicit `ids` → exactly those (owner-scoped; missing ids corrected);
-		// - omitted → every running job the caller owns.
 		const ids = params.ids;
 		const jobsToWatch = manager
 			? ids?.length
@@ -331,25 +300,15 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		}
 		const runningJobs = jobsToWatch.filter(j => j.status === "running");
 		if (manager && jobsToWatch.length > 0 && runningJobs.length === 0) {
-			// Every explicitly watched job already settled — immediate snapshot.
 			return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 		}
 
 		if (!manager || runningJobs.length === 0) {
-			// No job legs: pure message wait — or nothing to block on at all.
 			if (!messaging) return nothingToWaitForResult(this.session);
-			// The bus mailbox is a separate store from the session-pending buffer
-			// drained above, and only `executeMessageWait` below ever reads it. A
-			// peer that sends and then stops running leaves its message queued
-			// there, so without this take the liveness gate would answer "nothing
-			// to wait for" while `fleet inbox` hands back the very message being
-			// waited on. Single atomic take: the rest of the backlog stays queued.
+
 			const queued = IrcBus.global().take(messaging.senderId, from);
 			if (queued) return messageResult(messaging.senderId, queued);
 			if (!from) {
-				// A bare wait can only be satisfied by a running peer eventually
-				// sending something; with none, return the snapshot immediately
-				// instead of blocking a full message-timeout window.
 				const hasRunningPeer = messaging.registry
 					.listVisibleTo(messaging.senderId)
 					.some(ref => messaging.registry.isRunning(ref));
@@ -358,18 +317,12 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
 		}
 
-		// Wait window: explicit timeout wins (0 = no window); otherwise the
-		// `async.pollWaitDuration` fixed value or smart ladder. The ladder
-		// starts at the floor and climbs as the agent waits in a tight loop,
-		// then resets once it steps away (see AsyncJobManager.nextPollWaitMs).
 		const window = resolvePollWindow(this.session, manager, ownerId);
 		const windowMs = params.timeoutMs !== undefined ? normalizeIrcTimeoutMs(params.timeoutMs) : window.waitMs;
 		const usedSmartWindow = window.smart && params.timeoutMs === undefined;
 
 		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
 
-		// Message leg: park a bus waiter with no timeout of its own — the race
-		// window governs. Cancelled via sentinel so late losers do not reject.
 		const busAbort = messaging ? new AbortController() : undefined;
 		const busCancelled = new Error("fleet wait settled");
 		let removeBusAbortListener: (() => void) | undefined;
@@ -437,15 +390,10 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			busAbort?.abort(busCancelled);
 			removeBusAbortListener?.();
 			if (usedSmartWindow) {
-				// Reset the idle-gap clock: escalate if the agent waits again soon,
-				// drop back to the floor once it goes quiet for a while.
 				manager.recordPollWaitEnd(ownerId);
 			}
 		}
 
-		// A message consumed by the bus waiter must never be dropped — it wins
-		// even a photo-finish race (job results re-deliver themselves; a
-		// dequeued message would otherwise be lost).
 		if (busLeg && messaging) {
 			const settled = await busLeg;
 			if (settled.message) return messageResult(messaging.senderId, settled.message);
@@ -454,10 +402,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 	}
 }
-
-// =============================================================================
-// TUI Renderer — dispatches to the preserved messaging/job/launch renderings.
-// =============================================================================
 
 const LAUNCH_OPS: Record<string, true> = {
 	start: true,
@@ -468,14 +412,12 @@ const LAUNCH_OPS: Record<string, true> = {
 	describe: true,
 };
 
-/** Launch-style call: an explicit process op, or `send`/`wait` targeting a process `name`. */
 function isLaunchStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	if (!args?.op) return false;
 	if (LAUNCH_OPS[args.op]) return true;
 	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to && !args.from;
 }
 
-/** Job-style call: job ops, or a `wait` that does not target a peer or process. */
 function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	switch (args?.op) {
 		case "jobs":
@@ -488,10 +430,7 @@ function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	}
 }
 
-/** Launch details carry process/broker state; coordination details never define these keys. */
 function isLaunchDetails(details: FleetDetails): details is LaunchToolDetails {
-	// `state`/`cursor` cover logs results, which may carry neither a daemon
-	// snapshot nor terminal rows; coordination details never define these keys.
 	return (
 		"daemon" in details ||
 		"daemons" in details ||
@@ -502,7 +441,6 @@ function isLaunchDetails(details: FleetDetails): details is LaunchToolDetails {
 	);
 }
 
-/** Fleet args → launch renderer args: `ps` is the broker's `list`; everything else is verbatim. */
 function toLaunchArgs(args: FleetRenderArgs | undefined): LaunchRenderArgs {
 	if (!args) return {};
 	const { op, ...rest } = args;
@@ -512,8 +450,7 @@ function toLaunchArgs(args: FleetRenderArgs | undefined): LaunchRenderArgs {
 export const fleetToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
-	// Only launch pending frames consume the spinner (broker RPC in flight);
-	// messaging/job pending frames are static, exactly as before the merge.
+
 	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as FleetRenderArgs | undefined),
 
 	renderCall(args: FleetRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
@@ -529,8 +466,6 @@ export const fleetToolRenderer = {
 		uiTheme: Theme,
 		args?: FleetRenderArgs,
 	): Component {
-		// Results dispatch on what actually happened, falling back to the call
-		// shape when details are absent (framework-generated errors).
 		const details = result.details;
 		if (details && isLaunchDetails(details)) {
 			return launchRenderResult({ ...result, details }, options, uiTheme, toLaunchArgs(args));
@@ -545,7 +480,7 @@ export const fleetToolRenderer = {
 		) {
 			return messagingRenderResult({ ...result, details: coordination }, options, uiTheme, args);
 		}
-		// Detail-less or op-only results (validation errors, disabled gates).
+
 		if (isLaunchStyleArgs(args))
 			return launchRenderResult({ ...result, details: undefined }, options, uiTheme, toLaunchArgs(args));
 		if (isJobStyleArgs(args)) return jobsRenderResult({ ...result, details: coordination }, options, uiTheme, args);

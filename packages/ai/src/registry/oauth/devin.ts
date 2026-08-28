@@ -117,8 +117,6 @@ function getTokenExpiry(token: string): number {
 				return decoded.exp * 1000 - 5 * 60 * 1000;
 			}
 		}
-	} catch {
-		// Ignore malformed non-JWT tokens and use a conservative long-lived fallback.
-	}
+	} catch {}
 	return Date.now() + FALLBACK_EXPIRES_MS;
 }

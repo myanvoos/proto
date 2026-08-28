@@ -1,6 +1,6 @@
-//! `head` builtin: print the first part of files.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -21,7 +21,7 @@ use crate::host::{Host, Utility, matches_parser, util};
 const BUF_SIZE: usize = 65536;
 
 mod cli {
-//
+
 
 use std::ffi::OsString;
 
@@ -116,7 +116,7 @@ pub(super) fn uu_app() -> Command {
 use cli::{options, uu_app};
 
 mod parse {
-//
+
 
 use std::ffi::OsString;
 
@@ -128,7 +128,7 @@ use uucore::parser::{
 #[derive(PartialEq, Eq, Debug)]
 pub(super) struct ParseError;
 
-/// Parses obsolete syntax
+
 pub(super) fn parse_obsolete(src: &str) -> Option<Result<Vec<OsString>, ParseError>> {
 	let mut chars = src.char_indices();
 	if let Some((mut num_start, '-')) = chars.next() {
@@ -160,8 +160,8 @@ pub(super) fn parse_obsolete(src: &str) -> Option<Result<Vec<OsString>, ParseErr
 	}
 }
 
-/// Processes the numeric block of the input string to generate the appropriate
-/// options.
+
+
 fn process_num_block(
 	src: &str,
 	last_char: char,
@@ -175,16 +175,16 @@ fn process_num_block(
 	let mut quiet = false;
 	let mut verbose = false;
 	let mut zero_terminated = false;
-	// Lowercase suffixes are byte multipliers (obsolete BSD `-Nc`/`-Nb`/`-Nk`/`-Nm`);
-	// uppercase suffixes mirror the modern `-n NUM<suffix>` form and scale the
-	// line count (`head -10K` == `head -n 10240`).
+
+
+
 	let mut multiplier = None;
 	let mut line_multiplier: usize = 1;
 	let mut c = last_char;
 	loop {
 		match c {
-			// we want to preserve order
-			// this also saves us 1 heap allocation
+
+
 			'q' => {
 				quiet = true;
 				verbose = false;
@@ -241,11 +241,11 @@ fn process_num_block(
 	Ok(options)
 }
 
-/// Parses an -c or -n argument,
-/// the bool specifies whether to read from the end (all but last N)
+
+
 pub(super) fn parse_num(src: &str) -> Result<(u64, bool), ParseSizeError> {
 	let result = parse_signed_num_max(src)?;
-	// head: '-' means "all but last N"
+
 	let all_but_last = result.sign == Some(SignPrefix::Minus);
 	Ok((result.value, all_but_last))
 }
@@ -254,8 +254,8 @@ pub(super) fn parse_num(src: &str) -> Result<(u64, bool), ParseSizeError> {
 }
 
 mod take {
-//
-//! Take all but the last elements of an iterator.
+
+
 use std::{
 	collections::VecDeque,
 	io::{ErrorKind, Read, Write},
@@ -328,22 +328,22 @@ impl TakeAllBuffer {
 	}
 }
 
-/// Function to copy all but `n` bytes from the reader to the writer.
-///
-/// If `n` exceeds the number of bytes in the input file then nothing is copied.
-/// If no errors are encountered then the function returns the number of bytes
-/// copied.
-///
-/// Algorithm for this function is as follows...
-/// 1 - Chunks of the input file are read into a queue of [`TakeAllBuffer`]
-/// instances.     Chunks are read until at least we have enough data to write
-/// out the entire contents of the     first [`TakeAllBuffer`] in the queue
-/// whilst still retaining at least `n` bytes in the queue.     If we hit `EoF`
-/// at any point, stop reading. 2 - Assess whether we managed to queue up
-/// greater-than `n` bytes. If not, we must be done, in     which case break and
-/// return. 3 - Write either the full first buffer of data, or just enough bytes
-/// to get back down to having     the required `n` bytes of data queued.
-/// 4 - Go back to (1).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub(super) fn copy_all_but_n_bytes(
 	reader: &mut impl Read,
 	writer: &mut impl Write,
@@ -355,7 +355,7 @@ pub(super) fn copy_all_but_n_bytes(
 	let mut total_bytes_copied = 0;
 	loop {
 		loop {
-			// Try to buffer at least enough to write the entire first buffer.
+
 			let front_buffer = buffers.front();
 			if let Some(front_buffer) = front_buffer
 				&& buffered_bytes >= n + front_buffer.remaining_bytes()
@@ -365,27 +365,27 @@ pub(super) fn copy_all_but_n_bytes(
 			let mut new_buffer = empty_buffer_pool.pop().unwrap_or_else(TakeAllBuffer::new);
 			let filled_bytes = new_buffer.fill_buffer(reader)?;
 			if filled_bytes == 0 {
-				// filled_bytes==0 => Eof
+
 				break;
 			}
 			buffers.push_back(new_buffer);
 			buffered_bytes += filled_bytes;
 		}
 
-		// If we've got <=n bytes buffered here we have nothing left to do.
+
 		if buffered_bytes <= n {
 			break;
 		}
 
 		let excess_buffered_bytes = buffered_bytes - n;
-		// Since we have some data buffered, can assume we have >=1 buffer - i.e. safe
-		// to unwrap.
+
+
 		let front_buffer = buffers.front_mut().unwrap();
 		let bytes_written = front_buffer.write_bytes_limit(writer, excess_buffered_bytes)?;
 		buffered_bytes -= bytes_written;
 		total_bytes_copied += bytes_written;
-		// If the front buffer is empty (which it probably is), push it into the
-		// empty-buffer-pool.
+
+
 		if front_buffer.is_empty() {
 			empty_buffer_pool.push(buffers.pop_front().unwrap());
 		}
@@ -416,7 +416,7 @@ impl TakeAllLinesBuffer {
 	) -> std::io::Result<BytesAndLines> {
 		self.partial_line = false;
 		let bytes_read = self.inner.fill_buffer(reader)?;
-		// Count the number of lines...
+
 		self.terminated_lines = memchr_iter(separator, self.inner.remaining_buffer()).count();
 		if let Some(last_char) = self.inner.remaining_buffer().last()
 			&& *last_char != separator
@@ -448,8 +448,8 @@ impl TakeAllLinesBuffer {
 				 copy_all_but_lines."
 			);
 			let index = index.unwrap();
-			// index is the offset of the separator character, zero indexed. Need to add 1
-			// to get the number of bytes to write.
+
+
 			let bytes_to_write = index + 1;
 			self.inner.write_bytes_exact(writer, bytes_to_write)?;
 			ret = BytesAndLines { bytes: bytes_to_write, terminated_lines: max_lines };
@@ -471,65 +471,65 @@ impl TakeAllLinesBuffer {
 	}
 }
 
-/// Function to copy all but `n` lines from the reader to the writer.
-///
-/// Lines are inferred from the `separator` value passed in by the client.
-/// If `n` exceeds the number of lines in the input file then nothing is copied.
-/// The last line in the file is not required to end with a `separator`
-/// character. If no errors are encountered then they function returns the
-/// number of bytes copied.
-///
-/// Algorithm for this function is as follows...
-/// 1 - Chunks of the input file are read into a queue of [`TakeAllLinesBuffer`]
-/// instances.     Chunks are read until at least we have enough lines that we
-/// can write out the entire     contents of the first [`TakeAllLinesBuffer`] in
-/// the queue whilst still retaining at least     `n` lines in the queue.
-///     If we hit `EoF` at any point, stop reading.
-/// 2 - Asses whether we managed to queue up greater-than `n` lines. If not, we
-/// must be done, in     which case break and return.
-/// 3 - Write either the full first buffer of data, or just enough lines to get
-/// back down to     having the required `n` lines of data queued.
-/// 4 - Go back to (1).
-///
-/// Note that lines will regularly straddle multiple [`TakeAllLinesBuffer`]
-/// instances. The `partial_line` flag on [`TakeAllLinesBuffer`] tracks this,
-/// and we use that to ensure that we write out enough lines in the case that
-/// the input file doesn't end with a `separator` character.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub(super) fn copy_all_but_n_lines<R: Read, W: Write>(
 	mut reader: R,
 	writer: &mut W,
 	n: usize,
 	separator: u8,
 ) -> std::io::Result<usize> {
-	// This function requires `n` > 0. Assert it!
+
 	assert!(n > 0);
 	let mut buffers: VecDeque<TakeAllLinesBuffer> = VecDeque::new();
 	let mut buffered_terminated_lines: usize = 0;
 	let mut empty_buffers = vec![];
 	let mut total_bytes_copied = 0;
 	loop {
-		// Try to buffer enough such that we can write out the entire first buffer.
+
 		loop {
-			// First check if we have enough lines buffered that we can write out the entire
-			// front buffer. If so, break.
+
+
 			let front_buffer = buffers.front();
 			if let Some(front_buffer) = front_buffer
 				&& buffered_terminated_lines > n + front_buffer.terminated_lines()
 			{
 				break;
 			}
-			// Else we need to try to buffer more data...
+
 			let mut new_buffer = empty_buffers.pop().unwrap_or_else(TakeAllLinesBuffer::new);
 			let fill_result = new_buffer.fill_buffer(&mut reader, separator)?;
 			if fill_result.bytes == 0 {
-				// fill_result.bytes == 0 => EoF.
+
 				break;
 			}
 			buffered_terminated_lines += fill_result.terminated_lines;
 			buffers.push_back(new_buffer);
 		}
 
-		// If we've not buffered more lines than we need to hold back we must be done.
+
 		if buffered_terminated_lines < n
 			|| (buffered_terminated_lines == n && !buffers.back().unwrap().partial_line())
 		{
@@ -537,8 +537,8 @@ pub(super) fn copy_all_but_n_lines<R: Read, W: Write>(
 		}
 
 		let excess_buffered_terminated_lines = buffered_terminated_lines - n;
-		// Since we have some data buffered can assume we have at least 1 buffer, so
-		// safe to unwrap.
+
+
 		let lines_to_write = if buffers.back().unwrap().partial_line() {
 			excess_buffered_terminated_lines + 1
 		} else {
@@ -548,8 +548,8 @@ pub(super) fn copy_all_but_n_lines<R: Read, W: Write>(
 		let write_result = front_buffer.write_lines(writer, lines_to_write, separator)?;
 		buffered_terminated_lines -= write_result.terminated_lines;
 		total_bytes_copied += write_result.bytes;
-		// If the front buffer is empty (which it probably is), push it into the
-		// empty-buffer-pool.
+
+
 		if front_buffer.is_empty() {
 			empty_buffers.push(buffers.pop_front().unwrap());
 		}
@@ -557,11 +557,11 @@ pub(super) fn copy_all_but_n_lines<R: Read, W: Write>(
 	Ok(total_bytes_copied)
 }
 
-/// Like `std::io::Take`, but for lines instead of bytes.
-///
-/// This struct is generally created by calling [`take_lines`] on a
-/// reader. Please see the documentation of [`take_lines`] for more
-/// details.
+
+
+
+
+
 pub(super) struct TakeLines<T> {
 	inner:     T,
 	limit:     u64,
@@ -569,7 +569,7 @@ pub(super) struct TakeLines<T> {
 }
 
 impl<T: Read> Read for TakeLines<T> {
-	/// Read bytes from a buffer up to the requested number of lines.
+
 	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
 		if self.limit == 0 {
 			return Ok(0);
@@ -590,14 +590,14 @@ impl<T: Read> Read for TakeLines<T> {
 	}
 }
 
-/// Create an adaptor that will read at most `limit` lines from a given reader.
-///
-/// This function returns a new instance of `Read` that will read at
-/// most `limit` lines, after which it will always return EOF
-/// (`Ok(0)`).
-///
-/// The `separator` defines the character to interpret as the line
-/// ending. For the usual notion of "line", set this to `b'\n'`.
+
+
+
+
+
+
+
+
 pub(super) fn take_lines<R>(reader: R, limit: u64, separator: u8) -> TakeLines<R> {
 	TakeLines { inner: reader, limit, separator }
 }
@@ -609,7 +609,7 @@ use take::{copy_all_but_n_bytes, copy_all_but_n_lines, take_lines};
 
 #[derive(Error, Debug)]
 enum HeadError {
-	/// Wrapper around `io::Error`
+
 	#[error("error reading {}: {}", name.quote(), err)]
 	Io { name: PathBuf, err: io::Error },
 
@@ -664,15 +664,15 @@ impl Mode {
 	}
 }
 
-/// True when `token` is an option that takes its value from the *next* argv
-/// token, so that value must never be mistaken for an obsolete `-NUM` form
-/// (e.g. the `-5` in `head -n -5 file`).
+
+
+
 fn consumes_separate_value(token: &str) -> bool {
 	if let Some(long) = token.strip_prefix("--") {
 		if long.is_empty() || long.contains('=') {
 			return false;
 		}
-		// clap infers unambiguous long-option prefixes.
+
 		return ["lines", "bytes"].iter().any(|name| name.starts_with(long));
 	}
 	let Some(cluster) = token.strip_prefix('-') else {
@@ -681,8 +681,8 @@ fn consumes_separate_value(token: &str) -> bool {
 	let mut chars = cluster.chars();
 	while let Some(c) = chars.next() {
 		match c {
-			// Value-taking shorts: a trailing `-n`/`-c` consumes the next
-			// token; anything after them in the cluster is an attached value.
+
+
 			'n' | 'c' => return chars.next().is_none(),
 			'q' | 'v' | 'z' => {},
 			_ => return false,
@@ -691,13 +691,13 @@ fn consumes_separate_value(token: &str) -> bool {
 	false
 }
 
-/// Rewrites every obsolete `-NUM[suffix]` token (before `--`) into modern
-/// options, wherever it appears among flags and operands: GNU/BSD accept
-/// `head -q -5 file`, `head file -5`, and `head -5 -20 file`.
+
+
+
 fn arg_iterate(argv: Vec<OsString>) -> HeadResult<Vec<OsString>> {
 	let mut rewritten = Vec::with_capacity(argv.len() + 1);
 	let mut iter = argv.into_iter();
-	// argv[0] is always present
+
 	rewritten.extend(iter.next());
 	let mut skip_value = false;
 	let mut seen_ddash = false;
@@ -708,8 +708,8 @@ fn arg_iterate(argv: Vec<OsString>) -> HeadResult<Vec<OsString>> {
 			continue;
 		}
 		let Some(token) = arg.to_str() else {
-			// Non-UTF-8 can't be an obsolete option like "-5"; treat it as a
-			// regular file argument.
+
+
 			rewritten.push(arg);
 			continue;
 		};
@@ -752,7 +752,7 @@ struct HeadOptions {
 }
 
 impl HeadOptions {
-	///Construct options from matches
+
 	pub fn get_from(matches: &ArgMatches) -> Result<Self, String> {
 		let mut options = Self::default();
 
@@ -809,9 +809,9 @@ fn read_but_last_n_bytes(mut input: impl Read, output: &mut impl Write, n: u64) 
 			.try_into()
 			.unwrap();
 
-		// Make sure we finish writing everything to the target before
-		// exiting. Otherwise, when Rust is implicitly flushing, any
-		// error will be silently ignored.
+
+
+
 		output.flush().map_err(wrap_in_stdout_error)?;
 	}
 	Ok(bytes_written)
@@ -827,47 +827,47 @@ fn read_but_last_n_lines(mut input: impl Read, output: &mut impl Write, n: u64, 
 			.map_err(wrap_in_stdout_error)?
 			.try_into()
 			.unwrap();
-		// Make sure we finish writing everything to the target before
-		// exiting. Otherwise, when Rust is implicitly flushing, any
-		// error will be silently ignored.
+
+
+
 		output.flush().map_err(wrap_in_stdout_error)?;
 	}
 	Ok(bytes_written)
 }
 
-/// Return the index in `input` just after the `n`th line from the end.
-///
-/// If `n` exceeds the number of lines in this file, then return 0.
-/// This function rewinds the cursor to the
-/// beginning of the input just before returning unless there is an
-/// I/O error.
-///
-/// # Errors
-///
-/// This function returns an error if there is a problem seeking
-/// through or reading the input.
-///
-/// # Examples
-///
-/// The function returns the index of the byte immediately following
-/// the line ending character of the `n`th line from the end of the
-/// input:
-///
-/// ```rust,ignore
-/// let mut input = Cursor::new("x\ny\nz\n");
-/// assert_eq!(find_nth_line_from_end(&mut input, 0, false).unwrap(), 6);
-/// assert_eq!(find_nth_line_from_end(&mut input, 1, false).unwrap(), 4);
-/// assert_eq!(find_nth_line_from_end(&mut input, 2, false).unwrap(), 2);
-/// ```
-///
-/// If `n` exceeds the number of lines in the file, always return 0:
-///
-/// ```rust,ignore
-/// let mut input = Cursor::new("x\ny\nz\n");
-/// assert_eq!(find_nth_line_from_end(&mut input, 3, false).unwrap(), 0);
-/// assert_eq!(find_nth_line_from_end(&mut input, 4, false).unwrap(), 0);
-/// assert_eq!(find_nth_line_from_end(&mut input, 1000, false).unwrap(), 0);
-/// ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 fn find_nth_line_from_end<R>(input: &mut R, n: u64, separator: u8) -> io::Result<u64>
 where
 	R: Read + Seek,
@@ -881,7 +881,7 @@ where
 	let mut bytes_remaining_to_search = file_size;
 
 	loop {
-		// the casts here are ok, `buffer.len()` should never be above a few k
+
 		let bytes_to_read_this_loop = bytes_remaining_to_search.min(buffer.len().try_into().unwrap());
 		let read_start_offset = bytes_remaining_to_search - bytes_to_read_this_loop;
 		let buffer = &mut buffer[..bytes_to_read_this_loop.try_into().unwrap()];
@@ -890,11 +890,11 @@ where
 		input.seek(SeekFrom::Start(read_start_offset))?;
 		input.read_exact(buffer)?;
 
-		// Unfortunately need special handling for the case that the input file doesn't
-		// have a terminating `separator` character.
-		// If the input file doesn't end with a `separator` character, add an extra line
-		// to our `line` counter. In the case that `n` is 0 we need to return here
-		// since we've obviously found our 0th-line-from-the-end offset.
+
+
+
+
+
 		if check_last_byte_first_loop {
 			check_last_byte_first_loop = false;
 			if let Some(last_byte_of_file) = buffer.last()
@@ -980,7 +980,7 @@ fn head_file(input: &mut File, output: &mut impl Write, options: &HeadOptions) -
 	}
 }
 
-/// Parsed `head` invocation.
+
 pub(crate) struct Head {
 	matches: ArgMatches,
 }
@@ -989,8 +989,8 @@ matches_parser!(Head, uu_app);
 
 impl Utility for Head {
 	const NAME: &'static str = "head";
-	// Normalize GNU's obsolete `-NUM` syntax before clap sees argv; clap
-	// otherwise treats it as an unknown short-option cluster.
+
+
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
 		arg_iterate(argv).map_err(|err| err.to_string())
 	}
@@ -1006,9 +1006,9 @@ impl Utility for Head {
 		};
 
 		let print_headers = (options.files.len() > 1 && !options.quiet) || options.verbose;
-		// GNU head only emits the blank separator line before a header when a
-		// previous file actually produced output; open failures print nothing
-		// and must not flip `first`.
+
+
+
 		let mut first = true;
 		fn print_header(out: &mut impl Write, name: &[u8], first: &mut bool) {
 			if !*first {
@@ -1044,8 +1044,8 @@ impl Utility for Head {
 			} else {
 				let resolved = host.resolve(file);
 				if resolved.is_dir() {
-					// GNU prints the header before reporting the read error,
-					// and that header counts as produced output.
+
+
 					if print_headers {
 						print_header(&mut out, file.as_encoded_bytes(), &mut first);
 					}
@@ -1070,8 +1070,8 @@ impl Utility for Head {
 				} else {
 					PathBuf::from(file)
 				};
-				// A dead pipe ends the whole invocation; any other I/O error
-				// only fails this operand, and GNU keeps going.
+
+
 				let broken_pipe = err.kind() == io::ErrorKind::BrokenPipe;
 				host.error(HeadError::Io { name, err }, 1);
 				if broken_pipe {
@@ -1086,7 +1086,7 @@ impl Utility for Head {
 	}
 }
 
-/// Creates the `head` builtin registration.
+
 pub(crate) fn head_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Head, SE>()
 }

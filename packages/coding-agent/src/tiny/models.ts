@@ -1,6 +1,5 @@
-/** Default session-title model: the online @smol path (no local download / on-device inference). */
 export const ONLINE_TINY_TITLE_MODEL_KEY = "online";
-/** Local model the `tiny-models` CLI downloads when none is named. Not the session-title default — that is {@link ONLINE_TINY_TITLE_MODEL_KEY}. */
+
 export const DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY = "lfm2-700m";
 
 export interface TinyTitleLocalModelSpec {
@@ -10,9 +9,9 @@ export interface TinyTitleLocalModelSpec {
 	label: string;
 	description: string;
 	contextNote: string;
-	/** Model family emits hidden reasoning unless the chat template disables it. */
+
 	reasoning?: boolean;
-	/** Reason this model is blocked before loading the ONNX runtime. */
+
 	unsupportedReason?: string;
 }
 
@@ -108,15 +107,8 @@ export function getTinyTitleModelSpec(key: TinyTitleLocalModelKey): (typeof TINY
 	return spec;
 }
 
-/** Default memory model: the online path (the configured smol / remote LLM; no local download). */
 export const ONLINE_MEMORY_MODEL_KEY = "online";
 
-/**
- * Local models for structured generation beyond titles (classification, extraction).
- * These are larger (1B-1.7B) than the title models: structured extraction and
- * faithful summarization need more capacity than 3-6 word titles. All q4.
- * Ranking/recipe rationale lives in docs/local-models.md.
- */
 const TINY_MEMORY_LOCAL_MODELS = [
 	{
 		key: "qwen3-1.7b",
@@ -207,10 +199,8 @@ export function isTinyMemoryLocalModelKey(value: string): value is TinyMemoryLoc
 	return TINY_MEMORY_LOCAL_MODELS.some(model => model.key === value);
 }
 
-/** Any local model key (title or memory), used by the shared inference worker. */
 export type TinyLocalModelKey = TinyTitleLocalModelKey | TinyMemoryLocalModelKey;
 
-/** Resolve a local model spec by key across both the title and memory registries. */
 export function getTinyLocalModelSpec(key: string): TinyTitleLocalModelSpec | undefined {
 	return (
 		TINY_TITLE_LOCAL_MODELS.find(model => model.key === key) ??
@@ -222,7 +212,6 @@ export function isTinyLocalModelKey(value: string): value is TinyLocalModelKey {
 	return getTinyLocalModelSpec(value) !== undefined;
 }
 
-/** Combined local model registry (title + memory) for the shared tiny-models CLI. */
 export const TINY_LOCAL_MODELS = [
 	...TINY_TITLE_LOCAL_MODELS,
 	...TINY_MEMORY_LOCAL_MODELS,

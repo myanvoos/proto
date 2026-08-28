@@ -4,19 +4,9 @@ import * as path from "node:path";
 import { getDocumentConversionCacheDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import packageJson from "../../package.json" with { type: "json" };
 
-/**
- * Cache schema/format revision. Bumping it changes the on-disk key prefix
- * (`v<N>-...`), so old entries become unreachable and are pruned naturally.
- * Bump when the cache *file* shape changes (entry JSON layout, key scheme).
- *
- * Converter *output* changes are handled separately: the package version is
- * folded into the key (see {@link markitConversionCacheKey}), so any release
- * that ships new markdown from `src/markit/converters/*` auto-invalidates the
- * cache without a manual bump here.
- */
 const MARKIT_CONVERSION_CACHE_VERSION = 1;
 const MAX_MARKIT_CONVERSION_CACHE_BYTES = 256 * 1024 * 1024;
-/** `.tmp` files older than this are treated as orphaned writes and swept. */
+
 const TMP_ORPHAN_MAX_AGE_MS = 5 * 60 * 1000;
 export type MarkitConversionCacheStatus = "hit" | "miss" | "skipped";
 
@@ -91,9 +81,7 @@ export async function pruneMarkitConversionCache(cacheDir: string): Promise<void
 	}
 
 	const now = Date.now();
-	// Eviction is FIFO by mtime (not LRU): reads do not bump mtime, so a hot
-	// entry written long ago is evicted before a cold recent miss. The cap is a
-	// coarse disk-footprint safety valve, so the cheaper policy is intentional.
+
 	const entries: { path: string; size: number; mtimeMs: number }[] = [];
 	let totalBytes = 0;
 	for (const name of names) {
@@ -109,9 +97,6 @@ export async function pruneMarkitConversionCache(cacheDir: string): Promise<void
 		}
 		if (!stat.isFile()) continue;
 
-		// Sweep orphaned `.tmp` files left by a crash/SIGKILL between writeFile
-		// and rename; they never become `.json` entries, so the size cap would
-		// otherwise never see them.
 		if (name.endsWith(".tmp")) {
 			if (now - stat.mtimeMs > TMP_ORPHAN_MAX_AGE_MS) {
 				await fs.rm(entryPath, { force: true }).catch(() => undefined);
@@ -143,8 +128,7 @@ export async function pruneMarkitConversionCache(cacheDir: string): Promise<void
 export async function writeMarkitConversionCache(key: string, content: string): Promise<void> {
 	const cacheDir = getDocumentConversionCacheDir();
 	const target = path.join(cacheDir, `${key}.json`);
-	// The random suffix keeps concurrent writers (same pid + same ms) from
-	// colliding on one temp path before the atomic rename.
+
 	const tempPath = path.join(cacheDir, `${key}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`);
 	const payload = JSON.stringify({ version: MARKIT_CONVERSION_CACHE_VERSION, content });
 	try {
@@ -157,9 +141,6 @@ export async function writeMarkitConversionCache(key: string, content: string): 
 		return;
 	}
 
-	// Prune is just GC: the entry is already on disk under its final name, so
-	// fire-and-forget rather than make the caller wait on a readdir + N×stat
-	// sweep on every miss (the slow path the cache exists to amortise).
 	void pruneMarkitConversionCache(cacheDir).catch(error => {
 		logger.debug("document conversion cache prune failed", { error: errorMessage(error) });
 	});

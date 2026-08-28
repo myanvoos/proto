@@ -1,13 +1,3 @@
-/**
- * Worker entry for the project-shared blob daemon (`__omp_worker_blob_broker`).
- *
- * Hosts a {@link LocalBlobBackend} (store + exposure or uploader) plus an HTTP
- * control plane on a Unix socket. Sessions register blobs over the socket;
- * providers fetch them through the exposure. Lazy blobs resolve through a
- * loopback callback into the owning session, so nothing renders — and nothing
- * stays resident — until a provider actually asks for the bytes.
- */
-
 import * as fs from "node:fs";
 import { logger } from "@oh-my-pi/pi-utils";
 import { isUploaderKind, LocalBlobBackend } from "./broker";
@@ -34,7 +24,6 @@ import { type BlobBrokerSavingsStatus, readBlobBrokerSavingsStatus } from "./sav
 
 const CALLBACK_TIMEOUT_MS = 30_000;
 
-/** Stable identity for a worker config, used by clients to detect drift. */
 export function blobBrokerConfigKey(config: BlobBrokerWorkerConfig): string {
 	return Bun.hash(JSON.stringify(config)).toString(16);
 }
@@ -61,9 +50,7 @@ async function backendStatus(
 	if (config.persist?.savingsPath) {
 		try {
 			savings = await readBlobBrokerSavingsStatus(config.persist.savingsPath);
-		} catch {
-			// Status remains available when the optional savings journal is unreadable.
-		}
+		} catch {}
 	}
 	return {
 		baseUrl,
@@ -74,7 +61,6 @@ async function backendStatus(
 	};
 }
 
-/** Serve the control plane against a backend; exported for the smoke probe and tests. */
 function createControlHandler(
 	backend: LocalBlobBackend,
 	config: BlobBrokerWorkerConfig,
@@ -144,7 +130,6 @@ function createControlHandler(
 	};
 }
 
-/** Boot the blob daemon from worker environment variables and serve forever. */
 export async function startBlobBrokerFromEnvironment(): Promise<void> {
 	const socketPath = Bun.env[BLOB_BROKER_SOCKET_ENV];
 	const configJson = Bun.env[BLOB_BROKER_CONFIG_ENV];
@@ -153,27 +138,23 @@ export async function startBlobBrokerFromEnvironment(): Promise<void> {
 	}
 	const config = JSON.parse(configJson) as BlobBrokerWorkerConfig;
 	const backend = new LocalBlobBackend(config);
-	// Bring the exposure up before advertising readiness so a ready daemon is a
-	// serving daemon. Uploader configs have nothing to start.
+
 	const baseUrl = isUploaderKind(config.kind) ? "" : await backend.ensureStarted();
 	if (baseUrl === null) {
 		throw new Error("blob broker exposure failed to start");
 	}
 	try {
 		fs.rmSync(socketPath, { force: true });
-	} catch {
-		// A live daemon holding the socket loses the start race in the broker.
-	}
+	} catch {}
 	Bun.serve({ unix: socketPath, fetch: createControlHandler(backend, config, baseUrl) });
-	// The daemon broker tears us down with a signal; flush the persisted
-	// url index rather than losing the debounced write.
+
 	process.on("SIGTERM", () => {
 		backend.stop();
 		process.exit(0);
 	});
 	logger.info("blob-broker daemon up", { kind: config.kind, baseUrl, socketPath });
-	// Readiness banner consumed by the daemon broker's ready matcher.
+
 	console.log(blobBrokerReadyBanner(baseUrl || `upload:${config.kind}`));
-	// Serve until the daemon broker tears the process down with the project.
+
 	await Promise.withResolvers<never>().promise;
 }

@@ -1,29 +1,18 @@
-/**
- * Cross-process daemon broker protocol shared by the tool, client, and broker.
- */
-/** Hidden CLI selector used to re-enter the daemon broker worker. */
 export const DAEMON_BROKER_WORKER_ARG = "__proto_worker_daemon_broker";
 
-/** Fixed dimensions negotiated with every supervised PTY. */
 export const DAEMON_PTY_COLUMNS = 120;
 export const DAEMON_PTY_ROWS = 40;
 
-/** Environment key carrying the broker's canonical project or synthetic global scope directory. */
 export const DAEMON_PROJECT_DIR_ENV = "PROTO_DAEMON_PROJECT_DIR";
 
-/** Environment key carrying the broker's private runtime directory. */
 export const DAEMON_RUNTIME_DIR_ENV = "PROTO_DAEMON_RUNTIME_DIR";
 
-/** Optional environment key overriding last-client shutdown grace. */
 export const DAEMON_IDLE_GRACE_ENV = "PROTO_DAEMON_IDLE_GRACE_MS";
 
-/** Stable lifecycle states exposed by the launch tool. */
 export type DaemonState = "starting" | "running" | "ready" | "restarting" | "stopping" | "exited" | "failed";
 
-/** Restart behavior applied after an unexpected daemon exit. */
 type DaemonRestartPolicy = "no" | "on-failure" | "always";
 
-/** Readiness conditions; every configured condition must pass. */
 export interface DaemonReadySpec {
 	log?: string;
 	port?: number;
@@ -31,7 +20,6 @@ export interface DaemonReadySpec {
 	timeoutMs: number;
 }
 
-/** Immutable launch specification retained for restart and inspection. */
 export interface DaemonSpec {
 	name: string;
 	application: string;
@@ -45,7 +33,6 @@ export interface DaemonSpec {
 	detached: boolean;
 }
 
-/** Serializable daemon state visible to every client in one broker scope. */
 export interface DaemonSnapshot {
 	name: string;
 	id: string;
@@ -61,16 +48,14 @@ export interface DaemonSnapshot {
 	outputBytes: number;
 	owner?: string;
 	readyMatch?: string;
-	/** Readiness conditions still unmet while `state` is `starting`; absent once ready or without a ready spec. */
+
 	readyPending?: ("log" | "port")[];
 	persist: boolean;
 	detached: boolean;
 }
 
-/** Signals accepted by daemon input operations. */
 export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 
-/** Typed broker operation sent over the authenticated socket. */
 export type DaemonOperation =
 	| { op: "ping" }
 	| { op: "start"; spec: DaemonSpec; owner?: string }
@@ -83,7 +68,7 @@ export type DaemonOperation =
 			grep?: string;
 			follow: boolean;
 			cursor?: number;
-			/** Ask the broker to replay PTY output as virtual terminal rows. */
+
 			renderTerminalRows?: boolean;
 			timeoutMs: number;
 	  }
@@ -94,7 +79,6 @@ export type DaemonOperation =
 	| { op: "describe"; name: string }
 	| { op: "shutdown" };
 
-/** Typed broker result decoded before it reaches tool code. */
 export type DaemonRpcResult =
 	| { op: "ping"; projectDir: string }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
@@ -103,9 +87,9 @@ export type DaemonRpcResult =
 			op: "logs";
 			name: string;
 			text: string;
-			/** Virtual PTY rows reconstructed by the broker for terminal display. */
+
 			terminalRows?: string[];
-			/** Raw PTY bytes returned when rendered rows were not produced (failed replay or non-rendering client). */
+
 			terminalText?: string;
 			cursor: number;
 			timedOut: boolean;
@@ -118,7 +102,6 @@ export type DaemonRpcResult =
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "shutdown" };
 
-/** Authenticated request envelope used by socket clients. */
 export interface DaemonWireRequest {
 	id: string;
 	token: string;
@@ -132,10 +115,8 @@ export interface DaemonWireRequest {
 	operation: DaemonOperation;
 }
 
-/** Response envelope kept raw until matched with its pending operation. */
 type DaemonWireResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
-/** Unsolicited terminal completion sent to the socket that owns a daemon. */
 export interface DaemonCompletionNotification {
 	event: "daemon-completed";
 	completionId: string;
@@ -242,7 +223,6 @@ function readySpec(value: unknown): DaemonReadySpec {
 	return { log, port, host, timeoutMs };
 }
 
-/** Decode and validate a daemon launch specification. */
 export function parseDaemonSpec(value: unknown): DaemonSpec {
 	const source = record(value, "daemon spec");
 	const detached = source.detached === undefined ? false : booleanValue(source.detached, "spec.detached");
@@ -260,7 +240,6 @@ export function parseDaemonSpec(value: unknown): DaemonSpec {
 	};
 }
 
-/** Decode and validate one daemon snapshot. */
 export function parseDaemonSnapshot(value: unknown): DaemonSnapshot {
 	const source = record(value, "daemon snapshot");
 	return {
@@ -284,7 +263,6 @@ export function parseDaemonSnapshot(value: unknown): DaemonSnapshot {
 	};
 }
 
-/** Decode a socket request before the broker acts on it. */
 export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 	const source = record(value, "daemon request");
 	return {
@@ -315,7 +293,6 @@ export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 	};
 }
 
-/** Decode a socket response envelope before resolving a pending call. */
 function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	const source = record(value, "daemon response");
 	const id = stringValue(source.id, "response.id");
@@ -324,7 +301,6 @@ function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	throw new Error("response.ok must be a boolean");
 }
 
-/** Decode one broker response or unsolicited completion notification. */
 export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 	const source = record(value, "daemon message");
 	if (source.event === "daemon-completed") {
@@ -399,7 +375,6 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 	}
 }
 
-/** Decode a broker result using its pending operation as the discriminator. */
 export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown): DaemonRpcResult {
 	const source = record(value, `${operation.op} result`);
 	switch (operation.op) {

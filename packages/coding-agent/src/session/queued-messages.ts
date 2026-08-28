@@ -24,17 +24,14 @@ function queuedImageContent(message: AgentMessage): ImageContent[] | undefined {
 	return images.length > 0 ? images : undefined;
 }
 
-/** Whether a queued message should render in the queue UI. */
 export function isDisplayableQueuedMessage(message: AgentMessage): boolean {
 	return !(message.role === "custom" && message.display === false);
 }
 
-/** Whether a queued message is an advisor card. */
 export function isAdvisorCard(message: AgentMessage): message is CustomMessage {
 	return message.role === "custom" && message.customType === "advisor";
 }
 
-/** Whether a message is a terminal assistant answer containing text and no tools. */
 export function isTerminalTextAssistantAnswer(message: AgentMessage | undefined): message is AssistantMessage {
 	if (message?.role !== "assistant" || message.stopReason !== "stop") return false;
 	let hasText = false;
@@ -56,22 +53,18 @@ export function isTerminalTextAssistantAnswer(message: AgentMessage | undefined)
 	return hasText;
 }
 
-/** Whether queued content was authored by the user and can be restored to the editor. */
 export function isUserQueuedMessage(message: AgentMessage): boolean {
 	if (message.role === "user") return true;
 	return message.role === "custom" && message.attribution === "user" && message.display !== false;
 }
 
-/** Hidden magic-keyword notices queued alongside a user prompt. */
 const MAGIC_KEYWORD_NOTICE_TYPES: Record<string, true> = {
 	"ultrathink-notice": true,
 	"workflow-notice": true,
 };
 
-/** Hidden companion carrying vision descriptions for a text-only model. */
 export const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
 
-/** Whether a hidden queued message is a companion of an adjacent user prompt. */
 export function isHiddenUserCompanion(message: AgentMessage): boolean {
 	return (
 		message.role === "custom" &&
@@ -82,7 +75,6 @@ export function isHiddenUserCompanion(message: AgentMessage): boolean {
 	);
 }
 
-/** Human-readable text shown for a queued-message chip. */
 export function queueChipText(message: AgentMessage): string {
 	if (message.role === "custom") {
 		return readQueueChipText(message.details) ?? queuedTextContent(message) ?? "";
@@ -92,7 +84,6 @@ export function queueChipText(message: AgentMessage): string {
 	return queuedImageContent(message) ? "[Image]" : "";
 }
 
-/** Converts a queued user message to editor-restorable content. */
 export function toRestoredQueuedMessage(message: AgentMessage): RestoredQueuedMessage {
 	return { text: queueChipText(message), images: queuedImageContent(message) };
 }

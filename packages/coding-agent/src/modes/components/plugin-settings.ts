@@ -1,10 +1,3 @@
-/**
- * Plugin settings UI components.
- *
- * Provides a hierarchical settings interface:
- * - Plugin list (npm plugins + marketplace plugins)
- *   - Plugin details (enablement, manifest settings, and marketplace metadata)
- */
 import {
 	type Component,
 	Container,
@@ -34,14 +27,6 @@ import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/the
 import { shortenPath } from "../../tools/render-utils";
 import { OverlayPanel } from "./overlay-box";
 
-/**
- * Forwards a keystroke to `input`, but cancels via `onCancel` when the user presses Escape.
- *
- * Escape is decoded via `matchesKey` rather than a raw `\x1b` compare: inside the
- * fullscreen settings overlay the kitty keyboard protocol is active (ghostty/kitty),
- * where the Escape key arrives as the CSI-u sequence `\x1b[27u`, not a bare `\x1b`.
- * The literal fallbacks preserve legacy single/double-escape on terminals without it.
- */
 export function handleInputOrEscape(
 	data: string,
 	input: { handleInput(data: string): void },
@@ -54,15 +39,6 @@ export function handleInputOrEscape(
 	input.handleInput(data);
 }
 
-// =============================================================================
-// Plugin List Component
-// =============================================================================
-
-/**
- * One row in the unified plugin list. npm and marketplace plugins live in
- * separate registries with different shapes, so a tagged union keeps both
- * paths type-safe end-to-end (list rendering, value lookup, detail callback).
- */
 export type PluginListEntry =
 	| { kind: "npm"; plugin: InstalledPlugin }
 	| { kind: "marketplace"; plugin: InstalledPluginSummary };
@@ -73,10 +49,6 @@ interface PluginListCallbacks {
 	onCancel: () => void;
 }
 
-/**
- * True when the marketplace summary's first entry is not explicitly disabled.
- * Mirrors the `/plugins list` convention: a missing `enabled` flag means enabled.
- */
 function marketplaceEnabled(summary: InstalledPluginSummary): boolean {
 	return summary.entries[0]?.enabled !== false;
 }
@@ -147,11 +119,6 @@ async function buildPluginConfigItems(
 	return items;
 }
 
-/**
- * Stable SelectList value for a list entry. Combined with `findEntryByValue`
- * this keeps lookup correct even when the same plugin id exists in both user
- * and project scope (one of which is `shadowedBy: "project"`).
- */
 function entryValue(entry: PluginListEntry): string {
 	if (entry.kind === "npm") return `npm:${entry.plugin.name}`;
 	return `mkt:${entry.plugin.scope}:${entry.plugin.id}`;
@@ -161,11 +128,6 @@ function findEntryByValue(entries: ReadonlyArray<PluginListEntry>, value: string
 	return entries.find(e => entryValue(e) === value);
 }
 
-/**
- * Shows installed plugins from both registries (npm + marketplace) with
- * enable/disable status, scope tag, and shadow indicator. Selecting an entry
- * fans out to the kind-specific detail callback.
- */
 export class PluginListComponent extends OverlayPanel {
 	readonly #selectList: SelectList;
 
@@ -185,7 +147,6 @@ export class PluginListComponent extends OverlayPanel {
 			);
 			this.addChild(new Spacer(1));
 
-			// Empty list still handles Escape so the user can leave the panel.
 			this.#selectList = new SelectList([], 1, getSelectListTheme());
 			this.#selectList.onCancel = callbacks.onCancel;
 			return;
@@ -193,9 +154,6 @@ export class PluginListComponent extends OverlayPanel {
 
 		const items: SelectItem[] = entries.map(entry => this.#renderItem(entry));
 
-		// Marketplace plugin ids (`name@marketplace`) routinely run past the
-		// SelectList default primary column (32 chars). Widen the bound so the
-		// id remains readable; the description gets whatever width is left.
 		this.#selectList = new SelectList(items, Math.min(items.length, 8), getSelectListTheme(), {
 			minPrimaryColumnWidth: 24,
 			maxPrimaryColumnWidth: 64,
@@ -262,10 +220,6 @@ export class PluginListComponent extends OverlayPanel {
 	}
 }
 
-// =============================================================================
-// Plugin Detail Component
-// =============================================================================
-
 interface PluginDetailCallbacks {
 	onEnabledChange: (enabled: boolean) => void;
 	onFeatureChange: (feature: string, enabled: boolean) => void;
@@ -273,12 +227,6 @@ interface PluginDetailCallbacks {
 	onBack: () => void;
 }
 
-/**
- * Shows detail settings for a single plugin:
- * - Enable/disable toggle
- * - Feature toggles
- * - Config settings
- */
 class PluginDetailComponent extends OverlayPanel {
 	#settingsList!: SettingsList;
 
@@ -306,7 +254,6 @@ class PluginDetailComponent extends OverlayPanel {
 
 		const items: SettingItem[] = [];
 
-		// Enable/disable toggle
 		items.push({
 			id: "__enabled__",
 			label: "Enabled",
@@ -315,14 +262,12 @@ class PluginDetailComponent extends OverlayPanel {
 			values: ["true", "false"],
 		});
 
-		// Feature toggles
 		if (manifest.features && Object.keys(manifest.features).length > 0) {
 			const enabledSet = new Set(plugin.enabledFeatures ?? []);
 			const defaultFeatures = Object.entries(manifest.features)
 				.filter(([_, f]) => f.default)
 				.map(([name]) => name);
 
-			// If enabledFeatures is null, use defaults
 			const effectiveEnabled = plugin.enabledFeatures === null ? new Set(defaultFeatures) : enabledSet;
 
 			for (const [featName, feat] of Object.entries(manifest.features)) {
@@ -350,7 +295,7 @@ class PluginDetailComponent extends OverlayPanel {
 				} else if (id.startsWith("feature:")) {
 					const featName = id.slice(8);
 					this.callbacks.onFeatureChange(featName, newValue === "true");
-					// Update local state
+
 					const current = new Set(this.plugin.enabledFeatures ?? []);
 					if (newValue === "true") {
 						current.add(featName);
@@ -380,22 +325,14 @@ class PluginDetailComponent extends OverlayPanel {
 	}
 }
 
-// =============================================================================
-// Marketplace Plugin Detail Component
-// =============================================================================
-
 interface MarketplacePluginDetailCallbacks {
 	onEnabledChange: (enabled: boolean) => void;
 	onConfigChange: (pluginName: string, key: string, value: unknown) => void;
-	/** Schedules a TUI frame after asynchronous manifest settings load. */
+
 	requestRender?: () => void;
 	onBack: () => void;
 }
 
-/**
- * Detail view for a marketplace plugin, including settings declared by its
- * runtime package and metadata from the installed-plugins registry.
- */
 export class MarketplacePluginDetailComponent extends OverlayPanel {
 	#settingsList!: SettingsList;
 
@@ -500,13 +437,6 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 	}
 }
 
-// =============================================================================
-// Config Submenus
-// =============================================================================
-
-/**
- * Submenu for enum config values.
- */
 class ConfigEnumSubmenu extends OverlayPanel {
 	#selectList: SelectList;
 
@@ -546,9 +476,6 @@ class ConfigEnumSubmenu extends OverlayPanel {
 	}
 }
 
-/**
- * Submenu for string/number config values with text input.
- */
 class ConfigInputSubmenu extends OverlayPanel {
 	#input: Input;
 
@@ -565,7 +492,6 @@ class ConfigInputSubmenu extends OverlayPanel {
 			this.addChild(new Text(theme.fg("muted", schema.description), 0, 0));
 		}
 
-		// Type hint
 		let hint = `Type: ${schema.type}`;
 		if (schema.type === "number") {
 			const numSchema = schema as { min?: number; max?: number };
@@ -578,7 +504,6 @@ class ConfigInputSubmenu extends OverlayPanel {
 
 		this.addChild(new Spacer(1));
 
-		// Input field
 		this.#input = new Input();
 		if (!schema.secret && currentValue) {
 			this.#input.setValue(currentValue);
@@ -602,36 +527,21 @@ class ConfigInputSubmenu extends OverlayPanel {
 	}
 }
 
-// =============================================================================
-// Main Plugin Settings Selector
-// =============================================================================
-
 interface PluginSettingsCallbacks {
 	onClose: () => void;
 	onPluginChanged: () => void | Promise<void>;
-	/** Schedules a TUI frame after asynchronous plugin data loads. */
+
 	requestRender?: () => void;
 }
 
-/** Component with handleInput method */
 interface InputHandler {
 	handleInput(data: string): void;
 }
 
-/**
- * Top-level plugin settings component.
- * Manages navigation between plugin list and plugin detail views.
- */
 export class PluginSettingsComponent extends Container {
 	#cwd: string;
 	#manager: PluginManager;
 	#viewComponent: (Component & InputHandler) | null = null;
-	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
-	#currentView: "list" | "npm-detail" | "marketplace-detail" = "list";
-	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
-	#currentPlugin: InstalledPlugin | null = null;
-	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
-	#currentMarketplacePlugin: InstalledPluginSummary | null = null;
 
 	constructor(
 		cwd: string,
@@ -655,16 +565,8 @@ export class PluginSettingsComponent extends Container {
 	}
 
 	async #showPluginList(): Promise<void> {
-		this.#currentView = "list";
-		this.#currentPlugin = null;
-		this.#currentMarketplacePlugin = null;
 		this.clear();
 
-		// Surface registry failures without taking the whole tab down — either
-		// registry can fail to load (corrupt JSON, missing project root) and the
-		// user still benefits from the other half. An uncaught rejection here
-		// would also leave the tab permanently blank: this method is invoked
-		// fire-and-forget from the constructor, so nothing awaits it.
 		const [npmPlugins, marketplacePlugins] = await Promise.all([
 			this.#manager.list().catch(err => {
 				logger.error("Settings → Plugins: failed to list npm plugins", {
@@ -697,9 +599,6 @@ export class PluginSettingsComponent extends Container {
 	}
 
 	#showPluginDetail(plugin: InstalledPlugin): void {
-		this.#currentView = "npm-detail";
-		this.#currentPlugin = plugin;
-		this.#currentMarketplacePlugin = null;
 		this.clear();
 
 		this.#viewComponent = new PluginDetailComponent(plugin, this.#manager, {
@@ -728,9 +627,6 @@ export class PluginSettingsComponent extends Container {
 	}
 
 	#showMarketplaceDetail(plugin: InstalledPluginSummary): void {
-		this.#currentView = "marketplace-detail";
-		this.#currentPlugin = null;
-		this.#currentMarketplacePlugin = plugin;
 		this.clear();
 
 		this.#viewComponent = new MarketplacePluginDetailComponent(plugin, this.#manager, {
@@ -761,10 +657,6 @@ export class PluginSettingsComponent extends Container {
 
 	handleInput(data: string): void {
 		if (!this.#viewComponent) {
-			// The list view mounts asynchronously (npm + marketplace listing).
-			// Until it does — or if listing rejected and no view ever mounted —
-			// Escape must still close the panel instead of leaving /settings
-			// non-dismissible.
 			if (data === "\x1b" || data === "\x1b\x1b") {
 				this.callbacks.onClose();
 			}

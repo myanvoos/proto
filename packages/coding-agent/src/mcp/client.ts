@@ -1,8 +1,3 @@
-/**
- * MCP Client.
- *
- * Handles connection initialization, tool listing, and tool calling.
- */
 import * as path from "node:path";
 import * as url from "node:url";
 import { getProjectDir, logger, withTimeout } from "@oh-my-pi/pi-utils";
@@ -40,18 +35,11 @@ import type {
 
 import { MCP_PROTOCOL_VERSION } from "./types";
 
-/** Client info sent during initialization */
 const CLIENT_INFO = {
 	name: "proto-coding-agent",
 	version: "1.0.0",
 };
 
-/**
- * Default handler for standard MCP server-to-client requests.
- * Handles `ping` and `roots/list`; rejects unknown methods with -32601.
- * Reads getProjectDir() at call time so the root stays stable even if
- * the process cwd changes during tool execution.
- */
 async function defaultRequestHandler(method: string, _params: unknown): Promise<unknown> {
 	switch (method) {
 		case "ping":
@@ -67,9 +55,6 @@ async function defaultRequestHandler(method: string, _params: unknown): Promise<
 	}
 }
 
-/**
- * Create a transport for the given server config.
- */
 async function createTransport(config: MCPServerConfig): Promise<MCPTransport> {
 	const serverType = config.type ?? "stdio";
 
@@ -85,14 +70,11 @@ async function createTransport(config: MCPServerConfig): Promise<MCPTransport> {
 	}
 }
 
-/**
- * Initialize connection with MCP server.
- */
 async function initializeConnection(
 	transport: MCPTransport,
 	options?: {
 		signal?: AbortSignal;
-		/** Called after notifications/initialized succeeds. */
+
 		onInitialized?: () => void | Promise<void>;
 	},
 ): Promise<MCPInitializeResult> {
@@ -114,14 +96,8 @@ async function initializeConnection(
 		throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Aborted");
 	}
 
-	// Echo the negotiated protocol version on every subsequent request. The MCP
-	// Streamable HTTP spec requires the MCP-Protocol-Version header after
-	// initialize; transports that don't need it ignore this.
 	transport.setProtocolVersion?.(result.protocolVersion);
 
-	// Send initialized before opening the optional GET SSE stream. Servers may
-	// reject or terminate sessions that receive session traffic before this
-	// notification; POST response streams already carry messages during setup.
 	await transport.notify("notifications/initialized");
 
 	await options?.onInitialized?.();
@@ -129,11 +105,6 @@ async function initializeConnection(
 	return result;
 }
 
-/**
- * Connect to an MCP server.
- * Has a 30 second timeout by default to prevent blocking startup.
- * Set PROTO_MCP_TIMEOUT_MS=0 to disable MCP client-side timeouts.
- */
 export async function connectToServer(
 	name: string,
 	config: MCPServerConfig,
@@ -152,17 +123,12 @@ export async function connectToServer(
 			transport.onNotification = options.onNotification;
 		}
 
-		// Always handle standard MCP server-to-client requests (ping, roots/list).
-		// The initialize request declares roots capability, so we must respond to
-		// roots/list — even for short-lived test connections.
 		transport.onRequest = options?.onRequest ?? defaultRequestHandler;
 
 		try {
 			const initResult = await initializeConnection(transport, {
 				signal: options?.signal,
 				async onInitialized() {
-					// Open the optional GET SSE stream only after the initialized
-					// notification makes the session ready for further traffic.
 					if ("startSSEListener" in transport! && typeof transport!.startSSEListener === "function") {
 						await (transport as { startSSEListener(): Promise<void> }).startSSEListener();
 					}
@@ -194,8 +160,6 @@ export async function connectToServer(
 			options?.signal,
 		);
 	} catch (error) {
-		// If withTimeout rejected (timeout/abort) while connect() was still pending,
-		// the transport may be alive with an open SSE listener. Close it.
 		if (transport) {
 			void transport.close().catch(() => {});
 		}
@@ -203,19 +167,14 @@ export async function connectToServer(
 	}
 }
 
-/**
- * List tools from a connected server.
- */
 export async function listTools(
 	connection: MCPServerConnection,
 	options?: { signal?: AbortSignal },
 ): Promise<MCPToolDefinition[]> {
-	// Check if server supports tools
 	if (!connection.capabilities.tools) {
 		return [];
 	}
 
-	// Return cached tools if available
 	if (connection.tools) {
 		return connection.tools;
 	}
@@ -234,15 +193,11 @@ export async function listTools(
 		cursor = result.nextCursor;
 	} while (cursor);
 
-	// Cache tools
 	connection.tools = allTools;
 
 	return allTools;
 }
 
-/**
- * Call a tool on a connected server.
- */
 export async function callTool(
 	connection: MCPServerConnection,
 	toolName: string,
@@ -261,16 +216,10 @@ export async function callTool(
 	);
 }
 
-/**
- * Disconnect from a server.
- */
 export async function disconnectServer(connection: MCPServerConnection): Promise<void> {
 	await connection.transport.close();
 }
 
-/**
- * List resources from a connected server.
- */
 export async function listResources(
 	connection: MCPServerConnection,
 	options?: { signal?: AbortSignal },
@@ -301,23 +250,11 @@ export async function listResources(
 	return allResources;
 }
 
-/** True when an error is a JSON-RPC "method not found" (-32601) response. */
 function isMethodNotFoundError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return message.includes("-32601") || /method not found/i.test(message);
 }
 
-/**
- * List resource templates from a connected server.
- *
- * A server MAY advertise the `resources` capability without implementing the
- * optional `resources/templates/list` method (it is optional in the MCP spec).
- * Such servers reject the request with JSON-RPC -32601 ("Method not found").
- * Treat that as "no templates" and return `[]` rather than throwing — otherwise
- * a caller that loads resources and templates together (see `MCPManager`'s
- * `Promise.all([listResources, listResourceTemplates])`) would discard the
- * server's concrete resources too. Any other error still propagates.
- */
 export async function listResourceTemplates(
 	connection: MCPServerConnection,
 	options?: { signal?: AbortSignal },
@@ -349,9 +286,6 @@ export async function listResourceTemplates(
 			cursor = result.nextCursor;
 		} while (cursor);
 	} catch (error) {
-		// A server that doesn't implement the optional templates method answers
-		// -32601; cache an empty list so we neither retry nor let the failure
-		// bubble up and discard the server's concrete resources.
 		if (isMethodNotFoundError(error)) {
 			connection.resourceTemplates = [];
 			return [];
@@ -363,9 +297,6 @@ export async function listResourceTemplates(
 	return allTemplates;
 }
 
-/**
- * Read a resource from a connected server.
- */
 export async function readResource(
 	connection: MCPServerConnection,
 	uri: string,
@@ -379,9 +310,6 @@ export async function readResource(
 	);
 }
 
-/**
- * Subscribe to resource update notifications.
- */
 export async function subscribeToResources(
 	connection: MCPServerConnection,
 	uris: string[],
@@ -405,9 +333,6 @@ export async function subscribeToResources(
 	}
 }
 
-/**
- * Unsubscribe from resource update notifications.
- */
 export async function unsubscribeFromResources(
 	connection: MCPServerConnection,
 	uris: string[],
@@ -431,23 +356,14 @@ export async function unsubscribeFromResources(
 	}
 }
 
-/**
- * Check if a server supports resource subscriptions.
- */
 export function serverSupportsResourceSubscriptions(capabilities: MCPServerCapabilities): boolean {
 	return capabilities.resources?.subscribe === true;
 }
 
-/**
- * Check if a server supports resources.
- */
 export function serverSupportsResources(capabilities: MCPServerCapabilities): boolean {
 	return capabilities.resources !== undefined;
 }
 
-/**
- * List prompts from a connected server.
- */
 export async function listPrompts(
 	connection: MCPServerConnection,
 	options?: { signal?: AbortSignal },
@@ -478,9 +394,6 @@ export async function listPrompts(
 	return allPrompts;
 }
 
-/**
- * Get a specific prompt from a connected server.
- */
 export async function getPrompt(
 	connection: MCPServerConnection,
 	name: string,
@@ -499,9 +412,6 @@ export async function getPrompt(
 	);
 }
 
-/**
- * Check if a server supports prompts.
- */
 export function serverSupportsPrompts(capabilities: MCPServerCapabilities): boolean {
 	return capabilities.prompts !== undefined;
 }

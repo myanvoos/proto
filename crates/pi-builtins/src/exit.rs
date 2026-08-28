@@ -1,10 +1,10 @@
 use brush_core::{ExecutionControlFlow, ExecutionResult, builtins};
 use clap::Parser;
 
-/// Exit the shell.
+
 #[derive(Parser)]
 pub(crate) struct ExitCommand {
-	/// The exit code to return.
+
 	#[arg(allow_hyphen_values = true)]
 	code: Option<i64>,
 }

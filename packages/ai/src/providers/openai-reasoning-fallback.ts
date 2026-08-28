@@ -1,19 +1,10 @@
 import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 
-/**
- * Fallback marker: the server rejected the `chat_template_kwargs.reasoning_effort`
- * spelling itself (strict kwargs whitelists — Ninfer-style servers), not the
- * effort value. Apply strips the kwarg and hoists the value onto the top-level
- * `reasoning_effort` field when that spelling is absent.
- * @internal
- */
 export const STRIP_TEMPLATE_KWARG_REASONING_EFFORT = Symbol("strip-template-kwarg-reasoning-effort");
 
-/** @internal */
 export type OpenAIReasoningEffortFallback = string | null | typeof STRIP_TEMPLATE_KWARG_REASONING_EFFORT;
 
-/** @internal */
 export interface OpenAIReasoningEffortFallbackState {
 	reasoningEffortFallbacks: Map<string, OpenAIReasoningEffortFallback>;
 }
@@ -37,17 +28,14 @@ const REASONING_VALUE_RANK: Readonly<Record<string, number>> = {
 	max: 5,
 };
 
-/** @internal */
 export function createOpenAIReasoningEffortFallbackState(): OpenAIReasoningEffortFallbackState {
 	return { reasoningEffortFallbacks: new Map() };
 }
 
-/** @internal */
 export function clearOpenAIReasoningEffortFallbackState(state: OpenAIReasoningEffortFallbackState): void {
 	state.reasoningEffortFallbacks.clear();
 }
 
-/** @internal */
 export function getOpenAIReasoningEffortFallback(
 	state: OpenAIReasoningEffortFallbackState | undefined,
 	key: string,
@@ -55,7 +43,6 @@ export function getOpenAIReasoningEffortFallback(
 	return state?.reasoningEffortFallbacks.get(key);
 }
 
-/** @internal */
 export function rememberOpenAIReasoningEffortFallback(
 	state: OpenAIReasoningEffortFallbackState | undefined,
 	key: string,
@@ -64,7 +51,6 @@ export function rememberOpenAIReasoningEffortFallback(
 	state?.reasoningEffortFallbacks.set(key, fallback);
 }
 
-/** @internal */
 export function createOpenAIReasoningEffortFallbackKey(
 	endpoint: "chat-completions" | "responses" | "azure-responses",
 	baseUrl: string | undefined,
@@ -77,7 +63,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** @internal */
 export function readOpenAIReasoningEffort(params: unknown): string | undefined {
 	if (!isRecord(params)) return undefined;
 	if (typeof params.reasoning_effort === "string") return params.reasoning_effort;
@@ -91,7 +76,6 @@ function readTemplateKwargReasoningEffort(params: Record<string, unknown>): stri
 	return isRecord(kwargs) && typeof kwargs.reasoning_effort === "string" ? kwargs.reasoning_effort : undefined;
 }
 
-/** Remove `chat_template_kwargs.reasoning_effort`, dropping the kwargs object when it becomes empty. */
 function deleteTemplateKwargReasoningEffort(kwargs: Record<string, unknown>, parent: Record<string, unknown>): void {
 	delete kwargs.reasoning_effort;
 	for (const key in kwargs) {
@@ -111,7 +95,6 @@ function deleteReasoningEffort(reasoning: Record<string, unknown>, parent: Recor
 	return true;
 }
 
-/** @internal */
 export function applyOpenAIReasoningEffortFallback(params: unknown, fallback: OpenAIReasoningEffortFallback): boolean {
 	if (!isRecord(params)) return false;
 	if (fallback === STRIP_TEMPLATE_KWARG_REASONING_EFFORT) {
@@ -119,9 +102,7 @@ export function applyOpenAIReasoningEffortFallback(params: unknown, fallback: Op
 		if (!isRecord(kwargs) || typeof kwargs.reasoning_effort !== "string") return false;
 		const effort = kwargs.reasoning_effort;
 		deleteTemplateKwargReasoningEffort(kwargs, params);
-		// The `qwen-chat-template` dialect rides kwargs alone; keep the effort
-		// selection alive on the standard OpenAI field (Ninfer-style servers
-		// accept it, vLLM-style renderers ignore it).
+
 		if (typeof params.reasoning_effort !== "string") params.reasoning_effort = effort;
 		return true;
 	}
@@ -143,8 +124,7 @@ export function applyOpenAIReasoningEffortFallback(params: unknown, fallback: Op
 			changed = true;
 		}
 	}
-	// Keep the Qwen template kwarg twin in lockstep — a value remap or drop
-	// must not leave a stale effort for kwargs-reading renderers.
+
 	const kwargs = params.chat_template_kwargs;
 	if (isRecord(kwargs) && typeof kwargs.reasoning_effort === "string") {
 		if (fallback === null) {
@@ -179,12 +159,6 @@ function collectMessageParts(error: unknown, captured: CapturedHttpErrorResponse
 	return parts.join("\n");
 }
 
-/**
- * Text that identifies a 400 as being about the reasoning-effort field.
- * OpenAI-compatible gateways (cliproxy, …) never name the field — they reject
- * the value alone with `level "none" not supported, valid levels: low, …` — so
- * the allowed-level phrasing counts as a mention too.
- */
 const REASONING_EFFORT_FIELD_PATTERN = /reasoning[_. ]effort|reasoning value|(?:valid|supported|allowed) levels?/i;
 
 function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
@@ -225,8 +199,7 @@ function isInvalidReasoningEffortError(
 	) {
 		return true;
 	}
-	// Gateways put the rejected value first (`level "none" not supported`), the
-	// official API puts the verdict first (`Unsupported value: 'none'`).
+
 	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
 	return (
 		new RegExp(`(?:invalid|unsupported|not supported)[^\\n]*${quoted}`, "i").test(message) ||
@@ -309,12 +282,6 @@ function nearestEnabledReasoningFallback(currentEffort: string, allowed: Set<str
 	return best;
 }
 
-/**
- * Text that identifies a rejection of the kwargs spelling itself: the server
- * names `chat_template_kwargs` together with `reasoning_effort` (Ninfer-style
- * strict kwargs whitelists: `chat_template_kwargs.reasoning_effort is not
- * supported`).
- */
 const TEMPLATE_KWARG_EFFORT_PATTERN =
 	/chat_template_kwargs[^\n]{0,120}reasoning[_. ]effort|reasoning[_. ]effort[^\n]{0,120}chat_template_kwargs/i;
 const FIELD_REJECTION_PATTERN =
@@ -332,13 +299,11 @@ function resolveStripTemplateKwargFallback(
 	if (status !== 400 && status !== 422) return undefined;
 	const message = collectMessageParts(error, captured);
 	if (!TEMPLATE_KWARG_EFFORT_PATTERN.test(message) || !FIELD_REJECTION_PATTERN.test(message)) return undefined;
-	// A value-level rejection listing allowed levels wants the value remapped
-	// (in every spelling) by the ordinary flow, not the kwarg stripped.
+
 	if (parseAllowedReasoningValues(message, effort) !== undefined) return undefined;
 	return STRIP_TEMPLATE_KWARG_REASONING_EFFORT;
 }
 
-/** @internal */
 export function resolveOpenAIReasoningEffortFallback(
 	error: unknown,
 	captured: CapturedHttpErrorResponse | undefined,

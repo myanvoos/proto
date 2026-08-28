@@ -105,11 +105,6 @@ function isStringArray(data: unknown): data is string[] {
 	return Array.isArray(data) && data.every(item => typeof item === "string");
 }
 
-/**
- * Runtime validator for the cross-module event payload. The event bus is
- * untyped at runtime, so the subscriber verifies the shape before formatting
- * rather than trusting a cast — a malformed emit is ignored instead of throwing.
- */
 export function isMcpConnectionStatusEvent(data: unknown): data is McpConnectionStatusEvent {
 	if (!isRecord(data) || typeof data.type !== "string") return false;
 	switch (data.type) {

@@ -1,14 +1,3 @@
-/**
- * Kimi Code provider - wraps OpenAI or Anthropic API based on format setting.
- *
- * Kimi offers both OpenAI-compatible and Anthropic-compatible APIs:
- * - OpenAI: https://api.kimi.com/coding/v1/chat/completions
- * - Anthropic: https://api.kimi.com/coding/v1/messages
- *
- * Each discovered model selects its server-declared protocol; legacy models
- * without protocol metadata retain the Anthropic-compatible default.
- */
-
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
 import type { Api, Context, Model } from "../types";
 import type { AssistantMessageEventStream } from "../utils/event-stream";
@@ -21,14 +10,9 @@ import {
 export type KimiApiFormat = OpenAIAnthropicApiFormat;
 
 export interface KimiOptions extends OpenAIAnthropicShimOptions {
-	/** Explicit API format override. Defaults to the model's discovered protocol. */
 	format?: KimiApiFormat;
 }
 
-/**
- * Stream from Kimi Code, routing to either OpenAI or Anthropic API based on format.
- * Returns synchronously like other providers - async header fetching happens internally.
- */
 export function streamKimi(
 	model: Model<"openai-completions">,
 	context: Context,
@@ -43,9 +27,6 @@ export function streamKimi(
 	});
 }
 
-/**
- * Check if a model is a Kimi Code model.
- */
 export function isKimiModel(model: Model<Api>): boolean {
 	return model.provider === "kimi-code";
 }

@@ -1,5 +1,3 @@
-//! Conservative text filters for system-style commands.
-
 use std::{collections::HashMap, fmt::Write as _};
 
 use super::git;
@@ -323,8 +321,6 @@ pub(super) fn compact_log_lines(
 
 	for (idx, line) in input.lines().enumerate() {
 		let key = if line.trim().is_empty() {
-			// Blank lines are section separators; do not globally deduplicate them.
-			// drop_repeated_blank_lines already collapsed consecutive blanks.
 			format!("<blank-{idx}>")
 		} else {
 			let key = key_fn(line);

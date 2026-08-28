@@ -1,7 +1,3 @@
-/**
- * Generic selector component for hooks.
- * Displays a list of string options with keyboard navigation.
- */
 import {
 	Container,
 	Ellipsis,
@@ -30,29 +26,18 @@ import { CountdownTimer } from "./countdown-timer";
 import { OverlayPanel } from "./overlay-box";
 import { renderSegmentTrack } from "./segment-track";
 
-/** One segment of a {@link HookSelectorSlider} — a label and an optional
- *  detail line (e.g. the resolved model name) shown beneath the track while
- *  the segment is active. Segment colors come from the track's theme palette,
- *  assigned by position. */
 interface HookSelectorSliderSegment {
 	label: string;
-	/** Secondary line rendered under the track when this segment is selected. */
+
 	detail?: string;
 }
 
-/**
- * A horizontal left/right selector rendered above the option list. Unlike the
- * up/down option cursor, the slider is moved with the left/right arrows from
- * any list position, letting the caller capture an orthogonal choice (e.g. the
- * model tier to continue execution with) alongside the selected option.
- */
 export interface HookSelectorSlider {
-	/** Dim caption rendered before the slider track (e.g. "continue with"). */
 	caption?: string;
 	segments: HookSelectorSliderSegment[];
-	/** Initially highlighted segment index. */
+
 	index: number;
-	/** Invoked with the new index whenever the slider moves. */
+
 	onChange?: (index: number) => void;
 }
 
@@ -70,19 +55,13 @@ export interface HookSelectorOptions {
 	onExternalEditor?: () => void;
 	helpText?: string;
 	slider?: HookSelectorSlider;
-	/** Indices into the original options that cannot be selected: they render
-	 *  dimmed, are skipped during navigation, and reject enter/timeout. */
+
 	disabledIndices?: readonly number[];
-	/** Render a leading radio/checkbox marker before each markable option,
-	 *  matching the ask transcript. "radio" fills the marker on the cursor row
-	 *  (single-choice); "checkbox" reflects {@link checkedIndices} per row
-	 *  (multi-select). Options at or beyond {@link markableCount} keep the plain
-	 *  cursor prefix — used for trailing control rows like "Other"/"Done". */
+
 	selectionMarker?: "radio" | "checkbox";
-	/** For `selectionMarker: "checkbox"`: original-indices currently checked. */
+
 	checkedIndices?: readonly number[];
-	/** Number of leading options (original order) that receive a selection
-	 *  marker. Defaults to every option when {@link selectionMarker} is set. */
+
 	markableCount?: number;
 }
 
@@ -114,14 +93,8 @@ function splitLeadingSpacesForWrap(line: string, width: number): { indent: strin
 	};
 }
 
-/** One row fed to {@link OutlinedList} or the plain list container. `highlight`
- *  causes the row (and its wrapped continuations, plus trailing padding) to be
- *  painted with the theme's `selectedBg` band — the focus cue that survives
- *  themes where `accent` fg is close to the terminal foreground. */
 type SelectorRow = { text: string; highlight: boolean };
 
-/** Paint `content` with the `selectedBg` background, applied AFTER any inner
- *  ANSI styling so the band spans padding as well as content. */
 function paintSelectedRow(content: string): string {
 	return theme.bg("selectedBg", content);
 }
@@ -155,8 +128,6 @@ class OutlinedList extends Container {
 	}
 }
 
-/** A filtered option paired with its index into the original options array, so
- *  disabled-index lookups survive fuzzy filtering and reordering. */
 type FilteredOption = { option: HookSelectorOption; index: number };
 
 export class HookSelectorComponent extends OverlayPanel {
@@ -240,7 +211,7 @@ export class HookSelectorComponent extends OverlayPanel {
 				s => (this.title = `${this.#baseTitle} (${s}s)`),
 				() => {
 					opts?.onTimeout?.();
-					// Auto-select current option on timeout (typically the first/recommended option)
+
 					const selected = this.#filteredOptions[this.#selectedIndex];
 					if (selected && !this.#isDisabled(selected.index)) {
 						this.#onSelectCallback(selected.option.label);
@@ -270,8 +241,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		return this.#disabledIndices.has(index);
 	}
 
-	/** Clamp `index` into range, then walk forward (and finally backward) to the
-	 *  nearest enabled option so the cursor never lands on a disabled row. */
 	#coerceSelectedIndex(index: number): number {
 		if (this.#filteredOptions.length === 0) return -1;
 		const maxIndex = this.#filteredOptions.length - 1;
@@ -289,8 +258,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		return clamped;
 	}
 
-	/** Move the cursor by `delta`, skipping disabled rows, stopping at the first
-	 *  enabled option reached or at the list edge. */
 	#moveSelection(delta: number): void {
 		if (this.#filteredOptions.length === 0) return;
 		const maxIndex = this.#filteredOptions.length - 1;
@@ -337,11 +304,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		return lines;
 	}
 
-	/** Styled leading marker (`"<glyph> "`) for a markable option row, or
-	 *  `undefined` when no marker applies (control rows beyond `markableCount`,
-	 *  or when {@link selectionMarker} is unset) so the caller falls back to the
-	 *  classic cursor prefix. Radio fills on the cursor row; checkbox reflects
-	 *  the per-row checked state, with the cursor row drawn in accent. */
 	#renderMarkerPrefix(index: number, isSelected: boolean, isDisabled: boolean): string | undefined {
 		if (this.#selectionMarker === undefined || index >= this.#markableCount) return undefined;
 		if (this.#selectionMarker === "radio") {
@@ -355,10 +317,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		return theme.fg(color, `${glyph} `);
 	}
 
-	/** Wrap an option description into indented rows, truncating to `maxRows`
-	 *  with an ellipsis. Pre-wrapping (rather than emitting one long line that the
-	 *  list re-wraps) lets compact mode bound how much of the highlighted option's
-	 *  detail is shown, so every option label stays on screen on short terminals. */
 	#wrapDescriptionRows(
 		description: string,
 		maxRows: number,
@@ -422,10 +380,6 @@ export class HookSelectorComponent extends OverlayPanel {
 	): { startIndex: number; endIndex: number } {
 		if (total === 0) return { startIndex: 0, endIndex: 0 };
 
-		// In compact mode every option contributes only its label rows; the
-		// highlighted option's description is layered on afterwards (see
-		// #updateList), so the window is sized to keep as many labels visible as
-		// possible rather than letting one long description swallow the budget.
 		const descMode: number | "full" = compact ? 0 : "full";
 		const rowBudget = Math.max(1, this.#maxVisible);
 		const selectedIndex = Math.max(0, Math.min(this.#selectedIndex, total - 1));
@@ -488,11 +442,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		const rows: SelectorRow[] = [];
 		const total = this.#filteredOptions.length;
 		const mdTheme = getMarkdownTheme();
-		// Compact mode kicks in exactly when the fully-expanded list (all
-		// descriptions) would overflow the row budget — the same condition that
-		// enables search. There we collapse every option to its label and show
-		// only the highlighted option's description, so the whole menu stays
-		// visible on short terminals instead of collapsing to a single entry.
+
 		const compact = this.#isSearchEnabled(renderWidth, mdTheme);
 		const { startIndex, endIndex } = this.#getVisibleOptionRange(total, renderWidth, mdTheme, compact);
 
@@ -504,8 +454,7 @@ export class HookSelectorComponent extends OverlayPanel {
 				if (filtered === undefined) continue;
 				labelRows += this.#optionRowCount(filtered.option, renderWidth, i === this.#selectedIndex, mdTheme, 0);
 			}
-			// Reserve one row for the status line; give the remainder to the
-			// highlighted option's description.
+
 			selectedDescRows = Math.max(0, Math.max(1, this.#maxVisible) - labelRows - 1);
 		}
 
@@ -515,10 +464,7 @@ export class HookSelectorComponent extends OverlayPanel {
 			const isSelected = i === this.#selectedIndex;
 			const isDisabled = this.#isDisabled(filtered.index);
 			const descMode: number | "full" = compact ? (isSelected ? selectedDescRows : 0) : "full";
-			// Highlight the whole option block (label + wrapped description rows)
-			// so the focus band reads as one continuous bar rather than a stripe
-			// under the label alone. Disabled rows never claim focus even if the
-			// index momentarily lands on one during initial coercion.
+
 			const highlight = isSelected && !isDisabled;
 			for (const text of this.#renderOptionLines(
 				filtered.option,
@@ -551,13 +497,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		}
 	}
 
-	/** Render the slider block in the style of the status line: each option is a
-	 *  distinctly colored segment, the active one filled as a powerline chip
-	 *  (its accent as the background, a luminance-matched label, flanked by
-	 *  triangle caps) and the rest shown as plain colored labels joined by a thin
-	 *  separator. Edge arrows brighten while there is room to move. When the
-	 *  active segment carries a `detail` (e.g. the resolved model name) a muted
-	 *  second line is appended. Returns one or two `\n`-joined lines. */
 	#renderSliderLine(): string {
 		const slider = this.#slider;
 		if (!slider) return "";
@@ -574,8 +513,6 @@ export class HookSelectorComponent extends OverlayPanel {
 		return `${trackLine}\n  ${theme.fg("dim", "↳")} ${theme.fg("muted", detail)}`;
 	}
 
-	/** Move the slider by `delta`, clamped to the segment range, refresh the
-	 *  rendered track, and notify the caller only when the index actually moves. */
 	#moveSlider(delta: number): void {
 		const slider = this.#slider;
 		if (!slider) return;

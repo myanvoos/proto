@@ -63,15 +63,6 @@ bench("WelcomeComponent.render", () => {
 	welcome.render(WIDTH);
 });
 
-// ── A2: streaming reveal + editor render baselines ──────────────────────────
-//
-// Diagnostic series, not a fixed-iteration micro-op. The full-reveal loops
-// mirror the controller: a per-episode BlockUnitCounter feeds countOf + sliceOf
-// (memoized, O(delta)/tick). `streamingReveal` (C1) instead measures the DEFAULT
-// pure-sliceGraphemes path at a fixed revealed length — the un-memoized cost the
-// counter avoids. Representative controller-path throughput lives in
-// bench/streaming-throughput.bench.ts.
-
 function makeMarkdownCorpus(targetGraphemes: number): string {
 	const para =
 		"The quick brown fox jumps over the lazy dog while 🚀 emoji and a `code span` " +
@@ -106,14 +97,12 @@ function makeTextMessage(text: string): AssistantMessage {
 	};
 }
 
-/** Average ms for one call of `fn`, over `reps` repeats. */
 function benchStep(reps: number, fn: () => void): number {
 	const start = Bun.nanoseconds();
 	for (let i = 0; i < reps; i++) fn();
 	return (Bun.nanoseconds() - start) / 1e6 / reps;
 }
 
-/** Average ms for one awaited call of `fn`, over `reps` repeats. */
 async function benchStepAsync(reps: number, fn: () => Promise<unknown>): Promise<number> {
 	const start = Bun.nanoseconds();
 	for (let i = 0; i < reps; i++) await fn();
@@ -135,11 +124,6 @@ for (const n of REVEAL_CHECKPOINTS) {
 	console.log(`  len=${n}: ${ms.toFixed(4)}ms/step`);
 }
 
-// Controller path: a per-episode BlockUnitCounter memoizes count + slice, so
-// buildDisplayMessage is O(delta)/tick. The Markdown render (component.render)
-// still re-lexes the growing text each step here (no { transient: true }), so
-// total ms is dominated by the render, not the slice. Total ms to fully reveal
-// an N-grapheme message in nextStep increments.
 console.log("\nstreamingRevealFull (controller-path counter + Markdown render, growing text):");
 try {
 	for (const n of REVEAL_CHECKPOINTS) {
@@ -165,9 +149,6 @@ try {
 	console.log(`  (skipped: ${(err as Error).message})`);
 }
 
-// Multi-block variant: a finalized thinking block (stable) precedes the growing
-// text block — the shape C2 targets. Current code re-lexes BOTH every tick;
-// after C2 the finalized thinking block stays L1-cached and only the tail re-lexes.
 function makeThinkingPlusText(thinking: string, text: string): AssistantMessage {
 	return {
 		...makeTextMessage(text),
@@ -213,7 +194,7 @@ try {
 
 	const e1 = new Editor(getEditorTheme());
 	e1.setText(buffer);
-	e1.render(WIDTH); // warm
+	e1.render(WIDTH);
 	const noMutMs = benchStep(200, () => {
 		e1.render(WIDTH);
 	});
@@ -221,7 +202,7 @@ try {
 
 	const e2 = new Editor(getEditorTheme());
 	e2.setText(buffer);
-	e2.render(WIDTH); // warm
+	e2.render(WIDTH);
 	const editMs = benchStep(200, () => {
 		e2.insertText("x");
 		e2.render(WIDTH);
@@ -231,15 +212,6 @@ try {
 	console.log(`  (skipped: ${(err as Error).message})`);
 }
 
-// ── E3: long-transcript frame cost ──────────────────────────────────────────
-//
-// E3 root cause: Container.render walks EVERY child and concatenates their line
-// arrays on every frame. Finalized messages hit their Markdown L1 cache (no
-// re-lex) but still pay the tree walk + line-array rebuild/concat per frame.
-// Build N finalized assistant messages (prose + closed code fences) + 1 growing
-// tail, then time one render(WIDTH) of the whole tree per streaming frame.
-// Rising ms/frame in N => the stable history is re-walked/re-concatenated each
-// frame (the cost E3 culls); flat => the walk is already cheap.
 console.log("\nlongTranscriptFrame (E3: whole-tree render cost vs transcript length N):");
 try {
 	const histText = makeMarkdownCorpus(800);
@@ -255,7 +227,7 @@ try {
 		container.addChild(tail);
 		let revealed = Math.floor(tailCorpus.length * 0.5);
 		tail.updateContent(makeTextMessage(tailCorpus.slice(0, revealed)));
-		container.render(WIDTH); // warm finalized history (L1 caches hot)
+		container.render(WIDTH);
 		const ms = benchStep(60, () => {
 			revealed += 20;
 			if (revealed > tailCorpus.length) revealed = Math.floor(tailCorpus.length * 0.5);
@@ -268,14 +240,6 @@ try {
 	console.log(`  (skipped: ${(err as Error).message})`);
 }
 
-// ── E4: tool read/parse redundancy ──────────────────────────────────────────
-//
-// E4 root cause: the read tool re-parses (tree-sitter `summarizeCode`, ~12-18ms
-// for a ~1500-line file) on every summary read of the same unchanged file. E4-ii
-// memoizes the parse per session keyed on the content hash of the freshly-read
-// bytes, so a repeat read of the same file reuses the parse (the file is still
-// read fresh, so the result stays correct). A repeated same-session summary read
-// should drop from ~17ms to a few ms; a fresh session each call stays full cost.
 console.log("\ntoolReadReparse (E4: repeat summary read, memoized parse vs cold):");
 try {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bench-e4-"));

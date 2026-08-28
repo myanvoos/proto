@@ -45,38 +45,26 @@ DB_PATH = Path.home() / ".proto" / "stats.db"
 OUT_DIR = Path(__file__).resolve().parent / "out"
 DEFAULT_SINCE = "2026-05-04"
 
-# Tool current values (packages/coding-agent/src/session/streaming-output.ts +
-# tools/read.ts) — used for baseline comparison.
 CURRENT_DEFAULT = 3000
 CURRENT_LINE_CAP = 3000
-CURRENT_BYTE_CAP = 50 * 1024  # 50 KB
+CURRENT_BYTE_CAP = 50 * 1024
 
-# Average bytes per line — only used to convert byte cap → line cap when the
-# model didn't pass an explicit limit. Computed at runtime from observed
-# bytes_per_line per file, with this as a fallback for files we never saw.
 FALLBACK_BPL = 60.0
-FALLBACK_TPL = 12.0  # tokens per line if a file has no observed reads
+FALLBACK_TPL = 12.0
 
-# Cost of an extra tool roundtrip: at minimum the assistant text+thinking
-# preceding the call (median ~120-250 tokens) + the call envelope + the
-# result-header overhead. We charge a flat 200 tokens per call kept; the
-# answer is qualitatively stable across 50-400.
 ROUNDTRIP_OVERHEAD = 200
 
-# Selector parser (reuses the same rules as analyze_selector_reads.py).
 _RANGE_RE = re.compile(r"^(\d+)(?:([-+])(\d+))?$")
 _FOOTER_RE = re.compile(r"\[Showing lines (\d+)-(\d+) of (\d+)\.")
 _TRUNCATED_RE = re.compile(r"\[Output truncated")
 
 
-# --------------------------------------------------------------------------- #
-# Selector → intent
 
 
 class Intent(NamedTuple):
-    kind: str  # 'bare' | 'range' | 'raw' | 'conflicts' | 'other'
-    start: int | None  # requested start line (1-indexed) — only meaningful for 'range'
-    end: int | None  # requested end line  (1-indexed, inclusive) — None = open-ended
+    kind: str
+    start: int | None
+    end: int | None
 
 
 def parse_selector(path: str) -> tuple[str, Intent]:
@@ -100,7 +88,7 @@ def parse_selector(path: str) -> tuple[str, Intent]:
         return base, Intent("range", s, int(nval))
     if op == "+" and nval is not None:
         return base, Intent("range", s, s + int(nval) - 1)
-    return base, Intent("range", s, None)  # open-ended `:N`
+    return base, Intent("range", s, None)
 
 
 def parse_args(arg_json: str | None) -> tuple[str | None, Intent]:
@@ -116,7 +104,6 @@ def parse_args(arg_json: str | None) -> tuple[str | None, Intent]:
     base, intent = parse_selector(path)
     if intent.kind != "bare":
         return base, intent
-    # Legacy offset/limit treated as an explicit range.
     offset = obj.get("offset")
     limit = obj.get("limit")
     if (
@@ -131,8 +118,6 @@ def parse_args(arg_json: str | None) -> tuple[str | None, Intent]:
     return path, Intent("bare", None, None)
 
 
-# --------------------------------------------------------------------------- #
-# Footer parser → (returned_start, returned_end, file_total_lines)
 
 
 def parse_footer(tail: str | None) -> tuple[int | None, int | None, int | None, bool]:
@@ -150,8 +135,6 @@ def parse_footer(tail: str | None) -> tuple[int | None, int | None, int | None, 
     )
 
 
-# --------------------------------------------------------------------------- #
-# Coverage utilities
 
 
 def merge(ivs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -194,25 +177,21 @@ def subtract(s: int, e: int, ivs: list[tuple[int, int]]) -> list[tuple[int, int]
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Data model
 
 
 class ReadCall(NamedTuple):
     seq: int
     intent: Intent
     base: str
-    actual_a: int | None  # what came back: lines [actual_a, actual_b]
+    actual_a: int | None
     actual_b: int | None
-    file_total: int | None  # from footer
-    tokens: int  # observed result tokens
-    was_truncated: bool  # [Output truncated marker present
+    file_total: int | None
+    tokens: int
+    was_truncated: bool
 
 
 def fetch_reads(conn: sqlite3.Connection, since_ms: int) -> list[tuple[str, ReadCall]]:
     """Returns list of (session, ReadCall) in (session, seq) order."""
-    # Pull only the last 320 bytes of result_text — enough for the footer +
-    # truncation marker, keeps the working set small.
     sql = """
         SELECT c.session_file,
                c.seq,
@@ -253,14 +232,12 @@ def fetch_reads(conn: sqlite3.Connection, since_ms: int) -> list[tuple[str, Read
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Per-file aggregates
 
 
 class FileStats(NamedTuple):
-    size_lines: int  # best-effort estimate
+    size_lines: int
     tokens_per_line: float
-    bytes_per_line: float  # only when we can derive (currently we can't, so fallback)
+    bytes_per_line: float
 
 
 def aggregate_files(reads: list[tuple[str, ReadCall]]) -> dict[str, FileStats]:
@@ -283,14 +260,12 @@ def aggregate_files(reads: list[tuple[str, ReadCall]]) -> dict[str, FileStats]:
             prev = by_file_total_lines.get(rc.base, 0)
             if rc.file_total > prev:
                 by_file_total_lines[rc.base] = rc.file_total
-        # Track max line ever observed.
         cands = [v for v in (rc.actual_b, rc.intent.end) if v is not None]
         if cands:
             cur = max(cands)
             prev = by_file_max_end.get(rc.base, 0)
             if cur > prev:
                 by_file_max_end[rc.base] = cur
-        # tok/line: only when we know how many lines came back AND tokens > 0.
         if rc.actual_a is not None and rc.actual_b is not None and rc.tokens > 0:
             n = rc.actual_b - rc.actual_a + 1
             if n > 0:
@@ -313,8 +288,6 @@ def aggregate_files(reads: list[tuple[str, ReadCall]]) -> dict[str, FileStats]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Per-pair grouping
 
 
 def group_pairs(
@@ -323,20 +296,16 @@ def group_pairs(
     by_pair: dict[tuple[str, str], list[ReadCall]] = defaultdict(list)
     for session, rc in reads:
         by_pair[(session, rc.base)].append(rc)
-    # Already sorted by session, seq from the SQL.
     return by_pair
 
 
-# --------------------------------------------------------------------------- #
-# Simulator
 
 
 class Config(NamedTuple):
-    default_page: int  # lines returned for a bare path read
-    line_cap: int  # absolute max lines per read
-    byte_cap: int  # max bytes per read (modelled as line cap via bytes_per_line)
-    summarize_min: int  # min file size (lines) for summarizer to fire on bare reads
-    # (-1 disables summarizer; 0 = always)
+    default_page: int
+    line_cap: int
+    byte_cap: int
+    summarize_min: int
 
 
 def effective_returned(
@@ -385,8 +354,6 @@ def cost_of_chunk(
         and cfg.summarize_min >= 0
         and fs.size_lines >= cfg.summarize_min
     ):
-        # Calibrated from observed post-deploy summary-eligible reads:
-        # tokens/line collapses to ~0.35× the verbatim rate.
         return raw * 0.35
     return raw
 
@@ -441,7 +408,6 @@ def replay_pair(reads: list[ReadCall], fs: FileStats, cfg: Config) -> tuple[floa
         kept += 1
         covered.append((s, e))
         covered = merge(covered)
-    # Shortfall: lines the agent originally read that sim never delivered.
     observed_needed = merge(observed_needed)
     gaps: list[tuple[int, int]] = []
     for need_s, need_e in observed_needed:
@@ -477,14 +443,12 @@ def baseline_observed(reads: list[tuple[str, ReadCall]]) -> tuple[int, int]:
     return tot, len(reads)
 
 
-# --------------------------------------------------------------------------- #
-# Sweep + report
 
 
 def sweep(by_pair: dict, files: dict[str, FileStats]) -> dict:
     defaults = [200, 300, 400, 500, 700, 1000, 1500, 2000, 3000]
     line_caps = [500, 1000, 1500, 2000, 3000, 5000]
-    summary_thresholds = [-1, 0, 50, 150, 300, 600]  # min file size to summarize
+    summary_thresholds = [-1, 0, 50, 150, 300, 600]
 
     grid_tokens = np.zeros((len(defaults), len(line_caps)))
     grid_calls = np.zeros((len(defaults), len(line_caps)), dtype=np.int64)
@@ -497,12 +461,10 @@ def sweep(by_pair: dict, files: dict[str, FileStats]) -> dict:
             grid_tokens[i, j] = t
             grid_calls[i, j] = k
 
-    # Best (D, L) for fixed summarize_min=0.
     flat = np.argmin(grid_tokens)
     i_best, j_best = np.unravel_index(flat, grid_tokens.shape)
     best_DL = (defaults[i_best], line_caps[j_best])
 
-    # Sweep summarize_min at best (D, L).
     sm_tokens = []
     for sm in summary_thresholds:
         cfg = Config(
@@ -515,7 +477,6 @@ def sweep(by_pair: dict, files: dict[str, FileStats]) -> dict:
         sm_tokens.append((sm, t, k))
     best_sm = min(sm_tokens, key=lambda x: x[1])
 
-    # Sweep byte_cap at best (D, L, summarize_min).
     byte_caps = [
         16 * 1024,
         32 * 1024,
@@ -537,8 +498,6 @@ def sweep(by_pair: dict, files: dict[str, FileStats]) -> dict:
         bc_tokens.append((bc, t, k))
     best_bc = min(bc_tokens, key=lambda x: x[1])
 
-    # Final combined config (D, L, summarize_min, byte_cap) — should be the
-    # global minimum given the order of dimensions.
     final_cfg = Config(
         default_page=best_DL[0],
         line_cap=best_DL[1],
@@ -563,8 +522,6 @@ def sweep(by_pair: dict, files: dict[str, FileStats]) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# Plotting
 
 
 def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> None:
@@ -573,7 +530,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 11))
 
-    # Heatmap: relative to baseline (current config).
     ax = axes[0, 0]
     grid = result["grid_tokens"]
     rel = grid / baseline_sim
@@ -604,7 +560,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
                 fontsize=8,
             )
     fig.colorbar(im, ax=ax, fraction=0.05)
-    # Highlight current and best.
     cur_i = (
         result["defaults"].index(CURRENT_DEFAULT)
         if CURRENT_DEFAULT in result["defaults"]
@@ -643,7 +598,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
     )
     ax.legend(loc="upper right", frameon=True, fontsize=9)
 
-    # Default-page line (at best line cap).
     ax = axes[0, 1]
     best_L = result["best_DL"][1]
     j = result["line_caps"].index(best_L)
@@ -668,7 +622,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
     ax.grid(True, alpha=0.25, linestyle="--")
     ax.legend(loc="best", frameon=False)
 
-    # Summarizer threshold sweep.
     ax = axes[1, 0]
     sm_data = result["summary_sweep"]
     xs = [
@@ -700,7 +653,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
     )
     ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # Byte cap sweep.
     ax = axes[1, 1]
     bc_data = result["byte_cap_sweep"]
     xs_kb = [bc // 1024 for bc, _, _ in bc_data]
@@ -739,8 +691,6 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
     plt.close(fig)
 
 
-# --------------------------------------------------------------------------- #
-# Report
 
 
 def fmt_pct(x: float) -> str:
@@ -770,7 +720,6 @@ def report(
     print(f"  observed read calls      = {observed_calls:>13,}")
     print(f"  simulator calls (baseline) = {baseline_calls:>11,}")
 
-    # Sweep table.
     print(f"\nsimulated read tokens (× of baseline) by (D, L):")
     header = "  D \\ L     " + "  ".join(f"{L:>6}" for L in line_caps)
     print(header)
@@ -785,7 +734,6 @@ def report(
         f"  ({fmt_pct(grid.min() / baseline_sim - 1)})"
     )
 
-    # Summarizer threshold sweep at best (D, L).
     print(f"\nsummarizer threshold sweep at best (D, L) = {result['best_DL']}:")
     print(f"  {'min_file_lines':<16} {'tokens':>12}  {'vs baseline':>12}")
     for sm, t, k in result["summary_sweep"]:
@@ -797,7 +745,6 @@ def report(
         f"({fmt_pct(result['best_summary'][1] / baseline_sim - 1)})"
     )
 
-    # Byte cap sweep at (best D, L, summarize_min).
     print(f"\nbyte cap sweep at best (D, L, summarize_min):")
     print(f"  {'byte_cap':<10} {'tokens':>12}  {'vs baseline':>12}")
     for bc, t, k in result["byte_cap_sweep"]:
@@ -810,7 +757,6 @@ def report(
         f"({fmt_pct(result['best_byte_cap'][1] / baseline_sim - 1)})"
     )
 
-    # Final recommendation.
     cfg = result["final_cfg"]
     print("\n" + "=" * 64)
     print("  RECOMMENDED CONFIG")
@@ -842,8 +788,6 @@ def report(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Entry
 
 
 def main() -> int:
@@ -862,7 +806,6 @@ def main() -> int:
     conn.close()
     print(f"  {len(reads):,} read calls")
 
-    # Per-file aggregates.
     files = aggregate_files(reads)
     sizes = np.array([f.size_lines for f in files.values()], dtype=np.int64)
     tpls = np.array([f.tokens_per_line for f in files.values()], dtype=float)
@@ -876,11 +819,9 @@ def main() -> int:
         f"p90={np.percentile(tpls, 90):.2f}  max={tpls.max():.2f}"
     )
 
-    # Per-pair.
     by_pair = group_pairs(reads)
     print(f"  {len(by_pair):,} (session, file) pairs")
 
-    # Baseline simulation.
     print("\nsimulating baseline...")
     baseline_cfg = Config(
         default_page=CURRENT_DEFAULT,

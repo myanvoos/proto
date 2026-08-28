@@ -304,7 +304,6 @@ async function readRpmArchive(source: ByteSource, options: FormatReadOptions): P
 	return readCpioEntriesFromBuffer(cpio, options);
 }
 
-/** Read an RPM lead, headers, compressed payload, and its contained CPIO entries. */
 export const readRpm: FormatReader = async (source, options) => {
 	try {
 		return await readRpmArchive(source, options);
@@ -314,7 +313,6 @@ export const readRpm: FormatReader = async (source, options) => {
 	}
 };
 
-/** Detect the four-byte RPM package lead magic. */
 export function sniffRpm(bytes: Uint8Array): boolean {
 	return bytes.byteLength >= 4 && bytes[0] === 0xed && bytes[1] === 0xab && bytes[2] === 0xee && bytes[3] === 0xdb;
 }

@@ -1,11 +1,3 @@
-/**
- * Codex Discovery Provider
- *
- * Loads configuration from OpenAI Codex format:
- * - System Instructions: AGENTS.md (user-level only at ~/.codex/AGENTS.md)
- *
- * User directory: ~/.codex
- */
 import * as path from "node:path";
 import { logger, parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
@@ -47,15 +39,10 @@ function getProjectCodexDir(ctx: LoadContext): string {
 	return path.join(ctx.cwd, ".codex");
 }
 
-// =============================================================================
-// Context Files (AGENTS.md)
-// =============================================================================
-
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];
 
-	// User level only: ~/.codex/AGENTS.md
 	const agentsMd = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "AGENTS.md");
 	const agentsContent = await readFile(agentsMd);
 	if (agentsContent) {
@@ -70,10 +57,6 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 	return { items, warnings };
 }
 
-// =============================================================================
-// MCP Servers (config.toml)
-// =============================================================================
-
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const warnings: string[] = [];
 
@@ -87,9 +70,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	]);
 
 	const items: MCPServer[] = [];
-	// Capability dedupe is first-wins, including suppressed items claiming their
-	// key. Load project entries first so a project `enabled = false` keeps a
-	// same-named user server disabled.
+
 	if (projectConfig) {
 		const servers = extractMCPServersFromToml(projectConfig, path.dirname(projectConfigPath));
 		for (const name in servers) {
@@ -128,16 +109,15 @@ async function loadTomlConfig(_ctx: LoadContext, path: string): Promise<Record<s
 	}
 }
 
-/** Codex MCP server config format (from config.toml) */
 interface CodexMCPConfig {
 	enabled?: boolean;
 	command?: string;
 	args?: string[];
 	env?: Record<string, string>;
-	env_vars?: string[]; // Environment variable names to forward from parent
+	env_vars?: string[];
 	url?: string;
 	http_headers?: Record<string, string>;
-	env_http_headers?: Record<string, string>; // Header name -> env var name
+	env_http_headers?: Record<string, string>;
 	bearer_token_env_var?: string;
 	cwd?: string;
 	startup_timeout_sec?: number;
@@ -150,7 +130,6 @@ function extractMCPServersFromToml(
 	toml: Record<string, unknown>,
 	configDir: string,
 ): Record<string, Partial<MCPServer>> {
-	// Check for [mcp_servers.*] sections (Codex format)
 	if (!toml.mcp_servers || typeof toml.mcp_servers !== "object") {
 		return {};
 	}
@@ -160,17 +139,9 @@ function extractMCPServersFromToml(
 
 	for (const name in codexServers) {
 		const config = codexServers[name];
-		// Root relative cwd/command against the Codex config directory. Codex
-		// spawns the process with the resolved cwd, so a relative command is
-		// resolved by the OS from there — pass "cwd" so e.g. cwd="server",
-		// command="./bin/mcp" resolves to <configDir>/server/bin/mcp.
+
 		const rooted = resolvePluginStdioPaths({ command: config.command, cwd: config.cwd }, configDir, "cwd");
 		const server: Partial<MCPServer> = {
-			// Carry `enabled: false` through rather than dropping the entry: the
-			// central MCP loader (`loadAllMCPConfigs`) suppresses disabled servers
-			// so they still claim their dedupe key (keeping a same-named,
-			// lower-priority source disabled) and remain overridable via the user
-			// force-enable allowlist. Dropping here would defeat both.
 			...(config.enabled === false && { enabled: false }),
 			...(rooted.command !== undefined && { command: rooted.command }),
 			args: config.args,
@@ -178,7 +149,6 @@ function extractMCPServersFromToml(
 			...(rooted.cwd !== undefined && { cwd: rooted.cwd }),
 		};
 
-		// Build env by merging explicit env and forwarded env_vars
 		const env: Record<string, string> = { ...config.env };
 		if (config.env_vars) {
 			for (const varName of config.env_vars) {
@@ -192,7 +162,6 @@ function extractMCPServersFromToml(
 			server.env = env;
 		}
 
-		// Build headers from http_headers, env_http_headers, and bearer_token_env_var
 		const headers: Record<string, string> = { ...config.http_headers };
 		if (config.env_http_headers) {
 			for (const [headerName, envVarName] of Object.entries(config.env_http_headers)) {
@@ -212,15 +181,12 @@ function extractMCPServersFromToml(
 			server.headers = headers;
 		}
 
-		// Determine transport type (infer from config if not explicit)
 		if (config.url) {
 			server.transport = "http";
 		} else if (config.command) {
 			server.transport = "stdio";
 		}
-		// Note: validation of transport vs endpoint is handled by mcpCapability.validate()
 
-		// Map Codex tool_timeout_sec (seconds) to MCPServer timeout (milliseconds)
 		if (typeof config.tool_timeout_sec === "number" && config.tool_timeout_sec > 0) {
 			server.timeout = config.tool_timeout_sec * 1000;
 		}
@@ -229,10 +195,6 @@ function extractMCPServersFromToml(
 
 	return result;
 }
-
-// =============================================================================
-// Skills (skills/)
-// =============================================================================
 
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const userSkillsDir = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "skills");
@@ -258,10 +220,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Extension Modules (extensions/)
-// =============================================================================
-
 async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<ExtensionModule>> {
 	const warnings: string[] = [];
 
@@ -278,10 +236,6 @@ async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<Extens
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Slash Commands (commands/)
-// =============================================================================
 
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const userCommandsDir = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "commands");
@@ -318,10 +272,6 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	return { items, warnings };
 }
 
-// =============================================================================
-// Prompts (prompts/*.md)
-// =============================================================================
-
 async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 	const userPromptsDir = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "prompts");
 	const codexDir = getProjectCodexDir(ctx);
@@ -356,21 +306,11 @@ async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Hooks (hooks/)
-// =============================================================================
-
 async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const userHooksDir = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "hooks");
 	const codexDir = getProjectCodexDir(ctx);
 	const projectHooksDir = path.join(codexDir, "hooks");
 
-	// PROTO hooks must be named `pre-<tool>.<ts|js>` or `post-<tool>.<ts|js>`.
-	// Files without that prefix are not PROTO hooks (e.g. the standalone Codex
-	// hook scripts users keep alongside) — silently dropping the prefix and
-	// defaulting to `pre:<basename>` caused those scripts to be imported as
-	// extension factories and any top-level `process.exit()` killed startup
-	// (#3680).
 	const transformHook =
 		(level: "user" | "project") =>
 		(name: string, _content: string, path: string, source: SourceMeta): Hook | null => {
@@ -406,10 +346,6 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Tools (tools/)
-// =============================================================================
-
 async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	const userToolsDir = path.join(ctx.home, SOURCE_PATHS.codex.userBase, "tools");
 	const codexDir = getProjectCodexDir(ctx);
@@ -443,10 +379,6 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Settings (config.toml)
-// =============================================================================
-
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const warnings: string[] = [];
 
@@ -475,10 +407,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration (executes on module import)
-// =============================================================================
 
 registerProvider<ContextFile>(contextFileCapability.id, {
 	id: PROVIDER_ID,

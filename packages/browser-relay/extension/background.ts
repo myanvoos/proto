@@ -1,14 +1,4 @@
-/**
- * PROTO Browser Relay — MV3 service worker.
- *
- * Dumb pipe by design: all CDP orchestration lives in the relay server. This
- * worker (1) keeps a websocket to the relay, (2) executes its RPCs against
- * `chrome.debugger`/`chrome.tabs`, and (3) streams tab + debugger events back.
- *
- * Service-worker lifetime: the open websocket plus a periodic ping keeps the
- * worker alive while connected (Chrome 116+); a chrome.alarms tick revives it
- * and re-dials after Chrome reaps it while disconnected.
- */
+
 import type { ExtToRelayMessage, RelayToExtMessage, TabSnapshot } from "../../coding-agent/src/tools/browser/relay/protocol";
 
 const DEFAULT_PORT = 9224;
@@ -47,14 +37,10 @@ function snapshot(tab: ChromeTab): TabSnapshot | null {
 	};
 }
 
-/** Title of the proto tab group; mirrored to session storage so a restarted service worker can still dissolve it. */
+
 let ompGroupTitle: string | null = null;
 
-/**
- * Serialize group mutations. Chrome's query→group→set-title sequence is not
- * atomic: two concurrent runs both miss the not-yet-titled group and mint
- * duplicate "proto" groups in the same window.
- */
+
 let groupOps: Promise<unknown> = Promise.resolve();
 function enqueueGroupOp<T>(fn: () => Promise<T>): Promise<T> {
 	const result = groupOps.then(fn, fn);
@@ -62,7 +48,7 @@ function enqueueGroupOp<T>(fn: () => Promise<T>): Promise<T> {
 	return result;
 }
 
-/** Move tabs into the per-window proto group, creating or reusing it by title. */
+
 async function groupTabs(tabIds: number[], title: string, color: string): Promise<{ grouped: Record<string, number> }> {
 	ompGroupTitle = title;
 	void chrome.storage.session.set({ ompGroupTitle: title });
@@ -70,13 +56,13 @@ async function groupTabs(tabIds: number[], title: string, color: string): Promis
 	for (const tabId of tabIds) {
 		try {
 			const tab = await chrome.tabs.get(tabId);
-			// Grouping silently unpins; never touch pinned tabs.
+
 			if (tab.pinned || tab.id === undefined) continue;
 			const bucket = byWindow.get(tab.windowId) ?? [];
 			bucket.push(tab.id);
 			byWindow.set(tab.windowId, bucket);
 		} catch {
-			// Tab already closed.
+
 		}
 	}
 	const grouped: Record<string, number> = {};
@@ -85,7 +71,7 @@ async function groupTabs(tabIds: number[], title: string, color: string): Promis
 		let groupId: number;
 		if (existing[0]) {
 			groupId = existing[0].id;
-			// Heal duplicate same-title groups left behind by older races.
+
 			for (const dupe of existing.slice(1)) {
 				const dupeTabs = await chrome.tabs.query({ groupId: dupe.id });
 				const dupeIds = dupeTabs.map(tab => tab.id).filter(id => id !== undefined);
@@ -101,10 +87,10 @@ async function groupTabs(tabIds: number[], title: string, color: string): Promis
 	return { grouped };
 }
 
-/** Dissolve every proto-titled group (relay disconnected or asked us to release tabs). */
+
 async function restoreGroups(): Promise<void> {
 	if (!ompGroupTitle) {
-		// Service worker restarted since the last group op; recover the title.
+
 		const stored = await chrome.storage.session.get({ ompGroupTitle: "" }).catch(() => ({ ompGroupTitle: "" }));
 		ompGroupTitle = typeof stored.ompGroupTitle === "string" && stored.ompGroupTitle ? stored.ompGroupTitle : null;
 	}
@@ -126,7 +112,7 @@ async function setBadge(connected: boolean): Promise<void> {
 		await chrome.action.setBadgeText({ text: connected ? "on" : "off" });
 		await chrome.action.setBadgeBackgroundColor({ color: connected ? "#1a7f37" : "#8b8b8b" });
 	} catch {
-		// Badge is cosmetic; never let it break the relay loop.
+
 	}
 }
 
@@ -241,7 +227,7 @@ async function connect(): Promise<void> {
 	};
 }
 
-// ---- event streaming ---------------------------------------------------------
+
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
 	if (source.tabId === undefined) return;
@@ -267,7 +253,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
 	post({ t: "tabRemoved", tabId });
 });
 
-// ---- lifecycle ----------------------------------------------------------------
+
 
 chrome.alarms.create("proto-relay-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(alarm => {
@@ -276,7 +262,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
 
 chrome.storage.onChanged.addListener((_changes, areaName) => {
 	if (areaName !== "local") return;
-	// Settings changed: drop the current connection and re-dial with new ones.
+
 	ws?.close();
 	void connect();
 });

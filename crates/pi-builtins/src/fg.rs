@@ -3,11 +3,11 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, jobs, sys};
 use clap::Parser;
 
-/// Move a specified job to the foreground.
+
 #[derive(Parser)]
 pub(crate) struct FgCommand {
-	/// Job spec for the job to move to the foreground; if not specified, the
-	/// current job is moved.
+
+
 	job_spec: Option<String>,
 }
 
@@ -20,7 +20,7 @@ impl builtins::Command for FgCommand {
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
 		let mut stderr = context.stdout();
 
-		// Read interactive option before taking mutable borrow on jobs
+
 		let is_interactive = context.shell.options().interactive;
 
 		if let Some(job_spec) = &self.job_spec {
@@ -34,7 +34,7 @@ impl builtins::Command for FgCommand {
 				}
 
 				if matches!(job.state, jobs::JobState::Stopped) {
-					// N.B. We use the '\r' to overwrite any ^Z output.
+
 					let formatted = job.to_string();
 					writeln!(context.stderr(), "\r{formatted}")?;
 				}
@@ -55,7 +55,7 @@ impl builtins::Command for FgCommand {
 				}
 
 				if matches!(job.state, jobs::JobState::Stopped) {
-					// N.B. We use the '\r' to overwrite any ^Z output.
+
 					let formatted = job.to_string();
 					writeln!(context.stderr(), "\r{formatted}")?;
 				}

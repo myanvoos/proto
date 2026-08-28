@@ -1,15 +1,3 @@
-/**
- * Local napi build: regenerates the TypeScript bindings (native/index.d.ts)
- * and the runtime enum exports, then installs the host addon. This is the
- * backend for the `host` target (`bun run build` →
- * scripts/build-natives.sh host); release addons for the other targets are
- * built by the same shell driver with explicit target names. Host target
- * only — no cross-compilation.
- *
- * `PROTO_NATIVE_CARGO_PROFILE` selects the cargo profile (default `local`:
- * incremental, unstripped). Image builds set `ci` for a stripped addon.
- */
-
 import * as fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as path from "node:path";
@@ -17,8 +5,6 @@ import { $ } from "bun";
 import { detectHostAvx2Support, resolveLocalHostAddon } from "../../../scripts/host-detect";
 import { generateEnumExports } from "./gen-enums";
 
-// pcre2-sys prefers a system libpcre2 when pkg-config finds one. Keep the
-// static build so the local addon never retains host Homebrew paths.
 process.env.PCRE2_SYS_STATIC ??= "1";
 
 const repoRoot = path.join(import.meta.dir, "../../..");
@@ -34,11 +20,6 @@ const localAddon = resolveLocalHostAddon({
 const effectiveVariant = localAddon.x64Variant;
 const variantSuffix = effectiveVariant ? `-${effectiveVariant}` : "";
 
-// Pin Rust target-cpu so x64 baseline/modern variants get a reproducible ISA floor
-// instead of inheriting the host CPU when RUSTFLAGS is unset. Non-x64 builds keep
-// the target's default CPU features: `-C target-cpu=native` would bake the build
-// host's CPU features into the addon and trips ring 0.17's aarch64-apple
-// const assertion (CAPS_STATIC == MIN_STATIC_FEATURES).
 if (!Bun.env.RUSTFLAGS) {
 	if (effectiveVariant === "modern") {
 		Bun.env.RUSTFLAGS = "-C target-cpu=x86-64-v3";
@@ -55,9 +36,7 @@ async function cleanupStaleTemps(dir: string): Promise<void> {
 				await fs.unlink(path.join(dir, entry)).catch(() => {});
 			}
 		}
-	} catch {
-		// Directory might not exist yet
-	}
+	} catch {}
 }
 
 async function installBinary(src: string, dest: string): Promise<void> {
@@ -66,10 +45,8 @@ async function installBinary(src: string, dest: string): Promise<void> {
 	await fs.copyFile(src, tempPath);
 
 	try {
-		// Atomic rename - works even if dest is loaded on Linux/macOS (old inode stays valid)
 		await fs.rename(tempPath, dest);
 	} catch {
-		// Rename failed (dest busy): fall back to delete-then-rename.
 		try {
 			await fs.unlink(dest);
 		} catch (unlinkErr) {
@@ -88,10 +65,6 @@ async function installBinary(src: string, dest: string): Promise<void> {
 }
 
 async function resolveBuiltAddonPath(outputDir: string, canonicalFilename: string): Promise<string> {
-	// napi-rs 3.x emits `${binaryName}.${platformArchABI}.node` where
-	// platformArchABI is e.g. `darwin-x64`, `linux-x64-gnu`, `darwin-arm64`.
-	// Build into an isolated output dir so only this invocation's
-	// outputs are considered fresh candidates.
 	const entries = await fs.readdir(outputDir);
 
 	if (entries.includes(canonicalFilename)) {
@@ -141,9 +114,6 @@ const buildOutputDir = await fs.mkdtemp(
 	path.join(nativeDir, ".build", `${process.platform}-${process.arch}-${effectiveVariant ?? "default"}-local-`),
 );
 
-// Resolve the CLI's JS entry from the package manifest rather than the
-// `node_modules/.bin` shim: `bunx @napi-rs/cli` can pick up the wrong bin on
-// systems where `cli` exists on PATH (e.g. Mono's /usr/bin/cli on Ubuntu).
 const require_ = createRequire(import.meta.url);
 const napiManifestPath = require_.resolve("@napi-rs/cli/package.json");
 const napiManifest: unknown = require_(napiManifestPath);
@@ -162,8 +132,6 @@ if (!napiBinEntry) {
 }
 const napiBin = path.join(path.dirname(napiManifestPath), napiBinEntry);
 
-// Profiles live in the root Cargo.toml; `local` trades size for iteration
-// speed, `ci` strips and drops incremental state.
 const cargoProfile = Bun.env.PROTO_NATIVE_CARGO_PROFILE?.trim() || "local";
 
 const napiArgs = [
@@ -182,11 +150,8 @@ const napiArgs = [
 	cargoProfile,
 ];
 
-// napi-rs / cargo route much failure detail to stdout (e.g. `cargo metadata`
-// errors), so a stderr-only error collapses real failures to a bare message.
 const BUILD_LOG_TAIL_LINES = 40;
 
-/** Tail-cap captured build output into a labeled section for the failure report. */
 function tailSection(label: string, text: string): string {
 	const trimmed = text.trimEnd();
 	if (!trimmed) return "";
@@ -197,9 +162,6 @@ function tailSection(label: string, text: string): string {
 }
 
 try {
-	// The package declares Bun as its build runtime. Invoke napi's JavaScript
-	// entry through this Bun process instead of its `#!/usr/bin/env node` shim so
-	// an old host Node installation cannot make an otherwise supported Bun build fail.
 	const buildResult = await $`${process.execPath} ${napiBin} ${napiArgs}`.nothrow();
 	if (buildResult.exitCode !== 0) {
 		const stdout = buildResult.stdout?.toString("utf-8") ?? "";

@@ -1,6 +1,6 @@
-//! `sha256sum` builtin: compute and check SHA-256 digests.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
@@ -11,7 +11,7 @@ use crate::{
 	host::{Host, Utility, matches_parser, util},
 };
 
-/// Parsed `sha256sum` invocation.
+
 pub(crate) struct Sha256sum {
 	matches: ArgMatches,
 }
@@ -31,7 +31,7 @@ fn app() -> clap::Command {
 	cksum::command(Sha256sum::NAME, false)
 }
 
-/// Creates the `sha256sum` builtin registration.
+
 pub(crate) fn sha256sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sha256sum, SE>()
 }

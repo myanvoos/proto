@@ -4,15 +4,15 @@ import { buildResult, formatIsoDate, formatNumber, loadPage } from "./types";
 
 interface MavenDoc {
 	id: string;
-	g: string; // groupId
-	a: string; // artifactId
+	g: string;
+	a: string;
 	latestVersion: string;
 	repositoryId: string;
-	p: string; // packaging
+	p: string;
 	timestamp: number;
 	versionCount: number;
 	text?: string[];
-	ec?: string[]; // extensions/classifiers
+	ec?: string[];
 }
 
 interface MavenResponse {
@@ -22,10 +22,6 @@ interface MavenResponse {
 	};
 }
 
-/**
- * Handle Maven Central URLs via Solr API
- * Supports: search.maven.org/artifact/... and mvnrepository.com/artifact/...
- */
 export const handleMaven: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -35,7 +31,6 @@ export const handleMaven: SpecialHandler = async (
 		const parsed = new URL(url);
 		const hostname = parsed.hostname;
 
-		// Check if this is a Maven URL
 		const isSearchMaven = hostname === "search.maven.org";
 		const isMvnRepository = hostname === "mvnrepository.com" || hostname === "www.mvnrepository.com";
 
@@ -46,14 +41,12 @@ export const handleMaven: SpecialHandler = async (
 		let version: string | null = null;
 
 		if (isSearchMaven) {
-			// Pattern: /artifact/{groupId}/{artifactId}[/{version}[/{packaging}]]
 			const match = parsed.pathname.match(/^\/artifact\/([^/]+)\/([^/]+)(?:\/([^/]+))?/);
 			if (!match) return null;
 			groupId = match[1];
 			artifactId = match[2];
 			version = match[3] || null;
 		} else if (isMvnRepository) {
-			// Pattern: /artifact/{groupId}/{artifactId}[/{version}]
 			const match = parsed.pathname.match(/^\/artifact\/([^/]+)\/([^/]+)(?:\/([^/]+))?/);
 			if (!match) return null;
 			groupId = match[1];
@@ -65,7 +58,6 @@ export const handleMaven: SpecialHandler = async (
 
 		const fetchedAt = new Date().toISOString();
 
-		// Query Maven Central API
 		const apiUrl = `https://search.maven.org/solrsearch/select?q=g:${encodeURIComponent(groupId)}+AND+a:${encodeURIComponent(artifactId)}&wt=json&rows=1`;
 		const result = await loadPage(apiUrl, {
 			timeout,
@@ -98,7 +90,6 @@ export const handleMaven: SpecialHandler = async (
 			md += `**Last Updated:** ${formatIsoDate(doc.timestamp)}\n`;
 		}
 
-		// Add dependency snippets
 		md += `\n## Maven Dependency\n\n`;
 		md += "```xml\n";
 		md += `<dependency>\n`;
@@ -118,7 +109,6 @@ export const handleMaven: SpecialHandler = async (
 		md += `implementation("${doc.g}:${doc.a}:${displayVersion}")\n`;
 		md += "```\n";
 
-		// Add available classifiers/extensions if present
 		if (doc.ec && doc.ec.length > 0) {
 			const extensions = doc.ec.filter(e => e && e !== "-");
 			if (extensions.length > 0) {

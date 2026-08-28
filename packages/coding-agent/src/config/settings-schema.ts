@@ -47,26 +47,6 @@ import {
 	SERVICE_TIER_OPENAI_VALUES,
 } from "./service-tier";
 
-/** Unified settings schema - single source of truth for all settings.
- *
- * Each setting is defined once here with:
- * - Type and default value
- * - Optional UI metadata (label, description, tab, group)
- *
- * UI metadata places the setting in the settings panel: `tab` picks the
- * panel tab, `group` the titled section within it (registered in
- * TAB_GROUPS). Sections render in TAB_GROUPS order; settings within a
- * section keep declaration order.
- *
- * The Settings singleton provides type-safe path-based access:
- *   settings.get("compaction.enabled")  // => boolean
- *   settings.set("theme.dark", "titanium")  // sync, saves in background
- */
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Schema Definition Types
-// ═══════════════════════════════════════════════════════════════════════════
-
 const BUILTIN_BLOB_DESTINATION_METADATA: readonly BlobDestinationMetadata<BlobDestinationId>[] =
 	Object.values(BUILTIN_BLOB_DESTINATIONS);
 
@@ -91,7 +71,6 @@ export type SettingTab =
 	| "tasks"
 	| "providers";
 
-/** Ordered list of tabs for UI rendering */
 export const SETTING_TABS: SettingTab[] = [
 	"appearance",
 	"model",
@@ -104,7 +83,6 @@ export const SETTING_TABS: SettingTab[] = [
 	"providers",
 ];
 
-/** Tab display metadata - icon is a symbol key from theme.ts (tab.*) */
 export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${string}` }> = {
 	appearance: { label: "Appearance", icon: "tab.appearance" },
 	model: { label: "Model", icon: "tab.model" },
@@ -117,11 +95,6 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 	providers: { label: "Providers", icon: "tab.providers" },
 };
 
-/**
- * Ordered section groups per tab. Settings declare their section via `ui.group`;
- * the settings UI renders groups in this order with a heading row between them.
- * Ungrouped settings render first, before any section heading.
- */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	appearance: ["Theme", "Composer", "Status Line", "Display", "Images"],
 	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk", "Vision"],
@@ -155,7 +128,6 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
-/** Status line segment identifiers */
 export type StatusLineSegmentId =
 	| "pi"
 	| "model"
@@ -182,7 +154,6 @@ export type StatusLineSegmentId =
 	| "session_name"
 	| "usage";
 
-/** Submenu choice metadata. */
 export type SubmenuOption<V extends string = string> = {
 	value: V;
 	label: string;
@@ -191,66 +162,44 @@ export type SubmenuOption<V extends string = string> = {
 
 interface UiBase {
 	tab: SettingTab;
-	/** Section within the tab; must be listed in TAB_GROUPS[tab]. Ungrouped settings render at the top. */
+
 	group?: string;
 	label: string;
 	description: string;
-	/**
-	 * Risk note. Marks the settings row with a warning glyph and renders above
-	 * the description in warning styling. For settings that can get the user
-	 * rate-limited, flagged, or banned — not for merely advanced options.
-	 */
+
 	warning?: string;
-	/** Condition function name - setting only shown when true */
+
 	condition?: string;
 }
 
 interface UiBoolean extends UiBase {}
 
 interface UiEnum<T extends readonly string[]> extends UiBase {
-	/** Submenu options. When omitted, the enum renders as an inline toggle derived from `values`. */
 	options?: ReadonlyArray<SubmenuOption<T[number]>>;
 }
 
 interface UiNumber extends UiBase {
-	/** Submenu options. Without options, a numeric setting has no UI representation (intentional hide). */
 	options?: ReadonlyArray<SubmenuOption>;
 }
 
 interface UiString extends UiBase {
-	/** Mask the value in both the settings row and text editor. */
 	secret?: boolean;
-	/**
-	 * Submenu options.
-	 *  - Array  → submenu with these choices.
-	 *  - "runtime" → submenu populated by the runtime layer (theme registry, etc.).
-	 *  - Omitted → renders as a free text input.
-	 */
+
 	options?: ReadonlyArray<SubmenuOption> | "runtime";
 }
 
 interface UiArray extends UiBase {
-	/** Membership choices. Without options, an array setting has no UI representation (config-file only). */
 	options?: ReadonlyArray<SubmenuOption>;
-	/** Selection order is meaningful; the editor renders positions and supports reordering. */
+
 	ordered?: boolean;
 }
 
-/** Wide ui shape exposed to consumers that walk the schema generically. */
 export type AnyUiMetadata = UiBase & {
 	options?: ReadonlyArray<SubmenuOption> | "runtime";
 	secret?: boolean;
 	ordered?: boolean;
 };
 
-/**
- * Marks a setting whose value is a credential.
- *
- * Lives at the top level rather than inside `ui` so it can also describe a
- * setting the settings panel never shows and therefore cannot carry
- * `ui.secret`. Read it through `isCredential`, which is the single accessor
- * both the CLI and the settings panel consult.
- */
 interface CredentialMarker {
 	credential?: true;
 }
@@ -300,14 +249,10 @@ type SettingDef =
 	| ArrayDef<unknown>
 	| RecordDef<unknown>;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Schema Definition
-// ═══════════════════════════════════════════════════════════════════════════
-
 interface ModelTagDef {
 	name: string;
 	color?: string;
-	/** If true, the role is functional but not shown in the model selector UI. */
+
 	hidden?: boolean;
 }
 
@@ -315,8 +260,6 @@ interface ModelTagsSettings {
 	[key: string]: ModelTagDef;
 }
 
-// Typed defaults for array/record settings — named constants avoid `as` casts
-// under `as const` while still letting SettingValue infer the correct element type.
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
@@ -345,12 +288,6 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		message: "Use the `edit` tool instead of awk -i inplace. It provides diff preview and fuzzy matching.",
 	},
 	{
-		// `>` must sit outside quoted regions (so `echo "a -> b"` passes) and be
-		// followed by a plausible filename — including `$VAR` targets; `>|`
-		// (clobber) counts as a redirect; `>&2`/`2>&1` style fd duplication is
-		// not matched. Allowed device sinks are consumed while looking for later
-		// real file redirects because the write tool cannot replace shell
-		// output/discard targets.
 		pattern:
 			"^\\s*(echo|printf|cat\\s*<<)\\s+(?:(?:[^\"'>]|\"[^\"]*\"|'[^']*')|(?<!\\|)>{1,2}\\|?\\s*(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))*(?<!\\|)>{1,2}\\|?\\s*(?!(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))[$\\w./~\"'-]",
 		tool: "write",
@@ -380,15 +317,8 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
 
 export const SETTINGS_SCHEMA = {
-	// ────────────────────────────────────────────────────────────────────────
-	// General settings (no UI)
-	// ────────────────────────────────────────────────────────────────────────
 	setupVersion: { type: "number", default: 0 },
 
-	// Auth broker — credentials proxied through a remote `proto auth-broker serve`
-	// host. Hidden from the UI; populate via env vars or hand-edited config.yml.
-	// Env (`PROTO_AUTH_BROKER_URL` / `PROTO_AUTH_BROKER_TOKEN`) takes precedence so
-	// per-machine overrides remain trivial.
 	"auth.broker.url": { type: "string", default: undefined },
 	"auth.broker.token": { type: "string", default: undefined, credential: true },
 
@@ -414,7 +344,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// macOS power assertions (caffeinate flags). No-op on other platforms.
 	"power.sleepPrevention": {
 		type: "enum",
 		values: ["off", "idle", "display", "system"] as const,
@@ -593,11 +522,6 @@ export const SETTINGS_SCHEMA = {
 
 	cycleOrder: { type: "array", default: DEFAULT_CYCLE_ORDER },
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Appearance
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Theme
 	"theme.dark": {
 		type: "string",
 		default: "dark",
@@ -822,7 +746,6 @@ export const SETTINGS_SCHEMA = {
 
 	"statusLine.segmentOptions": { type: "record", default: {} as Record<string, unknown> },
 
-	// Images and terminal
 	"terminal.showImages": {
 		type: "boolean",
 		default: true,
@@ -1179,7 +1102,7 @@ export const SETTINGS_SCHEMA = {
 
 	showHardwareCursor: {
 		type: "boolean",
-		default: true, // will be computed based on platform if undefined
+		default: true,
 		ui: {
 			tab: "appearance",
 			group: "Display",
@@ -1199,11 +1122,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Model
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Reasoning and prompts
 	defaultThinkingLevel: {
 		type: "enum",
 		values: [...THINKING_EFFORTS],
@@ -1417,7 +1335,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Sampling
 	temperature: {
 		type: "number",
 		default: -1,
@@ -1616,7 +1533,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Retries
 	"retry.enabled": { type: "boolean", default: true },
 
 	"retry.maxRetries": {
@@ -1761,11 +1677,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Interaction
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Conversation flow
 	steeringMode: {
 		type: "enum",
 		values: ["all", "one-at-a-time"] as const,
@@ -1827,7 +1738,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Input and startup
 	doubleEscapeAction: {
 		type: "enum",
 		values: ["branch", "tree", "none"] as const,
@@ -2061,7 +1971,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Notifications
 	"completion.notify": {
 		type: "enum",
 		values: ["on", "off"] as const,
@@ -2144,11 +2053,7 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-	// ────────────────────────────────────────────────────────────────────────
-	// Context
-	// ────────────────────────────────────────────────────────────────────────
 
-	// Context promotion
 	"contextPromotion.enabled": {
 		type: "boolean",
 		default: false,
@@ -2160,9 +2065,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Premium long-context tiers (OpenAI GPT-5.6 bills 2x input / 1.5x output
-	// above 272K input tokens). Off caps affected models at the threshold so
-	// compaction kicks in before any request crosses into premium billing.
 	extendedContext: {
 		type: "boolean",
 		default: true,
@@ -2175,7 +2077,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Compaction
 	"compaction.enabled": {
 		type: "boolean",
 		default: true,
@@ -2281,10 +2182,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// No default: an unset reserve tells the compaction layer the user never
-	// chose one, so small-window recovery may swap in the proportional reserve
-	// (see resolveBudgetReserveTokens). A materialized 16384 here would make
-	// every session look explicitly configured.
 	"compaction.reserveTokens": { type: "number", default: undefined },
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
@@ -2295,7 +2192,6 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.v2RetainedMessageBudget": { type: "number", default: 64000 },
 
-	// Idle compaction
 	"compaction.idleEnabled": {
 		type: "boolean",
 		default: false,
@@ -2417,7 +2313,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Branch summaries
 	"branchSummary.enabled": {
 		type: "boolean",
 		default: false,
@@ -2431,9 +2326,6 @@ export const SETTINGS_SCHEMA = {
 
 	"branchSummary.reserveTokens": { type: "number", default: 16384 },
 
-	// Auto-Learn (experimental): post-stop nudge to capture lessons as managed
-	// skills under ~/.proto/agent/managed-skills. Master flag is default-off → zero
-	// footprint; sub-flags gate behaviour.
 	"autolearn.enabled": {
 		type: "boolean",
 		default: false,
@@ -2456,10 +2348,9 @@ export const SETTINGS_SCHEMA = {
 			condition: "autolearnActive",
 		},
 	},
-	// Config-file-only knob (numbers without `options` are hidden from the UI).
+
 	"autolearn.minToolCalls": { type: "number", default: 5 },
 
-	// TTSR
 	"ttsr.enabled": {
 		type: "boolean",
 		default: true,
@@ -2553,11 +2444,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Editing
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Edit tool
 	"edit.mode": {
 		type: "enum",
 		values: EDIT_MODES,
@@ -2771,7 +2657,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// LSP
 	"lsp.enabled": {
 		type: "boolean",
 		default: true,
@@ -2872,7 +2757,7 @@ export const SETTINGS_SCHEMA = {
 			description: "Automatically background long-running bash commands and deliver the result later",
 		},
 	},
-	// Bash interceptor
+
 	"bashInterceptor.enabled": {
 		type: "boolean",
 		default: false,
@@ -2908,7 +2793,7 @@ export const SETTINGS_SCHEMA = {
 				"Max wait for the first `direnv export` (a cold devenv shell can be slow); on timeout the session runs without the direnv env",
 		},
 	},
-	// Shell output minimizer
+
 	"shellMinimizer.enabled": {
 		type: "boolean",
 		default: true,
@@ -2945,7 +2830,6 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 	},
 
-	// Eval (per-backend toggles; add more as new backends ship, e.g. eval.ts)
 	"eval.py": {
 		type: "boolean",
 		default: true,
@@ -3006,7 +2890,6 @@ export const SETTINGS_SCHEMA = {
 		default: 60_000,
 	},
 
-	// Runtime knobs (consumed by eval backends and the /python slash command)
 	"python.kernelMode": {
 		type: "enum",
 		values: ["session", "per-call"] as const,
@@ -3052,11 +2935,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Tools
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Todo tool
 	"todo.enabled": {
 		type: "boolean",
 		default: true,
@@ -3117,8 +2995,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Optional tools
-
 	"launch.enabled": {
 		type: "boolean",
 		default: true,
@@ -3141,8 +3017,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Legacy boolean kept only for back-compat migration to `inspect_image.mode`
-	// (see config/settings.ts). Hidden from UI.
 	"inspect_image.enabled": {
 		type: "boolean",
 		default: false,
@@ -3240,7 +3114,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Fetching and browser
 	"fetch.enabled": {
 		type: "boolean",
 		default: true,
@@ -3414,7 +3287,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Tool execution
 	"tools.intentTracing": {
 		type: "boolean",
 		default: true,
@@ -3456,7 +3328,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Async jobs
 	"async.enabled": {
 		type: "boolean",
 		default: true,
@@ -3564,7 +3435,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// MCP
 	"mcp.enableProjectConfig": {
 		type: "boolean",
 		default: true,
@@ -3610,10 +3480,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Orchestration
-	// ────────────────────────────────────────────────────────────────────────
-
 	"goal.enabled": {
 		type: "boolean",
 		default: true,
@@ -3658,7 +3524,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Delegation
 	"orchestrator.isolation.mode": {
 		type: "enum",
 		values: ["none", "auto", "apfs", "btrfs", "zfs", "reflink", "overlayfs", "rcopy"] as const,
@@ -3927,7 +3792,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Skills
 	"skills.enabled": { type: "boolean", default: true },
 
 	"skills.enableSkillCommands": {
@@ -3961,7 +3825,6 @@ export const SETTINGS_SCHEMA = {
 
 	"skills.includeSkills": { type: "array", default: [] as string[] },
 
-	// Commands
 	"commands.enableClaudeUser": {
 		type: "boolean",
 		default: true,
@@ -4006,11 +3869,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// ────────────────────────────────────────────────────────────────────────
-	// Providers
-	// ────────────────────────────────────────────────────────────────────────
-
-	// Secret handling
 	"secrets.enabled": {
 		type: "boolean",
 		default: false,
@@ -4022,7 +3880,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Provider selection
 	"providers.ollama-cloud.maxConcurrency": {
 		type: "number",
 		default: 3,
@@ -4361,7 +4218,7 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-	// Codex saved rate-limit resets (auto-redeem)
+
 	"codexResets.autoRedeem": {
 		type: "enum",
 		values: ["unset", "yes", "no"] as const,
@@ -4434,7 +4291,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Exa
 	"exa.enabled": {
 		type: "boolean",
 		default: true,
@@ -4457,7 +4313,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// SearXNG
 	"searxng.endpoint": {
 		type: "string",
 		default: undefined,
@@ -4559,19 +4414,6 @@ export const SETTINGS_SCHEMA = {
 		credential: true,
 	},
 
-	/**
-	 * User decision on sharing automatic `report_tool_issue` grievances.
-	 *
-	 *   - `"unset"`  — never asked; the first `report_tool_issue` invocation
-	 *                  pops a consent dialog and persists the answer here.
-	 *   - `"granted"` — record and (when push is configured) ship grievances.
-	 *   - `"denied"`  — silently no-op every `report_tool_issue` call.
-	 *
-	 * Owned by `packages/coding-agent/src/tools/report-tool-issue.ts` via the
-	 * process-global consent handler registered by `InteractiveMode`.
-	 *
-	 * @default "unset"
-	 */
 	"dev.autoqaConsent": {
 		type: "enum",
 		values: ["unset", "granted", "denied"] as const,
@@ -4603,16 +4445,10 @@ export const SETTINGS_SCHEMA = {
 	"thinkingBudgets.max": { type: "number", default: 32768 },
 } as const;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Type Inference
-// ═══════════════════════════════════════════════════════════════════════════
-
 type Schema = typeof SETTINGS_SCHEMA;
 
-/** All valid setting paths */
 export type SettingPath = keyof Schema;
 
-/** Infer the value type for a setting path */
 export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
 	? boolean | undefined
 	: Schema[P] extends { type: "boolean" }
@@ -4633,32 +4469,22 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 								? D
 								: never;
 
-/** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
 }
 
-/**
- * Whether a setting holds a credential and must never be printed or exported
- * without an explicit request. Drives both CLI redaction and settings-panel
- * masking, so the two cannot disagree.
- */
 export function isCredential(path: SettingPath): boolean {
 	const def = SETTINGS_SCHEMA[path];
 	if ("credential" in def && def.credential === true) return true;
-	// `ui.secret` predates this marker and still means "never display". Reading
-	// both here keeps ONE accessor, so the two spellings cannot produce
-	// different behaviour on different surfaces.
+
 	return getUi(path)?.secret === true;
 }
 
-/** Get UI metadata for a path (undefined if no UI) */
 export function getUi(path: SettingPath): AnyUiMetadata | undefined {
 	const def = SETTINGS_SCHEMA[path];
 	return "ui" in def ? (def.ui as AnyUiMetadata) : undefined;
 }
 
-/** Get all paths for a specific tab */
 export function getPathsForTab(tab: SettingTab): SettingPath[] {
 	return (Object.keys(SETTINGS_SCHEMA) as SettingPath[]).filter(path => {
 		const ui = getUi(path);
@@ -4666,33 +4492,20 @@ export function getPathsForTab(tab: SettingTab): SettingPath[] {
 	});
 }
 
-/** Get the type of a setting */
 export function getType(path: SettingPath): SettingDef["type"] {
 	return SETTINGS_SCHEMA[path].type;
 }
 
-/** Get enum values for an enum setting */
 export function getEnumValues(path: SettingPath): readonly string[] | undefined {
 	const def = SETTINGS_SCHEMA[path];
 	return "values" in def ? (def.values as readonly string[]) : undefined;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Derived Types from Schema
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Status line separator style - derived from schema */
 export type StatusLineSeparatorStyle = SettingValue<"statusLine.separator">;
 
-/** Tree selector filter mode - derived from schema */
 export type TreeFilterMode = SettingValue<"treeFilterMode">;
 
-/** Personality preset - derived from schema */
 export type Personality = SettingValue<"personality">;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Typed Group Definitions
-// ═══════════════════════════════════════════════════════════════════════════
 
 export interface CompactionSettings {
 	enabled: boolean;
@@ -4791,9 +4604,9 @@ export interface TtsrSettings {
 	interruptMode: "never" | "prose-only" | "tool-only" | "always";
 	repeatMode: "once" | "after-gap";
 	repeatGap: number;
-	/** Bucketing-only (read by bucketRules, not the TtsrManager). */
+
 	builtinRules?: boolean;
-	/** Bucketing-only (read by bucketRules, not the TtsrManager). */
+
 	disabledRules?: string[];
 }
 
@@ -4855,7 +4668,6 @@ interface GcSettings {
 	retainNewestPerCwd: number;
 }
 
-/** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
 	recap: RecapSettings;

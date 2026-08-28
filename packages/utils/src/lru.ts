@@ -1,23 +1,18 @@
-/** Behavior-compatible reimplementation of lru-cache's used surface. */
-
-/** Why an entry left the cache. */
 export type DisposeReason = "evict" | "set" | "delete" | "expire";
 
-/** Options supported by {@link LRUCache}. */
 export interface LRUCacheOptions<K, V> {
-	/** Maximum number of retained entries. */
 	max?: number;
-	/** Maximum aggregate calculated size. */
+
 	maxSize?: number;
-	/** Maximum calculated size of one entry. */
+
 	maxEntrySize?: number;
-	/** Calculates an entry's size. */
+
 	sizeCalculation?: (value: V, key: K) => number;
-	/** Entry lifetime in milliseconds; zero disables expiry. */
+
 	ttl?: number;
-	/** Refreshes an entry's lifetime when it is read. */
+
 	updateAgeOnGet?: boolean;
-	/** Called synchronously before an entry is removed. */
+
 	dispose?: (value: V, key: K, reason: DisposeReason) => void;
 }
 
@@ -33,7 +28,6 @@ function positiveInteger(value: number | undefined, name: string): number {
 	return value;
 }
 
-/** A bounded least-recently-used cache with optional size and lifetime limits. */
 export class LRUCache<K, V> {
 	readonly #entries = new Map<K, Entry<V>>();
 	readonly #max: number;
@@ -45,7 +39,6 @@ export class LRUCache<K, V> {
 	readonly #dispose: ((value: V, key: K, reason: DisposeReason) => void) | undefined;
 	#calculatedSize = 0;
 
-	/** Creates an empty cache. */
 	constructor(options: LRUCacheOptions<K, V>) {
 		this.#max = positiveInteger(options.max, "max");
 		this.#maxSize = positiveInteger(options.maxSize, "maxSize");
@@ -63,17 +56,14 @@ export class LRUCache<K, V> {
 		this.#dispose = options.dispose;
 	}
 
-	/** Number of entries, including stale entries not yet removed by `get`. */
 	get size(): number {
 		return this.#entries.size;
 	}
 
-	/** Aggregate calculated size of retained entries. */
 	get calculatedSize(): number {
 		return this.#calculatedSize;
 	}
 
-	/** Stores a value and makes it most recently used. */
 	set(key: K, value: V | undefined): this {
 		if (value === undefined) {
 			this.delete(key);
@@ -106,7 +96,6 @@ export class LRUCache<K, V> {
 		return this;
 	}
 
-	/** Returns a value and makes a fresh entry most recently used. */
 	get(key: K): V | undefined {
 		const entry = this.#entries.get(key);
 		if (entry === undefined) return undefined;
@@ -120,19 +109,16 @@ export class LRUCache<K, V> {
 		return entry.value;
 	}
 
-	/** Reports whether a fresh value is present without changing recency. */
 	has(key: K): boolean {
 		const entry = this.#entries.get(key);
 		return entry !== undefined && !this.#isStale(entry);
 	}
 
-	/** Returns a fresh value without changing recency or removing stale data. */
 	peek(key: K): V | undefined {
 		const entry = this.#entries.get(key);
 		return entry === undefined || this.#isStale(entry) ? undefined : entry.value;
 	}
 
-	/** Removes a value, returning whether one was present. */
 	delete(key: K): boolean {
 		const entry = this.#entries.get(key);
 		if (entry === undefined) return false;
@@ -140,14 +126,12 @@ export class LRUCache<K, V> {
 		return true;
 	}
 
-	/** Removes every value from least to most recently used. */
 	clear(): void {
 		for (const [key, entry] of this.#entries) this.#dispose?.(entry.value, key, "delete");
 		this.#entries.clear();
 		this.#calculatedSize = 0;
 	}
 
-	/** Iterates fresh keys from most to least recently used. */
 	*keys(): Generator<K, void, unknown> {
 		const entries = [...this.#entries.entries()];
 		for (let index = entries.length - 1; index >= 0; index--) {
@@ -156,7 +140,6 @@ export class LRUCache<K, V> {
 		}
 	}
 
-	/** Iterates fresh values from most to least recently used. */
 	*values(): Generator<V, void, unknown> {
 		const entries = [...this.#entries.values()];
 		for (let index = entries.length - 1; index >= 0; index--) {

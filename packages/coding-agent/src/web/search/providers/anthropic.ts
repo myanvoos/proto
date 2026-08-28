@@ -1,9 +1,3 @@
-/**
- * Anthropic Web Search Provider
- *
- * Uses Claude's built-in web_search_20250305 tool to search the web.
- * Returns synthesized answers with citations and source metadata.
- */
 import {
 	type AnthropicAuthConfig,
 	type AnthropicSystemBlock,
@@ -39,12 +33,6 @@ const DEFAULT_MAX_TOKENS = 4096;
 const WEB_SEARCH_TOOL_NAME = "web_search";
 const WEB_SEARCH_TOOL_TYPE = "web_search_20250305";
 
-/**
- * Claude's search backend understands common Google-style operators, so most
- * directives are re-emitted as query text. `site:` is intentionally absent:
- * site includes/excludes map onto the web_search tool's native
- * `allowed_domains`/`blocked_domains` parameters instead.
- */
 const ANTHROPIC_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -55,22 +43,12 @@ const ANTHROPIC_QUERY_SYNTAX: QuerySyntax = {
 	dateRange: true,
 };
 
-/** Upstream request shape derived from the parsed query. */
 interface AnthropicQueryPlan {
 	query: string;
 	allowedDomains?: string[];
 	blockedDomains?: string[];
 }
 
-/**
- * Map parsed directives onto the request: `site:` includes become
- * `allowed_domains`, `-site:` exclusions become `blocked_domains` (the two are
- * mutually exclusive on the API, so exclusions are only sent when there are no
- * includes), and remaining directives are re-emitted as query syntax.
- * Directive-free queries pass through byte-identical. Anthropic domain
- * filters take bare hosts (subdomains included automatically); any path part
- * of a `site:` value is enforced by the central constraint filter.
- */
 function planQuery(rawQuery: string, parsed: StructuredQuery): AnthropicQueryPlan {
 	if (!parsed.hasDirectives) return { query: rawQuery };
 	const hosts = (sites: readonly string[]) => {
@@ -102,28 +80,15 @@ interface AnthropicSearchParams {
 	fetch?: FetchImpl;
 }
 
-/**
- * Gets the model to use for web search from environment or default.
- * @returns Model identifier string
- */
 function getModel(): string {
 	return $env.ANTHROPIC_SEARCH_MODEL ?? DEFAULT_MODEL;
 }
 
-/**
- * Builds system instruction blocks for the Anthropic API request.
- * @param auth - Authentication configuration
- * @param model - Model identifier (affects whether Claude Code instruction is included)
- * @param systemPrompt - Optional system prompt for guiding response style
- * @returns Array of system blocks for the API request
- */
 function buildSystemBlocks(
 	auth: AnthropicAuthConfig,
 	model: string,
 	systemPrompt?: string,
 ): AnthropicSystemBlock[] | undefined {
-	// Match the streaming path: the CC billing header + system instruction are
-	// an OAuth fingerprint and must not be claimed on API-key requests.
 	const includeClaudeCode = auth.isOAuth && !model.startsWith("claude-3-5-haiku");
 	const extraInstructions = auth.isOAuth ? ["You are a helpful AI assistant with web search capabilities."] : [];
 
@@ -133,16 +98,6 @@ function buildSystemBlocks(
 	});
 }
 
-/**
- * Calls the Anthropic API with web search tool enabled.
- * @param auth - Authentication configuration (API key or OAuth)
- * @param model - Model identifier to use
- * @param plan - Query text plus native domain filters derived from parsed directives
- * @param metadataUserId - Optional Anthropic Messages metadata.user_id (already shaped for OAuth)
- * @param systemPrompt - Optional system prompt for guiding response style
- * @returns Raw API response from Anthropic
- * @throws {SearchProviderError} If the API request fails
- */
 async function callSearch(
 	auth: AnthropicAuthConfig,
 	model: string,
@@ -178,7 +133,6 @@ async function callSearch(
 		body.metadata = { user_id: metadataUserId };
 	}
 
-	// Opus 4.7+, Sonnet 5+, and Fable/Mythos 5 reject sampling parameters with a 400.
 	if (temperature !== undefined && !hasOpus47ApiRestrictions(model)) {
 		body.temperature = temperature;
 	}
@@ -187,8 +141,6 @@ async function callSearch(
 		body.system = systemBlocks;
 	}
 
-	// OAuth requests inject the CC billing header (buildSystemBlocks); patch its
-	// cch attestation like the streaming path instead of shipping `cch=00000`.
 	const doFetch = auth.isOAuth ? wrapFetchForCch(fetchImpl) : fetchImpl;
 	const response = await doFetch(url, {
 		method: "POST",
@@ -211,11 +163,6 @@ async function callSearch(
 	return response.json() as Promise<AnthropicApiResponse>;
 }
 
-/**
- * Parses a human-readable page age string into seconds.
- * @param pageAge - Age string like "2 days ago", "3h ago", "1 week ago"
- * @returns Age in seconds, or undefined if parsing fails
- */
 function parsePageAge(pageAge: string | null | undefined): number | undefined {
 	if (!pageAge) return undefined;
 
@@ -247,11 +194,6 @@ function parsePageAge(pageAge: string | null | undefined): number | undefined {
 	return value * (multipliers[unit] ?? 86400);
 }
 
-/**
- * Parses the Anthropic API response into a unified SearchResponse.
- * @param response - Raw API response containing content blocks
- * @returns Normalized response with answer, sources, citations, and usage
- */
 function parseResponse(response: AnthropicApiResponse): SearchResponse {
 	const answerParts: string[] = [];
 	const searchQueries: string[] = [];
@@ -264,12 +206,10 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 			block.name &&
 			stripClaudeToolPrefix(block.name) === WEB_SEARCH_TOOL_NAME
 		) {
-			// Intermediate search query
 			if (block.input?.query) {
 				searchQueries.push(block.input.query);
 			}
 		} else if (block.type === "web_search_tool_result" && block.content) {
-			// Search results
 			for (const result of block.content) {
 				if (result.type === "web_search_result") {
 					sources.push({
@@ -282,7 +222,6 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 				}
 			}
 		} else if (block.type === "text" && block.text) {
-			// Synthesized answer with citations
 			answerParts.push(block.text);
 			if (block.citations) {
 				for (const c of block.citations as AnthropicCitation[]) {
@@ -312,12 +251,6 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 	};
 }
 
-/**
- * Executes a web search using Anthropic's Claude with built-in web search tool.
- * @param params - Search parameters including query and optional settings
- * @returns Search response with synthesized answer, sources, and citations
- * @throws {Error} If no Anthropic credentials are configured
- */
 export async function searchAnthropic(
 	params: SearchParams | AnthropicSearchParams,
 	_legacyStorage?: unknown,
@@ -348,12 +281,7 @@ export async function searchAnthropic(
 		keyOrResolver,
 		key => {
 			const auth = buildAnthropicAuthConfig(key, searchBaseUrl);
-			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
-			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the
-			// CC billing header + system fingerprint installed by
-			// `buildAnthropicSearchHeaders`/`buildSystemBlocks` line up with the
-			// attribution Anthropic and enterprise gateways expect. API-key tokens
-			// forward the raw session id verbatim.
+
 			const metadataUserId = resolveAnthropicMetadataUserId(
 				callerSessionId,
 				auth.isOAuth,
@@ -390,7 +318,6 @@ export async function searchAnthropic(
 	return result;
 }
 
-/** Search provider for Anthropic Claude web search. */
 export class AnthropicProvider extends SearchProvider {
 	readonly id = "anthropic";
 	readonly label = "Anthropic";

@@ -139,8 +139,6 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				try {
 					await (tool as { restartForModeChange: () => Promise<void> }).restartForModeChange();
 				} catch (err) {
-					// Setting was already mutated; surface the restart failure so the
-					// user knows the browser is in an inconsistent state.
 					await runtime.output(
 						`Browser mode set to ${next ? "headless" : "visible"}, but restart failed: ${errorMessage(err)}`,
 					);

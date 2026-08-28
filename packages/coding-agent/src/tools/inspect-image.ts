@@ -244,11 +244,6 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 			return `inspect_image request timed out after ${seconds}s. Increase inspect_image.timeoutMs (currently ${timeoutMs}ms; 0 disables) or check the vision model provider.`;
 		};
 
-		// Honor the thinking effort configured on the resolved model role
-		// (e.g. `modelRoles.vision: <model>:high`). Without it the oneshot sent a
-		// suppressed/zero thinking budget, which thinking-only models (Gemini 3.x)
-		// reject with HTTP 400 ("Budget 0 is invalid. This model only works in
-		// thinking mode.").
 		const configuredThinking = extractExplicitThinkingSelector(selectedPattern, this.session.settings, {
 			isLiteralModelId: (provider, id) =>
 				availableModels.some(candidate => candidate.provider === provider && candidate.id === id),

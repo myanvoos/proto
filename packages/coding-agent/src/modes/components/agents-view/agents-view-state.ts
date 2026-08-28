@@ -1,15 +1,3 @@
-/**
- * State layer for the full-screen agents view: unified records over live
- * registry refs and persisted session listings, hierarchy indexing, row
- * building, scoping, selection resolution, and search filtering.
- *
- * Ported from prime-agent's agents-view-state.ts onto proto data sources:
- * - live agents: AgentRegistry.global() refs (running/idle/parked/aborted)
- * - persisted sessions: SessionManager.listAll()/listSessions SessionInfo
- * - hierarchy: ref.parentId links plus proto's transcript layout (child
- *   transcripts live next to the parent file under `<parent-basename>/`),
- *   which yields the parent session path without extra filesystem probes.
- */
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AgentRef, MAIN_AGENT_ID } from "../../../registry/agent-registry";
@@ -17,16 +5,14 @@ import type { SessionInfo } from "../../../session/session-listing";
 
 export type AgentsViewSection = "running" | "idle" | "current" | "inactive";
 
-/** View root: every session, or the attached session's subtree. */
 export type AgentsViewScope = "current" | "global";
 
-/** Merged durable/live view of one browsable agent session. */
 export interface AgentsViewRecord {
 	ref?: AgentRef;
 	session?: SessionInfo;
-	/** Stable UI key: canonical transcript path, then registry id, then session id. */
+
 	identity: string;
-	/** Alternate keys that re-find this record across live↔persisted flips. */
+
 	identityAliases: readonly string[];
 	section: AgentsViewSection;
 	searchableText: string;
@@ -34,7 +20,6 @@ export interface AgentsViewRecord {
 
 type AgentsViewRowKind = "agent" | "subagent-summary" | "subagent" | "subagent-code";
 
-// Hard cap on spawn-task lines shown so a large assignment never floods the view.
 const MAX_SPAWN_TASK_LINES = 10;
 
 export interface AgentsViewRow {
@@ -48,19 +33,19 @@ export interface AgentsViewRow {
 	depth: number;
 	selectable: boolean;
 	runningSubagentCount: number;
-	/** Unique selection identity for this row. */
+
 	identity: string;
-	/** Identity of the agent row this row is nested under. */
+
 	parentIdentity?: string;
-	/** True when the selected agent row can drill into its subtree. */
+
 	hasChildren?: boolean;
-	/** True when this subagent-summary row's list is expanded. */
+
 	expanded?: boolean;
-	/** True when any child carries a spawn task that can be revealed. */
+
 	hasSpawnTask?: boolean;
-	/** Full spawn-task text carried by subagent rows for grouping/reveal. */
+
 	spawnTask?: string;
-	/** One source line of the spawn task, for "subagent-code" rows. */
+
 	code?: string;
 }
 
@@ -112,12 +97,6 @@ function fileIdentity(sessionPath: string): string {
 	return `file:${path.resolve(sessionPath)}`;
 }
 
-/**
- * Proto nests a subagent's transcript next to its parent session file under a
- * directory named after the parent's basename: `<dir>/<parent>.jsonl` owns
- * `<dir>/<parent>/<child>.jsonl`. Invert that layout to recover the parent
- * session path. Purely lexical — a miss simply matches no record.
- */
 function derivedParentSessionFile(sessionFile: string): string | undefined {
 	const dir = path.dirname(sessionFile);
 	const parentBasename = path.basename(dir);
@@ -156,7 +135,6 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 		.join(" ");
 }
 
-/** Classify a merged record into Running / Idle / Inactive. */
 function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref">): AgentsViewSection {
 	if (!record.ref) return "inactive";
 	switch (record.ref.status) {
@@ -198,11 +176,6 @@ function buildRecord(ref: AgentRef | undefined, session: SessionInfo | undefined
 	return record;
 }
 
-/**
- * Merge live registry refs and the persisted session catalog into unified
- * records. Refs win for lifecycle state; sessions enrich durable fields and
- * contribute standalone Inactive rows when nothing lives for them.
- */
 export function reconcileAgentsViewRecords(
 	refs: readonly AgentRef[],
 	sessions: readonly SessionInfo[],
@@ -238,7 +211,6 @@ export function getRecordSessionFile(record: AgentsViewRecord): string | undefin
 	return record.ref?.sessionFile ?? record.session?.path;
 }
 
-/** Parent lookup keys: transcript-layout paths first, then registry lineage. */
 function parentKeys(record: AgentsViewRecord): string[] {
 	const keys: string[] = [];
 	const sessionFile = getRecordSessionFile(record);
@@ -247,13 +219,7 @@ function parentKeys(record: AgentsViewRecord): string[] {
 		if (derived) keys.push(fileIdentity(derived));
 	}
 	if (record.session?.parentSessionPath) keys.push(fileIdentity(record.session.parentSessionPath));
-	// `active:<parentId>` last: a parked worker's parentId can be the generic
-	// MAIN_AGENT_ID owner rather than the transcript parent. A MAIN_AGENT_ID
-	// parent never narrows the record into anyone's subtree: the live main ref
-	// answers to that alias, so honoring it would graft unrelated parked
-	// transcripts (any sibling of a seeded nested transcript parks under Main)
-	// onto whatever session is attached — an empty session then reports
-	// phantom children and the scoped browser mounts instead of no-op'ing.
+
 	if (record.ref?.parentId && record.ref.parentId !== MAIN_AGENT_ID) {
 		keys.push(`active:${record.ref.parentId}`);
 	}
@@ -282,7 +248,6 @@ export function buildAgentsViewIndex(records: readonly AgentsViewRecord[]): Agen
 	return { byKey, childrenByParent };
 }
 
-/** Restrict records to the scoped root and every descendant of that root. */
 export function scopeToRecordSubtree(
 	records: readonly AgentsViewRecord[],
 	rootIdentity: string | undefined,
@@ -302,7 +267,6 @@ export function scopeToRecordSubtree(
 	return records.filter(record => retained.has(record));
 }
 
-/** Filter to matching records while keeping ancestors of every match. */
 export function filterAgentsViewRecords(
 	records: readonly AgentsViewRecord[],
 	matches: (searchableText: string) => boolean,
@@ -317,7 +281,7 @@ export function filterAgentsViewRecords(
 			current = findParentRecord(current, index);
 		}
 	}
-	// Keep catalog order so row ranking and sections remain authoritative.
+
 	return records.filter(record => retained.has(record));
 }
 
@@ -326,9 +290,6 @@ interface SpawnTaskGroup {
 	rows: MutableAgentsViewRow[];
 }
 
-// Subagents spawned with an identical assignment share its text; group them so
-// each assignment renders once, above the subagents it launched. Different
-// turns produce different tasks and therefore distinct groups.
 function groupChildrenBySpawnTask(children: readonly MutableAgentsViewRow[]): SpawnTaskGroup[] {
 	const NO_TASK_KEY = " no-spawn-task";
 	const groups = new Map<string, SpawnTaskGroup>();
@@ -356,20 +317,20 @@ function buildSpawnTaskRows(parent: AgentsViewRow, task: string, depth: number, 
 		detailsWidth: 0,
 		runningSubagentCount: 0,
 		depth,
-		// Task rows are read-only context; selection skips over them.
+
 		selectable: false,
 		identity: `code:${parent.identity}:${groupIndex}:${lineIndex}`,
 		parentIdentity: parent.identity,
 		code,
 	});
 	const allLines = task.replace(/\s+$/, "").split("\n");
-	// Cap the body so a long program can't flood the view; note the remainder.
+
 	const lines = allLines.slice(0, MAX_SPAWN_TASK_LINES).map((line, i) => makeRow(line, String(i)));
 	const hidden = allLines.length - lines.length;
 	if (hidden > 0) {
 		lines.push(makeRow(`… +${hidden} more ${hidden === 1 ? "line" : "lines"}`, "more"));
 	}
-	// A blank panel line above and below pads the program into a clean block.
+
 	return [makeRow("", "pad-top"), ...lines, makeRow("", "pad-bottom")];
 }
 
@@ -413,7 +374,6 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	return a.identity.localeCompare(b.identity);
 }
 
-/** Relative age cell content: bare units (42m / 2h / 1d), right-aligned width-10 column. */
 function formatRowDetails(row: AgentsViewRow): string {
 	const age = formatRelativeAge(getLastActivity(row.record));
 	if (row.section !== "inactive") return age;
@@ -431,7 +391,6 @@ export function formatRelativeAge(valueMs: number, now = Date.now()): string {
 	return `${Math.floor(hours / 24)}d`;
 }
 
-/** Explicit names read bold downstream; fallback titles stay plain. */
 export function hasExplicitTitle(record: AgentsViewRecord): boolean {
 	return Boolean(record.session?.title);
 }
@@ -483,7 +442,6 @@ function getStatusLabel(record: AgentsViewRecord): string {
 	}
 }
 
-/** Resolve a row index after a rebuild: exact identity, then clamp, then first selectable. */
 export function resolveAgentsViewSelectionIndex(
 	rows: readonly AgentsViewRow[],
 	identity: string | undefined,
@@ -527,17 +485,12 @@ export function sectionTitle(section: AgentsViewSection): string {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Scope frames (drill-in/out)
-// ---------------------------------------------------------------------------
-
 export interface AgentsViewScopeFrame {
 	identity: string;
-	/** Title captured when the frame was pushed, so the header survives refreshes. */
+
 	rootTitle: string;
 }
 
-/** Drop frames whose root record vanished; keeps the deepest surviving chain. */
 export function resolveAgentsViewScopeFrames(
 	frames: readonly AgentsViewScopeFrame[],
 	index: AgentsViewIndex,
@@ -551,11 +504,6 @@ export function resolveAgentsViewScopeFrames(
 	return { frames: [], droppedFrames: frames.length };
 }
 
-/**
- * Build the flattened row tree. Direct children of the scope root render as
- * top-level agent rows (drill-in flattening); deeper descendants become nested
- * subagent rows under synthetic subagent-summary rows.
- */
 export function buildAgentsViewRows(
 	records: readonly AgentsViewRecord[],
 	expandedSubagentParents: ReadonlySet<string>,
@@ -572,8 +520,7 @@ export function buildAgentsViewRows(
 		const spawnTaskSource = getRecordSessionFile(record);
 		const spawnTask = spawnTaskSource ? spawnTasks.get(spawnTaskSource) : undefined;
 		const isChildOfScopeRoot = scopeRootAliases.size > 0 && parentKeys(record).some(key => scopeRootAliases.has(key));
-		// Direct children of the scope root render as top-level agent rows
-		// (drill-in flattening); only deeper lineage nests.
+
 		const nestedByLineage = Boolean(record.ref && (record.ref.kind === "sub" || record.ref.parentId));
 		const nested = nestedByLineage && !isChildOfScopeRoot;
 		return {
@@ -605,8 +552,6 @@ export function buildAgentsViewRows(
 			.map(key => rowsByKey.get(key))
 			.find(Boolean);
 		if (!parent || parent === row) {
-			// A child can arrive before its parent record; keep it reachable as a
-			// root until the parent appears.
 			row.kind = "agent";
 			continue;
 		}

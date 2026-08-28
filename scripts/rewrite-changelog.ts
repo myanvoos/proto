@@ -1,33 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Rewrite each package's `[Unreleased]` changelog section for release notes.
- *
- * A release cycle accumulates noisy implementation notes: a feature is added,
- * then internal bugs in that same not-yet-released feature are fixed, transport
- * plumbing is refactored, and behavior is renamed before anyone uses it. Only
- * the final shipped behavior belongs in release notes.
- *
- * For every non-empty `[Unreleased]` section this script hands the whole section
- * to a small model (default `google-antigravity/gemini-3.7-flash` via `@oh-my-pi/pi-ai`)
- * and asks for a complete replacement grouped by changelog category. The model
- * returns structured sections/items; markdown is rendered locally so only the
- * Unreleased section changes and formatting stays deterministic.
- *
- * The prompt defines "user-visible" for package consumers broadly: public
- * exports/API, provider behavior, auth/errors, config, performance, and
- * breaking changes are visible; pure implementation/test/refactor/internal
- * protocol churn is not.
- *
- * Usage:
- *   bun scripts/rewrite-changelog.ts                       # rewrite + write
- *   bun scripts/rewrite-changelog.ts --dry-run             # report only
- *   bun scripts/rewrite-changelog.ts --check               # exit 1 if any would change
- *   bun scripts/rewrite-changelog.ts --package coding-agent
- *   bun scripts/rewrite-changelog.ts --model google/gemini-3.5-flash
- *
- * Auth: resolves the provider API key through proto's auth storage
- * (~/.proto/agent/agent.db: stored key, OAuth, or env var fallback).
- */
 
 import * as path from "node:path";
 import { parseArgs } from "node:util";
@@ -47,9 +18,6 @@ import {
 } from "./fix-changelogs";
 
 const DEFAULT_MODEL = "google-antigravity/gemini-3.7-flash";
-
-// --------------------------------------------------------------------------
-// Prompts
 
 const SYSTEM_PROMPT = `You audit and consolidate the \`[Unreleased]\` section of a package's changelog, rewriting it into high-quality, user-facing release notes before a new release.
 
@@ -84,9 +52,6 @@ Call the \`rewrite\` tool with the rewritten release note sections.
 - **Be Concise and User-Facing**: Turn developer jargon (e.g., "replayed thinking blocks without context-management.keep") into description of the actual benefit (e.g., "Fixed preserving multi-turn thinking/reasoning context for Anthropic-compatible models").
 - **Remove Leading Symbols**: Write the item as a clean text string without prepending "- " or "* ". The harness will handle bullet formatting locally.`;
 
-// --------------------------------------------------------------------------
-// Model + auth
-
 interface RewriteModel {
 	model: Model<Api>;
 	apiKey: string;
@@ -110,14 +75,9 @@ async function openModel(modelSpec: string): Promise<RewriteModel> {
 		}
 		return { model, apiKey, spec: modelSpec };
 	} finally {
-		// Broker-backed storage runs a background SSE/long-poll loop that keeps
-		// the event loop alive; release it once the key is captured.
 		storage.close();
 	}
 }
-
-// --------------------------------------------------------------------------
-// Unreleased entries
 
 interface UnreleasedEntry {
 	index: number;
@@ -139,9 +99,6 @@ function collectEntries(section: ReleaseSection): UnreleasedEntry[] {
 	}
 	return entries;
 }
-
-// --------------------------------------------------------------------------
-// LLM call
 
 interface RewrittenSection {
 	category: string;
@@ -268,9 +225,6 @@ Consolidate and rewrite this content into user-visible release notes. Keep all p
 	throw new Error(`rewrite call failed for ${packageName}: ${lastError}`);
 }
 
-// --------------------------------------------------------------------------
-// Run
-
 interface RewrittenFile {
 	path: string;
 	originalCount: number;
@@ -358,9 +312,6 @@ async function run(options: RunOptions): Promise<RunResult> {
 
 	return { model: model.spec, changed };
 }
-
-// --------------------------------------------------------------------------
-// CLI
 
 interface CliOptions {
 	mode: "write" | "dry-run" | "check";

@@ -1,23 +1,23 @@
-// Pack the Qwen3 (3.5/3.6/3.8) vocab into data/qwen3.bin.zst (UTOK1 + zstd -19).
-//
-// Source: tools/cache/qwen3.8.tokenizer.json (HF tokenizers format).
-// The vocab keys are plain GPT-2 byte-level alphabet strings (the
-// families.json note about id 0 = '｜' was a misdiagnosis; id 0 is '!').
-//
-// Real trap handled here: 201 vocab entries are unreachable via the merges
-// list (len(vocab) - 256 byte tokens - len(merges)). With ignore_merges=false
-// the HF tokenizer can never emit them, but a rank-table engine's whole-piece
-// short-circuit would. We keep their rank slots (UTOK1 requires rank = index)
-// but emit them as EMPTY byte strings: the splitter never produces empty
-// pieces, so they become unmatchable — verified to reproduce reference ids
-// exactly (fixtures/qwen3.json).
-//
-// Run: bun tools/pack-qwen.ts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SRC = new URL("cache/qwen3.8.tokenizer.json", import.meta.url).pathname;
 const OUT = new URL("../data/qwen3.bin.zst", import.meta.url).pathname;
 
-const VOCAB_SIZE = 248_044; // base vocab; 33 added tokens (248044-248076) excluded
+const VOCAB_SIZE = 248_044; 
 const ALPHABET_SIZE = 256;
 
 const tj = await Bun.file(SRC).json();
@@ -29,7 +29,7 @@ if (tj.normalizer?.type !== "NFC") throw new Error("expected NFC normalizer");
 const vocab: Record<string, number> = model.vocab;
 const merges: (string | [string, string])[] = model.merges;
 
-// GPT-2 byte-level alphabet: unicode char -> original byte.
+
 const u2b: Record<string, number> = {};
 {
 	const bs: number[] = [];
@@ -48,14 +48,14 @@ const u2b: Record<string, number> = {};
 	for (let i = 0; i < bs.length; i++) u2b[String.fromCodePoint(cs[i])] = bs[i];
 }
 
-// Merge-reachable token strings.
+
 const reachable = new Set<string>();
 for (const m of merges) {
 	const [a, b] = typeof m === "string" ? [m.slice(0, m.indexOf(" ")), m.slice(m.indexOf(" ") + 1)] : m;
 	reachable.add(a + b);
 }
 
-// rank -> raw bytes (empty for merge-unreachable multi-char entries).
+
 const entries: (Uint8Array | null)[] = new Array(Object.keys(vocab).length).fill(null);
 let dead = 0;
 for (const tok in vocab) {
@@ -76,13 +76,13 @@ for (const tok in vocab) {
 	entries[rank] = bytes;
 }
 
-// Assertions: size + rank contiguity (no null slot).
+
 if (entries.length !== VOCAB_SIZE) throw new Error(`vocab size ${entries.length}, expected ${VOCAB_SIZE}`);
 for (let r = 0; r < entries.length; r++) {
 	if (entries[r] === null) throw new Error(`rank gap at ${r}: ranks not contiguous`);
 }
 
-// UTOK1: magic, u32le count, per entry varint(len) + bytes.
+
 const parts: Uint8Array[] = [new TextEncoder().encode("UTOK1\n")];
 const count = new Uint8Array(4);
 new DataView(count.buffer).setUint32(0, entries.length, true);

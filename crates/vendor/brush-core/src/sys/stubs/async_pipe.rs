@@ -1,7 +1,7 @@
-//! Async pipe reading utilities for non-Unix platforms.
-//!
-//! Uses `spawn_blocking` internally for the I/O operation only,
-//! not for the entire subshell execution.
+
+
+
+
 
 use std::io::{self, Read};
 

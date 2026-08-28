@@ -11,10 +11,7 @@ import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
 const XAI_DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const XAI_WEB_SEARCH_MODEL = "grok-4.5";
-// grok-4.5 defaults reasoning.effort to "high"; xAI documents "low" for
-// latency-sensitive agentic use and simple tool calling
-// (docs.x.ai/developers/model-capabilities/text/reasoning). Web search is
-// latency-sensitive, so pin these calls low regardless of their configured timeout.
+
 const XAI_WEB_SEARCH_REASONING_EFFORT = "low";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 30;
@@ -71,14 +68,6 @@ interface XAIResponsesResponse {
 	usage?: XAIResponsesUsage | null;
 }
 
-/**
- * Query syntax re-emitted for the Grok search agent. `site:`/`-site:` are
- * stripped because hosts map natively onto the web_search domain filters;
- * `before:`/`after:` stay in the query text — the Responses web_search tool
- * has no date parameters (`from_date`/`to_date` exist only on `x_search` and
- * the deprecated Live Search `search_parameters`, which now returns 410) and
- * the agent honors the tokens as natural-language hints.
- */
 const XAI_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -89,10 +78,8 @@ const XAI_QUERY_SYNTAX: QuerySyntax = {
 	dateRange: true,
 };
 
-/** xAI web_search accepts at most 5 allowed or excluded domains per request. */
 const MAX_DOMAIN_FILTERS = 5;
 
-/** Bare hosts of `site:` values (`github.com/anthropics` → `github.com`), deduped, capped at 5; path parts are enforced by the central constraint filter. */
 function domainFilterList(sites: readonly string[]): string[] {
 	const hosts = new Set<string>();
 	for (const site of sites) {
@@ -109,8 +96,7 @@ function buildRequestBody(params: SearchParams): Record<string, unknown> {
 	let query = params.query;
 	if (parsed.hasDirectives) {
 		query = formatQuery(parsed, XAI_QUERY_SYNTAX);
-		// allowed_domains and excluded_domains are mutually exclusive per
-		// request; prefer the allow list, the central filter enforces exclusions.
+
 		if (parsed.sites.length > 0) {
 			webSearchTool.filters = { allowed_domains: domainFilterList(parsed.sites) };
 		} else if (parsed.excludedSites.length > 0) {
@@ -349,10 +335,6 @@ function parseResponse(response: XAIResponsesResponse, resultCap: number): Searc
 	};
 }
 
-/**
- * Prefer `xai-oauth` only when its resolver cannot be shadowed by the shared
- * `XAI_API_KEY` fallback before reaching a lower-priority dedicated source.
- */
 function shouldPreferXAIOAuth(authStorage: AuthStorage): boolean {
 	if ($env.XAI_OAUTH_TOKEN) return true;
 
@@ -394,7 +376,6 @@ function resolveXAIWebSearchAuth(params: SearchParams): XAIWebSearchAuth {
 	return { provider: "xai-oauth", keyOrResolver };
 }
 
-/** Execute xAI Responses API web search. */
 export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 	const auth = resolveXAIWebSearchAuth(params);
 	const transport = params.modelRegistry
@@ -428,7 +409,6 @@ export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 	return parsed;
 }
 
-/** Search provider for xAI web search. */
 export class XAIProvider extends SearchProvider {
 	readonly id = "xai";
 	readonly label = "xAI";

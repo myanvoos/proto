@@ -13,10 +13,6 @@ import {
 	type SymbolPreset,
 } from "./symbols";
 
-// ============================================================================
-// Theme Class
-// ============================================================================
-
 const langMap: Record<string, SymbolKey> = {
 	typescript: "lang.typescript",
 	ts: "lang.typescript",
@@ -114,13 +110,6 @@ const langMap: Record<string, SymbolKey> = {
 	bin: "lang.binary",
 };
 
-/**
- * Brand colors for language icons, keyed by the resolved `lang.*` SymbolKey.
- * Used by {@link Theme.getLangIconStyled} so eval-kernel cell headers tint each
- * language with its recognizable hue (JS yellow, Ruby red, Julia purple, Python
- * blue) instead of a flat muted gray. Applied as truecolor/256 per the active
- * color mode; languages without an entry fall back to the muted theme color.
- */
 const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
 	"lang.javascript": "#f7df1e",
 	"lang.python": "#3776ab",
@@ -133,18 +122,13 @@ const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
-	/** Resolved hex strings for foreground colors — populated at construction. */
+
 	readonly #hexFgColors: Record<ThemeColor, string>;
-	/** Resolved hex strings for background colors — populated at construction. */
+
 	readonly #hexBgColors: Record<ThemeBg, string>;
 	#symbols: SymbolMap;
 	#spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>>;
-	/**
-	 * Perceptual luma (0..1) of the status-line background — used to classify the
-	 * theme light/dark. Undefined when it can't be resolved. Classified against the
-	 * status line rather than the chat bubble (`userMessageBg`), which some themes
-	 * (e.g. `porcelain`) style dark on an otherwise-light theme.
-	 */
+
 	readonly statusLineLuminance: number | undefined;
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
@@ -169,7 +153,7 @@ export class Theme {
 			this.#bgColors[key] = bgAnsi(value, mode);
 			this.#hexBgColors[key] = resolveToHex(value, slIsLight);
 		}
-		// Build symbol map from preset + overrides
+
 		const baseSymbols = SYMBOL_PRESETS[symbolPreset];
 		this.#symbols = { ...baseSymbols };
 		for (const [key, value] of Object.entries(symbolOverrides)) {
@@ -182,24 +166,16 @@ export class Theme {
 		this.#spinnerFramesOverrides = spinnerFramesOverrides;
 	}
 
-	/** True when the active theme has a light status-line background. */
 	get isLight(): boolean {
 		return this.statusLineLuminance !== undefined && this.statusLineLuminance > 0.5;
 	}
 
-	/**
-	 * Get the resolved CSS hex string for a foreground theme color.
-	 */
 	getColorHex(color: ThemeColor): string {
 		const hex = this.#hexFgColors[color];
 		if (hex === undefined) throw new Error(`Unknown theme color: ${color}`);
 		return hex || (this.isLight ? "#000000" : "#e5e5e7");
 	}
 
-	/**
-	 * Get all foreground and background theme colors as CSS hex strings.
-	 * Skips colors resolved to the default terminal color (unstyled).
-	 */
 	getAllThemeColorHexes(): string[] {
 		const hexes: string[] = [];
 		for (const hex of Object.values(this.#hexFgColors)) {
@@ -211,9 +187,6 @@ export class Theme {
 		return hexes;
 	}
 
-	/**
-	 * Get the resolved CSS hex string for the theme's accent color.
-	 */
 	getAccentColorHex(): string {
 		return this.getColorHex("accent");
 	}
@@ -221,21 +194,15 @@ export class Theme {
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.#fgColors[color];
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
-		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
+		return `${ansi}${text}\x1b[39m`;
 	}
 
 	bg(color: ThemeBg, text: string): string {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
-		return `${ansi}${text}\x1b[49m`; // Reset only background color
+		return `${ansi}${text}\x1b[49m`;
 	}
 
-	/**
-	 * Apply a background fill that resumes after nested full/background resets.
-	 *
-	 * Composer rows contain styled text and cursor escapes; a normal background
-	 * wrapper would otherwise stop at the first nested reset.
-	 */
 	bgFill(color: ThemeBg, text: string): string {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
@@ -274,16 +241,6 @@ export class Theme {
 		return ansi;
 	}
 
-	/**
-	 * Foreground ANSI for text drawn **on top of** `fillColor` used as a solid
-	 * background (e.g. a powerline chip). Picks near-black or near-white by the
-	 * fill's perceived luminance (Rec. 601 luma) so the label stays legible on
-	 * both bright and dark fills, across light and dark themes.
-	 *
-	 * Reads the RGB out of the already-resolved truecolor escape; when the fill
-	 * is encoded as a 256-palette index (limited terminals) the RGB is
-	 * unavailable, so it falls back to the theme `text` color.
-	 */
 	getContrastFgAnsi(fillColor: ThemeColor): string {
 		const ansi = this.#fgColors[fillColor];
 		const match = ansi ? /38;2;(\d+);(\d+);(\d+)/.exec(ansi) : null;
@@ -297,7 +254,6 @@ export class Theme {
 	}
 
 	getThinkingBorderColor(level: ThinkingLevel | Effort): (str: string) => string {
-		// Map thinking levels to dedicated theme colors
 		switch (level) {
 			case "off":
 				return (str: string) => this.fg("thinkingOff", str);
@@ -312,7 +268,6 @@ export class Theme {
 			case "xhigh":
 				return (str: string) => this.fg("thinkingXhigh", str);
 			case "max":
-				// thinkingMax is optional; themes without it resolve to the xhigh color.
 				return (str: string) => this.fg(this.#fgColors.thinkingMax ? "thinkingMax" : "thinkingXhigh", str);
 			default:
 				return (str: string) => this.fg("thinkingOff", str);
@@ -327,34 +282,17 @@ export class Theme {
 		return (str: string) => this.fg("pythonMode", str);
 	}
 
-	// ============================================================================
-	// Symbol Methods
-	// ============================================================================
-
-	/**
-	 * Get a symbol by key.
-	 */
 	symbol(key: SymbolKey): string {
 		return this.#symbols[key];
 	}
 
-	/**
-	 * Get a symbol styled with a color.
-	 */
 	styledSymbol(key: SymbolKey, color: ThemeColor): string {
 		return this.fg(color, this.#symbols[key]);
 	}
 
-	/**
-	 * Get the current symbol preset.
-	 */
 	getSymbolPreset(): SymbolPreset {
 		return this.symbolPreset;
 	}
-
-	// ============================================================================
-	// Symbol Category Accessors
-	// ============================================================================
 
 	get status() {
 		return {
@@ -407,9 +345,7 @@ export class Theme {
 			bottomRight: this.#symbols["boxRound.bottomRight"],
 			horizontal: this.#symbols["boxRound.horizontal"],
 			vertical: this.#symbols["boxRound.vertical"],
-			// Junctions have no rounded Unicode variant, so a rounded box reuses the
-			// sharp tee/cross glyphs. Sourcing them from the boxSharp.* tokens keeps a
-			// theme's `boxSharp.tee*` overrides effective for rounded-box dividers.
+
 			cross: this.#symbols["boxSharp.cross"],
 			teeDown: this.#symbols["boxSharp.teeDown"],
 			teeUp: this.#symbols["boxSharp.teeUp"],
@@ -545,24 +481,14 @@ export class Theme {
 		};
 	}
 
-	/**
-	 * Default spinner frames (status spinner).
-	 */
 	get spinnerFrames(): string[] {
 		return this.getSpinnerFrames();
 	}
 
-	/**
-	 * Get spinner frames by type.
-	 */
 	getSpinnerFrames(type: SpinnerType = "status"): string[] {
 		return this.#spinnerFramesOverrides[type] ?? SPINNER_FRAMES[this.symbolPreset][type];
 	}
 
-	/**
-	 * Get language icon for a language name.
-	 * Maps common language names to their corresponding symbol keys.
-	 */
 	getLangIcon(lang: string | undefined): string {
 		if (!lang) return this.#symbols["lang.default"];
 		const normalized = lang.toLowerCase();
@@ -570,20 +496,11 @@ export class Theme {
 		return key ? this.#symbols[key] : this.#symbols["lang.default"];
 	}
 
-	/**
-	 * The muted language badge AND the space after it, or `""` when the preset has none.
-	 */
 	langBadge(lang: string | undefined): string {
 		const icon = this.getLangIcon(lang);
 		return icon ? `${this.fg("muted", icon)} ` : "";
 	}
 
-	/**
-	 * Language icon tinted with the language's brand color (see
-	 * {@link LANG_BRAND_COLORS}). Falls back to the muted theme color for
-	 * languages without a brand entry, and returns the bare (possibly empty)
-	 * icon when the active symbol preset has none.
-	 */
 	getLangIconStyled(lang: string | undefined): string {
 		const icon = this.getLangIcon(lang);
 		if (!icon) return icon;

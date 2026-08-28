@@ -454,7 +454,6 @@ function createPushbulletUploader(config: DestinationRuntimeConfig): BlobUploade
 	};
 }
 
-/** Create the built-in uploader for a cloud-drive destination, or null for another family. */
 export function createCloudDriveUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

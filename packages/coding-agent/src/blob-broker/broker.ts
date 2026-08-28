@@ -1,25 +1,3 @@
-/**
- * Blob URL backends: give outgoing images an externally fetchable URL.
- *
- * `LocalBlobBackend` runs everything in-process — either a loopback HTTP
- * server behind a tunnel/direct exposure (serve mode) or a push-once uploader
- * (upload mode). The daemon-shared variant in `daemon.ts` implements the same
- * {@link BlobBackend} contract over the project blob daemon so every proto
- * process reuses one exposure and one URL per blob.
- *
- * Design invariants:
- * - **Stable, multi-use URLs.** A blob's URL is keyed by content hash for the
- *   backend's lifetime. Anthropic silently forgets images unless a resent turn
- *   is byte-identical, OpenAI's fetcher issues two GETs per image, and any
- *   provider may refetch on a cache miss — single-use tokens would break all
- *   three.
- * - **Unguessable URL is the only authorization.** 128-bit random token per
- *   blob. `User-Agent` attribution (pi-catalog fetcher registry) is telemetry,
- *   never a gate.
- * - **Fail toward inline.** Missing binary, tunnel crash, failed upload, or a
- *   provider rejection all degrade to inline base64.
- */
-
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -38,19 +16,13 @@ import { BlobRegistry, type BlobRegistryEntry, EXT_BY_MIME, type LazyBlobFetcher
 import { DestinationUnavailableError } from "./uploader-runtime";
 import { createConfiguredUploader, memoizeUploader } from "./uploaders";
 
-/** Turns blob bytes into externally fetchable publications. */
 export interface BlobBackend {
-	/** Whether render-on-fetch blobs are supported (serve mode only). */
 	readonly supportsLazy: boolean;
-	/**
-	 * Stable publication for the content behind `key`, or `null` when the backend
-	 * cannot provide one. `getBytes` is invoked only when the key is unknown —
-	 * persisted or already-registered blobs never decode or transfer bytes.
-	 */
+
 	ensureBlob(key: string, mimeType: string, getBytes: () => Uint8Array): Promise<BlobPublication | null>;
-	/** Stable publication served by invoking `fetcher` on demand; `null` when unsupported. */
+
 	ensureLazy(key: string, mimeType: string, fetcher: LazyBlobFetcher): Promise<BlobPublication | null>;
-	/** Release backend-owned stores, servers, and exposure processes. */
+
 	stop(): void;
 }
 
@@ -68,17 +40,14 @@ const SERVE_KINDS: Readonly<Partial<Record<BlobDestinationId, true>>> = {
 	"named-cloudflared": true,
 };
 
-/** Whether a destination exposes the local blob server. */
 function isServeKind(kind: BlobDestinationId): kind is ExposureKind {
 	return SERVE_KINDS[kind] === true;
 }
 
-/** Whether a configured destination bypasses the local serving path. */
 export function isUploaderKind(kind: BlobDestinationId): boolean {
 	return !isServeKind(kind);
 }
 
-/** In-process backend hosting the store, exposure, or uploader directly. */
 export class LocalBlobBackend implements BlobBackend {
 	#config: BlobBrokerWorkerConfig;
 	#store: BlobRegistry;
@@ -89,7 +58,6 @@ export class LocalBlobBackend implements BlobBackend {
 	#fetch: typeof globalThis.fetch;
 	#dead = false;
 
-	/** Create one local serving or configured upload backend. */
 	constructor(config: BlobBrokerWorkerConfig, fetchFn: typeof globalThis.fetch = globalThis.fetch) {
 		this.#config = config;
 		this.#fetch = fetchFn;
@@ -107,15 +75,10 @@ export class LocalBlobBackend implements BlobBackend {
 		if (uploader) this.#upload = memoizeUploader(uploader);
 	}
 
-	/** Whether this backend can render blobs on fetch. */
 	get supportsLazy(): boolean {
 		return this.#upload === undefined;
 	}
 
-	/**
-	 * Start the local server and exposure once (serve mode); resolves to the
-	 * public base URL or `null` after a failure (sticky for this backend).
-	 */
 	ensureStarted(): Promise<string | null> {
 		if (this.#upload) return Promise.resolve(null);
 		this.#startPromise ??= this.#start();
@@ -182,7 +145,6 @@ export class LocalBlobBackend implements BlobBackend {
 		}
 	}
 
-	/** Ensure eager bytes have a stable publication. */
 	async ensureBlob(key: string, mimeType: string, getBytes: () => Uint8Array): Promise<BlobPublication | null> {
 		if (this.#dead) return null;
 		if (this.#upload) {
@@ -212,7 +174,6 @@ export class LocalBlobBackend implements BlobBackend {
 		return this.#publish(key, baseUrl, await this.#store.registerBytes(key, mimeType, bytes));
 	}
 
-	/** Probe for an existing (persisted or live) registration without bytes. */
 	async lookupBlob(key: string): Promise<BlobPublication | null> {
 		if (this.#dead) return null;
 		if (this.#upload) {
@@ -227,7 +188,6 @@ export class LocalBlobBackend implements BlobBackend {
 		return existing ? this.#publish(key, baseUrl, existing) : null;
 	}
 
-	/** Ensure a lazy producer has a stable publication. */
 	async ensureLazy(key: string, mimeType: string, fetcher: LazyBlobFetcher): Promise<BlobPublication | null> {
 		if (this.#dead || this.#upload) return null;
 		const baseUrl = await this.ensureStarted();
@@ -248,12 +208,10 @@ export class LocalBlobBackend implements BlobBackend {
 		return publication;
 	}
 
-	/** Return current serving-store counters and fetch attribution. */
 	storeStatus(): BlobStoreStatus {
 		return this.#store.status();
 	}
 
-	/** Perform an actual request through the public exposure health endpoint. */
 	async probePublicHealth(timeoutMs?: number): Promise<BlobBrokerProbeResponse> {
 		const startedAt = performance.now();
 		if (this.#upload) {
@@ -287,7 +245,6 @@ export class LocalBlobBackend implements BlobBackend {
 		}
 	}
 
-	/** Validate backend configuration and persistent index/disk access. */
 	async doctor(includeProbe = true): Promise<readonly BlobBrokerDoctorCheck[]> {
 		const checks: BlobBrokerDoctorCheck[] = [
 			{
@@ -346,10 +303,6 @@ export class LocalBlobBackend implements BlobBackend {
 		return checks;
 	}
 
-	/**
-	 * Preview cleanup by default. Apply mode first replays each exact remote
-	 * delete request, then removes local-only and successfully deleted entries.
-	 */
 	async purge(request: BlobBrokerPurgeRequest): Promise<BlobBrokerPurgeResponse> {
 		const plan = this.#store.purge({ ...request, apply: false });
 		if (request.apply !== true) return plan;
@@ -373,9 +326,7 @@ export class LocalBlobBackend implements BlobBackend {
 				}
 				try {
 					await response.body?.cancel();
-				} catch {
-					// The status above is authoritative; body disposal is best-effort.
-				}
+				} catch {}
 			} catch {
 				errors.push(`remote delete ${attempted} request failed`);
 			}
@@ -394,12 +345,10 @@ export class LocalBlobBackend implements BlobBackend {
 		};
 	}
 
-	/** Local server origin for tests, diagnostics, and the daemon worker. */
 	get localBaseUrl(): string | null {
 		return this.#server ? `http://${this.#config.bindHost}:${this.#server.port}` : null;
 	}
 
-	/** Stop serving and flush persistent registry state. */
 	stop(): void {
 		this.#dead = true;
 		this.#store.flush();

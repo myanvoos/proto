@@ -1,14 +1,3 @@
-/**
- * SessionFocusController - Weak retargeting primitive between the rendering/
- * input layer and the AgentSession it displays.
- *
- * Focusing re-points the transcript, streaming event subscription, status
- * line, and editor prompt/interrupt at a subagent's live AgentSession (from
- * AgentRegistry) without touching the main session underneath; unfocusing
- * re-attaches the main session and rebuilds the transcript from its
- * authoritative state.
- */
-
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
@@ -17,7 +6,7 @@ import type { InteractiveModeContext } from "../types";
 
 export class SessionFocusController {
 	#focusedAgentId: string | undefined;
-	/** Session currently attached while focused; undefined when unfocused. */
+
 	#attachedSession: AgentSession | undefined;
 	#registryUnsubscribe: (() => void) | undefined;
 
@@ -31,12 +20,10 @@ export class SessionFocusController {
 		return this.#focusedAgentId;
 	}
 
-	/** Focused live session, undefined when unfocused. */
 	get target(): AgentSession | undefined {
 		return this.#attachedSession;
 	}
 
-	/** Focus the main view on an agent's live session. Throws an Error with a user-displayable message. */
 	async focusAgent(id: string): Promise<void> {
 		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const session = await this.lifecycle().ensureLive(id);
@@ -48,7 +35,6 @@ export class SessionFocusController {
 		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent`);
 	}
 
-	/** Focus the focused agent's parent agent, falling back to the main session. No-op when unfocused. */
 	async focusParent(): Promise<void> {
 		if (!this.#focusedAgentId) return;
 		const parentId = this.registry.get(this.#focusedAgentId)?.parentId;
@@ -58,7 +44,6 @@ export class SessionFocusController {
 		return this.unfocus();
 	}
 
-	/** Return to the main session. No-op when unfocused. */
 	async unfocus(): Promise<void> {
 		if (!this.#focusedAgentId) return;
 		this.#focusedAgentId = undefined;
@@ -67,13 +52,6 @@ export class SessionFocusController {
 		this.ctx.showStatus("Returned to main session");
 	}
 
-	/**
-	 * Re-point the view at `target` after a wholesale main-session swap
-	 * (detached-session re-attach / constructed foreground). Unlike
-	 * {@link focusAgent} this is not registry-driven: the caller has already
-	 * swapped ctx.session/sessionManager/agent and only needs the rendering,
-	 * subscription, and status-line surfaces moved onto `target`.
-	 */
 	async attachSwappedMain(target: AgentSession): Promise<void> {
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = target;
@@ -95,16 +73,11 @@ export class SessionFocusController {
 		});
 	}
 
-	/** Retarget core, both directions: swap subscription, transcript, and status line onto `target`. */
 	async #attach(target: AgentSession): Promise<void> {
 		this.ctx.unsubscribe?.();
 		this.ctx.clearTransientSessionUi();
 		this.ctx.eventController.resetTranscriptAnchors();
-		// Orphan-delta guard: when attaching mid-turn the message_start for the
-		// in-flight assistant message predates the attach. message_update carries
-		// the full accumulating message, so synthesize the missing start before
-		// the first orphaned update; every other handler is tolerant of unknown
-		// anchors (guarded by streamingComponent/pendingTools lookups).
+
 		let assistantStreamSynced = false;
 		this.ctx.unsubscribe = target.subscribe(async event => {
 			if (event.type === "message_start" && event.message.role === "assistant") {
@@ -117,10 +90,7 @@ export class SessionFocusController {
 		});
 		this.ctx.statusLine.setSession(target, this.#focusedAgentId);
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-		// Sync the run-state title to the attached target: a streaming target has no
-		// agent_start incoming, so arm the loader/working title manually; an idle
-		// target would otherwise inherit the previous session's stuck spinner, so
-		// reset it to idle (agent_end teardown already ran via clearTransientSessionUi).
+
 		if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
 		else setTerminalTitleState("idle");
 		this.ctx.updateEditorBorderColor();

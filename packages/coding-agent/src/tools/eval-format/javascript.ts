@@ -512,14 +512,6 @@ function formatDisplayObjectLiterals(formatted: string, source: string): string 
 			return `{${renderRange(node.start + 1, end, node.children, propertyIndent)}${closed ? "}" : ""}`;
 		}
 
-		// Walk the body left to right and decide the layout at the FIRST decisive
-		// event, so the decision is a pure function of the source prefix and never
-		// flips as more code streams in:
-		// - a raw newline or a multi-line block child commits lines with the
-		//   original inline layout -> verbatim forever;
-		// - a nested object exploding, or the flat width passing the cap,
-		//   explodes this object (and, transitively, every enclosing inline
-		//   object in this same render pass).
 		let mode: "inline" | "verbatim" | "explode" = "inline";
 		let width = node.start - lineStart + 4;
 		const pieces: string[] = [];
@@ -564,11 +556,6 @@ function formatDisplayObjectLiterals(formatted: string, source: string): string 
 	return renderRange(0, formatted.length, roots, "");
 }
 
-/**
- * Finds the next operator token eligible for spacing normalization. Angle
- * brackets and bare `*` are intentionally excluded: generics (`Map<K, V>`) and
- * generators (`function*`) would be mangled by binary-operator spacing.
- */
 function scanDisplayOperator(source: string, start: number): string | undefined {
 	const three = source.slice(start, start + 3);
 	if (three === "===" || three === "!==" || three === "**=" || three === "&&=" || three === "||=" || three === "??=") {
@@ -609,7 +596,6 @@ function operatorSpacing(token: string, unary: boolean, ternaryPending: boolean)
 	return { before: true, after: true };
 }
 
-/** Formats JavaScript/TypeScript-like eval source for safe, stable display without requiring valid syntax. */
 export function formatJavaScriptForDisplay(source: string): string {
 	const output: string[] = [];
 	const parens: ParenFrame[] = [];
@@ -850,8 +836,6 @@ export function formatJavaScriptForDisplay(source: string): string {
 			const braceKind = braceKinds.pop() ?? "block";
 			prepareToken("punctuation", char, index + 1);
 			if (braceKind === "object") {
-				// Multi-line object closers keep their line indentation; inline
-				// closers attach tight so the post-pass controls the spacing.
 				if (atLineStart) flushWhitespace();
 				else {
 					pendingWhitespace = "";
@@ -915,8 +899,6 @@ export function formatJavaScriptForDisplay(source: string): string {
 
 		const operator = scanDisplayOperator(source, index);
 		if (operator && !(operator === "?" && (next === "." || next === ":"))) {
-			// In a regex-eligible position the previous token was an operator or
-			// keyword, so `+`/`-` here are unary signs, not binary operators.
 			const unary = (operator === "+" || operator === "-") && regexAllowed;
 			prepareToken("punctuation", operator, index + operator.length);
 			flushWhitespace();

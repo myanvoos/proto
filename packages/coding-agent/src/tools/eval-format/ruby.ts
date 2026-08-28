@@ -370,7 +370,6 @@ function formatRubyPrefix(source: string): string {
 	return output.join("");
 }
 
-/** Formats an arbitrary Ruby source prefix for display without requiring valid syntax. */
 export function formatRubyForDisplay(source: string): string {
 	try {
 		return formatRubyPrefix(source);

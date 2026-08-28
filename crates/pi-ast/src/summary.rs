@@ -1,5 +1,3 @@
-//! Structural source summaries powered by tree-sitter.
-
 use std::{collections::BTreeSet, path::Path};
 
 use anyhow::Result;
@@ -13,53 +11,43 @@ const DEFAULT_MIN_COMMENT_LINES: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummaryOptions {
-	/// Source code to summarize.
-	pub code:               String,
-	/// Language alias (e.g. "rust", "typescript") used before path inference.
-	pub lang:               Option<String>,
-	/// File path used to infer language by extension when `lang` is omitted.
-	pub path:               Option<String>,
-	/// Minimum total node lines before eliding a body/literal node.
-	pub min_body_lines:     Option<u32>,
-	/// Minimum total comment lines before eliding a multiline block comment.
-	pub min_comment_lines:  Option<u32>,
-	/// Target visible-line count for BFS unfold. Starting from every elidable
-	/// span folded, this progressively reveals outer-then-inner spans until
-	/// the visible line count meets the target. `None` or `0` disables BFS
-	/// and keeps only the outermost elisions (every nested span stays hidden
-	/// behind its parent).
+	pub code: String,
+
+	pub lang: Option<String>,
+
+	pub path: Option<String>,
+
+	pub min_body_lines: Option<u32>,
+
+	pub min_comment_lines: Option<u32>,
+
 	pub unfold_until_lines: Option<u32>,
-	/// Hard ceiling for BFS unfold. If a candidate unfold would push the
-	/// visible count past this value, revert that step and stop. Defaults
-	/// to `unfold_until_lines * 2` when omitted (with `unfold_until_lines`
-	/// itself as the floor so a single threshold also works).
+
 	pub unfold_limit_lines: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SummarySegment {
-	/// "kept" or "elided".
-	pub kind:       String,
-	/// 1-based inclusive start line.
+	pub kind: String,
+
 	pub start_line: u32,
-	/// 1-based inclusive end line.
-	pub end_line:   u32,
-	/// Verbatim text for kept segments; absent for elided segments.
-	pub text:       Option<String>,
+
+	pub end_line: u32,
+
+	pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SummaryResult {
-	/// Canonical language name when parsing succeeded.
-	pub language:    Option<String>,
-	/// True when tree-sitter parsed the source without syntax errors.
-	pub parsed:      bool,
-	/// True when at least one elision span was emitted.
-	pub elided:      bool,
-	/// Total source lines.
+	pub language: Option<String>,
+
+	pub parsed: bool,
+
+	pub elided: bool,
+
 	pub total_lines: u32,
-	/// Kept/elided segments in source order.
-	pub segments:    Vec<SummarySegment>,
+
+	pub segments: Vec<SummarySegment>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,18 +62,12 @@ impl LineSpan {
 	}
 }
 
-/// One elidable region plus its directly-nested elidable descendants. The
-/// forest is built by AST traversal in source order, so `children` reflects
-/// the structural hierarchy: a child's span is always strictly contained
-/// within its parent's.
 #[derive(Debug)]
 struct SpanNode {
 	span:     LineSpan,
 	children: Vec<usize>,
 }
 
-/// Flat arena of elidable spans organized as a forest. `roots` lists the
-/// topmost spans — anything whose AST ancestors held no elidable container.
 #[derive(Debug, Default)]
 struct ElidableForest {
 	nodes: Vec<SpanNode>,
@@ -104,16 +86,6 @@ impl ElidableForest {
 	}
 }
 
-/// BFS unfold. Start with every root span folded (matches the legacy
-/// outermost-only behavior) and progressively replace folded spans with
-/// their elidable children, breadth-first, until the visible line count
-/// reaches `unfold_until`. A candidate unfold whose revealed lines would
-/// push the visible count past `unfold_limit` is skipped — that span stays
-/// folded and its subtree is not explored — while the BFS keeps unfolding
-/// the remaining queued siblings. A single oversized, un-unfoldable leaf
-/// (e.g. a `<style>` raw-text block) therefore no longer aborts the whole
-/// pass and starve its siblings. `unfold_until == 0` short-circuits to the
-/// legacy behavior.
 fn select_folded_spans(
 	forest: &ElidableForest,
 	total_lines: u32,
@@ -141,9 +113,7 @@ fn select_folded_spans(
 		}
 		let node = &nodes[idx];
 		let child_line_total: u32 = node.children.iter().map(|&c| nodes[c].span.lines()).sum();
-		// Unfolding swaps the parent's span for its children's, so the visible
-		// gain is the difference between them. `saturating_sub` keeps the math
-		// honest if children somehow over-cover (they shouldn't by construction).
+
 		let revealed = node.span.lines().saturating_sub(child_line_total);
 		let new_visible = visible.saturating_add(revealed);
 		if new_visible > unfold_limit {
@@ -264,18 +234,11 @@ fn collect_elidable_tree(
 		let start_line = node_start_line(node) + 1;
 		let end_line = node_end_line(node).saturating_sub(1);
 		if start_line <= end_line {
-			// Unlike the legacy outermost-only collector, we DO recurse into
-			// the elided node so nested elisions are recorded as children.
-			// The BFS unfold pass decides which level actually fires.
 			current_parent =
 				Some(forest.push(elidable_parent, LineSpan { start: start_line, end: end_line }));
 		}
 	}
 
-	// Detect consecutive runs of groupable siblings (e.g. import statements).
-	// When the run's total line span meets `min_body_lines`, elide the lines
-	// strictly between the first and last sibling's content, leaving the
-	// boundary statements visible.
 	let child_count = node.child_count();
 	let mut run_first: Option<Node<'_>> = None;
 	let mut run_last: Option<Node<'_>> = None;
@@ -341,9 +304,7 @@ fn flush_groupable_run(
 	if span_lines < min_body_lines {
 		return;
 	}
-	// Use the line of the first node's last visible content as the lower bound
-	// (some grammars include trailing newlines in the node range, which would
-	// otherwise place `end_line` on the next sibling's first line).
+
 	let first_content_end = node_content_end_line(first).min(last_start.saturating_sub(1));
 	let start = first_content_end.saturating_add(1);
 	let end = last_start.saturating_sub(1);
@@ -368,12 +329,6 @@ fn node_end_line(node: Node<'_>) -> u32 {
 		.min(u32::MAX as usize) as u32
 }
 
-/// Last source line containing a content byte from `node`.
-///
-/// Tree-sitter reports `end_position` as the position one past the last byte.
-/// When that byte is a newline, the resulting position lands at column 0 of
-/// the next row, which makes the naive `row + 1` answer one greater than the
-/// row of the last visible content. This helper subtracts that off.
 pub(crate) fn node_content_end_line(node: Node<'_>) -> u32 {
 	let pos = node.end_position();
 	let row = if pos.column == 0 && pos.row > 0 {
@@ -726,11 +681,7 @@ fn is_elidable_kind(language: SupportLang, kind: &str) -> bool {
 		SupportLang::Make => kind == "recipe",
 		SupportLang::Just => kind == "recipe_body",
 		SupportLang::Fortran => false,
-		// Skip: data formats with no closing-token anchor (Yaml mappings,
-		// Toml tables, Ini sections), the diff format whose informational
-		// content IS the lines inside hunks, and the leaf-token-only Regex
-		// grammar. Eliding any of these deletes the only content worth
-		// reading.
+
 		SupportLang::Yaml
 		| SupportLang::Toml
 		| SupportLang::Ini
@@ -762,10 +713,7 @@ fn is_groupable_kind(language: SupportLang, kind: &str) -> bool {
 		SupportLang::Julia => matches!(kind, "import_statement" | "using_statement"),
 		SupportLang::Proto => kind == "import",
 		SupportLang::Fortran => kind == "use_statement",
-		// Languages where imports either have no run pattern, are wrapped in a
-		// single AST node already covered by `is_elidable_kind` (Kotlin's
-		// `import_list`, Haskell's `imports`), or live inside a too-generic
-		// container (Powershell `statement_list`).
+
 		SupportLang::Kotlin
 		| SupportLang::Haskell
 		| SupportLang::Powershell

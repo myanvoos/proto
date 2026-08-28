@@ -1,13 +1,11 @@
 import type { Theme } from "../modes/theme/theme";
 import { replaceTabs } from "../tools/render-utils";
 
-/** Render nested worker ids as a breadcrumb. */
 export function formatWorkerId(id: string): string {
 	const segments = replaceTabs(id).split(".");
 	return segments.length < 2 ? (segments[0] ?? "") : segments.join(">");
 }
 
-/** Dim badge for a specialist worker; the generic worker needs no badge. */
 export function workerTypeBadge(agent: string | undefined, theme: Theme): string {
 	const trimmed = agent?.trim();
 	if (!trimmed || trimmed === "worker") return "";

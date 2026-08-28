@@ -12,7 +12,7 @@ import type { ByteSource } from "./source";
 import type { ArchiveIndexEntry, FormatReader, FormatReadOptions, MemberSource } from "./types";
 
 const SIGNATURE = Uint8Array.of(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c);
-// WHATWG maps the "utf-16" label to the UTF-16LE decoder 7z names use.
+
 const UTF16_LE = new TextDecoder("utf-16", { fatal: true });
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const FILETIME_EPOCH_MS = 11_644_473_600_000;
@@ -584,14 +584,12 @@ async function buildEntries(
 	return entries;
 }
 
-/** Whether bytes begin with the canonical 7z signature. */
 export function sniffSevenZip(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < SIGNATURE.byteLength) return false;
 	for (let index = 0; index < SIGNATURE.byteLength; index++) if (bytes[index] !== SIGNATURE[index]) return false;
 	return true;
 }
 
-/** Index a 7z archive and lazily decode member folders on extraction. */
 export const readSevenZip: FormatReader = async (source, options) => {
 	try {
 		if (source.size < 32) throw new ArchiveError("Invalid 7z archive: truncated signature header");

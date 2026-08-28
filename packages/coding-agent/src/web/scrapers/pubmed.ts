@@ -1,6 +1,3 @@
-/**
- * PubMed handler for web-fetch
- */
 import { tryParseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 import { buildResult, loadPage, type RenderResult, type SpecialHandler } from "./types";
 
@@ -9,9 +6,6 @@ const NCBI_HEADERS = {
 	"User-Agent": USER_AGENT,
 };
 
-/**
- * Handle PubMed URLs - fetch article metadata, abstract, MeSH terms
- */
 export const handlePubMed: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -20,7 +14,6 @@ export const handlePubMed: SpecialHandler = async (
 	try {
 		const parsed = new URL(url);
 
-		// Match pubmed.ncbi.nlm.nih.gov/{pmid} or ncbi.nlm.nih.gov/pubmed/{pmid}
 		if (
 			parsed.hostname !== "pubmed.ncbi.nlm.nih.gov" &&
 			!(parsed.hostname === "ncbi.nlm.nih.gov" && parsed.pathname.startsWith("/pubmed"))
@@ -28,14 +21,11 @@ export const handlePubMed: SpecialHandler = async (
 			return null;
 		}
 
-		// Extract PMID from URL
 		let pmid: string | null = null;
 		if (parsed.hostname === "pubmed.ncbi.nlm.nih.gov") {
-			// Format: pubmed.ncbi.nlm.nih.gov/12345678/
 			const match = parsed.pathname.match(/\/(\d+)/);
 			if (match) pmid = match[1];
 		} else {
-			// Format: ncbi.nlm.nih.gov/pubmed/12345678
 			const match = parsed.pathname.match(/\/pubmed\/(\d+)/);
 			if (match) pmid = match[1];
 		}
@@ -74,7 +64,6 @@ export const handlePubMed: SpecialHandler = async (
 			return response;
 		};
 
-		// Fetch summary metadata
 		const summaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${pmid}&retmode=json`;
 		const summaryResult = await fetchWithRetry(summaryUrl);
 
@@ -92,7 +81,7 @@ export const handlePubMed: SpecialHandler = async (
 					volume?: string;
 					issue?: string;
 					pages?: string;
-					elocationid?: string; // DOI
+					elocationid?: string;
 					articleids?: Array<{ idtype: string; value: string }>;
 				};
 			};
@@ -106,7 +95,6 @@ export const handlePubMed: SpecialHandler = async (
 			return buildFallback(["PubMed record unavailable from E-utilities summary endpoint"]);
 		}
 
-		// Fetch abstract
 		const abstractUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${pmid}&rettype=abstract&retmode=text`;
 		const abstractResult = await fetchWithRetry(abstractUrl, false);
 
@@ -116,7 +104,6 @@ export const handlePubMed: SpecialHandler = async (
 			notes.push("Fetched abstract via NCBI E-utilities");
 		}
 
-		// Extract DOI and PMCID
 		let doi = "";
 		let pmcid = "";
 		if (article.articleids) {
@@ -129,23 +116,19 @@ export const handlePubMed: SpecialHandler = async (
 			doi = article.elocationid;
 		}
 
-		// Build markdown output
 		let md = `# ${article.title || "PubMed Article"}\n\n`;
 
-		// Authors
 		if (article.authors && article.authors.length > 0) {
 			const authorNames = article.authors.map(a => a.name).join(", ");
 			md += `**Authors:** ${authorNames}\n`;
 		}
 
-		// Journal info
 		if (article.fulljournalname) {
 			md += `**Journal:** ${article.fulljournalname}`;
 			if (article.pubdate) md += ` (${article.pubdate})`;
 			md += "\n";
 		}
 
-		// Volume/Issue/Pages
 		const citation: string[] = [];
 		if (article.volume) citation.push(`Vol ${article.volume}`);
 		if (article.issue) citation.push(`Issue ${article.issue}`);
@@ -154,21 +137,18 @@ export const handlePubMed: SpecialHandler = async (
 			md += `**Citation:** ${citation.join(", ")}\n`;
 		}
 
-		// IDs
 		md += `**PMID:** ${pmid}\n`;
 		if (doi) md += `**DOI:** ${doi}\n`;
 		if (pmcid) md += `**PMCID:** ${pmcid}\n`;
 
 		md += "\n---\n\n";
 
-		// Abstract section
 		if (abstractText) {
 			md += `## Abstract\n\n${abstractText}\n`;
 		} else {
 			md += `## Abstract\n\nNo abstract available.\n`;
 		}
 
-		// Try to fetch MeSH terms
 		try {
 			const meshUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${pmid}&rettype=medline&retmode=text`;
 			const meshResult = await loadPage(meshUrl, {
@@ -195,9 +175,7 @@ export const handlePubMed: SpecialHandler = async (
 					notes.push("Fetched MeSH terms via NCBI E-utilities");
 				}
 			}
-		} catch {
-			// MeSH terms are optional
-		}
+		} catch {}
 
 		return buildResult(md, {
 			url,

@@ -1,16 +1,3 @@
-/**
- * Windsurf (Codeium) Provider
- *
- * Loads configuration from Windsurf's config locations:
- * - User: ~/.codeium/windsurf
- * - Project: .windsurf
- *
- * Supports:
- * - MCP servers from mcp_config.json
- * - Rules from .windsurf/rules/*.md and ~/.codeium/windsurf/memories/global_rules.md
- * - Legacy .windsurfrules file
- */
-
 import { tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
 import { readFile } from "../capability/fs";
@@ -29,10 +16,6 @@ import {
 const PROVIDER_ID = "windsurf";
 const DISPLAY_NAME = "Windsurf";
 const PRIORITY = 50;
-
-// =============================================================================
-// MCP Servers
-// =============================================================================
 
 function parseServerConfig(
 	name: string,
@@ -72,8 +55,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	]);
 
 	const projectContent = projectPath ? await readFile(projectPath) : null;
-	// Load project entries before user entries so a project `enabled: false`
-	// claims its dedupe key before a same-named user server can survive (#7654).
+
 	const configs: Array<{ content: string | null; path: string | null; scope: "user" | "project" }> = [
 		{ content: projectContent, path: projectPath, scope: "project" },
 		{ content: userContent, path: userPath, scope: "user" },
@@ -95,15 +77,10 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	return { items, warnings };
 }
 
-// =============================================================================
-// Rules
-// =============================================================================
-
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const items: Rule[] = [];
 	const warnings: string[] = [];
 
-	// User-level: ~/.codeium/windsurf/memories/global_rules.md
 	const userPath = getUserPath(ctx, "windsurf", "memories/global_rules.md");
 	if (userPath) {
 		const content = await readFile(userPath);
@@ -113,7 +90,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 		}
 	}
 
-	// Project-level: .windsurf/rules/*.md
 	const projectRulesDir = getProjectPath(ctx, "windsurf", "rules");
 	if (projectRulesDir) {
 		const result = await loadFilesFromDir<Rule>(ctx, projectRulesDir, PROVIDER_ID, "project", {
@@ -127,10 +103,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider<MCPServer>(mcpCapability.id, {
 	id: PROVIDER_ID,

@@ -20,7 +20,6 @@ function isStringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every(item => typeof item === "string");
 }
 
-/** Build the exact two-line `proto://` docs embed from the source `docs` Markdown corpus. */
 export async function buildDocsIndexPayload(): Promise<DocsIndexPayload> {
 	const glob = new Glob("**/*.md");
 	const files: string[] = [];
@@ -38,7 +37,6 @@ export async function buildDocsIndexPayload(): Promise<DocsIndexPayload> {
 	};
 }
 
-/** Decode a populated docs embed payload into filenames and index-aligned Markdown bodies. */
 export function decodeDocsIndexPayload(embed: string): DecodedDocsIndexPayload | null {
 	const newline = embed.indexOf("\n");
 	if (newline === -1) return null;

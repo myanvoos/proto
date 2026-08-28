@@ -34,9 +34,6 @@ interface ChangelogProposalInput {
 	onProgress?: (message: string) => void;
 }
 
-/**
- * Update CHANGELOG.md entries for staged changes.
- */
 export async function runChangelogFlow({
 	cwd,
 	model,
@@ -92,9 +89,6 @@ export async function runChangelogFlow({
 	return updated;
 }
 
-/**
- * Apply changelog entries provided by the commit agent.
- */
 export async function applyChangelogProposals({
 	cwd,
 	proposals,

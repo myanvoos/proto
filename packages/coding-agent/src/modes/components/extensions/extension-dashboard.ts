@@ -1,18 +1,3 @@
-/**
- * ExtensionDashboard - Fullscreen alternate-screen control center for extensions.
- *
- * Chrome mirrors the `/settings` overlay: a titled rounded box, a shared
- * {@link TabBar} for provider selection, and a two-column body (inventory list |
- * inspector). Both panes are mouse-aware — wheel scrolls, hover highlights, and
- * clicks select/activate — routed from a single SGR-mouse handler.
- *
- * Navigation:
- * - Tab/Shift+Tab or ←/→: switch provider tab
- * - Up/Down/j/k or wheel: move list selection
- * - Space/Enter or click: toggle selected item (or provider master switch)
- * - Wheel over the inspector: scroll the detail pane
- * - Esc: clear search (if active) then close
- */
 import {
 	type Component,
 	matchesKey,
@@ -45,12 +30,6 @@ import type { DashboardState, ProviderTab } from "./types";
 
 const EXT_FOOTER = " ↑/↓: navigate · Space: toggle · ←/→: provider · Esc: close";
 
-/**
- * Map dashboard provider tabs to {@link TabBar} tabs. Empty *enabled* providers
- * are muted — skipped by keyboard nav and unclickable; disabled providers stay
- * selectable (with a leading disabled glyph) so their master switch can be
- * re-enabled from the list. The "all" tab is never muted or marked.
- */
 export function buildTabBarTabs(tabs: ProviderTab[]): Tab[] {
 	return tabs.map(tab => {
 		const isAll = tab.id === "all";
@@ -70,8 +49,7 @@ export class ExtensionDashboard implements Component {
 	#tabBar!: TabBar;
 	#body!: TwoColumnBody;
 	#refreshToken = 0;
-	// Frame geometry from the last render, for SGR mouse hit-testing. The
-	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1.
+
 	#tabRowStart = 0;
 	#tabRowCount = 0;
 	#bodyRowStart = 0;
@@ -108,7 +86,7 @@ export class ExtensionDashboard implements Component {
 				onSelectionChange: ext => {
 					this.#state.selected = ext;
 					this.#inspector.setExtension(ext);
-					// A fresh selection resets the inspector to the top.
+
 					this.#body.resetInspectorScroll();
 				},
 				onToggle: (extensionId, enabled) => this.#handleExtensionToggle(extensionId, enabled),
@@ -138,22 +116,16 @@ export class ExtensionDashboard implements Component {
 		return tab && tab.id !== "all" ? tab.id : null;
 	}
 
-	/** Live terminal height so the dashboard tracks resize while open. */
 	#terminalRows(): number {
 		return process.stdout.rows || this.terminalHeight || 24;
 	}
 
-	/**
-	 * Fullscreen frame: titled top border, the tab row(s), a divider, the
-	 * two-column body sized to fill the viewport, a divider, the footer hint, and
-	 * the bottom border. Records row geometry for mouse hit-testing.
-	 */
 	render(width: number): readonly string[] {
 		const height = Math.max(14, this.#terminalRows());
 		const innerWidth = Math.max(1, width - 4);
 
 		const tabLines = this.#tabBar.render(innerWidth);
-		// Fixed chrome: top border + tab rows + divider + divider + footer + bottom border.
+
 		const fixedRows = 1 + tabLines.length + 1 + 1 + 1 + 1;
 		const contentRows = Math.max(5, height - fixedRows);
 
@@ -182,16 +154,10 @@ export class ExtensionDashboard implements Component {
 		this.#inspector.invalidate();
 	}
 
-	/**
-	 * Route an SGR mouse report against the last render's geometry. Wheel scrolls
-	 * the pane under the pointer, motion drives hover highlights (tabs + rows),
-	 * and a left click switches tabs or selects/activates a list row.
-	 */
 	#handleMouse(data: string): void {
 		const event = parseSgrMouse(data);
 		if (!event) return;
 
-		// row() insets content by two columns (border + space).
 		const innerCol = event.col - 2;
 		const tabLine = event.row - this.#tabRowStart;
 		const overTabs = tabLine >= 0 && tabLine < this.#tabRowCount;
@@ -233,7 +199,6 @@ export class ExtensionDashboard implements Component {
 		}
 	}
 
-	/** Switch to the provider tab with `id`, re-filtering the list around it. */
 	#selectProviderById(id: string): void {
 		const index = this.#state.tabs.findIndex(t => t.id === id);
 		if (index < 0) return;
@@ -265,9 +230,6 @@ export class ExtensionDashboard implements Component {
 		const sm = this.settings ?? Settings.instance;
 		if (!sm) return;
 
-		// MCP toggles route through the canonical denylist in
-		// `~/.proto/agent/mcp.json` so `/mcp list`, the MCP runtime, and this
-		// dashboard agree on every server's enabled state (issue #3827).
 		if (extensionId.startsWith("mcp:")) {
 			void this.#toggleMcpExtension(extensionId, enabled, sm);
 			return;
@@ -305,10 +267,6 @@ export class ExtensionDashboard implements Component {
 			logger.warn("Failed to persist MCP toggle", { name, enabled, error: String(error) });
 		}
 
-		// Reconcile `settings.disabledExtensions` with the canonical mcp.json
-		// state so a legacy `mcp:<name>` flag from before this routing change
-		// doesn't keep the server marked disabled after the user re-enables it
-		// via the UI.
 		const stored = ((sm.get("disabledExtensions") as string[]) ?? []).slice();
 		const had = stored.indexOf(extensionId);
 		if (enabled && had !== -1) {
@@ -329,7 +287,7 @@ export class ExtensionDashboard implements Component {
 
 	async #refreshFromState(): Promise<void> {
 		const refreshToken = ++this.#refreshToken;
-		// Remember the current tab so it survives the re-sort.
+
 		const currentTabId = this.#state.tabs[this.#state.activeTabIndex]?.id;
 
 		const sm = this.settings ?? Settings.instance;
@@ -338,7 +296,6 @@ export class ExtensionDashboard implements Component {
 		if (refreshToken !== this.#refreshToken) return;
 		this.#state = nextState;
 
-		// Re-anchor on the same tab id in the (re-sorted) list.
 		if (currentTabId) {
 			const newIndex = this.#state.tabs.findIndex(t => t.id === currentTabId);
 			if (newIndex >= 0) {
@@ -367,19 +324,16 @@ export class ExtensionDashboard implements Component {
 	}
 
 	handleInput(data: string): void {
-		// SGR mouse reports (the fullscreen overlay enables tracking).
 		if (data.startsWith("\x1b[<")) {
 			this.#handleMouse(data);
 			return;
 		}
 
-		// Ctrl+C - close immediately
 		if (matchesKey(data, "ctrl+c")) {
 			this.onClose?.();
 			return;
 		}
 
-		// Escape - clear search first, then close
 		if (matchesAppInterrupt(data)) {
 			if (this.#state.searchQuery.length > 0) {
 				this.#state.searchQuery = "";
@@ -393,15 +347,12 @@ export class ExtensionDashboard implements Component {
 			return;
 		}
 
-		// Tab/Shift+Tab or ←/→: switch provider tabs (fires onTabChange).
 		if (this.#tabBar.handleInput(data)) {
 			return;
 		}
 
-		// All other input goes to the list.
 		this.#mainList.handleInput(data);
 
-		// Sync search query back to state.
 		const query = this.#mainList.getSearchQuery();
 		if (query !== this.#state.searchQuery) {
 			this.#state.searchQuery = query;
@@ -411,12 +362,6 @@ export class ExtensionDashboard implements Component {
 	}
 }
 
-/**
- * Two-column body: inventory list on the left, inspector on the right, split by
- * a vertical rule. The inspector is a {@link ScrollView} viewport so long detail
- * panes scroll (wheel) with an auto scrollbar; the left list manages its own
- * windowing. Records the left-column width so the host can hit-test panes.
- */
 class TwoColumnBody implements Component {
 	#maxHeight: number;
 	#rightScroll = 0;
@@ -435,7 +380,6 @@ class TwoColumnBody implements Component {
 		this.#maxHeight = maxHeight;
 	}
 
-	/** Content width of the left (list) column from the last render. */
 	get leftWidth(): number {
 		return this.#leftWidth;
 	}
@@ -444,7 +388,6 @@ class TwoColumnBody implements Component {
 		this.#rightScroll = 0;
 	}
 
-	/** Wheel notch over the inspector pane: scroll its content, clamped. */
 	scrollInspector(delta: -1 | 1): void {
 		const max = Math.max(0, this.#rightTotal - this.#maxHeight);
 		this.#rightScroll = Math.max(0, Math.min(this.#rightScroll + delta, max));
@@ -462,9 +405,6 @@ class TwoColumnBody implements Component {
 		const maxScroll = Math.max(0, this.#rightTotal - numLines);
 		if (this.#rightScroll > maxScroll) this.#rightScroll = maxScroll;
 
-		// `totalRows` omitted so the ScrollView windows `rightLines` by the scroll
-		// offset (rather than treating them as a pre-windowed slice) and pads short
-		// content to exactly `numLines`.
 		const rightView = new ScrollView(rightLines, {
 			height: numLines,
 			scrollbar: "auto",

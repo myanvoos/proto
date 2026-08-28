@@ -7,41 +7,24 @@ import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { lookupSessionTitle, recordSessionTitle } from "./title-index";
 
-/**
- * Coarse lifecycle status of a session, derived from its last persisted message.
- *
- * - `complete` — the last assistant turn ended with no unanswered tool calls, i.e.
- *   the agent yielded control back to the user.
- * - `interrupted` — work was cut off mid-flight: a trailing assistant turn with
- *   pending tool calls, a trailing tool result the agent never continued from, or
- *   a length-truncated turn.
- * - `aborted` — the last assistant turn was cancelled by the user.
- * - `error` — the last assistant turn ended in an error.
- * - `pending` — a trailing user message with no assistant reply persisted after it.
- * - `unknown` — status could not be determined (empty/header-only session, or the
- *   final message was larger than the tail window that was read).
- */
 export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
 
 export interface SessionInfo {
 	path: string;
 	id: string;
-	/** Working directory where the session was started. Empty string for old sessions. */
+
 	cwd: string;
 	title?: string;
-	/** Path to the parent session (if this session was forked). */
+
 	parentSessionPath?: string;
 	created: Date;
 	modified: Date;
 	messageCount: number;
-	/** File size in bytes on disk; used for compact list rendering. */
+
 	size: number;
 	firstMessage: string;
 	allMessagesText: string;
-	/**
-	 * Coarse lifecycle status from the session's last persisted message. Optional:
-	 * synthesized {@link SessionInfo}s (cross-project stubs, tests) leave it unset.
-	 */
+
 	status?: SessionStatus;
 }
 
@@ -50,7 +33,6 @@ interface ResolvedSessionMatch {
 	scope: "local" | "global";
 }
 
-/** Lightweight metadata for a recent session, used in welcome/picker UI. */
 export interface RecentSessionInfo {
 	path: string;
 	name: string;
@@ -58,27 +40,11 @@ export interface RecentSessionInfo {
 }
 
 const SESSION_LIST_PREFIX_BYTES = 4096;
-/**
- * Tail window read to derive {@link SessionStatus}. Large enough to capture a
- * typical final assistant turn (thinking + text); when the final message exceeds
- * it the status falls back to `unknown` rather than misreporting.
- */
+
 const SESSION_LIST_SUFFIX_BYTES = 32_768;
 const SESSION_LIST_PARALLEL_THRESHOLD = 64;
 const SESSION_LIST_MAX_WORKERS = 16;
 
-/**
- * Memoizes {@link scanSessionFile} results keyed by stat identity so listing
- * refreshes (resume picker opens, startup recent-sessions, cross-project
- * scans) skip the open+read+parse for unchanged files. The `statSync` still
- * runs on every scan — it IS the invalidation check: a hit requires both
- * `mtimeMs` and `size` to match. This covers the two mutation paths:
- * - streaming appends grow `size` (and bump `mtimeMs`);
- * - `updateSessionTitle` rewrites the fixed-width title slot in place via
- *   `writeSync`, which leaves `size` unchanged but updates `mtimeMs`.
- * Negative results (unparseable files) are cached too, as `undefined` info.
- * Entries are small header objects, so a generous cap is cheap.
- */
 const SESSION_SCAN_CACHE_MAX = 4096;
 
 interface SessionScanCacheEntry {
@@ -89,9 +55,8 @@ interface SessionScanCacheEntry {
 
 type SessionScanCache = LRUCache<string, SessionScanCacheEntry>;
 
-/** All {@link FileSessionStorage} instances view the same real filesystem, so they share one cache. */
 const fileSessionScanCache: SessionScanCache = new LRUCache({ max: SESSION_SCAN_CACHE_MAX });
-/** Other storages (in-memory test doubles) each carry their own cache to avoid cross-instance path collisions. */
+
 const kScanCache = Symbol("session-listing.scanCache");
 
 interface StorageWithScanCache extends SessionStorage {
@@ -113,7 +78,6 @@ function sanitizeSessionName(value: string | undefined): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/** Format a time difference as a human-readable string */
 function formatTimeAgo(date: Date): string {
 	const now = Date.now();
 	const diffMs = now - date.getTime();
@@ -128,11 +92,6 @@ function formatTimeAgo(date: Date): string {
 	return date.toLocaleDateString();
 }
 
-/**
- * Friendly display name for a session: explicit title, then first user prompt,
- * then a timestamp-based label. The raw UUID `id` is intentionally never used —
- * it is unfriendly and indistinguishable from neighboring sessions in the UI.
- */
 function sessionDisplayName(info: SessionInfo): string {
 	const title = sanitizeSessionName(info.title);
 	if (title) return title;
@@ -155,20 +114,12 @@ function extractTextFromContent(content: Message["content"]): string {
 	return text.join(" ");
 }
 
-/**
- * Derive a {@link SessionStatus} from a tail window of a session file. Entries are
- * newline-terminated on write, so within the window only the first line can be a
- * partial fragment — it simply fails to parse and is skipped. We walk backwards to
- * the last `message` entry and classify by its role / stop reason.
- */
 function deriveSessionStatus(suffix: string): SessionStatus {
 	if (!suffix) return "unknown";
 	const lines = suffix.split("\n");
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const line = lines[i];
-		// Every persisted entry is `JSON.stringify(obj)` → starts with `{`. This
-		// cheaply rejects blank lines and the leading partial fragment without
-		// attempting to parse a multi-KB tail of a truncated line.
+
 		if (line.charCodeAt(0) !== 123) continue;
 		let entry: { type?: string; message?: TailMessage };
 		try {
@@ -183,12 +134,6 @@ function deriveSessionStatus(suffix: string): SessionStatus {
 	return "unknown";
 }
 
-/**
- * Last assistant text in the transcript, for reply-composer recap headers.
- * Walks a bounded suffix window backward to the most recent `message` entry
- * with `role: "assistant"`; undefined when no assistant text is present or
- * the file is unreadable. Size-bounded so large transcripts never load fully.
- */
 export async function readLastAssistantText(sessionPath: string): Promise<string | undefined> {
 	let suffix: string;
 	try {
@@ -238,18 +183,14 @@ function statusFromTailMessage(message: TailMessage): SessionStatus {
 				case "length":
 					return "interrupted";
 			}
-			// A turn that ends without unanswered tool calls means the agent yielded
-			// control back to the user — complete. Trailing tool calls (no tool
-			// results after) mean the loop was cut off before running them.
+
 			const content = message.content;
 			if (Array.isArray(content) && content.some(isToolCallBlock)) return "interrupted";
 			return "complete";
 		}
 		case "toolResult":
-			// Tools ran but the agent never produced the following assistant turn.
 			return "interrupted";
 		case "user":
-			// User message with no assistant reply persisted after it.
 			return "pending";
 		default:
 			return "unknown";
@@ -418,12 +359,6 @@ function getSessionListWorkerCount(fileCount: number): number {
 	);
 }
 
-/**
- * Scan a single session file into a {@link SessionInfo}. Always reads the 4 KB
- * header/first-message prefix; only reads the 32 KB tail window (and derives
- * {@link SessionStatus}) when `withStatus` is set — the recent/most-recent
- * lookups skip it.
- */
 async function scanSessionFile(
 	file: string,
 	storage: SessionStorage,
@@ -433,12 +368,10 @@ async function scanSessionFile(
 	try {
 		stat = storage.statSync(file);
 	} catch {
-		// Missing/unstatable file: no stat identity to cache under.
 		return undefined;
 	}
 	const cache = getSessionScanCache(storage);
-	// `withStatus` changes what a scan reads (tail window) and returns, so the
-	// two variants are cached under distinct keys.
+
 	const cacheKey = withStatus ? `s\0${file}` : `h\0${file}`;
 	const cached = cache.get(cacheKey);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
@@ -454,8 +387,6 @@ async function scanSessionFile(
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
 		const header = parseSessionListHeader(content, entries);
 		if (!header) {
-			// Cache the negative result too: an unparseable file stays unparseable
-			// until its stat identity changes.
 			cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
 			return undefined;
 		}
@@ -505,8 +436,7 @@ async function scanSessionFile(
 			allMessagesText: allMessages.length > 0 ? allMessages.join(" ") : firstMessage,
 			status: withStatus ? deriveSessionStatus(suffix) : undefined,
 		};
-		// The cache keeps its own shallow copy; hits also hand out copies, so
-		// callers can never mutate the shared cached object.
+
 		cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: { ...info } });
 		return info;
 	} catch {
@@ -552,15 +482,6 @@ async function collectSessionsFromFiles(
 	return sessions;
 }
 
-/**
- * Promote orphaned `<basename>.jsonl.<snowflake>.bak` backups created by the
- * EPERM-rewrite path back to their primary path when the primary is missing.
- * This runs once per session-dir scan, before the main `*.jsonl` glob, so a
- * crash between the two renames in the EPERM-rewrite path does not leave the
- * user's last good state stranded outside the loader's view.
- *
- * Exported for testing.
- */
 export async function recoverOrphanedBackups(sessionDir: string, storage: SessionStorage): Promise<void> {
 	let backups: string[];
 	try {
@@ -569,11 +490,11 @@ export async function recoverOrphanedBackups(sessionDir: string, storage: Sessio
 		return;
 	}
 	if (backups.length === 0) return;
-	// For each primary path, pick the newest backup (highest mtime) as the recovery source.
+
 	const candidates = new Map<string, { backup: string; mtimeMs: number }>();
 	for (const backup of backups) {
 		const name = path.basename(backup);
-		// Expect "<primary>.<snowflake>.bak" where <primary> ends in ".jsonl".
+
 		if (!name.endsWith(".bak")) continue;
 		const trimmed = name.slice(0, -".bak".length);
 		const dotIdx = trimmed.lastIndexOf(".");
@@ -637,22 +558,14 @@ async function scanSessionDirReadOnly(
 	}
 }
 
-/**
- * List sessions in a resolved session directory (newest first), reading each
- * file's lifecycle {@link SessionStatus}.
- */
 export function listSessions(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
 	return scanSessionDir(sessionDir, storage, true);
 }
 
-/**
- * List sessions without repairing orphaned backups or mutating the directory.
- */
 export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
 	return scanSessionDirReadOnly(sessionDir, storage, true);
 }
 
-/** List all sessions across all project directories (newest first). */
 export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
 	const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");
 	try {
@@ -665,7 +578,6 @@ export async function listAllSessions(storage: SessionStorage = new FileSessionS
 	}
 }
 
-/** Exported for testing */
 export async function findMostRecentSession(
 	sessionDir: string,
 	storage: SessionStorage = new FileSessionStorage(),
@@ -674,7 +586,6 @@ export async function findMostRecentSession(
 	return sessions[0]?.path ?? null;
 }
 
-/** Session id embedded in a `<file-safe-timestamp>_<id>.jsonl` filename, if present. */
 function sessionIdFromSessionPath(file: string): string | undefined {
 	const base = path.basename(file);
 	if (!base.endsWith(".jsonl")) return undefined;
@@ -683,16 +594,6 @@ function sessionIdFromSessionPath(file: string): string | undefined {
 	return base.slice(sep + 1, -".jsonl".length) || undefined;
 }
 
-/**
- * Get recent sessions for display in the welcome screen.
- *
- * Deliberately avoids {@link scanSessionDir}'s full-directory content scan
- * (multi-hundred-ms with thousands of sessions): lists files, sorts by mtime,
- * and resolves names for the newest `limit` files from the history.db title
- * index. Files without an indexed title (legacy sessions, branch/fork copies)
- * fall back to a per-file header scan whose title — when present — is
- * backfilled into the index so the next launch skips the read.
- */
 export async function getRecentSessions(
 	sessionDir: string,
 	limit = 4,
@@ -708,14 +609,10 @@ export async function getRecentSessions(
 	for (const file of files) {
 		try {
 			byMtime.push({ file, stat: storage.statSync(file) });
-		} catch {
-			// Vanished between glob and stat; skip.
-		}
+		} catch {}
 	}
 	byMtime.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 
-	// The index is keyed by real session ids; in-memory test storages must not
-	// touch the process-wide history.db.
 	const useIndex = storage instanceof FileSessionStorage;
 	const recent: RecentSessionInfo[] = [];
 	for (const { file, stat } of byMtime) {
@@ -756,9 +653,7 @@ function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): bool
 	return fileSessionId.startsWith(normalizedArg);
 }
 
-/** Controls cross-directory fallback for resumable session lookup. */
 interface ResolveResumableSessionOptions {
-	/** Search default global session buckets after the active/custom session directory misses. */
 	allowGlobalFallback?: boolean;
 }
 

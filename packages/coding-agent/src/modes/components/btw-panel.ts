@@ -67,7 +67,6 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#rebuild();
 	}
 
-	/** Shows that the completed answer is being promoted into the chat session. */
 	markBranching(): void {
 		if (this.#closed) return;
 		this.#state = "branching";
@@ -112,10 +111,7 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.addChild(this.#contentComponent());
 		this.addChild(new Spacer(1));
 		this.addChild(new BtwFooter(() => this.#footerLine()));
-		// Component-scoped: a rebuild replaces only this panel's own children
-		// (streaming deltas arrive per token, and a full compose would re-walk
-		// the whole transcript each time). Before the panel is mounted the TUI
-		// cannot resolve it and falls back to a full compose on its own.
+
 		this.#tui.requestComponentRender(this);
 	}
 

@@ -1,5 +1,3 @@
-//! Bun package-manager, test-runner, and tool output filters.
-
 use super::{cpp, generic, js_tools, lint, node_tests, pkg};
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 

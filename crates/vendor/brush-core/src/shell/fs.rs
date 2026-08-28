@@ -1,4 +1,4 @@
-//! Filesystem interaction in the shell.
+
 
 use std::path::{Path, PathBuf};
 
@@ -13,11 +13,11 @@ use crate::{
 };
 
 impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
-	/// Sets the shell's current working directory to the given path.
-	///
-	/// # Arguments
-	///
-	/// * `target_dir` - The path to set as the working directory.
+
+
+
+
+
 	pub fn set_working_dir(&mut self, target_dir: impl AsRef<Path>) -> Result<(), error::Error> {
 		let abs_path = self.absolute_path(target_dir.as_ref());
 
@@ -32,7 +32,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			},
 		}
 
-		// Normalize the path (but don't canonicalize it).
+
 		let cleaned_path = abs_path.normalize();
 
 		let pwd = cleaned_path.to_string_lossy().to_string();
@@ -57,12 +57,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Tilde-shortens the given string, replacing the user's home directory with
-	/// a tilde.
-	///
-	/// # Arguments
-	///
-	/// * `s` - The string to shorten.
+
+
+
+
+
+
 	pub fn tilde_shorten(&self, s: String) -> String {
 		if let Some(home_dir) = self.home_dir()
 			&& let Some(stripped) = s.strip_prefix(home_dir.to_string_lossy().as_ref())
@@ -72,22 +72,22 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		s
 	}
 
-	/// Returns the shell's current home directory, if available.
+
 	pub(crate) fn home_dir(&self) -> Option<PathBuf> {
 		if let Some(home) = self.env.get_str("HOME", self) {
 			Some(PathBuf::from(home.to_string()))
 		} else {
-			// HOME isn't set, so let's sort it out ourselves.
+
 			users::get_current_user_home_dir()
 		}
 	}
 
-	/// Finds executables in the shell's current default PATH, matching the given
-	/// glob pattern.
-	///
-	/// # Arguments
-	///
-	/// * `required_glob_pattern` - The glob pattern to match against.
+
+
+
+
+
+
 	pub fn find_executables_in_path<'a>(
 		&'a self,
 		filename: &'a str,
@@ -98,12 +98,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		pathsearch::search_for_executable(paths, filename)
 	}
 
-	/// Finds executables in the shell's current default PATH, with filenames
-	/// matching the given prefix.
-	///
-	/// # Arguments
-	///
-	/// * `filename_prefix` - The prefix to match against executable filenames.
+
+
+
+
+
+
 	pub fn find_executables_in_path_with_prefix(
 		&self,
 		filename_prefix: &str,
@@ -115,13 +115,13 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		pathsearch::search_for_executable_with_prefix(paths, filename_prefix, case_insensitive)
 	}
 
-	/// Determines whether the given filename is the name of an executable in one
-	/// of the directories in the shell's current PATH. If found, returns the
-	/// path.
-	///
-	/// # Arguments
-	///
-	/// * `candidate_name` - The name of the file to look for.
+
+
+
+
+
+
+
 	pub fn find_first_executable_in_path<S: AsRef<str>>(
 		&self,
 		candidate_name: S,
@@ -131,14 +131,14 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		pathsearch::search_for_executable(paths, candidate_name.as_ref()).next()
 	}
 
-	/// Uses the shell's hash-based path cache to check whether the given
-	/// filename is the name of an executable in one of the directories in the
-	/// shell's current PATH. If found, ensures the path is in the cache and
-	/// returns it.
-	///
-	/// # Arguments
-	///
-	/// * `candidate_name` - The name of the file to look for.
+
+
+
+
+
+
+
+
 	pub fn find_first_executable_in_path_using_cache<S: AsRef<str>>(
 		&mut self,
 		candidate_name: S,
@@ -158,11 +158,11 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		}
 	}
 
-	/// Gets the absolute form of the given path.
-	///
-	/// # Arguments
-	///
-	/// * `path` - The path to get the absolute form of.
+
+
+
+
+
 	pub fn absolute_path(&self, path: impl AsRef<Path>) -> PathBuf {
 		let normalized_path = crate::sys::fs::normalize_shell_path(path.as_ref());
 		let path = normalized_path.as_ref();
@@ -173,34 +173,34 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		}
 	}
 
-	/// Opens the given file, using the context of this shell and the provided
-	/// execution parameters.
-	///
-	/// # Arguments
-	///
-	/// * `options` - The options to use opening the file.
-	/// * `path` - The path to the file to open; may be relative to the shell's
-	///   working directory.
-	/// * `params` - Execution parameters.
+
+
+
+
+
+
+
+
+
 	pub(crate) fn open_file(
 		&self,
 		options: &std::fs::OpenOptions,
 		path: impl AsRef<Path>,
 		params: &ExecutionParameters,
 	) -> Result<openfiles::OpenFile, std::io::Error> {
-		// Give platform-specific code a chance to handle special files
-		// (e.g. /dev/null on Windows, which needs to open NUL instead).
-		// This is checked before absolute_path so that paths like /dev/null
-		// are intercepted on platforms where they aren't valid native paths.
+
+
+
+
 		if let Some(result) = crate::sys::fs::try_open_special_file(path.as_ref()) {
 			return result.map(openfiles::OpenFile::from);
 		}
 
 		let path_to_open = self.absolute_path(path.as_ref());
 
-		// See if this is a reference to a file descriptor, in which case the actual
-		// /dev/fd* file path for this process may not match with what's in the
-		// execution parameters.
+
+
+
 		if let Some(parent) = path_to_open.parent()
 			&& parent == Path::new("/dev/fd")
 			&& let Some(filename) = path_to_open.file_name()
@@ -213,12 +213,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(options.open(path_to_open)?.into())
 	}
 
-	/// Replaces the shell's currently configured open files with the given set.
-	/// Typically only used by exec-like builtins.
-	///
-	/// # Arguments
-	///
-	/// * `open_files` - The new set of open files to use.
+
+
+
+
+
+
 	pub fn replace_open_files(
 		&mut self,
 		open_fds: impl Iterator<Item = (ShellFd, openfiles::OpenFile)>,

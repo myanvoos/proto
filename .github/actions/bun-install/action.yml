@@ -43,26 +43,16 @@ runs:
            curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.0"
            echo "${BUN_INSTALL}/bin" >> "$GITHUB_PATH"
 
-      # Off-infra (GitHub-hosted): actions/cache for the bun store, split into
-      # restore + save. actions/cache entries are scoped per ref but count
-      # against the shared 10 GB repo quota — letting every PR branch save its
-      # own copy of the ~500 MB store duplicated it 19x and evicted other
-      # jobs' caches. PRs only restore; non-PR runs (main pushes, releases,
-      # dispatches) produce the shared entry every PR can see.
       - name: Restore bun store (GitHub cache)
         id: bun-cache
         if: steps.env.outputs.cache == 'gha'
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
            path: ~/.bun/install/cache
            key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
-           # A lockfile change seeds from the previous store: entries are
-           # content-hash-named tarballs, so stale extras waste only space and
-           # bun downloads just the delta.
            restore-keys: |
               bun-${{ runner.os }}-
 
-      # On-infra (proto-kata): the pod mounts a shared PVC at bun's store path.
       - name: Prepare mounted bun store
         if: steps.env.outputs.cache == 'mounted'
         shell: bash
@@ -88,11 +78,9 @@ runs:
            retry_cache="$(mktemp -d "${RUNNER_TEMP:-/tmp}/bun-cache-retry.XXXXXX")"
            bun install --frozen-lockfile --cache-dir="$retry_cache"
 
-      # Producer half of the split cache: only non-PR runs save, so the store
-      # exists once per lockfile generation instead of once per PR ref.
       - name: Save bun store (GitHub cache)
         if: steps.env.outputs.cache == 'gha' && github.event_name != 'pull_request' && steps.bun-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
            path: ~/.bun/install/cache
            key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}

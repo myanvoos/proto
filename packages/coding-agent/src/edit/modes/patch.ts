@@ -1,10 +1,3 @@
-/**
- * Patch application logic for the edit tool.
- *
- * Applies parsed diff hunks to file content using fuzzy matching
- * for robust handling of whitespace and formatting differences.
- */
-
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -98,21 +91,10 @@ export interface ApplyPatchOptions {
 	fuzzyThreshold?: number;
 	allowFuzzy?: boolean;
 	fs?: FileSystem;
-	/**
-	 * Permit `op: "create"` to replace an existing file (full-file overwrite).
-	 * The JSON `patch` edit mode sanctions create-as-overwrite for major
-	 * restructures (see prompts/tools/patch.md); the Codex `apply_patch`
-	 * envelope documents `*** Add File` as strictly non-overwriting and must
-	 * leave this unset.
-	 */
+
 	allowCreateOverwrite?: boolean;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Default File System
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Default filesystem implementation using Bun APIs */
 export const defaultFileSystem: FileSystem = {
 	async exists(path: string): Promise<boolean> {
 		return Bun.file(path).exists();
@@ -124,14 +106,6 @@ export const defaultFileSystem: FileSystem = {
 		return fs.promises.readFile(path);
 	},
 	async write(path: string, content: string): Promise<void> {
-		// Crash-atomic: write a sibling temp and rename it over the target so a
-		// death mid-write (SIGINT, OOM-kill, full disk) can never leave the user's
-		// source truncated. The interactive editor overrides this with the LSP
-		// writethrough (also atomic); this default backs every programmatic /
-		// SDK apply_patch caller that does not pass its own filesystem, so the
-		// shipped default must be as safe as the interactive path. Mode is carried
-		// forward because the rename swaps the inode (a bare atomic write would
-		// otherwise strip a script's +x); new files default to 0o644.
 		await atomicWriteFilePreservingMode(path, await serializeEditFileText(path, path, content));
 	},
 	async delete(path: string): Promise<void> {
@@ -141,10 +115,6 @@ export const defaultFileSystem: FileSystem = {
 		await fs.promises.mkdir(path, { recursive: true });
 	},
 };
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Internal Types
-// ═══════════════════════════════════════════════════════════════════════════
 
 interface Replacement {
 	startIndex: number;
@@ -225,27 +195,19 @@ function canConvertTabsToSpaces(oldLines: string[], actualLines: string[], space
 	return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Replacement Computation
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Adjust indentation of newLines to match the delta between patternLines and actualLines */
 function adjustLinesIndentation(patternLines: string[], actualLines: string[], newLines: string[]): string[] {
 	if (patternLines.length === 0 || actualLines.length === 0 || newLines.length === 0) {
 		return newLines;
 	}
 
-	// If pattern already matches actual exactly (including indentation), preserve agent's intended changes
 	if (areEqualLines(patternLines, actualLines)) {
 		return newLines;
 	}
 
-	// If the patch is purely an indentation change (same trimmed content), apply exactly as specified
 	if (areEqualTrimmedLines(patternLines, newLines)) {
 		return newLines;
 	}
 
-	// Detect indent character from actual content
 	const indentChar = getIndentChar(actualLines);
 
 	let patternTabOnly = true;
@@ -300,12 +262,8 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 		}
 	}
 
-	// Reverse: pattern uses spaces, actual uses tabs — infer spaces = tabs * width + offset
-	// Collect (tabs, spaces) pairs from matched lines to solve for the model's tab rendering.
-	// With one data point: spaces = tabs * width (offset=0).
-	// With two+: solve ax + b via pairs with distinct tab counts.
 	if (!patternMixed && !actualMixed && patternSpaceOnly && actualTabOnly) {
-		const samples = new Map<number, number>(); // tabs -> spaces
+		const samples = new Map<number, number>();
 		const lineCount = Math.min(patternLines.length, actualLines.length);
 		let consistent = true;
 		for (let i = 0; i < lineCount; i++) {
@@ -328,14 +286,11 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 			let offset = 0;
 
 			if (samples.size === 1) {
-				// One level: assume offset=0, width = spaces / tabs
 				const [[tabs, spaces]] = samples;
 				if (spaces % tabs === 0) {
 					tabWidth = spaces / tabs;
 				}
 			} else {
-				// Two+ levels: solve via any two distinct pairs
-				// spaces = tabs * width + offset  =>  width = (s2 - s1) / (t2 - t1)
 				const entries = [...samples.entries()];
 				const [t1, s1] = entries[0];
 				const [t2, s2] = entries[1];
@@ -343,7 +298,7 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 					const w = (s2 - s1) / (t2 - t1);
 					if (w > 0 && Number.isInteger(w)) {
 						const b = s1 - t1 * w;
-						// Validate all samples against this model
+
 						let valid = true;
 						for (const [t, s] of samples) {
 							if (t * w + b !== s) {
@@ -364,12 +319,12 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 					if (line.trim().length === 0) return line;
 					const ws = countLeadingWhitespace(line);
 					if (ws === 0) return line;
-					// Reverse: tabs = (spaces - offset) / width
+
 					const adjusted = ws - offset;
 					if (adjusted >= 0 && adjusted % tabWidth! === 0) {
 						return "\t".repeat(adjusted / tabWidth!) + line.slice(ws);
 					}
-					// Partial tab — keep remainder as spaces
+
 					const tabCount = Math.floor(adjusted / tabWidth!);
 					const remainder = adjusted - tabCount * tabWidth!;
 					if (tabCount >= 0) {
@@ -382,8 +337,6 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 		}
 	}
 
-	// Build a map from trimmed content to actual lines (by content, not position)
-	// This handles fuzzy matches where pattern and actual may not be positionally aligned
 	const contentToActualLines = new Map<string, string[]>();
 	for (const line of actualLines) {
 		const trimmed = line.trim();
@@ -408,8 +361,7 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 	const deltas = collectIndentDeltas(patternLines, actualLines);
 	const delta = deltas.length > 0 && deltas.every(value => value === deltas[0]) ? deltas[0] : undefined;
 
-	// Track which actual lines we've used to handle duplicate content correctly
-	const usedActualLines = new Map<string, number>(); // trimmed content -> count used
+	const usedActualLines = new Map<string, number>();
 
 	return newLines.map(newLine => {
 		if (newLine.trim().length === 0) {
@@ -419,7 +371,6 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 		const trimmed = newLine.trim();
 		const matchingActualLines = contentToActualLines.get(trimmed);
 
-		// Check if this is a context line (same trimmed content exists in actual)
 		if (matchingActualLines && matchingActualLines.length > 0) {
 			if (matchingActualLines.length === 1) {
 				return matchingActualLines[0];
@@ -430,12 +381,11 @@ function adjustLinesIndentation(patternLines: string[], actualLines: string[], n
 			const usedCount = usedActualLines.get(trimmed) ?? 0;
 			if (usedCount < matchingActualLines.length) {
 				usedActualLines.set(trimmed, usedCount + 1);
-				// Use actual file content directly for context lines
+
 				return matchingActualLines[usedCount];
 			}
 		}
 
-		// This is a new/added line - apply consistent delta if safe
 		if (delta && delta !== 0) {
 			const newIndent = countLeadingWhitespace(newLine);
 			if (newIndent === patternMin) {
@@ -507,8 +457,7 @@ function collapseRepeatedBlocks(oldLines: string[], newLines: string[]): HunkVar
 		let i = 0;
 		while (i < output.length) {
 			let collapsed = false;
-			// Only blocks whose lines are all shared are collapsible; if the first line
-			// is not shared no size can match, so skip the size search entirely.
+
 			if (shared.has(output[i])) {
 				for (let size = Math.floor((output.length - i) / 2); size >= 2; size--) {
 					let same = true;
@@ -658,23 +607,12 @@ function chooseHintedMatch(
 	return undefined;
 }
 
-/** Get hint index from hunk's line number */
 function getHunkHintIndex(hunk: DiffHunk, currentIndex: number): number | undefined {
 	if (hunk.oldStartLine === undefined) return undefined;
 	const hintIndex = Math.max(0, hunk.oldStartLine - 1);
 	return hintIndex >= currentIndex ? hintIndex : undefined;
 }
 
-/**
- * Find hierarchical context in file lines.
- *
- * Handles three formats:
- * 1. Simple context: "function foo" - find this line
- * 2. Hierarchical (newline): "class Foo\nmethod" - find class, then method after it
- * 3. Hierarchical (space): "class Foo method" - try as literal first, then split and search
- *
- * @returns The result from finding the final (innermost) context, or undefined if not found
- */
 function findHierarchicalContext(
 	lines: string[],
 	context: string,
@@ -682,7 +620,6 @@ function findHierarchicalContext(
 	lineHint: number | undefined,
 	allowFuzzy: boolean,
 ): ContextLineResult {
-	// Check for newline-separated hierarchical contexts (from nested @@ anchors)
 	if (context.includes("\n")) {
 		const parts = context
 			.split("\n")
@@ -736,7 +673,6 @@ function findHierarchicalContext(
 		return { index: undefined, confidence: 0 };
 	}
 
-	// Try literal context first
 	const spaceParts = context.split(/\s+/).filter(p => p.length > 0);
 	const hasSignatureChars = /[(){}[\]]/.test(context);
 	if (!hasSignatureChars && spaceParts.length > 2) {
@@ -771,7 +707,6 @@ function findHierarchicalContext(
 
 	const result = findContextLine(lines, context, startFrom, { allowFuzzy });
 
-	// If line hint exists and result is ambiguous or missing, try from hint
 	if ((result.index === undefined || (result.matchCount ?? 0) > 1) && lineHint !== undefined) {
 		const hintStart = Math.max(0, lineHint - 1);
 		const hintedResult = findContextLine(lines, context, hintStart, { allowFuzzy });
@@ -780,7 +715,6 @@ function findHierarchicalContext(
 		}
 	}
 
-	// If found uniquely, return it
 	if (result.index !== undefined && (result.matchCount ?? 0) <= 1) {
 		return result;
 	}
@@ -788,7 +722,6 @@ function findHierarchicalContext(
 		return result;
 	}
 
-	// Try from beginning if not found from current position
 	if (result.index === undefined && startFrom !== 0) {
 		const fromStartResult = findContextLine(lines, context, 0, { allowFuzzy });
 		if (fromStartResult.index !== undefined && (fromStartResult.matchCount ?? 0) <= 1) {
@@ -799,8 +732,6 @@ function findHierarchicalContext(
 		}
 	}
 
-	// Fallback: try space-separated hierarchical matching
-	// e.g., "class PatchTool constructor" -> find "class PatchTool", then "constructor" after it
 	if (!hasSignatureChars && spaceParts.length > 1) {
 		const outer = spaceParts.slice(0, -1).join(" ");
 		const inner = spaceParts[spaceParts.length - 1];
@@ -838,7 +769,6 @@ function findHierarchicalContext(
 	return result;
 }
 
-/** Find sequence with optional hint position, returning full search result */
 function findSequenceWithHint(
 	lines: string[],
 	pattern: string[],
@@ -847,7 +777,6 @@ function findSequenceWithHint(
 	eof: boolean,
 	allowFuzzy: boolean,
 ): SequenceSearchResult {
-	// Prefer content-based search starting from currentIndex
 	const primaryResult = seekSequence(lines, pattern, currentIndex, eof, { allowFuzzy });
 	if (
 		primaryResult.matchCount &&
@@ -867,7 +796,6 @@ function findSequenceWithHint(
 		return primaryResult;
 	}
 
-	// Use line hint as a secondary bias only if needed
 	if (hintIndex !== undefined && hintIndex !== currentIndex) {
 		const hintedResult = seekSequence(lines, pattern, hintIndex, eof, { allowFuzzy });
 		if (hintedResult.index !== undefined || (hintedResult.matchCount && hintedResult.matchCount > 1)) {
@@ -875,7 +803,6 @@ function findSequenceWithHint(
 		}
 	}
 
-	// Last resort: search from beginning (handles out-of-order hunks)
 	if (currentIndex !== 0) {
 		const fromStartResult = seekSequence(lines, pattern, 0, eof, { allowFuzzy });
 		if (fromStartResult.index !== undefined || (fromStartResult.matchCount && fromStartResult.matchCount > 1)) {
@@ -932,10 +859,6 @@ function attemptSequenceFallback(
 	return undefined;
 }
 
-/**
- * Apply a hunk using character-based fuzzy matching.
- * Used when the hunk contains only -/+ lines without context.
- */
 function applyCharacterMatch(
 	originalContent: string,
 	path: string,
@@ -966,7 +889,6 @@ function applyCharacterMatch(
 		}
 	}
 
-	// Check for multiple exact occurrences
 	if (matchOutcome.occurrences && matchOutcome.occurrences > 1) {
 		const previews = matchOutcome.occurrencePreviews?.join("\n\n") ?? "";
 		const moreMsg = matchOutcome.occurrences > 5 ? ` (showing first 5 of ${matchOutcome.occurrences})` : "";
@@ -995,7 +917,6 @@ function applyCharacterMatch(
 		throw new ApplyPatchError(`Failed to find expected lines in ${path}:\n${oldText}`);
 	}
 
-	// Adjust indentation to match what was actually found
 	const adjustedNewText = adjustIndentation(normalizedOldText, matchOutcome.match.actualText, newText);
 
 	const warnings: string[] = [];
@@ -1006,7 +927,6 @@ function applyCharacterMatch(
 		);
 	}
 
-	// Apply the replacement
 	const before = normalizedContent.substring(0, matchOutcome.match.startIndex);
 	const after = normalizedContent.substring(matchOutcome.match.startIndex + matchOutcome.match.actualText.length);
 	return { content: before + adjustedNewText + after, warnings };
@@ -1030,12 +950,6 @@ async function readExistingPatchFile(fileSystem: FileSystem, absolutePath: strin
 	}
 }
 
-/**
- * A prefix/substring strategy matched pattern lines that cover only part of
- * the corresponding file lines; replacing whole lines would silently drop the
- * uncovered text the model never saw. Allow the replacement only when every
- * discarded piece (normalized) survives somewhere in the hunk's new lines.
- */
 function assertPartialMatchPreservesDiscardedText(
 	path: string,
 	pattern: string[],
@@ -1065,9 +979,6 @@ function assertPartialMatchPreservesDiscardedText(
 	}
 }
 
-/**
- * Compute replacements needed to transform originalLines using the diff hunks.
- */
 function computeReplacements(
 	originalLines: string[],
 	path: string,
@@ -1097,9 +1008,7 @@ function computeReplacements(
 			lineIndex = clampLow(lineHint - 1, 0, originalLines.length - 1);
 		}
 
-		// If hunk has a changeContext, find it and adjust lineIndex
 		if (hunk.changeContext !== undefined) {
-			// Use hierarchical context matching for nested @@ anchors and space-separated contexts
 			const result = findHierarchicalContext(originalLines, hunk.changeContext, lineIndex, lineHint, allowFuzzy);
 			const idx = result.index;
 			contextIndex = idx;
@@ -1133,8 +1042,6 @@ function computeReplacements(
 					throw new ApplyPatchError(`Failed to find context '${displayContext}' in ${path}`);
 				}
 			} else {
-				// If oldLines[0] matches the final context, start search at idx (not idx+1)
-				// This handles the common case where @@ scope and first context line are identical
 				const firstOldLine = hunk.oldLines[0];
 				const finalContext = hunk.changeContext.includes("\n")
 					? hunk.changeContext.split("\n").pop()?.trim()
@@ -1150,16 +1057,12 @@ function computeReplacements(
 		}
 
 		if (hunk.oldLines.length === 0) {
-			// Pure addition - prefer changeContext position, then line hint, then end of file
 			let insertionIdx: number;
 			if (hunk.changeContext !== undefined) {
-				// changeContext was processed above; lineIndex is set to the context line or after it
 				insertionIdx = lineIndex;
 			} else {
 				const lineHintForInsertion = hunk.oldStartLine ?? hunk.newStartLine;
 				if (lineHintForInsertion !== undefined) {
-					// Reject if line hint is out of range for insertion
-					// Valid insertion points are 1 to (file length + 1) for 1-indexed hints
 					if (lineHintForInsertion < 1) {
 						throw new ApplyPatchError(
 							`Line hint ${lineHintForInsertion} is out of range for insertion in ${path} ` +
@@ -1185,7 +1088,6 @@ function computeReplacements(
 			continue;
 		}
 
-		// Try to find the old lines in the file
 		let pattern = [...hunk.oldLines];
 		const matchHint = getHunkHintIndex(hunk, lineIndex);
 		let searchResult = findSequenceWithHint(
@@ -1198,7 +1100,6 @@ function computeReplacements(
 		);
 		let newSlice = [...hunk.newLines];
 
-		// Retry without trailing empty line if present
 		if (searchResult.index === undefined && pattern.length > 0 && pattern[pattern.length - 1] === "") {
 			pattern = pattern.slice(0, -1);
 			if (newSlice.length > 0 && newSlice[newSlice.length - 1] === "") {
@@ -1325,7 +1226,6 @@ function computeReplacements(
 			);
 		}
 
-		// Reject if match is ambiguous (prefix/substring matching found multiple matches)
 		if (searchResult.matchCount !== undefined && searchResult.matchCount > 1) {
 			const previews = formatSequenceMatchPreviews(
 				originalLines,
@@ -1340,9 +1240,6 @@ function computeReplacements(
 			);
 		}
 
-		// For simple diffs (no context marker, no context lines), check for multiple occurrences
-		// This ensures ambiguous replacements are rejected
-		// Skip this check if isEndOfFile is set (EOF marker provides disambiguation)
 		if (hunk.changeContext === undefined && !hunk.hasContextLines && !hunk.isEndOfFile && lineHint === undefined) {
 			const secondMatch = seekSequence(originalLines, pattern, found + 1, false, { allowFuzzy });
 			if (secondMatch.index !== undefined) {
@@ -1355,11 +1252,8 @@ function computeReplacements(
 			}
 		}
 
-		// Adjust indentation if needed (handles fuzzy matches where indentation differs)
 		const actualMatchedLines = originalLines.slice(found, found + pattern.length);
 
-		// Skip pure-context hunks (no +/- lines — oldLines === newLines).
-		// They serve only to advance lineIndex for subsequent hunks.
 		let isNoOp = pattern.length === newSlice.length;
 		if (isNoOp) {
 			for (let i = 0; i < pattern.length; i++) {
@@ -1384,7 +1278,6 @@ function computeReplacements(
 		lineIndex = found + pattern.length;
 	}
 
-	// Sort by start index
 	replacements.sort((a, b) => a.startIndex - b.startIndex);
 
 	for (let i = 1; i < replacements.length; i++) {
@@ -1410,13 +1303,9 @@ function computeReplacements(
 	return { replacements, warnings };
 }
 
-/**
- * Apply replacements to lines, returning the modified content.
- */
 function applyReplacements(lines: string[], replacements: Replacement[]): string[] {
 	const result = [...lines];
 
-	// Apply in reverse order to maintain indices
 	for (let i = replacements.length - 1; i >= 0; i--) {
 		const { startIndex, oldLen, newLines } = replacements[i];
 		result.splice(startIndex, oldLen);
@@ -1426,9 +1315,6 @@ function applyReplacements(lines: string[], replacements: Replacement[]): string
 	return result;
 }
 
-/**
- * Apply diff hunks to file content.
- */
 function applyHunksToContent(
 	originalContent: string,
 	path: string,
@@ -1438,16 +1324,14 @@ function applyHunksToContent(
 ): { content: string; warnings: string[] } {
 	const hadFinalNewline = originalContent.endsWith("\n");
 
-	// Detect simple replace pattern: single hunk, no @@ context, no context lines, has old lines to match
-	// Only use character-based matching when there are no hints to disambiguate
 	if (hunks.length === 1) {
 		const hunk = hunks[0];
 		if (
 			hunk.changeContext === undefined &&
 			!hunk.hasContextLines &&
 			hunk.oldLines.length > 0 &&
-			hunk.oldStartLine === undefined && // No line hint to use for positioning
-			!hunk.isEndOfFile // No EOF targeting (prefer end of file)
+			hunk.oldStartLine === undefined &&
+			!hunk.isEndOfFile
 		) {
 			const { content, warnings } = applyCharacterMatch(originalContent, path, hunk, fuzzyThreshold, allowFuzzy);
 			return { content: applyTrailingNewlinePolicy(content, hadFinalNewline), warnings };
@@ -1456,11 +1340,8 @@ function applyHunksToContent(
 
 	let originalLines = originalContent.split("\n");
 
-	// Track if we have a trailing empty element from the final newline
-	// Only strip ONE trailing empty (the newline marker), preserve actual blank lines
 	let strippedTrailingEmpty = false;
 	if (hadFinalNewline && originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
-		// Check if the second-to-last is also empty (actual blank line) - if so, only strip one
 		originalLines = originalLines.slice(0, -1);
 		strippedTrailingEmpty = true;
 	}
@@ -1468,7 +1349,6 @@ function applyHunksToContent(
 	const { replacements, warnings } = computeReplacements(originalLines, path, hunks, allowFuzzy);
 	const newLines = applyReplacements(originalLines, replacements);
 
-	// Restore the trailing empty element if we stripped it
 	if (strippedTrailingEmpty) {
 		newLines.push("");
 	}
@@ -1477,21 +1357,10 @@ function applyHunksToContent(
 	return { content: applyTrailingNewlinePolicy(content, hadFinalNewline), warnings };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Public API
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Apply a patch operation to the filesystem.
- */
 export async function applyPatch(input: PatchInput, options: ApplyPatchOptions): Promise<ApplyPatchResult> {
 	return applyNormalizedPatch(input, options);
 }
 
-/**
- * Apply a normalized patch operation to the filesystem.
- * @internal
- */
 async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOptions): Promise<ApplyPatchResult> {
 	const {
 		cwd,
@@ -1511,33 +1380,23 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 		if (destPath === absolutePath) {
 			throw new ApplyPatchError("rename path is the same as source path");
 		}
-		// The `*** Move to` / rename contract is strictly non-overwriting:
-		// reject before the update path reads or writes anything, so both
-		// source and pre-existing destination remain untouched. Callers who
-		// really need to replace the destination must delete it in an
-		// earlier hunk.
+
 		if (await fs.exists(destPath)) {
 			throw new ApplyPatchError(`Cannot rename ${input.path} to ${input.rename}: destination already exists.`);
 		}
 	}
 
-	// Handle CREATE operation
 	if (op === "create") {
 		if (!input.diff) {
 			throw new ApplyPatchError("Create operation requires diff (file content)");
 		}
-		// The `*** Add File` contract of the apply_patch envelope is strictly
-		// non-overwriting: reject before mkdir/write so pre-existing content
-		// stays intact and the caller can re-issue as an explicit
-		// `*** Update File` (or a delete+add pair) if overwrite is genuinely
-		// intended. The JSON `patch` mode opts out via `allowCreateOverwrite`,
-		// where `op: "create"` doubles as a sanctioned full-file overwrite.
+
 		if (!allowCreateOverwrite && (await fs.exists(absolutePath))) {
 			throw new ApplyPatchError(
 				`Cannot create ${input.path}: file already exists. Use *** Update File to modify it in place.`,
 			);
 		}
-		// Strip + prefixes if present (handles diffs formatted as additions)
+
 		const normalizedContent = normalizeCreateContent(input.diff);
 		const content = normalizedContent.endsWith("\n") ? normalizedContent : `${normalizedContent}\n`;
 
@@ -1558,7 +1417,6 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 		};
 	}
 
-	// Handle DELETE operation
 	if (op === "delete") {
 		const oldContent = await readExistingPatchFile(fs, absolutePath, input.path);
 		if (!dryRun) {
@@ -1574,14 +1432,13 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 		};
 	}
 
-	// Handle UPDATE operation
 	if (!input.diff) {
 		throw new ApplyPatchError("Update operation requires diff (hunks)");
 	}
 
 	const originalContent = await readExistingPatchFile(fs, absolutePath, input.path);
 	const { bom: bomFromText, text: strippedContent } = stripBom(originalContent);
-	// The text read drops a leading UTF-8 BOM, so recover it from the raw bytes.
+
 	let bom = bomFromText;
 	if (!bom && fs.readBinary && hasUtf8Bom(await fs.readBinary(absolutePath))) {
 		bom = "\uFEFF";
@@ -1630,9 +1487,6 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 	};
 }
 
-/**
- * Preview what changes a patch would make without applying it.
- */
 export async function previewPatch(input: PatchInput, options: ApplyPatchOptions): Promise<ApplyPatchResult> {
 	return applyPatch(input, { ...options, dryRun: true });
 }
@@ -1695,7 +1549,7 @@ export interface ExecutePatchSingleOptions {
 	batchRequest?: LspBatchRequest;
 	allowFuzzy: boolean;
 	fuzzyThreshold: number;
-	/** See {@link ApplyPatchOptions.allowCreateOverwrite}; set by the JSON `patch` mode only. */
+
 	allowCreateOverwrite?: boolean;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
@@ -1739,7 +1593,6 @@ class LspFileSystem implements FileSystem {
 	async write(path: string, content: string): Promise<void> {
 		const finalContent = await serializeEditFileText(path, path, content);
 
-		// Route through ACP bridge when available; skips internal artifacts and local:// paths.
 		if (await routeWriteThroughBridge(this.session, this.requestedPath, path, finalContent, this.signal)) {
 			return;
 		}
@@ -1825,15 +1678,6 @@ export async function executePatchSingle(
 
 	await assertEditableFile(resolvedPath, path);
 
-	// Capture pre-edit content so we can verify the write actually hit disk.
-	// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
-	// some host integrations, has been observed to report success without
-	// persisting bytes — leaving the tool to claim "Updated <path>" while the
-	// file on disk is byte-identical to before. After the write we re-read
-	// the file and assert the bytes match the expected newContent; relying
-	// on stat (mtime/size) is unreliable because filesystems with coarse
-	// timestamp resolution can record an unchanged mtime even when the
-	// content was rewritten, and same-length rewrites leave size unchanged.
 	let preEditContent: Uint8Array | undefined;
 	if (op === "update") {
 		try {
@@ -1846,7 +1690,7 @@ export async function executePatchSingle(
 	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
 	const patchFileSystem = new LspFileSystem(
 		session,
-		path, // original user-provided path for bridge guard (may be local://, vault://, etc.)
+		path,
 		writethrough,
 		signal,
 		batchRequest,
@@ -1860,8 +1704,6 @@ export async function executePatchSingle(
 		allowCreateOverwrite,
 	});
 
-	// Post-write verification: only meaningful for in-place updates where the
-	// patch actually changes content and the file is not being renamed away.
 	if (
 		result.change.type === "update" &&
 		!result.change.newPath &&
@@ -1911,8 +1753,6 @@ export async function executePatchSingle(
 			path: result.change.newPath ?? result.change.path,
 		});
 	} else if (result.change.type === "create" && result.change.newContent !== undefined) {
-		// The result is authoritative for rendering, so emit the added-content
-		// diff here rather than relying on the call-phase streaming preview.
 		const normalizedNew = normalizeToLF(stripBom(result.change.newContent).text);
 		diffResult = generateUnifiedDiffString("", normalizedNew, undefined, { path: result.change.path });
 	}
@@ -1947,10 +1787,7 @@ export async function executePatchSingle(
 		content: [{ type: "text", text: resultText }],
 		details: pruneOversizedEditSnapshots({
 			diff: diffResult.diff,
-			// When the patch moves the file, anchor the diff to the destination
-			// path. ACP `ToolCallContent.diff.path` comes from this field, and
-			// clients use it to open or focus the file post-change; pointing at
-			// the (now-deleted) source navigates to nothing.
+
 			path: result.change.newPath ?? resolvedPath,
 			firstChangedLine: diffResult.firstChangedLine,
 			diagnostics: mergedDiagnostics,

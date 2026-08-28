@@ -1,10 +1,3 @@
-/**
- * Synthetic Web Search Provider
- *
- * Uses Synthetic's zero-data-retention web search API for coding agents.
- * Endpoint: POST https://api.synthetic.new/v2/search
- */
-
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -28,7 +21,6 @@ interface SyntheticSearchResponse {
 	results: SyntheticSearchResult[];
 }
 
-/** Resolve Synthetic API key through the shared auth storage pipeline. */
 export function findApiKey(
 	authStorage: AuthStorage,
 	sessionId?: string,
@@ -37,7 +29,6 @@ export function findApiKey(
 	return authStorage.getApiKey("synthetic", sessionId, { signal });
 }
 
-/** Call Synthetic search API. */
 async function callSyntheticSearch(
 	apiKey: string,
 	query: string,
@@ -69,7 +60,6 @@ async function callSyntheticSearch(
 	return (await response.json()) as SyntheticSearchResponse;
 }
 
-/** Execute Synthetic web search. */
 async function searchSynthetic(params: SearchParamsWithFetch): Promise<SearchResponse> {
 	const keyOrResolver: ApiKey = params.authStorage.resolver("synthetic", {
 		sessionId: params.sessionId,
@@ -111,7 +101,6 @@ async function searchSynthetic(params: SearchParamsWithFetch): Promise<SearchRes
 	};
 }
 
-/** Search provider for Synthetic. */
 export class SyntheticProvider extends SearchProvider {
 	readonly id = "synthetic";
 	readonly label = "Synthetic";

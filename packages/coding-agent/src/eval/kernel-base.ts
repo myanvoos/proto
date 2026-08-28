@@ -6,9 +6,9 @@ export type KernelRuntimeEnv = Record<string, string | null>;
 
 export interface KernelExecuteOptions {
 	id?: string;
-	/** Runtime working directory applied immediately before this request executes. */
+
 	cwd?: string;
-	/** Managed runtime environment variables applied immediately before this request executes. */
+
 	env?: Record<string, string | undefined> | Record<string, string | null>;
 	signal?: AbortSignal;
 	onChunk?: (text: string) => Promise<void> | void;
@@ -26,11 +26,7 @@ export interface KernelExecuteResult {
 	cancelled: boolean;
 	timedOut: boolean;
 	stdinRequested: boolean;
-	/**
-	 * True when the kernel subprocess was killed as part of settling this
-	 * execution (e.g. SIGINT was ignored and we escalated to shutdown, or the
-	 * kernel died unexpectedly). When false, the kernel remains reusable.
-	 */
+
 	kernelKilled?: boolean;
 }
 
@@ -43,29 +39,26 @@ export interface KernelShutdownOptions {
 	timeoutMs?: number;
 }
 
-/** Per-language lifecycle configuration consumed by each kernel's `start()`. */
 export interface KernelStartOptions {
 	cwd: string;
 	env?: Record<string, string | undefined>;
-	/** Explicit interpreter path; skips discovery when set. */
+
 	interpreter?: string;
 	signal?: AbortSignal;
 	deadlineMs?: number;
 }
 
-/** Per-language configuration handed to {@link BaseKernel} by each subclass. */
 interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
-	/** Human-readable language label used in log messages and errors. */
 	languageName: string;
-	/** When true, every IPC frame is logged at debug level. */
+
 	traceIpc: boolean;
-	/** Wire payload asking the runner to exit cleanly. */
+
 	exitPayload: string;
-	/** How long to wait after SIGINT before escalating to subprocess termination. */
+
 	interruptEscalationMs: number;
-	/** Default grace period applied by {@link BaseKernel.shutdown}. */
+
 	shutdownGraceMs: number;
-	/** Serializes an execution request into the runner's wire protocol. */
+
 	buildPayload: (code: string, msgId: string, options?: TExecuteOptions) => string;
 }
 
@@ -123,17 +116,6 @@ export function isTimeoutReason(reason: unknown): boolean {
 	return false;
 }
 
-/**
- * Shared subprocess-backed kernel machinery for the language runners. Each
- * language subclasses this, supplying its binary/runner via a static `start()`
- * and its wire protocol via {@link BaseKernelOptions.buildPayload}. The IPC loop
- * speaks NDJSON: the runner emits one JSON {@link Frame} per line; outbound
- * requests are serialized by `buildPayload` (which may itself be NDJSON or any
- * other line-delimited encoding).
- *
- * `TExecuteOptions` is the language's own execute-options type so each runner's
- * `buildPayload` sees its precise option shape (e.g. environment-map variants).
- */
 export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
 	readonly id: string;
 	#proc: Subprocess | null = null;
@@ -309,32 +291,24 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		try {
 			await this.#writeLine(this.#options.exitPayload).catch(() => {});
-		} catch {
-			/* writer may already be closed */
-		}
+		} catch {}
 
 		try {
 			this.#stdin?.end();
-		} catch {
-			/* ignore */
-		}
+		} catch {}
 
 		const exited = this.#waitForExitWithTimeout(timeoutMs);
 		let result = await exited;
 		if (!result) {
 			try {
 				proc.kill("SIGTERM");
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
 		if (!result) {
 			try {
 				proc.kill("SIGKILL");
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
 
@@ -396,9 +370,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			} finally {
 				try {
 					reader.releaseLock();
-				} catch {
-					/* ignore */
-				}
+				} catch {}
 			}
 		};
 		void loop();
@@ -418,13 +390,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 					}
 				}
 			} catch {
-				/* ignore */
 			} finally {
 				try {
 					reader.releaseLock();
-				} catch {
-					/* ignore */
-				}
+				} catch {}
 			}
 		};
 		void loop();

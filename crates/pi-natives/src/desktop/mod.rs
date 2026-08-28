@@ -717,7 +717,6 @@ fn response_unit(response: Response) -> CoreResult<()> {
 	}
 }
 
-/// Persistent, serialized native desktop capture/input/accessibility session.
 #[napi]
 pub struct DesktopSession {
 	core: Arc<SessionCore>,
@@ -929,8 +928,6 @@ impl DesktopSession {
 		}))
 	}
 
-	/// Accessibility hit-test at global logical desktop coordinates; needs no
-	/// prior capture.
 	#[napi]
 	pub fn ax_element_at(
 		&self,

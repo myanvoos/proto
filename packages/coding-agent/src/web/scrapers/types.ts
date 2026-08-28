@@ -1,6 +1,3 @@
-/**
- * Shared types and utilities for web-fetch handlers
- */
 import { scheduler } from "node:timers/promises";
 import { ptree, readBytesWithLimit } from "@oh-my-pi/pi-utils";
 import type TurndownService from "@oh-my-pi/pi-utils/turndown";
@@ -52,9 +49,6 @@ function isBotBlocked(status: number, content: string): boolean {
 	return false;
 }
 
-/**
- * Truncate and cleanup output
- */
 export function finalizeOutput(content: string): { content: string; truncated: boolean } {
 	const cleaned = content.replace(/\n{3,}/g, "\n\n").trim();
 	const truncated = cleaned.length > MAX_OUTPUT_CHARS;
@@ -71,11 +65,7 @@ interface LoadPageOptions {
 	body?: string;
 	maxBytes?: number;
 	signal?: AbortSignal;
-	/**
-	 * Return true to skip reading the response body for this content type
-	 * (lowercased mime, no params). The caller is expected to re-fetch the
-	 * payload as binary; this avoids streaming + decoding huge binaries twice.
-	 */
+
 	skipBodyForContentType?: (contentType: string) => boolean;
 }
 
@@ -85,17 +75,16 @@ interface LoadPageResult {
 	finalUrl: string;
 	ok: boolean;
 	status?: number;
-	/** True when the body was cut mid-stream at maxBytes. */
+
 	truncated?: boolean;
-	/** Last transport-level error message when ok is false. */
+
 	error?: string;
-	/** True when the body read was skipped via skipBodyForContentType. */
+
 	bodySkipped?: boolean;
 }
 
 const RETRY_AFTER_MAX_MS = 10_000;
 
-/** Parse a Retry-After header (seconds or HTTP-date) into a bounded delay. */
 function parseRetryAfterMs(value: string | null): number {
 	if (!value) return 1_000;
 	const seconds = Number(value);
@@ -109,34 +98,21 @@ function charsetFromContentType(header: string): string | undefined {
 	return /charset\s*=\s*"?([\w-]+)"?/i.exec(header)?.[1];
 }
 
-/**
- * Decode a response body honoring the declared charset (Content-Type header,
- * then a cheap <meta charset> sniff), falling back to UTF-8.
- */
 function decodeBody(bytes: Uint8Array, contentTypeHeader: string): string {
 	let label = charsetFromContentType(contentTypeHeader);
 	if (!label) {
-		// All charsets we can decode are ASCII-compatible in the prefix, so a
-		// latin1 view of the first 2KB is enough to find a <meta charset>.
 		label = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(
 			new TextDecoder("latin1" as Bun.Encoding).decode(bytes.subarray(0, 2048)),
 		)?.[1];
 	}
 	if (label && !/^utf-?8$/i.test(label)) {
 		try {
-			// Bun.Encoding's union is narrower than the runtime, which accepts
-			// WHATWG labels (shift_jis, euc-kr, gbk, big5, …); unknowns throw here.
 			return new TextDecoder(label as Bun.Encoding).decode(bytes);
-		} catch {
-			// Unknown/unsupported label — fall back to UTF-8.
-		}
+		} catch {}
 	}
 	return new TextDecoder().decode(bytes);
 }
 
-/**
- * Fetch a page with timeout and size limit
- */
 export async function loadPage(url: string, options: LoadPageOptions = {}): Promise<LoadPageResult> {
 	const { timeout = 20, headers = {}, maxBytes = MAX_BYTES, signal, method = "GET", body } = options;
 
@@ -158,7 +134,7 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 					"User-Agent": userAgent,
 					Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 					"Accept-Language": "en-US,en;q=0.5",
-					"Accept-Encoding": "identity", // Cloudflare Markdown-for-Agents returns corrupted bytes when compression is negotiated
+					"Accept-Encoding": "identity",
 					...headers,
 				},
 				redirect: "follow",
@@ -175,9 +151,6 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 			const finalUrl = response.url;
 
 			if (response.status === 429 && !retried429) {
-				// Rate limited: retry once, honoring a bounded Retry-After. The
-				// wait observes the caller's signal so an Esc during the backoff
-				// does not stall for up to the full delay.
 				retried429 = true;
 				const delayMs = parseRetryAfterMs(response.headers.get("retry-after"));
 				void response.body?.cancel().catch(() => {});
@@ -186,7 +159,7 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 				} catch {
 					throw new ToolAbortError();
 				}
-				attempt--; // Reuse the same user agent for the retry.
+				attempt--;
 				continue;
 			}
 
@@ -225,7 +198,6 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 	return { content: "", contentType: "", finalUrl: url, ok: false, error: lastError };
 }
 
-/** Module-level Turndown instance — built lazily on first use. */
 let turndownPromise: Promise<TurndownService> | undefined;
 
 function getTurndown(): Promise<TurndownService> {
@@ -234,24 +206,16 @@ function getTurndown(): Promise<TurndownService> {
 }
 
 async function initTurndown(): Promise<TurndownService> {
-	// Lazy import keeps turndown/turndown-plugin-gfm off the startup graph.
 	const { createTurndown } = await import("../../utils/turndown");
 	return createTurndown();
 }
 
-/**
- * Convert HTML to markdown using Turndown with GFM support.
- * Strips script/style tags before conversion.
- */
 export async function htmlToBasicMarkdown(html: string): Promise<string> {
 	const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
 	const turndown = await getTurndown();
 	return turndown.turndown(cleaned).trim();
 }
 
-/**
- * Build a RenderResult from markdown content. Calls finalizeOutput internally.
- */
 export function buildResult(
 	md: string,
 	opts: { url: string; finalUrl?: string; method: string; fetchedAt: string; notes?: string[]; contentType?: string },
@@ -269,9 +233,6 @@ export function buildResult(
 	};
 }
 
-/**
- * Format a date value as YYYY-MM-DD. Returns empty string on invalid input.
- */
 export function formatIsoDate(value?: string | number | Date): string {
 	if (value == null) return "";
 	if (typeof value === "string") {
@@ -285,9 +246,6 @@ export function formatIsoDate(value?: string | number | Date): string {
 	}
 }
 
-/**
- * Decode common HTML entities.
- */
 export function decodeHtmlEntities(text: string): string {
 	return text
 		.replace(/&lt;/g, "<")
@@ -300,9 +258,6 @@ export function decodeHtmlEntities(text: string): string {
 		.replace(/&nbsp;/g, " ");
 }
 
-/**
- * Format seconds into HH:MM:SS or MM:SS.
- */
 export function formatMediaDuration(totalSeconds: number): string {
 	const hours = Math.floor(totalSeconds / 3600);
 	const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -311,9 +266,6 @@ export function formatMediaDuration(totalSeconds: number): string {
 	return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
-/**
- * Extract localized text, preferring en-US/en.
- */
 export type LocalizedText = string | Record<string, string | null> | null | undefined;
 
 export function getLocalizedText(value: LocalizedText, defaultLocale?: string): string | undefined {
@@ -325,9 +277,6 @@ export function getLocalizedText(value: LocalizedText, defaultLocale?: string): 
 	);
 }
 
-/**
- * Check if content looks like HTML by inspecting the leading tag.
- */
 export function looksLikeHtml(content: string): boolean {
 	const trimmed = content.trim().toLowerCase();
 	return (

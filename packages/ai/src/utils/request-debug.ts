@@ -221,11 +221,7 @@ function copyResponseMetadata(target: Response, source: Response): void {
 	if (!sourceUrl) return;
 	try {
 		Object.defineProperty(target, "url", { value: sourceUrl, configurable: true });
-	} catch {
-		// Some runtimes may expose Response.url as non-configurable. The body
-		// capture remains correct; callers that need url already tolerate the
-		// platform default on other response wrappers in this package.
-	}
+	} catch {}
 }
 
 async function reserveRequestDebugFile(): Promise<ReservedRequestDebugFile> {
@@ -292,9 +288,7 @@ function snapshotText(text: string, contentType: string | null): RequestDebugBod
 	if (isJsonContentType(contentType) || looksLikeJson(text)) {
 		try {
 			return { body: JSON.parse(text) };
-		} catch {
-			// Fall through to bodyText: malformed JSON is still useful as raw text.
-		}
+		} catch {}
 	}
 	return { bodyText: text };
 }

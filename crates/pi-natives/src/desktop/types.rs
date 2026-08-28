@@ -1,8 +1,6 @@
 use napi::bindgen_prelude::Uint8Array;
 use napi_derive::napi;
 
-/// Monitor geometry in both global logical desktop coordinates and composite
-/// screenshot pixels.
 #[napi(object)]
 #[derive(Debug, Clone)]
 pub struct DesktopDisplay {
@@ -20,38 +18,32 @@ pub struct DesktopDisplay {
 	pub is_primary:   bool,
 }
 
-/// One capturable top-level window in global logical desktop coordinates.
 #[napi(object)]
 #[derive(Debug, Clone)]
 pub struct DesktopWindow {
-	/// Backend-defined opaque window id, valid as a capture target while the
-	/// window lives. Numeric on X11/Win32/macOS; a composite AT-SPI string on
-	/// Wayland (e.g. `atspi::1.31:/org/a11y/atspi/accessible/1`). Never parse
-	/// it.
-	pub id:      String,
-	/// Window title; may be empty for untitled windows.
-	pub title:   String,
-	/// Owning application name.
-	pub app:     String,
-	/// Owning process id when the platform exposes it.
-	pub pid:     Option<u32>,
-	pub x:       i32,
-	pub y:       i32,
-	pub width:   u32,
-	pub height:  u32,
-	/// Whether the window currently holds input focus.
+	pub id: String,
+
+	pub title: String,
+
+	pub app: String,
+
+	pub pid:    Option<u32>,
+	pub x:      i32,
+	pub y:      i32,
+	pub width:  u32,
+	pub height: u32,
+
 	pub focused: bool,
 }
 
 #[napi(object)]
 pub struct DesktopCapture {
-	pub data:           Uint8Array,
-	pub width:          u32,
-	pub height:         u32,
-	/// Pre-scaling capture width in native pixels; equals `width` when unscaled.
-	pub source_width:   u32,
-	/// Pre-scaling capture height in native pixels; equals `height` when
-	/// unscaled.
+	pub data:   Uint8Array,
+	pub width:  u32,
+	pub height: u32,
+
+	pub source_width: u32,
+
 	pub source_height:  u32,
 	pub target:         String,
 	pub displays:       Vec<DesktopDisplay>,

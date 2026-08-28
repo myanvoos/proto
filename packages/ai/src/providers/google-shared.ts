@@ -1,7 +1,3 @@
-/**
- * Shared utilities for Google Generative AI and Google Cloud Code Assist providers.
- */
-
 import { scheduler } from "node:timers/promises";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { readSseJson } from "@oh-my-pi/pi-utils";
@@ -62,80 +58,32 @@ function convertGoogleImagePart(image: ImageContent): Part {
 		: { inlineData: { mimeType: image.mimeType, data: image.data } };
 }
 
-/**
- * Thinking level for Gemini 3 models. Mirrors Google's `ThinkingLevel` enum values.
- * Defined here (not in any specific provider) so all Google providers can reference it
- * without inducing a circular dependency.
- */
 export type GoogleThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
 
-/**
- * Sampling/thinking options shared by `streamGoogle` and `streamGoogleVertex`.
- * `google-gemini-cli` uses a different transport and request shape — do not extend this for it.
- */
 export interface GoogleSharedStreamOptions extends StreamOptions {
-	/**
-	 * Tool selection mode. String forms map directly to Gemini
-	 * `FunctionCallingConfigMode`. The object form forces a single named tool
-	 * — `mode: "ANY"` is wire-required when `allowedFunctionNames` is set.
-	 */
 	toolChoice?: "auto" | "none" | "any" | { mode: "ANY"; allowedFunctionNames: [string, ...string[]] };
 	thinking?: {
 		enabled: boolean;
 		budgetTokens?: number;
 		level?: GoogleThinkingLevel;
 	};
-	/** Request that Google omit human-readable thought summaries while still allowing internal reasoning. */
+
 	hideThinkingSummary?: boolean;
-	/** Gemini/Vertex serving tier (`flex`/`priority`); other values are omitted. */
+
 	serviceTier?: ServiceTier;
-	/**
-	 * Caller-owned Google context-cache resource name for GenerateContent.
-	 * Passed through opaquely as the wire `cachedContent` field on
-	 * `google-generative-ai` and `google-vertex` only. PROTO does not create,
-	 * refresh, validate model/project/location compatibility, or delete the
-	 * resource — callers own that lifecycle.
-	 *
-	 * @see https://ai.google.dev/api/generate-content
-	 * @see `@google/genai` `GenerateContentConfig.cachedContent`
-	 */
+
 	cachedContent?: string;
 }
 
-/**
- * Determines whether a streamed Gemini `Part` should be treated as "thinking".
- *
- * Protocol note (Gemini / Vertex AI thought signatures):
- * - `thought: true` is the definitive marker for thinking content (thought summaries).
- * - `thoughtSignature` is an encrypted representation of the model's internal thought process
- *   used to preserve reasoning context across multi-turn interactions.
- * - `thoughtSignature` can appear on ANY part type (text, functionCall, etc.) - it does NOT
- *   indicate the part itself is thinking content.
- * - For non-functionCall responses, the signature appears on the last part for context replay.
- * - When persisting/replaying model outputs, signature-bearing parts must be preserved as-is;
- *   do not merge/move signatures across parts.
- *
- * See: https://ai.google.dev/gemini-api/docs/thought-signatures
- */
 export function isThinkingPart(part: Pick<Part, "thought" | "thoughtSignature">): boolean {
 	return part.thought === true;
 }
 
-/**
- * Retain thought signatures during streaming.
- *
- * Some backends only send `thoughtSignature` on the first delta for a given part/block; later deltas may omit it.
- * This helper preserves the last non-empty signature for the current block.
- *
- * Note: this does NOT merge or move signatures across distinct response parts. It only prevents
- * a signature from being overwritten with `undefined` within the same streamed block.
- */
 export function retainThoughtSignature(existing: string | undefined, incoming: string | undefined): string | undefined {
 	if (typeof incoming === "string" && incoming.length > 0) return incoming;
 	return existing;
 }
 
-// Thought signatures must be base64 for Google APIs (TYPE_BYTES).
 const base64SignaturePattern = /^[A-Za-z0-9+/]+={0,2}$/;
 
 const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
@@ -146,9 +94,6 @@ function isValidThoughtSignature(signature: string | undefined): boolean {
 	return base64SignaturePattern.test(signature);
 }
 
-/**
- * Only keep signatures from the same provider/model and with valid base64.
- */
 function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: string | undefined): string | undefined {
 	return isSameProviderAndModel && isValidThoughtSignature(signature) ? signature : undefined;
 }
@@ -176,9 +121,6 @@ function isGemini3Model(modelId: string): boolean {
 	return modelId.includes("gemini-3");
 }
 
-/**
- * Convert internal messages to Gemini Content[] format.
- */
 export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
@@ -189,10 +131,6 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 
-	// Gemini < 3 image tool results go in a separate user turn, but parallel tool results must
-	// stay a single contiguous functionResponse turn ("number of function response parts is not
-	// equal to number of function call parts"). Buffer image turns and flush them only after the
-	// merged functionResponse turn is complete.
 	let pendingToolImageParts: Part[] = [];
 	const flushPendingToolImages = () => {
 		if (pendingToolImageParts.length === 0) return;
@@ -204,7 +142,6 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 		if (msg.role !== "toolResult") flushPendingToolImages();
 		if (msg.role === "user" || msg.role === "developer") {
 			if (typeof msg.content === "string") {
-				// Skip empty user messages
 				if (!msg.content || msg.content.trim() === "") continue;
 				contents.push({
 					role: "user",
@@ -236,14 +173,13 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			}
 		} else if (msg.role === "assistant") {
 			const parts: Part[] = [];
-			// Check if message is from same provider and model - only then keep thinking blocks
+
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
 			const dropsUnsignedThinking =
 				model.provider === "google-antigravity" && model.id.toLowerCase().includes("claude");
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
-					// Skip empty text blocks - they can cause issues with some models (e.g. Claude via Antigravity)
 					if (!block.text || block.text.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.textSignature);
 					parts.push({
@@ -251,7 +187,6 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						...(thoughtSignature && { thoughtSignature }),
 					});
 				} else if (block.type === "thinking") {
-					// Skip empty thinking blocks
 					if (!block.thinking || block.thinking.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
@@ -280,7 +215,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						},
 					};
 					if (model.provider === "google-vertex" && part?.functionCall?.id) {
-						delete part.functionCall.id; // Vertex AI GenerateContent rejects 'id' in functionCall parts.
+						delete part.functionCall.id;
 					}
 					if (effectiveSignature) {
 						part.thoughtSignature = effectiveSignature;
@@ -295,7 +230,6 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				parts,
 			});
 		} else if (msg.role === "toolResult") {
-			// Extract text and image content
 			const supportsImages = model.input.includes("image");
 			const textContent = msg.content.filter((c): c is TextContent => c.type === "text");
 			const textResult = textContent.map(c => c.text).join("\n");
@@ -305,12 +239,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const hasText = textResult.length > 0;
 			const hasImages = imageContent.length > 0;
 
-			// Gemini 3+ models support multimodal function responses with images nested inside
-			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
-			// Antigravity also accept this shape. Gemini < 3 still needs a separate user image turn.
 			const modelSupportsMultimodalFunctionResponse = supportsMultimodalFunctionResponse(model.id);
 
-			// Use "output" key for success, "error" key for errors as per SDK documentation
 			const responseValue = omittedImages
 				? [hasText ? textResult.toWellFormed() : "", NON_VISION_IMAGE_PLACEHOLDER].filter(Boolean).join("\n")
 				: hasText
@@ -333,11 +263,9 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			};
 
 			if (model.provider === "google-vertex" && functionResponsePart.functionResponse?.id) {
-				delete functionResponsePart.functionResponse.id; // Vertex AI GenerateContent rejects 'id' in functionResponse parts.
+				delete functionResponsePart.functionResponse.id;
 			}
 
-			// Cloud Code Assist API requires all function responses to be in a single user turn.
-			// Check if the last content is already a user turn with function responses and merge.
 			const lastContent = contents[contents.length - 1];
 			if (lastContent?.role === "user" && lastContent.parts?.some(p => p.functionResponse)) {
 				lastContent.parts.push(functionResponsePart);
@@ -348,7 +276,6 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				});
 			}
 
-			// For Gemini < 3, buffer images for a separate user message after the functionResponse turn
 			if (hasImages && !modelSupportsMultimodalFunctionResponse) {
 				pendingToolImageParts.push({ text: "Tool result image:" }, ...imageParts);
 			}
@@ -359,25 +286,12 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 	return contents;
 }
 
-/**
- * Convert tools to Gemini function declarations format.
- *
- * We prefer `parametersJsonSchema` (full JSON Schema: anyOf/oneOf/const/etc.).
- *
- * Claude models via Cloud Code Assist require the legacy `parameters` field; the API
- * translates it into Anthropic's `input_schema`. When using that path, we sanitize the
- * schema to remove Google-unsupported JSON Schema keywords.
- */
 export function convertTools(
 	tools: Tool[],
 	model: Model<"google-generative-ai" | "google-gemini-cli" | "google-vertex">,
 ): { functionDeclarations: Record<string, unknown>[] }[] | undefined {
 	if (tools.length === 0) return undefined;
 
-	/**
-	 * Claude models on Cloud Code Assist need the legacy `parameters` field;
-	 * the API translates it into Anthropic's `input_schema`.
-	 */
 	const useParameters = model.id.startsWith("claude-");
 
 	return [
@@ -393,9 +307,6 @@ export function convertTools(
 	];
 }
 
-/**
- * Map tool choice string to Gemini FunctionCallingConfigMode.
- */
 export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	switch (choice) {
 		case "auto":
@@ -409,9 +320,6 @@ export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	}
 }
 
-/**
- * Map Gemini FinishReason to our StopReason.
- */
 export function mapStopReason(reason: FinishReason): StopReason {
 	switch (reason) {
 		case "STOP":
@@ -440,9 +348,6 @@ export function mapStopReason(reason: FinishReason): StopReason {
 	}
 }
 
-/**
- * Map string finish reason to our StopReason (for raw API responses).
- */
 export function mapStopReasonString(reason: string): StopReason {
 	switch (reason) {
 		case "STOP":
@@ -454,23 +359,9 @@ export function mapStopReasonString(reason: string): StopReason {
 	}
 }
 
-/**
- * Bounded retries for the well-known Gemini "empty response" failure: a benign
- * `finishReason: STOP` carrying only an empty/whitespace text part and no tool call.
- * Shared by the public/Vertex `streamGoogleGenAI` path and the Cloud Code Assist
- * (`google-gemini-cli`/`google-antigravity`) provider so both apply the same policy.
- */
 export const MAX_EMPTY_STREAM_RETRIES = 2;
 export const EMPTY_STREAM_BASE_DELAY_MS = 500;
 
-/**
- * Whether a completed Google assistant message carries content worth delivering.
- *
- * A tool call or any non-whitespace text counts as meaningful. An empty/whitespace-only
- * text part — or thinking that never produced an answer — is the "empty response" failure:
- * delivered as-is the agent loop has nothing to act on and silently halts, so the request
- * must be retried instead of surfaced.
- */
 export function hasMeaningfulGoogleContent(output: AssistantMessage): boolean {
 	for (const block of output.content) {
 		if (block.type === "toolCall") return true;
@@ -479,7 +370,6 @@ export function hasMeaningfulGoogleContent(output: AssistantMessage): boolean {
 	return false;
 }
 
-/** Wipe a streamed message between empty-response retries so the next attempt starts clean. */
 function resetGoogleStreamOutputForRetry(output: AssistantMessage): void {
 	output.content = [];
 	output.usage = {
@@ -495,22 +385,12 @@ function resetGoogleStreamOutputForRetry(output: AssistantMessage): void {
 	output.timestamp = Date.now();
 }
 
-/**
- * Module-local counter for generating unique tool call IDs across Google providers.
- * Shared so that a single monotonically-increasing sequence is used regardless of which
- * Google API surface produced the stream — purely for uniqueness, not ordering semantics.
- */
 let toolCallCounter = 0;
 
 export function nextToolCallId(name: string): string {
 	return `${name}_${Date.now()}_${++toolCallCounter}`;
 }
 
-/**
- * Push the appropriate `text_end` / `thinking_end` event for the given block.
- * Shared between the SDK-backed stream consumer and the gemini-cli SSE consumer so
- * the end-of-block event shape stays in lockstep.
- */
 export function pushBlockEndEvent(
 	block: TextContent | ThinkingContent,
 	contentIndex: number,
@@ -524,11 +404,6 @@ export function pushBlockEndEvent(
 	}
 }
 
-/**
- * Push the three lifecycle events (`toolcall_start` / `toolcall_delta` / `toolcall_end`) for a
- * fully-assembled `ToolCall`. Caller is responsible for appending the toolCall to `output.content`
- * before invoking — this helper does not mutate `output.content`.
- */
 export function pushToolCallEvents(
 	toolCall: ToolCall,
 	contentIndex: number,
@@ -545,11 +420,6 @@ export function pushToolCallEvents(
 	stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 }
 
-/**
- * Append a new text- or thinking-block to `output.content` and push the matching
- * `text_start` / `thinking_start` event. `onBeforeStartEvent` lets the SSE consumer
- * inject its `ensureStarted()` first-token side effect into the canonical event order.
- */
 export function startTextOrThinkingBlock(
 	isThinking: true,
 	output: AssistantMessage,
@@ -588,28 +458,13 @@ export function startTextOrThinkingBlock(
 	return block;
 }
 
-/**
- * Drives the chunked `generateContentStream` iterator into an `AssistantMessage` and
- * the corresponding `AssistantMessageEventStream`. Shared between `streamGoogle` and
- * `streamGoogleVertex` — every observable event order and stop-reason rule is preserved.
- *
- * The caller still owns: `output` construction, timing fields (`duration`/`ttft`),
- * `rawRequestDump`, the `client.models.generateContentStream(params)` call itself,
- * pushing `start`/`done`/`error` events, and the surrounding try/catch that translates
- * thrown errors into `output.stopReason`/`errorMessage`.
- *
- * This helper handles: the chunk loop, currentBlock flush transitions, usage metadata
- * decoding (`calculateCost` included), tool-call id collision avoidance, finish-reason
- * mapping, and the abort/stop-reason post-checks that re-throw to bubble into the
- * caller's catch.
- */
 export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	googleStream: AsyncIterable<GenerateContentResponse>;
 	output: AssistantMessage;
 	stream: AssistantMessageEventStream;
 	model: Model<T>;
 	options: { signal?: AbortSignal } | undefined;
-	/** Vertex preserves `textSignature` on streamed text deltas; google-generative-ai does not. */
+
 	retainTextSignature?: boolean;
 	onFirstToken?: () => void;
 }): Promise<void> {
@@ -617,9 +472,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 	let currentBlock: TextContent | ThinkingContent | null = null;
-	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
-	// Gemini thought summaries emit as a between-summary delimiter (#8719). One
-	// stripper per thinking block; created lazily on first thinking delta.
+
 	let thinkingStripper: ThinkingFenceStripper | null = null;
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
@@ -720,7 +573,6 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 						currentBlock = null;
 					}
 
-					// Generate unique ID if not provided or if it's a duplicate
 					const providedId = part.functionCall.id;
 					const needsNewId = !providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
 					const toolCallId = needsNewId ? nextToolCallId(part.functionCall.name || "tool") : providedId;
@@ -742,8 +594,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		if (candidate?.finishReason) {
 			sawFinishReason = true;
 			const mapped = mapStopReason(candidate.finishReason);
-			// Only let a trailing tool call upgrade benign finishes; SAFETY/MALFORMED_FUNCTION_CALL
-			// and friends must surface as errors even when earlier chunks carried valid tool calls.
+
 			if ((mapped === "stop" || mapped === "length") && output.content.some(b => b.type === "toolCall")) {
 				output.stopReason = "toolUse";
 			} else {
@@ -755,11 +606,6 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		}
 
 		if (chunk.usageMetadata) {
-			// promptTokenCount includes cachedContentTokenCount when cached content is used.
-			// Subtract to get non-cached input, matching the OpenAI convention where
-			// input = uncached prompt tokens and cacheRead = cached tokens so that
-			// input + cacheRead = total prompt tokens (no double-counting).
-			// Ref: https://ai.google.dev/api/generate-content#v1beta.GenerateContentResponse.UsageMetadata
 			const cachedTokens = chunk.usageMetadata.cachedContentTokenCount || 0;
 			const thinkingTokens = chunk.usageMetadata.thoughtsTokenCount || 0;
 			output.usage = {
@@ -802,10 +648,6 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	}
 }
 
-/**
- * Generation/sampling fields that map directly onto Gemini's `GenerateContentConfig`.
- * Excludes any provider-specific extensions (`topP`/`topK`/etc are all forwarded as-is).
- */
 interface GoogleGenerationConfig extends GenerateContentConfig {
 	topP?: number;
 	topK?: number;
@@ -814,15 +656,6 @@ interface GoogleGenerationConfig extends GenerateContentConfig {
 	repetitionPenalty?: number;
 }
 
-/**
- * Build the `GenerateContentParameters` payload for the public Gemini API and Vertex AI.
- * Both surfaces accept the same `GenerateContentConfig` shape — every numeric/string knob,
- * tool-config, thinking-config, and system-instruction conversion is identical.
- *
- * `google-gemini-cli` is NOT routed through here: its `CloudCodeAssistRequest` body has a
- * distinct top-level shape (project/request/requestType) and a different thinking-config
- * placement on `generationConfig`.
- */
 export function buildGoogleGenerateContentParams<T extends "google-generative-ai" | "google-vertex">(
 	model: Model<T>,
 	context: Context,
@@ -846,10 +679,6 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 		...(context.tools && context.tools.length > 0 && { tools: convertTools(context.tools, model) }),
 	};
 
-	// Gemini API (google-generative-ai) reads the tier from the request body;
-	// Vertex AI ignores a body field and requires the
-	// `X-Vertex-AI-LLM-Shared-Request-Type` header instead (added in
-	// streamGoogleVertex), so only emit the body field for the direct API.
 	if (model.provider === "google" && shouldSendServiceTier(options.serviceTier, model.provider)) {
 		config.serviceTier = options.serviceTier;
 	}
@@ -864,8 +693,6 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 				};
 			}
 		} else {
-			// Named-tool routing — `mode: "ANY"` plus an explicit allow-list. The
-			// caller is responsible for ensuring the names exist in `context.tools`.
 			config.toolConfig = {
 				functionCallingConfig: {
 					mode: "ANY",
@@ -885,7 +712,6 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	) {
 		const cfg: ThinkingConfig = { includeThoughts: thinking.enabled && !options.hideThinkingSummary };
 		if (thinking.level !== undefined) {
-			// GoogleThinkingLevel mirrors the SDK's ThinkingLevel string enum values 1:1.
 			cfg.thinkingLevel = thinking.level as ThinkingLevel;
 		} else if (thinking.budgetTokens !== undefined) {
 			cfg.thinkingBudget = thinking.budgetTokens;
@@ -901,8 +727,6 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	}
 
 	if (options.cachedContent !== undefined) {
-		// Blank names are never valid resource references; anything else stays
-		// opaque so we do not invent format/model/project checks here.
 		if (options.cachedContent.trim().length === 0) {
 			throw new AIError.ValidationError("cachedContent must not be blank");
 		}
@@ -926,20 +750,12 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	};
 }
 
-/**
- * Drive the `streamGoogle` / `streamGoogleVertex` event flow: build the assistant message,
- * push start/done/error events, run `consumeGoogleStream`, and translate thrown errors into
- * the canonical `error` event shape.
- *
- * Caller-supplied `prepare()` runs inside the try-block so any failure (missing project,
- * bad auth, etc.) is funneled through the same error path as a streaming failure.
- */
 export interface GoogleGenAIRequestPlan {
 	params: GenerateContentParameters;
 	url: string;
 	headers: Record<string, string>;
 	fetch?: FetchImpl;
-	/** Optional URL retried once when {@link url} returns 404 (regional Vertex endpoint missing a global-only model). */
+
 	fallbackUrl?: string;
 }
 
@@ -1018,9 +834,7 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 				}
 				return response.body as ReadableStream<Uint8Array>;
 			};
-			// A regional Vertex endpoint 404s for models published only on the
-			// global endpoint; retry global once so a stale/ambient region never
-			// breaks a request that worked before regional routing existed.
+
 			const openStream = async (): Promise<ReadableStream<Uint8Array>> => {
 				if (!plan.fallbackUrl) return openStreamAt(plan.url);
 				try {
@@ -1036,9 +850,6 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 			let body = await openStream();
 			stream.push({ type: "start", partial: output });
 
-			// Gemini occasionally finishes with `finishReason: STOP` while emitting only an empty
-			// text part and no tool call. Delivered as-is the agent receives a blank message and
-			// silently halts mid-task, so retry a bounded number of times before giving up.
 			for (let emptyAttempt = 0; ; emptyAttempt++) {
 				const googleStream = readSseJson<GenerateContentResponse>(body, options?.signal, event =>
 					options?.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
@@ -1097,15 +908,6 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 	return stream;
 }
 
-/**
- * Lift the SDK's `params.config` fields out of `config` and place them where the
- * Gemini / Vertex AI REST API expects them on the request body. Mirrors the
- * generateContentParametersTo{Mldev,Vertex} transformation in @google/genai
- * for the subset of fields this codebase actually sets.
- *
- * `abortSignal` is intentionally dropped — the SDK propagates it via `fetch.signal`,
- * which our caller already wires up through `options.signal`.
- */
 function paramsToWireBody(params: GenerateContentParameters): Record<string, unknown> {
 	const body: Record<string, unknown> = { contents: params.contents };
 	const config = params.config;
@@ -1145,8 +947,6 @@ function extractGoogleErrorMessage(errorText: string): string {
 	try {
 		const parsed = JSON.parse(errorText) as { error?: { message?: string } };
 		if (parsed.error?.message) return parsed.error.message;
-	} catch {
-		// fall through to raw text
-	}
+	} catch {}
 	return errorText;
 }

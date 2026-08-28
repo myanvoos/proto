@@ -1,14 +1,6 @@
-/**
- * Host-side handler for the eval `parallel()` / `pipeline()` worker pool.
- *
- * The pool ceiling is not a kernel-side knob: it tracks the `orchestrator.maxConcurrency`
- * setting so an eval fan-out runs as wide as an orchestration fan-out would. `0` means
- * unbounded — run every item at once, exactly like `orchestrator.maxConcurrency = 0`.
- */
 import type { ToolSession } from "../tools";
 import type { JsStatusEvent } from "./js/shared/types";
 
-/** Synthetic bridge name reserved for the parallel-pool ceiling across both runtimes. */
 export const EVAL_CONCURRENCY_BRIDGE_NAME = "__concurrency__";
 
 interface EvalConcurrencyBridgeOptions {
@@ -18,15 +10,9 @@ interface EvalConcurrencyBridgeOptions {
 }
 
 export interface EvalConcurrencyResult {
-	/** Worker-pool ceiling; `0` means unbounded (run every item at once). */
 	limit: number;
 }
 
-/**
- * Resolve the worker-pool ceiling for an eval cell's `parallel()`/`pipeline()`
- * helpers from the live `orchestrator.maxConcurrency` setting. Negative/non-finite
- * values collapse to `0` (unbounded), matching orchestration's own handling.
- */
 export function runEvalConcurrency(_args: unknown, options: EvalConcurrencyBridgeOptions): EvalConcurrencyResult {
 	const raw = options.session.settings.get("orchestrator.maxConcurrency");
 	const limit = Number.isFinite(raw) ? Math.trunc(raw) : 0;

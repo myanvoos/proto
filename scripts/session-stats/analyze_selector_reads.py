@@ -40,16 +40,11 @@ DB_PATH = Path.home() / ".proto" / "stats.db"
 OUT_DIR = Path(__file__).resolve().parent / "out"
 DEFAULT_SINCE = "2026-05-04"
 
-# When a read has start but no explicit end (`:50` or default bare path with
-# no offset/limit), assume the read tool returns this many lines. The read
-# tool's default page is 500.
 DEFAULT_PAGE = 500
 
 _RANGE_RE = re.compile(r"^(\d+)(?:([-+])(\d+))?$")
 
 
-# --------------------------------------------------------------------------- #
-# Selector parsing
 
 
 def parse_selector(path: str) -> tuple[str, int | None, int | None, str]:
@@ -77,7 +72,6 @@ def parse_selector(path: str) -> tuple[str, int | None, int | None, str]:
         return base, start, int(nval), "range"
     if op == "+" and nval is not None:
         return base, start, start + int(nval) - 1, "range"
-    # bare `:N` — open-ended; assume one page.
     return base, start, start + DEFAULT_PAGE - 1, "range"
 
 
@@ -97,7 +91,6 @@ def args_to_interval(
     base, start, end, kind = parse_selector(path)
     if kind != "none":
         return base, start, end, kind
-    # Legacy offset/limit.
     offset = obj.get("offset")
     limit = obj.get("limit")
     if (
@@ -109,13 +102,9 @@ def args_to_interval(
         return path, offset, offset + limit - 1, "range"
     if isinstance(offset, int) and offset >= 1:
         return path, offset, offset + DEFAULT_PAGE - 1, "range"
-    # Bare path — read tool default returns first page. Marked as `default`
-    # so the rest of the script can exclude it from "explicit selector".
     return path, 1, DEFAULT_PAGE, "default"
 
 
-# --------------------------------------------------------------------------- #
-# Coverage math
 
 
 def merge_intervals(ivs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -126,7 +115,7 @@ def merge_intervals(ivs: list[tuple[int, int]]) -> list[tuple[int, int]]:
     out = [ivs[0]]
     for s, e in ivs[1:]:
         ls, le = out[-1]
-        if s <= le + 1:  # touching or overlapping
+        if s <= le + 1:
             out[-1] = (ls, max(le, e))
         else:
             out.append((s, e))
@@ -145,12 +134,9 @@ def classify_followup(s: int, e: int, init_s: int, init_e: int) -> str:
         return "forward"
     if s < init_s and e <= init_e:
         return "backward"
-    # Spans both sides of initial range.
     return "both"
 
 
-# --------------------------------------------------------------------------- #
-# Pull
 
 
 def iter_reads(conn: sqlite3.Connection, since_ms: int):
@@ -179,8 +165,6 @@ def collect(conn, since_ms) -> dict[tuple[str, str], list[tuple[int, int, int, s
     return by_key
 
 
-# --------------------------------------------------------------------------- #
-# Analyze
 
 
 def analyze(by_key: dict) -> dict:
@@ -188,7 +172,6 @@ def analyze(by_key: dict) -> dict:
     read is a numeric range."""
     eligible: list[dict] = []
     first_kind_counts: Counter = Counter()
-    # Position counter across all follow-ups (not just first one).
     followup_positions: Counter = Counter()
     for (session, base), reads in by_key.items():
         first = reads[0]
@@ -204,9 +187,6 @@ def analyze(by_key: dict) -> dict:
 
         for _, s, e, k in followups:
             followup_kinds.append(k)
-            # `range` (explicit) and `default` (bare path → first page) both
-            # contribute a known interval to coverage. `raw`/`conflicts`
-            # have no line bounds so we skip them here.
             if k not in ("range", "default") or s is None or e is None:
                 continue
             pos = classify_followup(s, e, s0, e0)
@@ -219,11 +199,10 @@ def analyze(by_key: dict) -> dict:
         covered_lines = sum(e - s + 1 for s, e in merged)
         init_size = e0 - s0 + 1
         regions = len(merged)
-        # Span = bounding box length, gaps = span - covered.
         bbox = (merged[0][0], merged[-1][1])
         span = bbox[1] - bbox[0] + 1
         gap_lines = span - covered_lines
-        extra_lines = max(0, covered_lines - init_size)  # new lines past initial
+        extra_lines = max(0, covered_lines - init_size)
 
         eligible.append(
             {
@@ -253,8 +232,6 @@ def analyze(by_key: dict) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# Report
 
 POS_ORDER = ["forward", "backward", "inside", "both", "gap-above", "gap-below"]
 POS_COLORS = {
@@ -312,7 +289,6 @@ def report(stats: dict) -> None:
             continue
         print(f"  {k:<10} {v:>8,}  ({100 * v / total_pos:>5.1f}%)  -- {POS_HELP[k]}")
 
-    # Region count distribution.
     regions = np.array([e["regions"] for e in eligible], dtype=np.int64)
     print(f"\ndisjoint regions in final coverage (per session/file):")
     print(
@@ -325,7 +301,6 @@ def report(stats: dict) -> None:
     for label, nb in zip(labels, hist):
         print(f"  {label:<10} {nb:>8,}  ({100 * nb / regions.size:>5.1f}%)")
 
-    # Extra lines vs initial (only when follow-ups exist).
     fu = [e for e in eligible if e["n_range_followups"] > 0]
     extra = np.array([e["extra_lines"] for e in fu], dtype=np.int64)
     if extra.size:
@@ -341,7 +316,6 @@ def report(stats: dict) -> None:
         for label, nb in zip(labels, hist):
             print(f"  {label:<12} {nb:>8,}  ({100 * nb / extra.size:>5.1f}%)")
 
-    # Coverage ratio.
     init_sizes = np.array([e["init_size"] for e in fu], dtype=np.int64)
     covered = np.array([e["covered"] for e in fu], dtype=np.int64)
     if init_sizes.size:
@@ -355,8 +329,6 @@ def report(stats: dict) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Plot
 
 
 def plot(stats: dict, since: str) -> Path | None:
@@ -369,7 +341,6 @@ def plot(stats: dict, since: str) -> Path | None:
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 9))
 
-    # 1) Follow-up position breakdown.
     ax = axes[0, 0]
     pos = stats["followup_pos"]
     total = sum(pos.values())
@@ -393,7 +364,6 @@ def plot(stats: dict, since: str) -> Path | None:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
         ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # 2) Disjoint region count.
     ax = axes[0, 1]
     regions = np.array([e["regions"] for e in eligible], dtype=np.int64)
     edges = [1, 2, 3, 4, 6, 11, regions.max() + 1 if regions.size else 12]
@@ -417,7 +387,6 @@ def plot(stats: dict, since: str) -> Path | None:
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # 3) Extra lines past initial.
     ax = axes[1, 0]
     fu = [e for e in eligible if e["n_range_followups"] > 0]
     extra = np.array([e["extra_lines"] for e in fu], dtype=np.int64)
@@ -445,7 +414,6 @@ def plot(stats: dict, since: str) -> Path | None:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
         ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # 4) Coverage ratio CDF.
     ax = axes[1, 1]
     init_sizes = np.array([e["init_size"] for e in fu], dtype=np.int64)
     covered = np.array([e["covered"] for e in fu], dtype=np.int64)
@@ -494,8 +462,6 @@ def plot(stats: dict, since: str) -> Path | None:
     return p
 
 
-# --------------------------------------------------------------------------- #
-# Examples
 
 
 def dump_examples(stats: dict, k: int = 8) -> None:
@@ -503,9 +469,6 @@ def dump_examples(stats: dict, k: int = 8) -> None:
     fu = [e for e in stats["eligible"] if e["n_range_followups"] > 0]
     if not fu:
         return
-    # Bucket by region count → pick one example from each bucket; for buckets
-    # with many candidates prefer one whose initial range isn't the bare-path
-    # default [1, 500] so the maps look more meaningful.
     buckets: dict[int, list[dict]] = defaultdict(list)
     for e in fu:
         bucket = min(e["regions"], 10)
@@ -513,7 +476,6 @@ def dump_examples(stats: dict, k: int = 8) -> None:
     picks: list[dict] = []
     for r in sorted(buckets.keys()):
         candidates = buckets[r]
-        # Prefer ones with non-default initial windows.
         non_default = [
             c
             for c in candidates
@@ -525,7 +487,6 @@ def dump_examples(stats: dict, k: int = 8) -> None:
             break
     print("\nexample coverage maps:")
     for e in picks[:k]:
-        # Compact ASCII map of intervals over the bounding range.
         bbox_lo = e["intervals"][0][0]
         bbox_hi = e["intervals"][-1][1]
         width = 50
@@ -536,7 +497,6 @@ def dump_examples(stats: dict, k: int = 8) -> None:
             i1 = int((ee - bbox_lo) / span * (width - 1))
             for i in range(i0, i1 + 1):
                 bar[i] = "█"
-        # Highlight initial range positions.
         init_s, init_e = e["init_start"], e["init_end"]
         i0 = int((init_s - bbox_lo) / span * (width - 1))
         i1 = int((init_e - bbox_lo) / span * (width - 1))
@@ -552,8 +512,6 @@ def dump_examples(stats: dict, k: int = 8) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Entry
 
 
 def main() -> int:

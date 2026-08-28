@@ -8,22 +8,19 @@ const MINIMUM_DEVICE_FLOW_INTERVAL_MS = 1000;
 const DEFAULT_DEVICE_FLOW_INTERVAL_SECONDS = 5;
 const SLOW_DOWN_INTERVAL_INCREMENT_MS = 5000;
 
-/** Result returned by one OAuth device-code polling attempt. */
 export type OAuthDeviceCodePollResult<T> =
 	| { status: "complete"; value: T }
 	| { status: "pending" }
 	| { status: "slow_down" }
 	| { status: "failed"; message: string };
 
-/** Options for polling an RFC 8628-style OAuth device-code flow. */
 export interface OAuthDeviceCodeFlowOptions<T> {
-	/** Poll the provider once and classify the response. */
 	poll(): OAuthDeviceCodePollResult<T> | Promise<OAuthDeviceCodePollResult<T>>;
-	/** Provider-requested polling cadence; defaults to RFC 8628's five seconds. */
+
 	intervalSeconds?: number;
-	/** Provider-issued expiry window for the device code. */
+
 	expiresInSeconds?: number;
-	/** Cancels the flow with the legacy "Login cancelled" error. */
+
 	signal?: AbortSignal;
 }
 
@@ -50,7 +47,6 @@ async function abortableDeviceFlowSleep(ms: number, signal: AbortSignal | undefi
 	await promise;
 }
 
-/** Poll an OAuth device-code flow until completion, provider failure, timeout, or cancellation. */
 export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodeFlowOptions<T>): Promise<T> {
 	const deadline =
 		typeof options.expiresInSeconds === "number"

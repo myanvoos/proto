@@ -10,9 +10,6 @@ const NITTER_INSTANCES = [
 	"nitter.woodland.cafe",
 ];
 
-/**
- * Handle Twitter/X URLs via Nitter
- */
 export const handleTwitter: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -26,17 +23,14 @@ export const handleTwitter: SpecialHandler = async (
 
 		const fetchedAt = new Date().toISOString();
 
-		// Try Nitter instances
 		for (const instance of NITTER_INSTANCES) {
 			const nitterUrl = `https://${instance}${parsed.pathname}`;
 			const result = await loadPage(nitterUrl, { timeout: Math.min(timeout, 10), signal });
 
 			if (result.ok && result.content.length > 500) {
-				// Parse the Nitter HTML
 				const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
 				const doc = parseHTML(result.content).document;
 
-				// Extract tweet content
 				const tweetContent = doc.querySelector(".tweet-content")?.textContent?.trim();
 				const fullname = doc.querySelector(".fullname")?.textContent?.trim();
 				const username = doc.querySelector(".username")?.textContent?.trim();
@@ -49,7 +43,6 @@ export const handleTwitter: SpecialHandler = async (
 					md += `${tweetContent}\n\n`;
 					if (stats) md += `---\n${stats.replace(/\s+/g, " ")}\n`;
 
-					// Check for replies/thread
 					const replies = Array.from(doc.querySelectorAll(".timeline-item .tweet-content")) as HTMLElement[];
 					if (replies.length > 1) {
 						md += `\n---\n\n## Thread/Replies\n\n`;
@@ -79,7 +72,6 @@ export const handleTwitter: SpecialHandler = async (
 		throw new ToolAbortError();
 	}
 
-	// X.com blocks all bots - return a helpful error instead of falling through
 	return {
 		url,
 		finalUrl: url,

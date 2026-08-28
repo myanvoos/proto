@@ -1,5 +1,3 @@
-//! Container and cloud command output filters.
-
 use std::fmt::Write as _;
 
 use serde_json::Value;
@@ -68,24 +66,11 @@ fn filter_docker(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String 
 			input.to_string()
 		};
 	}
-	// start/stop/restart/rm output is container names or confirmation messages;
-	// compact_build_or_progress would strip legitimate lines that happen to
-	// contain progress substrings (e.g. a container named "my-Downloading-app").
+
 	if is_docker_lifecycle_command(ctx) {
 		return head_tail_dedup(input);
 	}
-	// docker-compose up / docker compose up (attached mode) streams container
-	// logs, not build progress.  Lines like "Downloading", "Waiting",
-	// "Extracting" that appear here are real application log lines, not
-	// layer-pull status noise.  Route through the log filter so they are
-	// preserved.
-	//
-	// Two detection paths:
-	//   • legacy `docker-compose up` — detect.rs normalises the binary name to
-	//     "docker" and sets subcommand="up" directly.
-	//   • Compose v2 `docker compose up` — subcommand="compose", action found
-	//     by scanning past compose global options (same pattern as the listing
-	//     and lifecycle helpers).
+
 	if is_compose_up_command(ctx) {
 		return filter_docker_logs(input);
 	}
@@ -99,19 +84,17 @@ fn filter_kubectl(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String
 	match ctx.subcommand {
 		Some("logs") => filter_logs(input),
 		Some("get") => {
-			// Explicit JSON/YAML output — passthrough, never compact to table
 			if is_explicit_kubectl_json_yaml(ctx.command) {
 				return input.to_string();
 			}
 			if let Some(compacted) = try_compact_kubectl_json(input) {
 				return compacted;
 			}
-			// `-o yaml` or single-object `-o json` from content (already
-			// caught above by flag check, but handle content-detected too).
+
 			if is_structured_kubectl_output(input) {
 				return primitives::head_tail_lines(input, 80, 40);
 			}
-			// Non-table output formats produce listings, not tables
+
 			if is_kubectl_non_table_format(ctx.command) {
 				return primitives::head_tail_lines(input, 80, 40);
 			}
@@ -127,24 +110,12 @@ fn filter_kubectl(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String
 	}
 }
 
-// ── kubectl JSON compaction ──────────────────────────────────────────────────
-
-/// Returns true when the `kubectl get` output is structured JSON or YAML
-/// (i.e. `-o json` single-object or `-o yaml`) rather than a tabular listing.
-/// Used to avoid rewriting manifests as a fake row-count table.
 fn is_structured_kubectl_output(input: &str) -> bool {
 	let t = input.trim_start();
-	// Single-object -o json (starts with '{' but is not a List handled above)
-	// or -o yaml (starts with "apiVersion:" or "kind:").
+
 	t.starts_with('{') || t.starts_with("apiVersion:") || t.starts_with("kind:")
 }
 
-/// Whether `kubectl get` was invoked with explicit `-o json` or `-o yaml`.
-///
-/// Handles all three kubectl `-o` forms:
-///   `-o json`      (space-separated)
-///   `-o=json`      (attached with `=`)
-///   `-ojson`       (fully attached, no separator — common CLI shorthand)
 fn is_explicit_kubectl_json_yaml(command: &str) -> bool {
 	let mut tokens = command.split_whitespace();
 	while let Some(tok) = tokens.next() {
@@ -165,7 +136,7 @@ fn is_explicit_kubectl_json_yaml(command: &str) -> bool {
 				return true;
 			}
 		}
-		// Fully-attached form: `-ojson`, `-oyaml`, `-ojsonpath=...`, etc.
+
 		if let Some(val) = tok
 			.strip_prefix("-o")
 			.filter(|v| !v.is_empty() && !v.starts_with('='))
@@ -179,16 +150,6 @@ fn is_explicit_kubectl_json_yaml(command: &str) -> bool {
 	false
 }
 
-/// Whether `kubectl get` was invoked with a non-table output format.
-/// These formats (`-o name`, `-o jsonpath/...`, `-o go-template/...`,
-/// `-o template/...`, `-o custom-columns/...`, `--no-headers`) produce
-/// listings or single values, not tables — `compact_table` would treat
-/// the first entry as a header and corrupt the requested format.
-///
-/// Handles all three kubectl `-o` forms:
-///   `-o name`      (space-separated)
-///   `-o=name`      (attached with `=`)
-///   `-oname`       (fully attached, no separator — common CLI shorthand)
 fn is_kubectl_non_table_format(command: &str) -> bool {
 	let mut tokens = command.split_whitespace();
 	while let Some(tok) = tokens.next() {
@@ -229,7 +190,7 @@ fn is_kubectl_non_table_format(command: &str) -> bool {
 				return true;
 			}
 		}
-		// Fully-attached form: `-oname`, `-ojsonpath=...`, `-ogo-template=...`, etc.
+
 		if let Some(val) = tok
 			.strip_prefix("-o")
 			.filter(|v| !v.is_empty() && !v.starts_with('='))
@@ -256,8 +217,6 @@ fn is_kubectl_non_table_format(command: &str) -> bool {
 	false
 }
 
-/// Try to parse kubectl `get -o json` output and produce a compact table.
-/// Returns None if input is not recognized JSON or if schema is unexpected.
 fn try_compact_kubectl_json(input: &str) -> Option<String> {
 	let trimmed = input.trim();
 	if !trimmed.starts_with('{') {
@@ -265,7 +224,6 @@ fn try_compact_kubectl_json(input: &str) -> Option<String> {
 	}
 	let root: Value = serde_json::from_str(trimmed).ok()?;
 
-	// kubectl list JSON: {"kind":"List","items":[...]}
 	if root.get("kind")?.as_str()? != "List" {
 		return None;
 	}
@@ -274,7 +232,6 @@ fn try_compact_kubectl_json(input: &str) -> Option<String> {
 		return None;
 	}
 
-	// Determine resource kind from first item
 	let first = &items[0];
 	let kind = first.get("kind")?.as_str()?;
 
@@ -308,14 +265,13 @@ fn compact_kubectl_pods(items: &[Value]) -> String {
 			.and_then(|v| v.as_str())
 			.unwrap_or("<none>");
 
-		// Compute READY and RESTARTS from containerStatuses
 		let (ready, total, restarts) = compute_pod_container_stats(status);
 
 		let start_time = status
 			.get("startTime")
 			.and_then(|v| v.as_str())
 			.unwrap_or("");
-		// Simple age extraction (just show startTime if available)
+
 		let age = start_time;
 
 		let display = if namespace == "default" {
@@ -377,7 +333,6 @@ fn compact_kubectl_services(items: &[Value]) -> String {
 			.and_then(|v| v.as_str())
 			.unwrap_or("<none>");
 
-		// External IP from loadBalancer status
 		let external_ip = item
 			.get("status")
 			.and_then(|s| s.get("loadBalancer"))
@@ -388,7 +343,6 @@ fn compact_kubectl_services(items: &[Value]) -> String {
 			.and_then(|v| v.as_str())
 			.unwrap_or("<none>");
 
-		// Ports
 		let ports = format_k8s_ports(spec.get("ports").and_then(|v| v.as_array()));
 
 		let display = if namespace == "default" {
@@ -479,16 +433,13 @@ fn is_glog_prefix(line: &str) -> bool {
 	{
 		return false;
 	}
-	// Validate month (01-12) and day (01-31) to avoid stripping legitimate
-	// output that happens to start with W + 4 digits + space.
+
 	let month = (bytes[1] - b'0') * 10 + (bytes[2] - b'0');
 	let day = (bytes[3] - b'0') * 10 + (bytes[4] - b'0');
 	if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
 		return false;
 	}
-	// Require a time stamp (hh:mm...) after the space to distinguish real
-	// glog lines from space-separated table output where a release name
-	// happens to match W + MMDD + space.
+
 	if bytes.len() < 11 {
 		return false;
 	}
@@ -504,8 +455,6 @@ fn is_glog_prefix(line: &str) -> bool {
 	true
 }
 
-/// Returns `true` when `tok` is a known docker-compose option that consumes
-/// the next token as its value (i.e. is space-separated, not `--flag=value`).
 fn compose_option_consumes_next(tok: &str) -> bool {
 	matches!(
 		tok,
@@ -526,12 +475,7 @@ fn is_log_command(ctx: &MinimizerCtx<'_>) -> bool {
 	if ctx.subcommand == Some("logs") {
 		return true;
 	}
-	// `docker compose logs <service>` — the action is `logs` but subcommand
-	// resolves to `compose`.  Find the first non-option token after `compose`
-	// (the action) and check only that.  Scanning further tokens would
-	// misclassify service names or command args: for example,
-	// `docker compose exec logs cat file` has action `exec` and service name
-	// `logs`, and must NOT be routed through log dedup/truncation.
+
 	if ctx.subcommand == Some("compose") {
 		let mut tokens = ctx.command.split_whitespace();
 		while let Some(tok) = tokens.next() {
@@ -544,9 +488,9 @@ fn is_log_command(ctx: &MinimizerCtx<'_>) -> bool {
 								&& !tok.contains('=')
 								&& compose_option_consumes_next(tok) =>
 						{
-							tokens.next(); // skip value
+							tokens.next();
 						},
-						Some(tok) if tok.starts_with('-') => {}, // skip boolean flag
+						Some(tok) if tok.starts_with('-') => {},
 						Some(tok) => return tok == "logs",
 					}
 				}
@@ -557,12 +501,6 @@ fn is_log_command(ctx: &MinimizerCtx<'_>) -> bool {
 }
 
 fn is_table_command(ctx: &MinimizerCtx<'_>) -> bool {
-	// Match `docker ps`, `docker images` (subcommand is argv[1])
-	// or `docker compose ps`, `docker compose images` (subcommand is "compose",
-	// action is argv[2]). Machine-readable listing modes (`-q`/`--quiet`, or
-	// `--format` without Docker's `table` directive) must stay opaque: callers
-	// commonly pipe these IDs/templates into other commands, and `compact_table`
-	// would treat the first ID as a header and drop middle rows.
 	if !is_docker_listing_command(ctx) {
 		return false;
 	}
@@ -574,11 +512,6 @@ fn is_docker_listing_command(ctx: &MinimizerCtx<'_>) -> bool {
 }
 
 fn is_compose_listing_action(command: &str) -> bool {
-	// Advance past the `compose` token, then find the first non-option token
-	// (the action).  Only that token decides whether this is a listing command.
-	// Scanning further tokens would misclassify service names: for example,
-	// `docker compose up ps` has action `up` and service name `ps`, and must
-	// NOT be routed through compact_table.
 	let mut tokens = command
 		.split_whitespace()
 		.skip_while(|token| *token != "compose");
@@ -591,9 +524,9 @@ fn is_compose_listing_action(command: &str) -> bool {
 			Some(tok)
 				if tok.starts_with('-') && !tok.contains('=') && compose_option_consumes_next(tok) =>
 			{
-				tokens.next(); // skip value
+				tokens.next();
 			},
-			Some(tok) if tok.starts_with('-') => {}, // skip boolean flag
+			Some(tok) if tok.starts_with('-') => {},
 			Some(tok) => return matches!(tok, "ps" | "images"),
 		}
 	}
@@ -617,30 +550,19 @@ fn is_compose_lifecycle_action(command: &str) -> bool {
 			Some(tok)
 				if tok.starts_with('-') && !tok.contains('=') && compose_option_consumes_next(tok) =>
 			{
-				tokens.next(); // skip value
+				tokens.next();
 			},
-			Some(tok) if tok.starts_with('-') => {}, // skip boolean flag
+			Some(tok) if tok.starts_with('-') => {},
 			Some(tok) => return matches!(tok, "start" | "stop" | "restart" | "rm"),
 		}
 	}
 }
 
-/// Returns `true` when the command is an attached `docker compose up` or
-/// legacy `docker-compose up` that streams container log output.
-///
-/// Two forms are handled:
-///   • `docker-compose up` — detect.rs normalises the binary to "docker" and
-///     sets `subcommand="up"` directly; the original command still contains
-///     "compose" so we can tell it apart from plain `docker build`.
-///   • `docker compose up` — `subcommand="compose"`, action resolved by
-///     scanning past compose global options (same logic as the listing /
-///     lifecycle helpers).
 fn is_compose_up_command(ctx: &MinimizerCtx<'_>) -> bool {
-	// Legacy docker-compose: subcommand is already the action.
 	if ctx.subcommand == Some("up") && ctx.command.contains("compose") {
 		return true;
 	}
-	// Compose v2: subcommand is "compose", scan for first non-option action.
+
 	if ctx.subcommand == Some("compose") {
 		return is_compose_up_action(ctx.command);
 	}
@@ -660,9 +582,9 @@ fn is_compose_up_action(command: &str) -> bool {
 			Some(tok)
 				if tok.starts_with('-') && !tok.contains('=') && compose_option_consumes_next(tok) =>
 			{
-				tokens.next(); // skip value
+				tokens.next();
 			},
-			Some(tok) if tok.starts_with('-') => {}, // skip boolean flag
+			Some(tok) if tok.starts_with('-') => {},
 			Some(tok) => return tok == "up",
 		}
 	}

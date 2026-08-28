@@ -1,7 +1,3 @@
-/**
- * Proxy stream function for apps that route LLM calls through a server.
- * The server manages auth and proxies requests to LLM providers.
- */
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -23,7 +19,6 @@ import {
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { parseStreamingJson, readSseJson } from "@oh-my-pi/pi-utils";
 
-// Event stream adapter for proxy SSE events
 export class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
 		super(
@@ -37,9 +32,6 @@ export class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, 
 	}
 }
 
-/**
- * Proxy event types - server sends these with partial field stripped to reduce bandwidth.
- */
 export type ProxyAssistantMessageEvent =
 	| { type: "start" }
 	| { type: "text_start"; contentIndex: number }
@@ -67,38 +59,17 @@ export type ProxyAssistantMessageEvent =
 	  };
 
 export interface ProxyStreamOptions extends SimpleStreamOptions {
-	/** Auth token for the proxy server */
 	authToken: string;
-	/** Proxy server URL (e.g., "https://genai.example.com") */
+
 	proxyUrl: string;
-	/** Optional fetch implementation; defaults to global fetch. */
+
 	fetch?: FetchImpl;
 }
 
-/**
- * Stream function that proxies through a server instead of calling LLM providers directly.
- * The server strips the partial field from delta events to reduce bandwidth.
- * We reconstruct the partial message client-side.
- *
- * Use this as the `streamFn` option when creating an Agent that needs to go through a proxy.
- *
- * @example
- * ```typescript
- * const agent = new Agent({
- *   streamFn: (model, context, options) =>
- *     streamProxy(model, context, {
- *       ...options,
- *       authToken: await getAuthToken(),
- *       proxyUrl: "https://genai.example.com",
- *     }),
- * });
- * ```
- */
 export function streamProxy(model: Model, context: Context, options: ProxyStreamOptions): ProxyMessageEventStream {
 	const stream = new ProxyMessageEventStream();
 
 	(async () => {
-		// Initialize the partial message that we'll build up from events
 		const partial: AssistantMessage = {
 			role: "assistant",
 			stopReason: "stop",
@@ -159,9 +130,7 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 					if (errorData.error) {
 						errorMessage = `Proxy error: ${errorData.error}`;
 					}
-				} catch {
-					// Couldn't parse error response
-				}
+				} catch {}
 				throw new Error(errorMessage);
 			}
 
@@ -211,27 +180,12 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 	return stream;
 }
 
-/**
- * Clear the `partialJson` streaming symbol from any tool-call content blocks
- * that still carry it (e.g. when the stream ended without a `toolcall_end`), so
- * the finalized `AssistantMessage` no longer reads as still-streaming.
- */
 function scrubPartialJson(partial: AssistantMessage): void {
 	for (const block of partial.content) {
 		if (block?.type === "toolCall") clearStreamingPartialJson(block);
 	}
 }
 
-/**
- * Process a proxy event and update the partial message.
- *
- * Streaming `partialJson` for in-progress tool calls is accumulated in a
- * side-channel map keyed by `contentIndex` and also written onto the content
- * object as a symbol-keyed field so downstream renderers can read it
- * during streaming. The field is cleared at `toolcall_end` and scrubbed from any
- * remaining blocks at `done`/`error` so the finalized `AssistantMessage` never
- * reads as still-streaming.
- */
 function processProxyEvent(
 	model: Model,
 	proxyEvent: ProxyAssistantMessageEvent,
@@ -345,7 +299,7 @@ function processProxyEvent(
 				partialJsonByIndex.set(proxyEvent.contentIndex, acc);
 				content.arguments = parseStreamingJson(acc) || {};
 				setStreamingPartialJson(content, acc);
-				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
+				partial.content[proxyEvent.contentIndex] = { ...content };
 				return {
 					type: "toolcall_delta",
 					contentIndex: proxyEvent.contentIndex,

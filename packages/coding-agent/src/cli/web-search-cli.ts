@@ -1,9 +1,3 @@
-/**
- * Web search CLI command handlers.
- *
- * Handles `proto q`/`proto web-search` subcommands for testing web search providers.
- */
-
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";

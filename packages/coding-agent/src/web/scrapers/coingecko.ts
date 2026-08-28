@@ -27,9 +27,6 @@ interface CoinGeckoResponse {
 	genesis_date?: string;
 }
 
-/**
- * Handle CoinGecko cryptocurrency URLs via API
- */
 export const handleCoinGecko: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -39,14 +36,12 @@ export const handleCoinGecko: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (!parsed.hostname.includes("coingecko.com")) return null;
 
-		// Extract coin ID from /coins/{id} or /en/coins/{id}
 		const match = parsed.pathname.match(/^(?:\/[a-z]{2})?\/coins\/([^/?#]+)/);
 		if (!match) return null;
 
 		const coinId = decodeURIComponent(match[1]);
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from CoinGecko API
 		const apiUrl = `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`;
 		const result = await loadPage(apiUrl, {
 			timeout,
@@ -79,7 +74,6 @@ export const handleCoinGecko: SpecialHandler = async (
 
 		let md = `# ${coin.name} (${coin.symbol.toUpperCase()})\n\n`;
 
-		// Price and market data
 		if (market?.current_price?.usd !== undefined) {
 			md += `**Price:** $${formatPrice(market.current_price.usd)}`;
 			if (market.price_change_percentage_24h !== undefined) {
@@ -113,7 +107,6 @@ export const handleCoinGecko: SpecialHandler = async (
 
 		md += "\n";
 
-		// Supply info
 		if (market?.circulating_supply) {
 			md += `**Circulating Supply:** ${formatNumber(Math.round(market.circulating_supply))}`;
 			if (market.max_supply) {
@@ -133,7 +126,6 @@ export const handleCoinGecko: SpecialHandler = async (
 			md += `**Categories:** ${coin.categories.join(", ")}\n`;
 		}
 
-		// Links
 		const links: string[] = [];
 		if (coin.links?.homepage?.[0]) {
 			links.push(`[Website](${coin.links.homepage[0]})`);
@@ -148,10 +140,9 @@ export const handleCoinGecko: SpecialHandler = async (
 			md += `**Links:** ${links.join(" · ")}\n`;
 		}
 
-		// Description
 		if (coin.description?.en) {
 			const desc = coin.description.en
-				.replace(/<[^>]+>/g, "") // Strip HTML
+				.replace(/<[^>]+>/g, "")
 				.replace(/\r\n/g, "\n")
 				.trim();
 			if (desc) {
@@ -165,9 +156,6 @@ export const handleCoinGecko: SpecialHandler = async (
 	return null;
 };
 
-/**
- * Format price with appropriate decimal places
- */
 function formatPrice(price: number): string {
 	if (price >= 1000) return price.toLocaleString("en-US", { maximumFractionDigits: 2 });
 	if (price >= 1) return price.toFixed(2);

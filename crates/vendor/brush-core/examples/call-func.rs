@@ -1,4 +1,4 @@
-//! Example of instantiating a shell and calling a shell function in it.
+
 
 use anyhow::Result;
 
@@ -53,7 +53,7 @@ async fn run(suppress_stdout: bool) -> Result<()> {
 fn main() -> Result<()> {
 	const SUPPRESS_STDOUT: bool = true;
 
-	// Construct a runtime for us to run async code on.
+
 	let rt = tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
 		.build()?;

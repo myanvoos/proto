@@ -1,21 +1,3 @@
-/**
- * Protocol handler for history:// URLs.
- *
- * Exposes agent transcripts as concise markdown. Live refs render from the
- * in-memory message array; parked refs (session disposed, sessionFile
- * retained) load read-only from the JSONL session file — no writer, no lock.
- *
- * Agents that are no longer in the `AgentRegistry` — one-shot helpers
- * unregistered after `finalizeSubagentLifecycle` (`keepAlive: false`, e.g. the
- * `eval` `agent()` bridge), agents released via the Agent Fleet / orchestrate_kill, or
- * any agent after a session resume — remain reachable: `resolve`, `complete`,
- * and the index all fall back to scanning artifacts dirs for `<id>.jsonl`,
- * mirroring how `agent://` reads `.md` outputs straight off disk.
- *
- * URL forms:
- * - history:// - Index of all registry + on-disk agents (id, status, kind, last activity)
- * - history://<agentId> - Concise markdown transcript of that agent
- */
 import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
@@ -23,7 +5,6 @@ import { loadSessionMessagesReadOnly } from "../session/session-loader";
 import { sessionFilesFromDisk } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
-/** Humanize a last-activity timestamp as `Ns/Nm/Nh/Nd ago`. */
 function formatAgo(timestamp: number): string {
 	const diffMs = Math.max(0, Date.now() - timestamp);
 	const secs = Math.floor(diffMs / 1000);
@@ -35,7 +16,6 @@ function formatAgo(timestamp: number): string {
 	return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** One row of the history index — either a registered ref or a disk-only transcript. */
 interface IndexEntry {
 	id: string;
 	status: string;
@@ -44,13 +24,6 @@ interface IndexEntry {
 	lastActivity: string;
 }
 
-/**
- * Handler for history:// URLs.
- *
- * Resolves agent ids against the global AgentRegistry, then falls back to
- * on-disk `.jsonl` transcripts, serving read-only history for live, parked,
- * and unregistered agents alike.
- */
 export class HistoryProtocolHandler implements ProtocolHandler {
 	readonly scheme = "history";
 	readonly immutable = false;
@@ -58,8 +31,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl): Promise<InternalResource> {
 		const agentId = url.rawHost || url.hostname;
 		const registry = AgentRegistry.global();
-		// Advisor transcripts are observability-only — surfaced in the Agent Fleet, never
-		// in the agent-facing roster. Hide them from the index, lookup, and completions.
+
 		const visible = registry.list().filter(ref => ref.kind !== "advisor");
 
 		if (!agentId) {
@@ -75,14 +47,11 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		let ref = registry.get(agentId);
 		if (ref?.kind === "advisor") ref = undefined;
 		if (!ref) {
-			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
 			const lower = agentId.toLowerCase();
 			ref = visible.find(candidate => candidate.id.toLowerCase() === lower);
 		}
 
 		if (!ref) {
-			// Registry miss — the agent may have been unregistered or lost on resume.
-			// Serve its transcript straight from disk if the session file persists.
 			const disk = await this.#resolveFromDisk(agentId);
 			if (disk) return { ...disk, url: url.href };
 
@@ -100,8 +69,6 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
 			notes.push(`Source: session file (read-only, ${ref.status})`);
 		} else {
-			// No live session and no retained sessionFile — try the disk scan before
-			// giving up, in case the transcript lingers under an artifacts dir.
 			const disk = await this.#resolveFromDisk(ref.id);
 			if (disk) return { ...disk, url: url.href };
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
@@ -118,10 +85,6 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		};
 	}
 
-	/**
-	 * Load a transcript for `agentId` from an on-disk `.jsonl` session file,
-	 * matched case-insensitively. Returns `undefined` when no file is found.
-	 */
 	async #resolveFromDisk(agentId: string): Promise<InternalResource | undefined> {
 		const files = await sessionFilesFromDisk();
 		const lower = agentId.toLowerCase();
@@ -155,7 +118,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			parent: ref.parentId ?? "—",
 			lastActivity: formatAgo(ref.lastActivity),
 		}));
-		// Merge on-disk transcripts for agents absent from the registry.
+
 		const registered = new Set(refs.map(ref => ref.id));
 		const disk = await sessionFilesFromDisk();
 		for (const id of disk.keys()) {

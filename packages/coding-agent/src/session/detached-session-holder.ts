@@ -45,20 +45,12 @@ export class DetachedSessionHolder {
 		this.#live.delete(this.#key(file));
 	}
 
-	/**
-	 * Take the entry for `file` and stop its live instance before the caller
-	 * removes the transcript. The abort is awaited (rejection-safe) so artifact
-	 * deletion cannot race further appends from the parked turn. Returns
-	 * whether a parked entry existed.
-	 */
 	async stopAndRemove(file: string | null | undefined): Promise<boolean> {
 		const entry = this.take(file);
 		if (!entry) return false;
 		try {
 			await entry.session.abort({ goalReason: "internal" });
-		} catch {
-			// Best-effort: the entry is already removed, so deletion proceeds.
-		}
+		} catch {}
 		return true;
 	}
 
@@ -79,22 +71,17 @@ export class DetachedSessionHolder {
 			this.#live.delete(key);
 			evicted.push(key);
 		}
-		// Best-effort abort of each evicted background session to free resources.
-		// Await every abort so rejections are observed instead of surfacing as
-		// unhandled rejections; a failing abort only skips that cleanup.
+
 		await Promise.all(
 			toEvict.map(async ([, entry]) => {
 				try {
 					await entry.session.abort({ goalReason: "internal" });
-				} catch {
-					// Dropped anyway.
-				}
+				} catch {}
 			}),
 		);
 		return evicted;
 	}
 
-	// For tests: touch to update lastActivity
 	touch(file: string): void {
 		const entry = this.#live.get(this.#key(file));
 		if (entry) entry.lastActivity = Date.now();

@@ -1,19 +1,3 @@
-/**
- * Cleanup-loop discovery scanner. Feeds the `/cleanup` command's Discover phase
- * with ranked, machine-generated candidates so each iteration starts from
- * evidence instead of ad-hoc grepping.
- *
- * Reports (all heuristic — candidates, not proofs):
- *   clones         near-duplicate code regions (normalized line-window hashing)
- *   god-objects    oversized multi-responsibility files (LOC, exports, class methods)
- *   junk-drawers   domain-less modules (utils/helpers/misc/common) accreting code
- *   dead-exports   exported symbols with zero references elsewhere in the repo,
- *                  tiered by exports-map exposure (barrel-public / wildcard-only)
- *   deep-imports   files importing via ../../.. (wrong-home signal)
- *   check-density  defensive-check hotspots (as-casts, ?., ??, typeof re-narrowing)
- *
- * Usage: bun scripts/cleanup-scan.ts [--json] [--top=N] [--pkg=ai,utils|all]
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ts } from "@ts-morph/common";
@@ -24,18 +8,17 @@ const JUNK_NAME = /(^|[-_.])(utils?|helpers?|misc|common)\.ts$/;
 const CLONE_WINDOW = 7;
 
 interface FileInfo {
-	/** Repo-relative path. */
 	rel: string;
 	pkg: string;
 	text: string;
 	lines: string[];
-	/** Non-blank line count. */
+
 	loc: number;
-	/** Locally declared exported symbol names (excludes re-exports). */
+
 	exportedNames: string[];
-	/** `export * from` specifiers (relative only). */
+
 	exportStar: string[];
-	/** `export { a, b } from` re-exports: name → specifier. */
+
 	namedReexports: { name: string; from: string }[];
 	classes: { name: string; methods: number }[];
 	topLevelStatements: number;
@@ -141,7 +124,6 @@ function parseFile(rel: string, pkg: string, text: string): FileInfo {
 	return info;
 }
 
-/** Normalized significant lines for clone hashing: [normalizedText, originalLineNo][]. */
 function significantLines(info: FileInfo): [string, number][] {
 	const out: [string, number][] = [];
 	let inBlock = false;
@@ -190,10 +172,9 @@ class UnionFind {
 	}
 }
 
-/** Detect duplicated regions via hashed sliding windows + union-find chaining. */
 function detectClones(files: FileInfo[]): { regions: CloneRegion[]; sigLines: number }[] {
 	const sig = files.map(significantLines);
-	const byHash = new Map<number | bigint, number[]>(); // encoded position = fileIdx * 2^24 + windowIdx
+	const byHash = new Map<number | bigint, number[]>();
 	const POS = 1 << 24;
 	for (let f = 0; f < files.length; f++) {
 		const s = sig[f];
@@ -236,7 +217,6 @@ function detectClones(files: FileInfo[]): { regions: CloneRegion[]; sigLines: nu
 
 	const results: { regions: CloneRegion[]; sigLines: number }[] = [];
 	for (const positions of clusters.values()) {
-		// Merge window positions into per-file line intervals.
 		const perFile = new Map<number, number[]>();
 		for (const pos of positions) {
 			const f = Math.floor(pos / POS);
@@ -273,7 +253,6 @@ function detectClones(files: FileInfo[]): { regions: CloneRegion[]; sigLines: nu
 	return results.sort((a, b) => b.sigLines - a.sigLines);
 }
 
-/** Resolve a relative re-export specifier to a repo-relative .ts path. */
 function resolveSpecifier(fromRel: string, spec: string, known: Set<string>): string | null {
 	const base = path.join(path.dirname(fromRel), spec);
 	for (const cand of [base, `${base}.ts`, path.join(base, "index.ts")]) {
@@ -283,14 +262,9 @@ function resolveSpecifier(fromRel: string, spec: string, known: Set<string>): st
 	return null;
 }
 
-/**
- * Public-surface tiers from package.json exports maps.
- * Explicit (non-wildcard) entries + their `export *` closure = barrel-public.
- * Wildcard patterns (`./*`) technically expose everything; tracked separately.
- */
 async function computePublicSurface(pkgs: string[], byRel: Map<string, FileInfo>) {
 	const barrelFiles = new Set<string>();
-	const barrelNames = new Map<string, Set<string>>(); // file → names made public via named re-export
+	const barrelNames = new Map<string, Set<string>>();
 	for (const pkg of pkgs) {
 		let exportsMap: Record<string, unknown>;
 		try {
@@ -341,9 +315,7 @@ async function main() {
 	const scanFiles: FileInfo[] = [];
 	const byRel = new Map<string, FileInfo>();
 
-	// Reference corpus = every TS file in the repo (including tests/scripts),
-	// so dead-export candidacy sees all in-repo consumers.
-	const corpusIdents = new Map<string, Set<string>>(); // identifier → referencing rel paths
+	const corpusIdents = new Map<string, Set<string>>();
 	const glob = new Bun.Glob("**/*.ts");
 	const corpusRoots = ["packages", "scripts"];
 	for (const root of corpusRoots) {
@@ -374,7 +346,6 @@ async function main() {
 
 	const { barrelFiles, barrelNames } = await computePublicSurface(pkgs, byRel);
 
-	// God objects: rank by LOC, annotate structure.
 	const godObjects = scanFiles
 		.filter(f => f.loc >= 800)
 		.sort((a, b) => b.loc - a.loc)
@@ -391,7 +362,6 @@ async function main() {
 		}))
 		.sort((a, b) => b.godScore - a.godScore);
 
-	// Clones.
 	const clones = detectClones(scanFiles)
 		.filter(c => c.sigLines >= 2 * CLONE_WINDOW)
 		.slice(0, top)
@@ -400,14 +370,12 @@ async function main() {
 			regions: c.regions.map(r => `${r.rel}:${r.startLine}-${r.endLine}`),
 		}));
 
-	// Junk drawers.
 	const junkDrawers = scanFiles
 		.filter(f => JUNK_NAME.test(f.rel) || /\/(utils|helpers)\//.test(f.rel))
 		.map(f => ({ file: f.rel, loc: f.loc, exports: f.exportedNames.length }))
 		.sort((a, b) => b.loc - a.loc)
 		.slice(0, top);
 
-	// Dead-export candidates.
 	const deadExports: {
 		file: string;
 		name: string;
@@ -431,14 +399,12 @@ async function main() {
 	}
 	deadExports.sort((a, b) => a.file.localeCompare(b.file) || a.name.localeCompare(b.name));
 
-	// Deep imports.
 	const deepImports = scanFiles
 		.filter(f => f.deepImports > 0)
 		.map(f => ({ file: f.rel, count: f.deepImports }))
 		.sort((a, b) => b.count - a.count)
 		.slice(0, top);
 
-	// Defensive-check density (per 100 LOC, min 150 LOC).
 	const checkDensity = scanFiles
 		.filter(f => f.loc >= 150)
 		.map(f => {

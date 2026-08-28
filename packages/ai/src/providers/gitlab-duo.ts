@@ -141,8 +141,6 @@ export function getModelMapping(modelId: string): GitLabModelMapping | undefined
 	const direct = MODEL_MAPPINGS[modelId];
 	if (direct) return direct;
 
-	// Support canonical model IDs (e.g. "gpt-5-codex", "claude-sonnet-4-5-20250929")
-	// in addition to Duo aliases (e.g. "duo-chat-gpt-5-codex").
 	return Object.values(MODEL_MAPPINGS).find(mapping => mapping.model === modelId);
 }
 

@@ -35,7 +35,7 @@ const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
 const DEFAULT_ANTIGRAVITY_MODEL = "gemini-3-pro-image";
 const DEFAULT_XAI_IMAGE_MODEL = "grok-imagine-image";
-const IMAGE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
+const IMAGE_TIMEOUT = 3 * 60 * 1000;
 const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_IMAGE_OUTPUT_FORMAT = "webp";
@@ -94,34 +94,24 @@ const imageGenSchema = type({
 type ImageGenParams = typeof imageGenSchema.infer;
 type GeminiResponseModality = typeof responseModalitySchema.infer;
 
-/**
- * Assembles a structured prompt from the provided parameters.
- * For generation: builds "subject, action, scene. composition. lighting. camera. style."
- * For edits: appends change instructions and preserve directives.
- */
 function assemblePrompt(params: ImageGenParams): string {
 	const parts: string[] = [];
 
-	// Core subject line: subject + action + scene
 	const subjectParts = [params.subject];
 	if (params.action) subjectParts.push(params.action);
 	if (params.scene) subjectParts.push(params.scene);
 	parts.push(subjectParts.join(", "));
 
-	// Technical details as separate sentences
 	if (params.composition) parts.push(params.composition);
 	if (params.lighting) parts.push(params.lighting);
 	if (params.style) parts.push(params.style);
 
-	// Join with periods for sentence structure
 	let prompt = `${parts.map(p => p.replace(/[.!,;:]+$/, "")).join(". ")}.`;
 
-	// Text rendering specs
 	if (params.text) {
 		prompt += `\n\nText: ${params.text}`;
 	}
 
-	// Edit mode: changes and preserve directives
 	if (params.changes?.length) {
 		prompt += `\n\nChanges:\n${params.changes.map(c => `- ${c}`).join("\n")}`;
 	}
@@ -291,10 +281,6 @@ interface AntigravityRequest {
 }
 
 interface XAIImageReference {
-	// OpenAI-compat discriminator. Every code example at
-	// docs.x.ai/developers/rest-api-reference/inference/images sends this
-	// alongside `url`; the schema text doesn't strictly require it, but
-	// matching the documented wire format avoids relying on schema-vs-example.
 	readonly type: "image_url";
 	readonly url: string;
 }
@@ -308,13 +294,6 @@ interface XAIImageRequestBase {
 	readonly response_format: "b64_json" | "url";
 }
 
-// xAI image request body. Three shapes:
-//   1. text-only generation                  → POST /v1/images/generations
-//   2. single-source edit (image field)      → POST /v1/images/edits
-//   3. multi-reference edit (images field)   → POST /v1/images/edits
-// `image` and `images` are mutually exclusive per docs.x.ai; the discriminated
-// union enforces that statically. The runtime cap (XAI_MAX_EDIT_IMAGES) bounds
-// the array length, which TypeScript cannot encode without lossy tuple unions.
 type XAIImageRequestBody =
 	| (XAIImageRequestBase & { readonly image?: never; readonly images?: never })
 	| (XAIImageRequestBase & { readonly image: XAIImageReference; readonly images?: never })
@@ -440,10 +419,8 @@ function extractOpenRouterImageUrls(message: OpenRouterMessage | undefined): str
 	return urls;
 }
 
-/** Configured provider priority set via `providers.imageOrder` (default: none). */
 let configuredImageProviderOrder: readonly ImageProvider[] = [];
 
-/** Set the configured image-provider priority from settings; invalid IDs are dropped. */
 export function setImageProviderOrder(providers: readonly string[]): void {
 	configuredImageProviderOrder = providers.filter(isImageProviderId);
 }
@@ -467,9 +444,7 @@ function parseAntigravityCredentials(raw: string): ParsedAntigravityCredentials 
 		if (parsed.token && parsed.projectId) {
 			return { accessToken: parsed.token, projectId: parsed.projectId };
 		}
-	} catch {
-		// Invalid JSON
-	}
+	} catch {}
 	return null;
 }
 
@@ -508,7 +483,6 @@ async function findOpenRouterImageCredentials(
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
 	if (modelRegistry) {
-		// AuthStorage.getApiKey already falls back to env keys, so this covers OPENROUTER_API_KEY too.
 		const apiKey = await modelRegistry.getApiKeyForProvider("openrouter", sessionId);
 		if (apiKey) return { provider: "openrouter", apiKey: modelRegistry.resolver("openrouter", { sessionId }) };
 		return null;
@@ -523,8 +497,6 @@ async function findGeminiImageCredentials(
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
 	if (modelRegistry) {
-		// AuthStorage.getApiKey already falls back to env keys (GEMINI_API_KEY), so only
-		// GOOGLE_API_KEY needs the explicit check below.
 		const apiKey = await modelRegistry.getApiKeyForProvider("google", sessionId);
 		if (apiKey) return { provider: "gemini", apiKey: modelRegistry.resolver("google", { sessionId }) };
 	} else {
@@ -551,9 +523,6 @@ async function findOpenAIHostedImageCredentials(
 	};
 }
 
-// Codex (ChatGPT subscription) chat models that carry OpenAI's hosted
-// `image_generation` tool. Priority: newest general model first, then Codex
-// variants; any available openai-codex hosted-image model is the last resort.
 const CODEX_IMAGE_MODEL_PRIORITY = ["gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-5-codex"] as const;
 
 function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | undefined {
@@ -564,15 +533,6 @@ function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | un
 	return modelRegistry.getAll().find(model => model.provider === "openai-codex" && isOpenAIHostedImageModel(model));
 }
 
-/**
- * Codex subscription (ChatGPT OAuth) image credentials — engages OpenAI's hosted
- * `image_generation` tool through a CONNECTED Codex account, independent of the
- * active chat model. This is what lets image generation run on a ChatGPT
- * subscription (no metered OPENAI_API_KEY) even when the active model is, e.g.,
- * Claude. The active-model-is-codex case is already served by
- * {@link findOpenAIHostedImageCredentials}, so it is skipped here to avoid a
- * duplicate resolution.
- */
 async function findCodexSubscriptionImageCredentials(
 	modelRegistry: ModelRegistry | undefined,
 	activeModel: Model | undefined,
@@ -582,9 +542,7 @@ async function findCodexSubscriptionImageCredentials(
 	if (isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex") {
 		return null;
 	}
-	// A Codex subscription credential is an OAuth JWT with an account claim. API
-	// keys stored under this provider cannot use the ChatGPT backend and must not
-	// prevent fallback providers from being selected.
+
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
 	if (!token || !getCodexAccountId(token)) return null;
 	const model = resolveDefaultCodexImageModel(modelRegistry);
@@ -622,8 +580,6 @@ function imageProviderOrder(activeModel: Model | undefined, requested?: ImagePro
 		providers.push(provider);
 	};
 
-	// Per-request provider wins, then the configured priority list, then the
-	// active session's provider, then the built-in auto order.
 	if (requested !== undefined && requested !== "auto") add(requested);
 	for (const provider of configuredImageProviderOrder) add(provider);
 	add(activeImageProvider(activeModel));
@@ -892,7 +848,7 @@ function buildOpenAIImageHeaders(model: Model, apiKey: string, sessionId: string
 		if (accountId) {
 			headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 		}
-		// Same region gate as the chat transport; the token carries the value.
+
 		applyCodexResidencyHeader(headers, apiKey);
 		headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
@@ -1025,28 +981,20 @@ function buildAntigravityRequest(
 	};
 }
 
-// xAI image-edit cap per docs.x.ai (POST /v1/images/edits supports up to 3
-// source images for multi-reference editing).
 const XAI_MAX_EDIT_IMAGES = 3;
 
-// Map the OpenAI-style pixel-size enum (image_size) to xAI's discrete tier.
-// "1024x1024" → "1k"; anything wider (1536x... or ...x1536) → "2k". Absent
-// image_size defaults to "1k", matching hermes-agent's DEFAULT_RESOLUTION
-// (plugins/image_gen/xai/__init__.py:71).
 function resolveXAIResolution(imageSize: string | undefined): "1k" | "2k" {
 	if (!imageSize || imageSize === "1024x1024") return "1k";
 	return "2k";
 }
 
-// Build the discriminated edit body. Caller must ensure images.length is in
-// [1, XAI_MAX_EDIT_IMAGES]; the bound check fires earlier in execute().
 function buildXAIEditPayload(base: XAIImageRequestBase, images: readonly InlineImageData[]): XAIImageRequestBody {
 	const refs: readonly XAIImageReference[] = images.map(img => ({
 		type: "image_url",
 		url: toDataUrl(img),
 	}));
 	const [first, ...rest] = refs;
-	if (first === undefined) return base; // unreachable: caller checked images.length > 0
+	if (first === undefined) return base;
 	return rest.length === 0 ? { ...base, image: first } : { ...base, images: refs };
 }
 
@@ -1216,9 +1164,6 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						const response = await withAuth(
 							antigravityKey,
 							async key => {
-								// On a retry the resolver yields the raw stored credential JSON
-								// ({ token, projectId }); the initial seed is the already-parsed
-								// access token. Tolerate both, falling back to the seed projectId.
 								const rotated = parseAntigravityCredentials(key);
 								const bearer = rotated?.accessToken ?? key;
 								const projectId = rotated?.projectId ?? apiKey.projectId!;
@@ -1239,9 +1184,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									} else if (mode === "sandbox") {
 										endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
 									}
-								} catch {
-									// Ignored
-								}
+								} catch {}
 
 								let resp: Response | undefined;
 								let lastError: Error | undefined;
@@ -1271,9 +1214,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 										try {
 											const parsedErr = JSON.parse(errorText) as { error?: { message?: string } };
 											message = parsedErr.error?.message ?? message;
-										} catch {
-											// Keep raw text.
-										}
+										} catch {}
 
 										lastError = new ProviderHttpError(
 											`Antigravity image request failed (${resp.status}): ${message}`,
@@ -1398,9 +1339,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									try {
 										const parsedErr = JSON.parse(rawText) as { error?: { message?: string } };
 										message = parsedErr.error?.message ?? message;
-									} catch {
-										// Keep raw text.
-									}
+									} catch {}
 									throw new ProviderHttpError(
 										`xAI image request failed (${resp.status}): ${message}`,
 										resp.status,
@@ -1488,9 +1427,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									try {
 										const parsed = JSON.parse(text) as { error?: { message?: string } };
 										message = parsed.error?.message ?? message;
-									} catch {
-										// Keep raw text.
-									}
+									} catch {}
 									throw new ProviderHttpError(
 										`OpenRouter image request failed (${resp.status}): ${message}`,
 										resp.status,
@@ -1589,9 +1526,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								try {
 									const parsed = JSON.parse(text) as { error?: { message?: string } };
 									message = parsed.error?.message ?? message;
-								} catch {
-									// Keep raw text.
-								}
+								} catch {}
 								throw new ProviderHttpError(
 									`Gemini image request failed (${resp.status}): ${message}`,
 									resp.status,

@@ -1,13 +1,3 @@
-//! Resolve the syntactic block that begins on a given source line.
-//!
-//! Powers the hashline `replace block N:` operator: given a 1-indexed line,
-//! parse the source with tree-sitter and return the line span of the outermost
-//! named node that *begins* on that line (excluding the whole-file root). Brace
-//! languages anchor a construct's block to its opening line, so pointing at the
-//! line that opens an `if` / `function` / `struct` resolves to that construct's
-//! full span; pointing at a continuation line or a lone closing delimiter
-//! resolves to nothing.
-
 use std::collections::BTreeSet;
 
 use anyhow::Result;
@@ -21,27 +11,22 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockRangeOptions {
-	/// Source code to inspect.
 	pub code: String,
-	/// Language alias (e.g. "rust", "typescript") used before path inference.
+
 	pub lang: Option<String>,
-	/// File path used to infer language by extension when `lang` is omitted.
+
 	pub path: Option<String>,
-	/// 1-indexed source line the block must begin on.
+
 	pub line: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockRange {
-	/// 1-indexed inclusive first line of the resolved block.
 	pub start_line: u32,
-	/// 1-indexed inclusive last line of the resolved block.
-	pub end_line:   u32,
+
+	pub end_line: u32,
 }
 
-/// Count of leading space/tab bytes on `row` (0-indexed), i.e. the byte column
-/// of the first content character. Returns `None` when `row` is out of range
-/// or the line is blank / whitespace-only — there is no block to resolve there.
 fn first_content_column(code: &str, row: usize) -> Option<usize> {
 	let line = code.split('\n').nth(row)?;
 	for (col, byte) in line.bytes().enumerate() {
@@ -52,11 +37,6 @@ fn first_content_column(code: &str, row: usize) -> Option<usize> {
 	None
 }
 
-/// Resolve the block beginning on `options.line`.
-///
-/// Returns `None` (a soft "no block here", surfaced as a hard error one layer
-/// up) when the language is unrecognized, the line is out of range / blank, no
-/// node begins on that line, or the resolved subtree contains a syntax error.
 pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> {
 	let BlockRangeOptions { code, lang, path, line } = options;
 	if line == 0 || code.is_empty() {
@@ -75,31 +55,16 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 	};
 	let root = tree.root_node();
 
-	// Query a one-column-wide range over the first content character rather
-	// than a zero-width point. Some grammars (e.g. tree-sitter-swift) insert a
-	// zero-width separator node at the start of a statement that follows a
-	// blank line. An empty point range at that node's start gets absorbed into
-	// the invisible node, which has no children and is not "relevant", so
-	// `named_descendant_for_point_range` bubbles back up to the last visible
-	// ancestor (the enclosing body, or the file root). That made `replace
-	// block` on a line like `var body: some View {` preceded by a blank line
-	// resolve to the whole enclosing type body and then fail. Spanning the
-	// first character skips the zero-width node (its end is < the range end)
-	// and forces the descent into the node that begins on `row`.
 	let point = Point::new(row, col);
 	let point_end = Point::new(row, col + 1);
 	let Some(leaf) = root.named_descendant_for_point_range(point, point_end) else {
 		return Ok(None);
 	};
-	// A leaf whose own start row is earlier than `row` means `point` landed on
-	// a continuation line or a closing delimiter of a block that opened earlier
-	// — there is no block *beginning* on line N.
+
 	if leaf.start_position().row != row {
 		return Ok(None);
 	}
-	// Climb to the outermost named ancestor that still begins on `row`,
-	// excluding the whole-file root. Ancestors can only begin on an earlier
-	// row, so the first parent that starts before `row` stops the climb.
+
 	let mut node = leaf;
 	while let Some(parent) = node.parent() {
 		if parent.id() == root.id() {
@@ -110,10 +75,7 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 		}
 		node = parent;
 	}
-	// Refuse degenerate error-recovery spans: a missing brace can make
-	// tree-sitter wrap a huge region in an ERROR node. Checking only the
-	// resolved node's subtree (not the whole file) keeps an unrelated syntax
-	// error elsewhere from disabling the feature.
+
 	if node.has_error() {
 		return Ok(None);
 	}
@@ -125,26 +87,22 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LineRange {
-	/// 1-indexed inclusive first visible line.
 	pub start_line: u32,
-	/// 1-indexed inclusive last visible line.
-	pub end_line:   u32,
+
+	pub end_line: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnclosingBoundaryOptions {
-	/// Source code to inspect.
-	pub code:   String,
-	/// Language alias (e.g. "rust", "typescript") used before path inference.
-	pub lang:   Option<String>,
-	/// File path used to infer language by extension when `lang` is omitted.
-	pub path:   Option<String>,
-	/// 1-indexed inclusive visible line ranges (the lines actually shown).
+	pub code: String,
+
+	pub lang: Option<String>,
+
+	pub path: Option<String>,
+
 	pub ranges: Vec<LineRange>,
 }
 
-/// Sort, drop invalid, and merge adjacent/overlapping ranges so visibility
-/// tests can binary-search a non-overlapping list.
 fn normalize_ranges(mut ranges: Vec<LineRange>) -> Vec<LineRange> {
 	ranges.retain(|range| range.start_line > 0 && range.end_line >= range.start_line);
 	ranges.sort_by(|a, b| {
@@ -179,42 +137,27 @@ fn is_visible(merged: &[LineRange], line: u32) -> bool {
 		.is_ok()
 }
 
-/// Does any visible line fall inside the inclusive line span `[start, end]`?
 fn intersects_visible(merged: &[LineRange], start: u32, end: u32) -> bool {
-	// `merged` is sorted and non-overlapping, so the first range that can
-	// possibly overlap is the first one whose `end_line` reaches `start`.
 	let idx = merged.partition_point(|range| range.end_line < start);
 	merged.get(idx).is_some_and(|range| range.start_line <= end)
 }
 
-/// Depth-first walk collecting boundary lines from every multi-line named node
-/// that straddles a visible-range edge. A single reused [`TreeCursor`] keeps
-/// the traversal allocation-free.
 fn collect_boundaries(cursor: &mut TreeCursor<'_>, merged: &[LineRange], out: &mut BTreeSet<u32>) {
 	let node = cursor.node();
-	// Prune whole subtrees that cannot contribute. A node contributes only when
-	// one of its own endpoint lines is visible, and both of those lines lie
-	// inside its raw row span; every descendant's span is contained in this
-	// one, so a span holding no visible line rules out this node *and*
-	// everything beneath it. Without the prune the walk is O(nodes in file)
-	// even though the answer is bounded by the window size — which made the
-	// traversal cost roughly twice the parse on a large file.
+
 	let raw_start = node.start_position().row.saturating_add(1) as u32;
 	let raw_end = node.end_position().row.saturating_add(1) as u32;
 	if !intersects_visible(merged, raw_start, raw_end) {
 		return;
 	}
-	// Skip the whole-file root: its only "boundary" is EOF, never a useful
-	// matching line (mirrors `block_range_at` excluding the root).
+
 	if node.is_named() && node.parent().is_some() {
 		let start = node_start_line(node);
 		let end = node_content_end_line(node);
 		if end > start {
 			let start_visible = is_visible(merged, start);
 			let end_visible = is_visible(merged, end);
-			// Opener shown, closer off-window → surface the closer (and vice
-			// versa). A node fully inside or fully outside the window adds
-			// nothing.
+
 			if start_visible && !end_visible {
 				out.insert(end);
 			} else if end_visible && !start_visible {
@@ -233,22 +176,6 @@ fn collect_boundaries(cursor: &mut TreeCursor<'_>, merged: &[LineRange], out: &m
 	}
 }
 
-/// Generalize "show the matching bracket" to every tree-sitter block: for each
-/// multi-line named node whose span crosses the visible window, return the
-/// boundary line sitting *outside* that window.
-///
-/// - node opens on a visible line but closes past the window → its closing line
-/// - node closes on a visible line but opens before the window → its opening
-///   line
-///
-/// Because the trigger is an endpoint *inside* the window, the result is
-/// bounded by the window size (not nesting depth), exactly like a bracket scan
-/// — but it also covers indentation languages (Python) and uses real syntactic
-/// spans.
-///
-/// Returns `None` when the language is unrecognized or the source fails to
-/// parse / carries a syntax error (caller falls back to a lexical bracket
-/// scan); `Some(sorted unique boundary lines)` otherwise (possibly empty).
 pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<Option<Vec<u32>>> {
 	let EnclosingBoundaryOptions { code, lang, path, ranges } = options;
 	let merged = normalize_ranges(ranges);
@@ -262,8 +189,7 @@ pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<O
 		return Ok(None);
 	};
 	let root = tree.root_node();
-	// A file-level syntax error makes error-recovery spans unreliable; defer to
-	// the lexical scanner rather than emit boundaries off a broken tree.
+
 	if root.has_error() {
 		return Ok(None);
 	}
@@ -276,29 +202,13 @@ pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<O
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeSpan {
-	/// 1-indexed inclusive first line of the node.
 	pub start_line: u32,
-	/// 1-indexed inclusive last content line of the node.
-	pub end_line:   u32,
-	/// Tree-sitter grammar node kind (e.g. `attribute_item`, `function_item`).
-	pub kind:       String,
+
+	pub end_line: u32,
+
+	pub kind: String,
 }
 
-/// Named-node chain containing `options.line`, innermost-first, excluding the
-/// whole-file root.
-///
-/// The chain descends through the line's first content character, so
-/// single-line nodes beginning on the line (attributes, decorators, one-line
-/// statements) come first, followed by every enclosing construct up to — but
-/// not including — the file root. Callers use it to classify a line by grammar
-/// node kind and to enumerate enclosing construct end lines.
-///
-/// ERROR and MISSING recovery nodes are skipped rather than failing the whole
-/// chain: an unrelated syntax error elsewhere in the file leaves healthy
-/// ancestors' spans meaningful.
-///
-/// Returns `None` when the language is unrecognized, the line is out of
-/// range / blank, or the source fails to parse entirely.
 pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>> {
 	let BlockRangeOptions { code, lang, path, line } = options;
 	if line == 0 || code.is_empty() {
@@ -315,8 +225,7 @@ pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>
 		return Ok(None);
 	};
 	let root = tree.root_node();
-	// One-column-wide range for the same zero-width-node reason as
-	// `block_range_at` above.
+
 	let point = Point::new(row, col);
 	let point_end = Point::new(row, col + 1);
 	let Some(leaf) = root.named_descendant_for_point_range(point, point_end) else {

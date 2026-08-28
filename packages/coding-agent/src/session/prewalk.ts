@@ -12,7 +12,6 @@ import type { SessionManager } from "./session-manager";
 const PREWALK_CONTINUE_MESSAGE_TYPE = "prewalk-continue";
 const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 
-/** Hidden plan steering is consumed within the live run and must not reappear after a context rebuild. */
 export function isPrewalkPlanNudge(message: AgentMessage): boolean {
 	return message.role === "custom" && message.customType === PREWALK_PLAN_MESSAGE_TYPE;
 }
@@ -21,21 +20,14 @@ const PREWALK_ACTION_TOOLS: Record<string, true> = {
 	write: true,
 };
 
-/**
- * Whether a completed tool result is the first workspace-mutating action that
- * arms the prewalk hand-off. Only direct `edit`/`write` calls count; `write`
- * dispatches into an `xd://` device are treated as investigation and leave the
- * prewalk armed, since dispatches carry no mutation-tier signal anymore.
- */
 function isPrewalkImplementationAction(result: ToolResultMessage): boolean {
 	if (!PREWALK_ACTION_TOOLS[result.toolName]) return false;
 	const details = result.details;
-	// A direct filesystem edit/write carries no `xd://` dispatch metadata.
+
 	if (!details || typeof details !== "object") return true;
 	return !("xdev" in details);
 }
 
-/** Capabilities the prewalk coordinator borrows from its owning session. */
 export interface PrewalkCoordinatorHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -50,12 +42,10 @@ export interface PrewalkCoordinatorHost {
 	waitForSessionMessagePersistence(message: AgentMessage): Promise<void>;
 }
 
-/** Initial state for the prewalk startup flow. */
 interface PrewalkCoordinatorOptions {
 	prewalk?: Prewalk;
 }
 
-/** Coordinates one-way model prewalks. */
 export class PrewalkCoordinator {
 	readonly #host: PrewalkCoordinatorHost;
 	#prewalk: Prewalk | undefined;
@@ -68,7 +58,6 @@ export class PrewalkCoordinator {
 		this.#prewalk = options.prewalk;
 	}
 
-	/** Current prewalk target, if the one-way switch remains armed. */
 	get state(): Prewalk | undefined {
 		return this.#prewalk;
 	}
@@ -98,7 +87,6 @@ export class PrewalkCoordinator {
 		);
 	}
 
-	/** Advances the one-way prewalk switch at a completed assistant-turn boundary. */
 	async advanceAtTurnEnd(liveMessages: AgentMessage[], context: AgentTurnEndContext | undefined): Promise<void> {
 		const prewalk = this.#prewalk;
 		if (!prewalk || context?.message.role !== "assistant") return;
@@ -172,7 +160,6 @@ export class PrewalkCoordinator {
 		});
 	}
 
-	/** Arms a prewalk immediately for an explicit slash-command request. */
 	arm(target: Model, thinkingLevel?: ThinkingLevel): boolean {
 		const active = this.#prewalk;
 		if (active) {

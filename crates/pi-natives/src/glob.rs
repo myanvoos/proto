@@ -1,19 +1,3 @@
-//! Filesystem discovery with glob patterns, ignore semantics, and shared scan
-//! caching.
-//!
-//! # Overview
-//! Resolves a search root, scans entries via `pi-walker`, applies glob matching
-//! plus optional file-type filtering, and optionally streams each accepted
-//! match through a callback.
-//!
-//! The walker always skips `.git`, and skips `node_modules` unless explicitly
-//! requested.
-//!
-//! # Example
-//! ```ignore
-//! // JS: await native.glob({ pattern: "*.rs", path: "." })
-//! ```
-
 use std::{cmp::Ordering, path::Path};
 
 use napi::{
@@ -22,51 +6,43 @@ use napi::{
 };
 use napi_derive::napi;
 
-// Re-export entry types so existing `glob::FileType` / `glob::GlobMatch` paths still work.
 pub use crate::iofs::{FileType, GlobMatch};
 use crate::{glob_util, iofs, task};
 
-/// Input options for `glob`, including traversal, filtering, and cancellation.
 #[napi(object)]
 pub struct GlobOptions<'env> {
-	/// Glob pattern to match (e.g., "*.ts").
-	pub pattern:              String,
-	/// Directory to search.
-	pub path:                 String,
-	/// Filter by file type: "file", "dir", or "symlink". Symlinks are
-	/// matched for file/dir filters based on their target type.
-	pub file_type:            Option<FileType>,
-	/// Match simple patterns recursively by default (`*.ts` -> recursive).
-	pub recursive:            Option<bool>,
-	/// Include hidden files (default: false).
-	pub hidden:               Option<bool>,
-	/// Maximum number of results to return.
-	pub max_results:          Option<u32>,
-	/// Respect .gitignore files (default: true).
-	pub gitignore:            Option<bool>,
-	/// Enable walker scan caching (default: false).
-	pub cache:                Option<bool>,
-	/// Sort results by mtime (most recent first) before applying limit.
-	pub sort_by_mtime:        Option<bool>,
-	/// Include `node_modules` entries when the pattern does not explicitly
-	/// mention them.
+	pub pattern: String,
+
+	pub path: String,
+
+	pub file_type: Option<FileType>,
+
+	pub recursive: Option<bool>,
+
+	pub hidden: Option<bool>,
+
+	pub max_results: Option<u32>,
+
+	pub gitignore: Option<bool>,
+
+	pub cache: Option<bool>,
+
+	pub sort_by_mtime: Option<bool>,
+
 	pub include_node_modules: Option<bool>,
-	/// Abort signal for cancelling the operation.
-	pub signal:               Option<Unknown<'env>>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:           Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// Result payload returned by a glob operation.
 #[napi(object)]
 pub struct GlobResult {
-	/// Matched filesystem entries.
-	pub matches:       Vec<GlobMatch>,
-	/// Number of returned matches (`matches.len()`), clamped to `u32::MAX`.
+	pub matches: Vec<GlobMatch>,
+
 	pub total_matches: u32,
 }
 
-/// Internal runtime config for a single glob execution.
 struct GlobConfig {
 	root:                  std::path::PathBuf,
 	pattern:               String,
@@ -164,16 +140,13 @@ fn collect_native_filtered_matches(
 	Ok(collected)
 }
 
-/// Executes walker-owned glob filtering plus optional native file-type
-/// filtering, then optionally streams each returned match.
 fn run_glob(
 	config: GlobConfig,
 	on_match: Option<&ThreadsafeFunction<GlobMatch>>,
 	ct: task::CancelToken,
 ) -> Result<GlobResult> {
 	let walk_glob_pattern = glob_util::build_glob_pattern(&config.pattern, config.recursive);
-	// Non-recursive patterns bound the walk: `dir/*` must not traverse the
-	// entire subtree under `dir` to match only direct children.
+
 	let walk_depth_limit = glob_util::walk_depth_bound(&walk_glob_pattern);
 	let walk_glob = pi_walker::CompiledWalkGlob::new([walk_glob_pattern])
 		.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
@@ -217,7 +190,6 @@ fn run_glob(
 	};
 
 	if config.sort_by_mtime {
-		// Sorting mode: rank by mtime descending, then apply max-results truncation.
 		matches.sort_by(compare_matches_by_rank);
 		matches.truncate(config.max_results);
 		if let Some(callback) = on_match {
@@ -237,19 +209,6 @@ fn run_glob(
 	Ok(GlobResult { matches, total_matches })
 }
 
-/// Find filesystem entries matching a glob pattern.
-///
-/// Resolves the search root, scans entries, applies glob and optional file-type
-/// filters, and optionally streams each accepted match through `on_match`.
-///
-/// When `sortByMtime` is enabled, the walker ranks matches by mtime before the
-/// native layer applies final symlink-aware file-type filtering and callback
-/// emission.
-///
-/// # Errors
-/// Returns an error when the search path cannot be resolved, the path is not a
-/// directory, the glob pattern is invalid, or cancellation/timeout is
-/// triggered.
 #[napi]
 pub fn glob(
 	options: GlobOptions<'_>,

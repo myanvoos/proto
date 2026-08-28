@@ -1,5 +1,3 @@
-//! Git output filters.
-
 use std::fmt::Write as _;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -57,12 +55,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		Some("show") => condense_show(&cleaned),
 		Some("log") if is_log_custom_format(ctx.command) => cleaned,
 		Some("log") => condense_log(&cleaned, 32, 16),
-		// Non-listing branch formats produce single values or one-liner
-		// confirmations (e.g. `--show-current` → `main`, `--delete` →
-		// `Deleted branch feature (was abc123).`).  `condense_branch`
-		// would rewrite those as `local: main\n` / `local: Deleted
-		// branch…`, changing the meaning of the requested output, so
-		// skip it and passthrough the cleaned buffer.
+
 		Some("branch") if is_branch_non_listing(ctx.command) => cleaned,
 		Some("branch") => condense_branch(&cleaned),
 		Some("tag") if is_tag_non_listing(ctx.command) => cleaned,
@@ -131,10 +124,6 @@ fn has_token(command: &str, token: &str) -> bool {
 	command.split_whitespace().any(|part| part == token)
 }
 
-/// Whether `command` carries `--flag` in either the space-separated
-/// (`--flag value`) or the inline (`--flag=value`) form. `has_token` only
-/// matches the bare token, so inline `=`-joined flags (e.g. `--format=%H`)
-/// would otherwise slip through guards that key off the flag name alone.
 fn has_flag(command: &str, flag: &str) -> bool {
 	let inline_prefix = format!("{flag}=");
 	command
@@ -237,10 +226,7 @@ struct StatusSummary {
 fn condense_status(input: &str) -> String {
 	let mut summary = StatusSummary::default();
 	let mut in_untracked = false;
-	// Long-format `git status` groups entries under section headers. `modified:`
-	// and `deleted:` appear in both the staged ("Changes to be committed:") and
-	// unstaged ("Changes not staged for commit:") sections, so we must track the
-	// active section to count them correctly.
+
 	let mut in_staged = false;
 	let mut state: Option<&str> = None;
 
@@ -277,14 +263,7 @@ fn condense_status(input: &str) -> String {
 			summary.clean = true;
 			continue;
 		}
-		// Only detect in-progress state headers OUTSIDE the "Untracked files:"
-		// section. Real `git status` prints these blocks before/after the file
-		// listings, never as untracked entries; but several progress phrases
-		// ("Last command done", "Next command to do", "No commands remaining")
-		// are plausible filenames, so an untracked file so named would otherwise
-		// be mis-read as `state: rebasing` and swallowed via the `continue`
-		// below, losing the real untracked count. Gating on `!in_untracked`
-		// lets such filenames fall through to the untracked path handling.
+
 		if !in_untracked && let Some(detected) = detect_status_state(trimmed) {
 			if state.is_none() {
 				state = Some(detected);
@@ -340,13 +319,6 @@ fn condense_status(input: &str) -> String {
 }
 fn detect_status_state(line: &str) -> Option<&str> {
 	if line.starts_with("You are currently rebasing")
-		// Interactive-rebase sub-states all print under the same in-progress
-		// rebase header in default long-format `git status`; collapse them to
-		// the single `rebasing` label so an interactive-rebase edit/split is not
-		// mistaken for a clean tree. "You are currently editing a commit"/"…
-		// splitting the commit" are the rebase-edit/-split phase lines, and the
-		// "Last command done"/"Next command to do"/"No commands remaining"
-		// progress lines accompany them.
 		|| line.starts_with("You are currently editing")
 		|| line.starts_with("You are currently splitting")
 		|| line.starts_with("Last command done")
@@ -365,9 +337,6 @@ fn detect_status_state(line: &str) -> Option<&str> {
 	} else if line.starts_with("You are in a sparse checkout") {
 		Some("sparse-checkout")
 	} else if line.starts_with("All conflicts fixed but you are still merging") {
-		// Distinct from `merge-conflict`: the merge is staged and ready to
-		// conclude with `git commit`, so surface a separate "ready to commit"
-		// label rather than implying unresolved conflicts.
 		Some("merge (ready to commit)")
 	} else if line == "You have unmerged paths." {
 		Some("merge-conflict")
@@ -421,9 +390,6 @@ fn parse_long_status_line(
 	in_untracked: bool,
 	summary: &mut StatusSummary,
 ) -> bool {
-	// `modified:`/`deleted:` are staged or unstaged depending on the active
-	// section; `new file:`/`renamed:` only appear staged. The unmerged-path
-	// forms are always conflicts regardless of section.
 	for (prefix, label, staged) in [
 		("modified:", "M", in_staged),
 		("deleted:", "D", in_staged),
@@ -561,14 +527,10 @@ struct LogEntry {
 	hash:    String,
 	subject: String,
 	body:    Vec<String>,
-	/// Body lines dropped past the per-commit body cap, surfaced as an explicit
-	/// `[…Nln elided…]` marker instead of being silently lost.
-	elided:  usize,
+
+	elided: usize,
 }
 
-/// Soft cap on rendered subject/body line width. Long commit subjects and body
-/// lines are truncated through `truncate_line`, which appends a `…[+N]`
-/// dropped-char marker so the elision is visible rather than silent.
 const LOG_LINE_WIDTH: usize = 160;
 
 fn push_log_entry(out: &mut String, entry: &LogEntry) {
@@ -620,9 +582,6 @@ fn parse_log_entries(input: &str) -> Vec<LogEntry> {
 		if entry.subject.is_empty() {
 			entry.subject = trimmed.to_string();
 		} else if !is_git_trailer(trimmed) {
-			// Real (non-trailer) body lines past the 3-line cap are tallied so
-			// `push_log_entry` can emit an explicit `[…Nln elided…]` marker
-			// rather than dropping them silently.
 			if entry.body.len() < 3 {
 				entry.body.push(trimmed.to_string());
 			} else {
@@ -722,21 +681,18 @@ fn push_show_commit_summary(out: &mut String, prelude: &str) {
 		body_lines += 1;
 	}
 }
-/// Whether `git branch` was invoked with non-listing flags (mutations, value
-/// retrieval, or config) whose output `condense_branch` would corrupt by
-/// treating the output as a listing.
+
 fn is_branch_non_listing(command: &str) -> bool {
 	let tokens: Vec<&str> = command.split_whitespace().collect();
-	// Find the "branch" token and scan flags after it
+
 	let idx = tokens.iter().position(|&t| t == "branch");
 	let Some(idx) = idx else { return false };
 	tokens[idx + 1..].iter().any(|&tok| {
 		if !tok.starts_with('-') {
-			return false; // non-flag args after the command (branch names) are fine
+			return false;
 		}
 		!matches!(
 			tok,
-			// Listing flags — skip to allow `condense_branch` to handle them
 			"--list"
 				| "-l" | "--merged"
 				| "--no-merged"
@@ -754,9 +710,7 @@ fn is_branch_non_listing(command: &str) -> bool {
 		)
 	})
 }
-/// Whether `git tag` was invoked with non-listing flags (verification,
-/// deletion, creation, or custom formatting) whose output `compact_listing`
-/// would corrupt by treating it as a plain tag-name listing.
+
 fn is_tag_non_listing(command: &str) -> bool {
 	if !has_token(command, "tag") {
 		return false;
@@ -785,14 +739,7 @@ fn is_tag_non_listing(command: &str) -> bool {
 	})
 }
 
-/// Whether `git show` was invoked with custom output format flags that
-/// `condense_show` would corrupt (pre-diff content would be truncated/
-/// rewritten as commit summary).
 fn is_show_custom_format(command: &str) -> bool {
-	// `--format`/`--pretty` accept both space-separated (`--format fuller`) and
-	// inline (`--format=%H`, `--pretty=fuller`) forms; both rewrite the commit
-	// prelude that `condense_show` would otherwise truncate, so treat either
-	// form as a custom format. `--diff-filter` likewise takes an inline value.
 	has_flag(command, "--format")
 		|| has_flag(command, "--pretty")
 		|| has_flag(command, "--diff-filter")
@@ -879,10 +826,6 @@ fn condense_branch(input: &str) -> String {
 }
 
 fn has_local_tracking_branch(remote: &str, current: Option<&str>, local: &[String]) -> bool {
-	// Only the conventional `origin/<branch>` mirror is treated as redundant with
-	// a local branch of the same name. Same-named branches on other remotes
-	// (e.g. `upstream/main` alongside `origin/main`) are distinct refs and must
-	// be preserved in the summary.
 	let Some(branch) = remote.strip_prefix("origin/") else {
 		return false;
 	};
@@ -1105,9 +1048,7 @@ fn condense_commit(input: &str, exit_code: i32) -> String {
 				hash = Some(found);
 				continue;
 			}
-			// Default `git commit` success prints a "N files changed, …" stat line
-			// below the "[branch hash] msg" line; fold it back into the summary so
-			// the files/insertions signal survives the condense.
+
 			if stat.is_none() {
 				stat = parse_stat_summary(trimmed);
 			}
@@ -1117,13 +1058,11 @@ fn condense_commit(input: &str, exit_code: i32) -> String {
 				Some((files, added, deleted)) => {
 					format!("ok {hash} ({files} files +{added} -{deleted})\n")
 				},
-				// `--quiet` (or otherwise stat-less) success keeps the bare hash.
+
 				None => format!("ok {hash}\n"),
 			};
 		}
-		// No commit hash found — likely a `--dry-run` invocation that exits 0
-		// but prints a status-style listing instead of a "[branch hash]" line.
-		// Preserve/condense the output rather than replacing it with bare "ok".
+
 		return condense_noisy_output(input);
 	}
 
@@ -1201,20 +1140,19 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 			if is_remote_progress(trimmed) {
 				continue;
 			}
-			// Keep remote warnings / notes (non-progress remote lines)
+
 			if trimmed.starts_with("remote:") {
 				out.push_str(line);
 				out.push('\n');
 				continue;
 			}
-			// Keep destination lines
+
 			if trimmed.starts_with("To ") {
 				out.push_str(line);
 				out.push('\n');
 				continue;
 			}
-			// Keep ref update lines: "* [new ...]", "- [deleted] ...", branch setup,
-			// or "hash..hash ref -> ref"
+
 			if trimmed.starts_with("* [new")
 				|| trimmed.starts_with("- [deleted]")
 				|| trimmed.starts_with("Branch ")
@@ -1238,7 +1176,6 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 			out.push_str("ok\n");
 		}
 	} else {
-		// Failure: keep diagnostics, strip only progress noise
 		for line in stripped.lines() {
 			let trimmed = line.trim();
 			if trimmed.is_empty() {
@@ -1303,8 +1240,6 @@ fn condense_diff_stat(input: &str) -> String {
 }
 
 fn parse_stat_summary(line: &str) -> Option<(&str, &str, &str)> {
-	// Parse "N file(s) changed, I insertion(s)(+), D deletion(s)(-)"
-	// or variants with only insertions or only deletions.
 	if !line.contains("file") || !line.contains("changed") {
 		return None;
 	}
@@ -1345,13 +1280,12 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 				kept.push(trimmed.to_string());
 				continue;
 			}
-			// remote: warnings/errors
+
 			if trimmed.starts_with("remote:") && !is_remote_progress(trimmed) {
 				kept.push(trimmed.to_string());
 				continue;
 			}
-			// Branch fetch lines: " * branch       name -> FETCH_HEAD", " * [new branch]
-			// name -> origin/name", or "   hash..hash name -> name"
+
 			if trimmed.starts_with('*') || trimmed.starts_with(" *") {
 				if is_fetch_ref_update(trimmed) {
 					updates += 1;
@@ -1365,7 +1299,7 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 				}
 				kept.push(trimmed.to_string());
 			}
-			// Keep error/warning lines
+
 			if trimmed.starts_with("error:")
 				|| trimmed.starts_with("fatal:")
 				|| trimmed.starts_with("warning:")
@@ -1393,8 +1327,6 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 		return out;
 	}
 
-	// Failure: keep diagnostics, dedup like old condense_noisy_output
-	// Don't strip progress on failure; keep verbatim for debugging.
 	let deduped = primitives::dedup_consecutive_lines(input);
 	let mut out = String::new();
 	for line in deduped.lines() {
@@ -1417,7 +1349,7 @@ fn condense_stash(command: &str, input: &str, exit_code: i32) -> String {
 	}
 	if exit_code == 0 {
 		let sub = stash_subcommand(command);
-		// Bare "stash" defaults to push
+
 		let sub = if sub.is_empty() { "push" } else { sub };
 		if sub == "push" || sub == "save" {
 			return "ok stashed\n".to_string();
@@ -1436,7 +1368,7 @@ fn condense_stash(command: &str, input: &str, exit_code: i32) -> String {
 		if sub == "drop" || sub == "clear" {
 			return format!("ok stash {sub}\n");
 		}
-		// Default: compact listing fallback
+
 		return primitives::compact_listing(input, 40);
 	}
 
@@ -1452,16 +1384,13 @@ fn condense_stash_list(input: &str) -> String {
 			continue;
 		}
 		count += 1;
-		// Format: "stash@{N}: WIP on <branch>: <hash> <message>"
-		// or    : "stash@{N}: On <branch>: <hash> <message>"
+
 		let (stash_ref, after_stash) = if let Some((stash_ref, rest)) = trimmed.split_once(": ") {
 			(stash_ref, rest)
 		} else {
 			("", trimmed)
 		};
-		// Strip the "WIP on "/"On " prefix but KEEP <branch> — it's the primary
-		// thing users scan a stash list for ("which branch is this stash from?").
-		// Re-emit it compactly as `[branch] <message>` instead of dropping it.
+
 		let compact = match after_stash
 			.strip_prefix("WIP on ")
 			.or_else(|| after_stash.strip_prefix("On "))
@@ -1482,7 +1411,7 @@ fn condense_stash_list(input: &str) -> String {
 	if count == 0 {
 		return input.to_string();
 	}
-	// Remove trailing newline then add exactly one
+
 	out.pop();
 	out.push('\n');
 	out
@@ -1502,21 +1431,10 @@ fn stash_subcommand(command: &str) -> &str {
 const WORKTREE_LIMIT: usize = 20;
 
 fn condense_worktree(input: &str) -> String {
-	// Home is re-derived from the environment (never shelled out) so a leading
-	// `$HOME` in worktree paths can be abbreviated to `~`. Falls back to no
-	// abbreviation when `HOME` is unset.
 	let home = std::env::var("HOME").unwrap_or_default();
 	condense_worktree_with_home(input, &home)
 }
 
-/// Condense `git worktree` output, shape-detected from the OUTPUT rather than
-/// the args so it covers both `worktree list` and bare confirmations.
-///
-/// Listing-shaped lines (`<abs-path> <hash> [<branch>]`, plus the `(bare)` and
-/// `(detached HEAD)` variants) get a leading `$HOME` abbreviated to `~` and are
-/// capped with an elided-count marker. Any non-listing output (`add`'s
-/// "Preparing worktree…"/"HEAD is now at …" confirmations, errors) is left to
-/// `condense_noisy_output`/passthrough so its meaning is preserved.
 fn condense_worktree_with_home(input: &str, home: &str) -> String {
 	let mut entries = Vec::new();
 	for line in input.lines() {
@@ -1524,7 +1442,6 @@ fn condense_worktree_with_home(input: &str, home: &str) -> String {
 			continue;
 		}
 		if !is_worktree_listing_line(line) {
-			// Not a listing: confirmation / error / progress — hand off untouched.
 			return condense_noisy_output(input);
 		}
 		entries.push(abbreviate_worktree_home(line, home));
@@ -1545,10 +1462,6 @@ fn condense_worktree_with_home(input: &str, home: &str) -> String {
 	out
 }
 
-/// A `git worktree list` row is `<abs-path>  <hash> [<branch>]`, with the
-/// trailing column being `(bare)` for a bare repo or `(detached HEAD)` for a
-/// detached worktree. The discriminator: an absolute first token followed by a
-/// hex hash or the literal `(bare)`.
 fn is_worktree_listing_line(line: &str) -> bool {
 	let mut parts = line.split_whitespace();
 	let Some(path) = parts.next() else {
@@ -1571,8 +1484,7 @@ fn abbreviate_worktree_home(line: &str, home: &str) -> String {
 	if home.is_empty() {
 		return line.to_string();
 	}
-	// Only abbreviate a leading `$HOME` path prefix; a bare `$HOME` exactly is
-	// rendered as `~`. Mid-line occurrences are left untouched.
+
 	if let Some(rest) = line.strip_prefix(home)
 		&& (rest.is_empty() || rest.starts_with(['/', ' ', '\t']))
 	{

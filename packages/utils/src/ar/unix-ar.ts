@@ -191,7 +191,6 @@ function readSignatureFromBuffer(bytes: Uint8Array): void {
 	if (!sniffUnixAr(bytes)) throw new ArchiveError("Invalid ar archive signature");
 }
 
-/** Parse a fully materialized Unix ar archive for composition by formats such as deb. */
 export function readUnixArEntriesFromBuffer(bytes: Uint8Array, options: FormatReadOptions): ArchiveIndexEntry[] {
 	readSignatureFromBuffer(bytes);
 	const records: RawArMember[] = [];
@@ -296,7 +295,6 @@ async function readUnixArImpl(source: ByteSource, options: FormatReadOptions): P
 	return materializeEntries(records, longNames, source, options);
 }
 
-/** Read a Unix ar, static-library, or COFF import-library container. */
 export const readUnixAr: FormatReader = async (source, options) => {
 	try {
 		return await readUnixArImpl(source, options);
@@ -306,7 +304,6 @@ export const readUnixAr: FormatReader = async (source, options) => {
 	}
 };
 
-/** Detect the Unix ar global header. */
 export function sniffUnixAr(bytes: Uint8Array): boolean {
 	return bytesMatchAscii(bytes, 0, SIGNATURE);
 }

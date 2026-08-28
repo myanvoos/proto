@@ -270,9 +270,7 @@ function parseExtra(extra: Uint8Array, rawName: Uint8Array): ParsedExtra {
 			if (data[0] === 1 && readUInt32LE(data, 1) === crc32(rawName)) {
 				try {
 					result.unicodePath = UTF8_FATAL_DECODER.decode(data.subarray(5));
-				} catch {
-					// A bad optional Unicode path falls back to the header name.
-				}
+				} catch {}
 			}
 		} else if (id === 0x5455) {
 			if (data.byteLength < 1)
@@ -570,7 +568,6 @@ async function readZipImpl(source: ByteSource, options: FormatReadOptions): Prom
 	return parsed.map(item => item.entry);
 }
 
-/** Index a ZIP/ZIP64 archive lazily from its central directory. */
 export const readZip: FormatReader = async (source, options) => {
 	try {
 		return await readZipImpl(source, options);
@@ -579,7 +576,6 @@ export const readZip: FormatReader = async (source, options) => {
 	}
 };
 
-/** Detect a ZIP local header, empty-archive end record, or leading data descriptor. */
 export function sniffZip(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < 4) return false;
 	const signature = readUInt32LE(bytes, 0);
@@ -588,7 +584,6 @@ export function sniffZip(bytes: Uint8Array): boolean {
 	);
 }
 
-/** Materialize every regular ZIP member into a path-to-bytes map for document converters. */
 export async function readZipEager(
 	bytes: Uint8Array,
 	limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
@@ -606,7 +601,6 @@ export async function readZipEager(
 	}
 }
 
-/** Encode deterministic stored/deflated ZIP bytes, emitting ZIP64 end records when the entry count requires them. */
 export async function encodeZip(members: Iterable<readonly [string, Uint8Array]>): Promise<Uint8Array> {
 	try {
 		const localParts: Uint8Array[] = [];

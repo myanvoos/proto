@@ -27,17 +27,17 @@ export const Flag = {
 	ProviderFinishError: 0x0040_0000,
 	EmptyResponse: 0x0000_2000,
 	ContentBlocked: 0x0000_8000,
-	/** Account-scoped provider policy denial that may succeed with another credential. */
+
 	AccountPolicy: 0x0000_4000,
 	ContextOverflow: 0x0080_0000,
 	AuthFailed: 0x0100_0000,
 	UserInterrupt: 0x0400_0000,
 	Abort: 0x0800_0000,
-	/** Strict-tool rejection (400): grammar too large, schema too complex, or structured outputs unsupported by the model/endpoint. */
+
 	Grammar: 0x1000_0000,
-	/** Anthropic model/account does not support fast mode / the `speed` parameter. */
+
 	FastModeUnsupported: 0x2000_0000,
-	/** OAuth refresh failed definitively — the stored grant is dead, re-login required. */
+
 	OAuthExpiry: 0x4000_0000,
 } as const;
 
@@ -71,32 +71,32 @@ const RETRIABLE_KINDS =
 	Flag.EmptyResponse;
 
 const OVERFLOW_PATTERNS = [
-	/prompt is too long/i, // Anthropic
-	/input is too long for requested model/i, // Amazon Bedrock
-	/exceeds the context window/i, // OpenAI (Completions & Responses API)
-	/input token count.*exceeds the maximum/i, // Google (Gemini)
-	/maximum prompt length is \d+/i, // xAI (Grok)
-	/reduce the length of the messages/i, // Groq
-	/maximum context length is \d+ tokens/i, // OpenRouter (all backends)
-	/exceeds the limit of \d+/i, // GitHub Copilot
-	/exceeds the available context size/i, // llama.cpp server
-	/requested tokens?.*exceed.*context (window|length|size)/i, // llama.cpp / OpenAI-compatible local servers
-	/context (window|length|size).*(exceeded|overflow|too small)/i, // Generic local server variants
-	/(prompt|input).*(too long|too large).*(context|n_ctx)/i, // llama.cpp phrasing variants
-	/requested tokens?.*(exceeds?|greater than).*(n_ctx|context)/i, // llama.cpp n_ctx variants
-	/greater than the context length/i, // LM Studio
-	/context window exceeds limit/i, // MiniMax
-	/exceeded model token limit/i, // Kimi For Coding
-	/context[_ ]length[_ ]exceeded/i, // Generic fallback
-	/too many tokens/i, // Generic fallback
-	/token limit exceeded/i, // Generic fallback
-	/request_too_large/i, // Anthropic 413 (request body too large)
-	/request exceeds the maximum size/i, // Anthropic 413 variant
-	/payload too large/i, // Generic HTTP 413 variant
-	/entity too large/i, // Generic HTTP 413 variant
-	/\b413\b.*\b(request|payload|entity)\b.*\btoo large\b/i, // "413 Request Entity Too Large" variants
-	/model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text
-	/prompt filled the context window/i, // Ollama OpenAI-compatible empty length completion
+	/prompt is too long/i,
+	/input is too long for requested model/i,
+	/exceeds the context window/i,
+	/input token count.*exceeds the maximum/i,
+	/maximum prompt length is \d+/i,
+	/reduce the length of the messages/i,
+	/maximum context length is \d+ tokens/i,
+	/exceeds the limit of \d+/i,
+	/exceeds the available context size/i,
+	/requested tokens?.*exceed.*context (window|length|size)/i,
+	/context (window|length|size).*(exceeded|overflow|too small)/i,
+	/(prompt|input).*(too long|too large).*(context|n_ctx)/i,
+	/requested tokens?.*(exceeds?|greater than).*(n_ctx|context)/i,
+	/greater than the context length/i,
+	/context window exceeds limit/i,
+	/exceeded model token limit/i,
+	/context[_ ]length[_ ]exceeded/i,
+	/too many tokens/i,
+	/token limit exceeded/i,
+	/request_too_large/i,
+	/request exceeds the maximum size/i,
+	/payload too large/i,
+	/entity too large/i,
+	/\b413\b.*\b(request|payload|entity)\b.*\btoo large\b/i,
+	/model_context_window_exceeded/i,
+	/prompt filled the context window/i,
 ];
 
 const OVERFLOW_NO_BODY_PATTERN = /\b4(00|13)\s*(status code)?\s*\(no body\)/i;
@@ -145,28 +145,15 @@ function isCodexChatGPTAccountPolicyText(
 }
 const STALE_RESPONSE_ITEM_PATTERNS = [/\bItem with id ['"][^'"]+['"] not found\.?/i, /previous[ _]?response/i] as const;
 const STALE_RESPONSE_ITEM_DETAIL_PATTERN = /not[ _]?found|invalid|expired|stale|zero[ _-]?data[ _-]?retention/i;
-/**
- * Local llama.cpp / Ollama deterministic tool-call argument JSON parse failure.
- * The model emitted invalid JSON in a tool call and the server returned HTTP 500
- * with this exact text — replaying the same prompt yields the same malformed
- * output, so callers strip {@link Flag.Transient} when this matches.
- */
+
 export const LLAMA_CPP_TOOL_CALL_PARSE_PATTERN =
 	/failed to parse tool call arguments as json|\[json\.exception\.parse_error\.101\]/i;
 
-// Copilot fleet skew: HTTP 400 `model_not_supported` can reject a model that
-// `/models` advertised on the same host when the request lands on a stale
-// replica. `model_not_available_for_integrator` is deliberately excluded:
-// GitHub also uses it for stable per-integrator entitlement denials and includes
-// that integrator's actionable `Available models` list in the response.
 const COPILOT_TRANSIENT_MODEL_CODES: Record<string, true> = {
 	model_not_supported: true,
 };
 const COPILOT_TRANSIENT_MODEL_PATTERN = /model_not_supported/i;
-// Anthropic strict-tool grammar too large / schema too complex (400 invalid_request_error).
-// Feature-gated deployments (Azure Foundry, Baseten, …) reject `strict: true`
-// tools outright when the hosted model lacks structured outputs, e.g.
-// "structured_outputs not supported" — without an invalid_request_error wrapper.
+
 const GRAMMAR_TOO_LARGE_PATTERN = /compiled grammar/i;
 const GRAMMAR_TOO_LARGE_DETAIL_PATTERN = /too large/i;
 const SCHEMA_TOO_COMPLEX_PATTERN = /schema/i;
@@ -177,13 +164,12 @@ const STRUCTURED_OUTPUTS_PATTERN = /structured[_ -]?outputs?/i;
 const FEATURE_NOT_SUPPORTED_PATTERN = /not (?:supported|available|enabled)|unsupported|does(?: not|n'?t) support/i;
 const ANTHROPIC_STRICT_FIELD_PATTERN = /\btools\.\d+\.custom\.strict\b/i;
 const EXTRA_INPUTS_NOT_PERMITTED_PATTERN = /extra inputs? (?:are|is) not permitted/i;
-// Anthropic fast-mode unsupported: 400 rejecting `speed`, or 429 rate_limit_error
-// because the account lacks the extra-usage entitlement fast mode requires.
+
 const FAST_MODE_SPEED_PARAM_PATTERN = /\bspeed\b/i;
 const FAST_MODE_NOT_SUPPORTED_PATTERN = /not support/i;
 const FAST_MODE_RATE_LIMIT_PATTERN = /rate_limit_error/i;
 const FAST_MODE_ENTITLEMENT_PATTERN = /fast mode/i;
-// Definitive OAuth refresh failure — the stored grant/client is dead.
+
 const OAUTH_DEFINITIVE_FAILURE_PATTERN =
 	/invalid_grant|invalid_token|unauthorized_client|\brevoked\b|refresh[\s_]?token.*expired/i;
 const OAUTH_TRANSIENT_FAILURE_PATTERN =
@@ -220,7 +206,6 @@ function matchesFastModeUnsupported(message: string, errorStatus: number | undef
 	);
 }
 
-/** Whether an OAuth refresh error message means the grant is definitively dead. */
 export function isOAuthExpiry(errorMessage: string): boolean {
 	if (OAUTH_DEFINITIVE_FAILURE_PATTERN.test(errorMessage)) return true;
 	return OAUTH_HTTP_AUTH_PATTERN.test(errorMessage) && !OAUTH_TRANSIENT_FAILURE_PATTERN.test(errorMessage);
@@ -323,10 +308,6 @@ export function isStreamReadErrorText(text: string): boolean {
 	return STREAM_READ_ERROR_PATTERN.test(text);
 }
 
-/** Persisted-text form of {@link isStreamEnvelopeError}: recognizes the
- *  prefix-tagged envelope diagnostic on an aborted turn's `errorMessage` /
- *  `stopDetails.explanation` so loop-level salvage can classify it after the
- *  original `Error` instance is gone. */
 export function isStreamEnvelopeErrorText(text: string): boolean {
 	return text.includes(STREAM_ENVELOPE_ERROR_PREFIX);
 }
@@ -399,14 +380,7 @@ function classifyText(
 
 		const isLimitStatus = isUsageLimitStatus(statusClean);
 		const reason = parseRateLimitReason(cleanMessage);
-		// Concurrency caps (e.g. Vertex "Online prediction concurrent requests
-		// quota exceeded") are shed-and-backoff, not credential-rotatable —
-		// exclude them even when the quota-worded phrasing matches the generic
-		// usage-limit text matcher, whose `quota.?exceeded` arm would otherwise
-		// set Flag.UsageLimit and burn a healthy sibling credential. HTTP 402 is
-		// excluded from this gate: it is categorically an account-billing cap, so
-		// a 402 whose body merely mentions concurrency still classifies as a
-		// usage limit, mirroring isUsageLimitOutcome.
+
 		const isBillingCapStatus = statusClean === 402;
 		const concurrencyExcluded = reason === "CONCURRENT_LIMIT" && !isBillingCapStatus;
 		if (
@@ -421,16 +395,12 @@ function classifyText(
 
 		if (isTimeoutText(errorMessage)) kinds |= Flag.Transient | Flag.Timeout;
 		else if (isTransientErrorText(errorMessage)) kinds |= Flag.Transient;
-		// A concurrency cap (e.g. Vertex "Online prediction concurrent requests
-		// quota exceeded") is transient — shed-and-backoff. The bare wording need
-		// not match TRANSIENT_TRANSPORT_PATTERN, so flag it explicitly to keep
-		// AIError.retriable from treating the temporary cap as terminal.
+
 		if (reason === "CONCURRENT_LIMIT") kinds |= Flag.Transient;
 		if ((api === "openai-responses" || api === "openai-codex-responses") && isStaleResponsesText(errorMessage)) {
 			kinds |= Flag.StaleResponsesItem;
 		}
 
-		// Copilot's `model_not_supported` fleet-skew rejection is transient.
 		if (statusClean === 400 && COPILOT_TRANSIENT_MODEL_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
@@ -526,25 +496,14 @@ export function classify(error: unknown, api?: Api): number {
 	return kinds !== 0 ? create(kinds) : (status(error) ?? 0);
 }
 
-/**
- * Whether an error (or message string) classifies as an account usage/quota
- * limit — the persistent, credential-rotation-worthy kind. This is the public
- * accessor for {@link Flag.UsageLimit}; prefer it over re-running message
- * regexes at call sites.
- */
 export function isUsageLimit(error: unknown, api?: Api): boolean {
 	return is(classify(error, api), Flag.UsageLimit);
 }
 
-/** Whether an upstream rejection is an account-scoped policy denial worth retrying with a sibling credential. */
 export function isAccountPolicyError(error: unknown, api?: Api): boolean {
 	return is(classify(error, api), Flag.AccountPolicy);
 }
 
-/**
- * Model id from Codex's exact ChatGPT-account entitlement denial. Generic
- * unsupported-model invalid requests deliberately do not match.
- */
 export function codexChatGPTAccountPolicyModel(error: unknown, depth = 0): string | undefined {
 	if (depth > 6) return undefined;
 	if (typeof error === "string") return codexChatGPTAccountPolicyModelFromText(error);
@@ -559,7 +518,6 @@ export function codexChatGPTAccountPolicyModel(error: unknown, depth = 0): strin
 	return "cause" in error ? codexChatGPTAccountPolicyModel(error.cause, depth + 1) : undefined;
 }
 
-/** Whether the exact Codex entitlement denial applies to this provider and requested model. */
 export function isCodexChatGPTAccountPolicyError(
 	error: unknown,
 	provider: string,
@@ -571,29 +529,14 @@ export function isCodexChatGPTAccountPolicyError(
 	return provider === "openai-codex" && deniedIdentity !== undefined && deniedIdentity === requestedIdentity;
 }
 
-/**
- * Strict-tool rejection: grammar too large, schema too complex, or structured
- * outputs unsupported by the model/endpoint.
- * Accessor for {@link Flag.Grammar}.
- */
 export function isGrammarError(error: unknown): boolean {
 	return is(classify(error), Flag.Grammar);
 }
 
-/**
- * Anthropic model/account does not support fast mode / the `speed` parameter.
- * Accessor for {@link Flag.FastModeUnsupported}.
- */
 export function isFastModeUnsupported(error: unknown): boolean {
 	return is(classify(error), Flag.FastModeUnsupported);
 }
 
-/**
- * Depth-bounded search for a provider error `code`. SDK error objects keep the
- * parsed response body on `.error`, and Copilot's body is itself
- * `{ error: { code } }`, so the code sits up to two envelopes below the thrown
- * error depending on which SDK produced it.
- */
 function providerErrorCode(error: object): string | undefined {
 	let node: object = error;
 	for (let depth = 0; depth < 3; depth++) {
@@ -606,17 +549,10 @@ function providerErrorCode(error: object): string | undefined {
 	return undefined;
 }
 
-/**
- * GitHub Copilot 400 `model_not_supported` response for a model advertised by
- * `/models` — transient fleet skew, not a malformed request. Reads the
- * structural `code` through the SDK/body envelopes, then falls back to the
- * stringified body both SDK families put in `message`.
- */
 export function isCopilotTransientModelError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || status(error) !== 400) return false;
 	const code = providerErrorCode(error);
-	// `Object.hasOwn`, not a bare index: `code` is provider-controlled, and a
-	// prototype key (`__proto__`, `toString`, …) would otherwise read truthy.
+
 	if (code !== undefined && Object.hasOwn(COPILOT_TRANSIENT_MODEL_CODES, code)) return true;
 	const message: unknown = "message" in error ? error.message : undefined;
 	return typeof message === "string" && COPILOT_TRANSIENT_MODEL_PATTERN.test(message);
@@ -638,9 +574,6 @@ export function classifyMessage(message: {
 
 	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
 	if (classificationMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(classificationMessage)) {
-		// Deterministic local-model tool-call JSON parse failure: HTTP 500 is misleading
-		// because the same prompt reproduces the same malformed output, so the agent-level
-		// auto-retry would loop. Strip Transient so the recovery message surfaces immediately.
 		kinds &= ~Flag.Transient;
 	}
 	const id = kinds !== 0 ? create(kinds) : (statusFromId(textId) ?? statusFromId(existingId) ?? currentStatus ?? 0);
@@ -676,19 +609,11 @@ const STREAM_PARSE_DIAGNOSTIC_PATTERN =
 	/(?:json parse error:\s*(?:unterminated string|unexpected end of json input|unexpected end of data|unexpected eof|end of file|eof while parsing|truncated)|json\.parse:\s*(?:unterminated string|unexpected end of data)|unexpected end of json input|unexpected eof|eof while parsing)/i;
 const STREAM_EVENT_ORDER_PATTERN = /stream event order|before message_start/i;
 
-/**
- * Transient stream corruption where the response was truncated mid-JSON.
- *
- * Strings (persisted `stopDetails.explanation`/`errorMessage` diagnostics) are matched with the
- * stricter {@link STREAM_PARSE_DIAGNOSTIC_PATTERN} — bare "truncated"/"end of file" text is too
- * low-signal to trust once detached from a live transport `Error`, which keeps the broad pattern.
- */
 export function isTransientStreamParseError(error: unknown): boolean {
 	if (typeof error === "string") return STREAM_PARSE_DIAGNOSTIC_PATTERN.test(error);
 	return error instanceof Error && STREAM_PARSE_TRUNCATION_PATTERN.test(error.message);
 }
 
-/** Any malformed stream-envelope error (prefix-tagged or out-of-order events). */
 export function isStreamEnvelopeError(error: unknown): boolean {
 	return (
 		error instanceof Error &&
@@ -696,7 +621,6 @@ export function isStreamEnvelopeError(error: unknown): boolean {
 	);
 }
 
-/** Stream-envelope errors safe to retry against the provider (event ordering only). */
 export function isRetryableStreamEnvelopeError(error: unknown): boolean {
 	return error instanceof Error && STREAM_EVENT_ORDER_PATTERN.test(error.message);
 }

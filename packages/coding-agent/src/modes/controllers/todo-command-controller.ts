@@ -27,10 +27,6 @@ const USAGE = [
 	"  /todo rm     [<task|phase>]        Remove task/phase/all",
 ].join("\n");
 
-// =============================================================================
-// Argument tokenizer (respects double-quoted strings)
-// =============================================================================
-
 function tokenize(input: string): string[] {
 	const tokens: string[] = [];
 	let cur = "";
@@ -58,10 +54,6 @@ function tokenize(input: string): string[] {
 	return tokens;
 }
 
-// =============================================================================
-// Name normalization
-// =============================================================================
-
 function titleCase(s: string): string {
 	return s
 		.split(/\s+/)
@@ -70,17 +62,13 @@ function titleCase(s: string): string {
 		.join(" ");
 }
 
-// =============================================================================
-// Fuzzy matching
-// =============================================================================
-
 function findPhaseFuzzy(phases: TodoPhase[], query: string): TodoPhase | undefined {
 	const q = query.trim().toLowerCase();
 	if (!q) return undefined;
-	// Exact name (case-insensitive)
+
 	const byName = phases.find(p => p.name.toLowerCase() === q);
 	if (byName) return byName;
-	// Substring (prefer prefix match)
+
 	const prefixMatches = phases.filter(p => p.name.toLowerCase().startsWith(q));
 	if (prefixMatches.length === 1) return prefixMatches[0];
 	const subMatches = phases.filter(p => p.name.toLowerCase().includes(q));
@@ -91,7 +79,7 @@ function findPhaseFuzzy(phases: TodoPhase[], query: string): TodoPhase | undefin
 function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; phase: TodoPhase } | undefined {
 	const q = query.trim().toLowerCase();
 	if (!q) return undefined;
-	// Exact content (case-insensitive)
+
 	for (const phase of phases) {
 		for (const task of phase.tasks) {
 			if (task.content.toLowerCase() === q) return { task, phase };
@@ -106,15 +94,11 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; ph
 		}
 	}
 	if (matches.length === 1) return matches[0];
-	// Prefer single in_progress/pending hit when ambiguous
+
 	const active = matches.filter(m => m.task.status === "in_progress" || m.task.status === "pending");
 	if (active.length === 1) return active[0];
 	return undefined;
 }
-
-// =============================================================================
-// Build system reminder
-// =============================================================================
 
 function buildSystemReminder(action: string, phases: TodoPhase[], removed = false): string {
 	const md = phases.length === 0 ? "(empty)" : phasesToMarkdown(phases).trimEnd();
@@ -133,10 +117,6 @@ function buildSystemReminder(action: string, phases: TodoPhase[], removed = fals
 export class TodoCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
-	/**
-	 * True latest todo state for the user-facing /todo verbs. Reads from session
-	 * entries or falls back to the active session state.
-	 */
 	#currentPhases(): TodoPhase[] {
 		const fromEntries = getLatestTodoPhasesFromEntries(this.ctx.sessionManager.getBranch());
 		if (fromEntries.length > 0) return fromEntries;
@@ -253,8 +233,6 @@ export class TodoCommandController {
 		this.ctx.showStatus(`Imported ${phases.length} phase(s), ${taskCount} task(s) from ${source}.`);
 	}
 
-	// ------------------------------------------------------------- append
-
 	#append(rest: string): void {
 		const tokens = tokenize(rest);
 		if (tokens.length === 0) {
@@ -299,8 +277,6 @@ export class TodoCommandController {
 		this.ctx.showStatus(`Appended to ${targetPhase.name}: ${finalContent}`);
 	}
 
-	// ------------------------------------------------------------- start / done / drop / rm
-
 	#start(rest: string): void {
 		if (!rest) {
 			this.ctx.showError("Usage: /todo start <task>");
@@ -326,7 +302,6 @@ export class TodoCommandController {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
-			// no-arg: apply to all
 			const { phases, errors } = applyOpsToPhases(current, [{ op }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
@@ -397,8 +372,6 @@ export class TodoCommandController {
 		this.ctx.showError(`No task or phase matched "${trimmed}".`);
 	}
 
-	// ------------------------------------------------------------- editor
-
 	async #editInExternalEditor(): Promise<void> {
 		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
@@ -436,16 +409,11 @@ export class TodoCommandController {
 	}
 
 	#commit(nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean }): void {
-		// 1. In-memory + UI state
 		this.ctx.session.setTodoPhases(nextPhases);
 		this.ctx.setTodos(nextPhases);
 
-		// 2. Persist for reload survival via custom session entry.
 		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: nextPhases });
 
-		// 3. Inject system reminder so the agent learns about the change next turn.
-		//    Removals carry explicit intent so the agent does not rebuild the
-		//    cleared/removed items on its next turn (issue #5258).
 		const reminderText = buildSystemReminder(action, nextPhases, opts?.removed ?? false);
 		const message = {
 			role: "developer" as const,
@@ -458,7 +426,6 @@ export class TodoCommandController {
 	}
 }
 
-/** Capitalize first letter only — keeps acronyms / casing in the rest of the sentence intact. */
 function titleCaseSentence(s: string): string {
 	const trimmed = s.trim();
 	if (!trimmed) return trimmed;

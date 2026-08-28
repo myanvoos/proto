@@ -1,11 +1,3 @@
-/**
- * MCP JSON Provider
- *
- * Discovers standalone mcp.json / .mcp.json files in the project root.
- * This is a fallback for projects that have a standalone mcp.json without any config directory.
- *
- * Priority: 5 (low, as this is a fallback after tool-specific providers)
- */
 import * as path from "node:path";
 import { logger, tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
@@ -17,9 +9,6 @@ import { createSourceMeta, expandEnvVarsDeep, parseRequestIdFormat } from "./hel
 const PROVIDER_ID = "mcp-json";
 const DISPLAY_NAME = "MCP Config";
 
-/**
- * Raw MCP JSON format (matches Claude Desktop's format).
- */
 interface MCPConfigFile {
 	mcpServers?: Record<
 		string,
@@ -53,15 +42,11 @@ interface MCPConfigFile {
 	>;
 }
 
-/**
- * Transform raw MCP config to canonical MCPServer format.
- */
 function transformMCPConfig(config: MCPConfigFile, source: SourceMeta): MCPServer[] {
 	const servers: MCPServer[] = [];
 
 	if (config.mcpServers) {
 		for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-			// Runtime type validation for user-controlled JSON values
 			let enabled: boolean | undefined;
 			if (serverConfig.enabled !== undefined) {
 				if (typeof serverConfig.enabled === "boolean") {
@@ -109,7 +94,6 @@ function transformMCPConfig(config: MCPConfigFile, source: SourceMeta): MCPServe
 				_source: source,
 			};
 
-			// Expand environment variables
 			if (server.command) server.command = expandEnvVarsDeep(server.command);
 			if (server.args) server.args = expandEnvVarsDeep(server.args);
 			if (server.env) server.env = expandEnvVarsDeep(server.env);
@@ -125,9 +109,6 @@ function transformMCPConfig(config: MCPConfigFile, source: SourceMeta): MCPServe
 	return servers;
 }
 
-/**
- * Load MCP servers from a JSON file.
- */
 async function loadMCPJsonFile(
 	_ctx: LoadContext,
 	path: string,
@@ -154,9 +135,6 @@ async function loadMCPJsonFile(
 	return { items, warnings };
 }
 
-/**
- * MCP JSON Provider loader.
- */
 async function load(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const filenames = ["mcp.json", ".mcp.json"];
 	const results = await Promise.all(
@@ -172,7 +150,6 @@ async function load(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	};
 }
 
-// Register provider
 registerProvider(mcpCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,

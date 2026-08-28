@@ -5,7 +5,6 @@ import { DAEMON_PTY_COLUMNS, DAEMON_PTY_ROWS } from "./protocol";
 
 const VIRTUAL_SCROLLBACK_ROWS = 4_096;
 
-/** Controls which virtual terminal rows a launch log exposes. */
 interface TerminalOutputOptions {
 	head: boolean;
 	maxRows: number;
@@ -17,7 +16,6 @@ function writeTerminal(terminal: XtermTerminal, output: string): Promise<void> {
 	return promise;
 }
 
-/** Replays daemon bytes with the same xterm screen renderer used by PTY mode. */
 export async function renderTerminalOutput(
 	output: string,
 	options: TerminalOutputOptions,

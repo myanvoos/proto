@@ -73,10 +73,6 @@ function deriveResetsAt(payload: Record<string, unknown>): number | undefined {
 	return undefined;
 }
 
-/**
- * Parse a Cursor cents bucket (`used`/`limit`/`remaining` in USD cents).
- * Returns null for disabled or non-positive / malformed buckets.
- */
 function parseCursorCentsBucket(bucket: Record<string, unknown>): UsageAmount | null {
 	if (bucket.enabled === false) return null;
 
@@ -113,14 +109,6 @@ function parseCursorCentsBucket(bucket: Record<string, unknown>): UsageAmount | 
 	};
 }
 
-/**
- * Cursor's dashboard does not treat plan.used / plan.limit as the visible %.
- * Pro+ shows separate quota pools (not one shared percent):
- * - Cursor Models  ← autoPercentUsed
- *   (includes Cursor Grok 4.5 and Composer 2.5)
- * - Other Models   ← apiPercentUsed (separate included-$ pool; different quota)
- * Prefer those fractions when present; fall back to cents only for older overall buckets.
- */
 function parseCursorPlanDashboardAmounts(bucket: Record<string, unknown>): {
 	auto?: UsageAmount;
 	api?: UsageAmount;
@@ -198,17 +186,6 @@ function pushCursorPlanRails(limits: UsageLimit[], bucket: Record<string, unknow
 	}
 }
 
-/**
- * Cursor's `/api/usage-summary` has shipped two personal-bucket shapes:
- * - Enterprise/team dashboards historically exposed `individualUsage.overall`
- * - Current Pro / Pro+ / Ultra dashboards expose `individualUsage.plan`
- *   (plus optional `onDemand`)
- *
- * Prefer a *usable* overall bucket; if overall is absent/disabled/malformed,
- * fall through to plan rails (`autoPercentUsed` / `apiPercentUsed`). Always
- * consider on-demand afterward so a valid on-demand meter is not dropped when
- * the included plan bucket is empty.
- */
 export function parseCursorIndividualUsage(payload: unknown, fetchedAt = Date.now()): UsageReport | null {
 	if (!isRecord(payload) || !isRecord(payload.individualUsage)) {
 		return null;
@@ -225,7 +202,6 @@ export function parseCursorIndividualUsage(payload: unknown, fetchedAt = Date.no
 	const overall = isRecord(payload.individualUsage.overall) ? payload.individualUsage.overall : null;
 	const plan = isRecord(payload.individualUsage.plan) ? payload.individualUsage.plan : null;
 
-	// Prefer a usable overall bucket; if it is disabled/malformed, fall through to plan.
 	let usedOverall = false;
 	if (overall) {
 		const amount = parseCursorCentsBucket(overall);
@@ -245,7 +221,6 @@ export function parseCursorIndividualUsage(payload: unknown, fetchedAt = Date.no
 		pushCursorPlanRails(limits, plan, window);
 	}
 
-	// Keep on-demand even when the included plan/overall bucket is absent or unusable.
 	if (isRecord(payload.individualUsage.onDemand)) {
 		const onDemandAmount = parseCursorCentsBucket(payload.individualUsage.onDemand);
 		if (onDemandAmount && onDemandAmount.limit !== undefined && onDemandAmount.limit > 0) {
@@ -284,11 +259,9 @@ export function parseCursorUsage(payload: unknown, fetchedAt = Date.now()): Usag
 	for (const [key, value] of Object.entries(payload)) {
 		if (!isRecord(value)) continue;
 
-		// used can be: numRequests, used, amountUsed, usdUsed
 		const usedVal =
 			toNumber(value.numRequests) ?? toNumber(value.used) ?? toNumber(value.amountUsed) ?? toNumber(value.usdUsed);
 
-		// limit can be: maxRequestUsage, limit, amountLimit, usdLimit
 		const limitVal =
 			toNumber(value.maxRequestUsage) ??
 			toNumber(value.limit) ??
@@ -309,9 +282,6 @@ export function parseCursorUsage(payload: unknown, fetchedAt = Date.now()): Usag
 
 		const label = isUsd ? `${key} spend` : `${key} requests`;
 
-		// Some Cursor plans report no legacy numeric cap (`maxRequestUsage: null`).
-		// Emit an uncapped, used-only meter for those buckets instead of dropping
-		// them, which used to collapse the whole account to "no usage data".
 		let amount: UsageAmount;
 		if (limitVal === undefined) {
 			amount = { used: usedVal, unit };

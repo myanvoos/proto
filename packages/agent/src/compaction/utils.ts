@@ -1,7 +1,3 @@
-/**
- * Shared utilities for compaction and branch summarization.
- */
-
 import type { Message, ToolCall } from "@oh-my-pi/pi-ai";
 import { type Dialect, getDialectDefinition } from "@oh-my-pi/pi-ai/dialect";
 import { escapeHarmonyControlTokens } from "@oh-my-pi/pi-ai/utils/harmony-leak";
@@ -9,10 +5,6 @@ import { formatGroupedPaths, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
 import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
 import summarizationSystemPrompt from "./prompts/summarization-system.md" with { type: "text" };
-
-// ============================================================================
-// File Operation Tracking
-// ============================================================================
 
 export interface FileOperations {
 	read: Set<string>;
@@ -28,23 +20,12 @@ export function createFileOps(): FileOperations {
 	};
 }
 
-// Read-tool selector grammar, mirrored from the conservative filesystem splitter in
-// packages/coding-agent/src/tools/path-utils.ts (splitPathAndSel). Keep in sync.
-// A trailing `:chunk` is a selector only when it is a line-range list
-// (`50`, `50-200`, `50+10`, `5-16,960-973`, `..` alias), `raw`, or `conflicts` —
-// alone or as a `range:raw` / `raw:range` compound.
 const RANGE_CHUNK_SRC = String.raw`L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?`;
 const RANGE_LIST_SRC = `${RANGE_CHUNK_SRC}(?:,${RANGE_CHUNK_SRC})*`;
 const READ_SELECTOR_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|raw|conflicts)$`, "i");
 const READ_RANGE_ONLY_RE = new RegExp(`^${RANGE_LIST_SRC}$`, "i");
 const READ_RAW_ONLY_RE = /^raw$/i;
 
-/**
- * Split a read-tool path into its base path and trailing selector, mirroring the
- * read tool's own splitter. Single source of the grammar in this package: the
- * file-operations list strips selectors via {@link stripReadSelector}, and the
- * supersede-prune pass keys on both parts via `readToolSupersedeKey`.
- */
 export function splitReadSelector(path: string): { path: string; sel?: string } {
 	const colon = path.lastIndexOf(":");
 	if (colon <= 0) return { path };
@@ -52,7 +33,7 @@ export function splitReadSelector(path: string): { path: string; sel?: string } 
 	if (!READ_SELECTOR_RE.test(candidate)) return { path };
 	let base = path.slice(0, colon);
 	let sel = candidate;
-	// Compound trailing selector: `path:1-50:raw` or `path:raw:1-50`.
+
 	const inner = base.lastIndexOf(":");
 	if (inner > 0) {
 		const innerCandidate = base.slice(inner + 1);
@@ -68,35 +49,16 @@ export function splitReadSelector(path: string): { path: string; sel?: string } 
 	return { path: base, sel };
 }
 
-/**
- * Strip a trailing read-tool selector (`:50-200`, `:raw`, `:1-50:raw`, `:conflicts`, …)
- * so the same file read with different line ranges dedupes to one `<files>` entry
- * and matches its write/edit path when computing Read/Write/RW markers.
- */
 export function stripReadSelector(path: string): string {
 	return splitReadSelector(path).path;
 }
 
-/**
- * A real filesystem path never contains a `scheme://` URL. Tool-call paths that
- * do — `conflict://1`, `artifact://3`, `local://ctx.md`, `history://…`,
- * `issue://12`, `https://…`, and the tolerated `file.ts:conflict://1` prefix
- * form — are session-scoped or remote resources, not files the post-compaction
- * agent can re-ground on. Keep them out of the `<files>` summary.
- */
 const URL_SCHEME_RE = /[a-z][a-z0-9+.-]*:\/\//i;
 
-/**
- * Whether `path` references a `scheme://` URL (internal URI or web URL) rather
- * than a filesystem path that belongs in the compaction `<files>` summary.
- */
 export function isUrlSchemePath(path: string): boolean {
 	return URL_SCHEME_RE.test(path);
 }
 
-/**
- * Extract file operations from tool calls in an assistant message.
- */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
 	if (message.role !== "assistant") return;
 	if (!("content" in message) || !Array.isArray(message.content)) return;
@@ -112,8 +74,6 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		const path = typeof args.path === "string" ? args.path : undefined;
 		if (!path) continue;
 
-		// Internal URIs (conflict://, artifact://, local://, history://, …) and
-		// web URLs are not re-groundable files — keep them out of `<files>`.
 		if (isUrlSchemePath(path)) continue;
 
 		switch (block.name) {
@@ -130,32 +90,16 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 	}
 }
 
-/**
- * Compute final file lists from file operations.
- * Returns readFiles (files only read, not modified) and modifiedFiles.
- */
 export function computeFileLists(fileOps: FileOperations): { readFiles: string[]; modifiedFiles: string[] } {
-	// Drop any `scheme://` URLs (e.g. legacy `conflict://`/`artifact://` entries
-	// rehydrated straight into `fileOps` from a pre-fix compaction summary) — only
-	// real files belong in `<files>`. New tool-call scans are already filtered.
 	const modified = new Set([...fileOps.edited, ...fileOps.written].filter(f => !isUrlSchemePath(f)));
 	const readOnly = [...fileOps.read].filter(f => !isUrlSchemePath(f) && !modified.has(f)).sort();
 	const modifiedFiles = [...modified].sort();
 	return { readFiles: readOnly, modifiedFiles };
 }
 
-/**
- * Format file operations as one `<files>` tag: a grouped, prefix-folded
- * directory tree (find-tool shape — `# dir/` headers, bare basenames) with a
- * ` (Read)` / ` (Write)` / ` (RW)` marker per file instead of separate
- * read/modified lists. `readSet` is the cumulative read set (`fileOps.read`),
- * used to tell modified files that were also read (RW) from blind writes.
- */
 const FILE_OPERATION_SUMMARY_LIMIT = 20;
 
 function stripFileOperationTags(summary: string): string {
-	// Legacy <read-files>/<modified-files> tags are still stripped so summaries
-	// written before the combined <files> tag self-heal on the next compaction.
 	return summary
 		.replace(/<files>[\s\S]*?<\/files>\s*/g, "")
 		.replace(/<read-files>[\s\S]*?<\/read-files>\s*/g, "")
@@ -192,16 +136,8 @@ export function upsertFileOperations(
 	return `${baseSummary}\n\n${fileOperations}`;
 }
 
-// ============================================================================
-// Message Serialization
-// ============================================================================
-
-/** Maximum characters for a tool result in serialized summaries. */
 const TOOL_RESULT_MAX_CHARS = 2000;
 
-/**
- * Truncate tool results to the same representation used in summarization prompts.
- */
 export function truncateToolResultForSummary(text: string): string {
 	if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
 	const truncatedChars = text.length - TOOL_RESULT_MAX_CHARS;
@@ -210,29 +146,17 @@ export function truncateToolResultForSummary(text: string): string {
 
 const SUMMARY_BOUNDARY_TAG_RE = /<\s*\/?\s*(?:conversation|previous-summary)\s*>/gi;
 
-/** Keep untrusted summary input from closing or impersonating harness-owned boundaries. */
 export function escapeSummaryBoundaryTags(text: string): string {
 	return text.replace(SUMMARY_BOUNDARY_TAG_RE, tag => `&lt;${tag.slice(1)}`);
 }
 
-/**
- * Serialize LLM messages as plain summary input without provider control tokens.
- */
 export function serializeConversationForSummary(messages: Message[], dialect?: Dialect): string {
 	const conversation = serializeConversation(messages, dialect);
 	const escaped = dialect === "harmony" ? escapeHarmonyControlTokens(conversation) : conversation;
 	return escapeSummaryBoundaryTags(escaped);
 }
 
-/**
- * Serialize LLM messages to transcript text.
- * Call convertToLlm() first to handle custom message types.
- */
 export function serializeConversation(messages: Message[], dialect?: Dialect): string {
-	// Tool results flagged contextually useless (and their paired calls) are
-	// dropped from the serialized text: the source region is discarded after
-	// summarization anyway, so excluding them costs nothing and keeps garbage
-	// out of the summary input.
 	const uselessCallIds = new Set<string>();
 	for (const msg of messages) {
 		if (msg.role === "toolResult" && msg.useless === true && msg.isError !== true) {
@@ -240,12 +164,6 @@ export function serializeConversation(messages: Message[], dialect?: Dialect): s
 		}
 	}
 	if (dialect) {
-		// Claude's classifier refuses inputs that reproduce the model's own
-		// reasoning as text ("reasoning_extraction"), and the anthropic dialect
-		// otherwise renders thinking verbatim inside <thinking> tags. Reasoning is
-		// ephemeral and low-signal for a summary, so drop it from Anthropic-target
-		// summary input. Other dialects (e.g. Harmony) carry reasoning natively in
-		// their transcript format and keep it.
 		const dropThinking = dialect === "anthropic";
 		const processed: Message[] = [];
 		for (const msg of messages) {
@@ -328,10 +246,6 @@ export function serializeConversation(messages: Message[], dialect?: Dialect): s
 	return parts.join("\n\n");
 }
 
-/**
- * Render an assistant turn's tool calls as a compact `name(args)` list for the
- * legacy serializer.
- */
 function renderToolCalls(calls: ToolCall[]): string {
 	return calls
 		.map(call => {
@@ -342,9 +256,5 @@ function renderToolCalls(calls: ToolCall[]): string {
 		})
 		.join("; ");
 }
-
-// ============================================================================
-// Summarization System Prompt
-// ============================================================================
 
 export const SUMMARIZATION_SYSTEM_PROMPT = prompt.render(summarizationSystemPrompt);

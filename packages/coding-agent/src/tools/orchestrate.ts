@@ -1,16 +1,3 @@
-/**
- * Orchestrator tools — always available at the top level.
- *
- * Five thin tools over {@link OrchestratorRuntime}: spawn/send/wait/kill/list
- * persistent workers. Spawns and sends return immediately; turn results
- * self-deliver through the async job manager.
- *
- * The TUI renderers lean into the "you are driving little agents" fiction:
- * spawn/send draw a mini composer (a message typed into a tiny terminal), and
- * wait/list draw the "TV wall" — one live screen per worker, stacked, each
- * showing its tool calls and streamed text as it works.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -94,10 +81,9 @@ const orchestrateListSchema = type({});
 
 export type OrchestrateOp = "spawn" | "send" | "wait" | "kill" | "list";
 
-/** Details payload shared by every orchestrate tool for TUI rendering. */
 export interface OrchestrateToolDetails {
 	op: OrchestrateOp;
-	/** Live TV-wall snapshot of the owner's workers at (or during) the call. */
+
 	screens: WorkerScreen[];
 	spawned?: { id: string; agent: string; jobId: string };
 	send?: SendOutcome;
@@ -105,7 +91,7 @@ export interface OrchestrateToolDetails {
 		settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled" }>;
 		stillRunning: string[];
 		timedOut: boolean;
-		/** True on interim progress emissions while the wait is still blocking. */
+
 		waiting?: boolean;
 	};
 	killed?: KillOutcome;
@@ -154,8 +140,6 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		}
 		const registry = OrchestratorRuntime.global();
 		if (params.isolated === true) {
-			// One-turn terminal worker: reuse the shared subagent backend's
-			// isolation apply/capture semantics and return the result inline.
 			try {
 				const execution = await runStructuredSubagent({
 					session: this.session,
@@ -259,8 +243,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		onUpdate?: AgentToolUpdateCallback<OrchestrateToolDetails>,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
 		const registry = OrchestratorRuntime.global();
-		// Live TV-wall frames while the wait blocks: each tick re-snapshots the
-		// watched workers so their tool calls and streamed text play in place.
+
 		const emitProgress = (): void => {
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
@@ -306,7 +289,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 			lines.push("Wait window elapsed before any turn settled — re-issue orchestrate_wait to keep waiting.");
 		}
 		const result = textResult(lines.join("\n").trimEnd(), details);
-		// A pure "still waiting" frame is noise once a newer wait exists.
+
 		return outcome.settled.length === 0 ? { ...result, useless: true } : result;
 	}
 }
@@ -370,10 +353,6 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 	}
 }
 
-// =============================================================================
-// TUI Renderer — mini composer (spawn/send) + TV wall (wait/list)
-// =============================================================================
-
 const COMPOSER_LINE_MAX = TRUNCATE_LENGTHS.LONG;
 const TV_LINE_MAX = TRUNCATE_LENGTHS.LINE;
 const TV_TRACE_COLLAPSED = PREVIEW_LIMITS.COLLAPSED_LINES;
@@ -417,19 +396,10 @@ interface OrchestrateRenderArgs {
 	workers?: string[];
 }
 
-/** One-line, escape-stripped fragment for embedding in a frame row. */
 function frameText(text: string, max: number): string {
 	return oneLineLabel(replaceTabs(text), max);
 }
 
-/**
- * Draw a left-railed mini terminal:
- * ```
- * ╭─ <header>
- * │ <body…>
- * ╰─ <footer>
- * ```
- */
 function miniFrame(uiTheme: Theme, header: string, body: string[], footer?: string): string[] {
 	const box = uiTheme.boxRound;
 	const rail = (glyph: string) => uiTheme.fg("dim", glyph);
@@ -443,7 +413,6 @@ function miniFrame(uiTheme: Theme, header: string, body: string[], footer?: stri
 	return lines;
 }
 
-/** The `>` composer rows of the mini CLI: the director's message being typed in. */
 function composerRows(uiTheme: Theme, message: string, options: { cursor: boolean; expanded: boolean }): string[] {
 	const promptGlyph = uiTheme.fg("accent", ">");
 	const rawLines = message.split(/\r?\n/).filter(line => line.trim().length > 0);
@@ -460,7 +429,6 @@ function composerRows(uiTheme: Theme, message: string, options: { cursor: boolea
 	);
 }
 
-/** Render one worker "TV": header + live tool calls + streamed text tail. */
 function tvScreen(
 	uiTheme: Theme,
 	screen: WorkerScreen,
@@ -525,14 +493,6 @@ function tvScreen(
 	return miniFrame(uiTheme, headParts.join(" "), body, footer);
 }
 
-/**
- * Width-aware component over prebuilt lines, or — given a builder — lines
- * recomputed on every paint. Spinner ticks repaint the tool block WITHOUT
- * re-invoking renderCall/renderResult, so time-based content (shimmer sweep,
- * spinner glyph, cursor blink, elapsed turn duration) must be produced inside
- * a builder that reads the shared mutable `options` at paint time; prebuilt
- * arrays are for static frames only.
- */
 function linesComponent(lines: string[] | (() => string[])): Component {
 	return {
 		render(width: number): readonly string[] {
@@ -558,7 +518,6 @@ function describeCall(op: OrchestrateOp, args: OrchestrateRenderArgs | undefined
 	}
 }
 
-/** Build the shared orchestrator renderer for one tool name. */
 export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 	const composerOp = op === "spawn" || op === "send";
 	return {
@@ -649,7 +608,6 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				return new Text(header, 0, 0);
 			}
 
-			// wait/list: the TV wall.
 			const screens = details.screens;
 			if (screens.length === 0) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "no sessions";

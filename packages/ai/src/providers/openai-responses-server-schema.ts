@@ -1,13 +1,3 @@
-/**
- * ArkType schemas for the OpenAI Responses API request shape we accept on the
- * gateway. Mirrors https://platform.openai.com/docs/api-reference/responses.
- *
- * Unsupported / opaque controls (background/include/metadata/prompt/…) are
- * accepted as `"unknown"` optional so we silently ignore rather than 400.
- * Real clients (codex, openai-python, llm-git) routinely send these and a 400
- * is a worse outcome than dropping them on the floor.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import type {
 	EasyInputMessage,
@@ -19,8 +9,6 @@ import type {
 	ResponseReasoningItem,
 	Tool as ResponsesTool,
 } from "./openai-responses-wire";
-
-// ─── Input content blocks ───────────────────────────────────────────────────
 
 const inputTextSchema = type({
 	type: "'input_text'",
@@ -77,8 +65,6 @@ const inputContentBlockSchema = inputTextSchema.or(plainTextSchema).or(inputImag
 
 const outputContentBlockSchema = outputTextSchema.or(plainTextSchema).or(outputRefusalSchema);
 
-// ─── Input items ────────────────────────────────────────────────────────────
-
 const userMessageItemSchema = type({
 	"type?": "'message'",
 	role: "'user' | 'developer'",
@@ -118,7 +104,7 @@ const functionCallItemSchema = type({
 const functionCallOutputItemSchema = type({
 	type: "'function_call_output'",
 	call_id: "string >= 1",
-	// Codex CLI replays multimodal tool results in array form (text + refusal).
+
 	"output?": type("string").or(outputContentBlockSchema.array()),
 });
 
@@ -127,8 +113,7 @@ const customToolCallItemSchema = type({
 	"id?": "string",
 	call_id: "string >= 1",
 	name: "string >= 1",
-	// Raw input string — NOT JSON.stringified. apply_patch flow streams a
-	// freeform body and reading it as JSON would corrupt it.
+
 	input: "string",
 });
 
@@ -144,9 +129,6 @@ const computerSafetyCheckSchema = type({
 	"message?": "string | null",
 });
 
-// Desktop coordinates cross the native boundary as i32 and must be
-// nonnegative; scroll deltas are signed i32. Out-of-range numbers fail
-// closed here instead of truncating downstream.
 const computerCoordinate = type("0 <= number.integer <= 2147483647");
 const computerScrollDelta = type("-2147483648 <= number.integer <= 2147483647");
 
@@ -244,9 +226,6 @@ const unbridgedInputItemSchema = type({ type: "string" }).narrow((value, ctx) =>
 	value.type in BRIDGED_INPUT_ITEM_TYPES ? ctx.mustBe("a valid bridged Responses input item") : true,
 );
 
-/**
- * Direct mapping to standard types.
- */
 export const inputItemSchema = userMessageItemSchema
 	.or(systemMessageItemSchema)
 	.or(assistantMessageItemSchema)
@@ -257,12 +236,9 @@ export const inputItemSchema = userMessageItemSchema
 	.or(customToolCallOutputItemSchema)
 	.or(computerCallItemSchema)
 	.or(computerCallOutputItemSchema)
-	// Tolerated but not bridged (file_search_call, web_search_call, …).
+
 	.or(unbridgedInputItemSchema);
 
-// Variant types alias the canonical SDK union members so the walker can
-// narrow them cleanly. The convenience "message" shape (no `type` field) maps
-// to EasyInputMessage; the explicit form maps to ResponseInputItem.Message.
 export type OpenAIResponsesUserItem = EasyInputMessage | ResponseInputItem.Message;
 export type OpenAIResponsesSystemItem = EasyInputMessage | ResponseInputItem.Message;
 export type OpenAIResponsesAssistantItem = EasyInputMessage | ResponseOutputMessage;
@@ -270,7 +246,6 @@ export type OpenAIResponsesReasoningItem = ResponseReasoningItem;
 export type OpenAIResponsesFunctionCallItem = ResponseFunctionToolCall;
 export type OpenAIResponsesFunctionCallOutputItem = ResponseInputItem.FunctionCallOutput;
 
-/** Inferred shape of the custom tool call input item (no canonical SDK alias). */
 export type OpenAIResponsesCustomToolCallItem = typeof customToolCallItemSchema.infer;
 export type OpenAIResponsesCustomToolCallOutputItem = typeof customToolCallOutputItemSchema.infer;
 export type OpenAIResponsesComputerCallItem = typeof computerCallItemSchema.infer;
@@ -278,8 +253,6 @@ export type OpenAIResponsesComputerCallOutputItem = typeof computerCallOutputIte
 export type OpenAIResponsesInputImageBlock = typeof inputImageBlockSchema.infer;
 export type OpenAIResponsesInputFileBlock = typeof inputFileBlockSchema.infer;
 export type OpenAIResponsesOutputRefusalBlock = typeof outputRefusalSchema.infer;
-
-// ─── Tools ──────────────────────────────────────────────────────────────────
 
 export const toolSchema = type({
 	type: "'function'",
@@ -293,13 +266,9 @@ const computerToolSchema = type({ type: "'computer'" });
 
 const BRIDGED_TOOL_TYPES: Record<string, true> = { function: true, computer: true };
 
-// Built-in / hosted tool entries (web_search_preview, file_search, …) — accepted
-// but skipped by the walker.
 const builtinToolSchema = type({ type: "string" }).narrow((value, ctx) =>
 	value.type in BRIDGED_TOOL_TYPES ? ctx.mustBe("a valid bridged Responses tool") : true,
 );
-
-// ─── Tool choice ────────────────────────────────────────────────────────────
 
 const hostedToolType = type(
 	"'web_search_preview' | 'file_search' | 'computer' | 'computer_use_preview' | 'code_interpreter' | 'image_generation' | 'mcp'",
@@ -336,21 +305,13 @@ export const toolChoiceSchema = type("'auto' | 'none' | 'required'")
 		}),
 	);
 
-// ─── Reasoning config ───────────────────────────────────────────────────────
-
 export const reasoningConfigSchema = type({
 	"effort?": "string",
-	// `none` maps to hideThinkingSummary; auto/concise/detailed mean "show
-	// summary". pi-ai has no per-level plumbing for the latter — walker logs
-	// once and treats them as default.
+
 	"summary?": "'auto' | 'concise' | 'detailed' | 'none'",
 });
 
-// ─── Stop ───────────────────────────────────────────────────────────────────
-
 export const stopSchema = type("string | string[] | null");
-
-// ─── Top-level request ──────────────────────────────────────────────────────
 
 export const openaiResponsesRequestSchema = type({
 	model: "string >= 1",
@@ -373,8 +334,7 @@ export const openaiResponsesRequestSchema = type({
 	"service_tier?": "string",
 	"presence_penalty?": "number",
 	"frequency_penalty?": "number",
-	// `reasoning.encrypted_content` and computer screenshot refs must survive
-	// the gateway bridge so the resolved Responses transport can request them.
+
 	"background?": "unknown",
 	"include?": "string[] | null",
 	"prompt?": "unknown",
@@ -384,11 +344,6 @@ export const openaiResponsesRequestSchema = type({
 	"truncation?": "unknown",
 });
 
-/**
- * Public types are sourced from the OpenAI SDK so the gateway stays in
- * lock-step with the canonical API surface; the schemas above are runtime
- * validators for the subset we actually accept.
- */
 export type OpenAIResponsesRequest = ResponseCreateParams;
 export type OpenAIResponsesInputItem = ResponseInputItem;
 export type OpenAIResponsesTool = ResponsesTool;

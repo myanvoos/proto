@@ -1,7 +1,7 @@
-//! `basename` builtin: print a path with leading directory components (and
-//! optionally a trailing suffix) removed.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
+
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -18,7 +18,7 @@ mod options {
 	pub static ZERO: &str = "zero";
 }
 
-/// Parsed `basename` invocation.
+
 pub(crate) struct Basename {
 	matches: ArgMatches,
 }
@@ -41,8 +41,8 @@ impl Utility for Basename {
 			return 1;
 		}
 
-		// A suffix operand (or -a) switches from the two-operand "simple format"
-		// (`basename PATH SUFFIX`) to "strip this suffix from every operand".
+
+
 		let explicit_suffix = self.matches.get_one::<OsString>(options::SUFFIX);
 		let suffix = if explicit_suffix.is_some() || self.matches.get_flag(options::MULTIPLE) {
 			explicit_suffix.cloned().unwrap_or_default()
@@ -74,15 +74,15 @@ impl Utility for Basename {
 	}
 }
 
-/// The final path component of `fullname`, minus `suffix`.
-///
-/// Returns bytes rather than an `OsString` because the result is written
-/// straight out, and `None` when the operand has no byte representation on this
-/// platform.
+
+
+
+
+
 fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 	let fullname_bytes = os_bytes(fullname)?;
 
-	// `a/.` names the directory `a`, whose basename is `.`.
+
 	if fullname_bytes.ends_with(b"/.") {
 		return Some(b".".into());
 	}
@@ -94,7 +94,7 @@ fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 
 	let name = last.as_os_str();
 	let name_bytes = os_bytes(name)?;
-	// Stripping the whole component would leave nothing, so GNU keeps it.
+
 	if name == suffix.as_os_str() {
 		return Some(name_bytes.into());
 	}
@@ -102,7 +102,7 @@ fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 	Some(name_bytes.strip_suffix(suffix_bytes).unwrap_or(name_bytes).into())
 }
 
-/// The `basename` argument model.
+
 fn app() -> Command {
 	Command::new(Basename::NAME)
 		.version("0.8.0")
@@ -147,7 +147,7 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `basename` builtin registration.
+
 pub(crate) fn basename_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Basename, SE>()
 }

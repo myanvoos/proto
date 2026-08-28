@@ -1,28 +1,9 @@
-/**
- * Parallel execution with concurrency control.
- */
-/** Result of parallel execution */
 interface ParallelResult<R> {
-	/** Results array - undefined entries indicate tasks that were skipped due to abort */
 	results: (R | undefined)[];
-	/** Whether execution was aborted before all tasks completed */
+
 	aborted: boolean;
 }
 
-/**
- * Execute items with a concurrency limit using a worker pool pattern.
- * Results are returned in the same order as input items.
- *
- * On abort: returns partial results with `aborted: true`. Completed tasks are preserved,
- * in-progress tasks will complete with their abort handling, skipped tasks are `undefined`.
- *
- * On error: fails fast - does not wait for other workers to complete.
- *
- * @param items - Items to process
- * @param concurrency - Maximum concurrent operations
- * @param fn - Async function to execute for each item; receives a worker signal that fires on abort or fail-fast so in-flight siblings can cancel
- * @param signal - Optional abort signal to stop scheduling new work
- */
 export async function mapWithConcurrencyLimit<T, R>(
 	items: T[],
 	concurrency: number,
@@ -35,11 +16,9 @@ export async function mapWithConcurrencyLimit<T, R>(
 	const results: (R | undefined)[] = new Array(items.length);
 	let nextIndex = 0;
 
-	// Create internal abort controller to cancel workers on any rejection
 	const abortController = new AbortController();
 	const workerSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
 
-	// Promise that rejects on first error - used to fail fast (not for abort)
 	let rejectFirst: (error: unknown) => void;
 	const firstErrorPromise = new Promise<never>((_, reject) => {
 		rejectFirst = reject;
@@ -47,15 +26,12 @@ export async function mapWithConcurrencyLimit<T, R>(
 
 	const worker = async (): Promise<void> => {
 		while (true) {
-			// On abort, stop picking up new work - but don't throw
 			if (workerSignal.aborted) return;
 			const index = nextIndex++;
 			if (index >= items.length) return;
 			try {
 				results[index] = await fn(items[index], index, workerSignal);
 			} catch (error) {
-				// On abort, the fn itself handles it and returns a result
-				// Only propagate non-abort errors
 				if (!workerSignal.aborted) {
 					abortController.abort();
 					rejectFirst(error);
@@ -65,7 +41,6 @@ export async function mapWithConcurrencyLimit<T, R>(
 		}
 	};
 
-	// Create worker pool
 	const workers = Array(limit)
 		.fill(null)
 		.map(() => worker());
@@ -73,7 +48,6 @@ export async function mapWithConcurrencyLimit<T, R>(
 	try {
 		await Promise.race([Promise.all(workers), firstErrorPromise]);
 	} catch (error) {
-		// If aborted, don't rethrow - return partial results
 		if (signal?.aborted) {
 			return { results, aborted: true };
 		}
@@ -83,20 +57,12 @@ export async function mapWithConcurrencyLimit<T, R>(
 	return { results, aborted: signal?.aborted ?? false };
 }
 
-/** Result of a concurrency-limited operation that waits for every launched item. */
 interface ParallelSettledResult<R> {
-	/** Settled results in original input order; absent entries were never launched after cancellation. */
 	results: (PromiseSettledResult<R> | undefined)[];
-	/** Whether cancellation prevented scheduling all items. */
+
 	aborted: boolean;
 }
 
-/**
- * Execute items with a concurrency limit without failing fast. Rejections are
- * captured at their input position and already launched siblings always settle
- * before this function returns. Cancellation stops new launches but preserves
- * the settled state of every item that began.
- */
 export async function mapWithConcurrencyLimitAllSettled<T, R>(
 	items: T[],
 	concurrency: number,
@@ -126,13 +92,6 @@ export async function mapWithConcurrencyLimitAllSettled<T, R>(
 	return { results, aborted: workerSignal.aborted };
 }
 
-/**
- * Simple counting semaphore for limiting concurrency across independently-scheduled async work.
- *
- * `max <= 0` (or any non-finite input) means unbounded — every `acquire()` resolves
- * immediately — matching `orchestrator.maxConcurrency = 0`'s "Unlimited" semantics in the
- * settings UI (#3305).
- */
 export function normalizeConcurrencyLimit(max: number): number {
 	const normalizedMax = Number.isFinite(max) ? Math.trunc(max) : 0;
 	return normalizedMax > 0 ? normalizedMax : 0;
@@ -148,13 +107,6 @@ export class Semaphore {
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;
 	}
 
-	/**
-	 * Resolves when a slot is available. Pass an `AbortSignal` so callers that
-	 * stop waiting (parent task cancelled, wall-clock budget elapsed) also stop
-	 * occupying a queue slot — otherwise a later `release()` would resolve the
-	 * abandoned waiter, permanently shrinking effective concurrency for the
-	 * remaining lifetime of the process (issue #3464 review feedback).
-	 */
 	async acquire(signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) {
 			throw semaphoreAbortReason(signal);
@@ -184,7 +136,7 @@ export class Semaphore {
 
 	release(): void {
 		if (this.#current > 0) this.#current--;
-		// Admit the next waiter only if we are under the (possibly just-lowered) ceiling.
+
 		if (this.#current < this.#max) {
 			const next = this.#queue.shift();
 			if (next) {
@@ -194,14 +146,6 @@ export class Semaphore {
 		}
 	}
 
-	/**
-	 * Adjust the maximum concurrency in place. Raising the ceiling immediately
-	 * admits queued waiters that now fit; lowering it lets in-flight holders
-	 * drain naturally (new acquires keep blocking until `#current` falls below
-	 * the new max). Resizing the single shared instance — instead of replacing
-	 * it — keeps in-flight slots counted, so a runtime or mixed limit change can
-	 * never push concurrency past the cap (issue #3464 review feedback).
-	 */
 	resize(max: number): void {
 		const normalizedMax = normalizeConcurrencyLimit(max);
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;

@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
 
-/** Build-time specifier resolved to bundled host module namespaces. */
 export const HOST_MODULES_SPECIFIER = "proto-host-modules";
 
 const VIRTUAL_NAMESPACE = "proto-host-modules-build";
@@ -26,13 +25,11 @@ const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 const SKIPPED_WILDCARD_BASENAMES = new Set(["index"]);
 const MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES = new Set(["worker-entry"]);
 
-/** One namespace module the binary must retain for extension imports. */
 export interface BundledHostEntry {
-	/** Canonical import key exposed to extensions. */
 	readonly key: string;
-	/** Unique identifier used by the virtual module's generated import. */
+
 	readonly binding: string;
-	/** Package or absolute source specifier compiled into the binary. */
+
 	readonly importSpecifier: string;
 }
 
@@ -85,11 +82,6 @@ function exportImportTarget(value: unknown): string | null {
 	return null;
 }
 
-/**
- * Derive the bundled host module surface from current package exports.
- * Named wildcard exports are expanded from source; root catch-alls stay out to
- * avoid importing CLI entrypoints and other non-extension surfaces.
- */
 export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 	const entries: BundledHostEntry[] = [];
 	const seenKeys = new Set<string>();
@@ -112,9 +104,7 @@ export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 			throw new Error(`Bundled host package manifest has no name: ${manifestPath}`);
 		}
 		const exportsField = isRecord(manifest.exports) ? manifest.exports : {};
-		// The `@oh-my-pi/pi-coding-agent` root serves the extension-facing
-		// surface module that retains the synchronous `AuthStorage` facade
-		// (issue #5879); every other root maps to the real package entry.
+
 		const rootImportSpecifier =
 			pkg.dir === "coding-agent"
 				? path.join(packageDir, "src", "extensibility", "plugins", "host-pi-coding-agent-surface.ts")
@@ -137,18 +127,9 @@ export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 
 			const sourceDir = path.join(packageRoot, pattern.sourcePrefix);
 			try {
-				// Recursive on purpose: Node matches `*` in an `exports` pattern across
-				// `/`, so `./slash-commands/*` genuinely serves
-				// `slash-commands/helpers/active-oauth-account`. Enumerating only the
-				// top level left every nested key out of the compiled registry, where
-				// it fell through to `Bun.resolveSync` and died under bunfs — so such
-				// an import worked from source and failed inside a binary.
 				const glob = new Bun.Glob(`**/*${pattern.sourceSuffix}`);
 				const matches: string[] = [];
 				for await (const match of glob.scan({ cwd: sourceDir, onlyFiles: true })) {
-					// Bun.Glob yields host separators; the export keys and generated
-					// identifiers below are `/`-shaped. Same normalization as
-					// `generate-docs-index.ts`.
 					matches.push(match.split(path.sep).join("/"));
 				}
 				matches.sort();
@@ -156,8 +137,7 @@ export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 					if (!match.endsWith(pattern.sourceSuffix)) continue;
 					const basename = match.slice(0, match.length - pattern.sourceSuffix.length);
 					const segments = basename.split("/");
-					// Every directory on the way has to be importable too: a private or
-					// hidden folder is no more exported than a private file.
+
 					if (segments.some(segment => segment.startsWith(".") || segment.startsWith("_"))) continue;
 					if (!isSafeWildcardBasename(segments.at(-1) ?? "")) continue;
 					const subpath = `${pattern.exportPrefix}${basename}${pattern.exportSuffix}`.replace(/^\.\//, "");
@@ -173,7 +153,6 @@ export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 	return entries;
 }
 
-/** Render the lazy loader registry; exported so tests can execute the generated module. */
 export function __renderHostVirtualModule(entries: readonly BundledHostEntry[]): string {
 	const loaders = entries.map(
 		entry => `const ${entry.binding} = () => import(${JSON.stringify(entry.importSpecifier)});`,
@@ -182,11 +161,6 @@ export function __renderHostVirtualModule(entries: readonly BundledHostEntry[]):
 	return [...loaders, "", "export const BUNDLED_HOST_MODULE_LOADERS = {", ...modules, "};", ""].join("\n");
 }
 
-/**
- * Build plugin that materializes lazy host module loaders entirely in memory.
- * Literal dynamic imports retain every compile-time edge without evaluating
- * unrelated host modules during extension bootstrap.
- */
 export async function createHostVirtualModulePlugin(): Promise<Bun.BunPlugin> {
 	const source = __renderHostVirtualModule(await collectBundledHostEntries());
 	return {

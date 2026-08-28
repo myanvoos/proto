@@ -44,9 +44,7 @@ async function createApiKeyValidationError(provider: string, response: Response)
 	let details = "";
 	try {
 		details = (await response.text()).trim();
-	} catch {
-		// Ignore body read errors; the HTTP status still preserves the failure category.
-	}
+	} catch {}
 
 	const message = details
 		? `${provider} API key validation failed (${response.status}): ${details}`
@@ -54,11 +52,6 @@ async function createApiKeyValidationError(provider: string, response: Response)
 	return new ProviderHttpError(message, response.status, { headers: response.headers });
 }
 
-/**
- * Validate an API key against an OpenAI-compatible chat completions endpoint.
- *
- * Performs a minimal request to verify credentials and endpoint access.
- */
 export async function validateOpenAICompatibleApiKey(options: OpenAICompatibleValidationOptions): Promise<void> {
 	const timeoutSignal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
@@ -86,9 +79,6 @@ export async function validateOpenAICompatibleApiKey(options: OpenAICompatibleVa
 	throw await createApiKeyValidationError(options.provider, response);
 }
 
-/**
- * Validate an API key against an Anthropic-compatible messages endpoint.
- */
 export async function validateAnthropicCompatibleApiKey(options: AnthropicCompatibleValidationOptions): Promise<void> {
 	const timeoutSignal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
@@ -117,12 +107,6 @@ export async function validateAnthropicCompatibleApiKey(options: AnthropicCompat
 	throw await createApiKeyValidationError(options.provider, response);
 }
 
-/**
- * Validate an API key against a provider models endpoint.
- *
- * Useful for providers where access to specific models may vary by plan and
- * should not block key validation.
- */
 export async function validateApiKeyAgainstModelsEndpoint(options: ModelListValidationOptions): Promise<void> {
 	const timeoutSignal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;

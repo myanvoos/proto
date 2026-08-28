@@ -1,19 +1,9 @@
-//! macOS spelling, word-completion, and autocorrection services.
-//!
-//! `AppleSpell` exposes UTF-16 ranges through [`NSSpellChecker`]. JavaScript
-//! strings use the same indexing unit, so ranges cross N-API without remapping.
-//! Other platforms expose the same API as an unavailable, no-op backend.
-//! All `AppKit` work runs serially on one lazily spawned, dedicated spelling
-//! thread so the singleton keeps a stable thread identity.
-
 use napi_derive::napi;
 
-/// A misspelled span measured in JavaScript/UTF-16 code units.
 #[napi(object)]
 pub struct SpellingRange {
-	/// Inclusive UTF-16 start offset.
-	pub start:  u32,
-	/// UTF-16 length of the misspelled span.
+	pub start: u32,
+
 	pub length: u32,
 }
 
@@ -42,11 +32,7 @@ mod platform {
 			.expect("failed to spawn the native spelling thread");
 		sender
 	});
-	static APP_KIT_LOADED: LazyLock<bool> = LazyLock::new(|| {
-		// SAFETY: AppKit documents `NSApplicationLoad` as process-global and
-		// idempotent; `LazyLock` guarantees this process calls it at most once.
-		unsafe { NSApplicationLoad() }
-	});
+	static APP_KIT_LOADED: LazyLock<bool> = LazyLock::new(|| unsafe { NSApplicationLoad() });
 	const NS_NOT_FOUND: usize = isize::MAX as usize;
 
 	#[link(name = "AppKit", kind = "framework")]
@@ -92,11 +78,7 @@ mod platform {
 		let checker = checker()?;
 		let text = NSString::from_str(text);
 		let full = NSRange { location: 0, length: text.length() };
-		// `checkString:...` honors `automaticallyIdentifiesLanguages`, selecting
-		// the dictionary per detected run; the legacy `checkSpellingOfString:`
-		// used only the shared checker's single current language (issue #9334).
-		// SAFETY: `options`/`orthography` are nil and `word_count` is null, all
-		// documented as valid; the returned array is retained by objc2.
+
 		let results = unsafe {
 			checker.checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(
 				&text,
@@ -130,9 +112,6 @@ mod platform {
 			.unwrap_or_default()
 	}
 
-	/// Language macOS identifies for a word range, honoring automatic language
-	/// identification. Falls back to the shared checker's current language when
-	/// detection is inconclusive (issue #9334).
 	fn word_language(
 		checker: &NSSpellChecker,
 		text: &NSString,
@@ -183,17 +162,12 @@ mod platform {
 	}
 }
 
-/// Whether the host can use Apple's native spelling service.
 #[napi(js_name = "macOSSpellCheckerAvailable")]
 #[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
 pub fn macos_spell_checker_available() -> bool {
 	cfg!(target_os = "macos")
 }
 
-/// Find every misspelled word using the active macOS dictionaries.
-///
-/// Returns an empty list when Apple's spelling service is unavailable.
-/// On macOS, the check runs on the dedicated spelling thread.
 #[napi(js_name = "macOSCheckSpelling")]
 #[cfg_attr(
 	not(target_os = "macos"),
@@ -211,10 +185,6 @@ pub async fn macos_check_spelling(text: String) -> napi::Result<Vec<SpellingRang
 	}
 }
 
-/// Return macOS dictionary completions for one partial-word range.
-///
-/// Returns an empty list when Apple's spelling service is unavailable.
-/// On macOS, the lookup runs on the dedicated spelling thread.
 #[napi(js_name = "macOSCompleteWord")]
 #[cfg_attr(
 	not(target_os = "macos"),
@@ -236,11 +206,6 @@ pub async fn macos_complete_word(
 	}
 }
 
-/// Return the autocorrection macOS chooses for one completed-word range.
-///
-/// Returns `null` when no confident correction exists or the service is
-/// unavailable.
-/// On macOS, the lookup runs on the dedicated spelling thread.
 #[napi(js_name = "macOSAutocorrectWord")]
 #[cfg_attr(
 	not(target_os = "macos"),
@@ -261,10 +226,7 @@ pub async fn macos_autocorrect_word(
 		Ok(None)
 	}
 }
-/// Return macOS replacement guesses for one misspelled-word range.
-///
-/// Returns an empty list when Apple's spelling service is unavailable.
-/// On macOS, the lookup runs on the dedicated spelling thread.
+
 #[napi(js_name = "macOSSpellingGuesses")]
 #[cfg_attr(
 	not(target_os = "macos"),

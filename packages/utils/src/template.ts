@@ -1,19 +1,13 @@
-/** Behavior-compatible reimplementation of handlebars' used surface. */
-
-/** Values accepted as registered partial templates. */
 export type Template = string | TemplateDelegate;
 
-/** A compiled template function. */
 export type TemplateDelegate<T = unknown> = (context?: T, options?: RuntimeOptions) => string;
 
-/** Runtime options accepted by compiled templates. */
 export interface RuntimeOptions {
 	data?: Record<string, unknown>;
 	helpers?: Record<string, HelperDelegate>;
 	partials?: Record<string, Template>;
 }
 
-/** Options passed as the final argument to helpers. */
 export interface HelperOptions {
 	name: string;
 	hash: Record<string, unknown>;
@@ -23,16 +17,13 @@ export interface HelperOptions {
 	lookupProperty: (parent: unknown, propertyName: string) => unknown;
 }
 
-/** A template helper function. */
 export type HelperDelegate = { bivarianceHack(this: unknown, ...args: unknown[]): unknown }["bivarianceHack"];
 
-/** Template compilation behavior. */
 export interface CompileOptions {
 	noEscape?: boolean;
 	strict?: boolean;
 }
 
-/** A string that bypasses HTML escaping when interpolated. */
 export class SafeString {
 	readonly #value: string;
 
@@ -40,12 +31,10 @@ export class SafeString {
 		this.#value = String(value);
 	}
 
-	/** Return the unescaped string value. */
 	toString(): string {
 		return this.#value;
 	}
 
-	/** Return the unescaped primitive value. */
 	toHTML(): string {
 		return this.#value;
 	}
@@ -426,8 +415,7 @@ function evaluateCall(
 	const hash = evaluateHash(call.hash, frame, evaluation);
 	if (helper)
 		return helper.call(frame.context, ...args, helperOptions(call.name, hash, frame, evaluation, body, inverse));
-	// Handlebars built-in: `{{lookup obj key}}` → proto-safe `obj[key]`.
-	// Resolved after user helpers so a registered `lookup` override wins.
+
 	if (call.name === "lookup" && args.length >= 2) return property(args[0], String(args[1]));
 	if (forceHelper || args.length) throw new Error(`Missing helper: "${call.name}"`);
 	for (const _key in hash) throw new Error(`Missing helper: "${call.name}"`);
@@ -522,7 +510,6 @@ function stringify(value: unknown, shouldEscape: boolean): string {
 	return shouldEscape ? escapeExpression(text) : text;
 }
 
-/** Escape a value with Handlebars' HTML entity set. */
 export function escapeExpression(value: unknown): string {
 	const text = value == null ? "" : String(value);
 	return text.replace(
@@ -534,17 +521,14 @@ export function escapeExpression(value: unknown): string {
 	);
 }
 
-/** Register a helper for subsequently compiled templates. */
 export function registerHelper(name: string, helper: HelperDelegate): void {
 	helpers.set(name, helper);
 }
 
-/** Register a partial for subsequently rendered templates. */
 export function registerPartial(name: string, partial: Template): void {
 	partials.set(name, partial);
 }
 
-/** Compile a template into a reusable rendering function. */
 export function compile<T = unknown>(source: string, options: CompileOptions = {}): TemplateDelegate<T> {
 	const nodes = parseTemplate(stripStandalone(source));
 	return (context, runtime = {}) => {
@@ -554,27 +538,22 @@ export function compile<T = unknown>(source: string, options: CompileOptions = {
 	};
 }
 
-/** Create an isolated template engine with its own helper and partial registries. */
 export function create(): TemplateEngine {
 	return new TemplateEngine();
 }
 
-/** Isolated template compiler and registry. */
 export class TemplateEngine {
 	readonly #helpers = new Map<string, HelperDelegate>();
 	readonly #partials = new Map<string, Template>();
 
-	/** Register a helper in this engine. */
 	registerHelper(name: string, helper: HelperDelegate): void {
 		this.#helpers.set(name, helper);
 	}
 
-	/** Register a partial in this engine. */
 	registerPartial(name: string, partial: Template): void {
 		this.#partials.set(name, partial);
 	}
 
-	/** Compile a template using this engine's registries. */
 	compile<T = unknown>(source: string, options: CompileOptions = {}): TemplateDelegate<T> {
 		const nodes = parseTemplate(stripStandalone(source));
 		return (context, runtime = {}) => {

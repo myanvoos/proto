@@ -1,8 +1,5 @@
 import type { Component } from "../tui";
 
-/**
- * Spacer component that renders empty lines
- */
 export class Spacer implements Component {
 	#lines: number;
 	#cached: string[] | undefined;
@@ -17,9 +14,7 @@ export class Spacer implements Component {
 		this.#cached = undefined;
 	}
 
-	invalidate(): void {
-		// No cached state to invalidate currently
-	}
+	invalidate(): void {}
 
 	render(_width: number): readonly string[] {
 		let cached = this.#cached;

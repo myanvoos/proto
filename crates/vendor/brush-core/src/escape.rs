@@ -1,4 +1,4 @@
-//! String escaping utilities
+
 
 use std::borrow::Cow;
 
@@ -6,21 +6,21 @@ use itertools::Itertools;
 
 use crate::{error, int_utils};
 
-/// Escape expansion mode.
+
 #[derive(Clone, Copy)]
 pub enum EscapeExpansionMode {
-	/// echo builtin mode.
+
 	EchoBuiltin,
-	/// ANSI-C quotes.
+
 	AnsiCQuotes,
 }
 
-/// Expands backslash escapes in the provided string.
-///
-/// # Arguments
-///
-/// * `s` - The string to expand.
-/// * `mode` - The mode to use for expansion.
+
+
+
+
+
+
 #[expect(clippy::too_many_lines)]
 pub fn expand_backslash_escapes(
 	s: &str,
@@ -30,13 +30,13 @@ pub fn expand_backslash_escapes(
 	let mut it = s.chars();
 	while let Some(c) = it.next() {
 		if c != '\\' {
-			// Not a backslash, add and move on.
+
 			result.append(c.to_string().into_bytes().as_mut());
 			continue;
 		}
 
 		let Some(escape_cmd) = it.next() else {
-			// Trailing backslash.
+
 			result.push(b'\\');
 			continue;
 		};
@@ -47,19 +47,19 @@ pub fn expand_backslash_escapes(
 			'c' => {
 				match mode {
 					EscapeExpansionMode::EchoBuiltin => {
-						// Stop all additional output!
+
 						return Ok((result, false));
 					},
 					EscapeExpansionMode::AnsiCQuotes => {
 						if let Some(char_value) = it.next() {
-							// Special case backslash. If it's immediately followed by another
-							// backslash, then we consume both; if not, we still will use the
-							// backslash character as the one to apply the control transformation
-							// to.
+
+
+
+
 							if char_value == '\\' {
 								let orig_it = it.clone();
 								if !matches!(it.next(), Some('\\')) {
-									// Didn't find another backslash; restore iterator.
+
 									it = orig_it;
 								}
 							}
@@ -76,7 +76,7 @@ pub fn expand_backslash_escapes(
 
 							if !bytes.is_empty() {
 								if bytes[0] == b'?' {
-									// We can't explain why this is the case, but it is.
+
 									bytes[0] = 0x7f;
 								} else {
 									bytes[0] &= 0x1f;
@@ -102,7 +102,7 @@ pub fn expand_backslash_escapes(
 			'\"' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => result.push(b'\"'),
 			'?' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => result.push(b'?'),
 			'0' => {
-				// Consume 0-3 valid octal chars
+
 				let mut taken_so_far = 0;
 				let mut octal_chars: String = it
 					.take_while_ref(|c| {
@@ -123,14 +123,14 @@ pub fn expand_backslash_escapes(
 				result.push(value);
 			},
 			'x' => {
-				// Consume 1-2 valid hex chars (or unlimited with braces in ANSI-C mode)
+
 				let mut hex_chars = String::new();
 				let mut invalid_prefix = false;
 				let mut hexits_consumed = 0;
 				let mut start_brace_consumed = false;
 
 				loop {
-					// Save the original in case we go too far and need to restore.
+
 					let orig_it = it.clone();
 
 					let Some(next_c) = it.next() else {
@@ -153,7 +153,7 @@ pub fn expand_backslash_escapes(
 					} else if start_brace_consumed && hexits_consumed == 0 {
 						invalid_prefix = true;
 					} else {
-						// Went too far; restore iterator and break.
+
 						it = orig_it;
 						break;
 					}
@@ -173,7 +173,7 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			'u' => {
-				// Consume 1-4 hex digits
+
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
@@ -200,7 +200,7 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			'U' => {
-				// Consume 1-8 hex digits
+
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
@@ -227,11 +227,11 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			first_octal @ '1'..='7' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => {
-				// We've already consumed the first octal digit.
+
 				let mut octal_chars = String::new();
 				octal_chars.push(first_octal);
 
-				// Consume up to 2 more valid octal chars
+
 				let mut taken_so_far = 1;
 				for next_c in it.take_while_ref(|next_c| {
 					if taken_so_far < 3 && matches!(next_c, '0'..='7') {
@@ -248,14 +248,14 @@ pub fn expand_backslash_escapes(
 				result.push(value);
 			},
 			unknown => {
-				// Not a valid escape sequence.
+
 				result.push(b'\\');
 				result.append(unknown.to_string().into_bytes().as_mut());
 			},
 		}
 	}
 
-	// In ANSI-C quotes, we crop the result at the first NUL.
+
 	if matches!(mode, EscapeExpansionMode::AnsiCQuotes) {
 		if let Some(nul_index) = result.iter().position(|&b| b == 0) {
 			result.truncate(nul_index);
@@ -265,31 +265,31 @@ pub fn expand_backslash_escapes(
 	Ok((result, true))
 }
 
-/// Quoting mode to use for escaping.
+
 #[derive(Clone, Copy, Default)]
 pub enum QuoteMode {
-	/// Single-quote.
+
 	#[default]
 	SingleQuote,
-	/// Double-quote.
+
 	DoubleQuote,
-	/// Backslash-escape.
+
 	BackslashEscape,
 }
 
-/// Options influencing how to escape/quote an input string.
+
 #[derive(Default)]
 pub(crate) struct QuoteOptions {
-	/// Whether or not to *always* escape or quote the input; if false, then
-	/// escaping/quoting will only be applied if the input contains characters
-	/// that *require* it.
+
+
+
 	pub always_quote:                 bool,
-	/// Preferred mode for quoting/escaping. Quoting may be "upgraded" to a more
-	/// expressive format if the input is not expressible otherwise.
+
+
 	pub preferred_mode:               QuoteMode,
-	/// Whether or not to *avoid* using ANSI C quoting just for the benefit of
-	/// newline characters. Default is for newline characters to require
-	/// upgrading the string's quoting to ANSI C quoting.
+
+
+
 	pub avoid_ansi_c_quoting_newline: bool,
 }
 
@@ -316,25 +316,25 @@ pub(crate) fn quote<'a>(s: &'a str, options: &QuoteOptions) -> Cow<'a, str> {
 	}
 }
 
-/// Escape the given string, forcing quoting.
-///
-/// # Arguments
-///
-/// * `s` - The string to escape.
-/// * `mode` - The quoting mode to use.
+
+
+
+
+
+
 pub fn force_quote(s: &str, mode: QuoteMode) -> String {
 	let options = QuoteOptions { always_quote: true, preferred_mode: mode, ..Default::default() };
 
 	quote(s, &options).to_string()
 }
 
-/// Applies the given quoting mode to the provided string, only changing it if
-/// required.
-///
-/// # Arguments
-///
-/// * `s` - The string to escape.
-/// * `mode` - The quoting mode to use.
+
+
+
+
+
+
+
 pub fn quote_if_needed(s: &str, mode: QuoteMode) -> Cow<'_, str> {
 	let options = QuoteOptions { always_quote: false, preferred_mode: mode, ..Default::default() };
 
@@ -343,7 +343,7 @@ pub fn quote_if_needed(s: &str, mode: QuoteMode) -> Cow<'_, str> {
 
 fn backslash_escape(s: &str) -> Cow<'_, str> {
 	if s.is_empty() {
-		// An empty string must be represented as '' to be a valid shell word.
+
 		Cow::Owned("''".to_string())
 	} else if !s.chars().any(needs_escaping) {
 		Cow::Borrowed(s)
@@ -360,16 +360,16 @@ fn backslash_escape(s: &str) -> Cow<'_, str> {
 }
 
 fn single_quote(s: &str) -> Cow<'_, str> {
-	// Special-case the empty string.
+
 	if s.is_empty() {
 		return Cow::Borrowed("''");
 	}
 
 	let mut result = String::with_capacity(s.len());
 
-	// Go through the string; put everything in single quotes except for
-	// the single quote character itself. It will get escaped outside
-	// all quoting.
+
+
+
 	let mut first = true;
 	for part in s.split('\'') {
 		if !first {
@@ -435,8 +435,8 @@ fn ansi_c_quote(s: &str) -> String {
 	result
 }
 
-// Returns whether or not the given character needs to be escaped (or quoted) if
-// outside quotes.
+
+
 const fn needs_escaping(c: char) -> bool {
 	matches!(
 		c,

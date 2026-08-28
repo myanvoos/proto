@@ -361,12 +361,10 @@ async function readCabArchive(source: ByteSource, options: Parameters<FormatRead
 	return entries;
 }
 
-/** Probe a byte prefix for the Microsoft Cabinet `MSCF` signature. */
 export function sniffCab(bytes: Uint8Array): boolean {
 	return hasSignature(bytes);
 }
 
-/** Index a Microsoft Cabinet archive and defer folder decompression until a member is read. */
 export const readCab: FormatReader = async (source, options) => {
 	try {
 		return await readCabArchive(source, options);

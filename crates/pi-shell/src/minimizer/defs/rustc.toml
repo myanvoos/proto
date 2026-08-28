@@ -1,23 +1,23 @@
-# rustc: stateless per-line keep for direct `rustc` invocations (NOT the
-# cargo-claimed path — cargo/clippy run through filters/cargo.rs). rustc is not
-# Rust-claimed in mod.rs, so a TOML def is the correct home.
-#
-# Keep diagnostics that carry failure signal: error[E…]/error: headers, warning
-# headers, the `-->` source-pointer lines that name file:line:col, the trailing
-# "aborting due to" / "For more information" summary, "could not compile"
-# trailers, and — critically — ICE/panic lines ("thread '…' panicked",
-# "internal compiler error", "panicked at", "rustc <version> running on …").
-# The intervening snippet/caret/label lines (`  |`, ` 3 | …`, `  = note:`) are
-# dropped: they are recoverable context, not signal, and the kept `-->` pointer
-# already localizes the diagnostic.
-# Query/help output is not a diagnostic stream. Preserve it when no diagnostic
-# line matches, rather than letting the engine turn the meaningful response into
-# a generic success sentinel.
-#
-# DELIBERATELY no on_empty: that stage is not exit-gated, so a failed compile
-# whose error text happened to miss the keep-set would otherwise collapse to a
-# fake "rustc: ok". The engine's ensure_success_visible prints "OK" only on
-# exit 0, which is the correct, exit-gated success sentinel.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 [filters.rustc]
 description = "Compact rustc output — keep diagnostics, ICE/panic, and failure trailers"

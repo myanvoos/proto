@@ -8,13 +8,9 @@ import { collectMcpServerNames } from "../modes/controllers/mcp-command-controll
 import { expandTilde } from "../tools/path-utils";
 import type { SubcommandDef, TuiSlashCommandRuntime } from "./types";
 
-/**
- * Build getArgumentCompletions from declarative subcommand definitions.
- * Returns subcommand names filtered by prefix in the dropdown.
- */
 export function buildArgumentCompletions(subcommands: SubcommandDef[]): (prefix: string) => AutocompleteItem[] | null {
 	return (argumentPrefix: string) => {
-		if (argumentPrefix.includes(" ")) return null; // past the subcommand
+		if (argumentPrefix.includes(" ")) return null;
 		const lower = argumentPrefix.toLowerCase();
 		const matches = subcommands
 			.filter(s => s.name.startsWith(lower))
@@ -28,7 +24,6 @@ export function buildArgumentCompletions(subcommands: SubcommandDef[]): (prefix:
 	};
 }
 
-/** /mcp subcommands whose argument is a server name (per their `usage: "<name>..."`). */
 const MCP_SERVER_NAME_SUBCOMMANDS: Readonly<Record<string, true>> = {
 	enable: true,
 	disable: true,
@@ -39,35 +34,17 @@ const MCP_SERVER_NAME_SUBCOMMANDS: Readonly<Record<string, true>> = {
 	unauth: true,
 };
 
-/** Subcommands that accept names found only in `userConfig.disabledServers`. */
 const MCP_DISABLED_ONLY_ELIGIBLE_SUBCOMMANDS: Readonly<Record<string, true>> = {
 	enable: true,
 	disable: true,
 };
 
-/**
- * Subcommands that accept configured servers whose `enabled` flag is false.
- * `unauth` can clear persisted credentials without connecting; test,
- * reconnect, and reauth explicitly require an enabled server.
- */
 const MCP_DISABLED_CONFIG_ELIGIBLE_SUBCOMMANDS: Readonly<Record<string, true>> = {
 	enable: true,
 	disable: true,
 	unauth: true,
 };
 
-/**
- * Build getArgumentCompletions for /mcp. Delegates to the generic
- * declarative subcommand completer while the subcommand name itself is
- * still being typed, then switches to MCP server-name completion (sourced
- * from {@link collectMcpServerNames}) once a recognized server-name
- * subcommand (enable/disable/test/remove/reconnect/reauth/unauth) is
- * followed by a space. `remove` gets its own scope-aware completions (see
- * {@link buildMcpRemoveCompletions}) since — unlike the others —
- * it only ever succeeds against a config-file entry. Subcommands with a
- * different argument shape (add, smithery-search, ...) get no argument
- * completion.
- */
 export function buildMcpArgumentCompletions(
 	subcommands: SubcommandDef[],
 	runtime: TuiSlashCommandRuntime,
@@ -104,16 +81,6 @@ export function buildMcpArgumentCompletions(
 	};
 }
 
-/**
- * Build `/mcp remove <name>` completions. Unlike the other server-name
- * subcommands, `#handleRemove` only ever succeeds against a config-file
- * `mcpServers` entry in the target scope (project by default, user with an
- * explicit `--scope user`) — a purely runtime-discovered server has no
- * config entry to remove and always fails with `Server "<name>" not found
- * in <scope> config.`. Completions are therefore restricted to config-file
- * names, and a name that exists only in the user config is completed with
- * `--scope user` appended so the inserted command is directly executable.
- */
 async function buildMcpRemoveCompletions(
 	rawSubcommand: string,
 	namePrefix: string,
@@ -146,17 +113,12 @@ async function buildMcpRemoveCompletions(
 	return matches.length > 0 ? matches : null;
 }
 
-/**
- * Build getInlineHint from declarative subcommand definitions.
- * Shows remaining completion + usage as dim ghost text after cursor.
- */
 export function buildSubcommandInlineHint(subcommands: SubcommandDef[]): (argumentText: string) => string | null {
 	return (argumentText: string) => {
 		const trimmed = argumentText.trimStart();
 		const spaceIndex = trimmed.indexOf(" ");
 
 		if (spaceIndex === -1) {
-			// Still typing subcommand name — show remaining chars + usage
 			const prefix = trimmed.toLowerCase();
 			if (prefix.length === 0) return null;
 			const match = subcommands.find(s => s.name.startsWith(prefix));
@@ -165,7 +127,6 @@ export function buildSubcommandInlineHint(subcommands: SubcommandDef[]): (argume
 			return remaining + (match.usage ? ` ${match.usage}` : "");
 		}
 
-		// Subcommand typed — show remaining usage params
 		const subName = trimmed.slice(0, spaceIndex).toLowerCase();
 		const afterSub = trimmed.slice(spaceIndex + 1);
 		const sub = subcommands.find(s => s.name === subName);
@@ -182,19 +143,10 @@ export function buildSubcommandInlineHint(subcommands: SubcommandDef[]): (argume
 	};
 }
 
-/**
- * Build getInlineHint for commands with a simple static hint string.
- * Shows the hint only when no arguments have been typed yet.
- */
 export function buildStaticInlineHint(hint: string): (argumentText: string) => string | null {
 	return (argumentText: string) => (argumentText.trim().length === 0 ? hint : null);
 }
 
-/**
- * Build getArgumentCompletions that suggests directories relative to the
- * current project directory. Used by /move so users can Tab-complete the
- * destination directory.
- */
 export function buildDirectoryArgumentCompletions(): (prefix: string) => Promise<AutocompleteItem[] | null> {
 	return async (argumentPrefix: string) => {
 		const prefix = argumentPrefix.trim();
@@ -255,8 +207,6 @@ export function buildDirectoryArgumentCompletions(): (prefix: string) => Promise
 	};
 }
 function buildDirectoryCompletionDisplayValue(prefix: string, absoluteValue: string, cwd: string): string {
-	// Preserve the user's prefix style where possible, but always return a
-	// value that /move can resolve (absolute or relative) without escaping.
 	const normalized = path.normalize(absoluteValue);
 
 	if (prefix.startsWith("~/")) {
@@ -285,7 +235,6 @@ function buildDirectoryCompletionDisplayValue(prefix: string, absoluteValue: str
 		return `${relative.replaceAll("\\", "/")}/`;
 	}
 
-	// Default: relative to cwd.
 	const relative = path.relative(cwd, normalized);
 	return `${relative.replaceAll("\\", "/")}/`;
 }

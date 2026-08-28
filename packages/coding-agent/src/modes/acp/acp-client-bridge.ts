@@ -1,8 +1,3 @@
-/**
- * ACP-side `ClientBridge` implementation. Wraps `AgentSideConnection` so the
- * `read`/`write`/`bash`/`edit` tools can route through the client when it
- * advertises the relevant capabilities at `initialize` time.
- */
 import type {
 	TerminalHandle as AcpTerminalHandle,
 	AgentSideConnection,

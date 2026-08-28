@@ -23,11 +23,6 @@ import type { ArchiveFormat, ArchiveIndexEntry, FormatReader, MemberSource } fro
 import { readUnixAr, sniffUnixAr } from "./unix-ar";
 import { readZip, sniffZip } from "./zip";
 
-/**
- * Extensions recognized per format, lowercase, without the leading dot.
- * ZIP aliases cover the ZIP-container package families (JVM, Android, Python
- * wheels, browser/IDE extensions, NuGet, comics); `cbr` is RAR-under-alias.
- */
 const FORMAT_EXTENSIONS: Record<ArchiveFormat, readonly string[]> = {
 	zip: ["zip", "jar", "war", "ear", "apk", "whl", "ipa", "xpi", "vsix", "nupkg", "cbz"],
 	tar: ["tar"],
@@ -55,19 +50,12 @@ const FORMAT_EXTENSIONS: Record<ArchiveFormat, readonly string[]> = {
 	lzma: ["lzma"],
 };
 
-/** Every recognized extension paired with its format, longest first. */
 const EXTENSION_TABLE: readonly (readonly [string, ArchiveFormat])[] = Object.entries(FORMAT_EXTENSIONS)
 	.flatMap(([format, extensions]) => extensions.map(ext => [ext, format as ArchiveFormat] as const))
 	.sort((left, right) => right[0].length - left[0].length);
 
-/**
- * Regex alternation of every recognized archive extension, longest first so
- * `.tar.gz` wins over `.gz`. Shared with `parseArchivePathCandidates` as its
- * split pattern so extension recognition and path splitting never drift.
- */
 export const ARCHIVE_EXTENSION_ALTERNATION = EXTENSION_TABLE.map(([ext]) => ext.replace(/\./g, "\\.")).join("|");
 
-/** Infer an archive format from a filesystem path's extension. */
 export function archiveFormatFromPath(filePath: string): ArchiveFormat | undefined {
 	const normalized = filePath.toLowerCase();
 	for (const [ext, format] of EXTENSION_TABLE) {
@@ -76,7 +64,6 @@ export function archiveFormatFromPath(filePath: string): ArchiveFormat | undefin
 	return undefined;
 }
 
-/** Strip the recognized archive extension for single-member pseudo-archives. */
 function stemMemberName(archivePath: string | undefined): string {
 	if (!archivePath) return "data";
 	const base = path.basename(archivePath.replace(/\\/g, "/"));
@@ -89,7 +76,6 @@ function stemMemberName(archivePath: string | undefined): string {
 	return base || "data";
 }
 
-/** In-memory bytes as a `MemberSource` (single-member pseudo-archives). */
 class BufferMember implements MemberSource {
 	#bytes: Uint8Array;
 	constructor(bytes: Uint8Array) {
@@ -100,12 +86,6 @@ class BufferMember implements MemberSource {
 	}
 }
 
-/**
- * Reader for one compressed stream: decompress bounded, then index the inner
- * bytes as tar when they are one, else surface a single stem-named member.
- * Serves both `tar.<codec>` and bare `.<codec>` formats, so `foo.tgz` holding
- * a tar lists as a tree while `notes.txt.gz` lists as `notes.txt`.
- */
 function compressedReader(decompress: (bytes: Uint8Array, maxOutput: number) => Promise<Uint8Array>): FormatReader {
 	return async (source, options) => {
 		assertInMemorySize(source.size, options.limits);
@@ -151,18 +131,10 @@ const READERS: Record<ArchiveFormat, FormatReader> = {
 	lzma: compressedReader(lzmaAloneDecompress),
 };
 
-/** The format reader responsible for `format`. */
 export function formatReaderFor(format: ArchiveFormat): FormatReader {
 	return READERS[format];
 }
 
-/**
- * Content-sniff order. Magic-at-zero formats first, then structural probes,
- * then compression wrappers (reported as their `tar.*` variant — the reader
- * falls back to a single member when the inner stream is not tar), then
- * offset magics (tar at 257, ISO at 32769), and last the bounded ZIP-EOCD
- * tail scan for zips with prepended data.
- */
 const SNIFFERS: readonly (readonly [ArchiveFormat, (bytes: Uint8Array) => boolean])[] = [
 	["zip", sniffZip],
 	["rar", sniffRar],
@@ -188,17 +160,11 @@ const ZIP_EOCD_SIGNATURE = 0x06054b50;
 const ZIP_EOCD_MIN_LENGTH = 22;
 const ZIP_EOCD_MAX_COMMENT_LENGTH = 0xffff;
 
-/**
- * Sniff an archive format from its bytes. Pass the full buffer when
- * available: most probes read the head, but tar needs offset 257, ISO offset
- * 32769, and the trailing ZIP central-directory scan needs the tail.
- */
 export function sniffArchiveFormat(bytes: Uint8Array): ArchiveFormat | undefined {
 	for (const [format, sniff] of SNIFFERS) {
 		if (sniff(bytes)) return format;
 	}
-	// ZIP with prepended data (self-extractors, some installers): bounded
-	// backward scan for the end-of-central-directory record.
+
 	const scanStart = bytes.byteLength - ZIP_EOCD_MIN_LENGTH;
 	const scanLimit = Math.max(0, bytes.byteLength - ZIP_EOCD_MIN_LENGTH - ZIP_EOCD_MAX_COMMENT_LENGTH);
 	for (let offset = scanStart; offset >= scanLimit; offset--) {

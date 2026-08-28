@@ -1,13 +1,3 @@
-// Lazy registry of web search providers.
-//
-// Each provider is loaded on first use; importing this module loads zero
-// provider implementations. Provider modules are heavy (each pulls in
-// fetch/parse/format helpers) and only one — at most — is needed per session,
-// so eager construction was wasted work at startup.
-//
-// Provider modules are loaded lazily; display metadata lives in types.ts so UI
-// listings can share it without importing provider implementations.
-
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { SearchProvider } from "./providers/base";
 import { SEARCH_PROVIDER_LABELS, SEARCH_PROVIDER_ORDER, SearchProviderError, type SearchProviderId } from "./types";
@@ -22,7 +12,6 @@ interface ProviderMeta {
 	load: () => Promise<SearchProvider>;
 }
 
-/** Lazy factories. Each `load()` dynamic-imports its provider module on first call. */
 const PROVIDER_META: Record<SearchProviderId, ProviderMeta> = {
 	perplexity: {
 		id: "perplexity",
@@ -143,12 +132,10 @@ const PROVIDER_META: Record<SearchProviderId, ProviderMeta> = {
 
 const instanceCache = new Map<SearchProviderId, SearchProvider>();
 
-/** Cheap, sync metadata accessor — never triggers a provider load. */
 export function getSearchProviderLabel(id: SearchProviderId): string {
 	return PROVIDER_META[id]?.label ?? id;
 }
 
-/** Format one provider failure for the user-facing fallback summary. */
 export function formatSearchProviderFailure(error: unknown, provider: Pick<SearchProvider, "id" | "label">): string {
 	if (error instanceof SearchProviderError) {
 		if (error.provider === "anthropic" && error.status === 404) {
@@ -166,17 +153,12 @@ export function formatSearchProviderFailure(error: unknown, provider: Pick<Searc
 	return `Unknown error from ${provider.label}`;
 }
 
-/** Format the ordered provider fallback failures for terminal/tool output. */
 export function formatSearchProviderFailures(
 	failures: readonly { provider: Pick<SearchProvider, "id" | "label">; error: unknown }[],
 ): string {
 	return failures.map(f => `${f.provider.id}: ${formatSearchProviderFailure(f.error, f.provider)}`).join("; ");
 }
 
-/**
- * Resolve and cache a provider instance. First call for a given id loads the
- * underlying module; subsequent calls return the cached singleton.
- */
 export async function getSearchProvider(id: SearchProviderId): Promise<SearchProvider> {
 	const cached = instanceCache.get(id);
 	if (cached) return cached;
@@ -189,18 +171,10 @@ export async function getSearchProvider(id: SearchProviderId): Promise<SearchPro
 	return provider;
 }
 
-/** Provider fallback order set via settings (default: built-in order). */
 let orderedProvIds: readonly SearchProviderId[] = SEARCH_PROVIDER_ORDER;
-/** Providers the user explicitly listed in `providers.webSearchOrder`. */
+
 let explicitProvIds = new Set<SearchProviderId>();
 
-/**
- * Prioritize configured providers while retaining every unlisted provider in
- * its built-in relative order. Invalid IDs are ignored defensively. Listed
- * providers are treated as explicit selections: they resolve through
- * `isExplicitlyAvailable`, so e.g. a hand-listed Perplexity may fall back to
- * anonymous search exactly like the retired single-preference setting did.
- */
 export function setSearchProviderOrder(providers: readonly SearchProviderId[]): void {
 	const prioritized = new Set(providers.filter(id => SEARCH_PROVIDER_ORDER.includes(id)));
 	explicitProvIds = prioritized;
@@ -210,15 +184,12 @@ export function setSearchProviderOrder(providers: readonly SearchProviderId[]): 
 			: [...prioritized, ...SEARCH_PROVIDER_ORDER.filter(id => !prioritized.has(id))];
 }
 
-/** Providers excluded from web search resolution via settings. */
 let excludedProvIds = new Set<SearchProviderId>();
 
-/** Set providers that web search should never use, including fallbacks. */
 export function setExcludedSearchProviders(providers: readonly SearchProviderId[]): void {
 	excludedProvIds = new Set(providers);
 }
 
-/** `true` when settings exclude `id` from web search (auto chain and the Public Web fan-out). */
 export function isSearchProviderExcluded(id: SearchProviderId): boolean {
 	return excludedProvIds.has(id);
 }
@@ -228,11 +199,6 @@ export interface SearchProviderCandidate {
 	explicit: boolean;
 }
 
-/**
- * Return provider candidates in fallback order without loading their modules.
- * `forcedProvider` (a per-request `provider` argument) is terminal-first and
- * bypasses exclusion; configured-order entries carry `explicit: true`.
- */
 export function resolveProviderCandidates(forcedProvider?: SearchProviderId): SearchProviderCandidate[] {
 	const candidates: SearchProviderCandidate[] = [];
 
@@ -248,12 +214,6 @@ export function resolveProviderCandidates(forcedProvider?: SearchProviderId): Se
 	return candidates;
 }
 
-/**
- * Resolve the complete available provider chain.
- *
- * This compatibility helper loads every candidate. Search execution should use
- * {@link resolveProviderCandidates} so fallback modules load only when reached.
- */
 export async function resolveProviderChain(
 	authStorage: AuthStorage,
 	forcedProvider?: SearchProviderId,

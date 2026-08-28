@@ -10,19 +10,12 @@ import type {
 	ExtractedArchiveFile,
 } from "./types";
 
-/** Raise the canonical error for a symlink whose target cannot be materialized. */
 export function throwUnreadableArchiveLink(targetPath: string, memberPath: string): never {
 	throw new ArchiveError(
 		`Archive symlink '${formatArchivePathForError(memberPath)}' cannot be materialized from target '${formatArchivePathForError(targetPath)}'`,
 	);
 }
 
-/**
- * An indexed, read-only view over a single archive. Member payloads stay
- * lazy behind their format's `MemberSource`; symlink aliases are traversed
- * lazily so N files behind M directory aliases never inflate the index to
- * N×M entries during listing.
- */
 export class ArchiveReader {
 	readonly format: ArchiveFormat;
 	readonly limits: ArchiveLimits;
@@ -37,16 +30,10 @@ export class ArchiveReader {
 		ensureParentDirectories(this.#entries, limits);
 	}
 
-	/**
-	 * Raw index entries, including link records and synthesized directories.
-	 * For extraction/merge flows that need storage kinds; path lookups should
-	 * use {@link getNode}/{@link readFile}, which resolve symlink aliases.
-	 */
 	indexEntries(): IterableIterator<ArchiveIndexEntry> {
 		return this.#entries.values();
 	}
 
-	/** Resolve a path to its node, or `undefined` when absent or escaping the root. */
 	getNode(subPath?: string): ArchiveNode | undefined {
 		const normalizedPath = normalizeArchiveLookupPath(subPath);
 		if (normalizedPath === undefined) return undefined;
@@ -69,7 +56,6 @@ export class ArchiveReader {
 		};
 	}
 
-	/** List one directory's children, sorted case-insensitively by name. */
 	listDirectory(subPath?: string): ArchiveDirectoryEntry[] {
 		const normalizedPath = normalizeArchiveLookupPath(subPath);
 		if (normalizedPath === undefined) {
@@ -123,7 +109,6 @@ export class ArchiveReader {
 		);
 	}
 
-	/** Extract one file member's bytes, following symlink aliases. */
 	async readFile(subPath: string): Promise<ExtractedArchiveFile> {
 		const normalizedPath = normalizeArchiveLookupPath(subPath);
 		if (!normalizedPath) {

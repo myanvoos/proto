@@ -1,22 +1,3 @@
-/**
- * Benchmark: transcript compose cost vs session depth
- * (perf/transcript-compose-flat-after-commit)
- *
- * A long interactive session finalizes assistant blocks and emits their rows
- * into native terminal scrollback. Once committed, those rows are immutable
- * history the terminal owns; the local {@link TranscriptContainer} should drop
- * them from its frame so a live tail mutation does not re-walk sealed history.
- *
- * This bench builds N finalized assistant blocks (prose + closed code fences),
- * commits every finalized row into native scrollback, then times one pure
- * `TranscriptContainer.render(width)` per streaming tick of a single live tail
- * block. Depth-linear cost (ms rising with N) means sealed history is still
- * walked and re-assembled each tick; flat cost means the committed prefix was
- * compacted and only the live tail composes.
- *
- * Target after the fix: ratio(N5000/N500) <= 1.3, N5000 p95 < 10 ms.
- */
-
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Settings } from "../src/config/settings";
 import { AssistantMessageComponent } from "../src/modes/components/assistant-message";
@@ -68,7 +49,6 @@ function percentile(sorted: number[], p: number): number {
 	return sorted[idx]!;
 }
 
-/** Build N committed finalized blocks + a live tail, return per-tick render medians/p95. */
 function measure(n: number): { median: number; p95: number } {
 	const histText = makeMarkdownCorpus(240);
 	const tailCorpus = makeMarkdownCorpus(1200);
@@ -84,10 +64,6 @@ function measure(n: number): { median: number; p95: number } {
 	let revealed = Math.floor(tailCorpus.length * 0.5);
 	tail.updateContent(makeTextMessage(tailCorpus.slice(0, revealed)), { transient: true });
 
-	// Warm every block's markdown L1 cache and establish the assembled frame,
-	// then commit exactly the seam the container reports (what the TUI does):
-	// every finalized-history row plus the separator before the live tail. The
-	// container compacts that committed prefix on the next render.
 	container.render(WIDTH);
 	const committed = container.getNativeScrollbackLiveRegionStart() ?? 0;
 	container.setNativeScrollbackCommittedRows(committed);

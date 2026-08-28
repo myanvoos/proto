@@ -1,10 +1,3 @@
-//! Linux btrfs subvolume snapshot isolation.
-//!
-//! When `lower` is a btrfs subvolume, `btrfs subvolume snapshot` creates an
-//! O(1) writable snapshot at `merged`. The CLI owns the filesystem-specific
-//! details; this backend only validates paths, invokes it without a shell, and
-//! removes the snapshot on [`stop`](IsolationBackend::stop).
-
 use std::path::Path;
 
 use async_trait::async_trait;

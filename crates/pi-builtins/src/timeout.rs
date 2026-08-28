@@ -1,4 +1,4 @@
-//! `timeout` builtin, moved from `pi-shell`.
+
 
 use std::{
 	io::Write,
@@ -16,48 +16,48 @@ use tokio_util::sync::CancellationToken;
 
 use crate::host::{parse_duration, quote_arg};
 
-/// GNU timeout's exit status for its own usage/internal errors.
+
 const EXIT_TIMEOUT_FAILURE: u8 = 125;
-/// GNU timeout's exit status when the time limit expired.
+
 const EXIT_TIMED_OUT: u8 = 124;
-/// 128 + SIGKILL(9): reported when the command died from SIGKILL.
+
 const EXIT_KILLED: u8 = 137;
 
-/// Run a command with a time limit.
+
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 struct TimeoutArgs {
-	/// Signal to send on expiry: a name with or without the `SIG` prefix, or
-	/// a number. Defaults to TERM.
+
+
 	#[arg(short = 's', long = "signal", value_name = "SIGNAL")]
 	signal: Option<String>,
-	/// Also send SIGKILL if the command is still running this long after the
-	/// initial signal.
+
+
 	#[arg(short = 'k', long = "kill-after", value_name = "DURATION")]
 	kill_after: Option<String>,
-	/// Exit with the command's own status even when the time limit expired.
+
 	#[arg(long)]
 	preserve_status: bool,
-	/// GNU compatibility: don't put the command in a separate process group,
-	/// and signal only the direct children rather than a whole group.
+
+
 	#[arg(long)]
 	foreground: bool,
-	/// Diagnose each signal sent to the command on stderr.
+
 	#[arg(short = 'v', long)]
 	verbose: bool,
-	// Hyphenated operands must reach `parse_duration` so `timeout -1 cmd`
-	// reports an invalid time interval (exit 125) like GNU, instead of a
-	// clap unknown-option error.
+
+
+
 	#[arg(required = true, allow_hyphen_values = true)]
 	duration: String,
-	// The command's own options belong to the command: `timeout 5 grep -v x`.
+
 	#[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
 	command: Vec<String>,
 }
 
-/// Holds the raw argument vector so parse failures surface as GNU timeout's
-/// exit status 125, not brush's generic usage-error status 2 (which the
-/// default `builtins::Command::new` path would produce).
+
+
+
 pub(crate) struct TimeoutCommand {
 	argv: Vec<String>,
 }
@@ -84,12 +84,12 @@ impl clap::CommandFactory for TimeoutCommand {
 
 impl clap::Parser for TimeoutCommand {}
 
-/// Records the external children spawned while running the timed command.
-///
-/// brush's cancellation token can only SIGKILL a child (see
-/// `brush_core::processes::Process::wait`), so delivering the *configured*
-/// signal requires knowing the child's pid/pgid; the shell reports those
-/// through its [`SpawnObserver`] hook.
+
+
+
+
+
+
 #[derive(Default)]
 struct SpawnRecorder(Mutex<Vec<(i32, Option<i32>)>>);
 
@@ -102,8 +102,8 @@ impl SpawnObserver for SpawnRecorder {
 }
 
 impl SpawnRecorder {
-	/// Sends `signal` to every recorded child — its whole process group when
-	/// `group` is set — and reports whether any delivery succeeded.
+
+
 	fn signal(&self, signal: TrapSignal, group: bool) -> bool {
 		let spawns = match self.0.lock() {
 			Ok(spawns) => spawns.clone(),
@@ -123,19 +123,19 @@ impl SpawnRecorder {
 	}
 }
 
-/// Parses a `-s` operand: a signal name (with or without the `SIG` prefix,
-/// any case) or a signal number.
+
+
 fn parse_signal(spec: &str) -> Option<TrapSignal> {
 	let parsed = if let Ok(number) = spec.trim().parse::<i32>() {
 		TrapSignal::try_from(number).ok()?
 	} else {
 		TrapSignal::try_from(spec).ok()?
 	};
-	// Only real signals can be delivered; EXIT/DEBUG/ERR are shell traps.
+
 	matches!(parsed, TrapSignal::Signal(_)).then_some(parsed)
 }
 
-/// Renders a signal the way GNU timeout's diagnostics do: `TERM`, not `SIGTERM`.
+
 fn signal_display(signal: TrapSignal) -> &'static str {
 	let name = signal.as_str();
 	name.strip_prefix("SIG").unwrap_or(name)
@@ -161,8 +161,8 @@ impl builtins::Command for TimeoutCommand {
 		let args = match TimeoutArgs::try_parse_from(&self.argv) {
 			Ok(args) => args,
 			Err(err) => {
-				// clap reports `--help` as an error; that belongs on stdout
-				// with a success status, real usage errors exit 125.
+
+
 				let rendered = err.to_string();
 				if err.use_stderr() {
 					let _ = write!(context.stderr(), "{rendered}");
@@ -205,9 +205,9 @@ impl builtins::Command for TimeoutCommand {
 		let child_cancel = CancellationToken::new();
 		let spawns = Arc::new(SpawnRecorder::default());
 		let mut params = context.params.clone();
-		// GNU runs the command in its own process group and signals the whole
-		// group; `--foreground` keeps it in the invoking group and signals
-		// only the direct children.
+
+
+
 		params.process_group_policy = if args.foreground {
 			ProcessGroupPolicy::SameProcessGroup
 		} else {
@@ -224,8 +224,8 @@ impl builtins::Command for TimeoutCommand {
 			command_line.push_str(&quote_arg(arg));
 		}
 
-		// Grab an owned stderr handle up front: `run_future` below holds the
-		// shell mutably, so `context.stderr()` is unavailable once it exists.
+
+
 		let mut stderr = context.stderr();
 		let outer_cancel = context.cancel_token();
 		let source_info = SourceInfo::from("pi-natives:timeout");
@@ -240,7 +240,7 @@ impl builtins::Command for TimeoutCommand {
 		};
 		tokio::pin!(outer_cancelled);
 
-		// GNU: a duration of zero disables the timeout entirely.
+
 		let deadline = async {
 			if limit.is_zero() {
 				std::future::pending::<()>().await;
@@ -259,7 +259,7 @@ impl builtins::Command for TimeoutCommand {
 			() = &mut deadline => {},
 		}
 
-		// The limit expired: deliver the configured signal like GNU timeout.
+
 		if args.verbose {
 			let _ = writeln!(
 				stderr,
@@ -270,19 +270,19 @@ impl builtins::Command for TimeoutCommand {
 		}
 		let signalled = spawns.signal(signal, !args.foreground);
 		if !signalled {
-			// The operand ran in-process (a builtin, say) or the child is
-			// already gone; cancellation is the only remaining lever. For
-			// external children it degrades to SIGKILL — see `Process::wait`.
+
+
+
 			child_cancel.cancel();
 		}
 		let mut killed = signal.as_str() == "SIGKILL";
 
-		// Wait for the command to finish, escalating to SIGKILL after
-		// `--kill-after`. Without `-k`, GNU waits indefinitely — a command
-		// that catches the signal keeps running (the caller can still cancel).
-		// After a cancel-fallback (in-process operand), the inner shell may
-		// surface its own cancellation as an Interrupted error instead of the
-		// operand's result; that is expected retirement, not a fault.
+
+
+
+
+
+
 		let reap = |result: Result<ExecutionResult, brush_core::Error>| match result {
 			Ok(result) => Ok(Some(result)),
 			Err(err) if !signalled && matches!(err.kind(), brush_core::ErrorKind::Interrupted) => {
@@ -316,8 +316,8 @@ impl builtins::Command for TimeoutCommand {
 				let kill = TrapSignal::try_from("KILL").expect("SIGKILL must be a known signal");
 				spawns.signal(kill, !args.foreground);
 				child_cancel.cancel();
-				// SIGKILL can't be resisted; bound the reaping wait anyway so
-				// a wedged in-process operand can't hang the builtin forever.
+
+
 				match time::timeout(Duration::from_secs(2), &mut run_future).await {
 					Ok(result) => reap(result)?,
 					Err(_) => None,
@@ -325,17 +325,17 @@ impl builtins::Command for TimeoutCommand {
 			},
 		};
 
-		// Exit status per GNU: the command's own status under
-		// `--preserve-status`; 137 when it died from SIGKILL; else 124.
+
+
 		if args.preserve_status {
 			if signalled {
 				return Ok(child_result.unwrap_or_else(|| ExecutionResult::new(EXIT_KILLED)));
 			}
-			// Cancel-fallback path (in-process operand): the inner shell's own
-			// cancellation check races the operand's result, so its status is
-			// unreliable. Report death by the delivered signal (128+N, or 137
-			// after escalation) deterministically, matching GNU for a command
-			// taken down by the timeout signal.
+
+
+
+
+
 			let number = i32::try_from(signal).unwrap_or(15);
 			let code = if killed {
 				EXIT_KILLED

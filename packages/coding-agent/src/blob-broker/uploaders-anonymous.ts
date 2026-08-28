@@ -248,7 +248,6 @@ function createPomfUploader(config: DestinationRuntimeConfig): BlobUploader {
 	};
 }
 
-/** Create an uploader for an anonymous HTTP host, or null for another family. */
 export function createAnonymousUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

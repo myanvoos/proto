@@ -5,19 +5,16 @@ const LEGACY_INTENT_FIELD = "__intent";
 const RESULT_SUMMARY_LIMIT = 200;
 const ARGUMENT_SUMMARY_LIMIT = 400;
 
-/** Runtime settings for cross-turn tool-call repetition detection. */
 export interface ToolCallLoopGuardOptions {
 	readonly threshold: number;
 	readonly exemptTools: readonly string[];
 }
 
-/** A completed assistant turn plus the tool results it produced. */
 export interface ToolCallLoopTurn {
 	readonly message: AssistantMessage;
 	readonly toolResults: readonly ToolResultMessage[];
 }
 
-/** Details needed to steer the model away from a repeated tool call. */
 export interface RepeatedToolCallDetection {
 	readonly kind: "repeated_tool_call";
 	readonly toolName: string;
@@ -64,7 +61,6 @@ function summarizeToolResult(toolResults: readonly ToolResultMessage[], toolCall
 	return summarizeText(textParts.join("\n"), RESULT_SUMMARY_LIMIT);
 }
 
-/** Detects consecutive identical assistant tool calls across model turns. */
 export class ToolCallLoopGuard {
 	#threshold: number;
 	#exemptTools: ReadonlySet<string>;
@@ -76,7 +72,6 @@ export class ToolCallLoopGuard {
 		this.#exemptTools = new Set(options.exemptTools);
 	}
 
-	/** Records one completed turn and returns the threshold hit, if any. */
 	recordTurn(turn: ToolCallLoopTurn): RepeatedToolCallDetection | null {
 		const toolCalls = turn.message.content.filter((part): part is ToolCall => part.type === "toolCall");
 		if (toolCalls.length !== 1 || this.#exemptTools.has(toolCalls[0]!.name)) {

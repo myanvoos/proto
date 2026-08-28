@@ -1,21 +1,14 @@
-//! GitLab CLI (glab) output filters.
-
 use std::{fmt::Write as _, sync::LazyLock};
 
 use regex::Regex;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
-/// Match GitLab CI section markers: `section_start/end:timestamp:name` followed
-/// by bracket code.
 static SECTION_MARKER_RE: LazyLock<Regex> =
 	LazyLock::new(|| Regex::new(r"section_(?:start|end):\d+:[a-z0-9_]+\[[\d;]*[A-Za-z]").unwrap());
 
-/// Match bare bracket ANSI-like codes without ESC prefix: `[0K`, `[0;m`,
-/// `[36;1m`, etc.
 static BARE_ANSI_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[\d;]+[A-Za-z]").unwrap());
 
-/// Multiple consecutive blank lines (3+ newlines) collapsed to double newline.
 static MULTI_BLANK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
 
 #[must_use]
@@ -59,41 +52,33 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-/// Check whether the command should be passed through unmodified.
 fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
-	// -F, --output, --json anywhere -> passthrough (user chose output format)
 	if primitives::command_has_any_token(ctx.command, &["-F", "--output", "--json"]) {
 		return true;
 	}
-	// --web anywhere -> passthrough (opens browser)
+
 	if primitives::command_has_any_token(ctx.command, &["--web"]) {
 		return true;
 	}
-	// api subcommand -> passthrough (advanced user)
+
 	if ctx.subcommand == Some("api") {
 		return true;
 	}
-	// --comments for mr view / issue view -> passthrough
+
 	if primitives::command_has_any_token(ctx.command, &["--comments"])
 		&& (primitives::command_has_ordered_tokens(ctx.command, "mr", "view")
 			|| primitives::command_has_ordered_tokens(ctx.command, "issue", "view"))
 	{
 		return true;
 	}
-	// mr diff -> passthrough (raw unified diff must be un-modified)
+
 	if primitives::command_has_ordered_tokens(ctx.command, "mr", "diff") {
 		return true;
 	}
 	false
 }
 
-// ── CI trace filter ────────────────────────────────────────────────────
-
-/// Filter `glab ci trace` output: strip section markers, bare ANSI codes,
-/// and runner boilerplate. Keep warnings, errors, and build output.
 fn filter_ci_trace(input: &str) -> String {
-	// Strip section markers first (they contain bracket codes), then bare ANSI
-	// codes
 	let cleaned = SECTION_MARKER_RE.replace_all(input, "");
 	let cleaned = BARE_ANSI_RE.replace_all(&cleaned, "");
 
@@ -112,7 +97,6 @@ fn filter_ci_trace(input: &str) -> String {
 		}
 		previous_blank = false;
 
-		// Skip runner boilerplate
 		if trimmed.starts_with("Running with gitlab-runner")
 			|| (trimmed.starts_with("on ") && trimmed.contains("system ID:"))
 			|| trimmed.starts_with("Using Docker executor")
@@ -141,25 +125,18 @@ fn filter_ci_trace(input: &str) -> String {
 	primitives::head_tail_lines(&primitives::dedup_consecutive_lines(&filtered), 120, 80)
 }
 
-// ── Release list filter ───────────────────────────────────────────────
-
-/// Parse `glab release list` tab-separated output into compact form.
-/// Returns `None` if no TAB-separated rows are found (caller falls through
-/// to `head_tail_dedup`).
 fn filter_release_list(input: &str) -> Option<String> {
 	let mut lines = input.lines().peekable();
 	let mut filtered = String::new();
 
-	// Skip "Showing N releases..." preamble and blank lines until header.
-	// Parse the total count from the preamble line if present.
 	let mut total: Option<usize> = None;
 	while let Some(line) = lines.peek() {
 		let trimmed = line.trim();
 		if trimmed.starts_with("Name\t") || trimmed.starts_with("NAME\t") {
-			lines.next(); // consume header
+			lines.next();
 			break;
 		}
-		// Parse "Showing N releases on owner/repo." or similar
+
 		if total.is_none()
 			&& let Some(rest) = trimmed.strip_prefix("Showing ")
 			&& let Some(n_str) = rest.split_whitespace().next()
@@ -186,7 +163,6 @@ fn filter_release_list(input: &str) -> Option<String> {
 		}
 
 		if count >= 20 {
-			// We've already emitted 20 rows and found a 21st valid row.
 			has_more = true;
 			break;
 		}
@@ -208,24 +184,16 @@ fn filter_release_list(input: &str) -> Option<String> {
 		return None;
 	}
 
-	// Append omission marker when there are more releases than shown.
 	let omitted = total.map_or(0, |t| t.saturating_sub(count));
 	if omitted > 0 {
 		let _ = writeln!(filtered, "[…{omitted} releases elided…]");
 	} else if has_more {
-		// Total not parsed from preamble but a 21st row was observed; signal
-		// truncation.
 		filtered.push_str("[…releases elided…]\n");
 	}
 
 	Some(filtered)
 }
 
-// ── Release view filter ───────────────────────────────────────────────
-
-/// Filter `glab release view` output: strip SOURCES block, image-only lines,
-/// `Image: name -> url` lines, HTML comments, horizontal rules, and collapse
-/// multiple blank lines.
 fn filter_release_view(input: &str) -> String {
 	let mut filtered = String::new();
 	let mut in_sources = false;
@@ -233,18 +201,15 @@ fn filter_release_view(input: &str) -> String {
 	for line in input.lines() {
 		let trimmed = line.trim();
 
-		// Strip trailing "View this release on GitLab" link
 		if trimmed.starts_with("View this release on GitLab") {
 			continue;
 		}
 
-		// Strip "ASSETS" / "There are no assets..." section
 		if trimmed == "ASSETS" {
-			in_sources = true; // reuse state machine; next non-empty line is "There are no assets..."
+			in_sources = true;
 			continue;
 		}
 
-		// Strip SOURCES section (archive download URLs)
 		if trimmed == "SOURCES" {
 			in_sources = true;
 			continue;
@@ -257,22 +222,19 @@ fn filter_release_view(input: &str) -> String {
 			in_sources = false;
 		}
 
-		// Strip image-only lines: ![alt](url)
 		if trimmed.starts_with("![") && trimmed.ends_with(')') && trimmed.contains("](") {
 			continue;
 		}
-		// Strip glab's "Image: name -> url" rendering (Unicode or ASCII arrow)
+
 		if trimmed.starts_with("Image:") && (trimmed.contains('\u{2192}') || trimmed.contains(" -> "))
 		{
 			continue;
 		}
 
-		// Strip single-line HTML comments
 		if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
 			continue;
 		}
 
-		// Strip horizontal rules (--- or --------)
 		if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-') {
 			continue;
 		}
@@ -281,14 +243,9 @@ fn filter_release_view(input: &str) -> String {
 		filtered.push('\n');
 	}
 
-	// Collapse multiple blank lines
 	MULTI_BLANK_RE.replace_all(&filtered, "\n\n").to_string()
 }
 
-// ── MR/issue view filter ─────────────────────────────────────────────
-
-/// On error (non-zero exit), skip markdown filtering to preserve error context.
-/// On success, apply markdown body noise filtering.
 fn filter_mr_issue_view(input: &str, exit_code: i32) -> String {
 	if exit_code != 0 {
 		return primitives::head_tail_dedup(input);
@@ -296,10 +253,6 @@ fn filter_mr_issue_view(input: &str, exit_code: i32) -> String {
 	filter_markdown_body_view(input)
 }
 
-// ── Markdown body filter (mr view / issue view) ──────────────────────
-
-/// Filter markdown body noise: HTML comments, badges, image-only lines,
-/// horizontal rules. Collapse multiple blank lines. Apply `head_tail_dedup`.
 fn filter_markdown_body_view(input: &str) -> String {
 	let mut out = String::new();
 	let mut in_html_comment = false;
@@ -314,8 +267,7 @@ fn filter_markdown_body_view(input: &str) -> String {
 				comment_lines = 0;
 			} else {
 				comment_lines += 1;
-				// Safety: cap unclosed comment consumption at 50 lines to
-				// prevent data loss from malformed/truncated markdown.
+
 				if comment_lines > 50 {
 					in_html_comment = false;
 					comment_lines = 0;

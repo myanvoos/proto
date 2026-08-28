@@ -1,6 +1,3 @@
-/** Behavior-compatible reimplementation of @mozilla/readability's used surface. */
-
-/** Minimal standards-shaped DOM node accepted by the readability extractor. */
 export interface ReadabilityNode {
 	readonly nodeType: number;
 	readonly nodeName: string;
@@ -16,7 +13,6 @@ export interface ReadabilityNode {
 	remove(): void;
 }
 
-/** Minimal standards-shaped DOM element accepted by the readability extractor. */
 export interface ReadabilityElement extends ReadabilityNode {
 	readonly children: ArrayLike<ReadabilityElement>;
 	readonly tagName: string;
@@ -33,7 +29,6 @@ export interface ReadabilityElement extends ReadabilityNode {
 	querySelectorAll(selector: string): ArrayLike<ReadabilityElement>;
 }
 
-/** Minimal standards-shaped document accepted by the readability extractor. */
 export interface ReadabilityDocument extends ReadabilityNode {
 	title: string;
 	readonly body: ReadabilityElement | null;
@@ -44,7 +39,6 @@ export interface ReadabilityDocument extends ReadabilityNode {
 	querySelectorAll(selector: string): ArrayLike<ReadabilityElement>;
 }
 
-/** Configuration for article extraction. */
 export interface ReadabilityOptions<T = string> {
 	debug?: boolean;
 	maxElemsToParse?: number;
@@ -57,7 +51,6 @@ export interface ReadabilityOptions<T = string> {
 	allowedVideoRegex?: RegExp;
 }
 
-/** Extracted article and metadata. */
 export interface ReadabilityArticle<T = string> {
 	title: string | null | undefined;
 	content: T | null | undefined;

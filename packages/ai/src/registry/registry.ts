@@ -76,13 +76,6 @@ import { zaiCodingPlanProvider, zaiProvider } from "./zai";
 import { zenmuxProvider } from "./zenmux";
 import { zhipuCodingPlanProvider } from "./zhipu-coding-plan";
 
-/**
- * The single per-provider list. Adding a provider = create `./providers/<id>.ts`
- * and add its export here. Every legacy structure (`KnownProvider`/`OAuthProvider`
- * unions, descriptors, env map, login list, refresh/login dispatch, CLI callback
- * maps) is derived from this registry. Order matches the interactive `/login`
- * list for the loginable providers; non-login model providers are appended.
- */
 const ALL = [
 	azureProvider,
 	openaiCodexProvider,
@@ -171,12 +164,10 @@ export function getProviderDefinition(id: string): ProviderDefinition | undefine
 	return BY_ID.get(id);
 }
 
-/** Compile-time completeness: every catalog chat-model provider must have a registry definition. */
 type _MissingCatalogProviders = Exclude<KnownProvider, RegistryDef["id"]>;
 type _CheckRegistryComplete = _MissingCatalogProviders extends never
 	? true
 	: ["registry is missing catalog providers", _MissingCatalogProviders];
 true satisfies _CheckRegistryComplete;
 
-/** Loginable providers (those carrying a `login` flow). */
 export type OAuthProviderUnion = Extract<RegistryDef, { login: object }>["id"];

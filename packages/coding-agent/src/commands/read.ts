@@ -1,7 +1,3 @@
-/**
- * Show what the read tool will return for a path, URL, or internal URI.
- */
-
 import { Args, Command } from "@oh-my-pi/pi-utils/cli";
 import { readHelp as commandHelp } from "../cli/command-help";
 import { type ReadCommandArgs, runReadCommand } from "../cli/read-cli";

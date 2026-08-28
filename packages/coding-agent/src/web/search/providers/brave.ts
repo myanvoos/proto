@@ -1,9 +1,3 @@
-/**
- * Brave Web Search Provider
- *
- * Calls Brave's web search REST API and maps results into the unified
- * SearchResponse shape used by the web search tool.
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import { readBytesWithLimit } from "@oh-my-pi/pi-utils";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
@@ -29,18 +23,8 @@ const RECENCY_MAP: Record<"day" | "week" | "month" | "year", "pd" | "pw" | "pm" 
 	year: "py",
 };
 
-/**
- * Brave parses the classic operator set inline (site:, quotes, -, OR…) but
- * date bounds map onto the native `freshness` param, so `before:`/`after:`
- * tokens are stripped from the rebuilt query string.
- */
 const BRAVE_QUERY_SYNTAX: QuerySyntax = { ...GOOGLE_QUERY_SYNTAX, dateRange: false };
 
-/**
- * Freshness param: explicit `after:`/`before:` bounds win over the
- * recency-derived period, rendered as Brave's absolute range
- * `YYYY-MM-DDtoYYYY-MM-DD` with sensible open ends.
- */
 function braveFreshness(parsed: StructuredQuery, recency?: keyof typeof RECENCY_MAP): string | undefined {
 	if (parsed.after || parsed.before) {
 		const start = parsed.after ?? "1970-01-01";
@@ -55,9 +39,9 @@ interface BraveSearchParams {
 	num_results?: number;
 	recency?: "day" | "week" | "month" | "year";
 	parsedQuery?: StructuredQuery;
-	/** Two-letter market code, or `ALL`. */
+
 	country?: string;
-	/** Brave search language code, such as `en` or `zh-hans`. */
+
 	search_lang?: string;
 	safesearch?: "off" | "moderate" | "strict";
 	authStorage: AuthStorage;
@@ -175,7 +159,6 @@ async function callBraveSearch(
 	return { response: data, requestId };
 }
 
-/** Execute Brave web search. */
 export async function searchBrave(params: BraveSearchParams): Promise<SearchResponse> {
 	const numResults = Math.floor(clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS));
 	const keyOrResolver: ApiKey = params.authStorage.resolver("brave", {
@@ -209,7 +192,6 @@ export async function searchBrave(params: BraveSearchParams): Promise<SearchResp
 	};
 }
 
-/** Search provider for Brave web search. */
 export class BraveProvider extends SearchProvider {
 	readonly id = "brave";
 	readonly label = "Brave";

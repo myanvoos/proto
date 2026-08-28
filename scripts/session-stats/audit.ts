@@ -1,30 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Token-usage audit over the local proto session corpus (~/.proto/agent/sessions/).
- *
- * Phase 1 (scan, no LLM): walks recent sessions, sums *real* per-request usage
- * (input/output/cacheRead/cacheWrite + nominal cost recorded in each assistant
- * message), splits main-context vs subagent usage, and aggregates tool traffic
- * (estimated tokens in args/results, context residency, repeated reads, edit
- * failures, compactions).
- *
- * Phase 2 (classify): for the costliest sessions, builds a compact digest and
- * asks a small model (default: anthropic/claude-sonnet-4-6 via @oh-my-pi/pi-ai)
- * to judge:
- *   a) session hygiene — multiple topics in one chat, missed handoff points,
- *   b) task-spawn quality — wasteful spawns, context-transfer failures,
- *   c) the biggest sources of waste given the tool traffic.
- * A final aggregate call distills systemic findings across sessions.
- *
- * Usage:
- *   bun scripts/session-stats/audit.ts                      # last week, scan + LLM
- *   bun scripts/session-stats/audit.ts --since 3d --no-llm  # scan only
- *   bun scripts/session-stats/audit.ts --folder Projects-pi --max-llm 6
- *   bun scripts/session-stats/audit.ts --json out.json
- *
- * Auth: resolves an API key for the classifier provider through proto's auth
- * storage (~/.proto/agent/agent.db: stored key, OAuth, or env var fallback).
- */
 
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -48,11 +22,8 @@ const SESSIONS_ROOT = path.join(os.homedir(), ".proto", "agent", "sessions");
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 const CACHE_PATH = path.join(os.homedir(), ".proto", "stats-audit-cache.json");
 
-// --------------------------------------------------------------------------
-// CLI
-
 interface CliOptions {
-	since: number; // ms window
+	since: number;
 	folder?: string;
 	exclude?: string;
 	model: string;
@@ -79,7 +50,7 @@ export function parseSince(raw: string): number {
 			return n * 24 * HOUR;
 		case "w":
 			return n * 7 * 24 * HOUR;
-		default: // m | mo
+		default:
 			return n * 30 * 24 * HOUR;
 	}
 }
@@ -140,9 +111,6 @@ function parseCli(argv: string[]): CliOptions {
 	};
 }
 
-// --------------------------------------------------------------------------
-// Usage accounting
-
 interface UsageTotals {
 	input: number;
 	output: number;
@@ -169,16 +137,12 @@ function billedTokens(u: UsageTotals): number {
 	return u.input + u.output + u.cacheRead + u.cacheWrite;
 }
 
-// --------------------------------------------------------------------------
-// Per-file scan
-
 interface ToolAgg {
 	calls: number;
 	argToks: number;
 	resultToks: number;
 	errors: number;
-	/** Σ resultToks × (requests issued after the result landed) — how heavily
-	 * the result sat in context for the rest of the session. */
+
 	residency: number;
 }
 
@@ -238,12 +202,8 @@ function estTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-/** Matches the placeholder the session writer stores when a tool result was
- * pruned from context (`[Output truncated - N tokens]`); N is the true size. */
 const TRUNCATED_RESULT_RE = /\[Output truncated - (\d+) tokens?\]/;
 
-/** Group key for repeated-read detection: keep `scheme://` URLs intact and
- * strip trailing line/raw selectors (`:50-200`, `:raw`, `:2-4:raw`, …). */
 export function normalizeReadPath(p: string): string {
 	let out = p;
 	for (;;) {
@@ -270,7 +230,6 @@ function clip(text: string, max: number): string {
 	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-/** Human-meaningful one-liner for a tool call's arguments. */
 function argSummary(name: string, args: Record<string, unknown> | undefined): string {
 	if (!args) return "";
 	const pick = (...keys: string[]): string => {
@@ -355,7 +314,7 @@ export async function scanFile(filePath: string): Promise<FileScan | undefined> 
 		try {
 			entry = JSON.parse(line);
 		} catch {
-			continue; // torn tail line from a crashed writer
+			continue;
 		}
 		const type = entry.type;
 		if (type === "session") {
@@ -505,13 +464,12 @@ export async function scanFile(filePath: string): Promise<FileScan | undefined> 
 		}
 	}
 
-	// Context residency: result tokens weighted by how many later requests re-paid them.
 	for (const r of resultLog) {
 		const later = Math.max(0, requestCount - r.requestIndex);
 		const agg = scan.toolAgg.get(r.tool);
 		if (agg) agg.residency += r.toks * later;
 	}
-	// Per-path read residency: same weighting, attributed to the normalized path.
+
 	for (const r of readLog) {
 		const rec = scan.readCounts.get(r.path);
 		if (rec) rec.residency += r.toks * Math.max(0, requestCount - r.requestIndex);
@@ -521,17 +479,14 @@ export async function scanFile(filePath: string): Promise<FileScan | undefined> 
 	return scan;
 }
 
-// --------------------------------------------------------------------------
-// Session groups (main + subagent files)
-
 interface SessionGroup {
 	folder: string;
 	id: string;
 	mtime: number;
 	main: FileScan;
 	children: FileScan[];
-	usage: UsageTotals; // main + children
-	subUsage: UsageTotals; // children only
+	usage: UsageTotals;
+	subUsage: UsageTotals;
 }
 
 interface DiscoveredGroup {
@@ -613,11 +568,10 @@ async function scanGroup(d: DiscoveredGroup): Promise<SessionGroup | undefined> 
 		addUsage(usage, c.usage);
 		addUsage(subUsage, c.usage);
 	}
-	if (usage.requests === 0) return undefined; // header-only session, never used
+	if (usage.requests === 0) return undefined;
 	return { folder: d.folder, id: d.id, mtime: d.mtime, main, children, usage, subUsage };
 }
 
-/** Run `fn` over `items` with bounded concurrency, preserving order. */
 async function mapPool<T, R>(
 	items: readonly T[],
 	limit: number,
@@ -634,9 +588,6 @@ async function mapPool<T, R>(
 	await Promise.all(workers);
 	return out;
 }
-
-// --------------------------------------------------------------------------
-// Formatting helpers
 
 function fmtTok(n: number): string {
 	if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
@@ -669,9 +620,6 @@ function padl(s: string, w: number): string {
 	return s.length >= w ? s : " ".repeat(w - s.length) + s;
 }
 
-// --------------------------------------------------------------------------
-// Digest builder (classifier input)
-
 function toolLine(name: string, agg: ToolAgg): string {
 	const err = agg.errors ? ` errors=${agg.errors}` : "";
 	return `${name}: ${agg.calls} calls, args~${fmtTok(agg.argToks)}, results~${fmtTok(agg.resultToks)}, residency~${fmtTok(agg.residency)}${err}`;
@@ -696,13 +644,10 @@ function mergeToolAggs(scans: FileScan[]): Map<string, ToolAgg> {
 	return merged;
 }
 
-/** Strip a `-2`/`-3` retry suffix from a subagent file stem. */
 function baseLabel(stem: string): string {
 	return stem.replace(/-\d+$/, "");
 }
 
-/** How a (sub)agent transcript ended, for digests. A child ending on a tool
- * call is normal — its report flows back through the task result channel. */
 function endedStr(s: FileScan): string {
 	if (s.lastAssistantText) return `"${s.lastAssistantText}"`;
 	if (s.lastToolName) return `(no final text; last tool: ${s.lastToolName})`;
@@ -775,7 +720,6 @@ function buildDigest(g: SessionGroup): string {
 		lines.push(`\n## Edits: ${m.editCalls} calls, ${m.editErrors} failed`);
 	}
 
-	// Spawn ↔ child linkage
 	const childByLabel = new Map<string, FileScan[]>();
 	for (const c of g.children) {
 		const key = baseLabel(c.stem);
@@ -821,9 +765,6 @@ function buildDigest(g: SessionGroup): string {
 	if (digest.length > 26000) digest = `${digest.slice(0, 26000)}\n…[digest truncated]`;
 	return digest;
 }
-
-// --------------------------------------------------------------------------
-// Classifier
 
 interface SpawnVerdict {
 	label: string;
@@ -963,9 +904,6 @@ function finiteNumber(n: unknown, fallback: number): number {
 	return typeof n === "number" && Number.isFinite(n) ? n : fallback;
 }
 
-/** Clamp/default every field the renderer touches so `undefined` can never
- * reach the report, and sort waste by dollars desc (tokens desc tie-break).
- * Also applied to cached verdicts, which may predate schema changes. */
 function normalizeVerdict(v: SessionVerdict): SessionVerdict {
 	const waste = (Array.isArray(v.waste) ? v.waste : [])
 		.map(w => ({
@@ -1074,16 +1012,12 @@ function usageOf(response: AssistantMessageLike): UsageTotals {
 	};
 }
 
-/** Narrow view of pi-ai's AssistantMessage used here (content + usage). */
 interface AssistantMessageLike {
 	content: (ToolCall | { type: string })[];
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: { total: number } };
 	stopReason: string;
 	errorMessage?: string;
 }
-
-// --------------------------------------------------------------------------
-// Verdict cache
 
 interface VerdictCacheEntry {
 	verdict: SessionVerdict;
@@ -1107,7 +1041,6 @@ async function loadVerdictCache(): Promise<VerdictCache> {
 	return { entries: {} };
 }
 
-/** Persist the cache, pruned to the newest 500 entries by timestamp. */
 async function saveVerdictCache(cache: VerdictCache): Promise<void> {
 	const newest = Object.entries(cache.entries)
 		.sort((a, b) => b[1].ts - a[1].ts)
@@ -1115,14 +1048,9 @@ async function saveVerdictCache(cache: VerdictCache): Promise<void> {
 	await Bun.write(CACHE_PATH, JSON.stringify({ entries: Object.fromEntries(newest) }));
 }
 
-/** Digest + system-prompt hashes make staleness automatic: any change to the
- * session transcript, digest format, model, or prompt misses the cache. */
 function verdictCacheKey(groupId: string, digest: string, model: string): string {
 	return `${groupId}:${Bun.hash(digest).toString(16)}:${model}:${Bun.hash(SYSTEM_PROMPT).toString(16)}`;
 }
-
-// --------------------------------------------------------------------------
-// Report
 
 interface AuditResult {
 	windowMs: number;
@@ -1158,7 +1086,6 @@ function printScanReport(res: AuditResult): void {
 	);
 	console.log(`compactions in main contexts: ${compactions}`);
 
-	// Folder split
 	const byFolder = new Map<string, { usage: UsageTotals; sub: UsageTotals; n: number }>();
 	for (const g of groups) {
 		let rec = byFolder.get(g.folder);
@@ -1179,7 +1106,6 @@ function printScanReport(res: AuditResult): void {
 		);
 	}
 
-	// Tool traffic across everything
 	const allScans: FileScan[] = [];
 	for (const g of groups) {
 		allScans.push(g.main, ...g.children);
@@ -1197,7 +1123,6 @@ function printScanReport(res: AuditResult): void {
 		);
 	}
 
-	// Biggest single results anywhere
 	const allTop: TopResult[] = [];
 	for (const s of allScans) allTop.push(...s.topResults);
 	allTop.sort((a, b) => b.toks - a.toks);
@@ -1208,7 +1133,6 @@ function printScanReport(res: AuditResult): void {
 		}
 	}
 
-	// Top sessions
 	console.log(`\ntop sessions by cost:`);
 	const top = [...groups].sort((a, b) => b.usage.cost - a.usage.cost).slice(0, 15);
 	for (const g of top) {
@@ -1270,9 +1194,6 @@ function printAggregate(res: AuditResult): void {
 	);
 }
 
-// --------------------------------------------------------------------------
-// JSON export
-
 function exportJson(res: AuditResult): Record<string, unknown> {
 	return {
 		windowMs: res.windowMs,
@@ -1305,9 +1226,6 @@ function exportJson(res: AuditResult): Record<string, unknown> {
 		})),
 	};
 }
-
-// --------------------------------------------------------------------------
-// Main
 
 async function main(): Promise<void> {
 	const opts = parseCli(process.argv.slice(2));

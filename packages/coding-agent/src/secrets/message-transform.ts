@@ -4,17 +4,6 @@ import type { SessionContext } from "../session/session-context";
 import type { JsonValue, SecretObfuscator } from "./obfuscator";
 import { collectJsonRegexSecretValues, mapJsonStrings } from "./placeholder-scan";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Display restore (inbound, persisted/provider → local display)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Restore secret placeholders for local display. Only message kinds the model
- * itself authored from obfuscated context carry placeholders — assistant
- * content and the LLM-written branch/compaction summaries. User, developer, and
- * tool-result messages are persisted with their literal text, so operator-authored
- * placeholder-shaped text must survive untouched; those roles are never walked.
- */
 export function deobfuscateSessionContext(
 	sessionContext: SessionContext,
 	obfuscator: SecretObfuscator | undefined,
@@ -57,11 +46,6 @@ export function deobfuscateAgentMessages(obfuscator: SecretObfuscator, messages:
 	return changed ? result : messages;
 }
 
-/**
- * Restore placeholders in assistant content: visible text and tool-call
- * arguments/intent/rawBlock. Thinking and signatures are opaque
- * provider-replay/hidden-reasoning data and pass through byte-identical.
- */
 export function deobfuscateAssistantContent(
 	obfuscator: SecretObfuscator,
 	content: AssistantMessage["content"],
@@ -90,11 +74,6 @@ export function deobfuscateAssistantContent(
 	return changed ? result : content;
 }
 
-/**
- * Restore placeholders inside a tool call's arguments. Arguments are arbitrary
- * model-authored JSON, so tool-call arguments are the ONLY place a recursive
- * JSON walk runs.
- */
 export function deobfuscateToolArguments(
 	obfuscator: SecretObfuscator,
 	args: Record<string, unknown>,
@@ -103,7 +82,6 @@ export function deobfuscateToolArguments(
 	return mapJsonStrings(args as JsonValue, s => obfuscator.deobfuscate(s)) as Record<string, unknown>;
 }
 
-/** Redact secrets inside a tool call's arguments (same JSON-walk exception as {@link deobfuscateToolArguments}). */
 export function obfuscateToolArguments(
 	obfuscator: SecretObfuscator,
 	args: Record<string, unknown>,
@@ -114,13 +92,8 @@ export function obfuscateToolArguments(
 	return mapJsonStrings(args as JsonValue, s => obfuscator.obfuscate(s, regexSecretValues)) as Record<string, unknown>;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Outbound obfuscation (local → provider)
-// ═══════════════════════════════════════════════════════════════════════════
-
 type UserFacingMessage = Extract<Message, { role: "user" | "developer" | "toolResult" }>;
 
-/** Obfuscate `text` blocks of a content array; image and other blocks pass through. */
 function obfuscateTextBlocks(
 	obfuscator: SecretObfuscator,
 	content: (TextContent | ImageContent)[],
@@ -137,11 +110,6 @@ function obfuscateTextBlocks(
 	return changed ? result : content;
 }
 
-/**
- * Re-obfuscate assistant content before it returns to a provider after session
- * restoration, removing friendly prefixes made unsafe by this batch. A changed
- * thinking block loses its byte-bound replay signature.
- */
 function obfuscateAssistantContentForReplay(
 	obfuscator: SecretObfuscator,
 	content: AssistantMessage["content"],
@@ -221,13 +189,6 @@ function collectMessageRegexSecretValues(obfuscator: SecretObfuscator, messages:
 	return values;
 }
 
-/**
- * Redact secrets from outbound messages. User messages, tool results, and
- * user-authored developer messages (e.g. `@file` mentions) are obfuscated.
- * Assistant replay content is re-obfuscated too, because session restoration
- * expands keyed placeholders locally before the next provider request. Inline
- * image bytes are never walked.
- */
 export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Message[]): Message[] {
 	if (!obfuscator.hasSecrets()) return messages;
 	const sharedRegexSecretValues = collectMessageRegexSecretValues(obfuscator, messages);
@@ -259,10 +220,6 @@ export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Messag
 	return changed ? result : messages;
 }
 
-/**
- * Redact outbound provider context. Only conversation messages are rewritten;
- * the static system prompt and tool schemas pass through unchanged.
- */
 export function obfuscateProviderContext(obfuscator: SecretObfuscator | undefined, context: Context): Context {
 	if (!obfuscator?.hasSecrets()) return context;
 	const messages = obfuscateMessages(obfuscator, context.messages);

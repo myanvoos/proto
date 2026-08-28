@@ -17,7 +17,6 @@ import type { SetupSceneHost, SetupTab } from "./types";
 
 const MAX_VISIBLE = 8;
 
-/** Reuse the shared provider options as the single source of truth for labels/descriptions. */
 const WEB_SEARCH_ITEMS: readonly SelectItem[] = SEARCH_PROVIDER_OPTIONS.map(option => ({
 	value: option.value,
 	label: option.label,
@@ -26,12 +25,6 @@ const WEB_SEARCH_ITEMS: readonly SelectItem[] = SEARCH_PROVIDER_OPTIONS.map(opti
 
 type Availability = "checking" | boolean;
 
-/**
- * "Web search" panel: picks the provider the web_search tool should prefer and
- * reports whether the highlighted provider is ready to use given current
- * credentials (env keys or OAuth sign-ins from the Sign in tab) or an
- * unauthenticated fallback.
- */
 export class WebSearchTab implements SetupTab {
 	readonly id = "web-search";
 	readonly label = "Web search";
@@ -41,7 +34,7 @@ export class WebSearchTab implements SetupTab {
 	#availability = new Map<SearchProviderId, Availability>();
 	#status: string[] = [];
 	#disposed = false;
-	/** Render line where the select list begins. */
+
 	#listRowStart = 0;
 
 	constructor(private readonly host: SetupSceneHost) {
@@ -56,7 +49,6 @@ export class WebSearchTab implements SetupTab {
 	}
 
 	onActivate(): void {
-		// Auth may have changed in the Sign in tab; re-check from scratch.
 		this.#availability.clear();
 		this.#status = [];
 		const selected = this.#list.getSelectedItem();
@@ -68,7 +60,6 @@ export class WebSearchTab implements SetupTab {
 		this.#list.handleInput(data);
 	}
 
-	/** Wheel moves the highlight; hover lights the row under the pointer; click confirms it. */
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
 		routeSelectListMouse(this.#list, event, line - this.#listRowStart);
 	}
@@ -85,8 +76,6 @@ export class WebSearchTab implements SetupTab {
 		const lines = [theme.fg("muted", "Choose the provider the web_search tool should prefer."), ""];
 		this.#listRowStart = lines.length;
 		if (maxLines !== undefined) {
-			// Above: hint + blank. Below: the list's own search-status row plus
-			// blank + readiness line. Shrinking keeps the selection centered.
 			this.#list.setMaxVisible(Math.max(1, Math.min(MAX_VISIBLE, maxLines - 5)));
 		}
 		lines.push(...this.#list.render(width));
@@ -125,8 +114,7 @@ export class WebSearchTab implements SetupTab {
 
 	#apply(value: string): void {
 		if (value !== "auto" && !isSearchProviderId(value)) return;
-		// The wizard picks one favorite; persist it as the head of the priority
-		// list with the remaining providers in their built-in order (auto = reset).
+
 		const order = value === "auto" ? [] : [value, ...SEARCH_PROVIDER_ORDER.filter(id => id !== value)];
 		this.host.ctx.settings.set("providers.webSearchOrder", order);
 		setSearchProviderOrder(order);

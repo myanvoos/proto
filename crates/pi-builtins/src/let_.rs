@@ -3,10 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionExitCode, ExecutionResult, arithmetic::Evaluatable, builtins};
 use clap::Parser;
 
-/// Evaluate arithmetic expressions.
+
 #[derive(Parser)]
 pub(crate) struct LetCommand {
-	/// Arithmetic expressions to evaluate.
+
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	exprs: Vec<String>,
 }

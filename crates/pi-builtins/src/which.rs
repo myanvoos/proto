@@ -1,6 +1,6 @@
-//! `which` builtin: locate executables in the shell's `PATH`.
-//!
-//! Ported from pi-shell's in-process `which` implementation.
+
+
+
 
 use std::io::Write;
 
@@ -14,19 +14,19 @@ use clap::Parser;
 
 use crate::host::{Host, Utility, util};
 
-/// Parsed `which` invocation.
+
 #[derive(Parser, Debug)]
 #[command(name = "which", about = "Locate a command's executable in the shell's PATH")]
 pub(crate) struct WhichCli {
-	/// Print all matching executables in PATH, not just the first.
+
 	#[arg(short = 'a', long = "all")]
 	all: bool,
 
-	/// Silent (BSD): print nothing, report matches via the exit status only.
+
 	#[arg(short = 's')]
 	silent: bool,
 
-	/// Command names to locate.
+
 	#[arg(value_name = "name")]
 	names: Vec<String>,
 }
@@ -36,7 +36,7 @@ impl Utility for WhichCli {
 	const USAGE_ERROR: u8 = 2;
 
 	fn run(self, host: &mut Host) -> i32 {
-		// BSD and GNU which both treat a bare `which` as a usage error (exit 1).
+
 		if self.names.is_empty() {
 			let _ = writeln!(host.stderr, "usage: which [-as] program ...");
 			return 1;
@@ -63,7 +63,7 @@ impl Utility for WhichCli {
 			};
 
 			if matches.is_empty() {
-				// which(1) reports missing names via the exit status only.
+
 				all_found = false;
 			}
 			if !self.silent {
@@ -77,7 +77,7 @@ impl Utility for WhichCli {
 	}
 }
 
-/// Creates the `which` builtin registration.
+
 pub(crate) fn which_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<WhichCli, SE>()
 }

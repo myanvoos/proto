@@ -1,9 +1,3 @@
-/**
- * OpenAI Codex Web Search Provider
- *
- * Uses the configured Codex Responses transport for proxy/API-key setups and
- * the official ChatGPT backend for OAuth logins.
- */
 import {
 	type AuthStorage,
 	type FetchImpl,
@@ -109,15 +103,6 @@ function getDefaultModelCandidates(): CodexModelCandidate[] {
 	return fallbackModel ? [{ modelId: fallbackModel.id, catalogModel: fallbackModel }] : [{ modelId: FALLBACK_MODEL }];
 }
 
-/**
- * Raised when Codex produced an answer without invoking the hosted `web_search`
- * tool. GPT-5.6 Responses-Lite models receive `tool_choice: "auto"` (the forced
- * hosted choice is invalid under the lite shape — see #5771 / #5772), so the
- * model may skip searching and return a plain completion. A search command must
- * not present that as a successful, search-backed result (#6988); this advances
- * the candidate chain to a model that will search, or surfaces a clear failure
- * when the model was explicitly configured.
- */
 class CodexNoWebSearchError extends SearchProviderError {
 	constructor() {
 		super(
@@ -138,7 +123,6 @@ function shouldRetryWithNextDefaultModel(error: unknown): boolean {
 	);
 }
 
-/** Codex API response structure */
 interface CodexWebSearchSource {
 	url?: string;
 	source_website_url?: string;
@@ -189,13 +173,6 @@ interface CodexResponse {
 	usage?: CodexUsage;
 }
 
-/**
- * Known Codex "image placeholder" answers — short prose the assistant emits in
- * place of a real answer when it produced a screenshot instead of text. These
- * carry no information, so callers treat them as non-answers and advance the
- * chain to a provider that returns text. Extend by adding the normalized
- * literal below; no regex tuning required.
- */
 const IMAGE_PLACEHOLDER_ANSWERS: ReadonlySet<string> = new Set([
 	"see attached image",
 	"attached image",
@@ -208,8 +185,6 @@ const IMAGE_PLACEHOLDER_ANSWERS: ReadonlySet<string> = new Set([
 ]);
 
 function isImagePlaceholderAnswer(text: string): boolean {
-	// Strip surrounding brackets/quotes and trailing punctuation, lowercase,
-	// then match against the known-placeholder set.
 	const normalized = text
 		.trim()
 		.replace(/^[[("'`*_]+/, "")
@@ -268,10 +243,6 @@ function countCharacter(text: string, target: string): number {
 	return count;
 }
 
-/**
- * Strips prose punctuation and unmatched closing delimiters from extracted URLs.
- * Codex often returns links in markdown or sentence text without structured annotations.
- */
 function normalizeExtractedUrl(candidate: string): string | null {
 	let url = candidate.trim();
 
@@ -335,10 +306,6 @@ function findMarkdownLinkUrlEnd(text: string, openParenIndex: number): number | 
 	return null;
 }
 
-/**
- * Extracts citation sources from markdown links and bare URLs in the answer text.
- * Used as a fallback when the Codex response omits `url_citation` annotations.
- */
 function extractTextSources(text: string): SearchSource[] {
 	const sources: SearchSource[] = [];
 
@@ -371,12 +338,6 @@ function extractTextSources(text: string): SearchSource[] {
 	return sources;
 }
 
-/**
- * Resolve a Codex bearer + accountId through {@link AuthStorage} — the single
- * refresh authority. Returns `null` when no OAuth credential is configured,
- * when the credential cannot be refreshed (broker error, revoked token, etc.),
- * or when the access token carries no `chatgpt_account_id` claim.
- */
 async function findCodexAuth(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -410,9 +371,6 @@ function resolveCodexSearchTransport(modelRegistry: ModelRegistry | undefined, m
 	};
 }
 
-/**
- * Builds HTTP headers for Codex API requests.
- */
 function buildCodexHeaders(
 	accessToken: string,
 	accountId: string | undefined,
@@ -436,13 +394,6 @@ function buildCodexHeaders(
 	return headers;
 }
 
-/**
- * Extracts a backend error `{code, message}` from a Codex SSE event, tolerating
- * the envelope shapes the ChatGPT Codex backend emits: top-level `{code,message}`,
- * a nested `error` object, and a `response.error` object (as in `response.failed`).
- * Without this the nested shapes collapse to `Codex error (): Unknown error`,
- * discarding the backend diagnostic — e.g. a regional/model-snapshot rejection (#7200).
- */
 function extractCodexSseError(rawEvent: Record<string, unknown>): { code: string; message: string } {
 	const candidates: unknown[] = [
 		rawEvent,
@@ -469,12 +420,6 @@ function classifyCodexSseErrorStatus(code: string, message: string): number {
 	return 500;
 }
 
-/**
- * Calls the Codex Responses API with web search tool enabled.
- * The caller provides the exact model id to send; retry / fallback policy
- * lives one layer up in `searchCodex()` so we can distinguish explicit user
- * overrides from the default ChatGPT-account model-selection path.
- */
 async function callCodexSearch(
 	auth: { accessToken: string; accountId?: string },
 	query: string,
@@ -534,15 +479,13 @@ async function callCodexSearch(
 		throw new SearchProviderError("codex", "Codex API returned no response body", 500);
 	}
 
-	// Parse SSE stream
 	const answerParts: string[] = [];
 	const streamedAnswerParts: string[] = [];
 	const sources: SearchSource[] = [];
 	let model = requestedModel;
 	let requestId = "";
 	let usage: { inputTokens: number; outputTokens: number; totalTokens: number } | undefined;
-	// A search command must reject a completion that did not invoke the hosted
-	// tool rather than returning an answer from the model's own knowledge (#6988).
+
 	let webSearchInvoked = false;
 
 	for await (const rawEvent of readSseJson<Record<string, unknown>>(response.body, options.signal)) {
@@ -580,13 +523,11 @@ async function callCodexSearch(
 				}
 			}
 
-			// Handle text message content and extract sources from annotations
 			if (item.type === "message" && item.content) {
 				for (const part of item.content) {
 					if (part.type === "output_text" && part.text) {
 						answerParts.push(part.text);
 
-						// Extract sources from url_citation annotations
 						if (part.annotations) {
 							for (const annotation of part.annotations) {
 								if (annotation.type === "url_citation" && annotation.url) {
@@ -602,7 +543,6 @@ async function callCodexSearch(
 				}
 			}
 
-			// Handle reasoning summary as part of answer
 			if (item.type === "reasoning" && item.summary) {
 				for (const part of item.summary) {
 					if (part.type === "summary_text" && part.text) {
@@ -646,10 +586,7 @@ async function callCodexSearch(
 
 	const finalAnswer = answerParts.join("\n\n").trim();
 	const streamedAnswer = streamedAnswerParts.join("").trim();
-	// Throw to advance the chain whenever Codex emitted nothing but image
-	// placeholder prose — including the case where the streamed delta itself
-	// is the placeholder (the model occasionally streams the same text it
-	// publishes as the final output_text).
+
 	const finalIsPlaceholder = finalAnswer.length > 0 && isImagePlaceholderAnswer(finalAnswer);
 	const streamedIsPlaceholder = streamedAnswer.length > 0 && isImagePlaceholderAnswer(streamedAnswer);
 	const hasFinalText = finalAnswer.length > 0 && !finalIsPlaceholder;
@@ -659,8 +596,6 @@ async function callCodexSearch(
 	}
 	const answer = hasFinalText ? finalAnswer : hasStreamedText ? streamedAnswer : "";
 
-	// Fallback: when Codex omits url_citation annotations, scrape markdown links
-	// and bare URLs from the synthesized answer so callers still receive sources.
 	if (sources.length === 0 && answer.length > 0) {
 		for (const source of extractTextSources(answer)) {
 			addSource(sources, source);
@@ -710,18 +645,6 @@ async function runCodexSearchCandidates(options: {
 	throw lastError ?? new Error("Codex search failed without returning a result");
 }
 
-/**
- * Executes a web search using OpenAI Codex's built-in web search tool.
- *
- * Default-model behavior:
- * - If `PI_CODEX_WEB_SEARCH_MODEL` is set, use it exactly once and surface any
- *   upstream error verbatim.
- * - Otherwise prefer ChatGPT-account-safe bundled defaults (GPT-5.6 Luna,
- *   Terra, Sol, GPT-5.5, …) and retry the next candidate only when Codex
- *   returns the known 400 "model is not supported" family. This avoids
- *   selecting `gpt-5-codex-mini` first on ChatGPT accounts, which OpenAI
- *   rejects.
- */
 export async function searchCodex(params: SearchParams): Promise<SearchResponse> {
 	const configuredModel = getConfiguredModel();
 	const modelCandidates = configuredModel ? [configuredModel] : getDefaultModelCandidates();
@@ -730,21 +653,12 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 		throw new SearchProviderError("codex", "No Codex web search model is configured.");
 	}
 	const transport = resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId);
-	// The ChatGPT-backend Codex endpoint speaks the undocumented codex-rs
-	// request shape (responses-lite moves tools into an `additional_tools`
-	// developer item), so the documented `web_search.filters.allowed_domains`
-	// parameter cannot be assumed to survive it. Instead, re-emit directive
-	// queries with the full Google-style operator syntax — the backing index
-	// parses the classic operator set — and leave directive-free queries
-	// byte-identical.
+
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const query = parsed.hasDirectives ? formatQuery(parsed, GOOGLE_QUERY_SYNTAX) : params.query;
 
 	let result: CodexSearchResult;
 	if (transport.customEndpoint) {
-		// ModelRegistry resolves command-backed provider keys before consulting
-		// its AuthStorage, so a lower-priority OAuth origin is irrelevant when
-		// that command source is configured.
 		const credentialSource = params.modelRegistry?.authStorage ?? params.authStorage;
 		const credentialOrigin = credentialSource.getCredentialOrigin("openai-codex");
 		const hasCommandBackedKey = params.modelRegistry?.hasCommandBackedApiKey("openai-codex") === true;
@@ -791,8 +705,6 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			params.authStorage,
 			"openai-codex",
 			access => {
-				// A refreshed/rotated credential can carry a different bearer and
-				// ChatGPT account id than the seed used to select the first attempt.
 				const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
 				if (!accountId) {
 					throw new Error("Codex OAuth credential is missing a ChatGPT account id");
@@ -833,14 +745,10 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 	};
 }
 
-/**
- * Checks whether Codex web search has an API key or OAuth credential.
- */
 export async function hasCodexSearch(authStorage: AuthStorage): Promise<boolean> {
 	return authStorage.hasAuth("openai-codex");
 }
 
-/** Search provider for OpenAI Codex web search. */
 export class CodexProvider extends SearchProvider {
 	readonly id = "codex";
 	readonly label = "OpenAI";

@@ -31,9 +31,6 @@ interface SummaryInput {
 	userContext?: string;
 }
 
-/**
- * Generate a commit summary line for the conventional commit header.
- */
 export async function generateSummary({
 	model,
 	apiKey,

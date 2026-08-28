@@ -40,9 +40,6 @@ function collectCrossReferences(license: SpdxLicense): string[] {
 	return combined.filter((url, index) => combined.indexOf(url) === index);
 }
 
-/**
- * Handle SPDX license URLs via SPDX JSON API
- */
 export const handleSpdx: SpecialHandler = async (
 	url: string,
 	timeout: number,

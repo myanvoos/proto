@@ -1,7 +1,7 @@
 telemetry = false
 
 [install]
-minimumReleaseAge = 259200 # 3 days in seconds
+minimumReleaseAge = 259200 
 minimumReleaseAgeExcludes = ["@types/bun", "bun-types", "kitty-vt-wasm"]
 linker = "hoisted"
 exact = true

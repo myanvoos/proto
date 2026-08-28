@@ -6,7 +6,6 @@ use std::{
 	},
 };
 
-/// Linux lock held by an abstract Unix-domain socket binding.
 pub struct PlatformFileLock {
 	socket: Option<UnixDatagram>,
 }

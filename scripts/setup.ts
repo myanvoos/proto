@@ -1,10 +1,5 @@
 #!/usr/bin/env bun
-/**
- * `bun setup` entrypoint. Chains the four setup steps (install → native
- * addon build → coding-agent link → proto link). The native host build runs
- * scripts/build-natives.sh host (the local cargo/napi-rs path). Flags
- * after `--` are appended to the native build invocation.
- */
+
 import * as path from "node:path";
 
 const repoRoot = path.join(import.meta.dir, "..");

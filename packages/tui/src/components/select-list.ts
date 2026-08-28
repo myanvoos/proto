@@ -27,9 +27,9 @@ export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
-	/** Optional type-indicator glyph rendered in an aligned column before the label */
+
 	icon?: string;
-	/** Dim hint text shown inline after cursor when this item is selected */
+
 	hint?: string;
 }
 
@@ -40,9 +40,9 @@ export interface SelectListTheme {
 	scrollInfo: (text: string) => string;
 	noMatch: (text: string) => string;
 	symbols: SymbolTheme;
-	/** Style for the type-icon column on unselected rows. Defaults to plain text. */
+
 	icon?: (text: string) => string;
-	/** Hover band applied to the full row under the mouse pointer. */
+
 	hovered?: (text: string) => string;
 }
 
@@ -58,20 +58,11 @@ export interface SelectListLayoutOptions {
 	minPrimaryColumnWidth?: number;
 	maxPrimaryColumnWidth?: number;
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
-	/** Enable type-to-filter search when the item count exceeds maxVisible. Defaults to true. */
+
 	overflowSearch?: boolean;
-	/**
-	 * Wrap long descriptions onto continuation rows indented under the
-	 * description column instead of truncating. Defaults to false so existing
-	 * single-line consumers are unaffected. Navigation remains item-to-item;
-	 * the scrollbar tracks visual rows so the thumb stays correct when items
-	 * wrap unevenly.
-	 */
+
 	wrapDescription?: boolean;
-	/**
-	 * Cap wrapped descriptions at this many visual rows; the last kept row is
-	 * ellipsized. Only meaningful with `wrapDescription`.
-	 */
+
 	maxDescriptionRows?: number;
 }
 
@@ -100,7 +91,7 @@ export class SelectList implements Component, MouseRoutable {
 	#filterQuery = "";
 	#selectedIndex: number = 0;
 	#hoveredIndex: number | null = null;
-	/** Per-render map of 0-based output line → filtered-item index. */
+
 	#hitRows: (number | undefined)[] = [];
 
 	onSelect?: (item: SelectItem) => void;
@@ -117,7 +108,6 @@ export class SelectList implements Component, MouseRoutable {
 		this.#filteredItems = items;
 	}
 
-	/** Refit the visible row budget (hosts clamp the list to available height). */
 	setMaxVisible(rows: number): void {
 		this.#maxVisible = Math.max(1, Math.trunc(rows));
 	}
@@ -130,17 +120,14 @@ export class SelectList implements Component, MouseRoutable {
 		this.#selectedIndex = Math.max(0, Math.min(index, this.#filteredItems.length - 1));
 	}
 
-	/** Resolve a 0-based rendered-line index to a filtered-item index. */
 	hitTest(line: number): number | undefined {
 		return this.#hitRows[line];
 	}
 
-	/** Highlight the item under the pointer (null clears). */
 	setHoverIndex(index: number | null): void {
 		this.#hoveredIndex = index;
 	}
 
-	/** Move the selection one step for a wheel notch. */
 	handleWheel(delta: -1 | 1): void {
 		if (this.#filteredItems.length === 0) return;
 		const next = clamp(this.#selectedIndex + delta, 0, this.#filteredItems.length - 1);
@@ -149,7 +136,6 @@ export class SelectList implements Component, MouseRoutable {
 		this.#notifySelectionChange();
 	}
 
-	/** Mouse click: select the item under the pointer and confirm it. */
 	clickItem(index: number): void {
 		const item = this.#filteredItems[index];
 		if (!item) return;
@@ -164,16 +150,13 @@ export class SelectList implements Component, MouseRoutable {
 		routeSelectListMouse(this, event, line);
 	}
 
-	invalidate(): void {
-		// No cached state to invalidate currently
-	}
+	invalidate(): void {}
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
 		this.#hitRows = [];
 		const showSearchStatus = this.#shouldRenderSearchStatus();
 
-		// If no items match filter, show message
 		if (this.#filteredItems.length === 0) {
 			if (showSearchStatus) {
 				lines.push(this.#renderStatusLine(width));
@@ -185,14 +168,9 @@ export class SelectList implements Component, MouseRoutable {
 		const primaryColumnWidth = this.#getPrimaryColumnWidth();
 		const iconColumnWidth = this.#getIconColumnWidth();
 		const wrapEnabled = this.layout.wrapDescription === true;
-		// `maxVisible` is the picker's visual row budget. For non-wrap layouts
-		// every item is one row, so the budget matches the original item count.
+
 		const visualBudget = this.#maxVisible;
 
-		// Compute per-item visual row counts at the conservative width (i.e.
-		// assume the scrollbar column might be reserved). For non-wrap layouts
-		// every count is 1, so visualTotal == #filteredItems and overflow falls
-		// back to the original `N > maxVisible` predicate exactly.
 		const conservativeRowWidth = Math.max(0, width - 1);
 		const rowCounts = new Array<number>(this.#filteredItems.length);
 		let visualTotal = 0;
@@ -211,15 +189,8 @@ export class SelectList implements Component, MouseRoutable {
 		const overflow = visualTotal > visualBudget;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 
-		// Pick a window centered on the selected item that fits in visualBudget
-		// rows. Falls through to the original item-count window when every row
-		// count is 1.
 		const { startIndex, endIndex, visualOffset } = this.#pickWindow(rowCounts, visualBudget);
 
-		// Render visible items. Cap rows at the budget so a single item that
-		// wraps to more than `visualBudget` rows (pathological — e.g. a 5-row
-		// description with maxVisible=3) still keeps the popup bounded; the
-		// scrollbar carries the offscreen rows.
 		const rows: string[] = [];
 		for (let i = startIndex; i < endIndex && rows.length < visualBudget; i++) {
 			const item = this.#filteredItems[i];
@@ -248,7 +219,6 @@ export class SelectList implements Component, MouseRoutable {
 		sv.setScrollOffset(visualOffset);
 		lines.push(...sv.render(width));
 
-		// Add search status when relevant (scrollbar now indicates overflow)
 		if (showSearchStatus) {
 			lines.push(this.#renderStatusLine(width));
 		}
@@ -258,7 +228,7 @@ export class SelectList implements Component, MouseRoutable {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
-		// Escape or Ctrl+C
+
 		if (kb.matches(keyData, "tui.select.cancel")) {
 			if (this.onCancel) {
 				this.onCancel();
@@ -271,28 +241,20 @@ export class SelectList implements Component, MouseRoutable {
 		}
 
 		if (this.#filteredItems.length === 0) return;
-		// Up arrow - wrap to bottom when at top
+
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.#selectedIndex = this.#selectedIndex === 0 ? this.#filteredItems.length - 1 : this.#selectedIndex - 1;
 			this.#notifySelectionChange();
-		}
-		// Down arrow - wrap to top when at bottom
-		else if (kb.matches(keyData, "tui.select.down")) {
+		} else if (kb.matches(keyData, "tui.select.down")) {
 			this.#selectedIndex = this.#selectedIndex === this.#filteredItems.length - 1 ? 0 : this.#selectedIndex + 1;
 			this.#notifySelectionChange();
-		}
-		// PageUp - jump up by one visible page
-		else if (kb.matches(keyData, "tui.select.pageUp")) {
+		} else if (kb.matches(keyData, "tui.select.pageUp")) {
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#maxVisible);
 			this.#notifySelectionChange();
-		}
-		// PageDown - jump down by one visible page
-		else if (kb.matches(keyData, "tui.select.pageDown")) {
+		} else if (kb.matches(keyData, "tui.select.pageDown")) {
 			this.#selectedIndex = Math.min(this.#filteredItems.length - 1, this.#selectedIndex + this.#maxVisible);
 			this.#notifySelectionChange();
-		}
-		// Enter
-		else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
+		} else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
 			const selectedItem = this.#filteredItems[this.#selectedIndex];
 			if (selectedItem && this.onSelect) {
 				this.onSelect(selectedItem);
@@ -347,14 +309,12 @@ export class SelectList implements Component, MouseRoutable {
 	}
 
 	#computeItemRowCount(item: SelectItem, width: number, primaryColumnWidth: number, iconColumnWidth: number): number {
-		// Selection style does not change row count; pass isSelected=false to
-		// keep the cheap path uniform for items outside the visible window.
 		const layout = this.#computeItemLayout(item, false, width, primaryColumnWidth, iconColumnWidth);
 		if (layout.kind !== "description") return 1;
 		const wrapped = this.#wrapDescription(layout.descriptionSingleLine, layout.remainingWidth);
 		return Math.max(1, wrapped.length);
 	}
-	/** Wrap a description, capping it at `maxDescriptionRows` with a trailing ellipsis. */
+
 	#wrapDescription(description: string, width: number): string[] {
 		const wrapped = wrapTextWithAnsi(description, width);
 		const cap = this.layout.maxDescriptionRows;
@@ -364,14 +324,6 @@ export class SelectList implements Component, MouseRoutable {
 		return kept;
 	}
 
-	/**
-	 * Pick a contiguous window of items containing `selectedIndex` such that
-	 * their visual rows fit within `budget`. Centers the selection roughly
-	 * mid-window: first expands up by ⌊budget/2⌋ rows, then fills downward,
-	 * then back upward with any remaining budget. For non-wrap layouts (every
-	 * `rowCounts[i] === 1`) this resolves to the same `[start, start+maxVisible)`
-	 * window the prior arithmetic produced.
-	 */
 	#pickWindow(
 		rowCounts: ReadonlyArray<number>,
 		budget: number,
@@ -383,16 +335,12 @@ export class SelectList implements Component, MouseRoutable {
 		const half = Math.floor(budget / 2);
 		let lo = selected;
 		let rowsAboveSelected = 0;
-		// Step 1: expand upward up to `half` rows above the selection so it
-		// lands near the visual middle, matching the prior centering.
+
 		while (lo > 0 && rowsAboveSelected + (rowCounts[lo - 1] ?? 0) <= half) {
 			lo--;
 			rowsAboveSelected += rowCounts[lo] ?? 0;
 		}
 
-		// Step 2: expand downward until the budget is filled. The selected
-		// item's own rows are always counted; if it alone exceeds `budget`
-		// the surplus is clipped at render time and the scrollbar carries it.
 		let hi = selected + 1;
 		let used = rowsAboveSelected + (rowCounts[selected] ?? 0);
 		while (hi < n && used + (rowCounts[hi] ?? 0) <= budget) {
@@ -400,8 +348,6 @@ export class SelectList implements Component, MouseRoutable {
 			hi++;
 		}
 
-		// Step 3: if room remains (selection sat near the bottom), keep
-		// expanding upward.
 		while (lo > 0 && used + (rowCounts[lo - 1] ?? 0) <= budget) {
 			lo--;
 			used += rowCounts[lo] ?? 0;
@@ -421,8 +367,7 @@ export class SelectList implements Component, MouseRoutable {
 	): SelectItemLayout {
 		const cursor = this.theme.symbols?.cursor ?? DEFAULT_CURSOR_SYMBOL;
 		const prefix = isSelected ? `${cursor} ` : padding(visibleWidth(cursor) + 1);
-		// Icon column: every row reserves the same width so labels stay aligned
-		// whether or not an individual item carries an icon.
+
 		const iconWidth = item.icon ? visibleWidth(item.icon) : 0;
 		const iconCell = iconColumnWidth > 0 ? (item.icon ?? "") + padding(iconColumnWidth - iconWidth + 1) : "";
 		const prefixWidth = visibleWidth(prefix) + (iconColumnWidth > 0 ? iconColumnWidth + 1 : 0);
@@ -435,7 +380,7 @@ export class SelectList implements Component, MouseRoutable {
 			const truncatedValueWidth = visibleWidth(truncatedValue);
 			const spacing = padding(Math.max(1, effectivePrimaryColumnWidth - truncatedValueWidth));
 			const descriptionStart = prefixWidth + truncatedValueWidth + spacing.length;
-			const remainingWidth = width - descriptionStart - 2; // -2 for safety
+			const remainingWidth = width - descriptionStart - 2;
 
 			if (remainingWidth > MIN_DESCRIPTION_WIDTH) {
 				return {
@@ -549,8 +494,6 @@ export class SelectList implements Component, MouseRoutable {
 	#setFilter(filter: string, notify: boolean): void {
 		this.#filterQuery = filter;
 		if (filter.trim()) {
-			// Breadcrumb the fuzzy match so the loop watchdog can attribute a
-			// large-list filter stall instead of logging it as "unknown".
 			pushLoopPhase("ui.select-filter");
 			try {
 				this.#filteredItems = fuzzyFilter([...this.items], filter, item => this.#getFilterText(item));

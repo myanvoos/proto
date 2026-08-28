@@ -1,22 +1,3 @@
-/**
- * Agent discovery from filesystem.
- *
- * Discovers agent definitions from PROTO-native worker-agent roots:
- *   - ~/.proto/agent/agents/*.md (user-level)
- *   - .proto/agents/*.md (project-level)
- *   - <ext>/agents/*.md for every PROTO extension package wired through
- *     `listOmpExtensionRoots` (CLI `--extension` roots, `extensions:` in
- *     settings, and enabled npm/link plugins under `<plugins>/node_modules/`).
- *     Mirrors the same sub-discovery convention applied to `skills/`,
- *     `hooks/`, `tools/`, etc. by `discovery/proto-plugins.ts`.
- *
- * Claude Code marketplace plugin agents are discovered separately via the
- * claude-plugins provider. Direct cross-harness roots such as .claude/agents
- * are intentionally skipped because their frontmatter schema is not the PROTO
- * worker-agent contract.
- *
- * Agent files use markdown with YAML frontmatter.
- */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -30,15 +11,11 @@ import type { AgentDefinition, AgentSource } from "./types";
 
 const AGENT_CONFIG_SOURCE = ".proto";
 
-/** Result of agent discovery */
 export interface DiscoveryResult {
 	agents: AgentDefinition[];
 	projectAgentsDir: string | null;
 }
 
-/**
- * Load agents from a directory.
- */
 async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<AgentDefinition[]> {
 	const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
 	const files = entries
@@ -58,15 +35,6 @@ async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<Agen
 	return (await Promise.all(files)).filter(Boolean) as AgentDefinition[];
 }
 
-/**
- * Discover agents from filesystem and merge with bundled agents.
- * Precedence (highest wins): project `.proto/agents`, user `.proto/agents`,
- * PROTO extension-package agents in `listOmpExtensionRoots` source order
- * (CLI roots > project `extensions:` settings > user `extensions:` settings >
- * installed npm/link plugins), Claude marketplace plugin agents (project
- * scope before user), then bundled.
- * @param cwd - Current working directory for project agent discovery
- */
 export async function discoverAgents(cwd: string, home: string = os.homedir()): Promise<DiscoveryResult> {
 	const resolvedCwd = path.resolve(cwd);
 
@@ -90,13 +58,6 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	const user = userDirs[0];
 	if (user) orderedDirs.push({ dir: user.path, source: "user" });
 
-	// PROTO extension-package agents/ dirs. `listOmpExtensionRoots` returns roots in
-	// source-precedence order (CLI > project `extensions:` settings > user
-	// `extensions:` settings > installed npm/link plugins, with marketplace
-	// installs already excluded by realpath) — consume that order verbatim so the
-	// worker discovery surface dedups identically to the sibling skills/hooks/tools
-	// surface in `discovery/proto-plugins.ts`. Gate on `proto-plugins` so
-	// disabledProviders suppresses the whole extension-package surface.
 	const extensionRoots = isProviderEnabled("proto-plugins")
 		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null })
 		: [];
@@ -104,7 +65,6 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level });
 	}
 
-	// Load agents from Claude Code marketplace plugins (respects disabledProviders)
 	const { roots: pluginRoots } = isProviderEnabled("claude-plugins")
 		? await listClaudePluginRoots(home, resolvedCwd)
 		: { roots: [] };
@@ -137,9 +97,6 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 	return { agents: [...loadedAgents, ...bundledAgents], projectAgentsDir };
 }
 
-/**
- * Get an agent by name from discovered agents.
- */
 export function getAgent(agents: AgentDefinition[], name: string): AgentDefinition | undefined {
 	return agents.find(a => a.name === name);
 }

@@ -40,13 +40,6 @@ export type TerminalId =
 const CMUX_NOTIFICATION_TITLE = "Proto";
 const CMUX_SURFACE_ID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu;
 
-/**
- * Route a notification through cmux when the process belongs to a concrete
- * surface. Workspace/socket state alone is not enough: only the injected
- * surface UUID identifies the pane that should receive the notification.
- * Returns whether cmux owns delivery so the caller can preserve every existing
- * terminal fallback unchanged when no valid surface is present.
- */
 function sendCmuxNotification(message: string | TerminalNotification, env: NodeJS.ProcessEnv = Bun.env): boolean {
 	const surfaceId = env.CMUX_SURFACE_ID?.trim();
 	if (!surfaceId || !CMUX_SURFACE_ID_PATTERN.test(surfaceId)) return false;
@@ -63,7 +56,6 @@ function sendCmuxNotification(message: string | TerminalNotification, env: NodeJ
 		});
 		child.unref();
 	} catch {
-		// A missing cmux binary leaves delivery to the existing terminal fallback.
 		return false;
 	}
 	return true;
@@ -94,7 +86,6 @@ function hasSixelDcsStart(line: string): boolean {
 	}
 }
 
-/** Terminal capability details used for rendering and protocol selection. */
 export class TerminalInfo {
 	constructor(
 		public readonly id: TerminalId,
@@ -104,22 +95,12 @@ export class TerminalInfo {
 		public readonly notifyProtocol: NotifyProtocol = NotifyProtocol.Bell,
 		public readonly deccara: boolean = false,
 		readonly supportsScreenToScrollback: boolean = false,
-		/** Renders the Kitty OSC 66 text-sizing protocol (scaled spans). Kitty only. */
+
 		public readonly supportsTextSizing: boolean = false,
-		/**
-		 * Hangul Compatibility Jamo (U+3131..=U+318E) cell width. Ghostty follows
-		 * UAX#11 (2 cells); Warp paints 1; "platform" keeps the OS default
-		 * (macOS narrow, otherwise UAX#11).
-		 */
+
 		public readonly hangulJamoWidth: HangulCompatibilityJamoWidth = "platform",
 	) {}
 
-	/**
-	 * Mutable clone for the {@link TERMINAL} singleton: copies every field and
-	 * keeps the prototype methods, so the builder and runtime setters flip
-	 * runtime-resolved {@link RuntimeTerminal} capabilities in place instead of
-	 * reconstructing positional constructor args.
-	 */
 	clone(): RuntimeTerminal {
 		return Object.assign(Object.create(TerminalInfo.prototype), this) as RuntimeTerminal;
 	}
@@ -129,12 +110,7 @@ export class TerminalInfo {
 		if (this.imageProtocol === ImageProtocol.Sixel) {
 			return hasSixelDcsStart(line);
 		}
-		// 512-unit window: placeholder cells can sit deep in a composed row —
-		// the composer attachment band prefixes each thumbnail row with border
-		// SGRs and stacks cards side by side, so the first placeholder of a
-		// later card starts hundreds of units in. Rows past the window would
-		// silently lose the verbatim image-line path (no truncation, no SGR
-		// coalescing) that placeholder grids and placement APCs rely on.
+
 		return hasNeedleBefore(line, this.imageProtocol, 512) || hasNeedleBefore(line, KITTY_PLACEHOLDER, 512);
 	}
 
@@ -142,9 +118,7 @@ export class TerminalInfo {
 		if (this.notifyProtocol === NotifyProtocol.Bell) {
 			return NotifyProtocol.Bell;
 		}
-		// Structured notifications use OSC 99's rich metadata only once the
-		// terminal confirms support; otherwise collapse to a single message line
-		// (basic OSC 99 / OSC 9 still work).
+
 		if (typeof message !== "string") {
 			if (this.notifyProtocol === NotifyProtocol.Osc99 && osc99CapabilitiesConfirmed) {
 				return formatOsc99Notification(message);
@@ -158,57 +132,31 @@ export class TerminalInfo {
 		if (isNotificationSuppressed() || isTerminalHeadless()) return;
 		if (sendCmuxNotification(message)) return;
 		const formatted = this.formatNotification(message);
-		// Under tmux, terminals whose notify protocol is OSC 9 / OSC 99 would
-		// otherwise lose the notification entirely: tmux does not forward bare
-		// OSC 9/99 to the outer terminal, and the bare sequence does not flag
-		// tmux's own `monitor-bell` / `monitor-activity`. Wrap the OSC in tmux's
-		// DCS passthrough envelope so users with `allow-passthrough on` still
-		// get the desktop toast, then append a BEL so `monitor-bell` flags the
-		// pane/window for everyone else — the only signal a backgrounded pane
-		// has that the agent finished or is waiting for input. `Bell` protocol
-		// already self-flags via tmux's bell monitoring, so leave it alone.
+
 		if (this.notifyProtocol !== NotifyProtocol.Bell && isInsideTmux()) {
 			process.stdout.write(`${wrapTmuxPassthrough(formatted)}\x07`);
 			return;
 		}
-		// Zellij drops OSC 9/99 and has no DCS passthrough envelope, but raises its
-		// `[!]` bell flag on a bare BEL — the same backgrounded-pane signal tmux
-		// users get. So follow the (Zellij-swallowed) OSC with a plain BEL.
+
 		if (this.notifyProtocol !== NotifyProtocol.Bell && isInsideZellij()) {
 			process.stdout.write(`${formatted}\x07`);
 			return;
 		}
 		process.stdout.write(formatted);
-		// VTE-family terminals (Ptyxis, GNOME Terminal, Tilix, …) plus Alacritty
-		// and bare xterm-on-Wayland have no in-band escape that surfaces an
-		// arbitrary desktop toast (#3685). When the chosen `notifyProtocol` is
-		// BEL on a Linux session bus, also fan the notification out via
-		// libnotify so users see the toast and the BEL still fires for tmux
-		// `monitor-bell` / X11 urgency hints / audible bell.
+
 		if (this.notifyProtocol === NotifyProtocol.Bell && shouldDeliverDesktopNotification(this.id, true)) {
 			sendDesktopNotification(message);
 		}
 	}
 }
 
-/** Detect terminal multiplexers where scrollback clearing and height-change redraws are hostile. */
 export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	// TMUX/STY/ZELLIJ, Herdr, and CMUX workspace/surface/remote-transport
-	// markers are authoritative session signals. TERM can also survive when those are
-	// stripped (`sudo` without -E, `su`, env-sanitizing launchers/ssh). Do not
-	// use CMUX_SOCKET_PATH here: it is a CLI socket override and can be set
-	// outside a CMUX terminal.
 	if (env.TMUX || env.STY || env.ZELLIJ || env.HERDR_ENV === "1") return true;
 	if (env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID || env.CMUX_REMOTE_TRANSPORT) return true;
 	const term = env.TERM?.toLowerCase() ?? "";
 	return term.startsWith("tmux") || term.startsWith("screen");
 }
 
-/**
- * Whether the agent process is running inside a Zellij session. Read fresh on
- * each call (like {@link isInsideTmux}) so a session attached/detached mid-run
- * is observed and tests can toggle `Bun.env.ZELLIJ` per case.
- */
 export function isInsideZellij(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	return Boolean(env.ZELLIJ);
 }
@@ -229,12 +177,6 @@ function getForcedImageProtocol(): ImageProtocol | null | undefined {
 	return null;
 }
 
-/**
- * Whether `PI_FORCE_IMAGE_PROTOCOL` pins the image protocol, including its
- * `off`/`none` kill switch. A runtime capability probe must not override an
- * explicit user choice: a forced protocol is already applied to {@link TERMINAL},
- * and a forced "off" leaves `imageProtocol` null on purpose.
- */
 export function isImageProtocolForced(): boolean {
 	return getForcedImageProtocol() !== undefined;
 }
@@ -249,12 +191,6 @@ function parseMajorMinorVersion(versionRaw?: string): { major: number; minor: nu
 	return { major, minor };
 }
 
-/**
- * Returns true when running in Windows Terminal with known SIXEL support,
- * including WSL/SSH-fronted hosts — anywhere `WT_SESSION` reaches us.
- *
- * Windows Terminal introduced SIXEL support in preview 1.22.
- */
 export function isWindowsTerminalPreviewSixelSupported(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.WT_SESSION) return false;
 	if (env.TERM_PROGRAM && env.TERM_PROGRAM.toLowerCase() !== "windows_terminal") {
@@ -265,43 +201,16 @@ export function isWindowsTerminalPreviewSixelSupported(env: NodeJS.ProcessEnv = 
 	return version.major > 1 || (version.major === 1 && version.minor >= 22);
 }
 
-/**
- * Resolve an explicit user override for DEC 2026 synchronized output. Returns
- * `false` for an opt-out, `true` for a force-on, or `null` when the user has
- * expressed no preference. Shared by the static default and the runtime DECRQM
- * probe so both honor the same precedence — an opt-out beats a force-on.
- */
 export function synchronizedOutputUserOverride(env: NodeJS.ProcessEnv = Bun.env): boolean | null {
 	if (env.PI_NO_SYNC_OUTPUT || env.PI_TUI_SYNC_OUTPUT === "0") return false;
 	if (env.PI_FORCE_SYNC_OUTPUT === "1" || env.PI_TUI_SYNC_OUTPUT === "1") return true;
 	return null;
 }
 
-/**
- * Whether `TERM_FEATURES` advertises DEC 2026 synchronized output via the `Sy`
- * capability token. `TERM_FEATURES` is a run of capitalized two-letter codes
- * (e.g. `…Sy…`), so a case-sensitive substring match is unambiguous: `Sy`
- * cannot straddle a code boundary because those are always lowercase→uppercase.
- */
 function advertisesSynchronizedOutput(termFeatures: string | undefined): boolean {
 	return termFeatures?.includes("Sy") ?? false;
 }
 
-/**
- * Whether DEC 2026 synchronized-output wrappers should be enabled by default.
- *
- * Policy (highest precedence first):
- *   1. Explicit user override (`PI_NO_SYNC_OUTPUT`/`PI_TUI_SYNC_OUTPUT=0` off,
- *      `PI_FORCE_SYNC_OUTPUT=1`/`PI_TUI_SYNC_OUTPUT=1` on).
- *   2. Positive `TERM_FEATURES` advertisement (`Sy`) — survives SSH/mux wrapping.
- *   3. Windows Terminal (1.24+) via `WT_SESSION`, including the
- *      WSL/SSH-fronted host.
- *   4. Known direct terminals with confirmed support. SSH does *not* disable —
- *      DEC 2026 passes through SSH when the outer terminal honors it.
- *   5. Everything else starts off, including risky multiplexers; the runtime
- *      DECRQM probe upgrades any of them when the terminal actually reports
- *      `?2026` supported (current zellij, tmux master, foot, contour, mintty…).
- */
 export function shouldEnableSynchronizedOutputByDefault(
 	env: NodeJS.ProcessEnv = Bun.env,
 	terminalId: TerminalId = TERMINAL_ID,
@@ -312,10 +221,6 @@ export function shouldEnableSynchronizedOutputByDefault(
 	if (advertisesSynchronizedOutput(env.TERM_FEATURES)) return true;
 	if (env.WT_SESSION) return true;
 
-	// Risky multiplexers start off even when an inner terminal id leaks through:
-	// older tmux/screen synchronized-output handling is flaky and a mux may not
-	// pass DEC 2026 to the outer host. The DECRQM probe re-enables sync when the
-	// mux reports `?2026` supported.
 	if (isInsideTerminalMultiplexer(env)) {
 		return false;
 	}
@@ -329,33 +234,10 @@ export function shouldEnableSynchronizedOutputByDefault(
 		case "vscode":
 			return true;
 		default:
-			// VTE family, GNU screen, Apple Terminal, Warp, legacy native console
-			// host (no WT_SESSION), and bare/unknown xterm profiles stay off until
-			// the DECRQM probe proves support.
 			return false;
 	}
 }
 
-/**
- * Whether the terminal applies Kitty-style DECCARA rectangular SGR changes
- * (`CSI Pt ; Pl ; Pb ; Pr ; <sgr> $ r`) extended to background color, so large
- * filled regions can be painted as rectangles instead of background-padded
- * strings on every row.
- *
- * Verified against terminal sources rather than terminfo, because a bare
- * `Cara`/DECCARA terminfo capability does not imply the Kitty SGR-background
- * extension:
- * - Kitty implements it for *all* SGR attributes including background (see
- *   kitty `docs/deccara.rst` and the `test_deccara` parser test).
- * - Ghostty does NOT: its `CSI $ r` dispatch falls through to an "unknown CSI"
- *   warning and DECCARA/DECSACE are tracked as unsupported
- *   (ghostty-org/ghostty#632). Enabling it there would silently drop panel
- *   backgrounds, so ghostty stays on the padded-string fallback.
- *
- * Disabled under tmux/screen/zellij multiplexers — screen-coordinate rectangle
- * protocols are not safe to assume through a multiplexer — and via the
- * `PI_NO_DECCARA` kill switch. Pure helper for tests and `TERMINAL` construction.
- */
 export function detectRectangularSgrSupport(terminalId: TerminalId, env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (terminalId !== "kitty") return false;
 	const kill = env.PI_NO_DECCARA;
@@ -365,53 +247,18 @@ export function detectRectangularSgrSupport(terminalId: TerminalId, env: NodeJS.
 	}
 	return true;
 }
-/**
- * Resolve an explicit user override for OSC 8 hyperlinks. Returns `false` for
- * an opt-out, `true` for a force-on, or `null` when the user has expressed no
- * preference. Opt-out beats force-on so a kill switch is unambiguous, mirroring
- * {@link synchronizedOutputUserOverride}.
- */
+
 export function hyperlinksUserOverride(env: NodeJS.ProcessEnv = Bun.env): boolean | null {
 	if (env.PI_NO_HYPERLINKS === "1") return false;
 	if (env.PI_FORCE_HYPERLINKS === "1") return true;
 	return null;
 }
 
-/**
- * Parse tmux's self-reported version from `TERM_PROGRAM_VERSION`. tmux sets
- * `TERM_PROGRAM=tmux` and `TERM_PROGRAM_VERSION=<version>` automatically since
- * 3.2a; older releases (or any path that does not surface the version) yield
- * `null` and the caller treats tmux conservatively.
- */
 function parseTmuxVersionFromEnv(env: NodeJS.ProcessEnv): { major: number; minor: number } | null {
 	if (env.TERM_PROGRAM?.toLowerCase() !== "tmux") return null;
 	return parseMajorMinorVersion(env.TERM_PROGRAM_VERSION);
 }
 
-/**
- * Whether OSC 8 hyperlinks should be enabled by default.
- *
- * Policy (highest precedence first):
- *   1. Explicit user override (`PI_NO_HYPERLINKS=1` off, `PI_FORCE_HYPERLINKS=1`
- *      on). Opt-out wins ties.
- *   2. Static terminal capability — terminals whose {@link TerminalInfo} marks
- *      `hyperlinks: false` (e.g. `base`) stay off unless the user forced on.
- *   3. GNU screen's explicit session marker (`STY`) always off, even if tmux is
- *      also present: a screen layer anywhere in the path cannot forward OSC 8.
- *   4. tmux session (`TMUX` set): enabled when tmux self-reports >= 3.4 via
- *      `TERM_PROGRAM_VERSION` (tmux 3.4 stores OSC 8 as a cell attribute and
- *      forwards it to outer terminals whose `terminal-features` include
- *      `hyperlinks`). Older or unknown versions stay off; on outer terminals
- *      without the feature configured, tmux silently drops the sequence —
- *      identical to today. Checked before the screen-family TERM heuristic
- *      because tmux's historical `default-terminal` is `screen-256color`, so
- *      `TERM=screen*` inside a tmux session must NOT short-circuit to off.
- *   5. screen-family TERM without `TMUX` always off: screen never gained OSC 8
- *      support.
- *   6. tmux-family TERM without `TMUX` env — unusual (e.g. inspection scripts);
- *      no version available, so off.
- *   7. Otherwise honor the static terminal capability.
- */
 export function shouldEnableHyperlinksByDefault(
 	env: NodeJS.ProcessEnv = Bun.env,
 	terminalId: TerminalId = TERMINAL_ID,
@@ -421,14 +268,8 @@ export function shouldEnableHyperlinksByDefault(
 
 	if (!getTerminalInfo(terminalId).hyperlinks) return false;
 
-	// STY is GNU screen's explicit session marker. It vetoes tmux enabling when
-	// multiplexers are nested because screen cannot forward OSC 8 anywhere in the
-	// path.
 	if (env.STY) return false;
 
-	// tmux check before TERM heuristics: TMUX is the authoritative current-session
-	// signal and supersedes TERM, which may be `screen-256color` under tmux's
-	// historical default-terminal setting.
 	if (env.TMUX) {
 		const version = parseTmuxVersionFromEnv(env);
 		if (!version) return false;
@@ -451,12 +292,7 @@ function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null 
 	}
 	return null;
 }
-/**
- * Warp implements the Kitty graphics protocol only outside Windows hosts; its
- * Windows build (including Warp-hosted WSL shells) renders the same APC
- * sequences as visible garbage. Keep platform/env injectable so the carve-out
- * is testable without mutating `process.platform`.
- */
+
 export function resolveWarpImageProtocol(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = Bun.env,
@@ -479,28 +315,22 @@ function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv =
 	);
 }
 const KNOWN_TERMINALS = Object.freeze({
-	// Fallback terminals
 	base: new TerminalInfo("base", null, false, false, NotifyProtocol.Bell),
 	trueColor: new TerminalInfo("trueColor", null, true, false, NotifyProtocol.Bell),
-	// Recognized terminals
+
 	kitty: new TerminalInfo("kitty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc99, true, true, true),
 	ghostty: new TerminalInfo("ghostty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
 	wezterm: new TerminalInfo("wezterm", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9),
 	iterm2: new TerminalInfo("iterm2", ImageProtocol.Iterm2, true, true, NotifyProtocol.Osc9),
 	vscode: new TerminalInfo("vscode", null, true, true, NotifyProtocol.Bell),
 	alacritty: new TerminalInfo("alacritty", null, true, true, NotifyProtocol.Bell),
-	// Warp identifies via TERM_PROGRAM=WarpTerminal and ships the Kitty graphics
-	// protocol on macOS/Linux (direct placement only — no Unicode placeholders, so
-	// detectKittyUnicodePlaceholdersSupport correctly excludes it). It does not
-	// honor OSC 8 yet (the escape renders as visible text), so hyperlinks stay off,
-	// but it does support OSC 9 notifications.
+
 	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Osc9, false, false, false, 1),
 });
 
-/** Resolve terminal identity from environment markers used by common emulators. */
 export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	function caseEq(a: string, b: string): boolean {
-		return a.toLowerCase() === b.toLowerCase(); // For compiler to pattern match
+		return a.toLowerCase() === b.toLowerCase();
 	}
 
 	const {
@@ -542,84 +372,50 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 
 export const TERMINAL_ID: TerminalId = detectTerminalId(Bun.env);
 
-/**
- * The process-wide {@link TERMINAL} singleton: a {@link TerminalInfo} whose
- * post-construction capabilities — the image protocol and the probe-driven
- * flags — are writable, so the runtime setters and tests mutate them directly
- * instead of through an unsound cast. Every other field stays readonly.
- */
 export interface RuntimeTerminal extends TerminalInfo {
 	imageProtocol: ImageProtocol | null;
 	hyperlinks: boolean;
 	deccara: boolean;
 	supportsScreenToScrollback: boolean;
-	/** Whether OSC 66 text sizing is currently enabled. */
+
 	textSizing: boolean;
 }
 
 export const TERMINAL: RuntimeTerminal = (() => {
 	const resolved = getTerminalInfo(TERMINAL_ID).clone();
-	// Detection records support; hosts opt into OSC 66 separately.
+
 	resolved.textSizing = false;
 
 	const forcedImageProtocol = getForcedImageProtocol();
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
 	} else if (resolved.id === "warp") {
-		// Warp advertises Kitty graphics only outside Windows hosts; drop it under WSL.
 		resolved.imageProtocol = resolveWarpImageProtocol();
 	} else if (!resolved.imageProtocol) {
 		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id);
 		if (fallbackImageProtocol) resolved.imageProtocol = fallbackImageProtocol;
 	}
-	// Hyperlink (OSC 8) capability. The static per-terminal flag lives on
-	// KNOWN_TERMINALS; shouldEnableHyperlinksByDefault folds in runtime context —
-	// PI_FORCE_HYPERLINKS / PI_NO_HYPERLINKS overrides plus a tmux>=3.4 gate so
-	// modern tmux forwards OSC 8 to outer terminals that opt in via
-	// `terminal-features "*:hyperlinks"`.
+
 	resolved.hyperlinks = shouldEnableHyperlinksByDefault(Bun.env, resolved.id);
-	// DECCARA rectangular-SGR background fills. The static per-terminal capability
-	// lives on KNOWN_TERMINALS; here we fold in runtime context — multiplexer and
-	// the PI_NO_DECCARA kill switch via detectRectangularSgrSupport — and force it
-	// off inside the test runtime so the xterm.js-backed virtual terminal (which
-	// ignores DECCARA) exercises the padded-string fallback. Integration tests opt
-	// in explicitly through setTerminalDeccara.
+
 	resolved.deccara = detectRectangularSgrSupport(resolved.id, Bun.env) && !isBunTestRuntime();
 	return resolved;
 })();
 
-// Seed Kitty Unicode placeholder support from the resolved terminal id. Only
-// kitty/ghostty are known to honor `U=1` placement; other Kitty-protocol paths
-// (wezterm, tmux/screen fallback) treat the placeholder cells as literal PUA
-// glyphs, which is the "ASCII artifact + laggy scrolling" reported in #1877.
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
 
-/**
- * Override terminal image protocol at runtime after capability probes complete.
- */
 export function setTerminalImageProtocol(imageProtocol: ImageProtocol | null): void {
 	TERMINAL.imageProtocol = imageProtocol;
 }
 
-/**
- * Override DECCARA rectangular-SGR capability at runtime. Used by tests to
- * exercise the optimizer and fallback paths deterministically — the default is
- * resolved once at import and force-disabled under the test runtime.
- */
 export function setTerminalDeccara(enabled: boolean): void {
 	TERMINAL.deccara = enabled;
 }
 
-/** Override screen-to-scrollback clear support for targeted renderer tests. */
 export function setTerminalScreenToScrollback(enabled: boolean): void {
 	TERMINAL.supportsScreenToScrollback = enabled;
 }
 
-/**
- * Enable/disable OSC 66 text-sizing at runtime. The coding-agent calls this from
- * the `tui.textSizing` setting (gated on the terminal's static `supportsTextSizing`
- * capability); tests flip it directly to exercise the scaled-heading path.
- */
 export function setTerminalTextSizing(enabled: boolean): void {
 	TERMINAL.textSizing = enabled;
 }
@@ -646,19 +442,14 @@ export interface ImageRenderOptions {
 	maxWidthCells?: number;
 	maxHeightCells?: number;
 	preserveAspectRatio?: boolean;
-	/**
-	 * Stable Kitty image id (`i=`). When set, the image is displayed via a
-	 * transmit-once + placement scheme keyed off this id instead of re-sending the
-	 * base64 each frame.
-	 */
+
 	imageId?: number;
-	/** Stable Kitty placement id (`p=`); defaults to {@link imageId}. */
+
 	placementId?: number;
-	/** When true (Kitty + {@link imageId}), also return the one-time transmit sequence. */
+
 	includeTransmit?: boolean;
 }
 
-// Default cell dimensions - updated by TUI when terminal responds to query
 let cellDimensions: CellDimensions = { widthPx: 9, heightPx: 18 };
 
 export function getCellDimensions(): CellDimensions {
@@ -698,7 +489,6 @@ function chunkKittyApc(leadParams: string, base64Data: string): string {
 	return chunks.join("");
 }
 
-/** Transmit-and-display (`a=T`) — the self-contained form used when no stable id is available. */
 export function encodeKitty(
 	base64Data: string,
 	options: {
@@ -714,25 +504,10 @@ export function encodeKitty(
 	return chunkKittyApc(params.join(","), base64Data);
 }
 
-/**
- * Transmit image data only (`a=t`), keyed by `imageId`, without displaying it.
- * Sent once per image; the data then persists in the terminal's store (it
- * survives scroll-off and text clears for images with a non-zero id), so
- * subsequent frames display it with the tiny {@link encodeKittyPlacement}
- * sequence instead of re-sending the base64.
- */
 export function encodeKittyTransmit(base64Data: string, imageId: number): string {
 	return chunkKittyApc(`a=t,f=100,q=2,i=${imageId}`, base64Data);
 }
 
-/**
- * Display a previously transmitted image (`a=p`) at the cursor. `C=1` keeps
- * the terminal cursor anchored at the placement origin so the renderer's
- * explicit cursor movement remains the only row accounting. Carrying a stable
- * `placementId` (`p=`) means re-emitting the sequence on a repaint *replaces*
- * the existing placement (moving/resizing it without flicker) rather than
- * stacking a duplicate.
- */
 export function encodeKittyPlacement(options: {
 	imageId: number;
 	placementId?: number;
@@ -746,12 +521,6 @@ export function encodeKittyPlacement(options: {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
 }
 
-/**
- * Exact shape of the direct-placement line {@link Image} emits as its block's
- * last row: optional `ESC 7` + `CUU(rows-1)` prefix, the {@link encodeKittyPlacement}
- * APC, optional `ESC 8` suffix. tmux-passthrough-wrapped lines deliberately do
- * not match (passthrough placements stay untouched).
- */
 const KITTY_DIRECT_PLACEMENT_LINE =
 	/^(?:\x1b7(?:\x1b\[(\d+)A)?)?\x1b_Ga=p,q=2,C=1,i=(\d+)(?:,p=(\d+))?(?:,c=(\d+))?(?:,r=(\d+))?\x1b\\(?:\x1b8)?$/;
 
@@ -762,12 +531,6 @@ export interface ParsedKittyPlacementLine {
 	rows: number;
 }
 
-/**
- * Parse a frame line that consists solely of a Kitty direct placement (the
- * last line of an {@link Image} block). Returns null for anything else —
- * placeholder grids, tmux-wrapped placements, sixel/iTerm2 payloads — so
- * callers fall back to writing the line verbatim.
- */
 export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacementLine | null {
 	const m = KITTY_DIRECT_PLACEMENT_LINE.exec(line);
 	if (!m) return null;
@@ -782,28 +545,17 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 	};
 }
 
-/**
- * Rebuild an {@link Image} direct-placement line for the viewport row it is
- * written at. The component-rendered line encodes `CUU(rows-1)`, which clamps
- * at the viewport top once the block's leading rows have scrolled out — the
- * placement then re-anchors the full image shifted down over foreign rows.
- * Anchor at the block's first *visible* row instead, clipping the source
- * rectangle (`y=`/`h=`, image pixels) to the visible bottom slice.
- */
 export function encodeKittyPlacementLine(options: {
 	imageId: number;
 	placementId: number;
 	columns: number;
-	/** Total cell rows of the image block. */
+
 	rows: number;
-	/** Viewport row the block's last line is being written at. */
+
 	screenRow: number;
-	/** Source image height in pixels, for the clipped source rectangle. */
+
 	imageHeightPx: number;
 }): string {
-	// Without a source pixel height the slice cannot be expressed — emit the
-	// component's own full form (status quo) rather than squashing the whole
-	// image into the reduced row count.
 	const clippable = options.imageHeightPx > 0;
 	const hiddenRows = clippable ? Math.max(0, options.rows - 1 - options.screenRow) : 0;
 	const visibleRows = options.rows - hiddenRows;
@@ -813,30 +565,16 @@ export function encodeKittyPlacementLine(options: {
 		const srcY = Math.floor((options.imageHeightPx * hiddenRows) / options.rows);
 		params.push(`y=${srcY}`, `h=${Math.max(1, options.imageHeightPx - srcY)}`);
 	}
-	// No tmux passthrough: inside tmux the component's own line arrives
-	// wrapped, never parses, and never reaches this rewrite.
+
 	const apc = `\x1b_G${params.join(",")}\x1b\\`;
 	const cuu = visibleRows - 1;
 	return cuu > 0 ? `\x1b7\x1b[${cuu}A${apc}\x1b8` : apc;
 }
 
-/**
- * Kitty graphics delete command for a single image id. Uses `d=I` (capital)
- * which removes the image and every one of its placements — on screen *and* in
- * scrollback — and frees the backing data. `q=2` suppresses the terminal reply.
- * Text-clearing escapes (`CSI 2 J` / `CSI 3 J`) do not remove Kitty graphics, so
- * this is the only way to actually purge a placed image.
- */
 export function encodeKittyDeleteImage(imageId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=I,i=${imageId},q=2\x1b\\`);
 }
 
-/**
- * Delete a single placement of an image (`d=i`, lowercase): removes its cells
- * and registry entry but keeps the transmitted data, so a later `a=p` under a
- * fresh placement id needs no retransmit. Used to clear stale placement-epoch
- * entries after a destructive history clear.
- */
 export function encodeKittyDeletePlacement(imageId: number, placementId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`);
 }
@@ -1064,16 +802,12 @@ export function renderImage(
 		if (options.imageId != null) {
 			const placementId = options.placementId ?? options.imageId;
 			const graphics = getKittyGraphics();
-			// Transmit-once (keyed by id). Repaints reuse the stored image, so the
-			// transmit is only emitted when requested.
+
 			let transmit: string | undefined;
 			if (options.includeTransmit) {
 				transmit = encodeKittyTransmit(base64Data, options.imageId);
 			}
-			// Unicode placeholders render the image as real text cells (which survive
-			// horizontal slicing, reflow and overlaps) instead of a cursor-positioned
-			// `a=p` placement. Falls back to direct placement when disabled or when the
-			// grid exceeds the diacritic table's addressable cell range.
+
 			if (graphics.unicodePlaceholders && kittyPlaceholdersFit(fit.columns, fit.rows)) {
 				const lines = renderKittyPlaceholderLines({
 					imageId: options.imageId,
@@ -1083,7 +817,7 @@ export function renderImage(
 				});
 				return { lines, rows: fit.rows, transmit };
 			}
-			// Direct placement: re-emit only the tiny `a=p` on repaints.
+
 			const sequence = encodeKittyPlacement({
 				imageId: options.imageId,
 				placementId,
@@ -1092,7 +826,7 @@ export function renderImage(
 			});
 			return { sequence, rows: fit.rows, transmit };
 		}
-		// No stable id (e.g. no budget): self-contained transmit-and-display.
+
 		const sequence = encodeKitty(base64Data, {
 			columns: fit.columns,
 			rows: fit.rows,
@@ -1102,17 +836,6 @@ export function renderImage(
 
 	if (TERMINAL.imageProtocol === ImageProtocol.Sixel) {
 		try {
-			// SIXEL encodes in 6-pixel vertical bands. A height that is not a
-			// multiple of 6 is padded with transparent rows, but the terminal
-			// still allocates cell rows for the padded height. When the padded
-			// height crosses a cell boundary the terminal uses one more row
-			// than fit.rows, so the next line of content overwrites the bottom
-			// of the image — a visible slice stripped from the image. Round the
-			// encode height DOWN to the largest multiple of 6 that fits within
-			// the requested row budget, so the band boundary aligns without
-			// padding and the reserved row count never exceeds fit.rows. Scale
-			// the width by the same ratio so resize_exact preserves the aspect
-			// ratio instead of squashing the image vertically.
 			const rawHeightPx = Math.max(1, fit.rows * cellDims.heightPx);
 			const targetHeightPx = Math.max(6, Math.floor(rawHeightPx / 6) * 6);
 			const heightScale = targetHeightPx / rawHeightPx;
@@ -1145,11 +868,6 @@ export function imageFallback(mimeType: string, dimensions?: ImageDimensions, fi
 	return `[Image: ${parts.join(" ")}]`;
 }
 
-/**
- * Structured terminal notification. Rich fields are honored only by OSC 99
- * (Kitty) once support is confirmed; other protocols and the unconfirmed Kitty
- * path collapse to a single `title: body` line.
- */
 export interface TerminalNotification {
 	title?: string;
 	body?: string;
@@ -1162,30 +880,21 @@ export interface TerminalNotification {
 	expiresMs?: number;
 }
 
-/**
- * Whether the terminal confirmed OSC 99 desktop-notification support via the
- * `p=?` query probe. Until confirmed, structured notifications collapse to a
- * single message line.
- */
 let osc99CapabilitiesConfirmed = false;
 
-/** Record the OSC 99 capability-probe result (called by ProcessTerminal). */
 export function setOsc99Supported(supported: boolean): void {
 	osc99CapabilitiesConfirmed = supported;
 }
 
-/** True when OSC 99 structured notifications have been confirmed available. */
 export function isOsc99Supported(): boolean {
 	return osc99CapabilitiesConfirmed;
 }
 
-/** Collapse a structured notification to a single line for non-OSC-99 sinks. */
 function notificationToLine(n: TerminalNotification): string {
 	if (n.title && n.body) return `${n.title}: ${n.body}`;
 	return n.title ?? n.body ?? "";
 }
 
-// C0/C1 control characters that are unsafe inside an OSC payload (must base64).
 const OSC99_UNSAFE = /[\x00-\x1f\x7f\x80-\x9f]/u;
 const OSC99_MAX_PAYLOAD_BYTES = 2048;
 const OSC99_APP_NAME = "Proto";
@@ -1279,12 +988,6 @@ function osc99Actions(actions: TerminalNotification["actions"]): string | undefi
 	}
 }
 
-/**
- * Format a structured notification as OSC 99 title/body payloads. Title and
- * body chunks share one id. Every non-final chunk carries `d=0`; the final
- * title or body chunk displays the notification. Metadata values that require
- * it (application name, type, icon name, sound) are base64-encoded.
- */
 function formatOsc99Notification(n: TerminalNotification): string {
 	const id = osc99Id(n.id);
 	const meta: string[] = [`i=${id}`, `f=${base64Utf8(OSC99_APP_NAME)}`];

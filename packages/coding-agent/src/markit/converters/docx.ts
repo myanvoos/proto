@@ -1,4 +1,3 @@
-// Adapted from markit-ai (MIT). See ../NOTICE.
 import * as path from "node:path";
 import mammoth from "@oh-my-pi/pi-utils/docx";
 import { createTurndown, normalizeTablesHtml } from "../../utils/turndown";
@@ -47,7 +46,7 @@ export class DocxConverter implements Converter {
 		const { value: html } = await mammoth.convertToHtml({ buffer: input }, { convertImage });
 		const turndown = createTurndown();
 		let markdown = turndown.turndown(normalizeTablesHtml(html));
-		// Replace data URI images with comment placeholders when no imageDir
+
 		if (!imageDir) {
 			markdown = markdown.replace(/!\[([^\]]*)\]\(data:[^)]*\)/g, "<!-- image: $1 -->");
 		}

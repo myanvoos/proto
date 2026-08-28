@@ -1,9 +1,3 @@
-/**
- * Firecrawl Web Search Provider
- *
- * Calls Firecrawl's search API and maps web results into the unified
- * SearchResponse shape used by the web search tool.
- */
 import {
 	type AuthStorage,
 	type FetchImpl,
@@ -57,7 +51,7 @@ interface FirecrawlSearchParams {
 	query: string;
 	num_results?: number;
 	recency?: SearchParams["recency"];
-	/** Explicit `tbs` (custom date range); takes precedence over `recency`. */
+
 	tbs?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -87,7 +81,6 @@ interface FirecrawlSearchResponse {
 	results?: FirecrawlWebResult[] | null;
 }
 
-/** Resolve Firecrawl API key through the shared auth storage pipeline. */
 export function findApiKey(
 	authStorage: AuthStorage,
 	sessionId?: string,
@@ -144,17 +137,11 @@ async function callFirecrawlSearch(
 	return data;
 }
 
-/** ISO `YYYY-MM-DD` to Google `MM/DD/YYYY` for `tbs=cdr` custom date ranges. */
 function toGoogleDate(iso: string): string {
 	const [year, month, day] = iso.split("-");
 	return `${month}/${day}/${year}`;
 }
 
-/**
- * Map explicit `before:`/`after:` bounds to a Firecrawl `tbs` custom date
- * range (`cdr:1,cd_min:MM/DD/YYYY,cd_max:MM/DD/YYYY`), or undefined when the
- * query carries no absolute date bounds.
- */
 function buildDateTbs(parsed: StructuredQuery): string | undefined {
 	if (!parsed.after && !parsed.before) return undefined;
 	const parts = ["cdr:1"];
@@ -168,15 +155,12 @@ function getWebResults(data: FirecrawlSearchResponse): FirecrawlWebResult[] {
 	if (data.data && Array.isArray(data.data.web)) return data.data.web;
 	return data.results ?? [];
 }
-/** Execute Firecrawl web search. */
+
 export async function searchFirecrawl(params: SearchParams): Promise<SearchResponse> {
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	let query = params.query;
 	let tbs: string | undefined;
 	if (parsed.hasDirectives) {
-		// Firecrawl search is SERP-backed: the query supports Google operators
-		// (site:, inurl:, intitle:, quotes, -, OR). Absolute date bounds move to
-		// the native tbs param and are stripped from the query string.
 		tbs = buildDateTbs(parsed);
 		query = formatQuery(parsed, tbs ? { ...GOOGLE_QUERY_SYNTAX, dateRange: false } : GOOGLE_QUERY_SYNTAX);
 	}
@@ -197,13 +181,11 @@ export async function searchFirecrawl(params: SearchParams): Promise<SearchRespo
 	const resolvedKey = await resolveApiKeyOnce(keyResolver, params.signal);
 	let data: FirecrawlSearchResponse;
 	if (resolvedKey) {
-		// Reuse the preflight credential for the initial authenticated attempt.
 		const seededResolver = seedApiKeyResolver(resolvedKey, keyResolver);
 		data = await withAuth(seededResolver, key => callFirecrawlSearch(key, firecrawlParams), {
 			signal: params.signal,
 		});
 	} else {
-		// Keyless mode — omit Authorization header
 		data = await callFirecrawlSearch(undefined, firecrawlParams);
 	}
 
@@ -226,25 +208,15 @@ export async function searchFirecrawl(params: SearchParams): Promise<SearchRespo
 	};
 }
 
-/** Search provider for Firecrawl web search. */
 export class FirecrawlProvider extends SearchProvider {
 	readonly id = "firecrawl";
 	readonly label = "Firecrawl";
 
-	/**
-	 * Auto-chain admission requires either a credential or an explicitly
-	 * configured self-hosted endpoint. Hosted keyless mode remains explicit-only
-	 * so it does not displace providers the user configured.
-	 */
 	isAvailable(authStorage: AuthStorage): boolean {
 		const configuredBaseUrl = process.env.FIRECRAWL_BASE_URL ?? process.env.FIRECRAWL_API_URL;
 		return !!configuredBaseUrl?.trim() || authStorage.hasAuth("firecrawl") || !!getEnvApiKey("firecrawl");
 	}
 
-	/**
-	 * Firecrawl supports keyless mode, so an explicit user selection
-	 * (`webSearch: firecrawl`) works without any credential configured.
-	 */
 	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return true;
 	}

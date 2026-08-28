@@ -2,16 +2,8 @@ import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import type { Rule } from "../../capability/rule";
 import { theme } from "../../modes/theme/theme";
 
-/** Collapsed view shows at most this many rules before eliding the rest. */
 const MAX_COLLAPSED_RULES = 4;
 
-/**
- * Component that renders a TTSR (Time Traveling Stream Rules) notification.
- * Shows when a rule violation is detected and the stream is being rewound.
- * One block can carry several rules: a single event may match multiple rules,
- * and consecutive notifications merge into the previous block via
- * {@link addRules} while it is still the live transcript tail.
- */
 export class TtsrNotificationComponent extends Container {
 	#box: Box;
 	#expanded = false;
@@ -24,7 +16,6 @@ export class TtsrNotificationComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Use inverse warning color for yellow background effect
 		this.#box = new Box(1, 1, t => theme.inverse(theme.fg("warning", t)));
 		this.#box.setIgnoreTight(true);
 		this.addChild(this.#box);
@@ -43,7 +34,6 @@ export class TtsrNotificationComponent extends Container {
 		return super.render(width);
 	}
 
-	/** Merge additional rules into this block (deduped by rule name). */
 	addRules(rules: Rule[]): void {
 		let changed = false;
 		for (const rule of rules) {
@@ -67,8 +57,7 @@ export class TtsrNotificationComponent extends Container {
 
 	#rebuild(): void {
 		this.#box.clear();
-		// fg colors conflict with inverse, so styling inside the block is limited
-		// to bold (names) and italic (descriptions).
+
 		if (this.#rules.length === 1) {
 			this.#rebuildSingle(this.#rules[0]!);
 		} else {
@@ -113,7 +102,6 @@ export class TtsrNotificationComponent extends Container {
 			if (desc) {
 				let displayText = desc;
 				if (!this.#expanded) {
-					// One line per rule when collapsed; full description when expanded.
 					const newline = desc.indexOf("\n");
 					if (newline !== -1) {
 						displayText = `${desc.slice(0, newline).trimEnd()}…`;

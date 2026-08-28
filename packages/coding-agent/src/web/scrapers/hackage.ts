@@ -58,9 +58,6 @@ function parseCabal(content: string): ParsedCabal {
 	};
 }
 
-/**
- * Handle Hackage (Haskell package registry) URLs via JSON API
- */
 export const handleHackage: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -70,14 +67,12 @@ export const handleHackage: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "hackage.haskell.org") return null;
 
-		// Match /package/{name} or /package/{name}-{version}
 		const match = parsed.pathname.match(/^\/package\/([^/]+)(?:\/|$)/);
 		if (!match) return null;
 
 		const packageId = decodeURIComponent(match[1]);
 		const fetchedAt = new Date().toISOString();
 
-		// Version endpoint returns a map of version -> status.
 		const versionUrl = `https://hackage.haskell.org/package/${encodeURIComponent(packageId)}.json`;
 		const versionResult = await loadPage(versionUrl, {
 			timeout,
@@ -92,7 +87,6 @@ export const handleHackage: SpecialHandler = async (
 		const latestVersion = Object.keys(versionMap).sort(compareVersions).at(-1);
 		if (!latestVersion) return null;
 
-		// Fetch the latest cabal file for package metadata.
 		const cabalUrl = `https://hackage.haskell.org/package/${encodeURIComponent(packageId)}-${latestVersion}/${encodeURIComponent(packageId)}.cabal`;
 		const cabalResult = await loadPage(cabalUrl, {
 			timeout,

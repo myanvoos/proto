@@ -6,18 +6,18 @@ use clap::Parser;
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 use nix::sys::stat::Mode;
 
-/// Manage the process umask.
+
 #[derive(Parser)]
 pub(crate) struct UmaskCommand {
-	/// If MODE is omitted, output in a form that may be reused as input.
+
 	#[arg(short = 'p')]
 	print_roundtrippable: bool,
 
-	/// Makes the output symbolic; otherwise an octal number is given.
+
 	#[arg(short = 'S')]
 	symbolic_output: bool,
 
-	/// Mode mask.
+
 	mode: Option<String>,
 }
 
@@ -152,7 +152,7 @@ fn parse_symbolic_umask(mode: &str, current_umask: u32) -> Result<nix::sys::stat
 }
 
 fn set_umask(value: nix::sys::stat::mode_t) -> Result<(), brush_core::Error> {
-	// value of mode_t can be platform dependent
+
 	let mode = nix::sys::stat::Mode::from_bits(value).ok_or_else(|| ErrorKind::InvalidUmask)?;
 	nix::sys::stat::umask(mode);
 	Ok(())

@@ -1,34 +1,28 @@
-//! Shared glob-pattern helpers used by both [`crate::glob`] and
-//! [`crate::grep`].
-
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use napi::bindgen_prelude::*;
 
-/// Compiled glob filter with cheap paths for common basename/extension queries.
 pub struct CompiledGlob {
 	fast_path: GlobFastPath,
 	glob_set:  GlobSet,
 }
 
 enum GlobFastPath {
-	/// Matches any path regardless of depth or name (`**`, `**/*`).
 	All,
-	/// Matches only root-level paths (no `/`), regardless of name (`*`).
+
 	RootOnly,
-	/// Matches by extension at any depth (`**/*.ext`, `**/*.{a,b}`).
+
 	Extension(Vec<String>),
-	/// Matches by extension only at the root level (`*.ext`, `*.{a,b}`).
+
 	RootExtension(Vec<String>),
-	/// Matches a literal basename at any depth (`**/name`).
+
 	Basename(String),
-	/// Matches a literal basename only at the root level (bare `name`).
+
 	RootBasename(String),
-	/// Falls back to full glob matching.
+
 	GlobSet,
 }
 
 impl CompiledGlob {
-	/// Returns true when the normalized relative path matches this glob.
 	pub fn is_match(&self, path: &str) -> bool {
 		match &self.fast_path {
 			GlobFastPath::All => true,
@@ -48,8 +42,6 @@ impl CompiledGlob {
 	}
 }
 
-/// Normalize a raw glob string: fix path separators, optionally prepend `**/`
-/// for recursive matching, and close any unclosed `{` alternation groups.
 pub fn build_glob_pattern(glob: &str, recursive: bool) -> String {
 	let normalized = glob.replace('\\', "/");
 	let pattern = if !recursive
@@ -64,18 +56,6 @@ pub fn build_glob_pattern(glob: &str, recursive: bool) -> String {
 	fix_unclosed_braces(pattern)
 }
 
-/// Maximum walk depth (path components) a normalized glob pattern can match,
-/// or `usize::MAX` when unbounded.
-///
-/// Walk-relative globs compile with `literal_separator(true)`, so `*`, `?`,
-/// and `[...]` never cross `/` — a pattern with N literal segments can only
-/// match entries at most N components deep. Bounding the walk to that depth
-/// keeps non-recursive patterns (`*`, `dir/*.json`) from traversing an entire
-/// subtree they can never match into (the source of "narrow glob timed out on
-/// a populated directory" failures).
-///
-/// `**` matches any number of components and `{...}` alternations may contain
-/// `/`, so both disable the bound.
 pub fn walk_depth_bound(pattern: &str) -> usize {
 	if pattern.contains("**") || pattern.contains('{') {
 		return usize::MAX;
@@ -87,10 +67,6 @@ pub fn walk_depth_bound(pattern: &str) -> usize {
 		.max(1)
 }
 
-/// Compile a glob pattern string into a [`CompiledGlob`].
-///
-/// When `recursive` is true, simple patterns (no path separators, no leading
-/// `**`) are automatically prefixed with `**/`.
 pub fn compile_glob(glob: &str, recursive: bool) -> Result<CompiledGlob> {
 	let mut builder = GlobSetBuilder::new();
 	let pattern = build_glob_pattern(glob, recursive);
@@ -105,8 +81,6 @@ pub fn compile_glob(glob: &str, recursive: bool) -> Result<CompiledGlob> {
 	Ok(CompiledGlob { fast_path: classify_fast_path(&pattern), glob_set })
 }
 
-/// Like [`compile_glob`], but accepts an `Option<&str>` — returns `Ok(None)`
-/// when the input is `None`, empty, or whitespace-only.
 pub fn try_compile_glob(glob: Option<&str>, recursive: bool) -> Result<Option<CompiledGlob>> {
 	let Some(glob) = glob.map(str::trim).filter(|v| !v.is_empty()) else {
 		return Ok(None);
@@ -180,9 +154,6 @@ fn is_literal_component(value: &str) -> bool {
 			.any(|ch| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '/' | '\\'))
 }
 
-/// True when `value` is a literal single path component: non-empty, no glob
-/// metacharacters, and no path separator, so a "basename" fast path is safe
-/// to apply regardless of how many directory levels precede it.
 fn is_literal_path(value: &str) -> bool {
 	!value.is_empty()
 		&& !value
@@ -190,10 +161,6 @@ fn is_literal_path(value: &str) -> bool {
 			.any(|ch| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '\\' | '/'))
 }
 
-/// Close unclosed `{` alternation groups in a glob pattern.
-///
-/// LLMs occasionally produce patterns like `*.{ts,js` without the closing `}`.
-/// Rather than failing, we append the missing braces.
 fn fix_unclosed_braces(pattern: String) -> String {
 	let opens = pattern.chars().filter(|&c| c == '{').count();
 	let closes = pattern.chars().filter(|&c| c == '}').count();

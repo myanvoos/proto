@@ -12,8 +12,7 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 import { WorkerCore } from "./worker-core";
-// Coding-agent binary/bundle workers route through the CLI entrypoint with a
-// hidden argv mode, so compiled/npm builds only need one JavaScript entry.
+
 import type {
 	JsDisplayOutput,
 	RunErrorPayload,
@@ -48,25 +47,13 @@ interface PendingRun {
 	resolve(value: { value: unknown }): void;
 	reject(error: Error): void;
 	toolCalls: Map<string, AbortController>;
-	/**
-	 * Host calls currently inside a `deferExternalAbort` phase — `agent()`
-	 * isolation worktree setup and merge/cherry-pick, which ignore their abort
-	 * once started. Settling the run while one is live would return the cell on
-	 * top of a git operation still rewriting the repo, so the abort path drains
-	 * this first. Mirrors the Python bridge's shielded-signal contract.
-	 */
+
 	deferDepth: number;
-	/** Resolves once {@link deferDepth} falls back to zero. */
+
 	deferDrained?: PromiseWithResolvers<void>;
-	/** Set once the turn was cancelled; blocks new bridge calls during the drain. */
+
 	aborted: boolean;
-	/**
-	 * A worker `result` withheld because the cell still has bridge calls in
-	 * flight. `#runOne` reports a finished run without awaiting its pending
-	 * tools, so a floated or caught `agent()` would otherwise settle the run —
-	 * tearing down the abort listener — while the subagent kept going with
-	 * nothing left able to cancel it. Delivered once the last call drains.
-	 */
+
 	heldResult?: Extract<WorkerOutbound, { type: "result" }>;
 	settled: boolean;
 }
@@ -89,26 +76,18 @@ interface StartingJsSession extends SessionOwners {
 const sessions = new Map<string, JsSession>();
 const startingSessions = new Map<string, StartingJsSession>();
 const resettingSessions = new Map<string, Promise<void>>();
-// Worker startup (module-graph import + WorkerCore construction) is infrastructure
-// cost, not user compute. Floor it independently of Bun's 5s default per-test timeout
-// so a slow cold-start under load isn't aborted mid-init — terminating a still-
-// initializing eval runtime triggers the same kind of terminate-race that motivates
-// avoiding `vm.runInContext` (see shared/indirect-eval.ts), here surfacing as a
-// SIGILL/SIGSEGV. Callers that pass a larger per-cell budget still dominate.
+
 const WORKER_INIT_TIMEOUT_MS = 15_000;
 const WORKER_CLOSE_TIMEOUT_MS = 1_000;
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
-// Active graceful-close grace period before a worker that ack'd `close` but never
-// emitted its `close` event is force-terminated. Defaults to the production floor;
-// tests override it (and restore it) to exercise the close-timeout -> terminate
-// path without a real wall-clock wait.
+
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
 const useWorkerThreadForTests = false;
 
 export async function executeInVmContext(options: {
 	sessionKey: string;
 	sessionId: string;
-	/** Logical owner identifier; scopes `reset` on shared contexts and retained-worker cleanup. */
+
 	ownerId?: string;
 	cwd: string;
 	session: ToolSession;
@@ -127,9 +106,6 @@ export async function executeInVmContext(options: {
 		getOwners: key => sessions.get(key) ?? startingSessions.get(key),
 	});
 	if (options.reset) {
-		// Coalesce concurrent resets: an existing in-flight reset already
-		// produces a fresh context, so a follow-up `reset: true` cell should
-		// just wait for it rather than failing the user-visible call.
 		const inFlight = resettingSessions.get(sessionKey);
 		if (inFlight) await inFlight.catch(() => undefined);
 		else {
@@ -145,8 +121,6 @@ export async function executeInVmContext(options: {
 			}
 		}
 	} else {
-		// Internal coordination: wait for any in-flight reset to settle and
-		// then run on the freshly-rebuilt context.
 		const inFlight = resettingSessions.get(sessionKey);
 		if (inFlight) await inFlight.catch(() => undefined);
 	}
@@ -179,10 +153,6 @@ export async function disposeAllVmContexts(): Promise<void> {
 	await Promise.all(all.map(session => killSession(session, new ToolError("JS context disposed"), { force: false })));
 }
 
-/**
- * Shut down retained JS contexts owned solely by `ownerId` (e.g. a subagent's
- * private fork); shared contexts just drop the owner registration.
- */
 export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
 	const toKill: JsSession[] = [];
 	for (const session of [...sessions.values()]) {
@@ -248,16 +218,10 @@ async function runOnce(
 	const onAbort = (): void => {
 		const reason = options.runState.signal?.reason;
 		const abortError = reasonToError(reason, "Execution aborted");
-		// Stop delegated work at once — this is what kills spawned subagents —
-		// and refuse further bridge calls so the drain below stays bounded to
-		// phases that had already started.
+
 		pending.aborted = true;
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(abortError);
-		// A critical host phase ignores its abort once started (isolation
-		// worktree setup, merge/cherry-pick). Killing the worker now would
-		// settle the cell on top of a git operation still in progress, so wait
-		// for it. Hard-kill is still the only way to interrupt synchronous user
-		// code, hence it stays the terminal step either way.
+
 		const drained = pending.deferDepth > 0 ? pending.deferDrained?.promise : undefined;
 		if (drained) {
 			void drained.then(() => killSessionFor(session, abortError, { force: true }));
@@ -308,8 +272,6 @@ async function acquireSession(
 	let startingSession!: StartingJsSession;
 
 	const startup = (async (): Promise<JsSession> => {
-		// Attach the message listener before sending init. Both Bun Worker messages
-		// and subprocess IPC can arrive immediately after the evaluator loads.
 		const worker = spawnJsWorker();
 		const session: JsSession = {
 			sessionKey,
@@ -321,17 +283,13 @@ async function acquireSession(
 			ownerIds: new Set(),
 			hasFallbackOwner: false,
 		};
-		// Init headroom is the fixed infrastructure floor; the caller's per-cell timeout
-		// dominates when larger so users can grant more by raising `timeout` on a cell.
+
 		const readyTimeoutMs = Math.max(WORKER_INIT_TIMEOUT_MS, timeoutMs ?? 0);
 		while (true) {
 			try {
 				await initWorker(session, snapshot, readyTimeoutMs);
 				break;
 			} catch (error) {
-				// Runtime crash/load failures surface asynchronously via the runtime's
-				// error callback, after the synchronous spawn try/catch has returned.
-				// Preserve the full process -> Worker -> inline ladder for those failures.
 				const failed = session.worker;
 				await failed.terminate().catch(() => undefined);
 				if (failed.mode === "inline") throw error;
@@ -351,9 +309,7 @@ async function acquireSession(
 		}
 		session.ownerIds = new Set(startingSession.ownerIds);
 		session.hasFallbackOwner = startingSession.hasFallbackOwner;
-		// Publish only while this startup still owns the key: owner disposal or
-		// a concurrent dispose-all may have already reaped the starting record,
-		// and publishing here would resurrect a context that was just torn down.
+
 		if (startingSessions.get(sessionKey) === startingSession) {
 			sessions.set(sessionKey, session);
 		}
@@ -396,20 +352,13 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 			rejectReady(error);
 			return;
 		}
-		// Worker died after a successful handshake: tear the session down so the
-		// in-flight run (and the next acquire) fail fast instead of hanging on a
-		// worker that will never reply.
+
 		void killSessionFor(session, error, { force: true });
 	});
 	try {
-		// Attach listeners and send init before awaiting ready. The worker now
-		// emits ready only in response to init, so this ordering is race-free.
 		worker.send({ type: "init", snapshot });
 		await raceWithTimeout(readyPromise, timeoutMs, "Timed out initializing JS eval worker");
 	} catch (error) {
-		// Handshake failed (timeout, init-failed, or worker error): drop both listeners
-		// so the abandoned worker can't keep routing messages into a session the caller
-		// is about to discard or retry on the inline fallback.
 		unsubscribeMessage();
 		unsubscribeError();
 		throw error;
@@ -444,11 +393,6 @@ function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 	}
 }
 
-/**
- * Maintain {@link PendingRun.deferDepth} from the bridge's pause/resume status
- * events so an abort can wait out a critical `agent()` phase instead of
- * settling the cell over a half-applied merge.
- */
 function trackDeferPhase(pending: PendingRun, event: JsStatusEvent): void {
 	if (event.deferExternalAbort !== true) return;
 	if (event.op === EVAL_TIMEOUT_PAUSE_OP) {
@@ -497,7 +441,7 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 		safeSend(session, { type: "tool-reply", id: msg.id, reply: { ok: false, error: toErrorPayload(error) } });
 	} finally {
 		pending.toolCalls.delete(msg.id);
-		// Last call of a run whose worker result was withheld: settle it now.
+
 		const held = pending.heldResult;
 		if (held && !pending.settled && !pending.aborted && pending.toolCalls.size === 0) {
 			finishPending(pending, held);
@@ -505,7 +449,6 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 	}
 }
 
-/** Deliver a worker `result` to the waiting {@link runOnce}. */
 function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type: "result" }>): void {
 	pending.settled = true;
 	pending.heldResult = undefined;
@@ -519,14 +462,9 @@ function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type:
 function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: "result" }>): void {
 	const pending = session.pending.get(msg.runId);
 	if (!pending || pending.settled) return;
-	// Once the turn is cancelled the scheduled kill is the sole settler, so a
-	// late worker result can't cut the abort drain short.
+
 	if (pending.aborted) return;
-	// A cell owns every bridge call it starts. The worker finishes a run without
-	// awaiting its outstanding tool calls, so `agent(...)` that is floated or
-	// caught would settle the run here — `runOnce` then drops the abort listener
-	// and the pending entry, leaving the subagent running with nothing able to
-	// cancel it. Hold the result until the last call drains.
+
 	if (pending.toolCalls.size > 0) {
 		pending.heldResult = msg;
 		return;
@@ -623,9 +561,6 @@ function spawnJsWorker(): WorkerHandle {
 		try {
 			return spawnJsProcess();
 		} catch (err) {
-			// Fall through to the Bun Worker rung: a worker thread still interrupts
-			// synchronous infinite loops via terminate(), which the inline fallback
-			// cannot.
 			logger.warn("JS eval subprocess spawn failed; falling back to a Bun Worker", {
 				error: err instanceof Error ? err.message : String(err),
 			});
@@ -759,11 +694,6 @@ function errorFromWorkerEvent(event: ErrorEvent): Error {
 	return new Error("Unknown JS eval worker error");
 }
 
-/**
- * Inline fallback for environments where Bun cannot spawn the worker entry
- * (e.g. some test runners). Preserves behavior but cannot interrupt synchronous
- * infinite loops because user code runs on the main thread.
- */
 function spawnInlineWorker(): WorkerHandle {
 	const hostListeners = new Set<(message: WorkerOutbound) => void>();
 	const workerListeners = new Set<(message: WorkerInbound) => void>();

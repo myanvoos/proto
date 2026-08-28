@@ -4,12 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://app.tavily.com/home";
 
-/**
- * Login to Tavily.
- *
- * Opens browser to API keys page and prompts user to paste their API key.
- * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
- */
 export const loginTavily = createApiKeyLogin({
 	providerLabel: "Tavily",
 	authUrl: AUTH_URL,

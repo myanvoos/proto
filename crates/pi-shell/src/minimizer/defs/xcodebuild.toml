@@ -1,4 +1,4 @@
-# xcodebuild compile output — strip build-graph chatter, keep errors and result.
+
 
 [filters.xcodebuild]
 description = "Compact xcodebuild output"

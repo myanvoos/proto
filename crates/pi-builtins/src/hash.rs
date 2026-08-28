@@ -5,27 +5,27 @@ use clap::Parser;
 
 #[derive(Parser)]
 pub(crate) struct HashCommand {
-	/// Remove entries associated with the given names.
+
 	#[arg(short = 'd')]
 	remove: bool,
 
-	/// Display paths in a format usable for input.
+
 	#[arg(short = 'l')]
 	display_as_usable_input: bool,
 
-	/// The path to associate with the names.
+
 	#[arg(short = 'p', value_name = "PATH")]
 	path_to_use: Option<PathBuf>,
 
-	/// Remove all entries.
+
 	#[arg(short = 'r')]
 	remove_all: bool,
 
-	/// Display the paths associated with the names.
+
 	#[arg(short = 't')]
 	display_paths: bool,
 
-	/// Names to process.
+
 	names: Vec<String>,
 }
 
@@ -76,15 +76,15 @@ impl builtins::Command for HashCommand {
 			}
 		} else {
 			for name in &self.names {
-				// Remove from the cache if already hashed.
+
 				let _ = context.shell.program_location_cache_mut().unset(name);
 
-				// Names with slashes are accepted silently
+
 				if name.contains('/') {
 					continue;
 				}
 
-				// Hash the path
+
 				if context
 					.shell
 					.find_first_executable_in_path_using_cache(name)

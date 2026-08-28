@@ -58,12 +58,6 @@ function fileName(request: ProviderFileUploadRequest): string {
 	return preferred && preferred !== "." && preferred !== ".." ? preferred : "image";
 }
 
-/**
- * Create an OpenAI Files API client for an official OpenAI Responses model.
- *
- * Models using Codex, Azure, OpenRouter, or another OpenAI-compatible endpoint
- * are rejected locally by returning `null`; no request is attempted for them.
- */
 export function createOpenAIFileClient(
 	model: Model,
 	credential: string,

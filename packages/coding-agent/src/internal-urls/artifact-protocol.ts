@@ -1,14 +1,3 @@
-/**
- * Protocol handler for artifact:// URLs.
- *
- * Resolves artifact IDs against the artifacts directories of every active
- * session. Unlike agent://, artifacts are raw text with no JSON extraction.
- *
- * URL form:
- * - artifact://<id> - Full artifact content
- *
- * Pagination is handled by the read tool via offset/limit parameters.
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
@@ -17,7 +6,6 @@ import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, Ur
 
 const MAX_INLINE_ARTIFACT_BYTES = 8 * 1024 * 1024;
 
-/** Filesystem location for a session artifact, resolved without materializing its content. */
 export interface ResolvedArtifactFile {
 	id: string;
 	path: string;
@@ -35,13 +23,9 @@ function parseArtifactId(url: InternalUrl): string {
 	return id;
 }
 
-/** Resolve an `artifact://` URL to its backing file without reading artifact bytes. */
 export async function resolveArtifactFile(url: InternalUrl, context?: ResolveContext): Promise<ResolvedArtifactFile> {
 	const id = parseArtifactId(url);
 
-	// Artifact ids are per-session counters; in multi-session hosts the same
-	// id exists in several dirs. Pin resolution to the calling session's
-	// artifacts dir first so `artifact://3` means *this* session's #3.
 	const dirs = artifactsDirsFromRegistry();
 	const pinnedDir = context?.localProtocolOptions?.getArtifactsDir?.() ?? null;
 	if (pinnedDir) {
@@ -102,9 +86,6 @@ export class ArtifactProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		const artifact = await resolveArtifactFile(url, context);
 
-		// Path-only callers (search/grep, bash URL expansion) never touch the
-		// artifact bytes. Return the resource shape so those flows keep working
-		// on artifacts of any size — only content materialization is gated.
 		if (context?.pathOnly) {
 			return {
 				url: url.href,

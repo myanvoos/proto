@@ -6,12 +6,6 @@ const AUTH_URL = "https://venice.ai/settings/api";
 const API_BASE_URL = "https://api.venice.ai/api/v1";
 const VALIDATION_MODEL = "qwen3-4b";
 
-/**
- * Login to Venice.
- *
- * Opens browser to API keys page, prompts user to paste their API key.
- * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
- */
 export const loginVenice = createApiKeyLogin({
 	providerLabel: "Venice",
 	authUrl: AUTH_URL,

@@ -43,8 +43,6 @@ export async function loginNvidia(options: OAuthController): Promise<string> {
 			fetch: options.fetch,
 		});
 	} catch (error) {
-		// A real auth rejection (401/403) is fatal; any other validation-endpoint
-		// failure is non-fatal — skip validation and trust the supplied key.
 		if (AIError.is(AIError.classify(error), AIError.Flag.AuthFailed)) {
 			throw error;
 		}

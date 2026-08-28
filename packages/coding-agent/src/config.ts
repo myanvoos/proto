@@ -9,27 +9,13 @@ export * from "./config/config-file";
 
 const priorityList = [
 	{ dir: CONFIG_DIR_NAME, globalAgentDir: getConfigAgentDirName },
-	// Legacy pi config dirs (pre-proto installs): same layout under `.pi`.
+
 	{ dir: ".pi", globalAgentDir: () => ".pi/agent" },
 	{ dir: ".claude" },
 	{ dir: ".codex" },
 	{ dir: ".gemini" },
 ];
 
-// =============================================================================
-// Package Directory (for optional external docs/examples)
-// =============================================================================
-
-/**
- * Walk up from `startDir` looking for a `package.json`. Returns the directory
- * containing the marker, or `undefined` when the walk hits the filesystem root
- * without finding one.
- *
- * Exported for unit-testing the resolution contract from arbitrary start
- * directories (notably the `bun --compile` case where `import.meta.dir`
- * resolves to `/$bunfs/root` and no owning package is locatable — issue
- * #1423). Production callers should use {@link getPackageDir} instead.
- */
 function walkUpForPackageDir(startDir: string): string | undefined {
 	let dir = startDir;
 	while (dir !== path.dirname(dir)) {
@@ -41,20 +27,6 @@ function walkUpForPackageDir(startDir: string): string | undefined {
 	return undefined;
 }
 
-/**
- * Get the base directory for resolving optional package assets (docs, examples, CHANGELOG.md).
- *
- * Honors the `PI_PACKAGE_DIR` override (useful for Nix/Guix store paths);
- * otherwise walks up from `import.meta.dir` looking for a `package.json`.
- * Returns `undefined` when no owning package is locatable — notably inside
- * `bun --compile` binaries where `import.meta.dir` resolves to `/$bunfs/root`
- * and the walk hits the filesystem root with nothing found.
- *
- * Callers MUST treat `undefined` as "no package assets available" and skip the
- * lookup. NEVER fall back to the user's `cwd` here: that conflates the host
- * project with proto's own assets and was the source of issue #1423 (the host
- * project's `CHANGELOG.md` rendered as proto's startup changelog).
- */
 export function getPackageDir(): string | undefined {
 	const envDir = process.env.PI_PACKAGE_DIR;
 	if (envDir) {
@@ -63,25 +35,11 @@ export function getPackageDir(): string | undefined {
 	return walkUpForPackageDir(import.meta.dir);
 }
 
-/**
- * Path to proto's own `CHANGELOG.md`, or `undefined` when the package directory
- * cannot be resolved (e.g. inside `bun --compile` binaries that don't bundle
- * package assets). Callers MUST skip changelog parsing when this is undefined;
- * see issue #1423.
- */
 export function getChangelogPath(): string | undefined {
 	const packageDir = getPackageDir();
 	return packageDir ? path.resolve(packageDir, "CHANGELOG.md") : undefined;
 }
 
-// =============================================================================
-// Multi-Config Directory Helpers
-// =============================================================================
-
-/**
- * User-level: ~/.proto/agent, Claude's active config directory, ~/.codex, ~/.gemini
- * Project-level: .proto, .claude, .codex, .gemini
- */
 const USER_CONFIG_BASES = priorityList.map(({ dir, globalAgentDir }) => ({
 	base: () =>
 		dir === ".claude" ? resolveClaudePaths().configDir : path.join(os.homedir(), globalAgentDir?.() ?? dir),
@@ -95,42 +53,24 @@ const PROJECT_CONFIG_BASES = priorityList.map(({ dir }) => ({
 
 interface ConfigDirEntry {
 	path: string;
-	source: string; // e.g., ".proto", ".claude"
+	source: string;
 	level: "user" | "project";
 }
 
 interface GetConfigDirsOptions {
-	/** Include user-level directories (~/.proto/agent/...). Default: true */
 	user?: boolean;
-	/** Include project-level directories (.proto/...). Default: true */
+
 	project?: boolean;
-	/** Current working directory for project paths. Default: getProjectDir() */
+
 	cwd?: string;
-	/** Only return directories that exist. Default: false */
+
 	existingOnly?: boolean;
 }
 
-/**
- * Get all config directories for a subpath, ordered by priority (highest first).
- *
- * @param subpath - Subpath within config dirs (e.g., "commands", "hooks", "agents")
- * @param options - Options for filtering
- * @returns Array of directory entries, highest priority first
- *
- * @example
- * // Get all command directories
- * getConfigDirs("commands")
- * // → [{ path: "~/.proto/agent/commands", source: ".proto", level: "user" }, ...]
- *
- * @example
- * // Get only existing project skill directories
- * getConfigDirs("skills", { user: false, existingOnly: true })
- */
 export function getConfigDirs(subpath: string, options: GetConfigDirsOptions = {}): ConfigDirEntry[] {
 	const { user = true, project = true, cwd = getProjectDir(), existingOnly = false } = options;
 	const results: ConfigDirEntry[] = [];
 
-	// User-level directories (highest priority)
 	if (user) {
 		for (const { base, name } of USER_CONFIG_BASES) {
 			const resolvedPath = path.resolve(base(), subpath);
@@ -140,7 +80,6 @@ export function getConfigDirs(subpath: string, options: GetConfigDirsOptions = {
 		}
 	}
 
-	// Project-level directories
 	if (project) {
 		for (const { base, name } of PROJECT_CONFIG_BASES) {
 			const resolvedPath = path.resolve(cwd, base, subpath);
@@ -153,10 +92,6 @@ export function getConfigDirs(subpath: string, options: GetConfigDirsOptions = {
 	return results;
 }
 
-/**
- * Get all config directory paths for a subpath (convenience wrapper).
- * Returns just the paths, highest priority first.
- */
 export function getConfigDirPaths(subpath: string, options: GetConfigDirsOptions = {}): string[] {
 	return getConfigDirs(subpath, options).map(e => e.path);
 }
@@ -168,10 +103,6 @@ interface ConfigFileResult<T> {
 	content: T;
 }
 
-/**
- * Find the first existing config file (for non-JSON files like SYSTEM.md).
- * Returns just the path, or undefined if not found.
- */
 export function findConfigFile(subpath: string, options: GetConfigDirsOptions = {}): string | undefined {
 	const dirs = getConfigDirs("", { ...options, existingOnly: false });
 
@@ -185,9 +116,6 @@ export function findConfigFile(subpath: string, options: GetConfigDirsOptions = 
 	return undefined;
 }
 
-/**
- * Find the first existing config file with metadata.
- */
 export function findConfigFileWithMeta(
 	subpath: string,
 	options: GetConfigDirsOptions = {},
@@ -204,15 +132,6 @@ export function findConfigFileWithMeta(
 	return undefined;
 }
 
-// =============================================================================
-// Walk-Up Config Discovery (for monorepo scenarios)
-// =============================================================================
-
-/**
- * Find all nearest config directories by walking up from cwd.
- * Returns one entry per config base (.proto, .claude) - the nearest one found.
- * Results are in priority order (highest first).
- */
 export function findAllNearestProjectConfigDirs(subpath: string, cwd: string = getProjectDir()): ConfigDirEntry[] {
 	const results: ConfigDirEntry[] = [];
 	const foundBases = new Set<string>();
@@ -237,7 +156,6 @@ export function findAllNearestProjectConfigDirs(subpath: string, cwd: string = g
 		currentDir = parentDir;
 	}
 
-	// Sort by priority order
 	const order = PROJECT_CONFIG_BASES.map(b => b.name);
 	results.sort((a, b) => order.indexOf(a.source) - order.indexOf(b.source));
 

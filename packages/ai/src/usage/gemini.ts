@@ -10,8 +10,6 @@ import type {
 } from "../usage";
 import { parseIsoTimestamp } from "./shared";
 
-// (Refresh is the sole responsibility of AuthStorage; no provider-direct refresh here.)
-
 const DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 
 const GEMINI_TIER_MAP: Array<{ tier: string; models: string[] }> = [
@@ -110,13 +108,6 @@ function buildAmount(remainingFraction: number | undefined): UsageAmount {
 	};
 }
 
-/**
- * Return the OAuth access token to use against `/v1internal:*`. AuthStorage is
- * the sole refresh authority (broker-aware, single-flighted, rotation-safe);
- * if the token landed here expired or near-expired, the next usage cycle will
- * carry a freshly-refreshed credential. Returning `undefined` short-circuits
- * the probe rather than POSTing a stale token to Google.
- */
 function resolveAccessToken(params: UsageFetchParams): string | undefined {
 	const { credential } = params;
 	if (credential.type !== "oauth") return undefined;

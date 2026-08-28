@@ -1,7 +1,7 @@
-//! `jq` builtin: jq-compatible JSON processing via jaq 2.3.0.
-//!
-//! Ported from the jaq 2.3.0 CLI front end. The interpreter is provided by
-//! `jaq-core`, `jaq-std`, and `jaq-json`.
+
+
+
+
 
 use core::fmt::{self, Display, Formatter};
 use std::{
@@ -26,30 +26,30 @@ use cli::Cli;
 use filter::{FileReports, Filter};
 
 mod cli {
-	//! Command-line argument parsing.
+
 	use core::fmt;
 	use std::{ffi::OsString, path::PathBuf};
 
-	/// Remaining arguments; upstream used `std::env::ArgsOs`, but as an in-process
-	/// builtin the argv comes from the host, not the process.
+
+
 	type Args = std::vec::IntoIter<OsString>;
 
 	#[derive(Debug, Default)]
 	pub struct Cli {
-		// Input options
+
 		pub null_input: bool,
-		/// When the option `--slurp` is used additionally,
-		/// then the whole input is read into a single string.
+
+
 		pub raw_input:  bool,
-		/// When input is read from files,
-		/// jaq yields an array for each file, whereas
-		/// jq produces only a single array.
+
+
+
 		pub slurp:      bool,
 
-		// Output options
+
 		pub compact_output:    bool,
 		pub raw_output:        bool,
-		/// This flag enables `--raw-output`.
+
 		pub join_output:       bool,
 		pub in_place:          bool,
 		pub sort_keys:         bool,
@@ -58,33 +58,33 @@ mod cli {
 		pub tab:               bool,
 		pub indent:            usize,
 
-		// Compilation options
+
 		pub from_file:    bool,
-		/// If this option is given multiple times, all given directories are
-		/// searched.
+
+
 		pub library_path: Vec<PathBuf>,
 
-		// Key-value options
+
 		pub arg:       Vec<(String, String)>,
 		pub argjson:   Vec<(String, String)>,
 		pub slurpfile: Vec<(String, OsString)>,
 		pub rawfile:   Vec<(String, OsString)>,
 
-		// Positional arguments
-		/// If this argument is not given, it is assumed to be `.`, the identity
-		/// filter.
+
+
+
 		pub filter:      Option<Filter>,
 		pub files:       Vec<PathBuf>,
 		pub args:        Vec<String>,
-		//pub jsonargs: Vec<String>,
+
 		pub run_tests:   Option<Vec<PathBuf>>,
-		/// If there is some last output value `v`,
-		/// then the exit status code is
-		/// 1 if `v < true` (that is, if `v` is `false` or `null`) and
-		/// 0 otherwise.
-		/// If there is no output value, then the exit status code is 4.
-		///
-		/// If any error occurs, then this option has no effect.
+
+
+
+
+
+
+
 		pub exit_status: bool,
 		pub version:     bool,
 		pub help:        bool,
@@ -108,7 +108,7 @@ mod cli {
 				match mode {
 					Mode::Files => self.files.push(arg.into()),
 					Mode::Args => self.args.push(arg.into_string()?),
-					//Mode::JsonArgs => self.jsonargs.push(arg.into_string()?),
+
 				}
 			}
 			Ok(())
@@ -117,7 +117,7 @@ mod cli {
 		fn long(&mut self, mode: &mut Mode, arg: &str, args: &mut Args) -> Result<(), Error> {
 			let int = |s: OsString| s.into_string().ok()?.parse().ok();
 			match arg {
-				// handle all arguments after "--"
+
 				"" => args.try_for_each(|arg| self.positional(mode, arg))?,
 
 				"null-input" => self.short('n', args)?,
@@ -147,7 +147,7 @@ mod cli {
 				"rawfile" => self.rawfile.push(parse_key_val("--rawfile", args)?),
 
 				"args" => *mode = Mode::Args,
-				//"jsonargs" => *mode = Mode::JsonArgs,
+
 				"run-tests" => self.run_tests = Some(args.map(PathBuf::from).collect()),
 				"exit-status" => self.short('e', args)?,
 				"version" => self.short('V', args)?,
@@ -186,10 +186,10 @@ mod cli {
 			let mut cli = Self { indent: 2, ..Self::default() };
 			let mut mode = Mode::Files;
 			let mut args = argv.into_iter();
-			args.next(); // skip the command name (argv[0])
+			args.next();
 			while let Some(arg) = args.next() {
 				match arg.to_str() {
-					// we've got a valid UTF-8 argument here
+
 					Some(s) => match s.strip_prefix("--") {
 						Some(rest) => cli.long(&mut mode, rest, &mut args)?,
 						None => match s.strip_prefix("-") {
@@ -197,9 +197,9 @@ mod cli {
 							None => cli.positional(&mode, arg)?,
 						},
 					},
-					// we've got invalid UTF-8, so it is no valid flag
-					// note that we do not check here whether arg starts with `-`,
-					// because this seems to be quite difficult to do in a portable way
+
+
+
 					None => cli.positional(&mode, arg)?,
 				}
 			}
@@ -238,7 +238,7 @@ mod cli {
 		}
 	}
 
-	/// Conversion of errors from [`OsString::into_string`].
+
 	impl From<OsString> for Error {
 		fn from(e: OsString) -> Self {
 			Self::Utf8(e)
@@ -252,17 +252,17 @@ mod cli {
 		Ok((key, val))
 	}
 
-	/// Interpretation of positional arguments.
+
 	enum Mode {
 		Args,
-		//JsonArgs,
+
 		Files,
 	}
 
 }
 
 mod filter {
-	//! Filter parsing, compilation, and execution.
+
 	use core::{
 		cell::Cell,
 		fmt::{self, Display, Formatter},
@@ -281,28 +281,28 @@ mod filter {
 	pub type Filter = jaq_core::Filter<Native<Val>>;
 
 	thread_local! {
-		/// Exit code requested by `halt`/`halt_error` in the current invocation.
-		/// The overridden natives set this instead of `std::process::exit` and
-		/// abort the run with a sentinel error; the entry point checks it first.
+
+
+
 		static HALT: Cell<Option<i32>> = const { Cell::new(None) };
 	}
 
-	/// Takes (and clears) the exit code requested by `halt`/`halt_error`.
+
 	pub fn take_halt() -> Option<i32> {
 		HALT.with(Cell::take)
 	}
 
-	/// Replacements for jaq-std natives that are unsound inside a long-lived host
-	/// process. Prepended before `jaq_std::funs()`: the compiler resolves native
-	/// calls by first match, so these shadow the crates.io implementations.
-	///
-	/// - `env`: reads the shell's exported environment, not the host process's.
-	/// - `halt`/`halt_error`: record the exit code and abort the run with a
-	///   sentinel error instead of `std::process::exit`, which would kill the
-	///   shell.
-	/// - `debug`/`stderr`: write to the ctx stderr stream directly instead of going
-	///   through the process-global `log` facade (whose single global logger may
-	///   belong to the host).
+
+
+
+
+
+
+
+
+
+
+
 	fn overrides() -> impl Iterator<Item = jaq_std::Filter<Native<Val>>> {
 		use jaq_core::box_iter::box_once;
 		use jaq_std::ValT as _;
@@ -313,14 +313,14 @@ mod filter {
 		}
 
 		fn debug_msg(v: &Val) {
-			// upstream format: env_logger renders `["DEBUG:", <args>]\n`
+
 			super::with_runtime(|runtime| {
 				let _ = writeln!(runtime.stderr, "[\"DEBUG:\", {v}]");
 			});
 		}
 
 		fn stderr_msg(v: &Val) {
-			// like jq, print strings raw and everything else as JSON, no newline
+
 			if let Some(s) = v.as_str() {
 				super::with_runtime(|runtime| {
 					let _ = write!(runtime.stderr, "{s}");
@@ -342,8 +342,8 @@ mod filter {
 			("halt_error", jaq_std::v(1), |_, mut cv| {
 				match cv.0.pop_var().as_isize() {
 					Some(code) => {
-						// upstream prints the input to stdout: raw for strings
-						// (no trailing newline), JSON + newline otherwise
+
+
 						if let Some(s) = cv.1.as_str() {
 							super::with_runtime(|runtime| {
 								let _ = write!(runtime.stdout, "{s}");
@@ -360,8 +360,8 @@ mod filter {
 			}),
 		];
 
-		// `debug` and `stderr` are identity filters with an output effect; they
-		// need an update pointer so `debug |= f` keeps working.
+
+
 		let upd_funs: [jaq_std::Filter<(RunPtr<Val>, UpdatePtr<Val>)>; 2] = [
 			(
 				"debug",
@@ -429,7 +429,7 @@ mod filter {
 		})
 		.map_err(load_errors)?;
 
-		// overrides first: native lookup is first-match-wins
+
 		let funs = overrides().chain(jaq_std::funs()).chain(jaq_json::funs());
 		let compiler = Compiler::default()
 			.with_funs(funs)
@@ -438,10 +438,10 @@ mod filter {
 		Ok((vals, filter))
 	}
 
-	/// Run a filter with given input values and run `f` for every value output.
-	///
-	/// This function cannot return an `Iterator` because it creates an `RcIter`.
-	/// This is most unfortunate. We should think about how to simplify this ...
+
+
+
+
 	pub(crate) fn run(
 		cli: &Cli,
 		filter: &Filter,
@@ -461,8 +461,8 @@ mod filter {
 		let ctx = Ctx::new(vars, &iter);
 
 		for item in if cli.null_input { &null } else { &iter } {
-			// host abort/timeout: stdin reads observe the cancel flag themselves,
-			// but file/slurped inputs and long-running filters do not
+
+
 			if super::runtime_cancelled() {
 				break;
 			}
@@ -553,7 +553,7 @@ mod filter {
 	}
 
 	fn report_lex(code: &str, (expected, found): load::lex::Error<&str>) -> Report {
-		// truncate found string to its first character
+
 		let found = &found[..found.char_indices().nth(1).map_or(found.len(), |(i, _)| i)];
 
 		let found_range = load::span(code, found);
@@ -640,8 +640,8 @@ mod read {
 
 	use super::{Cli, Val};
 
-	/// Try to load file by memory mapping and fall back to regular loading if it
-	/// fails.
+
+
 	pub fn load_file(path: impl AsRef<Path>) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
 		let path = path.as_ref();
 		let file = std::fs::File::open(path)?;
@@ -831,15 +831,15 @@ mod output {
 		};
 
 		if cli.join_output {
-			// when running `jaq -jn '"prompt> " | (., input)'`,
-			// this flush is necessary to make "prompt> " appear first
+
+
 			w.flush()
 		} else {
 			writeln!(w)
 		}
 	}
 
-	/// Runs `f` with standard output.
+
 	pub fn with_stdout<T>(stdout: &mut dyn Write, f: impl FnOnce(&mut dyn Write) -> T) -> T {
 		let res = f(stdout);
 		let _ = stdout.flush();
@@ -848,7 +848,7 @@ mod output {
 
 }
 
-/// Parsed `jq` invocation.
+
 pub(crate) struct Jq {
 	cli: Cli,
 }
@@ -1078,17 +1078,17 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 	} else {
 		let mut last = None;
 		for file in &cli.files {
-			// Resolve the operand against the shell's cwd; all later path
-			// operations (open, metadata, in-place temp+rename) use the
-			// resolved path so nothing touches the host process cwd.
+
+
+
 			let path = file.as_path();
 			let file =
 				read::load_file(path).map_err(|e| Error::Io(Some(path.display().to_string()), e))?;
 			let inputs = read::slice(cli, &file);
 			if cli.in_place {
-				// create a temporary file where output is written to,
-				// in the resolved target's directory so the final rename
-				// stays on the same filesystem
+
+
+
 				let location = path.parent().unwrap();
 				let mut tmp = tempfile::Builder::new()
 					.prefix("jaq")
@@ -1098,7 +1098,7 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 					output::print(tmp.as_file_mut(), cli, &output)
 				})?;
 
-				// replace the input file with the temporary file
+
 				std::mem::drop(file);
 				let perms = std::fs::metadata(path)?.permissions();
 				tmp.persist(path).map_err(Error::Persist)?;
@@ -1147,7 +1147,7 @@ fn binds(cli: &Cli, host: &Host) -> Result<Vec<(String, Val)>, Error> {
 	let mut var_val = var_val.collect::<Result<Vec<_>, Error>>()?;
 
 	var_val.push(("ARGS".to_string(), args(&positional, &var_val)));
-	// the shell's exported environment, not the host process environment
+
 	let env = host
 		.env()
 		.map(|(key, value)| (key.to_owned().into(), Val::from(value.to_owned())));
@@ -1197,7 +1197,7 @@ impl Display for Error {
 }
 
 impl Error {
-	/// Upstream's `Termination` exit-code mapping, kept verbatim.
+
 	fn report(&self) -> i32 {
 		match self {
 			Self::FalseOrNull => 1,
@@ -1266,7 +1266,7 @@ fn run_tests(
 }
 
 
-/// Creates the `jq` builtin registration.
+
 pub(crate) fn jq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Jq, SE>()
 }

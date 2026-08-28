@@ -1,5 +1,3 @@
-//! Runtime-agnostic brush shell execution.
-
 use std::{
 	collections::HashMap,
 	fs,
@@ -195,22 +193,13 @@ impl Shell {
 		self.abort_state.abort().await;
 	}
 
-	/// Number of live background jobs (running `&`/`nohup` children) tracked by
-	/// the persistent session. Completed jobs are reaped first via a silent
-	/// `JobManager::poll()` (no job-control notifications), so the count
-	/// reflects only processes still alive. Returns 0 when no session core is
-	/// materialized. The host uses this to decide whether to retain a per-call
-	/// shell whose background children are still running instead of dropping it
-	/// (which would SIGKILL them on kill-on-drop).
 	pub async fn live_background_job_count(&self) -> u32 {
 		let mut guard = self.session.lock().await;
 		let Some(core) = guard.as_mut() else {
 			return 0;
 		};
 		let jobs = core.shell.jobs_mut();
-		// Fail closed: a poll error leaves the job table in an unknown state, so
-		// report 0 (drop the shell) rather than pin a retained session forever on
-		// stale `representative_pid()` entries.
+
 		if jobs.poll().is_err() {
 			return 0;
 		}
@@ -244,23 +233,12 @@ pub async fn execute_shell(
 	run_shell_oneshot(config, run_config, on_chunk, cancel_token).await
 }
 
-/// Optional per-stream raw byte sinks for [`execute_shell_streams`].
-///
-/// When a sink is `Some`, that stream's pipe is drained directly into the
-/// channel with no UTF-8 decoding and no merging. When `None`, the
-/// corresponding pipe is still drained (to avoid blocking the child) but
-/// its bytes are dropped.
 #[derive(Default)]
 pub struct StreamSinks {
 	pub stdout: Option<Sender<Bytes>>,
 	pub stderr: Option<Sender<Bytes>>,
 }
 
-/// One-shot execution that delivers stdout/stderr as raw byte chunks.
-///
-/// Bytes are delivered on separate channels with no UTF-8 decoding and no
-/// merging. The minimizer is intentionally disabled — its
-/// `MinimizerResult.text` contract presumes a single merged transcript.
 pub async fn execute_shell_streams(
 	options: ShellExecuteOptions,
 	streams: StreamSinks,
@@ -334,9 +312,9 @@ async fn run_shell_session(
 				let _ = run_task.await;
 			}
 			abort_state.clear().await;
-			// Use try_lock to avoid deadlocking if another task holds the session.
-			// If we can't acquire the lock, the session will be cleaned up when the
-			// holding task finishes.
+
+
+
 			if let Ok(mut guard) = session.try_lock() {
 				*guard = None;
 			}
@@ -523,22 +501,12 @@ const fn normalize_env_key(key: &str) -> &str {
 	key
 }
 
-/// Copies the host environment into `shell`, registering the host `PATH`
-/// last.
-///
-/// Entries whose key or value is not valid Unicode are skipped: a corrupt
-/// entry carries no usable meaning, and `std::env::vars()` — the naive way to
-/// read the host environment — panics on the first one before any command can
-/// run. `vars_os()` yields the raw entries without panicking, leaving the
-/// skip decision here.
 fn copy_env_into_shell(
 	shell: &mut BrushShell,
 	env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Result<()> {
 	let mut merged_path: Option<String> = None;
 	for (key, value) in env {
-		// A key or value that cannot be decoded as Unicode is unusable; drop
-		// it rather than panicking startup for a corrupt host environment.
 		let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
 			continue;
 		};
@@ -590,22 +558,14 @@ async fn create_session_for_run(
 	if let Some(suspend_builtin) = shell.builtin_mut("suspend") {
 		suspend_builtin.disabled = true;
 	}
-	// Process inspection and control (see `pi_builtins::process_builtins`).
-	// `nohup` is withheld when PI_DISABLE_NOHUP_BUILTIN asks for the system one;
-	// `kill` already comes from the default set, where our richer implementation
-	// replaced brush's.
+
 	for (name, registration) in pi_builtins::process_builtins() {
 		if name == "nohup" && nohup_builtin_disabled(config) {
 			continue;
 		}
 		shell.register_builtin(name, registration);
 	}
-	// In-process command-line utility builtins (see
-	// `pi_builtins::utility_builtins`): consistent, cross-platform implementations
-	// that run without spawning a process and resolve paths against the shell
-	// working directory. The whole set can be disabled (falling back to system
-	// binaries) via PI_DISABLE_UUTILS_BUILTINS; the destructive trio additionally
-	// honors PI_DISABLE_UUTILS_DESTRUCTIVE, and `rm`/`mv` have their own switches.
+
 	if !uutils_env_disabled(config, "PI_DISABLE_UUTILS_BUILTINS") {
 		let destructive_disabled = uutils_env_disabled(config, "PI_DISABLE_UUTILS_DESTRUCTIVE");
 		let rm_disabled =
@@ -616,7 +576,7 @@ async fn create_session_for_run(
 			let disabled = match name {
 				"rm" => rm_disabled,
 				"mv" => mv_disabled,
-				// ln can clobber existing files via -f; gate it with the destructive set.
+
 				"ln" => destructive_disabled,
 				_ => false,
 			};
@@ -643,7 +603,6 @@ async fn create_session_for_run(
 		}
 	}
 	apply_env_fallback(&mut shell)?;
-	// `nohup` is registered above, with the rest of the process builtins.
 
 	if let Some(snapshot_path) = config.snapshot_path.as_ref() {
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;
@@ -802,47 +761,34 @@ async fn run_shell_command_single(
 	let mut minimized_out = None;
 	if let Some(buffered) = command_run.buffered
 		&& let Some(config) = options.minimizer.as_ref()
+		&& !buffered.exceeded
 	{
-		// When the capture cap is exceeded the output was streamed raw and never
-		// buffered, so nothing was minimized — leave `minimized` absent, matching
-		// every other passthrough path and `apply_shell_minimizer`. Previously a
-		// `too-large` result with empty `text`/`original_text` was emitted, which a
-		// consumer keying off `minimized` presence could mistake for a real rewrite
-		// that produced empty output.
-		if !buffered.exceeded {
-			let minimized = match minimizer_mode {
-				minimizer::engine::MinimizerMode::WholeCommand => minimizer::apply(
-					&options.command,
-					&buffered.text,
-					exit_code(&command_run.result),
-					config,
-				),
-				minimizer::engine::MinimizerMode::None => {
-					minimizer::MinimizerOutput::passthrough(&buffered.text)
-				},
-				minimizer::engine::MinimizerMode::SegmentedChain => {
-					minimizer::MinimizerOutput::passthrough(&buffered.text)
-				},
-			};
-			// Surface telemetry only when the filter actually rewrote the output
-			// and kept the original buffer — same contract as `apply_shell_minimizer`
-			// in `pi-natives`. A supported filter that runs but leaves the output
-			// unchanged (e.g. a short `git diff --name-only`) reports `changed:
-			// false` with no `original_text` and must NOT set `minimized`, or API
-			// consumers keying off `result.minimized` are misled. The separate
-			// `too-large` reason path above is unaffected.
-			if minimized.changed
-				&& let Some(original_text) = minimized.original_text
-			{
-				let output_bytes = u32::try_from(minimized.text.len()).unwrap_or(u32::MAX);
-				minimized_out = Some(MinimizerResult {
-					filter: minimized.filter.to_string(),
-					text: minimized.text,
-					original_text,
-					input_bytes: u32::try_from(minimized.input_bytes).unwrap_or(u32::MAX),
-					output_bytes,
-				});
-			}
+		let minimized = match minimizer_mode {
+			minimizer::engine::MinimizerMode::WholeCommand => minimizer::apply(
+				&options.command,
+				&buffered.text,
+				exit_code(&command_run.result),
+				config,
+			),
+			minimizer::engine::MinimizerMode::None => {
+				minimizer::MinimizerOutput::passthrough(&buffered.text)
+			},
+			minimizer::engine::MinimizerMode::SegmentedChain => {
+				minimizer::MinimizerOutput::passthrough(&buffered.text)
+			},
+		};
+
+		if minimized.changed
+			&& let Some(original_text) = minimized.original_text
+		{
+			let output_bytes = u32::try_from(minimized.text.len()).unwrap_or(u32::MAX);
+			minimized_out = Some(MinimizerResult {
+				filter: minimized.filter.to_string(),
+				text: minimized.text,
+				original_text,
+				input_bytes: u32::try_from(minimized.input_bytes).unwrap_or(u32::MAX),
+				output_bytes,
+			});
 		}
 	}
 
@@ -868,7 +814,6 @@ async fn run_shell_command_segmented_chain(
 		.await;
 	};
 
-	// When minimizer is disabled, don't segment — stream the original single path.
 	if !config.enabled {
 		return run_shell_command_single(
 			session,
@@ -929,9 +874,6 @@ async fn run_shell_command_segmented_chain(
 
 		if let Some(buffered) = command_run.buffered {
 			if buffered.exceeded {
-				// Cap exceeded mid-chain: output streamed raw, drop the buffered
-				// aggregate so the remaining segments stream too. No minimization
-				// happened, so we emit no `minimized` telemetry (see below).
 				aggregate = None;
 			} else if let Some(capture) = aggregate.as_mut() {
 				let next_input_bytes = capture.input_bytes.saturating_add(buffered.input_bytes);
@@ -962,30 +904,21 @@ async fn run_shell_command_segmented_chain(
 		return Err(Error::msg("Segmented chain executed no segments"));
 	};
 
-	let minimized_out = aggregate
-		// Only surface telemetry when the segmented chain actually rewrote the
-		// output; a `chain-noop` capture (`changed == false`) must yield `None`,
-		// matching the public `ShellRunResult.minimized` contract.
-		.filter(|capture| capture.changed)
-		.map(|capture| {
-			let minimized = minimizer::chain_output(
-				capture.text,
-				capture.original_text,
-				capture.input_bytes,
-				capture.changed,
-			);
-			MinimizerResult {
-				filter:        minimized.filter.to_string(),
-				text:          minimized.text,
-				original_text: minimized.original_text.unwrap_or_default(),
-				input_bytes:   u32::try_from(minimized.input_bytes).unwrap_or(u32::MAX),
-				output_bytes:  u32::try_from(minimized.output_bytes).unwrap_or(u32::MAX),
-			}
-		});
-	// A chain that overflowed the aggregate cap streamed its output raw and was
-	// not minimized — `minimized_out` stays `None`, matching the whole-command
-	// path and `apply_shell_minimizer`. (Previously a `too-large` result with
-	// empty `text` was emitted, a footgun for consumers keying off presence.)
+	let minimized_out = aggregate.filter(|capture| capture.changed).map(|capture| {
+		let minimized = minimizer::chain_output(
+			capture.text,
+			capture.original_text,
+			capture.input_bytes,
+			capture.changed,
+		);
+		MinimizerResult {
+			filter:        minimized.filter.to_string(),
+			text:          minimized.text,
+			original_text: minimized.original_text.unwrap_or_default(),
+			input_bytes:   u32::try_from(minimized.input_bytes).unwrap_or(u32::MAX),
+			output_bytes:  u32::try_from(minimized.output_bytes).unwrap_or(u32::MAX),
+		}
+	});
 
 	Ok((result, minimized_out))
 }
@@ -1040,9 +973,7 @@ async fn run_shell_command_once(
 			}
 		}
 	});
-	// Let pipeline consumers flush output after cancellation kills their
-	// producers. The outer run cancellation remains bounded, and this delayed
-	// fallback still releases readers whose writers never close.
+
 	const CANCEL_READER_GRACE: Duration = Duration::from_millis(500);
 	let cancel_bridge = tokio::spawn({
 		let cancel_token = cancel_token.clone();
@@ -1066,9 +997,6 @@ async fn run_shell_command_once(
 
 	drop(params);
 
-	// The foreground command can complete while background jobs keep the
-	// stdout/stderr pipe open. Don't hang forever waiting for EOF; drain output
-	// for a short period, then cancel.
 	const POST_EXIT_IDLE: Duration = Duration::from_millis(250);
 	const POST_EXIT_MAX: Duration = Duration::from_secs(2);
 	const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
@@ -1305,7 +1233,6 @@ async fn read_output_bytes(
 		if let Some(sink) = sink.as_ref()
 			&& sink.send(Bytes::from(buf)).is_err()
 		{
-			// Receiver dropped — stop forwarding and let the pipe close.
 			break;
 		}
 	}
@@ -1313,23 +1240,11 @@ async fn read_output_bytes(
 
 impl SpawnObserver for process::SpawnRegistry {
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>) {
-		// Pin a stable process reference *now*, before the pid can be recycled.
-		// On Linux the pidfd carries identity; on macOS the recorded start-time
-		// triple detects impersonation. Deferring the open to `build_targets`
-		// (as the old code did) let a recycled pid resolve to an unrelated
-		// process — issue #4605.
 		let process = process::Process::from_pid(pid);
 		self.record(pgid, process);
 	}
 }
 
-// Escalating TERM -> KILL waves over the processes this run spawned, scoped via
-// the per-run `SpawnRegistry`. The kill set is rebuilt each wave so a child
-// spawned in a grace window — or a grandchild whose recorded parent already
-// exited but whose process group is still live — is still reaped, and the loop
-// stops as soon as the run's whole tree is gone. Scoping to the registry (vs a
-// process-global descendant diff) is what keeps a cancel from reaping a
-// concurrent run's children in a shared host process.
 async fn terminate_run(registry: &process::SpawnRegistry) {
 	const WAVES: u32 = 3;
 	let mut saw_targets = false;
@@ -1376,9 +1291,6 @@ fn terminate_background_jobs(shell: &mut BrushShell) {
 		}
 	}
 	if targets.is_empty() {
-		// Shell-internal jobs were aborted above. Pure descendant cleanup is
-		// handled by `process_cancel_bridge` while the cancel was in flight;
-		// without job-tracked pgids or pids there is nothing else to signal here.
 		return;
 	}
 
@@ -1389,10 +1301,6 @@ fn terminate_background_jobs(shell: &mut BrushShell) {
 	});
 }
 
-/// Apply per-command environment variables onto a freshly pushed
-/// `Command` scope. Returns `true` when a scope was pushed (so the caller
-/// can pop it after the command runs), `false` when there were no vars and
-/// the existing scopes remain untouched.
 fn apply_command_env(
 	shell: &mut BrushShell,
 	env: Option<&HashMap<String, String>>,
@@ -1419,17 +1327,6 @@ fn apply_command_env(
 	Ok(true)
 }
 
-/// Define `env` as a shell variable expanding to the literal `$env` so that
-/// brush-core's POSIX parameter expansion preserves PowerShell-style
-/// `$env:NAME` references when commands are dispatched through brush to a
-/// PowerShell (or any) subprocess. The variable is not exported, so it only
-/// influences brush's own expansion; the child process environment is
-/// unaffected.
-///
-/// User-driven assignments (`env=prod; echo "$env:8080"`) push their own
-/// binding in the command scope and shadow this global default, preserving
-/// the bash POSIX contract for callers that genuinely use a variable named
-/// `env`.
 fn apply_env_fallback(shell: &mut BrushShell) -> Result<()> {
 	if shell.env().get("env").is_some() {
 		return Ok(());
@@ -1542,7 +1439,7 @@ async fn read_output(
 ) {
 	const REPLACEMENT: &str = "\u{FFFD}";
 	const BUF: usize = 65536;
-	let mut buf = vec![0u8; BUF + 4]; // +4 for max UTF-8 char
+	let mut buf = vec![0u8; BUF + 4];
 	let mut it = 0;
 
 	#[cfg(unix)]
@@ -1579,7 +1476,7 @@ async fn read_output(
 				res = &mut read_future => res,
 				() = cancel_token.cancelled() => break,
 			} {
-				Ok(0) => break, // EOF
+				Ok(0) => break,
 				Ok(n) => n,
 				Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
 				Err(_) => break,
@@ -1590,7 +1487,6 @@ async fn read_output(
 		}
 		it += n;
 
-		// Consume as much of `pending` as is decodable *right now*.
 		while it > 0 {
 			let pending = &buf[..it];
 			match str::from_utf8(pending) {
@@ -1602,26 +1498,21 @@ async fn read_output(
 				Err(err) => {
 					let p = err.valid_up_to();
 					if p > 0 {
-						// SAFETY: [..p] is guaranteed valid UTF-8 by valid_up_to().
 						let text = unsafe { str::from_utf8_unchecked(&pending[..p]) };
 						emit_chunk(text, on_chunk.as_ref()).await;
-						// copy p..it to the beginning of the buffer
+
 						buf.copy_within(p..it, 0);
 						it -= p;
 					}
 
 					match err.error_len() {
 						Some(p) => {
-							// Invalid byte sequence: emit replacement and drop those bytes.
 							emit_chunk(REPLACEMENT, on_chunk.as_ref()).await;
-							// copy p..it to the beginning of the buffer
+
 							buf.copy_within(p..it, 0);
 							it -= p;
-							// continue loop in case more bytes remain after the
-							// invalid sequence
 						},
 						None => {
-							// Incomplete UTF-8 sequence at end: keep bytes for next read.
 							break;
 						},
 					}
@@ -1630,7 +1521,6 @@ async fn read_output(
 		}
 	}
 
-	// Flush whatever is left at EOF (including an incomplete final sequence).
 	for chunk in buf[..it].utf8_chunks() {
 		let valid = chunk.valid();
 		if !valid.is_empty() {
@@ -1655,9 +1545,7 @@ async fn read_output_buffered(
 	let mut input_bytes = 0usize;
 	let mut captured = Vec::new();
 	let mut exceeded = false;
-	// Pending bytes from a prior read that ended mid-UTF-8 sequence. We hold
-	// them back so we emit only valid UTF-8 to the streaming callback while
-	// still capturing every byte into `captured` for post-processing.
+
 	let mut pending = Vec::<u8>::new();
 
 	#[cfg(unix)]
@@ -1704,10 +1592,7 @@ async fn read_output_buffered(
 			let _ = activity.try_send(());
 			input_bytes = input_bytes.saturating_add(n);
 		}
-		// Once `exceeded`, the post-process minimizer is bypassed (see the
-		// `!output.exceeded` gate at the call site), so further appends just
-		// grow `captured` without serving any purpose. Stop accumulating to
-		// bound peak memory on commands that produce very large output.
+
 		if !exceeded {
 			if captured.len().saturating_add(n) > max_capture_bytes {
 				exceeded = true;
@@ -1716,8 +1601,6 @@ async fn read_output_buffered(
 			}
 		}
 
-		// Stream whatever is validly decodable *right now* to the callback,
-		// carrying incomplete trailing UTF-8 bytes over to the next iteration.
 		if let Some(cb) = on_chunk.as_ref() {
 			pending.extend_from_slice(&buf[..n]);
 			while !pending.is_empty() {
@@ -1730,7 +1613,6 @@ async fn read_output_buffered(
 					Err(err) => {
 						let p = err.valid_up_to();
 						if p > 0 {
-							// SAFETY: [..p] is valid UTF-8 per valid_up_to().
 							let text = unsafe { str::from_utf8_unchecked(&pending[..p]) };
 							emit_chunk(text, Some(cb)).await;
 							pending.drain(..p);
@@ -1748,7 +1630,6 @@ async fn read_output_buffered(
 		}
 	}
 
-	// Flush any trailing bytes the streaming decoder held back at EOF.
 	if let Some(cb) = on_chunk.as_ref() {
 		for chunk in pending.utf8_chunks() {
 			let valid = chunk.valid();
@@ -1773,8 +1654,7 @@ fn register_nonblocking_pipe(reader: fs::File) -> io::Result<tokio::io::unix::As
 #[cfg(unix)]
 fn set_nonblocking<T: std::os::fd::AsRawFd>(file: &T) -> io::Result<()> {
 	let fd = file.as_raw_fd();
-	// SAFETY: `fd` is owned by `file` and remains valid for the duration of
-	// these `fcntl` calls.
+
 	let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
 	if flags < 0 {
 		return Err(io::Error::last_os_error());
@@ -1783,7 +1663,6 @@ fn set_nonblocking<T: std::os::fd::AsRawFd>(file: &T) -> io::Result<()> {
 		return Ok(());
 	}
 
-	// SAFETY: `fd` remains valid here and we are only toggling `O_NONBLOCK`.
 	let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
 	if result < 0 {
 		Err(io::Error::last_os_error())
@@ -1794,8 +1673,6 @@ fn set_nonblocking<T: std::os::fd::AsRawFd>(file: &T) -> io::Result<()> {
 
 #[cfg(unix)]
 fn read_nonblocking<T: std::os::fd::AsRawFd>(file: &T, buf: &mut [u8]) -> io::Result<usize> {
-	// SAFETY: `buf` is writable for `buf.len()` bytes, and the raw fd obtained
-	// from `file` stays valid for the duration of the syscall.
 	let read = unsafe { libc::read(file.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
 	if read < 0 {
 		Err(io::Error::last_os_error())
@@ -1804,13 +1681,6 @@ fn read_nonblocking<T: std::os::fd::AsRawFd>(file: &T, buf: &mut [u8]) -> io::Re
 	}
 }
 
-/// Forward one decoded chunk to the streaming callback, honouring channel
-/// backpressure: on a bounded channel (the pi-natives JS bridge) the send
-/// parks until the consumer frees a slot — which parks the pipe reader and,
-/// transitively, the child on its stdout/stderr pipe — so a fast producer
-/// can never buffer unbounded output in memory (#4078). A disconnected
-/// receiver (consumer gone) fails immediately, so the pipe keeps draining
-/// and the child never wedges on a full pipe.
 async fn emit_chunk(text: &str, callback: Option<&Sender<String>>) {
 	if let Some(callback) = callback {
 		let _ = callback.send_async(text.to_string()).await;
@@ -1826,26 +1696,17 @@ fn pipe_to_files(label: &str) -> Result<(fs::File, fs::File)> {
 		use std::os::unix::io::{FromRawFd, IntoRawFd};
 		let r = r.into_raw_fd();
 		let w = w.into_raw_fd();
-		// SAFETY: We just obtained these fds from os_pipe and own them exclusively.
+
 		unsafe { (FromRawFd::from_raw_fd(r), FromRawFd::from_raw_fd(w)) }
 	};
 
 	Ok((r, w))
 }
 
-/// Whether the `nohup` builtin should stand aside for the system binary.
-///
-/// The builtin detaches its operand into a new session so a backgrounded server
-/// survives this embedded shell's kill-on-drop teardown, which a system `nohup`
-/// does not do. It therefore shadows the real one unless
-/// `PI_DISABLE_NOHUP_BUILTIN` (session env or process env) asks otherwise.
 fn nohup_builtin_disabled(config: &ShellConfig) -> bool {
 	uutils_env_disabled(config, "PI_DISABLE_NOHUP_BUILTIN")
 }
 
-/// Reads a boolean "disable" flag for the uutils builtins from the session
-/// environment (preferred) then the process environment, mirroring the nohup
-/// builtin gate. Truthy = present and not "", "0", or "false".
 fn uutils_env_disabled(config: &ShellConfig, key: &str) -> bool {
 	let raw = config
 		.session_env

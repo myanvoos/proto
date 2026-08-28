@@ -56,7 +56,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"alwaysSendMaxTokens?": "boolean",
 		"strictResponsesPairing?": "boolean",
 		"supportsImageDetailOriginal?": "boolean",
-		// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
+
 		"supportsEagerToolInputStreaming?": "boolean",
 		"allowAnthropicHeaderOverrides?": "boolean",
 		"requiresToolResultId?": "boolean",
@@ -77,8 +77,6 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"promptCacheMaximumCheckpoints?": "number >= 0",
 	});
 
-	// Provider-level overrides can target bundled models whose API is not repeated
-	// in models.yml, so preserve the sparse compat shape for each supported API.
 	const ApiCompatSchema = OpenAICompatSchema.and(BedrockCompatSchema);
 
 	const ApiSchema = type(
@@ -93,19 +91,13 @@ export const getModelsConfigSchemaBundle = once(() => {
 
 	const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-	/**
-	 * Accepts the canonical `efforts` vocabulary plus the legacy
-	 * `minLevel`/`maxLevel`/`levels` range shape, normalizing both to
-	 * `ThinkingConfig` (ordered `efforts`, never empty). Precedence mirrors the
-	 * old runtime: explicit `levels` beat the min..max range; `efforts` beats both.
-	 */
 	const ModelThinkingSchema = type({
 		mode: ThinkingControlModeSchema,
 		"efforts?": EffortSchema.array(),
 		"defaultLevel?": EffortSchema,
 		"effortMap?": ReasoningEffortMapSchema,
 		"supportsDisplay?": "boolean",
-		// Legacy range vocabulary (pre-efforts configs).
+
 		"minLevel?": EffortSchema,
 		"maxLevel?": EffortSchema,
 		"levels?": EffortSchema.array(),
@@ -192,7 +184,6 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"compactionModel?": "string",
 		"remoteCompaction?": RemoteCompactionSchema,
 	}).narrow((value, ctx) => {
-		// Enforce id non-empty
 		if (typeof value.id === "string" && value.id.length === 0) {
 			return ctx.mustBe("id a non-empty string");
 		}
@@ -291,13 +282,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"models?": ModelDefinitionSchema.array(),
 		"modelOverrides?": { "[string]": ModelOverrideSchema },
 		"disableStrictTools?": "boolean",
-		/**
-		 * Streaming transport override. When set to `"pi-native"`, proto dispatches
-		 * every model under this provider via the auth-gateway's
-		 * `POST /v1/pi/stream` endpoint instead of the per-provider SDK. The
-		 * provider's `baseUrl` must point at a compatible `proto auth-gateway`
-		 * and `apiKey` must carry the gateway bearer.
-		 */
+
 		"transport?": '"pi-native"',
 	}).narrow((value, ctx) => {
 		if (value.baseUrl !== undefined && typeof value.baseUrl === "string" && value.baseUrl.length === 0) {

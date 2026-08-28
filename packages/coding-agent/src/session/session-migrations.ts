@@ -1,16 +1,14 @@
 import { Snowflake } from "@oh-my-pi/pi-utils";
 import { type CompactionEntry, CURRENT_SESSION_VERSION, type FileEntry, type SessionHeader } from "./session-entries";
 
-/** Generate a unique short ID (8 hex chars, collision-checked) */
 export function generateId(byId: { has(id: string): boolean }): string {
 	for (let i = 0; i < 100; i++) {
 		const id = crypto.randomUUID().slice(-8);
 		if (!byId.has(id)) return id;
 	}
-	return Snowflake.next(); // fallback to full snowflake id
+	return Snowflake.next();
 }
 
-/** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */
 function migrateV1ToV2(entries: FileEntry[]): void {
 	const ids = new Set<string>();
 	let prevId: string | null = null;
@@ -25,7 +23,6 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 		entry.parentId = prevId;
 		prevId = entry.id;
 
-		// Convert firstKeptEntryIndex to firstKeptEntryId for compaction
 		if (entry.type === "compaction") {
 			const comp = entry as CompactionEntry & { firstKeptEntryIndex?: number };
 			if (typeof comp.firstKeptEntryIndex === "number") {
@@ -39,7 +36,6 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 	}
 }
 
-/** Migrate v2 → v3: rename hookMessage role to custom. Mutates in place. */
 function migrateV2ToV3(entries: FileEntry[]): void {
 	for (const entry of entries) {
 		if (entry.type === "session") {
@@ -56,10 +52,6 @@ function migrateV2ToV3(entries: FileEntry[]): void {
 	}
 }
 
-/**
- * Run all necessary migrations to bring entries to current version.
- * Mutates entries in place. Returns true if any migration was applied.
- */
 export function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 	const header = entries.find(e => e.type === "session") as SessionHeader | undefined;
 	const version = header?.version ?? 1;
@@ -72,7 +64,6 @@ export function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 	return true;
 }
 
-/** Exported for testing */
 export function migrateSessionEntries(entries: FileEntry[]): void {
 	migrateToCurrentVersion(entries);
 }

@@ -86,10 +86,6 @@ function uploadedFile(request: ProviderFileUploadRequest): File {
 	return new File([request.bytes], filename, { type: request.mimeType });
 }
 
-/**
- * Create a native Anthropic Files API client for an official Anthropic Messages model.
- * Unsupported providers, APIs, and non-Anthropic endpoints return `null` without making a request.
- */
 export function createAnthropicFileClient(
 	model: Model,
 	credential: string,

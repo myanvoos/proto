@@ -240,7 +240,6 @@ async function handleTodoMutationCommand(
 	return usage(`No task or phase matched "${trimmedArg}".`, runtime);
 }
 
-/** ACP/text-mode `/todo` handler. Shared by both dispatchers via the spec. */
 export async function handleTodoAcp(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,

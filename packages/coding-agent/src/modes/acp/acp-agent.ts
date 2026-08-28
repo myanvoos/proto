@@ -83,14 +83,7 @@ const MODEL_CONFIG_ID = "model";
 const THINKING_CONFIG_ID = "thinking";
 const THINKING_OFF = "off";
 const SESSION_PAGE_SIZE = 50;
-/**
- * Delay between `session/new` (or `session/load` / `session/resume` /
- * `unstable_session/fork`) returning and the agent firing the first
- * notifications against the new session id. Mitigates Zed's
- * `Received session notification for unknown session` race — see
- * `#scheduleBootstrapUpdates`. Exported so the ACP test harness can
- * wait past this guard without hard-coding the literal.
- */
+
 export const ACP_BOOTSTRAP_RACE_GUARD_MS = 50;
 const ACP_CANCEL_CLEANUP_TIMEOUT_MS = 5_000;
 const ACP_ASYNC_DELIVERY_DRAIN_TIMEOUT_MS = 250;
@@ -111,21 +104,9 @@ type PromptLifecycleError = Error & { readonly code: "ACP_SESSION_CLOSED" };
 type PromptTurnState = {
 	cancelRequested: boolean;
 	settled: boolean;
-	/**
-	 * Delivery of streamed assistant `error` chunks this turn (the mapper
-	 * surfaces them as `agent_message_chunk`s). Resolves `true` once at least
-	 * one error chunk reached the client — the `agent_end` error fallback in
-	 * {@link AcpAgent##flushUnreportedTurnError} awaits it and stays silent on
-	 * success, so a fallback racing an in-flight delivery can neither duplicate
-	 * the error nor drop it when delivery fails.
-	 */
+
 	errorTextDelivery: Promise<boolean> | undefined;
-	/**
-	 * `abort()` is in-flight (or its bounded-timeout race). `undefined` while the turn is
-	 * running normally and after cleanup completes. The turn occupies `record.promptTurn`
-	 * for as long as either `!settled` or `cleanup` is set — that combined window is the
-	 * "turn in flight" predicate (`isPromptTurnInFlight`) every consumer gates on.
-	 */
+
 	cleanup: Promise<void> | undefined;
 	usageBaseline: UsageStatistics;
 	unsubscribe: (() => void) | undefined;
@@ -134,12 +115,6 @@ type PromptTurnState = {
 	promise: Promise<PromptResponse>;
 };
 
-/**
- * A turn is "in flight" from the moment `prompt()` reserves the slot until `settled` is
- * true AND any cancel cleanup has completed. Fork/queue/event gating all depend on this
- * combined window — a settled-but-still-aborting turn is not safe to fork from, queue
- * onto, or forward late events for.
- */
 function isPromptTurnInFlight(turn: PromptTurnState | undefined): turn is PromptTurnState {
 	return turn !== undefined && (!turn.settled || turn.cleanup !== undefined);
 }
@@ -148,9 +123,7 @@ type ManagedSessionRecord = {
 	session: AgentSession;
 	setToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined;
 	mcpManager: MCPManager | undefined;
-	// Ordered queue of MCP tool refreshes for this record. Rebuilt per
-	// `#configureMcpServers` call; drained on reconfigure so a stale in-flight
-	// refresh can never land after a newer configuration's tools.
+
 	mcpRefreshChain: Promise<void> | undefined;
 	promptTurn: PromptTurnState | undefined;
 	promptQueue: PromptQueueState;
@@ -158,8 +131,7 @@ type ManagedSessionRecord = {
 	liveMessageProgress: { textEmitted: boolean; thoughtEmitted: boolean } | undefined;
 	toolArgsById: Map<string, unknown>;
 	extensionsConfigured: boolean;
-	// Installed inside `#scheduleBootstrapUpdates` (post-race-guard); released
-	// in `#disposeSessionRecord`. Lives independent of any prompt turn.
+
 	lifetimeUnsubscribe: (() => void) | undefined;
 	closedError: PromptLifecycleError | undefined;
 	promptEventHandlers: Set<Promise<void>>;
@@ -216,26 +188,6 @@ function normalizeCreatedAcpSession(created: AgentSession | AcpSessionHandle): {
 	return "session" in created ? created : { session: created, setToolUIContext: undefined };
 }
 
-/**
- * Bridge an ExtensionUIContext form to ACP `unstable_createElicitation`.
- *
- * `dialogOptions.signal` short-circuits the elicitation if it is already
- * aborted and races the in-flight request against the abort event. The SDK
- * exposes no `cancel_elicitation` surface for form-mode elicitations
- * (`unstable_completeElicitation` is URL-mode only), so the ACP request itself
- * keeps running on the client side until the user dismisses it — but
- * resolving the local promise unblocks the caller (matches the RPC mode
- * pattern in `requestRpcEditor`). The abort listener is removed once the
- * elicitation settles so that callers which reuse the same signal across many
- * elicitations don't accumulate listeners and trip Node's `MaxListeners`
- * warning.
- *
- * `dialogOptions.timeout` mirrors `RpcExtensionUIContext.#createDialogPromise`:
- * when the timer fires before the client responds, `onTimeout` is invoked and
- * the caller's promise resolves to the stub fallback. Late SDK responses that
- * arrive after abort/timeout — both rejections and successful `accept`s —
- * are dropped silently (no `logger.warn`) to keep operator logs clean.
- */
 async function elicitFormFromAcpClient(
 	connection: AgentSideConnection,
 	sessionId: string,
@@ -267,16 +219,11 @@ async function elicitFormFromAcpClient(
 			try {
 				dialogOptions.onTimeout?.();
 			} catch (error) {
-				// A throwing `onTimeout` must not leave the elicitation promise
-				// pending — settle it via `finish` below regardless.
 				logger.warn("ACP elicitation onTimeout threw", { sessionId, method, error });
 			}
 			finish(undefined);
 		}, dialogOptions.timeout);
-		// A long pending timeout alone shouldn't keep the event loop alive when
-		// the rest of the agent has shut down — matches `job-manager.ts` /
-		// `executor.ts` timer hygiene. Connection + session lifetimes keep the
-		// loop alive on the happy path.
+
 		timeoutId.unref();
 	}
 	connection
@@ -291,7 +238,6 @@ async function elicitFormFromAcpClient(
 			},
 		})
 		.then(finish, error => {
-			// Caller may already have moved on via abort/timeout; suppress noise.
 			if (settled) return;
 			logger.warn("ACP elicitation failed", { sessionId, method, error });
 			finish(undefined);
@@ -323,29 +269,12 @@ async function elicitFromAcpClient(
 	return content?.value;
 }
 
-/** Narrows a `CreateElicitationResponse` to the accepted-with-content branch; the SDK's `action: string` catch-all arm otherwise defeats literal narrowing on `action !== "accept"`. */
 function isAcceptedElicitation(
 	response: CreateElicitationResponse | undefined,
 ): response is Extract<CreateElicitationResponse, { action: "accept" }> {
 	return response?.action === "accept";
 }
 
-/**
- * Build an {@link ExtensionUIContext} that translates skill/extension UI
- * requests into ACP elicitations against `connection` for the session
- * returned by `getSessionId()`. The id is read lazily at each elicitation
- * because `AgentSession.sessionId` is a getter over `sessionManager` state
- * that mutates when an extension command calls `ctx.newSession` /
- * `ctx.switchSession` — snapshotting it once at factory time would route
- * later elicitations to the pre-switch id. Live reads keep the bridge
- * symmetric with every other `sessionUpdate` call in this file
- * (`record.session.sessionId` is always evaluated at emit time).
- *
- * The non-elicitation surface (custom components, theming, terminal
- * input) remains stubbed — ACP clients render those themselves or not
- * at all. Capability gating respects the client's `initialize`
- * advertisement.
- */
 export function createAcpExtensionUiContext(
 	connection: AgentSideConnection,
 	getSessionId: () => string,
@@ -384,10 +313,7 @@ export function createAcpExtensionUiContext(
 				getSessionId(),
 				"input",
 				title,
-				// ACP's `StringPropertySchema` has no `placeholder` field, so we
-				// surface the placeholder text as `description` — the closest
-				// semantic field a client can render alongside the input.
-				// Empty / whitespace-only placeholders are treated as absent.
+
 				{ type: "string", ...(placeholder?.trim() ? { description: placeholder } : {}) },
 				dialogOptions,
 			);
@@ -604,9 +530,6 @@ export class AcpAgent implements Agent {
 	}
 
 	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
-		// ACP spec: `methodId` must be one of the methods advertised by `initialize`.
-		// Reject anything else so malformed clients fail fast rather than appearing
-		// authenticated and surfacing a downstream model failure later.
 		const supportsTerminalAuth = this.#clientCapabilities?.auth?.terminal === true;
 		const validMethods = supportsTerminalAuth ? ["agent", "terminal"] : ["agent"];
 		if (!validMethods.includes(params.methodId)) {
@@ -719,9 +642,6 @@ export class AcpAgent implements Agent {
 				throw new Error(`Unknown ACP config option: ${params.configId}`);
 		}
 
-		// When mode is changed via the generic config-option API, mirror the
-		// `current_mode_update` notification that `setSessionMode` emits so
-		// ACP clients tracking session-mode state see a consistent transition.
 		if (params.configId === MODE_CONFIG_ID) {
 			await this.#connection.sessionUpdate({
 				sessionId: record.session.sessionId,
@@ -729,13 +649,6 @@ export class AcpAgent implements Agent {
 			});
 		}
 
-		// For `model`/`thinking`, `#setModelById`/`#setThinkingLevelById` change
-		// the session model/thinking level through AgentSession, which now emits
-		// a lifetime event (`model_changed`/`thinking_level_changed`) that
-		// `#handleLifetimeEvent` turns into a push once the subscription is
-		// installed. Only push here when that subscription is not yet
-		// installed, so pre-bootstrap callers still see the change without a
-		// post-bootstrap duplicate.
 		const handledBySubscription =
 			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
 			record.lifetimeUnsubscribe !== undefined;
@@ -749,16 +662,6 @@ export class AcpAgent implements Agent {
 		const record = this.#getSessionRecord(params.sessionId);
 		const activeTurn = record.promptTurn;
 		if (activeTurn && !activeTurn.settled && record.session.isStreaming) {
-			// New prompt arrived while the previous turn is still in-flight (e.g. the
-			// client sent a message immediately after pressing stop, before or without
-			// a preceding session/cancel notification). Implicitly cancel the running
-			// turn so the new prompt can queue behind the abort cleanup — identical to
-			// what cancel() does when called explicitly. #beginCancelCleanup is
-			// idempotent, so a concurrent session/cancel notification is harmless.
-			// Mirror cancel()'s timeout handling: if abort() hangs past the cleanup
-			// timeout, close the managed session instead of leaving it registered
-			// with a still-streaming AgentSession. The queued prompt below observes
-			// the same cleanup rejection and fails accordingly.
 			this.#beginCancelCleanup(record, activeTurn).catch(async (error: unknown) => {
 				logger.warn("ACP cancel cleanup timed out; closing session", {
 					sessionId: record.session.sessionId,
@@ -770,11 +673,6 @@ export class AcpAgent implements Agent {
 		return await this.#queuePrompt(record, async () => {
 			const previousTurn = record.promptTurn;
 			if (previousTurn) {
-				// Wait for any prompt that's still settling or whose cancel cleanup is
-				// still in flight. We deliberately swallow the prompt rejection (the
-				// owning caller already received it) but let cleanup rejections
-				// propagate — a timed-out cancel must fail this queued prompt instead
-				// of letting it run on a session that is about to be closed.
 				await previousTurn.promise.catch(() => undefined);
 				await previousTurn.cleanup;
 			}
@@ -907,11 +805,7 @@ export class AcpAgent implements Agent {
 			if ("prompt" in builtinResult) {
 				const residualBaseline = new Set(record.extensionUserMessageTasks);
 				const residualAgentInvoked = await record.session.prompt(builtinResult.prompt, { images });
-				// A residual prompt can itself resolve locally (extension command,
-				// custom-TS command, file prompt template). No agent turn means no
-				// `agent_end`, so the prompt turn must be settled here — same pairing
-				// as the plain-prompt `!agentInvoked` path below — or the ACP
-				// `session/prompt` request never resolves (#9206).
+
 				if (!residualAgentInvoked) {
 					await this.#waitForExtensionUserMessages(record, residualBaseline);
 					await this.#waitForPromptEventHandlers(record);
@@ -933,11 +827,7 @@ export class AcpAgent implements Agent {
 
 		const extensionPromptBaseline = new Set(record.extensionUserMessageTasks);
 		const agentInvoked = await record.session.prompt(text, { images });
-		// Extension and custom-TS commands are handled locally inside session.prompt().
-		// An ACP extension command can still call pi.sendUserMessage(), which starts
-		// an async nested prompt through the extension runtime. Keep the ACP turn
-		// subscribed until those scheduled prompts and their event handlers drain;
-		// only then is `false` proof that the slash command was purely local.
+
 		if (!agentInvoked) {
 			await this.#waitForExtensionUserMessages(record, extensionPromptBaseline);
 			await this.#waitForPromptEventHandlers(record);
@@ -986,13 +876,6 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	/**
-	 * Transition a still-running turn into cancellation: mark intent, drop the live-event
-	 * subscription, start the bounded `abort()` race, and resolve the ACP prompt response
-	 * with `stopReason: "cancelled"` so the client sees acceptance immediately. The
-	 * returned promise is the cleanup barrier — it resolves when `abort()` completes and
-	 * rejects when the timeout fires. Idempotent: a second call returns the same barrier.
-	 */
 	#beginCancelCleanup(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
 		if (promptTurn.cleanup) {
 			return promptTurn.cleanup;
@@ -1017,8 +900,7 @@ export class AcpAgent implements Agent {
 			await Promise.race([record.session.abort({ reason: USER_INTERRUPT_LABEL }), timeout]);
 		} finally {
 			if (timer) clearTimeout(timer);
-			// Order matters: clear `cleanup` before evicting the slot so the slot-eviction
-			// branch matches what `#finishPrompt` saw if it ran first.
+
 			promptTurn.cleanup = undefined;
 			if (promptTurn.settled && record.promptTurn === promptTurn) {
 				record.promptTurn = undefined;
@@ -1226,8 +1108,7 @@ export class AcpAgent implements Agent {
 	): Promise<ManagedSessionRecord> {
 		const record = this.#createManagedSessionRecord(session, setToolUIContext);
 		session.setClientBridge(createAcpClientBridge(this.#connection, session.sessionId, this.#clientCapabilities));
-		// `record.lifetimeUnsubscribe` is installed in `#scheduleBootstrapUpdates`
-		// so it shares the bootstrap race guard — see that comment for why.
+
 		try {
 			await this.#configureExtensions(record);
 			await this.#configureMcpServers(record, mcpServers);
@@ -1346,8 +1227,6 @@ export class AcpAgent implements Agent {
 		})) {
 			const delivery = this.#connection.sessionUpdate(notification);
 			if (streamedAssistantError) {
-				// Resolves true only once the error chunk actually reached the
-				// client — a failed delivery keeps the agent_end fallback armed.
 				const outcome = delivery.then(
 					() => true,
 					() => false,
@@ -1376,22 +1255,6 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	/**
-	 * Deliver the final visible answer when the assistant `message_end` never
-	 * reached this prompt turn's subscription. Session event handlers are
-	 * fire-and-forget (`Agent#emit` does not await async listeners), and
-	 * `agent_end` is flushed through the session's `#endInFlight` path while the
-	 * assistant `message_end` fan-out can still be parked on extension delivery —
-	 * so `agent_end` can overtake `message_end`. Once the turn finishes,
-	 * `#finishPrompt` unsubscribes and the fallback text emission in
-	 * `mapAssistantMessageEnd` is lost for good: a client that only received
-	 * `agent_thought_chunk`s stays stuck on the thinking block (#4902). The live
-	 * message progress records whether visible text ever reached the client; if
-	 * it has not, emit the last assistant message's text before the prompt
-	 * resolves. A `message_end` that lands during the end-of-turn waits still
-	 * takes the normal mapper path and sees `textEmitted` already set, so the
-	 * answer is delivered exactly once.
-	 */
 	async #flushMissedFinalAssistantText(
 		record: ManagedSessionRecord,
 		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
@@ -1421,16 +1284,6 @@ export class AcpAgent implements Agent {
 		});
 	}
 
-	/**
-	 * Surface a turn-fatal provider error that never reached the client. A
-	 * request that fails before streaming any assistant events — e.g. GitHub
-	 * Copilot's `HTTP 400 model_not_supported` after retries — emits only
-	 * `agent_end` with an empty assistant message carrying `errorMessage`
-	 * (`Agent#runLoop`'s catch), so no `message_update`/`message_end` ever maps
-	 * to a session update and the client sees the turn end silently. Errors
-	 * that did stream are tracked via {@link PromptTurnState.errorTextDelivery};
-	 * the fallback awaits that delivery and re-sends only when it failed.
-	 */
 	async #flushUnreportedTurnError(
 		record: ManagedSessionRecord,
 		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
@@ -1484,14 +1337,6 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	/**
-	 * Reset live-message tracking once the assistant `message_end` is handled.
-	 * The `agent_end` reset happens inside the `agent_end` branch of
-	 * `#handlePromptEvent` — after `#flushMissedFinalAssistantText` — so a
-	 * `message_end` that arrives during the end-of-turn waits maps against the
-	 * real progress instead of resurrecting a fresh one (which would double-emit
-	 * the final answer).
-	 */
 	#clearLiveAssistantMessageAfterEvent(record: ManagedSessionRecord, event: AgentSessionEvent): void {
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			record.liveMessageId = undefined;
@@ -1525,8 +1370,7 @@ export class AcpAgent implements Agent {
 		}
 		promptTurn.settled = true;
 		promptTurn.unsubscribe?.();
-		// Keep the slot occupied until cancel cleanup finishes — `#runCancelCleanup`
-		// evicts the slot in its finally block once both flags say it's safe.
+
 		if (!promptTurn.cleanup && record.promptTurn === promptTurn) {
 			record.promptTurn = undefined;
 		}
@@ -1600,10 +1444,6 @@ export class AcpAgent implements Agent {
 					if ("text" in block.resource) {
 						textParts.push(block.resource.text);
 					} else if (typeof block.resource.mimeType === "string" && block.resource.mimeType.startsWith("image/")) {
-						// `embeddedContext: true` covers both text and blob resources, but
-						// blobs aren't directly consumable by the LLM. Route image blobs
-						// to the images array so the user's intent survives; everything
-						// else falls back to the URI placeholder below.
 						images.push({ type: "image", data: block.resource.blob, mimeType: block.resource.mimeType });
 					} else {
 						textParts.push(`[embedded resource: ${block.resource.uri}]`);
@@ -1769,25 +1609,6 @@ export class AcpAgent implements Agent {
 	}
 
 	#scheduleBootstrapUpdates(sessionId: string): void {
-		// Defer first notifications until the response has reached the client.
-		// Zed's agent-client-protocol reader dispatches responses and
-		// notifications to different async tasks; sending the first
-		// `available_commands_update` from `setTimeout(0)` reliably loses the
-		// race against the response handler and Zed logs `Received session
-		// notification for unknown session` then drops the update — leaving
-		// the slash-command palette empty (#1015 follow-up; see
-		// zed-industries/zed#55965 for the same race biting other ACP agents).
-		// `ACP_BOOTSTRAP_RACE_GUARD_MS` is invisible to the operator and large
-		// enough that the response future has scheduled before our timer fires
-		// on stdio-only transports.
-		//
-		// The session-lifetime subscription is installed inside the same timer
-		// so it shares this guard — without it, an extension's `session_start`
-		// handler (or any async work it schedules) calling `setThinkingLevel`
-		// would push a `config_option_update` for a session id the client
-		// hasn't been told about yet. The pre-bootstrap thinking level is
-		// reported in the response's `configOptions`, so deferring the
-		// notification loses no state.
 		setTimeout(() => {
 			if (this.#connection.signal.aborted) {
 				return;
@@ -1836,13 +1657,6 @@ export class AcpAgent implements Agent {
 		});
 	}
 
-	/**
-	 * Reload plugin/registry state for an ACP session. Mirrors the interactive
-	 * `/reload-plugins` and `/move` flows: invalidates the plugin-roots cache,
-	 * refreshes worker agents, resets the capability cache, refreshes the
-	 * session's slash-command state, then re-advertises commands so the client
-	 * sees newly installed/disabled plugins.
-	 */
 	async #reloadPluginState(record: ManagedSessionRecord): Promise<void> {
 		const cwd = record.session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
@@ -1933,11 +1747,7 @@ export class AcpAgent implements Agent {
 		if (scoped) {
 			return scoped;
 		}
-		// The cwd-derived directory only covers sessions stored under the current
-		// naming scheme. Sessions written under a legacy/hashed project directory
-		// (the 17.2.5+ scheme reverted in #7656) live elsewhere, so fall back to a
-		// global by-id scan: the session id is globally unique, and
-		// #openStoredSession reopens the file with the request cwd. See #7779.
+
 		return this.#findStoredSessionById(sessionId);
 	}
 
@@ -2338,9 +2148,7 @@ export class AcpAgent implements Agent {
 		if (record.mcpManager) {
 			await record.mcpManager.disconnectAll();
 		}
-		// Drain any in-flight refresh queued by a previous configuration: a refresh
-		// that already passed its manager guard could otherwise finish applying a
-		// stale tool set after this reconfiguration installs the new one.
+
 		await record.mcpRefreshChain;
 		record.mcpRefreshChain = undefined;
 		if (servers.length === 0) {
@@ -2350,14 +2158,7 @@ export class AcpAgent implements Agent {
 		}
 
 		const manager = new MCPManager(record.session.sessionManager.getCwd());
-		// MCP servers connect and reconnect independently, so `onToolsChanged` can fire
-		// several times back to back. Each firing is chained onto `record.mcpRefreshChain`
-		// so refreshes apply in order, and each one re-reads `manager.getTools()` at the
-		// time it actually runs rather than the snapshot from when it was queued — so a
-		// refresh can never apply a stale, smaller tool set after a newer one already landed.
-		// The returned promise propagates failures (the initial awaited refresh below must
-		// fail session setup, as the pre-queue code did); the stored chain swallows them
-		// after logging so background firings only warn and the chain never rejects.
+
 		const enqueueMcpToolsRefresh = (): Promise<void> => {
 			const run = (record.mcpRefreshChain ?? Promise.resolve()).then(async () => {
 				if (record.mcpManager !== manager) return;
@@ -2371,7 +2172,6 @@ export class AcpAgent implements Agent {
 			return run;
 		};
 		manager.setOnToolsChanged(() => {
-			// Failures are logged once via the stored chain's catch above.
 			enqueueMcpToolsRefresh().catch(() => {});
 		});
 		const configs: MCPConfigMap = {};
@@ -2422,8 +2222,7 @@ export class AcpAgent implements Agent {
 				headers: this.#toNameValueMap(server.headers),
 			};
 		}
-		// The experimental ACP-channel transport (`type: "acp"`) is not advertised in
-		// `mcpCapabilities`, so a spec-compliant client never sends it; reject defensively.
+
 		throw new Error(`Unsupported MCP server transport: ${server.type}`);
 	}
 
@@ -2480,7 +2279,6 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	/** Dispose every session owned by this ACP connection and await persisted teardown. */
 	async dispose(reason?: postmortem.Reason): Promise<void> {
 		if (this.#disposePromise) {
 			await this.#disposePromise;

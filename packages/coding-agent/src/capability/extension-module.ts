@@ -1,22 +1,13 @@
-/**
- * Extension Modules Capability
- *
- * TypeScript/JavaScript extension modules loaded by the extension system.
- */
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
-/**
- * A loaded extension module.
- */
 export interface ExtensionModule {
-	/** Extension module name (derived from path) */
 	name: string;
-	/** Absolute path to extension entrypoint */
+
 	path: string;
-	/** Source level */
+
 	level: "user" | "project";
-	/** Source metadata */
+
 	_source: SourceMeta;
 }
 

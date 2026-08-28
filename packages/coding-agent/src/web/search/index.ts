@@ -1,10 +1,3 @@
-/**
- * Unified Web Search Tool
- *
- * Single tool supporting Anthropic, Perplexity, Exa, Brave, Jina, Kimi, Gemini, Codex, Tavily, Kagi, Z.AI, SearXNG, and Synthetic
- * providers with provider-specific parameters exposed conditionally.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
@@ -38,7 +31,6 @@ import {
 	type SearchResponse,
 } from "./types";
 
-/** Web search tool parameters schema */
 const webSearchSchema = type({
 	query: "string",
 	recency: "'day' | 'week' | 'month' | 'year'?",
@@ -54,7 +46,6 @@ export interface SearchQueryParams extends SearchToolParams {
 	provider?: SearchProviderId | "auto";
 }
 
-/** Truncate text for tool output */
 function truncateText(text: string, maxLen: number): string {
 	if (text.length <= maxLen) return text;
 	return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
@@ -64,7 +55,6 @@ function formatCount(label: string, count: number): string {
 	return `${count} ${label}${count === 1 ? "" : "s"}`;
 }
 
-/** Format response for LLM consumption. `notes` lead the output (e.g. relaxed-constraint warnings). */
 function formatForLLM(response: SearchResponse, notes: readonly string[] = []): string {
 	const parts: string[] = [];
 	for (const note of notes) {
@@ -134,7 +124,6 @@ interface ExecuteSearchOptions {
 	signal?: AbortSignal;
 }
 
-/** Execute web search */
 async function executeSearch(
 	_toolCallId: string,
 	params: SearchQueryParams,
@@ -146,16 +135,11 @@ async function executeSearch(
 	if (explicitProvider && explicitProvider !== "auto") {
 		candidates = [{ id: explicitProvider, explicit: true }];
 	} else {
-		// `--provider auto` and the default both walk the configured chain;
-		// exclusions still apply.
 		candidates = resolveProviderCandidates();
 	}
 
 	const parsedQuery = parseSearchQuery(params.query);
 
-	// Invariant across providers; read once and tolerate an uninitialized
-	// Settings singleton (e.g. `proto q ...` CLI path, unit tests) so the
-	// provider-fallback loop never aborts before any provider runs.
 	let antigravityEndpointMode: "auto" | "production" | "sandbox" | undefined;
 	try {
 		antigravityEndpointMode = settings.get("providers.antigravityEndpoint");
@@ -176,9 +160,7 @@ async function executeSearch(
 		if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
 			timeoutMs = Math.ceil(Math.min(configuredSeconds, MAX_WEB_SEARCH_TIMEOUT_SECONDS) * 1_000);
 		}
-	} catch {
-		// Preserve the default for one-shot callers that do not initialize Settings.
-	}
+	} catch {}
 
 	const failures: Array<{ provider: Pick<SearchProvider, "id" | "label">; error: unknown }> = [];
 	let availableProviderCount = 0;
@@ -220,10 +202,6 @@ async function executeSearch(
 				geminiModel,
 			});
 
-			// Lenient constraint pass over whatever the provider returned: enforce
-			// site:/inurl:/intitle:/filetype:/date directives the provider could
-			// not (or only partially) honor natively, relaxing any dimension that
-			// would wipe out every result. Citations/answer text stay untouched.
 			let finalResponse = response;
 			const constraintNotes: string[] = [];
 			if (parsedQuery.hasConstraints && response.sources.length > 0) {
@@ -247,11 +225,6 @@ async function executeSearch(
 				details: { response: finalResponse },
 			};
 		} catch (error) {
-			// Surface user-initiated cancellation immediately so the session sees
-			// a clean abort instead of a generic "all providers failed" message.
-			// Without this, an AbortError from `fetch()` is treated as a provider
-			// failure and the loop falls through to the next provider (or to the
-			// summary error), masking the cancellation.
 			throwIfAborted(signal);
 			failures.push({ provider: provider ?? providerMeta, error });
 		}
@@ -281,13 +254,6 @@ async function executeSearch(
 	};
 }
 
-/**
- * Execute a web search query for CLI/testing workflows.
- *
- * `authStorage` may be omitted; in that case we discover one via the standard
- * factory (`discoverAuthStorage`), which honours `PROTO_AUTH_BROKER_URL` and
- * otherwise opens the local SQLite credential store.
- */
 export async function runSearchQuery(
 	params: SearchQueryParams,
 	options: { authStorage?: AuthStorage; modelRegistry?: ModelRegistry; sessionId?: string; signal?: AbortSignal } = {},
@@ -310,11 +276,6 @@ export async function runSearchQuery(
 	}
 }
 
-/**
- * Web search tool implementation.
- *
- * Supports the configured web-search provider chain with automatic fallback.
- */
 export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRenderDetails> {
 	readonly name = "web_search";
 	readonly label = "Web Search";
@@ -349,7 +310,6 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 	}
 }
 
-/** Web search tool as CustomTool (for TUI rendering support) */
 const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRenderDetails> = {
 	name: "web_search",
 	label: "Web Search",

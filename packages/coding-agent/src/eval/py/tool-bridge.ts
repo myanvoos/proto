@@ -1,30 +1,12 @@
-/**
- * HTTP loopback bridge that lets the Python kernel synchronously invoke
- * host-side tools by name, mirroring the JS worker's `tool.<name>(args)` proxy.
- *
- * The Python prelude builds a `tool` proxy that POSTs to `/v1/tool` over a
- * 127.0.0.1 loopback socket; the host resolves the request against the
- * `ToolSession` registered for the current execution and forwards to the same
- * `callSessionTool` implementation the JS bridge uses.
- */
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
 interface PyToolBridgeEntry {
 	toolSession: ToolSession;
-	/**
-	 * Turn-cancel handed to the tool implementation. Raw and never deferred, so
-	 * delegated work — above all the subagents `agent()` spawns — stops at once.
-	 */
+
 	signal?: AbortSignal;
-	/**
-	 * Kernel-side abort, held back while a critical `agent()` phase (isolation
-	 * worktree setup, merge/cherry-pick) is in flight. Decides only when the host
-	 * may stop waiting on a call and let the kernel unwind; it is never given to
-	 * a tool. Keeping these separate is what stops a cancel from settling the
-	 * cell on top of a still-running, abort-insensitive merge.
-	 */
+
 	shieldedSignal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 	abortRequested?: () => boolean;
@@ -43,26 +25,6 @@ interface BridgeServer {
 const registrations = new Map<string, PyToolBridgeEntry>();
 let serverPromise: Promise<BridgeServer> | null = null;
 
-/**
- * Forward a bridge call to {@link callSessionTool}, failing fast once the cell
- * has been interrupted.
- *
- * Python invokes this bridge with blocking `urllib` requests from worker threads
- * (each `agent()` / `tool.*` call). Two different aborts meet here:
- *
- * - {@link PyToolBridgeEntry.signal} goes to the tool, so a turn cancel tears
- *   down delegated work — subagents included — instead of leaving it running
- *   past the cell.
- * - {@link PyToolBridgeEntry.shieldedSignal} decides when we may stop waiting.
- *   It is deferred across a critical `agent()` phase, so a cancel landing
- *   mid-merge cannot return early and let the cell settle while an
- *   abort-insensitive cherry-pick is still rewriting the repo.
- *
- * Calls arriving after an abort are rejected before starting. Otherwise the
- * usual path is that the tool observes its own abort and rejects; the race only
- * matters for tools that ignore the signal, keeping the kernel unwinding
- * promptly instead of being hard-killed.
- */
 async function callSessionToolPromptOnAbort(name: string, args: unknown, entry: PyToolBridgeEntry): Promise<unknown> {
 	if (entry.abortRequested?.()) {
 		throw new Error(`bridge call ${JSON.stringify(name)} aborted: eval cell was interrupted`);
@@ -85,8 +47,7 @@ async function callSessionToolPromptOnAbort(name: string, args: unknown, entry: 
 		return await Promise.race([call, aborted]);
 	} finally {
 		signal.removeEventListener("abort", onAbort);
-		// `call` may still be settling (subagent teardown after its own abort);
-		// swallow its outcome so an abort-won race can't surface as unhandled.
+
 		void call.catch(() => {});
 	}
 }
@@ -152,7 +113,6 @@ async function startServer(): Promise<BridgeServer> {
 	};
 }
 
-/** Starts the bridge server lazily and returns its connection info. */
 export async function ensurePyToolBridge(): Promise<PyToolBridgeInfo> {
 	if (!serverPromise) {
 		serverPromise = startServer();
@@ -166,10 +126,6 @@ export async function ensurePyToolBridge(): Promise<PyToolBridgeInfo> {
 	}
 }
 
-/**
- * Register a tool session for the duration of one execution. The returned
- * function MUST be called to remove the entry once execution finishes.
- */
 function bridgeRegistrationKey(sessionId: string, runId: string): string {
 	return `${sessionId}:${runId}`;
 }
@@ -184,7 +140,6 @@ export function registerPyToolBridge(sessionId: string, runId: string, entry: Py
 	};
 }
 
-/** Stop the bridge and clear registrations. Test-only / shutdown helper. */
 export async function disposePyToolBridge(): Promise<void> {
 	registrations.clear();
 	const pending = serverPromise;

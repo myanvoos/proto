@@ -9,8 +9,6 @@ const generator = new HeaderGenerator({
 	strict: false,
 });
 
-// A fallback desktop Mac Chrome navigation fingerprint matching
-// the previous static default setup for deterministic or non-randomized calls.
 const CHROME_FALLBACK_HEADERS: Record<string, string> = {
 	Accept:
 		"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -37,25 +35,21 @@ function canonicalizeHeaderNames(headers: Record<string, string>): Record<string
 		const value = headers[key];
 		if (value === undefined) continue;
 
-		// Retain Client Hints (sec-ch-ua*) in their standard lower-case representation
 		if (key.startsWith("sec-ch-ua")) {
 			canonicalized[key] = value;
 			continue;
 		}
 
-		// Retain diagnostics or other HTTP/2 custom lower-case keys
 		if (["dnt", "rtt", "ect"].includes(key)) {
 			canonicalized[key.toUpperCase()] = value;
 			continue;
 		}
 
-		// Retain HTTP/2 specific pseudo headers if any, or general standard casing overrides
 		if (key === "te") {
 			canonicalized.TE = value;
 			continue;
 		}
 
-		// Pascalize words separated by hyphens (e.g. accept-language -> Accept-Language)
 		const pascalized = key
 			.split("-")
 			.map(part => (part[0] ? part[0].toUpperCase() + part.slice(1).toLowerCase() : ""))
@@ -67,11 +61,6 @@ function canonicalizeHeaderNames(headers: Record<string, string>): Record<string
 	return canonicalized;
 }
 
-/**
- * Build a fresh, internally consistent desktop navigation fingerprint for one HTTP request.
- * By default, this randomizes across coherent modern Chrome, Firefox, and Safari profiles.
- * Set `randomized` to `false` when a fetch must preserve a stable Mac Chrome identity.
- */
 export function buildBrowserNavigationHeaders(options?: { randomized?: boolean }): Record<string, string> {
 	const randomized = options?.randomized !== false;
 	if (!randomized) {

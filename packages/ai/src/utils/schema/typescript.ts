@@ -1,26 +1,10 @@
-/**
- * Render a JSON Schema as a simplified, human-readable TypeScript type.
- *
- * This is a *display* conversion, not a faithful TS codegen: it surfaces the
- * shape (objects, arrays, unions, enums, records) and property descriptions so
- * a model — or a human reading `/dump` — can grasp a tool's parameters at a
- * glance, far more legibly than raw JSON Schema. Refinement keywords
- * (min/max/pattern/format) are intentionally dropped; only type structure,
- * literal enums/consts, and descriptions survive.
- */
-
 import { isJsonObject } from "./types";
 
 export interface JsonSchemaToTsOptions {
-	/** Indentation unit for nested object bodies. Default two spaces (none in `harmony` style). */
 	readonly indent?: string;
-	/** Emit `description` keywords as comments on object properties. Default true. */
+
 	readonly comments?: boolean;
-	/**
-	 * Output flavor. `default` renders JSDoc comments, `;` delimiters, and
-	 * indented bodies; `harmony` renders the flat OpenAI-Harmony convention —
-	 * `//` line comments, `,` delimiters, no indentation.
-	 */
+
 	readonly style?: "default" | "harmony";
 }
 
@@ -34,7 +18,7 @@ interface Ctx {
 
 const SAFE_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const LOCAL_REF = /^#\/(?:\$defs|definitions)\/(.+)$/;
-/** Inline an array item as `T[]` only while it stays a short single token. */
+
 const INLINE_ARRAY_LIMIT = 40;
 
 function literal(value: unknown): string {
@@ -43,7 +27,6 @@ function literal(value: unknown): string {
 	return JSON.stringify(value) ?? "unknown";
 }
 
-/** Join member types into a TS union, deduping structurally identical renders. */
 function joinUnion(parts: readonly string[]): string {
 	const seen = new Set<string>();
 	const unique: string[] = [];
@@ -60,7 +43,7 @@ function emitDescription(lines: string[], description: string, ctx: Ctx, pad: st
 		for (const line of description.split("\n")) lines.push(`${pad}// ${line}`.trimEnd());
 		return;
 	}
-	// `* /` keeps a stray closing token inside the description from ending the comment.
+
 	const safe = description.replace(/\*\//g, "* /");
 	if (!safe.includes("\n")) {
 		lines.push(`${pad}/** ${safe} */`);
@@ -113,14 +96,12 @@ function convertObject(node: Record<string, unknown>, ctx: Ctx, pad: string): st
 		}
 	}
 
-	// No named properties: pure record / open / empty object.
 	if (body.length === 0) {
 		if (isJsonObject(additional)) return `Record<string, ${convert(additional, ctx, pad)}>`;
 		if (additional === true) return "Record<string, unknown>";
 		return "{}";
 	}
 
-	// Named properties alongside a free-form value schema → index signature.
 	if (isJsonObject(additional)) {
 		body.push(`${childPad}[key: string]: ${convert(additional, ctx, childPad)}${ctx.harmony ? "," : ";"}`);
 	}
@@ -187,7 +168,6 @@ function convert(node: unknown, ctx: Ctx, pad: string): string {
 	return "unknown";
 }
 
-/** Convert a JSON Schema object into a simplified TypeScript type string. */
 export function jsonSchemaToTypeScript(schema: unknown, options?: JsonSchemaToTsOptions): string {
 	const root = isJsonObject(schema) ? schema : undefined;
 	let defs: Record<string, unknown> | undefined;

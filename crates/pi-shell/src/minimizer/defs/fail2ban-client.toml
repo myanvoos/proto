@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/fail2ban-client.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.fail2ban-client]
 description = "Compact fail2ban-client output"

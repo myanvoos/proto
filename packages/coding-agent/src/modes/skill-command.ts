@@ -27,20 +27,17 @@ interface InvokeSkillCommandOptions {
 	images?: ImageContent[];
 }
 
-/** Built custom-message payload and delivery options for a `/skill:` command. */
 interface BuiltSkillCommandPrompt {
 	message: SkillPromptMessage;
 	options: SkillPromptOptions;
 }
 
-/** Return true when `text` invokes a registered `/skill:<name>` command. */
 export function isKnownSkillCommand(ctx: SkillCommandHost, text: string): boolean {
 	const parsed = parseSkillInvocation(text);
 	if (!parsed) return false;
 	return ctx.skillCommands.has(getSkillSlashCommandName({ name: parsed.name }));
 }
 
-/** Build the user-attributed custom message for a registered `/skill:<name>` command. */
 export async function buildSkillCommandPrompt(
 	ctx: SkillCommandHost,
 	text: string,
@@ -68,7 +65,6 @@ export async function buildSkillCommandPrompt(
 	};
 }
 
-/** Invoke a registered `/skill:<name>` command as a user-attributed custom message. */
 export async function invokeSkillCommandFromText(
 	ctx: SkillCommandHost,
 	text: string,

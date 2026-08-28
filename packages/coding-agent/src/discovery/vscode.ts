@@ -1,9 +1,3 @@
-/**
- * VS Code Provider
- *
- * Loads config from `.vscode` directory (project-only).
- * Supports MCP server discovery from `mcp.json` with nested `mcp.servers` structure.
- */
 import { tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
 import { readFile } from "../capability/fs";
@@ -15,10 +9,6 @@ const PROVIDER_ID = "vscode";
 const DISPLAY_NAME = "VS Code";
 const PRIORITY = 20;
 
-// =============================================================================
-// MCP Servers
-// =============================================================================
-
 registerProvider<MCPServer>(mcpCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,
@@ -28,7 +18,6 @@ registerProvider<MCPServer>(mcpCapability.id, {
 		const items: MCPServer[] = [];
 		const warnings: string[] = [];
 
-		// Project-only (VS Code doesn't support user-level MCP config)
 		const projectPath = getProjectPath(ctx, "vscode", "mcp.json");
 		if (projectPath) {
 			const result = await loadMCPConfig(ctx, projectPath, "project");
@@ -40,10 +29,6 @@ registerProvider<MCPServer>(mcpCapability.id, {
 	},
 });
 
-/**
- * Load MCP servers from a mcp.json file.
- * VS Code uses nested structure: { "mcp": { "servers": { ... } } }
- */
 async function loadMCPConfig(
 	_ctx: LoadContext,
 	path: string,
@@ -64,7 +49,6 @@ async function loadMCPConfig(
 		return { items, warnings };
 	}
 
-	// VS Code uses nested structure: mcp.servers
 	const servers = parsed.mcp?.servers;
 	if (!servers || typeof servers !== "object") {
 		return { items, warnings };
@@ -78,7 +62,6 @@ async function loadMCPConfig(
 
 		const raw = config as Record<string, unknown>;
 
-		// Expand environment variables
 		const expanded = expandEnvVarsDeep(raw);
 
 		const server: MCPServer = {

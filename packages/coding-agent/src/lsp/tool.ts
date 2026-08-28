@@ -104,11 +104,6 @@ interface FileRenamePair {
 	newUri: string;
 }
 
-/**
- * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
- * For files this is a single pair. For directories this walks every regular file underneath
- * and produces a parallel pair anchored at the new directory root.
- */
 async function enumerateRenamePairs(
 	source: string,
 	dest: string,
@@ -139,9 +134,6 @@ async function enumerateRenamePairs(
 	return { pairs, directory: true, exceeded: false };
 }
 
-/**
- * LSP tool for language server protocol operations.
- */
 export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Theme> {
 	readonly name = "lsp";
 	readonly label = "LSP";
@@ -178,7 +170,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 		const config = getConfig(this.session.cwd);
 
-		// Status action doesn't need a file
 		if (action === "status") {
 			const configuredNames = Object.keys(config.servers);
 			const lspmuxState = await detectLspmux();
@@ -188,17 +179,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					: "lspmux: installed but server not running"
 				: "";
 
-			// `Object.keys(config.servers)` reflects what is *configured & resolvable
-			// on PATH* — it does NOT prove the server actually starts. A wrapper
-			// binary that exits immediately (e.g. rustup without the rust-analyzer
-			// component) still appears here. Distinguish "configured" from
-			// "started" (have a live in-process client) so callers cannot mistake
-			// presence-on-PATH for a working server.
 			const startedClients = getActiveClients();
 			const startedByConfigName = new Map<string, LspServerStatus>();
-			// getActiveClients() reports `name = client.config.command` (the
-			// unresolved binary name from defaults.json), so match against
-			// `serverConfig.command`, not the resolved path.
+
 			for (const [name, serverConfig] of Object.entries(config.servers)) {
 				const matched = startedClients.find(c => c.name === serverConfig.command);
 				if (matched) startedByConfigName.set(name, matched);
@@ -226,10 +209,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			};
 		}
 
-		// Diagnostics can be batch or single-file - queries all applicable servers
 		if (action === "diagnostics") {
 			if (file === "*") {
-				// `*` => run workspace diagnostics across all configured servers
 				const result = await runWorkspaceDiagnostics(this.session.cwd, signal);
 				return {
 					content: [
@@ -296,7 +277,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const failedServers: string[] = [];
 				let succeededServers = 0;
 
-				// Query all applicable servers for this file
 				for (const [serverName, serverConfig] of servers) {
 					allServerNames.add(serverName);
 					totalServerAttempts++;
@@ -331,7 +311,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						if (err instanceof ToolAbortError || signal?.aborted) {
 							throw err;
 						}
-						// Server failed; record it so a total failure is not reported as clean.
+
 						failedServers.push(serverName);
 						logger.debug("LSP diagnostics server failed", {
 							server: serverName,
@@ -341,7 +321,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					}
 				}
 
-				// Deduplicate diagnostics
 				const seen = new Set<string>();
 				const uniqueDiagnostics: Diagnostic[] = [];
 				for (const d of allDiagnostics) {
@@ -463,9 +442,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			try {
 				await fs.promises.stat(dest);
 				destExists = true;
-			} catch {
-				// expected: destination must not exist
-			}
+			} catch {}
 			if (destExists) {
 				return {
 					content: [
@@ -499,12 +476,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			const lspParams = { files: pairs };
-			// Filter to servers whose fileTypes match either the source or any
-			// destination path. Asking every configured server about a .md/.sql/.txt
-			// rename used to stack up willRenameFiles requests against irrelevant
-			// language servers and hit the wall-clock timeout. A server only has
-			// something useful to say about a rename if it understands one of the
-			// affected file extensions.
+
 			const allLspServers = getLspServers(config);
 			const relevantNames = new Set<string>();
 			const collectRelevant = (filePath: string) => {
@@ -522,11 +494,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const respondingServers = new Set<string>();
 			const perServerEdits: Array<{ serverName: string; edit: WorkspaceEdit }> = [];
 			const serverNotes: string[] = [];
-			// Servers that support workspace/willRenameFiles (i.e. did not reply
-			// method-not-found) but failed the request. Their semantic edits are
-			// owed but missing, so on apply the rename MUST NOT mutate the workspace
-			// — moving the path without those edits leaves dangling references
-			// (issue #8380).
+
 			const hardFailures: string[] = [];
 
 			for (const [serverName, serverConfig] of servers) {
@@ -541,8 +509,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;
 					}
-					// Could not reach the server at all; note it but don't block —
-					// this is not a willRenameFiles failure.
+
 					const msg = err instanceof Error ? err.message : String(err);
 					serverNotes.push(`  ${serverName}: ${msg}`);
 					continue;
@@ -562,9 +529,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;
 					}
-					// method-not-found means the server doesn't implement the request;
-					// skip it silently. Any other error is a genuine failure from a
-					// server that supports willRenameFiles.
+
 					if (!isMethodNotFoundError(err)) {
 						const msg = err instanceof Error ? err.message : String(err);
 						serverNotes.push(`  ${serverName}: ${msg}`);
@@ -610,9 +575,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				};
 			}
 
-			// A relevant server that supports willRenameFiles failed. Applying
-			// partial edits and moving the path would leave references dangling,
-			// so abort before any mutation and surface the failure (issue #8380).
 			if (hardFailures.length > 0) {
 				const lines: string[] = [
 					`Error: aborted rename; workspace/willRenameFiles failed on ${hardFailures.join(", ")}, so semantic references would not be updated. No files were moved.`,
@@ -632,12 +594,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			const summary: string[] = [];
 
-			// Coalesce per-URI edits across servers before applying. Each server
-			// computed positions against the pre-edit file content, so applying
-			// server A then re-reading for server B yields stale positions and
-			// produces malformed imports. Group all text edits by URI, prefer the
-			// project-primary (project-aware) server on overlap, and apply once
-			// per URI from a single snapshot.
 			const serverConfigByName = new Map(servers);
 			interface AcceptedBucket {
 				primaryServer: string;
@@ -664,7 +620,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const existingCfg = serverConfigByName.get(existing.primaryServer);
 					const existingIsPrimary = existingCfg ? isProjectAwareLspServer(existingCfg) : false;
 					if (incomingPrimary && !existingIsPrimary) {
-						// Promote incoming to primary; keep existing edits that don't overlap.
 						const keptOld: TextEdit[] = [];
 						let discardedOld = 0;
 						for (const oe of existing.edits) {
@@ -676,7 +631,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						existing.primaryServer = serverName;
 						existing.edits = [...edits, ...keptOld];
 					} else {
-						// Existing wins; discard incoming edits that overlap any accepted edit.
 						let discardedNew = 0;
 						for (const ne of edits) {
 							if (existing.edits.some(ae => rangesOverlap(ae.range, ne.range))) {
@@ -693,9 +647,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			}
 
-			// Validate every accepted bucket (overlap + snippet-format rejection)
-			// before writing any file, so a snippet edit in a later URI cannot
-			// leave earlier files half-applied.
 			for (const bucket of acceptedByUri.values()) {
 				sortAndValidateTextEdits(bucket.edits);
 			}
@@ -717,9 +668,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			}
 
-			// Apply the reference edits and move as one unit: a failed move rolls
-			// the reference edits back so the source, destination, and every
-			// reference file are left unchanged.
 			await applyEditsThenRename(referenceEdits, source, dest);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
@@ -892,9 +840,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					throw new ToolAbortError();
 				}
 				const msg = err instanceof Error ? err.message : String(err);
-				// Echo a (truncated) preview of the params we sent so the caller can
-				// tell parse / shape errors (e.g. nested args dropped, missing field)
-				// apart from genuine server errors without spinning up another debug call.
+
 				const previewRaw = JSON.stringify(requestParams ?? null);
 				const preview = previewRaw.length > 400 ? `${previewRaw.slice(0, 397)}...` : previewRaw;
 				return {
@@ -906,7 +852,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 		}
 
-		// `*` means workspace scope for symbols/reload; other actions need a concrete file.
 		const isWorkspace = file === "*";
 		const requiresFile = !file && action !== "reload";
 
@@ -1001,11 +946,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		if (action === "reload" && (isWorkspace || !resolvedFile)) {
-			// `reload *` is the user's explicit request to re-read config from
-			// disk. Drop the per-cwd cache entry so `.proto/lsp.json`, root markers,
-			// and plugin configs added after the first LSP call become visible —
-			// otherwise `getConfig` returns the first observation for the rest of
-			// the process lifetime (#3546).
 			configCache.delete(this.session.cwd);
 			const refreshedConfig = getConfig(this.session.cwd);
 			const servers = getLspServers(refreshedConfig);
@@ -1069,11 +1009,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				await waitForProjectLoaded(client, signal);
 			}
 
-			// For project-aware servers, references/rename/definition without a `symbol`
-			// silently falls back to the first non-whitespace column on the line, which
-			// frequently points at the wrong identifier (decorator, keyword, parameter)
-			// and the server returns plausible-looking but unrelated results. Require
-			// `symbol` explicitly so callers cannot accidentally trigger that fallback.
 			if (
 				targetFile &&
 				line !== undefined &&
@@ -1091,10 +1026,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const position = { line: resolvedLine - 1, character: resolvedCharacter };
 
 			let output: string;
-			// Set on bare empty-lookup outcomes (no definition/references/…): the
-			// result carries no information once consumed, so compaction may elide
-			// it. Clean diagnostics runs are NOT useless — they are verification
-			// evidence.
+
 			let useless = false;
 
 			if (needsProjectIndex && !isRustAnalyzerServer) {
@@ -1102,10 +1034,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			switch (action) {
-				// =====================================================================
-				// Standard LSP Operations
-				// =====================================================================
-
 				case "definition": {
 					const result = (await sendRequest(
 						client,
@@ -1337,7 +1265,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						output = "Error: file parameter required for document symbols";
 						break;
 					}
-					// File-based document symbols
+
 					const result = (await sendRequest(
 						client,
 						"textDocument/documentSymbol",
@@ -1418,10 +1346,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		} catch (err) {
 			if (err instanceof ToolError) throw err;
 			if (err instanceof ToolAbortError || signal?.aborted) {
-				// Distinguish a wall-clock timeout from a caller cancel:
-				// callerSignal aborting → real cancel (re-throw ToolAbortError);
-				// timeoutSignal aborting without callerSignal → emit a ToolError naming the
-				// elapsed budget and server, instead of opaque "Operation aborted".
 				if (timeoutSignal.aborted && !callerSignal?.aborted) {
 					throw new ToolError(
 						`LSP ${action} timed out after ${timeoutSec}s on ${serverName}. The server may still be indexing; try again or pass timeout=<larger>.`,

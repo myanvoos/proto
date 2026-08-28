@@ -1,17 +1,3 @@
-/**
- * Fullscreen transcript viewer.
- *
- * `AgentFleetOverlayComponent.openChat` mounts this as a `fullscreen` overlay
- * (`ui.showOverlay(..., { fullscreen: true })`), so it borrows the terminal's
- * alternate screen buffer (the vim/less idiom) and paints the whole screen — no
- * compositing into the live transcript's scrollback. It renders a parked
- * subagent / advisor transcript that has no live in-view session.
- *
- * Local transcripts tail append-only growth: unchanged file identity plus stable
- * sentinels means only newly appended JSONL is parsed and rendered. Rewrites,
- * truncation, rotation, or sentinel drift fall back to a full rebuild so changed
- * historical entries cannot leave stale components behind.
- */
 import * as fs from "node:fs";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
@@ -33,36 +19,32 @@ import { formatContextUsage } from "./status-line/context-thresholds";
 interface AgentTranscriptViewerDeps {
 	agentId: string;
 	registry: AgentRegistry;
-	/** Progress/cost snapshot source for the stats line. */
+
 	observers?: SessionObserverRegistry;
-	/** Revive+prompt path for messageable local agents. Lazy to avoid touching the global. */
+
 	lifecycle?: () => AgentLifecycleManager;
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
-	/** Whether the active registry entry came from a built-in factory. */
+
 	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	expandKeys: KeyId[];
-	/** Keys that toggle the whole fleet closed (app.agents.fleet + app.session.observe). */
+
 	fleetKeys: KeyId[];
 	requestRender: () => void;
-	/** Close just this viewer (Esc), returning to the fleet table. */
+
 	onClose: () => void;
-	/** Close this viewer AND the fleet (fleet-toggle keys). */
+
 	onFleetClose: () => void;
 }
 
-/** How often to re-stat a file-backed transcript for growth (advisor/live tail). */
 const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
 
-/** Sanitize wire-delivered error text for a single TUI row: tabs → spaces,
- *  newlines collapsed, absolute paths shortened, truncated to `maxWidth`.
- */
 function sanitizeErrorLine(text: string, maxWidth: number): string {
 	const singleLine = replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
@@ -172,7 +154,6 @@ export class AgentTranscriptViewer implements Component {
 		this.#pollTimer.unref?.();
 	}
 
-	/** Advisor and aborted-agent transcripts are read-only. */
 	get #sendable(): boolean {
 		const ref = this.deps.registry.get(this.deps.agentId);
 		if (!ref || ref.kind === "advisor" || ref.status === "aborted") return false;
@@ -191,11 +172,6 @@ export class AgentTranscriptViewer implements Component {
 		this.#pollTimer = undefined;
 	}
 
-	// ========================================================================
-	// Transcript loading
-	// ========================================================================
-
-	/** Refresh the transcript from the agent's local session file. */
 	#refresh(): void {
 		if (this.#disposed) return;
 		const sessionFile = this.deps.registry.get(this.deps.agentId)?.sessionFile;
@@ -237,8 +213,6 @@ export class AgentTranscriptViewer implements Component {
 			try {
 				current = readFileRangeSync(sessionFile, sentinel.offset, sentinel.bytes.byteLength);
 			} catch (err) {
-				// The file can be unlinked/rotated between statSync and this read.
-				// Treat as not-appendable so #refresh falls back to a guarded full load.
 				logger.debug("transcript viewer: sentinel read failed", { err: String(err) });
 				return false;
 			}
@@ -252,24 +226,17 @@ export class AgentTranscriptViewer implements Component {
 		try {
 			data = fs.readFileSync(sessionFile);
 		} catch (err) {
-			// Leave #localState unchanged so a transient read error retries next poll.
 			logger.debug("transcript viewer: read failed", { err: String(err) });
 			return;
 		}
-		// The file may have grown between the earlier `statSync` and this read.
-		// Anchor the tail cursor to what we actually consumed so the next poll's
-		// `#appendLocal` never re-renders bytes already in the rebuilt transcript;
-		// re-stat for mtime/identity so the post-read clock matches what's on disk.
+
 		let post: fs.Stats;
 		try {
 			post = fs.statSync(sessionFile);
 		} catch {
 			post = stat;
 		}
-		// A reader that opens the file mid-append sees a trailing partial line
-		// (no terminating newline). Carry those bytes as `pending` so the next
-		// poll's `#appendLocal` joins them with the completion bytes instead of
-		// parsing a headless line fragment and dropping the entry.
+
 		const text = data.toString("utf-8");
 		const lastNewline = text.lastIndexOf("\n");
 		const complete = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : "";
@@ -307,8 +274,6 @@ export class AgentTranscriptViewer implements Component {
 		try {
 			sentinels = sentinelsFromFile(sessionFile, stat.size);
 		} catch (err) {
-			// File unlinked/rotated mid-poll: fall back to a guarded full reload
-			// instead of letting the open escape the poll timer.
 			logger.debug("transcript viewer: sentinel recompute failed", { err: String(err) });
 			this.#loadLocalFull(sessionFile, stat);
 			return;
@@ -328,7 +293,6 @@ export class AgentTranscriptViewer implements Component {
 		}
 	}
 
-	/** Filter to message entries, tracking the model from the first assistant / a model_change. */
 	#extractMessages(entries: FileEntry[]): SessionMessageEntry[] {
 		const messages: SessionMessageEntry[] = [];
 		for (const entry of entries) {
@@ -352,10 +316,6 @@ export class AgentTranscriptViewer implements Component {
 		this.deps.requestRender();
 	}
 
-	// ========================================================================
-	// Input
-	// ========================================================================
-
 	handleInput(data: string): void {
 		if (data.startsWith("\x1b[<")) {
 			routeSgrMouseInput(data, event => {
@@ -369,8 +329,6 @@ export class AgentTranscriptViewer implements Component {
 			return;
 		}
 
-		// The fleet/observe toggle keys close the whole fleet (matches the table view's
-		// toggle semantics), not just this viewer.
 		for (const key of this.deps.fleetKeys) {
 			if (matchesKey(data, key)) {
 				this.deps.onFleetClose();
@@ -397,7 +355,6 @@ export class AgentTranscriptViewer implements Component {
 			}
 		}
 
-		// Once the reader starts typing a message, the editor owns every key.
 		const editorEmpty = !this.#editor || this.#editor.getText().trim() === "";
 		if (editorEmpty && this.#handleScroll(data)) return;
 
@@ -407,7 +364,6 @@ export class AgentTranscriptViewer implements Component {
 		}
 	}
 
-	/** Returns true when the key was a scroll command. ScrollView owns the offset. */
 	#handleScroll(data: string): boolean {
 		if (this.#scrollView.handleScrollKey(data)) {
 			this.#syncFollow();
@@ -444,9 +400,8 @@ export class AgentTranscriptViewer implements Component {
 		if (!lifecycle) return;
 		void (async () => {
 			try {
-				// Revives a parked agent; returns the live session for running/idle.
 				const session = await lifecycle().ensureLive(id);
-				// Steers a mid-turn agent; sends a normal prompt to an idle one.
+
 				await session.prompt(trimmed, { streamingBehavior: "steer" });
 			} catch (error) {
 				this.#notice = error instanceof Error ? error.message : String(error);
@@ -456,18 +411,9 @@ export class AgentTranscriptViewer implements Component {
 		this.deps.requestRender();
 	}
 
-	// ========================================================================
-	// Render
-	// ========================================================================
-
 	render(width: number): readonly string[] {
 		const termHeight = process.stdout.rows || 40;
-		// `innerWidth` widths the editor/notice chrome (gutter-prefixed below).
-		// `contentWidth` widths the transcript: ScrollView reserves the last column
-		// for the scrollbar, and the transcript components carry their own 1-col left
-		// gutter — so body rows are emitted WITHOUT an extra outer space, sharing that
-		// gutter with the header/footer (which add one). Stacking both shifted the body
-		// one column right of the title.
+
 		const innerWidth = Math.max(20, width - 2);
 		const contentWidth = Math.max(1, width - 1);
 		const ref = this.deps.registry.get(this.deps.agentId);
@@ -479,7 +425,6 @@ export class AgentTranscriptViewer implements Component {
 			: undefined;
 		const editorLines = this.#editor ? this.#editor.render(innerWidth) : [];
 
-		// Chrome: top border + header rows + divider border + (notice) + editor + footer + bottom border.
 		const chrome = headerLines.length + 2 + editorLines.length + footerLines.length + (noticeLine ? 1 : 0) + 1;
 		const viewportHeight = Math.max(3, termHeight - chrome);
 

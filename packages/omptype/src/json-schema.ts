@@ -4,14 +4,7 @@ export interface JsonSchemaOptions {
 	description?: string;
 	target?: string;
 	dialect?: string | null;
-	/**
-	 * Which side of morphs and defaults to describe:
-	 * - `'input'` — accepted payloads: morphs emit their input shape, defaulted
-	 *   properties are optional (with `default` annotations).
-	 * - `'output'` — produced values: morphs emit their output shape, defaulted
-	 *   properties are required (always present after validation).
-	 * Unset keeps the hybrid legacy behavior (morph output, defaults optional).
-	 */
+
 	io?: "input" | "output";
 	fallback?: (context: { base: Record<string, unknown> }) => unknown;
 }
@@ -20,13 +13,12 @@ type JsonSchema = Record<string, unknown>;
 
 interface EmitCtx {
 	options?: JsonSchemaOptions;
-	/** Emitted alias definitions, attached as `$defs` on the root schema. */
+
 	defs: Map<string, JsonSchema>;
-	/** Alias resolver identity → assigned `$defs` name (cycle-safe). */
+
 	refs: Map<() => IR, string>;
 }
 
-/** Emit the requested JSON Schema dialect represented by an IR tree. */
 export function irToJsonSchema(ir: IR, options?: JsonSchemaOptions): JsonSchema {
 	const ctx: EmitCtx = { options, defs: new Map(), refs: new Map() };
 	let schema = emit(ir, ctx);
@@ -165,8 +157,7 @@ function emit(ir: IR, ctx: EmitCtx): JsonSchema {
 				schema = { $ref: `#/$defs/${known}` };
 				break;
 			}
-			// Register before lowering so cyclic aliases resolve to the same $ref
-			// instead of recursing forever.
+
 			let name = ir.name.replace(/[^\w.-]/g, "_");
 			while ([...ctx.refs.values()].includes(name)) name = `${name}_`;
 			ctx.refs.set(ir.resolve, name);
@@ -273,8 +264,7 @@ function emitObject(
 	const properties: Record<string, unknown> = {};
 	const required: string[] = [];
 	const filled = (prop: PropIR): boolean => !prop.opt && (ctx.options?.io === "output" || !prop.hasDefault);
-	// ArkType emits required properties first (each group in declaration
-	// order); downstream wire consumers rely on that stable ordering.
+
 	const ordered = [...props.filter(filled), ...props.filter(prop => !filled(prop))];
 	for (const prop of ordered) {
 		if (typeof prop.key === "symbol") throw new TypeError("Cannot convert a symbol to a string");

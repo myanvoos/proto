@@ -1,6 +1,6 @@
-//! `ln` builtin: make hard and symbolic links.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(any(unix, target_os = "redox"))]
 use std::os::unix::fs::symlink;
@@ -78,7 +78,7 @@ enum LnError {
 
 mod options {
 	pub const FORCE: &str = "force";
-	//pub const DIRECTORY: &str = "directory";
+
 	pub const INTERACTIVE: &str = "interactive";
 	pub const NO_DEREFERENCE: &str = "no-dereference";
 	pub const SYMBOLIC: &str = "symbolic";
@@ -92,7 +92,7 @@ mod options {
 
 static ARG_FILES: &str = "files";
 
-/// Parsed `ln` invocation.
+
 pub(crate) struct Ln {
 	matches: ArgMatches,
 }
@@ -149,7 +149,7 @@ impl Utility for Ln {
 }
 
 fn ln_main(matches: &ArgMatches, host: &mut Host) -> LnResult<()> {
-	/* the list of files */
+
 
 	let paths: Vec<PathBuf> = matches
 		.get_many::<OsString>(ARG_FILES)
@@ -171,7 +171,7 @@ fn ln_main(matches: &ArgMatches, host: &mut Host) -> LnResult<()> {
 		.map_err(|error| LnError::Message(error.to_string()))?;
 	let backup_suffix = backup_control::determine_backup_suffix(matches);
 
-	// When we have "-L" or "-L -P", false otherwise
+
 	let logical = matches.get_flag(options::LOGICAL);
 
 	let settings = Settings {
@@ -211,7 +211,7 @@ fn uu_app() -> Command {
 			 DIRECTORY\nln [OPTION]... -t DIRECTORY TARGET...",
 		))
 		.infer_long_args(true)
-		// Free `-h` for the BSD `--no-dereference` alias; `--help` remains.
+
 		.disable_help_flag(true)
 		.arg(
 			Arg::new("help")
@@ -222,12 +222,12 @@ fn uu_app() -> Command {
 		.after_help(after_help)
 		.arg(backup_control::arguments::backup())
 		.arg(backup_control::arguments::backup_no_args())
-		/*.arg(
-			Arg::new(options::DIRECTORY)
-				.short('d')
-				.long(options::DIRECTORY)
-				.help("allow users with appropriate privileges to attempt to make hard links to directories")
-		)*/
+
+
+
+
+
+
 		.arg(
 			Arg::new(options::FORCE)
 				.short('f')
@@ -247,7 +247,7 @@ fn uu_app() -> Command {
 		.arg(
 			Arg::new(options::NO_DEREFERENCE)
 				.short('n')
-				// BSD/macOS spells `--no-dereference` as `-h`.
+
 				.short_alias('h')
 				.long(options::NO_DEREFERENCE)
 				.help("treat LINK_NAME as a normal file if it is a\nsymbolic link to a directory")
@@ -262,7 +262,7 @@ fn uu_app() -> Command {
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
-			// Not implemented yet
+
 			Arg::new(options::PHYSICAL)
 				.short('P')
 				.long(options::PHYSICAL)
@@ -274,7 +274,7 @@ fn uu_app() -> Command {
 				.short('s')
 				.long(options::SYMBOLIC)
 				.help("make symbolic links instead of hard links")
-				// override added for https://github.com/uutils/coreutils/issues/2359
+
 				.overrides_with(options::SYMBOLIC)
 				.action(ArgAction::SetTrue),
 		)
@@ -321,32 +321,32 @@ fn uu_app() -> Command {
 		)
 }
 
-/// Creates the `ln` builtin registration.
+
 pub(crate) fn ln_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ln, SE>()
 }
 
 fn exec(host: &mut Host, files: &[PathBuf], settings: &Settings) -> LnResult<()> {
-	// Handle cases where we create links in a directory first.
+
 	if let Some(target_path) = &settings.target_dir {
-		// 4th form: a directory is specified by -t.
+
 		return link_files_in_dir(host, files, target_path, settings);
 	}
 	if !settings.no_target_dir {
 		if files.len() == 1 {
-			// 2nd form: the target directory is the current directory.
+
 			return link_files_in_dir(host, files, &PathBuf::from("."), settings);
 		}
 		let last_file = &PathBuf::from(files.last().unwrap());
 
 		if files.len() > 2 || host.resolve(last_file).is_dir() {
-			// 3rd form: create links in the last argument.
+
 			return link_files_in_dir(host, &files[0..files.len() - 1], last_file, settings);
 		}
 	}
 
-	// 1st form. Now there should be only two operands, but if -T is
-	// specified we may have a wrong number of operands.
+
+
 	if files.len() == 1 {
 		return Err(LnError::MissingDestination(files[0].clone()).into());
 	}
@@ -364,19 +364,19 @@ fn link_files_in_dir(
 	target_dir: &Path,
 	settings: &Settings,
 ) -> LnResult<()> {
-	// Keep the operand spelling for diagnostics and link-name construction.
+
 	let target_dir_fs = host.resolve(target_dir);
 	if !target_dir_fs.is_dir() {
 		return Err(LnError::TargetIsNotADirectory(target_dir.to_owned()).into());
 	}
-	// remember the linked destinations for further usage
+
 	let mut linked_destinations: HashSet<PathBuf> = HashSet::with_capacity(files.len());
 
 	let mut all_successful = true;
 	for srcpath in files {
 		let targetpath = if settings.no_dereference && target_dir_fs.is_symlink() {
 			let remove_target = |host: &mut Host| {
-				// In that case, we don't want to do link resolution.
+
 				if target_dir_fs.is_file()
 					&& let Err(e) = fs::remove_file(&target_dir_fs)
 				{
@@ -384,7 +384,7 @@ fn link_files_in_dir(
 				}
 				#[cfg(windows)]
 				if target_dir_fs.is_dir() {
-					// On Windows a directory symlink can be considered a directory.
+
 					if let Err(e) = fs::remove_dir(&target_dir_fs) {
 						show_error(host, format_args!("Could not update {}: {e}", target_dir.quote()));
 					}
@@ -405,10 +405,10 @@ fn link_files_in_dir(
 		} else if let Some(name) = srcpath.as_os_str().to_str() {
 			match Path::new(name).file_name() {
 				Some(basename) => target_dir.join(basename),
-				// This can be None only for "." or "..". Trying
-				// to create a link with such name will fail with
-				// EEXIST, which agrees with the behavior of GNU
-				// coreutils.
+
+
+
+
 				None => target_dir.join(name),
 			}
 		} else {
@@ -418,7 +418,7 @@ fn link_files_in_dir(
 		};
 
 		if linked_destinations.contains(&targetpath) {
-			// If the target file was already created in this ln call, do not overwrite
+
 			show_error(host, format_args!(
 				"will not overwrite just-created {} with {}",
 				targetpath.quote(),
@@ -440,7 +440,7 @@ fn link_files_in_dir(
 }
 
 fn relative_path<'a>(host: &Host, src: &'a Path, dst: &Path) -> Cow<'a, Path> {
-	// Resolve before canonicalizing so `-r` computes against the shell cwd.
+
 	if let Ok(src_abs) =
 		canonicalize(host.resolve(src), MissingHandling::Missing, ResolveMode::Physical)
 		&& let Ok(dst_abs) = canonicalize(
@@ -461,16 +461,16 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 		src.into()
 	};
 
-	// Resolve both filesystem operands, but never resolve `source`: it is the
-	// text stored inside a symbolic link.
+
+
 	let src_fs = host.resolve(src);
 	let dst_fs = host.resolve(dst);
 
 	if dst_fs.is_symlink() || dst_fs.exists() {
-		// Probe numbered backups from the resolved destination.
+
 		backup_path = backup_control::get_backup_path(settings.backup, &dst_fs, &settings.suffix);
 		if settings.backup == BackupMode::Existing && !settings.symbolic {
-			// when ln --backup f f, it should detect that it is the same file
+
 			if paths_refer_to_same_file(&src_fs, &dst_fs, true) {
 				return Err(LnError::SameFile(src.to_owned(), dst.to_owned()).into());
 			}
@@ -487,12 +487,12 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 				}
 
 				let _ = fs::remove_file(&dst_fs);
-				// In case of error, don't do anything
+
 			},
 			OverwriteMode::Force => {
 				if !dst_fs.is_symlink() && paths_refer_to_same_file(&src_fs, &dst_fs, true) {
-					// Even in force overwrite mode, verify we are not targeting the same entry and
-					// return a SameFile error if so
+
+
 					let same_entry = match (
 						canonicalize(&src_fs, MissingHandling::Missing, ResolveMode::Physical),
 						canonicalize(&dst_fs, MissingHandling::Missing, ResolveMode::Physical),
@@ -505,7 +505,7 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 					}
 				}
 				let _ = fs::remove_file(&dst_fs);
-				// In case of error, don't do anything
+
 			},
 		}
 	}
@@ -519,7 +519,7 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 			))
 		})
 	} else {
-		// Hard links dereference their target, so syscalls get the resolved source.
+
 		let source_fs = host.resolve(&source);
 		let p = if settings.logical && source_fs.is_symlink() {
 			fs::canonicalize(&source_fs).map_err(|e| {
@@ -556,7 +556,7 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 		write!(out, "{} -> {}", dst.quote(), source.quote())?;
 		match backup_path {
 			Some(path) => {
-				// Rebuild a display path from the operand because the backup path is resolved.
+
 				let backup_display = match (dst.parent(), path.file_name()) {
 					(Some(parent), Some(name)) if !parent.as_os_str().is_empty() => parent.join(name),
 					(_, Some(name)) => PathBuf::from(name),

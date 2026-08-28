@@ -1,6 +1,6 @@
-# Helm repo/search/list/history output.
-# Strips the "Hang tight..." / "Happy Helming!" banners that clutter agent
-# context without affecting the actual chart/release listing.
+
+
+
 
 [filters.helm]
 description = "Compact helm repo/search/list/history output"

@@ -1,15 +1,15 @@
-//! Source info.
+
 
 use std::{path::PathBuf, sync::Arc};
 
-/// Source context.
+
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceInfo {
-	/// The name of the source.
+
 	pub source: String,
-	/// Optionally indicates a starting location after the beginning of the
-	/// source. If `None`, the start is the beginning of the source.
+
+
 	pub start:  Option<Arc<crate::SourcePosition>>,
 }
 

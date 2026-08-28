@@ -1,28 +1,4 @@
-/**
- * Fuzzy-filter performance harness.
- *
- * Models the realistic interactive cost: a user TYPES a query one keystroke at
- * a time, and every keystroke re-filters the SAME stable candidate list (the
- * model selector / settings selector / file-tree selector scenario). The warm
- * session is the primary metric because that is the user-facing latency.
- *
- * `fuzzyMatch` rebuilds a `SearchIndex` (normalize + index) per item per call
- * with no cross-call reuse, so the warm session currently pays N index rebuilds
- * on EVERY keystroke. The optimization target is to memoize that pure build.
- *
- * Guards:
- *   - Golden ranking checksums for a fixed corpus + queries. Any scoring drift
- *     (e.g. a bad cache) fails the harness with a non-zero exit.
- *   - A cold/unique-text pass with no possible reuse, so cache overhead can't
- *     hide a cold-path regression.
- */
-
 import { fuzzyFilter, fuzzyRank, resetFuzzyIndexCache } from "../src/fuzzy";
-
-// ─── Deterministic corpus ───────────────────────────────────────────────────
-// Base model IDs × variant tags (real catalogs look exactly like this), plus a
-// spread of repo file paths for length/structure variety. Built identically on
-// every run so the golden checksums stay valid.
 
 const BASES = [
 	"openai/gpt-4o",
@@ -99,10 +75,6 @@ function buildCorpus(): string[] {
 	return out;
 }
 
-// ─── Golden ranking checksums (ranking-drift guard) ─────────────────────────
-// FNV-1a/32 over the joined ranked output for each query. Any scoring change
-// — including an incorrect cache — fails the harness.
-
 function fnv1a(str: string): string {
 	let h = 0x811c9dc5;
 	for (let i = 0; i < str.length; i++) {
@@ -142,8 +114,6 @@ function assertGolden(corpus: string[]): void {
 	}
 }
 
-// ─── Timing helpers ─────────────────────────────────────────────────────────
-
 function median(values: number[]): number {
 	const sorted = [...values].sort((a, b) => a - b);
 	const mid = sorted.length >> 1;
@@ -160,7 +130,6 @@ function timeFn(reps: number, fn: () => void): number[] {
 	return samples;
 }
 
-// Deterministic PRNG so the cold corpus is identical every run (no time-of-day).
 function makeLcg(seed: number): () => number {
 	let state = seed >>> 0;
 	return () => {
@@ -169,18 +138,12 @@ function makeLcg(seed: number): () => number {
 	};
 }
 
-// ─── Workloads ──────────────────────────────────────────────────────────────
-
-// A user typing "gpt4o-mini" one keystroke at a time, re-filtering the whole
-// list each step. Stable corpus => the same indices are queried every keystroke.
 const KEYSTROKES = ["g", "gp", "gpt", "gpt4", "gpt4o", "gpt4o-", "gpt4o-m", "gpt4o-mini"];
 
 function warmSession(corpus: string[]): void {
 	for (const q of KEYSTROKES) fuzzyFilter(corpus, q, t => t);
 }
 
-// All-unique texts per round: the index can never be reused, so this isolates
-// the pure index-build + scoring cost (the cold path a cache must not regress).
 function coldUniqueCorpus(rng: () => number): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < 400; i++) {
@@ -189,8 +152,6 @@ function coldUniqueCorpus(rng: () => number): string[] {
 	return out;
 }
 
-// ─── Main ───────────────────────────────────────────────────────────────────
-
 const corpus = buildCorpus();
 assertGolden(corpus);
 
@@ -198,23 +159,15 @@ const WARM_REPS = 21;
 const COLD_REPS = 21;
 const COLD_SEED = 0xc0ffee;
 
-// Warm the JIT on a DISJOINT corpus — never the measured one — so a future
-// per-text index cache stays cold for the first measured keystroke. (Until that
-// cache exists this is just JIT warm-up; the reset below is a no-op.)
 const JIT_WARMUP_CORPUS: string[] = Array.from({ length: 400 }, (_, i) => `jit-warmup-entry-${i}-alpha-beta-gamma`);
 for (let i = 0; i < 5; i++) for (const q of ["jit", "warmup", "entry"]) fuzzyFilter(JIT_WARMUP_CORPUS, q, t => t);
 
-// Each sample is a fresh cold-start typing session: the index cache is reset so
-// the first keystroke pays the cold build and keystrokes 2..N reuse it. The
-// baseline has no cache, so the reset is a no-op and every keystroke rebuilds —
-// measured identically before and after the optimization.
 const warmSamples = timeFn(WARM_REPS, () => {
 	resetFuzzyIndexCache();
 	warmSession(corpus);
 });
 const warmMedian = median(warmSamples);
 
-// Cold path: a fresh unique corpus per sample.
 const coldRng = makeLcg(COLD_SEED);
 for (let i = 0; i < 3; i++) {
 	fuzzyFilter(coldUniqueCorpus(coldRng), "model", t => t);
@@ -228,10 +181,6 @@ for (let r = 0; r < COLD_REPS; r++) {
 	coldSamples.push(performance.now() - t0);
 }
 const coldMedian = median(coldSamples);
-
-// Single-keystroke latency over the stable corpus is dominated by the same
-// per-item index build the cold path above isolates; it is not reported
-// separately to avoid duplicating that signal.
 
 console.log(`fuzzy benchmark — corpus ${corpus.length} items, ${KEYSTROKES.length} keystrokes\n`);
 console.log(`warm incremental-typing session: ${warmMedian.toFixed(4)}ms (median of ${WARM_REPS})`);

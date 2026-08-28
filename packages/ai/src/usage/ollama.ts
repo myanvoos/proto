@@ -24,7 +24,6 @@ async function fetchOllamaUsage(params: UsageFetchParams, _ctx: UsageFetchContex
 	};
 }
 
-/** Registers Ollama accounts with usage views even though no quota endpoint is exposed. */
 export const ollamaUsageProvider: UsageProvider = {
 	id: OLLAMA_PROVIDER,
 	fetchUsage: fetchOllamaUsage,
@@ -32,7 +31,6 @@ export const ollamaUsageProvider: UsageProvider = {
 	validatesCredentials: false,
 };
 
-/** Registers Ollama Cloud accounts with usage views until a quota endpoint is available. */
 export const ollamaCloudUsageProvider: UsageProvider = {
 	id: OLLAMA_CLOUD_PROVIDER,
 	fetchUsage: fetchOllamaUsage,

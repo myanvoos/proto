@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 #
 # Upload the macOS signing/notarization secrets to GitHub Actions WITHOUT ever
 # printing a secret value. Every value is read from a file on disk and piped to

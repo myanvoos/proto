@@ -1,9 +1,3 @@
-/**
- * Transparent provider-file to URL to inline recovery for image requests.
- * Retries are allowed only before the provider emits content, keeping the
- * consumer-facing stream single and ordered.
- */
-
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Context } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -18,7 +12,6 @@ function imageSource(context: Context): ImageSource {
 	return contextHasImageUrls(context) ? "url" : "inline";
 }
 
-/** Wrap `base` with provider-file then URL then inline recovery. */
 export function wrapStreamFnWithBlobUrlFallback(base: StreamFn, broker: ImageUrlService | undefined): StreamFn {
 	if (!broker) return base;
 	return (model, context, options) => {

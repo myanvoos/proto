@@ -1,10 +1,10 @@
 use brush_core::{ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-/// Shift positional arguments.
+
 #[derive(Parser)]
 pub(crate) struct ShiftCommand {
-	/// Number of positions to shift the arguments by (defaults to 1).
+
 	n: Option<i32>,
 }
 

@@ -1,9 +1,3 @@
-/**
- * Confirm Destructive Actions Hook
- *
- * Prompts for confirmation before destructive session actions (clear, switch, branch).
- * Demonstrates how to cancel session events using the before_* events.
- */
 import type { HookAPI, SessionBeforeSwitchEvent, SessionMessageEntry } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: HookAPI) {
@@ -23,7 +17,6 @@ export default function (pi: HookAPI) {
 			return;
 		}
 
-		// reason === "resume" - check if there are unsaved changes (messages since last assistant response)
 		const entries = ctx.sessionManager.getEntries();
 		const hasUnsavedWork = entries.some(
 			(e): e is SessionMessageEntry => e.type === "message" && e.message.role === "user",

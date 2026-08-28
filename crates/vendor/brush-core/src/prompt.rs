@@ -15,10 +15,10 @@ pub(crate) async fn expand_prompt(
 	params: &ExecutionParameters,
 	spec: String,
 ) -> Result<String, error::Error> {
-	// Parse the prompt spec into its pieces.
+
 	let prompt_pieces = parse_prompt(spec)?;
 
-	// Now, render each piece.
+
 	let mut formatted_prompt = String::new();
 	for piece in prompt_pieces {
 		let needs_escaping = matches!(
@@ -37,7 +37,7 @@ pub(crate) async fn expand_prompt(
 	}
 
 	if shell.options().expand_prompt_strings {
-		// Now expand any remaining escape sequences, but without tilde-expansion.
+
 		let options = expansion::ExpanderOptions { tilde_expand: false, ..Default::default() };
 		formatted_prompt =
 			expansion::basic_expand_word_with_options(shell, params, &formatted_prompt, &options)
@@ -87,11 +87,11 @@ fn format_prompt_piece(
 				"$".to_owned()
 			}
 		},
-		// NOTE: We mimic bash and convert \[ into \001, a.k.a. RL_PROMPT_START_IGNORE.
-		// It will need to get removed before it's actually displayed. While present it
-		// also has the important (compatible) side effect of ensuring the text on either
-		// side of it is not concatenated together, potentially resulting in incompatible
-		// variable expansions. Also, we *only* do this if the shell is interactive.
+
+
+
+
+
 		brush_parser::prompt::PromptPiece::EndNonPrintingSequence => {
 			if shell.options().interactive {
 				"\x02".to_owned()
@@ -128,7 +128,7 @@ fn format_prompt_piece(
 		brush_parser::prompt::PromptPiece::ShellVersion => {
 			std::format!("{VERSION_MAJOR}.{VERSION_MINOR}")
 		},
-		// NOTE: See above note for EndNonPrintingSequence
+
 		brush_parser::prompt::PromptPiece::StartNonPrintingSequence => {
 			if shell.options().interactive {
 				"\x01".to_owned()
@@ -172,9 +172,9 @@ fn format_current_working_directory(
 }
 
 fn format_current_history_number(shell: &Shell<impl extensions::ShellExtensions>) -> String {
-	// Bash renders \! as the history number that will be assigned to the next
-	// interactive command. When command history is disabled, bash keeps this at
-	// 1 rather than rendering 0.
+
+
+
 	shell.history().map_or(1, |history| history.count() + 1).to_string()
 }
 

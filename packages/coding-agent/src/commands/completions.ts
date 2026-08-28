@@ -1,21 +1,12 @@
-/**
- * `proto completions <bash|zsh|fish>` — print a shell completion script.
- *
- * The script is derived entirely from the declarative command/flag metadata
- * (see `cli/completion-gen.ts`), so it never drifts from the actual CLI surface.
- */
-
 import { BINARY_NAME, postmortem, VERSION } from "@oh-my-pi/pi-utils";
 import { Args, type CliConfig, Command, type CommandCtor } from "@oh-my-pi/pi-utils/cli";
 import { completionsHelp as commandHelp } from "../cli/command-help";
 import { buildSpec, generateCompletion, type Shell } from "../cli/completion-gen";
 import { commands } from "../cli-commands";
 
-/** Entry name of the default command whose flags become top-level completions. */
 const ROOT_COMMAND = "launch";
 const SHELLS = ["bash", "zsh", "fish"] as const;
 
-/** Generate a completion script from the live command registry. */
 export async function generateLiveCompletion(shell: Shell): Promise<string> {
 	const loaded = await Promise.all(commands.map(async entry => ({ entry, Cmd: await entry.load() })));
 	const map = new Map<string, CommandCtor>();

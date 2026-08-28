@@ -1,6 +1,6 @@
-//! `touch` builtin: update file access and modification times.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -69,67 +69,67 @@ fn io_context(error: std::io::Error, context: impl std::fmt::Display) -> TouchEr
 	TouchError::Message(format!("{context}: {}", io_error(&error)))
 }
 
-/// Options contains all the possible behaviors and flags for touch.
-///
-/// All options are public so that the options can be programmatically
-/// constructed by other crates, such as nushell. That means that this struct is
-/// part of our public API. It should therefore not be changed without good
-/// reason.
-///
-/// The fields are documented with the arguments that determine their value.
+
+
+
+
+
+
+
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Options {
-	/// Do not create any files. Set by `-c`/`--no-create`.
+
 	no_create: bool,
 
-	/// Affect each symbolic link instead of any referenced file. Set by
-	/// `-h`/`--no-dereference`.
+
+
 	no_deref: bool,
 
-	/// Where to get access and modification times from
+
 	source: Source,
 
-	/// If given, uses time from `source` but on given date
+
 	date: Option<String>,
 
-	/// Whether to change access time only, modification time only, or both
+
 	change_times: ChangeTimes,
 
-	/// When true, error when file doesn't exist and either `--no-dereference`
-	/// was passed or the file couldn't be created
+
+
 	strict: bool,
 }
 
 enum InputFile {
-	/// A regular file
+
 	Path(PathBuf),
-	/// Touch stdout. `--no-dereference` will be ignored in this case.
+
 	Stdout,
 }
 
-/// Whether to set access time only, modification time only, or both
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum ChangeTimes {
-	/// Change only access time
+
 	AtimeOnly,
-	/// Change only modification time
+
 	MtimeOnly,
-	/// Change both access and modification times
+
 	Both,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum Source {
-	/// Use access/modification times of given file
+
 	Reference(PathBuf),
 	Timestamp(FileTime),
-	/// Use current time
+
 	Now,
 }
 
 mod options {
-	// Both SOURCES and sources are needed as we need to be able to refer to the
-	// ArgGroup.
+
+
 	pub static SOURCES: &str = "sources";
 	pub mod sources {
 		pub static DATE: &str = "date";
@@ -150,19 +150,19 @@ static ARG_FILES: &str = "files";
 mod format {
 	pub(crate) const POSIX_LOCALE: &str = "%a %b %e %H:%M:%S %Y";
 	pub(crate) const ISO_8601: &str = "%Y-%m-%d";
-	// "%Y%m%d%H%M.%S" 15 chars
+
 	pub(crate) const YYYYMMDDHHMM_DOT_SS: &str = "%Y%m%d%H%M.%S";
-	// "%Y-%m-%d %H:%M:%S.%SS" 12 chars
+
 	pub(crate) const YYYYMMDDHHMMSS: &str = "%Y-%m-%d %H:%M:%S.%f";
-	// "%Y-%m-%d %H:%M:%S" 12 chars
+
 	pub(crate) const YYYYMMDDHHMMS: &str = "%Y-%m-%d %H:%M:%S";
-	// "%Y-%m-%d %H:%M" 12 chars
-	// Used for example in tests/touch/no-rights.sh
+
+
 	pub(crate) const YYYY_MM_DD_HH_MM: &str = "%Y-%m-%d %H:%M";
-	// "%Y%m%d%H%M" 12 chars
+
 	pub(crate) const YYYYMMDDHHMM: &str = "%Y%m%d%H%M";
-	// "%Y-%m-%d %H:%M +offset"
-	// Used for example in tests/touch/relative.sh
+
+
 	pub(crate) const YYYYMMDDHHMM_OFFSET: &str = "%Y-%m-%d %H:%M %z";
 }
 
@@ -184,15 +184,15 @@ fn host_time_zone(host: &Host) -> TimeZone {
 		.unwrap_or(TimeZone::UTC)
 }
 
-/// Whether all characters in the string are digits.
+
 fn all_digits(s: &str) -> bool {
 	s.as_bytes().iter().all(u8::is_ascii_digit)
 }
 
-/// Convert a two-digit year string to the corresponding number.
-///
-/// `s` must be of length two or more. The last two bytes of `s` are
-/// assumed to be the two digits of the year.
+
+
+
+
 fn get_year(s: &str) -> u8 {
 	let bytes = s.as_bytes();
 	let n = bytes.len();
@@ -201,7 +201,7 @@ fn get_year(s: &str) -> u8 {
 	10 * y1 + y2
 }
 
-/// Whether the first filename should be interpreted as a timestamp.
+
 fn is_first_filename_timestamp(
 	reference: Option<&OsString>,
 	date: Option<&str>,
@@ -213,20 +213,20 @@ fn is_first_filename_timestamp(
 		&& reference.is_none()
 		&& date.is_none()
 		&& files.len() >= 2
-		// The environment check is last as the slowest operation.
+
 		&& posix2_version == Some("199209")
 		&& files[0].to_str().is_some_and(is_timestamp)
 }
 
-// Check if string is a valid POSIX timestamp (8 digits or 10 digits with valid
-// year range)
+
+
 fn is_timestamp(s: &str) -> bool {
 	all_digits(s) && (s.len() == 8 || (s.len() == 10 && (69..=99).contains(&get_year(s))))
 }
 
-/// Cycle the last two characters to the beginning of the string.
-///
-/// `s` must have length at least two.
+
+
+
 fn shr2(s: &str) -> String {
 	let n = s.len();
 	let (a, b) = s.split_at(n - 2);
@@ -236,7 +236,7 @@ fn shr2(s: &str) -> String {
 	result
 }
 
-/// Parsed `touch` invocation.
+
 pub(crate) struct Touch {
 	matches: ArgMatches,
 }
@@ -427,23 +427,23 @@ fn uu_app() -> Command {
 		)
 }
 
-/// Execute the touch command.
-///
-/// # Errors
-///
-/// Possible causes:
-/// - The user doesn't have permission to access the file
-/// - One of the directory components of the file path doesn't exist.
-/// - Dangling symlink is given and -r/--reference is used.
-///
-/// It will return an `Err` on the first error. However, for any of the files,
-/// if all of the following are true, it will print the error and continue
-/// touching the rest of the files.
-/// - `opts.strict` is `false`
-/// - The file doesn't already exist
-/// - `-c`/`--no-create` was passed (`opts.no_create`)
-/// - Either `-h`/`--no-dereference` was passed (`opts.no_deref`) or the file
-///   couldn't be created
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 fn touch(
 	files: &[InputFile],
 	opts: &Options,
@@ -505,15 +505,15 @@ fn touch(
 	Ok(())
 }
 
-/// Create or update the timestamp for a single file.
-///
-/// # Arguments
-///
-/// - `path` - The path to the file to create/update timestamp for
-/// - `is_stdout` - Stdout is handled specially, see [`update_times`] for more
-///   info
-/// - `atime` - Access time to set for the file
-/// - `mtime` - Modification time to set for the file
+
+
+
+
+
+
+
+
+
 fn touch_file(
 	path: &Path,
 	is_stdout: bool,
@@ -548,8 +548,8 @@ fn touch_file(
 		}
 
 		if let Err(error) = File::create(&resolved) {
-			// A trailing separator denotes a directory, but `File::create`
-			// cannot create one.
+
+
 			let is_directory = path
 				.to_string_lossy()
 				.chars()
@@ -570,8 +570,8 @@ fn touch_file(
 			return Ok(());
 		}
 
-		// Minor optimization: if no reference time, timestamp, or date was specified,
-		// we're done.
+
+
 		if opts.source == Source::Now && opts.date.is_none() {
 			return Ok(());
 		}
@@ -580,15 +580,15 @@ fn touch_file(
 	update_times(path, &resolved, is_stdout, opts, atime, mtime)
 }
 
-/// Returns which of the times (access, modification) are to be changed.
-///
-/// Note that "-a" and "-m" may be passed together; this is not an xor.
-/// - If `-a` is passed but not `-m`, only access time is changed
-/// - If `-m` is passed but not `-a`, only modification time is changed
-/// - If neither or both are passed, both times are changed
+
+
+
+
+
+
 fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
-	// If `--time` is given, Some(true) if equivalent to `-a`, Some(false) if
-	// equivalent to `-m` If `--time` not given, None
+
+
 	let time_access_only = if matches.contains_id(options::TIME) {
 		matches
 			.get_one::<String>(options::TIME)
@@ -609,11 +609,11 @@ fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
 	}
 }
 
-/// Updating file access and modification times based on user-specified options
-///
-/// If the file is not stdout (`!is_stdout`) and `-h`/`--no-dereference` was
-/// passed, then, if the given file is a symlink, its own times will be updated,
-/// rather than the file it points to.
+
+
+
+
+
 fn update_times(
 	path: &Path,
 	resolved: &Path,
@@ -622,7 +622,7 @@ fn update_times(
 	atime: FileTime,
 	mtime: FileTime,
 ) -> Result<(), TouchError> {
-	// If changing "only" atime or mtime, grab the existing value of the other.
+
 	let (atime, mtime) = match opts.change_times {
 		ChangeTimes::AtimeOnly => (
 			atime,
@@ -650,7 +650,7 @@ fn update_times(
 
 	#[cfg(unix)]
 	{
-		// Open write-only and use futimens to trigger IN_CLOSE_WRITE on Linux.
+
 		if !is_stdout && try_futimens_via_write_fd(resolved, atime, mtime).is_ok() {
 			return Ok(());
 		}
@@ -661,15 +661,15 @@ fn update_times(
 }
 
 #[cfg(unix)]
-/// Set file times via file descriptor using `futimens`.
-///
-/// This opens the file write-only and uses the POSIX `futimens` call to set
-/// access and modification times on the open FD (not by path), which also
-/// triggers `IN_CLOSE_WRITE` on Linux when the FD is closed.
+
+
+
+
+
 fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> std::io::Result<()> {
 	let file = OpenOptions::new()
 		.write(true)
-		// Avoid blocking on special files (e.g. FIFOs) before we can inspect metadata.
+
 		.custom_flags(O_NONBLOCK)
 		.open(path)?;
 
@@ -687,18 +687,18 @@ fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> s
 	futimens(&file, &timestamps).map_err(|e| Error::from_raw_os_error(e.raw_os_error()))
 }
 
-/// Get metadata of the provided path
-/// If `follow` is `true`, the function will try to follow symlinks. Errors if
-/// the symlink is dangling, otherwise defaults to symlink metadata. If `follow`
-/// is `false`, the function will return metadata of the symlink itself
+
+
+
+
 fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
 	let metadata = if follow {
 		match fs::metadata(path) {
-			// Successfully followed symlink
+
 			Ok(meta) => meta,
-			// Dangling symlink
+
 			Err(e) if e.kind() == ErrorKind::NotFound => return Err(e),
-			// Other error (?), try to get the symlink metadata
+
 			Err(_) => fs::symlink_metadata(path)?,
 		}
 	} else {
@@ -712,20 +712,20 @@ fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
 }
 
 fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
-	// This isn't actually compatible with GNU touch, but there doesn't seem to
-	// be any simple specification for what format this parameter allows and I'm
-	// not about to implement GNU parse_datetime.
-	// http://git.savannah.gnu.org/gitweb/?p=gnulib.git;a=blob_plain;f=lib/parse-datetime.y
 
-	// TODO: match on char count?
 
-	// "The preferred date and time representation for the current locale."
-	// "(In the POSIX locale this is equivalent to %a %b %e %H:%M:%S %Y.)"
-	// time 0.1.43 parsed this as 'a b e T Y'
-	// which is equivalent to the POSIX locale: %a %b %e %H:%M:%S %Y
-	// Tue Dec  3 ...
-	// ("%c", POSIX_LOCALE_FORMAT),
-	//
+
+
+
+
+
+
+
+
+
+
+
+
 	if let Ok(parsed) = strtime::parse(format::POSIX_LOCALE, s)
 		.and_then(|tm| tm.to_datetime())
 		.and_then(|dt| TimeZone::UTC.to_zoned(dt))
@@ -733,9 +733,9 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 		return Ok(timestamp_to_filetime(parsed.timestamp()));
 	}
 
-	// Also support other formats found in the GNU tests like
-	// in tests/misc/stat-nanoseconds.sh
-	// or tests/touch/no-rights.sh
+
+
+
 	for fmt in [
 		format::YYYYMMDDHHMMS,
 		format::YYYYMMDDHHMMSS,
@@ -750,8 +750,8 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 		}
 	}
 
-	// "Equivalent to %Y-%m-%d (the ISO 8601 date format). (C99)"
-	// ("%F", ISO_8601_FORMAT),
+
+
 	if let Ok(filetime) = strtime::parse(format::ISO_8601, s)
 		.and_then(|tm| tm.to_date())
 		.and_then(|date| {
@@ -764,8 +764,8 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 		return Ok(filetime);
 	}
 
-	// "@%s" is "The number of seconds since the Epoch, 1970-01-01 00:00:00 +0000
-	// (UTC). (TZ) (Calculated from mktime(tm).)"
+
+
 	if s.bytes().next() == Some(b'@')
 		&& let Ok(ts) = &s[1..].parse::<i64>()
 	{
@@ -779,12 +779,12 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 	Err(TouchError::InvalidDateFormat(s.to_owned()))
 }
 
-/// Prepends 19 or 20 to the year if it is a 2 digit year
-///
-/// GNU `touch` behavior:
-///
-/// - 68 and before is interpreted as 20xx
-/// - 69 and after is interpreted as 19xx
+
+
+
+
+
+
 fn prepend_century(s: &str) -> Result<String, TouchError> {
 	let first_two_digits = s[..2].parse::<u32>().map_err(|_| {
 		TouchError::Message(format!("invalid date ts format {}", s.quote()))
@@ -792,14 +792,14 @@ fn prepend_century(s: &str) -> Result<String, TouchError> {
 	Ok(format!("{}{s}", if first_two_digits > 68 { 19 } else { 20 }))
 }
 
-/// Parses a timestamp string into a [`FileTime`].
-///
-/// This function attempts to parse a string into a [`FileTime`]
-/// As expected by gnu touch -t : `[[cc]yy]mmddhhmm[.ss]`
-///
-/// Note that  If the year is specified with only two digits,
-/// then cc is 20 for years in the range 0 … 68, and 19 for years in 69 … 99.
-/// in order to be compatible with GNU `touch`.
+
+
+
+
+
+
+
+
 fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
 	use format::{YYYYMMDDHHMM, YYYYMMDDHHMM_DOT_SS};
 
@@ -808,7 +808,7 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 	let (format, ts) = match s.chars().count() {
 		15 => (YYYYMMDDHHMM_DOT_SS, s.to_owned()),
 		12 => (YYYYMMDDHHMM, s.to_owned()),
-		// If we don't add "19" or "20", we have insufficient information to parse
+
 		13 => (YYYYMMDDHHMM_DOT_SS, prepend_century(s)?),
 		10 => (YYYYMMDDHHMM, prepend_century(s)?),
 		11 => (YYYYMMDDHHMM_DOT_SS, format!("{}{s}", current_year())),
@@ -822,17 +822,17 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 		.and_then(|parsed| parsed.to_datetime())
 		.map_err(|_| TouchError::Message(format!("invalid date ts format {}", ts.quote())))?;
 
-	// Jiff caps seconds at 59, but 60 is valid. It might be a leap second
-	// or wrap to the next minute. But that doesn't really matter, because we
-	// only care about the timestamp anyway.
-	// Tested in gnu/tests/touch/60-seconds
+
+
+
+
 	if dt.second() == 59 && ts.ends_with(".60") {
 		dt += 1.second();
 	}
 
-	// Due to daylight saving time switch, local time can jump from 1:59 AM to
-	// 3:00 AM, in which case any time between 2:00 AM and 2:59 AM is not valid.
-	// Jiff's `to_ambiguous_zoned(...).unambiguous()` handles this case.
+
+
+
 	let local = time_zone
 		.to_ambiguous_zoned(dt)
 		.unambiguous()
@@ -841,11 +841,11 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 	Ok(timestamp_to_filetime(local.timestamp()))
 }
 
-// TODO: this may be a good candidate to put in fsext.rs
-/// Returns a [`PathBuf`] to stdout.
-///
-/// On Windows, uses `GetFinalPathNameByHandleW` to attempt to get the path
-/// from the stdout handle.
+
+
+
+
+
 #[cfg_attr(not(windows), expect(clippy::unnecessary_wraps))]
 fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	#[cfg(all(unix, not(target_os = "android")))]
@@ -871,14 +871,14 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 		let handle = std::io::stdout().lock().as_raw_handle() as HANDLE;
 		let mut file_path_buffer: [u16; MAX_PATH as usize] = [0; MAX_PATH as usize];
 
-		// https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlea#examples
-		// SAFETY: We transmute the handle to be able to cast *mut c_void into a
-		// HANDLE (i32) so rustc will let us call GetFinalPathNameByHandleW. The
-		// reference example code for GetFinalPathNameByHandleW implies that
-		// it is safe for us to leave lpszfilepath uninitialized, so long as
-		// the buffer size is correct. We know the buffer size (MAX_PATH) at
-		// compile time. MAX_PATH is a small number (260) so we can cast it
-		// to a u32.
+
+
+
+
+
+
+
+
 		let ret = unsafe {
 			GetFinalPathNameByHandleW(
 				handle,
@@ -888,8 +888,8 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 			)
 		};
 
-		// The variant's display supplies the error prefix; only the code is
-		// stored here.
+
+
 		let buffer_size = match ret {
 			ERROR_PATH_NOT_FOUND | ERROR_NOT_ENOUGH_MEMORY | ERROR_INVALID_PARAMETER => {
 				return Err(TouchError::WindowsStdoutPathError(ret.to_string()));
@@ -897,14 +897,14 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 			0 => {
 				return Err(TouchError::WindowsStdoutPathError(format!(
 					"{}",
-					// SAFETY: GetLastError is thread-safe and has no documented memory unsafety.
+
 					unsafe { GetLastError() }
 				)));
 			},
 			e => e as usize,
 		};
 
-		// Don't include the null terminator
+
 		Ok(String::from_utf16(&file_path_buffer[0..buffer_size])
 			.map_err(|e| TouchError::WindowsStdoutPathError(e.to_string()))?
 			.into())
@@ -915,7 +915,7 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	}
 }
 
-/// Creates the `touch` builtin registration.
+
 pub(crate) fn touch_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Touch, SE>()
 }

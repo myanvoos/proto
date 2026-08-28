@@ -4,15 +4,15 @@ use brush_core::{Error, ErrorKind, ExecutionResult, builtins, escape, expansion}
 use clap::Parser;
 use uucore::format;
 
-/// Format a string.
+
 #[derive(Parser)]
 #[clap(disable_help_flag = true, disable_version_flag = true)]
 pub(crate) struct PrintfCommand {
-	/// If specified, the output of the command is assigned to this variable.
+
 	#[arg(short = 'v')]
 	output_variable: Option<String>,
 
-	/// Format string + arguments to the format string.
+
 	#[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
 	format_and_args: Vec<String>,
 }
@@ -25,16 +25,16 @@ impl builtins::Command for PrintfCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
 		if let Some(variable_name) = &self.output_variable {
-			// Format to a u8 vector.
+
 			let mut result: Vec<u8> = vec![];
 			format(self.format_and_args.as_slice(), &mut result)?;
 
-			// Convert to a string.
+
 			let result_str = String::from_utf8(result).map_err(|_| {
 				brush_core::ErrorKind::PrintfInvalidUsage("invalid UTF-8 output".into())
 			})?;
 
-			// Assign to the selected variable.
+
 			expansion::assign_to_named_parameter(
 				context.shell,
 				&context.params,
@@ -53,14 +53,14 @@ impl builtins::Command for PrintfCommand {
 
 fn format(format_and_args: &[String], writer: impl Write) -> Result<(), brush_core::Error> {
 	match format_and_args {
-		// Special-case invocation of printf with %q-based format string from bash-completion.
-		// It has hard-coded expectation of backslash-style escaping instead of quoting.
+
+
 		[fmt, arg] if fmt == "%q" => format_special_case_for_percent_q(None, arg, writer),
 		[fmt, arg] if fmt == "~%q" => format_special_case_for_percent_q(Some("~"), arg, writer),
-		// Handle format string with arguments using uucore
+
 		[fmt, args @ ..] => format_via_uucore(fmt, args.iter(), writer),
-		// Handle case with no format string (we shouldn't be able to get here since clap will
-		// fail parsing when the format string is missing)
+
+
 		[] => Err(ErrorKind::PrintfInvalidUsage("missing operand".into()).into()),
 	}
 }
@@ -86,29 +86,29 @@ fn format_via_uucore(
 	args: impl Iterator<Item = impl Into<OsString>>,
 	mut writer: impl Write,
 ) -> Result<(), brush_core::Error> {
-	// Convert string arguments to FormatArgument::Unparsed
+
 	let format_args: Vec<_> = args
 		.map(|s| format::FormatArgument::Unparsed(s.into()))
 		.collect();
 
-	// Parse format string once.
+
 	let format_items = parse_format_string(format_string)?;
 
-	// Wrap the format arguments.
+
 	let mut format_args_wrapper = format::FormatArguments::new(&format_args);
 
-	// Keep going until we've exhausted all format arguments. Also make sure to run
-	// at least once even if there's no format arguments.
+
+
 	while format_args.is_empty() || !format_args_wrapper.is_exhausted() {
-		// Process all format items, in order. We'll bail when we're told to stop.
+
 		for item in &format_items {
 			let control_flow =
 				item
 					.write(&mut writer, &mut format_args_wrapper)
 					.map_err(|e| match e {
-						// Propagate I/O errors directly so they can be handled appropriately
+
 						format::FormatError::IoError(io_err) => Error::from(io_err),
-						// Wrap other format errors
+
 						other => Error::from(ErrorKind::PrintfInvalidUsage(std::format!(
 							"printf formatting error: {other}"
 						))),
@@ -119,7 +119,7 @@ fn format_via_uucore(
 			}
 		}
 
-		// Start next batch if not exhausted
+
 		if !format_args_wrapper.is_exhausted() {
 			format_args_wrapper.start_next_batch();
 		}
@@ -138,7 +138,7 @@ fn parse_format_string(
 	let format_items: Result<Vec<_>, _> =
 		format::parse_spec_and_escape(format_string.as_bytes()).collect();
 
-	// Observe any errors we encountered along the way.
+
 	let format_items = format_items
 		.map_err(|e| ErrorKind::PrintfInvalidUsage(format!("printf parsing error: {e}")))?;
 

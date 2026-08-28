@@ -6,7 +6,6 @@ import * as zlib from "node:zlib";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { FetchImpl } from "../types";
 
-/** `host/path` for logging; query strings can carry keys. */
 function logTarget(input: string | URL | Request): string {
 	try {
 		const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -16,7 +15,6 @@ function logTarget(input: string | URL | Request): string {
 	}
 }
 
-/** Proxy host of a request init, or `"none"` when the request goes out direct. */
 function initProxy(init: RequestInit | undefined): string {
 	if (!init || !("proxy" in init) || typeof init.proxy !== "string") return "none";
 	try {
@@ -44,7 +42,6 @@ type RequestBody = string | Uint8Array;
 
 const directAgent = new https.Agent({ keepAlive: true });
 
-/** Resolved at call time, so a proxy wrapper installed after this module loads is honored. */
 const fallbackFetch: FetchImpl = (input, init) => globalThis.fetch(input, init as RequestInit);
 
 function isHeaderRecord(headers: RequestInit["headers"]): headers is Record<string, string> {
@@ -130,7 +127,6 @@ function createResponse(message: IncomingMessage, method: string): Response {
 	});
 }
 
-/** Response headers worth naming when a provider rejects a request; `cf-ray` names the edge PoP. */
 const DIAGNOSTIC_HEADERS = ["cf-ray", "cf-mitigated", "server", "request-id", "retry-after", "x-should-retry"];
 
 async function sendCoworkRequest(
@@ -200,18 +196,6 @@ async function sendCoworkRequest(
 	return result.promise;
 }
 
-/**
- * Sends Cowork-profiled HTTPS requests with stable header order, HTTP/1.1, and streaming decompression.
- *
- * Proxied requests deliberately leave this transport. It runs on `node:https`,
- * and Bun's shim ignores both `agent.createConnection` and
- * `options.createConnection`: a CONNECT tunnel handed to it is silently
- * discarded and the request dials the provider directly. That turned every
- * `PI_PROXY` / `HTTPS_PROXY` setting into a no-op for Anthropic inference —
- * the proxy looked configured, the traffic left on the default route, and a
- * region-blocked egress answered `403 Request not allowed`. Bun's own `fetch`
- * honors `init.proxy`, so a configured proxy wins over the Cowork profile.
- */
 export const coworkFetch: FetchImpl = async (input, init) => {
 	if (
 		init === undefined ||
@@ -219,8 +203,6 @@ export const coworkFetch: FetchImpl = async (input, init) => {
 		!isHeaderRecord(init.headers) ||
 		("proxy" in init && Boolean(init.proxy))
 	) {
-		// Reason is logged because the switch changes both the TLS fingerprint and
-		// who applies the proxy.
 		const reason =
 			init === undefined
 				? "no-init"

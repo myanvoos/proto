@@ -1,13 +1,3 @@
-/**
- * Client half of the project-shared blob daemon.
- *
- * `connectDaemonBlobBackend` ensures the blob daemon is running under the
- * daemon broker (same lifecycle as the shared Chromium and LSP mux: started on
- * first use, stopped when the last proto process in the project exits), then
- * speaks the HTTP-over-Unix-socket control plane from `protocol.ts`. Every
- * failure returns `null` so callers fall back to an in-process backend.
- */
-
 import { logger } from "@oh-my-pi/pi-utils";
 import { daemonClientForProject } from "../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../launch/ensure";
@@ -39,16 +29,14 @@ import type { LazyBlobFetcher } from "./store";
 const PROBE_TIMEOUT_MS = 1_500;
 const REQUEST_TIMEOUT_MS = 90_000;
 const READY_TIMEOUT_MS = 45_000;
-/** probe→describe→start rounds; bounds cross-process start races and wedged-daemon replacement. */
+
 const ENSURE_ATTEMPTS = 3;
 
 type DaemonInfo = BlobBrokerInfo & { configKey: string };
 
-/** Session-side callback registry the daemon renders lazy blobs through. */
 export interface RenderCallbackHost {
-	/** Start (once) and describe the loopback callback server. */
 	ensure(): Promise<{ port: number; token: string } | null>;
-	/** Register the fetcher answering callbacks for `key`. */
+
 	register(key: string, fetcher: LazyBlobFetcher): void;
 }
 
@@ -81,13 +69,11 @@ async function liveBlobBrokerSocket(projectDir: string): Promise<string | null> 
 	}
 }
 
-/** Query a running blob daemon without starting one; `null` means stopped. */
 export async function queryBlobBrokerStatus(projectDir: string): Promise<BlobBrokerStatus | null> {
 	const socket = await liveBlobBrokerSocket(projectDir);
 	return socket ? fetchUnix<BlobBrokerStatus>(socket, "/status") : null;
 }
 
-/** Run diagnostics on a running blob daemon; `null` means stopped. */
 export async function queryBlobBrokerDoctor(
 	projectDir: string,
 	request: BlobBrokerDoctorRequest = {},
@@ -100,10 +86,6 @@ export async function queryBlobBrokerDoctor(
 	});
 }
 
-/**
- * Ensure the configured daemon is active, then issue an actual public health
- * request through its exposure. `null` means the daemon could not be started.
- */
 export async function queryBlobBrokerProbe(
 	projectDir: string,
 	config: BlobBrokerWorkerConfig,
@@ -119,7 +101,6 @@ export async function queryBlobBrokerProbe(
 	});
 }
 
-/** Preview or apply cleanup on a running daemon; `null` means stopped. */
 export async function queryBlobBrokerPurge(
 	projectDir: string,
 	request: BlobBrokerPurgeRequest = {},
@@ -132,14 +113,10 @@ export async function queryBlobBrokerPurge(
 	});
 }
 
-/**
- * Ensure the project's blob daemon runs with `config` and return its info.
- * A live daemon with a different config is replaced (settings changed).
- */
 async function ensureBlobDaemon(projectDir: string, config: BlobBrokerWorkerConfig): Promise<DaemonInfo | null> {
 	const client = await daemonClientForProject(projectDir);
 	const socket = blobBrokerEndpoint(daemonRuntimeDir(client.projectDir));
-	// The broker connection doubles as the presence lease keeping the daemon alive.
+
 	await client.request({ op: "ping" });
 	const wantKey = blobBrokerConfigKey(config);
 	const spawn = resolveWorkerSpawnCmd(BLOB_BROKER_WORKER_ARG);
@@ -147,7 +124,7 @@ async function ensureBlobDaemon(projectDir: string, config: BlobBrokerWorkerConf
 		const live = await probeDaemon(socket);
 		if (live) {
 			if (live.configKey === wantKey) return live;
-			// Exposure settings changed since the daemon started: replace it.
+
 			await stopQuietly(client, BLOB_BROKER_DAEMON_NAME, "blob broker");
 		}
 		const existing = await describeQuietly(client, BLOB_BROKER_DAEMON_NAME, "blob broker");
@@ -157,7 +134,7 @@ async function ensureBlobDaemon(projectDir: string, config: BlobBrokerWorkerConf
 			}
 			const adopted = await probeDaemon(socket);
 			if (adopted?.configKey === wantKey) return adopted;
-			// Live record but wrong config or nothing listening: replace it.
+
 			await stopQuietly(client, BLOB_BROKER_DAEMON_NAME, "blob broker");
 			continue;
 		}
@@ -185,7 +162,6 @@ async function ensureBlobDaemon(projectDir: string, config: BlobBrokerWorkerConf
 			if (info?.configKey === wantKey) return info;
 			await stopQuietly(client, BLOB_BROKER_DAEMON_NAME, "blob broker");
 		} catch (error) {
-			// Lost a cross-process start race; the next round adopts the winner.
 			logger.debug("blob daemon start contention", {
 				name: BLOB_BROKER_DAEMON_NAME,
 				error: error instanceof Error ? error.message : String(error),
@@ -208,9 +184,6 @@ class DaemonBlobBackend implements BlobBackend {
 
 	async ensureBlob(key: string, mimeType: string, getBytes: () => Uint8Array): Promise<BlobPublication | null> {
 		try {
-			// Probe first: persisted/live registrations answer without the bytes
-			// ever crossing the socket — the common case on every turn after the
-			// first, and on conversation resume.
 			const probe = await fetchUnix<EnsureBlobResponse>(this.#socket, "/blob", {
 				method: "POST",
 				body: JSON.stringify({ key, mimeType }),
@@ -253,16 +226,9 @@ class DaemonBlobBackend implements BlobBackend {
 		}
 	}
 
-	stop(): void {
-		// The daemon outlives this session; the broker lease handles teardown.
-	}
+	stop(): void {}
 }
 
-/**
- * Connect the project-shared blob daemon, starting it when necessary.
- * Returns `null` (after a debug log) when the shared path is unavailable,
- * so the caller falls back to an in-process backend.
- */
 export async function connectDaemonBlobBackend(
 	projectDir: string,
 	config: BlobBrokerWorkerConfig,

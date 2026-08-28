@@ -1,14 +1,3 @@
-/**
- * Validation error containers mirroring ArkType's observable error surface:
- * `result instanceof type.errors` / `instanceof OmpErrors`, lazy `.summary`,
- * array iteration, and per-entry `.path` / `.problem` / `.message`.
- *
- * Failure-path cost matters: schemas reject untrusted input constantly, so
- * construction stores only the path, the expectation, and the offending value.
- * All human-readable strings are built lazily on property access.
- */
-
-/** Context supplied to configurable error formatters. */
 export interface ErrorContext {
 	readonly code: string;
 	readonly path: readonly PropertyKey[];
@@ -21,13 +10,12 @@ export interface ErrorContext {
 	readonly rule?: unknown;
 }
 
-/** Per-schema overrides for validation error text. */
 export interface ErrorConfig {
 	readonly expected?: string | ((context: ErrorContext) => string);
 	readonly actual?: string | ((data: unknown) => string);
 	readonly problem?: string | ((context: ErrorContext) => string);
 	readonly message?: string | ((context: ErrorContext) => string);
-	/** Internal: custom predicate expectations display the offending value rather than its domain. */
+
 	readonly preserveActual?: boolean;
 }
 
@@ -39,35 +27,31 @@ function format(
 	return typeof override === "function" ? override(context) : (override ?? fallback);
 }
 
-/** A single validation failure at one path. */
 export class OmpError {
 	#rawExpected: string;
 	#config: ErrorConfig | undefined;
 
 	constructor(
-		/** Property path from the root to the failing value (empty at root). */
 		readonly path: PropertyKey[],
 		expected: string,
-		/** The value that failed validation. */
+
 		readonly data: unknown,
 		config?: ErrorConfig,
 	) {
 		this.#rawExpected = expected;
 		this.#config = config;
 	}
-	/** Prefix this failure when a nested schema delegates validation. */
+
 	prefix(key: PropertyKey): this {
 		this.path.unshift(key);
 		return this;
 	}
 
-	/** Apply schema-local formatting to this failure. */
 	configure(config: ErrorConfig): this {
 		this.#config = { ...this.#config, ...config };
 		return this;
 	}
 
-	/** Stable category for programmatic error handling. */
 	get code(): string {
 		return errorCode(this.#rawExpected, this.data);
 	}
@@ -87,7 +71,6 @@ export class OmpError {
 		};
 	}
 
-	/** Human-readable expectation, including a configured override. */
 	get expected(): string {
 		const actual = describeValue(this.data, this.#config?.preserveActual ? "predicate" : this.code);
 		const parts = this.#rawExpected.split(" or ");
@@ -96,14 +79,12 @@ export class OmpError {
 		return format(this.#config?.expected, this.#context(fallback, actual), fallback);
 	}
 
-	/** Short description of the received value, e.g. `"a number"` or `"missing"`. */
 	get actual(): string {
 		const actual = describeValue(this.data, this.#config?.preserveActual ? "predicate" : this.code);
 		const override = this.#config?.actual;
 		return typeof override === "function" ? override(this.data) : (override ?? actual);
 	}
 
-	/** Path-less problem statement: `must be <expected> (was <actual>)`. */
 	get problem(): string {
 		const expected = this.expected;
 		const actual = this.actual;
@@ -129,7 +110,6 @@ export class OmpError {
 	}
 }
 
-/** Sentinel for a required key that was absent (distinguishes from `undefined`). */
 export const MISSING: unique symbol = Symbol("omptype.missing");
 function stringifyValue(data: object): string {
 	const seen = new WeakSet<object>();
@@ -289,10 +269,6 @@ function errorCode(expected: string, data: unknown): string {
 	return "predicate";
 }
 
-/**
- * Validation failure result. The common single-error case remains lazy;
- * traversal only materializes an entry array when a second error is appended.
- */
 type StoredPath = PropertyKey[] | PropertyKey | undefined;
 
 export class OmpErrors implements Iterable<OmpError> {
@@ -331,7 +307,6 @@ export class OmpErrors implements Iterable<OmpError> {
 		return entry;
 	}
 
-	/** Append all failures from `other`, preserving traversal order. */
 	append(other: OmpErrors): this {
 		this.#entries ??= [this.#getEntry()];
 		const entries = this.#entries;
@@ -339,7 +314,6 @@ export class OmpErrors implements Iterable<OmpError> {
 		return this;
 	}
 
-	/** Prefix every failure path with `key` when nesting sub-schemas. */
 	prefix(key: PropertyKey): this {
 		if (this.#entries) {
 			for (const entry of this.#entries) entry.prefix(key);
@@ -351,7 +325,6 @@ export class OmpErrors implements Iterable<OmpError> {
 		return this;
 	}
 
-	/** Apply schema-local message formatting without rebuilding failures. */
 	configure(config: ErrorConfig): this {
 		if (this.#entries) {
 			for (const entry of this.#entries) entry.configure(config);
@@ -392,7 +365,6 @@ export class OmpErrors implements Iterable<OmpError> {
 		}
 	}
 
-	/** @internal Render multiple branch failures as alternatives rather than independent failures. */
 	asAlternatives(): this {
 		this.#separator = " or ";
 		return this;
@@ -425,7 +397,6 @@ export class OmpErrors implements Iterable<OmpError> {
 	}
 }
 
-/** Error thrown by `Type.assert` on invalid input. */
 export class TraversalError extends Error {
 	constructor(readonly errors: OmpErrors) {
 		super(errors.summary);
@@ -433,11 +404,6 @@ export class TraversalError extends Error {
 	}
 }
 
-/**
- * Definition/usage error thrown while building a schema — malformed string
- * DSL, unsupported composition, or an illegal builder call. Distinct from
- * validation failures, which are returned as {@link OmpErrors}.
- */
 export class OmpTypeError extends Error {
 	constructor(message: string) {
 		super(message);

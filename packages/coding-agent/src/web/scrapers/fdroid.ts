@@ -57,9 +57,6 @@ function resolveSuggestedVersion(data: FdroidPackage): string | undefined {
 	return data.packages?.[0]?.versionName;
 }
 
-/**
- * Handle F-Droid URLs via API
- */
 export const handleFdroid: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -69,7 +66,6 @@ export const handleFdroid: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "f-droid.org" && parsed.hostname !== "www.f-droid.org") return null;
 
-		// Extract package name from /packages/{packageName} or /en/packages/{packageName}
 		const match = parsed.pathname.match(/^\/(?:en\/)?packages\/([^/]+)/);
 		if (!match) return null;
 

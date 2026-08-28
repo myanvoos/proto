@@ -21,9 +21,6 @@ interface RedditComment {
 	replies?: { data: { children: Array<{ data: RedditComment }> } };
 }
 
-/**
- * Handle Reddit URLs via JSON API
- */
 export const handleReddit: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -35,7 +32,6 @@ export const handleReddit: SpecialHandler = async (
 
 		const fetchedAt = new Date().toISOString();
 
-		// Append .json to get JSON response
 		let jsonUrl = `${url.replace(/\/$/, "")}.json`;
 		if (parsed.search) {
 			jsonUrl = `${url.replace(/\/$/, "").replace(parsed.search, "")}.json${parsed.search}`;
@@ -48,9 +44,7 @@ export const handleReddit: SpecialHandler = async (
 		if (!data) return null;
 		let md = "";
 
-		// Handle different Reddit URL types
 		if (Array.isArray(data) && data.length >= 1) {
-			// Post page (with comments)
 			const postData = data[0]?.data?.children?.[0]?.data as RedditPost | undefined;
 			if (postData) {
 				md = `# ${postData.title}\n\n`;
@@ -63,7 +57,6 @@ export const handleReddit: SpecialHandler = async (
 					md += `**Link:** ${postData.url}\n\n`;
 				}
 
-				// Add comments if available
 				if (data.length >= 2 && data[1]?.data?.children) {
 					md += `---\n\n## Top Comments\n\n`;
 					const comments = data[1].data.children.filter((c: { kind: string }) => c.kind === "t1").slice(0, 10);
@@ -75,7 +68,6 @@ export const handleReddit: SpecialHandler = async (
 				}
 			}
 		} else if (data?.data?.children) {
-			// Subreddit or listing page
 			const posts = data.data.children.slice(0, 20) as Array<{ data: RedditPost }>;
 			const subreddit = posts[0]?.data?.subreddit;
 

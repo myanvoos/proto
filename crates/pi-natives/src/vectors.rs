@@ -1,12 +1,3 @@
-//! Batch numeric vector kernels for recall paths.
-//!
-//! Every export processes an entire candidate batch per N-API crossing so the
-//! crossing cost is amortized over the whole recall operation. Semantics
-//! match the historical TypeScript reference implementations exactly — same
-//! accumulation order, same non-finite handling, same tie-breaking — so float
-//! scores are bit-identical to the TS versions and integer results are exactly
-//! equal.
-
 use napi::{
 	Error, JsString, Result, Status,
 	bindgen_prelude::{Array, Float32Array, Float64Array, Uint32Array},
@@ -24,13 +15,6 @@ const fn finite_or_zero(value: f64) -> f64 {
 	if value.is_finite() { value } else { 0.0 }
 }
 
-/// Cosine similarity with the exact semantics of the TS
-/// `cosineSimilarity`: iterate `max(len_a, len_b)` elements, treat missing
-/// and non-finite entries as `0`, return `0` when either norm is zero.
-///
-/// Splitting the shared prefix from the tails preserves bit-exactness: tail
-/// terms of the shorter side only ever add `±0.0` to `dot` and `+0.0` to its
-/// own norm, in the same index order as the TS loop.
 #[inline]
 #[allow(
 	clippy::suboptimal_flops,
@@ -65,13 +49,6 @@ fn cosine_one(a: &[f64], b: &[f64]) -> f64 {
 	dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
-/// All pairs `(i, j)` with `i < j` whose cosine similarity meets `threshold`.
-///
-/// `vectors` is `count` vectors flattened row-major at `dim` `f64` elements
-/// per row (zero-padded, which matches the TS `?? 0` missing-element
-/// semantics), so the similarity is bit-identical to the TS pairwise loop in
-/// `clusterBySimilarity`. Returns pairs flattened as `[i0, j0, i1, j1, ...]`
-/// in the same `(i, j)` visit order as the TS nested loop.
 #[napi]
 pub fn cosine_similarity_pairs(
 	vectors: Float64Array,
@@ -100,26 +77,13 @@ pub fn cosine_similarity_pairs(
 	Ok(Uint32Array::new(pairs))
 }
 
-/// Top-k rows of a normalized vector matrix ranked by dot product with a
-/// normalized query.
 #[napi(object)]
 pub struct VectorTopK {
-	/// Row indices of the selected hits, best score first.
 	pub indices: Uint32Array,
-	/// Scores aligned with `indices`.
-	pub scores:  Float64Array,
+
+	pub scores: Float64Array,
 }
 
-/// Score every row of a normalized `f32` matrix against `query` and return
-/// the top `limit` rows.
-///
-/// Mirrors the TS `searchExactVectorIndex` loop bit-exactly: the query is
-/// normalized by the L2 norm of its *full* length, each row score sums
-/// `matrix[row][col] * (query[col] / norm)` over
-/// `min(query.len, dimensions)` columns in column order. Ranking matches the
-/// TS stable sort: score descending, lower row index first on exact ties
-/// (`-0.0` and `+0.0` compare equal). Callers are expected to enforce the TS
-/// guards first (finite query with a positive norm, non-empty matrix).
 #[napi]
 #[allow(
 	clippy::suboptimal_flops,
@@ -143,8 +107,7 @@ pub fn vector_index_top_k(
 		norm_sq += value * value;
 	}
 	let norm = norm_sq.sqrt();
-	// Hoisting the per-column division out of the row loop is bitwise
-	// identical to the TS per-row `query[col] / queryNorm`.
+
 	let query_dims = q.len().min(dims);
 	let normalized: Vec<f64> = q[..query_dims].iter().map(|&v| v / norm).collect();
 
@@ -157,8 +120,7 @@ pub fn vector_index_top_k(
 		}
 		order.push((score, row as u32));
 	}
-	// JS comparator `(a, b) => b.score - a.score` under a stable sort: strict
-	// score ordering, otherwise (equal, including ±0.0) original row order.
+
 	order.sort_by(|a, b| {
 		let diff = b.0 - a.0;
 		if diff > 0.0 {
@@ -176,8 +138,6 @@ pub fn vector_index_top_k(
 	Ok(VectorTopK { indices: Uint32Array::new(indices), scores: Float64Array::new(scores) })
 }
 
-/// ECMA-262 `\s` (`WhiteSpace` ∪ `LineTerminator`), which differs from Rust's
-/// `char::is_whitespace` (JS additionally includes U+FEFF).
 #[inline]
 const fn is_js_whitespace(c: char) -> bool {
 	matches!(
@@ -201,9 +161,6 @@ const fn is_js_whitespace(c: char) -> bool {
 	)
 }
 
-/// Lowercased word set per the TS `jaccardSimilarity` tokenizer:
-/// `text.toLowerCase().split(/\s+/).filter(Boolean)` into a `Set`.
-/// Returned sorted and deduplicated for merge-based intersection counting.
 fn word_set(text: &str) -> Vec<Box<str>> {
 	let lower = text.to_lowercase();
 	let mut words: Vec<Box<str>> = lower
@@ -216,9 +173,6 @@ fn word_set(text: &str) -> Vec<Box<str>> {
 	words
 }
 
-/// Jaccard similarity of two sorted, deduplicated word sets. Matches the TS
-/// `jaccardSimilarity`: `0` when either set is empty, otherwise
-/// `|A ∩ B| / (|A| + |B| - |A ∩ B|)` with exact integer counts.
 fn jaccard_sorted(a: &[Box<str>], b: &[Box<str>]) -> f64 {
 	if a.is_empty() || b.is_empty() {
 		return 0.0;
@@ -239,24 +193,6 @@ fn jaccard_sorted(a: &[Box<str>], b: &[Box<str>]) -> f64 {
 	intersection as f64 / (a.len() + b.len() - intersection) as f64
 }
 
-/// MMR selection over pre-sorted candidates using Jaccard word similarity.
-///
-/// `contents[i]` and `scores[i]` describe candidate `i`, already sorted by
-/// relevance exactly as the TS `mmrRerank` sorts them (the JS stable sort
-/// stays on the TS side so its tie and NaN semantics are preserved).
-/// Replicates the TS selection loop exactly: candidate `0` is always taken
-/// first; each round picks the remaining candidate maximizing
-/// `lambda * score - (1 - lambda) * maxSimilarity(selected)` with strict
-/// `>` comparisons, so ties keep the earliest remaining candidate — and a
-/// round where every score is `NaN` picks the first remaining candidate,
-/// matching the TS `bestIdx = 0` initialisation. Returns the selected
-/// indices into the input order.
-///
-/// Word tokenization matches `text.toLowerCase().split(/\s+/)` (ECMA `\s`,
-/// Unicode default full case conversion). Known divergence: unpaired
-/// surrogates arrive here as U+FFFD, while JS keeps the lone surrogate; both
-/// tokenize to a single non-whitespace word so Jaccard counts still agree
-/// unless a text mixes U+FFFD words with lone-surrogate words.
 #[napi]
 #[allow(
 	clippy::suboptimal_flops,

@@ -1,10 +1,3 @@
-/**
- * Jina Reader Web Search Provider
- *
- * Uses the Jina Reader `s.jina.ai` endpoint to fetch search results with
- * cleaned content.
- */
-
 import { type ApiKey, type AuthStorage, type FetchImpl, withAuth } from "@oh-my-pi/pi-ai";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -24,7 +17,7 @@ interface JinaSearchParams {
 	authStorage: AuthStorage;
 	sessionId?: string;
 	num_results?: number;
-	/** Single bare host for Jina's `X-Site` in-site search header. */
+
 	site?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -45,7 +38,6 @@ interface JinaSearchEnvelope {
 
 type JinaSearchResponse = JinaSearchResult[];
 
-/** Call Jina Reader search API. */
 async function callJinaSearch(
 	apiKey: string,
 	query: string,
@@ -91,7 +83,6 @@ async function callJinaSearch(
 	return payload.data as JinaSearchResponse;
 }
 
-/** Execute Jina web search. */
 async function searchJina(params: JinaSearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const keyOrResolver: ApiKey = params.authStorage.resolver("jina", {
@@ -125,7 +116,6 @@ async function searchJina(params: JinaSearchParams): Promise<SearchResponse> {
 	};
 }
 
-/** Search provider for Jina Reader. */
 export class JinaProvider extends SearchProvider {
 	readonly id = "jina";
 	readonly label = "Jina";
@@ -139,9 +129,6 @@ export class JinaProvider extends SearchProvider {
 		let query = params.query;
 		let site: string | undefined;
 		if (parsed.hasDirectives) {
-			// Jina's X-Site header takes a single domain; with exactly one
-			// include site, send its host there and strip site: tokens from
-			// the query. Multiple sites stay inline (Bing-backed, parses them).
 			if (parsed.sites.length === 1) site = parsed.sites[0]!.split("/")[0];
 			query = formatQuery(parsed, {
 				phrases: true,

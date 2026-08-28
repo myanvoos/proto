@@ -1,6 +1,6 @@
-//! `whoami` builtin: print the effective user's name.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::io::Write;
 
@@ -22,7 +22,7 @@ mod platform {
 		use uucore::{entries::uid2usr, process::geteuid};
 
 		pub fn get_username() -> io::Result<OsString> {
-			// uid2usr should arguably return an OsString but currently doesn't
+
 			uid2usr(geteuid()).map(Into::into)
 		}
 	}
@@ -34,13 +34,13 @@ mod platform {
 		use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
 
 		pub fn get_username() -> io::Result<OsString> {
-			// `UNLEN` is 256 by the Windows API contract. Spelling the buffer size
-			// here avoids requiring the unrelated NetworkManagement feature solely
-			// for that constant.
+
+
+
 			const BUF_LEN: u32 = 257;
 			let mut buffer = [0_u16; BUF_LEN as usize];
 			let mut len = BUF_LEN;
-			// SAFETY: buffer.len() == len.
+
 			if unsafe { GetUserNameW(buffer.as_mut_ptr(), &raw mut len) } == 0 {
 				return Err(io::Error::last_os_error());
 			}
@@ -49,7 +49,7 @@ mod platform {
 	}
 }
 
-/// Parsed `whoami` invocation.
+
 pub(crate) struct Whoami {
 	matches: ArgMatches,
 }
@@ -85,7 +85,7 @@ impl Utility for Whoami {
 	}
 }
 
-/// The `whoami` argument model.
+
 fn app() -> Command {
 	Command::new(Whoami::NAME)
 		.version("0.8.0")
@@ -94,7 +94,7 @@ fn app() -> Command {
 		.infer_long_args(true)
 }
 
-/// Creates the `whoami` builtin registration.
+
 pub(crate) fn whoami_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Whoami, SE>()
 }

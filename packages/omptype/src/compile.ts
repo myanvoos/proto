@@ -1,19 +1,3 @@
-/**
- * JIT compiler: lowers schema IR into a specialized validator via
- * `new Function`. Invoked by `type.ts` after a schema's third call; the
- * interpreter (`interp.ts`) covers earlier calls so rarely-used schemas never
- * pay codegen cost.
- *
- * Generated code philosophy:
- * - success path is straight-line monomorphic JS with zero allocation; when
- *   the schema has no morphs the input value itself is returned
- * - failure allocates a single `OmpErrors` (`E(path, expected, data)`); path
- *   arrays and messages are inline literals, so cost is one small allocation
- * - morphing nodes (defaults, `"+": "delete"`, embedded stepped schemas)
- *   produce a fresh output object; pure subtrees below them stay check-only
- * - morphing union members use separately compiled or hoisted runners; pure
- *   members compile to inline predicates
- */
 import { MISSING, OmpErrors } from "./errors";
 import { canRefineUnionFailure, materializeDefault, unionFail, walk } from "./interp";
 import { expectedOf, hasMorph, type IR, type MorphContext, type PropIR, type TupleIR } from "./ir";
@@ -21,7 +5,6 @@ import { expectedOf, hasMorph, type IR, type MorphContext, type PropIR, type Tup
 const own = Object.prototype.hasOwnProperty;
 const IDENT = /^[A-Za-z_$][\w$]*$/;
 
-/** Inline-able literal, else undefined (caller hoists into the refs pool). */
 function litSource(v: unknown): string | undefined {
 	if (v === null) return "null";
 	if (v === undefined) return "undefined";
@@ -44,7 +27,6 @@ function isPrimitiveLiteral(node: IR): node is LiteralIR {
 	return node.k === "lit" && (node.v === null || (typeof node.v !== "object" && typeof node.v !== "function"));
 }
 
-/** Whether `undefined` necessarily fails, allowing property-presence checks to be elided. */
 function rejectsUndefined(node: IR): boolean {
 	switch (node.k) {
 		case "unknown":
@@ -145,7 +127,6 @@ class Builder {
 		return `if(${errors}===undefined)${errors}=${error};else ${errors}.append(${error});`;
 	}
 
-	/** Pure boolean predicate for a morph-free subtree. */
 	predicate(node: IR, v: string): string {
 		switch (node.k) {
 			case "unknown":
@@ -277,14 +258,6 @@ class Builder {
 		return `(${props.map(p => `${keyVar}===${this.lit(p.key)}`).join("||")})`;
 	}
 
-	/**
-	 * Run a node through its interpreter/sub-schema runner, appending any
-	 * failure to `errors`. `brk` (when given) exits the enclosing block on
-	 * failure so dependent statements (output assignment, morph fns) are
-	 * skipped. Both runner kinds receive the absolute path so nested step
-	 * callbacks observe ctx.path; walk-produced errors are already absolute,
-	 * while sub runners return schema-relative errors that need prefixing.
-	 */
 	emitCollectDelegate(node: IR, v: string, segs: PathSeg[], errors: string, brk?: string, out?: string): void {
 		const sub = node.k === "sub";
 		const runner = sub ? node.schema.run : boundWalk(node);
@@ -298,19 +271,16 @@ class Builder {
 		if (out !== undefined) this.push(`${out}=${result};`);
 	}
 
-	/** Snapshot the error count so sequencing sites can detect soft failures. */
 	markErrors(errors: string): string {
 		const mark = this.next("n");
 		this.push(`const ${mark}=${errors}===void 0?0:${errors}.length;`);
 		return mark;
 	}
 
-	/** Exit `brk` when errors were appended since `mark` (interp's return-on-error). */
 	guardGrowth(errors: string, mark: string, brk: string): void {
 		this.push(`if((${errors}===void 0?0:${errors}.length)!==${mark})break ${brk};`);
 	}
 
-	/** Aggregate every independent failure in a morph-free subtree. */
 	emitCollectCheck(node: IR, v: string, segs: PathSeg[], errors: string, failureData = v): void {
 		if (node.cfg !== undefined || node.k === "refine") {
 			this.emitCollectDelegate(node, v, segs, errors);
@@ -624,7 +594,6 @@ class Builder {
 		return { postfixStart, prefixCount, requiredPrefix };
 	}
 
-	/** Fill `target` with a validated default (factory output revalidated per call). */
 	emitDefaultFill(val: IR, def: unknown, isFactory: boolean, target: string, segs: PathSeg[], errors: string): void {
 		if (isFactory && typeof def === "function") {
 			const candidate = this.next("d");
@@ -634,18 +603,10 @@ class Builder {
 			this.emitCollectProduce(val, candidate, segs, resolved, errors, label);
 			this.push(`${target}=${resolved};}`);
 		} else {
-			// Static defaults were prevalidated at construction; MD clones
-			// mutable payloads so callers cannot alias the schema's copy.
 			this.push(`${target}=${litSource(def) ?? `MD(${this.ref(def)})`};`);
 		}
 	}
 
-	/**
-	 * Validate `v` against a morphing subtree and assign the produced output
-	 * to `out` (an already-declared `let`). Failures append to `errors` and
-	 * `break ${brk}` (skipping the output assignment), mirroring interp: an
-	 * error in one child never suppresses sibling validation or morphs.
-	 */
 	emitCollectProduce(
 		node: IR,
 		v: string,
@@ -1080,7 +1041,6 @@ interface WalkTagged {
 	[kWalk]?: (value: unknown, path?: PropertyKey[]) => unknown;
 }
 
-/** Cached interpreter closure for recursive aliases and predicate-only fallbacks. */
 function boundWalk(node: IR): (value: unknown, path?: PropertyKey[]) => unknown {
 	const tagged = node as IR & WalkTagged;
 	let fn = tagged[kWalk];
@@ -1098,16 +1058,10 @@ function resolvedRoot(ir: IR): IR {
 const compiledCache = new WeakMap<IR, (value: unknown) => unknown>();
 const allowsCache = new WeakMap<IR, (value: unknown) => value is unknown>();
 
-/** Compile `ir` into a specialized validator. */
 export function compile(ir: IR): (value: unknown) => unknown {
 	const root = resolvedRoot(ir);
 	const validator = compiledCache.get(root);
 	if (validator === undefined) {
-		// Publish a deferred wrapper before building: recursive schemas re-enter
-		// compile() for the same root mid-build (e.g. an alias element inside an
-		// array), and each re-entry must reuse this build instead of starting a
-		// fresh one forever. The wrapper resolves to the built validator by call
-		// time; the interpreter is a safety net that never triggers post-build.
 		let built: ((value: unknown) => unknown) | undefined;
 		compiledCache.set(root, value => (built === undefined ? walk(root, value) : built(value)));
 		built = new Builder().build(root);
@@ -1117,7 +1071,6 @@ export function compile(ir: IR): (value: unknown) => unknown {
 	return validator;
 }
 
-/** Compile `ir` into an allocation-free boolean validator. */
 export function compileAllows(ir: IR): (value: unknown) => value is unknown {
 	const root = resolvedRoot(ir);
 	const validator = allowsCache.get(root);
@@ -1134,7 +1087,6 @@ export function compileAllows(ir: IR): (value: unknown) => value is unknown {
 	return validator;
 }
 
-/** Generated source for inspection/debugging. */
 export function compileToSource(ir: IR): string {
 	const root = resolvedRoot(ir);
 	const builder = new Builder();

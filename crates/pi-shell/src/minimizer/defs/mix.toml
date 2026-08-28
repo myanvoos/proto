@@ -1,4 +1,4 @@
-# Elixir mix compile / format / test output.
+
 
 [filters.mix]
 description = "Compact Elixir mix output"

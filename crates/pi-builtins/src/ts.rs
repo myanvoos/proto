@@ -1,13 +1,13 @@
-//! moreutils-inspired `ts` builtin: prefix each line of standard input with a
-//! timestamp.
-//!
-//! This in-process port preserves moreutils' absolute, elapsed, monotonic, and
-//! relative timestamping modes while routing streams, cancellation, and `TZ`
-//! through the shell invocation's host.
-//!
-//! Elapsed durations are formatted as if they were seconds since the Unix epoch
-//! rendered in UTC. The moreutils subsecond extensions `%.S`, `%.s`, and `%.T`
-//! append microseconds to the seconds field.
+
+
+
+
+
+
+
+
+
+
 
 use std::{
 	io::{self, BufRead, BufReader, Write},
@@ -30,10 +30,10 @@ const ARG_FORMAT: &str = "format";
 const DEFAULT_ABSOLUTE_FORMAT: &str = "%b %d %H:%M:%S";
 const DEFAULT_ELAPSED_FORMAT: &str = "%H:%M:%S";
 
-/// Byte length of a syslog-style `%b %d %H:%M:%S` timestamp prefix.
+
 const SYSLOG_LEN: usize = 15;
 
-/// Parsed `ts` invocation.
+
 pub(crate) struct Ts {
 	matches: ArgMatches,
 }
@@ -56,7 +56,7 @@ impl Utility for Ts {
 	}
 }
 
-/// The `ts` argument model.
+
 fn command() -> Command {
 	Command::new(Ts::NAME)
 		.version("ts (pi-shell) 17.2.11")
@@ -99,7 +99,7 @@ fn command() -> Command {
 		)
 }
 
-/// Timestamping mode selected by the flags.
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
 	Absolute,
@@ -187,19 +187,19 @@ fn timestamp_lines(matches: &ArgMatches, host: &mut Host) -> io::Result<i32> {
 		if had_newline {
 			out.write_all(b"\n")?;
 		}
-		// `ts` is commonly used on live pipes; make each line visible promptly.
+
 		out.flush()?;
 	}
 	Ok(0)
 }
 
-/// Formats an elapsed duration as seconds-since-epoch rendered in UTC.
+
 fn format_elapsed(nanos: i128, format: &str) -> Result<String, String> {
 	let stamp = Timestamp::from_nanosecond(nanos).map_err(|err| err.to_string())?;
 	strtime::format(format, &stamp.to_zoned(TimeZone::UTC)).map_err(|err| err.to_string())
 }
 
-/// Resolves `TZ` from the shell environment, then the system timezone, then UTC.
+
 fn local_timezone(tz: Option<&str>) -> TimeZone {
 	if let Some(tz) = tz
 		&& let Ok(tz) = TimeZone::get(tz)
@@ -209,7 +209,7 @@ fn local_timezone(tz: Option<&str>) -> TimeZone {
 	TimeZone::try_system().unwrap_or(TimeZone::UTC)
 }
 
-/// Rewrites moreutils' subsecond extensions to fixed six-digit jiff fractions.
+
 fn expand_subseconds(format: &str) -> String {
 	let mut out = String::with_capacity(format.len());
 	let bytes = format.as_bytes();
@@ -247,7 +247,7 @@ fn expand_subseconds(format: &str) -> String {
 	out
 }
 
-/// Length of the UTF-8 sequence introduced by `first`.
+
 const fn utf8_len(first: u8) -> usize {
 	match first {
 		0xc0..=0xdf => 2,
@@ -257,7 +257,7 @@ const fn utf8_len(first: u8) -> usize {
 	}
 }
 
-/// Parses a supported timestamp at the start of `line`.
+
 fn parse_leading_timestamp(line: &[u8], year: i16, tz: &TimeZone) -> Option<(usize, Timestamp)> {
 	let token_len = line
 		.iter()
@@ -288,7 +288,7 @@ fn parse_leading_timestamp(line: &[u8], year: i16, tz: &TimeZone) -> Option<(usi
 	Some((SYSLOG_LEN, zoned.timestamp()))
 }
 
-/// Rewrites a leading timestamp relative to the pinned `now`, or copies the line.
+
 fn write_relative_line(
 	out: &mut impl Write,
 	line: &[u8],
@@ -304,7 +304,7 @@ fn write_relative_line(
 	}
 }
 
-/// Renders `then` relative to `now` using the largest nonzero time unit.
+
 fn render_relative(then: Timestamp, now: Timestamp) -> String {
 	let secs = now.duration_since(then).as_secs();
 	let magnitude = secs.unsigned_abs();
@@ -324,7 +324,7 @@ fn render_relative(then: Timestamp, now: Timestamp) -> String {
 	}
 }
 
-/// Creates the `ts` builtin registration.
+
 pub(crate) fn ts_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ts, SE>()
 }

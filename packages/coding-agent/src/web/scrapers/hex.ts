@@ -2,22 +2,17 @@ import { tryParseJson } from "@oh-my-pi/pi-utils";
 import type { SpecialHandler } from "./types";
 import { buildResult, formatIsoDate, formatNumber, loadPage } from "./types";
 
-/**
- * Handle Hex.pm (Elixir package registry) URLs via API
- */
 export const handleHex: SpecialHandler = async (url, timeout, signal) => {
 	try {
 		const parsed = new URL(url);
 		if (parsed.hostname !== "hex.pm" && parsed.hostname !== "www.hex.pm") return null;
 
-		// Extract package name from /packages/name or /packages/name/version
 		const match = parsed.pathname.match(/^\/packages\/([^/]+)/);
 		if (!match) return null;
 
 		const packageName = decodeURIComponent(match[1]);
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from Hex.pm API
 		const apiUrl = `https://hex.pm/api/packages/${packageName}`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
@@ -67,7 +62,6 @@ export const handleHex: SpecialHandler = async (url, timeout, signal) => {
 			md += "\n";
 		}
 
-		// Fetch releases if available
 		if (data.releases?.length) {
 			const releasesUrl = `https://hex.pm/api/packages/${packageName}/releases/${version}`;
 			const releaseResult = await loadPage(releasesUrl, { timeout: Math.min(timeout, 5), signal });
@@ -87,7 +81,6 @@ export const handleHex: SpecialHandler = async (url, timeout, signal) => {
 				}
 			}
 
-			// Show recent releases
 			const recentReleases = data.releases.slice(0, 10);
 			if (recentReleases.length > 0) {
 				md += `## Recent Releases\n\n`;

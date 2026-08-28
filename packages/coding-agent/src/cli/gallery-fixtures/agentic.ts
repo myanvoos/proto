@@ -1,10 +1,7 @@
-// Gallery fixtures for orchestration, fleet, and goal tools.
-
 import type { FleetDetails } from "../../tools/fleet";
 import type { OrchestrateToolDetails } from "../../tools/orchestrate";
 import type { GalleryFixture } from "./types";
 
-/** Message/activity timestamps are offsets from load time so gallery ages stay plausible. */
 const FIXTURE_NOW = Date.now();
 
 export const agenticFixtures: Record<string, GalleryFixture> = {
@@ -47,7 +44,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 	fleet_send: {
 		label: "Fleet send",
 		renderer: "fleet",
-		// Streaming: recipient known; the message body still arriving.
+
 		streamingArgs: { op: "send", to: "AuthLoader", message: "Are you still touching" },
 		args: {
 			op: "send",
@@ -226,7 +223,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 
 	goal: {
 		label: "Goal",
-		// Streaming: op is "create"; objective text still being typed.
+
 		streamingArgs: { op: "create", objective: "Ship the auth hardening" },
 		args: {
 			op: "create",
@@ -265,7 +262,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 
 	think: {
 		label: "Think",
-		// Streaming: scratchpad thoughts still arriving.
+
 		streamingArgs: {
 			thoughts: "The retry loop re-reads the config after every failure, which explains the doubled latency.",
 		},
@@ -282,7 +279,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 	fleet_jobs: {
 		label: "Fleet jobs",
 		renderer: "fleet",
-		// Streaming: waiting on a single job id; the second id is still arriving.
+
 		streamingArgs: { op: "wait", ids: ["job_a1"] },
 		args: { op: "wait", ids: ["job_a1", "job_b2", "job_c3"] },
 		result: {

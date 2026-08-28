@@ -1,15 +1,5 @@
-/**
- * Image Generation Providers
- *
- * Leaf module (no runtime deps) shared by the image_gen tool, the settings
- * schema, and settings migrations — mirrors `web/search/types.ts` so the
- * provider list, auto order, and settings choices never drift apart.
- */
-
-/** Image generation backends, in settings/tool vocabulary. */
 export type ImageProvider = "antigravity" | "gemini" | "openai" | "openai-codex" | "openrouter" | "xai";
 
-/** Auto-resolution fallback order when no configured entry or session provider matches. */
 export const AUTO_IMAGE_PROVIDER_ORDER: readonly ImageProvider[] = [
 	"openai",
 	"openai-codex",
@@ -19,7 +9,6 @@ export const AUTO_IMAGE_PROVIDER_ORDER: readonly ImageProvider[] = [
 	"gemini",
 ];
 
-/** Settings choices for `providers.imageOrder` (labels shared with the retired single-preference enum). */
 export const IMAGE_PROVIDER_CHOICES = [
 	{
 		value: "openai",

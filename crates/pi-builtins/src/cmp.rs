@@ -1,6 +1,6 @@
-//! `cmp` builtin: compare two files byte by byte.
-//!
-//! Ported from the `pi-shell` in-process implementation.
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -83,7 +83,7 @@ struct Input<'a> {
 	regular_len: Option<u64>,
 }
 
-/// Parsed `cmp` invocation.
+
 pub(crate) struct Cmp {
 	matches: ArgMatches,
 }
@@ -575,7 +575,7 @@ fn io_message(err: io::Error) -> String {
 	err.to_string()
 }
 
-/// Creates the `cmp` builtin registration.
+
 pub(crate) fn cmp_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cmp, SE>()
 }

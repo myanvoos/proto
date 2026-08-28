@@ -1,14 +1,3 @@
-/**
- * SuperGrok (`xai-oauth`) subscription usage provider.
- *
- * Reads utilization from the Grok CLI billing endpoint. Prefer the legacy
- * weekly `format=credits` payload (creditUsagePercent / productUsage). When
- * xAI marks the account as unified billing and omits those fields, fall back
- * to the default monthly included-quota shape (`monthlyLimit` / `used`).
- * Only OAuth access credentials are accepted; paid API keys are a separate
- * product and must never be sent here.
- */
-
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import {
 	buildXAICliBillingUrl,
@@ -42,7 +31,6 @@ interface XaiProductUsage {
 	usagePercent: number;
 }
 
-/** Legacy SuperGrok weekly credits (`?format=credits`). */
 interface XaiWeeklyBillingConfig {
 	kind: "weekly";
 	currentPeriod: XaiBillingPeriod;
@@ -53,11 +41,6 @@ interface XaiWeeklyBillingConfig {
 	inferredPercent?: boolean;
 }
 
-/**
- * Unified-billing monthly included quota.
- * Live `isUnifiedBillingUser` accounts omit creditUsagePercent on
- * `?format=credits` and expose monthlyLimit/used on the default billing URL.
- */
 interface XaiMonthlyBillingConfig {
 	kind: "monthly";
 	periodStart: string;
@@ -114,7 +97,7 @@ function buildMonthlyWindow(periodStart: string, periodEnd: string): UsageWindow
 	const startMs = parseIsoTimestamp(periodStart);
 	const endMs = parseIsoTimestamp(periodEnd);
 	if (startMs === undefined || endMs === undefined || endMs <= startMs) return undefined;
-	// Real calendar months vary; use the observed period length from the API.
+
 	const durationMs = endMs - startMs;
 	const approxDays = Math.max(1, Math.round(durationMs / DAY_MS));
 	return {
@@ -131,16 +114,11 @@ function parseWeeklyBillingConfig(raw: Record<string, unknown>): XaiWeeklyBillin
 	const start = typeof raw.currentPeriod.start === "string" ? parseIsoTimestamp(raw.currentPeriod.start) : undefined;
 	const end = typeof raw.currentPeriod.end === "string" ? parseIsoTimestamp(raw.currentPeriod.end) : undefined;
 	const type = typeof raw.currentPeriod.type === "string" ? raw.currentPeriod.type : "";
-	// Keep recently-ended weekly windows so /usage still renders across period
-	// rollover while the billing API is mid-refresh. Reject only inverted ranges
-	// and non-weekly period types.
+
 	if (start === undefined || end === undefined || end <= start || !type.toUpperCase().includes("WEEK")) {
 		return null;
 	}
 
-	// Fresh weekly periods (or accounts with 0 usage) omit creditUsagePercent;
-	// default to 0 only when the weekly period is active (end > now).
-	// Expired periods without explicit usage data are rejected to retain last good cache.
 	const inferredPercent = raw.creditUsagePercent === undefined || raw.creditUsagePercent === null;
 	let creditUsagePercent: number | undefined;
 	if (inferredPercent) {
@@ -189,7 +167,7 @@ function parseMonthlyBillingConfig(raw: Record<string, unknown>): XaiMonthlyBill
 
 	const limit = parseOnDemandAmount(raw.monthlyLimit);
 	const used = parseOnDemandAmount(raw.used);
-	// Require a positive included quota; zero/missing is not a usable report.
+
 	if (limit === undefined || limit <= 0 || used === undefined) return null;
 
 	return {
@@ -206,7 +184,7 @@ function parseMonthlyBillingConfig(raw: Record<string, unknown>): XaiMonthlyBill
 function confirmsNoMonthlyQuota(raw: Record<string, unknown>): boolean {
 	const limit = parseOnDemandAmount(raw.monthlyLimit);
 	if (limit !== undefined) return limit === 0;
-	// Some weekly accounts return the credits shape from the default endpoint too.
+
 	return parseWeeklyBillingConfig(raw)?.inferredPercent === true;
 }
 
@@ -296,7 +274,7 @@ function buildLimits(config: XaiBillingConfig, accountId: string | undefined): U
 				remaining: Math.max(0, config.limit - config.used),
 				usedFraction,
 				remainingFraction: 1 - usedFraction,
-				// xAI does not label the unit; amounts match the dashboard quota points.
+
 				unit: "unknown",
 			},
 			status: usageStatus(usedFraction),
@@ -346,12 +324,9 @@ export const xaiOauthUsageProvider: UsageProvider = {
 				const identity = await fetchXAIOAuthIdentity(accessToken, ctx.fetch, params.signal);
 				email = identity?.email?.trim().toLowerCase() || undefined;
 				accountId ??= identity?.accountId?.trim() || undefined;
-			} catch {
-				// Identity enrichment is best effort; billing remains authoritative.
-			}
+			} catch {}
 		}
 
-		// Always probe weekly credits first (legacy SuperGrok shape).
 		const creditsUrl = buildXAICliBillingUrl();
 		const monthlyUrl = buildXAICliBillingUrl("");
 		const creditsPayload = await fetchBillingPayload(creditsUrl, accessToken, ctx, params.signal);
@@ -365,10 +340,6 @@ export const xaiOauthUsageProvider: UsageProvider = {
 			isRecord(creditsPayload.config) &&
 			creditsPayload.config.isUnifiedBillingUser === true;
 
-		// Unified accounts expose a separate monthly included-quota payload on the
-		// default billing URL. Fetch it when credits is missing/unusable, or when
-		// credits itself marks the account unified (even if weekly percents exist —
-		// live responses sometimes include both shapes).
 		let monthlyPayload: unknown | null = null;
 		let monthly: XaiMonthlyBillingConfig | null = null;
 		const shouldProbeMonthly = (!weekly || creditsLooksUnified) && monthlyUrl !== creditsUrl;
@@ -380,13 +351,6 @@ export const xaiOauthUsageProvider: UsageProvider = {
 					: null;
 		}
 
-		// When an account is marked unified billing and weekly credits were only inferred
-		// from an omitted percentage field:
-		// - If a positive monthly quota is returned, use the monthly quota alone.
-		// - If the monthly endpoint returned a valid config without positive monthly quota,
-		//   confirm that this account relies on the weekly reset cycle and use weekly.
-		// - If the monthly fetch failed (transient network error), reject inferred weekly
-		//   so AuthStorage's retain-last-good cache preserves the previous valid snapshot.
 		let effectiveWeekly = weekly;
 		if (weekly?.inferredPercent && creditsLooksUnified) {
 			if (monthly) {
@@ -406,7 +370,7 @@ export const xaiOauthUsageProvider: UsageProvider = {
 		const limits: UsageLimit[] = [];
 		if (effectiveWeekly) limits.push(...buildLimits(effectiveWeekly, accountId));
 		if (monthly) limits.push(...buildLimits(monthly, accountId));
-		// Deduplicate on-demand if both shapes carried the same cap (keep first).
+
 		const seen = new Set<string>();
 		const deduped = limits.filter(limit => {
 			if (seen.has(limit.id)) return false;

@@ -1,9 +1,3 @@
-/**
- * Python runtime resolution utilities.
- *
- * Centralizes environment filtering, venv detection, and Python executable resolution
- * for both the shared gateway and local kernel spawning.
- */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -65,18 +59,13 @@ function resolveManagedPythonCandidate(): { venvPath: string; pythonPath: string
 }
 
 export interface PythonRuntime {
-	/** Path to python executable */
 	pythonPath: string;
-	/** Filtered environment variables */
+
 	env: Record<string, string | undefined>;
-	/** Path to virtual environment, if detected */
+
 	venvPath?: string;
 }
 
-/**
- * Filter environment variables to a safe allowlist for Python subprocesses.
- * Removes sensitive API keys and limits to known-safe variables.
- */
 export function filterEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
 	const filtered: Record<string, string | undefined> = {};
 	for (const [key, value] of Object.entries(env)) {
@@ -93,9 +82,6 @@ export function filterEnv(env: Record<string, string | undefined>): Record<strin
 	return filtered;
 }
 
-/**
- * Detect virtual environment path from VIRTUAL_ENV or common locations.
- */
 function resolveVenvPath(cwd: string): string | undefined {
 	if ($env.VIRTUAL_ENV) return $env.VIRTUAL_ENV;
 	if ($env.CONDA_PREFIX) return $env.CONDA_PREFIX;
@@ -108,10 +94,6 @@ function resolveVenvPath(cwd: string): string | undefined {
 	return undefined;
 }
 
-/**
- * Apply a venv-style PATH/VIRTUAL_ENV layout onto a fresh copy of `baseEnv` for
- * the interpreter living in `binDir`.
- */
 function applyVenvEnv(
 	baseEnv: Record<string, string | undefined>,
 	venvPath: string,
@@ -133,14 +115,6 @@ function detectExplicitVenv(pythonPath: string): { venvPath: string; binDir: str
 	return undefined;
 }
 
-/**
- * Resolve an explicitly configured interpreter (`python.interpreter`) into a
- * runtime, bypassing discovery. Does not probe or validate the executable —
- * callers must check it actually runs. `~` expands to the home directory and
- * relative paths resolve against `cwd`. When the interpreter sits inside a
- * virtualenv (a `pyvenv.cfg` above its bin dir), the venv activation env is
- * applied so subprocesses and `pip` resolve consistently.
- */
 export function resolveExplicitPythonRuntime(
 	interpreter: string,
 	cwd: string,
@@ -160,13 +134,6 @@ export function resolveExplicitPythonRuntime(
 	return { pythonPath, env: { ...baseEnv } };
 }
 
-/**
- * Enumerate candidate Python runtimes in priority order: an active/project venv,
- * the managed `~/.proto/python-env`, then the system interpreter on PATH. Every
- * candidate that physically exists is returned so callers can probe each in turn
- * rather than committing to the first — a managed env left behind by a removed
- * `uv` install no longer shadows a working system Python.
- */
 export function enumeratePythonRuntimes(cwd: string, baseEnv: Record<string, string | undefined>): PythonRuntime[] {
 	const runtimes: PythonRuntime[] = [];
 	const seen = new Set<string>();
@@ -203,11 +170,6 @@ export function enumeratePythonRuntimes(cwd: string, baseEnv: Record<string, str
 	return runtimes;
 }
 
-/**
- * Resolve the highest-priority Python runtime. Prefer {@link enumeratePythonRuntimes}
- * when you can probe candidates; this returns only the first one and throws when
- * no interpreter exists.
- */
 export function resolvePythonRuntime(cwd: string, baseEnv: Record<string, string | undefined>): PythonRuntime {
 	const [runtime] = enumeratePythonRuntimes(cwd, baseEnv);
 	if (!runtime) {

@@ -11,67 +11,47 @@ export interface PromptFormatOptions {
 	normalizeRfc2119?: boolean;
 }
 
-// Opening XML tag (not self-closing, not closing)
 const OPENING_XML = /^<([a-z_-]+)(?:\s+[^>]*)?>$/;
 
-/**
- * Closing XML tag matcher, manual equivalent of `/^<\/([a-z_-]+)>$/` — avoids a
- * RegExp exec (and match array allocation) per `<`-prefixed line. Caller
- * guarantees `s` starts `</`.
- */
 function closingTagName(s: string): string | null {
 	const n = s.length;
-	if (n < 4 || s.charCodeAt(n - 1) !== 62 /* > */) return null;
+	if (n < 4 || s.charCodeAt(n - 1) !== 62) return null;
 	for (let j = 2; j < n - 1; j++) {
 		const c = s.charCodeAt(j);
-		if (!((c >= 97 /* a */ && c <= 122) /* z */ || c === 45 /* - */ || c === 95) /* _ */) return null;
+		if (!((c >= 97 && c <= 122) || c === 45 || c === 95)) return null;
 	}
 	return s.slice(2, n - 1);
 }
 
-/**
- * Manual equivalent of {@link OPENING_XML}. Caller guarantees `s` starts with
- * `<` but not `</`. Falls back to the regex when the char after the tag name
- * is non-ASCII (possible unicode whitespace).
- */
 function openingTagName(s: string): string | null {
 	const n = s.length;
-	if (n < 3 || s.charCodeAt(n - 1) !== 62 /* > */) return null;
+	if (n < 3 || s.charCodeAt(n - 1) !== 62) return null;
 	let j = 1;
 	while (j < n - 1) {
 		const c = s.charCodeAt(j);
-		if ((c >= 97 /* a */ && c <= 122) /* z */ || c === 45 /* - */ || c === 95 /* _ */) j++;
+		if ((c >= 97 && c <= 122) || c === 45 || c === 95) j++;
 		else break;
 	}
 	if (j === 1) return null;
-	if (j === n - 1) return s.slice(1, j); // `<tag>`
+	if (j === n - 1) return s.slice(1, j);
 	const c = s.charCodeAt(j);
-	if (c !== 32 /* space */ && c !== 9 /* tab */) {
+	if (c !== 32 && c !== 9) {
 		if (c < 128) return null;
 		const match = OPENING_XML.exec(s);
 		return match ? match[1] : null;
 	}
-	// `\s+[^>]*>$` ⇔ no further `>` before the final char.
+
 	return s.indexOf(">", j + 1) === n - 1 ? s.slice(1, j) : null;
 }
-// Table row
+
 const TABLE_ROW = /^\|.*\|$/;
-// Table separator (|---|---|)
+
 const TABLE_SEP = /^\|[-:\s|]+\|$/;
-// Any non-whitespace char — blank-line check without allocating a trimmed copy
+
 const NON_BLANK = /\S/;
 
-/**
- * RFC 2119 keywords (plus project aliases NEVER/AVOID) wrapped in markdown bold
- * — `**MUST**`, `**MUST NOT**`, `**NEVER**`, etc.
- */
 const RFC2119_BOLD = /\*\*(MUST NOT|SHOULD NOT|RECOMMENDED|REQUIRED|OPTIONAL|SHOULD|MUST|MAY|NEVER|AVOID)\*\*/g;
 
-/**
- * Fast pre-check for {@link normalizeRfc2119}: a line that lacks every one of
- * these substrings is untouched by all three replacements, so the
- * split/replace/join machinery can be skipped entirely.
- */
 const RFC2119_GUARD = /\*\*(?:MUST|SHOULD|RECOMMENDED|REQUIRED|OPTIONAL|MAY|NEVER|AVOID)|MUST NOT|SHOULD NOT/;
 const MUST_NOT = /\bMUST NOT\b/g;
 const SHOULD_NOT = /\bSHOULD NOT\b/g;
@@ -80,12 +60,6 @@ function applyRfc2119(text: string): string {
 	return text.replace(RFC2119_BOLD, "$1").replace(MUST_NOT, "NEVER").replace(SHOULD_NOT, "AVOID");
 }
 
-/**
- * Normalize RFC 2119 markers per project convention:
- *   - Strip `**KEYWORD**` bold (visual noise, no semantics).
- *   - Alias `MUST NOT` → `NEVER` and `SHOULD NOT` → `AVOID` (single-token equivalents).
- * Skips spans inside inline code (`` `…` ``) so alias definitions can be quoted literally.
- */
 function normalizeRfc2119(line: string): string {
 	if (!RFC2119_GUARD.test(line)) return line;
 	if (!line.includes("`")) return applyRfc2119(line);
@@ -96,13 +70,11 @@ function normalizeRfc2119(line: string): string {
 	return segments.join("`");
 }
 
-/** Compact a table row by trimming cell padding */
 function compactTableRow(line: string): string {
 	const cells = line.split("|");
 	return cells.map(c => c.trim()).join("|");
 }
 
-/** Compact a table separator row */
 function compactTableSep(line: string): string {
 	const cells = line.split("|").filter(c => c.trim());
 	const normalized = cells.map(c => {
@@ -124,10 +96,6 @@ type HtmlCommentState = {
 	inHtmlComment: boolean;
 };
 
-// Single-pass alternation equivalent to the former chain of seven .replace()
-// calls. Alternative order mirrors the old sequential order (`<->` before
-// `->`/`<-`), and every replacement emits a non-ASCII char, so one pass
-// produces byte-identical output to the sequential passes.
 const ASCII_SYMBOLS = /\.{3}|<->|->|<-|!=|<=|>=/g;
 const ASCII_SYMBOL_REPLACEMENTS: Record<string, string> = {
 	"...": "…",
@@ -145,9 +113,6 @@ function replaceCommonAsciiSymbols(line: string): string {
 }
 
 function replaceCommonAsciiSymbolsOutsideHtmlComments(line: string, state: HtmlCommentState): string {
-	// When not inside a comment, a line without `<!--` takes the fast path even
-	// if it contains `-->`: the slow path would hit openIndex === -1 and replace
-	// the whole line identically.
 	if (!state.inHtmlComment && !line.includes(HTML_COMMENT_OPEN)) {
 		return replaceCommonAsciiSymbols(line);
 	}
@@ -197,7 +162,7 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 	const isPreRender = renderPhase === "pre-render";
 	const lines = content.split("\n");
 	const result: string[] = new Array(lines.length);
-	let n = 0; // logical length of `result` (pops are n--)
+	let n = 0;
 	let inCodeBlock = false;
 
 	const htmlCommentState: HtmlCommentState = { inHtmlComment: false };
@@ -205,24 +170,19 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i];
-		// charCode fast paths: only pay for trimEnd when the last char might be
-		// whitespace (<= 0x20 ASCII ws/controls, >= 0x80 unicode ws). Untouched
-		// lines are pushed as the original string — no allocation.
+
 		const last = raw.charCodeAt(raw.length - 1);
 		let line = last <= 32 || last >= 128 ? raw.trimEnd() : raw;
-		// Locate the first non-whitespace char without allocating a trimStart
-		// copy; `s` is the indent width, `first` the char code there (NaN when
-		// the line is blank).
+
 		let s = 0;
 		let first = line.charCodeAt(0);
-		while (first === 32 /* space */ || first === 9 /* tab */) first = line.charCodeAt(++s);
+		while (first === 32 || first === 9) first = line.charCodeAt(++s);
 		if (first >= 128) {
-			// Possible unicode leading whitespace — defer to trimStart for exactness.
 			s = line.length - line.trimStart().length;
 			first = line.charCodeAt(s);
 		}
 
-		if ((first === 96 /* ` */ || first === 126) /* ~ */ && (line.startsWith("```", s) || line.startsWith("~~~", s))) {
+		if ((first === 96 || first === 126) && (line.startsWith("```", s) || line.startsWith("~~~", s))) {
 			inCodeBlock = !inCodeBlock;
 			result[n++] = line;
 			continue;
@@ -248,9 +208,9 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 		}
 
 		let isClosingLine = false;
-		if (first === 60 /* < */) {
+		if (first === 60) {
 			const trimmedStart = s === 0 ? line : line.slice(s);
-			if (trimmedStart.charCodeAt(1) === 47 /* / */) {
+			if (trimmedStart.charCodeAt(1) === 47) {
 				const tagName = closingTagName(trimmedStart);
 				if (tagName !== null) {
 					isClosingLine = true;
@@ -262,7 +222,7 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 				const tagName = openingTagName(trimmedStart);
 				if (tagName !== null) topLevelTags.push(tagName);
 			}
-		} else if (first === 124 /* | */) {
+		} else if (first === 124) {
 			const trimmedStart = s === 0 ? line : line.slice(s);
 			if (TABLE_SEP.test(trimmedStart)) {
 				line = `${line.slice(0, s)}${compactTableSep(trimmedStart)}`;
@@ -276,9 +236,8 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 		}
 
 		if (s >= line.length) {
-			// Blank line (`line` carries no trailing whitespace, so it is "").
 			const next = lines[i + 1];
-			// Strip any run of 2+ consecutive blank lines entirely; preserve a single blank.
+
 			if (next === undefined || next.length === 0 || !NON_BLANK.test(next)) {
 				while (n > 0 && result[n - 1].length === 0) n--;
 				let j = i + 1;
@@ -291,8 +250,7 @@ export function format(content: string, options: PromptFormatOptions = {}): stri
 			}
 		}
 
-		// CLOSING_HBS (`/^\{\{\//`) ⇔ startsWith("{{/") at the indent offset.
-		if (isClosingLine || (isPreRender && first === 123 /* { */ && line.startsWith("{{/", s))) {
+		if (isClosingLine || (isPreRender && first === 123 && line.startsWith("{{/", s))) {
 			while (n > 0 && result[n - 1].length === 0) n--;
 		}
 
@@ -322,11 +280,6 @@ handlebars.registerHelper("arg", function (this: TemplateContext, index: number 
 	return args[zeroBased] ?? "";
 });
 
-/**
- * {{#list items prefix="- " suffix="" join="\n"}}{{this}}{{/list}}
- * Renders an array with customizable prefix, suffix, and join separator.
- * Note: Use \n in join for newlines (will be unescaped automatically).
- */
 handlebars.registerHelper(
 	"list",
 	function (this: unknown, context: unknown[], options: Handlebars.HelperOptions): string {
@@ -339,37 +292,19 @@ handlebars.registerHelper(
 	},
 );
 
-/**
- * {{join array ", "}}
- * Joins an array with a separator (default: ", ").
- * Note: Use \n/\t in the separator for newlines/tabs (unescaped automatically,
- * same convention as {{#list}} — Handlebars string literals carry no escapes).
- */
 handlebars.registerHelper("join", (context: unknown[], separator?: unknown): string => {
 	if (!Array.isArray(context)) return "";
 	const sep = typeof separator === "string" ? separator.replace(/\\n/g, "\n").replace(/\\t/g, "\t") : ", ";
 	return context.join(sep);
 });
 
-/**
- * {{default value "fallback"}}
- * Returns the value if truthy, otherwise returns the fallback.
- */
 handlebars.registerHelper("default", (value: unknown, defaultValue: unknown): unknown => value || defaultValue);
 
-/**
- * {{pluralize count "item" "items"}}
- * Returns "1 item" or "5 items" based on count.
- */
 handlebars.registerHelper(
 	"pluralize",
 	(count: number, singular: string, plural: string): string => `${count} ${count === 1 ? singular : plural}`,
 );
 
-/**
- * {{#when value "==" compare}}...{{else}}...{{/when}}
- * Conditional block with comparison operators: ==, ===, !=, !==, >, <, >=, <=
- */
 handlebars.registerHelper(
 	"when",
 	function (this: unknown, lhs: unknown, operator: string, rhs: unknown, options: Handlebars.HelperOptions): string {
@@ -389,28 +324,16 @@ handlebars.registerHelper(
 	},
 );
 
-/**
- * {{#ifAny a b c}}...{{else}}...{{/ifAny}}
- * True if any argument is truthy.
- */
 handlebars.registerHelper("ifAny", function (this: unknown, ...args: unknown[]): string {
 	const options = args.pop() as Handlebars.HelperOptions;
 	return args.some(Boolean) ? options.fn(this) : options.inverse(this);
 });
 
-/**
- * {{#ifAll a b c}}...{{else}}...{{/ifAll}}
- * True if all arguments are truthy.
- */
 handlebars.registerHelper("ifAll", function (this: unknown, ...args: unknown[]): string {
 	const options = args.pop() as Handlebars.HelperOptions;
 	return args.every(Boolean) ? options.fn(this) : options.inverse(this);
 });
 
-/**
- * {{#table rows headers="Col1|Col2"}}{{col1}}|{{col2}}{{/table}}
- * Generates a markdown table from an array of objects.
- */
 handlebars.registerHelper(
 	"table",
 	function (this: unknown, context: unknown[], options: Handlebars.HelperOptions): string {
@@ -424,61 +347,33 @@ handlebars.registerHelper(
 	},
 );
 
-/**
- * {{#codeblock lang="diff"}}...{{/codeblock}}
- * Wraps content in a fenced code block.
- */
 handlebars.registerHelper("codeblock", function (this: unknown, options: Handlebars.HelperOptions): string {
 	const lang = (options.hash.lang as string) ?? "";
 	const content = options.fn(this).trim();
 	return `\`\`\`${lang}\n${content}\n\`\`\``;
 });
 
-/**
- * {{#xml "tag"}}content{{/xml}}
- * Wraps content in XML-style tags. Returns empty string if content is empty.
- */
 handlebars.registerHelper("xml", function (this: unknown, tag: string, options: Handlebars.HelperOptions): string {
 	const content = options.fn(this).trim();
 	if (!content) return "";
 	return `<${tag}>\n${content}\n</${tag}>`;
 });
 
-/**
- * {{escapeXml value}}
- * Escapes XML special characters: & < > "
- */
 handlebars.registerHelper("escapeXml", (value: unknown): string => {
 	if (value == null) return "";
 	return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 });
 
-/**
- * {{len array}}
- * Returns the length of an array or string.
- */
 handlebars.registerHelper("len", (value: unknown): number => {
 	if (Array.isArray(value)) return value.length;
 	if (typeof value === "string") return value.length;
 	return 0;
 });
 
-/**
- * {{add a b}}
- * Adds two numbers.
- */
 handlebars.registerHelper("add", (a: number, b: number): number => (a ?? 0) + (b ?? 0));
 
-/**
- * {{sub a b}}
- * Subtracts b from a.
- */
 handlebars.registerHelper("sub", (a: number, b: number): number => (a ?? 0) - (b ?? 0));
 
-/**
- * {{#has collection item}}...{{else}}...{{/has}}
- * Checks if an array includes an item or if a Set/Map has a key.
- */
 handlebars.registerHelper(
 	"has",
 	function (this: unknown, collection: unknown, item: unknown, options: Handlebars.HelperOptions): string {
@@ -498,10 +393,6 @@ handlebars.registerHelper(
 	},
 );
 
-/**
- * {{includes array item}}
- * Returns true if array includes item. For use in other helpers.
- */
 handlebars.registerHelper("includes", (collection: unknown, item: unknown): boolean => {
 	if (Array.isArray(collection)) return collection.includes(item);
 	if (collection instanceof Set) return collection.has(item);
@@ -509,10 +400,6 @@ handlebars.registerHelper("includes", (collection: unknown, item: unknown): bool
 	return false;
 });
 
-/**
- * {{not value}}
- * Returns logical NOT of value. For use in subexpressions.
- */
 handlebars.registerHelper("not", (value: unknown): boolean => !value);
 
 handlebars.registerHelper("jsonStringify", (value: unknown): string => JSON.stringify(value));
@@ -528,7 +415,6 @@ export function registerPartial(name: string, fn: Template): void {
 const compiledTemplateCache = new Map<string, (context: TemplateContext) => string>();
 
 export function compile(template: string): (context: TemplateContext) => string {
-	// Keyed on the raw template so repeat renders skip parsing.
 	const cached = compiledTemplateCache.get(template);
 	if (cached) return cached;
 	const compiled = handlebars.compile(template, { noEscape: true, strict: false }) as (

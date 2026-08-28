@@ -24,9 +24,6 @@ interface KevCatalog {
 const CVE_PATTERN = /CVE-\d{4}-\d{4,7}/i;
 const KEV_FEED_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
-/**
- * Handle CISA Known Exploited Vulnerabilities (KEV) URLs
- */
 export const handleCisaKev: SpecialHandler = async (
 	url: string,
 	timeout: number,

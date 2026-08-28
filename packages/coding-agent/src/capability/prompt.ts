@@ -1,22 +1,13 @@
-/**
- * Prompts Capability
- *
- * Reusable prompt templates (Codex format) available via /prompts: menu.
- */
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
-/**
- * A reusable prompt template.
- */
 export interface Prompt {
-	/** Prompt name (filename without extension) */
 	name: string;
-	/** Absolute path to prompt file */
+
 	path: string;
-	/** Prompt content (markdown) */
+
 	content: string;
-	/** Source metadata */
+
 	_source: SourceMeta;
 }
 

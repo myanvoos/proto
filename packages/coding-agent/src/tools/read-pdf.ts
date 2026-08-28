@@ -9,9 +9,6 @@ const PDF_IMAGE_MEMBER_RE = /^(.*\.pdf):(.*)$/i;
 const PDF_PAGE_MEMBER_RE = /^(?:p|page[-_]?)(\d+)(?:[-_].*)?\.png$/i;
 const PDF_RENDER_TIMEOUT_MS = 30_000;
 
-// Chromium's PDF plugin paints in an out-of-process frame after navigation has
-// completed. Wait for document dimensions, then cross compositor boundaries
-// before capturing; otherwise the screenshot can contain only the viewer shell.
 const PDF_SCREENSHOT_CODE = `
 let viewerFrame;
 await wait(async () => {
@@ -51,17 +48,14 @@ await viewerFrame.evaluate(() => {
 return await tab.screenshot({ fullPage: true, silent: true });
 `;
 
-/** A legacy PDF image-member path interpreted as a page screenshot request. */
 export interface PdfImageReadTarget {
-	/** PDF path before the member delimiter. */
 	pdfPath: string;
-	/** Original member text after the delimiter. */
+
 	member: string;
-	/** One-indexed page inferred from names such as `p2-img0.png`; defaults to page 1. */
+
 	page: number;
 }
 
-/** Parse a former PDF image-member path as a Chromium page screenshot request. */
 export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | null {
 	const match = PDF_IMAGE_MEMBER_RE.exec(readPath);
 	const pdfPath = match?.[1];
@@ -73,7 +67,6 @@ export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | nu
 	return { pdfPath, member, page };
 }
 
-/** Render one PDF page through the browser tool's shared headless Chromium. */
 export async function renderPdfPageScreenshot(
 	session: ToolSession,
 	absolutePdfPath: string,

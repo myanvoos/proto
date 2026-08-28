@@ -1,10 +1,3 @@
-/**
- * Subprocess-backed Julia runner.
- *
- * The IPC loop, lifecycle, and display rendering are shared with the Python and
- * Ruby runners via BaseKernel; this module supplies the Julia binary, runner
- * script, and the runner's TSV/Base64 wire protocol.
- */
 import * as path from "node:path";
 import { $flag, Snowflake } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -29,7 +22,7 @@ export type { KernelDisplayOutput };
 const TRACE_IPC = $flag("PI_JULIA_IPC_TRACE");
 
 const SHUTDOWN_GRACE_MS = 1_000;
-const STARTUP_TIMEOUT_MS = 15_000; // Julia compile/warmup can be slightly slower
+const STARTUP_TIMEOUT_MS = 15_000;
 const INTERRUPT_ESCALATION_MS = 5_000;
 
 export interface KernelExecuteOptions {
@@ -51,8 +44,6 @@ interface JuliaKernelAvailability {
 	reason?: string;
 }
 
-// Cache successful probes per resolved cwd + explicit interpreter. Failures are
-// not cached so installing Julia mid-session is picked up on the next attempt.
 const availabilityCache = new Map<string, Promise<JuliaKernelAvailability>>();
 
 export async function checkJuliaKernelAvailability(
@@ -113,12 +104,10 @@ export class JuliaKernel extends BaseKernel<KernelExecuteOptions> {
 			interruptEscalationMs: INTERRUPT_ESCALATION_MS,
 			shutdownGraceMs: SHUTDOWN_GRACE_MS,
 			buildPayload: (code, msgId, opts) => {
-				// Convert arguments into a TSV / Base64 payload.
 				const cwdB64 = Buffer.from(opts?.cwd ?? "").toString("base64");
 				const silentVal = opts?.silent ? "1" : "0";
 				const storeHistVal = opts?.storeHistory !== false && !opts?.silent ? "1" : "0";
 
-				// Format environment variables as key1_b64:val1_b64 key2_b64:val2_b64
 				const envPairs: string[] = [];
 				if (opts?.env) {
 					for (const key in opts.env) {
@@ -207,7 +196,7 @@ function buildInitScript(cwd: string, env?: Record<string, string | undefined>):
 		const v_b64 = Buffer.from(envPayload[key]).toString("base64");
 		lines.push(`ENV[String(Base64.base64decode("${k_b64}"))] = String(Base64.base64decode("${v_b64}"))`);
 	}
-	// Avoid modifying LOAD_PATH if not necessary, but if needed, prepend cwd
+
 	lines.push("if !(__proto_init_cwd in LOAD_PATH); pushfirst!(LOAD_PATH, __proto_init_cwd); end");
 	return lines.join("\n");
 }

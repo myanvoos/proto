@@ -2,9 +2,6 @@ import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, loadPage } from "./types";
 import { convertWithMarkit, fetchBinary } from "./utils";
 
-/**
- * Handle arXiv URLs via arXiv API
- */
 export const handleArxiv: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -14,8 +11,6 @@ export const handleArxiv: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "arxiv.org") return null;
 
-		// Extract paper ID from various URL formats
-		// /abs/1234.56789, /pdf/1234.56789, /abs/cs/0123456
 		const match = parsed.pathname.match(/\/(abs|pdf)\/(.+?)(?:\.pdf)?$/);
 		if (!match) return null;
 
@@ -23,13 +18,11 @@ export const handleArxiv: SpecialHandler = async (
 		const fetchedAt = new Date().toISOString();
 		const notes: string[] = [];
 
-		// Fetch metadata via arXiv API
 		const apiUrl = `https://export.arxiv.org/api/query?id_list=${paperId}`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
 		if (!result.ok) return null;
 
-		// Parse the Atom feed response
 		const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
 		const doc = parseHTML(result.content).document;
 		const entry = doc.querySelector("entry");
@@ -56,7 +49,6 @@ export const handleArxiv: SpecialHandler = async (
 		md += `**arXiv:** ${paperId}\n\n`;
 		md += `---\n\n## Abstract\n\n${summary || "No abstract available."}\n\n`;
 
-		// If it was a PDF link or we want full content, try to fetch and convert PDF
 		if (match[1] === "pdf" || parsed.pathname.includes(".pdf")) {
 			if (pdfLink) {
 				notes.push("Fetching PDF for full content...");

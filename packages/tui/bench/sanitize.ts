@@ -19,8 +19,6 @@ function regexSanitizeText(text: string): string {
 	return text.replace(STRIP_RE, "");
 }
 
-// Character-class regex: any code unit that might trigger removal.
-// ESC (0x1B) is inside \x00-\x1F.
 const NEEDS_RE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\r\uD800-\uDFFF]/;
 const NEEDS_RE_G = /[\x00-\x08\x0B-\x1F\x7F-\x9F\r\uD800-\uDFFF]/g;
 const ESC = 0x1b;
@@ -66,13 +64,11 @@ function ansiSeqLen(text: string, pos: number): number {
 	return 0;
 }
 
-// Variant A: cheap regex gate, then fall back to currentSanitizeText logic inline.
 function gatedSanitizeText(text: string): string {
 	if (!NEEDS_RE.test(text)) return text;
 	return currentSanitizeText(text);
 }
 
-// Variant B: drive iteration via regex.exec, skipping clean runs wholesale.
 function skipRunSanitizeText(text: string): string {
 	NEEDS_RE_G.lastIndex = 0;
 	let m = NEEDS_RE_G.exec(text);
@@ -89,7 +85,6 @@ function skipRunSanitizeText(text: string): string {
 		}
 		if (removeLen === 0) {
 			if (u >= 0xd800 && u <= 0xdbff) {
-				// High surrogate: keep if followed by valid low surrogate.
 				if (i + 1 < len) {
 					const lo = text.charCodeAt(i + 1);
 					if (lo >= 0xdc00 && lo <= 0xdfff) {
@@ -100,7 +95,6 @@ function skipRunSanitizeText(text: string): string {
 				}
 				removeLen = 1;
 			} else {
-				// CR / C0 (excl. \t \n) / DEL / C1 / lone low surrogate.
 				removeLen = 1;
 			}
 		}
@@ -116,7 +110,6 @@ function skipRunSanitizeText(text: string): string {
 const REMOVAL_START_RE =
 	/[\x00-\x08\x0B-\x1F\x7F-\x9F]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-// Variant C: regex only matches real removal starts, not valid surrogate pairs.
 function removalStartSanitizeText(text: string): string {
 	REMOVAL_START_RE.lastIndex = 0;
 	let m = REMOVAL_START_RE.exec(text);
@@ -142,7 +135,6 @@ function removalStartSanitizeText(text: string): string {
 
 const CONTROL_RE_G = /[\x00-\x08\x0B-\x1F\x7F-\x9F]/g;
 
-// Variant D: avoid valid-surrogate matches when the string is well-formed.
 function wellFormedControlSanitizeText(text: string): string {
 	if (!text.isWellFormed()) return skipRunSanitizeText(text);
 	CONTROL_RE_G.lastIndex = 0;
@@ -167,7 +159,6 @@ function wellFormedControlSanitizeText(text: string): string {
 	return out;
 }
 
-// Variant E: broad scan first; only use isWellFormed when a valid pair is hit.
 function lazyWellFormedSanitizeText(text: string): string {
 	NEEDS_RE_G.lastIndex = 0;
 	let m = NEEDS_RE_G.exec(text);
@@ -252,17 +243,12 @@ function sanitizeBinaryOutput(str: string): string {
 		const width = code > 0xffff ? 2 : 1;
 		const next = i + width;
 
-		// Allow tab, newline, carriage return.
 		const isAllowedControl = code === 0x09 || code === 0x0a || code === 0x0d;
 		if (isAllowedControl) {
 			i = next;
 			continue;
 		}
 
-		// Filter out characters that crash `Bun.stringWidth()` or cause display issues:
-		// - ASCII control chars (C0)
-		// - DEL + C1 control block
-		// - Lone surrogates
 		const isControl = code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f);
 		const isSurrogate = code >= 0xd800 && code <= 0xdfff;
 		if (isControl || isSurrogate) {

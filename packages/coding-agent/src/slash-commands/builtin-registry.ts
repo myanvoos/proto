@@ -25,7 +25,6 @@ import type {
 
 export type { BuiltinSlashCommand, SubcommandDef } from "./types";
 
-/** TUI-specific runtime accepted by `executeBuiltinSlashCommand`. */
 export type BuiltinSlashCommandRuntime = TuiSlashCommandRuntime;
 
 interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
@@ -54,7 +53,6 @@ for (const command of BUILTIN_SLASH_COMMAND_REGISTRY) {
 
 export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set(BUILTIN_SLASH_COMMAND_LOOKUP.keys());
 
-/** Builtin command metadata used for slash-command autocomplete and help text. */
 export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_REGISTRY.map(
 	command => ({
 		name: command.name,
@@ -90,10 +88,6 @@ function materializeTuiBuiltinSlashCommand(
 	return materialized;
 }
 
-/**
- * Materialized builtin slash commands with completion functions derived from
- * declarative subcommand/hint definitions.
- */
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<TuiBuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd =>
 	materializeTuiBuiltinSlashCommand(cmd),
 );
@@ -102,20 +96,8 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
 	return BUILTIN_SLASH_COMMAND_DEFS.map(cmd => materializeTuiBuiltinSlashCommand(cmd, runtime));
 }
 
-/**
- * Unified registry exposed for cross-mode tooling. Each spec carries at least
- * one of `handle` / `handleTui`. The TUI dispatcher prefers `handleTui`; the
- * ACP dispatcher requires `handle` and skips TUI-only entries.
- */
 export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
 
-/**
- * Execute a builtin slash command in the interactive TUI.
- *
- * Returns `false` when no builtin matched. Returns `true` when a command
- * consumed the input entirely. Returns a `string` when the command was handled
- * but remaining text should be sent as a prompt.
- */
 export async function executeBuiltinSlashCommand(
 	text: string,
 	runtime: BuiltinSlashCommandRuntime,
@@ -134,12 +116,6 @@ export async function executeBuiltinSlashCommand(
 		return true;
 	}
 	if (command.handle) {
-		// No TUI-specific override → adapt the ACP/text-mode `handle` to the
-		// TUI by routing `runtime.output` through `ctx.showStatus`, clearing
-		// the editor after the call, and reusing the active session's plugin
-		// reload pipeline. Spec authors get a single body usable from either
-		// dispatcher without forcing every TUI test to construct the full
-		// `SlashCommandRuntime` shape.
 		const ctx = runtime.ctx;
 		const adapted: SlashCommandRuntime = {
 			session: ctx.session,
@@ -160,7 +136,6 @@ export async function executeBuiltinSlashCommand(
 	return false;
 }
 
-/** Look up a unified spec by name or alias. Used by the ACP dispatcher. */
 export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | undefined {
 	return BUILTIN_SLASH_COMMAND_LOOKUP.get(name);
 }

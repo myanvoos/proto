@@ -1,43 +1,25 @@
-/**
- * Shell-completion generation (bash, zsh, fish).
- *
- * Single source of truth: the declarative `flags`/`args` descriptors carried by
- * each `Command` subclass plus the registered subcommand table. {@link buildSpec}
- * walks that metadata — the same data `renderCommandBody` renders for `--help` —
- * and {@link generateCompletion} emits a self-contained completion script. Adding
- * a flag to a command's static `flags` therefore propagates into completions with
- * no edits here.
- *
- * Static candidates (enum `options`, the builtin tool list) are baked into the
- * script. A small set of flags resolve dynamic candidates (the live model
- * catalog and on-disk sessions) by calling back into `<bin> __complete <kind>`
- * — see `commands/complete.ts`. The flag→source mapping below is the only manual
- * knob and is keyed by flag name so it stays stable as flags are added.
- */
 import type { ArgDescriptor, CliConfig, CommandMetadata, FlagDescriptor } from "@oh-my-pi/pi-utils/cli";
 import { BUILTIN_TOOL_NAMES } from "../tools/builtin-names";
 
 export type Shell = "bash" | "zsh" | "fish";
 
-/** How a flag/positional value should be completed. */
 export type ValueSource =
-	| { kind: "flag" } // boolean — takes no value
-	| { kind: "value" } // takes a value with no completable candidates (e.g. integer, free text)
-	| { kind: "enum"; values: readonly string[] } // static single value
-	| { kind: "list"; values: readonly string[] } // static comma-separated list
-	| { kind: "models"; multiple: boolean } // dynamic: live model catalog
-	| { kind: "sessions" } // dynamic: on-disk sessions
+	| { kind: "flag" }
+	| { kind: "value" }
+	| { kind: "enum"; values: readonly string[] }
+	| { kind: "list"; values: readonly string[] }
+	| { kind: "models"; multiple: boolean }
+	| { kind: "sessions" }
 	| { kind: "file" }
 	| { kind: "dir" };
 
 interface CompletionFlag {
-	/** Long name without the leading `--`. */
 	name: string;
-	/** Short character without the leading `-`. */
+
 	char?: string;
 	description: string;
 	value: ValueSource;
-	/** Flag may appear multiple times (oclif `multiple`). */
+
 	repeatable: boolean;
 }
 
@@ -57,18 +39,15 @@ interface CompletionCommand {
 
 export interface CompletionSpec {
 	bin: string;
-	/** Flags/args of the default (no-subcommand) command. */
+
 	root: { flags: CompletionFlag[]; args: CompletionArg[] };
 	commands: CompletionCommand[];
 }
 
-// --- Flag/arg value classification (the single manual mapping) ----------------
-
-/** Single-value flags resolved against the live model catalog. */
 const MODEL_FLAGS: Record<string, true> = { model: true, smol: true, slow: true };
-/** Single-value flags resolved against on-disk sessions. */
+
 const SESSION_FLAGS: Record<string, true> = { resume: true, fork: true, session: true };
-/** Flags whose value is a directory path. */
+
 const DIR_FLAGS: Record<string, true> = { "session-dir": true, "plugin-dir": true };
 
 function flagValue(name: string, desc: FlagDescriptor): ValueSource {
@@ -114,14 +93,6 @@ function buildArgs(command: CommandMetadata): CompletionArg[] {
 	return out;
 }
 
-/**
- * Build a {@link CompletionSpec} from loaded command classes.
- *
- * @param rootName  Entry name of the default command (its flags become top-level
- *                  flags; it is excluded from the subcommand list).
- * @param aliasMap  Canonical-name → aliases (merged from the registration table
- *                  and the command class's static `aliases`).
- */
 export function buildSpec(
 	config: CliConfig,
 	rootName: string,
@@ -149,14 +120,10 @@ export function buildSpec(
 	return { bin: config.bin, root, commands };
 }
 
-// --- Shared helpers -----------------------------------------------------------
-
-/** Every value source except a bare boolean flag consumes the following token. */
 function takesValue(v: ValueSource): boolean {
 	return v.kind !== "flag";
 }
 
-/** All token forms (`name` + aliases) under which a subcommand can be invoked. */
 function commandTokens(c: CompletionCommand): string[] {
 	return [c.name, ...c.aliases];
 }
@@ -172,14 +139,10 @@ export function generateCompletion(shell: Shell, spec: CompletionSpec): string {
 	}
 }
 
-// --- bash ---------------------------------------------------------------------
-
-/** Escape for use inside a bash double-quoted `compgen -W "…"` word list. */
 function bashWords(values: readonly string[]): string {
 	return values.join(" ").replace(/"/g, '\\"');
 }
 
-/** bash snippet that fills COMPREPLY for a flag value, then `return 0`. */
 function bashValueBranch(bin: string, v: ValueSource): string {
 	switch (v.kind) {
 		case "flag":
@@ -202,7 +165,6 @@ function bashValueBranch(bin: string, v: ValueSource): string {
 	}
 }
 
-/** Build the `case "$prev" in …` arms for every value-taking flag in scope. */
 function bashFlagCase(bin: string, flags: CompletionFlag[]): string {
 	const lines: string[] = [];
 	for (const f of flags) {
@@ -228,7 +190,6 @@ function generateBash(spec: CompletionSpec): string {
 	parts.push(`# bash completion for ${bin} — generated by \`${bin} completions bash\``);
 	parts.push("");
 
-	// Comma-aware static/dynamic list completion helper.
 	parts.push(`_proto_comma() {
 	local words="$1" realcur prefix
 	realcur="\${cur##*,}"
@@ -242,7 +203,6 @@ function generateBash(spec: CompletionSpec): string {
 }`);
 	parts.push("");
 
-	// Root handler: top-level flags + subcommand names.
 	const subTokens = spec.commands.flatMap(commandTokens).sort();
 	parts.push(`_proto_root() {
 	case "$prev" in
@@ -256,7 +216,6 @@ ${bashFlagCase(bin, spec.root.flags)}
 }`);
 	parts.push("");
 
-	// Per-subcommand handlers.
 	for (const c of spec.commands) {
 		const argEnum = c.args.find(a => a.value.kind === "enum");
 		const argWords = argEnum && argEnum.value.kind === "enum" ? bashWords(argEnum.value.values) : "";
@@ -279,7 +238,6 @@ ${bashFlagCase(bin, c.flags)}
 		parts.push("");
 	}
 
-	// Dispatcher.
 	const dispatch: string[] = [];
 	for (const c of spec.commands) {
 		dispatch.push(`\t\t${commandTokens(c).join("|")})\n\t\t\t_proto_cmd_${bashFn(c.name)}\n\t\t\t;;`);
@@ -309,9 +267,6 @@ function bashFn(name: string): string {
 	return name.replace(/[^A-Za-z0-9]/g, "_");
 }
 
-// --- zsh ----------------------------------------------------------------------
-
-/** Sanitize a description for embedding in a single-quoted zsh `_arguments` spec. */
 function zshDesc(s: string): string {
 	return s
 		.replace(/'/g, "’")
@@ -362,9 +317,7 @@ function zshArgSpec(f: CompletionArg): string {
 
 function generateZsh(spec: CompletionSpec): string {
 	const { bin } = spec;
-	// The `:value:_omp_tools` action references this helper; bake its candidates
-	// from the spec's `list` flag so the generator stays a pure function of its
-	// input (bash/fish read `v.values` inline for the same reason).
+
 	const listFlag = [...spec.root.flags, ...spec.commands.flatMap(c => c.flags)].find(f => f.value.kind === "list");
 	const toolNames = listFlag?.value.kind === "list" ? listFlag.value.values.join(" ") : "";
 	const parts: string[] = [];
@@ -372,7 +325,6 @@ function generateZsh(spec: CompletionSpec): string {
 	parts.push(`# zsh completion for ${bin} — generated by \`${bin} completions zsh\``);
 	parts.push("");
 
-	// Dynamic helpers (single source: `<bin> __complete <kind>` → value<TAB>desc).
 	parts.push(`_proto_call() {
 	local kind=$1
 	local -a items
@@ -395,7 +347,6 @@ _proto_models_list() {
 _proto_tools() { _values -s , 'tools' ${toolNames} }`);
 	parts.push("");
 
-	// Subcommand description table.
 	const cmdRows = spec.commands.map(c => `\t\t'${c.name}:${zshDesc(c.description)}'`).join("\n");
 	parts.push(`_proto_commands() {
 	local -a commands
@@ -406,7 +357,6 @@ ${cmdRows}
 }`);
 	parts.push("");
 
-	// Per-subcommand argument functions.
 	for (const c of spec.commands) {
 		const specs = ["'(-h --help)'{-h,--help}'[Show help]'", ...c.flags.map(zshFlagSpec), ...c.args.map(zshArgSpec)];
 		parts.push(`_proto_cmd_${bashFn(c.name)}() {
@@ -416,7 +366,6 @@ ${cmdRows}
 		parts.push("");
 	}
 
-	// Top-level dispatch.
 	const aliasArms = spec.commands
 		.map(c => `\t\t\t${commandTokens(c).join("|")}) _proto_cmd_${bashFn(c.name)} ;;`)
 		.join("\n");
@@ -451,8 +400,6 @@ fi`);
 	parts.push("");
 	return `${parts.join("\n")}\n`;
 }
-
-// --- fish ---------------------------------------------------------------------
 
 function fishDesc(s: string): string {
 	return s
@@ -510,7 +457,6 @@ function generateFish(spec: CompletionSpec): string {
 
 	const rootCond = "__fish_proto_no_subcommand";
 
-	// Subcommand names.
 	for (const c of spec.commands) {
 		for (const token of commandTokens(c)) {
 			lines.push(`complete -c ${bin} -f -n '${rootCond}' -a '${token}' -d '${fishDesc(c.description)}'`);
@@ -518,21 +464,17 @@ function generateFish(spec: CompletionSpec): string {
 	}
 	lines.push("");
 
-	// Top-level flags.
 	for (const f of spec.root.flags) {
 		lines.push(fishFlagLine(bin, rootCond, f));
 	}
 	lines.push("");
 
-	// Per-subcommand flags and positional args.
 	for (const c of spec.commands) {
 		const cond = `__fish_seen_subcommand_from ${commandTokens(c).join(" ")}`;
 		for (const f of c.flags) {
 			lines.push(fishFlagLine(bin, cond, f));
 		}
-		// Positionals: fish conditions can't gate on position, so emit enum
-		// candidates (if any) and otherwise a single file completion — never both,
-		// and never duplicated across multiple file-typed positionals.
+
 		const enumArgs = c.args.filter(a => a.value.kind === "enum");
 		if (enumArgs.length > 0) {
 			for (const a of enumArgs) {

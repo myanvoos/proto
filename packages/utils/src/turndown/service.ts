@@ -125,7 +125,6 @@ function hasNonblankDescendant(node: TurndownNode): boolean {
 	return false;
 }
 
-/** Convert HTML fragments to Markdown with extensible Turndown-compatible rules. */
 export default class TurndownService {
 	readonly options: ResolvedTurndownOptions;
 	readonly #rules: RuleEntry[] = [];
@@ -138,7 +137,6 @@ export default class TurndownService {
 		this.options = { ...DEFAULT_OPTIONS, ...options };
 	}
 
-	/** Install a highest-priority named conversion rule. */
 	addRule(key: string, rule: TurndownRule): this {
 		const previous = this.#rules.findIndex(entry => entry.key === key);
 		if (previous >= 0) this.#rules.splice(previous, 1);
@@ -146,19 +144,16 @@ export default class TurndownService {
 		return this;
 	}
 
-	/** Preserve matching elements as HTML when no custom rule handles them. */
 	keep(filter: RuleFilter): this {
 		this.#keepFilters.unshift(filter);
 		return this;
 	}
 
-	/** Drop matching elements and all of their converted content. */
 	remove(filter: RuleFilter): this {
 		this.#removeFilters.unshift(filter);
 		return this;
 	}
 
-	/** Install one plugin or an ordered list of plugins. */
 	use(plugin: TurndownPlugin | readonly TurndownPlugin[]): this {
 		if (typeof plugin === "function") {
 			plugin(this);
@@ -168,7 +163,6 @@ export default class TurndownService {
 		return this;
 	}
 
-	/** Escape Markdown punctuation using Turndown's public escaping rules. */
 	escape(text: string): string {
 		return text
 			.replace(/\\/g, "\\\\")
@@ -178,7 +172,6 @@ export default class TurndownService {
 			.replace(/^(\s*\d+)\.(?=\s)/gm, "$1\\.");
 	}
 
-	/** Convert an HTML string or standards-shaped DOM node to Markdown. */
 	turndown(input: string | TurndownNode): string {
 		const root = typeof input === "string" ? parseHtmlFragment(input) : input;
 		this.#references = [];
@@ -195,7 +188,6 @@ export default class TurndownService {
 		return markdown;
 	}
 
-	/** Convert only a node's children within the active conversion. */
 	convertChildren(node: TurndownNode): string {
 		return this.#convertChildren(node);
 	}

@@ -11,17 +11,6 @@ import type { ProviderDefinition } from "./types";
 const INTERNATIONAL_AUTH_URL = "https://home.qwencloud.com/billing/subscription/token-plan-individual";
 const CHINA_AUTH_URL = "https://www.aliyun.com/benefit/scene/tokenplan";
 
-/**
- * Log in to the QwenCloud Token Plan provider.
- *
- * The Token Plan ships as two regionally separate products with
- * non-interchangeable keys — International (Singapore) and China (Beijing) —
- * so login first selects the region (or a custom base URL) before pasting the
- * key, mirroring {@link loginAlibabaCodingPlan}. The chosen region is validated
- * against its own `/models` endpoint and, when it diverges from the default
- * international endpoint, stored in the credential so inference and discovery
- * both target it (#6682).
- */
 export async function loginAlibabaTokenPlan(options: OAuthController): Promise<string> {
 	if (!options.onPrompt) {
 		throw new AIError.OnPromptRequiredError("QwenCloud Token Plan");
@@ -115,9 +104,6 @@ export async function loginAlibabaTokenPlan(options: OAuthController): Promise<s
 		);
 	}
 
-	// International (default) logins keep their existing bare/cookie credential
-	// form; only a diverging region is persisted so it can override the catalog
-	// base URL at inference and discovery time.
 	const regionUrl = baseUrl === ALIBABA_TOKEN_PLAN_BASE_URL ? undefined : baseUrl;
 	return serializeAlibabaTokenPlanCredential(apiKey, cookie, regionUrl);
 }

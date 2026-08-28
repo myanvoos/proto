@@ -1,7 +1,3 @@
-/**
- * Generate commit messages from diffs using a smol, fast model.
- * Follows the same pattern as title-generator.ts.
- */
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
@@ -16,17 +12,11 @@ import { toReasoningEffort } from "../thinking";
 
 const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);
 const MAX_DIFF_CHARS = 4000;
-// Cover the "backend ignores `disableReasoning`" case unconditionally: the
-// static `model.reasoning` catalog flag can't distinguish a thinking model
-// declared `reasoning: false` (e.g. Qwen3 served locally via llama.cpp) from
-// one that never emits thinking. `maxTokens` is a hard cap — non-thinking
-// completions still return in a handful of tokens (issue #4355).
+
 const COMMIT_MAX_TOKENS = 1024;
 
-/** File patterns that should be excluded from commit message generation diffs. */
 const NOISE_SUFFIXES = [".lock", ".lockb", "-lock.json", "-lock.yaml"];
 
-/** Strip diff hunks for noisy files that drown out real changes. */
 function filterDiffNoise(diff: string): string {
 	const lines = diff.split("\n");
 	const filtered: string[] = [];
@@ -75,10 +65,6 @@ function getSmolModelCandidates(
 	return candidates;
 }
 
-/**
- * Generate a commit message from a unified diff.
- * Returns null if generation fails (caller should fall back to generic message).
- */
 export async function generateCommitMessage(
 	diff: string,
 	registry: ModelRegistry,
@@ -133,7 +119,6 @@ export async function generateCommitMessage(
 			msg = msg.trim();
 			if (!msg) continue;
 
-			// Clean up: remove wrapping quotes, backticks, trailing period
 			msg = msg.replace(/^[`"']|[`"']$/g, "").replace(/\.$/, "");
 
 			logger.debug("commit-msg-generator: generated", { model: candidate.model.id, msg });

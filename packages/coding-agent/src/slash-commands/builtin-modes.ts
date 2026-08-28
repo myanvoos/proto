@@ -47,17 +47,14 @@ async function runWithDetachedModeDraft(
 	}
 }
 
-/** `/fast status` label for the active model: "on" when its family is priority, else "off". */
 function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
 }
 
-/** `/extended-context status` label for the premium long-context window setting. */
 function formatExtendedContextStatus(settings: Settings): string {
 	return settings.get("extendedContext") ? "on" : "off";
 }
 
-/** Applies an `/extended-context` argument and returns its operator feedback. */
 function applyExtendedContextCommand(settings: Settings, args: string): string | undefined {
 	const arg = args.trim().toLowerCase();
 	const current = settings.get("extendedContext");
@@ -78,7 +75,6 @@ function applyExtendedContextCommand(settings: Settings, args: string): string |
 	return undefined;
 }
 
-/** Detailed, session-effective `/computer status` diagnostics. */
 async function formatComputerUseStatus(session: AgentSession): Promise<string> {
 	const enabled = session.settings.get("computer.enabled");
 	const active = session.getEnabledToolNames().includes("computer");
@@ -118,12 +114,6 @@ async function formatComputerUseStatus(session: AgentSession): Promise<string> {
 	].join(" · ");
 }
 
-/**
- * Apply a session-scoped computer-use toggle: flip the active tool slate first
- * (so a failed enable never leaves a stale settings override), then record the
- * runtime override — never `settings.set`, which would persist to settings.json.
- * Returns the operator feedback line.
- */
 async function applyComputerUseToggle(session: AgentSession, enable: boolean): Promise<string> {
 	const applied = await session.setComputerToolEnabled(enable);
 	if (enable && !applied) {
@@ -135,7 +125,6 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 		: "Computer use disabled for this session.";
 }
 
-/** Session-effective `/vision status` line. */
 function formatVisionStatus(session: AgentSession): string {
 	const { mode, active, model } = session.inspectImageState();
 	const override = session.getInspectImageModeOverride();
@@ -153,7 +142,6 @@ function formatVisionStatus(session: AgentSession): string {
 	].join(" · ");
 }
 
-/** Applies a `/vision` mode for this session and returns the operator feedback line. */
 async function applyVisionMode(session: AgentSession, mode: InspectImageMode): Promise<string> {
 	const applied = await session.setInspectImageMode(mode);
 	if (!applied) {
@@ -239,8 +227,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const prompt = await runtime.ctx.handleLoopCommand(command.args);
 			runtime.ctx.editor.setText("");
-			// Surface any inline prompt so the dispatcher returns it and the normal
-			// submit flow runs the first loop iteration (recording it as the loop prompt).
+
 			if (prompt) return { prompt };
 		},
 	},

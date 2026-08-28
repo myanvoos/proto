@@ -172,7 +172,6 @@ const NAMED_ENTITIES: Record<string, string> = {
 	yen: "¥",
 };
 
-/** Decode common named entities and all valid numeric character references. */
 export function decodeEntities(value: string): string {
 	return value.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z][a-z0-9]+);/gi, (whole, entity: string) => {
 		if (entity[0] !== "#") return NAMED_ENTITIES[entity] ?? NAMED_ENTITIES[entity.toLowerCase()] ?? whole;
@@ -355,14 +354,12 @@ function parseInto(html: string, document: Document, root: Document | DocumentFr
 	void contextTag;
 }
 
-/** Parse markup into a document fragment. */
 export function parseFragment(html: string, document: Document, contextTag?: string): DocumentFragment {
 	const fragment = document.createDocumentFragment();
 	parseInto(html, document, fragment, contextTag);
 	return fragment;
 }
 
-/** Parse markup directly into a document. */
 export function parseDocument(html: string): Document {
 	const document = new Document();
 	parseInto(html, document, document);

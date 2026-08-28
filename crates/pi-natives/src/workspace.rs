@@ -1,11 +1,3 @@
-//! Workspace discovery for startup context.
-//!
-//! Walks a project tree once and returns the bounded entries needed to render
-//! the workspace tree plus directory-scoped AGENTS.md files. AGENTS.md files
-//! are checked directly in every traversed directory so a file-level gitignore
-//! rule cannot hide them, while ignored directories are still pruned by the
-//! walker.
-
 use std::{
 	collections::HashSet,
 	path::{Path, PathBuf},
@@ -26,9 +18,6 @@ const AGENTS_MD_MAX_DEPTH: usize = 4;
 const AGENTS_MD_LIMIT: usize = 200;
 const MAX_ENTRIES: usize = 100_000;
 
-/// Directory names pruned during traversal. The TypeScript caller no longer has
-/// to plumb this list through; it lives here so a single source of truth
-/// governs what counts as a non-source directory in startup scans.
 const EXCLUDED_DIRS: &[&str] = &[
 	"node_modules",
 	".git",
@@ -46,37 +35,30 @@ const EXCLUDED_DIRS: &[&str] = &[
 static EXCLUDED_DIR_SET: LazyLock<HashSet<&'static str>> =
 	LazyLock::new(|| EXCLUDED_DIRS.iter().copied().collect());
 
-/// Input options for `listWorkspace`, the single-pass workspace startup scan.
 #[napi(object)]
 pub struct ListWorkspaceOptions<'env> {
-	/// Directory to scan.
-	pub path:              String,
-	/// Maximum depth for returned tree entries. Root children are depth 1.
-	pub max_depth:         u32,
-	/// Include hidden files and directories. Default: false.
-	pub hidden:            Option<bool>,
-	/// Respect .gitignore files. Default: true.
-	pub gitignore:         Option<bool>,
-	/// Also surface AGENTS.md files in directories at depth 1..=4, even when
-	/// gitignore would otherwise hide the file. Walks deeper than `maxDepth`
-	/// to find them. Default: false.
+	pub path: String,
+
+	pub max_depth: u32,
+
+	pub hidden: Option<bool>,
+
+	pub gitignore: Option<bool>,
+
 	pub collect_agents_md: Option<bool>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:        Option<u32>,
-	/// Abort signal for cancelling the operation.
-	pub signal:            Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
 }
 
-/// Result payload returned by a workspace scan.
 #[napi(object)]
 pub struct ListWorkspaceResult {
-	/// Entries within `maxDepth`, with mtime and regular-file size metadata.
-	pub entries:         Vec<GlobMatch>,
-	/// Directory-scoped AGENTS.md files within depth 1..=4 (capped at 200).
-	/// Always empty when `collectAgentsMd` is false.
+	pub entries: Vec<GlobMatch>,
+
 	pub agents_md_files: Vec<String>,
-	/// True when any output cap was hit.
-	pub truncated:       bool,
+
+	pub truncated: bool,
 }
 
 struct WorkspaceConfig {
@@ -164,8 +146,7 @@ fn collect_agents_md_in_directory(
 	if tree_depth <= config.max_depth {
 		entries.push(entry.clone());
 	}
-	// AGENTS.md directory depth: root AGENTS.md is depth 0, child dir AGENTS.md
-	// is depth 1, and so on. We only surface files in depth 1..=4.
+
 	if (AGENTS_MD_MIN_DEPTH..=AGENTS_MD_MAX_DEPTH).contains(&directory_depth) {
 		agents_md_files.push(entry.path);
 	}
@@ -235,11 +216,6 @@ fn run_list_workspace(
 	})
 }
 
-/// Walk the workspace once and return tree entries plus AGENTS.md candidates.
-///
-/// File-level ignore rules for AGENTS.md are bypassed by checking each
-/// traversed directory directly when `collectAgentsMd` is enabled, but ignored
-/// directories are still pruned by the walker and are not searched.
 #[napi(js_name = "listWorkspace")]
 pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWorkspaceResult> {
 	let ListWorkspaceOptions {

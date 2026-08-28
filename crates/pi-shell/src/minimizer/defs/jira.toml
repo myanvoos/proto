@@ -1,4 +1,4 @@
-# jira CLI output. Strip ANSI and decorative separators.
+
 
 [filters.jira]
 description = "Compact jira CLI output"

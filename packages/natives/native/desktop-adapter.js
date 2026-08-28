@@ -88,11 +88,7 @@ function frameSignature(capture) {
 	});
 }
 
-/**
- * Adapt the pre-parity desktop addon ABI used by pull-request CI artifacts to
- * the current session contract. Released addons exposed capture/execute/close;
- * current addons already expose the complete API and pass through unchanged.
- */
+
 export function adaptDesktopSession(NativeDesktopSession) {
 	if (typeof NativeDesktopSession?.prototype?.click === "function") return NativeDesktopSession;
 	const cached = ADAPTED_SESSION_CLASSES.get(NativeDesktopSession);

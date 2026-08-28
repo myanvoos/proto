@@ -94,9 +94,6 @@ function extractRepoLink(properties: MarketplaceProperty[] | undefined): string 
 	return null;
 }
 
-/**
- * Handle VS Code Marketplace URLs via extension query API
- */
 export const handleVscodeMarketplace: SpecialHandler = async (
 	url: string,
 	timeout: number,

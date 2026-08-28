@@ -57,12 +57,6 @@ const FIXED_UNIT_MS: Record<string, number> = {
 	w: 7 * 86_400_000,
 };
 
-/**
- * Resolve a search date bound to a GitHub-search-compatible literal. Returns
- * either a `YYYY-MM-DD` date (relative durations and date-only inputs) or a
- * full ISO 8601 datetime string (datetime inputs), so the caller can drop it
- * straight into a qualifier like `created:>=<value>`.
- */
 export function parseSearchDateBound(raw: string, now: Date = new Date()): string {
 	const trimmed = raw.trim();
 	if (!trimmed) {
@@ -94,8 +88,6 @@ export function parseSearchDateBound(raw: string, now: Date = new Date()): strin
 
 	const parsedMs = Date.parse(trimmed);
 	if (!Number.isNaN(parsedMs)) {
-		// GitHub search qualifiers accept seconds precision only
-		// (`YYYY-MM-DDTHH:MM:SSZ`); strip the milliseconds toISOString emits.
 		return new Date(parsedMs).toISOString().replace(/\.\d{3}Z$/, "Z");
 	}
 
@@ -104,10 +96,6 @@ export function parseSearchDateBound(raw: string, now: Date = new Date()): strin
 	);
 }
 
-/**
- * Build the GitHub-search qualifier (e.g. `created:>=2026-05-09`) for the
- * provided bounds, or `undefined` if neither bound is set.
- */
 export function buildSearchDateQualifier(
 	field: string,
 	since: string | undefined,
@@ -246,24 +234,8 @@ function apiRepoToSearchResult(item: GhApiSearchRepoItem): GhSearchRepoResult {
 	};
 }
 
-/**
- * Matches search-query qualifiers that already scope to a repository, org, or
- * user. When present, callers should avoid layering a default `repo:<current>`
- * on top — the user has already expressed an explicit scope.
- *
- * Only the leading `repo:`/`org:`/`user:`/`owner:` token is treated as a
- * scope marker; arbitrary substrings (e.g. inside quoted text) are ignored.
- */
 const REPO_SCOPE_QUALIFIER_PATTERN = /(?:^|\s)-?(?:repo|org|user|owner):\S/i;
 
-/**
- * Resolve the effective `repo:` scope for a search op. Returns the explicit
- * `repo` when set, `undefined` when the query already carries a scoping
- * qualifier, and otherwise the current checkout's `owner/repo` via
- * `resolveDefaultRepoMemoized`. Resolution failures (no git/gh context, no
- * configured remote) silently fall back to `undefined` so the search proceeds
- * across all of GitHub instead of throwing.
- */
 async function resolveSearchRepoScope(
 	cwd: string,
 	repo: string | undefined,

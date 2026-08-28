@@ -4,22 +4,22 @@ use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 use itertools::Itertools;
 
-/// Display command help.
+
 #[derive(Parser)]
 pub(crate) struct HelpCommand {
-	/// Display a short description for the commands.
+
 	#[arg(short = 'd')]
 	short_description: bool,
 
-	/// Display a man-style page of documentation for the commands.
+
 	#[arg(short = 'm')]
 	man_page_style: bool,
 
-	/// Display a short usage summary for the commands.
+
 	#[arg(short = 's')]
 	short_usage: bool,
 
-	/// Patterns of topics to display help for.
+
 	topic_patterns: Vec<String>,
 }
 
@@ -61,8 +61,8 @@ impl HelpCommand {
 			for j in 0..COLUMN_COUNT {
 				if let Some((name, builtin)) = builtins.get(i + j * items_per_column) {
 					let prefix = if builtin.disabled { "*" } else { " " };
-					write!(context.stdout(), "  {prefix}{name:<20}")?; // adjust 20 to the desired
-					// column width
+					write!(context.stdout(), "  {prefix}{name:<20}")?;
+
 				}
 			}
 			writeln!(context.stdout())?;
@@ -112,11 +112,11 @@ impl HelpCommand {
 		};
 
 		let Some(mut stdout) = context.try_fd(brush_core::openfiles::OpenFiles::STDOUT_FD) else {
-			// If there's no stdout, nothing to do.
+
 			return Ok(());
 		};
 
-		// For now, we assume colorized output if stdout is a terminal.
+
 		let options = builtins::ContentOptions { colorized: stdout.is_terminal() };
 
 		let content = (registration.content_func)(name, content_type, &options)?;

@@ -14,8 +14,6 @@ function est(s: string): number {
 await Settings.init({ inMemory: true, cwd: process.cwd() });
 const settings = Settings.isolated({});
 
-// This standalone inspection script has no resolved catalog Model; its counts
-// therefore intentionally use the runtime's default estimate policy.
 const tokenizer = new Tokenizer();
 
 const session: ToolSession = {

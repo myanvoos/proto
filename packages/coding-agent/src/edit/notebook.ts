@@ -1,5 +1,5 @@
 import * as path from "node:path";
-// Owners, not the `@oh-my-pi/pi-utils` barrel: 2 modules against 74.
+
 import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
 import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
 
@@ -23,12 +23,7 @@ export interface NotebookDocument {
 }
 
 const CELL_MARKER_RE = /^# %% \[(code|markdown|raw)\](?: cell:(\d+))?$/;
-/**
- * Cell source lines that would themselves parse as (possibly already-escaped)
- * cell markers gain one extra `%` on render and lose it on parse, so a
- * notebook that *contains* the literal text `# %% [markdown] cell:3` survives
- * the editable-text round trip instead of being split into extra cells.
- */
+
 const ESCAPABLE_MARKER_RE = /^# %%+ \[(?:code|markdown|raw)\](?: cell:\d+)?$/;
 const ESCAPED_MARKER_RE = /^# %%%+ \[(?:code|markdown|raw)\](?: cell:\d+)?$/;
 

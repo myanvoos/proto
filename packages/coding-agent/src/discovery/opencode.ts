@@ -1,20 +1,3 @@
-/**
- * OpenCode Discovery Provider
- *
- * Loads configuration from OpenCode's config directories:
- * - User: ~/.config/opencode/
- * - Project: .opencode/ (cwd) and opencode.json/opencode.jsonc (project root)
- *
- * Capabilities:
- * - context-files: AGENTS.md (user-level only at ~/.config/opencode/AGENTS.md)
- * - mcps: From opencode.json and opencode.jsonc "mcp" keys
- * - settings: From opencode.json and opencode.jsonc
- * - skills: From skills/ subdirectories
- * - slash-commands: From commands/ subdirectories
- * - extension-modules: From plugins/ subdirectories
- *
- * Priority: 55 (tool-specific provider)
- */
 import * as os from "node:os";
 import * as path from "node:path";
 import { isRecord, logger, parseFrontmatter } from "@oh-my-pi/pi-utils";
@@ -50,10 +33,6 @@ interface OpenCodeConfigSource {
 	level: "user" | "project";
 }
 
-// =============================================================================
-// JSON Config Loading
-// =============================================================================
-
 async function loadJsonConfig(
 	configPath: string,
 	onInvalid: (configPath: string) => void,
@@ -75,21 +54,6 @@ async function loadJsonConfig(
 	return parsed;
 }
 
-/**
- * Apply OpenCode's config variable substitution to raw config text.
- *
- * OpenCode expands `{env:VAR}` (the env value, or an empty string when unset)
- * and `{file:path}` (file contents, trimmed and JSON-escaped) at load time,
- * before the JSON is parsed — see opencode `packages/opencode/src/config/variable.ts`.
- * PROTO loads the same config files, so it MUST honor the same syntax; the generic
- * `${VAR}` expansion used elsewhere never matches, leaving a header like
- * `Bearer {env:MCP_KEY}` to reach the MCP server verbatim and 401 (#8778).
- *
- * `{file:path}` resolves relative to the config file's directory, or from a `~`/
- * absolute path. A token on a `//` comment line is left untouched, matching
- * OpenCode. A missing file expands to an empty string (OpenCode's `missing:
- * "empty"` mode) rather than aborting discovery.
- */
 async function substituteConfigVars(text: string, configPath: string): Promise<string> {
 	const envExpanded = text.replace(/\{env:([^}]+)\}/g, (_, name: string) => Bun.env[name] ?? "");
 
@@ -105,7 +69,6 @@ async function substituteConfigVars(text: string, configPath: string): Promise<s
 		out += envExpanded.slice(cursor, index);
 		cursor = index + token.length;
 
-		// A `{file:...}` sitting on a JSONC comment line is not a real reference.
 		const lineStart = envExpanded.lastIndexOf("\n", index - 1) + 1;
 		if (envExpanded.slice(lineStart, index).trimStart().startsWith("//")) {
 			out += token;
@@ -121,25 +84,13 @@ async function substituteConfigVars(text: string, configPath: string): Promise<s
 			logger.warn("OpenCode config references a missing file", { configPath, path: resolved });
 			continue;
 		}
-		// JSON-escape so multi-line/quoted contents stay valid inside the string literal.
+
 		out += JSON.stringify(fileContent.trim()).slice(1, -1);
 	}
 	out += envExpanded.slice(cursor);
 	return out;
 }
 
-/**
- * OpenCode config sources in ascending effective precedence (lowest first):
- * user `opencode.json` → user `opencode.jsonc` → project-root
- * `opencode.json` → project-root `opencode.jsonc` → project `.opencode/opencode.json`
- * → project `.opencode/opencode.jsonc`. This matches how OpenCode merges configs:
- * project overrides user, `.opencode` overrides project-root config, and within
- * a directory `opencode.jsonc` overrides `opencode.json`.
- *
- * Both consumers apply this order low-to-high: settings deep-merge in item
- * order (last wins) and `loadMCPServers` deep-merges each server across layers
- * (later overrides earlier), so higher-precedence sources win in both.
- */
 function getConfigSources(ctx: LoadContext): OpenCodeConfigSource[] {
 	const sources: OpenCodeConfigSource[] = [];
 	for (const filename of CONFIG_FILENAMES) {
@@ -156,15 +107,10 @@ function getConfigSources(ctx: LoadContext): OpenCodeConfigSource[] {
 	return sources;
 }
 
-// =============================================================================
-// Context Files (AGENTS.md)
-// =============================================================================
-
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];
 
-	// User-level only: ~/.config/opencode/AGENTS.md
 	const userAgentsMd = getUserPath(ctx, "opencode", "AGENTS.md");
 	if (userAgentsMd) {
 		const content = await readFile(userAgentsMd);
@@ -181,11 +127,6 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 	return { items, warnings };
 }
 
-// =============================================================================
-// MCP Servers (opencode.json/opencode.jsonc → mcp)
-// =============================================================================
-
-/** OpenCode MCP server config (from the "mcp" key) */
 interface OpenCodeMCPConfig {
 	type?: "local" | "remote";
 	command?: string | string[];
@@ -240,11 +181,6 @@ function normalizeCommand(
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const warnings: string[] = [];
 
-	// Deep-merge each server across config layers in ascending precedence, the
-	// way OpenCode itself merges configs, so a partial higher-precedence override
-	// (e.g. project opencode.jsonc setting only mcp.<name>.timeout) inherits the
-	// command/url from lower-precedence layers instead of shadowing the complete
-	// definition and being rejected by mcpCapability.validate.
 	const mergedByName = new Map<string, Record<string, unknown>>();
 	const sourceByName = new Map<string, OpenCodeConfigSource>();
 
@@ -276,7 +212,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 	return { items, warnings };
 }
 
-/** Deep-merge two OpenCode config records; `override` wins, nested records recurse. */
 function mergeConfigRecords(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
 	const result: Record<string, unknown> = { ...base };
 	for (const key in override) {
@@ -287,9 +222,7 @@ function mergeConfigRecords(base: Record<string, unknown>, override: Record<stri
 	return result;
 }
 
-/** Translate one merged OpenCode MCP entry into the canonical MCPServer shape. */
 function buildMCPServer(name: string, serverConfig: OpenCodeMCPConfig, source: OpenCodeConfigSource): MCPServer {
-	// Determine transport from OpenCode's "type" field
 	let transport: "stdio" | "sse" | "http" | undefined;
 	if (serverConfig.type === "local") {
 		transport = "stdio";
@@ -317,10 +250,6 @@ function buildMCPServer(name: string, serverConfig: OpenCodeMCPConfig, source: O
 		_source: createSourceMeta(PROVIDER_ID, source.path, source.level),
 	};
 }
-
-// =============================================================================
-// Skills (skills/)
-// =============================================================================
 
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const userSkillsDir = getUserPath(ctx, "opencode", "skills");
@@ -355,10 +284,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Extension Modules (plugins/)
-// =============================================================================
-
 async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<ExtensionModule>> {
 	const userPluginsDir = getUserPath(ctx, "opencode", "plugins");
 	const projectPluginsDir = getProjectPath(ctx, "opencode", "plugins");
@@ -373,15 +298,6 @@ async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<Extens
 	return { items, warnings: [] };
 }
 
-// =============================================================================
-// Slash Commands (commands/)
-// =============================================================================
-
-/**
- * Read the OpenCode command-loading toggles from settings.
- * Falls back to true (current behavior) when settings are not initialized,
- * e.g. inside discovery unit tests that run without Settings.init().
- */
 function readOpencodeCommandToggles(): { enableUser: boolean; enableProject: boolean } {
 	try {
 		return {
@@ -438,10 +354,6 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	return { items, warnings };
 }
 
-// =============================================================================
-// Settings (opencode.json/opencode.jsonc)
-// =============================================================================
-
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const items: Settings[] = [];
 	const warnings: string[] = [];
@@ -462,10 +374,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider(contextFileCapability.id, {
 	id: PROVIDER_ID,

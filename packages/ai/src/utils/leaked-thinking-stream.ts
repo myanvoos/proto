@@ -1,30 +1,3 @@
-/**
- * Central live healing for leaked reasoning markup in the visible text channel.
- *
- * Some providers emit their canonical reasoning idioms (` ```thinking `,
- * `<think>`, Gemma/Harmony channels, …) into the *visible* text stream instead
- * of a structured thinking part. {@link wrapLeakedThinkingStream} re-projects a
- * provider stream into a fresh {@link AssistantMessageEventStream}, splitting the
- * leaked fences out into proper `thinking` blocks *live* as deltas arrive.
- *
- * Applied to every provider stream *except* official first-party endpoints
- * (the official Anthropic API and the official OpenAI / OpenAI-Codex endpoints),
- * which return structured thinking and never leak — `healLeakedThinking` in
- * `../stream.ts` gates the wrap so the healer cannot misfire on legitimate
- * fenced content those models emit as visible text.
- *
- * The healing is idempotent: a second pass over already-clean text finds no
- * fences, so wrapping a provider that already heals (or wrapping twice) is a
- * harmless pass-through. Signatures are load-bearing for Google/Gemini/Vertex
- * thought round-tripping, so text sub-blocks carry the source `textSignature`,
- * forwarded thinking blocks their `thinkingSignature`, and forwarded tool calls
- * their `thoughtSignature`.
- *
- * Modeled on {@link wrapInbandToolStream} / `InbandStreamProjector` in
- * `../dialect/owned-stream.ts`, minus all in-band tool-call grammar: tool-call
- * events are forwarded verbatim.
- */
-
 import { isAnthropicServerToolHistoryBlock } from "../providers/anthropic-wire";
 import type {
 	AnthropicServerToolContent,
@@ -62,11 +35,6 @@ function syncToolCall(target: StreamingToolCall, source: StreamingToolCall): voi
 	copyCursorExecResolved(target, source);
 }
 
-/**
- * Wrap a provider stream so leaked reasoning fences are healed into thinking
- * blocks live, for every provider. Returns a new stream that re-projects the
- * inner one; the inner stream is fully consumed.
- */
 export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): AssistantMessageEventStream {
 	const out = new AssistantMessageEventStream();
 	void (async () => {
@@ -135,12 +103,9 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 						out.push({ type: "error", reason: event.reason, error: { ...event.error, content } });
 						return;
 					}
-					// text_start/text_end/thinking_start are ignored: the projector owns
-					// block boundaries (matches wrapInbandToolStream). thinking_end is
-					// handled to capture the signature Anthropic delivers at block close.
 				}
 			}
-			// Inner ended via end(result) without a terminal event.
+
 			if (!out.done) {
 				const result = await inner.result();
 				projector ??= new LeakedThinkingProjector(out, result);
@@ -158,29 +123,25 @@ type OpenBlock = { index: number } | undefined;
 type ProjectedContent = AssistantMessage["content"][number];
 type AnchoredContent = { block: ProjectedContent; sourceIndex: number; order: number };
 
-/**
- * Re-projects an inner stream's events into `out`, healing leaked reasoning out
- * of the visible text channel while forwarding native thinking and tool calls.
- */
 class LeakedThinkingProjector {
 	readonly #out: AssistantMessageEventStream;
 	readonly #healer = new StreamMarkupHealing({ pattern: "thinking" });
 	#partial: AssistantMessage;
 	#text: OpenBlock;
 	#thinking: OpenBlock;
-	/** Visible text consumed per source block, used to recover terminal-only tails. */
+
 	#fedTextLengths = new Map<number, number>();
-	/** Source text block whose held healer output has not crossed a content boundary. */
+
 	#activeTextSourceIndex: number | undefined;
-	/** Original terminal content index for every projected block. */
+
 	#sourceAnchors = new Map<ProjectedContent, number>();
-	/** Latest non-undefined text signature seen, stamped onto held-back text flushed later. */
+
 	#lastTextSignature: string | undefined;
-	/** Forwarded native tool calls, keyed by the inner stream's `contentIndex`. */
+
 	#toolBlocks = new Map<number, { index: number; block: StreamingToolCall }>();
-	/** Projected native thinking blocks, keyed by the inner stream's `contentIndex`. */
+
 	#thinkingBlocks = new Map<number, number>();
-	/** Native thinking blocks whose projected `thinking_end` awaits the source end event. */
+
 	#pendingThinkingEnds = new Set<number>();
 
 	constructor(out: AssistantMessageEventStream, seed: AssistantMessage) {
@@ -189,7 +150,6 @@ class LeakedThinkingProjector {
 		this.#out.push({ type: "start", partial: this.#partial });
 	}
 
-	/** Feed a visible-text delta through the healer, splitting leaked fences live. */
 	text(srcIndex: number, delta: string, signature: string | undefined): void {
 		const startsSource = this.#activeTextSourceIndex !== srcIndex;
 		if (this.#activeTextSourceIndex !== undefined && startsSource) {
@@ -203,7 +163,6 @@ class LeakedThinkingProjector {
 		this.#apply(this.#healer.feedEvents(delta), this.#lastTextSignature, srcIndex);
 	}
 
-	/** Forward a native thinking delta, preserving its source block identity and signature. */
 	thinking(srcIndex: number, delta: string, signature: string | undefined): void {
 		let index = this.#thinkingBlocks.get(srcIndex);
 		if (index === undefined) {
@@ -218,18 +177,6 @@ class LeakedThinkingProjector {
 		this.#out.push({ type: "thinking_delta", contentIndex: index, delta, partial: this.#partial });
 	}
 
-	/**
-	 * Finalize a native thinking block by source identity. Its projected end is
-	 * deferred until this event so stream consumers observe the completed
-	 * signature before the block closes, even when later blocks started first.
-	 *
-	 * A block that never streamed a delta but closes with a signature is
-	 * projected here instead of dropped: Gemini thought signatures arrive via
-	 * OpenRouter's Responses translation as a text-less reasoning item whose id
-	 * is the following function call's `call_id`. Losing that signature makes
-	 * every current-turn function-call replay unsigned, which Gemini 3 punishes
-	 * with empty stops and `server_error: stream closed with reason: error`.
-	 */
 	thinkingEnd(srcIndex: number, signature: string | undefined): void {
 		const index = this.#thinkingBlocks.get(srcIndex);
 		if (index === undefined) {
@@ -244,12 +191,6 @@ class LeakedThinkingProjector {
 		this.#emitThinkingEnd(index);
 	}
 
-	/**
-	 * Project a completed signature-bearing thinking block whose deltas never
-	 * reached the projector. Releases held-back text first (same boundary
-	 * semantics as {@link toolStart}) so block order survives for replay —
-	 * the signature item must precede the function call it signs.
-	 */
 	#projectSignedThinking(srcIndex: number, thinking: string, signature: string): void {
 		this.#flushHealer();
 		this.#closeText();
@@ -262,7 +203,6 @@ class LeakedThinkingProjector {
 		this.#emitThinkingEnd(index);
 	}
 
-	/** Forward a completed native image after releasing held text. */
 	image(srcIndex: number, content: ImageContent): void {
 		this.#flushHealer();
 		this.#closeText();
@@ -278,7 +218,6 @@ class LeakedThinkingProjector {
 		});
 	}
 
-	/** Forward a native tool call's start, releasing any held-back text first. */
 	toolStart(srcIndex: number, source: StreamingToolCall | undefined): void {
 		if (!source) return;
 		this.#flushHealer();
@@ -316,7 +255,7 @@ class LeakedThinkingProjector {
 			this.#toolBlocks.delete(srcIndex);
 			return;
 		}
-		// `end` without a matching `start` — release held text, then forward whole.
+
 		this.#flushHealer();
 		this.#closeText();
 		this.#closeThinking();
@@ -328,19 +267,12 @@ class LeakedThinkingProjector {
 		this.#out.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: this.#partial });
 	}
 
-	/**
-	 * Finalize: replay any un-streamed visible-text tail from `message.content`,
-	 * flush held-back fragments, close open blocks, and return the healed content.
-	 */
 	finish(message: AssistantMessage): AssistantMessage["content"] {
 		for (const [srcIndex] of this.#thinkingBlocks) {
 			const block = message.content[srcIndex];
 			this.thinkingEnd(srcIndex, block?.type === "thinking" ? block.thinkingSignature : undefined);
 		}
-		// Safety net: signature-bearing thinking blocks whose events never
-		// reached the projector at all (e.g. a terminal message assembled from
-		// blocks that skipped per-item events) must still survive with their
-		// text and signature intact.
+
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
 			const block = message.content[srcIndex];
 			if (block?.type !== "thinking" || !block.thinkingSignature) continue;
@@ -392,7 +324,6 @@ class LeakedThinkingProjector {
 		this.#out.push({ type: "text_delta", contentIndex: this.#text.index, delta: text, partial: this.#partial });
 	}
 
-	/** Healed (leaked) thinking carries no signature, matching the source fence. */
 	#emitHealedThinking(text: string, srcIndex: number): void {
 		if (text.length === 0) return;
 		const index = this.#openThinking(srcIndex);

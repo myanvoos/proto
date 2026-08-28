@@ -14,7 +14,6 @@ import {
 } from "./composer-cache";
 import { initThemeSync } from "./theme/theme";
 
-/** Inputs available at the CLI prepaint boundary before command modules load. */
 interface PrepaintComposerOptions {
 	readonly terminal?: Terminal;
 	readonly exit?: (code: number) => void;
@@ -27,7 +26,6 @@ interface PrepaintComposerOptions {
 	readonly cache?: boolean;
 }
 
-/** Final settings pushed into the live composer after Settings and the theme resolve. */
 interface PrepaintComposerPreferences extends ComposerPreferences {
 	readonly theme: ComposerThemePreferences;
 }
@@ -40,7 +38,6 @@ interface PendingComposer {
 
 let pendingComposer: PendingComposer | undefined;
 
-/** Ownership token that transfers one already-started Composer to InteractiveMode. */
 export class ComposerLease {
 	readonly composer: Composer;
 	#adopted = false;
@@ -49,23 +46,19 @@ export class ComposerLease {
 		this.composer = composer;
 	}
 
-	/** Transfer terminal ownership exactly once. */
 	adopt(): void {
 		if (this.#adopted) return;
-		// Safety net: startup paths that never applied resolved settings must
-		// still hand InteractiveMode a raw-input terminal.
+
 		this.composer.enableInput();
 		this.composer.transfer();
 		this.#adopted = true;
 	}
 
-	/** Stop an unadopted composer when startup exits before InteractiveMode. */
 	dispose(): void {
 		if (!this.#adopted) this.composer.stop();
 	}
 }
 
-/** Start the canonical Composer with speculative cached state, then refresh recent sessions. */
 export function beginStartupComposer(options: PrepaintComposerOptions = {}): void {
 	if (pendingComposer) throw new Error("A prepaint composer is already active");
 	const cwd = options.cwd ?? process.cwd();
@@ -109,20 +102,17 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 	void refreshRecentSessions(pending, options.recentSessions);
 }
 
-/** Take the live prepaint composer away from the module-level startup owner. */
 export function takeStartupComposerLease(): ComposerLease | undefined {
 	const pending = pendingComposer;
 	pendingComposer = undefined;
 	return pending ? new ComposerLease(pending.composer) : undefined;
 }
 
-/** Stop and forget any prepaint composer that never reached InteractiveMode. */
 export function stopPendingStartupComposer(): void {
 	pendingComposer?.composer.stop();
 	pendingComposer = undefined;
 }
 
-/** Apply final settings to the pending Composer and cache them for the next first frame. */
 export function applyStartupComposerPreferences(update: PrepaintComposerPreferences): void {
 	const pending = pendingComposer;
 	if (!pending) return;
@@ -139,9 +129,7 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 		spellingAutocorrect: update.spellingAutocorrect,
 	};
 	pending.composer.setPreferences(preferences);
-	// Settings resolved means the module graph is loaded and the event loop is
-	// responsive again: take raw-input ownership now. The kernel echoed (and
-	// buffered) everything typed during the load; the editor replays it here.
+
 	pending.composer.enableInput();
 	if (pending.cache) {
 		void writeComposerUiCache(pending.cwd, preferences, update.theme).catch(error => {
@@ -150,7 +138,6 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 	}
 }
 
-/** Apply discovered project LSP rows and cache them for the next first frame. */
 export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
 	const pending = pendingComposer;
 	if (!pending) return;

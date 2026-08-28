@@ -1,6 +1,3 @@
-/**
- * Render a code or markdown cell with optional output section.
- */
 import { Markdown } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
@@ -25,19 +22,10 @@ interface CodeCellOptions {
 	output?: string;
 	outputMaxLines?: number;
 	codeMaxLines?: number;
-	/**
-	 * Show the LAST `codeMaxLines` rows (the live streaming edge) instead of the
-	 * first, with a "… N earlier lines" marker on top. Lets a pending preview
-	 * follow code as it is written while staying bounded. Ignored when `expanded`.
-	 */
+
 	codeTail?: boolean;
 	expanded?: boolean;
-	/**
-	 * Prefix the header with the cell's language icon (resolved through the
-	 * active symbol preset: nerd-font devicon, unicode emoji, or ascii
-	 * shorthand). Opt-in so only the eval kernel renderer labels each cell;
-	 * read/write/browser code cells stay icon-free.
-	 */
+
 	showLanguage?: boolean;
 	width: number;
 	codeStartLine?: number;
@@ -96,13 +84,6 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 	return { title: headerTitle, meta: metaParts.join(theme.fg("dim", theme.sep.dot)) };
 }
 
-/**
- * Normalize terminal control characters that would otherwise corrupt TUI rendering:
- * - Collapse `\r\n` to `\n`.
- * - Within a line, treat `\r` as a cursor-return overwrite by keeping only the
- *   final segment (mirrors how rsync/curl/pip progress bars render to a terminal).
- * Splits on `\n` and returns the cleaned lines.
- */
 function sanitizeTerminalLines(text: string): string[] {
 	return text.split(/\r?\n/).map(collapseCarriageReturns);
 }
@@ -166,8 +147,6 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 		if (tail) {
-			// Earlier rows scrolled above the live tail window — mark them on top so
-			// the newest streamed line stays pinned to the bottom of the box.
 			const earlier = `… ${hiddenCodeLines} earlier line${hiddenCodeLines === 1 ? "" : "s"}${hint ? ` ${hint}` : ""}`;
 			codeLines.unshift(theme.fg("dim", gutterPad + earlier));
 		} else {
@@ -230,8 +209,6 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 	const { title, meta } = formatHeader(codeOptions, theme);
 	const state = getState(options.status);
 
-	// Markdown component manages its own wrapping at the same inner width as
-	// `renderOutputBlock`, so collapsed row caps are applied after final wrapping.
 	const innerWidth = Math.max(20, outputBlockContentWidth(width));
 	const allLines = content.trim() ? new Markdown(content, 0, 0, getMarkdownTheme()).render(innerWidth) : [];
 	const maxContentLines = expanded ? allLines.length : Math.min(allLines.length, contentMaxLines);

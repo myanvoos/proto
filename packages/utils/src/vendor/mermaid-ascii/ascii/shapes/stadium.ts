@@ -1,10 +1,10 @@
-// ============================================================================
-// Stadium (pill) shape renderer — special parentheses-based rendering
-// ============================================================================
-//
-// Stadium has unique rendering: single-line is inline `(Label)`, multi-line
-// uses parentheses or rounded corners. This differs from other shapes that
-// use corner decorators with box lines.
+
+
+
+
+
+
+
 
 import type { Canvas, DrawingCoord, Direction } from '../types'
 import { mkCanvas } from '../canvas'
@@ -13,21 +13,7 @@ import type { ShapeRenderer, ShapeDimensions, ShapeRenderOptions } from './types
 import { getBoxAttachmentPoint } from './rectangle'
 import { displayWidth, toCells } from '../../text-metrics'
 
-/**
- * Stadium (pill) shape renderer.
- *
- * Single-line:  ( Label )
- *
- * Multi-line unicode:
- *   ╭──────────╮
- *   │  Label   │
- *   ╰──────────╯
- *
- * Multi-line ASCII:
- *   (----------)
- *   (  Label   )
- *   (----------)
- */
+
 export const stadiumRenderer: ShapeRenderer = {
   getDimensions(label: string, options: ShapeRenderOptions): ShapeDimensions {
     const lines = splitLines(label)
@@ -35,7 +21,7 @@ export const stadiumRenderer: ShapeRenderer = {
     const lineCount = lines.length
 
     const innerWidth = 2 * options.padding + maxLineWidth
-    const width = innerWidth + 4  // Extra for rounded ends
+    const width = innerWidth + 4  
     const innerHeight = lineCount + 2 * options.padding
     const height = Math.max(innerHeight + 2, 3)
 
@@ -61,11 +47,11 @@ export const stadiumRenderer: ShapeRenderer = {
     const hChar = options.useAscii ? '-' : '─'
 
     if (height === 3) {
-      // Single row pill: (  Label  )
+
       canvas[0]![centerY] = '('
       canvas[width - 1]![centerY] = ')'
     } else if (!options.useAscii) {
-      // Multi-row stadium with rounded corners (unicode)
+
       canvas[0]![0] = '╭'
       for (let x = 1; x < width - 1; x++) canvas[x]![0] = hChar
       canvas[width - 1]![0] = '╮'
@@ -79,7 +65,7 @@ export const stadiumRenderer: ShapeRenderer = {
       for (let x = 1; x < width - 1; x++) canvas[x]![height - 1] = hChar
       canvas[width - 1]![height - 1] = '╯'
     } else {
-      // Multi-row stadium ASCII — parentheses on all sides
+
       for (let y = 0; y < height; y++) {
         canvas[0]![y] = '('
         canvas[width - 1]![y] = ')'
@@ -90,7 +76,7 @@ export const stadiumRenderer: ShapeRenderer = {
       }
     }
 
-    // Center the label
+
     const lines = splitLines(label)
     const startY = centerY - Math.floor((lines.length - 1) / 2)
 

@@ -10,17 +10,9 @@ const PROJECTS_PATH = "/api/v4/projects";
 const GROUPS_PATH = "/api/v4/groups";
 const FALLBACK_MODEL_ID = "claude_sonnet_4_6_vertex";
 const FALLBACK_MODEL_NAME = "Claude Sonnet 4.6 - Vertex";
-// Bound the top-level group pagination so a misbehaving server cannot loop forever.
-// 50 pages × 100/page covers 5000 top-level groups, far beyond any realistic account.
+
 const GITLAB_DUO_WORKFLOW_MAX_GROUP_PAGES = 50;
 
-// GitLab Duo Workflow does not expose a context window via the model catalog GraphQL.
-// The Duo Workflow Service streams the real per-agent window in each checkpoint's
-// `agent_context_usage` (claude_opus_4_8 observed at 1_000_000), but PROTO's context
-// panel / auto-compaction read `model.contextWindow` from the catalog ModelSpec, which
-// the provider cannot backfill at runtime. Match the model ref to a static window the
-// same way other providers ship static values; DWS' own global fallback is 200_000
-// (duo_workflow_service/conversation/trimmer.py).
 const GITLAB_DUO_WORKFLOW_DEFAULT_CONTEXT_WINDOW = 200_000;
 const GITLAB_DUO_WORKFLOW_CONTEXT_WINDOW_RULES: readonly { pattern: RegExp; contextWindow: number }[] = [
 	{ pattern: /claude[_-]?opus/i, contextWindow: 1_000_000 },
@@ -93,10 +85,7 @@ interface GitLabDuoWorkflowAvailability {
 interface GitLabDuoWorkflowCandidate {
 	rootNamespaceId: string;
 	namespacePath?: string;
-	// The concrete GitLab project (full path) this namespace was resolved from, when
-	// the candidate came from an explicit project id/path or the workspace git remote.
-	// Carried forward so runtime scoping uses the actual repository project instead of
-	// a generic group project.
+
 	projectPath?: string;
 	source: GitLabDuoWorkflowCandidateSource;
 }
@@ -105,9 +94,6 @@ interface GitLabDuoWorkflowNamespaceSelectionWithModels extends GitLabDuoWorkflo
 	models: GitLabDuoWorkflowAvailability;
 }
 
-/**
- * GitLab Duo Workflow model/namespace discovery configuration.
- */
 export interface GitLabDuoWorkflowDiscoveryConfig {
 	apiKey: string;
 	baseUrl?: string;
@@ -121,9 +107,7 @@ export interface GitLabDuoWorkflowDiscoveryConfig {
 export interface GitLabDuoWorkflowNamespaceSelection {
 	rootNamespaceId: string;
 	namespacePath?: string;
-	// Concrete GitLab project (full path) the namespace was resolved from, when known
-	// (explicit project config or the workspace git remote). The runtime prefers this
-	// over a generic group project so the workflow scopes to the active repository.
+
 	projectPath?: string;
 	source: GitLabDuoWorkflowCandidateSource;
 }
@@ -181,9 +165,7 @@ export function buildGitLabDuoWorkflowModelSpec(
 		api: "gitlab-duo-agent",
 		provider: "gitlab-duo-agent",
 		baseUrl: normalizedBaseUrl,
-		// The Duo Agent Platform path exposes no client-controllable thinking knob
-		// (Anthropic model params are server-fixed; see provider notes), so reasoning
-		// is off — this also hides PROTO's thinking-effort selector for these models.
+
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -251,8 +233,7 @@ async function selectGitLabDuoWorkflowCandidate<TSelection>(
 		if (projectNamespace) {
 			const selected = await resolveCandidate({
 				rootNamespaceId: projectNamespace,
-				// Only a full path (group/project) is meaningful as a runtime project
-				// scope; a bare numeric id resolves the namespace but is not carried.
+
 				...(projectId.includes("/") ? { projectPath: projectId } : {}),
 				source: "project",
 			});
@@ -391,12 +372,7 @@ async function fetchProjectRootNamespace(
 	if (rest?.rootNamespaceId) {
 		return rest.rootNamespaceId;
 	}
-	// A normal GitLab project payload exposes only the immediate `namespace`, not
-	// the root ancestor, so a leaf project under a subgroup yields no explicit
-	// root above. Resolve the root via GraphQL `rootAncestor`, keyed by the
-	// project's full path. For a numeric id the path is unknown until the REST
-	// payload returns it (`path_with_namespace`); fall back to the literal value
-	// only when it is already a path.
+
 	const fullPath = rest?.pathWithNamespace ?? (projectIdOrPath.includes("/") ? projectIdOrPath : null);
 	if (!fullPath) {
 		return null;
@@ -459,10 +435,7 @@ async function fetchTopLevelGroupNamespaceCandidates(
 ): Promise<GitLabDuoWorkflowCandidate[]> {
 	const fetchImpl = discoveryFetch(config.fetch);
 	const candidates: (GitLabDuoWorkflowCandidate & { preferred: boolean })[] = [];
-	// GitLab paginates `/groups`; a token can belong to more than one page of top-level
-	// groups, and a usable Duo namespace may live on a later page. Follow the keyset/
-	// offset pages (via the `x-next-page` header GitLab sends) until exhausted, bounded
-	// so a misbehaving server cannot loop forever.
+
 	let nextPage: string | undefined = "1";
 	for (let page = 0; page < GITLAB_DUO_WORKFLOW_MAX_GROUP_PAGES && nextPage; page++) {
 		const url = new URL(`${baseUrl}${GROUPS_PATH}`);
@@ -741,8 +714,7 @@ async function readGitConfigFromDotGit(gitPath: string): Promise<string | null> 
 		return null;
 	}
 	const gitDirPath = path.isAbsolute(gitDir) ? gitDir : path.resolve(path.dirname(gitPath), gitDir);
-	// In a linked worktree, `.git` points at `.git/worktrees/<name>` whose `config`
-	// holds no remotes — those live in the common dir named by the `commondir` file.
+
 	const commonDir = await readTextFile(path.join(gitDirPath, "commondir"));
 	if (commonDir) {
 		const trimmed = commonDir.trim();
@@ -796,9 +768,7 @@ function parseGitLabRemoteProjectPath(remoteUrl: string, expectedHost: string | 
 	if (expectedHost && !gitLabRemoteHostMatches(parsed.host, parsed.portInsensitive, expectedHost)) {
 		return null;
 	}
-	// A self-managed GitLab under a relative install path (e.g. https://host/gitlab) yields
-	// remotes like https://host/gitlab/group/project.git, but project full paths stay
-	// group/project. Strip the matching base path so the lookup keys off the real full path.
+
 	let projectPath = parsed.projectPath.replace(/^\/+/, "");
 	if (basePath && (projectPath === basePath || projectPath.startsWith(`${basePath}/`))) {
 		projectPath = projectPath.slice(basePath.length);
@@ -807,12 +777,6 @@ function parseGitLabRemoteProjectPath(remoteUrl: string, expectedHost: string | 
 	return projectPath.includes("/") ? projectPath : null;
 }
 
-// Match a remote's host against the configured GitLab `baseUrl` host. HTTP(S) URL
-// remotes compare host:port strictly so a self-managed GitLab on a non-default port
-// is not confused with another service on the same hostname. `ssh://` and SCP-style
-// `git@host:path` remotes name the SSH port (commonly distinct from the web UI port)
-// or carry none, so they compare on the bare hostname only — stripping any port the
-// base URL carried — instead of being rejected for a port mismatch.
 function gitLabRemoteHostMatches(remoteHost: string, portInsensitive: boolean, expectedHost: string): boolean {
 	if (!portInsensitive) {
 		return remoteHost.toLowerCase() === expectedHost.toLowerCase();
@@ -825,14 +789,10 @@ function gitLabRemoteHostMatches(remoteHost: string, portInsensitive: boolean, e
 function parseRemoteUrl(remoteUrl: string): { host: string; projectPath: string; portInsensitive: boolean } | null {
 	try {
 		const url = new URL(remoteUrl);
-		// `host` (not `hostname`) keeps any explicit port so a self-managed GitLab on a
-		// non-default HTTP(S) port is not confused with another service on the same
-		// hostname. An `ssh://` remote, however, names the SSH port (commonly distinct
-		// from the web UI port), so it must compare on the bare hostname only.
+
 		const portInsensitive = url.protocol === "ssh:";
 		return { host: url.host, projectPath: url.pathname, portInsensitive };
 	} catch {
-		// SCP-style `git@host:path` has no port concept; bare host is the only key.
 		const scpMatch = remoteUrl.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
 		if (scpMatch?.[1] && scpMatch[2]) {
 			return { host: scpMatch[1], projectPath: scpMatch[2], portInsensitive: true };
@@ -843,7 +803,6 @@ function parseRemoteUrl(remoteUrl: string): { host: string; projectPath: string;
 
 function parseUrlHost(url: string): string | null {
 	try {
-		// Match `parseRemoteUrl`: include the port so host comparison is port-aware.
 		return new URL(url).host;
 	} catch {
 		return null;

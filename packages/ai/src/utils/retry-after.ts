@@ -62,7 +62,6 @@ function getHeaderValue(headers: Headers | Record<string, string | undefined>, n
 	return undefined;
 }
 
-/** `retry-after-ms` (Anthropic-style): a plain millisecond delta. */
 function parseRetryAfterMsHeader(value: string | undefined): number | undefined {
 	if (!value) return undefined;
 	const ms = Number(value.trim());

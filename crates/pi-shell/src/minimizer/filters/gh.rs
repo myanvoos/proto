@@ -1,5 +1,3 @@
-//! GitHub CLI output filters.
-
 use std::fmt::Write as _;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -55,14 +53,6 @@ fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
 				&& primitives::command_has_any_token(ctx.command, &["--log", "--log-failed", "--json"])
 		},
 		Some("pr") if primitives::command_has_ordered_tokens(ctx.command, "pr", "checks") => {
-			// `--watch` re-renders the whole check table each `--interval`/-i
-			// (default 10s) until checks finish; the captured buffer is then
-			// dozens of concatenated frames. `filter_pr_checks` counts one glyph
-			// per row per frame, so it would report counts x frames and let
-			// duplicate failed rows exhaust FAILED_ROW_CAP, hiding distinct later
-			// failures. A watch is an explicit live view -- pass it through raw
-			// instead of summarizing a multi-frame buffer. (--json/-w break the
-			// table shape outright.)
 			primitives::command_has_any_token(ctx.command, &[
 				"--json",
 				"--web",
@@ -94,16 +84,6 @@ fn filter_pr_issue(input: &str, exit_code: i32) -> String {
 	primitives::head_tail_dedup(&markdown_filtered)
 }
 
-/// Summarize the DEFAULT (non-JSON) `gh pr checks` table.
-///
-/// Default human output is a tab-separated table:
-/// `<symbol>\t<name>\t<duration>\t<url>` where the leading status glyph is
-/// `✓`/`X`/`*`/`-` (pass/fail/pending/skipping). We re-derive against this real
-/// layout — NOT rtk's `[ok]`/`[x]` strings, which only appear on the injected
-/// `-F json` path. Failed rows stay verbatim (they carry the actionable URL);
-/// passed/pending/skipping collapse to counts. Returns `None` when no
-/// recognizable check rows are found so the caller can fall back to the generic
-/// path.
 fn filter_pr_checks(input: &str) -> Option<String> {
 	let mut passed = 0usize;
 	let mut pending = 0usize;
@@ -113,12 +93,7 @@ fn filter_pr_checks(input: &str) -> Option<String> {
 
 	for line in input.lines() {
 		let trimmed = line.trim_start();
-		// A real check row is `<symbol>\t<name>\t<duration>\t<url>`: a status glyph
-		// followed by at least one TAB-delimited field. Requiring the tab shape
-		// keyed off the row's first glyph — NOT the leading char alone — rejects
-		// separators (`---`), blank-glyph lines, and bulleted annotation detail
-		// (`- ...`, `* ...`) that gh/CI tools emit, any of which would otherwise be
-		// miscounted as a phantom skipping/pending check and inflate the summary.
+
 		if !trimmed.contains('\t') {
 			continue;
 		}
@@ -160,10 +135,7 @@ fn filter_pr_checks(input: &str) -> Option<String> {
 		let _ = write!(out, ", {skipping} skipping");
 	}
 	out.push('\n');
-	// Cap the verbatim failed rows: a PR with hundreds of failing checks would
-	// otherwise emit one line each, uncapped (this path bypasses head_tail_dedup
-	// that every sibling arm ends in). Keep the first FAILED_ROW_CAP failures —
-	// they carry the actionable URLs — and append an omission marker.
+
 	const FAILED_ROW_CAP: usize = 40;
 	out.push_str(&primitives::head_lines_only(&failed_rows.join("\n"), FAILED_ROW_CAP));
 	Some(out)

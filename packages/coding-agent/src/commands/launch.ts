@@ -1,7 +1,3 @@
-/**
- * Root command for the coding agent CLI.
- */
-
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { type Args as ParsedArgs, parseArgs, reportCliUsageError } from "../cli/args";
 import { runRootCommand } from "../main";

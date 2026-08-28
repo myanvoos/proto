@@ -213,7 +213,6 @@ function normalizeHostPath(rawPath: string, hostOs: number): string {
 	return path;
 }
 
-/** Probe whether bytes begin with a CRC-framed ARJ main header. */
 export function sniffArj(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < 34 || bytes[0] !== ARJ_SIGNATURE_0 || bytes[1] !== ARJ_SIGNATURE_1) return false;
 	const size = u16(bytes, 2);
@@ -222,7 +221,6 @@ export function sniffArj(bytes: Uint8Array): boolean {
 	return body[0]! >= 30 && body[0]! <= size && body[6] === 2 && crc32(body) === u32(bytes, 4 + size);
 }
 
-/** Index an ARJ archive and lazily decode stored, static-Huffman, and fast-LZSS members. */
 export const readArj: FormatReader = async (
 	source: ByteSource,
 	options: FormatReadOptions,

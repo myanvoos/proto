@@ -1,10 +1,3 @@
-/**
- * Model-id classification: parse a model id into its family (gemini / anthropic /
- * openai), kind/variant, and version. This is the shared layer both catalog
- * policy rules (`model-thinking.ts`) and downstream consumers build on —
- * classification lives here, the rules that consume it stay with their domain.
- */
-
 export type SemVer = {
 	major: number;
 	minor: number;
@@ -36,9 +29,9 @@ export interface OpenAIModel {
 
 export interface GlmModel {
 	family: "glm";
-	/** Suffix variant (`-air`, `-turbo`, `-flash`, `-flashx`, `-preview`); `base` when none. */
+
 	variant: GlmVariant;
-	/** Vision SKU — the `v` that attaches directly to the version (`glm-4v`, `glm-4.5v`). */
+
 	vision: boolean;
 	version: SemVer;
 }
@@ -50,8 +43,6 @@ export interface UnknownModel {
 
 export type ParsedModel = GeminiModel | AnthropicModel | OpenAIModel | UnknownModel;
 
-/** Strip a provider namespace prefix (`openai/gpt-5.4` → `gpt-5.4`). */
-// Cache keyed by model id (a bounded set of bundled/aggregator ids), so no eviction is needed.
 const bareModelIdCache = new Map<string, string>();
 export function bareModelId(modelId: string): string {
 	const cached = bareModelIdCache.get(modelId);
@@ -71,11 +62,6 @@ export function parseKnownModel(modelId: string): ParsedModel {
 	);
 }
 
-/**
- * Wrap a parse function in a per-id memo cache. Caches the `null` result too, so
- * repeated misses (the common case — ids of other families) stay O(1) and never
- * re-run the regex/semver work.
- */
 function parser<T>(parse: (modelId: string) => T | null): (modelId: string) => T | null {
 	const cache = new Map<string, T | null>();
 	return modelId => {
@@ -122,10 +108,6 @@ export const parseAnthropicModel = parser((modelId): AnthropicModel | null => {
 	return { family: "anthropic", kind: kind as AnthropicKind, version };
 });
 
-/**
- * Rolling OpenAI aliases inherit wire capabilities from their current default
- * snapshots. Keep this map aligned with the model docs when an alias advances.
- */
 const OPENAI_ALIAS_VERSIONS: Readonly<Record<string, string>> = {
 	"daybreak-blue-latest": "5.6",
 	"gpt-daybreak-blue-latest": "5.6",
@@ -149,14 +131,6 @@ export const parseOpenAIModel = parser((modelId): OpenAIModel | null => {
 	return { family: "openai", variant: (match?.[2] as OpenAIVariant | undefined) ?? "base", version };
 });
 
-/**
- * Parse a GLM (Zhipu / Z.AI) model id into family + variant + vision + version.
- * Shape: `glm-<version>[v][-<variant>]` — e.g. `glm-4.5`, `glm-4.5-air`,
- * `glm-5-turbo`, `glm-4.5v`, `glm-5-preview`. The `v` (vision) attaches to the
- * version; other variants are `-` suffixes. Standalone like `parseAnthropicModel`
- * is used in family.ts — GLM needs no global thinking policy, so it stays out of
- * `parseKnownModel`.
- */
 export const parseGlmModel = parser((modelId): GlmModel | null => {
 	const match = /glm-(\d{1,2}(?:\.\d+)?)(v)?(?:-(air|turbo|flashx|flash|preview))?\b/i.exec(modelId);
 	if (!match) {
@@ -178,17 +152,11 @@ export function isFableOrMythos(kind: AnthropicKind): boolean {
 	return kind === "fable" || kind === "mythos";
 }
 
-/**
- * Returns true if the parsed Anthropic model is part of the adaptive-thinking
- * Claude generation at or above a specific capability threshold.
- * - Opus has a configurable minimum version floor (e.g. "4.6", "4.7", "4.8").
- * - Sonnet, Fable, and Mythos all require version 5 or higher.
- */
 export function isAnthropicAdaptiveGenAtLeast(parsed: AnthropicModel, opusMin: "4.6" | "4.7" | "4.8"): boolean {
 	if (parsed.kind === "opus") {
 		return semverGte(parsed.version, opusMin);
 	}
-	// Sonnet 5+, Fable 5+, Mythos 5+, and any future gen-5+ models
+
 	return semverGte(parsed.version, "5");
 }
 
@@ -196,9 +164,6 @@ function createSemVer(major: number, minor: number, patch = 0): SemVer {
 	return { major, minor, patch };
 }
 
-// Fast path for the common 1–2 component versions; anything the table misses
-// (large minors, 3-part versions) parses dynamically below so no future
-// version ever classifies as unknown (the failure class #8256 fixed).
 const precomputeTable: Record<string, SemVer> = {};
 for (let major = 0; major <= 9; major++) {
 	for (let minor = 0; minor <= 10; minor++) {

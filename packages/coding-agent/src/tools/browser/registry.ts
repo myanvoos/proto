@@ -28,17 +28,8 @@ export type BrowserKind = PuppeteerBrowserKind | CmuxKind;
 
 export type BrowserKindTag = BrowserKind["kind"];
 
-/**
- * Upper bound on `browser.close()` for headless Chromium. Puppeteer waits for
- * the process to fully exit; a wedged Chromium would otherwise hang cleanup
- * forever (issue #5260), so we cap the wait and force-kill on timeout.
- */
 const HEADLESS_CLOSE_TIMEOUT_MS = 5_000;
-/**
- * How long a relay open waits for the extension handshake (503 → 200). A
- * reaped extension service worker is revived by its 30s keepalive alarm, so
- * the wait must cover one full alarm period plus the dial.
- */
+
 const RELAY_EXTENSION_WAIT_MS = 35_000;
 
 interface BrowserHandleCommon {
@@ -52,9 +43,9 @@ export interface PuppeteerBrowserHandle extends BrowserHandleCommon {
 	browser: Browser;
 	cdpUrl?: string;
 	pid?: number;
-	/** PROTO-owned temp Chromium profile directory removed on dispose (process-local headless launches). */
+
 	userDataDir?: string;
-	/** Broker daemon backing this handle; dispose disconnects instead of closing, kill routes to the broker. */
+
 	sharedDaemon?: { name: string; projectDir: string };
 	subprocess?: Subprocess;
 	stealth: { browserSession: CDPSession | null; override: UserAgentOverride | null };
@@ -68,7 +59,6 @@ export interface CmuxBrowserHandle extends BrowserHandleCommon {
 
 export type BrowserHandle = PuppeteerBrowserHandle | CmuxBrowserHandle;
 
-/** Controls bounded browser-handle teardown and identifies the owning resource in timeout diagnostics. */
 interface ReleaseBrowserOptions {
 	kill: boolean;
 	timeoutMs?: number;
@@ -76,7 +66,7 @@ interface ReleaseBrowserOptions {
 }
 
 const browsers = new Map<string, BrowserHandle>();
-/** In-flight opens by browser key, so concurrent acquisitions share one launch instead of storming Chromium. */
+
 const pendingOpens = new Map<string, Promise<BrowserHandle>>();
 
 function browserKey(kind: BrowserKind): string {
@@ -112,15 +102,9 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 			await disposeBrowserHandle(existing, { kill: false });
 			continue;
 		}
-		// Short-circuit before launching: the tool wrapper's `untilAborted` only
-		// rejects its outer promise on abort; without this check `openBrowserHandle`
-		// would still fire and its result would land in `browsers` below.
+
 		if (opts.signal?.aborted) throw new ToolAbortError("Browser open aborted");
 
-		// Single-flight per key: a concurrent caller already opening this browser
-		// wins; everyone else waits and re-reads the registry. Without this, N
-		// simultaneous opens each launch a Chromium and the last write wins,
-		// leaking the rest as unreferenced process trees.
 		const pending = pendingOpens.get(key);
 		if (pending) {
 			await pending.catch(() => undefined);
@@ -129,14 +113,7 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 		const open = openBrowserHandle(kind, opts).finally(() => pendingOpens.delete(key));
 		pendingOpens.set(key, open);
 		const handle = await open;
-		// The launch may resolve AFTER the caller has already aborted (the outer
-		// `untilAborted` rejects immediately on abort but does not cancel the
-		// inner promise, and `launchHeadlessBrowser` does not accept a signal).
-		// Without this branch the completed handle sits in `browsers` at
-		// refCount:0 forever — no tab ever takes a hold, `releaseBrowser` never
-		// fires, and `releaseAllTabs` walks `tabs`, not `browsers`, so the
-		// orphaned Chromium/app process / puppeteer handle survives to process
-		// exit. (Issue #3963.)
+
 		if (opts.signal?.aborted) {
 			await disposeBrowserHandle(handle, { kill: kind.kind === "spawned" }).catch(err => {
 				logger.debug("Failed to dispose orphan browser after abort", {
@@ -173,11 +150,6 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		};
 	}
 	if (kind.kind === "headless") {
-		// Every real proto process (session, subagent, worker — anything with a CLI
-		// worker host) MUST go through the project-shared broker-owned Chromium:
-		// per-process launches are what produced launch storms and orphaned
-		// process trees. The process-local launch survives only for hosts that
-		// cannot spawn the broker (bun test, SDK embedding without a CLI entry).
 		if (isCompiledBinary() || workerHostEntry() !== null) {
 			return await openSharedHeadlessHandle(kind, opts);
 		}
@@ -214,17 +186,12 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	}
 	if (kind.kind === "relay") {
 		const cdpUrl = normalizeConnectedCdpUrl(kind.cdpUrl);
-		// Loopback relays are owned by a machine-global broker and auto-started
-		// on demand (the extension dials in on its own). Hosts without a CLI
-		// worker entry (bun test, SDK embedding) never spawn brokers. Remote
-		// relay URLs must already be serving.
+
 		let autoStarted = false;
 		if (isLoopbackRelayUrl(cdpUrl) && (isCompiledBinary() || workerHostEntry() !== null)) {
 			autoStarted = await ensureRelayDaemon({ cdpUrl, signal: opts.signal });
 		}
-		// The relay answers /json/version with 503 until its extension dials in.
-		// A freshly revived extension service worker can take up to ~30s (its
-		// keepalive alarm) to reconnect, so give the handshake that long.
+
 		try {
 			await waitForCdp(cdpUrl, RELAY_EXTENSION_WAIT_MS, opts.signal);
 		} catch (err) {
@@ -321,9 +288,6 @@ export function holdBrowser(handle: BrowserHandle): void {
 export async function releaseBrowser(handle: BrowserHandle, opts: ReleaseBrowserOptions): Promise<void> {
 	handle.refCount = Math.max(0, handle.refCount - 1);
 	if (handle.refCount === 0) {
-		// Only evict if the registry still points at THIS handle. After a disconnect,
-		// `acquireBrowser` may have already replaced the entry with a fresh live handle
-		// under the same key; deleting blindly would orphan that new browser.
 		if (browsers.get(handle.key) === handle) browsers.delete(handle.key);
 		await disposeBrowserHandle(handle, opts);
 	}
@@ -336,11 +300,6 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 	}
 	if (handle.kind.kind === "headless") {
 		if (handle.sharedDaemon) {
-			// The broker owns the Chromium; this process only drops its CDP
-			// connection. `kill` is scoped to spawned-app browsers — stopping the
-			// shared daemon here would tear down every other session's tabs. The
-			// daemon dies with the last proto client in the project (broker idle
-			// teardown), or via an explicit hub stop.
 			if (handle.browser.connected) {
 				try {
 					handle.browser.disconnect();
@@ -351,11 +310,6 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 			return;
 		}
 		if (handle.browser.connected) {
-			// Puppeteer's `browser.close()` resolves only once the Chromium
-			// process fully exits. A wedged Chromium (a known Windows failure
-			// mode) leaves this await pending forever, freezing `releaseTab` in
-			// the "Closing tab" phase (issue #5260). Bound it, then SIGKILL the
-			// process tree so cleanup always completes.
 			const proc = handle.browser.process();
 			try {
 				await withTimeout(handle.browser.close(), HEADLESS_CLOSE_TIMEOUT_MS, "Timed out closing headless browser");
@@ -364,13 +318,11 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 				if (proc?.pid !== undefined) await gracefulKillTreeOnce(proc.pid).catch(() => undefined);
 			}
 		}
-		// PROTO owns the profile directory (puppeteer's temp cleanup is disabled by
-		// our explicit --user-data-dir), so remove it now the process tree has
-		// exited. Tolerant of the Windows lock-held window (issue #7058).
+
 		if (handle.userDataDir) await removeUserDataDir(handle.userDataDir);
 		return;
 	}
-	// Connected and relay browsers belong to the user: drop our CDP link, never kill.
+
 	if (handle.kind.kind === "connected" || handle.kind.kind === "relay") {
 		if (handle.browser.connected) {
 			try {
@@ -391,12 +343,6 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 	if (opts.kill && handle.pid !== undefined) await gracefulKillTreeOnce(handle.pid);
 }
 
-/**
- * Attach to the project-shared broker-owned Chromium. Failures surface as
- * `ToolError` — a CLI-host process never silently falls back to a private
- * Chromium, so a broken broker cannot quietly recreate per-process launch
- * storms.
- */
 async function openSharedHeadlessHandle(
 	kind: Extract<PuppeteerBrowserKind, { kind: "headless" }>,
 	opts: AcquireBrowserOptions,
@@ -441,7 +387,6 @@ async function openSharedHeadlessHandle(
 	}
 }
 
-/** Test-only accessor for the module-global browsers map. */
 export function getBrowsersMapForTest(): ReadonlyMap<string, BrowserHandle> {
 	return browsers;
 }

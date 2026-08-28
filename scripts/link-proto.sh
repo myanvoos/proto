@@ -1,4 +1,4 @@
-#!/bin/sh
+
 # Install the dev `proto` wrapper into Bun's global bin directory.
 #
 # Replaces the bun-shebang symlink that `bun --cwd=packages/coding-agent link`

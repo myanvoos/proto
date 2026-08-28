@@ -6,7 +6,6 @@ import type { SessionInfo } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { FileSessionStorage } from "../session/session-storage";
 
-/** Presentation and capability controls for the standalone session picker. */
 interface SessionPickerOptions {
 	allSessions?: SessionInfo[];
 	title?: string;
@@ -17,12 +16,6 @@ interface SessionPickerOptions {
 	historySearch?: boolean;
 }
 
-/**
- * Show the TUI session selector and return the selected session, or null if
- * cancelled. The default PROTO picker supports deletion, transcript-history
- * search, and an all-projects scope; foreign import pickers disable those
- * source-owned capabilities.
- */
 export async function selectSession(
 	sessions: SessionInfo[],
 	options: SessionPickerOptions = {},
@@ -32,9 +25,6 @@ export async function selectSession(
 	let resolved = false;
 	const storage = new FileSessionStorage();
 
-	// Rank sessions with prompt-history matches too, recovering prompts the 4KB
-	// session-list prefix never sees. Best-effort: a missing/locked history.db
-	// must not break the picker.
 	let historyMatcher: ((query: string) => string[]) | undefined;
 	if (options.historySearch !== false) {
 		try {
@@ -92,11 +82,7 @@ export async function selectSession(
 
 	const selector = showSelector();
 	selector.setOnRequestRender(() => ui.requestRender());
-	// Present as a fullscreen overlay so the picker borrows the terminal's
-	// alternate screen buffer (vim/less idiom): the list scrolls and rows are
-	// clickable via the mouse tracking the overlay enables for its lifetime.
-	// Anchored top-left at full size so a mouse row maps directly to a rendered
-	// line (the overlay paints from screen row 0).
+
 	ui.showOverlay(selector, {
 		anchor: "top-left",
 		width: "100%",

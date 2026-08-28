@@ -19,9 +19,7 @@ import type {
 
 const ENCODER = new TextEncoder();
 
-/** Options accepted by every archive-opening entry point. */
 export interface OpenArchiveOptions {
-	/** Override individual resource ceilings; unset fields keep defaults. */
 	limits?: Partial<ArchiveLimits>;
 }
 
@@ -50,11 +48,6 @@ function resolveSource(input: ArchiveSource): ResolvedArchiveSource {
 	return { source: fileByteSource(input), format, archivePath: input };
 }
 
-/**
- * Open an archive for browsing and member reads. File- and source-backed
- * containers with random-access layouts (ZIP, ASAR, RAR, 7z, ISO, CAB) index
- * lazily; stream containers (tar family, cpio, ar) buffer once under limits.
- */
 export async function openArchive(input: ArchiveSource, options: OpenArchiveOptions = {}): Promise<ArchiveReader> {
 	const { source, format, archivePath } = resolveSource(input);
 	const limits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.limits };
@@ -63,12 +56,6 @@ export async function openArchive(input: ArchiveSource, options: OpenArchiveOpti
 	return new ArchiveReader(format, entries, limits);
 }
 
-/**
- * Split an `archive.ext:inner/path` reference into every plausible
- * `{ archivePath, subPath }` pair, longest archive prefix first. A path may
- * contain more than one archive extension, so each candidate is a guess at
- * where the archive ends and the member portion begins.
- */
 export function parseArchivePathCandidates(filePath: string): ArchivePathCandidate[] {
 	const normalized = filePath.replace(/\\/g, "/");
 	const pattern = new RegExp(`\\.(?:${ARCHIVE_EXTENSION_ALTERNATION})(?=(?::|$))`, "gi");
@@ -93,7 +80,6 @@ export function parseArchivePathCandidates(filePath: string): ArchivePathCandida
 	return candidates.sort((left, right) => right.archivePath.length - left.archivePath.length);
 }
 
-/** Render directory entries one per line: `name/` for dirs, `name (size)` for files. */
 export function formatArchiveEntryLines(entries: readonly ArchiveDirectoryEntry[]): string[] {
 	return entries.map(entry => {
 		if (entry.isDirectory) return `${entry.name}/`;
@@ -103,7 +89,6 @@ export function formatArchiveEntryLines(entries: readonly ArchiveDirectoryEntry[
 	});
 }
 
-/** Render the top-level entries of an in-memory archive as one line each. */
 export async function listArchiveRoot(
 	bytes: Uint8Array,
 	format: ArchiveFormat,
@@ -116,12 +101,6 @@ export async function listArchiveRoot(
 	return lines.length > 0 ? lines.join("\n") : "(empty archive directory)";
 }
 
-/**
- * Fully materialize every file member into a `path → bytes` map. Use this
- * for whole-archive rewrite; browsing and single-member reads should use
- * {@link openArchive} so payloads remain lazy. Total extracted bytes are
- * bounded by `limits.maxInMemorySize`.
- */
 export async function readArchiveEntries(
 	input: ArchiveSource,
 	options: OpenArchiveOptions = {},
@@ -131,8 +110,7 @@ export async function readArchiveEntries(
 	let total = 0;
 	for (const entry of archive.indexEntries()) {
 		if (entry.isDirectory) continue;
-		// Whole-archive materialization flattens file aliases; dangling or
-		// unresolved links are unreadable and throw, matching the reader.
+
 		const file = await archive.readFile(entry.path);
 		entries.set(entry.path, file.bytes);
 		total += file.bytes.byteLength;
@@ -141,25 +119,17 @@ export async function readArchiveEntries(
 	return entries;
 }
 
-/** Convert member content for packing: strings become UTF-8 bytes. */
 export async function memberContentToBytes(content: ArchiveMemberContent): Promise<Uint8Array> {
 	if (typeof content === "string") return ENCODER.encode(content);
 	if (content instanceof Uint8Array) return content;
 	return new Uint8Array(await content.arrayBuffer());
 }
 
-/** Read one materialized member as UTF-8 text, or `undefined` when absent. */
 export function archiveEntryText(entries: ReadonlyMap<string, Uint8Array>, entryPath: string): string | undefined {
 	const bytes = entries.get(entryPath);
 	return bytes ? UTF8_DECODER.decode(bytes) : undefined;
 }
 
-/**
- * Extract every member to `destDir`: files (with mode bits when recorded),
- * directories, and symlinks (targets validated to stay inside `destDir`).
- * Entries that would escape via `..` or absolute paths are rejected.
- * Returns the number of filesystem entries written.
- */
 export async function extractArchive(
 	input: ArchiveSource,
 	destDir: string,
@@ -170,8 +140,6 @@ export async function extractArchive(
 	await fs.mkdir(extractRoot, { recursive: true });
 	let count = 0;
 
-	// Directories first so empty ones materialize, then files, then symlinks
-	// (a symlink's target may be created after it in index order).
 	const files: { path: string; mode?: number }[] = [];
 	const links: { path: string; target: string }[] = [];
 	for (const entry of archive.indexEntries()) {
@@ -204,10 +172,7 @@ export async function extractArchive(
 
 	for (const link of links) {
 		const outputPath = path.resolve(extractRoot, link.path);
-		// Reader link targets are archive-root-relative (raw targets survive
-		// only for links that escape the root, which cannot be materialized).
-		// Rewrite to a target relative to the link's own directory so the
-		// symlink resolves correctly on disk.
+
 		const normalizedTarget = normalizeArchiveLookupPath(link.target);
 		if (normalizedTarget === undefined) {
 			throw new ArchiveError(`Archive symlink escapes extraction dir: ${link.path} -> ${link.target}`);

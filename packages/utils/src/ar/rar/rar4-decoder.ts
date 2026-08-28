@@ -120,7 +120,6 @@ interface PendingFilter {
 	fileOffset: number;
 }
 
-/** Stateful decoder for the RAR 2.9 LZ/Huffman algorithm used by RAR3/4 archives. */
 export class Rar4Decoder {
 	#history = new Uint8Array(0);
 	#oldDistances = [0, 0, 0, 0];

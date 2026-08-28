@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# PROTO prelude helpers (loaded once into the runner namespace)
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
@@ -9,9 +8,7 @@ if "__proto_prelude_loaded__" not in globals():
 
     INTENT_FIELD = "i"
 
-    # __omp_display is injected by runner.py before the prelude executes; it
-    # mirrors IPython's display() semantics with the same MIME bundle output.
-    _proto_display = __proto_display  # type: ignore[name-defined]
+    _proto_display = __proto_display
 
     _PRESENTABLE_REPRS = (
         "_repr_mimebundle_",
@@ -101,9 +98,6 @@ if "__proto_prelude_loaded__" not in globals():
         if not root:
             raise ValueError(f"Protocol paths are not supported by this helper: {path}")
         relative = unquote(match.group(2).replace("\\", "/"))
-        # Mirror the host `path.resolve`/`resolveLocalUrlToPath`: normalize and
-        # make absolute WITHOUT realpath'ing symlinks (Path.resolve would turn
-        # /tmp into /private/tmp and diverge from the read-side resolution).
         root_path = os.path.abspath(root)
         if relative == "":
             return Path(root_path)
@@ -170,16 +164,13 @@ if "__proto_prelude_loaded__" not in globals():
             output('scout_0', offset=10, limit=20)  # Lines 10-29
             output('scout_0', 'reviewer_1')  # Read multiple outputs
         """
-        # Prefer PI_ARTIFACTS_DIR so subagents resolve through the parent's
-        # shared artifacts dir; fall back to deriving from PI_SESSION_FILE
-        # for legacy callers / top-level sessions where the two coincide.
         artifacts_dir = os.environ.get("PI_ARTIFACTS_DIR")
         if not artifacts_dir:
             session_file = os.environ.get("PI_SESSION_FILE")
             if not session_file:
                 _emit_status("output", error="No session file available")
                 raise RuntimeError("No session - output artifacts unavailable")
-            artifacts_dir = session_file.rsplit(".", 1)[0]  # Strip .jsonl extension
+            artifacts_dir = session_file.rsplit(".", 1)[0]
         if not Path(artifacts_dir).exists():
             _emit_status(
                 "output", error="Artifacts directory not found", path=artifacts_dir
@@ -210,7 +201,6 @@ if "__proto_prelude_loaded__" not in globals():
             selected_content = raw_content
             range_info: dict | None = None
 
-            # Handle query
             if query:
                 try:
                     json_value = json.loads(raw_content)
@@ -218,7 +208,6 @@ if "__proto_prelude_loaded__" not in globals():
                     _emit_status("output", id=output_id, error=f"Not valid JSON: {e}")
                     raise ValueError(f"Output {output_id} is not valid JSON: {e}")
 
-                # Apply jq-like query
                 result_value = _apply_query(json_value, query)
                 try:
                     selected_content = (
@@ -229,7 +218,6 @@ if "__proto_prelude_loaded__" not in globals():
                 except (TypeError, ValueError):
                     selected_content = str(result_value)
 
-            # Handle offset/limit
             elif offset is not None or limit is not None:
                 start_line = max(1, offset or 1)
                 if start_line > total_lines:
@@ -254,13 +242,11 @@ if "__proto_prelude_loaded__" not in globals():
                     "total_lines": total_lines,
                 }
 
-            # Strip ANSI codes if requested
             if format == "stripped":
                 import re
 
                 selected_content = re.sub(r"\x1b\[[0-9;]*m", "", selected_content)
 
-            # Build result
             if format == "json":
                 result_data = {
                     "id": output_id,
@@ -281,7 +267,6 @@ if "__proto_prelude_loaded__" not in globals():
             else:
                 results.append({"id": output_id, "content": selected_content})
 
-        # Handle not found
         if not_found:
             available = sorted([f.stem for f in Path(artifacts_dir).glob("*.md")])
             error_msg = f"Output not found: {', '.join(not_found)}"
@@ -292,7 +277,6 @@ if "__proto_prelude_loaded__" not in globals():
             _emit_status("output", not_found=not_found, available_count=len(available))
             raise FileNotFoundError(error_msg)
 
-        # Return format
         if len(ids) == 1:
             if format == "json":
                 _emit_status("output", id=ids[0], chars=results[0]["char_count"])
@@ -300,7 +284,6 @@ if "__proto_prelude_loaded__" not in globals():
             _emit_status("output", id=ids[0], chars=len(results[0]["content"]))
             return results[0]["content"]
 
-        # Multiple IDs
         if format == "json":
             total_chars = sum(r["char_count"] for r in results)
             _emit_status("output", count=len(results), total_chars=total_chars)
@@ -324,7 +307,6 @@ if "__proto_prelude_loaded__" not in globals():
         if not query:
             return data
 
-        # Parse query into tokens
         tokens = []
         current_token = ""
         i = 0
@@ -338,7 +320,6 @@ if "__proto_prelude_loaded__" not in globals():
                 if current_token:
                     tokens.append(("key", current_token))
                     current_token = ""
-                # Find matching ]
                 j = i + 1
                 while j < len(query) and query[j] != "]":
                     j += 1
@@ -354,7 +335,6 @@ if "__proto_prelude_loaded__" not in globals():
         if current_token:
             tokens.append(("key", current_token))
 
-        # Apply tokens
         current = data
         for token_type, value in tokens:
             if token_type == "index":
@@ -378,8 +358,6 @@ if "__proto_prelude_loaded__" not in globals():
 
     import urllib.error, urllib.request
 
-    # urllib discovers environment and macOS SystemConfiguration proxies. This
-    # host-owned loopback endpoint must always connect directly.
     _BRIDGE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _bridge_call(name: str, args: dict):
@@ -604,7 +582,7 @@ if "__proto_prelude_loaded__" not in globals():
                 i = futures[fut]
                 try:
                     results[i] = fut.result()
-                except BaseException as exc:  # noqa: BLE001 - propagate to caller
+                except BaseException as exc:
                     errors[i] = exc
         if errors:
             raise errors[min(errors)]

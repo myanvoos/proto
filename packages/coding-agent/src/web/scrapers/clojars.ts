@@ -73,9 +73,6 @@ function formatDependencies(deps: unknown): string[] {
 	return output;
 }
 
-/**
- * Handle Clojars URLs via API
- */
 export const handleClojars: SpecialHandler = async (
 	url: string,
 	timeout: number,

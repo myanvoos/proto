@@ -1,5 +1,3 @@
-//! Cargo build/test output filters.
-
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -63,16 +61,10 @@ fn is_compiling_noise(line: &str) -> bool {
 		|| trimmed.starts_with("Downloaded ")
 		|| trimmed.starts_with("Locking ")
 		|| trimmed.starts_with("Updating ")
-		// `Blocking waiting for file lock on ...` is pure progress noise when a
-		// concurrent cargo holds the lock (snip strips it in cargo-build/clippy).
 		|| trimmed.starts_with("Blocking ")
 		|| is_generated_warnings_rollup(trimmed)
 }
 
-/// The per-crate rollup line warning: `crate` (lib) generated N warnings.
-/// The individual `warning: ...` diagnostic blocks are kept; this redundant
-/// tally is dropped.  Clippy/install paths already skip it explicitly, so
-/// stripping it here only affects build/check/doc/run condensing.
 fn is_generated_warnings_rollup(trimmed: &str) -> bool {
 	let Some(rest) = trimmed.strip_prefix("warning: ") else {
 		return false;
@@ -98,9 +90,7 @@ fn failures_only(input: &str, exit_code: i32) -> String {
 		{
 			keep = true;
 		}
-		// Passing test lines carry no failure signal — drop them unconditionally,
-		// even after the keep flag latches, so a later passing suite in a
-		// multi-suite run does not re-emit its `test <name> ... ok` lines.
+
 		if is_passing_test_line(trimmed) {
 			continue;
 		}
@@ -255,9 +245,7 @@ fn filter_nextest(input: &str) -> String {
 
 	for line in input.lines() {
 		let trimmed = line.trim();
-		// Once the Summary line is seen, nextest re-lists the failing tests as a
-		// recap (duplicate `FAIL [...]` rows + trailing noise).  Drop everything
-		// after it; the captured Summary line is re-emitted verbatim at the end.
+
 		if past_summary {
 			continue;
 		}
@@ -324,8 +312,7 @@ fn is_general_cargo_noise(line: &str) -> bool {
 		|| trimmed.starts_with("Checking ")
 		|| trimmed.starts_with("Fresh ")
 }
-/// Filter `cargo install` output: strip compilation/download noise, keep
-/// install/error summaries.
+
 fn filter_install(input: &str, exit_code: i32) -> String {
 	let stripped = primitives::strip_lines(input, &[is_compiling_noise]);
 
@@ -364,7 +351,6 @@ struct ClippyWarning {
 	lint_rule: Option<String>,
 }
 
-/// Filter `cargo clippy`: group warnings by lint rule; keep errors verbatim.
 fn filter_clippy(input: &str, exit_code: i32) -> String {
 	let no_noise = primitives::strip_lines(input, &[is_compiling_noise]);
 
@@ -403,7 +389,7 @@ fn parse_clippy_warnings(input: &str) -> Vec<ClippyWarning> {
 		}
 
 		let msg = trimmed.strip_prefix("warning: ").unwrap_or("");
-		// Skip summary lines like "warning: `crate` (lib) generated N warning(s)"
+
 		if msg.contains(" generated ") && (msg.ends_with(" warnings") || msg.ends_with(" warning")) {
 			i += 1;
 			continue;
@@ -449,7 +435,7 @@ fn extract_lint_rule(line: &str) -> Option<String> {
 		return None;
 	}
 	let after_note = line.strip_prefix("= note:")?.trim();
-	// Attribute form: `#[warn(rule)]` / `#[deny(rule)]` / `#[allow(rule)]`.
+
 	if let Some(rest) = after_note
 		.strip_prefix("`#[warn(")
 		.or_else(|| after_note.strip_prefix("`#[deny("))
@@ -457,9 +443,7 @@ fn extract_lint_rule(line: &str) -> Option<String> {
 	{
 		return Some(rest.split(")]`").next()?.to_string());
 	}
-	// CLI form: `requested on the command line with `-W <rule>`` (also -D).
-	// Lints enabled this way carry no `#[warn(...)]` note, so without this
-	// branch they fall into the ungrouped bucket instead of grouping by rule.
+
 	let cli = after_note.strip_prefix("requested on the command line with ")?;
 	let flag = cli.strip_prefix('`')?.split('`').next()?.trim();
 	let rule = flag

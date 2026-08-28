@@ -1,22 +1,3 @@
-/**
- * `application/vnd.amazon.eventstream` decoder.
- *
- * Wire format (all integers big-endian):
- *
- *   [total length     u32]
- *   [headers length   u32]
- *   [prelude CRC32    u32]   <- CRC over the first 8 bytes
- *   [headers          headers_length]
- *   [payload          total_length - headers_length - 16]
- *   [message CRC32    u32]   <- CRC over the entire message minus the trailing 4 bytes
- *
- * Headers: a sequence of `[name_len u8][name utf8][value_type u8][value …]`.
- * We only need the typed values Bedrock emits (boolean true/false, byte, short,
- * integer, long, byte-array, string, timestamp, uuid). All are surfaced as
- * strings for ease of consumption — Bedrock only sets string-valued headers in
- * practice (`:event-type`, `:message-type`, `:content-type`, `:exception-type`).
- */
-
 import * as AIError from "../error";
 
 const PRELUDE_LEN = 8;
@@ -26,22 +7,14 @@ const HEADER_BLOCK_OFFSET = PRELUDE_LEN + PRELUDE_CRC_LEN;
 const MIN_MESSAGE_LEN = HEADER_BLOCK_OFFSET + MESSAGE_CRC_LEN;
 
 export interface EventStreamMessage {
-	/** Lower-cased copy is *not* applied — Bedrock uses casing like `:event-type` verbatim. */
 	headers: Record<string, string>;
 	payload: Uint8Array;
 }
 
-/** CRC32 (IEEE / zlib polynomial 0xEDB88320), matches `@aws-crypto/crc32`. */
 export function crc32(bytes: Uint8Array): number {
 	return Bun.hash.crc32(bytes) >>> 0;
 }
 
-/**
- * Decode a single, fully buffered eventstream message. Throws if the framing is
- * malformed or either CRC mismatches. Used by both `decodeEventStream` (the
- * streaming entry point) and the unit tests, which exercise it with hand-built
- * frames.
- */
 export function decodeMessage(frame: Uint8Array): EventStreamMessage {
 	if (frame.length < MIN_MESSAGE_LEN) throw new AIError.EventStreamFrameError("frame too short");
 	const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
@@ -74,30 +47,29 @@ function parseHeaders(buf: Uint8Array): Record<string, string> {
 		const type = view.getUint8(p);
 		p += 1;
 		switch (type) {
-			case 0: // bool true
+			case 0:
 				out[name] = "true";
 				break;
-			case 1: // bool false
+			case 1:
 				out[name] = "false";
 				break;
-			case 2: // byte
+			case 2:
 				out[name] = String(view.getInt8(p));
 				p += 1;
 				break;
-			case 3: // short
+			case 3:
 				out[name] = String(view.getInt16(p, false));
 				p += 2;
 				break;
-			case 4: // integer
+			case 4:
 				out[name] = String(view.getInt32(p, false));
 				p += 4;
 				break;
-			case 5: // long — surface as decimal string to avoid precision loss
+			case 5:
 				out[name] = bigIntFromBytes(buf.subarray(p, p + 8)).toString();
 				p += 8;
 				break;
 			case 6: {
-				// byte array — base64 for safe transport
 				const len = view.getUint16(p, false);
 				p += 2;
 				out[name] = Buffer.from(buf.buffer, buf.byteOffset + p, len).toString("base64");
@@ -105,19 +77,17 @@ function parseHeaders(buf: Uint8Array): Record<string, string> {
 				break;
 			}
 			case 7: {
-				// string
 				const len = view.getUint16(p, false);
 				p += 2;
 				out[name] = decoder.decode(buf.subarray(p, p + len));
 				p += len;
 				break;
 			}
-			case 8: // timestamp (ms since epoch as i64)
+			case 8:
 				out[name] = new Date(Number(bigIntFromBytes(buf.subarray(p, p + 8)))).toISOString();
 				p += 8;
 				break;
 			case 9: {
-				// uuid
 				const u = buf.subarray(p, p + 16);
 				const hex: string[] = [];
 				for (let i = 0; i < 16; i++) hex.push(u[i].toString(16).padStart(2, "0"));
@@ -136,21 +106,14 @@ function parseHeaders(buf: Uint8Array): Record<string, string> {
 function bigIntFromBytes(b: Uint8Array): bigint {
 	let v = 0n;
 	for (let i = 0; i < b.length; i++) v = (v << 8n) | BigInt(b[i]);
-	// sign-extend (two's complement)
+
 	if (b.length === 8 && b[0] & 0x80) v -= 1n << 64n;
 	return v;
 }
 
-/**
- * Async generator that consumes a `ReadableStream<Uint8Array>` (e.g. a fetch
- * response body) and yields fully-framed messages. Handles arbitrary chunk
- * boundaries: messages may span multiple chunks, and a single chunk may carry
- * many messages.
- */
 export async function* decodeEventStream(source: ReadableStream<Uint8Array>): AsyncGenerator<EventStreamMessage> {
 	const reader = source.getReader();
-	// Single growable buffer; we slide a read cursor along it and compact when a
-	// complete prefix has been consumed. Avoids per-message Uint8Array copies.
+
 	let buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
 	let completed = false;
 	try {
@@ -173,8 +136,6 @@ export async function* decodeEventStream(source: ReadableStream<Uint8Array>): As
 		if (buf.length > 0) throw new AIError.EventStreamFrameError("truncated message at end of stream");
 		completed = true;
 	} finally {
-		// On abnormal exit (consumer threw/broke, decode error) cancel the body so the
-		// HTTP connection is released instead of draining until GC.
 		if (!completed) await reader.cancel().catch(() => {});
 		reader.releaseLock();
 	}

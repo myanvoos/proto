@@ -1,7 +1,3 @@
-/**
- * Agent loop that works with AgentMessage throughout.
- * Transforms to Message[] only at the LLM call boundary.
- */
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -86,34 +82,14 @@ import type {
 import { ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD, isSoftToolRequirement } from "./types";
 import { yieldIfDue } from "./utils/yield";
 
-/** Stop-details marker for a provider error after assistant content/tool args already streamed. */
 export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";
 
-/** Sentinel returned by the abort race in `streamAssistantResponse`. */
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
 
-/**
- * Cap on consecutive re-samples triggered by a non-terminal stop
- * (`stopDetails.type === "pause_turn"`) without an intervening tool call. Each
- * continuation is a full model request, so a backend that never stops pausing
- * must not spin the loop forever. Resets whenever a turn carries tool calls.
- */
 const MAX_PAUSED_TURN_CONTINUATIONS = 8;
 
-/**
- * Cap on consecutive forced escalations for a single soft tool requirement.
- * A forced `toolChoice` guarantees the call, so this is purely defensive: if a
- * model somehow never satisfies the requirement, give up forcing rather than
- * spin the loop. Reset whenever the requirement id changes or clears.
- */
 const MAX_SOFT_TOOL_ESCALATIONS = 3;
 
-/**
- * Whether a hard `toolChoice` for a turn conflicts with a pending soft tool
- * requirement — i.e. forbids tools (`"none"`) or forces a *different* specific
- * tool. `"auto"`/`"required"`/`"any"` and a same-tool force still let the model
- * satisfy the requirement, so they do not conflict and the soft gate stays active.
- */
 function hardToolChoiceBlocks(choice: ToolChoice | undefined, requiredTool: string): boolean {
 	if (choice === undefined) return false;
 	if (typeof choice === "string") return choice === "none";
@@ -122,16 +98,6 @@ function hardToolChoiceBlocks(choice: ToolChoice | undefined, requiredTool: stri
 	return name !== requiredTool;
 }
 
-/**
- * Cadence (ms) for polling queued steering while an `interruptible` tool is in
- * flight, so a steer cuts the wait short instead of sitting idle until the
- * tool's own window elapses. A cheap synchronous queue check; latency-bounded
- * at one tick.
- */
-/**
- * Abort reason for a turn-wide interruption where only some tool calls caused
- * the abort and sibling placeholders need neutral messages.
- */
 export interface ToolScopedAbortReason {
 	readonly kind: "tool-scoped-abort";
 	readonly message: string;
@@ -139,7 +105,6 @@ export interface ToolScopedAbortReason {
 	readonly defaultToolCallMessage: string;
 }
 
-/** Creates an abort reason that labels matching tool calls separately from siblings. */
 export function createToolScopedAbortReason(
 	message: string,
 	toolCallMessages: Record<string, string>,
@@ -148,11 +113,6 @@ export function createToolScopedAbortReason(
 	return { kind: "tool-scoped-abort", message, toolCallMessages, defaultToolCallMessage };
 }
 
-/**
- * Marks an abort raised by a completed post-tool hook as terminal for the
- * current run. External/user aborts still synthesize an aborted assistant
- * boundary; this reason stops after persisting the completed tool batch.
- */
 export const TERMINAL_TOOL_RESULT_ABORT_REASON = Symbol.for("pi-agent-core.terminal-tool-result");
 
 const STEERING_INTERRUPT_POLL_MS = 250;
@@ -365,9 +325,7 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 				arguments: structuredCloneJSON(block.arguments),
 				providerMetadata: snapshotToolCallProviderMetadata(block.providerMetadata),
 			};
-			// Object spread copies enumerable symbols in Bun, but the Cursor
-			// exec-resolved marker is load-bearing for skip-on-dispatch — copy
-			// it explicitly so a projector/snapshot path cannot drop it.
+
 			copyCursorExecResolved(snap, block);
 			return snap;
 		}
@@ -387,12 +345,6 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 	};
 }
 
-/**
- * Deep-clone an assistant streaming event so subscribers get an immutable view.
- * Pass `partialSnapshot` when the caller has already snapshotted `event.partial`
- * (the `message_update` push sites alias it as the event's `message`) so the
- * identical partial is not deep-cloned twice per streaming delta.
- */
 function snapshotAssistantMessageEvent(
 	event: AssistantMessageEvent,
 	partialSnapshot?: AssistantMessage,
@@ -423,15 +375,6 @@ function snapshotAssistantMessageEvent(
 	}
 }
 
-/**
- * Normalize a value coming back from `tool.execute()` (or its streaming partial-update callback)
- * into a structurally valid {@link AgentToolResult}.
- *
- * The tool interface is typed, but third-party tools (MCP, extensions, user-authored AgentTools)
- * can violate the contract at runtime. Persisting a malformed result corrupts the session file
- * (missing `content` array → crash on reload). We coerce at the single boundary where untyped
- * results enter the agent loop, so every downstream consumer can rely on the type.
- */
 const EMPTY_ERROR_TOOL_RESULT_TEXT = "Tool failed with no output.";
 
 function hasSubstantiveToolResultContent(content: AgentToolResult["content"]): boolean {
@@ -450,12 +393,9 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 		rawObj && "providerMetadata" in rawObj ? rawObj.providerMetadata : undefined,
 	);
 	const providerMetadata = providerMetadataResult.metadata;
-	// Tools may flag a non-throwing failure on the result itself (e.g. an
-	// aggregator that catches per-entry errors and synthesizes a combined
-	// result). Preserve the flag so agent-loop can surface it on the wire.
+
 	const explicitError = Boolean(rawObj && "isError" in rawObj && rawObj.isError);
-	// Tools may flag the result contextually useless (zero matches, elapsed
-	// wait) so compaction can elide it once consumed. Errors are never useless.
+
 	const useless = Boolean(rawObj && "useless" in rawObj && rawObj.useless);
 
 	if (!Array.isArray(rawContent)) {
@@ -501,7 +441,7 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 		});
 	}
 	const isError = explicitError || invalidBlocks > 0 || providerMetadataResult.malformed;
-	// Anthropic rejects tool_result blocks with is_error: true and empty content.
+
 	if (isError && !hasSubstantiveToolResultContent(content)) {
 		content.length = 0;
 		content.push({ type: "text", text: EMPTY_ERROR_TOOL_RESULT_TEXT });
@@ -518,10 +458,6 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 	};
 }
 
-/**
- * Start an agent loop with a new prompt message.
- * The prompt is added to the context and events are emitted for it.
- */
 export function agentLoop(
 	prompts: AgentMessage[],
 	context: AgentContext,
@@ -553,14 +489,6 @@ export function agentLoop(
 	return stream;
 }
 
-/**
- * Continue an agent loop from the current context without adding a new message.
- * Used for retries - context already has user message or tool results.
- *
- * **Important:** The last message in context must convert to a `user` or `toolResult` message
- * via `convertToLlm`. If it doesn't, the LLM provider will reject the request.
- * This cannot be validated here since `convertToLlm` is only called once per turn.
- */
 export function agentLoopContinue(
 	context: AgentContext,
 	config: AgentLoopConfig,
@@ -600,12 +528,6 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 	);
 }
 
-/**
- * Build the `agent_end` event payload. When telemetry is enabled, snapshots
- * the run collector so consumers receive {@link AgentRunSummary} +
- * {@link AgentRunCoverage} alongside the messages without parsing OTEL spans.
- * When telemetry is unset, returns the bare event for backwards compatibility.
- */
 function buildAgentEndEvent(
 	messages: AgentMessage[],
 	telemetry: AgentTelemetry | undefined,
@@ -618,11 +540,7 @@ function buildAgentEndEvent(
 	}
 	return { type: "agent_end", messages, telemetry: snapshot.summary, coverage: snapshot.coverage };
 }
-/**
- * Push a `turn_end` event and run the awaited per-turn hook when the run is
- * still healthy. The hook is skipped for externally aborted or errored turns so
- * a user interrupt does not hang on a background backlog wait.
- */
+
 async function emitTurnEnd(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	currentContext: AgentContext,
@@ -661,27 +579,12 @@ function createGateStopMessage(model: Model, reason: string | undefined): Assist
 	};
 }
 
-/**
- * Detailed-result handle returned by {@link agentLoopDetailed}. Adds the
- * run-level telemetry/coverage rollup to the existing `AgentMessage[]`
- * payload without changing the resolved type of `stream.result()`.
- */
 export interface AgentLoopDetailedResult {
 	readonly messages: AgentMessage[];
 	readonly telemetry: AgentRunSummary | undefined;
 	readonly coverage: AgentRunCoverage | undefined;
 }
 
-/**
- * Convenience wrapper over {@link agentLoop} that exposes the run-level
- * summary + coverage alongside the messages. The returned `stream` is the
- * same `EventStream` callers already consume; `detailed()` awaits the
- * stream's `agent_end` event and returns the additive fields.
- *
- * Existing `stream.result()` semantics are preserved — it still resolves to
- * `AgentMessage[]`. Use {@link agentLoopDetailed} when you need the rollup;
- * use {@link agentLoop} when you do not.
- */
 export function agentLoopDetailed(
 	prompts: AgentMessage[],
 	context: AgentContext,
@@ -697,10 +600,6 @@ export function agentLoopDetailed(
 	return { stream, detailed: () => capture.detailed(stream) };
 }
 
-/**
- * Like {@link agentLoopDetailed} but built on top of
- * {@link agentLoopContinue}.
- */
 export function agentLoopContinueDetailed(
 	context: AgentContext,
 	config: AgentLoopConfig,
@@ -715,11 +614,6 @@ export function agentLoopContinueDetailed(
 	return { stream, detailed: () => capture.detailed(stream) };
 }
 
-/**
- * Wire an `onRunEnd` telemetry hook onto `config` so the detailed helper can
- * capture the run summary without consuming the event stream. Preserves any
- * existing `onRunEnd` the caller had set.
- */
 function createDetailedCapture(config: AgentLoopConfig): {
 	readonly config: AgentLoopConfig;
 	readonly detailed: (stream: EventStream<AgentEvent, AgentMessage[]>) => Promise<AgentLoopDetailedResult>;
@@ -793,15 +687,6 @@ function injectIntentIntoSchema(
 	const hasOwnProperties =
 		propertiesValue !== null && typeof propertiesValue === "object" && !Array.isArray(propertiesValue);
 
-	// Pure union root (anyOf/oneOf with no own properties): push `i` into each
-	// alternative branch so each closed shape keeps `additionalProperties: false`
-	// honest with intent tracing. Adding a sibling root `properties: { i }` /
-	// `required: [i]` would force every input to satisfy both root *and* a
-	// branch, leaving no satisfiable shape because each branch's
-	// `additionalProperties: false` rejects every other field — and OpenAI
-	// strict sanitization later promotes that sibling to a closed root
-	// `type: "object"` that rejects every non-`i` key outright. allOf is not
-	// alternation (its members are sub-constraints), so we don't recurse into it.
 	if (!hasOwnProperties) {
 		for (const key of INTENT_SCHEMA_UNION_KEYS) {
 			const variants = schemaRecord[key];
@@ -842,9 +727,8 @@ function injectIntentIntoSchema(
 }
 
 export interface NormalizeToolsOptions {
-	/** Inject the `i` intent field into tool schemas (subject to `PI_NO_INTENT`). */
 	injectIntent: boolean;
-	/** Strip descriptions from the wire specs when the catalog rides in the system prompt. */
+
 	pruneDescriptions?: boolean;
 }
 
@@ -854,12 +738,7 @@ export function normalizeTools(tools: AgentContext["tools"], options: NormalizeT
 	return tools?.map(t => {
 		const intentMode = resolveIntentMode(t.intent);
 		const doInjectIntent = injectIntent && intentMode !== "omit";
-		// When the full catalog is rendered into the system prompt, ship the tool
-		// specs without their descriptions (top-level + nested schema annotations)
-		// so they are not duplicated on the wire. Strip the STABLE wire schema (the
-		// memoized `stripSchemaDescriptions` result is reused across requests), then
-		// re-inject `i` (without its hint, which `describeIntent: false` omits) so
-		// intent tracing keeps the field while no descriptions ride the wire.
+
 		if (pruneDescriptions) {
 			let parameters = stripSchemaDescriptions(toolWireSchema(t)) as TSchema;
 			if (doInjectIntent) parameters = injectIntentIntoSchema(parameters, intentMode, false) as TSchema;
@@ -889,9 +768,6 @@ function extractIntent(args: Record<string, unknown>): { intent?: string; stripp
 	return { intent: trimmed.length > 0 ? trimmed : undefined, strippedArgs };
 }
 
-/**
- * Main loop logic shared by agentLoop and agentLoopContinue.
- */
 async function runLoop(
 	currentContext: AgentContext,
 	newMessages: AgentMessage[],
@@ -955,13 +831,6 @@ function emitInputMessages(stream: EventStream<AgentEvent, AgentMessage[]>, mess
 	}
 }
 
-/**
- * Resolve aside entries at the moment the loop is about to inject them. Each entry
- * is either a ready {@link AgentMessage} or a sync thunk evaluated here so the
- * producer can make the final inject-or-drop decision (return null) against
- * up-to-the-injection state — e.g. dropping late diagnostics a newer edit
- * superseded. Kept sync so it can never stall the loop.
- */
 function resolveAsides(entries: AsideMessage[] | undefined): AgentMessage[] {
 	if (!entries || entries.length === 0) return [];
 	const out: AgentMessage[] = [];
@@ -1021,9 +890,7 @@ async function runLoopBody(
 			endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 			return;
 		}
-		// Check for steering messages at start (user may have typed while waiting).
-		// Skip when the run is already externally aborted — dequeuing would strand
-		// the messages in a run that is about to die.
+
 		try {
 			pendingMessages = signal?.aborted ? [] : (await config.getSteeringMessages?.(signal)) || [];
 		} catch (error) {
@@ -1035,39 +902,26 @@ async function runLoopBody(
 		let harmonyTruncateResumeCount = 0;
 		let pausedTurnContinuations = 0;
 
-		// Soft tool requirement lifecycle (reminder then escalation; see SoftToolRequirement).
-		// The host-owned state survives only a gate stop between Agent.prompt calls.
-		// Resolved once per logical turn at the fetch site below and reused across
-		// Harmony-leak re-samples (which re-enter the same turn) so the consuming
-		// getToolChoice is never advanced twice; the flag resets at the message boundary.
 		let hostToolChoice: ToolChoice | undefined;
 		let softRequiredTool: string | undefined;
 		let softSatisfies: SoftToolRequirement["satisfies"];
 		let directiveResolvedForTurn = false;
 		let turnOpen = false;
 
-		// Outer loop: continues when queued follow-up messages arrive after agent would stop
 		while (true) {
 			let hasMoreToolCalls = true;
 
-			// Inner loop: process tool calls and steering messages
 			while (hasMoreToolCalls || pendingMessages.length > 0) {
 				if (isDeadlineExceeded(config.deadline)) {
 					emitInputMessages(stream, messagesToEmit);
 					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 					return;
 				}
-				// Yield at the top of each iteration to prevent busy-wait when
-				// the agent loop is executing tool calls back-to-back.
+
 				await yieldIfDue();
-				// Park at the turn boundary while the process-wide pause gate is
-				// engaged (host /pause). An external abort releases the park so a
-				// cancelled run still unwinds while everything else stays frozen.
+
 				if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(signal);
 
-				// Build the provider-bound context before opening the turn. Queue
-				// messages are added now but their events remain deferred until
-				// provider preparation either succeeds or opens an error turn.
 				const turnMessages = messagesToEmit;
 				messagesToEmit = [];
 				if (pendingMessages.length > 0) {
@@ -1170,7 +1024,6 @@ async function runLoopBody(
 					turnOpen = true;
 				}
 
-				// Stream assistant response
 				let recovered: HarmonyRecoveredToolCall | undefined;
 				let message: AssistantMessage;
 				try {
@@ -1203,9 +1056,7 @@ async function runLoopBody(
 						recovered = err.recovered;
 						message = recovered.message;
 						await emitHarmonyAudit(config, err, "truncate_resume", harmonyRetryAttempt);
-						// A recovered message completes the turn, so the abort-retry counter
-						// resets like the normal success path (the truncate-resume counter
-						// keeps accumulating for its cross-turn cap).
+
 						harmonyRetryAttempt = 0;
 					} else {
 						if (harmonyRetryAttempt >= 2) {
@@ -1227,28 +1078,18 @@ async function runLoopBody(
 				}
 				newMessages.push(message);
 
-				// The escalation choice (if any) applied to the call above; clear it so
-				// only the single escalation turn carries the forced choice.
 				softRequirementState.forcedToolChoice = undefined;
 
-				// A fresh logical turn re-resolves the directive next iteration; a Harmony
-				// retry `continue`s before this line and keeps the cached value.
 				directiveResolvedForTurn = false;
 
 				if (message.stopReason === "error" || message.stopReason === "aborted") {
-					// Create placeholder tool results for any tool calls in the aborted message
-					// This maintains the tool_use/tool_result pairing that the API requires
 					type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-					// Cursor exec-resolved blocks already have their toolResult buffered
-					// for out-of-band emission; a placeholder aborted result here would
-					// pair a duplicate to the same toolCallId (issue #4348 codex review).
+
 					const toolCalls = message.content.filter(
 						(c): c is ToolCallContent =>
 							c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
 					);
-					// Provider-built aborted messages (stream error events) carry no
-					// per-tool labels; derive them from a tool-scoped abort signal so
-					// only the matching call is blamed and siblings stay neutral.
+
 					const scopedAbort = toolScopedAbortReason(signal);
 					const toolCallAbortMessages =
 						message.toolCallAbortMessages ??
@@ -1260,11 +1101,7 @@ async function runLoopBody(
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
-						// The placeholder result above keeps the API's tool_use/tool_result
-						// pairing intact, but no execute_tool span is started for these
-						// calls. Mirror the run-collector entry directly so the run
-						// summary's tool counters and `coverage.toolsInvoked` reflect
-						// what the user actually saw on the wire.
+
 						recordSkippedTool(telemetry, {
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
@@ -1279,25 +1116,8 @@ async function runLoopBody(
 					return;
 				}
 
-				// Run tools whenever the turn carries tool_use blocks AND was not truncated.
-				// `stop_reason` is provider metadata that never goes back on the wire, so it
-				// does not gate continuation validity: replaying a tool_use turn with the
-				// tool_results appended is accepted whether the turn ended on `tool_use` or
-				// `end_turn` (adaptive/interleaved-thinking Opus routinely emits tool calls
-				// under `end_turn`; verified against the live Anthropic API). The only
-				// continuation hazard is a thinking block carrying a stale/invalid signature,
-				// which `transformMessages` already neutralizes — it strips the signature on
-				// non-`toolUse` turns and the encoder downgrades the unsigned block to text,
-				// which the API accepts. So treat `stop` (end_turn/pause_turn) the same as
-				// `toolUse`. `length` (max_tokens) is the one reason we must NOT run: the
-				// trailing tool_use may be truncated with incomplete arguments — those calls
-				// are abandoned below. (`error`/`aborted` already returned above.)
 				type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-				// A Cursor exec-channel synthesized `toolCall` block carries
-				// `kCursorExecResolved` because Cursor already executed the tool
-				// server-side (via the bridge) and buffered the result for
-				// out-of-band emission — running it here again would duplicate the
-				// same side-effecting call (issue #4348 review by @chatgpt-codex-connector).
+
 				const toolCalls = message.content.filter(
 					(c): c is ToolCallContent =>
 						c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
@@ -1310,10 +1130,6 @@ async function runLoopBody(
 					hasMoreToolCalls = false;
 				}
 
-				// A turn is compliant ONLY when it calls the required tool and nothing
-				// else — mirroring the forced-tool_choice turn, which can emit only that
-				// tool. A required+detour batch is treated as non-compliant so detour
-				// tools never run side effects while the requirement is still pending.
 				const calledOnlyRequiredTool =
 					softRequiredTool !== undefined &&
 					toolCalls.length > 0 &&
@@ -1329,12 +1145,7 @@ async function runLoopBody(
 							`Soft tool requirement '${softRequiredTool}' was not satisfied after ${MAX_SOFT_TOOL_ESCALATIONS} forced turns; aborting to avoid an unbounded force loop.`,
 						);
 					}
-					// A soft-required tool is pending but the model called something else
-					// (or yielded). Do NOT execute the detour — pair each call with a
-					// skipped result and force the required tool next turn. This is the
-					// only turn that changes toolChoice; a model that complies with the
-					// reminder pays no message-cache invalidation. Re-engage so the loop
-					// never yields while the requirement is unmet.
+
 					for (const toolCall of toolCalls) {
 						const result = createAbortedToolResult(
 							toolCall,
@@ -1372,8 +1183,6 @@ async function runLoopBody(
 						newMessages.push(result);
 					}
 				} else if (toolCalls.length > 0) {
-					// Turn ended on a non-runnable reason (`length` truncation) or deadline was exceeded
-					// but left toolCall blocks behind. pair each with a placeholder result.
 					const skipReason = deadlinePassed ? "aborted" : message.stopReason === "length" ? "length" : "skipped";
 					const skipErrMsg = deadlinePassed ? "Deadline exceeded" : undefined;
 					for (const toolCall of toolCalls) {
@@ -1392,8 +1201,6 @@ async function runLoopBody(
 					}
 				}
 
-				// A tool hook may mark its completed result as terminal (e.g. subagent yield).
-				// Stop before the next provider call without changing external/user abort semantics.
 				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
 					hasMoreToolCalls = false;
 				}
@@ -1406,11 +1213,6 @@ async function runLoopBody(
 					message.stopDetails?.type === "pause_turn" &&
 					pausedTurnContinuations < MAX_PAUSED_TURN_CONTINUATIONS
 				) {
-					// Non-terminal stop: the provider ended the response but not the turn
-					// (e.g. Codex `end_turn: false` on a commentary-only progress update).
-					// Re-sample with the assistant message replayed so the model keeps
-					// working; the next round folds steering/asides in like any other
-					// mid-work turn.
 					pausedTurnContinuations++;
 					hasMoreToolCalls = true;
 				}
@@ -1424,21 +1226,12 @@ async function runLoopBody(
 					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 					return;
 				}
-				// On external abort (user interrupt), leave the steering queue intact: the
-				// session aborts then continues, delivering the queue into a fresh run.
-				// Draining it here would inject the messages right before a model call that
-				// instantly aborts — message lands in history, agent never responds. The
-				// mid-batch interrupt poll only peeks (hasSteeringMessages), so the queue
-				// still owns every message until this dequeue.
+
 				const steering = signal?.aborted ? [] : (await config.getSteeringMessages?.(signal)) || [];
 				if (hasMoreToolCalls) {
-					// Mid-work: fold any non-interrupting asides into the next turn alongside steering.
 					const asides = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.());
 					pendingMessages = asides.length > 0 ? [...steering, ...asides] : steering;
 				} else {
-					// Stop boundary: only steering (live user input) forces another turn here. Leave
-					// asides for the outer drain below so a passive aside can't trigger an extra model
-					// turn ahead of a queued follow-up — the outer drain batches asides + follow-ups together.
 					pendingMessages = steering;
 				}
 			}
@@ -1448,27 +1241,21 @@ async function runLoopBody(
 				return;
 			}
 
-			// Agent would stop here. Drain non-interrupting asides + follow-up messages.
 			await config.onBeforeYield?.();
 
 			if (isDeadlineExceeded(config.deadline)) {
 				endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 				return;
 			}
-			// Skip queue drains when externally aborted (same stranding hazard as above).
-			// Re-poll steering too: a steer can land between the stop-boundary dequeue
-			// above and this yield point (e.g. queued while onBeforeYield ran). Without
-			// this poll it would strand in the queue until the next manual prompt.
+
 			const lateSteering = signal?.aborted ? [] : (await config.getSteeringMessages?.(signal)) || [];
 			const asideMessages = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.());
 			const followUpMessages = signal?.aborted ? [] : (await config.getFollowUpMessages?.(signal)) || [];
 			if (lateSteering.length > 0 || asideMessages.length > 0 || followUpMessages.length > 0) {
-				// Set as pending so the inner loop processes them before stopping.
 				pendingMessages = [...lateSteering, ...asideMessages, ...followUpMessages];
 				continue;
 			}
 
-			// No more messages, exit
 			break;
 		}
 
@@ -1559,10 +1346,6 @@ async function prepareProviderCall(
 	return { model, context: llmContext, promptToolWireTools, ownedDialect };
 }
 
-/**
- * Stream an assistant response from the LLM.
- * This is where AgentMessage[] gets transformed to Message[] for the LLM.
- */
 async function streamAssistantResponse(
 	context: AgentContext,
 	config: AgentLoopConfig,
@@ -1584,9 +1367,7 @@ async function streamAssistantResponse(
 
 	const dynamicReasoning = config.getReasoning?.();
 	const dynamicDisableReasoning = config.getDisableReasoning?.();
-	// `getServiceTier` is authoritative when present (replaces the static tier
-	// for both the wire request and telemetry), so callers can scope priority
-	// per model without touching the shared session `serviceTier`.
+
 	const effectiveServiceTier = config.getServiceTier ? config.getServiceTier(model) : config.serviceTier;
 	const harmonyMitigationEnabled = isHarmonyLeakMitigationTarget(model);
 	const harmonyAbortController = harmonyMitigationEnabled ? new AbortController() : undefined;
@@ -1595,11 +1376,7 @@ async function streamAssistantResponse(
 			? AbortSignal.any([signal, harmonyAbortController.signal])
 			: harmonyAbortController.signal
 		: signal;
-	// Owned tool calling: aborted by the stream wrapper when the model starts
-	// fabricating a `<tool_response>`, so the provider stops generating the rest of
-	// the hallucinated turn. Merged into the provider signal ONLY (not
-	// `requestSignal`), so it cancels the request without tripping the loop's
-	// external-abort handling (`abortRacePromise` / `requestSignal.aborted`).
+
 	const promptToolAbortController = ownedDialect ? new AbortController() : undefined;
 	const providerAbortSignals: AbortSignal[] = [];
 	if (requestSignal) providerAbortSignals.push(requestSignal);
@@ -1614,17 +1391,14 @@ async function streamAssistantResponse(
 	const resolvedApiKey = await resolveApiKeyOnce(requestApiKey, finalRequestSignal);
 	const apiKey = isApiKeyResolver(requestApiKey) ? seedApiKeyResolver(resolvedApiKey, requestApiKey) : requestApiKey;
 
-	// Re-resolve metadata after credential selection so the per-request value
-	// reflects the credential actually used, not the snapshot from AgentLoopConfig construction.
 	const resolvedMetadata = config.metadataResolver ? config.metadataResolver(model.provider) : config.metadata;
 	const effectiveTemperature =
 		harmonyRetryAttempt > 0 && config.temperature !== undefined ? config.temperature + 0.05 : config.temperature;
-	// Owned tool calling sends no native tools, so any tool_choice would error.
+
 	const effectiveToolChoice = ownedDialect ? undefined : (hostToolChoice ?? forcedToolChoice ?? config.toolChoice);
 	const effectiveReasoning = dynamicReasoning ?? config.reasoning;
 	const effectiveDisableReasoning = dynamicDisableReasoning ?? config.disableReasoning;
-	// `getCwd` is read once per LLM call so a mid-run session move (`/move`) reaches
-	// workspace-scoped provider discovery; falls back to the static `cwd` when unset.
+
 	const effectiveCwd = config.getCwd?.() ?? config.cwd;
 
 	const chatStepNumber = stepCounter.count;
@@ -1647,9 +1421,6 @@ async function streamAssistantResponse(
 		},
 	});
 
-	// Wrap the user-supplied onResponse so we always observe response headers
-	// for telemetry (`ChatUsageEvent.headers`, gateway auto-detection) without
-	// stealing them from the configured hook.
 	let capturedHeaders: Readonly<Record<string, string>> | undefined;
 	const userOnResponse = config.onResponse;
 	const captureOnResponse: AgentLoopConfig["onResponse"] = (response, modelInfo) => {
@@ -1682,11 +1453,6 @@ async function streamAssistantResponse(
 				onResponse: captureOnResponse,
 			});
 			if (promptToolWireTools && ownedDialect) {
-				// Re-materialize in-band tool-call text as native toolCall content blocks
-				// so the rest of the loop executes them unchanged. When the model starts
-				// fabricating tool results, the abort callback cancels the provider — unless
-				// `abortOnFabricatedToolResult` is false, in which case the stream drains and
-				// the fabricated continuation is discarded without aborting.
 				response = wrapInbandToolStream(
 					response,
 					promptToolWireTools,
@@ -1705,9 +1471,7 @@ async function streamAssistantResponse(
 				try {
 					const cleanup = responseIterator.return?.();
 					if (cleanup) void cleanup.catch(() => {});
-				} catch {
-					// Provider cancellation failures cannot change the committed aborted message.
-				}
+				} catch {}
 				const aborted = emitAbortedAssistantMessage(
 					partialMessage,
 					addedPartial,
@@ -1721,9 +1485,6 @@ async function streamAssistantResponse(
 				return aborted;
 			};
 
-			// Set up a single abort race: register the abort listener once for the whole
-			// stream and reuse the same race promise for every iterator.next() instead of
-			// allocating Promise.withResolvers and add/removeEventListener per event.
 			let abortRacePromise: Promise<typeof ABORTED> | undefined;
 			let detachAbortListener: (() => void) | undefined;
 			if (requestSignal) {
@@ -1775,17 +1536,11 @@ async function streamAssistantResponse(
 							}
 						}
 						finalMessage = snapshotAssistantMessage(finalMessage);
-						// Expand inline macros (and any other registered rewrite) on the
-						// finalized message before it reaches the context, the UI, or tool
-						// dispatch — so a single mutation is the source of truth for all three.
+
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
-						// Prepare tool dispatch (validation + the `beforeToolCall` hook)
-						// BEFORE the message is snapshotted for consumers: a hook args
-						// revision is written back into this message's toolCall blocks,
-						// so history, the UI, persistence, provider replay, scheduling,
-						// and execution all carry the revised arguments.
+
 						if (finalMessage.content.some(c => c.type === "toolCall")) {
 							preparedDispatchByMessage.set(
 								finalMessage,
@@ -1808,8 +1563,6 @@ async function streamAssistantResponse(
 						return await finishAbortedStream();
 					}
 
-					// Yield to the event loop periodically to prevent busy-wait
-					// when the LLM is streaming chunks faster than the loop can rest.
 					await yieldIfDue();
 
 					switch (event.type) {
@@ -1818,10 +1571,7 @@ async function streamAssistantResponse(
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
-								// `message` and `assistantMessageEvent.partial` intentionally share one
-								// immutable snapshot of the streaming partial: every message_update
-								// consumer treats both as read-only, so cloning the identical partial
-								// twice per delta was pure waste.
+
 								const messageSnapshot = snapshotAssistantMessage(partialMessage);
 								stream.push({
 									type: "message_update",
@@ -1852,10 +1602,7 @@ async function streamAssistantResponse(
 								partialMessage = event.partial;
 								context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// `message` and `assistantMessageEvent.partial` intentionally share one
-								// immutable snapshot of the streaming partial: every message_update
-								// consumer treats both as read-only, so cloning the identical partial
-								// twice per delta was pure waste.
+
 								const messageSnapshot = snapshotAssistantMessage(partialMessage);
 								stream.push({
 									type: "message_update",
@@ -2020,12 +1767,6 @@ function buildToolCallAbortMessages(
 	return hasToolCall ? messages : undefined;
 }
 
-/** Resolve the human-readable reason an abort carried. A caller that aborts via
- *  `AbortController.abort(reason)` with a string or a non-`AbortError` `Error`
- *  (e.g. the coding agent's user-interrupt label) gets that text surfaced on the
- *  synthesized assistant message's `errorMessage`; a bare `abort()` (whose
- *  `signal.reason` is the default `AbortError` `DOMException`) falls back to the
- *  generic sentinel that downstream renderers treat as "no specific reason". */
 export function abortReasonText(signal: AbortSignal | undefined): string {
 	const scopedReason = toolScopedAbortReason(signal);
 	if (scopedReason) return scopedReason.message;
@@ -2073,9 +1814,7 @@ function emitAbortedAssistantMessage(
 				errorId,
 				timestamp: Date.now(),
 			};
-	// Only tool calls that reached `toolcall_end` survive abort/error replay. A
-	// labeled user interrupt still surfaces through `errorMessage`, but partial
-	// tool arguments are unsafe to keep and can carry incomplete provider IDs.
+
 	const retained = retainCompletedToolCalls(base, completedToolCallIds);
 	const scopedAbort = toolScopedAbortReason(requestSignal);
 	const toolCallAbortMessages = scopedAbort ? buildToolCallAbortMessages(retained, scopedAbort) : undefined;
@@ -2093,10 +1832,9 @@ function emitAbortedAssistantMessage(
 	return abortedMessage;
 }
 
-/** Per-call outcome of the pre-dispatch prepare phase (validation + `beforeToolCall`). */
 interface PreparedToolCall {
 	tool: AgentTool<any> | undefined;
-	/** Validated (possibly hook-revised) execution args; raw args when validation failed. */
+
 	args: Record<string, unknown>;
 	validationErrorMessage?: string;
 	blocked?: boolean;
@@ -2104,13 +1842,6 @@ interface PreparedToolCall {
 	prepareError?: unknown;
 }
 
-/**
- * Prepare results computed in the stream-done branch (before `message_start`/
- * `message_end`) so a `beforeToolCall` args revision is baked into the message
- * every consumer snapshots. `executeToolCalls` consumes them; a message that
- * bypassed the streamed path (e.g. Harmony-recovered) is prepared at dispatch
- * time instead.
- */
 const preparedDispatchByMessage = new WeakMap<AssistantMessage, Map<string, PreparedToolCall>>();
 
 function resolveToolForCall(
@@ -2118,29 +1849,13 @@ function resolveToolForCall(
 	toolCall: AgentToolCall,
 	resolveFallbackTool: AgentLoopConfig["resolveFallbackTool"],
 ): AgentTool<any> | undefined {
-	// Tools emitted via OpenAI's custom-tool path (e.g. `apply_patch` on GPT-5)
-	// come back under their wire-level name, which may differ from the
-	// harness-internal `name`. Match on either, preferring `name` for
-	// determinism if both somehow collide.
 	return (
 		tools?.find(t => t.name === toolCall.name) ??
 		tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
-		// Not in the advertised set: let the host route side-transport tools
-		// (e.g. xd:// device mounts) called by their top-level name.
 		resolveFallbackTool?.(toolCall.name)
 	);
 }
 
-/**
- * Pre-dispatch phase for every pending tool call on `assistantMessage`, run in
- * call order: intent extraction, argument validation, and the `beforeToolCall`
- * hook. A hook `args` revision is revalidated against the tool schema and
- * written back to `toolCall.arguments`; run before `message_start`/`message_end`
- * (the streamed path) that makes the revision the single source of truth —
- * history, execution events, persistence, provider replay, concurrency
- * scheduling, and `tool.execute` all agree. Failures are recorded per call and
- * surfaced by `executeToolCalls` at the record's scheduled slot.
- */
 async function prepareToolCallDispatch(
 	assistantMessage: AssistantMessage,
 	context: AgentContext,
@@ -2167,9 +1882,7 @@ async function prepareToolCallDispatch(
 					if (derived) {
 						toolCall.intent = derived;
 					}
-				} catch {
-					// intent function must never break tool execution
-				}
+				} catch {}
 			}
 		}
 		const validate = (args: Record<string, unknown>): Record<string, unknown> | undefined => {
@@ -2200,8 +1913,6 @@ async function prepareToolCallDispatch(
 				signal,
 			);
 		} catch (e) {
-			// Contract: a throwing hook surfaces as a tool-error result without
-			// aborting the batch — rethrown inside the execution span in runTool.
 			entry.prepareError = e;
 			continue;
 		}
@@ -2211,21 +1922,16 @@ async function prepareToolCallDispatch(
 			continue;
 		}
 		if (beforeResult?.args !== undefined) {
-			// Revalidate: a hook revision is untrusted input to the tool schema.
 			const revised = validate(beforeResult.args);
 			if (revised === undefined) continue;
-			// Bake the revision into the message itself. On the streamed path this
-			// precedes every consumer snapshot, so there is exactly one version of
-			// the call anywhere downstream.
+
 			toolCall.arguments = beforeResult.args;
 			entry.args = revised;
 		}
 	}
 	return prepared;
 }
-/**
- * Execute tool calls from an assistant message.
- */
+
 async function executeToolCalls(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
@@ -2246,9 +1952,7 @@ async function executeToolCalls(
 		afterToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
-	// Defensive: the outer loop already filters exec-resolved blocks before
-	// deciding to invoke `executeToolCalls`, but skip them here too so the
-	// guarantee lives with the code that would re-run the tool.
+
 	const toolCalls = assistantMessage.content.filter(
 		(c): c is ToolCallContent =>
 			c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
@@ -2259,26 +1963,15 @@ async function executeToolCalls(
 	const shouldInterruptImmediately = interruptMode !== "wait";
 	const steeringAbortController = new AbortController();
 	const ircAbortController = new AbortController();
-	// Cooperative channel: aborted when queued steering (or an interrupting
-	// peer IRC) is detected mid-batch. Tools receive it via tool context
-	// (`ctx.steeringSignal`) and MAY react — e.g. an auto-backgroundable bash
-	// backgrounds itself so the message injects promptly — but it never kills
-	// anything; ignoring it is always safe.
+
 	const steeringSoftController = new AbortController();
-	// Interruptible tools (pure waits: hub wait, vibe) observe steering +
-	// external + IRC aborts. Every other tool sees ONLY the external signal:
-	// neither queued steering nor a peer IRC ever hard-kills a partially
-	// side-effecting foreground tool (e.g. `bash`) — those get the cooperative
-	// `steeringSignal` above, and the message injects at the next boundary.
+
 	const nonInterruptibleSignal: AbortSignal = signal ?? new AbortController().signal;
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
 	const interruptState: { triggered: boolean; source?: SteeringInterruptSource | "irc" } = { triggered: false };
 
-	// Streamed messages were prepared (validation + `beforeToolCall`) before
-	// `message_end`, so hook revisions are already part of the message; anything
-	// that bypassed the streamed path is prepared here instead.
 	const preparedDispatch =
 		preparedDispatchByMessage.get(assistantMessage) ??
 		(await prepareToolCallDispatch(assistantMessage, currentContext, config, signal));
@@ -2293,11 +1986,8 @@ async function executeToolCalls(
 		let interruptible = false;
 		if (typeof interruptibleMode === "function") {
 			try {
-				// Resolved from the prepared (possibly hook-revised) args so an
-				// argument-dependent policy governs the call that actually runs.
 				interruptible = interruptibleMode(args);
 			} catch {
-				// Resolver failures default to preserving the tool's outcome.
 				interruptible = false;
 			}
 		} else {
@@ -2323,13 +2013,8 @@ async function executeToolCalls(
 	});
 
 	const checkIrcInterrupts = async (): Promise<void> => {
-		// IRC only fires once: a peer interrupt already recorded on interruptState
-		// must not re-abort, and (unlike steering) never re-consumes a queue.
 		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
 		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
-			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
-			// running (no partial side effects) but get the cooperative soft
-			// signal so backgroundable work can step aside for the peer message.
 			interruptState.triggered = true;
 			interruptState.source = "irc";
 			ircAbortController.abort();
@@ -2338,15 +2023,10 @@ async function executeToolCalls(
 	};
 
 	const checkSteering = async (): Promise<void> => {
-		// `signal` (external/user abort) is checked separately from the internal
-		// abort controllers: once the run is externally aborted it is unwinding
-		// and the interrupt would be redundant.
 		if (!shouldInterruptImmediately || signal?.aborted) {
 			return;
 		}
-		// Mid-batch steering detection must be non-consuming. If a direct
-		// integration only provides getSteeringMessages(), the queue drains at the
-		// injection boundary below; polling it here would strand or drop messages.
+
 		let steeringQueued = false;
 		let steeringSource: SteeringInterruptSource | undefined;
 		if (hasSteeringMessages) {
@@ -2361,11 +2041,6 @@ async function executeToolCalls(
 			}
 		}
 		if (steeringQueued) {
-			// Queued steering hard-aborts only interruptible waits and raises the
-			// cooperative soft signal for everything else: the boundary dequeue
-			// below injects the message as soon as running tools finish (or
-			// background themselves), and not-yet-started tools are skipped.
-			// Idempotent — a second steer poll after the abort is a no-op.
 			if (!steeringAbortController.signal.aborted) {
 				interruptState.triggered = true;
 				interruptState.source = steeringSource ?? "unknown";
@@ -2419,33 +2094,15 @@ async function executeToolCalls(
 	};
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
-		// A pending interrupt preempts not-yet-started tools so the message
-		// injects promptly. A peer-IRC interrupt is the exception: it aborts
-		// interruptible waits only and leaves non-interruptible foreground work
-		// untouched (see the emit branch below and the `does not abort a
-		// non-interruptible foreground tool` case). That guarantee must hold for
-		// work still queued behind the aborted wait too — otherwise a batched
-		// `todo`/`write` gets dropped as "Skipped due to pending peer interrupt"
-		// purely for being ordered after the wait (#7493). User/system steering
-		// still preempts everything queued.
 		if (interruptState.triggered && (record.interruptible || interruptState.source !== "irc")) {
-			// Skip both span emission and the collector orphan record here. The
-			// tail sweep below (after `Promise.allSettled`) is the single path
-			// that handles "no result message was produced" — it calls
-			// `recordSkippedTool` and `emitToolResult` once per record, so any
-			// work we did here would double-count.
 			record.skipped = true;
 			return;
 		}
-		// Park before starting this tool while the process-wide pause gate is
-		// engaged. Tools already executing are unaffected (pausing never aborts);
-		// a batch interrupted mid-pause unwinds via the signal checks below.
+
 		if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(record.signal);
 
 		const { toolCall, tool } = record;
-		// Validation (and the beforeToolCall hook) ran in the prepare phase; a
-		// failure recorded there surfaces here at the record's scheduled slot so
-		// result emission keeps batch order.
+
 		if (record.validationErrorMessage !== undefined) {
 			emitToolResult(
 				record,
@@ -2512,10 +2169,6 @@ async function executeToolCalls(
 					: effectiveArgs;
 				record.args = executionArgs;
 
-				// The cooperative steering signal rides the loop-owned
-				// ToolCallContext (surfacing as `ctx.toolCall.steeringSignal`):
-				// AgentToolContext itself is app-built via declaration merging, so
-				// the loop cannot construct or extend one structurally.
 				const toolContext = getToolContext
 					? getToolContext({
 							batchId,
@@ -2569,10 +2222,6 @@ async function executeToolCalls(
 						record.signal,
 					);
 					if (after) {
-						// Re-normalize the post-hook result: `afterToolCall` is untyped user/extension
-						// code and may return malformed `content` (non-array / invalid blocks), which
-						// would otherwise be persisted verbatim and corrupt the session — the same
-						// hazard `coerceToolResult` guards on the execute path.
 						const coerced = coerceToolResult({
 							content: after.content ?? result.content,
 							details: after.details ?? result.details,
@@ -2598,19 +2247,9 @@ async function executeToolCalls(
 		const perToolAborted = record.signal.aborted;
 		const abortedDuringExecution = perToolAborted && isError && !completedToolExecution;
 		if (interrupted && abortedDuringExecution) {
-			// This tool's own signal fired AND it failed to produce a result. The
-			// execution may already have performed partial work before throwing on
-			// abort, so preserve that distinction in the placeholder metadata.
 			record.skipped = true;
 			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
 		} else {
-			// No interrupt on this signal, or the tool finished before the interrupt landed
-			// (`completedToolExecution`) — even if the signal aborted around completion. Keep
-			// its real result: a completed tool already ran its side effects, so the model must
-			// see what actually happened (a genuine non-zero exit / error result) rather than a
-			// false "skipped" that discards work the tool performed (#4752). A peer-IRC interrupt
-			// on the batch leaves non-interruptible tools' signals untouched — their genuine
-			// errors survive here too.
 			emitToolResult(record, result, isError);
 		}
 
@@ -2641,12 +2280,6 @@ async function executeToolCalls(
 	let sharedTasks: Promise<void>[] = [];
 	const tasks: Promise<void>[] = [];
 
-	// While tool calls are in flight, queued steering or interrupting IRC would
-	// otherwise wait out the tools' own window. Poll only non-consuming queues:
-	// detection hard-aborts interruptible waits, soft-signals cooperative tools
-	// (auto-background bash), and skips not-yet-started tools, so the boundary
-	// dequeue below injects the message promptly. Gated on immediate-interrupt
-	// mode; checkSteering is idempotent (no-op once triggered).
 	const watchSteeringWhileRunning =
 		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
 	const eventDrivenSteeringWatch =
@@ -2655,10 +2288,7 @@ async function executeToolCalls(
 	const steeringWatchSignal = signal
 		? AbortSignal.any([signal, steeringWatchAbortController.signal])
 		: steeringWatchAbortController.signal;
-	// Race every wait against one local abort promise. The callback contract does
-	// not require an implementation to observe the signal, and one that resolves
-	// only on the next queue event would otherwise never settle once the batch
-	// finishes, so awaiting it during teardown would hang a batch with no steer.
+
 	const { promise: watchAborted, resolve: resolveWatchAbort } = Promise.withResolvers<void>();
 	if (steeringWatchSignal.aborted) {
 		resolveWatchAbort();
@@ -2669,10 +2299,6 @@ async function executeToolCalls(
 	const steeringWatchPromise = eventDrivenSteeringWatch
 		? (async (): Promise<void> => {
 				while (!steeringWatchSignal.aborted) {
-					// Subscribe before checking queue state. This closes the edge
-					// race where a steer arrives after a check but before listener
-					// registration: the subsequent check observes queued state,
-					// while later arrivals resolve this already-installed wait.
 					const steeringQueued = config.waitForSteeringMessages?.(steeringWatchSignal).then(
 						() => true,
 						() => false,
@@ -2687,9 +2313,7 @@ async function executeToolCalls(
 				}
 			})()
 		: undefined;
-	// IRC interrupt records have a separate session-owned queue and no wake
-	// callback. Keep its established timer fallback when that queue is present;
-	// system steering uses the event-driven path above and does not poll.
+
 	const steeringWatchTimer =
 		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
 			? setInterval(
@@ -2702,10 +2326,6 @@ async function executeToolCalls(
 		const concurrencyMode = record.tool?.concurrency;
 		let concurrency: "shared" | "exclusive";
 		if (typeof concurrencyMode === "function") {
-			// Resolved from the prepared (possibly hook-revised) args — raw args
-			// only when validation failed, and those records error out before
-			// executing. A throwing resolver must not take down the whole batch,
-			// so fall back to the safe (serial) mode.
 			try {
 				concurrency = concurrencyMode(record.args);
 			} catch {
@@ -2731,8 +2351,7 @@ async function executeToolCalls(
 		await steeringWatchPromise?.catch(() => undefined);
 		clearInterval(steeringWatchTimer);
 	}
-	// Yield after batch tool execution to let GC and I/O catch up,
-	// especially when tool results are large (e.g. bash output).
+
 	await yieldIfDue();
 
 	for (const record of records) {
@@ -2750,25 +2369,6 @@ async function executeToolCalls(
 	return { toolResults: emittedToolResults };
 }
 
-/**
- * Discriminator embedded in {@link AgentToolResult.details} and
- * {@link ToolResultMessage.details} for tool calls that were emitted by the
- * assistant but never actually invoked locally.
- *
- * The synthetic result exists only to preserve the tool_use / tool_result
- * pairing the provider API requires; no `tool.execute()` ran. UI, telemetry,
- * and history consumers can key on `__synthetic === true` to render or
- * classify these as "call emitted, not executed" instead of a real local
- * tool failure — the mislabeling this discriminator was introduced to fix
- * (#4321): a provider-side stream error after tool-call emission (e.g. Codex
- * websocket close) was surfaced by the CLI as if the local tool had failed.
- *
- * `source` names the state that prevented execution — either an assistant-side
- * turn termination (`assistant_stop_*`) or a mid-batch interrupt that skipped a
- * still-pending call to service queued steering/peer input (`interrupt_skipped`).
- * `upstreamError` is the provider-reported message when the turn ended with
- * `stopReason === "error"`.
- */
 export interface SyntheticToolResultDetails {
 	__synthetic: true;
 	source:
@@ -2781,24 +2381,12 @@ export interface SyntheticToolResultDetails {
 	upstreamError?: string;
 }
 
-/**
- * Metadata for an interrupt-aborted call that entered `tool.execute()` but
- * threw before returning a usable result. It may have performed partial work.
- */
 interface InterruptedToolResultDetails {
 	__interrupted: true;
 	source: "interrupt_skipped";
 	execution: "started";
 }
 
-/**
- * Narrow an {@link AgentMessage} to a synthetic {@link ToolResultMessage} —
- * a tool_result emitted for a tool call the assistant never invoked (see
- * {@link SyntheticToolResultDetails}). Consumers use this to look past the
- * placeholder pairing back to the assistant turn that produced it, e.g.
- * `AgentSession.retry()` walking back over the synthetic results a
- * stalled/aborted mid-tool-call turn leaves behind.
- */
 export function isSyntheticToolResultMessage(
 	message: AgentMessage | undefined,
 ): message is ToolResultMessage<SyntheticToolResultDetails> {
@@ -2828,10 +2416,6 @@ function syntheticDetailsFor(
 	};
 }
 
-/**
- * Create the persisted synthetic result for a tool call that was emitted by
- * the assistant but never invoked locally.
- */
 export function createSyntheticToolResultMessage(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	reason: "aborted" | "error" | "skipped" | "length",
@@ -2857,10 +2441,6 @@ export function createSyntheticToolResultMessage(
 	};
 }
 
-/**
- * Create and emit a tool result for a tool call that was emitted by the
- * assistant but never invoked locally.
- */
 function createAbortedToolResult(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	stream: EventStream<AgentEvent, AgentMessage[]>,

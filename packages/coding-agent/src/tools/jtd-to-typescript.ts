@@ -1,10 +1,3 @@
-/**
- * Convert JSON Type Definition (JTD) to TypeScript interface notation.
- *
- * Produces human-readable TypeScript for embedding in system prompts,
- * helping models understand expected output structure.
- */
-
 import type { JTDPrimitive } from "./jtd-utils.js";
 import {
 	isJTDDiscriminator,
@@ -80,7 +73,6 @@ function convertToTypeScript(schema: unknown, inline = false): string {
 		lines.push("}");
 
 		if (inline && lines.length <= 4) {
-			// Compact single-line for small objects
 			const props = lines.slice(1, -1).map(l => l.trim());
 			if (props.join(" ").length < 60) {
 				return `{ ${props.join(" ")} }`;
@@ -97,7 +89,6 @@ function convertToTypeScript(schema: unknown, inline = false): string {
 			if (propsType === "{}") {
 				variants.push(`{ ${schema.discriminator}: "${tag}" }`);
 			} else {
-				// Merge discriminator into props
 				const inner = propsType.slice(1, -1).trim();
 				variants.push(`{ ${schema.discriminator}: "${tag}"; ${inner} }`);
 			}
@@ -112,25 +103,6 @@ function convertToTypeScript(schema: unknown, inline = false): string {
 	return "unknown";
 }
 
-/**
- * Convert JTD schema to TypeScript interface string.
- *
- * @example
- * ```ts
- * const schema = {
- *   properties: {
- *     name: { type: "string" },
- *     count: { type: "int32" }
- *   }
- * };
- * jtdToTypeScript(schema);
- * // Returns:
- * // {
- * //   name: string;
- * //   count: number;
- * // }
- * ```
- */
 export function jtdToTypeScript(schema: unknown): string {
 	return convertToTypeScript(schema, false);
 }

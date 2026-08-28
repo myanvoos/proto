@@ -15,33 +15,14 @@ const CURSOR_GET_USABLE_MODELS_PATH = "/agent.v1.AgentService/GetUsableModels";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
 
-/**
- * `GetUsableModels` carries no context-window field, so the 1M ceiling is
- * recovered from the signals Cursor does send:
- * - display-name labels ("Opus 5 1M", "GPT-5.5 1M High") across families,
- * - natively 1M families Cursor serves unlabeled (Kimi K3, GLM 5.2+),
- * - the max-mode flag on Claude/Gemini ids, whose max-mode ceiling is 1M.
- */
 const CURSOR_1M_CONTEXT_WINDOW = 1_000_000;
 const CURSOR_1M_NAME_PATTERN = /\b1m\b/i;
 const CURSOR_MAX_MODE_1M_ID_PATTERN = /claude|gemini/;
-/** Kimi's official bare K3 id (`k3`, `kimi/k3`); `k3-256k` is the 256k SKU and stays out. */
+
 const CURSOR_KIMI_K3_BARE_ID_PATTERN = /(^|\/)k3$/i;
 
-/**
- * Versioned Cursor Grok ids (`cursor-grok-4.5`, `cursor-grok-4.6-high`) are
- * reasoning models whose effort is carried in the per-tier sibling id.
- * `GetUsableModels` ships no `thinkingDetails` and the bundled references read
- * `reasoning: false`, so classification falls back to the id. The non-reasoning
- * `grok-code-*` coding models lack the version digit and stay out.
- */
 const CURSOR_GROK_REASONING_ID_PATTERN = /^cursor-grok-\d/i;
 
-/**
- * Model-id families whose native catalogs (anthropic, openai/openai-codex,
- * google) are multimodal. Cursor-only or text-only families (`composer-*`,
- * `grok-code-*`) intentionally stay outside this pattern.
- */
 const CURSOR_MULTIMODAL_ID_PATTERN = /claude|gemini|gpt-|codex/;
 
 const OptionalDisplayNameSchema = type("unknown").pipe(raw => (typeof raw === "string" ? raw : undefined));
@@ -74,28 +55,18 @@ const CursorDecodedResponseSchema = type({
 
 type CursorModelDetailsValue = typeof CursorModelDetailsSchema.infer;
 
-/**
- * Options for fetching dynamic Cursor models from `GetUsableModels`.
- */
 export interface CursorModelDiscoveryOptions {
-	/** Cursor access token used for bearer authentication. */
 	apiKey: string;
-	/** Optional Cursor API base URL override. */
+
 	baseUrl?: string;
-	/** Optional client version override sent as `x-cursor-client-version`. */
+
 	clientVersion?: string;
-	/** Optional request timeout in milliseconds. */
+
 	timeoutMs?: number;
-	/** Optional list of custom Cursor model ids to include in request context. */
+
 	customModelIds?: string[];
 }
 
-/**
- * Fetches Cursor models through `GetUsableModels` and normalizes them into canonical model entries.
- *
- * Returns `null` on request/decode failures.
- * Returns `[]` only when the endpoint responds successfully with no usable models.
- */
 export async function fetchCursorUsableModels(
 	options: CursorModelDiscoveryOptions,
 ): Promise<ModelSpec<"cursor-agent">[] | null> {
@@ -136,7 +107,6 @@ function buildRequestHeaders(options: CursorModelDiscoveryOptions): Record<strin
 	};
 }
 
-/** HTTP/2 transport required by Cursor API (HTTP/1.1 is rejected with 464). */
 async function fetchViaHttp2(
 	baseUrl: string,
 	body: Uint8Array,
@@ -338,10 +308,6 @@ function normalizeCursorModel(
 	};
 }
 
-/**
- * Context window for a discovered Cursor model: the 1M ceiling when any 1M
- * signal fires (never below a larger bundled reference), else the fallback.
- */
 function resolveCursorContextWindow(
 	model: CursorModelDetailsValue,
 	id: string,
@@ -358,13 +324,6 @@ function resolveCursorContextWindow(
 	return fallback;
 }
 
-/**
- * Natively 1M-context families Cursor serves without a "1M" label: Kimi K3 and
- * GLM 5.2+ coding SKUs. The shared family parsers cover namespace forms
- * (`moonshotai/kimi-k3`, `z-ai/glm-5.2`) and future GLM versions (`glm-5.10`,
- * `glm-6`); vision and sub-1M variants stay out via the same gates as
- * `isGlm52ReasoningEffortModelId`.
- */
 function isCursorNative1MModelId(id: string): boolean {
 	if (isKimiK3ModelId(id) || CURSOR_KIMI_K3_BARE_ID_PATTERN.test(id)) {
 		return true;
@@ -393,14 +352,6 @@ function pickModelDisplayName(model: CursorModelDetailsValue, fallbackId: string
 	return fallbackId;
 }
 
-/**
- * Infers input modalities for Cursor models without a bundled reference.
- *
- * `GetUsableModels` carries no per-model modality metadata, so classification
- * falls back to the model family: families that are multimodal in PROTO's own
- * native catalogs accept images, everything else stays text-only. Mirrors
- * `inferInputFromGeminiId` in ./gemini.ts.
- */
 function inferInputFromCursorId(id: string): ("text" | "image")[] {
 	if (CURSOR_MULTIMODAL_ID_PATTERN.test(id.toLowerCase())) {
 		return ["text", "image"];

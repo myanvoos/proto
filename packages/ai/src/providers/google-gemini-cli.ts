@@ -1,8 +1,3 @@
-/**
- * Google Gemini CLI / Antigravity provider.
- * Shared implementation for both google-gemini-cli and google-antigravity providers.
- * Uses the Cloud Code Assist API endpoint to access Gemini and Claude models.
- */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
@@ -31,8 +26,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { extractGoogleValidationUrl, formatGoogleValidationRequiredMessage } from "../utils/google-validation";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
-// Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
-// the stream provider trusts the access token threaded through `options.apiKey`.
+
 import { normalizeSchemaForCCA } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
@@ -54,10 +48,6 @@ import {
 	startTextOrThinkingBlock,
 } from "./google-shared";
 
-/**
- * Thinking level for Gemini 3 models. Re-exported from `google-shared` so existing
- * `import { GoogleThinkingLevel } from "./google-gemini-cli"` callers keep working.
- */
 export type { GoogleThinkingLevel };
 
 function isPlanningLeakPrefix(text: string): boolean {
@@ -183,17 +173,14 @@ function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = f
 		return { kind: "plain", visibleText: text };
 	}
 
-	// Try standard brace-balanced slicing first (respecting quotes and escapes)
 	let leading = splitLeadingJsonObject(text);
 
-	// If standard parsing fails (e.g. due to unescaped quotes), fall back to quote-ignoring brace-balanced slicing
 	if (!leading) {
 		leading = splitLeadingJsonObjectIgnoringQuotes(text);
 	}
 
 	if (!leading) {
 		if (isFinal) {
-			// At EOF, if the buffer has a leak signature but no closing brace at all, discard the whole buffer.
 			const trimmed = text.trim();
 			const hasThoughtKey = trimmed.includes('"thought"');
 			const hasToolKey = Array.from(toolNames).some(name => trimmed.includes(`"${name}"`));
@@ -214,7 +201,6 @@ function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = f
 	try {
 		parsed = JSON.parse(leading.jsonText);
 	} catch {
-		// Fallback to substring matching if JSON parsing fails due to unescaped quotes
 		const hasThoughtKey = leading.jsonText.includes('"thought"');
 		const hasToolKey = Array.from(toolNames).some(name => leading.jsonText.includes(`"${name}"`));
 		const hasToolSignature =
@@ -226,7 +212,7 @@ function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = f
 		if (isLeak) {
 			return { kind: "leak", visibleText: leading.rest };
 		}
-		// Unparseable leading object is not safe to strip; release it as normal text.
+
 		return { kind: "plain", visibleText: text };
 	}
 
@@ -236,55 +222,30 @@ function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = f
 }
 
 export interface GoogleGeminiCliOptions extends StreamOptions {
-	/**
-	 * Tool selection mode. String forms map directly to Gemini
-	 * `FunctionCallingConfigMode`. The object form forces a single named tool —
-	 * `mode: "ANY"` is wire-required when `allowedFunctionNames` is set.
-	 */
 	toolChoice?: "auto" | "none" | "any" | { mode: "ANY"; allowedFunctionNames: [string, ...string[]] };
-	/**
-	 * Thinking/reasoning configuration.
-	 * - Gemini 2.x models: use `budgetTokens` to set the thinking budget
-	 * - Gemini 3 models (gemini-3-pro-*, gemini-3-flash-*): use `level` instead
-	 *
-	 * When using `streamSimple`, this is handled automatically based on the model.
-	 */
+
 	thinking?: {
 		enabled: boolean;
-		/** Thinking budget in tokens. Use for Gemini 2.x models. */
+
 		budgetTokens?: number;
-		/** Thinking level. Use for Gemini 3 models (LOW/HIGH for Pro, MINIMAL/LOW/MEDIUM/HIGH for Flash). */
+
 		level?: GoogleThinkingLevel;
-		/**
-		 * Explicit wire suppression when `enabled` is false. Cloud Code Assist
-		 * re-applies the per-id baked server default when thinkingConfig is
-		 * omitted, so models with `thinking.suppressWhenOff` must send
-		 * `includeThoughts: false` plus a MINIMAL level (or zero budget).
-		 */
+
 		suppress?: { level: GoogleThinkingLevel } | { budget: number };
 	};
-	/** Request that Cloud Code Assist omit human-readable thought summaries while still allowing internal reasoning. */
+
 	hideThinkingSummary?: boolean;
-	/**
-	 * Upstream wire model id override for collapsed effort-tier variants.
-	 * Serialized as `requestModelId ?? model.requestModelId ?? model.id`.
-	 */
+
 	requestModelId?: string;
 	projectId?: string;
-	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
+
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
 	providerSessionState?: Map<string, ProviderSessionState>;
 }
 
 export interface AntigravityProviderSessionState extends ProviderSessionState {
 	lastGoodEndpoint?: string;
-	/**
-	 * Per-conversation request-envelope identity that mirrors the real
-	 * Antigravity client. `sessionId` is the signed-decimal session id;
-	 * `agentId`/`trajectoryId` are UUIDs; `stepIndex` is the monotonic step
-	 * counter; `lastExecutionId` is the prior response id echoed as
-	 * `labels.last_execution_id`.
-	 */
+
 	agentId?: string;
 	trajectoryId?: string;
 	sessionId?: string;
@@ -315,7 +276,6 @@ const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 const ANTIGRAVITY_ENDPOINT_FALLBACKS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
-// Retry configuration
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 const FLASH_FIRST_EVENT_TIMEOUT_MS = 60_000;
@@ -477,7 +437,7 @@ interface CloudCodeAssistResponseChunk {
 		responseId?: string;
 		promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
 	};
-	/** In-band stream failure (quota, internal error) delivered as a final JSON event. */
+
 	error?: { code?: number; message?: string; status?: string };
 	traceId?: string;
 }
@@ -523,11 +483,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const isAntigravity = model.provider === "google-antigravity";
 			const parsedCredentials = parseGeminiCliCredentials(apiKeyRaw);
 			const { accessToken, projectId } = parsedCredentials;
-			// AuthStorage already refreshed credentials before threading them
-			// here (see {@link OAUTH_REFRESH_SKEW_MS}). If the credential lands
-			// expired we bail rather than POSTing a stale token; the next call
-			// — driven by AuthStorage's invalidate+retry path — will carry a
-			// fresh credential.
+
 			if (
 				shouldRefreshGeminiCliCredentials(parsedCredentials.expiresAt, isAntigravity) &&
 				parsedCredentials.expiresAt !== undefined &&
@@ -553,7 +509,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					endpoints = [ANTIGRAVITY_DAILY_ENDPOINT];
 					if (providerState) providerState.lastGoodEndpoint = undefined;
 				} else {
-					// auto mode
 					if (baseUrl) {
 						const cleanUrl = baseUrl.replace(/\/+$/, "");
 						if (cleanUrl !== ANTIGRAVITY_DAILY_ENDPOINT && cleanUrl !== ANTIGRAVITY_SANDBOX_ENDPOINT) {
@@ -607,10 +562,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				headers: requestHeaders,
 			};
 
-			// The provider owns the first-event watchdog so a silent successful
-			// response can fail over to the alternate Antigravity endpoint before
-			// anything user-visible has streamed. Flash should not inherit the
-			// five-minute allowance reserved for cold Pro reasoning starts.
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ??
 				getStreamFirstEventTimeoutMs(
@@ -622,8 +573,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const isFlashLeakModel = model.id.includes("flash");
 
 			let started = false;
-			// Once any stream event starts, the endpoint is committed downstream.
-			// Failover remains safe only while `started` is false.
+
 			let sawFinishReason = false;
 			let lastResponseId: string | undefined;
 			const ensureStarted = () => {
@@ -660,8 +610,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					});
 				}
 
-				// Scoped per attempt so a failed/empty retry cannot leak its
-				// response id into the next request's last_execution_id.
 				lastResponseId = undefined;
 
 				let currentBlock: TextContent | ThinkingContent | null = null;
@@ -869,8 +817,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					if (candidate?.finishReason) {
 						sawFinishReason = true;
 						const mapped = mapStopReasonString(candidate.finishReason);
-						// Only let a trailing tool call upgrade benign finishes; error finishes
-						// (SAFETY, MALFORMED_FUNCTION_CALL, ...) must surface even with tool calls present.
+
 						if ((mapped === "stop" || mapped === "length") && output.content.some(b => b.type === "toolCall")) {
 							output.stopReason = "toolUse";
 						} else {
@@ -882,7 +829,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 
 					if (responseData.usageMetadata) {
-						// promptTokenCount includes cachedContentTokenCount, so subtract to get fresh input
 						const promptTokens = responseData.usageMetadata.promptTokenCount || 0;
 						const cacheReadTokens = responseData.usageMetadata.cachedContentTokenCount || 0;
 						const thinkingTokens = responseData.usageMetadata.thoughtsTokenCount || 0;
@@ -940,9 +886,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					started = false;
 					resetOutput();
 
-					// Per attempt: arm a pre-response (TTFT) timer, cleared the instant
-					// headers arrive so it never aborts the actively streaming body —
-					// an absolute `AbortSignal.timeout` would (issue #2422).
 					const watchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
 					let response: Response;
 					try {
@@ -1021,10 +964,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						}
 
 						const streamed = await streamResponse(currentResponse);
-						// Eventless silence may fail over to the alternate Antigravity
-						// endpoint. Once thinking has streamed, the endpoint is already
-						// committed downstream; Advisor mode may accept that silence,
-						// while normal sessions surface it to final-output recovery.
+
 						const thoughtOnly = hasThinkingOutput();
 						const acceptedSilence =
 							options?.acceptEmptyResponse === true &&
@@ -1035,10 +975,6 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							break;
 						}
 
-						// A thought-only STOP is a complete provider response, not a
-						// transiently empty transport. Replaying the identical request
-						// burns another full reasoning pass; let session recovery add
-						// an explicit final-output reminder instead.
 						if (thoughtOnly) break;
 
 						if (emptyAttempt < MAX_EMPTY_STREAM_RETRIES) {
@@ -1077,16 +1013,13 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 						);
 					}
 
-					// Succeeded! Break the endpoints loop.
 					if (
 						providerState &&
 						(options?.antigravityEndpointMode === "auto" || !options?.antigravityEndpointMode)
 					) {
 						providerState.lastGoodEndpoint = endpoint;
 					}
-					// Commit after a fully successful attempt (content + finish reason);
-					// used as the next request's last_execution_id. Overwrite even when
-					// undefined so a response without an id can't leave a stale value.
+
 					if (providerState) {
 						providerState.lastExecutionId = lastResponseId;
 					}
@@ -1223,13 +1156,6 @@ interface AntigravityRequestEnvelope {
 	labels: Record<string, string>;
 }
 
-/**
- * Build the Antigravity request envelope (sessionId, structured requestId,
- * labels) advancing the per-conversation session state. Mirrors the real
- * `antigravity/hub` client: `requestId` is `agent/<agentId>/<ts>/<trajectoryId>/<step>`
- * and `labels.last_step_index` trails the requestId step by one. Without session
- * state (direct callers/tests) it falls back to ephemeral ids.
- */
 function buildAntigravityRequestEnvelope(
 	model: Model<"google-gemini-cli">,
 	context: Context,
@@ -1291,25 +1217,20 @@ export function buildRequest(
 		generationConfig.repetitionPenalty = options.repetitionPenalty;
 	}
 
-	// Thinking config
 	if (options.thinking?.enabled && model.reasoning) {
 		generationConfig.thinkingConfig = {
 			includeThoughts: !options.hideThinkingSummary,
 		};
-		// Gemini 3 models use thinkingLevel, older models use thinkingBudget
+
 		if (options.thinking.level !== undefined) {
-			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
 			generationConfig.thinkingConfig.thinkingLevel = options.thinking.level as any;
 		} else if (options.thinking.budgetTokens !== undefined) {
 			generationConfig.thinkingConfig.thinkingBudget = options.thinking.budgetTokens;
 		}
 	} else if (options.thinking?.suppress && model.reasoning) {
-		// Explicit off: omitting thinkingConfig re-applies the per-id baked
-		// server default (the model silently thinks and bills the tokens).
 		const suppress = options.thinking.suppress;
 		generationConfig.thinkingConfig = { includeThoughts: false };
 		if ("level" in suppress) {
-			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
 			generationConfig.thinkingConfig.thinkingLevel = suppress.level as any;
 		} else {
 			generationConfig.thinkingConfig.thinkingBudget = suppress.budget;
@@ -1320,8 +1241,6 @@ export function buildRequest(
 		contents,
 	};
 
-	// System instruction is an object with parts, not a plain string. Antigravity
-	// tags it with role "user" to mirror the real client.
 	if (systemPrompts.length > 0) {
 		request.systemInstruction = {
 			...(isAntigravity ? { role: "user" } : {}),
@@ -1349,16 +1268,12 @@ export function buildRequest(
 					},
 				};
 			}
-			// Cloud Code Assist drops `toolConfig` on Antigravity's Gemini routes:
-			// the backend answers in text under `mode: "ANY"` and still emits calls
-			// under `"NONE"`. Claude routes implement it, so only Gemini needs the
-			// forced choice restated in the transcript.
+
 			if (isAntigravity && !isClaudeModel(model.id) && request.toolConfig?.functionCallingConfig.mode === "ANY") {
 				contents.push({ role: "user", parts: [{ text: forcedToolDirective }] });
 			}
 		}
-		// Antigravity's default tool mode is VALIDATED (verified for Gemini and
-		// Claude); an explicit non-auto tool choice above wins.
+
 		if (isAntigravity && !request.toolConfig) {
 			request.toolConfig = {
 				functionCallingConfig: { mode: "VALIDATED" as FunctionCallingConfigMode },
@@ -1366,7 +1281,6 @@ export function buildRequest(
 		}
 	}
 
-	// Claude on Antigravity always forces VALIDATED, even with no tools declared.
 	if (isAntigravity && isClaudeModel(model.id)) {
 		request.toolConfig = {
 			functionCallingConfig: {
@@ -1378,8 +1292,6 @@ export function buildRequest(
 	const wireModelId = options.requestModelId ?? model.requestModelId ?? model.id;
 
 	if (isAntigravity) {
-		// The real client sends a fixed per-model output cap independent of the
-		// thinking budget; reassign so it keeps its slot ahead of thinkingConfig.
 		const profile = getAntigravityModelWireProfile(wireModelId);
 		if (profile) {
 			generationConfig.maxOutputTokens = profile.maxOutputTokens;

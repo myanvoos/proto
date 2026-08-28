@@ -1,8 +1,3 @@
-/**
- * Kagi Web Search Provider
- *
- * Thin wrapper that adapts shared Kagi API utilities to SearchResponse shape.
- */
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
 import type { SearchResponse } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -19,7 +14,6 @@ type SearchParamsWithFetch = SearchParams & { fetch?: FetchImpl };
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 40;
 
-/** Execute Kagi web search. */
 export async function searchKagi(params: {
 	query: string;
 	num_results?: number;
@@ -32,9 +26,7 @@ export async function searchKagi(params: {
 	fetch?: FetchImpl;
 }): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-	// Kagi's index understands the classic Google operator set: canonicalize
-	// directives (domain: -> site:, until: -> before:YYYY-MM-DD, ...) and pass
-	// them through in the query string. Directive-free queries stay untouched.
+
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const query = parsed.hasDirectives ? formatQuery(parsed, GOOGLE_QUERY_SYNTAX) : params.query;
 
@@ -71,7 +63,6 @@ export async function searchKagi(params: {
 	}
 }
 
-/** Search provider for Kagi web search. */
 export class KagiProvider extends SearchProvider {
 	readonly id = "kagi";
 	readonly label = "Kagi";

@@ -2,9 +2,6 @@ import { tryParseJson } from "@oh-my-pi/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, formatNumber, loadPage } from "./types";
 
-/**
- * Common Wikidata property IDs mapped to human-readable names
- */
 const PROPERTY_LABELS: Record<string, string> = {
 	P31: "Instance of",
 	P279: "Subclass of",
@@ -88,9 +85,6 @@ type WikidataValue =
 	| { text: string; language: string }
 	| { latitude: number; longitude: number; precision: number };
 
-/**
- * Handle Wikidata URLs via EntityData API
- */
 export const handleWikidata: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -100,14 +94,12 @@ export const handleWikidata: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (!parsed.hostname.includes("wikidata.org")) return null;
 
-		// Extract Q-id from /wiki/Q123 or /entity/Q123
 		const qidMatch = parsed.pathname.match(/\/(?:wiki|entity)\/(Q\d+)/i);
 		if (!qidMatch) return null;
 
 		const qid = qidMatch[1].toUpperCase();
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch entity data from API
 		const apiUrl = `https://www.wikidata.org/wiki/Special:EntityData/${qid}.json`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
@@ -119,7 +111,6 @@ export const handleWikidata: SpecialHandler = async (
 		const entity = data.entities[qid];
 		if (!entity) return null;
 
-		// Get label and description (prefer English)
 		const label = getLocalizedValue(entity.labels, "en") || qid;
 		const description = getLocalizedValue(entity.descriptions, "en");
 		const aliases = getLocalizedAliases(entity.aliases, "en");
@@ -128,17 +119,14 @@ export const handleWikidata: SpecialHandler = async (
 		if (description) md += `*${description}*\n\n`;
 		if (aliases.length > 0) md += `**Also known as:** ${aliases.join(", ")}\n\n`;
 
-		// Count sitelinks
 		const sitelinkCount = entity.sitelinks ? Object.keys(entity.sitelinks).length : 0;
 		if (sitelinkCount > 0) {
 			md += `**Wikipedia articles:** ${formatNumber(sitelinkCount)} languages\n\n`;
 		}
 
-		// Process claims
 		if (entity.claims && Object.keys(entity.claims).length > 0) {
 			md += "## Properties\n\n";
 
-			// Collect entity IDs we need to resolve
 			const entityIdsToResolve = new Set<string>();
 			for (const claims of Object.values(entity.claims)) {
 				for (const claim of claims) {
@@ -149,10 +137,8 @@ export const handleWikidata: SpecialHandler = async (
 				}
 			}
 
-			// Fetch labels for referenced entities (limit to 50)
 			const entityLabels = await resolveEntityLabels(Array.from(entityIdsToResolve).slice(0, 50), timeout, signal);
 
-			// Group claims by property
 			const processedProperties: string[] = [];
 			for (const [propId, claims] of Object.entries(entity.claims)) {
 				const propLabel = PROPERTY_LABELS[propId] || propId;
@@ -167,14 +153,12 @@ export const handleWikidata: SpecialHandler = async (
 				}
 
 				if (values.length > 0) {
-					// Limit values shown per property
 					const displayValues = values.slice(0, 10);
 					const overflow = values.length > 10 ? ` […${values.length - 10} values elided…]` : "";
 					processedProperties.push(`- **${propLabel}:** ${displayValues.join(", ")}${overflow}`);
 				}
 			}
 
-			// Sort: known properties first, then by property ID
 			processedProperties.sort((a, b) => {
 				const aKnown = Object.values(PROPERTY_LABELS).some(l => a.includes(`**${l}:**`));
 				const bKnown = Object.values(PROPERTY_LABELS).some(l => b.includes(`**${l}:**`));
@@ -183,7 +167,6 @@ export const handleWikidata: SpecialHandler = async (
 				return a.localeCompare(b);
 			});
 
-			// Limit total properties shown
 			const maxProps = 50;
 			md += processedProperties.slice(0, maxProps).join("\n");
 			if (processedProperties.length > maxProps) {
@@ -192,7 +175,6 @@ export const handleWikidata: SpecialHandler = async (
 			md += "\n";
 		}
 
-		// Add notable sitelinks
 		if (entity.sitelinks) {
 			const notableSites = ["enwiki", "dewiki", "frwiki", "eswiki", "jawiki", "zhwiki"];
 			const links: string[] = [];
@@ -217,23 +199,17 @@ export const handleWikidata: SpecialHandler = async (
 	return null;
 };
 
-/**
- * Get localized value with fallback
- */
 function getLocalizedValue(
 	values: Record<string, { language: string; value: string }> | undefined,
 	preferredLang: string,
 ): string | null {
 	if (!values) return null;
 	if (values[preferredLang]) return values[preferredLang].value;
-	// Fallback to any available
+
 	const first = Object.values(values)[0];
 	return first?.value || null;
 }
 
-/**
- * Get aliases for a language
- */
 function getLocalizedAliases(
 	aliases: Record<string, Array<{ language: string; value: string }>> | undefined,
 	preferredLang: string,
@@ -244,9 +220,6 @@ function getLocalizedAliases(
 	return langAliases.map(a => a.value);
 }
 
-/**
- * Resolve entity IDs to their labels via wbgetentities API
- */
 async function resolveEntityLabels(
 	entityIds: string[],
 	timeout: number,
@@ -256,7 +229,6 @@ async function resolveEntityLabels(
 
 	const labels: Record<string, string> = {};
 
-	// Fetch in batches of 50
 	const batchSize = 50;
 	for (let i = 0; i < entityIds.length; i += batchSize) {
 		const batch = entityIds.slice(i, i + batchSize);
@@ -279,9 +251,6 @@ async function resolveEntityLabels(
 	return labels;
 }
 
-/**
- * Format a claim value to human-readable string
- */
 function formatClaimValue(claim: WikidataClaim, entityLabels: Record<string, string>): string | null {
 	const snak = claim.mainsnak;
 	if (snak.snaktype !== "value" || !snak.datavalue) return null;
@@ -302,7 +271,7 @@ function formatClaimValue(claim: WikidataClaim, entityLabels: Record<string, str
 		case "quantity": {
 			const qtyVal = value as { amount: string; unit: string };
 			const amount = qtyVal.amount.replace(/^\+/, "");
-			// Extract unit Q-id if present
+
 			const unitMatch = qtyVal.unit.match(/Q\d+$/);
 			const unit = unitMatch ? entityLabels[unitMatch[0]] || "" : "";
 			return unit ? `${amount} ${unit}` : amount;
@@ -320,11 +289,7 @@ function formatClaimValue(claim: WikidataClaim, entityLabels: Record<string, str
 	}
 }
 
-/**
- * Format Wikidata time value to readable date
- */
 function formatWikidataTime(time: string, precision: number): string {
-	// Time format: +YYYY-MM-DDT00:00:00Z
 	const match = time.match(/^([+-]?\d+)-(\d{2})-(\d{2})/);
 	if (!match) return time;
 
@@ -333,7 +298,6 @@ function formatWikidataTime(time: string, precision: number): string {
 	const absYear = Math.abs(yearNum);
 	const era = yearNum < 0 ? " BCE" : "";
 
-	// Precision: 9=year, 10=month, 11=day
 	if (precision >= 11) {
 		return `${day}/${month}/${absYear}${era}`;
 	}

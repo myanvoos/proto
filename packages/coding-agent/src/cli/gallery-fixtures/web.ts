@@ -1,10 +1,9 @@
-// Gallery fixtures for the web tools (web_search, browser).
 import type { GalleryFixture } from "./types";
 
 export const webFixtures: Record<string, GalleryFixture> = {
 	web_search: {
 		label: "Web Search",
-		// Streaming: query still being typed, no recency/limit yet.
+
 		streamingArgs: { query: "bun vs node performance" },
 		args: {
 			query: "Bun vs Node.js performance benchmarks 2026",
@@ -100,7 +99,7 @@ export const webFixtures: Record<string, GalleryFixture> = {
 
 	browser: {
 		label: "Browser",
-		// Streaming: code body still arriving for a `run` action.
+
 		streamingArgs: {
 			action: "run",
 			name: "docs",

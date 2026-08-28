@@ -412,7 +412,6 @@ function resolvePendingLinks(
 	if (unresolved.size > 0) throw new ArchiveError("Archive contains cyclic or unsupported links");
 }
 
-/** Index an already-decompressed tar buffer with bounded GNU, ustar, and PAX handling. */
 export function readTarEntriesFromBuffer(buffer: Uint8Array, options: FormatReadOptions): ArchiveIndexEntry[] {
 	const { limits } = options;
 	assertInMemorySize(buffer.byteLength, limits);
@@ -575,7 +574,6 @@ export function readTarEntriesFromBuffer(buffer: Uint8Array, options: FormatRead
 	return [...entries.values()];
 }
 
-/** Read and index a tar source after one bounded whole-stream read. */
 export const readTar: FormatReader = async (source, options) => {
 	assertInMemorySize(source.size, options.limits);
 	let bytes: Uint8Array;
@@ -589,7 +587,6 @@ export const readTar: FormatReader = async (source, options) => {
 	return readTarEntriesFromBuffer(bytes, options);
 };
 
-/** Detect a tar header, including legacy pre-ustar archives, by its checksum. */
 export function sniffTar(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < BLOCK_SIZE) return false;
 	if (isZeroBlock(bytes, 0)) return true;
@@ -734,7 +731,6 @@ function appendTarEntry(
 	if (!directory) appendPayload(parts, payload);
 }
 
-/** Encode files as a deterministic ustar archive, using PAX records for overflow paths. */
 export async function encodeTar(members: Iterable<readonly [string, Uint8Array]>): Promise<Uint8Array> {
 	const parts: Uint8Array[] = [];
 	const kinds = new Map<string, "directory" | "file">();

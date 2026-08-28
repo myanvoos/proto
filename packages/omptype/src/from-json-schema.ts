@@ -1,16 +1,3 @@
-/**
- * JSON Schema → omptype importer.
- *
- * Rebuilds a callable schema from JSON Schema documents — the inverse of
- * `Type.toJsonSchema()` for the dialect omptype (and its Zod/TypeBox
- * adapters) emits: draft-07 and draft-2020-12 structural keywords, string
- * formats, `$defs`/`definitions` references (including recursion), enums,
- * and composition via `anyOf`/`oneOf`/`allOf`.
- *
- * Unknown or non-structural keywords are ignored, matching lenient importer
- * behavior: the result validates every constraint the schema can express in
- * omptype IR and passes the rest through.
- */
 import { OmpTypeError } from "./errors";
 import { type EmbeddableSchema, type IR, IR_BRAND, type PropIR, type TupleItemIR } from "./ir";
 import { keywordIR, patternIR } from "./keywords";
@@ -18,7 +5,6 @@ import { type BaseType, type } from "./type";
 
 type JsonSchema = Record<string, unknown>;
 
-/** `format` values lowered to built-in keyword validators. */
 const FORMAT_KEYWORDS: Record<string, string> = {
 	email: "string.email",
 	uuid: "string.uuid",
@@ -52,8 +38,6 @@ class Importer {
 			if (target === undefined) throw new OmpTypeError(`unresolved $ref: ${ref}`);
 		}
 
-		// Register the alias before lowering so recursive references resolve
-		// to the same node instead of recursing forever.
 		let lowered: IR | undefined;
 		const alias: IR = {
 			k: "alias",
@@ -106,7 +90,6 @@ class Importer {
 		}
 		if (typeof node.type === "string") return this.#lowerTyped(node, node.type);
 
-		// No explicit type: infer from structural keywords, else accept anything.
 		if (node.properties !== undefined || node.required !== undefined) return this.#lowerObject(node);
 		if (node.items !== undefined || node.prefixItems !== undefined) return this.#lowerArray(node);
 		return { k: "unknown" };
@@ -211,13 +194,6 @@ class Importer {
 	}
 }
 
-/**
- * Build a callable omptype schema from a JSON Schema document.
- *
- * # Errors
- * Throws {@link OmpTypeError} on malformed nodes, unresolvable `$ref`s, or
- * types omptype cannot represent.
- */
 export function fromJsonSchema(schema: unknown): BaseType {
 	const importer = new Importer(typeof schema === "object" && schema !== null ? (schema as JsonSchema) : {});
 	const embedded: EmbeddableSchema = {

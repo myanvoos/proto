@@ -1,11 +1,3 @@
-/**
- * Exa Web Search Provider
- *
- * High-quality neural search via Exa Search API.
- * Returns structured search results with optional content extraction.
- * Requests per-result summaries via `contents.summary` and synthesizes
- * them into a combined `answer` string on the SearchResponse.
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import { getDefault, settings } from "../../../config/settings";
 import { findApiKey, isSearchResponse } from "../../../exa/mcp-client";
@@ -99,7 +91,6 @@ async function waitForExaSearchSlot(signal: AbortSignal | undefined): Promise<vo
 	await waitUntilDoneOrAborted(queued, signal);
 }
 
-/** Reset Exa request pacing state for isolated provider tests. */
 export function resetExaSearchThrottleForTest(): void {
 	nextExaSearchRequestAt = 0;
 	exaSearchThrottle = Promise.resolve();
@@ -120,10 +111,7 @@ interface ExaSearchParams {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	fetch?: FetchImpl;
-	/**
-	 * Credential source. Resolved before falling back to `EXA_API_KEY` so
-	 * Exa works when the key is stored via the broker/auth pipeline.
-	 */
+
 	authStorage?: AuthStorage;
 	sessionId?: string;
 }
@@ -259,14 +247,8 @@ export function normalizeSearchType(type: ExaSearchParamType | undefined): ExaSe
 	return type;
 }
 
-/** Maximum number of per-result summaries to include in the synthesized answer. */
 const MAX_ANSWER_SUMMARIES = 3;
 
-/**
- * Synthesize an answer string from per-result summaries returned by Exa.
- * Returns `undefined` when no non-empty summaries are available so callers
- * can leave `SearchResponse.answer` unset (matching other providers).
- */
 export function synthesizeAnswer(results: ExaSearchResult[]): string | undefined {
 	const parts: string[] = [];
 	for (const r of results) {
@@ -279,7 +261,6 @@ export function synthesizeAnswer(results: ExaSearchResult[]): string | undefined
 	return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
-/** Build the request body for `callExaSearch`. Exported for testing. */
 export function buildExaRequestBody(params: ExaSearchParams): Record<string, unknown> {
 	const body: Record<string, unknown> = {
 		query: params.query,
@@ -306,7 +287,6 @@ export function buildExaRequestBody(params: ExaSearchParams): Record<string, unk
 	return body;
 }
 
-/** Call Exa Search API */
 async function callExaSearch(apiKey: string, params: ExaSearchParams): Promise<ExaSearchResponse> {
 	const body = buildExaRequestBody(params);
 
@@ -426,11 +406,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 	throw new Error("Exa MCP search returned unexpected response shape.");
 }
 
-/** Execute Exa web search */
 export async function searchExa(params: ExaSearchParams): Promise<SearchResponse> {
-	// AuthStorage-backed key takes precedence (existing behavior); probe it once
-	// so the env-key and keyless-MCP fallbacks below stay intact, then drive the
-	// authStorage path through the central force-refresh/rotate retry policy.
 	const storedKey = params.authStorage
 		? await params.authStorage.getApiKey("exa", params.sessionId, { signal: params.signal })
 		: undefined;
@@ -442,7 +418,6 @@ export async function searchExa(params: ExaSearchParams): Promise<SearchResponse
 		? await withAuth(keyOrResolver, key => callExaSearch(key, params), { signal: params.signal })
 		: await callExaMcpSearch(params);
 
-	// Convert to unified SearchResponse
 	const sources: SearchSource[] = [];
 
 	if (response.results) {
@@ -462,10 +437,8 @@ export async function searchExa(params: ExaSearchParams): Promise<SearchResponse
 		}
 	}
 
-	// Apply num_results limit if specified
 	const limitedSources = params.num_results ? sources.slice(0, params.num_results) : sources;
 
-	// Synthesize answer only from results that have a URL (same guard as sources loop)
 	const answer = response.results ? synthesizeAnswer(response.results.filter(r => !!r.url)) : undefined;
 
 	return {
@@ -476,7 +449,6 @@ export async function searchExa(params: ExaSearchParams): Promise<SearchResponse
 	};
 }
 
-/** Search provider for Exa. */
 export class ExaProvider extends SearchProvider {
 	readonly id = "exa";
 	readonly label = "Exa";
@@ -486,13 +458,6 @@ export class ExaProvider extends SearchProvider {
 		return !!getEnvApiKey("exa") || authStorage.hasAuth("exa");
 	}
 
-	/**
-	 * Exa ships an unauthenticated public MCP fallback, so an explicit
-	 * selection (programmatic or via `providers.webSearch: exa`) routes
-	 * through MCP even when no credential is configured. The auto chain
-	 * still uses {@link isAvailable} so an unrelated configured provider
-	 * keeps priority over the public fallback.
-	 */
 	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return this.#settingsAllowSearch();
 	}
@@ -502,9 +467,7 @@ export class ExaProvider extends SearchProvider {
 			if (settings.get("exa.enabled") === false) {
 				return false;
 			}
-		} catch {
-			// Settings may be unavailable before CLI initialization; assume not disabled.
-		}
+		} catch {}
 		return true;
 	}
 
@@ -522,14 +485,6 @@ export class ExaProvider extends SearchProvider {
 	}
 }
 
-/**
- * Map parsed query directives onto Exa's native request parameters:
- * `site:` → includeDomains, `-site:` → excludeDomains (bare hosts; path parts
- * are enforced by the central constraint filter), `after:`/`before:` →
- * start/endPublishedDate (ISO 8601). Exa's neural search prefers natural
- * language, so the query itself is re-emitted with quoted phrases only.
- * Directive-free queries pass through byte-identical.
- */
 function directiveParams(
 	parsed: StructuredQuery,
 ): Pick<

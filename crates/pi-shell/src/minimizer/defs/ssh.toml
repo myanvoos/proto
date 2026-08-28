@@ -1,5 +1,5 @@
-# ssh: mostly passthrough. Trim login banners / motd noise; leave the remote
-# command output untouched.
+
+
 
 [filters.ssh]
 description = "Strip ssh login banner and motd"

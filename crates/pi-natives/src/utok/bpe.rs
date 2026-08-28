@@ -1,24 +1,3 @@
-//! Core byte-pair encoding engine over rank tables (tiktoken algorithm).
-//!
-//! A [`RankTable`] maps token byte sequences to ranks; merge priority is
-//! rank order, so no merges list exists. Tables parse from the UTOK1
-//! container (see `data/families.json` for the format) after zstd
-//! decompression in [`tables`](crate::utok::tables).
-//!
-//! Input is encoding-generic: [`BpeEncoding::count`]/[`encode`]
-//! (`BpeEncoding::encode`) take `&[U: Unit]`. Pre-tokenization scans the
-//! units natively; each piece is then UTF-8-encoded into a reused buffer
-//! for the byte-keyed rank table (`str` input skips that copy entirely,
-//! non-UTF-8 flavors narrow ASCII runs 1:1). Steady state performs no
-//! per-call allocation beyond one scratch buffer for non-UTF-8 flavors.
-//!
-//! Per-flavor native rank-table views (`HashMap<Box<[u16]>, u32>` etc.)
-//! were considered and measured out: with the ASCII narrow path, u16
-//! input already runs at 81-97% of the str path per codepoint (M4 Max,
-//! english/CJK), so a second table per flavor (2x memory, plus a
-//! ragged-token eligibility rule for tokens that split codepoints) buys
-//! almost nothing. Revisit only with profile evidence.
-
 use std::{
 	borrow::Cow,
 	collections::HashMap,
@@ -30,9 +9,6 @@ use crate::utok::{
 	utf::Unit,
 };
 
-/// Firefox/rustc Fx hash: multiplicative word-at-a-time mixing. Rank
-/// lookups hash short byte keys on every merge step; `SipHash` is the
-/// dominant cost there (~30% end-to-end at the default hasher).
 #[derive(Default)]
 struct FxHasher(u64);
 
@@ -65,12 +41,6 @@ impl Hasher for FxHasher {
 type Fx = BuildHasherDefault<FxHasher>;
 type FxMap = HashMap<Box<[u8]>, u32, Fx>;
 
-/// Pack a key of ≤15 bytes losslessly into a `u128`: bytes little-endian
-/// at bits 0..len*8, zero padding, length tag at bits 120..128 (a
-/// 15-byte key leaves the top byte free, so equal packs imply equal keys
-/// even across lengths and with NUL bytes). Built from two overlapping
-/// unaligned reads — a variable-length memcpy here benched slower than
-/// hashing the raw bytes; the overlap region ORs identical bits.
 #[inline]
 fn pack(key: &[u8]) -> Option<u128> {
 	let n = key.len();
@@ -91,37 +61,17 @@ fn pack(key: &[u8]) -> Option<u128> {
 	Some(v | (n as u128) << 120)
 }
 
-/// Token bytes → rank map decoded from a UTOK1 blob.
-///
-/// Split by key length into three stores, matching the merge loop's
-/// query mix (measured on o200k, M4 Max: +18% english / +34% code /
-/// +14% cjk end-to-end vs a single `FxMap<Box<[u8]>, u32>`):
-///
-/// - 2 bytes — direct-indexed table: the merge seed loop queries every adjacent
-///   byte pair, so over half of all lookups land here as one array load.
-/// - other ≤15 bytes — [`pack`]ed `u128` keys in an Fx map: KV inline in the
-///   table, no `Box` pointer chase, no byte-wise compare.
-/// - >15 bytes — plain byte-keyed Fx map (~3% of vocab; spans this long are
-///   > almost always misses).
 pub struct RankTable {
-	/// Rank of 2-byte token `[a, b]` at `a << 8 | b`; `u32::MAX` where
-	/// absent (ranks are vocab indices, far below the sentinel).
-	pairs:             Box<[u32; 65536]>,
-	/// Tokens of 1 or 3..=15 bytes, keyed by [`pack`].
-	short:             HashMap<u128, u32, Fx>,
-	/// Tokens longer than 15 bytes.
-	long:              FxMap,
-	/// Longest token in bytes; callers may use it to bound scans.
+	pairs: Box<[u32; 65536]>,
+
+	short: HashMap<u128, u32, Fx>,
+
+	long: FxMap,
+
 	pub max_token_len: usize,
 }
 
 impl RankTable {
-	/// Parse a zstd-compressed UTOK1 blob. Panics on malformed data — the
-	/// blobs are compile-time embedded, so corruption is a build error.
-	///
-	/// Zero-length entries are *skipped*: packers emit merge-unreachable
-	/// ("dead") vocab slots as empty strings to keep rank contiguity, and
-	/// those ranks must never be produced.
 	pub fn parse(zst: &[u8]) -> Self {
 		let raw = zstd::decode_all(zst).expect("utoken: zstd decode failed");
 		let mut p = &raw[..];
@@ -163,7 +113,6 @@ impl RankTable {
 		Self { pairs, short, long, max_token_len }
 	}
 
-	/// Rank of an exact token byte sequence, if present.
 	#[inline]
 	pub fn rank(&self, piece: &[u8]) -> Option<u32> {
 		if let [a, b] = piece {
@@ -176,7 +125,6 @@ impl RankTable {
 		}
 	}
 
-	/// Append the BPE token ids of one pre-tokenized piece to `out`.
 	pub fn encode_piece(&self, piece: &[u8], out: &mut Vec<u32>) {
 		if piece.is_empty() {
 			return;
@@ -194,7 +142,6 @@ impl RankTable {
 		});
 	}
 
-	/// Token count of one pre-tokenized piece without materializing ids.
 	pub fn count_piece(&self, piece: &[u8]) -> u32 {
 		if piece.is_empty() {
 			return 0;
@@ -207,13 +154,7 @@ impl RankTable {
 		n
 	}
 
-	/// tiktoken's `byte_pair_merge`: start from single bytes, repeatedly
-	/// merge the adjacent pair with the lowest rank, then emit each final
-	/// span via `emit(start, end)`.
 	fn merge(&self, piece: &[u8], mut emit: impl FnMut(usize, usize)) {
-		// parts[k] = (start offset, rank of merging part k with part k+1).
-		// Two sentinels keep `parts[i + 3].0` in-bounds when recomputing
-		// the rank of the pair formed after a merge at the end.
 		let mut parts: Vec<(usize, u32)> = Vec::with_capacity(piece.len() + 1);
 		let mut min_rank: (u32, usize) = (u32::MAX, usize::MAX);
 		for i in 0..piece.len() - 1 {
@@ -226,9 +167,6 @@ impl RankTable {
 		parts.push((piece.len() - 1, u32::MAX));
 		parts.push((piece.len(), u32::MAX));
 
-		// Rank of merging part `k` with part `k+1` once parts `i` and
-		// `i+1` have conceptually fused (called before the `remove`, so
-		// the fused pair spans parts[k].0 .. parts[k + 3].0).
 		let get_rank = |parts: &[(usize, u32)], k: usize| -> u32 {
 			if k + 3 < parts.len() {
 				self
@@ -260,16 +198,12 @@ impl RankTable {
 	}
 }
 
-/// A full BPE tokenizer: piece splitter + rank table + family flags.
 pub struct BpeEncoding {
-	pub table:         RankTable,
-	pub splitter:      Splitter,
-	/// Apply Unicode NFC to input before splitting (Qwen3).
-	pub nfc:           bool,
-	/// HF `ignore_merges`: whole-piece vocab hit bypasses the merge loop
-	/// (GLM-5). The engine already short-circuits whole-piece hits, which
-	/// is proven equivalent for GLM-5 (see GLM tests); flag kept for
-	/// documentation and any future divergence.
+	pub table:    RankTable,
+	pub splitter: Splitter,
+
+	pub nfc: bool,
+
 	#[allow(dead_code, reason = "retained to document the GLM-5 tokenizer behavior")]
 	pub ignore_merges: bool,
 }
@@ -287,11 +221,8 @@ impl BpeEncoding {
 		out
 	}
 
-	/// Normalize/transcode as required, split, and feed each piece's
-	/// UTF-8 bytes to `f` alongside the rank table.
 	fn run<U: Unit>(&self, units: &[U], f: &mut impl FnMut(&RankTable, &[u8])) {
 		if let Some(bytes) = U::as_utf8(units) {
-			// UTF-8 flavor: valid by construction (`str`/`String` input).
 			if self.nfc
 				&& let Ok(text) = std::str::from_utf8(bytes)
 				&& let Cow::Owned(norm) = pretoken::nfc(text)
@@ -300,8 +231,7 @@ impl BpeEncoding {
 			}
 			return self.scan(bytes, f);
 		}
-		// Non-UTF-8 flavors: owned UTF-8 is needed only when NFC actually
-		// has work to do.
+
 		if self.nfc && !nfc_quick(units) {
 			let s = decode_lossy(units);
 			let s = match pretoken::nfc(&s) {
@@ -321,8 +251,6 @@ impl BpeEncoding {
 	}
 }
 
-/// UTF-8 bytes of one piece: identity for `u8`, otherwise re-encoded into
-/// `buf` (reused across pieces — one allocation per call, amortized nil).
 fn piece_bytes<'a, U: Unit>(piece: &'a [U], buf: &'a mut Vec<u8>) -> &'a [u8] {
 	if let Some(bytes) = U::as_utf8(piece) {
 		return bytes;
@@ -331,9 +259,6 @@ fn piece_bytes<'a, U: Unit>(piece: &'a [U], buf: &'a mut Vec<u8>) -> &'a [u8] {
 	buf.reserve(piece.len());
 	let mut i = 0;
 	while i < piece.len() {
-		// ASCII runs narrow 1:1 without the decode/encode round-trip
-		// (dominant for code/English u16 input, cf. xutf's ASCII kernels;
-		// the trivial loop autovectorizes).
 		if let Some(b) = piece[i].ascii() {
 			buf.push(b);
 			i += 1;
@@ -347,7 +272,6 @@ fn piece_bytes<'a, U: Unit>(piece: &'a [U], buf: &'a mut Vec<u8>) -> &'a [u8] {
 	buf
 }
 
-/// Permissive whole-input decode (malformed units → U+FFFD).
 fn decode_lossy<U: Unit>(units: &[U]) -> String {
 	let mut s = String::with_capacity(units.len());
 	let mut i = 0;
@@ -359,8 +283,6 @@ fn decode_lossy<U: Unit>(units: &[U]) -> String {
 	s
 }
 
-/// NFC quick-check over the decoded codepoint stream, allocation-free
-/// (conservative: `false` means "may need normalization").
 fn nfc_quick<U: Unit>(units: &[U]) -> bool {
 	struct Cps<'a, U: Unit>(&'a [U], usize);
 	impl<U: Unit> Iterator for Cps<'_, U> {

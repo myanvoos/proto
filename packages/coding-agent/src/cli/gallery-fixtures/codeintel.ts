@@ -1,4 +1,3 @@
-/** Gallery fixtures for the code-intelligence tools (lsp, debug). */
 import type { GalleryFixture } from "./types";
 
 export const codeintelFixtures: Record<string, GalleryFixture> = {

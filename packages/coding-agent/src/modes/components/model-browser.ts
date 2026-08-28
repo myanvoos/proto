@@ -1,12 +1,3 @@
-/**
- * Frameless, reusable model browser: a fuzzy search row, a windowed model
- * list with role chips and metadata columns, and a selection detail block.
- *
- * Hosts own the surrounding chrome and the data scope — the fullscreen
- * /models hub ({@link ./model-hub}) feeds it scope-filtered items plus role
- * state, while the advisor config overlay embeds it as a plain "pick one
- * model" list.
- */
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -36,33 +27,24 @@ import {
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
 
-/** One selectable row. `selector` is a canonical model key or host-specific virtual key. */
 export interface ModelBrowserItem {
 	provider: string;
 	id: string;
 	model: Model;
 	selector: string;
-	/** Optional foreground color for the row label. */
+
 	labelColor?: ThemeColor;
 }
 
-/** Resolved role assignment as displayed by the browser and the hub. */
 interface RoleAssignment {
 	model: Model;
 	thinkingLevel: ThinkingLevel;
-	/** True when the role has no configured value and fell back to auto-selection. */
+
 	autoSelected: boolean;
 }
 
-/** Map of role id to its resolved assignment (absent roles are unresolved). */
 export type RoleAssignments = Record<string, RoleAssignment | undefined>;
 
-/**
- * Resolve every known role to its display assignment: configured role values
- * resolve against `allModels`; unconfigured roles fall back to auto-selection
- * over `autoCandidates` (skipped when empty). Shared by the /models hub and
- * the alt+p session picker.
- */
 export function resolveRoleAssignments(
 	settings: Settings,
 	allModels: ReadonlyArray<Model>,
@@ -118,7 +100,6 @@ export function resolveRoleAssignments(
 	return roles;
 }
 
-/** Wrap raw models into browser items. */
 export function buildBrowserItems(models: ReadonlyArray<Model>): ModelBrowserItem[] {
 	return models.map(model => ({
 		provider: model.provider,
@@ -128,21 +109,18 @@ export function buildBrowserItems(models: ReadonlyArray<Model>): ModelBrowserIte
 	}));
 }
 
-/** Extract the first version number from a model ID (e.g. "gemini-2.5-pro" → 2.5, "claude-sonnet-4-6" → 4.6). */
 function extractVersionNumber(id: string): number {
-	// Dot-separated version: "gemini-2.5-pro" → 2.5
 	const dotMatch = id.match(/(?:^|[-_])(\d+\.\d+)/);
 	if (dotMatch) return Number.parseFloat(dotMatch[1]);
-	// Dash-separated short segments: "claude-sonnet-4-6" → 4.6, "llama-3-1-8b" → 3.1
+
 	const dashMatch = id.match(/(?:^|[-_])(\d{1,2})-(\d{1,2})(?=-|$)/);
 	if (dashMatch) return Number.parseFloat(`${dashMatch[1]}.${dashMatch[2]}`);
-	// Single number after separator: "gpt-4o" → 4
+
 	const singleMatch = id.match(/(?:^|[-_])(\d+)/);
 	if (singleMatch) return Number.parseFloat(singleMatch[1]);
 	return 0;
 }
 
-/** Rank a model by the first built-in role it is assigned to (lower = earlier role). */
 function computeModelRank(model: Model, roles: RoleAssignments): number {
 	let i = 0;
 	while (i < MODEL_ROLE_IDS.length) {
@@ -155,22 +133,13 @@ function computeModelRank(model: Model, roles: RoleAssignments): number {
 	return i;
 }
 
-/** Options for {@link sortModelItems}. */
 interface SortModelItemsOptions {
 	roles?: RoleAssignments;
 	mruOrder?: ReadonlyArray<string>;
-	/**
-	 * When a search query is narrowing the list, role assignments should NOT
-	 * promote a weakly-matching default model above a perfect text match —
-	 * defer to MRU/version instead so user affinity drives the order.
-	 */
+
 	skipRoleRank?: boolean;
 }
 
-/**
- * Order models for display: role-assigned first, then most-recently-used,
- * then per provider by priority, version, and recency.
- */
 export function sortModelItems(items: ModelBrowserItem[], options: SortModelItemsOptions = {}): void {
 	const { roles = {}, mruOrder = [], skipRoleRank = false } = options;
 	const mruIndex = new Map(mruOrder.map((key, i) => [key, i]));
@@ -185,21 +154,17 @@ export function sortModelItems(items: ModelBrowserItem[], options: SortModelItem
 			if (aRank !== bRank) return aRank - bRank;
 		}
 
-		// Then MRU order (models in mruIndex come before those not in it)
 		const aMru = mruIndex.get(a.selector) ?? Number.MAX_SAFE_INTEGER;
 		const bMru = mruIndex.get(b.selector) ?? Number.MAX_SAFE_INTEGER;
 		if (aMru !== bMru) return aMru - bMru;
 
-		// By provider, then recency within provider
 		const providerCmp = a.provider.localeCompare(b.provider);
 		if (providerCmp !== 0) return providerCmp;
 
-		// Priority field (lower = better, e.g. Codex priority values)
 		const aPri = a.model.priority ?? Number.MAX_SAFE_INTEGER;
 		const bPri = b.model.priority ?? Number.MAX_SAFE_INTEGER;
 		if (aPri !== bPri) return aPri - bPri;
 
-		// Version number descending (higher version = better model)
 		const aVer = extractVersionNumber(a.id);
 		const bVer = extractVersionNumber(b.id);
 		if (aVer !== bVer) return bVer - aVer;
@@ -209,26 +174,20 @@ export function sortModelItems(items: ModelBrowserItem[], options: SortModelItem
 		const aDate = a.id.match(dateRe)?.[1] ?? "";
 		const bDate = b.id.match(dateRe)?.[1] ?? "";
 
-		// Models with recency info come before those without
 		const aHasRecency = aIsLatest || aDate !== "";
 		const bHasRecency = bIsLatest || bDate !== "";
 		if (aHasRecency !== bHasRecency) return aHasRecency ? -1 : 1;
 
-		// If neither has recency info, fall back to alphabetical
 		if (!aHasRecency) return a.id.localeCompare(b.id);
 
-		// -latest always sorts first within recency group
 		if (aIsLatest !== bIsLatest) return aIsLatest ? -1 : 1;
 
-		// Both have dates — descending (newest first)
 		if (aDate && bDate) return bDate.localeCompare(aDate);
 
-		// One has date, other is latest — latest first
 		return aIsLatest ? -1 : bIsLatest ? 1 : a.id.localeCompare(b.id);
 	});
 }
 
-/** Compact glyph for a configured thinking level; empty for `inherit` (nothing to show). */
 export function thinkingLevelGlyph(level: ThinkingLevel): string {
 	const glyphOf = (symbol: string) => symbol.split(" ")[0] ?? symbol;
 	switch (level) {
@@ -251,18 +210,6 @@ export function thinkingLevelGlyph(level: ThinkingLevel): string {
 	}
 }
 
-/**
- * A slim role chip: `● default ◉` — solid dot for configured assignments,
- * hollow for auto-selected fallbacks, thinking glyph attached when set.
- *
- * The space after the status glyph is load-bearing. Under the `nerd` preset
- * these are Nerd Font private-use icons (U+F111 / U+F10C) whose glyphs are
- * drawn two cells wide, while `visibleWidth` counts them as one
- * (`ambiguousIsNarrow: true` in tui/utils.ts — the PUA block is
- * East_Asian_Width=Ambiguous). Without a separator the icon overhangs and
- * eats the label's first character (`● default` renders as `●efault`).
- * Mirrors the spacing already used for `status.success` in model-hub.
- */
 function formatRoleChip(role: string, assignment: RoleAssignment, settings: Settings): string {
 	const info = getRoleInfo(role, settings);
 	const label = (info.tag ?? info.name ?? role).toLowerCase();
@@ -274,7 +221,6 @@ function formatRoleChip(role: string, assignment: RoleAssignment, settings: Sett
 	return theme.fg(info.color ?? "muted", `${theme.status.enabled} ${label}`) + suffix;
 }
 
-/** `$in/out` per-million cost pair; `free` when both legs are zero. */
 function formatCostPair(model: Model): string {
 	const cost = model.cost;
 	if (!cost || (cost.input <= 0 && cost.output <= 0)) return "free";
@@ -286,64 +232,47 @@ function formatCostPair(model: Model): string {
 	return `$${fmt(cost.input)}/${fmt(cost.output)}`;
 }
 
-/**
- * `400k ◫` context-window column; empty when the model does not report one.
- * The icon trails the number so right-alignment pins it to a fixed column
- * instead of drifting with the number's width. The ascii preset's `ctx:`
- * label is a prefix form — strip the colon for suffix placement.
- */
 function formatContext(model: Model): string {
 	const ctx = model.contextWindow ?? 0;
 	if (ctx <= 0) return "";
 	return `${formatNumber(ctx).toLowerCase()} ${theme.icon.context.replace(/:$/, "")}`;
 }
 
-/** `118t/s` average output speed; one decimal below 10 t/s. */
 function formatTps(tps: number): string {
 	const value = tps >= 10 ? String(Math.round(tps)) : tps.toFixed(1);
 	return `${value}t/s`;
 }
 
-/** `0.9s` average time-to-first-token; whole seconds from 10s up. */
 function formatTtft(ms: number): string {
 	const seconds = ms / 1000;
 	return seconds >= 10 ? `${Math.round(seconds)}s` : `${seconds.toFixed(1)}s`;
 }
 
-/** Pad `text` on the left to `width` terminal columns (ANSI/emoji aware). */
 function padLeftVisible(text: string, width: number): string {
 	const missing = width - visibleWidth(text);
 	return missing > 0 ? " ".repeat(missing) + text : text;
 }
 
-/** Behavior switches for {@link ModelBrowser}. */
 interface ModelBrowserOptions {
-	/** Render the dim `provider/` prefix before model ids. Default true. */
 	showProvider?: boolean;
-	/** Session token count used to flag models whose context window is exceeded. */
+
 	currentContextTokens?: number;
-	/** When true, over-context rows render grayed; picking one compacts first (session-switch mode). */
+
 	markOverContext?: boolean;
-	/** Host-provided empty-state text (e.g. provider discovery status). */
+
 	emptyText?: () => string | undefined;
 }
 
-/** Rendered rows before the list window: search row + blank. */
 const LIST_ROW_START = 2;
-/** Rendered rows after the list window: blank + two detail rows. */
+
 const DETAIL_ROWS = 3;
-/** Row width from which the measured-perf column appears (TPS only). */
+
 const PERF_TPS_MIN_WIDTH = 76;
-/** Row width from which the perf column also includes TTFT. */
+
 const PERF_FULL_MIN_WIDTH = 96;
-/** What the per-row perf column shows at the current width. */
+
 type PerfMode = "off" | "tps" | "full";
 
-/**
- * The reusable browser component. Renders a fixed-height block
- * (`maxVisible + LIST_ROW_START + DETAIL_ROWS` rows) so host mouse geometry
- * stays stable across renders.
- */
 export class ModelBrowser implements Component {
 	#settings: Settings;
 	#searchInput = new Input();
@@ -359,21 +288,20 @@ export class ModelBrowser implements Component {
 	#currentContextTokens: number;
 	#markOverContext: boolean;
 	#emptyText?: () => string | undefined;
-	/** Keep role-like virtual rows in their host-defined order during search. */
+
 	#preserveQueryOrder = false;
-	/** First visible list row; panned by the wheel, snapped to the selection on keyboard navigation. */
+
 	#windowStart = 0;
 	#windowCount = 0;
-	/** Whether the host pane owns arrow keys; drives cursor strength and the selected-row band. */
+
 	#focused = true;
-	/** `provider/id` of the session's active model; marked in rows and detail. */
+
 	#currentSelector: string | undefined;
 
-	/** Enter or click-on-selected. */
 	onActivate?: (item: ModelBrowserItem) => void;
 	onSelectionChange?: (item: ModelBrowserItem | undefined) => void;
 	onQueryChange?: (query: string) => void;
-	/** Cancel key with an empty query (a non-empty query is cleared first). */
+
 	onCancel?: () => void;
 
 	constructor(settings: Settings, options: ModelBrowserOptions = {}) {
@@ -385,12 +313,10 @@ export class ModelBrowser implements Component {
 		this.#emptyText = options.emptyText;
 	}
 
-	/** Mark `selector` as the session's active model (undefined clears the mark). */
 	setCurrentSelector(selector: string | undefined): void {
 		this.#currentSelector = selector;
 	}
 
-	/** Replace the scope's base items; the live query re-applies and selection is pinned by selector. */
 	setItems(items: ModelBrowserItem[]): void {
 		const selectedKey = this.getSelected()?.selector;
 		this.#baseItems = items;
@@ -408,34 +334,30 @@ export class ModelBrowser implements Component {
 		this.#mruOrder = order;
 	}
 
-	/** Measured TPS/TTFT averages keyed by `provider/id` selector (see AgentStorage.getModelPerf). */
 	setPerfStats(perf: ReadonlyMap<string, ModelPerfStats>): void {
 		this.#perf = perf;
 	}
 
 	setMaxVisible(rows: number): void {
-		// No selection snap here: hosts call this on every render, and it must
-		// not undo wheel panning. render() re-clamps the window.
 		this.#maxVisible = Math.max(1, rows);
 	}
 
 	setShowProvider(show: boolean): void {
 		this.#showProvider = show;
 	}
-	/** Keep the source order after fuzzy filtering instead of applying model-specific ranking. */
+
 	setPreserveQueryOrder(preserve: boolean): void {
 		this.#preserveQueryOrder = preserve;
 	}
-	/** Allow hosts to toggle context-window flagging between browser modes. */
+
 	setMarkOverContext(mark: boolean): void {
 		this.#markOverContext = mark;
 	}
-	/** Focused: accent cursor + selected-row background band. Unfocused: dim cursor, no band. */
+
 	setFocused(focused: boolean): void {
 		this.#focused = focused;
 	}
 
-	/** Total rendered height for the current `maxVisible` (host layout budgeting). */
 	get renderedRows(): number {
 		return LIST_ROW_START + this.#maxVisible + DETAIL_ROWS;
 	}
@@ -457,7 +379,6 @@ export class ModelBrowser implements Component {
 		return this.#visibleItems.length;
 	}
 
-	/** Move selection to `selector`; false when it is not in the current view. */
 	selectSelector(selector: string): boolean {
 		const index = this.#visibleItems.findIndex(item => item.selector === selector);
 		if (index < 0) return false;
@@ -470,7 +391,6 @@ export class ModelBrowser implements Component {
 		return item.id === "separator";
 	}
 
-	/** True when `item`'s context window is smaller than the live session token count (grayed row; hosts compact before switching). */
 	isOverContext(item: ModelBrowserItem): boolean {
 		if (item.id === "separator") return false;
 		if (!this.#markOverContext || this.#currentContextTokens <= 0) return false;
@@ -495,12 +415,10 @@ export class ModelBrowser implements Component {
 		return clamped;
 	}
 
-	/** Clamp a window start into `[0, total - maxVisible]`. */
 	#clampWindowStart(start: number): number {
 		return Math.max(0, Math.min(start, this.#visibleItems.length - this.#maxVisible));
 	}
 
-	/** Scroll just enough to keep the selected row inside the window. */
 	#ensureSelectedVisible(): void {
 		if (this.#selectedIndex < this.#windowStart) {
 			this.#windowStart = this.#selectedIndex;
@@ -510,10 +428,6 @@ export class ModelBrowser implements Component {
 		this.#windowStart = this.#clampWindowStart(this.#windowStart);
 	}
 
-	/**
-	 * Move the selection by `delta` rows, skipping disabled rows. Single steps
-	 * wrap at the ends; `wrap: false` (page/home/end jumps) clamps instead.
-	 */
 	moveSelection(delta: number, options: { wrap?: boolean } = {}): void {
 		const count = this.#visibleItems.length;
 		if (count === 0) return;
@@ -578,20 +492,11 @@ export class ModelBrowser implements Component {
 		const query = this.#searchInput.getValue();
 		let items: ModelBrowserItem[];
 		if (query.trim()) {
-			// Match against the displayed "provider/id" string so the user can
-			// type what they see: bare names, provider prefixes, or scoped
-			// queries all flow through the same fuzzy matcher.
 			const ranked = fuzzyRank(this.#baseItems, query, ({ provider, id }) => `${provider}/${id}`);
 			const matches = ranked.map(result => result.item);
 			if (this.#preserveQueryOrder) {
 				items = matches;
 			} else {
-				// Match quality is the primary key while searching: an exact
-				// "gpt-5.5" must beat the MRU (or role-assigned) "gpt-5.6", so
-				// role rank is skipped and MRU only breaks ties. Scores are
-				// bucketed so sub-point position noise (provider-name length)
-				// can't split equally good matches; within a bucket the stable
-				// sort keeps sortModelItems' MRU/version order.
 				sortModelItems(matches, { roles: this.#roles, mruOrder: this.#mruOrder, skipRoleRank: true });
 				const buckets = new Map<ModelBrowserItem, number>();
 				for (const result of ranked) buckets.set(result.item, Math.round(result.score / 10));
@@ -643,7 +548,7 @@ export class ModelBrowser implements Component {
 			}
 			return;
 		}
-		// Everything else edits the query like a regular single-line editor.
+
 		const before = this.#searchInput.getValue();
 		this.#searchInput.handleInput(data);
 		const after = this.#searchInput.getValue();
@@ -653,7 +558,6 @@ export class ModelBrowser implements Component {
 		}
 	}
 
-	/** Cancel-key ladder: clear a non-empty query first, then bubble to the host. */
 	handleCancel(): void {
 		if (this.#searchInput.getValue().length > 0) {
 			this.setQuery("");
@@ -663,13 +567,8 @@ export class ModelBrowser implements Component {
 		this.onCancel?.();
 	}
 
-	/**
-	 * Route a mouse event. `line` is relative to the browser's first rendered
-	 * row (the search row).
-	 */
 	routeMouse(event: SgrMouseEvent, line: number): void {
 		if (event.wheel !== null) {
-			// Wheel pans the window; it never moves the selection and never wraps.
 			this.#windowStart = this.#clampWindowStart(this.#windowStart + event.wheel);
 			this.#hoveredIndex = this.#hoverIndexAt(line);
 			return;
@@ -682,19 +581,18 @@ export class ModelBrowser implements Component {
 		const index = this.#hoverIndexAt(line);
 		const item = index !== null ? this.#visibleItems[index] : undefined;
 		if (index === null || !item) return;
-		// Settings idiom: click selects, click-again activates.
+
 		if (index === this.#selectedIndex) {
 			this.onActivate?.(item);
 		} else {
 			this.#setSelectedIndex(index);
 		}
 	}
-	/** Drop the hover band. Hosts call this when the pointer leaves the browser pane. */
+
 	clearHover(): void {
 		this.#hoveredIndex = null;
 	}
 
-	/** List index under a frame-local row, or null when off-list or on a disabled row. */
 	#hoverIndexAt(line: number): number | null {
 		const listLine = line - LIST_ROW_START;
 		if (listLine < 0 || listLine >= this.#windowCount) return null;
@@ -704,7 +602,6 @@ export class ModelBrowser implements Component {
 		return index;
 	}
 
-	/** `0.9s 118t/s` measured-perf cell for the row's meta block; empty when unmeasured or the column is off. */
 	#perfCell(item: ModelBrowserItem, mode: PerfMode): string {
 		if (mode === "off") return "";
 		const perf = this.#perf.get(item.selector);
@@ -744,7 +641,6 @@ export class ModelBrowser implements Component {
 			: "";
 		let left = `${prefix}${providerPrefix}${name}${currentMark}${overLimit}`;
 
-		// Perf column collapses entirely when no visible row has measurements.
 		const perfCol =
 			perfWidth > 0 ? `${theme.fg("dim", padLeftVisible(this.#perfCell(item, perfMode), perfWidth))}  ` : "";
 		const meta = `${perfCol}${theme.fg("dim", padLeftVisible(formatContext(item.model), ctxWidth))}  ${theme.fg("dim", padLeftVisible(formatCostPair(item.model), costWidth))}`;
@@ -755,13 +651,10 @@ export class ModelBrowser implements Component {
 
 		let line = `${left}${" ".repeat(gap)} ${meta}`;
 		if (overContext) {
-			// Gray the whole row but keep the selection cursor visible: over-context
-			// models stay selectable (the host compacts before switching).
 			const plainPrefix = Bun.stripANSI(prefix);
 			line = `${prefix}${theme.fg("dim", Bun.stripANSI(line).slice(plainPrefix.length))}`;
 		}
-		// The bg band is reserved for the mouse: it marks hover, nothing else.
-		// Keyboard selection is the cursor glyph + accent name.
+
 		if (hovered) {
 			line = theme.bg("selectedBg", line);
 		}
@@ -819,9 +712,7 @@ export class ModelBrowser implements Component {
 		lines.push("");
 
 		const total = this.#visibleItems.length;
-		// The window is persistent state: wheel scrolling panned it, keyboard
-		// navigation snapped it to the selection. Re-clamp here because items
-		// or maxVisible may have changed since.
+
 		this.#windowStart = this.#clampWindowStart(this.#windowStart);
 		const startIndex = this.#windowStart;
 		const endIndex = Math.min(startIndex + this.#maxVisible, total);
@@ -833,8 +724,6 @@ export class ModelBrowser implements Component {
 			lines.push(truncateToWidth(theme.fg("muted", message), width));
 			for (let i = 1; i < this.#maxVisible; i++) lines.push("");
 		} else {
-			// Per-window column widths keep the metadata block aligned without
-			// scanning the entire catalog on every render.
 			let ctxWidth = 0;
 			let costWidth = 0;
 			const perfMode: PerfMode = width >= PERF_FULL_MIN_WIDTH ? "full" : width >= PERF_TPS_MIN_WIDTH ? "tps" : "off";

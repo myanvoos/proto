@@ -1,19 +1,15 @@
-/** Behavior-compatible reimplementation of @mozilla/readability's used surface. */
-
 import type { ReadabilityDocument, ReadabilityElement, ReadabilityNode } from "./types";
 
 const UNLIKELY =
 	/-ad-|ai2html|banner|breadcrumbs|combx|comment|community|cover-wrap|disqus|extra|footer|gdpr|header|legends|menu|related|remark|replies|rss|shoutbox|sidebar|skyscraper|social|sponsor|supplemental|ad-break|agegate|pagination|pager|popup|yom-remote/i;
 const POSSIBLE = /and|article|body|column|content|main|shadow/i;
 
-/** Options for the inexpensive readerability estimate. */
 export interface ReaderableOptions {
 	minContentLength?: number;
 	minScore?: number;
 	visibilityChecker?: (node: ReadabilityNode) => boolean;
 }
 
-/** Estimates whether a document contains enough prose for article extraction. */
 export function isProbablyReaderable(
 	document: ReadabilityDocument,
 	options: ReaderableOptions | ((node: ReadabilityNode) => boolean) = {},

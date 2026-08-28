@@ -41,9 +41,7 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 		"--port",
 		(parsed, value) => {
 			if (!value) return "Missing value for --port.";
-			// Reject any non-integer token. `Number.parseInt` accepts trailing
-			// garbage (parseInt("22oops") === 22) which silently coerces typos
-			// to valid-looking ports.
+
 			if (!/^\d+$/.test(value)) {
 				return "Invalid --port value. Must be an integer between 1 and 65535.";
 			}
@@ -109,10 +107,7 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 			readSSHConfigFile(projectPath),
 		]);
 		const entries: Array<{ name: string; host: string; user?: string; port?: number; scope: string }> = [];
-		// Capability loader resolves project before user, so list project hosts
-		// first and let the user-scope loop skip duplicates. Otherwise a host
-		// shared between scopes shows up under "user" when the project entry
-		// is the one actually in effect.
+
 		for (const [name, config] of Object.entries(projectConfig.hosts ?? {})) {
 			entries.push({ name, host: config.host, user: config.username, port: config.port, scope: "project" });
 		}
@@ -172,7 +167,6 @@ async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Pro
 	}
 }
 
-/** ACP/text-mode `/ssh` handler. Shared by both dispatchers via the spec. */
 export async function handleSshAcp(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,

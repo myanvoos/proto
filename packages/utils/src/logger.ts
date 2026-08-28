@@ -1,14 +1,3 @@
-/**
- * Centralized logger for proto.
- *
- * Default: rotating `~/.proto/logs/proto.<DATE>.<PID>.log`, no console output (writing
- * to stdout/stderr would corrupt the TUI). Long-running headless services
- * (the auth broker, etc.) call {@link setTransports} to swap in a console
- * transport so a process supervisor (pm2, journald, k8s) captures the logs.
- *
- * Each entry includes `process.pid` so concurrent proto instances stay
- * traceable.
- */
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -17,10 +6,9 @@ import { isPromise } from "node:util/types";
 import { getLogsDir } from "./dirs";
 import { RotatingFileSink } from "./logger/rotating-file";
 import { drainModuleLoadEvents } from "./timing-buffer";
-/** Severity names accepted by the centralized logger. */
+
 export type LogLevel = "error" | "warn" | "info" | "debug";
 
-/** Structured log event forwarded to out-of-band sinks such as OpenTelemetry. */
 export interface LogEvent {
 	readonly level: LogLevel;
 	readonly message: string;
@@ -28,12 +16,10 @@ export interface LogEvent {
 	readonly timestamp: Date;
 }
 
-/** Receives each structured log event after the local transport path runs. */
 export type LogSink = (event: LogEvent) => void;
 
 const logSinks = new Set<LogSink>();
 
-/** Register an out-of-band log sink and return a disposer. */
 export function registerLogSink(sink: LogSink): () => void {
 	logSinks.add(sink);
 	return () => {
@@ -47,9 +33,7 @@ function emitToSinks(level: LogLevel, message: string, context: Record<string, u
 	for (const sink of logSinks) {
 		try {
 			sink(event);
-		} catch {
-			// Sinks are side channels; they must never break local logging.
-		}
+		} catch {}
 	}
 }
 
@@ -68,12 +52,6 @@ function processIsRunning(pid: number): boolean {
 	}
 }
 
-/**
- * Retain one newest completed-process log per process/day within the current
- * and previous four local calendar days, and remove one-use audit files. Live
- * PID namespaces are never touched. The calendar-day boundary preserves daily
- * diagnostic coverage while bounding completed-process storage and scans.
- */
 function pruneStaleProcessLogs(dir: string): void {
 	let entries: fs.Dirent[];
 	try {
@@ -104,9 +82,7 @@ function pruneStaleProcessLogs(dir: string): void {
 			if (RETAINED_STALE_AUDIT_FILES === 0) {
 				try {
 					fs.rmSync(entryPath, { force: true });
-				} catch {
-					// Retention is best-effort; logging must still initialize.
-				}
+				} catch {}
 			}
 			continue;
 		}
@@ -114,9 +90,7 @@ function pruneStaleProcessLogs(dir: string): void {
 		if (logMatch[1] < cutoffDate || logMatch[1] > currentDate) {
 			try {
 				fs.rmSync(entryPath, { force: true });
-			} catch {
-				// Another process may have pruned the same stale namespace.
-			}
+			} catch {}
 			continue;
 		}
 
@@ -135,9 +109,7 @@ function pruneStaleProcessLogs(dir: string): void {
 		for (const stale of staleLogs) {
 			try {
 				ranked.push({ ...stale, mtimeMs: fs.statSync(stale.path).mtimeMs });
-			} catch {
-				// Another process may have pruned the same stale namespace.
-			}
+			} catch {}
 		}
 		ranked.sort(
 			(a, b) => b.mtimeMs - a.mtimeMs || b.rollover - a.rollover || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
@@ -145,14 +117,11 @@ function pruneStaleProcessLogs(dir: string): void {
 		for (const stale of ranked.slice(RETAINED_STALE_LOGS_PER_PROCESS_DAY)) {
 			try {
 				fs.rmSync(stale.path, { force: true });
-			} catch {
-				// Another process may have pruned the same stale namespace.
-			}
+			} catch {}
 		}
 	}
 }
 
-/** Ensure a logs directory exists; return the resolved path. */
 function ensureDir(dir: string): string {
 	if (!fs.existsSync(dir)) {
 		fs.mkdirSync(dir, { recursive: true });
@@ -160,12 +129,6 @@ function ensureDir(dir: string): string {
 	return dir;
 }
 
-/**
- * JSON.stringify replacer that unwraps {@link Error} instances. Error's own
- * properties are non-enumerable, so a plain `JSON.stringify(err)` produces
- * `"{}"`. Without this, a context like `{ err }` lost every useful field and
- * forensic logs showed only an opaque empty object.
- */
 function jsonReplacer(_key: string, value: unknown): unknown {
 	if (value instanceof Error) {
 		const out: Record<string, unknown> = {
@@ -173,7 +136,7 @@ function jsonReplacer(_key: string, value: unknown): unknown {
 			message: value.message,
 			stack: value.stack,
 		};
-		// Preserve `.cause` and any custom enumerable fields the caller attached.
+
 		const errAsRecord = value as unknown as Record<string, unknown>;
 		for (const k in errAsRecord) out[k] = errAsRecord[k];
 		if (value.cause !== undefined) out.cause = value.cause;
@@ -234,7 +197,6 @@ function formatLogInfo(info: NormalizedLogInfo): string {
 	return JSON.stringify(entry, jsonReplacer) as string;
 }
 
-/** Build a rotating file sink with process-local rotation and shared retention. */
 function makeFileTransport(dir?: string): RotatingFileSink {
 	const logsDir = ensureDir(dir ?? getLogsDir());
 	pruneStaleProcessLogs(logsDir);
@@ -248,10 +210,6 @@ function makeFileTransport(dir?: string): RotatingFileSink {
 	});
 }
 
-/**
- * Desired transport configuration, applied when local logging is initialized.
- * Default: file ON (TUI-safe), console OFF.
- */
 let transportOpts: { console?: boolean; file?: boolean | string } = { file: true };
 
 interface LocalTransports {
@@ -259,7 +217,6 @@ interface LocalTransports {
 	readonly console: boolean;
 }
 
-/** Local transports, constructed lazily on first log emission. */
 let activeTransports: LocalTransports | undefined;
 
 function buildTransports(opts: { console?: boolean; file?: boolean | string }): LocalTransports {
@@ -284,91 +241,48 @@ function emitLocally(level: LogLevel, message: string, context: Record<string, u
 	if (transports.console) fs.writeSync(1, `${formatLogInfo(info)}${os.EOL}`);
 }
 
-/**
- * Replace the active log transports. Pass `console: true, file: false` for
- * long-running services (the auth broker, etc.) that want their structured
- * logs piped into a process supervisor instead of the rotating file.
- */
 export function setTransports(opts: { console?: boolean; file?: boolean | string }): void {
 	transportOpts = opts;
-	if (!activeTransports) return; // applied lazily when local logging is first initialized
+	if (!activeTransports) return;
 	const previousTransports = activeTransports;
 	activeTransports = { file: undefined, console: false };
 	previousTransports.file?.close();
 	activeTransports = buildTransports(opts);
 }
 
-/**
- * Log an error message.
- * @param message - The message to log.
- * @param context - The context to log.
- */
 export function error(message: string, context?: Record<string, unknown>): void {
 	try {
 		emitLocally("error", message, context);
-	} catch {
-		// Silently ignore logging failures
-	}
+	} catch {}
 	emitToSinks("error", message, context);
 }
 
-/**
- * Log a warning message.
- * @param message - The message to log.
- * @param context - The context to log.
- */
 export function warn(message: string, context?: Record<string, unknown>): void {
 	try {
 		emitLocally("warn", message, context);
-	} catch {
-		// Silently ignore logging failures
-	}
+	} catch {}
 	emitToSinks("warn", message, context);
 }
 
-/**
- * Log an informational message.
- * @param message - The message to log.
- * @param context - The context to log.
- */
 export function info(message: string, context?: Record<string, unknown>): void {
 	try {
 		emitLocally("info", message, context);
-	} catch {
-		// Silently ignore logging failures
-	}
+	} catch {}
 	emitToSinks("info", message, context);
 }
 
-/**
- * Log a debug message.
- * @param message - The message to log.
- * @param context - The context to log.
- */
 export function debug(message: string, context?: Record<string, unknown>): void {
 	try {
 		emitLocally("debug", message, context);
-	} catch {
-		// Silently ignore logging failures
-	}
+	} catch {}
 	emitToSinks("debug", message, context);
 }
 
-/**
- * Streaming startup markers, enabled by `PI_DEBUG_STARTUP`. Unlike the
- * PI_TIMING tree (printed only after startup completes), these write one
- * synchronous stderr line as each phase begins/ends, so a hard hang still
- * shows the last phase that started. `fs.writeSync(2)` is used deliberately:
- * it cannot be reordered or buffered past a synchronous block of the event
- * loop (dlopen, sync fs on a dead mount, spawnSync).
- */
 export function startupMarker(text: string): void {
 	if (!process.env.PI_DEBUG_STARTUP) return;
 	try {
 		fs.writeSync(2, `[startup] ${text}\n`);
-	} catch {
-		// stderr unavailable; markers are best-effort
-	}
+	} catch {}
 }
 
 const LOGGED_TIMING_THRESHOLD_MS = 0.5;
@@ -379,13 +293,13 @@ interface Span {
 	end?: number;
 	parent?: Span;
 	children: Span[];
-	/** Marker / point event without a duration. */
+
 	point?: boolean;
-	/** Absolute module path for module-load spans. */
+
 	modulePath?: string;
-	/** Own top-level module body / TLA duration for module-load spans. */
+
 	moduleBodyMs?: number;
-	/** Resolved static imports for module-load spans. */
+
 	moduleImports?: string[];
 }
 const spanStorage = new AsyncLocalStorage<Span>();
@@ -411,11 +325,6 @@ export function shouldExitAfterTimings(): boolean {
 	return timingModeIncludes("x") || timingModeIncludes("full");
 }
 
-/**
- * Print collected timings as an indented tree.
- * Each span shows wall duration; parents with children also show "(self)" for unattributed time.
- * Sibling spans are sorted by start time. Spans whose intervals overlap with siblings ran in parallel.
- */
 export function printTimings(): void {
 	if (!gRecordTimings || !gRootSpan) {
 		console.error("\n--- Startup Timings ---\n(no markers)\n");
@@ -423,19 +332,12 @@ export function printTimings(): void {
 	}
 
 	gRootSpan.end = performance.now();
-	// Splice any preload-captured module-load events into the tree as root
-	// children and back-extend the root window over them, so the static-import
-	// phase that ran before the first explicit marker becomes visible (the
-	// `(modules)` summary below) instead of being lumped into the opaque
-	// `(before instrumentation)` figure.
+
 	spliceModuleLoadBuffer();
 	const lines: string[] = [];
 	lines.push("");
 	lines.push("--- Startup timings (hierarchical) ---");
-	// performance.now() shares the process-start origin, so the root span's start
-	// is the wall time before the first marker — runtime init plus any module
-	// loads not captured below. With the module-load preload active this shrinks
-	// to ~runtime init because the load phase is back-folded into the window.
+
 	if (gRootSpan.start > LOGGED_TIMING_THRESHOLD_MS) {
 		lines.push(`(before instrumentation): ${fmtMs(gRootSpan.start)} [runtime init + module load]`);
 	}
@@ -451,8 +353,7 @@ export function printTimings(): void {
 	if (loads.length > 0) {
 		printModuleLoadSummary(loads, 0, lines);
 	}
-	// Surface the root's own unattributed time so the gap between the visible
-	// top-level spans and Total isn't silently swallowed.
+
 	const rootSelf = selfTimeOf(gRootSpan);
 	if (gRootSpan.children.length > 0 && rootSelf > LOGGED_TIMING_THRESHOLD_MS) {
 		lines.push(`(unattributed self): ${fmtMs(rootSelf)}`);
@@ -465,11 +366,6 @@ export function printTimings(): void {
 	gRootSpan.end = undefined;
 }
 
-/**
- * Begin recording startup timings under a new root span.
- * Idempotent: a second call while already recording is a no-op, so an explicit
- * starter (main.ts) and any future early starter can coexist.
- */
 export function startTiming(): void {
 	if (gRecordTimings) return;
 	gRootSpan = {
@@ -481,11 +377,6 @@ export function startTiming(): void {
 	gRecordTimings = true;
 }
 
-/**
- * Record an externally-measured span as a leaf child of the active span (or root
- * when no span is active). Used by {@link spliceModuleLoadBuffer} to fold
- * preload-captured module windows into the tree.
- */
 export function recordModuleLoadSpan(
 	path: string,
 	start: number,
@@ -508,13 +399,6 @@ export function recordModuleLoadSpan(
 	parent.children.push(span);
 }
 
-/**
- * Drain the preload's module-load buffer (see module-timer.ts) into the tree as
- * `load:` children of the root, then back-extend the root window to the earliest
- * captured read so the pre-marker load phase is counted in Total rather than
- * hidden as `(before instrumentation)`. No-op when nothing was captured (e.g. no
- * `--preload`, or a compiled binary where module reads are not interceptable).
- */
 function spliceModuleLoadBuffer(): void {
 	if (!gRootSpan) return;
 	const events = drainModuleLoadEvents();
@@ -535,19 +419,11 @@ function shortenLoadPath(p: string): string {
 	return p;
 }
 
-/**
- * End timing window and clear buffers.
- */
 export function endTiming(): void {
 	gRootSpan = undefined;
 	gRecordTimings = false;
 }
 
-/**
- * Ops of the currently-open span chain (root → deepest), following the most
- * recently started unfinished child at each level. Lets a startup watchdog
- * name the phase a stalled startup is stuck in.
- */
 export function openSpanPath(): string[] {
 	const ops: string[] = [];
 	let node = gRootSpan;
@@ -571,7 +447,6 @@ function durationOf(span: Span): number {
 	return span.end - span.start;
 }
 
-/** Self time = total - union of child intervals (handles parallel children correctly). */
 function selfTimeOf(span: Span): number {
 	const dur = durationOf(span);
 	if (span.children.length === 0 || span.point) return dur;
@@ -634,7 +509,6 @@ function printSpan(span: Span, depth: number, lines: string[]): void {
 	const selfStr = span.children.length > 0 && self > LOGGED_TIMING_THRESHOLD_MS ? ` (self ${fmtMs(self)})` : "";
 	lines.push(`${indent}${span.op}: ${fmtMs(dur)}${selfStr}${tag}`);
 
-	// Split children into work spans and module-load spans for summarization.
 	const work: Span[] = [];
 	const loads: Span[] = [];
 	for (const child of span.children) {
@@ -649,7 +523,6 @@ function printSpan(span: Span, depth: number, lines: string[]): void {
 	}
 }
 
-/** Render module-load spans as a dependency-aware DAG/tree. */
 function printModuleLoadSummary(loads: Span[], depth: number, lines: string[]): void {
 	const childIndent = "  ".repeat(depth);
 	const grandIndent = "  ".repeat(depth + 1);
@@ -763,27 +636,17 @@ function renderModuleTimingNode(
 	ancestors.delete(path);
 }
 
-/** A span is parallel if it overlaps a sibling that started before it. */
 function isParallel(span: Span): boolean {
 	const parent = span.parent;
 	if (!parent || span.end === undefined) return false;
 	for (const sibling of parent.children) {
 		if (sibling === span || sibling.end === undefined || sibling.point) continue;
-		// Overlap test: A overlaps B iff A.start < B.end && B.start < A.end
+
 		if (sibling.start < span.end && span.start < sibling.end) return true;
 	}
 	return false;
 }
 
-/**
- * Time a span. Three forms:
- *   time(op)                    — point event (zero-duration breadcrumb)
- *   time(op, fn, ...args)        — wrap fn in a span; returns fn's return value (sync or Promise)
- *
- * Spans nest hierarchically via AsyncLocalStorage: a child started inside another span's fn
- * (even across awaits) becomes that span's child. Parallel children are recorded as siblings
- * with overlapping intervals.
- */
 export function time(op: string): void;
 export function time<T, A extends unknown[]>(op: string, fn: (...args: A) => T, ...args: A): T;
 export function time<T, A extends unknown[]>(op: string, fn?: (...args: A) => T, ...args: A): T | undefined {

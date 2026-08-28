@@ -3,7 +3,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 export interface ImageResizeOptions {
 	maxWidth?: number;
 	maxHeight?: number;
-	/** Smallest allowed edge length (px). Inputs below this are scaled up. */
+
 	minDimension?: number;
 	maxBytes?: number;
 	jpegQuality?: number;
@@ -22,20 +22,11 @@ export interface ResizedImage {
 	get data(): string;
 }
 
-// 500KB target — aggressive compression; Anthropic's 5MB per-image cap is rarely the
-// binding constraint once images are downsized to 1568px (Anthropic's internal threshold).
 const DEFAULT_MAX_BYTES = 500 * 1024;
 
-// Smallest edge length (px) vision backends reliably accept. They tile images into
-// fixed patches (Anthropic uses 28px) and reject degenerate sub-patch images — e.g.
-// the 1x1 PNG an empty chart render emits — with a hard 400 ("Could not process
-// image") that can poison the whole request. 200px is the smallest size Anthropic
-// documents as valid (200x200 = 64 visual tokens); undersized images are scaled up.
 const DEFAULT_MIN_DIMENSION = 200;
 
 const DEFAULT_OPTIONS: Required<Omit<ImageResizeOptions, "excludeWebP">> = {
-	// Anthropic's "internal recommended size" — Claude internally caps images at
-	// 1568px on the longest edge before vision processing.
 	maxWidth: 1568,
 	maxHeight: 1568,
 	maxBytes: DEFAULT_MAX_BYTES,
@@ -120,11 +111,6 @@ function readImageHeaderDimensions(buffer: Uint8Array): ImageHeaderDimensions | 
 	return readPngHeaderDimensions(buffer) ?? readJpegHeaderDimensions(buffer);
 }
 
-/**
- * Read `PROTO_NO_WEBP` per-call so runtime toggles take effect.
- * Only `"1"` and `"true"` (case-insensitive) enable exclusion — an empty string
- * or `"0"` MUST be treated as disabled.
- */
 function isWebPExcluded(): boolean {
 	const raw = Bun.env.PROTO_NO_WEBP;
 	if (raw === undefined) return false;
@@ -132,7 +118,6 @@ function isWebPExcluded(): boolean {
 	return v === "1" || v === "true";
 }
 
-/** Pick the smallest of N encoded buffers. */
 function pickSmallest(...candidates: Array<{ buffer: Uint8Array; mimeType: string }>): {
 	buffer: Uint8Array;
 	mimeType: string;
@@ -140,26 +125,10 @@ function pickSmallest(...candidates: Array<{ buffer: Uint8Array; mimeType: strin
 	return candidates.reduce((best, c) => (c.buffer.length < best.buffer.length ? c : best));
 }
 
-/** Polyfill for Buffer.toBase64, technically since it derives from Uint8Array it should exist but Bun reasons... */
 Buffer.prototype.toBase64 = function (this: Buffer) {
 	return new Uint8Array(this.buffer, this.byteOffset, this.byteLength).toBase64();
 };
 
-/**
- * Resize and recompress an image to fit within the specified max dimensions and file size.
- *
- * Strategy:
- *  1. Probe metadata. If already within all limits, return original.
- *  2. Resize to fit max dimensions and encode at high quality across PNG/JPEG (+ WebP) — return smallest.
- *  3. If still too large, walk a lossy JPEG/WebP quality ladder.
- *  4. If still too large, walk a dimension-scale ladder × quality ladder.
- *  5. If still too large, return the smallest variant produced.
- *
- * Set PROTO_NO_WEBP to exclude WebP from encoding (llama.cpp STB doesn't decode it).
- *
- * Backed by `Bun.Image`: a chainable native pipeline that runs decode/transform/encode
- * off the JS thread when the terminal (`.bytes()`) is awaited.
- */
 export async function resizeImage(img: ImageContent, options?: ImageResizeOptions): Promise<ResizedImage> {
 	const excludeWebP = options?.excludeWebP ?? isWebPExcluded();
 	const opts = { ...DEFAULT_OPTIONS, ...options, excludeWebP };
@@ -167,18 +136,12 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 
 	try {
 		const { width: originalWidth, height: originalHeight, format } = await new Bun.Image(inputBuffer).metadata();
-		// Trust decoded bytes over caller metadata. A mislabeled WebP must not take
-		// the fast path when the target decoder explicitly excludes WebP.
+
 		const sourceMime = format ? `image/${format}` : img.mimeType;
 
-		// Fast path: already within dimensions AND well under budget.
-		// Threshold is 1/4 of budget — if already that compact, don't re-encode.
-		// Avoids wasted work on tiny icons/diagrams while ensuring larger PNGs
-		// still get JPEG-compressed.
 		const originalSize = inputBuffer.length;
 		const comfortableSize = opts.maxBytes / 4;
-		// Clamp the floor to the caps so an unusually small max can't demand an
-		// impossible "≥ min and ≤ max" target.
+
 		const minDimension = Math.min(opts.minDimension, opts.maxWidth, opts.maxHeight);
 		if (
 			originalWidth >= minDimension &&
@@ -202,7 +165,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			};
 		}
 
-		// Calculate initial dimensions respecting max limits
 		let targetWidth = originalWidth;
 		let targetHeight = originalHeight;
 
@@ -215,10 +177,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			targetHeight = opts.maxHeight;
 		}
 
-		// Lift undersized inputs up to the minimum. A uniform scale covers the
-		// common case (icons, the 1x1 chart) without distortion; an aspect ratio
-		// too extreme to satisfy both floor and cap falls back to stretching the
-		// lagging edge up to the floor via the default fit:"fill" resize.
 		if (targetWidth < minDimension || targetHeight < minDimension) {
 			const shortEdge = Math.min(targetWidth, targetHeight);
 			const upscale = Math.min(minDimension / shortEdge, opts.maxWidth / targetWidth, opts.maxHeight / targetHeight);
@@ -230,10 +188,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			targetHeight = Math.min(opts.maxHeight, Math.max(minDimension, targetHeight));
 		}
 
-		// First-attempt encoder: try PNG and JPEG (+ WebP if not excluded) — return smallest.
-		// PNG wins for line art / few-color UI; JPEG wins for photographic content;
-		// WebP usually beats JPEG by 25–35% but is disabled when PROTO_NO_WEBP is set
-		// because many local inference backends (llama.cpp STB) don't decode it.
 		async function encodeSmallest(
 			width: number,
 			height: number,
@@ -263,9 +217,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			return pickSmallest(...candidates);
 		}
 
-		// Lossy encoder for quality/dimension fallback ladders. PNG is excluded since
-		// it's lossless and doesn't respond to quality parameters. WebP is included
-		// unless PROTO_NO_WEBP is set (llama.cpp STB incompatibility).
 		async function encodeLossy(
 			width: number,
 			height: number,
@@ -289,7 +240,7 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			]);
 			return pickSmallest(...candidates);
 		}
-		// Quality ladder — more aggressive steps for tighter budgets
+
 		const qualitySteps = [70, 60, 50, 40];
 		const scaleSteps = [1.0, 0.75, 0.5, 0.35, 0.25];
 
@@ -297,7 +248,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 		let finalWidth = targetWidth;
 		let finalHeight = targetHeight;
 
-		// First attempt: resize to target, try PNG/JPEG (+ WebP), pick smallest
 		best = await encodeSmallest(targetWidth, targetHeight, opts.jpegQuality);
 
 		if (best.buffer.length <= opts.maxBytes) {
@@ -315,7 +265,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			};
 		}
 
-		// Still too large — lossy JPEG (+ WebP) ladder with decreasing quality
 		for (const quality of qualitySteps) {
 			best = await encodeLossy(targetWidth, targetHeight, quality);
 
@@ -335,7 +284,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			}
 		}
 
-		// Still too large — reduce dimensions progressively with the lossy ladder
 		for (const scale of scaleSteps) {
 			finalWidth = Math.round(targetWidth * scale);
 			finalHeight = Math.round(targetHeight * scale);
@@ -364,7 +312,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			}
 		}
 
-		// Last resort: return smallest version we produced
 		return {
 			buffer: best.buffer,
 			mimeType: best.mimeType,
@@ -380,10 +327,7 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 	} catch {
 		const headerDimensions = readImageHeaderDimensions(inputBuffer);
 		const fallbackMimeType = img.mimeType ?? headerDimensions?.mimeType ?? "application/octet-stream";
-		// Bun.Image rejected the input — we cannot decode/re-encode it.
-		// When the caller demanded WebP exclusion AND the source might be WebP,
-		// returning the original buffer would silently violate that contract,
-		// so surface an explicit error instead.
+
 		if (excludeWebP && (fallbackMimeType === "image/webp" || (!img.mimeType && !headerDimensions))) {
 			throw new Error("resizeImage: failed to decode image and cannot honor excludeWebP for a WebP source");
 		}
@@ -403,10 +347,6 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 	}
 }
 
-/**
- * Format a dimension note for resized images.
- * This helps the model understand the coordinate mapping.
- */
 export function formatDimensionNote(result: ResizedImage): string | undefined {
 	if (!result.wasResized) {
 		return undefined;

@@ -18,14 +18,12 @@ const MAX_SPELLING_BUFFER_LENGTH = 20_000;
 const MAX_SPELLING_LINE_LENGTH = 1_000;
 const WORD_BOUNDARY = /[\s.,;:!?"\])}]/u;
 
-/** Independently switchable macOS prose-assistance features. */
 export interface SpellingFeatures {
 	typoDetection: boolean;
 	autocomplete: boolean;
 	autocorrect: boolean;
 }
 
-/** Logical source location for one rendered editor segment. */
 export interface SpellingDecorationContext {
 	editorText: string;
 	lines: readonly string[];
@@ -33,7 +31,6 @@ export interface SpellingDecorationContext {
 	startCol: number;
 }
 
-/** Native spelling operations used by {@link MacOSSpellingProvider}. */
 export interface SpellingBackend {
 	isAvailable(): boolean;
 	checkSpelling(text: string): Promise<readonly native.SpellingRange[]>;
@@ -75,10 +72,6 @@ function isProseWord(text: string, masked: string, start: number, end: number): 
 	return !text.trimStart().startsWith("/") && !text.startsWith("->") && !text.startsWith("=>");
 }
 
-/**
- * Bridges Apple's spelling service into the editor's separate typo,
- * word-completion, and autocorrection paths.
- */
 export class MacOSSpellingProvider implements EditorTextAssistProvider {
 	#features: SpellingFeatures = { typoDetection: false, autocomplete: false, autocorrect: false };
 	#available: boolean;
@@ -95,14 +88,12 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 	#sourceMask = "";
 	#sourceLineOffsets: number[] = [];
 
-	/** Invoked when an asynchronous spelling result can change rendered output. */
 	onUpdate: (() => void) | undefined;
 
 	constructor(private readonly backend: SpellingBackend = NATIVE_BACKEND) {
 		this.#available = false;
 	}
 
-	/** Apply all three independent feature gates and invalidate rendered typo ranges. */
 	setFeatures(features: SpellingFeatures): void {
 		if (
 			this.#features.typoDetection === features.typoDetection &&
@@ -119,7 +110,6 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		this.#clearCaches();
 	}
 
-	/** Add red undercurls to misspellings while preserving visible text width. */
 	decorateTypos(
 		text: string,
 		context: SpellingDecorationContext,
@@ -150,7 +140,6 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		return rendered + decorate(text.slice(cursor));
 	}
 
-	/** Return the cached macOS completion suffix for the word ending at the cursor. */
 	getWordCompletion(lines: string[], cursorLine: number, cursorCol: number): string | null {
 		if (!this.#available || !this.#features.autocomplete) return null;
 		const line = lines[cursorLine] ?? "";
@@ -170,7 +159,6 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		return null;
 	}
 
-	/** Return the confident macOS correction after a completed prose word. */
 	async tryAutocorrect(
 		lines: string[],
 		cursorLine: number,
@@ -197,7 +185,6 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		}
 	}
 
-	/** Return macOS replacement guesses for the misspelled word at the cursor. */
 	async getWordReplacements(
 		lines: string[],
 		cursorLine: number,
@@ -304,8 +291,7 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 			.toSorted((left, right) => left.start - right.start);
 		if (this.#typoCache.size >= CACHE_LIMIT) this.#typoCache.clear();
 		this.#typoCache.set(text, ranges);
-		// An empty result leaves the already-undecorated render correct; only a
-		// range that will add undercurls is worth a repaint.
+
 		if (ranges.length > 0) this.onUpdate?.();
 		return ranges;
 	}
@@ -353,7 +339,7 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 			}
 			if (this.#completionCache.size >= CACHE_LIMIT) this.#completionCache.clear();
 			this.#completionCache.set(key, suffix);
-			// A null suffix means no ghost text; the current paint is already right.
+
 			if (suffix !== null && this.#completionQueued === undefined) this.onUpdate?.();
 		} catch (error) {
 			this.#disable(error);

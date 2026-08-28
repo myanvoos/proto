@@ -31,8 +31,6 @@ pub struct WaylandBackend {
 
 impl WaylandBackend {
 	pub fn new(display: DisplaySelector) -> Self {
-		// Remove the world-readable RemoteDesktop restore token that pre-#7884
-		// builds wrote during read-only calls; nothing reads it anymore (#7884).
 		portal::remove_orphaned_remote_desktop_token();
 		let (ax, ax_error) = match AtSpiAx::new() {
 			Ok(ax) => (Some(ax), None),
@@ -110,11 +108,9 @@ impl Backend for WaylandBackend {
 			"prompt-or-granted"
 		};
 		DesktopCapabilities {
-			backend: "wayland".to_string(),
+			backend:        "wayland".to_string(),
 			display_server: Some("wayland".to_string()),
-			// The PipeWire screencast path is compiled in only under the
-			// wayland-pipewire feature; without it capture() hard-errors, so the
-			// capability report must not advertise a capture the binary cannot do.
+
 			capture: cfg!(feature = "wayland-pipewire"),
 			input: self.input_error.is_none(),
 			ax: self.ax.is_some(),

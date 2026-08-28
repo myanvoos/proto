@@ -59,11 +59,8 @@ try {
 			concurrency: 1,
 		});
 	}
-} catch {
-	// Skip the registry case in environments without a local Cargo registry.
-}
+} catch {}
 
-// Warm per-root state before timing so the benchmark measures steady-state search.
 for (const c of cases) {
 	await grep({ pattern: c.pattern, path: c.path, glob: c.glob, mode: c.mode, gitignore: false });
 }
@@ -112,9 +109,7 @@ for (const c of cases) {
 		for (const line of lines) {
 			try {
 				if (JSON.parse(line).type === "match") matches++;
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 		}
 		return matches;
 	};

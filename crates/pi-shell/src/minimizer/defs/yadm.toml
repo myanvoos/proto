@@ -1,4 +1,4 @@
-# yadm (dotfile manager, wraps git). Strip ANSI and blank lines.
+
 
 [filters.yadm]
 description = "Compact yadm output"

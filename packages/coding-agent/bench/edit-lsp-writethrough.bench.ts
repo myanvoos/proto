@@ -1,30 +1,3 @@
-/**
- * Edit/write LSP-writethrough latency probe.
- *
- * The pure hashline apply is sub-2ms for normal files (see
- * `packages/hashline/bench/apply-edit.ts`). The real source of "applying an
- * edit takes a LOT of time" is the LSP writethrough's *synchronous* wait for
- * fresh diagnostics:
- *
- *   runLspWritethrough -> getDiagnosticsForFile -> waitForDiagnostics
- *
- * `waitForDiagnostics` polls every 100ms. Servers that echo the edited
- * document version are accepted immediately; servers that omit or mismatch it
- * (typescript-language-server) settle on the latest publish after a 250ms quiet
- * window so stale in-flight publishes can be superseded without burning the
- * full timeout.
- *
- * Gated by settings:
- *   - edit tool:  `lsp.diagnosticsOnEdit`  (default FALSE — edits fast by default)
- *   - write tool: `lsp.diagnosticsOnWrite` (default TRUE  — writes pay it by default)
- *   - both:       `lsp.formatOnWrite`      (default FALSE — ~24ms when on, fine)
- *
- * Requires a TypeScript language server on PATH and a tsconfig at the repo
- * root. Mutates a temp .ts file inside the repo so tsserver resolves it under
- * the project, then deletes it.
- *
- * Run: `bun run packages/coding-agent/bench/edit-lsp-writethrough.bench.ts`
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createLspWritethrough, writethroughNoop } from "../src/lsp";
@@ -48,12 +21,6 @@ async function timeCall(label: string, fn: () => Promise<unknown>): Promise<void
 	console.log(`  ${label.padEnd(46)} ${((Bun.nanoseconds() - t0) / 1e6).toFixed(1).padStart(9)} ms`);
 }
 
-/**
- * Build a one-shot deferred handle mirroring the edit tool's
- * `beginDeferredDiagnosticsForPath`: `onDeferredDiagnostics` is the late-injection
- * sink, `signal` keeps the background fetch alive, `finalize` reports whether the
- * inline result arrived. Logs when late diagnostics land so #2 is observable.
- */
 function makeDeferred(label: string) {
 	const controller = new AbortController();
 	const lateAt = { t: 0 };
@@ -92,7 +59,7 @@ try {
 			wtDiag(target, body(i), undefined, Bun.file(target), undefined, () => handle),
 		);
 	}
-	// Give any in-flight late fetches a moment to land before teardown.
+
 	await Bun.sleep(6000);
 
 	console.log("\n--- format writethrough (formatOnWrite) ---");

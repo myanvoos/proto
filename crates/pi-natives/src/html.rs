@@ -1,5 +1,3 @@
-//! HTML to Markdown conversion.
-
 use html_to_markdown_rs::{
 	ConversionOptions, PreprocessingOptions, PreprocessingPreset, WarningKind, convert,
 };
@@ -8,20 +6,14 @@ use napi_derive::napi;
 
 use crate::{js::into_string, task};
 
-/// Options for HTML to Markdown conversion.
 #[napi(object)]
 #[derive(Debug, Default)]
 pub struct HtmlToMarkdownOptions {
-	/// Remove navigation elements, forms, headers, footers.
 	pub clean_content: Option<bool>,
-	/// Skip images during conversion.
-	pub skip_images:   Option<bool>,
+
+	pub skip_images: Option<bool>,
 }
 
-/// Convert HTML source to Markdown with optional preprocessing.
-///
-/// # Errors
-/// Returns an error if the conversion fails or the worker task aborts.
 #[napi]
 pub fn html_to_markdown(
 	html: JsString,

@@ -1,8 +1,3 @@
-/**
- * SSH Command Controller
- *
- * Handles /ssh subcommands for managing SSH host configurations.
- */
 import { getProjectDir, getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { type SSHHost, sshCapability } from "../../capability/ssh";
@@ -22,9 +17,6 @@ import {
 export class SSHCommandController {
 	constructor(private ctx: InteractiveModeContext) {}
 
-	/**
-	 * Handle /ssh command and route to subcommands
-	 */
 	async handle(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		const subcommand = parts[1]?.toLowerCase();
@@ -50,9 +42,6 @@ export class SSHCommandController {
 		}
 	}
 
-	/**
-	 * Show help text
-	 */
 	#showHelp(): void {
 		const helpText = [
 			"",
@@ -71,9 +60,6 @@ export class SSHCommandController {
 		this.#showMessage(helpText);
 	}
 
-	/**
-	 * Handle /ssh add - parse flags and add host to config
-	 */
 	async #handleAdd(text: string): Promise<void> {
 		const prefixMatch = text.match(/^\/ssh\s+add\b\s*(.*)$/i);
 		const rest = prefixMatch?.[1]?.trim() ?? "";
@@ -236,14 +222,10 @@ export class SSHCommandController {
 		}
 	}
 
-	/**
-	 * Handle /ssh list - show all configured SSH hosts
-	 */
 	async #handleList(): Promise<void> {
 		try {
 			const cwd = getProjectDir();
 
-			// Load from both user and project configs
 			const userPath = getSSHConfigPath("user", cwd);
 			const projectPath = getSSHConfigPath("project", cwd);
 
@@ -255,15 +237,12 @@ export class SSHCommandController {
 			const userHosts = Object.keys(userConfig.hosts ?? {});
 			const projectHosts = Object.keys(projectConfig.hosts ?? {});
 
-			// Load discovered hosts via capability system
 			const configHostNames = new Set([...userHosts, ...projectHosts]);
 			let discoveredHosts: SSHHost[] = [];
 			try {
 				const result = await loadCapability<SSHHost>(sshCapability.id, { cwd });
 				discoveredHosts = result.items.filter(h => !configHostNames.has(h.name));
-			} catch {
-				// Ignore discovery errors
-			}
+			} catch {}
 
 			if (userHosts.length === 0 && projectHosts.length === 0 && discoveredHosts.length === 0) {
 				this.#showMessage(
@@ -280,7 +259,6 @@ export class SSHCommandController {
 
 			const lines: string[] = ["", theme.bold("Configured SSH Hosts"), ""];
 
-			// Show user-level hosts
 			if (userHosts.length > 0) {
 				lines.push(theme.fg("accent", "User level") + theme.fg("muted", ` (~/.proto/agent/ssh.json):`));
 				for (const name of userHosts) {
@@ -291,7 +269,6 @@ export class SSHCommandController {
 				lines.push("");
 			}
 
-			// Show project-level hosts
 			if (projectHosts.length > 0) {
 				lines.push(theme.fg("accent", "Project level") + theme.fg("muted", ` (.proto/ssh.json):`));
 				for (const name of projectHosts) {
@@ -302,7 +279,6 @@ export class SSHCommandController {
 				lines.push("");
 			}
 
-			// Show discovered hosts (from ssh.json, .ssh.json in project root, etc.)
 			if (discoveredHosts.length > 0) {
 				for (const { providerName, shortPath, items: hosts } of groupBySource(discoveredHosts, h => h._source)) {
 					lines.push(
@@ -328,9 +304,6 @@ export class SSHCommandController {
 		}
 	}
 
-	/**
-	 * Format host details (host, user, port) for display
-	 */
 	#formatHostDetails(config: { host?: string; username?: string; port?: number }): string {
 		const parts: string[] = [];
 		if (config.host) parts.push(config.host);
@@ -339,9 +312,6 @@ export class SSHCommandController {
 		return theme.fg("dim", parts.length > 0 ? `[${parts.join(", ")}]` : "");
 	}
 
-	/**
-	 * Handle /ssh remove <name> - remove a host from config
-	 */
 	async #handleRemove(text: string): Promise<void> {
 		const match = text.match(/^\/ssh\s+(?:remove|rm)\b\s*(.*)$/i);
 		const rest = match?.[1]?.trim() ?? "";
@@ -376,9 +346,6 @@ export class SSHCommandController {
 		}
 	}
 
-	/**
-	 * Show a message in the chat
-	 */
 	#showMessage(text: string): void {
 		showCommandMessage(this.ctx, text);
 	}

@@ -144,7 +144,6 @@ async function readDebImpl(source: ByteSource, options: FormatReadOptions): Prom
 	return [...result.values()];
 }
 
-/** Read a Debian binary package and expose its control and data tar members. */
 export const readDeb: FormatReader = async (source, options) => {
 	try {
 		return await readDebImpl(source, options);
@@ -154,7 +153,6 @@ export const readDeb: FormatReader = async (source, options) => {
 	}
 };
 
-/** Detect a Debian package by its ar header and first debian-binary member. */
 export function sniffDeb(bytes: Uint8Array): boolean {
 	return firstArMemberName(bytes) === DEBIAN_BINARY;
 }

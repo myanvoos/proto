@@ -1,13 +1,3 @@
-/**
- * Fullscreen trajectory ledger (`/trajectory`).
- *
- * DeepSeek-harness-style turn-aware event ledger over the current session:
- * thick rules mark turn boundaries, compact badges identify each step's
- * source (USER / ASSISTANT / TOOL / COMPACTION / SYSTEM / META), and the main
- * pane keeps only index + event + one-line preview. Selecting a row opens a
- * local inspector with full content plus token usage, duration, and timing.
- * A snapshot is taken at open time; live growth is not tailed.
- */
 import { type Component, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { Trajectory, TrajectorySource, TrajectoryStep } from "../../session/trajectory/model";
@@ -69,10 +59,6 @@ export class TrajectoryView implements Component {
 		const lastAssistant = [...deps.trajectory.steps].reverse().find(step => step.kind === "chat");
 		if (lastAssistant) this.#selectedStepIndex = lastAssistant.index;
 	}
-
-	// ========================================================================
-	// Filtering + navigation
-	// ========================================================================
 
 	#visibleSteps(): TrajectoryStep[] {
 		const { steps } = this.#deps.trajectory;
@@ -141,7 +127,7 @@ export class TrajectoryView implements Component {
 		this.#selectedStepIndex = visible[nextPos].index;
 		this.#revealSelectedRow();
 	}
-	/** Keep the selected step's row inside the viewport while navigating. */
+
 	#revealSelectedRow(): void {
 		const rows = this.#cachedRowPositions;
 		const pos = rows.indexOf(this.#selectedStepIndex);
@@ -158,10 +144,6 @@ export class TrajectoryView implements Component {
 	#selectedStep(): TrajectoryStep | undefined {
 		return this.#deps.trajectory.steps.find(step => step.index === this.#selectedStepIndex);
 	}
-
-	// ========================================================================
-	// Input
-	// ========================================================================
 
 	handleInput(data: string): void {
 		if (data.startsWith("\x1b[<")) {
@@ -232,10 +214,6 @@ export class TrajectoryView implements Component {
 			this.#deps.requestRender();
 		}
 	}
-
-	// ========================================================================
-	// Render
-	// ========================================================================
 
 	render(width: number): readonly string[] {
 		const termHeight = process.stdout.rows || 40;

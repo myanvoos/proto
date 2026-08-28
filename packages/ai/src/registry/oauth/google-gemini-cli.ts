@@ -1,8 +1,3 @@
-/**
- * Gemini CLI OAuth flow (Google Cloud Code Assist)
- * Standard Gemini models only (gemini-2.0-flash, gemini-2.5-*)
- */
-
 import { getGeminiCliHeaders } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { $env } from "@oh-my-pi/pi-utils";
 import * as AIError from "../../error";
@@ -63,12 +58,6 @@ function isVpcScAffectedUser(payload: unknown): boolean {
 	return error.details.some(detail => detail.reason === "SECURITY_POLICY_VIOLATED");
 }
 
-/**
- * LRO poll cadence and bound. Cloud Code Assist project provisioning normally
- * completes within a handful of polls; the attempt cap converts a stuck
- * `done: false` operation (or a service incident) into a bounded login error
- * instead of the previous unbounded loop.
- */
 const POLL_INTERVAL_MS = 5000;
 export const POLL_MAX_ATTEMPTS = 24;
 
@@ -259,9 +248,6 @@ export async function loginGeminiCli(ctrl: OAuthController): Promise<OAuthCreden
 	});
 }
 
-/**
- * Refresh Google Cloud Code Assist token
- */
 export async function refreshGoogleCloudToken(refreshToken: string, projectId: string): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",

@@ -1,15 +1,3 @@
-/**
- * Context-reducing surgical compaction ("shake").
- *
- * `shake` drops heavy content out of the live context mechanically: whole
- * tool-call results and large fenced/XML blocks are replaced with short
- * placeholders. This module is the pure layer — region detection and in-place
- * mutation only. Artifact offload, persistence, and provider-session teardown
- * are orchestrated by the caller (`AgentSession.shake`).
- *
- * Layering mirrors `pruning.ts`: no I/O here.
- */
-
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
@@ -24,25 +12,17 @@ import {
 } from "./tool-protection";
 
 export interface ShakeConfig {
-	/** Keep the most recent context tokens (across all entries) intact. */
 	protectTokens: number;
-	/** Only shake when total estimated savings meets this threshold. */
+
 	minSavings: number;
-	/** Tool-result protection matchers. String entries protect every result from that tool; predicates may inspect the paired tool call. */
+
 	protectedTools: ProtectedToolMatcher[];
-	/** Minimum token size for a fenced/XML block to be eligible. */
+
 	fenceMinTokens: number;
-	/**
-	 * Compaction boundary (`firstKeptEntryId` of the latest compaction). Entries
-	 * before it are summarized away and never sent, so they are skipped — shaking
-	 * them only churns persisted history. Undefined = no compaction (whole branch
-	 * is sent). Note: shake still elides the warm cached prefix at/after the
-	 * boundary — that is its job as a compaction-class reducer.
-	 */
+
 	keepBoundaryId?: string;
 }
 
-/** Auto-shake config: protects the live tail, conservative thresholds. */
 export const DEFAULT_SHAKE_CONFIG: ShakeConfig = {
 	protectTokens: 16_000,
 	minSavings: 4_000,
@@ -50,12 +30,6 @@ export const DEFAULT_SHAKE_CONFIG: ShakeConfig = {
 	fenceMinTokens: 400,
 };
 
-/**
- * Manual `/shake`: aggressive — no savings threshold and drops eligible
- * regions across history, artifact recovery reads included (the user's full
- * escape hatch). Still keeps a small recent tail so it cannot strip the tool
- * results the agent is currently working from (#7776).
- */
 export const AGGRESSIVE_SHAKE_CONFIG: ShakeConfig = {
 	protectTokens: 4_000,
 	minSavings: 0,
@@ -63,47 +37,40 @@ export const AGGRESSIVE_SHAKE_CONFIG: ShakeConfig = {
 	fenceMinTokens: 400,
 };
 
-/** Compaction dead-end rescue: aggressive reach, but artifact recovery reads stay protected. */
 export const RESCUE_SHAKE_CONFIG: ShakeConfig = {
 	...AGGRESSIVE_SHAKE_CONFIG,
-	// Rescue must be able to elide the newest oversized result even inside the
-	// manual preset's recent-tail window (#7776) — a dead-end recovery that
-	// cannot drop its blocker is not a recovery.
+
 	protectTokens: 0,
 	protectedTools: [...AGGRESSIVE_SHAKE_CONFIG.protectedTools, isArtifactRecoveryToolResult],
 };
 
-/** Rough token cost of a placeholder line; used only for the savings gate. */
 const PLACEHOLDER_TOKEN_ESTIMATE = 16;
 
-/** A located eligible region. */
 export interface ToolResultShakeRegion {
 	kind: "toolResult";
 	entry: SessionMessageEntry;
 	tokens: number;
 	originalText: string;
-	/** Human label for the offload doc (tool name). */
+
 	label: string;
 }
 
 export interface BlockShakeRegion {
 	kind: "block";
 	entry: SessionMessageEntry | CustomMessageEntry;
-	/** Index into the content array, or -1 for string-form content. */
+
 	blockIndex: number;
-	/** Character offsets into the target text (start inclusive, end exclusive). */
+
 	start: number;
 	end: number;
 	tokens: number;
 	originalText: string;
-	/** Human label for the offload doc (role / customType). */
+
 	label: string;
 }
 
 export type ShakeRegion = ToolResultShakeRegion | BlockShakeRegion;
 
-// Mirror prompt.ts top-level XML detection. Lowercase tag names only —
-// conservative by design (uppercase / mixed-case tags are ignored).
 const OPENING_XML = /^<([a-z_-]+)(?:\s+[^>]*)?>$/;
 const CLOSING_XML = /^<\/([a-z_-]+)>$/;
 
@@ -121,7 +88,6 @@ function toolResultText(message: ToolResultMessage): string {
 		.join("\n");
 }
 
-/** Estimate the token contribution of an entry for the protect-recent window. */
 function entryTokens(entry: SessionEntry, tokenizer: Tokenizer): number {
 	if (entry.type === "message") {
 		return tokenizer.countMessage(entry.message);
@@ -135,15 +101,6 @@ function entryTokens(entry: SessionEntry, tokenizer: Tokenizer): number {
 	return 0;
 }
 
-/**
- * Locate fenced code blocks and top-level XML element spans inside `text`.
- * Returns character ranges `[start, end)` covering the full block (including the
- * opening and closing fence/tag lines, excluding the trailing newline).
- *
- * Conservative: unterminated fences/tags yield no range, and XML detection is
- * suppressed inside fences. Mirrors the toggling logic in
- * `@oh-my-pi/pi-utils` `format()` so behavior stays aligned with prompt rendering.
- */
 function scanTextForBlockRanges(text: string): Array<{ start: number; end: number }> {
 	const ranges: Array<{ start: number; end: number }> = [];
 	let inFence = false;
@@ -155,7 +112,7 @@ function scanTextForBlockRanges(text: string): Array<{ start: number; end: numbe
 	for (let i = 0; i <= text.length; i++) {
 		if (i !== text.length && text[i] !== "\n") continue;
 		const line = text.slice(lineStart, i);
-		const lineEnd = i; // offset of the newline (or end of text); excludes the "\n"
+		const lineEnd = i;
 		const trimmedStart = line.trimStart();
 
 		const isFenceLine = trimmedStart.startsWith("```") || trimmedStart.startsWith("~~~");
@@ -198,12 +155,6 @@ function scanTextForBlockRanges(text: string): Array<{ start: number; end: numbe
 	return mergeRanges(ranges);
 }
 
-/**
- * Sort ascending by start and drop any range that overlaps an already-kept
- * range. Because fence/XML spans are always properly nested (XML detection is
- * suppressed inside fences), overlap means containment — keeping the
- * earlier-starting range keeps the outermost span.
- */
 function mergeRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
 	if (ranges.length <= 1) return ranges;
 	const sorted = [...ranges].sort((a, b) => a.start - b.start);
@@ -264,7 +215,7 @@ function collectBlockRegions(
 		}
 		return;
 	}
-	// custom_message
+
 	scanContentBlocks(entry, entry.content, tokenizer, config, entry.customType, out);
 }
 
@@ -288,25 +239,10 @@ function scanContentBlocks(
 	}
 }
 
-/**
- * Pure detection: locate every eligible shake region on a branch.
- *
- * Walks the protect-recent window (most recent `protectTokens` of context is
- * kept intact), collects whole tool-result messages (honoring `protectedTools`
- * and skipping already-pruned results) and large fenced/XML blocks inside
- * user/developer/assistant/custom messages. Tool results flagged contextually
- * useless by their tool bypass the protect window — there is nothing recent
- * worth keeping in them. Returns regions in document order.
- *
- * `toolCall` blocks are never touched (tool-call/result pairing is preserved)
- * and regions never span a message boundary. When the combined estimated
- * savings is below `minSavings`, returns `[]` (no-op).
- */
 export function collectShakeRegions(entries: SessionEntry[], tokenizer: Tokenizer, config: ShakeConfig): ShakeRegion[] {
 	const n = entries.length;
 	if (n === 0) return [];
 
-	// Tokens of all entries strictly more recent than index i.
 	const accumulatedAfter = new Array<number>(n);
 	let acc = 0;
 	for (let i = n - 1; i >= 0; i--) {
@@ -316,8 +252,6 @@ export function collectShakeRegions(entries: SessionEntry[], tokenizer: Tokenize
 
 	const toolCallsById = collectToolCallsById(entries);
 
-	// Entries before the compaction boundary are summarized away and never sent —
-	// shaking them only churns persisted history (no prompt/cache effect).
 	const boundaryIndex =
 		config.keepBoundaryId === undefined
 			? 0
@@ -331,8 +265,7 @@ export function collectShakeRegions(entries: SessionEntry[], tokenizer: Tokenize
 		const entry = entries[i];
 		if (i < boundaryIndex) continue;
 		const toolResult = getToolResultMessage(entry);
-		// Useless-flagged results carry no information once consumed; they are
-		// eligible even inside the protect-recent window.
+
 		const uselessResult = toolResult !== undefined && toolResult.useless === true && toolResult.isError !== true;
 		if (!uselessResult && accumulatedAfter[i] < config.protectTokens) continue;
 		if (toolResult) {
@@ -390,7 +323,7 @@ function getBlockTextSlot(entry: SessionMessageEntry | CustomMessageEntry, block
 			},
 		};
 	}
-	// custom_message
+
 	if (blockIndex === -1) {
 		if (typeof entry.content !== "string") return undefined;
 		return {
@@ -411,15 +344,6 @@ function getBlockTextSlot(entry: SessionMessageEntry | CustomMessageEntry, block
 	};
 }
 
-/**
- * Pure mutation: replace a single region's content in place.
- *
- * Tool-result: replaces the message content with the placeholder text and
- * stamps `prunedAt`. Block: splices `replacement` over `[start, end)` of the
- * target text block. When several block regions share one text block they MUST
- * be applied highest-start-first so earlier offsets stay valid — use
- * {@link applyShakeRegions}, which orders them correctly.
- */
 export function applyShakeRegion(region: ShakeRegion, replacement: string): void {
 	if (region.kind === "toolResult") {
 		const message = region.entry.message as ToolResultMessage;
@@ -432,18 +356,10 @@ export function applyShakeRegion(region: ShakeRegion, replacement: string): void
 	if (!slot) return;
 	const text = slot.read();
 	slot.write(text.slice(0, region.start) + replacement + text.slice(region.end));
-	// Message entries keep a stable `entry.message` identity across context
-	// rebuilds, so an in-place block rewrite must drop its cached estimate/convert.
-	// Custom-message entries are re-materialized into a fresh AgentMessage on every
-	// buildSessionContext, so they carry no stable cached identity to invalidate.
+
 	if (region.entry.type === "message") invalidateMessageCache(region.entry.message);
 }
 
-/**
- * Apply many regions at once. Block regions are applied highest-start-first so
- * that splicing one region never shifts the offsets of another in the same text
- * block; tool-result regions are independent.
- */
 export function applyShakeRegions(items: Array<{ region: ShakeRegion; replacement: string }>): void {
 	const ordered = [...items].sort((a, b) => {
 		const aStart = a.region.kind === "block" ? a.region.start : -1;

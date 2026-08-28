@@ -25,14 +25,7 @@ const QUESTION_PROMPT_RE =
 const USER_DIRECTED_PROMPT_RE = /\b(?:you|your|we|our)\b/i;
 const USER_RESPONSE_CUE_RE =
 	/^(?:please\s+)?(?:confirm|reply|choose|pick|decide|advise)\b|^(?:please\s+)?answer\b|^(?:please\s+)?(?:let\s+me\s+know|tell\s+me)\b/i;
-/**
- * A trailing question mark is the universal signal that a line is a question, but
- * the English word/pronoun gates above exist to filter incidental "?" out of prose
- * (e.g. a TypeScript `foo?: string` tail). Non-English text has no cheap word list,
- * yet any non-ASCII character in a "?"/"？"-terminated line reliably marks it as
- * genuine prose — CJK/Japanese/Korean, Spanish `¿…?`, accented Latin — so treat it
- * as a real user-directed question. Fixes non-Latin prompts going undetected (#7803).
- */
+
 const NON_ASCII_TEXT_RE = /[^\x00-\x7F]/;
 
 interface PromptLine {
@@ -40,7 +33,6 @@ interface PromptLine {
 	hadPromptLabel: boolean;
 }
 
-/** Capabilities the todo tracker borrows from its owning session. */
 export interface TodoTrackerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -56,7 +48,6 @@ export interface TodoTrackerHost {
 	toolRegistry(): Map<string, AgentTool>;
 }
 
-/** Owns canonical todo state, eager preludes, and completion reminders. */
 export class TodoTracker {
 	readonly #host: TodoTrackerHost;
 	#phases: TodoPhase[] = [];
@@ -69,27 +60,22 @@ export class TodoTracker {
 		this.#host = host;
 	}
 
-	/** Returns a defensive clone of the current todo phases. */
 	get phases(): TodoPhase[] {
 		return this.#clonePhases(this.#phases);
 	}
 
-	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
 	}
 
-	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
 		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
 	}
 
-	/** Returns a defensive clone suitable for snapshots and branch state. */
 	clonePhases(phases: TodoPhase[]): TodoPhase[] {
 		return this.#clonePhases(phases);
 	}
 
-	/** Resets per-prompt reminder and mutation budgets. */
 	resetCycle(): void {
 		this.#reminderCount = 0;
 		this.#reminderAwaitingProgress = false;
@@ -97,7 +83,6 @@ export class TodoTracker {
 		this.#midRunNudgeCount = 0;
 	}
 
-	/** Records a completed tool result before asynchronous event processing begins. */
 	onToolResult(toolName: string, isError: boolean): void {
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
@@ -107,7 +92,6 @@ export class TodoTracker {
 		this.#reminderAwaitingProgress = false;
 	}
 
-	/** Detects whether a successful todo result came from an init operation. */
 	onTodoResultDetails(details: Record<string, unknown>, toolCallId: string | undefined): boolean {
 		const phases = details.phases;
 		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return false;
@@ -123,7 +107,6 @@ export class TodoTracker {
 		return false;
 	}
 
-	/** Builds the first-turn eager todo prelude and optional forced tool choice. */
 	createEagerTodoPrelude(
 		promptText: string | undefined,
 	): { message: AgentMessage; toolChoice?: ToolChoice } | undefined {
@@ -161,7 +144,6 @@ export class TodoTracker {
 		return { message, toolChoice };
 	}
 
-	/** Builds reminder-only eager preludes after compaction. */
 	buildPostCompactionEagerNudges(): AgentMessage[] {
 		const nudges: AgentMessage[] = [];
 		const todo = this.createEagerTodoPrelude(undefined);
@@ -169,7 +151,6 @@ export class TodoTracker {
 		return nudges;
 	}
 
-	/** Checks a terminal assistant turn and schedules continuation for incomplete todos. */
 	async checkCompletion(message: AssistantMessage): Promise<boolean> {
 		if (this.#reminderAwaitingProgress) {
 			logger.debug("Todo completion: prior reminder still awaiting agent action; staying silent", {
@@ -256,7 +237,6 @@ export class TodoTracker {
 		return true;
 	}
 
-	/** Takes the next hidden mid-run reconciliation nudge, if its budget and guards allow. */
 	takeMidRunNudge(): AgentMessage | null {
 		if (this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD) return null;
 		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;

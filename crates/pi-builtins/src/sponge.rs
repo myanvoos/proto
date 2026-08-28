@@ -1,9 +1,9 @@
-//! `sponge` builtin: soak up all of standard input before writing it to a file
-//! or standard output.
-//!
-//! Ported from pi-shell's in-process implementation of the moreutils tool. The
-//! delayed open makes `command < file | sponge file` safe: the destination is
-//! not opened or truncated until its former contents have reached EOF.
+
+
+
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -23,7 +23,7 @@ const OPT_APPEND: &str = "append";
 const ARG_FILE: &str = "file";
 const CHUNK_SIZE: usize = 64 * 1024;
 
-/// Parsed `sponge` invocation.
+
 pub(crate) struct Sponge {
 	matches: ArgMatches,
 }
@@ -34,8 +34,8 @@ impl Utility for Sponge {
 	const NAME: &'static str = "sponge";
 
 	fn run(self, host: &mut Host) -> i32 {
-		// Soak before resolving or opening the destination. In particular, do not
-		// move this below the output-operand branch: stdin may be that same file.
+
+
 		let buffer = match soak_stdin(host) {
 			Ok(buffer) => buffer,
 			Err(SoakError::Cancelled) => return 130,
@@ -101,8 +101,8 @@ enum SoakError {
 	Io(io::Error),
 }
 
-/// Reads stdin to EOF into memory, polling for cancellation between chunks so
-/// an aborted pipeline never touches the output file.
+
+
 fn soak_stdin(host: &mut Host) -> Result<Vec<u8>, SoakError> {
 	let mut buffer = Vec::new();
 	let mut chunk = vec![0u8; CHUNK_SIZE].into_boxed_slice();
@@ -126,9 +126,9 @@ fn append_to(target: &Path, buffer: &[u8]) -> io::Result<()> {
 	file.flush()
 }
 
-/// Writes `buffer` to a fresh temporary file beside `target`, copies the
-/// existing target's permissions onto it, then renames it over the target so
-/// readers never observe a truncated file.
+
+
+
 fn replace_atomically(target: &Path, buffer: &[u8]) -> io::Result<()> {
 	let (temp_path, mut temp) = create_sibling_temp(target)?;
 	let result = write_and_swap(target, &temp_path, &mut temp, buffer);
@@ -152,8 +152,8 @@ fn write_and_swap(
 	fs::rename(temp_path, target)
 }
 
-/// Creates a uniquely named `.<basename>.sponge.<random>` file next to
-/// `target` with `create_new`, retrying on collision.
+
+
 fn create_sibling_temp(target: &Path) -> io::Result<(PathBuf, File)> {
 	static COUNTER: AtomicU64 = AtomicU64::new(0);
 	let dir = target
@@ -185,7 +185,7 @@ fn create_sibling_temp(target: &Path) -> io::Result<(PathBuf, File)> {
 	))
 }
 
-/// Creates the `sponge` builtin registration.
+
 pub(crate) fn sponge_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sponge, SE>()
 }

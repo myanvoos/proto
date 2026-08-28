@@ -1,6 +1,6 @@
-//! `seq` builtin: display numbers from FIRST to LAST in steps of INCREMENT.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	error::Error,
@@ -24,20 +24,20 @@ mod number {
 use num_traits::Zero;
 use uucore::extendedbigdecimal::ExtendedBigDecimal;
 
-/// A number with a specified number of integer and fractional digits.
-///
-/// This struct can be used to represent a number along with information
-/// on how many significant digits to use when displaying the number.
-/// The [`PreciseNumber::num_integral_digits`] field also includes the width
-/// needed to display the "-" character for a negative number.
-/// [`PreciseNumber::num_fractional_digits`] provides the number of decimal
-/// digits after the decimal point (a.k.a. precision), or None if that number
-/// cannot intuitively be obtained (i.e. hexadecimal floats).
-/// Note: Those 2 fields should not necessarily be interpreted literally, but as
-/// matching GNU `seq` behavior: the exact way of guessing desired precision
-/// from user input is a matter of interpretation.
-///
-/// You can get an instance of this struct by calling [`str::parse`].
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[derive(Debug)]
 pub struct PreciseNumber {
 	pub number:                ExtendedBigDecimal,
@@ -47,9 +47,9 @@ pub struct PreciseNumber {
 
 impl PreciseNumber {
 		pub fn one() -> Self {
-		// We would like to implement `num_traits::One`, but it requires
-		// a multiplication implementation, and we don't want to
-		// implement that here.
+
+
+
 		Self {
 			number:                ExtendedBigDecimal::one(),
 			num_integral_digits:   1,
@@ -57,21 +57,21 @@ impl PreciseNumber {
 		}
 	}
 
-	/// Decide whether this number is zero (either positive or negative).
+
 	pub fn is_zero(&self) -> bool {
-		// We would like to implement `num_traits::Zero`, but it
-		// requires an addition implementation, and we don't want to
-		// implement that here.
+
+
+
 		self.number.is_zero()
 	}
 }
 }
 
 mod numberparse {
-//! Parsing numbers for use in `seq`.
-//!
-//! This module provides an implementation of [`FromStr`] for the
-//! [`PreciseNumber`] struct.
+
+
+
+
 use std::str::FromStr;
 
 use uucore::{
@@ -81,28 +81,28 @@ use uucore::{
 
 use super::number::PreciseNumber;
 
-/// An error returned when parsing a number fails.
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseNumberError {
 	Float,
 	Nan,
 }
 
-/// Compute the number of integral and fractional digits in input string,
-/// and wrap the result in a PreciseNumber.
-/// We know that the string has already been parsed correctly, so we don't
-/// need to be too careful.
+
+
+
+
 fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
 	let input = input.to_lowercase();
 	let input = input.trim_start();
 
-	// Leading + is ignored for this.
+
 	let input = input.strip_prefix('+').unwrap_or(input);
 
-	// Integral digits for any hex number is ill-defined (0 is fine as an output)
-	// Fractional digits for an floating hex number is ill-defined, return None
-	// as we'll totally ignore that number for precision computations.
-	// Still return 0 for hex integers though.
+
+
+
+
 	if input.starts_with("0x") || input.starts_with("-0x") {
 		return PreciseNumber {
 			number:                ebd,
@@ -115,15 +115,15 @@ fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
 		};
 	}
 
-	// Split the exponent part, if any
+
 	let parts: Vec<&str> = input.split('e').collect();
 	debug_assert!(parts.len() <= 2);
 
-	// Count all the digits up to `.`, `-` sign is included.
+
 	let (mut int_digits, mut frac_digits) = match parts[0].find('.') {
 		Some(i) => {
-			// Cover special case .X and -.X where we behave as if there was a leading 0:
-			// 0.X, -0.X.
+
+
 			let int_digits = match i {
 				0 => 1,
 				1 if parts[0].starts_with('-') => 2,
@@ -135,17 +135,17 @@ fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
 		None => (parts[0].len(), 0),
 	};
 
-	// If there is an exponent, reparse that (yes this is not optimal,
-	// but we can't necessarily exactly recover that from the parsed number).
+
+
 	if parts.len() == 2 {
 		let exp = parts[1].parse::<i64>().unwrap_or(0);
-		// For positive exponents, effectively expand the number. Ignore negative
-		// exponents. Also ignore overflowed exponents (unwrap_or(0)).
+
+
 		if exp > 0 {
 			int_digits += exp.try_into().unwrap_or(0);
 		}
 		frac_digits = if exp < frac_digits as i64 {
-			// Subtract from i128 to avoid any overflow
+
 			(frac_digits as i128 - exp as i128).try_into().unwrap_or(0)
 		} else {
 			0
@@ -159,18 +159,18 @@ fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
 	}
 }
 
-// Note: We could also have provided an `ExtendedParser` implementation for
-// PreciseNumber, but we want a simpler custom error.
+
+
 impl FromStr for PreciseNumber {
 	type Err = ParseNumberError;
 
 	fn from_str(input: &str) -> Result<Self, Self::Err> {
 		let ebd = match ExtendedBigDecimal::extended_parse(input) {
 			Ok(ebd) => match ebd {
-				// Handle special values
+
 				ExtendedBigDecimal::BigDecimal(_) | ExtendedBigDecimal::MinusZero => {
-					// TODO: GNU `seq` treats small numbers < 1e-4950 as 0, we could do the same
-					// to avoid printing senselessly small numbers.
+
+
 					ebd
 				},
 				ExtendedBigDecimal::Infinity | ExtendedBigDecimal::MinusInfinity => {
@@ -184,7 +184,7 @@ impl FromStr for PreciseNumber {
 					return Err(ParseNumberError::Nan);
 				},
 			},
-			Err(ExtendedParserError::Underflow(ebd)) => ebd, // Treat underflow as 0
+			Err(ExtendedParserError::Underflow(ebd)) => ebd,
 			Err(_) => return Err(ParseNumberError::Float),
 		};
 
@@ -196,10 +196,10 @@ impl FromStr for PreciseNumber {
 }
 
 mod error {
-//! Errors returned by seq.
 
-// pi-uutils: `translate!` message lookups are literalized with the en-US
-// strings from upstream's locales/en-US.ftl.
+
+
+
 
 use thiserror::Error;
 use uucore::display::Quotable;
@@ -208,25 +208,25 @@ use super::numberparse::ParseNumberError;
 
 #[derive(Debug, Error)]
 pub enum SeqError {
-	/// An error parsing the input arguments.
-	///
-	/// The parameters are the [`String`] argument as read from the
-	/// command line and the underlying parsing error itself.
+
+
+
+
 	#[error("invalid {} argument: {}", parse_error_type(.1), .0.quote())]
 	ParseError(String, ParseNumberError),
 
-	/// The increment argument was zero, which is not allowed.
-	///
-	/// The parameter is the increment argument as a [`String`] as read
-	/// from the command line.
+
+
+
+
 	#[error("invalid Zero increment value: {}", .0.quote())]
 	ZeroIncrement(String),
 
-	/// No arguments were passed to this function, 1 or more is required
+
 	#[error("missing operand")]
 	NoArguments,
 
-	/// Both a format and equal width where passed to seq
+
 	#[error("format string may not be specified when printing equal width strings")]
 	FormatAndEqualWidth,
 }
@@ -249,7 +249,7 @@ const OPT_FORMAT: &str = "format";
 
 const ARG_NUMBERS: &str = "numbers";
 
-/// How many emitted numbers to print between cancellation polls.
+
 const CANCEL_POLL_INTERVAL: u64 = 4096;
 
 #[derive(Clone)]
@@ -260,13 +260,13 @@ struct SeqOptions<'a> {
 	format:      Option<&'a str>,
 }
 
-/// A range of floats.
-///
-/// The elements are (first, increment, last).
+
+
+
 type RangeFloat = (ExtendedBigDecimal, ExtendedBigDecimal, ExtendedBigDecimal);
 
-/// Turn short args with attached value, for example "-s,", into two args "-s"
-/// and "," to make them work with clap.
+
+
 fn split_short_args_with_value(args: Vec<OsString>) -> Vec<OsString> {
 	let mut v: Vec<OsString> = Vec::new();
 
@@ -277,9 +277,9 @@ fn split_short_args_with_value(args: Vec<OsString>) -> Vec<OsString> {
 			&& (bytes.starts_with(b"-f") || bytes.starts_with(b"-s") || bytes.starts_with(b"-t"))
 		{
 			let (short_arg, value) = bytes.split_at(2);
-			// SAFETY:
-			// Both `short_arg` and `value` only contain content that originated from
-			// `OsStr::as_encoded_bytes`
+
+
+
 			v.push(unsafe { OsString::from_encoded_bytes_unchecked(short_arg.to_vec()) });
 			v.push(unsafe { OsString::from_encoded_bytes_unchecked(value.to_vec()) });
 		} else {
@@ -303,7 +303,7 @@ fn select_precision(
 	}
 }
 
-/// Parsed `seq` invocation.
+
 pub(crate) struct Seq {
 	matches: ArgMatches,
 }
@@ -374,9 +374,9 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 		return Err(SeqError::ZeroIncrement(numbers[1].to_owned()).into());
 	}
 	let last: PreciseNumber = {
-		// We are guaranteed that `numbers.len()` is greater than zero
-		// and at most three because of the argument specification in
-		// `uu_app()`.
+
+
+
 		let n: usize = numbers.len();
 		match numbers[n - 1].parse() {
 			Ok(num) => num,
@@ -384,8 +384,8 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 		}
 	};
 
-	// If a format was passed on the command line, use that.
-	// If not, use some default format based on parameters precision.
+
+
 	let (format, padding, fast_allowed) = if let Some(str) = options.format {
 		(Format::<num_format::Float, &ExtendedBigDecimal>::parse(str)?, 0, false)
 	} else {
@@ -407,7 +407,7 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 		};
 
 		let formatter = match precision {
-			// format with precision: decimal floats and integers
+
 			Some(precision) => num_format::Float {
 				variant: FloatVariant::Decimal,
 				width: padding,
@@ -415,11 +415,11 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 				precision: Some(precision),
 				..Default::default()
 			},
-			// format without precision: hexadecimal floats
+
 			None => num_format::Float { variant: FloatVariant::Shortest, ..Default::default() },
 		};
-		// Allow fast printing if precision is 0 (integer inputs), `print_seq` will do
-		// further checks.
+
+
 		(Format::from_formatter(formatter), padding, precision == Some(0))
 	};
 
@@ -436,7 +436,7 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 	match result {
 		Ok(()) => Ok(()),
 		Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {
-			// GNU seq prints the Broken pipe message but still exits with status 0.
+
 			let _ = writeln!(host.stderr, "seq: write error: {err}");
 			Ok(())
 		},
@@ -481,8 +481,8 @@ fn uu_app() -> Command {
 				.help("use printf style floating-point FORMAT"),
 		)
 		.arg(
-			// we use allow_hyphen_values instead of allow_negative_numbers because clap removed
-			// the support for "exotic" negative numbers like -.1 (see https://github.com/clap-rs/clap/discussions/5837)
+
+
 			Arg::new(ARG_NUMBERS)
 				.allow_hyphen_values(true)
 				.action(ArgAction::Append)
@@ -490,8 +490,8 @@ fn uu_app() -> Command {
 		)
 }
 
-/// Integer print, default format, positive increment: fast code path
-/// that avoids reformatting digit at all iterations.
+
+
 fn fast_print_seq(
 	host: &Host,
 	mut stdout: impl Write,
@@ -502,60 +502,60 @@ fn fast_print_seq(
 	terminator: &OsStr,
 	padding: usize,
 ) -> std::io::Result<()> {
-	// Nothing to do, just return.
+
 	if last < first {
 		return Ok(());
 	}
 
-	// Do at most u64::MAX loops. We can print in the order of 1e8 digits per
-	// second, u64::MAX is 1e19, so it'd take hundreds of years for this to
-	// complete anyway. TODO: we can move this test to `print_seq` if we care about
-	// this case.
+
+
+
+
 	let loop_cnt = ((last - first) / increment).to_u64().unwrap_or(u64::MAX);
 
-	// Format the first number.
+
 	let first_str = first.to_string();
 
-	// Makeshift log10.ceil
+
 	let last_length = last.to_string().len();
 
-	// Allocate a large u8 buffer, that contains a preformatted string
-	// of the number followed by the `separator`.
-	//
-	// | ... head space ... | number | separator |
-	// ^0                   ^ start  ^ num_end   ^ size (==buf.len())
-	//
-	// We keep track of start in this buffer, as the number grows.
-	// When printing, we take a slice between start and end.
+
+
+
+
+
+
+
+
 	let size = last_length.max(padding) + separator.len();
-	// Fill with '0', this is needed for equal_width, and harmless otherwise.
+
 	let mut buf = vec![b'0'; size];
 	let buf = buf.as_mut_slice();
 
 	let num_end = buf.len() - separator.len();
 	let mut start = num_end - first_str.len();
 
-	// Initialize buf with first and separator.
+
 	buf[start..num_end].copy_from_slice(first_str.as_bytes());
 	buf[num_end..].copy_from_slice(separator.as_encoded_bytes());
 
-	// Normally, if padding is > 0, it should be equal to last_length,
-	// so start would be == 0, but there are corner cases.
+
+
 	start = start.min(num_end - padding);
 
-	// Prepare the number to increment with as a string
+
 	let inc_str = increment.to_string();
 	let inc_str = inc_str.as_bytes();
 
 	for i in 0..loop_cnt {
-		// Poll periodically so shell abort/timeout is observed.
+
 		if i % CANCEL_POLL_INTERVAL == 0 && host.is_cancelled() {
 			return Ok(());
 		}
 		stdout.write_all(&buf[start..])?;
 		fast_inc(buf, &mut start, num_end, inc_str);
 	}
-	// Write the last number without separator, but with terminator.
+
 	stdout.write_all(&buf[start..num_end])?;
 	stdout.write_all(terminator.as_encoded_bytes())?;
 	stdout.flush()?;
@@ -570,7 +570,7 @@ fn done_printing<T: Zero + PartialOrd>(next: &T, increment: &T, last: &T) -> boo
 	}
 }
 
-/// Arbitrary precision decimal number code path ("slow" path)
+
 fn print_seq(
 	host: &Host,
 	range: RangeFloat,
@@ -578,14 +578,14 @@ fn print_seq(
 	terminator: &OsStr,
 	format: &Format<num_format::Float, &ExtendedBigDecimal>,
 	fast_allowed: bool,
-	padding: usize, // Used by fast path only
+	padding: usize,
 ) -> std::io::Result<()> {
 	let mut stdout = BufWriter::new(host.stdout_clone());
 	let (first, increment, last) = range;
 
 	if fast_allowed {
-		// Test if we can use fast code path.
-		// First try to convert the range to BigUint (u64 for the increment).
+
+
 		let (first_bui, increment_u64, last_bui) =
 			(first.to_biguint(), increment.to_biguint().and_then(|x| x.to_u64()), last.to_biguint());
 		if let (Some(first_bui), Some(increment_u64), Some(last_bui)) =
@@ -609,7 +609,7 @@ fn print_seq(
 	let mut is_first_iteration = true;
 	let mut iterations: u64 = 0;
 	while !done_printing(&value, &increment, &last) {
-		// Poll periodically so shell abort/timeout is observed.
+
 		if iterations.is_multiple_of(CANCEL_POLL_INTERVAL) && host.is_cancelled() {
 			return Ok(());
 		}
@@ -618,7 +618,7 @@ fn print_seq(
 			stdout.write_all(separator.as_encoded_bytes())?;
 		}
 		format.fmt(&mut stdout, &value)?;
-		// TODO Implement augmenting addition.
+
 		value = value + increment.clone();
 		is_first_iteration = false;
 	}
@@ -628,7 +628,7 @@ fn print_seq(
 	stdout.flush()?;
 	Ok(())
 }
-/// Creates the `seq` builtin registration.
+
 pub(crate) fn seq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Seq, SE>()
 }

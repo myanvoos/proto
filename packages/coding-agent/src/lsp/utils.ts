@@ -20,34 +20,15 @@ import type {
 
 export { detectLanguageId } from "../utils/lang-from-path";
 
-// =============================================================================
-// URI Handling (Cross-Platform)
-// =============================================================================
-
-/**
- * Convert a file path to a file:// URI.
- * Uses the URL machinery so special characters (`%`, `#`, `?`, spaces) are
- * percent-encoded; plain concatenation produced URIs that broke round-trips.
- * Handles Windows drive letters correctly.
- */
 export function fileToUri(filePath: string): string {
 	return Bun.pathToFileURL(path.resolve(filePath)).href;
 }
 
-/**
- * Convert a file:// URI to a file path.
- * Tolerates both percent-encoded URIs and lax servers that send raw paths.
- * Handles Windows drive letters correctly.
- */
 export function uriToFile(uri: string): string {
 	if (!uri.startsWith("file://")) {
 		return uri;
 	}
 
-	// A raw `#`/`?` parses *successfully* as fragment/query and silently
-	// truncates the path — it never reaches the catch below. LSP servers do
-	// not use fragments or queries on file URIs (encoded forms are %23/%3F),
-	// so raw occurrences mean a lax server sent an unencoded path.
 	if (uri.includes("#") || uri.includes("?")) {
 		return laxUriToFile(uri);
 	}
@@ -55,8 +36,6 @@ export function uriToFile(uri: string): string {
 	try {
 		return Bun.fileURLToPath(uri);
 	} catch {
-		// Not a well-formed file URL (unencoded characters, stray `%`, host
-		// component). Fall back to a lenient manual conversion.
 		return laxUriToFile(uri);
 	}
 }
@@ -65,14 +44,11 @@ function laxUriToFile(uri: string): string {
 	let filePath = uri.slice(7);
 	try {
 		filePath = decodeURIComponent(filePath);
-	} catch {
-		// Invalid percent-encoding — treat as a literal path.
-	}
+	} catch {}
 
 	return filePath;
 }
 
-/** Map that treats equivalent file URI spellings as the same key. */
 export class EquivalentUriMap<Value> extends Map<string, Value> {
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
@@ -101,10 +77,6 @@ export class EquivalentUriMap<Value> extends Map<string, Value> {
 	}
 }
 
-// =============================================================================
-// Diagnostic Formatting
-// =============================================================================
-
 const SEVERITY_NAMES: Record<DiagnosticSeverity, string> = {
 	1: "error",
 	2: "warning",
@@ -112,16 +84,10 @@ const SEVERITY_NAMES: Record<DiagnosticSeverity, string> = {
 	4: "hint",
 };
 
-/**
- * Convert diagnostic severity number to string name.
- */
 function severityToString(severity?: DiagnosticSeverity): string {
 	return SEVERITY_NAMES[severity ?? 1] ?? "unknown";
 }
 
-/**
- * Sort diagnostics by severity, then by location and message.
- */
 export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
 	return diagnostics.sort((a, b) => {
 		const aSeverity = a.severity ?? 1;
@@ -137,17 +103,14 @@ export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
 	});
 }
 
-/**
- * Strip noise from diagnostic messages (clippy URLs, override hints).
- */
 function stripDiagnosticNoise(message: string): string {
 	return message
 		.split("\n")
 		.filter(line => {
 			const trimmed = line.trim();
-			// Skip "for further information visit <url>" lines
+
 			if (trimmed.startsWith("for further information visit")) return false;
-			// Skip bare URLs
+
 			if (/^https?:\/\//.test(trimmed)) return false;
 			return true;
 		})
@@ -155,9 +118,6 @@ function stripDiagnosticNoise(message: string): string {
 		.trim();
 }
 
-/**
- * Format a diagnostic as a human-readable string.
- */
 export function formatDiagnostic(diagnostic: Diagnostic, filePath: string): string {
 	const severity = severityToString(diagnostic.severity);
 	const line = diagnostic.range.start.line + 1;
@@ -169,17 +129,8 @@ export function formatDiagnostic(diagnostic: Diagnostic, filePath: string): stri
 	return `${filePath}:${line}:${col} [${severity}] ${source}${message}${code}`;
 }
 
-// Regex: split on the first `:digits:digits` boundary to separate path from the rest
 const DIAG_PATH_RE = /^(.+?):(\d+:\d+\s+.*)$/;
 
-/**
- * Reformat pre-formatted diagnostic messages into a multi-level, prefix-folded
- * directory/file grouping (see `formatGroupedFiles`).
- * Input:  ["path:line:col [sev] msg", ...]
- * Output: "# pkg/src/\n## file.ts\n  line:col [sev] msg"
- *
- * Messages that don't match the expected format are appended ungrouped at the end.
- */
 export function formatGroupedDiagnosticMessages(messages: string[]): string {
 	const diagnosticsByFile = new Map<string, string[]>();
 	const fileOrder: string[] = [];
@@ -220,9 +171,6 @@ export function formatGroupedDiagnosticMessages(messages: string[]): string {
 	return lines.join("\n");
 }
 
-/**
- * Format diagnostics grouped by severity.
- */
 export function formatDiagnosticsSummary(diagnostics: Diagnostic[]): string {
 	const counts = { error: 0, warning: 0, info: 0, hint: 0 };
 
@@ -263,13 +211,6 @@ export function summarizeDiagnosticMessages(messages: string[]): { summary: stri
 	};
 }
 
-// =============================================================================
-// Location Formatting
-// =============================================================================
-
-/**
- * Format a location as file:line:col relative to cwd.
- */
 export function formatLocation(location: Location, cwd: string): string {
 	const file = formatPathRelativeToCwd(uriToFile(location.uri), cwd);
 	const line = location.range.start.line + 1;
@@ -277,17 +218,9 @@ export function formatLocation(location: Location, cwd: string): string {
 	return `${file}:${line}:${col}`;
 }
 
-// =============================================================================
-// WorkspaceEdit Formatting
-// =============================================================================
-
-/**
- * Format a workspace edit as a summary of changes.
- */
 export function formatWorkspaceEdit(edit: WorkspaceEdit, cwd: string): string[] {
 	const results: string[] = [];
 
-	// Handle changes map (legacy format)
 	if (edit.changes) {
 		for (const [uri, textEdits] of Object.entries(edit.changes)) {
 			const file = formatPathRelativeToCwd(uriToFile(uri), cwd);
@@ -295,7 +228,6 @@ export function formatWorkspaceEdit(edit: WorkspaceEdit, cwd: string): string[] 
 		}
 	}
 
-	// Handle documentChanges array (modern format)
 	if (edit.documentChanges) {
 		for (const change of edit.documentChanges) {
 			if ("edits" in change && change.textDocument) {
@@ -322,10 +254,6 @@ export function formatWorkspaceEdit(edit: WorkspaceEdit, cwd: string): string[] 
 	return results;
 }
 
-// =============================================================================
-// Symbol Formatting
-// =============================================================================
-
 function getSymbolKindIcons(): Record<SymbolKind, string> {
 	const currentTheme = theme as Theme | undefined;
 	const fallback = currentTheme?.format?.bullet ?? "*";
@@ -339,47 +267,41 @@ function getSymbolKindIcons(): Record<SymbolKind, string> {
 	const func = dash;
 
 	return {
-		1: file, // File
-		2: folder, // Module
-		3: folder, // Namespace
-		4: pkg, // Package
-		5: model, // Class
-		6: func, // Method
-		7: fallback, // Property
-		8: fallback, // Field
-		9: func, // Constructor
-		10: fallback, // Enum
-		11: model, // Interface
-		12: func, // Function
-		13: fallback, // Variable
-		14: fallback, // Constant
-		15: fallback, // String
-		16: fallback, // Number
-		17: fallback, // Boolean
-		18: fallback, // Array
-		19: fallback, // Object
-		20: fallback, // Key
-		21: fallback, // Null
-		22: fallback, // EnumMember
-		23: folder, // Struct
-		24: fallback, // Event
-		25: fallback, // Operator
-		26: fallback, // TypeParameter
+		1: file,
+		2: folder,
+		3: folder,
+		4: pkg,
+		5: model,
+		6: func,
+		7: fallback,
+		8: fallback,
+		9: func,
+		10: fallback,
+		11: model,
+		12: func,
+		13: fallback,
+		14: fallback,
+		15: fallback,
+		16: fallback,
+		17: fallback,
+		18: fallback,
+		19: fallback,
+		20: fallback,
+		21: fallback,
+		22: fallback,
+		23: folder,
+		24: fallback,
+		25: fallback,
+		26: fallback,
 	};
 }
 
-/**
- * Get icon for symbol kind.
- */
 export function symbolKindToIcon(kind: SymbolKind): string {
 	const currentTheme = theme as Theme | undefined;
 	const bullet = currentTheme?.format?.bullet ?? "*";
 	return getSymbolKindIcons()[kind] ?? bullet;
 }
 
-/**
- * Format a document symbol with optional hierarchy.
- */
 export function formatDocumentSymbol(symbol: DocumentSymbol, indent = 0): string[] {
 	const prefix = "  ".repeat(indent);
 	const icon = symbolKindToIcon(symbol.kind);
@@ -396,9 +318,6 @@ export function formatDocumentSymbol(symbol: DocumentSymbol, indent = 0): string
 	return results;
 }
 
-/**
- * Format a symbol information (flat format).
- */
 export function formatSymbolInformation(symbol: SymbolInformation, cwd: string): string {
 	const icon = symbolKindToIcon(symbol.kind);
 	const location = formatLocation(symbol.location, cwd);
@@ -470,9 +389,7 @@ export async function applyCodeAction(
 	if (!resolvedAction.edit && dependencies.resolveCodeAction) {
 		try {
 			resolvedAction = await dependencies.resolveCodeAction(resolvedAction);
-		} catch {
-			// Resolve is optional; continue with unresolved action.
-		}
+		} catch {}
 	}
 
 	const edits = resolvedAction.edit ? await dependencies.applyWorkspaceEdit(resolvedAction.edit) : [];
@@ -534,13 +451,7 @@ export async function resolveDiagnosticTargets(
 
 	return collectGlobMatches(file, cwd, maxMatches);
 }
-// =============================================================================
-// Hover Content Extraction
-// =============================================================================
 
-/**
- * Extract plain text from hover contents.
- */
 export function extractHoverText(
 	contents: string | { kind: string; value: string } | { language: string; value: string } | unknown[],
 ): string {
@@ -560,9 +471,6 @@ export function extractHoverText(
 
 	return String(contents);
 }
-
-// =============================================================================
-// General Utilities
 
 function firstNonWhitespaceColumn(lineText: string): number {
 	const match = lineText.match(/\S/);
@@ -597,13 +505,6 @@ function findSymbolMatchIndexes(lineText: string, symbol: string, caseInsensitiv
 	return indexes;
 }
 
-/**
- * Parses a symbol spec of the form `name` or `name#N` where N is the 1-indexed
- * occurrence on the target line. Returns `name` and `occurrence` (default 1).
- *
- * Greedy match on `.+` so `#name#2` parses as symbol=`#name` (TS private field)
- * with occurrence 2. Specs without a trailing `#\d+` are treated as literal.
- */
 function parseSymbolSpec(spec: string): { symbol: string; occurrence: number } {
 	const match = spec.match(/^(.+)#(\d+)$/);
 	if (!match) return { symbol: spec, occurrence: 1 };

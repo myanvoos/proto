@@ -3,21 +3,16 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { type BlobPutResult, blobExtensionForImageMimeType } from "../session/blob-store";
 import { fileHyperlink } from "../tui/hyperlink";
 
-/** Probed pixel dimensions riding on the draft image object itself; `null` records a failed
- *  probe so the chips band never re-decodes a corrupt header every frame. */
 const kImageDims = Symbol("proto.imageDimensions");
 
 interface ImageContentWithDims extends ImageContent {
 	[kImageDims]?: { width: number; height: number } | null;
 }
 
-/** Cached probe result for a draft image: dimensions, `null` (probe failed), or `undefined`
- *  (never probed). */
 export function cachedImageDimensions(image: ImageContent): { width: number; height: number } | null | undefined {
 	return (image as ImageContentWithDims)[kImageDims];
 }
 
-/** Record a probe result for a draft image (see {@link cachedImageDimensions}). */
 export function setCachedImageDimensions(image: ImageContent, dims: { width: number; height: number } | null): void {
 	(image as ImageContentWithDims)[kImageDims] = dims;
 }

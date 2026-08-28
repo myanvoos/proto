@@ -9,7 +9,6 @@ export * from "./julia";
 export * from "./python";
 export * from "./ruby";
 
-/** Formats an arbitrary eval-code prefix for display without changing the executed source. */
 export function formatEvalCodeForDisplay(source: string, language: EvalLanguage): string {
 	switch (language) {
 		case "js":

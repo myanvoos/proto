@@ -37,19 +37,13 @@ import numpy as np
 DB_PATH = Path.home() / ".proto" / "stats.db"
 OUT_DIR = Path(__file__).resolve().parent / "out"
 
-DEFAULT_SINCE = "2026-04-01"  # search/grep traffic before this is sparse
-LOOKAHEAD = 30  # max tool calls to scan after a search
+DEFAULT_SINCE = "2026-04-01"
+LOOKAHEAD = 30
 
 
-# --------------------------------------------------------------------------- #
-# Path extraction from result_text
 
-# Tree-style headers: `# packages/foo/bar` then `## └─ file.ext`
 _TREE_DIR = re.compile(r"^#\s+(\S[^\n]*?)\s*$", re.M)
 _TREE_FILE = re.compile(r"^##\s+└─\s+(\S[^\n]*?)\s*$", re.M)
-# Flat path with line marker: `path/to/file.ext:fn_X>14|…` or `path:14|…`
-# Require an extension on the filename so we don't match anchor-prefixed
-# in-file results (`1136xo|…`).
 _FLAT_PATH = re.compile(
     r"(?m)^\s*([A-Za-z0-9_./~+\-][A-Za-z0-9_./~+\-]*\.[A-Za-z0-9]{1,8})[:#]",
 )
@@ -71,7 +65,6 @@ def extract_paths(result_text: str | None) -> tuple[list[str], dict[str, int]]:
     current_file: str | None = None
     for line in result_text.splitlines():
         stripped = line.rstrip()
-        # `## └─ filename` — new file under current_dir.
         m = _TREE_FILE.match(stripped)
         if m and current_dir is not None:
             path = f"{current_dir.rstrip('/')}/{m.group(1).strip()}"
@@ -79,13 +72,11 @@ def extract_paths(result_text: str | None) -> tuple[list[str], dict[str, int]]:
             counts.setdefault(path, 0)
             current_file = path
             continue
-        # `# dir` — directory header.
         m = _TREE_DIR.match(stripped)
         if m:
             current_dir = m.group(1).strip()
             current_file = None
             continue
-        # Flat path with line marker (`path/file.ext:14|…`).
         flat_match = None
         for fm in _FLAT_PATH.finditer(stripped):
             flat_match = fm
@@ -95,9 +86,7 @@ def extract_paths(result_text: str | None) -> tuple[list[str], dict[str, int]]:
             counts[p] = counts.get(p, 0) + 1
             current_file = None
             continue
-        # Otherwise treat as a body row for the most recently named file.
         if current_file is not None and stripped:
-            # Skip anchor markers like `@imp_2#WJMV` and pure separators.
             if stripped.startswith(("@", "-@", "----@", "#")):
                 continue
             counts[current_file] = counts.get(current_file, 0) + 1
@@ -105,8 +94,6 @@ def extract_paths(result_text: str | None) -> tuple[list[str], dict[str, int]]:
     return list(seen.keys()), counts
 
 
-# --------------------------------------------------------------------------- #
-# Tool-call helpers
 
 
 def search_signature(arg_obj: dict) -> tuple:
@@ -144,7 +131,6 @@ def read_path(arg_obj: dict) -> str | None:
     p = arg_obj.get("path")
     if not isinstance(p, str):
         return None
-    # Strip selector for path matching.
     tail_idx = p.rfind("/")
     tail = p[tail_idx + 1 :]
     colon = tail.rfind(":")
@@ -153,13 +139,10 @@ def read_path(arg_obj: dict) -> str | None:
     return p
 
 
-# --------------------------------------------------------------------------- #
-# Per-session walk
 
 
 def classify_sessions(conn: sqlite3.Connection, since_ms: int) -> list[dict]:
     """Walks each session in seq order, classifying every search/grep call."""
-    # Pull calls + paired results in one ordered stream per session.
     sql = """
         SELECT
             c.session_file, c.seq, c.tool_name, c.arg_json,
@@ -176,7 +159,6 @@ def classify_sessions(conn: sqlite3.Connection, since_ms: int) -> list[dict]:
     for row in conn.execute(sql, (since_ms,)):
         by_session[row[0]].append(row[1:])
 
-    # Also need user message seqs for window cutoffs.
     user_seqs: dict[str, list[int]] = defaultdict(list)
     for sess, seq in conn.execute(
         "SELECT session_file, seq FROM ss_user_msgs WHERE timestamp >= ? ORDER BY session_file, seq",
@@ -199,7 +181,6 @@ def classify_sessions(conn: sqlite3.Connection, since_ms: int) -> list[dict]:
                 continue
             paths, match_counts = extract_paths(result_text)
             if not paths:
-                # Empty / unparseable results: skip — there's nothing to engage with.
                 continue
             cutoff_seq = next((s for s in user_msg_seqs if s > seq), None)
             outcome = walk_ahead(calls, idx, sig, paths, cutoff_seq)
@@ -242,15 +223,11 @@ def walk_ahead(calls, idx, sig, paths, cutoff_seq) -> dict:
             other_sig = search_signature(arg)
             if other_sig == sig and search_offset(arg) > 0:
                 next_page = True
-                # Don't break — model may also read something afterward.
                 continue
             if other_sig != sig:
-                # Different query — flag as potential refinement, but keep
-                # scanning in case the model later reads from THIS list.
                 refined = True
             continue
 
-    # Outcome label.
     if deepest_index is not None:
         outcome = "engaged-read"
     elif next_page:
@@ -269,8 +246,6 @@ def walk_ahead(calls, idx, sig, paths, cutoff_seq) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# Reporting
 
 OUTCOME_COLORS = {
     "engaged-read": "#16a34a",
@@ -299,7 +274,6 @@ def report(records: list[dict]) -> None:
     if engaged:
         deepest = np.array([r["deepest_index"] for r in engaged], dtype=np.int64)
         result_counts = np.array([r["n_results"] for r in engaged], dtype=np.int64)
-        # +1 because deepest_index is 0-based.
         deepest_1b = deepest + 1
         coverage = deepest_1b / result_counts
         engaged_n = np.array([r["engaged_count"] for r in engaged], dtype=np.int64)
@@ -332,8 +306,6 @@ def report(records: list[dict]) -> None:
     )
     print(f"  any refined-query       : {refined:,}  ({100 * refined / total:.1f}%)")
 
-    # Shape of result lists — files per result, matches per file, and whether
-    # diversity (files-per-result / matches-per-file) correlates with engagement.
     files_per_result = np.array([r["n_results"] for r in records], dtype=np.int64)
     matches_per_file_flat = np.array(
         [m for r in records for m in r["matches_per_file"] if m > 0],
@@ -358,8 +330,6 @@ def report(records: list[dict]) -> None:
             f"max={int(matches_per_file_flat.max())}"
         )
 
-    # Engagement vs shape: is the model more likely to read at all when there
-    # are more distinct files? When matches are more concentrated per file?
     print(f"\nengagement vs result shape:")
     print(
         f"  {'files-per-result':<22} {'n calls':>9}  {'engaged %':>10}  {'p50 deepest':>12}"
@@ -412,8 +382,6 @@ def report(records: list[dict]) -> None:
         print(f"  {label:<22} {len(bucket):>9,}  {eng_share:>9.1f}%  {p50_deep:>12}")
 
 
-# --------------------------------------------------------------------------- #
-# Plot
 
 
 def plot(records: list[dict], since: str) -> Path | None:
@@ -424,7 +392,6 @@ def plot(records: list[dict], since: str) -> Path | None:
     plt.rcParams.update({"figure.dpi": 110, "font.size": 10})
     fig, axes = plt.subplots(3, 2, figsize=(15, 14))
 
-    # Panel A — outcome breakdown.
     ax = axes[0, 0]
     counts = defaultdict(int)
     for r in records:
@@ -450,7 +417,6 @@ def plot(records: list[dict], since: str) -> Path | None:
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # Panel B — deepest result index touched.
     ax = axes[0, 1]
     engaged = [r for r in records if r["outcome"] == "engaged-read"]
     if engaged:
@@ -475,7 +441,6 @@ def plot(records: list[dict], since: str) -> Path | None:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
         ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # Panel C — coverage ratio (deepest / list-size) CDF.
     ax = axes[1, 0]
     if engaged:
         coverage = np.array(
@@ -499,7 +464,6 @@ def plot(records: list[dict], since: str) -> Path | None:
         ax.legend(loc="lower right", frameon=False)
         ax.grid(True, which="both", alpha=0.25, linestyle="--")
 
-    # Panel D — result-list size distribution per outcome.
     ax = axes[1, 1]
     bins = np.logspace(0, np.log10(max(r["n_results"] for r in records) + 1), 30)
     for outcome in ordered:
@@ -522,7 +486,6 @@ def plot(records: list[dict], since: str) -> Path | None:
     ax.legend(loc="upper right", frameon=False, fontsize=9)
     ax.grid(True, which="both", alpha=0.2, linestyle="--")
 
-    # Panel E — engagement rate vs files-per-result, with p50 deepest overlay.
     ax = axes[2, 0]
     bins = [
         (1, 1, "1"),
@@ -586,7 +549,6 @@ def plot(records: list[dict], since: str) -> Path | None:
     ax2.tick_params(axis="y", labelcolor="#5b21b6")
     ax.grid(True, axis="y", alpha=0.25, linestyle="--")
 
-    # Panel F — engagement rate vs max matches-per-file.
     ax = axes[2, 1]
     bins = [
         (1, 1, "1"),
@@ -661,8 +623,6 @@ def plot(records: list[dict], since: str) -> Path | None:
     return p
 
 
-# --------------------------------------------------------------------------- #
-# Entry
 
 
 def main() -> int:

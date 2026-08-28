@@ -6,23 +6,23 @@ use brush_core::{
 };
 use clap::Parser;
 
-/// Directly invokes an external command, without going through typical search
-/// order.
+
+
 #[derive(Default, Parser)]
 pub(crate) struct CommandCommand {
-	/// Use default PATH value.
+
 	#[arg(short = 'p')]
 	pub use_default_path: bool,
 
-	/// Display a short description of the command.
+
 	#[arg(short = 'v')]
 	pub print_description: bool,
 
-	/// Display a more verbose description of the command.
+
 	#[arg(short = 'V')]
 	pub print_verbose_description: bool,
 
-	/// Command and arguments.
+
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	pub command_and_args: Vec<String>,
 }
@@ -40,7 +40,7 @@ impl builtins::Command for CommandCommand {
 		&self,
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
-		// Silently exit if no command was provided.
+
 		if let Some(command_name) = self.command() {
 			if self.print_description || self.print_verbose_description {
 				if let Some(found_cmd) =
@@ -96,7 +96,7 @@ impl CommandCommand {
 		command_name: &str,
 		use_default_path: bool,
 	) -> Option<FoundCommand> {
-		// Look in path.
+
 		if sys::fs::contains_path_separator(command_name) {
 			let candidate_path = shell.absolute_path(Path::new(command_name));
 			if candidate_path.executable() {

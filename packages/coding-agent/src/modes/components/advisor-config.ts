@@ -1,20 +1,3 @@
-/**
- * Fullscreen `/advisor configure` overlay: a mouse- and keyboard-driven editor
- * for the `WATCHDOG.yml` advisor roster at project or user level.
- *
- * It paints the entire alternate screen from row 0 (so SGR mouse rows index
- * directly into the rendered frame) using the shared {@link ./overlay-box} chrome.
- * The list screen is a two-pane split (the `/extensions` idiom): a clickable
- * advisor/action sidebar on the left, and a scrollable preview of the highlighted
- * advisor's model / tools / instructions on the right, filling the free space.
- *
- * Each screen is backed by a proven primitive — {@link SelectList} (list / detail
- * / tools / thinking), {@link Input} (name), {@link ModelSelectorComponent} (the
- * same rich `/model` picker, in direct-select mode), and {@link HookEditorComponent}
- * (multiline instructions; Ctrl+G opens `$EDITOR`). The overlay edits an in-memory
- * {@link WatchdogConfigDoc} and only touches disk + the live advisors via the host
- * `save` callback.
- */
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -55,21 +38,19 @@ import {
 	topBorderSplit,
 } from "./overlay-box";
 
-/** Host callbacks: all disk + live-runtime effects flow through these. */
 interface AdvisorConfigCallbacks {
-	/** Load a scope's `WATCHDOG.yml` into an editable doc (empty when absent). */
 	loadDoc: (scope: AdvisorConfigScope) => Promise<WatchdogConfigDoc>;
-	/** Persist the doc to the scope's file and rebuild the live advisors. */
+
 	save: (scope: AdvisorConfigScope, doc: WatchdogConfigDoc) => Promise<void>;
-	/** Tear down the overlay and restore the editor. */
+
 	close: () => void;
 	requestRender: () => void;
-	/** Surface a transient status/warning line to the user. */
+
 	notify: (message: string) => void;
-	/** Live advisor usage stats; lets the preview show tokens/cost per advisor. */
+
 	getAdvisorStats?: () => PerAdvisorStat[];
 	getUsageReports?: () => Promise<UsageReport[] | null>;
-	/** Resolve the active OAuth identity for quota filtering (per-advisor account stickiness). */
+
 	resolveActiveAccount?: (provider: string, sessionId?: string) => OAuthAccountIdentity | undefined;
 }
 
@@ -78,7 +59,7 @@ export interface AdvisorConfigDeps {
 	settings: Settings;
 	scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	availableToolNames: string[];
-	/** Formatted advisor-role model shown on the seeded default row (e.g. "anthropic/claude-..."). */
+
 	defaultModelLabel?: string;
 }
 
@@ -90,7 +71,6 @@ function previewLine(text: string | undefined): string {
 	return first.length > PREVIEW_WIDTH ? `${first.slice(0, PREVIEW_WIDTH - 1)}…` : first;
 }
 
-/** Omitted means default read/grep/glob; an explicit empty set means no tools. */
 function commitTools(selected: ReadonlySet<string>, all: readonly string[]): string[] | undefined {
 	if (selected.size === 0) return [];
 	if (selected.size === ADVISOR_DEFAULT_TOOL_NAMES.size) {
@@ -111,7 +91,6 @@ function formatAdvisorTools(tools: readonly string[] | undefined, emptyLabel: st
 	return tools.length > 0 ? tools.join(", ") : emptyLabel;
 }
 
-/** Soft-wrap plain text to `width`, returning at least one (possibly empty) line. */
 function wrap(text: string, width: number): string[] {
 	if (!text) return [""];
 	return Bun.wrapAnsi(text, Math.max(1, width), { trim: false }).split("\n");
@@ -119,11 +98,6 @@ function wrap(text: string, width: number): string[] {
 
 type Screen = "list" | "detail" | "name" | "model" | "tools" | "thinking" | "instructions";
 
-/**
- * Fullscreen advisor-configuration overlay. Implements {@link Component} directly
- * (rather than extending Container) so it owns the whole frame and the mouse
- * geometry needed to make every row clickable.
- */
 export class AdvisorConfigOverlayComponent implements Component {
 	#tui: TUI;
 	#modelRegistry: ModelRegistry;
@@ -134,18 +108,16 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#cb: AdvisorConfigCallbacks;
 	#scope: AdvisorConfigScope;
 	#doc: WatchdogConfigDoc;
-	/** Cached usage reports (quota/window/reset) prefetched on overlay open. */
+
 	#cachedReports: UsageReport[] | null = null;
 	#dirty = false;
 
 	#screen: Screen = "list";
-	/** The interactive element for the current screen. */
+
 	#active: Component = new SelectList([], 1, getSelectListTheme());
 	#footerHint = "";
 	#previewScroll = 0;
 
-	// Frame geometry from the last render (the frame paints from screen row 0,
-	// so SGR `event.row`/`event.col` — already 0-based — index it directly).
 	#bodyRowStart = 0;
 	#dividerCol = 0;
 
@@ -167,7 +139,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#doc = doc;
 		this.#ensureRosterVisible();
 		this.#showList();
-		// Prefetch usage reports for quota display; non-fatal if unavailable.
+
 		if (callbacks.getUsageReports) {
 			void callbacks
 				.getUsageReports()
@@ -178,8 +150,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 				.catch(() => {});
 		}
 	}
-
-	// ───────────────────────────── render ─────────────────────────────
 
 	render(width: number): readonly string[] {
 		const height = Math.max(14, process.stdout.rows || 40);
@@ -212,8 +182,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		return out;
 	}
 
-	// ───────────────────────────── input ─────────────────────────────
-
 	handleInput(data: string): void {
 		if (data.startsWith("\x1b[<")) {
 			routeSgrMouseInput(data, event => this.#routeMouseEvent(event));
@@ -222,14 +190,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#active.handleInput?.(data);
 	}
 
-	/** Forward enhanced-paste transports into a multiline instructions editor. */
 	pasteText(text: string): void {
 		if (this.#active instanceof HookEditorComponent) this.#active.pasteText(text);
 	}
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
-		// Right pane of the split (the preview) only scrolls; everything left of the
-		// divider routes into the active list/component at frame-local coordinates.
 		if (this.#screen === "list" && event.col >= this.#dividerCol) {
 			if (event.wheel !== null) {
 				this.#previewScroll = Math.max(0, this.#previewScroll + event.wheel);
@@ -244,8 +209,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		return false;
 	}
-
-	// ───────────────────────────── preview ───────────────────────────
 
 	#previewWindow(bodyWidth: number, rows: number): string[] {
 		const lines = this.#previewContent(bodyWidth);
@@ -303,7 +266,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		];
 		const instr = advisor.instructions?.trim();
 		lines.push(...(instr ? wrap(instr, bodyWidth) : [theme.fg("muted", "(none)")]));
-		// Show live usage stats when available from the session.
+
 		const liveStat = this.#cb.getAdvisorStats?.()?.find(s => s.name === (advisor.name || "default"));
 		if (liveStat && (liveStat.status === "running" || liveStat.status === "quota_exhausted")) {
 			lines.push("", theme.fg("dim", "Usage:"));
@@ -333,8 +296,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		return lines.map(line => truncateToWidth(line, bodyWidth));
 	}
-
-	// ───────────────────────────── screens ───────────────────────────
 
 	#setScreen(screen: Screen, active: Component, footerHint: string): void {
 		this.#screen = screen;
@@ -384,7 +345,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		items.push({ value: "save", label: "Save & apply" });
 		items.push({ value: "close", label: "Close" });
 
-		// Show every row (no internal overflow-search); the split frame supplies height.
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		list.onSelectionChange = () => {
 			this.#previewScroll = 0;
@@ -561,8 +521,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		for (const effort of efforts) items.push({ value: effort, label: effort });
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		list.onSelect = item => {
-			// `item.value` is one of the model's own supported efforts (or "" for the
-			// model default); `formatModelSelectorValue` spells the `:level` suffix.
 			const level = item.value ? (item.value as ThinkingLevel) : undefined;
 			this.#doc.advisors[index].model = formatModelSelectorValue(selector, level);
 			this.#dirty = true;
@@ -608,7 +566,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		);
 	}
 
-	/** `index === -1` edits the shared top-level instructions; otherwise advisor[index]. */
 	#showInstructionsEditor(index: number): void {
 		const shared = index < 0;
 		const current = shared ? this.#doc.instructions : this.#doc.advisors[index].instructions;

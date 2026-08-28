@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 # Patch the live Kata QEMU config: set the guest BOOT floor (default_vcpus /
 # default_memory), raise guest and host open-file limits, and enlarge the
 # virtiofsd worker pool. Runner pods are burstable (see reload-runner.sh):

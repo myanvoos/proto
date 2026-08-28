@@ -1,4 +1,4 @@
-# jj (jujutsu) VCS output. Strip ANSI and blank lines, keep a compact summary.
+
 
 [filters.jj]
 description = "Compact jj (jujutsu) output"

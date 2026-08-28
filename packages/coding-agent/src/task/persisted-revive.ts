@@ -15,43 +15,17 @@ import type { EventBus } from "../utils/event-bus";
 import { attachIrcWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
 import type { AgentDefinition } from "./types";
 
-/**
- * Ambient context the reviver needs at revive time. The top-level session is
- * kept LIVE (cwd / artifact manager read on demand) so a later `/new` or cwd
- * move is followed rather than snapshotted; auth/models/settings are
- * process-stable and captured by reference.
- */
 interface PersistedSubagentReviveContext {
 	session: AgentSession;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
-	/** LSP policy of the top-level session; revived subagents inherit it rather than defaulting on. */
+
 	enableLsp: boolean;
-	/**
-	 * Shared event bus feeding RPC subagent subscriptions. Passed through
-	 * to the wake-turn monitor so an IRC send to a cold-revived subagent emits
-	 * the same lifecycle/progress frames a live run does.
-	 */
+
 	eventBus?: EventBus;
 }
 
-/**
- * Build the factory the {@link AgentLifecycleManager} uses to cold-revive a
- * `parked` subagent ref restored from disk (Agent Fleet scan or a
- * resumed process). Such a ref carries a sessionFile but no in-memory adoption —
- * the executor's live reviver closure died with the process/turn that spawned
- * it — so `ensureLive` (IRC sends, hub focus) would otherwise refuse it.
- *
- * This rebuilds the subagent the same way `--resume` rebuilds a session: reopen
- * the JSONL and replay it through {@link createAgentSession}. The catch is that
- * resume restores only conversation/model from the file — the runtime contract
- * (tools / system prompt / output schema / kind) is built from options, so a
- * bare reopen would resurrect a wrong (top-level) session. We source that
- * contract from the persisted `session_init` entry instead, and mirror the
- * executor's subagent wiring (MCP proxy tools, depth-derived gating,
- * yield-required, active-tool clamp, registry status sync).
- */
 export function createPersistedSubagentReviverFactory(
 	ctx: PersistedSubagentReviveContext,
 ): PersistedSubagentReviverFactory {
@@ -60,9 +34,7 @@ export function createPersistedSubagentReviverFactory(
 		const sessionFile = ref.sessionFile;
 		if (!sessionFile) return undefined;
 		const peek = await SessionManager.peekSessionInit(sessionFile);
-		// No persisted contract (pre-session_init file) or the recorded workspace
-		// is gone (isolated/merged worktree, moved dir): leave it transcript-only
-		// (history://) rather than resurrect a wrong or broken session.
+
 		if (!peek?.init) return undefined;
 		try {
 			await fs.stat(peek.cwd);
@@ -70,9 +42,7 @@ export function createPersistedSubagentReviverFactory(
 			return undefined;
 		}
 		const init = peek.init;
-		// taskDepth drives real capability gating (task-spawn allowance, memory
-		// startup, …); derive it from the persisted parent chain rather than
-		// assuming a fixed level.
+
 		let taskDepth = 1;
 		let parentId = ref.parentId;
 		const seen = new Set<string>();
@@ -81,10 +51,7 @@ export function createPersistedSubagentReviverFactory(
 			taskDepth++;
 			parentId = registry.get(parentId)?.parentId;
 		}
-		// Rebuild the same advisor opt-in the original spawn resolved: `"on"` =
-		// advisor-role model, anything else = the explicit pattern stamped onto
-		// this session's `modelRoles.advisor`. Absent = unadvised (the
-		// createSubagentSettings default).
+
 		const subagentSettings = createSubagentSettings(ctx.settings, {
 			...(init.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
 			...(init.advisor
@@ -101,15 +68,12 @@ export function createPersistedSubagentReviverFactory(
 				? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
 				: init.resolvedModel;
 		return async expectedRef => {
-			// Re-open fresh on every revive: park closes the writer, so this takes
-			// the single-writer lock cleanly and restores the full message history.
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
 				suppressBreadcrumb: true,
 			});
 			const artifactManager = ctx.session.sessionManager.getArtifactManager();
 			if (artifactManager) reopened.adoptArtifactManager(artifactManager);
-			// A restricted persisted contract must not consult process-global MCP
-			// state: same-name MCP tools are untrusted capability sources.
+
 			const restrictToolNames = init.restrictToolNames === true;
 			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
@@ -133,8 +97,7 @@ export function createPersistedSubagentReviverFactory(
 				restrictToolNames: restrictToolNames || undefined,
 				requireYieldTool: true,
 				systemPrompt: () => [init.systemPrompt],
-				// Old files predate persisted spawns: deny re-spawning rather than let
-				// createAgentSession default to wildcard ("*").
+
 				spawns: init.spawns ?? "",
 				hasUI: false,
 				enableLsp: restrictToolNames ? false : ctx.enableLsp,
@@ -151,28 +114,16 @@ export function createPersistedSubagentReviverFactory(
 							customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 						}),
 			});
-			// Clamp the active set to the persisted list: createAgentSession's
-			// `alwaysInclude` can re-add non-defaultInactive extension/custom tools
-			// the original run didn't carry. Unknown/missing names are ignored.
+
 			await session.setActiveToolsByName([...init.tools, ...session.getMountedXdevToolNames()]);
-			// Wire the extension runtime exactly as the live executor does. Without
-			// this the runner stays pre-init, every action method throws
-			// `ExtensionRuntimeNotInitializedError`, and a `tool_call` handler that
-			// touches a runtime action trips the fail-closed gate in `emitToolCall`,
-			// blocking every tool — including the hidden `yield` — in the revived
-			// agent. `session_start` also re-runs so extensions restore per-session
-			// state (issue #8824).
+
 			await initializeExtensions(session, {
 				reportSendError: (action, err) => logger.error("Extension send failed", { action, error: err.message }),
 				reportRuntimeError: err => logger.error("Extension error", { path: err.extensionPath, error: err.error }),
 			});
-			// Cold revives must drive registry status themselves — createAgentSession
-			// doesn't wire this generically (the live path does it in the executor).
-			// The internal run-state signal precedes deferrable public `agent_end`,
-			// keeping idle-TTL ownership synchronized even while prompts unwind.
+
 			registry.syncSessionStatus(ref.id, session);
-			// Persisted files predate an agent-source field, so cold-revived frames
-			// report the runtime-neutral `user` source; name comes from the ref.
+
 			const wakeAgent: AgentDefinition = {
 				name: ref.displayName,
 				description: "",

@@ -3,8 +3,6 @@ pub mod minimizer;
 pub mod process;
 pub mod shell;
 pub use brush_core::commands::{ChildSessionAction, child_session_action};
-// Re-exported for `pi-natives`: the builtins live in `pi-builtins`,
-// but the native layer only ever depends on the shell.
 pub use pi_builtins::{
 	panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available,
 };

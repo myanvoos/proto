@@ -1,33 +1,3 @@
-/**
- * report_issue — automated QA backend for tracking unexpected tool behavior.
- *
- * No model-facing tool schema anymore: the write tool dispatches plain text to
- * `xd://report_issue`, and the system prompt tells the model to write
- * `<tool>: <concise description>` there when auto-QA is enabled.
- *
- * Enabled by default (`dev.autoqa` defaults to true); `PI_AUTO_QA=0` or an
- * explicit `dev.autoqa: false` short-circuits injection entirely. When the
- * user is only enabled by default (never configured `dev.autoqa` themselves),
- * a persisted `dev.autoqaConsent: "denied"` also disables injection so a "No"
- * in the consent dialog fully turns the feature off.
- * Records grievances to a local SQLite database; never throws from the device
- * dispatch path.
- *
- * Nothing is written until consent resolves. If the user has never been asked
- * (`dev.autoqaConsent === "unset"`) the process-global consent handler —
- * wired by `InteractiveMode` to a Yes/No popup — is invoked exactly once and
- * the decision is persisted; a denial (or dismissal) drops the pending report
- * without touching the database. Subsequent calls (including from subagents)
- * read the cached decision without prompting. `PI_AUTO_QA_PUSH=1` bypasses
- * the dialog for headless environments.
- *
- * When the user grants consent, push is automatically active against the
- * bundled endpoint (`dev.autoqaPush.endpoint`, default `qa.proto.sh`). Each
- * insert schedules a background flush that POSTs pending rows and deletes them
- * on HTTP 2xx. `PI_AUTO_QA_PUSH=1` forces push in non-interactive environments
- * where the consent dialog never fires. Device execution is never blocked on
- * the network and never throws.
- */
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -47,12 +17,10 @@ import type { XdevDispatch } from "./xdev";
 export const REPORT_ISSUE_DEVICE_NAME = "report_issue";
 const REPORT_ISSUE_DEVICE_PATH = `xd://${REPORT_ISSUE_DEVICE_NAME}`;
 
-/** Usage text for `read xd://report_issue`. */
 export function reportIssueDeviceUsage(): string {
 	return `Write \`<tool>: <concise description>\` as plain text to ${REPORT_ISSUE_DEVICE_PATH}. A two-line fallback also works: tool name on line 1, report body below.`;
 }
 
-/** Call preview for an `xd://report_issue` write. */
 export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): Component {
 	const body = typeof content === "string" ? replaceTabs(content.trim().split("\n")[0] ?? "") : "";
 	const text = renderStatusLine(
@@ -86,14 +54,6 @@ function parseReportIssueBody(text: string): { tool: string; report: string } {
 	throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 }
 
-/**
- * Whether Auto-QA is active for this session.
- *
- * Precedence: `PI_AUTO_QA` env flag > explicit `dev.autoqa` setting >
- * default-on unless the user previously denied consent. The denial veto only
- * applies to the default: explicitly configuring `dev.autoqa: true` re-enables
- * injection (recording still no-ops until consent is granted).
- */
 export function isAutoQaEnabled(settings?: Settings): boolean {
 	let fallback = false;
 	if (settings) {
@@ -105,59 +65,16 @@ export function isAutoQaEnabled(settings?: Settings): boolean {
 	return $flag("PI_AUTO_QA", fallback);
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Consent gate
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Resolver for the user's "share grievances?" consent.
- *
- * Return values:
- *   - `true`  — user agreed; record + ship for this run and persist.
- *   - `false` — user declined; suppress for this run and persist.
- *   - `null`  — user dismissed the dialog (ESC, click-away, …) without
- *               picking an option. The decision is NOT cached or persisted,
- *               so the next `report_issue` invocation re-prompts.
- *
- * Persistence is the tool's job (so subagent invocations can persist into the
- * disk-backed `Settings` instance the host registered alongside the handler),
- * not the handler's. Implementations live in hosts that have UI affordances —
- * today only `InteractiveMode`. When no handler is registered (CLI subcommands,
- * tests, non-interactive runs) consent defaults to `false` — the explicit
- * "don't collect by default" stance.
- */
 type AutoQaConsentHandler = () => Promise<boolean | null>;
 
 let consentHandler: AutoQaConsentHandler | null = null;
-/**
- * Persistent settings instance supplied by the consent-handler registrant.
- * Subagents have in-memory `Settings` snapshots that don't write to disk;
- * we persist the decision through this disk-backed reference so a grant
- * survives across runs even when triggered from a subagent device write.
- */
+
 let persistentConsentSettings: Settings | null = null;
-/**
- * Process-global cache of the resolved consent decision. Survives across
- * subagent boundaries (subagents share this module instance), so a grant in
- * the parent applies immediately to children — including children that spawned
- * BEFORE the grant and would otherwise see a stale snapshot of
- * `dev.autoqaConsent` in their isolated `Settings`.
- *
- * `null` = never asked, never cached.
- */
+
 let cachedConsent: boolean | null = null;
-/**
- * Single-flight in-flight consent request. While the dialog is open, every
- * concurrent `report_issue` call (main + every subagent) awaits this promise
- * instead of stacking duplicate popups.
- */
+
 let consentInFlight: Promise<boolean> | null = null;
 
-/**
- * Register the consent handler and the persistent {@link Settings} instance
- * the decision should be written to. Passing `null` clears the handler
- * (e.g. on `InteractiveMode` teardown). Re-registration is authoritative.
- */
 export function setAutoQaConsentHandler(
 	handler: AutoQaConsentHandler | null,
 	persistentSettings: Settings | null = null,
@@ -166,7 +83,6 @@ export function setAutoQaConsentHandler(
 	persistentConsentSettings = persistentSettings;
 }
 
-/** Test-only: clear consent cache + handler. Never call from production code. */
 export function __resetAutoQaConsentForTests(): void {
 	consentHandler = null;
 	persistentConsentSettings = null;
@@ -198,16 +114,6 @@ function persistConsent(localSettings: Settings | undefined, granted: boolean): 
 	}
 }
 
-/**
- * Resolve the user's consent for Auto-QA grievances.
- *
- * Priority:
- * 1. module cache (`cachedConsent`) — process-global, survives subagent boundaries
- * 2. persisted setting on the caller's `Settings`
- * 3. persisted setting on the registered persistent settings instance
- * 4. registered UI handler (single-flight)
- * 5. default `false` (no handler / non-interactive)
- */
 export async function resolveAutoQaConsent(settings: Settings | undefined): Promise<boolean> {
 	if (cachedConsent !== null) return cachedConsent;
 	const localPersisted = readPersistedConsent(settings);
@@ -233,7 +139,6 @@ export async function resolveAutoQaConsent(settings: Settings | undefined): Prom
 			persistConsent(settings, result);
 			return result;
 		} catch {
-			// Transient failure (e.g. dialog crashed) — don't cache; allow re-prompt.
 			return false;
 		} finally {
 			consentInFlight = null;
@@ -244,11 +149,6 @@ export async function resolveAutoQaConsent(settings: Settings | undefined): Prom
 
 let cachedDb: Database | null = null;
 
-/**
- * Open (or return the cached handle for) the auto-QA SQLite database at
- * `~/.proto/autoqa.db` (XDG: `$XDG_DATA_HOME/proto/autoqa.db`), creating the
- * schema lazily. Returns `null` when the path cannot be resolved or opened.
- */
 export function openAutoQaDb(): Database | null {
 	if (cachedDb) return cachedDb;
 	const dbPath = getAutoQaDbPath();
@@ -256,7 +156,7 @@ export function openAutoQaDb(): Database | null {
 	try {
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 		const db = new Database(dbPath, { create: true });
-		// Install the busy handler BEFORE any lock-taking statement. See #2421.
+
 		db.run("PRAGMA busy_timeout = 5000");
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS grievances (
@@ -269,8 +169,7 @@ export function openAutoQaDb(): Database | null {
 				pushed INTEGER NOT NULL DEFAULT 0
 			);
 		`);
-		// Legacy DBs (May 2026) predate `created_at`. ALTER TABLE only accepts
-		// constant defaults, so add it empty and backfill before the index below.
+
 		const hasCreatedAt = db.prepare("SELECT 1 FROM pragma_table_info('grievances') WHERE name = 'created_at'").get();
 		if (!hasCreatedAt) {
 			db.exec(`
@@ -290,44 +189,19 @@ export function openAutoQaDb(): Database | null {
 	}
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Backend push
-// ───────────────────────────────────────────────────────────────────────────
-
 export interface FlushResult {
 	pushed: number;
 	ok: boolean;
 	skipped?: boolean;
 }
 
-/**
- * Optional per-flush controls. Used by `proto grievances push` to surface
- * progress to a TTY and to skip the user-facing consent gate (manual
- * pushes are the user's explicit intent, not a side effect of a device write).
- */
 interface FlushOptions {
-	/**
-	 * Skip the `dev.autoqaConsent === "granted"` gate in
-	 * {@link resolvePushConfig}. Endpoint configuration is still required.
-	 * Reserved for explicit user-driven pushes (CLI `grievances push`,
-	 * future debug recipes); never set from the device's auto-flush path.
-	 */
 	bypassConsent?: boolean;
-	/**
-	 * Fetch implementation for the push POST. Defaults to global fetch.
-	 */
+
 	fetch?: FetchImpl;
-	/**
-	 * Fires once at the start of the loop with the snapshot count of
-	 * unpushed rows. Subsequent inserts won't be reflected (the count is
-	 * a planning hint for progress reporters, not a live total).
-	 */
+
 	onStart?: (totalUnpushed: number) => void;
-	/**
-	 * Fires after every successfully shipped batch with the running pushed
-	 * count. Reporters compare against the `totalUnpushed` they saw in
-	 * `onStart` to advance their bar.
-	 */
+
 	onProgress?: (pushedSoFar: number) => void;
 }
 
@@ -338,20 +212,12 @@ interface PushConfig {
 
 const FLUSH_TIMEOUT_MS = 5_000;
 const FAILURE_COOLDOWN_MS = 30_000;
-/**
- * Per-request batch size. The worker loops until no unpushed rows remain,
- * shipping `FLUSH_BATCH_SIZE` rows per POST. Tunes the trade-off between
- * request count and request size — 50 keeps each payload well under the
- * default `maxBody` limit on the autoqa collector while letting a
- * realistic backlog (a few hundred legacy rows on first flush after the
- * consent grant) drain in single-digit requests.
- */
+
 const FLUSH_BATCH_SIZE = 50;
 
 let inFlightFlush: Promise<FlushResult> | null = null;
 let lastFailureAt = 0;
 
-/** Test-only: clear single-flight + cooldown state. Never call from production code. */
 export function __resetAutoQaFlushStateForTests(): void {
 	inFlightFlush = null;
 	lastFailureAt = 0;
@@ -367,10 +233,6 @@ function envOverrideString(name: string): string | undefined {
 function resolvePushConfig(settings: Settings | undefined, bypassConsent: boolean): PushConfig | null {
 	if (!isAutoQaEnabled(settings)) return null;
 
-	// Consent IS the push opt-in for the auto-flush path. `bypassConsent`
-	// covers explicit user-driven pushes (`proto grievances push`) where the
-	// user clearly intends to ship regardless of dialog state. The
-	// `PI_AUTO_QA_PUSH` env flag stays as a CI/headless override too.
 	if (!bypassConsent) {
 		const consented = settings?.get("dev.autoqaConsent") === "granted";
 		if (!consented && !$flag("PI_AUTO_QA_PUSH")) return null;
@@ -395,9 +257,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 	const selectStmt = db.prepare(
 		"SELECT id, model, version, tool, report FROM grievances WHERE pushed = 0 ORDER BY id ASC LIMIT ?",
 	);
-	// Planning snapshot — fires once so progress reporters can size their bar.
-	// Mid-flight inserts are NOT folded in (the worker drains them too, but
-	// the progress bar treats the initial backlog as the denominator).
+
 	if (options.onStart) {
 		const totalRow = db.prepare("SELECT COUNT(*) AS n FROM grievances WHERE pushed = 0").get() as { n: number };
 		options.onStart(totalRow.n);
@@ -411,9 +271,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 		const body = JSON.stringify({
 			agent: { name: "proto", version: VERSION },
 			installId: getInstallId(),
-			// Coarse host fingerprint for triage — `darwin`/`linux` +
-			// `arm64`/`x64`. Useful for "is this bug arch-specific?" without
-			// leaking the user's machine name.
+
 			platform: process.platform,
 			arch: process.arch,
 			entries: rows,
@@ -459,9 +317,6 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 	}
 }
 
-/**
- * Flush queued grievances to the configured backend.
- */
 export async function flushGrievances(
 	db?: Database,
 	settings?: Settings,
@@ -498,24 +353,12 @@ export async function flushGrievances(
 	}
 }
 
-/**
- * Most recently scheduled record pipeline. Never rejects (the pipeline
- * swallows its own errors); retained so tests can await the fire-and-forget
- * work deterministically via {@link __awaitAutoQaRecordPipelineForTests}.
- */
 let lastRecordPipeline: Promise<void> = Promise.resolve();
 
-/** Test-only: await the last consent → insert → flush pipeline. */
 export function __awaitAutoQaRecordPipelineForTests(): Promise<void> {
 	return lastRecordPipeline;
 }
 
-/**
- * Queue a grievance for recording. The consent → insert → flush pipeline is
- * fire-and-forget: nothing is written until the user grants consent (or
- * `PI_AUTO_QA_PUSH=1` forces headless recording), and the device result
- * returns immediately so the model never waits on the dialog or the network.
- */
 function recordToolIssue(session: ToolSession, tool: string, report: string): void {
 	const canonicalTool = tool.startsWith("proxy_") ? tool.slice("proxy_".length) : tool;
 	const model = session.getActiveModelString?.() ?? "unknown";
@@ -534,11 +377,6 @@ function recordToolIssue(session: ToolSession, tool: string, report: string): vo
 	})();
 }
 
-/**
- * Execute `write xd://report_issue`. `text` must be either:
- * - `<tool>: <concise description>` on one line, or
- * - tool name on the first line with the report body below.
- */
 export async function dispatchReportIssueDevice(
 	session: ToolSession,
 	text: string,

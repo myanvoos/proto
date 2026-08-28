@@ -11,10 +11,6 @@ import { resolveMermaidAscii } from "./mermaid-cache";
 import { theme } from "./theme";
 import type { Theme } from "./theme-class";
 
-// ============================================================================
-// TUI Helpers
-// ============================================================================
-
 let cachedHighlightColorsFor: Theme | undefined;
 let cachedHighlightColors: NativeHighlightColors | undefined;
 
@@ -38,20 +34,6 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 	return cachedHighlightColors;
 }
 
-/**
- * Memoized native syntax highlight. Returns the joined ANSI string, or `null`
- * when the native tokenizer throws so callers can apply their own fallback.
- *
- * Keyed on `(lang, code)` and reset whenever the active `theme` instance
- * changes — the ANSI colors are baked into the highlighted output, so a theme
- * switch (which always reassigns `theme`) must invalidate every entry.
- *
- * Why this exists: animated tool blocks (eval/bash) repaint their box on every
- * ~33ms border-shimmer frame, and markdown re-lexes on every streamed delta.
- * Without memoization each frame can re-tokenize an unchanged code body through
- * the Rust FFI — ~26ms for 100 lines, ~40ms for 150 — consuming or overrunning
- * the 33ms frame budget and starving the spinner/render timers (the "TUI freeze").
- */
 const HIGHLIGHT_CACHE_MAX = 256;
 const highlightCache = new LRUCache<string, string>({ max: HIGHLIGHT_CACHE_MAX });
 let highlightCacheTheme: Theme | undefined;
@@ -77,22 +59,14 @@ function highlightCached(code: string, validLang: string | undefined, highlightT
 	return highlighted;
 }
 
-/**
- * Highlight code with syntax coloring based on file extension or language.
- * Returns array of highlighted lines.
- */
 export function highlightCode(code: string, lang?: string, highlightTheme: Theme = theme): string[] {
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 	const highlighted = highlightCached(code, validLang, highlightTheme);
-	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
-	// onto the result, which would corrupt the cached string otherwise.
+
 	return (highlighted ?? code).split("\n");
 }
 
 export function getSymbolTheme(): SymbolTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). Fall back to the ASCII preset so the returned symbols are
-	// usable instead of crashing. See #2998.
 	if (typeof theme === "undefined") {
 		const box = {
 			topLeft: "+",
@@ -148,8 +122,6 @@ export function getMarkdownTheme(): MarkdownTheme {
 	}
 	const mermaid = markdownMermaidRendering
 		? (() => {
-				// Diagram geometry is content, so keep every structural stroke on the
-				// theme's readable muted foreground instead of subtle UI chrome borders.
 				const mermaidColorMode =
 					theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
 				const mermaidTheme = {
@@ -212,8 +184,6 @@ export function getMarkdownTheme(): MarkdownTheme {
 }
 
 export function getSelectListTheme(): SelectListTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). See #2998.
 	if (typeof theme === "undefined") {
 		return {
 			selectedPrefix: (text: string) => text,
@@ -239,8 +209,6 @@ export function getSelectListTheme(): SelectListTheme {
 }
 
 export function getEditorTheme(): EditorTheme {
-	// Guard against `theme` being undefined (pre-init or cross-module-instance
-	// plugin calls). See #2998.
 	if (typeof theme === "undefined") {
 		return {
 			borderColor: (text: string) => text,
@@ -262,11 +230,6 @@ export function getEditorTheme(): EditorTheme {
 }
 
 export function getSettingsListTheme(): SettingsListTheme {
-	// Plugins (e.g. pi-rtk-optimizer) may call this before `initTheme()` assigns
-	// the global `theme`, or from a separate module instance under npm-global
-	// installs where the live binding was never initialized. Fall back to plain
-	// text so the call returns a usable (unstyled) theme instead of crashing with
-	// "undefined is not an object (evaluating 'theme.fg')". See #2998.
 	if (typeof theme === "undefined") {
 		return {
 			label: (text: string) => text,

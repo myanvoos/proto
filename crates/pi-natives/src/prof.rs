@@ -1,41 +1,30 @@
-//! Always-on circular buffer profiler for work scheduling.
-//!
-//! Samples are continuously collected into a fixed-size circular buffer.
-//! Call `get_work_profile()` to retrieve the last N seconds of profiling data.
-
 use std::{cell::RefCell, cmp::Reverse, collections::HashMap, sync::LazyLock, time::Instant};
 
 use napi_derive::napi;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 
-/// Maximum samples to keep (roughly 60s at high activity).
 const MAX_SAMPLES: usize = 10_000;
 
-/// Process start time for relative timestamps.
 static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Circular buffer of profiling samples.
 static PROFILE_BUFFER: LazyLock<Mutex<CircularBuffer>> =
 	LazyLock::new(|| Mutex::new(CircularBuffer::new(MAX_SAMPLES)));
 
 thread_local! {
-	/// Thread-local stack of active regions.
+
 	static REGION_STACK: RefCell<SmallVec<[&'static str; 4]>> = const { RefCell::new(SmallVec::new_const()) };
 }
 
-/// A single profiling sample with timing data.
 #[derive(Clone)]
 struct ProfileSample {
-	/// Stack of region names (from root to leaf).
-	stack:        SmallVec<[&'static str; 4]>,
-	/// Duration in microseconds.
-	duration_us:  u64,
-	/// Timestamp (microseconds since process start).
+	stack: SmallVec<[&'static str; 4]>,
+
+	duration_us: u64,
+
 	timestamp_us: u64,
 }
 
-/// Circular buffer for samples.
 struct CircularBuffer {
 	samples:   Vec<ProfileSample>,
 	capacity:  usize,
@@ -68,7 +57,6 @@ impl CircularBuffer {
 	}
 }
 
-/// RAII guard that records timing when dropped.
 pub struct ProfileGuard {
 	region: &'static str,
 	start:  Instant,
@@ -102,29 +90,22 @@ impl Drop for ProfileGuard {
 	}
 }
 
-/// Start a profiling region. Returns a guard that records timing on drop.
 #[inline]
 pub fn profile_region(region: &'static str) -> ProfileGuard {
 	ProfileGuard::new(region)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Work Profile Results
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Profiling results returned to JavaScript.
 #[napi(object)]
 #[derive(Clone)]
 pub struct WorkProfile {
-	/// Folded stack format for flamegraph tools.
-	pub folded:       String,
-	/// Markdown summary of profiling results.
-	pub summary:      String,
-	/// SVG flamegraph (if generation succeeded).
-	pub svg:          Option<String>,
-	/// Total profiled duration in milliseconds.
-	pub total_ms:     f64,
-	/// Number of samples collected.
+	pub folded: String,
+
+	pub summary: String,
+
+	pub svg: Option<String>,
+
+	pub total_ms: f64,
+
 	pub sample_count: u32,
 }
 
@@ -213,14 +194,6 @@ fn generate_svg(folded: &str) -> Option<String> {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// N-API Exports
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Get work profile data from the last N seconds.
-///
-/// Always-on profiling - no need to start/stop. Just call this to get
-/// recent activity.
 #[napi]
 pub fn get_work_profile(last_seconds: f64) -> WorkProfile {
 	let window_us = (last_seconds * 1_000_000.0) as u64;

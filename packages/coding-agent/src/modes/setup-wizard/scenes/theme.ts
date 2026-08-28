@@ -95,7 +95,7 @@ class ThemeSceneController implements SetupSceneController {
 	#message: string | undefined;
 	#previewRequest = 0;
 	#disposed = false;
-	/** Render line where the select list began, or -1 while it is not shown. */
+
 	#listRowStart = -1;
 	readonly #originalTheme = getCurrentThemeName();
 	readonly #originalColorBlindMode: boolean;
@@ -123,11 +123,7 @@ class ThemeSceneController implements SetupSceneController {
 		this.#selectList.handleInput(data);
 	}
 
-	/** Wheel moves the highlight (live preview); hover lights the row under the pointer; click confirms it. */
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
-		// Mirror the pre-helper flow: wheel/motion are always processed, but a
-		// hidden list (#listRowStart < 0, e.g. while loading all themes) must
-		// never hit-test a row — route through a line that resolves to undefined.
 		const listLine = this.#listRowStart >= 0 ? line - this.#listRowStart : Number.NEGATIVE_INFINITY;
 		routeSelectListMouse(this.#selectList, event, listLine);
 	}
@@ -141,10 +137,7 @@ class ThemeSceneController implements SetupSceneController {
 				: theme.fg("dim", "Esc skips this step"),
 			"",
 		];
-		// The mock status-line/editor block is decorative — the wizard itself
-		// re-renders in the highlighted theme — so it yields to the list when
-		// it would squeeze the window below the six curated rows (+1 for the
-		// list's own search-status row).
+
 		const preview = renderThemePreview(width);
 		if (budget - lines.length - (preview.length + 1) - 1 >= CURATED_ITEMS.length) {
 			lines.push(...preview, "");

@@ -5,7 +5,6 @@ export const githubCopilotProvider = {
 	id: "github-copilot",
 	name: "GitHub Copilot",
 	login: async (cb: OAuthLoginCallbacks) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { loginGitHubCopilot } = await import("./oauth/github-copilot");
 		return loginGitHubCopilot({
 			onAuth: (url, instructions) => cb.onAuth({ url, instructions }),
@@ -15,7 +14,6 @@ export const githubCopilotProvider = {
 		});
 	},
 	refreshToken: async (credentials: OAuthCredentials) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { refreshGitHubCopilotToken } = await import("./oauth/github-copilot");
 		return refreshGitHubCopilotToken(credentials.refresh, credentials.enterpriseUrl, credentials.apiEndpoint);
 	},

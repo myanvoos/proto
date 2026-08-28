@@ -2,12 +2,6 @@ import { createApiKeyLogin } from "./api-key-login";
 import type { OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
-/** OpenRouter login flow (API key paste, validated via /auth/key).
- *
- * `/api/v1/models` is public and returns 200 for any bearer (including bogus),
- * so it cannot validate auth. `/api/v1/auth/key` is the canonical "who am I"
- * endpoint — 200 for valid keys, 401 otherwise.
- */
 export const loginOpenRouter = createApiKeyLogin({
 	providerLabel: "OpenRouter",
 	authUrl: "https://openrouter.ai/keys",

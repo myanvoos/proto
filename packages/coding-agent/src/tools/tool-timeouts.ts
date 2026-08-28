@@ -1,9 +1,8 @@
 interface ToolTimeoutConfig {
-	/** Default timeout in seconds when agent omits the field */
 	default: number;
-	/** Minimum allowed timeout in seconds */
+
 	min: number;
-	/** Maximum allowed timeout in seconds (per-tool ceiling) */
+
 	max: number;
 }
 
@@ -20,16 +19,6 @@ export const TOOL_TIMEOUTS = {
 
 type ToolWithTimeout = keyof typeof TOOL_TIMEOUTS;
 
-/**
- * Clamp a raw timeout to the allowed range for a tool.
- *
- * When `rawTimeout` is undefined the tool's `default` is used. A positive
- * `maxTimeout` (the `tools.maxTimeout` global ceiling) caps the *resolved*
- * value — including the default-fallback path — before the per-tool `min`/`max`
- * floor and ceiling apply, so a configured global cap governs calls where the
- * agent omits `timeout`, not only explicitly-passed values. `maxTimeout <= 0`
- * means no global cap.
- */
 export function clampTimeout(tool: ToolWithTimeout, rawTimeout?: number, maxTimeout?: number): number {
 	const config = TOOL_TIMEOUTS[tool];
 	const timeout = rawTimeout ?? config.default;

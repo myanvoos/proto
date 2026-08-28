@@ -1,31 +1,3 @@
-//! Native crash diagnostics.
-//!
-//! Installs Rust-side panic and allocation-error hooks the first time the
-//! native module loads, so any crash inside `pi-natives` writes an actionable
-//! record (thread, payload, backtrace) to disk and to stderr before the host
-//! process exits.
-//!
-//! Without these hooks, Bun receives only the bare
-//! `memory allocation of N bytes failed` line and aborts with no stack —
-//! see issue #2211 ("Windows crash: Rust allocator failure after tasklist.exe
-//! popup"). The cdylib builds with `panic = "unwind"`, so a panic in vendored
-//! uutils code unwinds to the shell boundary and is recovered as a failed
-//! command, and a panic in a `task::blocking` worker is caught at the napi
-//! boundary and surfaces as a rejected JS Promise; such recoverable panics are
-//! logged to disk only, while fatal crashes (allocation failure, or panics
-//! with no active recovery scope) still get the stderr dump + process exit.
-//! Either way the record stays diagnosable.
-//!
-//! Notes:
-//! - Backtraces are captured via [`Backtrace::force_capture`], so they work
-//!   regardless of `RUST_BACKTRACE`.
-//! - The crash log path mirrors the JS side (`packages/utils/src/dirs.ts`):
-//!   `$XDG_STATE_HOME/proto/logs/` on Linux / macOS when the user has migrated
-//!   to XDG (i.e. that directory already exists and `PI_CODING_AGENT_DIR` isn't
-//!   pointed somewhere custom), otherwise `<home>/<PI_CONFIG_DIR>/logs/`
-//!   (defaulting to `~/.proto/logs/`).
-//! - Hook installation is idempotent across repeated module loads.
-
 use std::{
 	alloc::Layout,
 	backtrace::Backtrace,
@@ -44,12 +16,8 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Default directory name for PROTO's per-user state (overridable via
-/// `PI_CONFIG_DIR`, matching `packages/utils/src/dirs.ts`).
 const DEFAULT_CONFIG_DIR: &str = ".proto";
 
-/// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/proto/`),
-/// matching `APP_NAME` in `packages/utils/src/dirs.ts`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const APP_NAME: &str = "proto";
 
@@ -57,27 +25,22 @@ static INSTALL: Once = Once::new();
 static ALLOC_HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-	/// Active `task::blocking` panic recovery frames on this thread.
-	///
-	/// The panic hook runs before [`std::panic::catch_unwind`] returns. A
-	/// borrow-free `Cell` lets the hook recognize panics that are already inside
-	/// a known recovery boundary without touching potentially borrowed task
-	/// state while the stack is unwinding.
+
+
+
+
+
+
 	static BLOCKING_TASK_PANIC_SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PanicDisposition {
-	/// No recovery boundary is active: persist the report, echo it to stderr,
-	/// and chain to the default hook (which ends the process).
 	Fatal,
-	/// The panic will be caught and mapped to a failed command / rejected
-	/// Promise: persist the report to the crash log for diagnosis, but keep
-	/// stderr quiet and do not chain to the default hook.
+
 	LoggedRecoverable,
 }
 
-/// Install the panic and allocation-error hooks. Idempotent.
 pub fn install() {
 	INSTALL.call_once(|| {
 		let prev_panic = std::panic::take_hook();
@@ -94,10 +57,6 @@ pub fn install() {
 		}));
 
 		std::alloc::set_alloc_error_hook(|layout| {
-			// Print the canonical line before doing anything allocation-prone.
-			// If this is genuine process-wide OOM, report formatting/path work may
-			// recursively enter this hook; the secondary entry writes the same
-			// stack-only fallback and aborts immediately.
 			write_alloc_failure_line(std::io::stderr(), layout.size());
 			if ALLOC_HOOK_ACTIVE.swap(true, Ordering::AcqRel) {
 				process::abort();
@@ -109,14 +68,6 @@ pub fn install() {
 	});
 }
 
-/// Run `f` inside a `task::blocking` panic recovery boundary.
-///
-/// The global panic hook checks this thread-local scope before reporting a
-/// panic. When a blocking worker closure panics, [`std::panic::catch_unwind`]
-/// will turn it into a rejected JS Promise, so the hook downgrades the panic
-/// to [`PanicDisposition::LoggedRecoverable`]: the report (location +
-/// backtrace) is still persisted to the crash log, but nothing is echoed to
-/// stderr and the default hook is not chained.
 pub(crate) fn blocking_task_panic_scope<R>(f: impl FnOnce() -> R) -> R {
 	struct Guard;
 
@@ -172,11 +123,6 @@ fn format_panic_report(info: &std::panic::PanicHookInfo<'_>) -> String {
 }
 
 fn format_alloc_report(layout: Layout) -> String {
-	// Capturing a backtrace allocates. If the global allocator is in a state
-	// where small allocations keep failing this will recurse into the hook —
-	// `Backtrace::force_capture` swallows the secondary failure internally and
-	// returns an empty backtrace, which is still strictly more useful than the
-	// nothing the default handler prints.
 	let bt = Backtrace::force_capture();
 	let mut out = report_header(CrashKind::Alloc);
 	let _ = writeln!(out, "size:      {} bytes", layout.size());
@@ -214,11 +160,6 @@ fn write_alloc_failure_line(mut out: impl std::io::Write, size: usize) {
 	let _ = out.write_all(b" bytes failed\n");
 }
 
-/// Extract a printable message from a panic payload captured by
-/// [`std::panic::catch_unwind`] or handed to the panic hook. Handles the two
-/// shapes `panic!` produces — `&'static str` (literal) and `String`
-/// (formatted) — and degrades to a sentinel for arbitrary
-/// [`panic_any`](std::panic::panic_any) payloads.
 pub(crate) fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
 	if let Some(s) = payload.downcast_ref::<&'static str>() {
 		(*s).to_owned()
@@ -230,10 +171,6 @@ pub(crate) fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 fn persist(report: &str, kind: CrashKind, echo_stderr: bool) {
-	// Echo to stderr so the user sees something even when the file write fails
-	// (read-only home, missing $HOME, …). Suppressed for recoverable panics
-	// (uutils shell boundary, `task::blocking` workers), which surface as a
-	// failed command / rejected Promise instead of a crash.
 	if echo_stderr {
 		let _ = writeln!(std::io::stderr(), "{report}");
 	}
@@ -276,8 +213,6 @@ fn resolve_logs_dir(
 	config_dir_override: Option<&OsStr>,
 	xdg_state_logs: Option<PathBuf>,
 ) -> PathBuf {
-	// XDG takes precedence so users who migrated to `$XDG_STATE_HOME/proto/logs/`
-	// see native crash reports in the same directory the JS logger rotates.
 	if let Some(p) = xdg_state_logs {
 		return p;
 	}
@@ -288,10 +223,6 @@ fn resolve_logs_dir(
 	base.join("logs")
 }
 
-/// Compute the XDG-state logs dir if the runtime environment matches the
-/// JS-side eligibility rules in `packages/utils/src/dirs.ts`: linux/macos,
-/// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/proto` exists on disk, and
-/// `PI_CODING_AGENT_DIR` is unset or pointing at the default agent dir.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
 	let default_agent_dir = default_agent_dir(home, config_dir_override);
@@ -305,9 +236,6 @@ fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> 
 	)
 }
 
-/// Pure XDG-eligibility computation extracted for unit testing — no env
-/// reads, no fs reads. `omp_dir_exists` decides whether the candidate
-/// `<xdg_state_home>/proto` actually lives on disk.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn xdg_state_logs(
 	xdg_state_home: Option<&OsStr>,
@@ -316,9 +244,6 @@ fn xdg_state_logs(
 	proto_dir_exists: impl FnOnce(&Path) -> bool,
 ) -> Option<PathBuf> {
 	if let Some(ov) = agent_dir_override.filter(|s| !s.is_empty()) {
-		// `path.resolve(value)` on the JS side: make absolute against cwd
-		// without touching the filesystem. Anything that diverges from the
-		// default agent dir disables XDG, matching `isDefault === false`.
 		let resolved = std::path::absolute(Path::new(ov)).ok()?;
 		if resolved != default_agent_dir {
 			return None;

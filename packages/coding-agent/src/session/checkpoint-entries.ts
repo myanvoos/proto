@@ -5,7 +5,6 @@ import type { CompletedRewindState } from "../tools/checkpoint";
 import { writeDeviceDispatch } from "../tools/resolve";
 import type { SessionEntry } from "./session-entries";
 
-/** Extracts text from custom message content. */
 function customMessageContentText(content: string | (TextContent | ImageContent)[]): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
@@ -15,7 +14,6 @@ function customMessageContentText(content: string | (TextContent | ImageContent)
 	return parts.join("\n");
 }
 
-/** Extracts the report body from persisted rewind-report content. */
 function reportFromRewindReportContent(content: string): string {
 	const marker = "\nReport:\n";
 	const index = content.lastIndexOf(marker);
@@ -23,16 +21,13 @@ function reportFromRewindReportContent(content: string): string {
 	return report.trim();
 }
 
-/** Checkpoint-domain tool names normalized from native and xdev calls. */
 type SemanticCheckpointToolName = "checkpoint" | "rewind";
 
-/** Normalized checkpoint-domain tool result. */
 interface SemanticToolResult {
 	toolName: SemanticCheckpointToolName;
 	details?: unknown;
 }
 
-/** Normalizes checkpoint and rewind results across native calls and xdev dispatches. */
 export function semanticToolResult(toolName: string | undefined, result: unknown): SemanticToolResult | undefined {
 	if (toolName === "checkpoint" || toolName === "rewind") {
 		const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
@@ -45,7 +40,6 @@ export function semanticToolResult(toolName: string | undefined, result: unknown
 	return { toolName: dispatch.tool, details: dispatch.inner };
 }
 
-/** Restores completed rewind state from a persisted session entry. */
 export function completedRewindFromEntry(entry: SessionEntry): CompletedRewindState | undefined {
 	if (entry.type !== "custom_message" || entry.customType !== "rewind-report") return undefined;
 	const details = entry.details;
@@ -59,7 +53,6 @@ export function completedRewindFromEntry(entry: SessionEntry): CompletedRewindSt
 	return report.length > 0 ? { report, startedAt, rewoundAt } : undefined;
 }
 
-/** Whether an entry is a successful checkpoint tool result. */
 export function isSuccessfulCheckpointEntry(
 	entry: SessionEntry,
 ): entry is SessionEntry & { type: "message"; message: Extract<AgentMessage, { role: "toolResult" }> } {
@@ -69,7 +62,6 @@ export function isSuccessfulCheckpointEntry(
 	return semanticToolResult(entry.message.toolName, entry.message)?.toolName === "checkpoint";
 }
 
-/** Returns the checkpoint start timestamp represented by an entry. */
 export function checkpointStartedAtFromEntry(entry: SessionEntry): string | undefined {
 	if (!isSuccessfulCheckpointEntry(entry)) return undefined;
 	const details = semanticToolResult(entry.message.toolName, entry.message)?.details;

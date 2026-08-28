@@ -1,6 +1,6 @@
-//! Checksum-family builtins (`md5sum`, SHA sums, and `b2sum`).
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 #![allow(dead_code, reason = "upstream checksum-common also supports cksum-only formats")]
 
 use std::{
@@ -51,11 +51,11 @@ fn failure(error: impl Display) -> Failure {
 }
 
 mod options {
-	// cksum-specific
+
 	pub(super) const ALGORITHM: &str = "algorithm";
 	pub(super) const DEBUG: &str = "debug";
 
-	// positional arg
+
 	pub(super) const FILE: &str = "file";
 
 	pub(super) const UNTAGGED: &str = "untagged";
@@ -68,7 +68,7 @@ mod options {
 	pub(super) const BINARY: &str = "binary";
 	pub(super) const ZERO: &str = "zero";
 
-	// check-specific
+
 	pub(super) const STRICT: &str = "strict";
 	pub(super) const STATUS: &str = "status";
 	pub(super) const WARN: &str = "warn";
@@ -76,8 +76,8 @@ mod options {
 	pub(super) const QUIET: &str = "quiet";
 }
 
-/// `ChecksumCommand` is a convenience trait to more easily declare checksum
-/// CLI interfaces with
+
+
 trait ChecksumCommand {
 	fn with_algo(self) -> Self;
 
@@ -237,8 +237,8 @@ impl ChecksumCommand for Command {
 				.long(options::BASE64)
 				.help("emit base64-encoded digests, not hexadecimal")
 				.action(ArgAction::SetTrue)
-				// Even though this could easily just override an earlier '--raw',
-				// GNU cksum does not permit these flags to be combined:
+
+
 				.conflicts_with(options::RAW),
 		)
 	}
@@ -382,7 +382,7 @@ fn checksum_main(
 	perform_checksum_computation(host, opts, files)
 }
 
-/// Builds the clap command for one standalone checksum utility.
+
 pub(crate) fn command(name: &'static str, with_length: bool) -> Command {
 	let (about, usage) = standalone_strings(name);
 	if with_length {
@@ -396,7 +396,7 @@ pub(crate) fn command(name: &'static str, with_length: bool) -> Command {
 	}
 }
 
-/// Runs one parsed standalone checksum invocation.
+
 pub(crate) fn run(
 	host: &mut Host,
 	algo: AlgoKind,
@@ -417,7 +417,7 @@ pub(crate) fn run(
 	}
 }
 
-/// Parsed `cksum` invocation.
+
 pub(crate) struct Cksum {
 	matches: ArgMatches,
 }
@@ -440,7 +440,7 @@ impl Utility for Cksum {
 	}
 }
 
-/// Builds the clap command for the GNU `cksum` multi-algorithm front-end.
+
 fn cksum_app() -> Command {
 	default_checksum_app(
 		"Print or verify checksums; without --algorithm, prints the POSIX CRC and byte count",
@@ -460,26 +460,26 @@ fn cksum_app() -> Command {
 	.with_debug()
 }
 
-/// Creates the `cksum` builtin registration.
+
 pub(crate) fn cksum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cksum, SE>()
 }
 
-/// Sanitizes `--length` against `--algorithm`, mirroring GNU `cksum`.
+
 fn sanitize_cksum_length(
 	host: &mut Host,
 	algo: Option<AlgoKind>,
 	input_length: Option<&str>,
 ) -> ExecResult<Option<usize>> {
 	match (algo, input_length) {
-		// No provided length is not a problem so far.
+
 		(_, None) => Ok(None),
 
-		// For SHA2 and SHA3, if a length is provided, ensure it is correct.
+
 		(Some(algo @ (AlgoKind::Sha2 | AlgoKind::Sha3)), Some(len)) => {
-			// Positive overflow while parsing counts as an invalid number,
-			// but a number still; it gets the extra reminder of the accepted
-			// inputs, unlike a plain parse failure.
+
+
+
 			let parsed = match len.parse::<usize>() {
 				Ok(parsed) => Some(parsed),
 				Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => None,
@@ -494,28 +494,28 @@ fn sanitize_cksum_length(
 			}
 		},
 
-		// SHAKE128 and SHAKE256 algorithms optionally take a bit length. No
-		// validation is performed on this length, any value is valid.
+
+
 		(Some(AlgoKind::Shake128 | AlgoKind::Shake256), Some(len)) => match len.parse::<usize>() {
 			Ok(0) => Ok(None),
 			Ok(parsed) => Ok(Some(parsed)),
 			Err(_) => Err(failure(ChecksumError::InvalidLength(len.into()))),
 		},
 
-		// For BLAKE, if a length is provided, validate it.
+
 		(Some(algo @ (AlgoKind::Blake2b | AlgoKind::Blake3)), Some(len)) => {
 			parse_blake_length(algo, BlakeLength::String(len)).map(Some).map_err(failure)
 		},
 
-		// For any other provided algorithm, check if length is 0.
-		// Otherwise, this is an error.
+
+
 		(_, Some(len)) if len.parse::<u32>() == Ok(0) => Ok(None),
 		(_, Some(_)) => Err(failure(ChecksumError::LengthOnlyForBlake2bSha2Sha3)),
 	}
 }
 
-/// Prints CPU hardware capability detection info, matching GNU `cksum
-/// --debug`.
+
+
 fn print_cpu_debug_info(host: &mut Host) {
 	let features = SimdPolicy::detect();
 
@@ -527,20 +527,20 @@ fn print_cpu_debug_info(host: &mut Host) {
 		}
 	};
 
-	// x86/x86_64
+
 	print_feature("avx512", features.has_avx512());
 	print_feature("avx2", features.has_avx2());
 	print_feature("pclmul", features.has_pclmul());
 
-	// ARM aarch64
+
 	if cfg!(target_arch = "aarch64") {
 		print_feature("vmull", features.has_vmull());
 	}
 }
 
-/// Runs one parsed `cksum` invocation. Unlike the standalone utilities, the
-/// algorithm comes from `--algorithm` (default: legacy POSIX CRC), output
-/// defaults to tagged, and `--raw`/`--base64` are accepted.
+
+
+
 fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 	let algo = matches
 		.get_one::<String>(options::ALGORITHM)
@@ -555,7 +555,7 @@ fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 	let binary = matches.get_flag(options::BINARY);
 	let text = matches.get_flag(options::TEXT);
 
-	// Specifying --text without ever mentioning --untagged fails.
+
 	if text && tag {
 		return Err(failure(ChecksumError::TextWithoutUntagged));
 	}
@@ -575,27 +575,27 @@ fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 	checksum_main(host, algo, length, matches, output_format)
 }
 
-/// Use the same buffer size as GNU when reading a file to create a checksum
-/// from it: 32 KiB.
+
+
 const READ_BUFFER_SIZE: usize = 32 * 1024;
 
-/// Necessary options when computing a checksum. Historically, these options
-/// included a `binary` field to differentiate `--binary` and `--text` modes on
-/// windows. Since the support for this feature is approximate in GNU, and it's
-/// deprecated anyway, it was decided in #9168 to ignore the difference when
-/// computing the checksum.
+
+
+
+
+
 struct ChecksumComputeOptions {
-	/// Which algorithm to use to compute the digest.
+
 	algo_kind: SizedAlgoKind,
 
-	/// Printing format to use for each checksum.
+
 	output_format: OutputFormat,
 
-	/// Whether to finish lines with '\n' or '\0'.
+
 	line_ending: LineEnding,
 }
 
-/// Whether to write the digest as hexadecimal or encoded in base64.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DigestFormat {
 	Hexadecimal,
@@ -609,24 +609,24 @@ impl DigestFormat {
 	}
 }
 
-/// Holds the representation that shall be used for printing a checksum line
+
 #[derive(Debug, PartialEq, Eq)]
 enum OutputFormat {
-	/// Raw digest
+
 	Raw,
 
-	/// Selected for older algorithms which had their custom formatting
-	///
-	/// Default for crc, sysv, bsd
+
+
+
 	Legacy,
 
-	/// `$ALGO_NAME ($FILENAME) = $DIGEST`
+
 	Tagged(DigestFormat),
 
-	/// '$DIGEST $FLAG$FILENAME'
-	/// where 'flag' depends on the reading mode
-	///
-	/// Default for standalone checksum utilities
+
+
+
+
 	Untagged(DigestFormat, ReadingMode),
 }
 
@@ -636,14 +636,14 @@ impl OutputFormat {
 		*self == Self::Raw
 	}
 
-	/// Find the correct output format for cksum.
+
 	fn from_cksum(algo: AlgoKind, tag: bool, binary: bool, raw: bool, base64: bool) -> Self {
-		// Raw output format takes precedence over anything else.
+
 		if raw {
 			return Self::Raw;
 		}
 
-		// Then, if the algo is legacy, takes precedence over the rest
+
 		if algo.is_legacy() {
 			return Self::Legacy;
 		}
@@ -654,7 +654,7 @@ impl OutputFormat {
 			DigestFormat::Hexadecimal
 		};
 
-		// After that, decide between tagged and untagged output
+
 		if tag {
 			Self::Tagged(digest_format)
 		} else {
@@ -667,11 +667,11 @@ impl OutputFormat {
 		}
 	}
 
-	/// Find the correct output format for a standalone checksum util (b2sum,
-	/// md5sum, etc)
-	///
-	/// Since standalone utils can't use the Raw or Legacy output format, it is
-	/// decided only using the --tag, --binary and --text arguments.
+
+
+
+
+
 	fn from_standalone(text: bool, tag: bool) -> Self {
 		if tag {
 			Self::Tagged(DigestFormat::Hexadecimal)
@@ -704,7 +704,7 @@ fn print_legacy_checksum(
 		escape_filename(filename)
 	};
 
-	// Print the sum
+
 	match (options.algo_kind, sum) {
 		(SizedAlgoKind::Sysv, DigestOutput::U16(sum)) => {
 			let _ = write!(
@@ -714,7 +714,7 @@ fn print_legacy_checksum(
 			);
 		},
 		(SizedAlgoKind::Bsd, DigestOutput::U16(sum)) => {
-			// The BSD checksum output is 5 digit integer
+
 			let bsd_width = 5;
 			let _ = write!(
 				&mut host.stdout,
@@ -728,7 +728,7 @@ fn print_legacy_checksum(
 		(algo, output) => unreachable!("Bug: Invalid legacy checksum ({algo:?}, {output:?})"),
 	}
 
-	// Print the filename after a space if not stdin
+
 	if escaped_filename != "-" {
 		let _ = write!(&mut host.stdout, " ");
 		let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
@@ -742,13 +742,13 @@ fn print_tagged_checksum(host: &mut Host, options: &ChecksumComputeOptions, file
 		escape_filename(filename)
 	};
 
-	// Print algo name and opening parenthesis.
+
 	let _ = write!(&mut host.stdout, "{prefix}{} (", options.algo_kind.to_tag());
 
-	// Print filename
+
 	let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
 
-	// Print closing parenthesis and sum
+
 	let _ = write!(&mut host.stdout, ") = {sum}");
 }
 
@@ -765,23 +765,23 @@ fn print_untagged_checksum(
 		escape_filename(filename)
 	};
 
-	// Print checksum and reading mode flag
+
 	let _ = write!(&mut host.stdout, "{prefix}{sum} {}", match reading_mode {
 		ReadingMode::Binary => '*',
 		ReadingMode::Text => ' ',
 	});
 
-	// Print filename
+
 	let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
 }
 
-/// Calculate checksum
-///
-/// # Arguments
-///
-/// * `options` - CLI options for the assigning checksum algorithm
-/// * `files` - A iterator of [`OsStr`] which is a bunch of files that are using
-///   for calculating checksum
+
+
+
+
+
+
+
 fn perform_checksum_computation<'a, I>(
 	host: &mut Host,
 	options: ChecksumComputeOptions,
@@ -793,7 +793,7 @@ where
 	let mut files = files.peekable();
 
 	while let Some(filename) = files.next() {
-		// Check that in raw mode, we are not provided with several files.
+
 		if options.output_format.is_raw() && files.peek().is_some() {
 			return Err(failure(ChecksumError::RawMultipleFiles));
 		}
@@ -807,7 +807,7 @@ where
 			continue;
 		}
 
-		// Handle the file input
+
 		let mut file = BufReader::with_capacity(
 			READ_BUFFER_SIZE,
 			if filename == "-" {
@@ -827,13 +827,13 @@ where
 
 		let mut digest = options.algo_kind.create_digest();
 
-		// Always compute the "binary" version of the digest, i.e. on Windows,
-		// never handle CRLFs specifically.
+
+
 		let (digest_output, sz) = digest_reader(&mut digest, &mut file, ReadingMode::Binary)
 			.map_err(|error| failure(format!("failed to read input: {error}")))?;
 		drop(file);
 
-		// Encodes the sum if df is Base64, leaves as-is otherwise.
+
 		let encode_sum = |sum: DigestOutput, df: DigestFormat| {
 			if df.is_base64() {
 				sum.to_base64()
@@ -844,7 +844,7 @@ where
 
 		match options.output_format {
 			OutputFormat::Raw => {
-				// Cannot handle multiple files anyway, output immediately.
+
 				digest_output.write_raw(&mut host.stdout)?;
 				return Ok(());
 			},
@@ -870,7 +870,7 @@ where
 	Ok(())
 }
 
-/// To what level should checksum validation print logging info.
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Copy, Default)]
 enum ChecksumVerbose {
 	Status,
@@ -884,8 +884,8 @@ impl ChecksumVerbose {
 	fn new(status: bool, quiet: bool, warn: bool) -> Self {
 		use ChecksumVerbose::*;
 
-		// Assume only one of the three booleans will be enabled at once.
-		// This is ensured by clap's overriding arguments.
+
+
 		match (status, quiet, warn) {
 			(true, ..) => Status,
 			(_, true, _) => Quiet,
@@ -910,7 +910,7 @@ impl ChecksumVerbose {
 	}
 }
 
-/// This struct regroups CLI flags.
+
 #[derive(Debug, Default, Clone, Copy)]
 struct ChecksumValidateOptions {
 	ignore_missing: bool,
@@ -918,19 +918,19 @@ struct ChecksumValidateOptions {
 	verbose:        ChecksumVerbose,
 }
 
-/// This structure holds the count of checksum test lines' outcomes.
+
 #[derive(Default)]
 struct ChecksumResult {
-	/// Number of lines in the file where the computed checksum MATCHES
-	/// the expectation.
+
+
 	correct:          u32,
-	/// Number of lines in the file where the computed checksum DIFFERS
-	/// from the expectation.
+
+
 	failed_cksum:     u32,
 	failed_open_file: u32,
-	/// Number of improperly formatted lines.
+
 	bad_format:       u32,
-	/// Total number of non-empty, non-comment lines.
+
 	total:            u32,
 }
 
@@ -941,22 +941,22 @@ impl ChecksumResult {
 	}
 }
 
-/// Represents a reason for which the processing of a checksum line
-/// could not proceed to digest comparison.
+
+
 enum LineCheckError {
-	/// A critical error was encountered in a helper.
+
 	Critical(Failure),
-	/// the computed checksum digest differs from the expected one
+
 	DigestMismatch,
-	/// the line is empty or is a comment
+
 	Skipped,
-	/// the line has a formatting error
+
 	ImproperlyFormatted,
-	/// file exists but is impossible to read
+
 	CantOpenFile,
-	/// there is nothing at the given path
+
 	FileNotFound,
-	/// the given path leads to a directory
+
 	FileIsDirectory,
 }
 
@@ -972,15 +972,15 @@ impl From<ChecksumError> for LineCheckError {
 	}
 }
 
-/// Represents an error that was encountered when processing a checksum file.
+
 enum FileCheckError {
-	/// A critical error was encountered in a helper.
+
 	Critical(Failure),
-	/// reading of the checksum file failed
+
 	CantOpenChecksumFile,
-	/// processing of the file is considered as a failure regarding the
-	/// provided flags. This however does not stop the processing of
-	/// further files.
+
+
+
 	Failed,
 }
 
@@ -1023,8 +1023,8 @@ fn log_no_file_verified(host: &mut Host, filename: impl Display) {
 	let _ = writeln!(host.stderr, "{name}: {filename}: no file was verified");
 }
 
-/// Represents the different outcomes that can happen to a file
-/// that is being checked.
+
+
 #[derive(Debug, Clone, Copy)]
 enum FileChecksumResult {
 	Ok,
@@ -1033,8 +1033,8 @@ enum FileChecksumResult {
 }
 
 impl FileChecksumResult {
-	/// Creates a `FileChecksumResult` from a digest comparison that
-	/// either succeeded or failed.
+
+
 	fn from_bool(checksum_correct: bool) -> Self {
 		if checksum_correct {
 			Self::Ok
@@ -1043,8 +1043,8 @@ impl FileChecksumResult {
 		}
 	}
 
-	/// The cli options might prevent to display on the outcome of the
-	/// comparison on STDOUT.
+
+
 	fn can_display(self, verbose: ChecksumVerbose) -> bool {
 		match self {
 			Self::Ok => verbose.over_quiet(),
@@ -1064,8 +1064,8 @@ impl Display for FileChecksumResult {
 	}
 }
 
-/// Write to the given buffer the checksum validation status of a file which
-/// name might contain non-utf-8 characters.
+
+
 fn write_file_report<W: Write>(
 	mut w: W,
 	filename: &[u8],
@@ -1088,15 +1088,15 @@ enum LineFormat {
 }
 
 impl LineFormat {
-	/// parse [tagged output format]
-	/// Normally the format is simply space separated but openssl does not
-	/// respect the gnu definition.
-	///
-	/// [tagged output format]: https://www.gnu.org/software/coreutils/manual/html_node/cksum-output-modes.html#cksum-output-modes-1
+
+
+
+
+
 	fn parse_algo_based(line: &[u8]) -> Option<LineInfo> {
-		//   r"\MD5 (a\\ b) = abc123",
-		//   BLAKE2b(44)=
-		// a45a4c4883cce4b50d844fab460414cc2080ca83690e74d850a9253e757384366382625b218c8585daee80f34dc9eb2f2fde5fb959db81cd48837f9216e7b0fa
+
+
+
 		let trimmed = line.trim_ascii_start();
 		let algo_start = usize::from(trimmed.starts_with(b"\\"));
 		let rest = &trimmed[algo_start..];
@@ -1105,8 +1105,8 @@ impl LineFormat {
 			Posix,
 			OpenSSL,
 		}
-		// find the next parenthesis  using byte search (not next whitespace) because
-		// openssl's tagged format does not put a space before (filename)
+
+
 
 		let par_idx = rest.iter().position(|&b| b == b'(')?;
 		let sub_case = if rest[par_idx - 1] == b' ' {
@@ -1122,12 +1122,12 @@ impl LineFormat {
 		let mut algo_parts = algo_substring.splitn(2, |&b| b == b'-');
 		let algo = algo_parts.next()?;
 
-		// Parse algo_bits if present
+
 		let algo_bits = algo_parts
 			.next()
 			.and_then(|s| std::str::from_utf8(s).ok()?.parse::<usize>().ok());
 
-		// Check algo format: uppercase ASCII or digits or "BLAKE2b"
+
 		let is_valid_algo = algo == b"BLAKE2b"
 			|| algo
 				.iter()
@@ -1135,11 +1135,11 @@ impl LineFormat {
 		if !is_valid_algo {
 			return None;
 		}
-		// SAFETY: we just validated the contents of algo, we can unsafely make a
-		// String from it
+
+
 		let algo_utf8 = unsafe { String::from_utf8_unchecked(algo.to_vec()) };
-		// stripping '(' not ' (' since we matched on ( not whitespace because of
-		// openssl.
+
+
 		let after_paren = rest.get(par_idx + 1..)?;
 		let (filename, checksum) = match sub_case {
 			SubCase::Posix => ByteSliceExt::rsplit_once(after_paren, b") = ")?,
@@ -1158,11 +1158,11 @@ impl LineFormat {
 	}
 
 	#[allow(rustdoc::invalid_html_tags)]
-	/// parse [untagged output format]
-	/// The format is simple, either "<checksum>  <filename>" or
-	/// "<checksum> *<filename>"
-	///
-	/// [untagged output format]: https://www.gnu.org/software/coreutils/manual/html_node/cksum-output-modes.html#cksum-output-modes-1
+
+
+
+
+
 	fn parse_untagged(line: &[u8]) -> Option<LineInfo> {
 		let space_idx = line.iter().position(|&b| b == b' ')?;
 		let checksum = &line[..space_idx];
@@ -1184,27 +1184,27 @@ impl LineFormat {
 	}
 
 	#[allow(rustdoc::invalid_html_tags)]
-	/// parse [untagged output format]
-	/// Normally the format is simple, either "<checksum>  <filename>" or
-	/// "<checksum> *<filename>"
-	/// But the bsd tests expect special single space behavior where
-	/// checksum and filename are separated only by a space, meaning the second
-	/// space or asterisk is part of the file name.
-	/// This parser accounts for this variation
-	///
-	/// [untagged output format]: https://www.gnu.org/software/coreutils/manual/html_node/cksum-output-modes.html#cksum-output-modes-1
+
+
+
+
+
+
+
+
+
 	fn parse_single_space(line: &[u8]) -> Option<LineInfo> {
-		// Find first space
+
 		let space_idx = line.iter().position(|&b| b == b' ')?;
 		let checksum = &line[..space_idx];
 		if !checksum.iter().all(|&b| b.is_ascii_hexdigit()) || checksum.is_empty() {
 			return None;
 		}
-		// SAFETY: we just validated the contents of checksum, we can unsafely make a
-		// String from it
+
+
 		let checksum_utf8 = unsafe { String::from_utf8_unchecked(checksum.to_vec()) };
 
-		let filename = line.get(space_idx + 1..)?; // Skip single space
+		let filename = line.get(space_idx + 1..)?;
 
 		Some(LineInfo {
 			algo_name:    None,
@@ -1215,8 +1215,8 @@ impl LineFormat {
 		})
 	}
 
-	/// Ensure that the given checksum is syntactically valid (that it is either
-	/// hexadecimal or base64 encoded).
+
+
 	fn validate_checksum_format(checksum: &[u8]) -> Option<String> {
 		if checksum.is_empty() {
 			return None;
@@ -1226,40 +1226,40 @@ impl LineFormat {
 
 		for index in 0..checksum.len() {
 			match checksum[index..] {
-				// ASCII alphanumeric
+
 				[b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9', ..] => (),
-				// Base64 special character
+
 				[b'+' | b'/', ..] => is_base64 = true,
-				// Base64 end of string padding
+
 				[b'='] | [b'=', b'='] | [b'=', b'=', b'='] => {
 					is_base64 = true;
 					break;
 				},
-				// Any other character means the checksum is wrong
+
 				_ => return None,
 			}
 		}
 
-		// If base64 characters were encountered, make sure the checksum has a
-		// length multiple of 4.
-		//
-		// This check is not enough because it may allow base64-encoded
-		// checksums that are fully alphanumeric. Another check happens later
-		// when we are provided with a length hint to detect ambiguous
-		// base64-encoded checksums.
+
+
+
+
+
+
+
 		if is_base64 && !checksum.len().is_multiple_of(4) {
 			return None;
 		}
 
-		// SAFETY: we just validated the contents of checksum, we can unsafely make a
-		// String from it
+
+
 		Some(unsafe { String::from_utf8_unchecked(checksum.to_vec()) })
 	}
 }
 
-// Helper trait for byte slice operations
+
 trait ByteSliceExt {
-	/// Look for a pattern from right to left, return surrounding parts if found.
+
 	fn rsplit_once(&self, pattern: &[u8]) -> Option<(&Self, &Self)>;
 }
 
@@ -1273,7 +1273,7 @@ impl ByteSliceExt for [u8] {
 	}
 }
 
-/// Hold the data extracted from a checksum line.
+
 struct LineInfo {
 	algo_name:    Option<String>,
 	algo_bit_len: Option<usize>,
@@ -1283,15 +1283,15 @@ struct LineInfo {
 }
 
 impl LineInfo {
-	/// Returns a `LineInfo` parsed from a checksum line.
-	/// The function will run 3 parsers against the line and select the first one
-	/// that matches to populate the fields of the struct.
-	/// However, there is a catch to handle regarding the handling of
-	/// `cached_line_format`. In case of non-algo-based format, if
-	/// `cached_line_format` is Some, it must take the priority
-	/// over the detected format. Otherwise, we must set it the the detected
-	/// format. This specific behavior is emphasized by the test
-	/// `test_md5sum::test_check_md5sum_only_one_space`.
+
+
+
+
+
+
+
+
+
 	fn parse(s: impl AsRef<OsStr>, cached_line_format: &mut Option<LineFormat>) -> Option<Self> {
 		let line_bytes = os_bytes(s.as_ref())?;
 
@@ -1316,7 +1316,7 @@ impl LineInfo {
 	}
 }
 
-/// Decodes standard Base64 using the forgiving-padding rules required by GNU.
+
 fn forgiving_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 	let input = input.strip_suffix(b"==").or_else(|| input.strip_suffix(b"=")).unwrap_or(input);
 	if input.len() % 4 == 1 {
@@ -1361,11 +1361,11 @@ fn forgiving_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 	Some(output)
 }
 
-/// Extracts and decodes the expected digest from a checksum string.
+
 fn get_raw_expected_digest(checksum: &str, bit_len_hint: Option<usize>) -> Option<Vec<u8>> {
-	// If the length of the digest is not a multiple of 2, then it must be
-	// improperly formatted (1 byte is 2 hex digits, and base64 strings should
-	// always be a multiple of 4).
+
+
+
 	if !checksum.len().is_multiple_of(2) {
 		return None;
 	}
@@ -1374,36 +1374,36 @@ fn get_raw_expected_digest(checksum: &str, bit_len_hint: Option<usize>) -> Optio
 
 	let checks_hint = |len| byte_len_hint.is_none_or(|hint| hint == len);
 
-	// If the length of the string matches the one to be expected (in case it's
-	// given) AND the digest can be decoded as hexadecimal, just go with it.
+
+
 	if checks_hint(checksum.len() / 2)
 		&& let Ok(raw_ck) = hex::decode(checksum)
 	{
 		return Some(raw_ck);
 	}
 
-	// If the checksum cannot be decoded as hexadecimal, interpret it as Base64
-	// instead.
 
-	// But first, verify the encoded checksum length, which should be a
-	// multiple of 4.
-	//
-	// It is important to check it before trying to decode, because the
-	// forgiving mode of decoding will ignore if padding characters '=' are
-	// MISSING, but to match GNU's behavior, we must reject it.
+
+
+
+
+
+
+
+
 	if !checksum.len().is_multiple_of(4) {
 		return None;
 	}
 
-	// Perform the decoding and be FORGIVING about it, to allow for checksums
-	// with INVALID padding to still be decoded. This is enforced by
-	// `test_untagged_base64_matching_tag` in `test_cksum.rs`
+
+
+
 
 	forgiving_base64_decode(checksum.as_bytes()).filter(|raw| checks_hint(raw.len()))
 }
 
-/// Returns a reader that reads from the specified file, or from stdin if
-/// `filename_to_check` is "-".
+
+
 fn get_file_to_check<'a>(
 	host: &'a mut Host,
 	filename: &OsStr,
@@ -1449,7 +1449,7 @@ fn get_file_to_check<'a>(
 	}
 }
 
-/// Returns a reader to the list of checksums.
+
 fn get_input_file(host: &Host, filename: &OsStr) -> ExecResult<Box<dyn Read>> {
 	match File::open(host.resolve(filename)) {
 		Ok(file) => {
@@ -1466,8 +1466,8 @@ fn get_input_file(host: &Host, filename: &OsStr) -> ExecResult<Box<dyn Read>> {
 	}
 }
 
-/// Gets the algorithm name and length from the `LineInfo` if the algo-based
-/// format is matched.
+
+
 fn identify_algo_name_and_length(
 	line_info: &LineInfo,
 	algo_name_input: Option<AlgoKind>,
@@ -1476,19 +1476,19 @@ fn identify_algo_name_and_length(
 	use AlgoKind as ak;
 	let algo_from_line = line_info.algo_name.clone().unwrap_or_default();
 	let Ok(line_algo) = AlgoKind::from_cksum(algo_from_line.to_lowercase()) else {
-		// Unknown algorithm
+
 		return Err(LineCheckError::ImproperlyFormatted);
 	};
 	*last_algo = Some(algo_from_line);
 
-	// check if we are called with XXXsum (example: md5sum) but we detected a
-	// different algo parsing the file (for example SHA1 (f) = d...)
-	//
-	// Also handle the case cksum -s sm3 but the file contains other formats
+
+
+
+
 	if let Some(algo_name_input) = algo_name_input {
 		match (algo_name_input, line_algo) {
 			(l, r) if l == r => (),
-			// Edge case for SHA2, which matches SHA(224|256|384|512)
+
 			(ak::Sha2, ak::Sha224 | ak::Sha256 | ak::Sha384 | ak::Sha512) => (),
 			_ => return Err(LineCheckError::ImproperlyFormatted),
 		}
@@ -1504,22 +1504,22 @@ fn identify_algo_name_and_length(
 			},
 			ak::Sha2 | ak::Sha3 if [224, 256, 384, 512].contains(&bitlen) => Some(bitlen),
 			ak::Shake128 | ak::Shake256 => Some(bitlen),
-			// Either
-			//  the algo based line is provided with a bit length with an
-			//  algorithm that does not support it (only Blake2b, Blake3, sha2,
-			//  and sha3 do).
-			//
-			//  eg: MD5-128 (foo.txt) = fffffffff
-			//          ^ This is illegal
-			// OR
-			//  the given length is wrong because it's not a multiple of 8.
+
+
+
+
+
+
+
+
+
 			_ => return Err(LineCheckError::ImproperlyFormatted),
 		}
 	} else if line_algo == ak::Blake2b {
-		// Default length with BLAKE2b,
+
 		Some(Blake2b::DEFAULT_BYTE_SIZE)
 	} else if line_algo == ak::Blake3 {
-		// Default length with BLAKE3,
+
 		Some(Blake3::DEFAULT_BYTE_SIZE)
 	} else {
 		None
@@ -1528,8 +1528,8 @@ fn identify_algo_name_and_length(
 	Ok((line_algo, bytes))
 }
 
-/// Given a filename and an algorithm, compute the digest and compare it with
-/// the expected one.
+
+
 fn compute_and_check_digest_from_file(
 	host: &mut Host,
 	filename: &[u8],
@@ -1581,7 +1581,7 @@ fn compute_and_check_digest_from_file(
 	if checksum_correct { Ok(()) } else { Err(LineCheckError::DigestMismatch) }
 }
 
-/// Check a digest checksum with non-algo based pre-treatment.
+
 fn process_algo_based_line(
 	host: &mut Host,
 	line_info: &LineInfo,
@@ -1593,8 +1593,8 @@ fn process_algo_based_line(
 
 	let (algo_kind, algo_len) = identify_algo_name_and_length(line_info, cli_algo_kind, last_algo)?;
 
-	// If the digest bitlen is known, we can check the format of the expected
-	// checksum with it.
+
+
 	let digest_bit_length_hint = match (algo_kind, algo_len) {
 		(AlgoKind::Blake2b | AlgoKind::Blake3, Some(byte_len)) => Some(byte_len * 8),
 		(AlgoKind::Shake128 | AlgoKind::Shake256, Some(bit_len)) => Some(bit_len),
@@ -1612,7 +1612,7 @@ fn process_algo_based_line(
 	compute_and_check_digest_from_file(host, filename_to_check, &expected_checksum, algo, opts)
 }
 
-/// Check a digest checksum with non-algo based pre-treatment.
+
 fn process_non_algo_based_line(
 	host: &mut Host,
 	line_number: usize,
@@ -1627,7 +1627,7 @@ fn process_non_algo_based_line(
 		&& line_number == 0
 		&& line_info.format == LineFormat::SingleSpace
 	{
-		// Remove the leading asterisk if present - only for the first line
+
 		filename_to_check = &filename_to_check[1..];
 	}
 
@@ -1635,13 +1635,13 @@ fn process_non_algo_based_line(
 	let expected_checksum = get_raw_expected_digest(&line_info.checksum, expected_digest_sum)
 		.ok_or(LineCheckError::ImproperlyFormatted)?;
 
-	// When a specific algorithm name is input, use it and use the provided
-	// bits except when dealing with blake2b, sha2 and sha3, where we will
-	// detect the length.
+
+
+
 	let algo_byte_len = match cli_algo_kind {
 		ak::Blake2b | ak::Blake3 => Some(expected_checksum.len()),
 		ak::Sha2 | ak::Sha3 => {
-			// multiplication by 8 to get the number of bits
+
 			Some(
 				ShaLength::try_from(expected_checksum.len() * 8)
 					.map_err(|_| LineCheckError::ImproperlyFormatted)?
@@ -1657,12 +1657,12 @@ fn process_non_algo_based_line(
 	compute_and_check_digest_from_file(host, filename_to_check, &expected_checksum, algo, opts)
 }
 
-/// Parses a checksum line, detect the algorithm to use, read the file and
-/// produce its digest, and compare it to the expected value.
-///
-/// Returns `Ok(bool)` if the comparison happened, bool indicates if the digest
-/// matched the expected.
-/// If the comparison didn't happen, return a `LineChecksumError`.
+
+
+
+
+
+
 fn process_checksum_line(
 	host: &mut Host,
 	line: &OsStr,
@@ -1798,7 +1798,7 @@ fn process_checksum_file(
 	Ok(())
 }
 
-/// Do the checksum validation (can be strict or not)
+
 fn perform_checksum_validation<'a, I>(
 	host: &mut Host,
 	files: I,

@@ -48,13 +48,6 @@ export function mergeAuthHeaderSources(
 	return createLiveConfigHeaders(sources, { authHeader, apiKeyConfig });
 }
 
-/**
- * Decide whether a custom-yaml model should force OAuth-style request shaping.
- * - Explicit `auth: oauth` → force on.
- *   endpoints are typically Claude-Code-style proxies (e.g. CLIProxyAPI) that expect
- *   the cloaked request shape regardless of how the proxy itself is authenticated.
- * - Otherwise → unset.
- */
 function resolveCustomModelIsOAuth(api: Api, providerAuth: ProviderAuthMode | undefined): boolean | undefined {
 	if (providerAuth === "oauth") return true;
 	if (providerAuth !== undefined) return undefined;
@@ -157,17 +150,11 @@ export function normalizeSuppressedSelector(
 		isLiteralModelId: (provider, id) => hasLiveModel?.(provider, id) === true,
 	});
 	if (!parsed) return trimmed;
-	// Retired effort-tier variant ids normalize to their collapsed logical id
-	// so persisted suppressions keyed by raw member ids still bind.
+
 	const aliasId = resolveVariantAlias(parsed.provider, parsed.id);
 	return `${parsed.provider}/${aliasId ?? parsed.id}`;
 }
 
-/**
- * Look up a model's override, falling back to entries keyed by retired
- * effort-tier variant ids (models.yml authored before collapsing). A raw key
- * only re-binds when no live model holds that id.
- */
 export function resolveModelOverrideWithAliases(
 	overrides: Map<string, ModelOverride>,
 	model: Model<Api>,

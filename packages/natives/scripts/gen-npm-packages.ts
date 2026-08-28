@@ -175,7 +175,6 @@ export async function generateNpmPackages({
 	return leaves;
 }
 
-/** Parse repeatable `--tag <tag>` / `--tag=<tag>` flags; undefined means all targets. */
 function parseTagArgs(argv: readonly string[]): readonly string[] | undefined {
 	const tags: string[] = [];
 	for (let i = 0; i < argv.length; i++) {

@@ -1,4 +1,3 @@
-/** Behavior-compatible reimplementation of winston-daily-rotate-file's used surface. */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -17,7 +16,6 @@ interface AuditState {
 	readonly hashType: "sha256";
 }
 
-/** Configuration for a process-local rotating file sink. */
 export interface RotatingFileOptions {
 	readonly directory: string;
 	readonly filenamePrefix: string;
@@ -33,7 +31,6 @@ function isAuditEntry(value: unknown): value is AuditEntry {
 	return typeof entry.date === "number" && typeof entry.name === "string" && typeof entry.hash === "string";
 }
 
-/** Synchronous append sink with local-day and size rotation plus bounded retention. */
 export class RotatingFileSink {
 	readonly #directory: string;
 	readonly #filenamePrefix: string;
@@ -65,7 +62,6 @@ export class RotatingFileSink {
 		}
 	}
 
-	/** Append one already-formatted log record. */
 	write(line: string): void {
 		if (this.#closed) return;
 		const now = new Date();
@@ -78,7 +74,6 @@ export class RotatingFileSink {
 		this.#activeBytes += Buffer.byteLength(record);
 	}
 
-	/** Stop accepting records. Synchronous writes require no drain phase. */
 	close(): void {
 		this.#closed = true;
 	}
@@ -121,9 +116,7 @@ export class RotatingFileSink {
 			if (!removed) break;
 			try {
 				fs.rmSync(removed.name, { force: true });
-			} catch {
-				// Retention is best-effort; the current record must still be written.
-			}
+			} catch {}
 		}
 		this.#writeAudit();
 	}

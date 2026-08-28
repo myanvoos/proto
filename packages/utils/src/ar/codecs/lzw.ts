@@ -173,12 +173,10 @@ function decode(bytes: Uint8Array, maxOutput: number): Uint8Array {
 	}
 }
 
-/** Return whether bytes begin with the ncompress `.Z` magic number. */
 export function isCompressZ(bytes: Uint8Array): boolean {
 	return bytes.byteLength >= 2 && bytes[0] === 0x1f && bytes[1] === 0x9d;
 }
 
-/** Decompress an ncompress `.Z` stream while enforcing a hard output bound. */
 export async function lzwDecompress(bytes: Uint8Array, maxOutput: number): Promise<Uint8Array> {
 	try {
 		return decode(bytes, maxOutput);

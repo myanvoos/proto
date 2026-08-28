@@ -1,10 +1,3 @@
-//! ZFS snapshot/clone-based isolation.
-//!
-//! ZFS can create a writable clone from a point-in-time snapshot without
-//! copying file data. This backend only accepts a `lower` path that exactly
-//! matches a mounted ZFS dataset mountpoint, snapshots that dataset, and clones
-//! it to a sibling dataset mounted at `merged`.
-
 use std::path::Path;
 
 use async_trait::async_trait;

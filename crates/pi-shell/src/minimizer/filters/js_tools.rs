@@ -1,8 +1,3 @@
-//! JavaScript framework and tool output filters.
-//!
-//! Covers command output that is not already handled by the package-manager,
-//! test-runner, or lint filters.
-
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
 const SUPPORTED_TOOLS: &[&str] = &["next", "prettier", "prisma"];

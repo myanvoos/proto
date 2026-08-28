@@ -1,44 +1,14 @@
-/**
- * Regenerates compact ctok vocabulary data for `src/utok/claude/`
- * (`tools/cache/ctok_*.bin`).
- *
- * Source of truth is the measured vocabulary of sanderland/ctok (MIT), pinned
- * to a release revision. Compaction drops the per-piece witness metadata,
- * parses the public `⟨bow⟩the⟨eow⟩` notation into C0 marker bytes, adds the
- * glued contraction spellings, and emits the version-2 front-coded binary
- * format below — cutting ~4.7 MB of upstream JSON to ~254 KB of embedded
- * data. If the pin moves, also regenerate
- * `src/utok/claude/testdata/fixtures.json` against the same ctok release
- * (`uv run --with ctok …`; see the fixture doc in `src/utok/claude/mod.rs`).
- *
- * Format (little-endian; parsed by `VocabCore::parse` in
- * `src/utok/claude/engine.rs`):
- *
- *   magic            b"CTOK"
- *   version          u8 = 2
- *   flags            u8 (bit 0: fold_quotes)
- *   message_overhead u8
- *   allcaps_min      u8 (0 = disabled)
- *   byte_token_count u16
- *   piece_count      u32
- *   byte tokens      count × { len u8, bytes }
- *   pieces           count × { shared_prefix varint, suffix_len varint, suffix bytes }
- *
- * Pieces are written in the compact alphabet — marker glyphs as the single
- * bytes above, everything else UTF-8 — and sorted by those bytes;
- * `shared_prefix` is the byte length shared with the previous piece (front
- * coding). Varints are LEB128.
- */
+
 
 import * as path from "node:path";
 
-/** Pinned upstream: sanderland/ctok v1.0.0. */
+
 const CTOK_REV = "df3b59b5e645289a5eadc8e24036b99d39c333c4";
 const UPSTREAM = `https://raw.githubusercontent.com/sanderland/ctok/${CTOK_REV}/ctok/data`;
 
 const DATA_DIR = path.join(import.meta.dir, "cache");
 
-/** Marker glyphs of ctok's internal marked form, keyed by public atom. */
+
 const ATOMS: Record<string, string> = {
 	"⟨bow⟩": "\ufdd0",
 	"⟨eow⟩": "\ufdd1",
@@ -47,13 +17,7 @@ const ATOMS: Record<string, string> = {
 	"⟨caps⟩": "\ufdd4",
 };
 
-/**
- * Marker glyph → the single byte the Rust encoder writes for it (mirrors
- * `MARKERS` in ctok/constants.rs). The tokenizer strips C0 controls from input
- * before anything else, so these bytes can never collide with text, and one
- * byte per marker instead of three shrinks both the marked stream and the
- * matching automaton by about a third.
- */
+
 const MARKER_BYTES: Record<string, number> = {
 	"\ufdd0": 0x01,
 	"\ufdd1": 0x02,
@@ -77,11 +41,7 @@ function encodeCompact(piece: string): Uint8Array<ArrayBuffer> {
 const EOW = "\ufdd1";
 const BYTE_ATOM = /^⟨0x([0-9A-Fa-f]{2})⟩/;
 
-/**
- * Parse one public-notation vocabulary key into the internal marked string:
- * named atoms become single glyphs, `⟨0xNN⟩` escape runs decode back to their
- * characters, anything else is literal.
- */
+
 function parseMarked(publicKey: string): string {
 	let out = "";
 	let bytes: number[] = [];
@@ -148,8 +108,8 @@ async function generate(src: string, dst: string): Promise<void> {
 		for (const key in entries) {
 			const parsed = parseMarked(key);
 			if (group === "contractions") {
-				// The file stores `'t`; the encoder writes `'t⟨eow⟩` (ctok's
-				// glued_contraction). Both spellings join the tiling vocabulary.
+
+
 				pieces.add(parsed + EOW);
 			}
 			pieces.add(parsed);
@@ -158,7 +118,7 @@ async function generate(src: string, dst: string): Promise<void> {
 
 	const sorted = [...pieces].map(encodeCompact).sort(Buffer.compare);
 
-	const out: number[] = [0x43, 0x54, 0x4f, 0x4b, 2]; // "CTOK", version
+	const out: number[] = [0x43, 0x54, 0x4f, 0x4b, 2]; 
 	out.push(doc.meta.fold_quotes ? 1 : 0);
 	out.push(doc.meta.message_overhead);
 	out.push(doc.meta.allcaps_min ?? 0);

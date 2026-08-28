@@ -1,8 +1,3 @@
-/**
- * `proto browser-relay` implementation: serve the local CDP relay and install
- * its Chrome extension. Standalone CLI command — console output here is
- * intentional user-facing output.
- */
 import * as path from "node:path";
 import { getBrowserRelayDir } from "@oh-my-pi/pi-utils";
 import { probeRelayServer } from "../tools/browser/relay/daemon";
@@ -22,9 +17,9 @@ interface BrowserRelayCommandArgs {
 	action: BrowserRelayAction;
 	port: number;
 	token?: string;
-	/** Install target directory; defaults to ~/.proto/browser-relay/extension. */
+
 	dir?: string;
-	/** Gather tabs the agent actively drives into an 'proto' Chrome tab group (default true). */
+
 	group?: boolean;
 	verbose?: boolean;
 }
@@ -38,7 +33,6 @@ const EXTENSION_FILES: Record<string, string> = {
 	"THIRD-PARTY-NOTICES.txt": thirdPartyNotices,
 };
 
-/** Default port of the relay endpoint (kept in sync with DEFAULT_RELAY_URL). */
 export const DEFAULT_RELAY_PORT = Number(new URL(DEFAULT_RELAY_URL).port);
 
 export async function runBrowserRelayCommand(args: BrowserRelayCommandArgs): Promise<void> {
@@ -76,8 +70,6 @@ async function runServe(args: BrowserRelayCommandArgs): Promise<void> {
 	try {
 		relay = startRelayServer({ port: args.port, token: args.token, group: args.group !== false, log });
 	} catch (err) {
-		// The port is machine-global while relays can be started by any project's
-		// broker (or by hand): losing the bind to a live relay is success.
 		if (err instanceof Error && "code" in err && err.code === "EADDRINUSE") {
 			if (await probeRelayServer(`http://127.0.0.1:${args.port}`)) {
 				console.log(`proto browser relay already running on http://127.0.0.1:${args.port}; nothing to do.`);
@@ -118,6 +110,6 @@ async function runServe(args: BrowserRelayCommandArgs): Promise<void> {
 	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
-	// Serve runs until SIGINT/SIGTERM; keep the process alive.
+
 	await new Promise<never>(() => {});
 }

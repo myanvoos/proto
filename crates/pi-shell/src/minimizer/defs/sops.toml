@@ -1,6 +1,6 @@
-# sops encrypt / decrypt output.
-# Strips age/gpg chatter and legacy-config notices but preserves decrypted
-# payload bytes.
+
+
+
 
 [filters.sops]
 description = "Compact sops encrypt/decrypt output"

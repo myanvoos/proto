@@ -1,18 +1,3 @@
-/**
- * Agent Fleet overlay component.
- *
- * One overlay, two views:
- * - Table view: every registered agent except Main (Main IS the ambient
- *   chat), live from the global AgentRegistry — status, unread irc count,
- *   current/last task, last activity. Navigate with keys, wheel, hover, and
- *   click; `r` revives a parked agent, `x` aborts + releases one.
- * - Chat view: per-agent transcript (incremental session-file tail, absorbed
- *   from the old session observer overlay) plus an input line. Submitting
- *   revives a parked agent, then prompts/steers it; the message lands in the
- *   agent's persisted history via the normal prompt path.
- *
- * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
- */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	Container,
@@ -78,49 +63,46 @@ import {
 
 type FleetViewMode = "roster" | "tree";
 
-/** Refresh cadence for the relative-time column. */
 const AGE_TICK_MS = 5_000;
 const DATA_CHANGE_RENDER_COALESCE_MS = 100;
-/** Double-tap window for the table's left-left "close fleet" gesture. */
+
 const LEFT_TAP_WINDOW_MS = 500;
 
-/** Two-pane mode needs a useful roster and a readable inspector. */
 const SPLIT_MIN_WIDTH = 96;
 const DETAIL_MIN_WIDTH = 34;
 const ROSTER_MIN_WIDTH = 48;
 export interface AgentFleetDeps {
-	/** Progress/status snapshot source (task lifecycle + progress channels). */
 	observers: SessionObserverRegistry;
-	/** Production settings used to resolve textual model-role tags. */
+
 	settings?: Settings;
-	/** Keys that toggle the fleet closed from inside (app.agents.fleet + app.session.observe). */
+
 	fleetKeys: KeyId[];
 	onDone: () => void;
 	requestRender: () => void;
-	/** Injectable for tests; defaults to the process-global registry. */
+
 	registry?: AgentRegistry;
-	/** Injectable for tests; defaults to the process-global lifecycle manager. */
+
 	lifecycle?: AgentLifecycleManager;
-	/** Injectable for tests; defaults to the process-global bus. */
+
 	irc?: IrcBus;
-	/** TUI handle for transcript components; tests omit it and get a render-only stub. */
+
 	ui?: TUI;
-	/** Tool lookup for transcript renderers (labels, custom render functions). */
+
 	getTool?: (name: string) => AgentTool | undefined;
-	/** Whether the active registry entry came from a built-in factory. */
+
 	isBuiltInTool?: (name: string) => boolean;
-	/** Extension message renderers for custom messages in the transcript. */
+
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
-	/** Cwd used by tool renderers for path shortening; defaults to the project dir. */
+
 	cwd?: string;
-	/** Mirrors the main transcript's thinking-block visibility. */
+
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
-	/** Keys toggling tool output expansion (app.tools.expand). */
+
 	expandKeys?: KeyId[];
-	/** Focus the main view on this agent's live session (ctx.focusAgentSession). When absent (tests), Enter opens the in-fleet chat view instead. */
+
 	focusAgent?: (id: string) => Promise<void>;
-	/** Current main session file; used to seed parked historical subagents after restart. */
+
 	sessionFile?: string | null;
 }
 
@@ -137,30 +119,29 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#ageTimer: NodeJS.Timeout | undefined;
 	#dataChangeTimer?: NodeJS.Timeout;
 	#disposed = false;
-	/** Resolves after persisted historical subagents have been registered and rows refreshed. */
+
 	readonly persistedSubagentsReady: Promise<void>;
-	/** Prevent the async persisted-session scan from flashing a false empty state. */
+
 	#loadingPersistedSubagents = false;
 
-	// Table state
 	#rows: AgentRef[] = [];
 	#statusCounts: Record<AgentStatus, number> = { running: 0, idle: 0, parked: 0, aborted: 0 };
 	#selectedRow = 0;
 	#hoveredRow: number | null = null;
-	/** Per-render screen-line to agent-row map, shared by click and hover routing. */
+
 	#hitRows: Array<number | undefined> = [];
 	#notice: string | undefined;
-	/** Captured row order from the first refresh; keeps the fleet stable while open. */
+
 	#rowOrder: Map<string, number> | undefined;
 	#nextRowOrder = 0;
-	/** Double-tap window state for the table's left-left "close fleet" gesture. */
+
 	#lastLeftTap = 0;
-	/** Operational ordering by default; tree mode groups descendants under their spawner. */
+
 	#viewMode: FleetViewMode = "roster";
 	#treeDepthById = new Map<string, number>();
 	#treeParentById = new Map<string, string>();
 	#treeLastSiblingById = new Map<string, boolean>();
-	/** Current observer index and summary data, rebuilt on source changes rather than every paint. */
+
 	#observedById = new Map<string, ObservableSession>();
 	#aggregate: AggregateMetrics = {
 		tokens: 0,
@@ -173,19 +154,18 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		activeDurationAgents: 0,
 	};
 	#childrenByParent = new Map<string, AgentRef[]>();
-	/** Transcript-derived fallback stats are sampled only on the bounded age cadence. */
+
 	#sessionMetrics = new WeakMap<object, { metrics: AgentMetrics | undefined }>();
-	/** Avoid a cadence-time row scan for the common persisted-only roster. */
+
 	#hasFallbackLiveSessions = false;
-	/** On narrow terminals Tab replaces the roster with the selected-agent inspector. */
+
 	#narrowDetailsOpen = false;
 	#lastRenderWasSplit = false;
 	#lastSplitRosterWidth: number | undefined;
-	/** Scroll offset for the selected-agent inspector when its content overflows. */
+
 	#detailScrollOffset = 0;
 	#detailAgentId: string | undefined;
 
-	// Transcript-viewer launch deps (passed through to AgentTranscriptViewer).
 	#ui: TUI;
 	#getTool: ((name: string) => AgentTool | undefined) | undefined;
 	#isBuiltInTool: ((name: string) => boolean) | undefined;
@@ -196,7 +176,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#expandKeys: KeyId[];
 	#focusAgent: ((id: string) => Promise<void>) | undefined;
 
-	// Fullscreen transcript overlay opened by openChat(), if any.
 	#transcriptOverlay: OverlayHandle | undefined;
 	#transcriptViewer: AgentTranscriptViewer | undefined;
 
@@ -206,8 +185,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#observers = deps.observers;
 		this.#settings = deps.settings;
 		this.#irc = deps.irc ?? IrcBus.global();
-		// Lazy: the lifecycle global self-constructs against the global
-		// registry, so only touch it when revive/kill actually needs it.
+
 		this.#lifecycle = () => deps.lifecycle ?? AgentLifecycleManager.global();
 		this.#onDone = deps.onDone;
 		this.#requestRender = deps.requestRender;
@@ -254,16 +232,10 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#refreshRows();
 	}
 
-	/**
-	 * Whether the current table view has no agents to show (every registered agent
-	 * except Main). Persisted historical rows may arrive later; callers that need
-	 * those included must wait for {@link persistedSubagentsReady} first.
-	 */
 	get isEmpty(): boolean {
 		return this.#rows.length === 0;
 	}
 
-	/** Tear down every subscription and timer. Called by the overlay owner on close. */
 	override dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
@@ -284,8 +256,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		const frame = this.#renderTable(width, termHeight).map(line => clampFleetLine(line, width));
 		if (frame.length <= termHeight) return frame;
 
-		// A tiny terminal can leave less room than the fixed chrome needs. Keep
-		// the title and footer visible instead of spilling into scrollback.
 		const footerLines = Math.min(3, frame.length);
 		const bodyEnd = Math.max(0, termHeight - footerLines);
 		return [...frame.slice(0, bodyEnd), ...frame.slice(-footerLines)].slice(0, termHeight);
@@ -302,7 +272,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			return;
 		}
 
-		// The fleet/observe keys always close the overlay (toggle semantics)
 		for (const key of this.#fleetKeys) {
 			if (matchesKey(keyData, key)) {
 				this.#onDone();
@@ -312,25 +281,10 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#handleTableInput(keyData);
 	}
 
-	/**
-	 * Seed the table's left-left close detector with the current time so a single
-	 * subsequent `←` (within {@link LEFT_TAP_WINDOW_MS}) dismisses the fleet.
-	 *
-	 * The editor's own double-tap detector consumes the `←←` that opens the fleet,
-	 * leaving this detector at its fresh `0` — without this handoff the user would
-	 * have to press `←←` a second time to escape. Called by the opener when the fleet
-	 * was raised by that gesture.
-	 */
 	armCloseTap(): void {
 		this.#lastLeftTap = Date.now();
 	}
 
-	/**
-	 * Open the fullscreen transcript viewer for an agent id (public for table Enter
-	 * and tests). Mounts {@link AgentTranscriptViewer} as a `fullscreen` overlay so it
-	 * owns the alternate screen; the fleet table stays mounted underneath and is
-	 * restored when the viewer closes. No-op without a real TUI (render-only test stub).
-	 */
 	openChat(id: string): void {
 		if (this.#disposed || !this.#registry.get(id)) return;
 		if (typeof this.#ui.showOverlay !== "function") return;
@@ -365,7 +319,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#requestRender();
 	}
 
-	/** Close and dispose the transcript overlay, restoring focus to the fleet table. */
 	#closeTranscriptOverlay(expectedViewer?: AgentTranscriptViewer): void {
 		if (expectedViewer && this.#transcriptViewer !== expectedViewer) return;
 		const overlay = this.#transcriptOverlay;
@@ -380,10 +333,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			this.#requestRender();
 		}
 	}
-
-	// ========================================================================
-	// Live data plumbing
-	// ========================================================================
 
 	#scheduleDataChange(): void {
 		if (this.#dataChangeTimer) return;
@@ -471,10 +420,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		const session = ref.session;
 		return session && typeof session.getSessionStats === "function" ? session : undefined;
 	}
-
-	// ========================================================================
-	// Table view
-	// ========================================================================
 
 	#renderTable(width: number, termHeight: number): string[] {
 		this.#hitRows.length = 0;
@@ -621,8 +566,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			return { lines, hitRows };
 		}
 
-		// Grow a window around the selection. Only visible entries are rendered,
-		// so the 5,000-agent Fleet retains bounded paint cost.
 		for (let grew = true; grew; ) {
 			grew = false;
 			if (end < this.#rows.length) {
@@ -642,8 +585,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 				}
 			}
 		}
-		// Overflow labels consume real rows. Trim the farthest visible neighbors
-		// before painting them so the selected entry and both labels fit.
+
 		for (
 			let markerRows = Number(start > 0) + Number(end < this.#rows.length);
 			used + markerRows > budget && start < end;
@@ -828,11 +770,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		return visible;
 	}
 
-	/**
-	 * One agent entry keeps identity/model metadata on one line when it fits,
-	 * then packs task and all five usage metrics together below. Narrow rows wrap
-	 * only those dense secondary fields.
-	 */
 	#renderEntry(
 		ref: AgentRef,
 		selected: boolean,
@@ -1020,23 +957,17 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		}
 	}
 
-	/**
-	 * Enter on a row: focus the main view on the agent's live session and close
-	 * the fleet. The transcript then renders through the regular session pipeline —
-	 * exact parity by construction.
-	 */
 	#activateAgent(ref: AgentRef): void {
 		this.#notice = undefined;
 		const focusAgent = this.#focusAgent;
-		// Aborted agents and advisor refs are read-only transcripts with no
-		// revivable session; open the in-fleet viewer instead of failing ensureLive.
+
 		if (ref.kind === "advisor" || ref.status === "aborted" || !focusAgent) {
 			this.openChat(ref.id);
 			return;
 		}
 		void (async () => {
 			try {
-				await focusAgent(ref.id); // ensureLive inside revives parked agents; no parking, no session files
+				await focusAgent(ref.id);
 				this.#onDone();
 			} catch (error) {
 				this.#notice = error instanceof Error ? error.message : String(error);
@@ -1059,7 +990,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			return;
 		}
 		this.#notice = undefined;
-		// Fire-and-forget; failures surface as an inline notice
+
 		this.#lifecycle()
 			.ensureLive(ref.id)
 			.catch((error: unknown) => {

@@ -1,12 +1,10 @@
 const BAR_WIDTH = 16;
 
-/** Minimal output contract used by the interactive progress reporter. */
 interface ProgressOutput {
 	isTTY?: boolean;
 	write(text: string): boolean;
 }
 
-/** Renders completed units of work on one transient terminal line. */
 export interface ProgressReporter {
 	readonly interactive: boolean;
 	start(total: number): void;
@@ -14,12 +12,6 @@ export interface ProgressReporter {
 	finish(): void;
 }
 
-/**
- * Create a TTY-only completion bar labelled `label`, e.g. `Repairing [████░░░░] 4/8`.
- *
- * Non-interactive output disables rendering entirely, so callers can print plain
- * per-item lines instead by checking {@link ProgressReporter.interactive}.
- */
 export function createProgressReporter(label: string, output: ProgressOutput = process.stdout): ProgressReporter {
 	const interactive = output.isTTY === true;
 	let total = 0;

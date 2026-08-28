@@ -13,7 +13,6 @@ const WARP_ATTENTION_EVENTS: Record<string, true> = {
 	question_asked: true,
 };
 
-/** True when Warp has negotiated the structured CLI-agent OSC protocol. */
 export function isWarpCliAgentProtocolActive(): boolean {
 	return Number(process.env.WARP_CLI_AGENT_PROTOCOL_VERSION) >= WARP_CLI_AGENT_PROTOCOL_VERSION;
 }
@@ -26,7 +25,6 @@ type WarpEventValue =
 	| readonly WarpEventValue[]
 	| { readonly [key: string]: WarpEventValue | undefined };
 
-/** Fields added to the Warp CLI-agent event envelope by the event bridge. */
 type WarpEvent = Readonly<Record<string, WarpEventValue | undefined>>;
 
 interface WarpEventEmitterOptions {
@@ -38,12 +36,6 @@ interface WarpEventEmitter {
 	emit(event: WarpEvent): void;
 }
 
-/**
- * Creates the Warp event transport for a top-level interactive TUI session.
- * The caller MUST enforce that install-site invariant; the sole production
- * caller is gated by `isInteractive`, so ACP, RPC, print, headless, and
- * subagent sessions never construct an emitter.
- */
 export function createWarpEventEmitter(options: WarpEventEmitterOptions): WarpEventEmitter | undefined {
 	if (!isWarpCliAgentProtocolActive()) {
 		return undefined;
@@ -55,7 +47,7 @@ export function createWarpEventEmitter(options: WarpEventEmitterOptions): WarpEv
 			const body = {
 				...event,
 				v: WARP_CLI_AGENT_PROTOCOL_VERSION,
-				// Warp resolves this via CLIAgent.command_prefix(); OhMyPi is "proto".
+
 				agent: "proto",
 				session_id: options.sessionId,
 				cwd,
@@ -67,10 +59,7 @@ export function createWarpEventEmitter(options: WarpEventEmitterOptions): WarpEv
 				process.stdout.write(osc);
 				return;
 			}
-			// DCS-wrap every OSC so Warp can parse it under allow-passthrough.
-			// Outer BEL after DCS is only for attention-worthy events so tmux
-			// monitor-bell flags the pane; the OSC's own trailing \x07 is its
-			// terminator and does not drive the outer bell after wrapping.
+
 			const wrapped = wrapTmuxPassthrough(osc);
 			const eventName = event.event;
 			const ring = typeof eventName === "string" && Object.hasOwn(WARP_ATTENTION_EVENTS, eventName);
@@ -157,7 +146,6 @@ function messageText(content: unknown): string {
 		.join("");
 }
 
-/** Internal event bridge installed only by the top-level interactive TUI runner. */
 export function createWarpEventBridgeExtension(): ExtensionFactory {
 	return api => {
 		let emitter: WarpEventEmitter | undefined;

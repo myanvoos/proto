@@ -1,4 +1,4 @@
-//! Defines shell options.
+
 
 use std::{collections::HashMap, sync::LazyLock};
 
@@ -7,75 +7,75 @@ use crate::options::RuntimeOptions;
 type OptionGetter = fn(shell: &RuntimeOptions) -> bool;
 type OptionSetter = fn(shell: &mut RuntimeOptions, value: bool) -> ();
 
-/// Defines an option.
+
 pub struct ShellOptionDef {
-	/// Getter function that retrieves the current value of the option.
+
 	getter: OptionGetter,
-	/// Setter function that may be used to set the current value of the option.
+
 	setter: OptionSetter,
 }
 
 impl ShellOptionDef {
-	/// Constructs a new option definition.
-	///
-	/// # Arguments
-	///
-	/// * `getter` - A function that retrieves the current value of the option.
-	/// * `setter` - A function that sets the current value of the option.
+
+
+
+
+
+
 	fn new(getter: OptionGetter, setter: OptionSetter) -> Self {
 		Self { getter, setter }
 	}
 
-	/// Retrieves the current value of this option from the given runtime
-	/// options.
-	///
-	/// # Arguments
-	///
-	/// * `options` - The runtime options to retrieve the value from.
+
+
+
+
+
+
 	pub fn get(&self, options: &RuntimeOptions) -> bool {
 		(self.getter)(options)
 	}
 
-	/// Sets the value of this option in the given runtime options.
-	///
-	/// # Arguments
-	///
-	/// * `options` - The runtime options to modify.
-	/// * `value` - The new value to set for the option.
+
+
+
+
+
+
 	pub fn set(&self, options: &mut RuntimeOptions, value: bool) {
 		(self.setter)(options, value);
 	}
 }
 
-/// Describes a shell option.
+
 pub struct ShellOption {
-	/// The name of the option.
+
 	pub name:       &'static str,
-	/// The definition of the option.
+
 	pub definition: &'static ShellOptionDef,
 }
 
-/// Describes a set of shell options.
+
 pub struct ShellOptionSet {
 	inner: &'static HashMap<&'static str, ShellOptionDef>,
 }
 
-/// Kind of shell option.
+
 #[derive(Clone, Copy)]
 pub enum ShellOptionKind {
-	/// `set` option.
+
 	Set,
-	/// `set -o` option.
+
 	SetO,
-	/// `shopt` option.
+
 	Shopt,
 }
 
-/// Returns the options for the given shell option kind.
-///
-/// # Arguments
-///
-/// * `kind` - The kind of shell options to retrieve.
+
+
+
+
+
 pub fn options(kind: ShellOptionKind) -> ShellOptionSet {
 	match kind {
 		ShellOptionKind::Set => ShellOptionSet { inner: &SET_OPTIONS },
@@ -85,7 +85,7 @@ pub fn options(kind: ShellOptionKind) -> ShellOptionSet {
 }
 
 impl ShellOptionSet {
-	/// Returns an iterator over the options defined in this set.
+
 	pub fn iter(&self) -> impl Iterator<Item = ShellOption> {
 		self
 			.inner
@@ -93,11 +93,11 @@ impl ShellOptionSet {
 			.map(|(&name, definition)| ShellOption { name, definition })
 	}
 
-	/// Returns the option with the given name, if it exists.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the option to retrieve.
+
+
+
+
+
 	pub fn get(&self, name: &str) -> Option<&'static ShellOptionDef> {
 		self.inner.get(name)
 	}

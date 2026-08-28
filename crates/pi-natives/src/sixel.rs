@@ -1,12 +1,3 @@
-//! SIXEL terminal-image encoding.
-//!
-//! Decodes an encoded image (PNG, JPEG, WebP, GIF), resizes to the target
-//! pixel dimensions, and encodes the result as a SIXEL escape sequence.
-//!
-//! General-purpose image processing (decode/resize/encode for files and
-//! buffers) lives in `Bun.Image` on the JS side; this module exists only
-//! because SIXEL is a terminal-display protocol with no equivalent there.
-
 use std::io::Cursor;
 
 use icy_sixel::{EncodeOptions, sixel_encode};
@@ -14,13 +5,6 @@ use image::{DynamicImage, ImageReader, imageops::FilterType};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-/// Encode image bytes into a SIXEL escape sequence for terminal rendering.
-///
-/// The input image is decoded and resized to the requested pixel dimensions
-/// before encoding.
-///
-/// # Errors
-/// Returns an error if decoding, resizing, or SIXEL encoding fails.
 #[napi]
 pub fn encode_sixel(
 	bytes: Uint8Array,

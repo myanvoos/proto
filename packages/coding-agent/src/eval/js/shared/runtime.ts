@@ -15,23 +15,12 @@ import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
 import { wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
-/**
- * Per-run callbacks. Runtime globals resolve these from AsyncLocalStorage so
- * overlapping async cells can route output/tool calls back to their own run.
- */
 export interface RuntimeHooks {
 	onText(chunk: string): void;
 	onDisplay(output: JsDisplayOutput): void;
 	callTool(name: string, args: unknown): Promise<unknown>;
 }
 
-/**
- * Bridged tool results carry image blocks as a base64 `images` array that no
- * cell code consumes. Emit each block as an image display output so the model
- * receives real image content — matching the direct tool path — and replace
- * the payload with a note so echoing the result cannot flood the transcript
- * with base64.
- */
 function surfaceBridgedToolImages(value: unknown, hooks: RuntimeHooks): unknown {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
 	const { images, ...rest } = value as { images?: unknown } & Record<string, unknown>;
@@ -59,22 +48,12 @@ export interface RunContext {
 export interface RuntimeOptions {
 	initialCwd: string;
 	sessionId: string;
-	/**
-	 * Extra globals installed alongside `__omp_helpers__` / prelude. Use for stable, lifetime-
-	 * of-the-worker bindings (e.g. browser's `page`, `browser`). Per-run scope should be set
-	 * via `setRunScope()` instead.
-	 */
+
 	extraGlobals?: Record<string, unknown>;
-	/**
-	 * On-disk roots the helpers substitute for internal-URL schemes (e.g.
-	 * `{ local: "/…/artifacts/local" }`). Stable for the worker's lifetime.
-	 */
+
 	localRoots?: Record<string, string>;
 }
 
-// Strict base64: characters from the standard alphabet plus optional `=` padding, and a
-// length that is a multiple of four. URL-safe base64 and embedded whitespace are not
-// accepted — the Anthropic API only honors strict base64 in image sources.
 const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const DECIMAL_CSV_RE = /^\d{1,3}(?:,\d{1,3})*$/;
 
@@ -103,18 +82,6 @@ function isStrictBase64(s: string): boolean {
 	return BASE64_STRICT_RE.test(s);
 }
 
-/**
- * Normalize the `data` field of an `{ type: "image", data, mimeType }` display payload
- * into strict base64. Accepts:
- *   - already-valid base64 strings (passed through verbatim)
- *   - `Uint8Array` / `Buffer` / `ArrayBuffer` / typed array views
- *   - `{ type: "Buffer", data: number[] }` (the shape Node serializes Buffers to via
- *     `JSON.stringify`)
- *   - decimal-CSV byte strings (the output of `uint8array.toString("base64")`, which
- *     silently ignores the encoding argument and returns `Array.prototype.toString` —
- *     a footgun for callers expecting `Buffer.toString` semantics)
- * Returns `null` if no recovery is possible.
- */
 function coerceImageBase64(data: unknown): string | null {
 	if (typeof data === "string") {
 		if (isStrictBase64(data)) return data;
@@ -161,12 +128,6 @@ function describeDataType(data: unknown): string {
 	return typeof data;
 }
 
-/**
- * Shared JS runtime for the eval worker and the browser tab worker. Owns the prelude,
- * helper bag, console bridge, and indirect-eval execution. Emits text/display/tool-call
- * back through `RuntimeHooks` that the embedder supplies — wire format is the embedder's
- * concern.
- */
 export class JsRuntime {
 	#globalOwner = Symbol("JsRuntime globals");
 	#ownedGlobalKeys = new Set<string>();
@@ -215,13 +176,7 @@ export class JsRuntime {
 
 	setCwd(cwd: string): void {
 		if (this.#disposed) throw new Error("Cannot set cwd on a disposed JS runtime");
-		// Always stamp the runtime and session state: WorkerCore/browser/cmux call
-		// setCwd from init and pre-run paths that may race another same-realm
-		// runtime, and a throw here used to escape the inline-worker microtask
-		// path as a fatal unhandledRejection that killed the whole session.
-		// #session is the same object saved in this owner's global stack entry,
-		// so the new cwd survives deferred activation and is visible to this
-		// runtime's next run; run()/setRunScope still assert exclusive ownership.
+
 		this.#cwd = cwd;
 		this.#session.cwd = cwd;
 		if (activeGlobalRunOwner === null || activeGlobalRunOwner === this.#globalOwner) {
@@ -229,11 +184,6 @@ export class JsRuntime {
 		}
 	}
 
-	/**
-	 * Install per-run globals. Intended for run-scoped state (browser's `tab`, `display`
-	 * overrides, etc.). Overwrites previous assignments — caller is responsible for any
-	 * cleanup it wants.
-	 */
 	setRunScope(scope: Record<string, unknown>): void {
 		this.#activateGlobals("set run scope");
 		Object.assign(globalThis, scope);
@@ -352,10 +302,6 @@ export class JsRuntime {
 	}
 
 	#install(extraGlobals: Record<string, unknown> | undefined): void {
-		// Constructing a runtime while another same-realm runtime is mid-run would
-		// silently replace the live runtime's globals (Object.assign + prelude eval
-		// below). Fail before any global/stack mutation; WorkerCore reports it as
-		// init-failed instead of corrupting the active run.
 		assertCanUseGlobalOwner(this.#globalOwner, "initialize a JS runtime");
 		const injected: Record<string, unknown> = {
 			__proto_session__: this.#session,
@@ -414,9 +360,7 @@ export class JsRuntime {
 				context.finalExpressionValue = value;
 			},
 			webcrypto: crypto,
-			// `process` is intentionally not overridden — user code gets the host worker's real
-			// `process` object. Subsetting it caused segfaults in workers that share state with
-			// puppeteer/worker_threads internals.
+
 			require: this.#buildDynamicRequire(),
 			createRequire,
 			fs,
@@ -433,8 +377,7 @@ export class JsRuntime {
 		}
 
 		Object.assign(globalThis, injected, extraGlobals ?? {});
-		// Prelude assigns console bridge + short aliases (`read`, `write`, `tool`, `display`, ...)
-		// onto globalThis. Must run after helpers are in place.
+
 		indirectEval(JAVASCRIPT_PRELUDE_SOURCE);
 		for (const key of allGlobalKeys) recordGlobalValue(key, this.#globalOwner);
 		RUN_HOOK_RESOLVERS.add(this.#runHookResolver);
@@ -465,9 +408,6 @@ interface GlobalStack {
 	entries: GlobalOwnerEntry[];
 }
 
-// Inline fallback and cmux tabs can create multiple JsRuntime instances in one Bun realm.
-// Track reserved helper globals by owner so disposing one runtime restores the next active
-// owner (or the original process global after the last owner), not a stale snapshot.
 const GLOBAL_STACKS = new Map<string, GlobalStack>();
 
 function snapshotGlobal(key: string): GlobalSnapshot {
@@ -517,9 +457,6 @@ function releaseGlobalKey(key: string, owner: symbol): void {
 	GLOBAL_STACKS.delete(key);
 }
 
-// Plain globalThis cannot safely serve two different runtimes at the same instant:
-// helpers dereference reserved globals on every call. Sequential cmux tab revisits
-// re-activate their owner stack; overlapping cross-runtime runs fail explicitly.
 let activeGlobalRunOwner: symbol | null = null;
 let activeGlobalRunDepth = 0;
 
@@ -554,13 +491,10 @@ function enterGlobalRun(owner: symbol, action: string): () => void {
 	};
 }
 
-/** Resolvers for each live runtime's active-run hooks (one per JsRuntime instance). */
 const RUN_HOOK_RESOLVERS = new Set<() => RuntimeHooks | undefined>();
 
-/** Streams whose `write` the runtime has already wrapped (patch-once guard). */
 const PATCHED_STDIO_STREAMS = new WeakSet<NodeJS.WriteStream>();
 
-/** Hooks for whichever registered runtime currently has an active run, if any. */
 function activeRunHooks(): RuntimeHooks | undefined {
 	for (const resolve of RUN_HOOK_RESOLVERS) {
 		const hooks = resolve();
@@ -569,17 +503,6 @@ function activeRunHooks(): RuntimeHooks | undefined {
 	return undefined;
 }
 
-/**
- * Wrap `process.stdout` / `process.stderr` `write` exactly once per process so
- * user `process.stdout.write(...)` lands in the active run's text sink. Models
- * reach for it out of Node habit, but `process` is intentionally the host
- * worker's real object (see {@link JsRuntime} `#install`), so unrouted writes
- * escape to the worker's own stdio and never reach the cell — and `write()`
- * returns a boolean, so a cell ending in `process.stdout.write("x")` captured
- * `true` while losing the text. Patch only the `write` method (never replace
- * `process`), preserve exact bytes (no trailing newline), and fall through to
- * the real stream when no run is active so the worker's own logging is intact.
- */
 function patchStdioOnce(): void {
 	const streams: NodeJS.WriteStream[] = [process.stdout, process.stderr];
 	for (const stream of streams) {
@@ -599,7 +522,6 @@ function patchStdioOnce(): void {
 	}
 }
 
-/** Coerce a `write()` chunk to text, honoring an explicit encoding for byte chunks. */
 function chunkToString(chunk: unknown, encoding?: BufferEncoding): string {
 	if (typeof chunk === "string") return chunk;
 	if (chunk instanceof Uint8Array) return Buffer.from(chunk).toString(encoding ?? "utf8");

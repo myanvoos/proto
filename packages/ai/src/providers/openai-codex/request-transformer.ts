@@ -5,13 +5,10 @@ import { $env } from "@oh-my-pi/pi-utils";
 import type { Model } from "../../types";
 import { mapOpenAIReasoningEffort } from "../openai-shared";
 
-/** Reasoning replay scope for the Codex Responses API (`reasoning.context`). */
 export type CodexReasoningContext = "auto" | "current_turn" | "all_turns";
 
-/** User-facing effort levels accepted by Codex request options. */
 type CodexCallerEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-/** Caller literal → catalog `Effort` bridge (the enum is nominal). */
 const EFFORT_BY_NAME: Record<CodexCallerEffort, Effort> = {
 	minimal: Effort.Minimal,
 	low: Effort.Low,
@@ -25,26 +22,20 @@ export interface ReasoningConfig {
 	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	summary?: "auto" | "concise" | "detailed";
 	context?: CodexReasoningContext;
-	/** Pro reasoning serving mode (gpt-5.6+ catalog pro aliases). */
+
 	mode?: "pro";
 }
 
 export interface CodexRequestOptions {
-	/** User-facing effort; maps 1:1 onto the wire tier of the same name. */
 	reasoningEffort?: CodexCallerEffort | "none";
-	/** Suppress native reasoning by sending `reasoning.effort: "none"`. */
+
 	reasoningOff?: boolean;
 	reasoningSummary?: ReasoningConfig["summary"] | null;
-	/** Explicit `reasoning.context` override. Omitted by default; Responses Lite forces `all_turns` as required by that transport. */
+
 	reasoningContext?: CodexReasoningContext;
 	textVerbosity?: "low" | "medium" | "high";
 	include?: string[];
-	/**
-	 * Responses Lite transport override; defaults to the model's
-	 * `useResponsesLite`. Lite moves instructions/tools into input items,
-	 * strips image detail, and disables parallel tool calling (codex-rs
-	 * `use_responses_lite`).
-	 */
+
 	responsesLite?: boolean;
 }
 
@@ -61,7 +52,7 @@ export interface InputItem {
 	actions?: unknown;
 	pending_safety_checks?: unknown;
 	acknowledged_safety_checks?: unknown;
-	/** `additional_tools` developer item payload (Responses Lite). */
+
 	tools?: unknown;
 }
 
@@ -73,12 +64,9 @@ export interface RequestBody {
 	input?: InputItem[];
 	tools?: unknown;
 	tool_choice?: unknown;
-	/** Concurrent reasoning-summary delivery (codex-rs `StreamOptions`). */
+
 	stream_options?: { reasoning_summary_delivery: "sequential_cutoff" };
-	// Sampling controls (temperature/top_p/top_k/min_p/presence_penalty/
-	// repetition_penalty/frequency_penalty/stop) are intentionally absent: the
-	// Codex backend rejects every one with a 400 `Unsupported parameter`, so
-	// the transformer never sets them (#3117).
+
 	reasoning?: Partial<ReasoningConfig>;
 	text?: {
 		verbosity?: "low" | "medium" | "high";
@@ -93,13 +81,6 @@ export interface RequestBody {
 	[key: string]: unknown;
 }
 
-/**
- * Resolve whether a Codex request uses the Responses Lite transport: an
- * explicit option wins, then the `PI_CODEX_RESPONSES_LITE` env override
- * (`1`/`true` forces Lite, `0`/`false` forces the full Responses body),
- * otherwise the model's catalog flag (codex-rs `model_info.use_responses_lite`)
- * decides.
- */
 export function resolveCodexResponsesLite(
 	model: Model<"openai-codex-responses">,
 	requested: boolean | undefined,
@@ -111,29 +92,11 @@ export function resolveCodexResponsesLite(
 	return model.useResponsesLite === true;
 }
 
-/**
- * Whether to request `stream_options.reasoning_summary_delivery =
- * "sequential_cutoff"` (codex-rs `concurrent_reasoning_summaries`), enabled by
- * `PI_CODEX_CONCURRENT_SUMMARIES=1`.
- *
- * Off by default because the mode cancels summary sections still in flight when
- * the reasoning item closes: measured over 12 interleaved turns it halved
- * visible thinking (0.83 vs 1.67 summary parts, 37 vs 69 chars per turn) and
- * produced no summary at all on 3 of 12 turns. codex-rs ships it disabled too
- * (`Stage::UnderDevelopment`, `default_enabled: false`).
- */
 function concurrentSummariesEnabled(): boolean {
 	const env = $env.PI_CODEX_CONCURRENT_SUMMARIES?.trim().toLowerCase();
 	return env === "1" || env === "true";
 }
 
-/**
- * Clamp a user-facing effort to the model's ladder, then remap to the wire
- * tier. User efforts map 1:1 onto wire tiers; the effort map only covers
- * host quirks where a wire tier genuinely does not exist (e.g. `minimal→none`).
- * A mapped value outside the Codex wire vocabulary is a broken compat/model
- * effort map — fail loudly rather than silently sending a different tier.
- */
 function mapCodexWireEffort(
 	model: Model<"openai-codex-responses">,
 	effort: CodexCallerEffort,
@@ -163,12 +126,7 @@ function getReasoningConfig(
 	const config: ReasoningConfig = {
 		effort: effort === "none" ? "none" : mapCodexWireEffort(model, effort),
 	};
-	// The backend only emits reasoning summaries when `reasoning.summary` is
-	// present: omitting it yields zero `response.reasoning_summary_text.*`
-	// events (measured against gpt-5.5, gpt-5.6-sol and gpt-5.6-terra). So
-	// `undefined` means "default on" — matching `applyResponsesCompatPolicy`
-	// on the plain Responses path — and only an explicit `null` (the caller
-	// hiding thinking) opts out.
+
 	if (options.reasoningSummary !== null && supportsCodexReasoningSummary(model.id)) {
 		config.summary = options.reasoningSummary ?? "auto";
 	}
@@ -191,7 +149,7 @@ function filterInput(input: InputItem[] | undefined): InputItem[] | undefined {
 }
 
 const CODEX_ORPHAN_OUTPUT_LIMIT = 16_000;
-/** Placeholder output for a tool call whose result never landed in the input. */
+
 const CODEX_INTERRUPTED_TOOL_OUTPUT =
 	"[No tool output recorded: the tool call was interrupted before it produced a result.]";
 
@@ -231,20 +189,6 @@ function toolOutputKind(type: unknown): ToolCallKind | undefined {
 	return undefined;
 }
 
-/**
- * Repair both halves of unpaired tool exchanges so the Responses input grammar
- * stays valid — the API rejects either orphan with a 400:
- *
- * - `function_call_output` / `custom_tool_call_output` with no matching call →
- *   folded into an assistant message (`400 No tool call found for … output`).
- *   Regression of #472 / #1351.
- * - `function_call` / `custom_tool_call` with no matching `*_output` → a
- *   placeholder output is synthesized immediately after the call
- *   (`400 No tool output found for function call …`). Hit when the user
- *   branches/navigates the session tree to a node that ends on a tool call (the
- *   tool-result child is dropped from the reconstructed history) or when a turn
- *   is aborted/crashes after the call streamed but before its result persisted.
- */
 function repairToolCallPairs(input: InputItem[]): InputItem[] {
 	const callKinds = new Map<string, ToolCallKind>();
 	const outputKinds = new Map<string, ToolCallKind>();
@@ -288,11 +232,6 @@ function repairToolCallPairs(input: InputItem[]): InputItem[] {
 	return repaired;
 }
 
-/**
- * Responses Lite requests must not pin image detail levels: codex-rs strips
- * `detail` from every input image (message content and tool outputs) before
- * sending, letting the server choose.
- */
 function stripImageDetails(input: unknown[]): void {
 	for (const item of input) {
 		if (!item || typeof item !== "object") continue;
@@ -309,11 +248,6 @@ function stripImageDetails(input: unknown[]): void {
 	}
 }
 
-/**
- * Structural view of a Responses-style body mutated by the Lite rewrite.
- * Loose (`unknown`) property types let the turn transformer (`RequestBody`)
- * and the agent's remote-compaction payloads reuse one shaper.
- */
 export interface CodexLiteShapedBody {
 	instructions?: unknown;
 	tools?: unknown;
@@ -322,21 +256,6 @@ export interface CodexLiteShapedBody {
 	parallel_tool_calls?: unknown;
 }
 
-/**
- * Applies the Responses Lite body contract in place (codex-rs
- * `build_responses_request` with `use_responses_lite`): strips pinned image
- * detail, forces parallel tool calling off, moves tools into a leading
- * `additional_tools` developer item and the base instructions into a
- * developer message, then omits top-level `instructions`/`tools`. Because the
- * rewrite removes top-level `tools`, a forced hosted-tool choice (e.g.
- * `{ type: "web_search" }`) would leave the backend unable to validate the
- * choice against a tools collection and it rejects the request with HTTP 400
- * (#5771). Native computer and named-function choices preserve exact forcing
- * by isolating the selected declaration and using `"required"`; other hosted
- * choices fall back to `"auto"`. Explicit string constraints such as `"none"`
- * and `"required"` remain valid. Shared by normal turns and both remote-compaction
- * paths — codex-rs routes `/responses/compact` through the same builder.
- */
 export function applyCodexResponsesLiteShape(body: CodexLiteShapedBody): void {
 	const input = Array.isArray(body.input) ? body.input : [];
 	stripImageDetails(input);
@@ -466,8 +385,7 @@ export async function transformRequestBody(
 			...body.reasoning,
 			...reasoningConfig,
 		};
-		// Lite requires `all_turns` even for opaque/codenamed model ids. Only explicit
-		// full-transport overrides are gated by the known model wire generation.
+
 		if (responsesLite) {
 			body.reasoning.context = "all_turns";
 		} else if (options.reasoningContext !== undefined) {
@@ -480,19 +398,11 @@ export async function transformRequestBody(
 	} else {
 		delete body.reasoning;
 	}
-	// Catalog pro aliases (`gpt-5.6-*-pro`): applied after the effort branch so
-	// the mode is sent even when no effort is set (the branch above deletes
-	// `body.reasoning` in that case) — mode and effort are independent fields.
+
 	if (model.reasoningMode && !options.reasoningOff) {
 		body.reasoning = { ...body.reasoning, mode: model.reasoningMode };
 	}
 
-	// Concurrent reasoning summaries (codex-rs `concurrent_reasoning_summaries`):
-	// `sequential_cutoff` lets the server stream output without blocking on
-	// summary generation, delivering each completed section as an atomic
-	// `response.reasoning_summary_text.done`. Opt-in only — see
-	// {@link concurrentSummariesEnabled} for why. Requires a requested summary;
-	// codex-rs additionally gates on its OpenAI provider check, inherent here.
 	if (body.reasoning?.summary !== undefined && concurrentSummariesEnabled()) {
 		body.stream_options = { reasoning_summary_delivery: "sequential_cutoff" };
 	} else {

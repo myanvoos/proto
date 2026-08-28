@@ -1,5 +1,3 @@
-/// <reference path="./host-virtual-modules.d.ts" />
-
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as url from "node:url";
@@ -10,21 +8,6 @@ import { registerPluginCacheInvalidator } from "../../discovery/helpers";
 
 const IS_COMPILED_BINARY = isCompiledBinary();
 
-// === Bundled host modules (issue #3423) ===
-//
-// Bun 1.3.14 stopped exposing `--compile` extras through any filesystem-style
-// API: `fs.existsSync`, `Bun.file().exists()`, `Bun.resolveSync`, and even
-// `import("/$bunfs/...")` / `import("file:///$bunfs/...")` all fail for the
-// embedded entries. Bun.plugin `onResolve` also no longer fires for transitive
-// imports inside runtime-loaded extensions.
-//
-// Compiled builds retain lazy loaders for host packages and serve requested
-// surfaces through `proto-host-bundled:<key>` synthetic modules.
-// `scripts/host-virtual-module.ts` derives literal dynamic-import edges from
-// current package exports inside a Bun build plugin: no generated source or
-// duplicate key list exists on disk. Deferring each host module evaluation
-// avoids cycles with an extension-loading command that is itself in the
-// retained package graph.
 const HOST_BUNDLED_SCHEME = "proto-host-bundled:";
 const HOST_BUNDLED_NAMESPACE = "proto-host-bundled";
 const HOST_MODULES_GLOBAL = "__ompHostBundledModules";
@@ -43,10 +26,6 @@ interface HostBundledResolveResult {
 	namespace: typeof HOST_BUNDLED_NAMESPACE;
 }
 
-// Specifiers the host resolves for extensions: exactly the current workspace
-// package names (plus their exported subpaths). Anything else — old publish
-// scopes, third-party bare deps, package `imports` aliases — resolves natively
-// from the extension's own location or fails.
 const HOST_PACKAGE_NAMES = [
 	"omptype",
 	"pi-agent-core",
@@ -336,11 +315,6 @@ function scopeForChild(
 	return nodeScope;
 }
 
-/**
- * Builds only the lexical information needed by extension source rewriting.
- * Scope frames are fully populated before selected nodes are returned, so
- * hoisted and TDZ bindings behave independently of textual declaration order.
- */
 function collectScopedAstNodes(root: unknown, select: (node: StructuralAstNode) => boolean): ScopedAstNode[] {
 	const rootNode = asAstNode(root);
 	if (!rootNode) return [];
@@ -459,8 +433,6 @@ function collectExtensionSpecifierReferences(
 	return references;
 }
 
-// === Extension source analysis (in-memory memo; parse cost dominates) ===
-
 interface ExtensionSourceAnalysis {
 	readonly references: readonly ExtensionSpecifierReference[];
 }
@@ -503,13 +475,6 @@ function applySpecifierReplacements(
 const loadedHostModules: Record<string, HostModule> = {};
 let bundledModuleLoadersPromise: Promise<HostModuleLoaders> | null = null;
 
-/**
- * Load the build-supplied module registry without evaluating its host modules.
- *
- * `globalThis` bridges the synthetic ES modules, which cannot close over this
- * file's lexical scope. Dev/test runs never execute the conditional import;
- * binary builds resolve it through the in-memory build plugin.
- */
 function ensureHostModuleLoadersLoaded(): Promise<HostModuleLoaders> {
 	if (!IS_COMPILED_BINARY) {
 		return Promise.reject(new Error("proto:host-modules: bundled modules are only available in compiled mode"));
@@ -548,7 +513,6 @@ function toHostResolveResult(resolvedPath: string): HostResolveResult {
 	return { path: resolvedPath };
 }
 
-/** Maps a bundled virtual specifier or registry key to Bun's plugin namespace shape. */
 export function resolveBundledVirtualSpecifier(specifier: string): HostBundledResolveResult {
 	const registryKey = isBundledVirtualSpecifier(specifier) ? specifier.slice(HOST_BUNDLED_SCHEME.length) : specifier;
 	if (!registryKey) {
@@ -557,10 +521,6 @@ export function resolveBundledVirtualSpecifier(specifier: string): HostBundledRe
 	return { path: registryKey, namespace: HOST_BUNDLED_NAMESPACE };
 }
 
-/**
- * Build a synthetic ES module for one live bundled namespace. Every export
- * reads through the global bridge; no bunfs path or copied package is involved.
- */
 function synthesizeBundledModuleSourceFromModules(moduleKey: string, modules: HostModules): string {
 	const mod = modules[moduleKey];
 	if (!mod) {
@@ -584,16 +544,11 @@ function synthesizeBundledModuleSourceFromModules(moduleKey: string, modules: Ho
 	return lines.join("\n");
 }
 
-/**
- * Build the synthetic source served for one
- * `proto-host-bundled:<key>` import.
- */
 async function synthesizeBundledModuleSource(moduleKey: string): Promise<string> {
 	await loadBundledModule(moduleKey);
 	return synthesizeBundledModuleSourceFromModules(moduleKey, loadedHostModules);
 }
 
-/** Test seam for the virtual module's named/default export forwarding. */
 export function __synthesizeHostBundledSourceWithModules(
 	moduleKey: string,
 	modules: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
@@ -601,16 +556,10 @@ export function __synthesizeHostBundledSourceWithModules(
 	return synthesizeBundledModuleSourceFromModules(moduleKey, modules);
 }
 
-/** Test seam for the global bridge key shared with synthetic module source. */
 export function __getHostBundledModulesGlobal(): string {
 	return HOST_MODULES_GLOBAL;
 }
 
-// Canonical scope for in-process pi packages. Plugins published against any of
-// the aliased scopes below (mariozechner's original publish, earendil-works'
-// fork, or the canonical @oh-my-pi scope itself) are remapped to this scope and
-// resolved against the bundled copy that ships inside the proto binary. This
-// keeps plugins running against the exact runtime state of the host (single
 const resolvedSpecifierFallbacks = new Map<string, string>();
 const realpathCache = new Map<string, Promise<string>>();
 
@@ -622,22 +571,8 @@ function clearHostResolutionCaches(): void {
 
 registerPluginCacheInvalidator(clearHostResolutionCaches);
 
-// Package-root overrides for the current `@oh-my-pi/*` specifiers. In compiled
-// binaries every registry key maps to a `proto-host-bundled:<key>` specifier
-// (bunfs paths are unreachable — issue #3423). In dev / source-link mode the
-// canonical specifiers resolve cleanly through `Bun.resolveSync` from the host
-// root, with one exception: the `@oh-my-pi/pi-coding-agent` root serves a
-// surface module retaining the synchronous `AuthStorage` facade extensions
-// rely on during module initialization (issue #5879).
-
 const HOST_CODING_AGENT_ROOT = "@oh-my-pi/pi-coding-agent";
 
-/**
- * Compute the package root for the npm prebuilt `dist/cli.js` bundle.
- *
- * `bundle-dist.ts` defines `process.env.PI_BUNDLED="true"`; after bundling,
- * `import.meta.dir` points at `<package>/dist`.
- */
 function computeSelfPackageRoot(metaDir: string): string {
 	const normalizedMetaDir = path.normalize(metaDir);
 	if (path.basename(normalizedMetaDir) === "dist") {
@@ -666,7 +601,6 @@ let hostPackageOverrides: Record<string, string> = HOST_CODING_AGENT_ROOT_SURFAC
 	: {};
 let hostOverridesReadyPromise: Promise<void> | null = null;
 
-/** Complete compiled-mode overrides from the lazy host-module registry. */
 function ensureHostOverridesReady(): Promise<void> {
 	if (!IS_COMPILED_BINARY) {
 		return Promise.resolve();
@@ -696,14 +630,6 @@ function getResolvedSpecifier(specifier: string): string {
 	return resolved;
 }
 
-/**
- * Resolve a current `@oh-my-pi/*` specifier to a filesystem path — or, in
- * compiled-binary mode, its bundled virtual specifier.
- *
- * Falls back to `getResolvedSpecifier` (which may throw under compiled binary
- * mode); callers handle that the same way they would for unresolved
- * specifiers.
- */
 function resolveHostSpecifier(specifier: string): string {
 	const override = hostPackageOverrides[specifier];
 	if (override) {
@@ -713,34 +639,17 @@ function resolveHostSpecifier(specifier: string): string {
 }
 
 function toImportSpecifier(resolvedPath: string): string {
-	// Virtual `proto-host-bundled:` specifiers are served by the synthetic
-	// onLoad in `installHostModuleResolution()`; wrapping them as `file://`
-	// would corrupt the scheme.
 	if (isBundledVirtualSpecifier(resolvedPath)) {
 		return resolvedPath;
 	}
 	return url.pathToFileURL(resolvedPath).href;
 }
 
-/**
- * Rewrite the extension-owned specifiers PROTO must host-resolve — current
- * `@oh-my-pi/*` package imports — to absolute `file://` URLs or compiled-mode
- * virtual specifiers. Relative siblings and built-in modules are left
- * untouched so Bun resolves them from the extension's real on-disk location.
- *
- * When `mtimeTag` is provided, extension-owned relative graph specifiers
- * (`./`/`../`) also carry a `?mtime=<tag>` cache-bust so Bun rekeys them on
- * same-process reloads. Host package rewrites always emit `file://` URLs or
- * bundled virtual specifiers because they resolve to in-process host code
- * that never changes between reloads.
- */
 async function rewriteHostExtensionSource(
 	source: string,
 	importerPath: string,
 	mtimeTag: string | null = null,
 ): Promise<string> {
-	// Compiled mode completes the override map from the build-supplied module
-	// keys on first use; every rewrite path must see the full map.
 	await ensureHostOverridesReady();
 	const references = getExtensionSourceAnalysis(source, importerPath).references;
 	const replacements: Array<ExtensionSpecifierReference & { replacement: string }> = [];
@@ -752,10 +661,7 @@ async function rewriteHostExtensionSource(
 		if (HOST_SPECIFIER_FILTER.test(specifier)) {
 			try {
 				replacement = toImportSpecifier(resolveHostSpecifier(specifier));
-			} catch {
-				// Compiled fallback may be absent from a malformed build. Leave the
-				// specifier untouched so native resolution gets its chance.
-			}
+			} catch {}
 		}
 		if (!replacement && mtimeTag && /^\.\.?\//.test(specifier) && !specifier.includes("?")) {
 			replacement = `${specifier}?mtime=${mtimeTag}`;
@@ -767,7 +673,6 @@ async function rewriteHostExtensionSource(
 	return applySpecifierReplacements(source, replacements);
 }
 
-/** Test seam for compiled-binary host-module source rewriting. */
 export async function __rewriteHostExtensionSourceForTests(
 	source: string,
 	importerPath: string,
@@ -788,7 +693,6 @@ function nextHostLoadTag(): string {
 	return String(hostLoadTag);
 }
 
-/** Resolve symlinks in a path, falling back to the input if realpath fails. */
 async function realpathOrSelf(p: string): Promise<string> {
 	const cached = realpathCache.get(p);
 	if (cached) return cached;
@@ -823,25 +727,12 @@ function getLoader(path: string): "js" | "jsx" | "ts" | "tsx" {
 	return "js";
 }
 
-// === Extension module graph ===
-
-// Extension source realpaths already covered by an installed load-time hook for
-// each entry. `Bun.plugin()` registrations are process-global and permanent, so
-// reloads install supplemental hooks only for modules added to the graph since
-// the previous load.
 const extensionGraphHookModules = new Map<string, Set<string>>();
 
 interface ExtensionModuleGraph {
 	readonly modules: Map<string, string>;
 }
 
-/**
- * Walk the extension's import graph starting at `entryRealPath`, returning the
- * realpath of every reachable source module PROTO must rewrite at load time.
- * Only relative imports are graph-owned: host `@oh-my-pi/*` imports are
- * rewritten per module without being followed, and everything else resolves
- * natively from the extension's own location.
- */
 async function collectHostExtensionModules(entryRealPath: string): Promise<ExtensionModuleGraph> {
 	const modules = new Map<string, string>();
 	const queue: string[] = [entryRealPath];
@@ -869,19 +760,12 @@ async function collectHostExtensionModules(entryRealPath: string): Promise<Exten
 				if (!modules.has(resolved)) {
 					queue.push(resolved);
 				}
-			} catch {
-				// Unresolvable import (e.g. a type-only path); skip it.
-			}
+			} catch {}
 		}
 	}
 	return { modules };
 }
 
-/**
- * Register an onLoad hook scoped to one entry's source graph. The hook
- * rewrites only host-resolved imports and tags relative edges with the load's
- * `?mtime` so same-process reloads pick up edits.
- */
 function installExtensionGraphHook(
 	entryRealPath: string,
 	modules: Map<string, string>,
@@ -902,7 +786,6 @@ function installExtensionGraphHook(
 					return (async () => {
 						let raw: string;
 						if (cached !== undefined) {
-							// consume-once: preserves ?mtime edit-pickup for re-imports
 							asyncModules.delete(sourcePath);
 							raw = cached;
 						} else {
@@ -920,14 +803,6 @@ function installExtensionGraphHook(
 	return { asyncModules };
 }
 
-/**
- * Ensure every currently reachable extension source module has a load-time
- * rewrite hook. The entry graph can grow across reloads, so each call collects
- * the current graph and registers hooks for paths not covered by earlier loads.
- *
- * Returns a clearable handle to drop cached sources that weren't consumed
- * during the initial load; `undefined` when no new modules were discovered.
- */
 async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(): void } | undefined> {
 	const { modules } = await collectHostExtensionModules(entryRealPath);
 	let hookedModules = extensionGraphHookModules.get(entryRealPath);
@@ -957,38 +832,16 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
 	};
 }
 
-/**
- * Load an extension module from its real on-disk location with host-module
- * resolution active.
- *
- * The extension runs in place, so its `import.meta.url` is the real source file
- * and `__dirname`-relative `readFileSync` asset loads (HTML/CSS bundled next to
- * the entry) resolve exactly as they do on disk — no temp-directory mirroring
- * and no asset copying. An `onLoad` hook scoped to the entry's source graph
- * rewrites only host-resolved imports in the extension's own source;
- * everything else resolves natively.
- */
 export async function loadHostModule(resolvedPath: string): Promise<unknown> {
-	// Bun reports the realpath of a loaded module to `onLoad` and exposes it as
-	// `import.meta.url`. Resolve symlinks here too (macOS `/var`→`/private/var`,
-	// `bun link`/pnpm installs) so the rewrite filter matches the path Bun
-	// actually hands the hook.
 	const entryRealPath = await realpathOrSelf(path.resolve(resolvedPath));
 	await ensureHostOverridesReady();
 	const pendingSources = await ensureExtensionGraphHook(entryRealPath);
 	try {
-		// Dynamic import is required: extension entry paths are user/plugin
-		// supplied at runtime. On POSIX, use the raw filesystem path so Bun keys
-		// the `?mtime` suffix as part of the module identity; Bun ignores query
-		// strings on `file://` specifiers, which would serve stale edited source.
 		const entrySpecifier = isBundledVirtualSpecifier(entryRealPath)
 			? toImportSpecifier(entryRealPath)
 			: entryRealPath;
 		return await import(`${entrySpecifier}?mtime=${nextHostLoadTag()}`);
 	} finally {
-		// Drop whatever the initial import didn't consume: graph modules only
-		// reached by lazy dynamic imports must be read from disk at their actual
-		// import time, not served from this load-time snapshot.
 		pendingSources?.clear();
 	}
 }
@@ -998,16 +851,9 @@ function resolveHostSpecifierForImport(args: { path: string; importer: string })
 		return undefined;
 	}
 
-	// Primary: resolve the current @oh-my-pi/* specifier from the host root.
-	// Works in dev mode and in source-link installs.
 	try {
 		return toHostResolveResult(resolveHostSpecifier(args.path));
 	} catch {
-		// Fallback for compiled binary mode: the bundled packages live inside
-		// /$bunfs/root and aren't reachable by filesystem resolution. Prefer the
-		// canonical specifier against the importing file's directory when the
-		// plugin installed @oh-my-pi peer deps. A peer copy shadows the host
-		// module registry only when the host itself cannot resolve the import.
 		try {
 			return toHostResolveResult(Bun.resolveSync(args.path, path.dirname(args.importer)));
 		} catch {
@@ -1018,12 +864,6 @@ function resolveHostSpecifierForImport(args: { path: string; importer: string })
 
 let isHostModuleResolutionInstalled = false;
 
-/**
- * Install runtime resolution for current `@oh-my-pi/*` specifiers inside
- * dynamically loaded extensions and plugins: bundled virtual namespaces in
- * compiled binaries, host-rooted package entries everywhere else. Legacy
- * publish scopes are intentionally not recognized.
- */
 export function installHostModuleResolution(): void {
 	if (isHostModuleResolutionInstalled) {
 		return;
@@ -1040,8 +880,7 @@ export function installHostModuleResolution(): void {
 			build.onResolve({ filter: /.*/, namespace: HOST_BUNDLED_NAMESPACE }, args =>
 				resolveBundledVirtualSpecifier(args.path),
 			);
-			// Compiled mode serves `proto-host-bundled:<key>` imports from live
-			// host module references. No bunfs path leaves this loader.
+
 			build.onLoad({ filter: /.*/, namespace: HOST_BUNDLED_NAMESPACE }, async args => {
 				return { contents: await synthesizeBundledModuleSource(args.path), loader: "js" };
 			});

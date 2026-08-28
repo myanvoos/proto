@@ -1,10 +1,3 @@
-/**
- * `/move` overlay: a path input with live directory autocomplete.
- *
- * Rendered as a centered modal via `showHookCustom(..., { overlay: true })`.
- * The user types a path, Tab autocomtes the highlighted directory, and Enter
- * confirms — yielding the resolved directory string (or `undefined` on cancel).
- */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,15 +11,13 @@ export interface MoveOverlayResult {
 }
 
 interface DirEntry {
-	/** Full absolute path. */
 	value: string;
-	/** Display label (basename + trailing slash). */
+
 	label: string;
 }
 
 const MAX_RESULTS = 15;
 
-/** TTL for the directory listing cache (ms). */
 const DIR_CACHE_TTL = 500;
 const dirCache = new Map<string, { time: number; entries: fs.Dirent[] }>();
 
@@ -43,20 +34,13 @@ function readDirCached(dir: string): fs.Dirent[] {
 	}
 }
 
-/**
- * `Dirent.isDirectory()` reports the entry type, not the link target, so a
- * `statSync` fallback is still needed for symlinks that point at a directory.
- * Some filesystems (NFS, FUSE, older SMB) report `UV_DIRENT_UNKNOWN` — every
- * `isX()` returns false — so those entries also fall back to `statSync` rather
- * than being silently dropped from the results.
- */
 function entryIsDirectory(dir: string, entry: fs.Dirent): boolean {
 	if (entry.isDirectory()) return true;
-	// Fast reject only for entry types we can confidently identify as non-directory.
+
 	if (entry.isFile() || entry.isBlockDevice() || entry.isCharacterDevice() || entry.isFIFO() || entry.isSocket()) {
 		return false;
 	}
-	// Symlink (need target type) or unknown (filesystem didn't provide a type) — stat to find out.
+
 	try {
 		return fs.statSync(path.join(dir, entry.name)).isDirectory();
 	} catch {
@@ -75,7 +59,6 @@ function printableInput(data: string): string {
 		.join("");
 }
 
-/** Resolve a user-typed path (`~`, absolute, or relative to `cwd`) to an absolute path. */
 export function resolveMovePath(input: string, cwd: string): string {
 	const trimmed = input.trim();
 	if (trimmed === "~") return os.homedir();
@@ -84,7 +67,6 @@ export function resolveMovePath(input: string, cwd: string): string {
 	return path.resolve(cwd, trimmed);
 }
 
-/** If `input` resolves to an existing directory, return it; otherwise `null`. */
 export function resolveExistingDirectory(input: string, cwd: string): string | null {
 	const resolved = resolveMovePath(input, cwd);
 	try {
@@ -111,7 +93,6 @@ function listChildDirectories(dirPath: string, max: number, includeHidden = fals
 function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[] {
 	if (!prefix) return listChildDirectories(cwd, max);
 
-	// Split into base dir + query so dot-prefixed segments can reveal hidden directories.
 	const norm = prefix.replace(/\\/g, "/");
 	const slashIdx = norm.lastIndexOf("/");
 	let baseDir: string;
@@ -127,8 +108,6 @@ function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[]
 
 	const includeHidden = query.startsWith(".");
 
-	// If the prefix already resolves to an existing directory, list its children.
-	// A dot-prefixed query is treated as a filter so hidden directories become reachable.
 	const resolved = includeHidden ? null : resolveExistingDirectory(prefix, cwd);
 	if (resolved) return listChildDirectories(resolved, max);
 
@@ -146,12 +125,6 @@ function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[]
 	return results;
 }
 
-/**
- * Overlay component for `/move`: a single-line path input with a live-filtered
- * list of matching directories. Tab accepts the highlighted suggestion; Enter
- * confirms the current input (or the highlighted suggestion if the input is
- * empty); Escape cancels.
- */
 export class MoveOverlay implements Component, Focusable {
 	#focused = false;
 	#input = "";
@@ -164,7 +137,7 @@ export class MoveOverlay implements Component, Focusable {
 	constructor(cwd: string, done: (result: MoveOverlayResult | undefined) => void) {
 		this.#cwd = cwd;
 		this.#done = done;
-		// Warm the cache for the current directory so the first keystroke is instant.
+
 		readDirCached(cwd);
 		this.#updateResults();
 	}

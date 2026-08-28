@@ -1,9 +1,5 @@
 import { readLines } from "@oh-my-pi/pi-utils";
 
-/**
- * Claims Bun's singleton stdin reader immediately and exposes a separately readable stream.
- * RPC startup uses this before extension discovery so in-process modules cannot steal protocol input.
- */
 export function claimRpcInput(): ReadableStream<Uint8Array> {
 	const reader = Bun.stdin.stream().getReader();
 	let released = false;
@@ -39,10 +35,6 @@ export function claimRpcInput(): ReadableStream<Uint8Array> {
 	});
 }
 
-/**
- * Parses newline-delimited RPC input without letting one malformed line stop
- * subsequent protocol frames.
- */
 export async function readRpcInputFrames(
 	input: ReadableStream<Uint8Array>,
 	onFrame: (frame: unknown) => void,

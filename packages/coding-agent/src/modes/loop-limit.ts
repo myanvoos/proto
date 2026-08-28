@@ -41,19 +41,11 @@ const TIME_UNITS_MS = new Map<string, number>([
 const LOOP_USAGE = "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
 
 interface ParsedLoopArgs {
-	/** Iteration/duration budget, when the user supplied a leading limit token. */
 	limit?: LoopLimitConfig;
-	/** Inline loop prompt: text after the limit, or the whole argument when no limit was given. */
+
 	prompt?: string;
 }
 
-/**
- * Parse `/loop` arguments into an optional leading limit plus an optional inline
- * prompt. A token that *looks* like a limit (starts with a digit or sign) but
- * fails to parse is a hard error; anything else is treated as prompt text, so
- * plain prose after `/loop` keeps starting an unbounded loop instead of erroring
- * (the pre-arg-parsing behavior). Returns the error message string on failure.
- */
 export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 	const trimmed = args.trim();
 	if (!trimmed) return {};
@@ -63,12 +55,10 @@ export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 	const rest = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
 	const token = firstToken.toLowerCase();
 
-	// Not a limit attempt (prose like "keep going") → unbounded loop, prompt = full args.
 	if (!/^[+-]?\d/.test(token)) {
 		return { prompt: trimmed };
 	}
 
-	// Bare integer: iteration count, unless the next token is a time unit ("10 minutes").
 	if (/^\d+$/.test(token)) {
 		if (rest) {
 			const restTokens = rest.split(/\s+/);
@@ -84,14 +74,12 @@ export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 		return { limit, prompt: rest || undefined };
 	}
 
-	// Compact / compound duration: "10m", "90s", "1h30m".
 	const duration = parseCompoundDuration(token);
 	if (duration !== undefined) {
 		if (typeof duration === "string") return duration;
 		return { limit: duration, prompt: rest || undefined };
 	}
 
-	// Limit-shaped but unparseable ("-1", "1.5h", "10x10").
 	return LOOP_USAGE;
 }
 
@@ -111,12 +99,6 @@ function makeDuration(amountText: string, unitMs: number): LoopLimitConfig | str
 	return { kind: "duration", durationMs: amount * unitMs };
 }
 
-/**
- * Parse a compact duration token such as `10m`, or a compound one like `1h30m`.
- * Returns `undefined` when the token is not duration-shaped, or an error string
- * when it is shaped like a duration but uses an unknown unit / non-positive
- * amount.
- */
 function parseCompoundDuration(token: string): LoopLimitConfig | string | undefined {
 	if (!/^(?:\d+[a-z]+)+$/.test(token)) return undefined;
 	const segments = token.match(/\d+[a-z]+/g);

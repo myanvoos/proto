@@ -1,5 +1,3 @@
-/** Behavior-compatible reimplementation of @mozilla/readability's used surface. */
-
 import type {
 	ReadabilityArticle,
 	ReadabilityDocument,
@@ -210,9 +208,7 @@ function jsonLdMetadata(document: ReadabilityDocument): Metadata {
 					publishedTime: typeof record.datePublished === "string" ? record.datePublished.trim() : undefined,
 				};
 			}
-		} catch {
-			// Invalid publisher data is ignored just like malformed meta markup.
-		}
+		} catch {}
 	}
 	return {};
 }
@@ -276,7 +272,6 @@ function metadataFromDocument(document: ReadabilityDocument, jsonLd: Metadata): 
 	};
 }
 
-/** Extracts the article body and metadata from a standards-shaped document. */
 export class Readability<T = string> {
 	readonly #document: ReadabilityDocument;
 	readonly #options: ReadabilityOptions<T>;
@@ -289,7 +284,6 @@ export class Readability<T = string> {
 		this.#options = options;
 	}
 
-	/** Runs extraction once; the supplied document is consumed and should not be reused. */
 	parse(): ReadabilityArticle<T> | null {
 		const documentElement = this.#document.documentElement;
 		if (!documentElement) return null;

@@ -1,6 +1,6 @@
-//! `hostname` builtin: display or set the system's host name.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(not(any(target_os = "freebsd", target_os = "openbsd")))]
 use std::net::ToSocketAddrs;
@@ -39,13 +39,13 @@ mod wsa {
 
 	impl Drop for WsaHandle {
 		fn drop(&mut self) {
-			// This possibly returns an error but we can't handle it.
+
 			let _ = unsafe { WSACleanup() };
 		}
 	}
 }
 
-/// Parsed `hostname` invocation.
+
 pub(crate) struct Hostname {
 	matches: ArgMatches,
 }
@@ -66,8 +66,8 @@ impl Utility for Hostname {
 		};
 
 		if self.matches.get_one::<OsString>(OPT_HOST).is_some() {
-			// The shared `hostname` dependency does not enable its process-global
-			// `set` feature, so an operand must fail explicitly rather than no-op.
+
+
 			host.error("setting the hostname is not supported by the in-process builtin", 1);
 			return 1;
 		}
@@ -82,7 +82,7 @@ impl Utility for Hostname {
 	}
 }
 
-/// The `hostname` argument model.
+
 fn app() -> Command {
 	Command::new(Hostname::NAME)
 		.version("0.8.0")
@@ -145,8 +145,8 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 				.map_err(|err| format!("failed to resolve socket addresses: {err}"))?;
 		}
 
-		// DNS reverse lookup via "hostname:1" does not work on FreeBSD and OpenBSD;
-		// use the dns-lookup crate instead.
+
+
 		#[cfg(any(target_os = "freebsd", target_os = "openbsd"))]
 		{
 			addresses = lookup_host(hostname.as_str())
@@ -156,7 +156,7 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 		let mut hashset = HashSet::new();
 		let mut output = String::new();
 		for addr in addresses {
-			// XXX: not sure why this is necessary...
+
 			if !hashset.contains(&addr) {
 				let mut ip = addr.to_string();
 				if ip.ends_with(":1") {
@@ -197,7 +197,7 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 	}
 }
 
-/// Creates the `hostname` builtin registration.
+
 pub(crate) fn hostname_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Hostname, SE>()
 }

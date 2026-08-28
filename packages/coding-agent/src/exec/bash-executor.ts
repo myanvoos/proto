@@ -1,8 +1,3 @@
-/**
- * Bash command execution with streaming support and cancellation.
- *
- * Uses brush-core via native bindings for shell execution.
- */
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
@@ -15,27 +10,21 @@ import { buildNonInteractiveEnv } from "./non-interactive-env";
 
 interface BashExecutorOptions {
 	cwd?: string;
-	/** Milliseconds before aborting the command; 0 disables the executor deadline. */
+
 	timeout?: number;
 	onChunk?: (chunk: string) => void;
 	chunkThrottleMs?: number;
 	signal?: AbortSignal;
-	/** Session key suffix to isolate shell sessions per agent */
+
 	sessionKey?: string;
-	/** Additional environment variables to inject */
+
 	env?: Record<string, string>;
-	/** Run through the configured user shell instead of brush parsing directly. */
+
 	useUserShell?: boolean;
-	/** Artifact path/id for full output storage */
+
 	artifactPath?: string;
 	artifactId?: string;
-	/**
-	 * Invoked when the native minimizer rewrote the command's output, giving
-	 * the caller a chance to persist the lossless original capture (typically
-	 * via the session's `ArtifactManager`). The returned id is spliced into
-	 * the sink output as `artifact://<id>` so the agent can retrieve the raw
-	 * bytes. Return `undefined` to skip the footer.
-	 */
+
 	onMinimizedSave?: (
 		originalText: string,
 		info: { filter: string; inputBytes: number; outputBytes: number },
@@ -46,7 +35,7 @@ export interface BashResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
-	/** True when the command was killed by its timeout deadline (not a user abort). */
+
 	timedOut?: boolean;
 	truncated: boolean;
 	totalLines: number;
@@ -57,56 +46,28 @@ export interface BashResult {
 	workingDir?: string;
 }
 
-/** POSIX-safe variable name — gates which direnv unsets we inject into the
- *  command line, so a hostile `.envrc` can't smuggle shell syntax through
- *  `unset`. `.envrc` never produces non-identifier names in practice. */
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 interface DirenvPreflightOptions {
-	/** Caller-supplied env overlay; these values win over direnv-provided ones. */
 	callerEnv?: Record<string, string>;
 	signal?: AbortSignal;
-	/** Full direnv-load budget (`bash.direnvLoadTimeoutMs`). A positive
-	 *  `callerTimeoutMs` clamps the effective load below this; `0`/undefined
-	 *  leaves the full budget. */
+
 	timeoutMs?: number;
-	/** The caller's command deadline (ms). A positive value clamps the direnv
-	 *  load so a cold `.envrc` can't outlast a short-timeout command; `0` or
-	 *  undefined means "no caller clamp" — the load keeps its full `timeoutMs`
-	 *  budget (a disabled command deadline is NOT a 0 ms load). Centralizing the
-	 *  clamp here keeps every backend (executeBash, ACP terminal, PTY) on one
-	 *  contract instead of each re-deriving it. */
+
 	callerTimeoutMs?: number;
-	/** `bash.direnv` setting — `"off"` skips the load entirely. */
+
 	direnvSetting: "auto" | "off";
-	/** Shell wrapper prefix (profiler/strace) to place *after* the unset prefix,
-	 *  matching `executeBash`'s ordering. Backends that apply their own shell
-	 *  wrapping (ACP `wrapShellLineForClientTerminal`) omit this. */
+
 	commandPrefix?: string | undefined;
 }
 
-/**
- * Load the repo's direnv/devenv env and fold it into a `(command, env)` pair so
- * every bash backend (one-shot `executeBash`, ACP client terminal, PTY) exposes
- * the same devenv tools. Encapsulates: load the diff, merge `set` under the
- * caller's overlay (caller wins), and prepend a regex-gated `unset -v` for
- * variables the `.envrc` removes (skipping any the caller re-supplied).
- *
- * Returns the possibly-prefixed command plus the merged env, or the inputs
- * unchanged (`env` = `callerEnv`) when direnv is off, absent, or has no `.envrc`.
- * Pure transform: does NOT layer non-interactive env defaults — that stays the
- * caller's job (so interactive PTY/ACP paths keep their own env shape).
- */
 export async function applyDirenvPreflight(
 	command: string,
 	cwd: string,
 	opts: DirenvPreflightOptions,
 ): Promise<{ command: string; env: Record<string, string> | undefined }> {
 	const withPrefix = (line: string): string => (opts.commandPrefix ? `${opts.commandPrefix} ${line}` : line);
-	// A positive caller deadline clamps the direnv load below its full budget so
-	// a cold `.envrc` can't outlast a short-timeout command; `0`/undefined means
-	// "no caller clamp" (a disabled command deadline is not a 0 ms load). Every
-	// backend routes through here, so the clamp lives in one place.
+
 	const loadTimeoutMs =
 		opts.callerTimeoutMs !== undefined && opts.callerTimeoutMs > 0
 			? Math.min(opts.timeoutMs ?? opts.callerTimeoutMs, opts.callerTimeoutMs)
@@ -116,12 +77,9 @@ export async function applyDirenvPreflight(
 	if (!direnvDiff) {
 		return { command: withPrefix(command), env: opts.callerEnv };
 	}
-	// The caller's explicit env still wins over direnv-provided values.
+
 	const mergedEnv = { ...direnvDiff.set, ...opts.callerEnv };
-	// direnv can also *remove* inherited variables (a `.envrc` doing
-	// `unset AWS_PROFILE`). An env overlay can only add/override, so prepend a
-	// real `unset` for those — unless the caller re-supplied the same var
-	// explicitly, in which case the caller wins.
+
 	const direnvUnsets = direnvDiff.unset.filter(
 		name => !(opts.callerEnv && name in opts.callerEnv) && SAFE_ENV_NAME.test(name),
 	);
@@ -132,21 +90,12 @@ export async function applyDirenvPreflight(
 const shellSessions = new Map<string, Shell>();
 const brokenShellSessions = new Set<string>();
 const shellSessionQuarantines = new Map<string, Promise<unknown>>();
-/** Session keys with a command currently in flight on the persistent Shell. */
+
 const shellSessionsInUse = new Set<string>();
 
-/**
- * Shells retained past their turn because a background (`nohup`/`&`) job is
- * still running. A per-call `:async:` Shell is normally dropped at teardown,
- * which SIGKILLs its children via kill-on-drop. Keeping the reference alive lets
- * the process survive across turns; the Shell is dropped once its last
- * background job exits (reaped by the poll loop below). Children stay
- * kill-on-drop, so they still die when the harness tears the Shell down on exit.
- */
 const retainedShells = new Set<Shell>();
 const RETAIN_REAP_INTERVAL_MS = 5_000;
-// Native cancellation may spend two seconds unwinding the shell before its
-// N-API chunk bridge drains. The JS watchdog must not race that teardown.
+
 const NATIVE_TIMEOUT_FALLBACK_GRACE_MS = 5_000;
 
 async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
@@ -195,12 +144,9 @@ function quarantineShellSession(
 }
 
 function resolveShellCwd(cwd: string | undefined): string | undefined {
-	// Preserve the caller's logical cwd string. Brush uses this value to update `PWD` and its
-	// internal working directory, so realpathing here collapses symlinks before the shell sees them.
 	return cwd;
 }
 
-/** Translate `ShellMinimizerSettings` into native `MinimizerOptions`, or `undefined` when disabled. */
 export function buildMinimizerOptions(group: ShellMinimizerSettings): MinimizerOptions | undefined {
 	if (!group.enabled) return undefined;
 	return {
@@ -287,12 +233,6 @@ function hasInteractiveShellArg(args: string[]): boolean {
 function ensureInteractiveShellArgs(shell: string, args: string[]): string[] {
 	if (!needsInteractiveShellArg(shell)) return args;
 
-	// fish sources the same config files (config.fish + conf.d) for interactive
-	// shells as for login shells, so the inherited `-l` adds nothing — it only
-	// marks the shell as login, firing `status is-login` blocks in user config
-	// (agent/keychain setup, path mutation) on every `!` command. zsh keeps `-l`
-	// because .zprofile is login-only. Args originate from procmgr's
-	// getShellArgs(), so login only ever appears as a standalone `-l`/`--login`.
 	const effectiveArgs = shellBasename(shell).includes("fish")
 		? args.filter(arg => arg !== "-l" && arg !== "--login")
 		: args;
@@ -352,11 +292,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const minimizer = buildMinimizerOptions(settings.getGroup("shellMinimizer"));
 
 	const commandCwd = resolveShellCwd(options?.cwd);
-	// Fold the repo's direnv/devenv env into the command + env so devenv tools
-	// land on PATH; the caller's explicit `env` still wins. Thread the caller's
-	// signal + timeout so an aborted / short-timeout call can't hang on a cold
-	// `.envrc` load before the abort listener is installed. The helper applies
-	// the configured shell `prefix` after any `unset -v` it prepends.
+
 	const preflight = await applyDirenvPreflight(command, commandCwd ?? process.cwd(), {
 		callerEnv: options?.env,
 		signal: options?.signal,
@@ -367,14 +303,12 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	});
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
-	// The embedded brush shell runs the POSIX line better directly than a
-	// configured non-bash shell wrapper.
+
 	const finalCommand =
 		options?.useUserShell === true && !bashShell && !runCdInPersistentShell
 			? buildUserShellCommand(shell, args, preflight.command)
 			: preflight.command;
 
-	// Create output sink for truncation and artifact handling
 	const sink = new OutputSink({
 		onChunk: options?.onChunk,
 		artifactPath: options?.artifactPath,
@@ -384,9 +318,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		chunkThrottleMs: options?.onChunk ? (options.chunkThrottleMs ?? 50) : 0,
 	});
 
-	// sink.push() is synchronous — buffer management, counters, and onChunk
-	// all run inline. File writes (artifact path) are handled asynchronously
-	// inside the sink. No promise chain needed.
 	let acceptingChunks = true;
 	const enqueueChunk = (chunk: string) => {
 		if (acceptingChunks) sink.push(chunk);
@@ -411,11 +342,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		shellSessions.delete(sessionKey);
 	}
 
-	// A persistent Shell runs one command at a time (the native session is a
-	// mutex-guarded queue and `abort()` kills every in-flight run on it). When
-	// parallel bash calls overlap on the same key, the first one owns the
-	// persistent session; the rest degrade to isolated one-shot shells — the
-	// same path quarantined sessions take.
 	const sessionBusy = shellSessionsInUse.has(sessionKey);
 	let shellSession = persistentSessionBroken || sessionBusy ? undefined : shellSessions.get(sessionKey);
 	if (!shellSession && !persistentSessionBroken && !sessionBusy) {
@@ -460,9 +386,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			? deadlineTimeoutMs + NATIVE_TIMEOUT_FALLBACK_GRACE_MS
 			: deadlineTimeoutMs;
 		timeoutTimer = setTimeout(() => {
-			// Explicit timeouts are enforced inside pi-natives via `timeoutMs`.
-			// Give native cancellation time to flush pipeline output and drain the
-			// N-API bridge before this result-only watchdog quarantines the run.
 			if (!nativeOwnsTimeout) {
 				abortCurrentExecution();
 			}
@@ -522,7 +445,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			timeoutTimer = undefined;
 		}
 
-		// Handle timeout
 		if (winner.result.timedOut) {
 			const annotation = options?.timeout
 				? `Command timed out after ${Math.round(options.timeout / 1000)} seconds`
@@ -539,7 +461,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			};
 		}
 
-		// Handle cancellation
 		if (winner.result.cancelled) {
 			resetSession = true;
 			if (shellSession) {
@@ -552,10 +473,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			};
 		}
 
-		// When the native minimizer rewrote the output, swap the sink's accumulated
-		// raw stream for the minimized text, persist the original as a session
-		// artifact, and splice an `artifact://<id>` footer into the visible text so
-		// the agent can retrieve the raw bytes losslessly.
 		const minimized = winner.result.minimized;
 		if (minimized && minimized.text !== minimized.originalText) {
 			sink.replace(minimized.text);
@@ -572,7 +489,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			}
 		}
 
-		// Normal completion
 		return {
 			exitCode: winner.result.exitCode,
 			cancelled: false,
@@ -593,14 +509,8 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		if (ownsPersistentSession) {
 			shellSessionsInUse.delete(sessionKey);
 			if (resetSession || options?.sessionKey?.includes(":async:")) {
-				// `:async:` keys are per-job (jobId is unique), so the Shell would
-				// otherwise stay in the process-global map forever after completion.
 				shellSessions.delete(sessionKey);
-				// Dropping the only reference to a per-call `:async:` Shell SIGKILLs
-				// any `nohup`/`&` children (kill-on-drop). If the command left a live
-				// background job, retain the Shell so the process survives across
-				// turns; it is reaped once its last job exits and still dies with the
-				// harness. Skip on resetSession (cancel/error) — those tear down.
+
 				if (!resetSession && shellSession) {
 					await retainShellWithLiveBackgroundJobs(shellSession);
 				}

@@ -1,4 +1,3 @@
-/** Gallery fixtures for the ask / ssh / github / inspect_image tools. */
 import type { GalleryFixture } from "./types";
 
 export const miscFixtures: Record<string, GalleryFixture> = {
@@ -146,8 +145,6 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	// Built-in tool with no dedicated renderer — exercises the generic fallback
-	// (`#formatToolExecution`) path so its padded, state-tinted block is QA'd.
 	report_tool_issue: {
 		label: "Report Tool Issue",
 		streamingArgs: { tool: "lsp" },
@@ -162,8 +159,6 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	// Stand-in for a custom/extension tool that ships no renderer — same generic
-	// fallback path most MCP/extension tools take.
 	custom: {
 		label: "Custom Tool",
 		streamingArgs: { query: "weather" },

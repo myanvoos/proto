@@ -28,17 +28,13 @@ from proto_rpc import (
     MessageUpdateEvent,
     RpcClient,
     ToolExecutionStartEvent,
-)  # noqa: E402
+)
 
 MODELS = [
     "openrouter/moonshotai/kimi-k2.5",
     "openrouter/anthropic/claude-haiku-4.5",
     "openrouter/google/gemini-3.1-flash-lite-preview",
     "openrouter/z-ai/glm-4.7-20251222:nitro",
-    # "openrouter/anthropic/claude-sonnet-4.6",
-    # "openrouter/google/gemini-3-flash-preview",
-    # "openrouter/z-ai/glm-5-turbo",
-    # "openrouter/minimax/minimax-m2.7",
 ]
 
 INITIAL_CONTENT = """\
@@ -469,7 +465,6 @@ def _compute_edit_diff() -> str:
     initial_lines = INITIAL_CONTENT.splitlines(keepends=True)
     expected_lines = EXPECTED_CONTENT.splitlines(keepends=True)
     diff = difflib.unified_diff(initial_lines, expected_lines, n=3)
-    # Skip the --- and +++ header lines, keep only @@ hunks
     diff_lines = list(diff)
     return "".join(diff_lines[2:]) if len(diff_lines) > 2 else ""
 
@@ -784,15 +779,12 @@ def run_benchmark_for_model(
                     if turn == 1:
                         client.prompt(spec.initial_prompt)
                     else:
-                        # Reset file to initial state on retry so the model starts fresh
-                        # instead of trying to fix a potentially corrupted file.
                         test_file.write_text(INITIAL_CONTENT)
                         client.prompt(build_retry_prompt(spec, INITIAL_CONTENT))
 
                     try:
                         client.wait_for_idle(timeout=timeout)
                     except Exception:
-                        # Prompt timed out or errored — abort the agent then retry.
                         try:
                             client.abort()
                             time.sleep(1)

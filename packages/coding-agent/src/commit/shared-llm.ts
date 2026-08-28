@@ -7,12 +7,6 @@ const changelogCategoryLiteral = t(
 	"'Added' | 'Changed' | 'Fixed' | 'Deprecated' | 'Removed' | 'Security' | 'Breaking Changes'",
 );
 
-/**
- * Shared arktype schema for the `create_conventional_analysis` tool used by
- * both the single-pass analysis call and the map-reduce reduce phase. Schemas
- * are identical across phases — only the surrounding tool `description`
- * differs to reflect the input the phase is summarizing.
- */
 const detailItem = t({
 	text: "string",
 	"changelog_category?": changelogCategoryLiteral,
@@ -32,10 +26,6 @@ export interface ConventionalAnalysisTool {
 	parameters: typeof conventionalAnalysisParameters;
 }
 
-/**
- * Build a `create_conventional_analysis` tool descriptor. Phase-specific
- * `description` text is the only thing that varies between callers.
- */
 export function createConventionalAnalysisTool(description: string): ConventionalAnalysisTool {
 	return {
 		name: "create_conventional_analysis",
@@ -51,10 +41,6 @@ interface ParsedConventionalAnalysis {
 	issue_refs: string[];
 }
 
-/**
- * Extract a {@link ConventionalAnalysis} from an assistant response, preferring
- * a structured tool call and falling back to JSON embedded in text content.
- */
 export function parseConventionalAnalysisResponse(
 	message: AssistantMessage,
 	tool: ConventionalAnalysisTool,

@@ -1,15 +1,6 @@
-/**
- * Shared box-drawing chrome for overlays — string helpers for fullscreen
- * surfaces (the `/copy` picker, the plan-review overlay, …) and the
- * {@link OverlayPanel} container for inline overlays hosted in the editor slot
- * or an anchored container. Everything paints with `theme.boxRound` glyphs
- * (rounded corners, sharp tee/cross junctions) and the `border`/`accent` theme
- * colors so all outlined overlays read identically.
- */
 import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
 
-/** Pad or truncate a (possibly ANSI-styled) string to exactly `width` columns. */
 export function fit(text: string, width: number): string {
 	if (width <= 0) return "";
 	const w = visibleWidth(text);
@@ -24,7 +15,6 @@ function paint(s: string): string {
 	return theme.fg("border", s);
 }
 
-/** Top border with an optional accent-colored title inset into the rule. */
 export function topBorder(width: number, title: string): string {
 	const box = theme.boxRound;
 	const inner = Math.max(0, width - 2);
@@ -38,7 +28,6 @@ export function topBorder(width: number, title: string): string {
 	);
 }
 
-/** A horizontal rule with left/right tees, splitting overlay sections. */
 export function divider(width: number): string {
 	const box = theme.boxRound;
 	return paint(box.teeRight + box.horizontal.repeat(Math.max(0, width - 2)) + box.teeLeft);
@@ -49,29 +38,19 @@ export function bottomBorder(width: number): string {
 	return paint(box.bottomLeft + box.horizontal.repeat(Math.max(0, width - 2)) + box.bottomRight);
 }
 
-/** Wrap pre-styled content in vertical borders with single-column insets. */
 export function row(content: string, width: number): string {
 	const box = theme.boxRound;
 	return `${paint(box.vertical)} ${fit(content, Math.max(0, width - 4))} ${paint(box.vertical)}`;
 }
 
-/**
- * Column index (0-based) of the inner divider for a two-column layout whose
- * sidebar content area is `sidebarWidth` columns wide. The layout is
- * `│ sidebar │ body │` with a single-column inset on every side, so the divider
- * vertical sits at `sidebarWidth + 3` and the body content area is
- * {@link splitBodyWidth} columns.
- */
 function splitDividerCol(sidebarWidth: number): number {
 	return sidebarWidth + 3;
 }
 
-/** Body content width for a two-column overlay of total `width`. */
 export function splitBodyWidth(width: number, sidebarWidth: number): number {
 	return Math.max(0, width - sidebarWidth - 7);
 }
 
-/** Top border carrying the title, split by a `┬` over the column divider. */
 export function topBorderSplit(width: number, title: string, sidebarWidth: number): string {
 	const box = theme.boxRound;
 	const dividerCol = splitDividerCol(sidebarWidth);
@@ -91,7 +70,6 @@ export function topBorderSplit(width: number, title: string, sidebarWidth: numbe
 	return left + paint(box.teeDown + box.horizontal.repeat(rightLen) + box.topRight);
 }
 
-/** Section rule that closes the sidebar column with a `┴` over the divider. */
 export function dividerSplit(width: number, sidebarWidth: number): string {
 	const box = theme.boxRound;
 	const dividerCol = splitDividerCol(sidebarWidth);
@@ -102,7 +80,6 @@ export function dividerSplit(width: number, sidebarWidth: number): string {
 	);
 }
 
-/** A two-column content row: `│ sidebar │ body │`, each inset by one column. */
 export function splitRow(sidebar: string, body: string, width: number, sidebarWidth: number): string {
 	const box = theme.boxRound;
 	const bodyWidth = splitBodyWidth(width, sidebarWidth);
@@ -110,7 +87,6 @@ export function splitRow(sidebar: string, body: string, width: number, sidebarWi
 	return `${bar} ${fit(sidebar, sidebarWidth)} ${bar} ${fit(body, bodyWidth)} ${bar}`;
 }
 
-/** Sentinel child rendered by {@link OverlayPanel} as a `├───┤` section rule. */
 export class PanelDivider implements Component {
 	render(): readonly string[] {
 		return [];
@@ -127,18 +103,10 @@ interface OverlayPanelMemo {
 	result: string[];
 }
 
-/** Titles inset into a single border row must never carry line breaks. */
 function collapseTitle(title: string): string {
 	return title.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Rounded-box container for inline overlays (selectors, run panels). Children
- * render inside `│ … │` rows between a titled top border and a bottom border,
- * so inline overlays share the chrome of fullscreen overlays. The top border
- * is exactly one row — `routeMouse` offsets written for a one-line top rule
- * stay valid — and content is inset two columns on each side.
- */
 export class OverlayPanel implements Component {
 	children: Component[] = [];
 	#title: string;
@@ -190,13 +158,6 @@ export class OverlayPanel implements Component {
 		return this;
 	}
 
-	/**
-	 * Body rows at the given content width, without border chrome —
-	 * {@link render} draws exactly these (4 columns narrower) inside `│ … │`
-	 * rows. Lets callers and tests assert on component-content coordinates
-	 * instead of reverse-parsing box glyphs. `PanelDivider` children contribute
-	 * no rows here (their rule is border chrome).
-	 */
 	renderContent(width: number): string[] {
 		const result: string[] = [];
 		for (const child of this.children) {
@@ -208,8 +169,7 @@ export class OverlayPanel implements Component {
 
 	render(width: number): readonly string[] {
 		const innerWidth = Math.max(1, width - 4);
-		// Children render every frame (renders may carry side effects); the memo
-		// only skips re-wrapping unchanged rows in border chrome.
+
 		const childLines = this.children.map(child =>
 			child instanceof PanelDivider ? NO_LINES : child.render(innerWidth),
 		);

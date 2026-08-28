@@ -1,36 +1,12 @@
 #!/usr/bin/env bun
-/**
- * Schema -> prompt inference probe.
- *
- * Given a tool's JSON parameter schema + a description-prompt outline ("template"),
- * ask one or more models to reconstruct the full description. Whatever they reliably
- * predict is inferable from the schema/outline alone — i.e. a candidate to PRUNE from
- * the hand-written prompt. Run several samples and several models: trust only content
- * that is STABLE across samples AND agrees across models.
- *
- * Routes through @oh-my-pi/pi-ai (`completeSimple`) rather than raw HTTP so model
- * resolution, auth, and provider quirks match production.
- * Per-provider env keys (<PROVIDER>_API_KEY) are resolved automatically; temperature is never sent.
- * Caller passes two things: a JSON schema and a template. Everything else has defaults.
- * With no `--model`, probes a 3-model panel (Fireworks Kimi, Claude Opus, GPT) x 3 samples.
- *
- * CLI:
- *   bun probe.ts --schema <file|json> --template <file|text> [options]
- *     --name <toolName>           tool name shown to the model (default "the tool")
- *     --samples <n>               independent samples per model (default 3)
- *     --model <p/id[,p/id...]>    override panel; comma-separated for several
- *     --max-tokens <n>            output cap (default 1200)
- *     --json                      emit JSON instead of human-readable blocks
- *
- * Programmatic: import { probe } from "./probe.ts"
- */
+
 import { parseArgs } from "node:util";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { GeneratedProvider } from "@oh-my-pi/pi-catalog/models";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
-/** Default 3-model panel when the caller does not pin a model. */
+
 const DEFAULT_MODELS = ["fireworks/kimi-k2.7-code", "anthropic/claude-opus-4-8", "openai/gpt-5.5"];
 const DEFAULT_SAMPLES = 3;
 
@@ -42,15 +18,15 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 export interface ProbeOptions {
-	/** JSON Schema for the tool's parameters (object or JSON string). */
+	
 	schema: unknown;
-	/** Description outline: a one-line summary + section skeleton (with `...` placeholders). */
+	
 	template: string;
-	/** Tool name surfaced to the model. */
+	
 	name?: string;
-	/** Independent samples per model. Only content stable across samples is trustworthy. */
+	
 	samples?: number;
-	/** `provider/id` list. Defaults to the 3-model panel. */
+	
 	models?: string[];
 	maxTokens?: number;
 	signal?: AbortSignal;
@@ -76,7 +52,7 @@ export interface ProbeRun {
 function resolveModel(ref: string): Model<Api> {
 	const slash = ref.indexOf("/");
 	if (slash === -1) throw new Error(`model must be "provider/id", got: ${ref}`);
-	// Runtime-validated below: getBundledModel returns undefined for an unknown provider/id.
+
 	const provider = ref.slice(0, slash) as GeneratedProvider;
 	const id = ref.slice(slash + 1);
 	const model = getBundledModel(provider, id);
@@ -192,7 +168,7 @@ async function main(): Promise<void> {
 	try {
 		schema = JSON.parse(schemaRaw);
 	} catch {
-		// Leave as raw text — caller may pass a non-JSON schema notation.
+
 	}
 	const template = await resolveInput(values.template);
 

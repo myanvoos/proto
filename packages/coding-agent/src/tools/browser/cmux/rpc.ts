@@ -114,18 +114,6 @@ export function serializeEval(fn: string | ((...args: unknown[]) => unknown), ar
 	return `(${fn.toString()})(${args.map(arg => JSON.stringify(arg)).join(",")})`;
 }
 
-/**
- * Like {@link serializeEval}, but wraps the expression in a page-side
- * try/catch envelope so a throwing script surfaces its message + stack
- * instead of the daemon's opaque `js_error: A JavaScript exception occurred`,
- * and a Promise return (which the daemon cannot serialize) is flagged
- * explicitly rather than failing as "unsupported type".
- *
- * String scripts run through indirect eval to keep global-scope semantics;
- * function sources are already expressions and are invoked directly.
- * `undefined` results come back as `null` (JSON cannot carry `undefined`).
- * Decode with {@link unwrapEvalEnvelope}.
- */
 export function serializeEvalWithEnvelope(fn: string | ((...args: unknown[]) => unknown), args: unknown[]): string {
 	const inner = serializeEval(fn, args);
 	const expr = typeof fn === "string" ? `(0, eval)(${JSON.stringify(inner)})` : inner;
@@ -140,12 +128,6 @@ export function serializeEvalWithEnvelope(fn: string | ((...args: unknown[]) => 
 	})()`;
 }
 
-/**
- * Decode a {@link serializeEvalWithEnvelope} result: rethrow page-side
- * exceptions as rich {@link ToolError}s, reject unserializable Promise
- * returns with an actionable message, and pass through values from daemons
- * that did not run the wrapper.
- */
 export function unwrapEvalEnvelope<TResult>(value: unknown, label: string): TResult {
 	if (value && typeof value === "object") {
 		if ("__ompErr" in value && typeof value.__ompErr === "string") {

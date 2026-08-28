@@ -1,4 +1,4 @@
-//! Facilities for configuring trap handlers.
+
 
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
@@ -6,18 +6,18 @@ use itertools::Itertools as _;
 
 use crate::{error, sys};
 
-/// Type of signal that can be trapped in the shell.
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TrapSignal {
-	/// A system signal.
+
 	Signal(sys::signal::Signal),
-	/// The `DEBUG` trap.
+
 	Debug,
-	/// The `ERR` trap.
+
 	Err,
-	/// The `EXIT` trap.
+
 	Exit,
-	/// The `RETURN` trp.
+
 	Return,
 }
 
@@ -49,7 +49,7 @@ impl Display for TrapSignal {
 }
 
 impl TrapSignal {
-	/// Returns all possible values of [`TrapSignal`].
+
 	pub fn iterator() -> impl Iterator<Item = Self> {
 		const SIGNALS: &[TrapSignal] = &[TrapSignal::Debug, TrapSignal::Err, TrapSignal::Exit];
 
@@ -61,8 +61,8 @@ impl TrapSignal {
 		iter
 	}
 
-	/// Converts [`TrapSignal`] into its corresponding signal name as a
-	/// [`&'static str`](str)
+
+
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Signal(s) => s.as_str(),
@@ -74,12 +74,12 @@ impl TrapSignal {
 	}
 }
 
-/// Formats [`Iterator<Item = TrapSignal>`](TrapSignal)  to the provided writer.
-///
-/// # Arguments
-///
-/// * `f` - Any type that implements [`std::io::Write`].
-/// * `it` - An iterator over the signals that will be formatted into the `f`.
+
+
+
+
+
+
 pub fn format_signals(
 	mut f: impl std::io::Write,
 	it: impl Iterator<Item = TrapSignal>,
@@ -92,7 +92,7 @@ pub fn format_signals(
 	Ok(())
 }
 
-// implement s.parse::<TrapSignal>()
+
 impl FromStr for TrapSignal {
 	type Err = error::Error;
 
@@ -105,14 +105,14 @@ impl FromStr for TrapSignal {
 	}
 }
 
-// from a signal number
+
 impl TryFrom<i32> for TrapSignal {
 	type Error = error::Error;
 
 	fn try_from(value: i32) -> Result<Self, Self::Error> {
-		// NOTE: DEBUG and ERR are real-time signals, defined based on NSIG or SIGRTMAX
-		// (is not available on bsd-like systems),
-		// and don't have persistent numbers across platforms, so we skip them here.
+
+
+
 		Ok(match value {
 			0 => Self::Exit,
 			value => Self::Signal(
@@ -123,7 +123,7 @@ impl TryFrom<i32> for TrapSignal {
 	}
 }
 
-// from a signal name
+
 impl TryFrom<&str> for TrapSignal {
 	type Error = error::Error;
 
@@ -137,9 +137,9 @@ impl TryFrom<&str> for TrapSignal {
 			"EXIT" => Self::Exit,
 			"RETURN" => Self::Return,
 			_ => {
-				// Bash compatibility:
-				// support for signal names without the `SIG` prefix, for example `HUP` ->
-				// `SIGHUP`
+
+
+
 				if !s.starts_with("SIG") {
 					s.insert_str(0, "SIG");
 				}
@@ -151,7 +151,7 @@ impl TryFrom<&str> for TrapSignal {
 	}
 }
 
-/// Error type used when failing to convert a `TrapSignal` to a number.
+
 #[derive(Debug, Clone, Copy)]
 pub struct TrapSignalNumberError;
 
@@ -167,26 +167,26 @@ impl TryFrom<TrapSignal> for i32 {
 	}
 }
 
-/// A handler for a trap signal.
+
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrapHandler {
-	/// The source text of the command to invoke.
+
 	pub command:     String,
-	/// Source information for where the trap handler was defined.
+
 	pub source_info: crate::SourceInfo,
 }
 
-/// Configuration for trap handlers in the shell.
+
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrapHandlerConfig {
-	/// Registered handlers for traps; maps signal type to command.
+
 	handlers: HashMap<TrapSignal, TrapHandler>,
 }
 
 impl TrapHandlerConfig {
-	/// Iterates over the registered handlers for trap signals.
+
 	pub fn iter_handlers(&self) -> impl Iterator<Item = (TrapSignal, &TrapHandler)> {
 		self
 			.handlers
@@ -194,27 +194,27 @@ impl TrapHandlerConfig {
 			.map(|(signal, handler)| (*signal, handler))
 	}
 
-	/// Tries to find the handler associated with the given signal.
-	///
-	/// # Arguments
-	///
-	/// * `signal_type` - The type of signal to get the handler for.
+
+
+
+
+
 	pub fn get_handler(&self, signal_type: TrapSignal) -> Option<&TrapHandler> {
 		self.handlers.get(&signal_type)
 	}
 
-	/// Returns whether a handler is registered for the given signal.
+
 	pub fn handles(&self, signal_type: TrapSignal) -> bool {
 		self.handlers.contains_key(&signal_type)
 	}
 
-	/// Registers a handler for a trap signal.
-	///
-	/// # Arguments
-	///
-	/// * `signal_type` - The type of signal to register a handler for.
-	/// * `command` - The command to execute when the signal is trapped.
-	/// * `source_info` - The source info for where the trap handler was defined.
+
+
+
+
+
+
+
 	pub fn register_handler(
 		&mut self,
 		signal_type: TrapSignal,
@@ -226,11 +226,11 @@ impl TrapHandlerConfig {
 			.insert(signal_type, TrapHandler { command, source_info });
 	}
 
-	/// Removes handlers for a trap signal.
-	///
-	/// # Arguments
-	///
-	/// * `signal_type` - The type of signal to remove handlers for.
+
+
+
+
+
 	pub fn remove_handlers(&mut self, signal_type: TrapSignal) {
 		self.handlers.remove(&signal_type);
 	}

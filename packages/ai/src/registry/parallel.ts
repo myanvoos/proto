@@ -4,12 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://platform.parallel.ai/settings?tab=api-keys";
 
-/**
- * Login to Parallel.
- *
- * Opens browser to the API keys page, prompts the user to paste their API key,
- * and returns the API key directly.
- */
 export const loginParallel = createApiKeyLogin({
 	providerLabel: "Parallel",
 	authUrl: AUTH_URL,

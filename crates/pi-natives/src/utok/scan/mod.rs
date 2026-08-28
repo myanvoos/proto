@@ -1,19 +1,3 @@
-//! Hand-written per-family codepoint scanners (runtime pre-tokenization).
-//!
-//! Contract (see `pretoken`): each family exposes
-//! `pub fn next_piece<U: Unit>(units: &[U], pos: usize) -> usize` returning
-//! the END unit offset of the piece starting at `pos` (`pos < end <= len`).
-//! Scanners run natively over any UTF flavor via [`Unit::decode`] — no
-//! regex engine, no transcode. Correctness bar: piece boundaries identical
-//! to the family's reference regex under fancy-regex/`regex`-module
-//! semantics (leftmost-first alternation, greedy with backtracking);
-//! fancy-regex remains a dev/test-only differential reference.
-//!
-//! Shared pieces: [`cls`] holds the character classes the patterns use,
-//! and the helpers below implement whole alternates that recur across
-//! families (contraction suffix, digit runs, punctuation runs, the
-//! whitespace trio).
-
 pub mod cl100k;
 pub mod deepseek;
 pub mod kimi;
@@ -22,13 +6,6 @@ pub mod qwen;
 
 use crate::utok::utf::Unit;
 
-/// Shared character classes. `\s` in the reference regexes is exactly the
-/// Unicode `White_Space` property, i.e. [`char::is_whitespace`];
-/// `\p{L}`/`\p{N}`/`\p{M}` are the general-category groups.
-///
-/// **UCD generation.** `xutf` defaults to UCD 16.0.0 tables to match the
-/// reference regex engines (fancy-regex, tiktoken-rs), so lookups call
-/// `xutf` directly.
 pub mod cls {
 	use xutf::{GeneralCategory as GC, GeneralCategoryGroup as GCG, Script, Ucd};
 
@@ -68,16 +45,11 @@ pub mod cls {
 		c.is_whitespace()
 	}
 
-	/// `\p{Han}` = Script=Han (includes e.g. 〇 U+3007 Nl and 々 U+3005 Lm).
-	/// The 17.0 additions include 4321 Han scalars (CJK ext. J, the ext.
-	/// B/F tail fills, and U+16FF2..=U+16FF6) that are `Script=Unknown` for
-	/// the reference engine.
 	#[inline]
 	pub fn is_han(c: char) -> bool {
 		!c.is_ascii() && c.script() == Script::Han
 	}
-	/// `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]` — tiktoken's "uppercase or
-	/// caseless letter" set. Overlaps [`in_lower_set`] on `Lm`/`Lo`/`M`.
+
 	#[inline]
 	pub fn in_upper_set(c: char) -> bool {
 		if c.is_ascii() {
@@ -90,7 +62,6 @@ pub mod cls {
 		) || cat.group() == GCG::Mark
 	}
 
-	/// `[\p{Ll}\p{Lm}\p{Lo}\p{M}]` — "lowercase or caseless letter" set.
 	#[inline]
 	pub fn in_lower_set(c: char) -> bool {
 		if c.is_ascii() {
@@ -102,16 +73,11 @@ pub mod cls {
 	}
 }
 
-/// Decode the codepoint at `i`, or `None` at end of input.
 #[inline]
 pub(crate) fn decode_at<U: Unit>(units: &[U], i: usize) -> Option<(char, usize)> {
 	(i < units.len()).then(|| U::decode(units, i))
 }
 
-/// `(?i:'s|'t|'re|'ve|'m|'ll|'d)` at `pos`. Returns the end, or `pos` when
-/// absent (the alternate is used both standalone and as an optional
-/// suffix). Case-insensitivity is simple case folding, so `'s` also
-/// matches U+017F ſ — matching the reference regex engines.
 pub(crate) fn contraction_end<U: Unit>(units: &[U], pos: usize) -> usize {
 	let Some(('\'', n0)) = decode_at(units, pos) else {
 		return pos;
@@ -134,7 +100,6 @@ pub(crate) fn contraction_end<U: Unit>(units: &[U], pos: usize) -> usize {
 	}
 }
 
-/// `\p{N}{1,3}` at `pos`.
 pub(crate) fn digits_end<U: Unit>(units: &[U], pos: usize) -> Option<usize> {
 	let mut i = pos;
 	for _ in 0..3 {
@@ -146,8 +111,6 @@ pub(crate) fn digits_end<U: Unit>(units: &[U], pos: usize) -> Option<usize> {
 	(i > pos).then_some(i)
 }
 
-/// ` ?[^\s\p{L}\p{N}]+[\r\n]*` at `pos`; `trailing_slash` adds o200k's `/`
-/// to the tail class (`[\r\n/]*`).
 pub(crate) fn punct_end<U: Unit>(units: &[U], pos: usize, trailing_slash: bool) -> Option<usize> {
 	let mut i = pos;
 	if let Some((' ', n)) = decode_at(units, pos) {
@@ -173,13 +136,6 @@ pub(crate) fn punct_end<U: Unit>(units: &[U], pos: usize, trailing_slash: bool) 
 	Some(i)
 }
 
-/// The tiktoken whitespace trio `\s*[\r\n]+|\s+(?!\S)|\s+`, in that
-/// alternation order, at `pos`:
-/// - a run containing a newline matches through its *last* `\r`/`\n` (trailing
-///   non-newline whitespace excluded — backtracked `\s*`),
-/// - otherwise a run at end of input matches whole,
-/// - otherwise the run gives back one codepoint for the `(?!\S)` lookahead
-///   (unless it is a single codepoint, which `\s+` takes whole).
 pub(crate) fn ws_end<U: Unit>(units: &[U], pos: usize) -> Option<usize> {
 	let mut i = pos;
 	let mut last_nl_end = None;

@@ -1,7 +1,7 @@
 use brush_core::{ExecutionExitCode, builtins, trace_categories};
 use clap::Parser;
 
-/// (UNIMPLEMENTED COMMAND)
+
 #[derive(Parser)]
 pub(crate) struct UnimplementedCommand {
 	#[clap(allow_hyphen_values = true)]

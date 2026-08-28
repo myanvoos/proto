@@ -59,10 +59,6 @@ function normalizeResponsesItemId(itemId: string, fallbackPrefix: ResponsesToolI
 	return truncateResponseItemId(itemId, prefix);
 }
 
-/**
- * Truncate an OpenAI Responses API item ID to 64 characters.
- * IDs exceeding the limit are replaced with a hash-based ID using the given prefix.
- */
 export function truncateResponseItemId(id: string, prefix: string): string {
 	if (id.length <= 64) return id;
 	return `${prefix}_${Bun.hash(id).toString(36)}`;
@@ -72,11 +68,7 @@ interface OpenAIResponsesReplaySanitizeOptions {
 	supportsImageDetailOriginal?: boolean;
 	supportsComputerUse?: boolean;
 }
-/**
- * Removes response-only lifecycle status from item types that reject it when replayed as input.
- *
- * Returns the original array when no item needs sanitization.
- */
+
 export function stripOpenAIResponsesOutputOnlyStatusesForReplay<TItem extends { type?: unknown; status?: unknown }>(
 	items: TItem[],
 ): TItem[] {
@@ -97,11 +89,6 @@ export function stripOpenAIResponsesOutputOnlyStatusesForReplay<TItem extends { 
 	return sanitized ?? items;
 }
 
-/**
- * Clamp `detail: "original"` only where Responses input_image parts live —
- * top-level items and `message.content[]`. Avoids a deep tree walk/clone of
- * every history node on providers that reject native-resolution images.
- */
 function clampReplayItemImageDetail(
 	item: Record<string, unknown>,
 	supportsImageDetailOriginal: boolean,
@@ -251,7 +238,6 @@ function collectOpenAIResponsesReasoningItemsWithSurvivingOutputIds(
 	return retainedReasoningItems;
 }
 
-/** Strip reasoning IDs whose only linked native output is a computer call that will be demoted. */
 export function stripOpenAIResponsesComputerLinkedReasoningIdsForReplay(items: ResponseInput): ResponseInput {
 	const records = items as unknown as Array<Record<string, unknown>>;
 	const linkedReasoningItems = collectOpenAIResponsesComputerLinkedReasoningItems(records, false);
@@ -277,10 +263,6 @@ export function stripOpenAIResponsesComputerLinkedReasoningIdsForReplay(items: R
 	return sanitized ?? items;
 }
 
-/**
- * Finalize provisional native-computer reasoning IDs after the complete
- * Responses input has been rebuilt, model-adapted, and orphan-repaired.
- */
 export function stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay(items: ResponseInput): ResponseInput {
 	const records = items as unknown as Array<Record<string, unknown>>;
 	const linkedReasoningItems = collectOpenAIResponsesComputerLinkedReasoningItems(records, true);
@@ -305,13 +287,6 @@ export function stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay(items:
 	return sanitized ?? items;
 }
 
-/**
- * Sanitize assistant-native Responses history for replay.
- *
- * Returns `undefined` for hidden-empty turns that only contain reasoning and an
- * empty assistant message, allowing callers to rebuild visible transcript
- * history instead of replaying stale native state.
- */
 export function sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(
 	items: Array<Record<string, unknown>>,
 	options: OpenAIResponsesReplaySanitizeOptions = {},
@@ -348,9 +323,6 @@ export function sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(
 	return hasReplayableAssistantOutput ? sanitized : undefined;
 }
 
-/**
- * Drop hidden-only fallback assistant replay after a native Responses snapshot is rejected.
- */
 export function sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(items: ResponseInput): ResponseInput {
 	const sanitized: ResponseInput = [];
 
@@ -476,11 +448,6 @@ export function getOpenAIResponsesHistoryItems(
 	return getOpenAIResponsesHistoryPayload(providerPayload, currentProvider, fallbackProvider)?.items;
 }
 
-/**
- * Resolve cache retention preference: explicit request option first, then the
- * `PI_CACHE_RETENTION` env override (`long` | `short` | `none`), then the
- * provider-supplied fallback.
- */
 export function resolveCacheRetention(
 	cacheRetention?: CacheRetention,
 	fallback: CacheRetention = "short",

@@ -1,10 +1,10 @@
-//! The `nohup` command, moved from `pi-shell`.
-//!
-//! This builtin detaches a backgrounded operand into a new session so a server
-//! survives the embedded shell's kill-on-drop teardown. A system `nohup` does
-//! not escape the process-group kill, so this command intentionally shadows it.
-//! Registration marks it as a transparent background wrapper, allowing brush to
-//! spawn the operand directly with session reparenting.
+
+
+
+
+
+
+
 
 use std::{future::Future, io::Write};
 
@@ -15,14 +15,14 @@ use clap::Parser;
 
 use crate::host::quote_arg;
 
-/// Runs an operand with the process-group policy required by `nohup`.
+
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 pub(crate) struct NohupCommand {
-	/// `--help` was the first argument; set by [`NohupCommand::from_argv`].
+
 	#[clap(skip)]
 	help:    bool,
-	/// `--version` was the first argument; set by [`NohupCommand::from_argv`].
+
 	#[clap(skip)]
 	version: bool,
 	#[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -30,10 +30,10 @@ pub(crate) struct NohupCommand {
 }
 
 impl NohupCommand {
-	/// Parses `argv` (without the command name) the way GNU nohup does:
-	/// `--help`/`--version` are recognized only as the first argument, and a
-	/// single leading `--` ends option processing, so `nohup -- --help` runs
-	/// a command named `--help` and `nohup -- --` runs one named `--`.
+
+
+
+
 	fn from_argv(mut argv: Vec<String>) -> Self {
 		match argv.first().map(String::as_str) {
 			Some("--help") => {
@@ -54,14 +54,14 @@ impl NohupCommand {
 impl builtins::Command for NohupCommand {
 	type Error = brush_core::Error;
 
-	/// Bypasses clap: clap silently eats the first `--` even inside a
-	/// `trailing_var_arg` capture, which loses the distinction between
-	/// `nohup --help` (help) and `nohup -- --help` (run `--help`).
+
+
+
 	fn new<I>(args: I) -> std::result::Result<Self, clap::Error>
 	where
 		I: IntoIterator<Item = String>,
 	{
-		// The first element is the command name itself.
+
 		Ok(Self::from_argv(args.into_iter().skip(1).collect()))
 	}
 
@@ -87,18 +87,18 @@ impl builtins::Command for NohupCommand {
 				);
 				return Ok(ExecutionResult::success());
 			}
-			// coreutils `nohup` with no operand fails with exit code 125.
+
 			if command.is_empty() {
 				return Ok(report_missing_operand(context.stderr()));
 			}
 
-			// `nohup <cmd>` (foreground) runs the operand directly and surfaces its
-			// exit status. Persistence across the host's teardown is a *background*
-			// concern that never reaches this builtin: brush's
-			// `transparent_background_wrapper` unwraps `nohup <server> &` to spawn the
-			// operand directly with session reparenting, double-forking it out of the
-			// shell's descendant tree. Like coreutils, we run the operand here; we only
-			// differ by not masking SIGHUP.
+
+
+
+
+
+
+
 			let command_line = rebuild_command_line(&command);
 
 			let mut params = context.params.clone();

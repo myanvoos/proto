@@ -36,7 +36,6 @@ import type {
 	ToolReply,
 } from "./protocol";
 
-/** Native desktop operations consumed by the script runtime. */
 export interface NativeDesktopSession {
 	readonly capabilities: DesktopCapabilities;
 	listDisplays(): Promise<DesktopDisplay[]>;
@@ -74,7 +73,6 @@ export interface NativeDesktopSession {
 	close(): Promise<void>;
 }
 
-/** Creates the native session co-located with the computer worker runtime. */
 type NativeDesktopSessionFactory = (options: DesktopSessionOptions) => NativeDesktopSession;
 
 type WindowFilter = { app?: string; title?: string };
@@ -414,7 +412,6 @@ class Win {
 	}
 }
 
-/** Hosts the persistent JavaScript runtime and native desktop session. */
 export class ComputerWorkerCore {
 	readonly #transport: ComputerWorkerTransport;
 	readonly #createSession: NativeDesktopSessionFactory;
@@ -422,11 +419,7 @@ export class ComputerWorkerCore {
 	#session?: NativeDesktopSession;
 	#runtime?: JsRuntime;
 	#active: ActiveRun | null = null;
-	/**
-	 * Per-run context, carried through AsyncLocalStorage so async work leaked
-	 * from an ended run (timers, dangling promises) keeps that run's aborted
-	 * context instead of borrowing the next run's signal and read-only policy.
-	 */
+
 	readonly #runContexts = new AsyncLocalStorage<ComputerRunContext>();
 	#closed = false;
 
@@ -437,7 +430,6 @@ export class ComputerWorkerCore {
 		this.#transport.send({ type: "ready" });
 	}
 
-	/** Routes one supervisor command into the persistent worker state. */
 	handle(message: ComputerWorkerInbound): void {
 		switch (message.type) {
 			case "ping":
@@ -734,7 +726,6 @@ export class ComputerWorkerCore {
 		try {
 			await this.#session?.close();
 		} catch {
-			// Closing is best-effort; the worker is exiting and has no request to report this against.
 		} finally {
 			this.#session = undefined;
 			this.#unsubscribe();

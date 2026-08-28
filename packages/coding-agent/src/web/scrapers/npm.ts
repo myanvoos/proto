@@ -2,9 +2,6 @@ import { tryParseJson } from "@oh-my-pi/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, formatNumber, loadPage } from "./types";
 
-/**
- * Handle npm URLs via registry API
- */
 export const handleNpm: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -14,12 +11,11 @@ export const handleNpm: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "www.npmjs.com" && parsed.hostname !== "npmjs.com") return null;
 
-		// Extract package name from /package/[scope/]name
 		const match = parsed.pathname.match(/^\/package\/(.+?)(?:\/|$)/);
 		if (!match) return null;
 
 		let packageName = decodeURIComponent(match[1]);
-		// Handle scoped packages: /package/@scope/name
+
 		if (packageName.startsWith("@")) {
 			const scopeMatch = parsed.pathname.match(/^\/package\/(@[^/]+\/[^/]+)/);
 			if (scopeMatch) packageName = decodeURIComponent(scopeMatch[1]);
@@ -27,11 +23,9 @@ export const handleNpm: SpecialHandler = async (
 
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from npm registry - use /latest endpoint for smaller response
 		const latestUrl = `https://registry.npmjs.org/${packageName}/latest`;
 		const downloadsUrl = `https://api.npmjs.org/downloads/point/last-week/${encodeURIComponent(packageName)}`;
 
-		// Fetch package info and download stats in parallel
 		const [result, downloadsResult] = await Promise.all([
 			loadPage(latestUrl, { timeout, signal }),
 			loadPage(downloadsUrl, { timeout: Math.min(timeout, 5), signal }),
@@ -39,7 +33,6 @@ export const handleNpm: SpecialHandler = async (
 
 		if (!result.ok) return null;
 
-		// Parse download stats
 		let weeklyDownloads: number | null = null;
 		if (downloadsResult.ok) {
 			const dlData = tryParseJson<{ downloads?: number }>(downloadsResult.content);

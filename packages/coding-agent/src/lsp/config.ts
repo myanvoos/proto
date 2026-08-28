@@ -12,13 +12,9 @@ import type { ServerConfig } from "./types";
 
 export interface LspConfig {
 	servers: Record<string, ServerConfig>;
-	/** Idle timeout in milliseconds. If set, LSP clients will be shutdown after this period of inactivity. Disabled by default. */
+
 	idleTimeoutMs?: number;
 }
-
-// =============================================================================
-// Default Server Configuration Loading
-// =============================================================================
 
 const PID_TOKEN = "$PID";
 
@@ -166,19 +162,9 @@ function applyRuntimeDefaults(servers: Record<string, ServerConfig>): Record<str
 	return updated;
 }
 
-// =============================================================================
-// Configuration Loading
-// =============================================================================
-
-/**
- * Check if any root marker file exists in the directory
- */
 function hasRootMarkers(cwd: string, markers: string[]): boolean {
 	let entries: string[] | null = null;
 	for (const marker of markers) {
-		// Handle glob-like patterns (e.g., "*.cabal"). Root markers live at the
-		// project root, so a one-level readdir is sufficient — and avoids
-		// Bun.Glob descending into node_modules for patterns like "**/*.cabal".
 		if (marker.includes("*")) {
 			if (entries === null) {
 				try {
@@ -204,9 +190,6 @@ function hasRootMarkers(cwd: string, markers: string[]): boolean {
 	return false;
 }
 
-/**
- * Check whether any ancestor directory of a file is an LSP project root.
- */
 export function hasRootMarkerAncestor(filePath: string, markers: string[]): boolean {
 	if (markers.length === 0) return false;
 
@@ -219,14 +202,6 @@ export function hasRootMarkerAncestor(filePath: string, markers: string[]): bool
 	}
 }
 
-// =============================================================================
-// Local Binary Resolution
-// =============================================================================
-
-/**
- * Local bin directories to check before $PATH, ordered by priority.
- * Each entry maps a root marker to the bin directory to check.
- */
 const PYTHON_ROOT_MARKERS = [
 	"pyproject.toml",
 	"ty.toml",
@@ -240,16 +215,15 @@ const PYTHON_ROOT_MARKERS = [
 ];
 
 const LOCAL_BIN_PATHS: Array<{ markers: string[]; binDir: string }> = [
-	// Node.js - check node_modules/.bin/
 	{ markers: ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"], binDir: "node_modules/.bin" },
-	// Python - check virtual environment bin directories
+
 	{ markers: PYTHON_ROOT_MARKERS, binDir: ".venv/bin" },
 	{ markers: PYTHON_ROOT_MARKERS, binDir: "venv/bin" },
 	{ markers: PYTHON_ROOT_MARKERS, binDir: ".env/bin" },
-	// Ruby - check vendor bundle and binstubs
+
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "vendor/bundle/bin" },
 	{ markers: ["Gemfile", "Gemfile.lock"], binDir: "bin" },
-	// Go - check project-local bin
+
 	{ markers: ["go.mod", "go.sum", "go.work"], binDir: "bin" },
 ];
 
@@ -262,20 +236,10 @@ function resolveCommandFromLocalRoot(command: string, cwd: string): string | nul
 	return null;
 }
 
-/** Controls project-local and PATH executable lookup. */
 interface ResolveCommandOptions extends Pick<WhichOptions, "cache" | "PATH"> {
-	/** Ordered project roots checked before PATH; defaults to the command cwd. */
 	localRoots?: readonly string[];
 }
 
-/**
- * Resolve a command to an executable path.
- * Checks project-local bin directories first, then falls back to $PATH.
- *
- * @param command - The command name (e.g., "typescript-language-server")
- * @param cwd - Working directory to search from
- * @returns Absolute path to the executable, or null if not found
- */
 export function resolveCommand(command: string, cwd: string, options?: ResolveCommandOptions): string | null {
 	if (options?.localRoots) {
 		for (const root of options.localRoots) {
@@ -338,20 +302,14 @@ function marketplaceConfigSource(root: ClaudePluginRoot): ConfigSource {
 	};
 }
 
-/**
- * Configuration sources in priority order.
- * Supports both visible and hidden variants at each config location.
- */
 function getConfigSources(cwd: string): ConfigSource[] {
 	const filenames = ["lsp.json", ".lsp.json", "lsp.yaml", ".lsp.yaml", "lsp.yml", ".lsp.yml"];
 	const sources: ConfigSource[] = [];
 
-	// Project root files (highest priority)
 	for (const filename of filenames) {
 		sources.push(fileConfigSource(path.join(cwd, filename)));
 	}
 
-	// Project config directories (.proto/, .pi/, .claude/)
 	const projectDirs = getConfigDirPaths("", { user: false, project: true, cwd });
 	for (const dir of projectDirs) {
 		for (const filename of filenames) {
@@ -359,7 +317,6 @@ function getConfigSources(cwd: string): ConfigSource[] {
 		}
 	}
 
-	// User config directories (~/.proto/agent/, ~/.pi/agent/, ~/.claude/)
 	const userDirs = getConfigDirPaths("", { user: true, project: false });
 	for (const dir of userDirs) {
 		for (const filename of filenames) {
@@ -367,7 +324,6 @@ function getConfigSources(cwd: string): ConfigSource[] {
 		}
 	}
 
-	// Plugin LSP configs (from marketplace/--plugin-dir roots)
 	const pluginRoots = getPreloadedPluginRoots();
 	for (const root of pluginRoots) {
 		for (const filename of filenames) {
@@ -376,7 +332,6 @@ function getConfigSources(cwd: string): ConfigSource[] {
 		sources.push(marketplaceConfigSource(root));
 	}
 
-	// User home root files (lowest priority fallback)
 	for (const filename of filenames) {
 		sources.push(fileConfigSource(path.join(os.homedir(), filename)));
 	}
@@ -384,38 +339,6 @@ function getConfigSources(cwd: string): ConfigSource[] {
 	return sources;
 }
 
-/**
- * Load LSP configuration.
- *
- * Priority (highest to lowest):
- * 1. Project root: lsp.json/.lsp.json/lsp.yml/.lsp.yml/lsp.yaml/.lsp.yaml
- * 2. Project config dirs: .proto/lsp.*, .pi/lsp.*, .claude/lsp.* (+ hidden variants)
- * 3. User config dirs: ~/.proto/agent/lsp.*, ~/.pi/agent/lsp.*, ~/.claude/lsp.* (+ hidden variants)
- * 4. User home root: ~/lsp.*, ~/.lsp.*
- * 5. Auto-detect from project markers + available binaries
- *
- * Config files are merged from lowest to highest priority; later files override earlier settings.
- *
- * Config file format (JSON or YAML):
- * ```json
- * {
- *   "servers": {
- *     "typescript-language-server": {
- *       "command": "typescript-language-server",
- *       "args": ["--stdio", "--log-level", "4"],
- *       "disabled": false
- *     },
- *     "my-custom-server": {
- *       "command": "/path/to/server",
- *       "args": ["--stdio"],
- *       "fileTypes": [".xyz"],
- *       "languageId": "xyz",
- *       "rootMarkers": [".xyz-project"]
- *     }
- *   }
- * }
- * ```
- */
 export function loadConfig(cwd: string): LspConfig {
 	let mergedServers = coerceServerConfigs(DEFAULTS);
 
@@ -437,15 +360,12 @@ export function loadConfig(cwd: string): LspConfig {
 	}
 
 	if (!hasOverrides) {
-		// Auto-detect: find servers based on project markers AND available binaries
 		const detected: Record<string, ServerConfig> = {};
 		const defaultsWithRuntime = applyRuntimeDefaults(mergedServers);
 
 		for (const [name, config] of Object.entries(defaultsWithRuntime)) {
-			// Check if project has root markers for this language
 			if (!hasRootMarkers(cwd, config.rootMarkers)) continue;
 
-			// Check if the language server binary is available (local or $PATH)
 			const resolved = resolveCommand(config.command, cwd);
 			if (!resolved) continue;
 
@@ -455,7 +375,6 @@ export function loadConfig(cwd: string): LspConfig {
 		return { servers: detected, idleTimeoutMs };
 	}
 
-	// Merge overrides with defaults and filter to available servers
 	const mergedWithRuntime = applyRuntimeDefaults(mergedServers);
 	const available: Record<string, ServerConfig> = {};
 
@@ -470,14 +389,6 @@ export function loadConfig(cwd: string): LspConfig {
 	return { servers: available, idleTimeoutMs };
 }
 
-// =============================================================================
-// Server Selection
-// =============================================================================
-
-/**
- * Find all servers that can handle a file based on extension.
- * Returns servers sorted with primary (non-linter) servers first.
- */
 export function getServersForFile(config: LspConfig, filePath: string): Array<[string, ServerConfig]> {
 	const ext = path.extname(filePath).toLowerCase();
 	const extNoDot = ext.startsWith(".") ? ext.slice(1) : ext;
@@ -486,9 +397,6 @@ export function getServersForFile(config: LspConfig, filePath: string): Array<[s
 
 	for (const [name, serverConfig] of Object.entries(config.servers)) {
 		const supportsFile = serverConfig.fileTypes.some(fileType => {
-			// Accept both `.ts` and `ts` forms in user config / fixtures so a
-			// missing dot in `fileTypes` doesn't silently exclude the server
-			// from extension-based routing (e.g. rename_file's relevance filter).
 			const normalized = fileType.toLowerCase();
 			const normalizedNoDot = normalized.startsWith(".") ? normalized.slice(1) : normalized;
 			return (
@@ -504,7 +412,6 @@ export function getServersForFile(config: LspConfig, filePath: string): Array<[s
 		}
 	}
 
-	// Sort: primary servers (non-linters) first, then linters
 	return matches.sort((a, b) => {
 		const aIsLinter = a[1].isLinter ? 1 : 0;
 		const bIsLinter = b[1].isLinter ? 1 : 0;
@@ -512,10 +419,6 @@ export function getServersForFile(config: LspConfig, filePath: string): Array<[s
 	});
 }
 
-/**
- * Find the primary server for a file (prefers type-checkers over linters).
- * Used for operations like definition, hover, references that need type intelligence.
- */
 export function getServerForFile(config: LspConfig, filePath: string): [string, ServerConfig] | null {
 	const servers = getServersForFile(config, filePath);
 	return servers.length > 0 ? servers[0] : null;

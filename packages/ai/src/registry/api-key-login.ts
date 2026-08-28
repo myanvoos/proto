@@ -1,11 +1,3 @@
-/**
- * Shared factory for API-key-paste "login" flows.
- *
- * Several providers (Cerebras, Synthetic, Moonshot, Together, NanoGPT, ZenMux)
- * don't actually implement OAuth — they just ask the user to paste an API key,
- * optionally validate it, and return the trimmed key.
- */
-
 import * as AIError from "../error";
 import {
 	validateAnthropicCompatibleApiKey,
@@ -36,19 +28,18 @@ type ModelsEndpointValidation = {
 };
 
 export type ApiKeyLoginConfig = {
-	/** Display name used in error messages, e.g. "Cerebras", "NanoGPT". */
 	providerLabel: string;
-	/** URL opened in browser for the user to grab their key, or omitted to skip onAuth. */
+
 	authUrl?: string;
-	/** Instructions shown with the onAuth callback, or omitted to skip onAuth. */
+
 	instructions?: string;
-	/** Prompt message shown when asking for the key paste. */
+
 	promptMessage: string;
-	/** Placeholder string for the prompt (e.g. "sk-...", "csk-..."). */
+
 	placeholder: string;
-	/** Validation strategy, or `null` to skip validation. */
+
 	validation: ChatCompletionsValidation | AnthropicMessagesValidation | ModelsEndpointValidation | null;
-	/** Value returned for an empty key; also allows an empty prompt response. */
+
 	emptyKeyFallback?: string;
 };
 

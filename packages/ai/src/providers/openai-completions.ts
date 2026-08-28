@@ -179,17 +179,12 @@ function hasPositiveCacheReadTokenField(rawUsage: object): boolean {
 	return typeof promptTokenDetails.cached_tokens === "number" && promptTokenDetails.cached_tokens > 0;
 }
 
-/**
- * Normalize tool call ID for Mistral.
- * Mistral requires tool IDs to be exactly 9 alphanumeric characters (a-z, A-Z, 0-9).
- */
 function normalizeMistralToolId(id: string, isMistral: boolean): string {
 	if (!isMistral) return id;
-	// Remove non-alphanumeric characters
+
 	let normalized = id.replace(/[^a-zA-Z0-9]/g, "");
-	// Mistral requires exactly 9 characters
+
 	if (normalized.length < 9) {
-		// Pad with deterministic characters based on original ID to ensure matching
 		const padding = "ABCDEFGHI";
 		normalized = normalized + padding.slice(0, 9 - normalized.length);
 	} else if (normalized.length > 9) {
@@ -197,13 +192,7 @@ function normalizeMistralToolId(id: string, isMistral: boolean): string {
 	}
 	return normalized;
 }
-// Direct DeepSeek model ids on NanoGPT are routed via the default tools-capable
-// path. We deliberately do NOT append `:tools` here: with `:tools`, NanoGPT
-// performs server-side tool-call parsing on the upstream DeepSeek stream and
-// 502s with `code: "malformed_tool_call"` on more complex tool schemas (issue
-// #1488). The default route forwards `delta.content` (including DSML
-// envelope leaks) which `StreamMarkupHealing` heals into a structured call
-// client-side.
+
 function resolveOpenAICompletionsRoutingEffort(
 	model: Model<"openai-completions">,
 	effort: Effort | undefined,
@@ -221,9 +210,6 @@ function resolveOpenAICompletionsModelId(
 	model: Model<"openai-completions">,
 	options: OpenAICompletionsOptions | undefined,
 ): string {
-	// Effort-tier variants route per request effort (off → bare id, efforts →
-	// the thinking backing id); catalog variants (Copilot long-context `-1m`
-	// entries) pin via `requestModelId`; everything else serializes `model.id`.
 	const requestedEffort =
 		options?.reasoning && !options.disableReasoning && model.reasoning ? (options.reasoning as Effort) : undefined;
 	const effort = resolveOpenAICompletionsRoutingEffort(model, requestedEffort);
@@ -231,17 +217,6 @@ function resolveOpenAICompletionsModelId(
 	return applyWireModelIdTransform(wireId, model.compat.wireModelIdMode, options?.openrouterVariant);
 }
 
-/**
- * Normalize OpenAI-compatible streaming `delta.content` into plain text.
- * Most providers stream `delta.content` as a string, but some (notably Mistral
- * Medium 3.5 / `mistral-medium-2604`) return an array of typed content parts
- * — e.g. `[{ type: "text", text: "Hello" }]`. Without normalization those
- * parts get string-coerced via `text += array`, producing the literal
- * `[object Object]` sequences observed in issue #911.
- *
- * Returns the joined text. Non-text parts and unknown shapes are skipped so
- * we never emit JS object sigils as visible output.
- */
 function normalizeStreamingContentText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
@@ -403,11 +378,6 @@ function mergeStreamingArgumentObjects(
 	return merged;
 }
 
-/**
- * Check if conversation messages contain tool calls or tool results.
- * This is needed because Anthropic (via proxy) requires the tools param
- * to be present when messages include tool_calls or tool role messages.
- */
 function hasToolHistory(messages: Message[]): boolean {
 	for (const msg of messages) {
 		if (msg.role === "toolResult") {
@@ -421,19 +391,7 @@ function hasToolHistory(messages: Message[]): boolean {
 	}
 	return false;
 }
-/**
- * Identify "real progress" stream chunks vs. keepalives, role-only preambles,
- * and empty `{choices:[]}` no-ops emitted by some OpenAI-compatible endpoints.
- * Without this filter, every keepalive resets `iterateWithIdleTimeout`'s
- * deadline, so a provider that streams nothing but pings keeps the watchdog
- * asleep indefinitely — observed against z.ai/GLM via OpenRouter where a
- * subagent stalled for hours with no error surfaced.
- *
- * A chunk counts as progress when it carries terminal usage, a finish reason,
- * or a model-produced delta (content / tool calls / reasoning / refusal).
- * Role-only `delta: { role: "assistant" }` preambles do NOT count; we want the
- * (longer) first-event timeout to keep governing until real output appears.
- */
+
 export function isOpenAICompletionsProgressChunk(chunk: unknown): boolean {
 	if (!chunk || typeof chunk !== "object") return false;
 	const record = chunk as {
@@ -471,21 +429,14 @@ export function isOpenAICompletionsProgressChunk(chunk: unknown): boolean {
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: ToolChoice;
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-	/** Force-disable reasoning where supported, or request the lowest effort on generic effort endpoints. */
+
 	disableReasoning?: boolean;
 	serviceTier?: ServiceTier;
-	/** @internal True when maxTokens came from the caller, not the model default. */
+
 	maxTokensExplicit?: boolean;
-	/**
-	 * Routing-variant suffix appended to OpenRouter model IDs when none is
-	 * already present (`anthropic/claude-haiku-latest` → `…:nitro`). Common
-	 * values: `"nitro"`, `"floor"`, `"online"`, `"exacto"`. Ignored when the
-	 * resolved `model.id` already contains a colon-suffix after the last
-	 * provider segment (explicit `:nitro` in the selector or a catalog entry
-	 * with the variant baked in).
-	 */
+
 	openrouterVariant?: string;
-	/** Opt-in GPT-5.6+ prompt-cache policy. Unsupported explicit mode fails locally. */
+
 	promptCache?: OpenAIPromptCacheOptions;
 }
 
@@ -495,7 +446,7 @@ type ToolStrictModeOverride = Exclude<ResolvedOpenAICompat["toolStrictMode"], "m
 type BuiltOpenAICompletionTools = {
 	tools: ChatCompletionTool[];
 	toolStrictMode: AppliedToolStrictMode;
-	/** True when at least one wire tool was sent with `strict: true`. */
+
 	strictToolsApplied: boolean;
 };
 
@@ -533,13 +484,6 @@ function getOpenAICompletionsProviderSessionState(
 	return created;
 }
 
-// DeepSeek models leak chat-template special tokens (e.g. `<｜tool_calls_begin｜>`,
-// `<｜DSML｜tool_calls｜>`) into visible `content` deltas when hosted behind providers
-// (such as NVIDIA NIM) that don't strip them server-side. The structured `tool_calls`
-// payload is still emitted correctly — we only need to filter the leaked markers from
-// user-visible text. Tokens use either fullwidth pipes (｜, U+FF5C) or ASCII pipes.
-// Body is restricted to identifier-like chars (with the DeepSeek tokenizer's `▁`),
-// capped at a sane length to avoid swallowing legitimate angle-bracket text.
 const DEEPSEEK_SPECIAL_TOKEN_REGEX = /<(?:｜|\|)[A-Za-z0-9_.｜|▁]{1,64}(?:｜|\|)>/g;
 const DEEPSEEK_SPECIAL_TOKEN_AT_START_REGEX = /^\s*<(?:｜|\|)[A-Za-z0-9_.｜|▁]{1,64}(?:｜|\|)>/;
 const DEEPSEEK_SPECIAL_TOKEN_AT_END_REGEX = /<(?:｜|\|)[A-Za-z0-9_.｜|▁]{1,64}(?:｜|\|)>\s*$/;
@@ -555,9 +499,6 @@ function stripDeepseekSpecialTokens(text: string): string {
 	return normalized;
 }
 
-// Find a trailing partial `<｜...` (or `<|...`) that has not yet been closed by a
-// matching `｜>`/`|>`, so it can be held back until the next chunk arrives. A solo
-// trailing `<` is also held in case it is the start of a new token.
 function getTrailingPartialDeepseekToken(text: string): string {
 	let bestIdx = -1;
 	for (const delim of DEEPSEEK_OPEN_DELIMS) {
@@ -569,18 +510,13 @@ function getTrailingPartialDeepseekToken(text: string): string {
 	}
 	const tail = text.slice(bestIdx);
 	if (tail.includes("｜>") || tail.includes("|>")) return "";
-	// Cap the held-back length so a stray `<｜` in normal prose can't grow unboundedly.
+
 	if (tail.length > 256) return "";
 	return tail;
 }
 const OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE =
 	"OpenAI completions stream timed out while waiting for the first event";
-// How long to keep draining the stream after a `finish_reason` chunk arrived.
-// Compliant hosts follow it (almost) immediately with an optional usage-only
-// chunk and the `[DONE]` sentinel, so the window only ever elapses on hosts
-// that hold the connection open after the response logically completed —
-// without it the turn parks on `iterator.next()` until the idle watchdog
-// converts the already-successful response into a timeout error.
+
 const OPENAI_COMPLETIONS_POST_FINISH_GRACE_MS = 2_500;
 
 const streamOpenAICompletionsOnce = (
@@ -623,9 +559,7 @@ const streamOpenAICompletionsOnce = (
 					onSseEvent(event, model);
 				}
 			: undefined;
-		// Assigned once the block helpers exist (they are scoped to the `try`);
-		// the catch handler uses it to close open blocks before emitting the
-		// terminal error so both exit paths obey the same block lifecycle.
+
 		let finishOpenBlocksOnError: () => void = () => {};
 
 		try {
@@ -708,17 +642,12 @@ const streamOpenAICompletionsOnce = (
 						body: params,
 						signal: requestSignal,
 						fetch: options?.fetch,
-						// Transient 408/429/5xx get Retry-After-aware transport retries.
-						// The first-event watchdog above aborts `requestSignal`, which
-						// bounds every attempt and backoff sleep — retries cannot
-						// extend the deadline.
+
 						onSseEvent: rawSseObserver,
 					});
 					await notifyProviderResponse(options, response, model, requestId);
 					return events;
 				} finally {
-					// Headers arrived (or the request failed); from here the
-					// first-event deadline is enforced by `iterateWithIdleTimeout`.
 					if (requestTimeout !== undefined) clearTimeout(requestTimeout);
 				}
 			};
@@ -765,8 +694,7 @@ const streamOpenAICompletionsOnce = (
 					) {
 						throw error;
 					}
-					// Remember the rejection for the rest of the session so every
-					// subsequent request doesn't pay a strict-400 + retry round-trip.
+
 					disableStrictToolsForScope(providerSessionState, strictToolsScope);
 					disableStrictTools = true;
 					openaiStream = await createCompletionsStream("none");
@@ -777,10 +705,6 @@ const streamOpenAICompletionsOnce = (
 			}
 			stream.push({ type: "start", partial: output });
 
-			// Some OpenAI-compatible DeepSeek hosts (including NVIDIA NIM and DeepSeek's
-			// native API) leak chat-template tool-call markers in `delta.content` even
-			// though tool calls are also surfaced structurally. Strip the leaked markers
-			// so users don't see raw `<｜...｜>` tokens.
 			const stripDeepseekChatTemplateTokens = policy.stream.stripSpecialTokens === "deepseek";
 			type ToolCallStreamBlock = ToolCall & {
 				partialArgs?: string | Record<string, unknown>;
@@ -790,10 +714,7 @@ const streamOpenAICompletionsOnce = (
 			type OpenAIStreamBlock = TextContent | ThinkingContent | ToolCallStreamBlock;
 			const pendingToolCallBlocks: ToolCallStreamBlock[] = [];
 			const toolCallBlockByIndex = new Map<number, ToolCallStreamBlock>();
-			// Blocks born from an unkeyed multi-entry `tool_calls` array (no `id`,
-			// no `index`), tracked by array offset so continuation chunks that omit
-			// the entry name still route back to the sibling created earlier
-			// instead of collapsing onto `currentBlock`.
+
 			const unkeyedBatchBlocks: (ToolCallStreamBlock | undefined)[] = [];
 			const clearUnkeyedBatchSlot = (block: ToolCallStreamBlock): void => {
 				for (let index = 0; index < unkeyedBatchBlocks.length; index++) {
@@ -809,14 +730,7 @@ const streamOpenAICompletionsOnce = (
 				if (block.partialArgs === undefined) return;
 				const contentIndex = blockIndex(block);
 				if (contentIndex < 0) return;
-				// Object-shaped `partialArgs` came from MiniMax-compatible hosts that stream
-				// `function.arguments` as an object. The per-chunk handler holds them with an
-				// empty wire delta (see the object branch below) because emitting each chunk's
-				// `JSON.stringify(rawArgs)` would feed concat-based downstream consumers
-				// (proxy.ts, openai-chat-server, openai-responses-server, anthropic-messages-server)
-				// an invalid concatenation like `{"input":"a"}{"input":"b"}`. Flush the final
-				// merged object as one concat-safe delta now so those consumers reconstruct the
-				// args correctly before observing `toolcall_end`.
+
 				if (typeof block.partialArgs === "object" && !Array.isArray(block.partialArgs)) {
 					const fullJson = JSON.stringify(block.partialArgs);
 					if (fullJson.length > 0 && fullJson !== "{}") {
@@ -864,10 +778,6 @@ const streamOpenAICompletionsOnce = (
 				text: string,
 			): void => {
 				if (currentBlock?.type !== "text") {
-					// Leave toolCall blocks pending across text transitions: chunks after
-					// the first typically carry only `index`, so a finished (de-registered)
-					// call would be reborn as a nameless phantom block when its arguments
-					// resume. The stream-end sweep finalizes pending calls.
 					if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
 					currentBlock = { type: "text", text: "" };
 					message.content.push(currentBlock);
@@ -891,8 +801,6 @@ const streamOpenAICompletionsOnce = (
 					currentBlock?.type !== "thinking" ||
 					(signature !== undefined && currentBlock.thinkingSignature !== signature)
 				) {
-					// Same as appendText: leave toolCall blocks pending so index-only
-					// continuation deltas can still find them.
 					if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
 					currentBlock = { type: "thinking", thinking: "", thinkingSignature: signature };
 					message.content.push(currentBlock);
@@ -919,13 +827,7 @@ const streamOpenAICompletionsOnce = (
 				if (!firstTokenTime) firstTokenTime = performance.now();
 				appendText(output, stream, text);
 			};
-			// Tracks the last full cumulative reasoning snapshot per signature (the
-			// reasoning field name) so dedup survives block transitions. Required
-			// for MiniMax-M3: once `</think>` and visible text arrive, currentBlock
-			// flips to "text", but later chunks keep carrying the same cumulative
-			// `reasoning_content` snapshot. Without an external tracker the guard
-			// below misses and the snapshot gets re-emitted as a fresh thinking
-			// block after the answer has started.
+
 			const lastCumulativeReasoningBySignature = new Map<string, string>();
 			const appendThinkingDelta = (
 				thinking: string,
@@ -1016,12 +918,6 @@ const streamOpenAICompletionsOnce = (
 				for (const call of calls) emitHealedToolCall(call);
 			};
 
-			// Terminal-chunk bookkeeping for the post-finish grace window below.
-			// `streamFinishedAt` flips when a chunk carries `finish_reason`;
-			// `sawUsagePayload` flips when a usage payload was parsed. Some
-			// OpenAI-compatible servers send basic usage with `finish_reason` and
-			// cache-read details in a trailing usage-only chunk, so only the
-			// no-choice terminal path may break while those details are pending.
 			let streamFinishedAt: number | undefined;
 			let sawUsagePayload = false;
 			let awaitTrailingUsageDetails = false;
@@ -1043,23 +939,14 @@ const streamOpenAICompletionsOnce = (
 			const terminalAwareStream = iterateWithTerminalGrace(timedOpenaiStream, {
 				finishedAtMs: () => streamFinishedAt,
 				graceMs: OPENAI_COMPLETIONS_POST_FINISH_GRACE_MS,
-				// The inner idle-timeout generator is parked mid-`next()` when the
-				// grace window closes, so abort the transport to settle that read
-				// and release the socket immediately (a queued `.return()` alone
-				// would wait on the never-arriving next chunk).
+
 				onGraceEnd: () => requestAbortController.abort(),
 			});
 			for await (const chunk of terminalAwareStream) {
 				if (!chunk || typeof chunk !== "object") continue;
 
-				// OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
-				// and each chunk in a streamed completion carries the same id.
 				output.responseId ||= chunk.id;
 
-				// Aggregators (OpenRouter, Vercel AI Gateway, …) report the upstream
-				// provider that actually served the request via a top-level `provider`
-				// field present on every chunk. Capture the first non-empty value so
-				// callers can attribute routing without re-parsing the raw stream.
 				if (!output.upstreamProvider) {
 					const upstreamProvider = (chunk as ProviderAttributedChatCompletionChunk).provider;
 					output.upstreamProvider =
@@ -1072,9 +959,6 @@ const streamOpenAICompletionsOnce = (
 
 				const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
 				if (!choice) {
-					// Trailing usage-only chunk (`stream_options.include_usage`) after
-					// `finish_reason`: the response is complete — stop pulling instead
-					// of waiting for `[DONE]`/close from hosts that never send either.
 					if (streamFinishedAt !== undefined && sawUsagePayload) break;
 					continue;
 				}
@@ -1096,10 +980,6 @@ const streamOpenAICompletionsOnce = (
 				}
 
 				if (choice.delta) {
-					// Some endpoints return reasoning in reasoning_content (llama.cpp),
-					// or reasoning (other openai compatible endpoints). Use the first
-					// non-empty reasoning field to avoid duplication when a chunk carries
-					// multiple aliases for the same reasoning text.
 					const reasoningFields = ["reasoning_content", "reasoning", "reasoning_text"];
 					const deltaRecord = choice.delta as Record<string, unknown>;
 					let foundReasoningField: string | undefined;
@@ -1146,10 +1026,7 @@ const streamOpenAICompletionsOnce = (
 							const toolCall = toolCalls[toolCallOffset]!;
 							const streamIndex = typeof toolCall.index === "number" ? toolCall.index : undefined;
 							const incomingName = toolCall.function?.name || "";
-							// Multi-entry `tool_calls` arrays without `id`/`index` — either the
-							// opening chunk that carries per-entry names, or a continuation whose
-							// entries are argument-only. Either way, route by array offset so
-							// sibling calls stay isolated.
+
 							const unkeyedBatchedArrayEntry = toolCalls.length > 1 && streamIndex === undefined && !toolCall.id;
 							let block = streamIndex !== undefined ? toolCallBlockByIndex.get(streamIndex) : undefined;
 							if (!block && toolCall.id) {
@@ -1191,8 +1068,6 @@ const streamOpenAICompletionsOnce = (
 								});
 								if (unkeyedBatchedArrayEntry) unkeyedBatchBlocks[toolCallOffset] = block;
 							} else {
-								// Resuming a pending call after interleaved text/thinking:
-								// close the text/thinking block we drifted into.
 								if (currentBlock !== block && currentBlock && currentBlock.type !== "toolCall") {
 									finishCurrentBlock(currentBlock);
 								}
@@ -1206,9 +1081,7 @@ const streamOpenAICompletionsOnce = (
 							if (toolCall.id) block.id = toolCall.id;
 							if (incomingName) block.name = incomingName;
 							let delta = "";
-							// The OpenAI SDK types `function.arguments` as a JSON string, but MiniMax-compatible
-							// hosts stream a fully-formed object instead. Model both shapes so the branches below
-							// narrow honestly rather than widening through `unknown`.
+
 							const rawArgs = toolCall.function?.arguments as string | Record<string, unknown> | undefined;
 							if (typeof rawArgs === "string") {
 								if (rawArgs.length > 0) {
@@ -1225,19 +1098,6 @@ const streamOpenAICompletionsOnce = (
 									}
 								}
 							} else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
-								// MiniMax-compatible hosts stream `function.arguments` as an object instead of the
-								// OpenAI JSON-string contract. Most chunks carry the complete object in one delta,
-								// but cannot rely on that: replacing per-chunk drops earlier keys (and earlier
-								// string content for the same key) when the host fragments the args across deltas.
-								// Deep-merge into the accumulated object. Strings and arrays detect
-								// cumulative-vs-delta semantics by prefix, nested objects merge by key, and
-								// prototype-polluting keys are ignored before storing or comparing values.
-								//
-								// `delta` stays empty here: emitting `JSON.stringify(rawArgs)` per chunk feeds
-								// downstream concat-based accumulators (proxy.ts, openai-chat-server,
-								// openai-responses-server, anthropic-messages-server) an invalid sequence like
-								// `{"input":"a"}{"input":"b"}`. The merged object is flushed as a single
-								// concat-safe delta in `finishToolCallBlock` before `toolcall_end` instead.
 								const prev =
 									block.partialArgs !== null &&
 									typeof block.partialArgs === "object" &&
@@ -1274,9 +1134,6 @@ const streamOpenAICompletionsOnce = (
 					}
 				}
 
-				// If usage arrived on the finish chunk without cache-read fields,
-				// keep draining through the grace window for vLLM-style trailing
-				// usage details instead of finalizing the incomplete accounting.
 				if (streamFinishedAt !== undefined && sawUsagePayload && !awaitTrailingUsageDetails) break;
 			}
 
@@ -1286,10 +1143,6 @@ const streamOpenAICompletionsOnce = (
 				}
 				flushHealedToolCalls();
 				if (healedToolCallEmitted && output.stopReason === "stop") {
-					// Hosts that leak tool-call templates often still report
-					// `finish_reason: stop` for the surrounding turn. Promote
-					// only that natural-completion finish — leave `error`,
-					// `length`, `aborted`, etc. untouched.
 					output.stopReason = "toolUse";
 				}
 			}
@@ -1298,9 +1151,6 @@ const streamOpenAICompletionsOnce = (
 				flushDeepseekStripBuffer(true);
 			}
 
-			// Detect premature stream closure before the normal block-finalization
-			// sweep. Throwing after that sweep would make the error handler emit a
-			// second text_end/thinking_end for the same partial block.
 			if (streamFinishedAt === undefined && output.content.length > 0) {
 				throw new AIError.ProviderResponseError(
 					"OpenAI completions stream closed before a finish_reason was received",
@@ -1315,14 +1165,6 @@ const streamOpenAICompletionsOnce = (
 				finishPendingToolCallBlocks();
 			}
 
-			// Some OpenAI-compatible hosts stream structured `tool_calls` but report
-			// `finish_reason: "stop"` instead of `"tool_calls"`. In the OpenAI contract a
-			// tool call always means "execute and continue", so promote that
-			// natural-completion finish to `toolUse` whenever the turn produced tool-call
-			// blocks — the agent loop gates execution on the stop reason. `error`,
-			// `length`, and `aborted` are intentionally left untouched. (Anthropic's
-			// distinct `end_turn`-with-tool-calls "abandon" semantics live in its own
-			// provider and correctly keep `stop`.)
 			if (output.stopReason === "stop" && output.content.some(b => b.type === "toolCall")) {
 				output.stopReason = "toolUse";
 			}
@@ -1359,9 +1201,6 @@ const streamOpenAICompletionsOnce = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			// Close open blocks first so consumers tracking text_/thinking_/toolcall_
-			// lifecycles never see orphaned starts on the error path. Best-effort: a
-			// throw here must not prevent the terminal error event below.
 			try {
 				finishOpenBlocksOnError();
 			} catch {}
@@ -1377,7 +1216,7 @@ const streamOpenAICompletionsOnce = (
 			output.errorStatus = result.status;
 			output.errorId = result.id;
 			output.errorMessage = result.message;
-			// Some providers via OpenRouter include extra details here.
+
 			const rawMetadata = (error as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
 			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
 			output.duration = performance.now() - startTime;
@@ -1390,12 +1229,6 @@ const streamOpenAICompletionsOnce = (
 	return stream;
 };
 
-/**
- * Public entry: wrap the single-attempt streamer with bounded empty-completion
- * retries — flaky gateways occasionally 200 with `delta: {}` + `finish_reason:
- * "stop"` and no usage, which would otherwise stall the agent loop. Shared with
- * the Anthropic provider via `withEmptyCompletionRetry`.
- */
 export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (model, context, options) =>
 	withEmptyCompletionRetry(model, context, options, streamOpenAICompletionsOnce);
 
@@ -1416,9 +1249,7 @@ function createRequestSetup(
 		promptCacheSessionId,
 		messages: context.messages,
 		defaultBaseUrl: "https://api.openai.com/v1",
-		// Provider auth/header overlay: Kimi-code hosts require shared client
-		// attribution headers prepended before caller headers. Kept here (not in
-		// the shared helper) because it is provider-specific request setup.
+
 		prependHeaders: model.provider === "kimi-code" ? getKimiCommonHeaders : undefined,
 		alibabaCodingPlanAuth: true,
 		azureChatCompletions: { apiVersion, deploymentName },
@@ -1569,8 +1400,6 @@ function buildParams(
 		params.store = false;
 	}
 
-	// OpenAI proprietary reasoning models (o-series, gpt-5+) reject explicit
-	// sampling params with a 400 on every serving host (#5606).
 	if (initialCompat.supportsSamplingParams) {
 		if (options?.temperature !== undefined) {
 			params.temperature = options.temperature;
@@ -1608,13 +1437,6 @@ function buildParams(
 		toolStrictMode = builtTools.toolStrictMode;
 		strictToolsApplied = builtTools.strictToolsApplied;
 	} else if (context.tools === undefined && hasToolHistory(context.messages)) {
-		// Anthropic (via LiteLLM/proxy) requires the `tools` param when the conversation
-		// contains tool_calls/tool_results, even when no tools are offered this turn.
-		// Only inject the sentinel when the caller passed `context.tools = undefined`
-		// (i.e. tools were not specified at all). An explicit `context.tools = []` means
-		// the caller opted out of tools for this turn (as /btw and IRC background replies
-		// do via AgentSession.runEphemeralTurn) — honour that intent and emit nothing,
-		// so LiteLLM → Bedrock never sees an empty `toolConfig` block.
 		params.tools = [];
 	}
 
@@ -1630,14 +1452,6 @@ function buildParams(
 		params.tool_choice !== null &&
 		!initialCompat.supportsNamedToolChoice
 	) {
-		// String-only hosts (llama.cpp, LM Studio) accept only none/auto/required,
-		// so a named object degrades to "required". "required" alone lets the host
-		// satisfy the hard choice with ANY advertised tool, defeating the named
-		// force. When the forced tool is present, narrow the advertised tools to it
-		// so "required" still enforces that specific call (mirrors the Ollama chat
-		// transport's selectToolsForToolChoice). When it is absent, leave the full
-		// list intact and let the absent-tool guard below drop the choice for an
-		// unforced turn.
 		if (
 			forcedToolName !== undefined &&
 			Array.isArray(params.tools) &&
@@ -1653,14 +1467,9 @@ function buildParams(
 		params.tools.some(tool => tool.type === "function" && tool.function.name === forcedToolName) &&
 		hasActiveNativeKimiK3Reasoning(model, options)
 	) {
-		// Native K3 reasoning is incompatible with selecting a specific function.
-		// Preserve the hard tool-use contract while letting K3 choose among tools.
 		params.tool_choice = "required";
 	}
 	if (isForcedToolChoice(params.tool_choice) && !initialCompat.supportsForcedToolChoice) {
-		// Some thinking-required OpenAI-compatible models reject forced
-		// `tool_choice` while still accepting tools with the default auto
-		// selector. Keep the tool available and let the model choose it.
 		params.tool_choice = "auto";
 	}
 
@@ -1668,16 +1477,6 @@ function buildParams(
 		(!Array.isArray(params.tools) || params.tools.length === 0) &&
 		(params.tool_choice === "none" || isForcedToolChoice(params.tool_choice))
 	) {
-		// `tool_choice: "none"` with no tools to gate is redundant and also
-		// trips LiteLLM → Bedrock: the proxy serializes the directive into a
-		// `toolConfig` block, and Bedrock requires `toolConfig.tools` to be
-		// non-empty whenever the conversation already holds `toolUse`/`toolResult`
-		// content. Drop it whenever the resolved tools list is missing or empty.
-		// Side-channel turns hit this: `/btw` and IRC background replies route
-		// through `AgentSession.runEphemeralTurn`, which sets `context.tools = []`
-		// and `toolChoice: "none"` (see packages/coding-agent/src/session/agent-session.ts).
-		// The same empty-tools case applies after leftover-union quarantine: a
-		// leftover `"required"` / named force would 400 just like the bad schema.
 		delete params.tool_choice;
 	}
 
@@ -1686,10 +1485,6 @@ function buildParams(
 		(!Array.isArray(params.tools) ||
 			!params.tools.some(tool => tool.type === "function" && tool.function.name === forcedToolName))
 	) {
-		// A forced named tool_choice is only valid when the same request offers
-		// that function in `tools`. Active-tool filtering normally enforces this
-		// before provider dispatch; this guard keeps raw provider callers from
-		// emitting a self-inconsistent OpenAI-compatible payload.
 		delete params.tool_choice;
 	}
 
@@ -1785,8 +1580,7 @@ export function parseChunkUsage(
 
 function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: ChatCompletionMessageParam[]): void {
 	if (compat.cacheControlFormat !== "anthropic") return;
-	// Anthropic-style caching requires cache_control on a text part. Add a breakpoint
-	// on the last user/assistant message (walking backwards until we find text content).
+
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role !== "user" && msg.role !== "assistant" && msg.role !== "developer") continue;
@@ -1802,9 +1596,6 @@ function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: C
 
 		if (!Array.isArray(content)) continue;
 
-		// Find last non-empty text part and add cache_control. Empty assistant
-		// content is valid for tool-call replay, but Anthropic/OpenRouter reject
-		// empty text blocks once cache_control turns it into structured content.
 		for (let j = content.length - 1; j >= 0; j--) {
 			const part = content[j];
 			if (part?.type === "text" && part.text.trim().length > 0) {
@@ -1836,9 +1627,7 @@ export function convertMessages(
 			source.provider === model.provider &&
 			source.api === model.api &&
 			source.model === model.id;
-		// Cross-model replay converts OpenAI Responses composite IDs from
-		// `{call_id}|{item_id}` to the Chat Completions `call_id`. Same-model
-		// Chat Completions IDs are provider-issued opaque correlation tokens.
+
 		if (!isSameModelSource && id.includes("|")) {
 			const [callId] = id.split("|");
 			return callId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
@@ -1892,12 +1681,7 @@ export function convertMessages(
 	if (systemPrompts.length > 0) {
 		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
 		const role = useDeveloperRole ? "developer" : "system";
-		// Default to one block per ordered system prompt so the leading prefix
-		// stays byte-identical between turns and the provider's KV cache can
-		// reuse it. Hosts whose chat templates reject follow-up system messages
-		// (Qwen via vLLM, MiniMax, Alibaba Dashscope, Qwen Portal, …) opt out
-		// via `compat.supportsMultipleSystemMessages = false`; in that mode we
-		// coalesce into a single message joined by `\n\n`.
+
 		if (compat.supportsMultipleSystemMessages) {
 			for (const systemPrompt of systemPrompts) {
 				params.push({ role, content: systemPrompt });
@@ -1911,8 +1695,7 @@ export function convertMessages(
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
-		// Some providers (e.g. Mistral/Devstral) don't allow user messages directly after tool results
-		// Insert a synthetic assistant message to bridge the gap
+
 		if (
 			compat.requiresAssistantAfterToolResult &&
 			lastRole === "toolResult" &&
@@ -1951,7 +1734,7 @@ export function convertMessages(
 							type: "image_url",
 							image_url: {
 								url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
-								// Chat Completions has no "original"; omit it (provider default).
+
 								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
 						} satisfies ChatCompletionContentPartImage);
@@ -1978,20 +1761,9 @@ export function convertMessages(
 			};
 
 			const textBlocks = msg.content.filter(b => b.type === "text") as TextContent[];
-			// Filter out empty text blocks to avoid API validation errors
+
 			const nonEmptyTextBlocks = textBlocks.filter(b => b.text && b.text.trim().length > 0);
 			if (nonEmptyTextBlocks.length > 0) {
-				// Always send assistant content as a plain string. Some OpenAI-compatible
-				// backends mirror array-of-text-block payloads back to the model literally,
-				// causing recursive nested content in subsequent turns.
-				// Join ordinary adjacent text blocks with no separator so bridge
-				// stitching, imported transcripts, and streaming chunks keep their
-				// original byte sequence. Demoted-thinking blocks (kDemotedThinking,
-				// synthesized by transformMessages) are the one exception: bare
-				// Anthropic-dialect reasoning would otherwise glue onto the first word
-				// of the visible answer. Insert a paragraph break after them — only
-				// when another block actually follows, so a trailing demoted block
-				// never ships trailing whitespace.
 				assistantMsg.content = nonEmptyTextBlocks
 					.map((b, i) => {
 						const text = b.text.toWellFormed();
@@ -2000,27 +1772,20 @@ export function convertMessages(
 					.join("");
 			}
 
-			// Handle thinking blocks
 			const thinkingBlocks = msg.content.filter(b => b.type === "thinking") as ThinkingContent[];
-			// Filter out empty thinking blocks to avoid API validation errors
+
 			const nonEmptyThinkingBlocks = thinkingBlocks.filter(b => b.thinking && b.thinking.trim().length > 0);
 			if (nonEmptyThinkingBlocks.length > 0) {
 				if (compat.requiresThinkingAsText) {
 					const thinkingText = nonEmptyThinkingBlocks
 						.map(b => renderDemotedThinking(model.id, b.thinking))
 						.join(" ");
-					// `content` is a plain string at this point (set above) or null —
-					// never an array. Prepend the demoted thinking to the string form.
+
 					assistantMsg.content =
 						typeof assistantMsg.content === "string" && assistantMsg.content.length > 0
 							? `${thinkingText} ${assistantMsg.content}`
 							: thinkingText;
 				} else if (compat.requiresReasoningContentForToolCalls) {
-					// Use the streamed signature when the backend accepts whichever
-					// recognized field name was emitted (allowsSynthetic=true). Backends
-					// like opencode-kimi-with-thinking and DeepSeek demand the exact
-					// configured `reasoningContentField` instead, so honor that here
-					// rather than echoing the upstream field name.
 					const signature = nonEmptyThinkingBlocks[0].thinkingSignature;
 					const wireField =
 						compat.allowsSyntheticReasoningContentForToolCalls &&
@@ -2033,33 +1798,9 @@ export function convertMessages(
 						assistantMsg[wireField] = nonEmptyThinkingBlocks.map(b => b.thinking).join("\n");
 					}
 				} else if (compat.thinkingFormat === "zai" && model.reasoning) {
-					// Z.AI / Zhipu / Moonshot Kimi (native) / Xiaomi MiMo accept
-					// `reasoning_content` as a continuation hint even when they don't
-					// strictly require it. Surfacing the preserved thinking text here
-					// keeps cross-API replays (Z.AI Anthropic → Z.AI OpenAI, etc.)
-					// shipping reasoning as structured `reasoning_content` rather than
-					// folded into conversation text (#3434). Signature is irrelevant on
-					// this path: `transform-messages` strips the source wire-format
-					// signature on cross-API replays before the block reaches us.
 					const reasoningField = compat.reasoningContentField ?? "reasoning_content";
 					assistantMsg[reasoningField] = nonEmptyThinkingBlocks.map(b => b.thinking).join("\n");
 				} else if (compat.replayReasoningContent) {
-					// Local llama.cpp-style servers (llama.cpp, LM Studio, vLLM, Ollama
-					// in openai-completions mode, custom providers pointed at a
-					// loopback baseUrl) re-tokenize the entire prompt every request.
-					// Qwen3 / DeepSeek-R1 / GLM chat templates reconstruct the prior
-					// assistant turn's `<think>` block from `reasoning_content`; if we
-					// drop the field the template re-renders the assistant turn
-					// without thinking content, the rendered tokens diverge from the
-					// slot's existing KV cache, and llama.cpp falls back to full
-					// prompt re-processing (#3528). Honor the streamed signature when
-					// it identifies a recognized wire field so a model that emitted
-					// `reasoning` (some llama.cpp builds) round-trips to the same
-					// field; otherwise fall back to the configured
-					// `reasoningContentField`. Gated by the new compat flag rather
-					// than the existing `requires*` flags because local servers
-					// accept but don't validate the field — they just need it to
-					// preserve cache locality.
 					const signature = nonEmptyThinkingBlocks[0].thinkingSignature;
 					const reasoningField: OpenAICompletionsReasoningField =
 						signature === "reasoning_content" || signature === "reasoning" || signature === "reasoning_text"
@@ -2093,40 +1834,21 @@ export function convertMessages(
 			}
 
 			const toolCalls = msg.content.filter(b => b.type === "toolCall") as ToolCall[];
-			// Replay reasoning_content on assistant turns for backends that validate
-			// thinking-mode history. DeepSeek V4 requires reasoning_content on EVERY
-			// assistant turn once a prior turn included it — not just tool-call turns.
-			// The replay logic has three tiers:
-			//   1. Recover from thinking blocks with valid signatures (covers same-model replay
-			//      where nonEmptyThinkingBlocks may have filtered out empty-text blocks)
-			//   2. For providers that require the field but returned no reasoning at all
-			//      (e.g. proxy-stripped reasoning_content), emit an empty string
-			//   3. For providers that accept synthetic placeholders (Kimi, OpenRouter), emit "."
-			// DeepSeek V4 rejects synthetic "." placeholders — it validates the exact value —
-			// so the allowsSyntheticReasoningContentForToolCalls flag controls tier 3.
+
 			const canUseSyntheticReasoningContent =
 				compat.requiresReasoningContentForToolCalls &&
 				compat.allowsSyntheticReasoningContentForToolCalls &&
 				(compat.thinkingFormat === "openai" ||
 					compat.thinkingFormat === "openrouter" ||
 					compat.thinkingFormat === "zai");
-			// DeepSeek-compatible reasoning models require reasoning_content on all
-			// assistant turns. Providers that allow placeholders only need it on
-			// tool-call turns.
+
 			const needsReasoningOnAllTurns = compat.requiresReasoningContentForAllAssistantTurns;
 			const needsReasoningField = needsReasoningOnAllTurns || toolCalls.length > 0;
 			let hasReasoningField =
 				assistantMsg.reasoning_content !== undefined ||
 				assistantMsg.reasoning !== undefined ||
 				assistantMsg.reasoning_text !== undefined;
-			// Tier 1: Recover reasoning_content from ALL thinking blocks (including empty-text
-			// ones) when the provider requires exact replay and rejects synthetic placeholders.
-			// This covers the case where thinking blocks have valid signatures but were excluded
-			// by the nonEmptyThinkingBlocks filter above, or where thinking text is empty but
-			// the signature identifies the correct field name for replay.
-			// Only recognized OpenAI-compat reasoning field names qualify — opaque signatures
-			// from other providers (Anthropic encrypted, OpenAI Responses JSON, etc.) are not
-			// valid property names for the wire message.
+
 			if (
 				needsReasoningField &&
 				!hasReasoningField &&
@@ -2143,10 +1865,7 @@ export function convertMessages(
 					}
 				}
 			}
-			// Tier 2: When the provider requires reasoning_content but there are genuinely no
-			// thinking blocks at all (e.g. proxy stripped reasoning_content from the response),
-			// emit an empty string. The field must be present; an empty string is the most honest
-			// representation of "no reasoning was captured."
+
 			if (
 				needsReasoningField &&
 				!hasReasoningField &&
@@ -2157,7 +1876,7 @@ export function convertMessages(
 				assistantMsg[reasoningField] = "";
 				hasReasoningField = true;
 			}
-			// Tier 3: For providers that accept synthetic placeholders (Kimi, OpenRouter).
+
 			if (toolCalls.length > 0 && canUseSyntheticReasoningContent && !hasReasoningField) {
 				const reasoningField = compat.reasoningContentField ?? "reasoning_content";
 				assistantMsg[reasoningField] = ".";
@@ -2191,15 +1910,11 @@ export function convertMessages(
 					assistantMsg.reasoning_details = reasoningDetails;
 				}
 			}
-			// Some OpenAI-compatible backends concatenate assistant content as a
-			// string even for tool-call replay. OpenAI accepts an empty string here;
-			// null trips strict/proxy implementations before the tool result is read.
+
 			if (assistantMsg.content === null && (hasReasoningField || assistantMsg.tool_calls)) {
 				assistantMsg.content = "";
 			}
-			// Skip assistant messages that have no content, no tool calls, and no reasoning payload.
-			// Some OpenAI-compatible backends require replaying reasoning-only assistant turns
-			// so follow-up requests preserve the provider-specific reasoning field name.
+
 			const content = assistantMsg.content;
 			const hasContent =
 				content !== null &&
@@ -2213,14 +1928,12 @@ export function convertMessages(
 			}
 			params.push(assistantMsg);
 		} else if (msg.role === "toolResult") {
-			// Batch consecutive tool results and collect all images
 			const imageBlocks: Array<{ type: "image_url"; image_url: { url: string } }> = [];
 			let j = i;
 
 			for (; j < transformedMessages.length && transformedMessages[j].role === "toolResult"; j++) {
 				const toolMsg = transformedMessages[j] as ToolResultMessage;
 
-				// Extract text and image content
 				const textResult = toolMsg.content
 					.filter(c => c.type === "text")
 					.map(c => (c as TextContent).text)
@@ -2229,7 +1942,6 @@ export function convertMessages(
 				const hasImages = toolMsg.content.some(c => c.type === "image");
 				const omittedImages = hasImages && !supportsImages;
 
-				// Always send tool result with text (or placeholder if only images)
 				const hasText = textResult.length > 0;
 				const remappedToolCallId = consumeToolCallId(toolMsg.toolCallId);
 				const resolvedToolCallId =
@@ -2267,7 +1979,6 @@ export function convertMessages(
 
 			i = j - 1;
 
-			// After all consecutive tool results, add a single user message with all images
 			if (imageBlocks.length > 0) {
 				if (compat.requiresAssistantAfterToolResult) {
 					params.push({
@@ -2339,21 +2050,11 @@ function convertTools(
 	let anyStrictEmitted = false;
 	for (const { tool, baseParameters, parameters, strict } of adaptedTools) {
 		const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
-		// `strict: false` is semantically distinct from omitted `strict` on some
-		// backends: with it absent, optional properties may be over-filled with
-		// placeholder values (#4336). Preserve the author's explicit `false`,
-		// but only in "mixed" mode against a provider that understands the
-		// field — the `all_strict → none` collapse and `supportsStrictMode:
-		// false` paths deliberately keep the wire flag uniformly absent.
+
 		const includeExplicitFalse =
 			!includeStrict && tool.strict === false && toolStrictMode === "mixed" && compat.supportsStrictMode !== false;
 		const wireParameters = includeStrict ? parameters : baseParameters;
-		// Moonshot/Kimi native hosts validate against the stricter MFJS subset
-		// (const→enum, typed enums, no validators) and 400 otherwise.
-		// Grammar-constrained local backends (llama.cpp, LM Studio, vLLM)
-		// build a GBNF grammar from the schema and 400 with
-		// `Unrecognized schema: true` on the bare boolean subschema
-		// `toolWireSchema` emits for open fields (issue #5914).
+
 		const emittedParameters =
 			compat.toolSchemaFlavor === "moonshot-mfjs"
 				? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
@@ -2374,7 +2075,7 @@ function convertTools(
 				name: tool.name,
 				description: tool.description || "",
 				parameters: emittedParameters,
-				// Only include strict if provider supports it. Some reject unknown fields.
+
 				...(includeStrict ? { strict: true } : includeExplicitFalse ? { strict: false } : {}),
 			},
 		});
@@ -2409,18 +2110,8 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 		case "network_error":
 			return { stopReason: "error", errorMessage: "Provider finish_reason: network_error" };
 		case "error":
-			// Gateways (OpenRouter, Vercel AI Gateway, …) report upstream model
-			// failures as a bare `finish_reason: "error"` with no detail. These are
-			// almost always transient (e.g. Gemini MALFORMED_FUNCTION_CALL), so word
-			// the message to match the session retry classifier's transient-transport
-			// pattern (`provider.?returned.?error`) and get the turn auto-retried.
 			return { stopReason: "error", errorMessage: "Provider returned error finish_reason" };
 		case "insufficient_system_resource":
-			// DeepSeek kills the generation mid-stream when its inference system runs
-			// out of resources (docs: "the request is interrupted due to insufficient
-			// resource of the inference system"). Server-side capacity failure — like
-			// the bare `error` case, word the message to match the transient-transport
-			// retry pattern so the turn is auto-retried instead of pinned as an error.
 			return {
 				stopReason: "error",
 				errorMessage: "Provider returned error finish_reason: insufficient_system_resource",

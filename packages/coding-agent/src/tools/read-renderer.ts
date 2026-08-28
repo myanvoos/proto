@@ -12,14 +12,10 @@ import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
 import { formatBytes, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
 
-// =============================================================================
-// TUI Renderer
-// =============================================================================
-
 interface ReadRenderArgs {
 	path?: unknown;
 	file_path?: unknown;
-	// Legacy fields from old schema — tolerated for in-flight tool calls during transition
+
 	offset?: number;
 	limit?: number;
 	raw?: boolean;
@@ -54,10 +50,6 @@ function firstReadSelectorLine(sel: string | undefined): number | undefined {
 	}
 }
 
-/** Absolute fs path the read result actually resolved to, used as the OSC 8 link
- * target when the structured `resolvedPath` isn't set (the common plain-file and
- * image reads only record the path in `meta.source`). URL/internal sources are
- * not fs paths, so only `type: "path"` qualifies. */
 function readSourceFsPath(details: ReadToolDetails | undefined): string | undefined {
 	const source = details?.meta?.source;
 	return source?.type === "path" ? source.value : undefined;
@@ -156,10 +148,7 @@ export const readToolRenderer = {
 		}
 		const details = result.details;
 		const rawText = result.content?.find(c => c.type === "text")?.text ?? "";
-		// Prefer structured `displayContent` from details when available so the TUI
-		// shows clean file content (no model-only hashline anchors) without parsing the formatted text.
-		// Fall back to the raw text, but strip the LLM-facing notice so it doesn't
-		// echo next to the styled warning line below.
+
 		const contentText = details?.displayContent?.text ?? stripOutputNotice(rawText, details?.meta);
 		const imageContent = result.content?.find(c => c.type === "image");
 		const rawPath =
@@ -223,10 +212,7 @@ export const readToolRenderer = {
 		}
 
 		const suffix = details?.suffixResolution;
-		// resolvedPath is the absolute fs path when a read resolved/corrected the
-		// input (suffix match, internal URL, archive/sqlite/notebook); plain file
-		// reads only record the absolute path in meta.source, so fall back to that
-		// (and then to a sync internal-URL resolver) to keep the title clickable.
+
 		const displayPath = formatReadPathLink(rawPath, {
 			resolvedPath: details?.resolvedPath,
 			sourcePath: readSourceFsPath(details),

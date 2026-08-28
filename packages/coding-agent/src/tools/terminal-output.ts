@@ -71,7 +71,6 @@ function isSafeStyle(codes: readonly number[]): boolean {
 	return true;
 }
 
-/** Applies the active tool-output color while preserving safe styles from a virtual terminal row. */
 export function styleTerminalRow(row: string, baseForeground: string): string {
 	let output = baseForeground;
 	let offset = 0;
@@ -93,7 +92,6 @@ export function styleTerminalRow(row: string, baseForeground: string): string {
 	return hasText ? `${output}${RESET}` : "";
 }
 
-/** Reads terminal screen rows as sanitized text plus only the styles the TUI may replay. */
 export function readTerminalRows(terminal: XtermTerminal, startRow: number, rowCount: number): string[] {
 	const buffer = terminal.buffer.active;
 	const reusableCell = buffer.getNullCell();

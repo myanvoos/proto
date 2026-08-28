@@ -1,14 +1,6 @@
-// ============================================================================
-// Symbol Presets
-// ============================================================================
-
 export type SymbolPreset = "unicode";
 
-/**
- * All available symbol keys organized by category.
- */
 export type SymbolKey =
-	// Status Indicators
 	| "status.success"
 	| "status.error"
 	| "status.warning"
@@ -20,32 +12,26 @@ export type SymbolKey =
 	| "status.shadowed"
 	| "status.aborted"
 	| "status.done"
-	// Navigation
 	| "nav.cursor"
 	| "nav.selected"
 	| "nav.expand"
 	| "nav.collapse"
 	| "nav.back"
-	// Tree Connectors
 	| "tree.branch"
 	| "tree.last"
 	| "tree.vertical"
 	| "tree.horizontal"
 	| "tree.hook"
-	// Progress Bar
 	| "progress.filled"
 	| "progress.empty"
-	// Context gauge boundaries
 	| "context.speculation"
 	| "context.compaction"
-	// Box Drawing - Rounded
 	| "boxRound.topLeft"
 	| "boxRound.topRight"
 	| "boxRound.bottomLeft"
 	| "boxRound.bottomRight"
 	| "boxRound.horizontal"
 	| "boxRound.vertical"
-	// Box Drawing - Sharp
 	| "boxSharp.topLeft"
 	| "boxSharp.topRight"
 	| "boxSharp.bottomLeft"
@@ -57,7 +43,6 @@ export type SymbolKey =
 	| "boxSharp.teeUp"
 	| "boxSharp.teeRight"
 	| "boxSharp.teeLeft"
-	// Separators
 	| "sep.powerline"
 	| "sep.powerlineThin"
 	| "sep.powerlineLeft"
@@ -71,7 +56,6 @@ export type SymbolKey =
 	| "sep.dot"
 	| "sep.slash"
 	| "sep.pipe"
-	// Icons
 	| "icon.model"
 	| "icon.prewalk"
 	| "icon.goal"
@@ -116,9 +100,7 @@ export type SymbolKey =
 	| "icon.extensionPrompt"
 	| "icon.extensionContextFile"
 	| "icon.extensionInstruction"
-	// Compaction divider
 	| "icon.camera"
-	// Thinking Levels
 	| "thinking.minimal"
 	| "thinking.low"
 	| "thinking.medium"
@@ -126,26 +108,20 @@ export type SymbolKey =
 	| "thinking.xhigh"
 	| "thinking.max"
 	| "thinking.autoPending"
-	// Checkboxes
 	| "checkbox.checked"
 	| "checkbox.unchecked"
-	// Radio (single-choice)
 	| "radio.selected"
 	| "radio.unselected"
-	// Text Formatting
 	| "format.bullet"
 	| "format.dash"
 	| "format.bracketLeft"
 	| "format.bracketRight"
-	// Markdown-specific
 	| "md.quoteBorder"
 	| "md.hrChar"
 	| "md.bullet"
 	| "md.colorSwatch"
-	// Advisor note rail
 	| "advisor.rail"
 	| "block.rail"
-	// Language/file type icons
 	| "lang.default"
 	| "lang.typescript"
 	| "lang.javascript"
@@ -183,10 +159,8 @@ export type SymbolKey =
 	| "lang.pdf"
 	| "lang.archive"
 	| "lang.binary"
-	// Composer attachment chips (image paste / large text paste)
 	| "chip.image"
 	| "chip.paste"
-	// Settings tab icons
 	| "tab.appearance"
 	| "tab.model"
 	| "tab.interaction"
@@ -197,7 +171,6 @@ export type SymbolKey =
 	| "tab.memory"
 	| "tab.tasks"
 	| "tab.providers"
-	// Tool identity icons
 	| "tool.write"
 	| "tool.edit"
 	| "tool.bash"
@@ -226,7 +199,6 @@ export type SymbolKey =
 export type SymbolMap = Record<SymbolKey, string>;
 
 const UNICODE_SYMBOLS: SymbolMap = {
-	// Status
 	"status.success": "✓",
 	"status.error": "✗",
 	"status.warning": "!",
@@ -238,32 +210,32 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"status.shadowed": "▫",
 	"status.aborted": "∎",
 	"status.done": "▪",
-	// Navigation
+
 	"nav.cursor": "›",
 	"nav.selected": "›",
 	"nav.expand": "▸",
 	"nav.collapse": "▾",
 	"nav.back": "⟵",
-	// Tree
+
 	"tree.branch": "├─",
 	"tree.last": "└─",
 	"tree.vertical": "│",
 	"tree.horizontal": "─",
 	"tree.hook": "└",
-	// Progress bar
+
 	"progress.filled": "━",
 	"progress.empty": "─",
-	// Context gauge boundaries
+
 	"context.speculation": "╎",
 	"context.compaction": "┃",
-	// Box (rounded)
+
 	"boxRound.topLeft": "╭",
 	"boxRound.topRight": "╮",
 	"boxRound.bottomLeft": "╰",
 	"boxRound.bottomRight": "╯",
 	"boxRound.horizontal": "─",
 	"boxRound.vertical": "│",
-	// Box (sharp)
+
 	"boxSharp.topLeft": "┌",
 	"boxSharp.topRight": "┐",
 	"boxSharp.bottomLeft": "└",
@@ -275,7 +247,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"boxSharp.teeUp": "┴",
 	"boxSharp.teeRight": "├",
 	"boxSharp.teeLeft": "┤",
-	// Separators (powerline-ish, but pure Unicode)
+
 	"sep.powerline": "▕",
 	"sep.powerlineThin": "┆",
 	"sep.powerlineLeft": "▶",
@@ -289,7 +261,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"sep.dot": " · ",
 	"sep.slash": " / ",
 	"sep.pipe": " │ ",
-	// Icons
+
 	"icon.model": "",
 	"icon.prewalk": "",
 	"icon.goal": "",
@@ -334,9 +306,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.extensionPrompt": "¶",
 	"icon.extensionContextFile": "",
 	"icon.extensionInstruction": "",
-	// Compaction divider
+
 	"icon.camera": "",
-	// Thinking levels
+
 	"thinking.minimal": "min",
 	"thinking.low": "low",
 	"thinking.medium": "med",
@@ -344,26 +316,26 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"thinking.xhigh": "xhigh",
 	"thinking.max": "max",
 	"thinking.autoPending": "◐",
-	// Checkboxes
+
 	"checkbox.checked": "■",
 	"checkbox.unchecked": "□",
-	// Radio (single-choice)
+
 	"radio.selected": "▣",
 	"radio.unselected": "□",
-	// Formatting
+
 	"format.bullet": "•",
 	"format.dash": "—",
 	"format.bracketLeft": "⟦",
 	"format.bracketRight": "⟧",
-	// Markdown
+
 	"md.quoteBorder": "▏",
 	"md.hrChar": "─",
 	"md.bullet": "•",
 	"md.colorSwatch": "■",
-	// Advisor note rail (heavier than md.quoteBorder so notes read as a distinct voice)
+
 	"advisor.rail": "▎",
 	"block.rail": "▏",
-	// Language/file icons (emoji-centric, no Nerd Font required)
+
 	"lang.default": "",
 	"lang.typescript": "",
 	"lang.javascript": "",
@@ -401,10 +373,10 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"lang.pdf": "",
 	"lang.archive": "",
 	"lang.binary": "",
-	// Composer attachment chips
+
 	"chip.image": "🖼",
 	"chip.paste": "📄",
-	// Settings tabs
+
 	"tab.appearance": "",
 	"tab.model": "",
 	"tab.interaction": "",
@@ -415,7 +387,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tab.memory": "",
 	"tab.tasks": "",
 	"tab.providers": "",
-	// Tool identity icons (per-tool signature glyph on the success header)
+
 	"tool.write": "❐",
 	"tool.edit": "✎",
 	"tool.bash": ">",
@@ -456,12 +428,6 @@ export const SPINNER_FRAMES: Record<SymbolPreset, Record<SpinnerType, string[]>>
 	},
 };
 
-/**
- * Shape accepted by `themeJson.symbols.spinnerFrames`. A flat array applies to
- * both spinner types; an object lets a theme override `status` and/or
- * `activity` independently. Anything not specified falls back to the symbol
- * preset's default frames.
- */
 export type SpinnerFramesOverride = string[] | { status?: string[]; activity?: string[] };
 
 export function normalizeSpinnerFramesOverride(

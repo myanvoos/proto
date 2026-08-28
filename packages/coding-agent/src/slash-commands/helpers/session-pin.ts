@@ -1,12 +1,10 @@
 import type { OAuthAccountSummary } from "../../session/auth-storage";
 import { formatActiveAccountLabel } from "./active-oauth-account";
 
-/** Stored OAuth account rendered and matched by `/session pin`. */
 interface SessionPinAccount extends OAuthAccountSummary {
 	label: string;
 }
 
-/** Add stable user-facing labels to provider account summaries. */
 export function toSessionPinAccounts(accounts: readonly OAuthAccountSummary[]): SessionPinAccount[] {
 	return accounts.map(account => {
 		const enterpriseUrl = account.enterpriseUrl?.trim();
@@ -17,7 +15,6 @@ export function toSessionPinAccounts(accounts: readonly OAuthAccountSummary[]): 
 	});
 }
 
-/** Match a `/session pin` selector by 1-based position or exact account identity. */
 export function matchSessionPinAccounts(accounts: readonly SessionPinAccount[], selector: string): SessionPinAccount[] {
 	const wanted = selector.trim().toLowerCase();
 	if (!wanted) return [];

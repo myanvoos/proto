@@ -20,13 +20,6 @@ import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
 import type { SlashCommandSpec } from "./types";
 
-/**
- * Reload the interactive session's plugin runtime: invalidate fs/plugin-root
- * caches, rediscover skills, file slash commands, and worker agents, reset the
- * capability cache, and reconnect MCP servers (rebinding the session's MCP
- * tools). Shared by `/reload-plugins`'s TUI handler and the `handle`-adapter's
- * `reloadPlugins` hook so both honor the command's documented reload scope.
- */
 export async function reloadTuiPluginState(ctx: InteractiveModeContext): Promise<void> {
 	const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
 	clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
@@ -237,7 +230,6 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 			const sub = args[0] || "install";
 			const rest = args.slice(1).join(" ").trim();
 
-			// /marketplace (no args) or /marketplace install (no args) → interactive browser
 			if ((sub === "install" && !rest) || (!args[0] && !command.args.trim())) {
 				try {
 					runtime.ctx.showPluginSelector("install");
@@ -310,7 +302,6 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						break;
 					}
 					case "install": {
-						// Parse: /marketplace install [--force] [--scope user|project] name@marketplace
 						const parsed = parseMarketplaceInstallArgs(rest);
 						if ("error" in parsed) {
 							runtime.ctx.showStatus(parsed.error);
@@ -325,7 +316,6 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					}
 					case "uninstall": {
 						if (!rest) {
-							// No args → open interactive uninstall selector
 							runtime.ctx.showPluginSelector("uninstall");
 							return;
 						}
@@ -446,7 +436,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					await runtime.output(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
 					return commandConsumed();
 				}
-				// Default: list
+
 				const lines: string[] = [];
 				const npmManager = new PluginManager();
 				const npmPlugins = await npmManager.list();

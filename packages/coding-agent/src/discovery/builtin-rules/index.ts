@@ -1,13 +1,3 @@
-/**
- * Bundled default rules shipped with the coding agent.
- *
- * Each markdown source is embedded via `with { type: "text" }` so it survives
- * `bun build --compile` (the compiled binary ships no loose rule files; only
- * the embedded text). The native source/tarball installs read the same modules.
- *
- * Registered by the lowest-priority `builtin-defaults` rule provider so any
- * user/project/tool rule with the same name overrides the bundled copy.
- */
 import goAddCleanup from "./go-add-cleanup.md" with { type: "text" };
 import goBenchLoop from "./go-bench-loop.md" with { type: "text" };
 import goExpPromoted from "./go-exp-promoted.md" with { type: "text" };
@@ -36,13 +26,11 @@ import tsPromiseWithResolvers from "./ts-promise-with-resolvers.md" with { type:
 import tsRedundantClearGuard from "./ts-redundant-clear-guard.md" with { type: "text" };
 import tsSetMap from "./ts-set-map.md" with { type: "text" };
 
-/** A bundled rule's stable name and raw markdown (frontmatter + body). */
 interface BuiltinRuleSource {
 	name: string;
 	content: string;
 }
 
-/** All bundled default rules, ordered by name. */
 export const BUILTIN_RULE_SOURCES: readonly BuiltinRuleSource[] = [
 	{ name: "go-add-cleanup", content: goAddCleanup },
 	{ name: "go-bench-loop", content: goBenchLoop },

@@ -1,20 +1,9 @@
-/**
- * MCP JSON-RPC 2.0 over HTTPS.
- *
- * Lightweight utilities for calling MCP servers directly via HTTP
- * without maintaining persistent connections.
- */
 import { logger } from "@oh-my-pi/pi-utils";
 
-/** Hard ceiling on a single MCP HTTP request when the caller provides no signal. */
 const MCP_DEFAULT_TIMEOUT_MS = 60_000;
 
 const SENSITIVE_QUERY_PARAM = /key|token|secret|auth/i;
 
-/**
- * Redact credential-bearing query params (e.g. `exaApiKey`) so failed
- * requests never write secrets to the persistent log file.
- */
 export function redactUrlForLog(url: string): string {
 	try {
 		const parsed = new URL(url);
@@ -23,12 +12,10 @@ export function redactUrlForLog(url: string): string {
 		}
 		return parsed.toString();
 	} catch {
-		// Unparseable URL — drop the query string entirely rather than risk leaking it.
 		return url.split("?")[0];
 	}
 }
 
-/** Parse SSE response format (lines starting with "data: ") */
 export function parseSSE(text: string): unknown {
 	const lines = text.split("\n");
 	for (const line of lines) {
@@ -38,12 +25,10 @@ export function parseSSE(text: string): unknown {
 			try {
 				const result = JSON.parse(data) as unknown;
 				if (result) return result;
-			} catch {
-				// Non-JSON data line (keep-alive/comment) — skip and keep scanning.
-			}
+			} catch {}
 		}
 	}
-	// Fallback: try parsing entire response as JSON
+
 	try {
 		return JSON.parse(text);
 	} catch {
@@ -51,7 +36,6 @@ export function parseSSE(text: string): unknown {
 	}
 }
 
-/** JSON-RPC 2.0 response structure */
 export interface JsonRpcResponse<T = unknown> {
 	jsonrpc: "2.0";
 	id: string | number;
@@ -63,20 +47,10 @@ export interface JsonRpcResponse<T = unknown> {
 	};
 }
 
-/** Options controlling a single MCP JSON-RPC HTTP request. */
 export interface CallMcpOptions {
 	signal?: AbortSignal;
 }
 
-/**
- * Call an MCP server with JSON-RPC 2.0 over HTTPS.
- *
- * @param url - Full MCP server URL (including any query parameters)
- * @param method - JSON-RPC method name (e.g., "tools/list", "tools/call")
- * @param params - Method parameters
- * @param options - Optional transport controls such as cancellation.
- * @returns Parsed JSON-RPC response
- */
 export async function callMCP<T = unknown>(
 	url: string,
 	method: string,

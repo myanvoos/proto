@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 # Build + roll the preloaded proto-kata runner image onto the self-hosted CI host,
 # driven over SSH from this repo. The Dockerfile next to this script is the
 # source of truth: it is copied to the host, built there, and the ARC runner

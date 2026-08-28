@@ -1,4 +1,4 @@
-# Compact rails db:migrate / db:rollback output.
+
 
 [filters.rails-migrate]
 description = "Compact rails db:migrate / db:rollback output"

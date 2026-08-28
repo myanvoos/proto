@@ -1,21 +1,21 @@
-//! `isutf8` builtin: check whether files (or, with no operands, standard input)
-//! are valid UTF-8.
-//!
-//! This moreutils-inspired implementation runs in process so it can validate
-//! shell-relative files without spawning an external command. Diagnostic
-//! coordinates follow moreutils semantics: `line` is 1-based (counting `\n`),
-//! `char` is the 1-based character position within that line, and `byte` is the
-//! 0-based file offset of the first byte of the invalid sequence. Input is
-//! streamed in 64 KiB chunks; a multi-byte sequence split across a chunk
-//! boundary carries its incomplete tail (at most 3 bytes) into the next chunk,
-//! and an incomplete tail at EOF counts as invalid.
-//!
-//! Standard input is reported as `(standard input)`. With `--invert` the exit
-//! status and `--list` output treat valid inputs as failures; the default
-//! diagnostic is still printed for invalid inputs. Exit codes: 0 = every input
-//! passes the (possibly inverted) predicate, 1 = at least one input fails it,
-//! 2 = an I/O error opening or reading a file (remaining files are still
-//! checked).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -45,7 +45,7 @@ enum Verdict {
 	Cancelled,
 }
 
-/// Parsed `isutf8` invocation.
+
 pub(crate) struct Isutf8 {
 	matches: ArgMatches,
 }
@@ -132,7 +132,7 @@ fn report_verdict(
 		},
 		Verdict::Cancelled => unreachable!("cancellation is handled by the caller"),
 	};
-	// An input fails when its validity matches the inversion flag.
+
 	let failed = valid == invert;
 	if failed && list && !quiet {
 		let _ = writeln!(host.stdout, "{display}");
@@ -178,14 +178,14 @@ fn command() -> Command {
 		)
 }
 
-/// Streams `input` in [`CHUNK_SIZE`] chunks, carrying an incomplete multi-byte
-/// tail (at most 3 bytes) across chunk boundaries.
+
+
 fn validate(input: &mut impl Read, cancel: &Arc<AtomicBool>) -> io::Result<Verdict> {
 	let mut buf = vec![0u8; CHUNK_SIZE + 3];
-	let mut carry = 0usize; // bytes at buf[..carry] carried from the previous chunk
-	let mut offset = 0u64; // file offset of buf[0]
+	let mut carry = 0usize;
+	let mut offset = 0u64;
 	let mut line = 1u64;
-	let mut chars_in_line = 0u64; // complete chars decoded on the current line
+	let mut chars_in_line = 0u64;
 
 	loop {
 		if cancel.load(Ordering::Relaxed) {
@@ -209,29 +209,29 @@ fn validate(input: &mut impl Read, cancel: &Arc<AtomicBool>) -> io::Result<Verdi
 					advance(&buf[pos..pos + err.valid_up_to()], &mut line, &mut chars_in_line);
 					pos += err.valid_up_to();
 					if err.error_len().is_some() || eof {
-						// Bad sequence, or an incomplete one truncated by EOF.
+
 						return Ok(Verdict::Invalid {
 							line,
 							character: chars_in_line + 1,
 							byte: offset + pos as u64,
 						});
 					}
-					break; // incomplete tail: carry it into the next chunk
+					break;
 				},
 			}
 		}
 		if eof {
 			return Ok(Verdict::Valid);
 		}
-		// Slide the unconsumed tail (at most 3 bytes) to the front of the buffer.
+
 		buf.copy_within(pos..data_len, 0);
 		carry = data_len - pos;
 		offset += pos as u64;
 	}
 }
 
-/// Updates line/char counters over `text`, a slice already known to be valid
-/// UTF-8 (chars are counted as non-continuation bytes, so no re-decode).
+
+
 fn advance(text: &[u8], line: &mut u64, chars_in_line: &mut u64) {
 	match memchr::memrchr(b'\n', text) {
 		Some(last) => {
@@ -254,7 +254,7 @@ fn display_name(name: &OsStr) -> String {
 	}
 }
 
-/// Creates the `isutf8` builtin registration.
+
 pub(crate) fn isutf8_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Isutf8, SE>()
 }

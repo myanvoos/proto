@@ -1,23 +1,15 @@
-/**
- * Git Checkpoint Hook
- *
- * Creates git stash checkpoints at each turn so /branch can restore code state.
- * When branching, offers to restore code to that point in history.
- */
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: HookAPI) {
 	const checkpoints = new Map<string, string>();
 	let currentEntryId: string | undefined;
 
-	// Track the current entry ID when user messages are saved
 	pi.on("tool_result", async (_event, ctx) => {
 		const leaf = ctx.sessionManager.getLeafEntry();
 		if (leaf) currentEntryId = leaf.id;
 	});
 
 	pi.on("turn_start", async () => {
-		// Create a git stash entry before LLM makes changes
 		const { stdout } = await pi.exec("git", ["stash", "create"]);
 		const ref = stdout.trim();
 		if (ref && currentEntryId) {
@@ -30,7 +22,6 @@ export default function (pi: HookAPI) {
 		if (!ref) return;
 
 		if (!ctx.hasUI) {
-			// In non-interactive mode, don't restore automatically
 			return;
 		}
 
@@ -46,7 +37,6 @@ export default function (pi: HookAPI) {
 	});
 
 	pi.on("agent_end", async () => {
-		// Clear checkpoints after agent completes
 		checkpoints.clear();
 	});
 }

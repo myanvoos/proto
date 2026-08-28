@@ -23,7 +23,7 @@ function hasVertexAdcCredentials(): boolean {
 export const googleVertexProvider = {
 	id: "google-vertex",
 	name: "Google Vertex AI",
-	// Vertex AI supports either GOOGLE_CLOUD_API_KEY or Application Default Credentials.
+
 	envKeys: () => {
 		if ($env.GOOGLE_CLOUD_API_KEY) {
 			return $env.GOOGLE_CLOUD_API_KEY;

@@ -264,7 +264,6 @@ def _terminate_process_group(process: subprocess.Popen[Any], pgid: int | None) -
         try:
             killpg(pgid, sig)
         except OSError:
-            # ESRCH: the group is already empty. Teardown is best-effort.
             pass
 
     _signal_group(signal.SIGTERM)
@@ -699,14 +698,6 @@ class RpcClient:
                     process.stderr.close()
                 except OSError:
                     pass
-            # Mark the client closed so any thread blocked in
-            # `_wait_for_agent_end` raises `RpcProcessExitError` instead of
-            # waiting for its request timeout. The stdout reader loop would
-            # normally do this when it observes the closed pipe, but it
-            # guards on `if not self._stopping:` — which is True by the time
-            # we get here — and so skips it. Calling `_mark_closed` directly
-            # closes the gap. It is idempotent: a second call (e.g. from the
-            # reader's exception path) returns early.
             self._mark_closed(RpcProcessExitError("RPC process stopped"))
             self._pending_host_tool_calls.clear()
             self._host_tool_dispatch_names.clear()
@@ -1455,9 +1446,6 @@ class RpcClient:
             or not isinstance(tool_call_id, str)
         ):
             return
-        # Remember the dispatch so tool_execution_* events for this call id can
-        # be renamed from the transport tool to the host tool that ran; see
-        # _normalize_host_tool_event.
         self._host_tool_dispatch_names[tool_call_id] = tool_name
         if not isinstance(raw_arguments, Mapping):
             self._send_notification(
@@ -1896,9 +1884,6 @@ class RpcClient:
                 try:
                     notification = parse_notification(payload)
                 except (TypeError, ValueError) as exc:
-                    # Protocol drift must not terminate the reader. This also
-                    # demotes parser defects to UnknownNotification; consumers
-                    # that need visibility should register an unknown listener.
                     notification = UnknownNotification(
                         _clone_json_object(payload), parse_error=str(exc)
                     )

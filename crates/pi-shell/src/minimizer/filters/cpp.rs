@@ -1,5 +1,3 @@
-//! `CMake`, `Ninja`, `CTest`, and `GoogleTest` output filters.
-
 use std::path::Path;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};

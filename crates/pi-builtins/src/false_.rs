@@ -1,6 +1,6 @@
 use brush_core::{ExecutionResult, builtins};
 
-/// Return exit code 1.
+
 pub(crate) struct FalseCommand {}
 
 impl builtins::SimpleCommand for FalseCommand {

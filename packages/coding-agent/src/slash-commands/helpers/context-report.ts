@@ -2,11 +2,6 @@ import { computeContextBreakdown } from "../../modes/utils/context-usage";
 import type { SlashCommandRuntime } from "../types";
 import { renderAsciiBar } from "./format";
 
-/**
- * Build the `/context` ACP-mode text. Tries the rich breakdown first
- * (categories + auto-compact buffer + free slack) and falls back to the
- * minimal "window/used" lines when the breakdown helper throws.
- */
 export function buildContextReportText(runtime: SlashCommandRuntime): string {
 	try {
 		const breakdown = computeContextBreakdown(runtime.session);

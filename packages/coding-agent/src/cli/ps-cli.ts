@@ -1,14 +1,3 @@
-/**
- * CLI handler for `proto ps` — inspect and control processes supervised by the
- * daemon broker from outside the harness.
- *
- * A bare `proto ps` on a TTY opens the interactive alt-screen monitor
- * (`ps-tui.ts`); `--plain`, `--json`, and non-TTY outputs use the static
- * listing. Actions (`stop`, `kill`, `restart`, `logs`, `info`) connect through
- * the regular client, which revives a dead broker so it can re-adopt detached
- * daemons before acting on them.
- */
-
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -36,27 +25,26 @@ export type PsAction = "list" | "info" | "logs" | "stop" | "kill" | "restart";
 
 export interface PsCommandArgs {
 	action: PsAction;
-	/** Daemon name; required for every action except `list`. */
+
 	name?: string;
 	flags: {
-		/** list: include every project and global service scope on this machine. */
 		all: boolean;
 		json: boolean;
-		/** list: force the static listing instead of the interactive monitor. */
+
 		plain: boolean;
-		/** Target another project directory instead of the current one. */
+
 		dir?: string;
-		/** Target a machine-global service scope (e.g. browser-relay). */
+
 		global?: string;
-		/** logs: keep streaming new output. */
+
 		follow: boolean;
-		/** logs: read from the beginning instead of the tail. */
+
 		head: boolean;
-		/** logs: number of lines. */
+
 		lines?: number;
-		/** logs: regex filter. */
+
 		grep?: string;
-		/** stop: grace period in seconds before hard kill. */
+
 		timeout?: number;
 	};
 }
@@ -80,10 +68,6 @@ export async function runPsCommand(cmd: PsCommandArgs): Promise<void> {
 		await closeDaemonClients();
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Static list
-// ---------------------------------------------------------------------------
 
 async function runList(cmd: PsCommandArgs): Promise<void> {
 	const reports = await collectReports(cmd.flags.all, cmd.flags);
@@ -130,7 +114,6 @@ async function runList(cmd: PsCommandArgs): Promise<void> {
 }
 
 function printTable(rows: PsDaemonRow[]): void {
-	// Truncate to the terminal on a TTY; keep full lines when piped.
 	const maxWidth = process.stdout.isTTY ? (process.stdout.columns ?? 120) : Number.POSITIVE_INFINITY;
 	const cells = rows.map(tableCells);
 	const widths = TABLE_HEADER.map((title, column) =>
@@ -147,10 +130,6 @@ function printTable(rows: PsDaemonRow[]): void {
 		console.log(TERMINAL_STATES[rows[index].snapshot.state] ? chalk.dim(line) : line);
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Named actions
-// ---------------------------------------------------------------------------
 
 async function actionClient(flags: PsCommandArgs["flags"]): Promise<DaemonBrokerClient> {
 	if (flags.global) return daemonClientForGlobal(flags.global);
@@ -214,8 +193,7 @@ function printDaemonResult(cmd: PsCommandArgs, verb: string, daemon: DaemonSnaps
 
 async function runLogs(cmd: PsCommandArgs, client: DaemonBrokerClient, name: string): Promise<void> {
 	const lines = Math.max(1, Math.min(1_000, Math.floor(cmd.flags.lines ?? 100)));
-	// Follow mode reads the full 1000-line window on every request so overlap
-	// trimming sees a stable, sliding tail; the initial print is cut to `lines`.
+
 	const first = await client.request({
 		op: "logs",
 		name,
@@ -251,8 +229,7 @@ async function runLogs(cmd: PsCommandArgs, client: DaemonBrokerClient, name: str
 			timeoutMs: 30_000,
 		});
 		if (next.op !== "logs") throw new Error(`Unexpected broker response ${next.op}`);
-		// The broker always returns the tail window (cursor is only a wait
-		// watermark), so trim the part we already printed.
+
 		const fresh = next.text.slice(overlapLength(previous, next.text));
 		if (fresh) process.stdout.write(fresh.endsWith("\n") ? fresh : `${fresh}\n`);
 		previous = next.text;
@@ -262,7 +239,6 @@ async function runLogs(cmd: PsCommandArgs, client: DaemonBrokerClient, name: str
 	console.log(chalk.dim(`[${name}: ${state}]`));
 }
 
-/** Longest suffix of `previous` that is a prefix of `next` — the already-printed portion of a tail window. */
 function overlapLength(previous: string, next: string): number {
 	for (let k = Math.min(previous.length, next.length); k > 0; k--) {
 		const offset = previous.length - k;

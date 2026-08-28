@@ -65,8 +65,6 @@ impl Drop for Libei {
 	}
 }
 
-/// Closes a `RemoteDesktop` portal session, bounded by `CLOSE_TIMEOUT` so an
-/// unresponsive `xdg-desktop-portal` cannot hang teardown indefinitely.
 fn close_session(runtime: &tokio::runtime::Runtime, session: &RemoteDesktopSession) {
 	let _ = runtime.block_on(async {
 		tokio::time::timeout(crate::desktop::CLOSE_TIMEOUT, session.close()).await
@@ -145,9 +143,6 @@ impl Libei {
 				match fd {
 					Ok((fd, targets)) => Ok((fd, session, targets)),
 					Err(err) => {
-						// Already inside `runtime.block_on`, so the `close_session`
-						// helper (itself a `block_on`) would abort with a nested-runtime
-						// panic; bound this consent-denied close inline instead.
 						let _ =
 							tokio::time::timeout(crate::desktop::CLOSE_TIMEOUT, session.close()).await;
 						Err(err)

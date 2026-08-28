@@ -152,11 +152,6 @@ function pushQuote(frames: LiteralFrame[], kind: QuoteKind): void {
 	frames.push({ type: "quote", kind, escaped: false });
 }
 
-/**
- * Finds the end of a quoted literal while treating interpolation as opaque code.
- * The small lexer is deliberately independent from display layout: its only job
- * is to keep separators and block words inside a literal out of the formatter.
- */
 function consumeQuotedLiteral(source: string, start: number, kind: QuoteKind): number {
 	const frames: LiteralFrame[] = [];
 	pushQuote(frames, kind);
@@ -257,7 +252,6 @@ function consumeQuotedLiteral(source: string, start: number, kind: QuoteKind): n
 	return source.length;
 }
 
-/** Formats an arbitrary Julia source prefix for stable, readable display. */
 export function formatJuliaForDisplay(source: string): string {
 	const output: string[] = [];
 	const delimiterClosers: string[] = [];

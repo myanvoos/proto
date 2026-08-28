@@ -55,7 +55,6 @@ export class BtwController {
 		return this.#branchUnavailableReason() === undefined;
 	}
 
-	/** Whether plain `b` is currently reserved for a completed or pending branch action. */
 	handlesBranchKey(): boolean {
 		if (this.#branchInFlight) return true;
 		if (this.#activeRequest?.component.isBranchable() !== true) return false;

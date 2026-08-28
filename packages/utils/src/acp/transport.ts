@@ -1,37 +1,34 @@
 import type { MaybePromise } from "./protocol";
 import type { Stream } from "./stream";
 
-/** JSON-RPC request identifier. */
 export type JsonRpcId = string | number | null;
-/** JSON-RPC request. */
+
 export interface AnyRequest {
 	jsonrpc: "2.0";
 	id: JsonRpcId;
 	method: string;
 	params?: unknown;
 }
-/** JSON-RPC notification. */
+
 export interface AnyNotification {
 	jsonrpc: "2.0";
 	method: string;
 	params?: unknown;
 }
-/** JSON-RPC error payload. */
+
 export interface ErrorResponse {
 	code: number;
 	message: string;
 	data?: unknown;
 }
-/** JSON-RPC response. */
+
 export type AnyResponse = { jsonrpc: "2.0"; id: JsonRpcId } & ({ result: unknown } | { error: ErrorResponse });
-/** Any JSON-RPC wire message. */
+
 export type AnyMessage = AnyRequest | AnyNotification | AnyResponse;
 
-/** Error returned by a JSON-RPC peer or handler. */
 export class RequestError extends Error {
-	/** JSON-RPC error code. */
 	readonly code: number;
-	/** Optional protocol error data. */
+
 	readonly data?: unknown;
 
 	constructor(code: number, message: string, data?: unknown) {
@@ -41,35 +38,34 @@ export class RequestError extends Error {
 		this.data = data;
 	}
 
-	/** Creates a JSON parse error. */
 	static parseError(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32700, "Parse error", data, additionalMessage);
 	}
-	/** Creates an invalid-request error. */
+
 	static invalidRequest(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32600, "Invalid request", data, additionalMessage);
 	}
-	/** Creates a method-not-found error. */
+
 	static methodNotFound(method: string): RequestError {
 		return new RequestError(-32601, `"Method not found": ${method}`, { method });
 	}
-	/** Creates an invalid-parameters error. */
+
 	static invalidParams(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32602, "Invalid params", data, additionalMessage);
 	}
-	/** Creates an internal error. */
+
 	static internalError(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32603, "Internal error", data, additionalMessage);
 	}
-	/** Creates a cancellation error. */
+
 	static requestCancelled(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32800, "Request cancelled", data, additionalMessage);
 	}
-	/** Creates an authentication-required error. */
+
 	static authRequired(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32000, "Authentication required", data, additionalMessage);
 	}
-	/** Creates a resource-not-found error. */
+
 	static resourceNotFound(uri?: string): RequestError {
 		return new RequestError(
 			-32002,
@@ -77,11 +73,11 @@ export class RequestError extends Error {
 			uri === undefined ? undefined : { uri },
 		);
 	}
-	/** Converts this error into a JSON-RPC result. */
+
 	toResult(): { error: ErrorResponse } {
 		return { error: this.toErrorResponse() };
 	}
-	/** Converts this error into a JSON-RPC error payload. */
+
 	toErrorResponse(): ErrorResponse {
 		return { code: this.code, message: this.message, ...(this.data === undefined ? {} : { data: this.data }) };
 	}
@@ -99,7 +95,6 @@ function createStandardError(
 type Dispatcher = (method: string, params: unknown, notification: boolean) => MaybePromise<unknown>;
 type Pending = { resolve(value: unknown): void; reject(reason: unknown): void };
 
-/** Correlated bidirectional JSON-RPC connection. */
 export class RpcConnection {
 	#nextId = 0;
 	#pending = new Map<JsonRpcId, Pending>();
@@ -115,16 +110,14 @@ export class RpcConnection {
 		void this.#read(stream.readable);
 	}
 
-	/** Signal aborted when the stream closes. */
 	get signal(): AbortSignal {
 		return this.#abort.signal;
 	}
-	/** Promise resolved when the stream closes. */
+
 	get closed(): Promise<void> {
 		return this.#closed.promise;
 	}
 
-	/** Sends a correlated JSON-RPC request. */
 	request<Response>(method: string, params?: unknown): Promise<Response> {
 		if (this.signal.aborted) return Promise.reject(new Error("Connection closed"));
 		const id = this.#nextId++;
@@ -137,12 +130,10 @@ export class RpcConnection {
 		return deferred.promise as Promise<Response>;
 	}
 
-	/** Sends a JSON-RPC notification. */
 	async notify(method: string, params?: unknown): Promise<void> {
 		await this.#write({ jsonrpc: "2.0", method, ...(params === undefined ? {} : { params }) });
 	}
 
-	/** Closes the connection and rejects outstanding requests. */
 	close(error?: unknown): void {
 		if (this.signal.aborted) return;
 		this.#abort.abort(error);
@@ -194,9 +185,7 @@ export class RpcConnection {
 		if (!("id" in message)) {
 			try {
 				await this.#dispatcher(message.method, message.params, true);
-			} catch {
-				/* Notifications have no error channel. */
-			}
+			} catch {}
 			return;
 		}
 		try {

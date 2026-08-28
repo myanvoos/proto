@@ -23,18 +23,12 @@ type PendingUriRequest = {
 	reject: (error: Error) => void;
 };
 
-/** Type guard for inbound `host_uri_result` frames coming from the host. */
 export function isRpcHostUriResult(value: unknown): value is RpcHostUriResult {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as { type?: unknown; id?: unknown };
 	return frame.type === "host_uri_result" && typeof frame.id === "string";
 }
 
-/**
- * One handler instance per host-registered scheme. Delegates reads and (when
- * the scheme was registered as writable) writes to the bridge, which serializes
- * them over the RPC transport.
- */
 class RpcHostUriProtocolHandler implements ProtocolHandler {
 	readonly scheme: string;
 	readonly immutable: boolean;
@@ -55,15 +49,6 @@ class RpcHostUriProtocolHandler implements ProtocolHandler {
 	}
 }
 
-/**
- * Bidirectional bridge that lets the RPC host own a set of URI schemes.
- *
- * The host registers schemes via `set_host_uri_schemes`; the bridge installs
- * a `RpcHostUriProtocolHandler` per scheme into the process-global
- * {@link InternalUrlRouter}. Reads land on the read tool through the existing
- * router; writes are intercepted by the write tool and dispatched through
- * `requestWrite`.
- */
 export class RpcHostUriBridge {
 	#output: RpcHostUriOutput;
 	#router: InternalUrlRouter;
@@ -79,11 +64,6 @@ export class RpcHostUriBridge {
 		return Array.from(this.#definitions.keys());
 	}
 
-	/**
-	 * Replace the registered set of host URI schemes. Previously registered
-	 * schemes that no longer appear in the new set are unregistered from the
-	 * router; surviving and new schemes get fresh handler instances.
-	 */
 	setSchemes(schemes: RpcHostUriSchemeDefinition[]): string[] {
 		const normalized = new Map<string, RpcHostUriSchemeDefinition>();
 		for (const raw of schemes) {
@@ -114,11 +94,6 @@ export class RpcHostUriBridge {
 		return Array.from(normalized.keys());
 	}
 
-	/**
-	 * Unregister every host scheme from the router and reject any in-flight
-	 * requests. Called on RPC shutdown to keep the global router clean for
-	 * subsequent sessions in the same process (used by tests).
-	 */
 	clear(message: string = "Host URI bridge shut down"): void {
 		for (const scheme of this.#definitions.keys()) {
 			this.#router.unregister(scheme);
@@ -127,7 +102,6 @@ export class RpcHostUriBridge {
 		this.rejectAllPending(message);
 	}
 
-	/** Resolve a pending request by id; called by `rpc-mode` on inbound results. */
 	handleResult(frame: RpcHostUriResult): boolean {
 		const pending = this.#pending.get(frame.id);
 		if (!pending) return false;

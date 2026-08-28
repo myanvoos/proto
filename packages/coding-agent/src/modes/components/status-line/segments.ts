@@ -18,8 +18,6 @@ import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegm
 
 export type { SegmentContext } from "./types";
 
-// Every mode label reads in the cool arc's mode hue so "what mode am I in" is
-// one color everywhere; proto's palette resolves that hue through `accent`.
 const MODE_ACCENT: ThemeColor = "accent";
 
 function normalizePremiumRequests(value: number): number {
@@ -30,21 +28,11 @@ function clamp01(value: number): number {
 	return Math.min(1, Math.max(0, value));
 }
 
-/**
- * Leading glyph of a thinking-level display string (e.g. "◉ xhigh" → "◉").
- * Compact mode promotes this glyph to the model-segment icon so the level
- * stays visible without the verbose effort tail.
- */
 function thinkingGlyph(display: string): string {
 	const space = display.indexOf(" ");
 	return space === -1 ? display : display.slice(0, space);
 }
 
-/**
- * Chevron prefix for an effort label: one `›` through medium, `»` once the
- * effort is high or beyond — the count itself signals how hard the model is
- * pushed.
- */
 function effortChevrons(level: string): string {
 	return level === "high" || level === "xhigh" || level === "max" ? "»" : "›";
 }
@@ -75,15 +63,6 @@ function classifyProjectDir(pwd: string): { scratch: boolean; relative: string |
 	return { scratch: false, relative: null };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Segment Implementations
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * `<agent> · esc to go back`, the one place the proxied view says whose
- * session you are in. Prefixed unconditionally by the live status surface, so
- * no preset can drop it and no preset choice can hide the way out.
- */
 export function focusExitBadge(focusedAgentId: string): string {
 	const who = theme.fg("warning", withIcon(theme.icon.ghost, focusedAgentId));
 	const exit = `${theme.fg("accent", "esc")}${theme.fg("muted", " to go back")}`;
@@ -142,24 +121,18 @@ const modelSegment: StatusLineSegment = {
 	},
 };
 
-/**
- * The priority-tier chip: icon plus the word, or the word alone when the symbol
- * theme has no icon. Compact mode keeps the icon only, falling back to the word.
- */
 function formatServiceTierChip(compact: boolean): string {
 	const icon = theme.icon.fast;
 	if (!icon) return PRIORITY_TIER_LABEL;
 	return compact ? icon : `${icon} ${PRIORITY_TIER_LABEL}`;
 }
 
-/** Cells in the compact goal progress bar (verbose mode only). */
 const GOAL_BAR_WIDTH = 8;
-/** Spinner advances one frame per this many active-ms (steady when idle/paused). */
+
 const GOAL_SPINNER_PERIOD_MS = 120;
-/** Recolor to warning once the goal has burned this fraction of its token budget. */
+
 const GOAL_NEAR_BUDGET_FRACTION = 0.9;
 
-/** Compact filled/empty unicode bar for a 0..1 fraction (clamped). */
 function goalProgressBar(fraction: number): string {
 	const clamped = clamp01(fraction);
 	const filled = Math.round(clamped * GOAL_BAR_WIDTH);
@@ -225,12 +198,6 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 	return theme.fg(color, parts.join(" "));
 }
 
-/**
- * One base mode the segment can be in, and how it renders when it is.
- *
- * The modes are MUTUALLY EXCLUSIVE and this list is their priority order: the
- * first entry that returns text wins.
- */
 interface BaseModeState {
 	readonly id: string;
 	render(ctx: SegmentContext): string;
@@ -261,7 +228,6 @@ const BASE_MODE_STATES: readonly BaseModeState[] = [
 	},
 ];
 
-/** The active mode label (prewalk/goal/loop). */
 function renderBaseMode(ctx: SegmentContext): string {
 	for (const mode of BASE_MODE_STATES) {
 		const content = mode.render(ctx);
@@ -335,8 +301,6 @@ const gitSegment: StatusLineSegment = {
 			content = withIcon(theme.icon.branch, branch);
 		}
 
-		// Branch plus one bare dirty marker; the star carries its own hue so it
-		// reads against the branch label.
 		if (isDirty) content = `${content} ${theme.fg("statusLineDirty", "*")}`;
 
 		const colorName = isDirty ? "statusLineGitDirty" : "statusLineGitClean";
@@ -433,19 +397,11 @@ const costSegment: StatusLineSegment = {
 	},
 };
 
-/** The context bar's fixed cell count — small enough to whisper, wide enough
- *  that one cell is a meaningful 12.5% step. */
 const CONTEXT_BAR_CELLS = 8;
-/** Live-tip pulse cadence; past the error threshold the pulse doubles — the
- *  bar visibly quickens as compaction nears. */
+
 const CONTEXT_BAR_TIP_STEP_MS = 1000;
 const CONTEXT_BAR_TIP_STEP_URGENT_MS = 500;
 
-/**
- * The draining context bar: `▰▰▰▰▰▰▱▱` — one filled cell per eighth of the room
- * still available, in the usage-level hue, spent cells dim. The caller passes
- * REMAINING room, so the bar empties as the session grows.
- */
 function renderContextBar(ratio: number, level: ContextUsageLevel, nowMs: number, live: boolean): string {
 	const clamped = clamp01(Number.isFinite(ratio) ? ratio : 0);
 	const filled = Math.min(CONTEXT_BAR_CELLS, Math.round(clamped * CONTEXT_BAR_CELLS));
@@ -465,11 +421,6 @@ function renderContextBar(ratio: number, level: ContextUsageLevel, nowMs: number
 	return bar;
 }
 
-/**
- * The room-left gauge. It measures against {@link SegmentContext.contextLimit} —
- * the auto-compaction trigger when auto-compaction is on, the model's window
- * otherwise. The window itself belongs to {@link contextTotalSegment}.
- */
 const contextPctSegment: StatusLineSegment = {
 	id: "context_pct",
 	render(ctx) {
@@ -485,7 +436,6 @@ const contextPctSegment: StatusLineSegment = {
 	},
 };
 
-/** The model's context window, and only ever that. */
 const contextTotalSegment: StatusLineSegment = {
 	id: "context_total",
 	render(ctx) {
@@ -498,8 +448,6 @@ const contextTotalSegment: StatusLineSegment = {
 	},
 };
 
-/** Total time the agent was actively processing this session. Hidden before
- *  the first second of activity to avoid flashing `0s` at session start. */
 const timeSpentSegment: StatusLineSegment = {
 	id: "time_spent",
 	render(ctx) {
@@ -593,9 +541,6 @@ const cacheHitSegment: StatusLineSegment = {
 		const { cacheRead, cacheWrite, input } = ctx.usageStats;
 		if (!cacheRead) return { content: "", visible: false };
 
-		// Hit rate = cacheRead / total prompt tokens. Including uncached input
-		// keeps the denominator honest for Anthropic/OpenRouter; DeepSeek reports
-		// its miss as input with cacheWrite 0, so this still yields hit/(hit+miss).
 		const total = cacheRead + cacheWrite + input;
 
 		const rate = (cacheRead / total) * 100;
@@ -613,8 +558,7 @@ const sessionNameSegment: StatusLineSegment = {
 		const sessionManager = ctx.session.sessionManager;
 		const name = sessionManager?.getSessionName() ?? ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
-		// Clamp: auto-generated titles are sentence-length and an unclamped chip
-		// dominates the shared footline.
+
 		const label = truncateToWidth(sanitizeStatusText(name), TRUNCATE_LENGTHS.SHORT);
 		return { content: theme.fg("accent", label), visible: true };
 	},
@@ -628,13 +572,12 @@ function pickUsageColor(percent: number): "muted" | "warning" | "error" {
 
 function formatUsageReset(value: number, unit: "m" | "h"): string {
 	if (unit === "m") {
-		// total minutes (5h window: max 300)
 		if (value < 60) return `${value}m`;
 		const hours = Math.floor(value / 60);
 		const mins = value % 60;
 		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 	}
-	// total hours (7d window: max 168)
+
 	if (value < 24) return `${value}h`;
 	const days = Math.floor(value / 24);
 	const hours = value % 24;
@@ -675,10 +618,6 @@ const usageSegment: StatusLineSegment = {
 		return { content, visible: true };
 	},
 };
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Segment Registry
-// ═══════════════════════════════════════════════════════════════════════════
 
 export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	pi: piSegment,

@@ -1,10 +1,3 @@
-/**
- * Micro-benchmark harness shared by the tui bench scripts.
- *
- * `makeBench(iterations)` returns a `bench(name, fn)` that runs `fn` the given
- * number of times, prints `<name>: <total>ms total (<perOp>ms/op)`, and returns
- * the total elapsed milliseconds.
- */
 export function makeBench(iterations: number): (name: string, fn: () => void) => number {
 	return function bench(name: string, fn: () => void): number {
 		const start = Bun.nanoseconds();

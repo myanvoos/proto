@@ -64,11 +64,11 @@ pub(crate) struct SetOption {
 	disable: Option<Vec<String>>,
 }
 
-/// Manage set-based shell options.
+
 #[derive(Parser)]
 #[clap(disable_help_flag = true)]
 pub(crate) struct SetCommand {
-	/// Display help for this command.
+
 	#[clap(long, action = clap::ArgAction::HelpLong)]
 	help: Option<bool>,
 
@@ -126,21 +126,21 @@ impl builtins::Command for SetCommand {
 		true
 	}
 
-	/// Override the default [`builtins::Command::new`] function to handle clap's
-	/// limitation related to `--`. See [`builtins::parse_known`] for more
-	/// information TODO(set): we can safely remove this after the issue is
-	/// resolved
+
+
+
+
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
 		I: IntoIterator<Item = String>,
 	{
-		//
-		// TODO(set): This is getting pretty messy; we need to see how to avoid this --
-		// handling from leaking into too many commands' custom parsing.
-		//
 
-		// Apply the same workaround from the default implementation of Command::new to
-		// handle '+' args.
+
+
+
+
+
+
 		let mut updated_args = vec![];
 		let mut now_parsing_positional_args = false;
 		let mut next_arg_is_option_value = false;
@@ -383,8 +383,8 @@ impl builtins::Command for SetCommand {
 
 		saw_option = saw_option || !self.positional_args.is_empty();
 
-		// If we *still* haven't seen any options, then we need to display all variables
-		// and functions.
+
+
 		if !saw_option {
 			display_all(&context)?;
 		}
@@ -396,21 +396,21 @@ impl builtins::Command for SetCommand {
 fn display_all(
 	context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 ) -> Result<(), brush_core::Error> {
-	// Display variables.
+
 	for (name, var) in context.shell.env().iter().sorted_by_key(|v| v.0) {
 		if !var.is_enumerable() {
 			continue;
 		}
 
-		// TODO(set): For now, skip all dynamic variables. The current behavior
-		// of bash is not quite clear. We've empirically found that some
-		// special variables don't get displayed until they're observed
-		// at least once.
+
+
+
+
 		if matches!(var.value(), variables::ShellValue::Dynamic { .. }) {
 			continue;
 		}
 
-		// Skip variables that have been declared but are unset.
+
 		if !var.value().is_set() {
 			continue;
 		}
@@ -423,7 +423,7 @@ fn display_all(
 		)?;
 	}
 
-	// Display functions... unless we're in posix compliance mode.
+
 	if !context.shell.options().posix_mode {
 		for (_name, registration) in context.shell.funcs().iter().sorted_by_key(|v| v.0) {
 			writeln!(context.stdout(), "{}", registration.definition())?;

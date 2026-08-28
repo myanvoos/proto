@@ -1,5 +1,3 @@
-//! Filter dispatch table for built-in minimizer strategies.
-
 use crate::minimizer::{MinimizerCtx, MinimizerOutput};
 
 pub mod cloud;
@@ -49,10 +47,7 @@ pub fn supports(program: &str, subcommand: Option<&str>) -> bool {
 		},
 		program if cpp::is_gtest_binary_name(program) => cpp::supports(program, subcommand),
 		"dotnet" => dotnet::supports(program, subcommand),
-		// JVM build tools: phase is decided inside jvm::filter (never by
-		// ctx.subcommand, which mis-reports `mvn clean install` as `clean`), so
-		// supports() claims every subcommand. Defensive `.cmd`/`.bat` arms cover
-		// the case where normalize_program is bypassed.
+
 		"mvn" | "mvnw" | "mvnw.cmd" | "gradle" | "gradlew" | "gradlew.bat" => {
 			jvm::supports(program, subcommand)
 		},
@@ -84,11 +79,6 @@ pub fn supports(program: &str, subcommand: Option<&str>) -> bool {
 			pkg::supports(subcommand)
 		},
 		"uv" => {
-			// uv dispatch coverage (B1 / m4): admit additional subcommand forms
-			// that wrap a known tool. `uv run` is already handled above; this
-			// arm covers `uv pytest`, `uv -m pytest`, `uv ruff`, `uv mypy`,
-			// and other wrapped-tool forms that pre-PR fell through to the
-			// package-manager filter.
 			matches!(subcommand, Some("pytest" | "ruff" | "mypy" | "-m")) || pkg::supports(subcommand)
 		},
 		"env" | "log" | "deps" | "summary" | "err" | "test" | "diff" | "format" | "pipe" | "ps"
@@ -102,14 +92,6 @@ fn is_test_script_token(token: &str) -> bool {
 	matches!(token, "test" | "t" | "e2e" | "spec") || token.starts_with("test:")
 }
 
-/// The script/command word a `run`-style invocation targets: the first
-/// non-flag token after the `run`/`-m`/`--module` marker. Returns `None` when
-/// no marker (or no following word) is present.
-///
-/// Selecting only this word — instead of scanning the entire command line —
-/// keeps tool/script names that appear merely as later arguments from
-/// mis-routing output through a test/lint/wrapped-tool filter. Examples that
-/// must NOT route as tests: `npm run build -- test`, `uv run echo pytest`.
 fn run_invoked_word(command: &str) -> Option<&str> {
 	let mut tokens = command
 		.split(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '|' | '&'))
@@ -141,7 +123,6 @@ fn is_lint_script_token(token: &str) -> bool {
 		|| token.starts_with("type-check:")
 }
 
-/// Apply the matching built-in filter.
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	let _ = ctx.command;
@@ -227,8 +208,6 @@ fn filter_js_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 }
 
 fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
-	// uv dispatch normalization (B1 / m4): admit `uv pytest`, `uv -m pytest`,
-	// `uv ruff`, `uv mypy` in addition to the pre-existing `uv run …` path.
 	if let Some(tool) = normalize_uv_form(ctx.subcommand, ctx.command) {
 		let routed = MinimizerCtx {
 			program:    tool,
@@ -291,9 +270,6 @@ fn filter_bundle_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) ->
 	crate::minimizer::apply(&inner_command, input, exit_code, ctx.config)
 }
 
-/// Extract the inner command from a `bundle exec <cmd> …` invocation so the
-/// engine can re-dispatch through the wrapped tool's filter/def. Returns
-/// `None` when the command does not follow the `bundle exec` pattern.
 fn bundle_wrapped_command(command: &str) -> Option<String> {
 	let tokens: Vec<&str> = command
 		.split(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '|' | '&'))
@@ -318,19 +294,6 @@ fn bundle_wrapped_command(command: &str) -> Option<String> {
 	Some(inner)
 }
 
-/// Normalize uv invocation forms into a routable tool name (B1 / m4).
-///
-/// Resolution order:
-///   1. If `subcommand` is itself a known python tool name (pytest, ruff,
-///      mypy), return `Some(<tool>)`.
-///   2. If `subcommand` is `"-m"`, scan `command` tokens for the first non-flag
-///      word matching the python-tool allowlist; return `Some(<tool>)`.
-///   3. If `subcommand` is `"run"`, return `None` so the caller falls through
-///      to the existing `uv_wrapper_tool` path (regression guard).
-///   4. Otherwise return `None`.
-///
-/// The returned `&'static str` is one of `"pytest"`, `"ruff"`, `"mypy"`;
-/// the caller is expected to route via the python filter.
 fn normalize_uv_form(subcommand: Option<&str>, command: &str) -> Option<&'static str> {
 	const ALLOWLIST: &[&str] = &["pytest", "ruff", "mypy"];
 	let sub = subcommand?;
@@ -338,11 +301,8 @@ fn normalize_uv_form(subcommand: Option<&str>, command: &str) -> Option<&'static
 		return Some(tool);
 	}
 	if sub == "-m" {
-		// Only the immediate next non-flag token after `-m` may select a tool;
-		// scanning all subsequent tokens would pick up positional arguments
-		// (e.g. `uv -m my_module pytest` where `pytest` is an arg to `my_module`).
 		let mut tokens = command.split_whitespace().skip_while(|t| t != &"-m");
-		tokens.next(); // consume `-m` itself
+		tokens.next();
 		let next = tokens.next().filter(|tok| !tok.starts_with('-'))?;
 		ALLOWLIST.iter().find(|&&tool| tool == next).copied()
 	} else {
@@ -367,15 +327,7 @@ fn uv_wrapper_tool<'a>(ctx: &'a MinimizerCtx<'_>) -> Option<&'a str> {
 	])
 }
 
-/// Wrapper options whose value is the *following* token (`--with pytest`),
-/// rather than being self-contained (`--with=pytest`). When skipping flags to
-/// find the invoked command word we must also skip these options' values, or
-/// the value (`pytest`) is mistaken for the command and routes arbitrary output
-/// through that tool's filter. Covers the value-taking options of the wrappers
-/// routed here — `uv run`, `npx`, `pnpm dlx`, `bun x`. The `--opt=value` form
-/// is already a single flag token and needs no entry here.
 const WRAPPER_VALUE_OPTIONS: &[&str] = &[
-	// uv run
 	"--extra",
 	"--with",
 	"--with-requirements",
@@ -400,49 +352,35 @@ const WRAPPER_VALUE_OPTIONS: &[&str] = &[
 	"--link-mode",
 	"--color",
 	"--python-preference",
-	// npx / pnpm dlx
 	"--package",
 	"-c",
 	"--call",
 	"--workspace",
 	"-w",
 	"--node-arg",
-	// bundle exec
 	"--gemfile",
 	"--path",
 	"--jobs",
 	"--retry",
 ];
 
-/// Advance `tokens` to the next invoked-command word, skipping flag tokens and
-/// the space-separated values of value-taking options (see
-/// [`WRAPPER_VALUE_OPTIONS`]). Inline `--opt=value` flags are skipped whole.
 fn next_command_word<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Option<&'a str> {
 	while let Some(tok) = tokens.next() {
 		if !tok.starts_with('-') {
 			return Some(tok);
 		}
 		if !tok.contains('=') && WRAPPER_VALUE_OPTIONS.contains(&tok) {
-			tokens.next(); // consume the option's value
+			tokens.next();
 		}
 	}
 	None
 }
 
-/// The command/tool word a wrapper invocation actually executes: the first
-/// non-flag token after a single wrapper keyword (`run`/`dlx`/`exec`), or —
-/// when none is present — the first non-flag token after the program.
-/// Value-taking options (`--with pytest`) have their value skipped so it is not
-/// mistaken for the command. A leading `python`/`python3`/`py` interpreter is
-/// descended through its `-m`/`--module` argument so `uv run python -m pytest`
-/// resolves to `pytest`. Tool names that appear only as later arguments
-/// (`uv run build -- pytest`, `uv run echo pytest`, `uv run --with pytest
-/// echo`) are never returned.
 fn wrapper_command_word(command: &str) -> Option<&str> {
 	let mut tokens = command
 		.split(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '|' | '&'))
 		.filter(|tok| !tok.is_empty());
-	tokens.next()?; // drop the program token
+	tokens.next()?;
 	let mut word = next_command_word(&mut tokens)?;
 	if matches!(word, "run" | "dlx" | "exec") {
 		word = next_command_word(&mut tokens)?;
@@ -470,17 +408,11 @@ fn wrapper_command_word(command: &str) -> Option<&str> {
 }
 
 fn wrapper_invoked_tool<'a>(ctx: &'a MinimizerCtx<'_>, tools: &[&'a str]) -> Option<&'a str> {
-	// Prefer wrapper_command_word over ctx.subcommand: it properly skips
-	// value-taking option values (e.g. -w, --workspace, --with) that
-	// detect_subcommand may mistake for the invoked tool name.
 	let word = wrapper_command_word(ctx.command)?;
 	match tools.iter().copied().find(|&tool| tool == word) {
 		Some(tool) => Some(tool),
-		None => {
-			// Fallback: detect_subcommand may have normalized case or
-			// resolved through program-specific logic.
-			ctx.subcommand
-				.and_then(|subcommand| tools.iter().copied().find(|tool| *tool == subcommand))
-		},
+		None => ctx
+			.subcommand
+			.and_then(|subcommand| tools.iter().copied().find(|tool| *tool == subcommand)),
 	}
 }

@@ -12,7 +12,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 try:
     from .encoding_k3 import build_chat_segments, is_batched_conversation
-except ImportError:  # pragma: no cover - supports direct file execution/import.
+except ImportError:
     from encoding_k3 import build_chat_segments, is_batched_conversation
 
 logger = getLogger(__name__)
@@ -113,7 +113,6 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         logger.info(f"Reloaded tiktoken model from {vocab_file}")
 
         self.n_words: int = self.model.n_vocab
-        # BOS / EOS token IDs
         self.bos_id: int = self.special_tokens[str(bos_token)]
         self.eos_id: int = self.special_tokens[str(eos_token)]
         logger.info(
@@ -128,7 +127,6 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
         self.decoder = {}
         for i in range(self.n_words):
-            # Taken from https://gist.github.com/xenova/a452a6474428de0182b17605a98631ee
             decoding = ''.join([
                 self.byte_encoder[ord(char)] for char in
                 self.model.decode_single_token_bytes(i).decode('latin-1')
@@ -153,13 +151,8 @@ class TikTokenTokenizer(PreTrainedTokenizer):
 
     def _encode_text_piece(self, text: str,
                            allow_special_tokens: bool = True) -> List[int]:
-        # The tiktoken tokenizer can handle <=400k chars without
-        # pyo3_runtime.PanicException.
         TIKTOKEN_MAX_ENCODE_CHARS = 400_000
 
-        # https://github.com/openai/tiktoken/issues/195
-        # Here we iterate over subsequences and split if we exceed the limit
-        # of max consecutive non-whitespace or whitespace characters.
         MAX_NO_WHITESPACES_CHARS = 25_000
 
         t: List[int] = []
@@ -170,14 +163,12 @@ class TikTokenTokenizer(PreTrainedTokenizer):
             ):
                 if allow_special_tokens:
                     t.extend(
-                        # structural markers: encode <|...|> as their special token IDs
                         self.model.encode(
                             substr,
                             allowed_special="all",
                         ))
                 else:
                     t.extend(
-                        # user/tool text: encode any <|...|> as ordinary BPE tokens (never as control tokens)
                         self.model.encode(
                             substr,
                             disallowed_special=(),
@@ -198,10 +189,6 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         Returns:
             list[int]: A list of token IDs.
         """
-        # If there are other args, we should call super().encode because there are a lot of code
-        # to handle those args. supper().encode finally will call _tokenize and _convert_token_to_id.
-        # NOTE: our encode method is not compatible with the super().encode method,
-        #   e.g. split_special_tokens' default is True in our encode method.
         if len(kwargs) > 0:
             logger.warning(f"Calling super().encode with {kwargs}")
             return super().encode(text, **kwargs)
@@ -220,8 +207,6 @@ class TikTokenTokenizer(PreTrainedTokenizer):
         Returns:
             str: The decoded string.
         """
-        # If there are other args, we should call super().decode because there are a lot of code
-        # to handle those args. supper().encode finally will call convert_tokens_to_string and _convert_id_to_token.
         if len(kwargs) > 0:
             return super().decode(token_ids, **kwargs)
 
@@ -366,16 +351,12 @@ class TikTokenTokenizer(PreTrainedTokenizer):
                             return_tensors=None,
                             return_dict: bool = False,
                             **kwargs):
-        # Tokenizer-level rendering reorders tool result messages to match
-        # assistant tool_calls, normalizes per-call arguments and response
-        # schema, then encodes the resulting XTML structure segment-by-segment.
         is_batched = is_batched_conversation(conversation)
         conversations = conversation if is_batched else [conversation]
         image_prompts = kwargs.pop("image_prompts", None)
         if is_batched and image_prompts is not None:
             raise ValueError("image_prompts is only supported for one chat.")
         
-        # by default set thinking effort to max
         kwargs.setdefault("thinking_effort", "max")
 
         segment_batches = [

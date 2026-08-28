@@ -1,6 +1,6 @@
-//! `grep` builtin implemented on top of the ripgrep libraries.
-//!
-//! Matching uses `grep-regex`/`grep-searcher`; recursive walks use `pi-walker`.
+
+
+
 
 
 use std::{
@@ -22,9 +22,9 @@ use grep_searcher::{
 };
 use crate::host::{Host, Utility, util};
 
-/// PCRE2 JIT toggle: `PROTO_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
-/// off. Unset, JIT stays on everywhere except macOS, where PCRE2's SLJIT
-/// executable allocator can fault while compiling patterns (issue #7399).
+
+
+
 pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
 	match host.var("PROTO_PCRE2_JIT") {
 		Some(value) if !value.is_empty() => value != "0" && !value.eq_ignore_ascii_case("false"),
@@ -42,219 +42,219 @@ pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
 	args_override_self = true
 )]
 struct GrepArgs {
-	/// Use PATTERN for matching (may be repeated; all patterns are OR-ed).
+
 	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
 	patterns: Vec<String>,
 
-	/// Read patterns from FILE, one per line.
+
 	#[arg(short = 'f', long = "file", value_name = "FILE")]
 	pattern_files: Vec<OsString>,
 
-	/// Interpret PATTERN as a strict extended regular expression.
+
 	#[arg(short = 'E', long = "extended-regexp")]
 	extended: bool,
 
-	/// Interpret PATTERN using the default basic-compatible mode.
+
 	#[arg(short = 'G', long = "basic-regexp")]
 	basic: bool,
 
-	/// Interpret PATTERN as a fixed string.
+
 	#[arg(short = 'F', long = "fixed-strings")]
 	fixed: bool,
 
-	/// Interpret PATTERN as a Perl-compatible regular expression.
+
 	#[arg(short = 'P', long = "perl-regexp")]
 	perl: bool,
 
-	/// Ignore case distinctions in patterns and data.
+
 	#[arg(short = 'i', short_alias = 'y', long = "ignore-case")]
 	ignore_case: bool,
 
-	/// Restore case-sensitive matching after an earlier -i.
+
 	#[arg(long = "no-ignore-case")]
 	no_ignore_case: bool,
 
-	/// Select non-matching lines.
+
 	#[arg(short = 'v', long = "invert-match")]
 	invert: bool,
 
-	/// Match only whole words.
+
 	#[arg(short = 'w', long = "word-regexp")]
 	word: bool,
 
-	/// Match only whole lines.
+
 	#[arg(short = 'x', long = "line-regexp")]
 	line_regexp: bool,
 
-	/// Print only a count of selected lines per FILE.
+
 	#[arg(short = 'c', long = "count")]
 	count: bool,
 
-	/// Print only the names of FILEs with at least one selected line.
+
 	#[arg(short = 'l', long = "files-with-matches")]
 	files_with_matches: bool,
 
-	/// Print only the names of FILEs with no selected lines.
+
 	#[arg(short = 'L', long = "files-without-match")]
 	files_without_match: bool,
 
-	/// Stop after NUM selected lines in each input.
+
 	#[arg(short = 'm', long = "max-count", value_name = "NUM", allow_hyphen_values = true)]
 	max_count: Option<i64>,
 
-	/// Print only the matched non-empty parts of selected lines.
+
 	#[arg(short = 'o', long = "only-matching")]
 	only_matching: bool,
 
-	/// Quiet; suppress normal output and stop after the first selected line.
+
 	#[arg(short = 'q', long = "quiet", visible_alias = "silent")]
 	quiet: bool,
 
-	/// Suppress error messages about nonexistent or unreadable files.
+
 	#[arg(short = 's', long = "no-messages")]
 	no_messages: bool,
 
-	/// Prefix output with the zero-based byte offset.
+
 	#[arg(short = 'b', long = "byte-offset")]
 	byte_offset: bool,
 
-	/// Always print the file name with output lines.
+
 	#[arg(short = 'H', long = "with-filename")]
 	with_filename: bool,
 
-	/// Never print the file name with output lines.
+
 	#[arg(short = 'h', long = "no-filename")]
 	no_filename: bool,
 
-	/// Use LABEL as the displayed name for standard input.
+
 	#[arg(long = "label", value_name = "LABEL")]
 	label: Option<OsString>,
 
-	/// Prefix each output line with its one-based line number.
+
 	#[arg(short = 'n', long = "line-number")]
 	line_number: bool,
 
-	/// Align line content on a tab stop after output prefixes.
+
 	#[arg(short = 'T', long = "initial-tab")]
 	initial_tab: bool,
 
-	/// Write NUL instead of the separator following a file name.
+
 	#[arg(short = 'Z', long = "null")]
 	null_paths: bool,
 
-	/// Print NUM lines of trailing context after selected lines.
+
 	#[arg(short = 'A', long = "after-context", value_name = "NUM")]
 	after_context: Option<usize>,
 
-	/// Print NUM lines of leading context before selected lines.
+
 	#[arg(short = 'B', long = "before-context", value_name = "NUM")]
 	before_context: Option<usize>,
 
-	/// Print NUM lines of leading and trailing context.
+
 	#[arg(short = 'C', long = "context", value_name = "NUM")]
 	context: Option<usize>,
 
-	/// Print STRING between non-adjacent groups of context lines.
+
 	#[arg(long = "group-separator", value_name = "STRING")]
 	group_separator: Option<String>,
 
-	/// Do not print a separator between context groups.
+
 	#[arg(long = "no-group-separator")]
 	no_group_separator: bool,
 
-	/// Process binary input as text.
+
 	#[arg(short = 'a', long = "text")]
 	text: bool,
 
-	/// Treat binary input as having no selected lines.
+
 	#[arg(short = 'I')]
 	binary_without_match: bool,
 
-	/// Choose how binary input is searched.
+
 	#[arg(long = "binary-files", value_name = "TYPE")]
 	binary_files: Option<BinaryFiles>,
 
-	/// Choose how device, FIFO, and socket operands are handled.
+
 	#[arg(short = 'D', long = "devices", value_name = "ACTION")]
 	devices: Option<DeviceAction>,
 
-	/// Choose how directory operands are handled.
+
 	#[arg(short = 'd', long = "directories", value_name = "ACTION")]
 	directories: Option<DirectoryAction>,
 
-	/// Search files matching GLOB.
+
 	#[arg(long = "include", value_name = "GLOB")]
 	include: Vec<String>,
 
-	/// Skip files matching GLOB.
+
 	#[arg(long = "exclude", value_name = "GLOB")]
 	exclude: Vec<String>,
 
-	/// Read file exclusion globs from FILE.
+
 	#[arg(long = "exclude-from", value_name = "FILE")]
 	exclude_from: Vec<OsString>,
 
-	/// Skip directories matching GLOB during recursive searches.
+
 	#[arg(long = "exclude-dir", value_name = "GLOB")]
 	exclude_dir: Vec<String>,
 
-	/// Search directories matching GLOB during recursive searches.
+
 	#[arg(long = "include-dir", value_name = "GLOB")]
 	include_dir: Vec<String>,
 
-	/// Recursively search each directory operand.
+
 	#[arg(short = 'r', long = "recursive")]
 	recursive: bool,
 
-	/// Recursively search and follow every symbolic link.
+
 	#[arg(short = 'R', long = "dereference-recursive")]
 	dereference_recursive: bool,
 
-	/// Follow symbolic links named as command-line operands.
+
 	#[arg(short = 'O')]
 	follow_command_line: bool,
 
-	/// Do not follow symbolic links during recursive searches.
+
 	#[arg(short = 'p')]
 	no_follow: bool,
 
-	/// Follow every symbolic link during recursive searches.
+
 	#[arg(short = 'S')]
 	follow_all: bool,
 
-	/// Flush standard output after each output record.
+
 	#[arg(long = "line-buffered")]
 	line_buffered: bool,
 
-	/// Use binary I/O where the platform distinguishes it.
+
 	#[arg(short = 'U', long = "binary")]
 	binary_io: bool,
 
-	/// Treat NUL rather than newline as the input and output record delimiter.
+
 	#[arg(short = 'z', long = "null-data")]
 	null_data: bool,
 
-	/// Request memory-mapped input where supported.
+
 	#[allow(dead_code, reason = "accepted BSD grep compatibility option")]
 	#[arg(long = "mmap")]
 	mmap: bool,
 
-	/// Accepted compatibility option with no effect.
+
 	#[allow(dead_code, reason = "accepted GNU grep compatibility option")]
 	#[arg(short = 'u')]
 	unix_byte_offsets: bool,
 
-	/// Print a help message.
+
 	#[allow(dead_code, reason = "clap consumes help before options are inspected")]
 	#[arg(long = "help", action = clap::ArgAction::Help)]
 	help: Option<bool>,
 
-	/// Print version information.
+
 	#[allow(dead_code, reason = "clap consumes version before options are inspected")]
 	#[arg(short = 'V', long = "version", action = clap::ArgAction::Version)]
 	version: Option<bool>,
 
-	/// Accept color configuration without injecting ANSI into redirected output.
+
 	#[allow(dead_code, reason = "color is intentionally disabled for builtin output")]
 	#[arg(
 		long = "color",
@@ -266,12 +266,12 @@ struct GrepArgs {
 	)]
 	color: Option<String>,
 
-	/// PATTERN followed by FILEs (PATTERN is omitted with -e or -f).
+
 	#[arg(value_name = "ARGS")]
 	args: Vec<OsString>,
 }
 
-/// Parsed GNU `grep` invocation, including option occurrence order.
+
 pub(crate) struct Grep {
 	cli: GrepArgs,
 	matches: ArgMatches,
@@ -323,7 +323,7 @@ enum MatchMode {
 	Perl,
 }
 
-/// Resolved, flag-free options shared with the search [`Sink`].
+
 struct Options {
 	line_number:         bool,
 	byte_offset:         bool,
@@ -530,8 +530,8 @@ fn resolve_follow_links(cli: &GrepArgs, matches: &ArgMatches) -> pi_walker::Foll
 }
 
 fn resolve_binary_files(cli: &GrepArgs, matches: &ArgMatches) -> BinaryFiles {
-	// Preserve the builtin's historical byte-transparent default. Explicit
-	// GNU/BSD binary controls opt into detection.
+
+
 	let mut selected = (0, BinaryFiles::Text);
 	choose_latest(&mut selected, last_index(matches, "text"), BinaryFiles::Text);
 	choose_latest(
@@ -588,8 +588,8 @@ fn normalize_context_args(argv: Vec<OsString>) -> Vec<OsString> {
 	normalized
 }
 
-/// Escape regular-expression meta-characters so a pattern is matched literally,
-/// mirroring `regex::escape` (used to implement `-F`/`--fixed-strings`).
+
+
 fn escape_literal(pat: &str) -> String {
 	const META: &[char] =
 		&['\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '#', '&', '-', '~'];
@@ -603,8 +603,8 @@ fn escape_literal(pat: &str) -> String {
 	out
 }
 
-/// Translate GNU BRE `\|` alternation into the syntax accepted by
-/// `grep-regex`, without rewriting escaped pipes inside character classes.
+
+
 fn normalize_basic_alternation(pattern: &str) -> Cow<'_, str> {
 	let bytes = pattern.as_bytes();
 	let mut output = None;
@@ -673,7 +673,7 @@ fn build_default_matcher<P: AsRef<str>>(
 		.map_err(|_| error.to_string())
 }
 
-/// Compile all patterns using the last-selected matcher mode.
+
 fn build_matcher(
 	host: &Host,
 	patterns: &[String],
@@ -729,7 +729,7 @@ fn build_matcher(
 		.map_err(|error| error.to_string())
 }
 
-/// A search sink that renders GNU-compatible records and tracks selection.
+
 struct GrepSink<'a, M: Matcher, W: Write> {
 	out:         &'a mut W,
 	matcher:     &'a M,
@@ -944,7 +944,7 @@ impl<M: Matcher, W: Write> Sink for GrepSink<'_, M, W> {
 	}
 }
 
-/// Search one input and return whether it contained a selected record.
+
 fn process_reader<M: Matcher, R: Read, W: Write>(
 	matcher: &M,
 	searcher: &mut Searcher,
@@ -968,11 +968,11 @@ fn display_path_for_operand(operand: &OsStr, resolved: &Path, path: &Path) -> Pa
 	}
 }
 
-/// Exit status of a process killed by SIGPIPE (128 + 13).
-///
-/// A closed downstream reader (`grep … | head`) surfaces as BrokenPipe on
-/// stdout writes. Real grep dies silently from SIGPIPE; the builtin mirrors
-/// that with this status and no diagnostic.
+
+
+
+
+
 const SIGPIPE_EXIT_CODE: i32 = 141;
 
 #[allow(clippy::too_many_arguments)]
@@ -993,8 +993,8 @@ fn search_file_path<M: Matcher, W: Write>(
 			let display = display_path.as_os_str().as_encoded_bytes();
 			match process_reader(matcher, searcher, file, display, opts, out) {
 				Ok(matched) => Ok(matched),
-				// A closed downstream pipe aborts the whole search like a
-				// SIGPIPE-killed grep; any other error fails only this file.
+
+
 				Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),
 				Err(error) => {
 					*had_error = true;
@@ -1041,7 +1041,7 @@ fn grep_walk_request(root: &Path, follow_links: pi_walker::FollowLinks) -> pi_wa
 		.filter(pi_walker::WalkFilter::all())
 }
 
-/// Recursively search a directory operand while pruning excluded directories.
+
 #[allow(clippy::too_many_arguments)]
 fn search_dir<M: Matcher, W: Write>(
 	host: &mut Host,
@@ -1120,15 +1120,15 @@ fn search_dir<M: Matcher, W: Write>(
 	*had_error |= had_error_state.get();
 	match walk {
 		Ok(pi_walker::WalkStatus::Complete | pi_walker::WalkStatus::Stopped) => Ok(any),
-		// A closed downstream pipe propagates so the caller exits like a
-		// SIGPIPE-killed grep.
+
+
 		Err(pi_walker::WalkError::Interrupted(error))
 			if error.kind() == io::ErrorKind::BrokenPipe =>
 		{
 			Err(error)
 		},
 		Err(pi_walker::WalkError::Interrupted(_)) if host.is_cancelled() => {
-			// The shell wrapper owns the user-visible cancellation status.
+
 			*had_error = true;
 			Ok(any)
 		},
@@ -1321,8 +1321,8 @@ fn execute_search<M: Matcher>(
 				&mut out,
 			) {
 				Ok(matched) => any_match |= matched,
-				// Real grep dies silently from SIGPIPE when the downstream
-				// reader exits early (`… | grep … | head`).
+
+
 				Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
 					return SIGPIPE_EXIT_CODE;
 				},
@@ -1545,7 +1545,7 @@ impl Utility for Grep {
 }
 }
 
-/// Creates the GNU `grep` builtin registration.
+
 pub(crate) fn grep_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Grep, SE>()
 }

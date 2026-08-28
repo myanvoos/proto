@@ -40,13 +40,6 @@ import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
 
-/**
- * A submenu component for selecting from a list of options.
- */
-/**
- * Submenu component for free-text string settings.
- * Mirrors the ConfigInputSubmenu pattern from plugin-settings.ts.
- */
 class TextInputSubmenu extends Container {
 	#input: Input;
 	#error: Text;
@@ -76,7 +69,7 @@ class TextInputSubmenu extends Container {
 		this.#error = new Text("", 0, 0);
 		this.#input.onSubmit = value => {
 			try {
-				this.onSubmit(value); // empty string clears the setting
+				this.onSubmit(value);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				this.#error.setText(theme.fg("error", truncateToWidth(replaceTabs(message).replace(/[\r\n]+/g, " "), 100)));
@@ -112,16 +105,13 @@ class SelectSubmenu extends Container {
 	) {
 		super();
 
-		// Title
 		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
 
-		// Description
 		if (description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", description), 0, 0));
 		}
 
-		// Preview (if provided)
 		if (getPreview) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", "Preview:"), 0, 0));
@@ -129,13 +119,10 @@ class SelectSubmenu extends Container {
 			this.addChild(this.#previewText);
 		}
 
-		// Spacer
 		this.addChild(new Spacer(1));
 
-		// Select list
 		this.#selectList = new SelectList(options, Math.min(options.length, 10), getSelectListTheme());
 
-		// Pre-select current value
 		const currentIndex = options.findIndex(o => o.value === currentValue);
 		if (currentIndex !== -1) {
 			this.#selectList.setSelectedIndex(currentIndex);
@@ -167,12 +154,9 @@ class SelectSubmenu extends Container {
 
 		this.addChild(this.#selectList);
 
-		// Hint
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
 
-		// Footer (e.g. the composer shape preview) below the interactive rows,
-		// so the list never shifts while browsing.
 		if (footer) {
 			this.addChild(new Spacer(1));
 			this.addChild(footer);
@@ -185,10 +169,6 @@ class SelectSubmenu extends Container {
 		}
 	}
 
-	/**
-	 * Concatenate children like Container.render, recording where the select
-	 * list lands so routed mouse events can be hit-tested against it.
-	 */
 	override render(width: number): readonly string[] {
 		const lines: string[] = [];
 		for (const child of this.children) {
@@ -201,7 +181,6 @@ class SelectSubmenu extends Container {
 		return lines;
 	}
 
-	/** Mouse routed from the host: wheel steps, hover lights, click confirms. */
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
 		routeSelectListMouse(this.#selectList, event, line - this.#selectListLineOffset);
 	}
@@ -211,11 +190,6 @@ class SelectSubmenu extends Container {
 	}
 }
 
-/**
- * Submenu for array-of-enum settings: every option is a toggle row. Enter or
- * Space flips membership; ordered lists render 1-based positions and reorder
- * the highlighted member with ←/→. Changes apply live; Esc goes back.
- */
 class MultiSelectSubmenu extends Container {
 	#selectList!: SelectList;
 	#value: string[];
@@ -233,7 +207,7 @@ class MultiSelectSubmenu extends Container {
 		private readonly onClose: () => void,
 	) {
 		super();
-		// Drop stale ids (renamed/removed providers) so positions stay contiguous.
+
 		this.#value = initial.filter(id => options.some(option => option.value === id));
 		this.#rebuild();
 	}
@@ -295,7 +269,6 @@ class MultiSelectSubmenu extends Container {
 		this.#apply(next);
 	}
 
-	/** Move a selected item before another selected item, retaining every other preference. */
 	#moveBefore(id: string, beforeId: string): void {
 		if (id === beforeId) return;
 		const next = this.#value.filter(value => value !== id);
@@ -305,14 +278,12 @@ class MultiSelectSubmenu extends Container {
 		this.#apply(next);
 	}
 
-	/** Splice the option into the 1-based `position` of the selection (adding it if unselected). */
 	#placeAt(id: string, position: number): void {
 		const next = this.#value.filter(v => v !== id);
 		next.splice(Math.min(position - 1, next.length), 0, id);
 		this.#apply(next);
 	}
 
-	/** Concatenate children, recording the select list's line offset for mouse routing. */
 	override render(width: number): readonly string[] {
 		const lines: string[] = [];
 		for (const child of this.children) {
@@ -495,11 +466,7 @@ class ProviderLimitsSubmenu extends Container {
 }
 
 let cachedSidebarWidth: number | undefined;
-/**
- * Split-sidebar width derived from every group name in the schema (not just
- * the visible tab), so the divider column never moves when switching tabs or
- * when condition-gated groups appear.
- */
+
 function settingsSidebarWidth(): number {
 	if (cachedSidebarWidth === undefined) {
 		let nameWidth = 0;
@@ -524,26 +491,20 @@ function getSettingsTabs(): Tab[] {
 	];
 }
 
-/**
- * Dynamic context for settings that need runtime data.
- * Some settings (like thinking level) are managed by the session, not Settings.
- */
 interface SettingsRuntimeContext {
-	/** Available thinking levels (from session) */
 	availableThinkingLevels: Effort[];
-	/** Current thinking level (from session) */
+
 	thinkingLevel: ThinkingLevel | undefined;
-	/** Available themes */
+
 	availableThemes: string[];
-	/** Provider/source ids shown in /model. */
+
 	providers: string[];
-	/** Working directory for plugins tab */
+
 	cwd: string;
-	/** Schedules a re-render after async preview work completes. */
+
 	requestRender?: () => void;
 }
 
-/** Status line settings subset for preview */
 interface StatusLinePreviewSettings {
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
@@ -553,24 +514,19 @@ interface StatusLinePreviewSettings {
 }
 
 interface SettingsCallbacks {
-	/** Called when any setting value changes */
 	onChange: (path: SettingPath, newValue: unknown) => void;
-	/** Called for theme preview while browsing */
+
 	onThemePreview?: (theme: string) => void | Promise<void>;
-	/** Called for status line preview while configuring */
+
 	onStatusLinePreview?: (settings: StatusLinePreviewSettings) => void;
-	/** Get current rendered status line for inline preview */
+
 	getStatusLinePreview?: () => string;
-	/** Called when plugins change */
+
 	onPluginsChanged?: () => void | Promise<void>;
-	/** Called when settings panel is closed */
+
 	onCancel: () => void;
 }
 
-/**
- * Main tabbed settings selector component.
- * Uses declarative settings definitions from settings-defs.ts.
- */
 export class SettingsSelectorComponent implements Component {
 	#tabBar: TabBar;
 	#currentList: SettingsList | null = null;
@@ -579,15 +535,14 @@ export class SettingsSelectorComponent implements Component {
 	#currentTabId: SettingTab | "plugins" = "appearance";
 	#preSearchTabId: SettingTab | "plugins" = "appearance";
 	#searchQuery = "";
-	/** Single-line editor backing the search banner (cursor, word ops, paste). */
+
 	#searchInput = new Input();
 	#searchMatchCount = 0;
-	/** First matching item id per tab id, for Tab-key jumps while searching. */
+
 	#searchFirstMatch = new Map<string, string>();
 	#textInputActive = false;
 	#hasSectionJump = false;
-	// Frame geometry from the last render, for mouse hit-testing (the
-	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
+
 	#tabRowStart = 0;
 	#tabRowCount = 0;
 	#contentRowStart = 0;
@@ -597,14 +552,11 @@ export class SettingsSelectorComponent implements Component {
 		private readonly context: SettingsRuntimeContext,
 		private readonly callbacks: SettingsCallbacks,
 	) {
-		// No label prefix (the frame title already says Settings) and no
-		// "(tab to cycle)" hint (folded into the footer hint line).
 		this.#tabBar = new TabBar("", getSettingsTabs(), getTabBarTheme());
 		this.#tabBar.showHint = false;
 		this.#tabBar.onTabChange = () => {
 			const tabId = this.#tabBar.getActiveTab().id as SettingTab | "plugins";
 			if (this.#searchList) {
-				// While searching, tabs act as jump targets into the result list.
 				const firstId = this.#searchFirstMatch.get(tabId);
 				if (firstId) this.#searchList.selectItem(firstId);
 				return;
@@ -612,7 +564,6 @@ export class SettingsSelectorComponent implements Component {
 			this.#switchToTab(tabId);
 		};
 
-		// Initialize with first tab
 		this.#switchToTab("appearance");
 	}
 
@@ -623,7 +574,6 @@ export class SettingsSelectorComponent implements Component {
 		this.#pluginComponent?.invalidate();
 	}
 
-	/** Swap the active content (per-tab list, search list, or plugins). */
 	#setContent(build: () => void): void {
 		this.#currentList = null;
 		this.#searchList = null;
@@ -656,24 +606,18 @@ export class SettingsSelectorComponent implements Component {
 		return `Enter/Space to change · ${nav} · Type to search · Esc to close`;
 	}
 
-	/** Single-line search banner: accent icon, editable query with live cursor, right-aligned match count. */
 	#renderSearchBanner(width: number): string {
 		const icon = theme.symbol("icon.search");
 		const countText = this.#searchMatchCount === 1 ? "1 match" : `${this.#searchMatchCount} matches`;
-		const rightWidth = visibleWidth(countText) + 1; // trailing margin
+		const rightWidth = visibleWidth(countText) + 1;
 		const prefix = ` ${theme.fg("accent", icon)} `;
-		// The input pads itself to exactly this width and keeps the cursor in view.
+
 		const inputWidth = Math.max(4, width - visibleWidth(prefix) - rightWidth - 1);
 		const inputLine = this.#searchInput.render(inputWidth)[0] ?? "";
 		const count = theme.fg(this.#searchMatchCount > 0 ? "dim" : "warning", countText);
 		return truncateToWidth(`${prefix}${theme.bold(inputLine)} ${count} `, width);
 	}
 
-	/**
-	 * Fullscreen frame: title border, tab row, divider, optional search banner,
-	 * the active content sized to fill the terminal, the appearance preview,
-	 * then a footer hint pinned above the bottom border.
-	 */
 	render(width: number): readonly string[] {
 		const height = Math.max(14, process.stdout.rows || 40);
 		const innerWidth = Math.max(1, width - 4);
@@ -683,14 +627,12 @@ export class SettingsSelectorComponent implements Component {
 		const showPreview = !searching && this.#currentTabId === "appearance";
 		const previewLines = showPreview ? ["", theme.fg("muted", "Preview:"), this.#getStatusPreviewString()] : [];
 
-		// Fixed chrome: top border, tabs, divider, [search row], divider, hint, bottom border.
 		const fixedRows = 1 + tabLines.length + 1 + (searching ? 1 : 0) + 1 + 1 + 1;
 		const contentRows = Math.max(7, height - fixedRows - previewLines.length);
 
 		const list = this.#searchList ?? this.#currentList;
 		let contentLines: readonly string[];
 		if (list) {
-			// SettingsList pads itself to viewport + blank + 3 description rows.
 			list.setMaxVisible(contentRows - 4);
 			contentLines = list.render(innerWidth);
 		} else if (this.#pluginComponent) {
@@ -724,26 +666,17 @@ export class SettingsSelectorComponent implements Component {
 		return out;
 	}
 
-	/**
-	 * Route an SGR mouse report against the frame geometry of the last render.
-	 * Wheel scrolls the focused list, motion drives the hover highlights (tabs
-	 * and rows), and a left click activates: tabs switch (or jump, while
-	 * searching), a row click selects, and a click on the already-selected row
-	 * activates it (toggle / open submenu).
-	 */
 	#handleMouse(data: string): boolean {
 		return routeSgrMouseInput(data, event => this.#routeMouseEvent(event));
 	}
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		const list = this.#searchList ?? this.#currentList;
-		// row() insets content by the border column plus a space.
+
 		const contentColInset = 2;
 		const innerCol = event.col - contentColInset;
 		const contentLine = event.row - this.#contentRowStart;
 
-		// An open submenu owns the pointer: wheel, hover, and clicks route into
-		// it (text-input submenus ignore routed events).
 		if (list?.hasOpenSubmenu()) {
 			list.routeSubmenuMouse(event, contentLine, innerCol);
 			return true;
@@ -763,8 +696,7 @@ export class SettingsSelectorComponent implements Component {
 		if (event.motion) {
 			const hovered = overTabs ? this.#tabBar.tabAt(tabLine, innerCol) : undefined;
 			this.#tabBar.setHoverTab(hovered && !hovered.muted ? hovered.id : null);
-			// hoverTest: never light up pane rows while the pointer is on the
-			// sidebar — only rows the pointer is actually on.
+
 			list?.setHoverItem(overContent ? (list.hoverTest(contentLine, innerCol) ?? null) : null);
 			return true;
 		}
@@ -780,18 +712,13 @@ export class SettingsSelectorComponent implements Component {
 			if (id !== undefined) {
 				const wasSelected = list.getSelectedItem()?.id === id;
 				list.selectItem(id);
-				// Click-again activates: toggle booleans, open submenus.
+
 				if (wasSelected) list.handleInput("\n");
 			}
 		}
 		return true;
 	}
 
-	// ═══════════════════════════════════════════════════════════════════════
-	// Global search (type-to-search across every tab)
-	// ═══════════════════════════════════════════════════════════════════════
-
-	/** Swap the tab content for the global search result list. */
 	#startSearch(initialQuery: string): void {
 		this.#preSearchTabId = this.#currentTabId;
 		this.#searchInput = new Input();
@@ -810,7 +737,7 @@ export class SettingsSelectorComponent implements Component {
 				hint: "",
 			},
 		);
-		// Keep the footer tab highlight on the tab owning the selected result.
+
 		list.onSelectionChange = item => this.#syncTabBarToSelection(item);
 		this.#setContent(() => {
 			this.#searchList = list;
@@ -818,11 +745,6 @@ export class SettingsSelectorComponent implements Component {
 		this.#setSearchQuery(initialQuery);
 	}
 
-	/**
-	 * Recompute matches across every settings tab. Results render as one flat
-	 * list with a heading row per tab; the footer tab bar reorders to show
-	 * matching tabs (with counts) first and the rest muted at the end.
-	 */
 	#setSearchQuery(query: string): void {
 		if (!this.#searchList) return;
 		if (query.length === 0) {
@@ -879,11 +801,6 @@ export class SettingsSelectorComponent implements Component {
 		this.#syncTabBarToSelection(this.#searchList.getSelectedItem());
 	}
 
-	/**
-	 * Leave search mode. With `jumpToSelection`, land on the tab containing
-	 * the selected result and keep it selected there — search doubles as
-	 * navigation. Otherwise restore the pre-search tab.
-	 */
 	#endSearch(jumpToSelection: boolean): void {
 		if (!this.#searchList) return;
 		const selected = jumpToSelection ? this.#searchList.getSelectedItem() : undefined;
@@ -900,7 +817,6 @@ export class SettingsSelectorComponent implements Component {
 		}
 	}
 
-	/** Matching tabs first (counts attached), ordered by best result score; the rest stay muted at the end. */
 	#buildSearchTabs(counts: Map<SettingTab, number>, matchedTabOrder: readonly SettingTab[]): Tab[] {
 		const matched: Tab[] = [];
 		const empty: Tab[] = [];
@@ -919,7 +835,7 @@ export class SettingsSelectorComponent implements Component {
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
 			empty.push({ id, label: `${icon} ${meta.label}`, short: icon, muted: true });
 		}
-		// Plugins hosts its own UI; it is not part of the schema-backed search.
+
 		empty.push({ id: "plugins", label: `${theme.icon.package} Plugins`, short: theme.icon.package, muted: true });
 		return [...matched, ...empty];
 	}
@@ -930,7 +846,6 @@ export class SettingsSelectorComponent implements Component {
 		if (def) this.#tabBar.setActiveById(def.tab);
 	}
 
-	/** Value-change dispatch for the search result list (any tab's setting). */
 	#onSearchSettingChange(path: SettingPath, newValue: string): void {
 		const def = getSettingDef(path);
 		if (!def) return;
@@ -942,20 +857,15 @@ export class SettingsSelectorComponent implements Component {
 			settings.set(path, newValue as never);
 			this.callbacks.onChange(path, newValue);
 		}
-		// Submenu/text types already persisted inside their own done callbacks.
+
 		if (def.tab === "appearance") {
 			this.#triggerStatusLinePreview();
 		}
-		// Values feed the searchable text and condition gates may have flipped:
-		// recompute results in place (selection is preserved by item id).
+
 		this.#setSearchQuery(this.#searchQuery);
 	}
 
-	/**
-	 * Convert a setting definition to a SettingItem for the UI.
-	 */
 	#defToItem(def: SettingDef): SettingItem | null {
-		// Check condition: applies to every variant — booleans, enums, submenus, text inputs.
 		if (def.condition && !def.condition()) {
 			return null;
 		}
@@ -1006,9 +916,6 @@ export class SettingsSelectorComponent implements Component {
 		}
 	}
 
-	/**
-	 * Get the current value for a setting.
-	 */
 	#getCurrentValue(def: SettingDef): unknown {
 		return settings.get(def.path);
 	}
@@ -1035,9 +942,6 @@ export class SettingsSelectorComponent implements Component {
 		return rawValue;
 	}
 
-	/**
-	 * Create a submenu for a submenu-type setting.
-	 */
 	#createSubmenu(
 		def: SettingDef & { type: "submenu" },
 		currentValue: string,
@@ -1045,9 +949,7 @@ export class SettingsSelectorComponent implements Component {
 	): Container {
 		let options = def.options;
 
-		// Special case: inject runtime options for thinking level
 		if (def.path === "defaultThinkingLevel") {
-			// The model's runtime-supported efforts.
 			const levels: ThinkingLevel[] = [...this.context.availableThinkingLevels];
 			options = levels.map(level => {
 				const baseOpt = options.find(o => o.value === level);
@@ -1056,7 +958,7 @@ export class SettingsSelectorComponent implements Component {
 		} else if (def.path === "theme.dark" || def.path === "theme.light") {
 			options = this.context.availableThemes.map(t => ({ value: t, label: t }));
 		}
-		// Preview handlers
+
 		let onPreview: ((value: string) => void | Promise<void>) | undefined;
 		let onPreviewCancel: (() => void) | undefined;
 		let footer: Component | undefined;
@@ -1078,7 +980,7 @@ export class SettingsSelectorComponent implements Component {
 				this.callbacks.onStatusLinePreview?.({ separator });
 			};
 		}
-		// Provide status line preview for theme selection
+
 		const isThemeSetting = def.path === "theme.dark" || def.path === "theme.light";
 		const getPreview = isThemeSetting ? this.callbacks.getStatusLinePreview : undefined;
 
@@ -1102,9 +1004,6 @@ export class SettingsSelectorComponent implements Component {
 		);
 	}
 
-	/**
-	 * Create a text input submenu for a plain string setting.
-	 */
 	#createTextInput(
 		def: SettingDef & { type: "text" },
 		_currentValue: string,
@@ -1121,8 +1020,6 @@ export class SettingsSelectorComponent implements Component {
 			this.#formatTextInputEditValue(def.path, settings.get(def.path)),
 			def.secret,
 			value => {
-				// Empty string clears the setting; undefined-typed string settings
-				// store "" which the browser.ts expandPath ignores (no-op fallback).
 				this.#setSettingValue(def.path, value);
 				this.callbacks.onChange(def.path, settings.get(def.path));
 				wrappedDone(this.#formatTextInputValue(def, settings.get(def.path)));
@@ -1201,9 +1098,6 @@ export class SettingsSelectorComponent implements Component {
 		return String(value);
 	}
 
-	/**
-	 * Set a setting value, handling type conversion.
-	 */
 	#setSettingValue(path: SettingPath, value: string): void {
 		const currentValue = settings.get(path);
 		const schemaType = getType(path);
@@ -1234,16 +1128,11 @@ export class SettingsSelectorComponent implements Component {
 		}
 	}
 
-	/**
-	 * Show a settings tab using definitions.
-	 */
 	#showSettingsTab(tabId: SettingTab): void {
 		const defs = getSettingsForTab(tabId);
 
 		const items = this.#buildItemsForDefs(defs);
-		// Mirror SettingsList's section detection (leading ungrouped items form
-		// an implicit section) so the footer hint only advertises PgUp/PgDn
-		// when the jump actually changes sections.
+
 		const sectionCount = items.filter(item => item.heading).length + (items.length > 0 && !items[0].heading ? 1 : 0);
 		this.#hasSectionJump = sectionCount >= 2;
 
@@ -1269,24 +1158,15 @@ export class SettingsSelectorComponent implements Component {
 					settings.set(path, newValue as never);
 					this.callbacks.onChange(path, newValue);
 				}
-				// Submenu/text types already persisted the value inside their own
-				// done callbacks before SettingsList re-dispatches here. Re-run the
-				// definition-to-item mapping so condition-gated settings
-				// appear/disappear immediately instead of waiting for the next tab switch.
+
 				this.#refreshCurrentTabItems(defs);
 			},
 			() => this.callbacks.onCancel(),
-			// The selector owns type-to-search and the footer hint; pin the
-			// split sidebar width so the divider never jumps between tabs.
+
 			{ typeToSearch: false, hint: "", sidebarWidth: settingsSidebarWidth() },
 		);
 	}
 
-	/**
-	 * Map a definition list to UI items, dropping any whose condition is false.
-	 * Inserts a heading row whenever the (group-sorted) definition list crosses
-	 * into a new group; groups whose items are all condition-hidden emit none.
-	 */
 	#buildItemsForDefs(defs: SettingDef[]): SettingItem[] {
 		const items: SettingItem[] = [];
 		let lastGroup: string | undefined;
@@ -1302,15 +1182,11 @@ export class SettingsSelectorComponent implements Component {
 		return items;
 	}
 
-	/** Re-evaluate condition gates against the current settings and refresh the active list. */
 	#refreshCurrentTabItems(defs: SettingDef[]): void {
 		if (this.#currentTabId === "plugins" || !this.#currentList) return;
 		this.#currentList.setItems(this.#buildItemsForDefs(defs));
 	}
 
-	/**
-	 * Get the status line preview string.
-	 */
 	#getStatusPreviewString(): string {
 		if (this.callbacks.getStatusLinePreview) {
 			return this.callbacks.getStatusLinePreview();
@@ -1318,9 +1194,6 @@ export class SettingsSelectorComponent implements Component {
 		return theme.fg("dim", "(preview not available)");
 	}
 
-	/**
-	 * Trigger status line preview with current settings.
-	 */
 	#triggerStatusLinePreview(): void {
 		const statusLineSettings: StatusLinePreviewSettings = {
 			leftSegments: settings.get("statusLine.leftSegments"),
@@ -1340,14 +1213,11 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	handleInput(data: string): void {
-		// SGR mouse reports (the fullscreen overlay enables tracking).
 		if (data.startsWith("\x1b[<")) {
 			this.#handleMouse(data);
 			return;
 		}
 
-		// Text-input submenus take every byte: arrow keys must reach the
-		// cursor and Tab must not switch tabs.
 		if (this.#textInputActive) {
 			(this.#searchList ?? this.#currentList)?.handleInput(data);
 			return;
@@ -1355,7 +1225,6 @@ export class SettingsSelectorComponent implements Component {
 
 		const activeList = this.#searchList ?? this.#currentList;
 
-		// An open submenu owns input entirely — Tab/arrows/typing belong to it.
 		if (activeList?.hasOpenSubmenu()) {
 			activeList.handleInput(data);
 			return;
@@ -1366,8 +1235,6 @@ export class SettingsSelectorComponent implements Component {
 			return;
 		}
 
-		// Tab toggles keyboard focus between section headings and setting rows
-		// (fast section hopping); tabs without sections keep Tab switching tabs.
 		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
 			if (this.#currentList?.hasSectionFocusTargets()) {
 				this.#currentList.toggleSectionFocus();
@@ -1381,8 +1248,6 @@ export class SettingsSelectorComponent implements Component {
 			return;
 		}
 
-		// Printable characters start a search across every settings tab. The
-		// plugins tab keeps its own local filtering instead.
 		if (this.#currentTabId !== "plugins") {
 			const printable = extractPrintableText(data);
 			if (printable !== undefined && printable.trim().length > 0) {
@@ -1401,16 +1266,14 @@ export class SettingsSelectorComponent implements Component {
 	#handleSearchModeInput(data: string, list: SettingsList): void {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel")) {
-			// Exit search, landing on the tab of the selected result.
 			this.#endSearch(true);
 			return;
 		}
 		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
-			// Jump between tabs that have matches (muted tabs are skipped).
 			this.#tabBar.handleInput(data);
 			return;
 		}
-		// Selection, paging, and activation stay with the result list.
+
 		if (
 			kb.matches(data, "tui.select.up") ||
 			kb.matches(data, "tui.select.down") ||
@@ -1422,8 +1285,7 @@ export class SettingsSelectorComponent implements Component {
 			list.handleInput(data);
 			return;
 		}
-		// Everything else edits the query like a regular single-line editor:
-		// cursor movement, word ops, kill ring, undo, paste.
+
 		this.#searchInput.handleInput(data);
 		const value = this.#searchInput.getValue();
 		if (value !== this.#searchQuery) this.#setSearchQuery(value);

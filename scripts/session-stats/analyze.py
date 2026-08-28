@@ -25,8 +25,6 @@ from pathlib import Path
 DB_PATH = Path.home() / ".proto" / "stats.db"
 
 
-# --------------------------------------------------------------------------- #
-# Shared helpers
 
 
 def open_ro() -> sqlite3.Connection:
@@ -87,8 +85,6 @@ def percentile(values: list[int], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
-# --------------------------------------------------------------------------- #
-# `tools` — per-tool token totals (cmd_tools.rs port)
 
 TOOLS_AGGREGATE_SQL = """
 WITH per_tool AS (
@@ -119,7 +115,6 @@ ORDER BY (IFNULL(p.arg_tok, 0) + IFNULL(q.res_tok, 0)) DESC
 
 _SEPARATORS_RE = re.compile(r"(\|\||&&|\||;|`|\$\()")
 _EXCLUDE_SET = {
-    # Shell control and builtins that aren't typical external utilities
     "do",
     "done",
     "for",
@@ -149,7 +144,6 @@ _EXCLUDE_SET = {
     "source",
     "alias",
     "unalias",
-    # JS/TS/programming keywords that show up from inline scripts or eval
     "const",
     "let",
     "var",
@@ -174,7 +168,6 @@ _EXCLUDE_SET = {
     "module",
     "exports",
     "def",
-    # Punctuation/operators
     "+",
     "-",
     "*",
@@ -211,7 +204,6 @@ def _get_utils_optimized(cmd: str) -> list[str]:
         if not part or part in ("||", "&&", "|", ";", "`", "$("):
             continue
 
-        # Optimize: only use shlex if quotes are present
         if "'" in part or '"' in part:
             try:
                 tokens = shlex.split(part)
@@ -262,7 +254,6 @@ def cmd_tools(args: argparse.Namespace) -> int:
     sf_clause_a, sf_params_a = with_session("a")
     sf_clause_u, sf_params_u = with_session("u")
 
-    # Grand totals (each subquery applies its own session filter).
     grand = conn.execute(
         f"""
         SELECT
@@ -317,7 +308,6 @@ def cmd_tools(args: argparse.Namespace) -> int:
     )
     print(f"total:                  {commas(grand_total):>14}")
 
-    # Per-tool table.
     rows = conn.execute(
         f"""
         WITH per_tool AS (
@@ -350,7 +340,6 @@ def cmd_tools(args: argparse.Namespace) -> int:
             f"{commas(r['arg_tok']):>14} {commas(r['res_tok']):>14} {commas(total):>14}"
         )
 
-    # Print most common bash commands
     bash_tools = (
         "bash",
         "uu_run",
@@ -406,7 +395,6 @@ def _session_filter_clause(conn, args) -> tuple[str, tuple]:
         clauses.append("folder LIKE ?")
         params.append(f"%{args.folder}%")
     if args.limit > 0:
-        # Resolve to a concrete session_file IN (...) so other tables can reuse it.
         rows = conn.execute(
             f"""
             SELECT session_file FROM ss_sessions
@@ -480,8 +468,6 @@ def _print_buckets(
             )
 
 
-# --------------------------------------------------------------------------- #
-# `edits` — edit-tool reliability audit (cmd_edits.rs port)
 
 _RE_TRUNCATED = re.compile(r"\[Output truncated", re.I)
 _RE_ABORTED = re.compile(
@@ -534,9 +520,6 @@ def classify_edit_result(text: str, is_error: int | None = None) -> str:
         return "truncated"
     if _RE_ABORTED.search(t):
         return "aborted"
-    # The harness `is_error` flag is authoritative. The current edit format emits
-    # a `¶PATH#TAG` / `[PATH#TAG]` diff header on success whose body can contain
-    # words like "parser"/"error" that the text heuristics would otherwise misread.
     if is_error == 0:
         return "success"
     if is_error is None and (t[0] in "¶[" or _RE_SUCCESS.match(first)):
@@ -574,8 +557,6 @@ _RANGE_SEPARATOR = r"(?:\.=|-|\.|…|\s+)"
 _RANGE_LOCATOR = rf"{_LINE_LOCATOR}(?:{_RANGE_SEPARATOR}{_LINE_LOCATOR})?"
 _REGISTER = r"@[A-Za-z0-9_-]{1,64}"
 
-# Current S3 headers. Match the whole row: prefix-only matching used to count
-# recovered body text such as `replace this value` as an edit operation.
 _HASHLINE_OP = re.compile(
     rf"""
     ^\s*(?:
@@ -595,9 +576,6 @@ _HASHLINE_OP = re.compile(
     re.I | re.X,
 )
 
-# Retain syntactically shaped pre-S3 rows so stored sessions remain useful for
-# historical reporting. These labels intentionally remain historical rather
-# than being folded into PUT/CUT.
 _HISTORICAL_HASHLINE_OP = re.compile(
     rf"""
     ^\s*(?P<op>
@@ -662,7 +640,7 @@ def _detect_edit_format(tool_name: str, args_obj: dict | None) -> str:
         return "ast_edit"
     if not isinstance(args_obj, dict):
         return "unknown"
-    has = lambda k: k in args_obj  # noqa: E731
+    has = lambda k: k in args_obj
     if has("oldText") and has("newText"):
         return "oldText/newText"
     if has("old_text") and has("new_text"):
@@ -680,7 +658,7 @@ def _detect_edit_format(tool_name: str, args_obj: dict | None) -> str:
     edits = args_obj.get("edits")
     if isinstance(edits, list) and edits and isinstance(edits[0], dict):
         first = edits[0]
-        fh = lambda k: k in first  # noqa: E731
+        fh = lambda k: k in first
         if fh("loc") and (fh("splice") or fh("pre") or fh("post") or fh("sed")):
             return "loc+splice/pre/post/sed"
         if fh("loc") and fh("content"):
@@ -885,8 +863,6 @@ def _fail_totals(c: Counter) -> tuple[int, int]:
     return total, failed
 
 
-# --------------------------------------------------------------------------- #
-# `followups` — five hashline-edit detectors (cmd_followups.rs port)
 
 _CLOSER_LINE_RE = re.compile(r"^\s*[\])}]+[;,]?\s*$")
 
@@ -928,7 +904,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
     since_clause = "AND c.timestamp >= ?" if cutoff is not None else ""
     since_params = (cutoff,) if cutoff is not None else ()
 
-    # All edit calls + their sections, ordered per session.
     call_rows = conn.execute(
         f"""
         SELECT c.session_file, c.call_id, c.seq, c.timestamp, c.raw_input_len,
@@ -955,12 +930,10 @@ def cmd_followups(args: argparse.Namespace) -> int:
         where_args + since_params,
     ).fetchall()
 
-    # Index sections by (session_file, call_id).
     sec_by_call: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
     for s in section_rows:
         sec_by_call[(s["session_file"], s["call_id"])].append(s)
 
-    # Build per-(session, target_file) ordered list of (call_meta, section).
     by_session_file: dict[tuple[str, str], list[tuple[sqlite3.Row, sqlite3.Row]]] = (
         defaultdict(list)
     )
@@ -996,7 +969,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
             continue
         for s in sec_by_call.get((c["session_file"], c["call_id"]), []):
             by_session_file[(c["session_file"], s["target_file"])].append((c, s))
-            # Payload self-dup
             if s["longest_repeat_len"] >= 4:
                 payload_dups.append(
                     {
@@ -1008,7 +980,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
                         "sample": s["longest_repeat_sample"] or "",
                     }
                 )
-            # Anchor reuse
             try:
                 dups = json.loads(s["dup_anchors"] or "[]")
             except Exception:
@@ -1024,7 +995,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
                     }
                 )
 
-    # (1) small-fix follow-ups + (3) same-locus re-edits.
     fix_hits: list[dict] = []
     locus_hits: list[dict] = []
     for (session, target), entries in by_session_file.items():
@@ -1037,7 +1007,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
             second_size = bsec["change_size"]
             gap = max(0, (bc["timestamp"] - ac["timestamp"]) // 1000)
 
-            # (1) small fix on big edit
             if 0 < second_size <= args.max_fix and first_size > 2:
                 pl = _flatten_payload(bsec)
                 pattern = _classify_fix(bsec["deleted_lines"], pl)
@@ -1057,7 +1026,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
                     }
                 )
 
-            # (3) same-locus re-edit (both > max-fix)
             if (
                 first_size > 2
                 and second_size > args.max_fix
@@ -1097,7 +1065,6 @@ def cmd_followups(args: argparse.Namespace) -> int:
     payload_dups.sort(key=lambda p: -p["repeat_len"])
     anchor_dups.sort(key=lambda a: -a["count"])
 
-    # ---- print ----
     by_pattern = Counter(h["pattern"] for h in fix_hits)
 
     print("=== heuristic followup hits ===")
@@ -1218,8 +1185,6 @@ def _render_section_summary(section_row: sqlite3.Row, payload_lines: list[str]) 
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Entry point
 
 
 def main() -> int:

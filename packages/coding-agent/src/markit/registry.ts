@@ -1,4 +1,3 @@
-// Adapted from markit-ai (MIT). See ./NOTICE.
 import * as path from "node:path";
 import { DocxConverter } from "./converters/docx";
 import { EpubConverter } from "./converters/epub";
@@ -7,13 +6,6 @@ import { PptxConverter } from "./converters/pptx";
 import { XlsxConverter } from "./converters/xlsx";
 import type { ConversionResult, Converter, MarkitOptions, StreamInfo } from "./types";
 
-/**
- * In-house document → markdown engine (replaces the `markit-ai` package).
- *
- * Only the document converters proto routes are registered (pdf, docx, pptx,
- * xlsx, epub). The first converter whose `accepts()` returns true and whose
- * `convert()` succeeds wins.
- */
 export class Markit {
 	readonly #converters: readonly Converter[];
 	readonly #options: MarkitOptions;

@@ -1,15 +1,3 @@
-/**
- * The single Model constructor. Resolution order is a dependency chain, each
- * step materialized exactly once per spec:
- *
- *   1. compat   — URL/provider/id detection resolved into a complete record;
- *   2. thinking — derived from identity + resolved compat (or trusted verbatim
- *                 when the spec carries explicit metadata);
- *
- * Request handlers read fields — they never detect, parse ids, or allocate
- * compat per request.
- */
-
 import { buildAnthropicCompat } from "./compat/anthropic";
 import { buildBedrockCompat } from "./compat/bedrock";
 import { buildDevinCompat } from "./compat/devin";
@@ -60,11 +48,6 @@ function supportsOpenAIGAComputerUse(spec: ModelSpec<Api>, explicitSupport: bool
 	return parsed !== null && semverGte(parsed.version, "5.4");
 }
 
-/**
- * Build one model from an authored spec. Bundled models.json rows are fully
- * materialized by the generator and consumed directly (see `models.ts`), so
- * this only runs for discovered/custom/override specs.
- */
 export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi> {
 	const compat = buildCompat(spec) as CompatOf<TApi>;
 	const supportsComputerUseConfig = explicitComputerUseConfig(spec);

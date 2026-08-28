@@ -1,12 +1,3 @@
-//! Ripgrep-backed search engine exported via N-API.
-//!
-//! Provides two layers:
-//! - `search()` for in-memory content search.
-//! - `grep()` for filesystem search with glob/type filtering.
-//!
-//! The filesystem search matches the previous JS wrapper behavior, including
-//! global offsets, optional match limits, and per-file match summaries.
-
 use std::{
 	borrow::Cow,
 	cell::RefCell,
@@ -38,26 +29,22 @@ use smallvec::SmallVec;
 use crate::{glob_util, iofs, task};
 
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
-/// PCRE2 JIT toggle: `PROTO_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
-/// off. Unset, JIT stays on everywhere except macOS, where PCRE2's SLJIT
-/// executable allocator can fault while compiling patterns (issue #7399).
+
 static PCRE2_JIT_ENABLED: LazyLock<bool> =
 	LazyLock::new(|| match std::env::var("PROTO_PCRE2_JIT") {
 		Ok(v) if !v.is_empty() => v != "0" && !v.eq_ignore_ascii_case("false"),
 		_ => !cfg!(target_os = "macos"),
 	});
 
-/// Output mode for [`search`] and [`grep`] (string values match JS callers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi(string_enum)]
 pub enum GrepOutputMode {
-	/// Emit matched lines (and optional context lines).
 	#[napi(value = "content")]
 	Content,
-	/// Emit per-file or total counts instead of line content.
+
 	#[napi(value = "count")]
 	Count,
-	/// Emit one row per file that matched, without line content.
+
 	#[napi(value = "filesWithMatches")]
 	FilesWithMatches,
 }
@@ -69,148 +56,131 @@ enum OutputMode {
 	FilesWithMatches,
 }
 
-/// Options for searching file content.
 #[napi(object)]
 pub struct SearchOptions {
-	/// Regex pattern to search for.
-	pub pattern:        String,
-	/// Case-insensitive search.
-	pub ignore_case:    Option<bool>,
-	/// Enable multiline matching.
-	pub multiline:      Option<bool>,
-	/// Maximum number of matches to return.
-	pub max_count:      Option<u32>,
-	/// Skip first N matches.
-	pub offset:         Option<u32>,
-	/// Lines of context before matches.
+	pub pattern: String,
+
+	pub ignore_case: Option<bool>,
+
+	pub multiline: Option<bool>,
+
+	pub max_count: Option<u32>,
+
+	pub offset: Option<u32>,
+
 	pub context_before: Option<u32>,
-	/// Lines of context after matches.
-	pub context_after:  Option<u32>,
-	/// Lines of context before/after matches (legacy).
-	pub context:        Option<u32>,
-	/// Truncate lines longer than this (characters).
-	pub max_columns:    Option<u32>,
-	/// Output mode (content or count).
-	pub mode:           Option<GrepOutputMode>,
+
+	pub context_after: Option<u32>,
+
+	pub context: Option<u32>,
+
+	pub max_columns: Option<u32>,
+
+	pub mode: Option<GrepOutputMode>,
 }
 
-/// Options for searching files on disk.
 #[napi(object)]
 pub struct GrepOptions<'env> {
-	/// Regex pattern to search for.
-	pub pattern:            String,
-	/// Directory or file to search.
-	pub path:               String,
-	/// Glob filter for filenames (e.g., "*.ts").
-	pub glob:               Option<String>,
-	/// Filter by file type (e.g., "js", "py", "rust").
-	pub r#type:             Option<String>,
-	/// Case-insensitive search.
-	pub ignore_case:        Option<bool>,
-	/// Enable multiline matching.
-	pub multiline:          Option<bool>,
-	/// Include hidden files (default: true).
-	pub hidden:             Option<bool>,
-	/// Respect .gitignore files (default: true).
-	pub gitignore:          Option<bool>,
-	/// Maximum number of matches to return.
-	pub max_count:          Option<u32>,
-	/// Skip first N matches.
-	pub offset:             Option<u32>,
-	/// Lines of context before matches.
-	pub context_before:     Option<u32>,
-	/// Lines of context after matches.
-	pub context_after:      Option<u32>,
-	/// Lines of context before/after matches (legacy).
-	pub context:            Option<u32>,
-	/// Truncate lines longer than this (characters).
-	pub max_columns:        Option<u32>,
-	/// Output mode (content, filesWithMatches, or count).
-	pub mode:               Option<GrepOutputMode>,
-	/// Maximum matches collected per file (content mode). Keeps one hot file
-	/// from exhausting the global `max_count` budget before other files are
-	/// reached.
+	pub pattern: String,
+
+	pub path: String,
+
+	pub glob: Option<String>,
+
+	pub r#type: Option<String>,
+
+	pub ignore_case: Option<bool>,
+
+	pub multiline: Option<bool>,
+
+	pub hidden: Option<bool>,
+
+	pub gitignore: Option<bool>,
+
+	pub max_count: Option<u32>,
+
+	pub offset: Option<u32>,
+
+	pub context_before: Option<u32>,
+
+	pub context_after: Option<u32>,
+
+	pub context: Option<u32>,
+
+	pub max_columns: Option<u32>,
+
+	pub mode: Option<GrepOutputMode>,
+
 	pub max_count_per_file: Option<u32>,
-	/// Abort signal for cancelling the operation.
-	pub signal:             Option<Unknown<'env>>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:         Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// A context line (before or after a match).
 #[derive(Clone, Debug)]
 #[napi(object)]
 pub struct ContextLine {
-	/// 1-indexed line number in the source file.
 	pub line_number: u32,
-	/// Raw line content (trimmed line ending).
-	pub line:        String,
+
+	pub line: String,
 }
 
-/// A single match in the content.
 #[napi(object)]
 pub struct Match {
-	/// 1-indexed line number.
-	pub line_number:    u32,
-	/// The matched line content.
-	pub line:           String,
-	/// Context lines before the match.
+	pub line_number: u32,
+
+	pub line: String,
+
 	pub context_before: Option<Vec<ContextLine>>,
-	/// Context lines after the match.
-	pub context_after:  Option<Vec<ContextLine>>,
-	/// Whether the line was truncated.
-	pub truncated:      Option<bool>,
+
+	pub context_after: Option<Vec<ContextLine>>,
+
+	pub truncated: Option<bool>,
 }
 
-/// Result of searching content.
 #[napi(object)]
 pub struct SearchResult {
-	/// All matches found.
-	pub matches:       Vec<Match>,
-	/// Total number of matches (may exceed `matches.len()` due to offset/limit).
-	pub match_count:   u32,
-	/// Whether the limit was reached.
+	pub matches: Vec<Match>,
+
+	pub match_count: u32,
+
 	pub limit_reached: bool,
-	/// Error message, if any.
-	pub error:         Option<String>,
+
+	pub error: Option<String>,
 }
 
-/// A single match in a grep result.
 #[derive(Clone)]
 #[napi(object)]
 pub struct GrepMatch {
-	/// File path for the match (relative for directory searches).
-	pub path:           String,
-	/// 1-indexed line number (0 for count-only entries).
-	pub line_number:    u32,
-	/// The matched line content (empty for count-only entries).
-	pub line:           String,
-	/// Context lines before the match.
+	pub path: String,
+
+	pub line_number: u32,
+
+	pub line: String,
+
 	pub context_before: Option<Vec<ContextLine>>,
-	/// Context lines after the match.
-	pub context_after:  Option<Vec<ContextLine>>,
-	/// Whether the line was truncated.
-	pub truncated:      Option<bool>,
-	/// Per-file match count (count mode only).
-	pub match_count:    Option<u32>,
+
+	pub context_after: Option<Vec<ContextLine>>,
+
+	pub truncated: Option<bool>,
+
+	pub match_count: Option<u32>,
 }
 
-/// Result of searching files.
 #[napi(object)]
 pub struct GrepResult {
-	/// Matches or per-file counts, depending on output mode.
-	pub matches:            Vec<GrepMatch>,
-	/// Total matches across all files, or matched file count in filesWithMatches
-	/// mode.
-	pub total_matches:      u32,
-	/// Number of files with at least one match.
+	pub matches: Vec<GrepMatch>,
+
+	pub total_matches: u32,
+
 	pub files_with_matches: u32,
-	/// Number of files searched.
-	pub files_searched:     u32,
-	/// Whether the limit/offset stopped the search early.
-	pub limit_reached:      Option<bool>,
-	/// Number of files skipped because they exceed the size limit.
-	pub skipped_oversized:  Option<u32>,
+
+	pub files_searched: u32,
+
+	pub limit_reached: Option<bool>,
+
+	pub skipped_oversized: Option<u32>,
 }
 
 enum TypeFilter {
@@ -233,10 +203,6 @@ impl TypeFilter {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Internal match collection
-// ---------------------------------------------------------------------------
 
 struct MatchCollector {
 	matches:         Vec<CollectedMatch>,
@@ -275,14 +241,11 @@ struct FileSearchResult {
 	limit_reached: bool,
 }
 
-/// Outcome of attempting to read a file for searching.
 enum ReadFile {
-	/// File was read successfully into the provided buffer.
 	Read,
-	/// File exceeds [`MAX_FILE_BYTES`]; callers count these so the skip can be
-	/// surfaced instead of silently returning no matches.
+
 	Oversized,
-	/// Unreadable or not a regular file; silently skipped.
+
 	Skipped,
 }
 
@@ -319,10 +282,6 @@ impl MatchCollector {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn truncate_line(line: String, max_columns: Option<usize>) -> (String, bool) {
 	match max_columns {
 		Some(max) if line.len() > max => {
@@ -340,10 +299,6 @@ fn bytes_to_trimmed_string(bytes: &[u8]) -> String {
 		Err(_) => String::from_utf8_lossy(bytes).trim_end().to_string(),
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Sink implementation for grep-searcher
-// ---------------------------------------------------------------------------
 
 impl Sink for MatchCollector {
 	type Error = io::Error;
@@ -424,10 +379,6 @@ impl Sink for MatchCollector {
 		Ok(true)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Option resolution
-// ---------------------------------------------------------------------------
 
 const fn parse_output_mode(mode: Option<GrepOutputMode>) -> OutputMode {
 	match mode {
@@ -528,10 +479,6 @@ fn resolve_context(
 		(value, value)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Search engine
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SearchParams {
@@ -688,12 +635,10 @@ fn read_owned_prefix(
 	Ok(())
 }
 
-/// Read file bytes, distinguishing oversized files from other skips.
 fn read_file_bytes(path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
 	read_file_bytes_with_size(path, None, buffer)
 }
 
-/// Read file bytes with an optional size hint from directory traversal.
 fn read_file_bytes_with_size(
 	path: &Path,
 	size_hint: Option<u64>,
@@ -727,10 +672,6 @@ fn read_file_bytes_with_size(
 	}
 	Ok(ReadFile::Read)
 }
-
-// ---------------------------------------------------------------------------
-// Result conversion
-// ---------------------------------------------------------------------------
 
 fn to_public_match(matched: CollectedMatch) -> Match {
 	let context_before = if matched.context_before.is_empty() {
@@ -798,7 +739,6 @@ const fn empty_search_result(error: Option<String>) -> SearchResult {
 	SearchResult { matches: Vec::new(), match_count: 0, limit_reached: false, error }
 }
 
-/// Internal configuration for grep, extracted from options.
 pub(crate) struct GrepConfig {
 	pub(crate) pattern:            String,
 	pub(crate) path:               String,
@@ -818,17 +758,10 @@ pub(crate) struct GrepConfig {
 	pub(crate) max_count_per_file: Option<u32>,
 }
 
-// ---------------------------------------------------------------------------
-// Regex brace sanitization
-// ---------------------------------------------------------------------------
-
-/// Check if `bytes[start]` (which must be `b'{'`) begins a valid repetition
-/// quantifier: `{N}`, `{N,}`, or `{N,M}` where N and M are decimal digits.
-/// Returns the byte index of the closing `}` if valid.
 const fn find_valid_repetition(bytes: &[u8], start: usize) -> Option<usize> {
 	let len = bytes.len();
 	let mut i = start + 1;
-	// Must start with at least one digit.
+
 	if i >= len || !bytes[i].is_ascii_digit() {
 		return None;
 	}
@@ -848,7 +781,7 @@ const fn find_valid_repetition(bytes: &[u8], start: usize) -> Option<usize> {
 	if i >= len {
 		return None;
 	}
-	// After comma: optional digits then `}`.
+
 	while i < len && bytes[i].is_ascii_digit() {
 		i += 1;
 	}
@@ -869,13 +802,6 @@ const fn find_braced_escape_end(bytes: &[u8], start: usize) -> Option<usize> {
 	None
 }
 
-/// Escape `{` and `}` that don't form valid repetition quantifiers.
-///
-/// Patterns like `${platform}` or `a{b}` contain braces the regex engine
-/// rejects as malformed repetitions. Since such braces can never be valid
-/// regex syntax, turning them into `\{` / `\}` is semantics-preserving
-/// and avoids confusing error messages for callers who pass literal text
-/// fragments (e.g. JS template strings).
 fn sanitize_braces(pattern: &str) -> Cow<'_, str> {
 	let bytes = pattern.as_bytes();
 	if !bytes.contains(&b'{') && !bytes.contains(&b'}') {
@@ -888,12 +814,10 @@ fn sanitize_braces(pattern: &str) -> Cow<'_, str> {
 	let mut i = 0;
 
 	while i < len {
-		// Pass escaped characters through unchanged.
 		if bytes[i] == b'\\' && i + 1 < len {
 			result.push('\\');
 			i += 1;
-			// The next character is the escaped literal; push it regardless.
-			// Safety: index is in bounds (checked above).
+
 			let ch = pattern[i..]
 				.chars()
 				.next()
@@ -946,13 +870,6 @@ fn sanitize_braces(pattern: &str) -> Cow<'_, str> {
 	}
 }
 
-/// Escape unescaped parentheses after a group-syntax regex error.
-///
-/// Search patterns like `fetchAnthropicProvider(` are common literal snippets,
-/// but the regex engine parses the trailing `(` as the start of a capture
-/// group. When the parser already reported invalid group syntax, escaping any
-/// remaining literal parentheses preserves useful search behavior without
-/// changing valid regexes.
 fn escape_unescaped_parentheses(pattern: &str) -> Cow<'_, str> {
 	let bytes = pattern.as_bytes();
 	if !bytes.contains(&b'(') && !bytes.contains(&b')') {
@@ -1037,15 +954,10 @@ fn build_matcher(pattern: &str, ignore_case: bool, multiline: bool) -> Result<Co
 		Err(err) => err,
 	};
 
-	// PCRE2 supports features the Rust regex engine deliberately omits, such
-	// as lookaround and backreferences.
 	if let Ok(matcher) = build_pcre_matcher(sanitized.as_ref(), ignore_case, multiline) {
 		return Ok(CompiledMatcher::Pcre(matcher));
 	}
 
-	// Targeted retry: a stray `(`/`)` in an otherwise valid regex (e.g.
-	// `fetchProvider(`) — escape the parentheses but keep the rest of the regex
-	// working.
 	let message = err.to_string();
 	if message.contains("unclosed group") || message.contains("unopened group") {
 		let escaped = escape_unescaped_parentheses(sanitized.as_ref());
@@ -1059,16 +971,11 @@ fn build_matcher(pattern: &str, ignore_case: bool, multiline: bool) -> Result<Co
 		}
 	}
 
-	// Final fallback: both engines rejected the pattern, so match it literally
-	// instead of failing the whole search.
 	build_regex_matcher(&regex::escape(pattern), ignore_case, multiline)
 		.map(CompiledMatcher::Rust)
 		.map_err(|_| Error::from_reason(format!("Regex error: {message}")))
 }
 
-// ---------------------------------------------------------------------------
-// File / directory search orchestration
-// ---------------------------------------------------------------------------
 const ORDERED_STREAMING_STOP_MAX_COUNT: u64 = 64;
 const GREP_STREAM_WINDOW: usize = 512;
 
@@ -1180,32 +1087,23 @@ fn file_size_hint(size: Option<f64>) -> Option<u64> {
 		.map(|value| value as u64)
 }
 
-/// How to read a candidate's bytes for searching.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReadPolicy {
-	/// Read the whole file; defer oversized files to the prefix pass.
 	Full,
-	/// Map only the leading [`MAX_FILE_BYTES`] window (deferred oversized pass).
+
 	Prefix,
 }
 
-/// Outcome of attempting to search one candidate.
 enum FileOutcome {
-	/// File was searched (possibly zero matches); counts toward
-	/// `files_searched`.
 	Searched(SearchResultInternal),
-	/// Oversized file deferred to the prefix pass ([`ReadPolicy::Full`] only).
+
 	Defer,
-	/// Oversized file that could not be mapped even for its prefix.
+
 	SkippedOversized,
-	/// Unreadable / not a regular file; ignored.
+
 	Skipped,
 }
 
-/// Shared accumulator across both search passes.
-///
-/// `results` is drained between passes; `deferred` is filled by pass 1 and
-/// consumed by pass 2; the counters accumulate across both.
 #[derive(Default)]
 struct PassState {
 	results:           Mutex<Vec<FileSearchResult>>,
@@ -1214,12 +1112,7 @@ struct PassState {
 	skipped_oversized: AtomicU64,
 	emitted:           AtomicU64,
 }
-/// Read the first [`MAX_FILE_BYTES`] of a file into owned bytes for searching.
-///
-/// Used by the deferred oversized pass: files larger than the cap are searched
-/// only over their leading window; the remainder is dropped. The bounded owned
-/// read avoids mmap page faults when the backing file is rewritten
-/// concurrently.
+
 fn read_file_prefix(path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
 	let file = match File::open(path) {
 		Ok(file) => file,
@@ -1244,7 +1137,6 @@ fn read_file_prefix(path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
 	Ok(ReadFile::Read)
 }
 
-/// Read one candidate per `policy` and search it, classifying the result.
 fn search_one_file<M: Matcher + Sync>(
 	worker: &mut SearchWorker,
 	matcher: &M,
@@ -1269,8 +1161,7 @@ fn search_one_file<M: Matcher + Sync>(
 		},
 		Err(_) => return FileOutcome::Skipped,
 	}
-	// A searcher error counts as searched-with-no-matches, matching the prior
-	// behavior (the file was read and attempted).
+
 	let search = search_file_bytes(&mut worker.searcher, matcher, &worker.buffer, file_params)
 		.unwrap_or(SearchResultInternal {
 			matches:       Vec::new(),
@@ -1281,7 +1172,6 @@ fn search_one_file<M: Matcher + Sync>(
 	FileOutcome::Searched(search)
 }
 
-/// Search one candidate and fold its outcome into the shared [`PassState`].
 fn handle_file<M: Matcher + Sync>(
 	file: &pi_walker::FileCandidate,
 	worker: &mut SearchWorker,
@@ -1325,10 +1215,6 @@ fn handle_file<M: Matcher + Sync>(
 	Ok(())
 }
 
-/// Run one search pass over `candidates`, returning its path-sorted results.
-///
-/// Counters and the deferred list accumulate into `state`; `results` is drained
-/// here so the same state can drive a second pass.
 fn run_pass<M: Matcher + Sync>(
 	candidates: &[pi_walker::FileCandidate],
 	matcher: &M,
@@ -1373,12 +1259,6 @@ fn run_pass<M: Matcher + Sync>(
 	Ok(results)
 }
 
-/// Search `candidates` in two passes: normal-sized files first, then oversized
-/// files (mmap of their first [`MAX_FILE_BYTES`]) deferred to the end.
-///
-/// Deferring oversized files lets smaller files surface first and lets a
-/// satisfied match budget skip the oversized pass entirely. Normal results
-/// always precede oversized results; each group is path-sorted internally.
 fn process_candidates<M: Matcher + Sync>(
 	candidates: Vec<pi_walker::FileCandidate>,
 	matcher: &M,
@@ -1390,8 +1270,6 @@ fn process_candidates<M: Matcher + Sync>(
 	let file_params = per_file_params(params);
 	let state = PassState::default();
 
-	// Partition oversized-by-hint files out of pass 1 up front; files without a
-	// size hint stay in pass 1 and are deferred at read time if oversized.
 	let (normal, oversized_hinted): (Vec<_>, Vec<_>) =
 		candidates
 			.into_iter()
@@ -1414,8 +1292,6 @@ fn process_candidates<M: Matcher + Sync>(
 		ct,
 	)?;
 
-	// Pass 2: deferred oversized files, searched over their leading window —
-	// only when a content-mode budget was not already satisfied in pass 1.
 	let deferred = std::mem::take(&mut *state.deferred.lock());
 	let limit_satisfied =
 		stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop);
@@ -1838,10 +1714,6 @@ fn aggregate_parallel_results(
 	(matches, total_matches, files_with_matches, files_searched, limit_reached)
 }
 
-// ---------------------------------------------------------------------------
-// Sync entry points
-// ---------------------------------------------------------------------------
-
 fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
 	let ignore_case = options.ignore_case.unwrap_or(false);
 	let multiline = options.multiline.unwrap_or(false);
@@ -2095,8 +1967,6 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	let (matches, total_matches, files_with_matches, files_searched, limit_reached) =
 		aggregate_parallel_results(results, params, files_searched);
 
-	// Fire callbacks after aggregation so offset/limit semantics match returned
-	// results.
 	if let Some(callback) = on_match {
 		for grep_match in &matches {
 			callback.call(Ok(grep_match.clone()), ThreadsafeFunctionCallMode::NonBlocking);
@@ -2117,19 +1987,6 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	})
 }
 
-// ---------------------------------------------------------------------------
-// N-API exports
-// ---------------------------------------------------------------------------
-
-/// Search content for a pattern (one-shot, compiles pattern each time).
-/// For repeated searches with the same pattern, use [`grep`] with file filters.
-///
-/// # Arguments
-/// - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `options`: Regex settings, context, and output mode.
-///
-/// # Returns
-/// Match list plus counts/limit status; errors are surfaced in `error`.
 #[napi]
 pub fn search(content: Either<JsString, Uint8Array>, options: SearchOptions) -> SearchResult {
 	match &content {
@@ -2144,16 +2001,6 @@ pub fn search(content: Either<JsString, Uint8Array>, options: SearchOptions) -> 
 	}
 }
 
-/// Quick check if content matches a pattern.
-///
-/// # Arguments
-/// - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `pattern`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `ignore_case`: Case-insensitive matching.
-/// - `multiline`: Enable multiline regex mode.
-///
-/// # Returns
-/// True if any match exists; false on no match.
 #[napi]
 pub fn has_match(
 	content: Either<JsString, Uint8Array>,
@@ -2161,7 +2008,6 @@ pub fn has_match(
 	ignore_case: Option<bool>,
 	multiline: Option<bool>,
 ) -> Result<bool> {
-	// Hold JsStringUtf8 on the stack and borrow - no copy
 	let content_utf8;
 	let content_slice: &[u8] = match &content {
 		Either::A(js_str) => {
@@ -2191,14 +2037,6 @@ pub fn has_match(
 	Ok(matcher.is_match(content_slice).unwrap_or(false))
 }
 
-/// Search files for a regex pattern.
-///
-/// # Arguments
-/// - `options`: Pattern, path, filters, and output mode.
-/// - `on_match`: Optional callback invoked per match/result.
-///
-/// # Returns
-/// Aggregated results across matching files.
 #[napi]
 pub fn grep(
 	options: GrepOptions<'_>,

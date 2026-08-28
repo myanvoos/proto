@@ -3,10 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-/// Moves a job to run in the background.
+
 #[derive(Parser)]
 pub(crate) struct BgCommand {
-	/// List of job specs to move to background.
+
 	job_specs: Vec<String>,
 }
 

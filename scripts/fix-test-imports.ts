@@ -1,37 +1,16 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
-/**
- * Codemod: rewrite relative test imports that reach into a package's `src/`
- * into the package's public subpath import.
- *
- *   ../src/format                  ->  @oh-my-pi/pi-utils/format
- *   ../../src/task/repair-args     ->  @oh-my-pi/pi-coding-agent/task/repair-args
- *   ../src/index                   ->  @oh-my-pi/pi-utils
- *
- * Only specifiers that resolve onto a file under `<pkg>/src/` are touched, and
- * only when they have no extension or a `.ts`/`.js` extension (the package
- * `exports` map `./*` -> `./src/*.ts`, so asset imports like `.json`/`.md`
- * have no public subpath and are left alone).
- *
- * Usage:
- *   bun scripts/fix-test-imports.ts          # dry run, prints a diff summary
- *   bun scripts/fix-test-imports.ts --write  # apply the changes
- */
+
 import { Glob } from "bun";
 
 const ROOT = resolve(import.meta.dir, "..");
 const WRITE = process.argv.includes("--write");
 
-// Matches the module specifier of `from "x"`, `import "x"`, `import("x")`,
-// `require("x")` / `export ... from "x"` — but only when it starts with `./`/`../`.
 const SPEC_RE = /(\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)(["'])((?:\.\.?\/)[^"']*)\2/g;
 
-// Source-module extensions. A specifier resolving to one of these has a public
-// `./*` -> `./src/*.ts` subpath; anything else (.json/.md/...) is an asset.
 const MODULE_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
-/** Walk up from `dir` to the nearest package.json; return its dir + name. */
 const pkgCache = new Map<string, { root: string; name: string } | null>();
 function findPackage(startDir: string): { root: string; name: string } | null {
 	let dir = startDir;
@@ -49,9 +28,7 @@ function findPackage(startDir: string): { root: string; name: string } | null {
 			try {
 				const name = JSON.parse(readFileSync(pj, "utf8")).name;
 				if (typeof name === "string" && name) result = { root: dir, name };
-			} catch {
-				/* ignore unparseable package.json */
-			}
+			} catch {}
 			if (result) {
 				for (const v of visited) pkgCache.set(v, result);
 				return result;
@@ -73,13 +50,6 @@ const isFile = (p: string): boolean => {
 	}
 };
 
-/**
- * Resolve a relative specifier to the actual file on disk it loads, mirroring
- * bundler resolution: try the literal path, the TS-extensions a `.js`-style
- * specifier really points at, appended source extensions, then a directory
- * `index`. Returns the resolved file path (whose real extension drives the
- * asset-vs-module decision) or null if nothing matches.
- */
 function resolveTarget(fromFile: string, spec: string): string | null {
 	const abs = resolve(dirname(fromFile), spec);
 	const candidates: string[] = [abs];
@@ -105,26 +75,23 @@ function rewriteFile(file: string): { content: string; changes: Change[]; skippe
 	const skipped: string[] = [];
 
 	const content = src.replace(SPEC_RE, (full, lead, quote, spec) => {
-		// Only relative specifiers reach here; figure out the real file they load.
 		const target = resolveTarget(file, spec);
-		if (!target) return full; // unresolved (or a directory without index) — leave it
+		if (!target) return full;
 		const pkg = findPackage(target);
 		if (!pkg) return full;
 
 		const srcDir = join(pkg.root, "src");
-		if (!target.startsWith(srcDir + sep)) return full; // not under this package's src/
+		if (!target.startsWith(srcDir + sep)) return full;
 
-		// Asset import (.json/.md/...) into src — no public subpath, leave & report.
 		const realExt = extname(target).toLowerCase();
 		if (!MODULE_EXTS.includes(realExt)) {
 			skipped.push(spec);
 			return full;
 		}
 
-		// Subpath relative to src, sans the real module extension, POSIX slashes.
 		let sub = relative(srcDir, target).split(sep).join("/").slice(0, -realExt.length);
-		sub = sub.replace(/\/index$/i, ""); // foo/index.ts -> foo
-		if (sub === "index") sub = ""; // src/index.ts -> bare package name
+		sub = sub.replace(/\/index$/i, "");
+		if (sub === "index") sub = "";
 
 		const newSpec = sub ? `${pkg.name}/${sub}` : pkg.name;
 		if (newSpec === spec) return full;
@@ -135,7 +102,6 @@ function rewriteFile(file: string): { content: string; changes: Change[]; skippe
 	return { content, changes, skipped };
 }
 
-// Collect every .ts/.tsx file living under a package `test/` or `tests/` dir.
 const files = new Set<string>();
 for (const pattern of ["packages/*/test/**/*.{ts,tsx}", "packages/*/tests/**/*.{ts,tsx}"]) {
 	for (const f of new Glob(pattern).scanSync({ cwd: ROOT, absolute: true })) files.add(f);

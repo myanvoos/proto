@@ -1,13 +1,3 @@
-/**
- * Session-facing image URL service.
- *
- * Owns policy and session state — provider gating, quarantine, the lazy-frame
- * producer registry, and the render-callback server — and delegates URL
- * minting to a {@link BlobBackend}: the project-shared blob daemon when
- * reachable, an in-process backend otherwise. Every failure at any layer
- * degrades to inline base64.
- */
-
 import * as path from "node:path";
 import type { Context, ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { getBlobsDir, logger } from "@oh-my-pi/pi-utils";
@@ -35,12 +25,6 @@ function contentHash(data: string, mimeType: string): string {
 	return new Bun.CryptoHasher("sha256").update(mimeType).update("\n").update(data).digest("hex");
 }
 
-/**
- * Ordered backend chain that advances when a destination cannot publish.
- *
- * Each ensure call starts at the first backend so healthy persisted
- * publications remain stable while unavailable destinations can be skipped.
- */
 export class FallbackBlobBackend implements BlobBackend {
 	readonly supportsLazy: boolean;
 
@@ -86,19 +70,18 @@ export class FallbackBlobBackend implements BlobBackend {
 	}
 }
 
-/** Coordinates image URL decoration for one session process. */
 export class ImageUrlService {
 	#projectDir: string;
 	#configs: readonly BlobBrokerWorkerConfig[];
 	#backendPromises = new Map<string, Promise<BlobBackend | null>>();
 	#quarantined = new Set<string>();
-	/** Session-side producers answering lazy renders, keyed by blob key. */
+
 	#producers = new Map<string, LazyBlobFetcher>();
-	/** Reverse index for inline materialization on provider fallback. */
+
 	#lazyKeyByUrl = new Map<string, string>();
-	/** Publication metadata retained by URL for diagnostics and fallback. */
+
 	#publicationByUrl = new Map<string, BlobPublication>();
-	/** Backend range and content key retained by URL for ordered fallback. */
+
 	#publicationSourceByUrl = new Map<string, { rangeStart: number; rangeEnd: number; hash: string }>();
 	#callback: { port: number; token: string; server: Bun.Server<undefined> } | null | undefined;
 	#daemonEnabled: boolean;
@@ -124,7 +107,6 @@ export class ImageUrlService {
 		this.#savingsJournal = options?.savingsJournal;
 	}
 
-	/** Kick off daemon/exposure startup in the background to hide latency. */
 	prewarm(): void {
 		const position = Math.min(this.#providerFilePosition, this.#configs.length);
 		const configs = position > 0 ? this.#configs.slice(0, position) : this.#configs.slice(position);
@@ -175,10 +157,6 @@ export class ImageUrlService {
 		};
 	}
 
-	/**
-	 * Loopback server the daemon renders lazy blobs through. Started once, on
-	 * the first lazy registration against a daemon backend.
-	 */
 	#ensureCallbackServer(): { port: number; token: string } | null {
 		if (this.#callback !== undefined) return this.#callback;
 		try {
@@ -216,11 +194,6 @@ export class ImageUrlService {
 		return this.#callback;
 	}
 
-	/**
-	 * Decorate images in configured backend order. The first source that can
-	 * represent an image wins; provider-native upload failures continue into
-	 * the following URL destinations without changing the session context.
-	 */
 	async decorateContext(context: Context, model: Model): Promise<Context> {
 		if (!contextHasImages(context)) return context;
 		const position = Math.min(this.#providerFilePosition, this.#configs.length);
@@ -373,10 +346,6 @@ export class ImageUrlService {
 		return urlByBlock.size === 0 ? context : decorateContextImages(context, block => urlByBlock.get(block));
 	}
 
-	/**
-	 * Undo URL decoration for an inline retry: strip URLs and materialize
-	 * lazy placeholders (empty `data`) through their session-side producers.
-	 */
 	inlineContext(context: Context): Promise<Context> {
 		return inlineContextImages(context, async block => {
 			if (block.data.length > 0) return block.data;
@@ -422,11 +391,6 @@ export class ImageUrlService {
 		}
 	}
 
-	/**
-	 * Advance one rejected image source. Provider-file rejection starts the
-	 * URL chain from its beginning. URL rejection resumes strictly after the
-	 * destination that produced the failed publication, then falls back inline.
-	 */
 	async fallbackContext(context: Context, model: Model): Promise<Context> {
 		const urls = this.#imageUrls(context);
 		if (contextHasProviderFiles(context)) {
@@ -455,7 +419,6 @@ export class ImageUrlService {
 		return fallback;
 	}
 
-	/** Stop decorating for `provider`; used when inline retry proved URLs were the failure. */
 	quarantine(provider: string, reason: string): void {
 		if (this.#quarantined.has(provider)) return;
 		this.#quarantined.add(provider);
@@ -492,13 +455,11 @@ function destinationOptions(
 	return options;
 }
 
-/** Deterministic durable provider-file cache path for one project. */
 export function providerFileCachePath(settings: Settings, projectDir: string): string {
 	const projectHash = Bun.hash.wyhash(path.resolve(projectDir)).toString(16);
 	return path.join(getBlobsDir(settings.getAgentDir()), `provider-files-index-${projectHash}.json`);
 }
 
-/** Resolve configured URL destinations without constructing their runtimes. */
 export function resolveBlobBrokerConfigs(settings: Settings, projectDir: string): BlobBrokerWorkerConfig[] {
 	const blobsDir = getBlobsDir(settings.getAgentDir());
 	const projectHash = Bun.hash.wyhash(path.resolve(projectDir)).toString(16);
@@ -548,7 +509,6 @@ export function resolveBlobBrokerConfigs(settings: Settings, projectDir: string)
 	return configs;
 }
 
-/** Resolve the settings group into a service; `undefined` when disabled. */
 export function createImageUrlServiceFromSettings(
 	settings: Settings,
 	projectDir: string,

@@ -26,9 +26,6 @@ interface MDNDoc {
 	};
 }
 
-/**
- * Convert MDN body sections to markdown
- */
 async function convertMDNBody(sections: MDNSection[]): Promise<string> {
 	const parts: string[] = [];
 
@@ -82,7 +79,6 @@ async function convertMDNBody(sections: MDNSection[]): Promise<string> {
 
 			case "table":
 				if (value.rows && value.rows.length > 0) {
-					// Simple markdown table
 					const header = (await Promise.all(value.rows[0].map(cell => htmlToBasicMarkdown(cell)))).join(" | ");
 					const separator = value.rows[0].map(() => "---").join(" | ");
 					const bodyRows = await Promise.all(
@@ -100,7 +96,6 @@ async function convertMDNBody(sections: MDNSection[]): Promise<string> {
 				break;
 
 			default:
-				// Skip unknown types
 				break;
 		}
 	}
@@ -111,19 +106,16 @@ async function convertMDNBody(sections: MDNSection[]): Promise<string> {
 export const handleMDN: SpecialHandler = async (url: string, timeout: number, signal?: AbortSignal) => {
 	const urlObj = new URL(url);
 
-	// Only handle developer.mozilla.org
 	if (!urlObj.hostname.includes("developer.mozilla.org")) {
 		return null;
 	}
 
-	// Only handle docs paths
 	if (!urlObj.pathname.includes("/docs/")) {
 		return null;
 	}
 
 	const notes: string[] = [];
 
-	// Construct JSON API URL
 	const jsonUrl = url.replace(/\/?$/, "/index.json");
 
 	try {
@@ -142,7 +134,6 @@ export const handleMDN: SpecialHandler = async (url: string, timeout: number, si
 
 		const { doc } = data;
 
-		// Build markdown content
 		const parts: string[] = [];
 
 		parts.push(`# ${doc.title}`);

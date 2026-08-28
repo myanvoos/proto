@@ -21,15 +21,10 @@ interface PendingContextSnapshot {
 	promptTokens: number;
 	nonMessageTokens: number;
 	cutoffCount: number;
-	/**
-	 * Compaction epoch at rebase time. Distinguishes a genuinely fresh in-turn
-	 * anchor (same epoch) from a post-cutoff anchor that predates a mid-run
-	 * compaction (older epoch) so the latter never out-ranks this snapshot.
-	 */
+
 	epoch: number;
 }
 
-/** Capabilities the stats tracker borrows from its owning session. */
 export interface SessionStatsTrackerHost {
 	session: NonMessageTokenSource;
 	agent: Agent;
@@ -44,7 +39,6 @@ function correctedPromptTokens(assistant: AssistantMessage): number {
 	return Math.max(0, providerPromptTokens - (assistant.contextSnapshot?.historyRewriteTokensRemoved ?? 0));
 }
 
-/** Computes session totals and tracks the in-flight context estimate. */
 export class SessionStatsTracker {
 	readonly #host: SessionStatsTrackerHost;
 	#pendingContextSnapshot: PendingContextSnapshot | undefined;
@@ -59,10 +53,6 @@ export class SessionStatsTracker {
 		return this.#host.agent.tokenizer;
 	}
 
-	/**
-	 * Anchored used-token arithmetic shared by every anchored branch: provider
-	 * base + non-message growth since the anchor + local tail + pending.
-	 */
 	#anchoredUsedTokens(
 		base: number,
 		anchorNonMessageTokens: number,
@@ -79,7 +69,6 @@ export class SessionStatsTracker {
 		);
 	}
 
-	/** Returns aggregate message, token, and cost statistics for the session. */
 	getSessionStats(): SessionStats {
 		const state = this.#host.agent.state;
 		const userMessages = state.messages.filter(message => message.role === "user").length;
@@ -130,7 +119,6 @@ export class SessionStatsTracker {
 		};
 	}
 
-	/** Returns the current provider-context token breakdown. */
 	getContextBreakdown(options?: {
 		contextWindow?: number;
 		pendingMessages?: AgentMessage[];
@@ -236,7 +224,6 @@ export class SessionStatsTracker {
 		};
 	}
 
-	/** Returns current context tokens, capacity, and percentage. */
 	getContextUsage(options?: { contextWindow?: number }): ContextUsage | undefined {
 		const breakdown = this.getContextBreakdown(options);
 		if (!breakdown) return undefined;
@@ -247,34 +234,18 @@ export class SessionStatsTracker {
 		};
 	}
 
-	/** Monotonic revision for in-flight context snapshot changes. */
 	get revision(): number {
 		return this.#contextUsageRevision;
 	}
 
-	/**
-	 * Monotonic compaction epoch, bumped whenever history is compacted. Stamped
-	 * onto each assistant snapshot at record time so {@link getContextBreakdown}
-	 * can reject a post-cutoff anchor whose usage predates the last compaction.
-	 */
 	get compactionEpoch(): number {
 		return this.#compactionEpoch;
 	}
 
-	/** Non-message token count captured for the active provider request. */
 	get pendingNonMessageTokens(): number | undefined {
 		return this.#pendingContextSnapshot?.nonMessageTokens;
 	}
 
-	/**
-	 * Apply an estimated prompt-prefix reduction to the current provider anchor.
-	 *
-	 * History after the anchor is estimated live by {@link getContextBreakdown};
-	 * callers must pass only savings from entries already included in the
-	 * anchor's provider-reported prompt. Persisting the correction on the
-	 * assistant snapshot keeps reloads accurate, and the next successful
-	 * assistant response naturally replaces it with a fresh provider anchor.
-	 */
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void {
 		if (!Number.isFinite(tokensRemoved) || tokensRemoved <= 0) return;
 
@@ -300,13 +271,11 @@ export class SessionStatsTracker {
 		}
 	}
 
-	/** Sets or clears the in-flight context snapshot. */
 	setPendingSnapshot(snapshot: Omit<PendingContextSnapshot, "epoch"> | undefined): void {
 		this.#pendingContextSnapshot = snapshot ? { ...snapshot, epoch: this.#compactionEpoch } : undefined;
 		this.#contextUsageRevision++;
 	}
 
-	/** Recomputes an in-flight snapshot after history is compacted or rewritten. */
 	rebaseAfterCompaction(): void {
 		this.#compactionEpoch++;
 		if (!this.#pendingContextSnapshot) return;
@@ -319,7 +288,6 @@ export class SessionStatsTracker {
 		});
 	}
 
-	/** Records provider usage headers against the active session account. */
 	ingestProviderUsageHeaders(response: ProviderResponseMetadata, model?: Model): void {
 		const provider = model?.provider;
 		if (!provider) return;

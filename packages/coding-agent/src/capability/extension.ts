@@ -1,15 +1,7 @@
-/**
- * Extensions Capability
- *
- * Gemini-style extensions that provide MCP servers, tools, and context.
- */
 import { defineCapability } from ".";
 import type { MCPServer } from "./mcp";
 import type { SourceMeta } from "./types";
 
-/**
- * Extension manifest structure.
- */
 export interface ExtensionManifest {
 	name?: string;
 	description?: string;
@@ -18,19 +10,15 @@ export interface ExtensionManifest {
 	context?: unknown;
 }
 
-/**
- * A loaded extension.
- */
 export interface Extension {
-	/** Extension name (from manifest.name or directory name) */
 	name: string;
-	/** Absolute path to extension directory */
+
 	path: string;
-	/** Parsed manifest data */
+
 	manifest: ExtensionManifest;
-	/** Source level */
+
 	level: "user" | "project";
-	/** Source metadata */
+
 	_source: SourceMeta;
 }
 

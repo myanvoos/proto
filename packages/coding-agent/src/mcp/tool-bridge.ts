@@ -1,8 +1,3 @@
-/**
- * MCP to CustomTool bridge.
- *
- * Converts MCP tool definitions to CustomTool format for the agent.
- */
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
@@ -30,14 +25,8 @@ import type {
 	MCPToolDefinition,
 } from "./types";
 
-/** Reconnect callback: tears down a stale connection, optionally authorizing first. */
 export type MCPReconnect = (options?: { authChallenge?: MCPAuthChallenge }) => Promise<MCPServerConnection | null>;
 
-/**
- * Network-level and stale-session errors that warrant a reconnect + single retry.
- * Conservative: only catches errors where the server is likely alive but the
- * connection object is stale (dead SSE, expired session, refused after restart).
- */
 const RETRIABLE_PATTERNS = [
 	"econnrefused",
 	"econnreset",
@@ -53,7 +42,7 @@ const RETRIABLE_PATTERNS = [
 export function isRetriableConnectionError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	const msg = error.message.toLowerCase();
-	// Stale session (server restarted, old session ID is gone)
+
 	if (/^http (404|502|503):/.test(msg)) return true;
 	return RETRIABLE_PATTERNS.some(p => msg.includes(p));
 }
@@ -92,19 +81,6 @@ function omitUnusedOptionalArgs(args: MCPToolArgs, inputSchema: MCPToolDefinitio
 	return cleaned ?? args;
 }
 
-/**
- * Drop the harness-internal intent field (`INTENT_FIELD`) before forwarding
- * args to an MCP server. The harness injects `i` into every tool's wire
- * schema; the direct model tool-call path strips it via `extractIntent`, but
- * the `eval` `tool.*` bridge and any other in-process caller forwards args
- * verbatim. Strict-schema servers (Linear, anything with
- * `additionalProperties:false` / Zod `.strict()`) reject every call that
- * carries `i`. The MCP boundary is the authoritative guard so callers don't
- * have to pre-strip.
- *
- * Leaves `i` in place when the server's own `inputSchema.properties` declares
- * it, so a server that legitimately uses `i` as a parameter is unaffected.
- */
 function stripHarnessIntent(args: MCPToolArgs, inputSchema: MCPToolDefinition["inputSchema"]): MCPToolArgs {
 	if (!Object.hasOwn(args, INTENT_FIELD)) return args;
 	if (inputSchema.properties && Object.hasOwn(inputSchema.properties, INTENT_FIELD)) return args;
@@ -155,12 +131,6 @@ async function resolveOutboundLocalUrlArgs(
 	return resolved ?? value;
 }
 
-/**
- * Normalize raw tool params into the outbound `tools/call` arguments: strip
- * the harness intent field, drop optional empty placeholders the server
- * declares but doesn't require, then translate session-local files to paths
- * external MCP servers can read.
- */
 async function prepareOutboundArgs(
 	params: unknown,
 	inputSchema: MCPToolDefinition["inputSchema"],
@@ -170,28 +140,24 @@ async function prepareOutboundArgs(
 	return (await resolveOutboundLocalUrlArgs(args, context)) as MCPToolArgs;
 }
 
-/** Details included in MCP tool results for rendering */
 export interface MCPToolDetails {
-	/** Server name */
 	serverName: string;
-	/** Original MCP tool name */
+
 	mcpToolName: string;
-	/** Whether the call resulted in an error */
+
 	isError?: boolean;
-	/** Raw content from MCP response */
+
 	rawContent?: MCPContent[];
-	/** Structured metadata from the MCP response */
+
 	mcpMeta?: Record<string, unknown>;
-	/** Provider ID (e.g., "claude", "mcp-json") */
+
 	provider?: string;
-	/** Provider display name (e.g., "Claude Code", "MCP Config") */
+
 	providerName?: string;
-	/** Structured output metadata (set by the spill wrapper when output is truncated to an artifact). */
+
 	meta?: OutputMeta;
 }
-/**
- * Convert MCP content to agent content while retaining image payloads.
- */
+
 function formatMCPContent(content: MCPContent[]): Array<TextContent | ImageContent> {
 	const blocks: Array<TextContent | ImageContent> = [];
 	let text = "";
@@ -226,7 +192,6 @@ function formatMCPContent(content: MCPContent[]): Array<TextContent | ImageConte
 	return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
 }
 
-/** Build a CustomToolResult from a callTool response. */
 function buildResult(
 	result: MCPToolCallResult,
 	serverName: string,
@@ -258,7 +223,6 @@ function buildResult(
 	return toolResult;
 }
 
-/** Build an error CustomToolResult from a caught exception. */
 function buildErrorResult(
 	error: unknown,
 	serverName: string,
@@ -319,7 +283,6 @@ async function callToolWithAuthRetry(
 	}
 }
 
-/** Re-throw abort-related errors so they bypass error-result handling. */
 function rethrowIfAborted(error: unknown, signal?: AbortSignal): void {
 	if (error instanceof ToolAbortError) throw error;
 	if (error instanceof Error && error.name === "AbortError") throw new ToolAbortError();
@@ -339,14 +302,6 @@ async function reconnectWithAbort(
 	}
 }
 
-/**
- * Create a unique tool name for an MCP tool.
- *
- * Prefixes with server name to avoid conflicts. If the tool name already
- * starts with the server name (e.g., server "puppeteer" with tool
- * "puppeteer_screenshot"), strips the redundant prefix to produce
- * "mcp__puppeteer_screenshot" instead of "mcp__puppeteer_puppeteer_screenshot".
- */
 function sanitizeMCPToolNamePart(value: string, fallback: string): string {
 	const sanitized = value
 		.toLowerCase()
@@ -357,22 +312,10 @@ function sanitizeMCPToolNamePart(value: string, fallback: string): string {
 	return sanitized.length > 0 ? sanitized : fallback;
 }
 
-/**
- * Longest tool name strict validators accept. OpenAI Responses/Completions and
- * Meta Responses enforce `^[a-zA-Z0-9_-]{1,64}$`; names over 64 chars are
- * rejected with HTTP 400 `name must be at most 64 characters` (#9130).
- */
 const MAX_MCP_TOOL_NAME_LENGTH = 64;
-/** Length of the deterministic hash suffix appended when a minted name overflows. */
+
 const MCP_TOOL_NAME_HASH_LENGTH = 8;
 
-/**
- * Cap a minted MCP tool name at {@link MAX_MCP_TOOL_NAME_LENGTH}. An overlong
- * name keeps a readable prefix and gains a deterministic base-36 hash suffix of
- * the full name, so distinct long names stay unique and the same name is stable
- * across turns — the model must call the exact registry key, and the hash is
- * seed-fixed so it never shifts between processes.
- */
 function capMCPToolNameLength(name: string): string {
 	if (name.length <= MAX_MCP_TOOL_NAME_LENGTH) return name;
 	const hash = Bun.hash(name).toString(36).slice(0, MCP_TOOL_NAME_HASH_LENGTH);
@@ -384,7 +327,6 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 	const sanitizedServerName = sanitizeMCPToolNamePart(serverName, "server");
 	const sanitizedToolName = sanitizeMCPToolNamePart(toolName, "tool");
 
-	// Strip redundant server name prefix from tool name if present
 	const prefixWithUnderscore = `${sanitizedServerName}_`;
 
 	let normalizedToolName = sanitizedToolName;
@@ -401,20 +343,11 @@ interface MCPToolOriginSource {
 	readonly mcpToolName?: unknown;
 }
 
-/** Stable identity for a tool's original MCP route, before its public name was normalized. */
 export function getMCPToolOriginKey(tool: MCPToolOriginSource): string | undefined {
 	if (typeof tool.mcpServerName !== "string" || typeof tool.mcpToolName !== "string") return undefined;
 	return `${tool.mcpServerName}\u0000${tool.mcpToolName}`;
 }
 
-/**
- * Keeps one MCP tool per minted name and logs collisions between distinct MCP
- * origins. The winner is chosen by a stable origin key (server name + original
- * tool name), NOT array order: MCPManager re-appends a reconnecting server's
- * tools, so insertion order is mutable across reconnects and first-wins would
- * silently flip ownership of the minted name. Non-MCP tools pass through
- * unchanged.
- */
 export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: readonly T[]): T[] {
 	const deduplicated: T[] = [];
 	const registered = new Map<string, { tool: T; originKey: string; index: number }>();
@@ -434,7 +367,6 @@ export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: 
 
 		if (existing.originKey === originKey) continue;
 
-		// Deterministic winner regardless of encounter order across reconnects.
 		const keepExisting = existing.originKey < originKey;
 		const winner = keepExisting ? existing.tool : tool;
 		const loser = keepExisting ? tool : existing.tool;
@@ -455,12 +387,6 @@ export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: 
 	return deduplicated;
 }
 
-/**
- * Parse an MCP tool name back to server and tool components.
- *
- * Note: This returns the normalized tool name (with server prefix stripped).
- * The original MCP tool name may have had the server name as a prefix.
- */
 export function parseMCPToolName(name: string): { serverName: string; toolName: string } | null {
 	if (!name.startsWith("mcp__")) return null;
 
@@ -474,29 +400,20 @@ export function parseMCPToolName(name: string): { serverName: string; toolName: 
 	};
 }
 
-/**
- * CustomTool wrapping an MCP tool with an active connection.
- */
 export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: TSchema;
-	/** Original MCP tool name (before normalization) */
+
 	readonly mcpToolName: string;
-	/** Server name */
+
 	readonly mcpServerName: string;
-	/** Render completed MCP calls with the result header replacing the pending call header. */
+
 	readonly mergeCallAndResult = true;
-	/**
-	 * MCP-backed tools opt out of strict structured-output grammar. The server
-	 * owns validation, and strict mode makes OpenAI-family models over-fill
-	 * mutually exclusive optional fields (#4336/#4340). Serializers preserve an
-	 * explicit `false`; an omitted flag would leave nothing to preserve.
-	 */
+
 	readonly strict = false as const;
 
-	/** Create MCPTool instances for all tools from an MCP server connection */
 	static fromTools(connection: MCPServerConnection, tools: MCPToolDefinition[], reconnect?: MCPReconnect): MCPTool[] {
 		return tools.map(tool => new MCPTool(connection, tool, reconnect));
 	}
@@ -561,7 +478,6 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 			if (this.reconnect && isRetriableConnectionError(error)) {
 				const newConn = await reconnectWithAbort(this.reconnect, signal);
 				if (newConn) {
-					// Rebind so subsequent calls on this instance use the fresh connection
 					this.connection = newConn;
 					const retryProvider = newConn._source?.provider ?? provider;
 					const retryProviderName = newConn._source?.providerName ?? providerName;
@@ -585,27 +501,23 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	}
 }
 
-/**
- * CustomTool wrapping an MCP tool with deferred connection resolution.
- */
 export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: TSchema;
-	/** Original MCP tool name (before normalization) */
+
 	readonly mcpToolName: string;
-	/** Server name */
+
 	readonly mcpServerName: string;
-	/** Render completed MCP calls with the result header replacing the pending call header. */
+
 	readonly mergeCallAndResult = true;
-	/** See {@link MCPTool.strict}: MCP servers own validation, so stay non-strict. */
+
 	readonly strict = false as const;
 
 	readonly #fallbackProvider: string | undefined;
 	readonly #fallbackProviderName: string | undefined;
 
-	/** Create DeferredMCPTool instances for all tools from an MCP server */
 	static fromTools(
 		serverName: string,
 		tools: MCPToolDefinition[],
@@ -708,9 +620,6 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 				return buildErrorResult(callError, this.serverName, this.tool.name, provider, providerName);
 			}
 		} catch (connError) {
-			// getConnection() failed — server never connected or connection lost.
-			// This is always worth a reconnect attempt for deferred tools, since the
-			// error ("MCP server not connected") isn't a network error from callTool.
 			rethrowIfAborted(connError, signal);
 			if (this.reconnect) {
 				const newConn = await reconnectWithAbort(this.reconnect, signal);

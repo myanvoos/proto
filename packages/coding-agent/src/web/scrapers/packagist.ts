@@ -2,9 +2,6 @@ import { tryParseJson } from "@oh-my-pi/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, formatNumber, loadPage } from "./types";
 
-/**
- * Handle Packagist URLs via JSON API
- */
 export const handlePackagist: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -14,7 +11,6 @@ export const handlePackagist: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "packagist.org" && parsed.hostname !== "www.packagist.org") return null;
 
-		// Extract vendor/package from /packages/{vendor}/{name}
 		const match = parsed.pathname.match(/^\/packages\/([^/]+)\/([^/]+)/);
 		if (!match) return null;
 
@@ -22,7 +18,6 @@ export const handlePackagist: SpecialHandler = async (
 		const packageName = decodeURIComponent(match[2]);
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from Packagist JSON API
 		const apiUrl = `https://packagist.org/packages/${vendor}/${packageName}.json`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
@@ -72,13 +67,11 @@ export const handlePackagist: SpecialHandler = async (
 		const pkg = data.package;
 		if (!pkg) return null;
 
-		// Find latest stable version (prefer non-dev)
 		type VersionInfo = NonNullable<typeof pkg.versions>[string];
 		let latestVersion: VersionInfo | null = null;
 		let latestVersionKey = "";
 
 		if (pkg.versions) {
-			// Look for latest stable version first
 			for (const [key, ver] of Object.entries(pkg.versions)) {
 				if (key === "dev-master" || key === "dev-main" || key.includes("-dev")) continue;
 				if (!latestVersion || (ver.time && latestVersion.time && ver.time > latestVersion.time)) {
@@ -86,7 +79,7 @@ export const handlePackagist: SpecialHandler = async (
 					latestVersionKey = key;
 				}
 			}
-			// Fallback to dev-master/dev-main if no stable version
+
 			if (!latestVersion) {
 				latestVersion = pkg.versions["dev-master"] || pkg.versions["dev-main"] || Object.values(pkg.versions)[0];
 				latestVersionKey = latestVersion?.version || "";
@@ -107,7 +100,6 @@ export const handlePackagist: SpecialHandler = async (
 		if (pkg.favers) md += `**Stars:** ${formatNumber(pkg.favers)}\n`;
 		md += "\n";
 
-		// Authors
 		if (latestVersion?.authors?.length) {
 			const authorList = latestVersion.authors
 				.map((a: { name: string; email?: string }) => (a.email ? `${a.name} <${a.email}>` : a.name))
@@ -115,12 +107,10 @@ export const handlePackagist: SpecialHandler = async (
 			md += `**Authors:** ${authorList}\n`;
 		}
 
-		// Maintainers
 		if (pkg.maintainers?.length) {
 			md += `**Maintainers:** ${pkg.maintainers.map(m => m.name).join(", ")}\n`;
 		}
 
-		// Links
 		if (latestVersion?.homepage) md += `**Homepage:** ${latestVersion.homepage}\n`;
 		if (pkg.repository) md += `**Repository:** ${pkg.repository}\n`;
 		else if (latestVersion?.source?.url) {
@@ -128,7 +118,6 @@ export const handlePackagist: SpecialHandler = async (
 			md += `**Repository:** ${repoUrl}\n`;
 		}
 
-		// GitHub stats
 		if (pkg.github_stars || pkg.github_forks) {
 			const stats: string[] = [];
 			if (pkg.github_stars) stats.push(`${formatNumber(pkg.github_stars)} stars`);
@@ -137,7 +126,6 @@ export const handlePackagist: SpecialHandler = async (
 			md += `**GitHub:** ${stats.join(" · ")}\n`;
 		}
 
-		// Dependencies
 		if (latestVersion?.require && Object.keys(latestVersion.require).length > 0) {
 			md += `\n## Requirements\n\n`;
 			for (const [dep, version] of Object.entries(latestVersion.require)) {
@@ -145,7 +133,6 @@ export const handlePackagist: SpecialHandler = async (
 			}
 		}
 
-		// Dev dependencies (brief)
 		if (latestVersion?.["require-dev"] && Object.keys(latestVersion["require-dev"]).length > 0) {
 			md += `\n## Dev Requirements\n\n`;
 			for (const [dep, version] of Object.entries(latestVersion["require-dev"])) {

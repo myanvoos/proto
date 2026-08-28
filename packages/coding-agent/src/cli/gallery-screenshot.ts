@@ -1,16 +1,3 @@
-/**
- * Render `proto gallery` output to PNG screenshots via VHS.
- *
- * ANSI escapes are invisible to anything that can only read raw bytes (e.g.
- * agents), so `--screenshot` drives the rendered gallery through a real virtual
- * terminal (VHS + ttyd + ffmpeg) and writes the captured frame to disk. The
- * gallery is pre-rendered to truecolor ANSI in this process — where the user's
- * theme and symbol preset are correct — then `cat`'d inside VHS so the captured
- * pixels match exactly what the live TUI would draw.
- *
- * VHS is a hard dependency of this path: if it is not installed we fail loudly
- * rather than degrade to a lossy fallback.
- */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,43 +5,27 @@ import { $which } from "@oh-my-pi/pi-utils";
 import { theme } from "../modes/theme/theme";
 import type { GallerySection } from "./gallery-cli";
 
-/** Nerd Font family so the gallery's icon glyphs (PUA) render instead of tofu. */
 const DEFAULT_SCREENSHOT_FONT = "JetBrainsMono Nerd Font";
 const DEFAULT_SCREENSHOT_FONT_SIZE = 18;
 
-/** Inner padding (px) VHS leaves around the terminal grid. */
 const PADDING = 14;
 const LINE_HEIGHT = 1.0;
-/**
- * Upper-bound cell metrics relative to font size. Real monospace cells are
- * smaller, so over-provisioning the canvas guarantees the gallery never
- * soft-wraps (too few columns) or scrolls off the top (too few rows). The slack
- * shows up only as a modest background margin, which is harmless for review.
- */
+
 const CELL_WIDTH_RATIO = 0.65;
 const CELL_HEIGHT_RATIO = 1.5;
-/** Keep each image well under headless-Chromium's tall-canvas limits. */
+
 const MAX_IMAGE_HEIGHT_PX = 8000;
 
 interface GalleryScreenshotOptions {
-	/** Gallery render width in columns (matches the ANSI line width). */
 	width: number;
-	/** VHS `FontFamily`. */
+
 	font?: string;
-	/** VHS `FontSize`. */
+
 	fontSize?: number;
-	/**
-	 * Output destination. When omitted, PNGs land in a fresh temp directory.
-	 * With multiple images the path is suffixed (`name-01.png`, `name-02.png`).
-	 */
+
 	out?: string;
 }
 
-/**
- * Capture the gallery sections as one or more PNGs and return their absolute
- * paths. Tall galleries are split across images so no single capture exceeds
- * the terminal-canvas height limit.
- */
 export async function captureGalleryScreenshots(
 	sections: GallerySection[],
 	options: GalleryScreenshotOptions,
@@ -116,8 +87,6 @@ async function renderChunk(args: RenderChunkArgs): Promise<void> {
 	const tapePath = path.join(dir, `.${stem}.tape`);
 	const gifPath = path.join(dir, `.${stem}.gif`);
 
-	// CRLF so each gallery line is its own terminal row regardless of how the
-	// captured shell handles bare LF.
 	await Bun.write(ansiPath, `${args.lines.join("\r\n")}\r\n`);
 	await Bun.write(
 		tapePath,
@@ -160,10 +129,6 @@ interface TapeArgs {
 }
 
 function buildTape(args: TapeArgs): string {
-	// `Output` (a throwaway GIF) is mandatory for VHS to record; the screenshot
-	// is captured from the final visible frame. Setup is hidden so the typed
-	// `cat` command and shell prompt never appear in the capture, and a trailing
-	// `sleep` keeps the shell from drawing a fresh prompt under the output.
 	const shellCommand = `clear; cat ${shellSingleQuote(args.ansiPath)}; sleep 120`;
 	return `${[
 		`Output ${JSON.stringify(args.gifPath)}`,
@@ -184,11 +149,6 @@ function buildTape(args: TapeArgs): string {
 	].join("\n")}\n`;
 }
 
-/**
- * Build the VHS terminal theme. Only background/foreground/cursor matter: the
- * gallery emits truecolor (`38;2`/`48;2`) escapes, so the 16-color palette is
- * never consulted — it is filler to satisfy VHS's theme schema.
- */
 function buildVhsTheme(): string {
 	const background = parseAnsiRgb(theme.getBgAnsi("statusLineBg")) ?? (theme.isLight ? "#ffffff" : "#1a1a1a");
 	const foreground = theme.isLight ? "#1a1a1a" : "#d4d4d4";
@@ -218,7 +178,6 @@ function buildVhsTheme(): string {
 	});
 }
 
-/** Extract `#rrggbb` from a truecolor SGR escape (`…38;2;r;g;b…` / `…48;2;…`). */
 function parseAnsiRgb(ansi: string): string | undefined {
 	const match = /[34]8;2;(\d+);(\d+);(\d+)/.exec(ansi);
 	if (!match) return undefined;
@@ -226,16 +185,10 @@ function parseAnsiRgb(ansi: string): string | undefined {
 	return `#${hex(match[1])}${hex(match[2])}${hex(match[3])}`;
 }
 
-/** POSIX single-quote a path for embedding in the VHS shell command. */
 function shellSingleQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/**
- * Resolve a chunk's PNG path. A single image keeps the bare name (or the exact
- * `out`); multiple images gain a zero-padded `-NN` suffix so they sort and never
- * collide.
- */
 function resolveScreenshotOutputPath(out: string | undefined, baseDir: string, index: number, total: number): string {
 	if (total === 1) {
 		return out ? path.resolve(out) : path.join(baseDir, "gallery.png");
@@ -250,11 +203,6 @@ function resolveScreenshotOutputPath(out: string | undefined, baseDir: string, i
 	return path.join(baseDir, `gallery-${suffix}.png`);
 }
 
-/**
- * Group whole tool sections into chunks that stay under `rowBudget` rows. A
- * single section larger than the budget gets its own (taller) image rather than
- * being split mid-renderer.
- */
 function chunkGallerySections(sections: GallerySection[], rowBudget: number): GallerySection[][] {
 	const chunks: GallerySection[][] = [];
 	let current: GallerySection[] = [];

@@ -1,5 +1,3 @@
-// Adapted from markit-ai (MIT). See ../NOTICE.
-
 import { archiveEntryText, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
 import { XMLParser } from "@oh-my-pi/pi-utils/xml";
 import type { ConversionResult, Converter, StreamInfo } from "../types";
@@ -7,7 +5,6 @@ import type { ConversionResult, Converter, StreamInfo } from "../types";
 const EXTENSIONS = [".xlsx"];
 const MIMETYPES = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 
-/** A text value: bare string/number, or a `{ "#text" }` node when the element carries attributes. */
 type XmlText = string | number | { "#text"?: string };
 
 interface RichTextRun {
@@ -63,17 +60,17 @@ export class XlsxConverter implements Converter {
 			textNodeName: "#text",
 			processEntities: { maxTotalExpansions: 1_000_000 },
 		});
-		// Parse shared strings
+
 		const ssXml = archiveEntryText(entries, "xl/sharedStrings.xml");
 		const ss = ssXml ? (parser.parse(ssXml) as SharedStringsDoc) : null;
 		const siList = ss?.sst?.si;
 		const shared = toArray(siList);
-		// Parse workbook for sheet names
+
 		const wbXml = archiveEntryText(entries, "xl/workbook.xml");
 		if (!wbXml) throw new Error("Invalid XLSX: missing workbook.xml");
 		const wb = parser.parse(wbXml) as WorkbookDoc;
 		const sheets = toArray(wb.workbook?.sheets?.sheet);
-		// Parse workbook rels to map rIds to sheet files
+
 		const relsXml = archiveEntryText(entries, "xl/_rels/workbook.xml.rels");
 		const rels = relsXml ? (parser.parse(relsXml) as RelationshipsDoc) : null;
 		const relList = toArray(rels?.Relationships?.Relationship);
@@ -93,7 +90,7 @@ export class XlsxConverter implements Converter {
 			const parsed = parser.parse(sheetXml) as WorksheetDoc;
 			const rows = toArray(parsed.worksheet?.sheetData?.row);
 			if (rows.length === 0) continue;
-			// Extract all rows as string arrays
+
 			const tableRows: string[][] = [];
 			for (const row of rows) {
 				const cells = toArray(row.c);
@@ -104,7 +101,7 @@ export class XlsxConverter implements Converter {
 				tableRows.push(values);
 			}
 			if (tableRows.length === 0) continue;
-			// Normalize column count
+
 			const maxCols = Math.max(...tableRows.map(r => r.length));
 			for (const row of tableRows) {
 				while (row.length < maxCols) row.push("");
@@ -123,11 +120,10 @@ export class XlsxConverter implements Converter {
 	}
 
 	getCellValue(cell: Cell, shared: StringItem[]): string {
-		// Shared string
 		if (cell["@_t"] === "s") {
 			return this.getSharedString(shared, Number(cell.v));
 		}
-		// Inline string
+
 		if (cell["@_t"] === "inlineStr") {
 			const is = cell.is;
 			if (!is) return "";
@@ -138,11 +134,11 @@ export class XlsxConverter implements Converter {
 					.join("");
 			return "";
 		}
-		// Boolean
+
 		if (cell["@_t"] === "b") {
 			return cell.v === 1 || cell.v === "1" ? "TRUE" : "FALSE";
 		}
-		// Number or formula result
+
 		if (cell.v != null) return String(cell.v);
 		return "";
 	}
@@ -150,9 +146,9 @@ export class XlsxConverter implements Converter {
 	getSharedString(shared: StringItem[], idx: number): string {
 		const si = shared[idx];
 		if (!si) return "";
-		// Simple text
+
 		if (si.t != null) return textValue(si.t);
-		// Rich text runs
+
 		if (si.r) {
 			return toArray(si.r)
 				.map(r => textValue(r.t))

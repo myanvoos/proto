@@ -604,7 +604,6 @@ function createNativeB2Uploader(config: DestinationRuntimeConfig): BlobUploader 
 	};
 }
 
-/** Create an uploader for an S3-compatible, GCS, Azure Blob, or Backblaze B2 destination. */
 export function createObjectStorageUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

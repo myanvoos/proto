@@ -1,9 +1,3 @@
-/**
- * Main entry point for the coding agent CLI.
- *
- * This file handles CLI argument parsing and translates them into
- * createAgentSession() options. The SDK does the heavy lifting.
- */
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import { createInterface } from "node:readline/promises";
@@ -131,8 +125,6 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 	}
 }
 
-// Todo settings are caller-controlled in protocol modes. Do not host-default them:
-// embedders need project-level opt-outs for reminder/prelude prompt injection.
 const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"orchestrator.isolation.mode",
 	"orchestrator.isolation.apply",
@@ -144,9 +136,7 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"orchestrator.agentModelOverrides",
 	"orchestrator.agentPrewalk",
 	"orchestrator.agentAdvisor",
-	// Advisor is interactive-session assistance. Protocol hosts opt in explicitly
-	// instead of inheriting a user's globally-enabled local preference, and when
-	// they do opt in they get the default tuning rather than the user's local tuning.
+
 	"advisor.enabled",
 	"advisor.syncBacklog",
 	"advisor.immuneTurns",
@@ -162,13 +152,6 @@ const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"eval.autoBackground.thresholdMs",
 ];
 
-// Protocol-mode hosts opt into a small set of paths whose host-default we
-// re-apply at startup so embedders inherit PROTO's neutral defaults instead of
-// the local user's globally-persisted preferences for interactive use. The
-// guard preserves any explicit configuration — caller `Settings.isolated`
-// overrides, project `.claude/settings.yml`, `--config` overlays, or global
-// `config.yml` — so the host default only kicks in when nothing is set. Without
-// it the override clobbers every caller/host choice (#2598, #3207).
 function applyDefaultSettingOverrides(settingPaths: SettingPath[], targetSettings: Settings): void {
 	for (const settingPath of settingPaths) {
 		if (targetSettings.isConfigured(settingPath)) continue;
@@ -185,11 +168,9 @@ function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): v
 	applyDefaultSettingOverrides(HOST_DEFAULTED_SETTING_PATHS, targetSettings);
 }
 
-/** Reads a non-TTY stdin stream as prompt text. */
 export async function readPipedInput(): Promise<string | undefined> {
 	if (process.stdin.isTTY === true) return undefined;
-	// stdin is a pipe: a producer that never writes nor closes would block
-	// startup forever with zero output. Say what we're blocked on after 1s.
+
 	const notice = isBunTestRuntime()
 		? undefined
 		: setTimeout(() => {
@@ -208,15 +189,6 @@ export async function readPipedInput(): Promise<string | undefined> {
 		clearTimeout(notice);
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Startup watchdog
-// ---------------------------------------------------------------------------
-// Speculative-hang reporter: until startup hands off to a mode runner, print a
-// stderr line every 10s naming the deepest in-flight startup phase. Turns
-// zero-output indefinite hangs (stuck discovery read, network wait, stdin
-// pipe) into self-diagnosing reports instead of "it just hangs" (see the
-// PI_DEBUG_STARTUP markers for the synchronous-hang counterpart).
 
 const STARTUP_WATCHDOG_INTERVAL_MS = 10_000;
 let startupWatchdogTimer: NodeJS.Timeout | undefined;
@@ -243,7 +215,6 @@ function disarmStartupWatchdog(): void {
 	startupWatchdogTimer = undefined;
 }
 
-/** Begin watching startup (idempotent). */
 function startStartupWatchdog(): void {
 	if (isBunTestRuntime()) return;
 	startupWatchdogActive = true;
@@ -251,18 +222,15 @@ function startStartupWatchdog(): void {
 	armStartupWatchdog();
 }
 
-/** Permanently stop watching: a mode runner now owns the terminal. */
 function stopStartupWatchdog(): void {
 	startupWatchdogActive = false;
 	disarmStartupWatchdog();
 }
 
-/** Pause while an interactive prompt legitimately waits on the user. */
 function pauseStartupWatchdog(): void {
 	disarmStartupWatchdog();
 }
 
-/** Resume after an interactive prompt, if startup is still being watched. */
 function resumeStartupWatchdog(): void {
 	if (isBunTestRuntime()) return;
 	if (startupWatchdogActive) armStartupWatchdog();
@@ -303,21 +271,9 @@ export async function submitInteractiveInput(
 
 	try {
 		using _keepalive = new EventLoopKeepalive();
-		// Honor the submission's queue intent, defaulting to followUp. Reading
-		// `session.isStreaming` to decide queue-vs-fresh is NOT atomic with the
-		// eventual `agent.prompt()` call inside `session.prompt()`: a background turn
-		// (queued-message drain, idle compaction, goal/loop continuation timer) can
-		// flip the agent busy in the gap, and a bare prompt() would then throw
-		// AgentBusyError straight to an error toast even though the UI shows no
-		// "Working…". Passing a behavior unconditionally is a no-op when the session
-		// is genuinely idle (a fresh turn runs and the option is ignored) and queues
-		// the message instead of erroring when a turn is already underway. Normal
-		// user Enter carries "steer" (interrupt, matching the streaming-branch Enter);
-		// background/continuation submits omit it and fall back to "followUp". The
-		// synthetic branch below opts out by design.
+
 		const streamingBehavior = input.streamingBehavior ?? ("followUp" as const);
-		// Continue shortcuts submit an already-started synthetic developer prompt with
-		// no optimistic user message.
+
 		if (!input.started && !mode.markPendingSubmissionStarted(input)) {
 			return;
 		}
@@ -330,12 +286,6 @@ export async function submitInteractiveInput(
 			};
 			await session.promptCustomMessage(message, { streamingBehavior });
 		} else if (input.synthetic) {
-			// Synthetic continue shortcuts are hidden developer prompts. The streaming
-			// queue (#queueUserMessage) only carries user-attributed messages, so we do
-			// NOT pass streamingBehavior here: queueing would silently demote the
-			// developer directive to a visible user message. A synthetic submit while
-			// streaming keeps its prior behavior (rejected as busy) rather than changing
-			// its role.
 			await session.prompt(input.text, {
 				synthetic: true,
 				expandPromptTemplates: false,
@@ -391,26 +341,12 @@ async function loadTrustedSessionExtensions(
 	return loadExtensions(paths, cwd, eventBus);
 }
 
-/**
- * Build the per-`session/new` factory used by ACP mode.
- *
- * MCP servers in ACP sessions are owned exclusively by the ACP client, which
- * supplies them through `session/new.mcpServers` and re-applies them via
- * {@link AcpAgent#configureMcpServers}. We therefore force `enableMCP: false`
- * on every session created here so {@link createAgentSession} skips the on-disk
- * `.mcp.json` discovery path — otherwise host MCP tools land in the session's
- * tool registry and shadow the client-supplied servers (issue #1234).
- */
 export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSessionFactory {
 	return async (cwd, factoryOptions) => {
 		const nextSettings = await args.settings.cloneForCwd(cwd);
 		const nextSessionManager = SessionManager.create(cwd, args.sessionDir);
 		const agentId = `acp:${nextSessionManager.getSessionId()}`;
-		// `baseOptions.titleSystemPrompt` is resolved from the launch cwd; an ACP
-		// host can open `session/new` for any client-supplied workspace, so
-		// re-discover `TITLE_SYSTEM.md` against THIS session's `cwd` to keep the
-		// replan-driven title refresh consistent with the target project's
-		// policy (PR #3736 follow-up).
+
 		const titleSystemPromptSource = discoverTitleSystemPromptFile(cwd);
 		const titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		const eventBus = new EventBus();
@@ -431,8 +367,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			authStorage: args.authStorage,
 			modelRegistry: args.modelRegistry,
 			agentId,
-			// ACP defers the `ask` capability and reserve-policy confirmation until
-			// client capabilities are known, without enabling other UI-only behavior.
+
 			interactivePrompts: factoryOptions?.interactivePrompts,
 			deferUsageReserveConfirmation: true,
 			enableMCP: false,
@@ -506,10 +441,6 @@ async function runInteractiveMode(
 	let setupWizard: typeof SetupWizardModule | undefined;
 	let setupScenes: SetupScene[] = [];
 	try {
-		// Cold-launch gate: the full setup wizard (every scene + the overlay and
-		// their TUI/OAuth/search/theme deps) is heavy, yet the common case only needs
-		// to know whether the stored setup version is current. Lazy-load the wizard
-		// barrel only when setup is stale or forced.
 		const storedSetupVersion = settings.get("setupVersion");
 		setupWizard =
 			forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION
@@ -536,14 +467,13 @@ async function runInteractiveMode(
 		await setupWizard.runSetupWizard(mode, setupScenes);
 	}
 
-	// Consume failures immediately, but defer any banner until the transcript is stable.
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
 	await mode.renderInitialMessages({
 		preserveExistingChat: true,
 		clearTerminalHistory: settings.get("startup.clearScrollback"),
 	});
-	// A resolved version check must not insert its banner into a partial transcript.
+
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {
 			return;
@@ -614,13 +544,6 @@ async function promptMoveSession(session: SessionInfo): Promise<SessionPromptRes
 	}
 }
 
-/**
- * Friendly CLI failure raised by {@link createSessionManager} when the user's
- * session-resolution flags (`--resume`/`--fork`/missing-directory move prompts)
- * cannot be satisfied. {@link runRootCommand} catches it and prints a clean
- * stderr message instead of letting it surface as `[Uncaught Exception]`
- * (see issue #2084).
- */
 export class SessionResolutionError extends Error {
 	readonly hint?: string;
 	constructor(message: string, hint?: string) {
@@ -678,10 +601,6 @@ async function moveMissingCwdSessionIfNeeded(
 		return { status: "declined" };
 	}
 
-	// Open anchored at the (now-missing) recorded cwd: `open` otherwise falls back
-	// to the launch cwd, which would make the `moveTo` below a no-op whenever the
-	// move target equals the current project dir. moveTo never chdirs, so the
-	// stale cwd is only a relocation source, not a directory we enter.
 	const manager = await SessionManager.open(session.path, sessionDir, undefined, { initialCwd: sourceCwd });
 	await manager.moveTo(cwd, sessionDir);
 	return { status: "moved", manager };
@@ -700,33 +619,17 @@ async function switchToResumedProject(
 		return getProjectDir();
 	}
 
-	// Let the launch-cwd preload settle before clearing and re-warming its caches.
 	await pluginPreloadPromise.catch(() => {});
 	setProjectDir(resumedCwd);
 	clearPluginRootsAndCaches();
 	resetCapabilities();
 	const cwd = getProjectDir();
-	// clearPluginRootsAndCaches only kicks off an unawaited re-warm; await a fresh
-	// destination preload so sync consumers (plugin-provided LSP/DAP config) never
-	// read the launch project's stale/empty roots during session creation.
+
 	await preloadPluginRoots(os.homedir(), cwd);
 	await activeSettings.reloadForCwd(cwd);
 	return cwd;
 }
 
-/**
- * Resolve the effective model allow-list from an explicit `--models` scope or,
- * failing that, the active project's `enabledModels`. A totally collapsed scope
- * gets one cache-aware discovery pass before session construction: otherwise an
- * all-discovery `--models` launch can select an unrelated static model before the
- * later background rebuild activates the requested scope. The pass only helps
- * providers already known to be discoverable (models.yml `discovery:`, runtime
- * managers); a scope naming only extension-supplied models stays empty here
- * because those providers register during `createAgentSession` — that case is
- * covered by deferring to the SDK's `modelPattern` resolution in
- * {@link buildSessionOptions}. Re-run after a resume switches projects so the
- * destination project's settings-derived scope wins over the launch directory's.
- */
 export async function resolveScopedModels(
 	parsed: Args,
 	modelRegistry: Pick<ModelRegistry, "getAvailable" | "getDiscoverableProviders" | "refresh">,
@@ -745,11 +648,6 @@ export async function resolveScopedModels(
 	return await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings);
 }
 
-/**
- * Map resolver scope entries to the session's Ctrl+P cycle shape, filling in the
- * configured default thinking level for entries without an explicit `:level`
- * suffix. `auto` is session-level only, so it is coerced to a concrete default here.
- */
 export function toSessionScopedModels(
 	scopedModels: readonly ScopedModel[],
 	activeSettings: Settings,
@@ -764,34 +662,18 @@ export function toSessionScopedModels(
 	}));
 }
 
-/** Whether two scope lists reference the same set of models (order-independent). */
 function sameScopedModelSet(a: ReadonlyArray<{ model: Model }>, b: ReadonlyArray<{ model: Model }>): boolean {
 	if (a.length !== b.length) return false;
 	const keys = new Set(a.map(entry => `${entry.model.provider}/${entry.model.id}`));
 	return b.every(entry => keys.has(`${entry.model.provider}/${entry.model.id}`));
 }
 
-/** Minimal session surface the post-discovery scope rebuild mutates. */
 export interface ScopedModelSink {
 	readonly isDisposed: boolean;
 	readonly scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void;
 }
 
-/**
- * Startup resolves the `--models`/`enabledModels` scope from the model registry
- * before background provider discovery runs — `createSession` fires
- * `refreshInBackground()` only after the session is built — so a scoped selector
- * whose model first materializes through runtime discovery (e.g.
- * `opencode-go/ox-alpha-free` on a fresh launch with no cache row) is absent from
- * the frozen scoped `/models` list even though it is in `enabledModels`, invokable
- * via `--model`, and listed by `proto models find`. Once the initial refresh settles,
- * re-resolve the scope and, when the set changed, push the fuller list into the
- * session so the scoped picker and Ctrl+P cycle include it. A scope that resolved
- * to zero models may become active here when the startup discovery pass returned
- * no models but the background pass succeeded. Fire-and-forget — never blocks the
- * prompt on background discovery latency. Issue #9220.
- */
 export async function rebuildScopedModelsAfterDiscovery(
 	session: ScopedModelSink,
 	parsed: Args,
@@ -849,7 +731,6 @@ export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly st
 	parsed.messages.splice(messageIndex, 1);
 }
 
-/** Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager. */
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -926,15 +807,11 @@ export async function createSessionManager(
 	if (parsed.continue) {
 		return await SessionManager.continueRecent(cwd, parsed.sessionDir);
 	}
-	// --resume without value is handled separately (needs picker UI)
-	// If --session-dir provided without --continue/--resume, create new session there
+
 	if (parsed.sessionDir) {
 		return SessionManager.create(cwd, parsed.sessionDir);
 	}
-	// Auto-resume: behave like --continue if the setting is enabled and a prior
-	// session exists. When a prior session is resumed, mark parsed.continue so
-	// buildSessionOptions restores the session's model/thinking instead of
-	// overriding them with CLI defaults.
+
 	if (activeSettings.get("autoResume")) {
 		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
 		if (manager.getEntries().length > 0) {
@@ -942,18 +819,16 @@ export async function createSessionManager(
 		}
 		return manager;
 	}
-	// Default case (new session) returns undefined, SDK will create one
+
 	return undefined;
 }
 
-/** Discover SYSTEM.md file if no CLI system prompt was provided */
 function discoverSystemPromptFile(): string | undefined {
-	// Check project-local first (.proto/SYSTEM.md, .pi/SYSTEM.md legacy)
 	const projectPath = findConfigFile("SYSTEM.md", { user: false });
 	if (projectPath) {
 		return projectPath;
 	}
-	// If not found, check SYSTEM.md file in the global directory.
+
 	const globalPath = findConfigFile("SYSTEM.md", { user: true });
 	if (globalPath) {
 		return globalPath;
@@ -961,7 +836,6 @@ function discoverSystemPromptFile(): string | undefined {
 	return undefined;
 }
 
-/** Discover APPEND_SYSTEM.md file if no CLI append system prompt was provided */
 function discoverAppendSystemPromptFile(): string | undefined {
 	const projectPath = findConfigFile("APPEND_SYSTEM.md", { user: false });
 	if (projectPath) {
@@ -974,7 +848,6 @@ function discoverAppendSystemPromptFile(): string | undefined {
 	return undefined;
 }
 
-/** Apply resolved CLI/discovered prompt files without bypassing system prompt templates. */
 export function applyResolvedSystemPromptInputs(
 	options: CreateAgentSessionOptions,
 	resolvedSystemPrompt: string | undefined,
@@ -988,7 +861,6 @@ export function applyResolvedSystemPromptInputs(
 	}
 }
 
-/** Builds startup session options from parsed CLI flags, scoped models, and resolved session lineage. */
 export async function buildSessionOptions(
 	parsed: Args,
 	scopedModels: ScopedModel[],
@@ -1012,7 +884,6 @@ export async function buildSessionOptions(
 		options.deadline = Date.now() + parsed.maxTime * 1000;
 	}
 
-	// Auto-discover SYSTEM.md if no CLI system prompt provided
 	const systemPromptSource = parsed.systemPrompt ?? discoverSystemPromptFile();
 	const appendPromptSource = parsed.appendSystemPrompt ?? discoverAppendSystemPromptFile();
 	const titleSystemPromptSource = discoverTitleSystemPromptFile();
@@ -1048,13 +919,8 @@ export async function buildSessionOptions(
 		}
 	}
 
-	// Model from CLI
-	// - supports --provider <name> --model <pattern>
-	// - supports --model <provider>/<pattern>
 	const modelMatchPreferences = getModelMatchPreferences(activeSettings);
-	// True when a configured `default` role was deliberately left unresolved for
-	// createAgentSession's post-extension re-resolution (issue #6694); the
-	// scoped thinking-level seed below must be deferred along with the model.
+
 	let deferredDefaultRole = false;
 	if (parsed.model) {
 		const resolved = resolveCliModel({
@@ -1070,12 +936,9 @@ export async function buildSessionOptions(
 		}
 		const matchedAfterMissingRolePattern = (resolved.configuredPatternIndex ?? 0) > 0;
 		if (matchedAfterMissingRolePattern) {
-			// Extensions may register an earlier configured role candidate.
 			options.modelPattern = parsed.model;
 		} else if (resolved.error) {
 			if (!parsed.provider && ((resolved.configuredPatterns?.length ?? 0) > 0 || !parsed.model.includes(":"))) {
-				// Model not found in built-in registry — defer resolution to after extensions load
-				// (extensions may register additional providers/models via registerProvider)
 				options.modelPattern = parsed.model;
 			} else {
 				process.stderr.write(`${chalk.red(resolved.error)}\n`);
@@ -1111,36 +974,16 @@ export async function buildSessionOptions(
 				: scopedModels.find(scopedModel => scopedModel.model.id.toLowerCase() === remembered.toLowerCase());
 			if (rememberedModel) {
 				options.model = rememberedModel.model;
-				// Apply explicit thinking level from remembered role value
+
 				if (!parsed.thinking && rememberedSpec.explicitThinkingLevel && rememberedSpec.thinkingLevel) {
 					options.thinkingLevel = rememberedSpec.thinkingLevel;
 				}
 			}
 		}
-		// A configured `default` role that doesn't resolve within the startup
-		// scope is deferred, NOT silently pinned to `scopedModels[0]`: the scope
-		// is resolved before extensions register their providers, so a role naming
-		// an extension-registered model (listed in `enabledModels`) would drop out
-		// here and the session would run on an unrelated in-scope provider without
-		// any error. Leaving `options.model` unset lets createAgentSession's
-		// post-extension default-role resolution reclaim it against the fully
-		// registered, still enabledModels-scoped catalog (issue #6694).
-		// Defer ONLY for a settings-derived scope: createAgentSession re-resolves
-		// against `settings.enabledModels` and never sees CLI `--models`, so
-		// deferring under an explicit CLI scope would let the saved default
-		// escape it — keep pinning the first scoped model there.
+
 		deferredDefaultRole = !options.model && Boolean(remembered) && !((parsed.models?.length ?? 0) > 0);
 		if (!options.model && !deferredDefaultRole) options.model = scopedModels[0].model;
 	} else if ((parsed.models?.length ?? 0) > 0 && !restoringSession) {
-		// A CLI `--models` scope that resolved to zero models at startup: its
-		// selectors name only models supplied by extension providers (or discovery)
-		// that register during createAgentSession, so nothing matched the
-		// pre-session catalog and `getDiscoverableProviders()` did not yet list the
-		// provider for resolveScopedModels' pre-refresh. Defer the choice to the
-		// SDK's post-extension resolution — the same `modelPattern` path a deferred
-		// `--model` uses — so the initial model is picked from the requested scope
-		// instead of an unrelated fallback. The fire-and-forget rebuild then
-		// activates the scoped list once discovery settles (issue #9220).
 		options.modelPattern = parsed.models;
 	}
 
@@ -1159,10 +1002,7 @@ export async function buildSessionOptions(
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
-		// Prewalk is an optional optimization (off by default): switch to a fast
-		// model at the first edit. If its hand-off target can't be resolved or has
-		// no configured auth, warn and leave prewalk unarmed rather than aborting
-		// startup and locking the user out of the app (issue #6064).
+
 		if (resolved.error || !resolved.model) {
 			const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
 			process.stderr.write(
@@ -1177,40 +1017,27 @@ export async function buildSessionOptions(
 		}
 	}
 
-	// Thinking level
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
 	} else if (
 		scopedModels.length > 0 &&
 		scopedModels[0].explicitThinkingLevel === true &&
-		// A deferred default role resolves its own model (and any explicit
-		// thinking suffix) after extensions register; seeding the fallback
-		// scoped model's level here would override it in createAgentSession.
 		!deferredDefaultRole &&
 		!restoringSession
 	) {
 		options.thinkingLevel = scopedModels[0].thinkingLevel;
 	}
 
-	// Scoped models for Ctrl+P cycling — fill in default thinking levels when not explicit.
 	if (scopedModels.length > 0) {
 		options.scopedModels = toSessionScopedModels(scopedModels, activeSettings);
 	}
 
-	// API key from CLI - set in authStorage
-	// (handled by caller before createAgentSession)
-
-	// System prompt
 	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
-	// Replan-driven title refresh resolves the override from this same field on
-	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
-	// both first-input titling (`input-controller.ts`) and replan refresh
-	// (`AgentSession.#refreshTitleAfterReplan`) on one source of truth.
+
 	if (titleSystemPrompt) {
 		options.titleSystemPrompt = titleSystemPrompt;
 	}
 
-	// Tools
 	if (parsed.noTools) {
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
 	} else if (parsed.tools) {
@@ -1221,20 +1048,16 @@ export async function buildSessionOptions(
 		options.enableLsp = false;
 	}
 
-	// Skills
 	if (parsed.noSkills) {
 		options.skills = [];
 	} else if (parsed.skills && parsed.skills.length > 0) {
-		// Override includeSkills for this session
 		activeSettings.override("skills.includeSkills", parsed.skills as string[]);
 	}
 
-	// Rules
 	if (parsed.noRules) {
 		options.rules = [];
 	}
 
-	// Trusted extension paths are an exact allowlist for extension modules.
 	if (parsed.trustedExtensions && parsed.trustedExtensions.length > 0) {
 		const trustedPaths = parsed.trustedExtensions.map(trustedPath => {
 			let resolvedPath: string;
@@ -1253,7 +1076,6 @@ export async function buildSessionOptions(
 		options.disableExtensionDiscovery = true;
 		options.additionalExtensionPaths = trustedPaths;
 	} else {
-		// Additional extension paths from CLI
 		const cliExtensionPaths = [...(parsed.extensions ?? []), ...(parsed.hooks ?? [])];
 		if (cliExtensionPaths.length > 0) {
 			options.additionalExtensionPaths = cliExtensionPaths;
@@ -1286,8 +1108,6 @@ export async function runRootCommand(
 	logger.startTiming();
 	startStartupWatchdog();
 	try {
-		// Non-prepaint commands still need a default theme; an existing Composer
-		// already initialized its cached theme synchronously for the first frame.
 		await logger.time("initTheme:initial", ensureTheme);
 
 		const parsedArgs = parsed;
@@ -1305,28 +1125,18 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 		const mode = parsedArgs.mode || "text";
-		// RPC owns stdin. Claim its singleton stream before plugin/extension discovery can load an in-process consumer.
+
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
 
-		// Kick off plugin-root preload in parallel with the remaining startup work.
-		// Awaited later (before extension/skill discovery in createAgentSession needs it).
 		const home = os.homedir();
 		const pluginPreloadPromise =
 			parsedArgs.pluginDirs && parsedArgs.pluginDirs.length > 0
 				? logger.time("injectPluginDirRoots", injectPluginDirRoots, home, parsedArgs.pluginDirs, getProjectDir())
 				: logger.time("preloadPluginRoots", preloadPluginRoots, home, getProjectDir());
-		// Mark the promise as handled so a synchronous failure does not surface as an unhandled-rejection
-		// warning before we reach the await site below.
+
 		pluginPreloadPromise.catch(() => {});
 
-		// Trusted files load as exact module paths, never as package roots whose
-		// sibling hooks/tools/commands/MCP content could be discovered implicitly.
 		if (!parsedArgs.trustedExtensions?.length) {
-			// Register CLI-provided extension package paths (`--extension`, `--hook`) so
-			// the `proto-plugins` discovery provider can surface their `skills/`, `hooks/`,
-			// `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json` sub-trees.
-			// Explicit roots remain authorized under `--no-extensions`; only ambient
-			// extension discovery is disabled.
 			const cliExtensions = [...(parsedArgs.extensions ?? []), ...(parsedArgs.hooks ?? [])];
 			injectOmpExtensionCliRoots(cliExtensions, home, getProjectDir(), {
 				mode: parsedArgs.noExtensions ? "explicit-only" : "merge",
@@ -1335,24 +1145,18 @@ export async function runRootCommand(
 		}
 
 		let cwd = getProjectDir();
-		// Classify the host before opening auth or settings storage so every
-		// session-critical database connection picks the right busy timeout.
-		// See getDbBusyTimeoutMs().
+
 		const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
-		// Protocol modes own stdin; treating it as prompt text would consume JSON-RPC frames before their transports start.
+
 		const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
 		const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 		const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
-		// Only the interactive host renders a focusable Agent Fleet / subagent session
-		// tree; declare it so headless subagent optimizations (e.g. skipping replan
-		// title refresh) can tell a focusable process from a print/RPC/eval one.
+
 		setInteractiveHost(isInteractive);
 		if (!isInteractive) {
 			stopPendingStartupComposer();
 		}
-		// Create AuthStorage upfront. A configured-but-unreachable auth broker throws
-		// here; convert it to an actionable stderr message + clean exit instead of a
-		// raw uncaught stack trace (issue #8096).
+
 		let authStorage: AuthStorage;
 		try {
 			authStorage = await logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
@@ -1371,8 +1175,6 @@ export async function runRootCommand(
 			applyAcpDefaultSettingOverrides(settingsInstance);
 		}
 
-		// The registry composes policy-dependent metadata synchronously, including
-		// extended-context window caps, so it must receive the finalized settings.
 		const modelRegistry = logger.time(
 			"modelRegistry:init",
 			() => new ModelRegistry(authStorage, undefined, { settings: settingsInstance }),
@@ -1389,10 +1191,8 @@ export async function runRootCommand(
 			Bun.env.PI_NO_TITLE = "1";
 		}
 
-		// Initialize discovery system with settings for provider persistence
 		logger.time("initializeWithSettings", initializeWithSettings, settingsInstance);
 
-		// Apply model role overrides from CLI args or env vars (ephemeral, not persisted)
 		const smolModel = parsedArgs.smol ?? $env.PI_SMOL_MODEL;
 		const slowModel = parsedArgs.slow ?? $env.PI_SLOW_MODEL;
 		if (smolModel || slowModel) {
@@ -1402,22 +1202,18 @@ export async function runRootCommand(
 			});
 		}
 
-		// --print-thoughts (single-shot print mode) must surface reasoning, so un-hide
-		// thinking before the session is built — otherwise a passive omitThinking
-		// setting makes the provider omit summaries and the flag prints nothing. An
-		// explicit --hide-thinking block display option still wins for output display.
 		if (parsedArgs.printThoughts && !isProtocolMode && !isInteractive) {
 			settingsInstance.override("omitThinking", false);
 		}
-		// Apply --hide-thinking CLI flag (ephemeral, not persisted)
+
 		if (parsedArgs.hideThinking) {
 			settingsInstance.override("hideThinkingBlock", true);
 		}
-		// Apply --advisor CLI flag (ephemeral, not persisted)
+
 		if (parsedArgs.advisor) {
 			settingsInstance.override("advisor.enabled", true);
 		}
-		// Apply --external-thinking CLI flag (ephemeral, not persisted)
+
 		if (parsedArgs.externalThinking) {
 			settingsInstance.override("externalThinking", true);
 		}
@@ -1458,13 +1254,8 @@ export async function runRootCommand(
 			settingsInstance,
 		);
 
-		// Resolve an explicit `--continue <id>` before extension flags are loaded.
-		// Reading the token immediately after `--continue` distinguishes the session
-		// id from UUID-shaped values owned by later extension flags.
 		normalizeContinueSessionArgs(parsedArgs, rawArgs);
 
-		// Resolve native resume/fork flags or import one foreign transcript into a
-		// fresh persisted PROTO session before constructing the AgentSession.
 		let sessionManager: SessionManager | undefined;
 		let foreignSource: ForeignSessionSource | undefined;
 		try {
@@ -1554,25 +1345,18 @@ export async function runRootCommand(
 			const previousCwd = cwd;
 			cwd = await switchToResumedProject(sessionManager.getCwd(), settingsInstance, pluginPreloadPromise);
 			if (cwd !== previousCwd) {
-				// applyStartupCwd persists an explicit --cwd in parsedArgs; once resume
-				// switches projects, keep session construction on the destination too.
 				parsedArgs.cwd = cwd;
-				// Destination project may scope a different `enabledModels`; re-resolve
-				// so the model UI and session options reflect it (explicit `--models`
-				// stays fixed inside resolveScopedModels).
+
 				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
 			}
 		}
 
-		// User declined the missing-directory move prompt — exit cleanly instead of
-		// letting the cancellation fall through to a new session.
 		if (typeof parsedArgs.resume === "string" && !sessionManager) {
 			writeStartupNotice(parsedArgs, `${chalk.dim("Resume cancelled: session was not moved.")}\n`);
 			stopStartupWatchdog();
 			process.exit(0);
 		}
 
-		// Handle --resume (no value): show session picker
 		if (parsedArgs.resume === true && !parsedArgs.fork) {
 			const folderSessions = await logger.time(
 				"SessionManager.list",
@@ -1582,11 +1366,6 @@ export async function runRootCommand(
 			);
 			let preloadedAllSessions: SessionInfo[] | undefined;
 			if (folderSessions.length === 0) {
-				// Probe globally so we can exit fast when the user has no sessions at
-				// all, but never auto-switch the picker into all-projects scope — that
-				// silently surfaced other projects' history when the cwd was empty
-				// (issue #3099). The preloaded list also makes the user's Tab switch
-				// instant on the way in.
 				preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
 				if (preloadedAllSessions.length === 0) {
 					writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
@@ -1601,17 +1380,11 @@ export async function runRootCommand(
 			resumeStartupWatchdog();
 			if (!selected) {
 				writeStartupNotice(parsedArgs, `${chalk.dim("No session selected")}\n`);
-				// Quit instead of returning: startup already armed long-lived handles
-				// (theme watcher + SIGWINCH/macOS appearance listeners via initTheme,
-				// settings save timer, model registry) that keep the event loop alive,
-				// so a bare return hangs the process after the picker leaves the alt
-				// screen. No session was built here, so there is nothing to flush. The
-				// in-session `/resume` picker (selector-controller.ts) takes a different
-				// onCancel that just closes the overlay — only this startup path exits.
+
 				stopStartupWatchdog();
 				process.exit(0);
 			}
-			// Re-scope every cwd-derived input before building the resumed session.
+
 			const previousCwd = cwd;
 			cwd = await switchToResumedProject(selected.cwd, settingsInstance, pluginPreloadPromise);
 			if (cwd !== previousCwd) {
@@ -1661,16 +1434,11 @@ export async function runRootCommand(
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
 		sessionOptions.settings = settingsInstance;
 
-		// OTEL: register global OTLP exporters when an endpoint is configured via
-		// env, then switch on the agent loop's telemetry hooks so traces, run-level
-		// metrics, and structured logs have source events to export. Content capture
-		// remains governed by OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT.
 		await logger.time("initTelemetryExport", initTelemetryExport);
 		if (isTelemetryExportEnabled()) {
 			sessionOptions.telemetry = createTelemetryExportConfig(sessionOptions.telemetry);
 		}
 
-		// Handle CLI --api-key as runtime override (not persisted)
 		if (parsedArgs.apiKey) {
 			if (!sessionOptions.model && !sessionOptions.modelPattern) {
 				process.stderr.write(
@@ -1686,9 +1454,7 @@ export async function runRootCommand(
 		const createAgentSessionImpl = deps.createAgentSession ?? createAgentSession;
 		const createSession = async (options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => {
 			const result = await logger.time("createAgentSession", createAgentSessionImpl, options);
-			// Kick off background model discovery only after createAgentSession finishes its parallel
-			// discovery arms; running these concurrently contends for the event loop and stretches
-			// every parallel arm by ~30ms.
+
 			modelRegistry.refreshInBackground();
 			return result;
 		};
@@ -1704,18 +1470,11 @@ export async function runRootCommand(
 				rawArgs,
 				createSession,
 			});
-			// Branch-only protocol runner: keep ACP server code out of normal interactive startup.
+
 			const runAcpMode = deps.runAcpMode ?? (await import("./modes/acp/acp-mode")).runAcpMode;
 			stopStartupWatchdog();
 			await runAcpMode(createAcpSession);
 		} else {
-			// Resolve extension-registered CLI flags before creating the session so a
-			// bad `@file` fails fast WITHOUT leaving a junk session/breadcrumb
-			// (createAgentSession writes the terminal breadcrumb eagerly). Loading the
-			// extensions here also makes `@file` classification extension-aware — e.g. a
-			// string-flag value such as `--target @notes.md` is the flag's value, not a
-			// file — and the same result is handed to createAgentSession via
-			// `preloadedExtensions` so the discovery work is not repeated.
 			if (isInteractive && !parsedArgs.trustedExtensions?.length) {
 				sessionOptions.extensions = [...(sessionOptions.extensions ?? []), createWarpEventBridgeExtension()];
 			}
@@ -1744,12 +1503,7 @@ export async function runRootCommand(
 					process.stderr.write(`${chalk.yellow(`${message}\n`)}`);
 				}
 			}
-			// Fail fast on stale/typo flags (e.g. `proto --list-models`) now that we
-			// know the real extension flag set. Without this check the unrecognized
-			// token gets silently consumed and any following positional leaks as the
-			// initial prompt — kicking off a real LLM session, MCP connection, and
-			// tool calls (issue #2459). Exit code 2 matches the conventional
-			// "command line usage error" convention.
+
 			if (reportUnrecognizedFlags(initialArgs)) {
 				process.exit(2);
 			}
@@ -1768,9 +1522,6 @@ export async function runRootCommand(
 				stdinContent: pipedInput,
 			});
 
-			// Startup changelog is only consumed by interactive mode below; kick the
-			// CHANGELOG.md parse off now so it overlaps session creation instead of
-			// serializing after it.
 			const startupChangelogPromise = isInteractive
 				? logger.time(
 						"main:getChangelogForDisplay",
@@ -1793,13 +1544,6 @@ export async function runRootCommand(
 				throw error;
 			}
 
-			// Cold-revive support: a `parked` subagent ref restored from disk (Agent Fleet
-			// scan or a resumed process) has a sessionFile but no in-memory
-			// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
-			// factory — bound to THIS top-level session — that rebuilds the subagent from
-			// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
-			// bootstrap: ACP keeps several concurrent top-level sessions and a single
-			// process-global factory must not be clobbered by the most recent one.
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 				createPersistedSubagentReviverFactory({
 					session,
@@ -1815,12 +1559,6 @@ export async function runRootCommand(
 				authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 			}
 
-			// Runtime provider discovery (opencode-go, models.yml `discovery:`, proxies)
-			// populates the registry AFTER the scope was snapshotted at startup; re-resolve
-			// once it settles so newly-discovered configured models join the scoped
-			// /models list and Ctrl+P cycle, including scopes that initially resolved
-			// empty (issue #9220). Fire-and-forget: the prompt must never block on the
-			// background pass.
 			const configuredScope = parsedArgs.models ?? settingsInstance.get("enabledModels");
 			if (isInteractive && configuredScope.length > 0) {
 				void rebuildScopedModelsAfterDiscovery(session, parsedArgs, modelRegistry, settingsInstance).catch(error =>
@@ -1853,7 +1591,6 @@ export async function runRootCommand(
 			}
 
 			if (mode === "rpc" || mode === "rpc-ui") {
-				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
 				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput);
@@ -1866,9 +1603,6 @@ export async function runRootCommand(
 					settingsInstance.get("startup.quiet"),
 				);
 				if (modelScopeNotification) {
-					// Routed through the TUI (not stdout): the startup capture owns the
-					// terminal in raw mode here, and the TUI's first clearScrollback paint
-					// would wipe a pre-TUI line anyway.
 					notifs.push(modelScopeNotification);
 				}
 
@@ -1903,7 +1637,6 @@ export async function runRootCommand(
 					startupLease?.dispose();
 				}
 			} else {
-				// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.
 				stopStartupWatchdog();
 				const runPrintMode: RunPrintMode = (await import("./modes/print-mode")).runPrintMode;
 				await runPrintMode(session, {

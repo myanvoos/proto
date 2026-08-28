@@ -1,6 +1,6 @@
-//! `tac` builtin: write each file to standard output, last line first.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -26,16 +26,16 @@ mod options {
 
 #[derive(Debug, Error)]
 enum TacError {
-	/// A regular expression given by the user is invalid.
+
 	#[error("invalid regular expression: {0}")]
 	InvalidRegex(regex::Error),
-	/// An error opening a file for reading.
+
 	#[error("failed to open {} for reading: {}", .0.quote(), strip_errno(.1))]
 	Open(OsString, std::io::Error),
-	/// An error reading the contents of a file or stdin.
+
 	#[error("{}: read error: {}", .0.maybe_quote(), strip_errno(.1))]
 	Read(OsString, std::io::Error),
-	/// An error writing the reversed contents of a file or stdin.
+
 	#[error("failed to write to stdout: {}", strip_errno(.0))]
 	Write(std::io::Error),
 }
@@ -48,7 +48,7 @@ fn strip_errno(error: &std::io::Error) -> String {
 	message
 }
 
-/// Parsed `tac` invocation.
+
 pub(crate) struct Tac {
 	matches: ArgMatches,
 }
@@ -64,8 +64,8 @@ impl Utility for Tac {
 }
 
 #[allow(dead_code, reason = "called by the separately feature-gated tail builtin")]
-/// Runs `tac` with `argv` (argv[0] is the command name) against `host`.
-/// Entry point for BSD `tail -r` delegation.
+
+
 pub(crate) fn run_argv(argv: Vec<std::ffi::OsString>, host: &mut Host) -> i32 {
 	match <Tac as clap::Parser>::try_parse_from(argv) {
 		Ok(parsed) => parsed.run(host),
@@ -107,7 +107,7 @@ fn tac_main(matches: &ArgMatches, host: &mut Host) -> Result<(), TacError> {
 	tac(&files, before, regex, separator, host)
 }
 
-/// The `tac` argument model.
+
 fn app() -> Command {
 	Command::new(Tac::NAME)
 		.version("0.8.0")
@@ -145,16 +145,16 @@ fn app() -> Command {
 		)
 }
 
-/// Reports a recoverable per-file error and records a non-zero status.
-///
-/// This deliberately uses `Tac::NAME`: delegated `tail -r` invocations retain
-/// `tac:` diagnostics even though the shared host's invocation name is `tail`.
+
+
+
+
 fn show(host: &mut Host, error: &TacError) {
 	let _ = writeln!(host.stderr, "{}: {error}", Tac::NAME);
 	host.fail(1);
 }
 
-/// Prints lines of a buffer in reverse, with the line separator given as a regex.
+
 fn buffer_tac_regex(
 	data: &[u8],
 	pattern: &regex::bytes::Regex,
@@ -163,11 +163,11 @@ fn buffer_tac_regex(
 ) -> std::io::Result<()> {
 	let mut out = BufWriter::new(&mut host.stdout);
 
-	// As we scan from right to left, this limits each search to bytes before the
-	// separator found on the previous iteration.
+
+
 	let mut this_line_end = data.len();
-	// If `before` is true, each line starts immediately before its separator;
-	// otherwise it starts immediately after it.
+
+
 	let mut following_line_start = data.len();
 
 	for i in (0..data.len()).rev() {
@@ -190,7 +190,7 @@ fn buffer_tac_regex(
 	out.flush()
 }
 
-/// Writes lines from `data` to stdout in reverse.
+
 fn buffer_tac(data: &[u8], before: bool, separator: &OsStr, host: &mut Host) -> std::io::Result<()> {
 	let mut out = BufWriter::new(&mut host.stdout);
 	let separator_len = separator.len();
@@ -210,11 +210,11 @@ fn buffer_tac(data: &[u8], before: bool, separator: &OsStr, host: &mut Host) -> 
 	out.flush()
 }
 
-/// Makes the GNU basic regular-expression flavor compatible with `regex`.
-///
-/// This toggles escaping of `()`, `|`, and `{}`, escapes misplaced anchors,
-/// leaves only ASCII bytes inside bracket expressions, and byte-escapes
-/// non-ASCII outside bracket expressions.
+
+
+
+
+
 fn translate_regex_flavor(bytes: &[u8]) -> String {
 	let mut result = Vec::new();
 	let mut i = 0;
@@ -370,12 +370,12 @@ fn tac(
 }
 
 fn try_mmap_file(file: &File) -> Option<Mmap> {
-	// SAFETY: If the file is truncated while mapped, SIGBUS terminates the
-	// process before invalid memory can be accessed.
+
+
 	unsafe { Mmap::map(file).ok() }
 }
 
-/// Creates the `tac` builtin registration.
+
 pub(crate) fn tac_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Tac, SE>()
 }

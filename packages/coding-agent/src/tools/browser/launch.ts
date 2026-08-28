@@ -22,25 +22,9 @@ import { ToolError } from "../tool-errors";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
 
-/**
- * Per-CDP-message timeout applied to every puppeteer launch/connect. Set above
- * `TOOL_TIMEOUTS.browser.max` (30s) so the agent-side wall-clock is the canonical
- * limit; this constant only catches genuinely stuck CDP sockets (renderer wedged,
- * connection dropped, etc.).
- */
 export const BROWSER_PROTOCOL_TIMEOUT_MS = 60_000;
 const ENABLE_AUTOMATION_FLAG = "--enable-automation";
-// Automation-tell launch flags that puppeteer-core adds by default. We suppress
-// them via `ignoreDefaultArgs` (the supported escape hatch) to mirror xxxx's
-// chromiumSwitches patch. `--enable-automation` is the loudest: it normally sets
-// navigator.webdriver=true and shows the "controlled by automated software" infobar.
-// Edge is the launch-stability exception: it can exit before CDP opens when this
-// default flag is stripped, so Edge keeps Puppeteer's flag while our explicit
-// `--disable-blink-features=AutomationControlled` launch arg still handles
-// navigator.webdriver.
-// `ignoreDefaultArgs` does exact-string matching, so each entry must be a flag that
-// puppeteer emits verbatim. The default `--disable-features=...` string can't be
-// matched this way; it is neutralized in the puppeteer-core patch (ChromeLauncher).
+
 const STEALTH_IGNORE_DEFAULT_ARGS = [
 	ENABLE_AUTOMATION_FLAG,
 	"--disable-extensions",
@@ -75,15 +59,6 @@ const USER_AGENT_TARGET_TIMEOUT_MS = 5_000;
 const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
 const PUPPETEER_SOURCE_URL_SUFFIX = "//# sourceURL=__puppeteer_evaluation_script__";
 
-/**
- * Lazy-import puppeteer from a safe CWD so cosmiconfig doesn't choke
- * on malformed package.json files in the user's project tree.
- *
- * Dynamic import is required because puppeteer-core probes the cwd at module
- * load time; we must `process.chdir` to a safe scratch dir before loading and
- * restore cwd afterwards. A static import would run at module-init time before
- * cwd is safe.
- */
 let puppeteerModule: typeof Puppeteer | undefined;
 export async function loadPuppeteer(): Promise<typeof Puppeteer> {
 	if (puppeteerModule) return puppeteerModule;
@@ -120,30 +95,11 @@ async function loadBrowsers(): Promise<typeof BrowsersNs> {
 	return browsersModule;
 }
 
-/**
- * Resolve the Chromium executable puppeteer will launch.
- *
- * `PUPPETEER_EXECUTABLE_PATH` always wins. On macOS the isolated Chrome for
- * Testing binary is preferred over a detected system Chrome: a headless
- * daemon launched from a system `Google Chrome.app` bundle shares its
- * LaunchServices bundle identity (`com.google.Chrome`), so macOS can deliver
- * the user's open-URL Apple Events to the daemon and silently swallow their
- * link clicks (#8673). Chrome for Testing uses a dedicated bundle id
- * (`com.google.chrome.for.testing`) that is never a user's default handler;
- * system Chrome is used on macOS only when Chrome for Testing cannot be
- * obtained. Other platforms keep the download-avoiding system Chrome
- * preference and fall back to Chrome for Testing. The managed browser is
- * cached under ~/.proto/puppeteer (getPuppeteerDir). Returns undefined when
- * platform detection fails (puppeteer default resolution takes over).
- * Exported so real-browser tests can probe launchability and skip on hosts
- * missing Chrome's system libraries.
- */
 let chromiumExecutablePromise: Promise<string | undefined> | undefined;
 export async function ensureChromiumExecutable(): Promise<string | undefined> {
 	const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
 	if (envPath) return envPath;
-	// macOS: never route a background daemon through the user's GUI Chrome
-	// bundle; prefer the isolated Chrome for Testing binary instead (#8673).
+
 	const preferManagedChromium = process.platform === "darwin";
 	if (!preferManagedChromium) {
 		const sysChrome = await resolveSystemChromium();
@@ -203,8 +159,7 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 		return await chromiumExecutablePromise;
 	} catch (err) {
 		if (!preferManagedChromium) throw err;
-		// Chrome for Testing could not be obtained on macOS; degrade to the
-		// system Chrome bundle rather than leaving the browser tool unusable.
+
 		const sysChrome = await resolveSystemChromium();
 		if (!sysChrome) throw err;
 		logger.warn(
@@ -217,7 +172,7 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 	}
 }
 
-let resolvedChromium: string | null | undefined; // undefined = unchecked; null = not found
+let resolvedChromium: string | null | undefined;
 
 function isExecutableFile(p: string): boolean {
 	try {
@@ -232,14 +187,7 @@ function isExecutableFile(p: string): boolean {
 
 async function isChromiumExecutable(p: string): Promise<boolean> {
 	if (!isExecutableFile(p)) return false;
-	// The version probe below launches the candidate. It exists to reject
-	// non-Chromium `chrome`/`chromium` wrapper scripts that appear on a Linux
-	// PATH (ecb22957, "validate Linux browser executables"). On Windows and
-	// macOS the candidates are fixed GUI application paths, not PATH wrappers,
-	// and executing them is harmful: a GUI `chrome.exe --version` does not print
-	// to a detached stdout and can hand off to the user's running instance,
-	// opening/activating a normal browser window (#8445). Confine the probe to
-	// Linux and trust the executable-file check elsewhere.
+
 	if (process.platform !== "linux") return true;
 	try {
 		const probeTimeoutMs = 3000;
@@ -261,7 +209,6 @@ async function isChromiumExecutable(p: string): Promise<boolean> {
 	}
 }
 
-/** Flatpak application id published by the Ungoogled Chromium project. */
 const UNGOOGLED_CHROMIUM_FLATPAK_ID = "io.github.ungoogled_software.ungoogled_chromium";
 
 function systemChromiumCandidates(
@@ -311,9 +258,6 @@ function systemChromiumCandidates(
 				if (found) candidates.push(found);
 			}
 			candidates.push(
-				// Ungoogled Chromium. Distro and AUR packages that keep the plain
-				// `chromium` name are already covered above; these are the paths
-				// unique to it, including the system and per-user Flatpak shims.
 				"/usr/bin/ungoogled-chromium",
 				"/usr/bin/ungoogled-chromium-browser",
 				`/var/lib/flatpak/exports/bin/${UNGOOGLED_CHROMIUM_FLATPAK_ID}`,
@@ -341,32 +285,21 @@ async function resolveSystemChromium(): Promise<string | undefined> {
 	return undefined;
 }
 
-/** Options shared by headless Chromium consumers. */
 interface LaunchHeadlessOptions {
 	headless: boolean;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
-	/** Additional Chromium arguments merged with the centralized launch defaults. */
+
 	args?: readonly string[];
-	/** Additional exact Puppeteer default arguments to suppress. */
+
 	ignoreDefaultArgs?: readonly string[];
 }
 
-/** Result of a headless Chromium launch. */
 interface LaunchHeadlessResult {
 	browser: Browser;
-	/**
-	 * PROTO-owned temporary Chromium profile directory to remove after the browser
-	 * process tree exits, or `undefined` when the caller supplied its own
-	 * `--user-data-dir` (which PROTO must not delete).
-	 */
+
 	userDataDir?: string;
 }
 
-/**
- * Base Chromium argv shared by process-local puppeteer launches and the
- * broker-owned shared browser: sandbox/stealth flags, window size, and
- * PUPPETEER_PROXY* env-derived proxy flags.
- */
 function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): string[] {
 	const launchArgs = [
 		"--no-sandbox",
@@ -377,8 +310,7 @@ function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): s
 	const proxy = process.env.PUPPETEER_PROXY;
 	if (proxy) {
 		launchArgs.push(`--proxy-server=${proxy}`);
-		// Chrome (since v72) bypasses proxies for localhost by default. When PUPPETEER_PROXY_BYPASS_LOOPBACK
-		// is true, add <-loopback> so traffic to localhost reaches the proxy (e.g. for mitmdump/auth capture).
+
 		const bypassLoopback = process.env.PUPPETEER_PROXY_BYPASS_LOOPBACK?.toLowerCase();
 		if (bypassLoopback === "true" || bypassLoopback === "1" || bypassLoopback === "yes" || bypassLoopback === "on") {
 			launchArgs.push("--proxy-bypass-list=<-loopback>");
@@ -403,12 +335,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	for (const arg of opts.args ?? []) {
 		if (!launchArgs.includes(arg)) launchArgs.push(arg);
 	}
-	// Own the Chromium profile directory instead of letting puppeteer-core create
-	// (and delete) a temporary one. Passing `--user-data-dir` makes puppeteer
-	// treat the profile as non-temporary, so `ChromeLauncher.cleanUserDataDir`
-	// becomes a no-op and can no longer reject its eager process-exit hook with an
-	// unhandled EBUSY when Chromium still holds the profile lock on Windows
-	// (issue #7058). `removeUserDataDir` cleans it up on our terms instead.
+
 	let userDataDir: string | undefined;
 	if (!launchArgs.some(arg => arg.startsWith("--user-data-dir"))) {
 		userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-chrome-profile-"));
@@ -433,20 +360,11 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	}
 }
 
-/** Fully resolved executable and argv for a broker-spawned shared Chromium. */
 interface SharedBrowserLaunchSpec {
 	executablePath: string;
 	args: string[];
 }
 
-/**
- * Resolve the executable and complete argv for a shared Chromium the daemon
- * broker spawns directly (no puppeteer inside the broker). Mirrors
- * `launchHeadlessBrowser` flag assembly — puppeteer's default args minus the
- * stealth-suppressed set — suppresses Puppeteer's unowned startup window, and
- * exposes CDP on an ephemeral port. Returns null when no executable resolves;
- * callers fall back to a process-local launch.
- */
 export async function resolveSharedBrowserLaunchSpec(opts: {
 	headless: boolean;
 	userDataDir: string;
@@ -468,14 +386,6 @@ export async function resolveSharedBrowserLaunchSpec(opts: {
 	};
 }
 
-/**
- * Remove an PROTO-owned headless Chromium profile directory, tolerating the brief
- * window on Windows in which Chromium (or an orphaned browser subprocess) still
- * holds the profile lock. The shared temp remover centralizes retry handling
- * for EBUSY/EPERM/ENOTEMPTY; if the directory is still busy afterwards we warn
- * and leave it for a later cleanup pass rather than throwing — a shutdown cleanup
- * failure must never crash the process (issue #7058).
- */
 export async function removeUserDataDir(dir: string): Promise<void> {
 	try {
 		await removeWithRetries(dir);
@@ -501,10 +411,6 @@ export async function applyViewport(
 		deviceScaleFactor: viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	});
 }
-
-// =====================================================================
-// Stealth patches
-// =====================================================================
 
 interface PuppeteerCdpClient {
 	send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
@@ -693,7 +599,6 @@ async function sendUserAgentOverride(client: PuppeteerCdpClient, override: UserA
 	}
 }
 
-/** Configure UA override on the browser + auto-attach to new targets. */
 async function configureUserAgentTargets(
 	browser: Browser,
 	state: { browserSession: CDPSession | null; override: UserAgentOverride },
@@ -807,13 +712,6 @@ function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_
 				const Page_WeakMap = WeakMap;
 				const Page_WeakMap_get = Page_WeakMap.prototype.get;
 				const Page_WeakMap_set = Page_WeakMap.prototype.set;
-				// Native function cache - captured before any tampering.
-				// A same-origin iframe yields natives uncontaminated by page-level
-				// tampering, but at document-start (when this preload runs) there is
-				// no documentElement to attach it to. In that case the page itself
-				// hasn't executed yet, so window's own natives are still pristine —
-				// fall back to window instead of bailing, otherwise none of the
-				// fingerprint patches below would ever run.
 				let iframe = null;
 				const container = document.head ?? document.documentElement;
 				if (container) {
@@ -825,7 +723,6 @@ function buildStealthInjectionScript(scripts: readonly string[] = STEALTH_PATCH_
 				try {
 					const nativeWindow = iframe ? iframe.contentWindow : window;
 
-					// Cache pristine native functions
 					const Function_toString = nativeWindow.Function.prototype.toString;
 					const Object_getOwnPropertyDescriptor = nativeWindow.Object.getOwnPropertyDescriptor;
 					const Object_getOwnPropertyDescriptors = nativeWindow.Object.getOwnPropertyDescriptors;
@@ -902,7 +799,6 @@ async function injectStealthScripts(page: Page): Promise<void> {
 	await page.evaluateOnNewDocument(buildStealthInjectionScript());
 }
 
-/** Apply stealth patches + UA override to a headless page. Idempotent within a tab. */
 export async function applyStealthPatches(
 	browser: Browser,
 	page: Page,

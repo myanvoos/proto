@@ -1,8 +1,3 @@
-/**
- * Component for displaying user-initiated eval execution with streaming output.
- * Shares the same kernel session as the agent's eval tool.
- */
-
 import { Container, type Loader, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { highlightCode, theme } from "../../modes/theme/theme";
@@ -28,10 +23,7 @@ export class EvalExecutionComponent extends Container {
 	#loader: Loader;
 	#truncation?: TruncationMeta;
 	#expanded = false;
-	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
-	// a completed cell's block still mutates on expansion toggles, and the
-	// transcript's width-epoch resolution and committed-render bypass must
-	// observe that.
+
 	#blockVersion = 0;
 	#contentContainer: Container;
 
@@ -66,11 +58,6 @@ export class EvalExecutionComponent extends Container {
 		this.#contentContainer.addChild(this.#loader);
 	}
 
-	/**
-	 * Transcript finalization contract (see `FinalizableBlock`): the collapsed
-	 * streaming preview rewrites its tail window every chunk, so the block must
-	 * stay out of native scrollback until the cell completes.
-	 */
 	isTranscriptBlockFinalized(): boolean {
 		return this.#status !== "running";
 	}
@@ -91,7 +78,6 @@ export class EvalExecutionComponent extends Container {
 	}
 
 	appendOutput(chunk: string): void {
-		// Chunk is pre-sanitized by OutputSink.push() — no need to sanitize again.
 		const newLines = chunk.split("\n").map(line => this.#clampDisplayLine(line));
 		if (this.#outputLines.length > 0 && newLines.length > 0) {
 			this.#outputLines[this.#outputLines.length - 1] = this.#clampDisplayLine(
@@ -124,8 +110,7 @@ export class EvalExecutionComponent extends Container {
 	#updateDisplay(): void {
 		const availableLines = this.#outputLines;
 		const previewLogicalLines = availableLines.slice(-PREVIEW_LINES);
-		// Only the collapsed preview hides lines; when expanded the footer must
-		// not keep advertising hidden lines / ctrl+o.
+
 		const hiddenLineCount = this.#expanded ? 0 : availableLines.length - previewLogicalLines.length;
 
 		this.#contentContainer.clear();

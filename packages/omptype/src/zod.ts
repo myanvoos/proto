@@ -29,10 +29,9 @@ export type ZodLikeSafeParseResult<Out> =
 	| { success: true; data: Out }
 	| { success: false; error: { message: string; issues: ZodLikeIssue[] } };
 
-/** A callable omptype schema carrying the Zod-v4-style fluent surface. */
 export interface ZodLikeSchema<out Out> extends Type<Out, unknown> {
 	readonly _output: Out;
-	/** @internal Used while composing object property IR. */
+
 	readonly isOptional: boolean;
 	parse(value: unknown): Out;
 	safeParse(value: unknown): ZodLikeSafeParseResult<Out>;
@@ -221,9 +220,7 @@ function decorate<Out>(schema: Decoratable<Out>, optional = false): ZodLikeSchem
 				try {
 					const result = schema(input);
 					if (!(result instanceof type.errors)) return result;
-				} catch {
-					// A caught schema is deliberately total, including user refinement/transform exceptions.
-				}
+				} catch {}
 				return typeof fallback === "function" ? (fallback as () => Out)() : fallback;
 			});
 			return decorate(caught as Decoratable<Out>, optional);
@@ -330,7 +327,6 @@ const undefinedSchema = (): ZodLikeSchema<undefined> =>
 
 export { nullSchema as null, undefinedSchema as undefined };
 
-/** Runtime `z.*` facade, merged with the `z.infer` type namespace below. */
 export const z = {
 	string,
 	number,

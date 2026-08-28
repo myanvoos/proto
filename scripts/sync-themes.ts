@@ -1,8 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Syncs the theme index file with the JSON files in the defaults directory.
- * Usage: bun scripts/sync-themes.ts
- */
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";

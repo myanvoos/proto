@@ -4,28 +4,17 @@ import { OmpErrors, type Type } from "@oh-my-pi/omptype";
 import { getAgentDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
 
-/** Minimal subset of the AJV ConfigSchemaError shape this module actually relies on. */
 interface ConfigSchemaError {
 	instancePath: string;
 	message: string | undefined;
 }
 
-/**
- * Module-private cache of JSON → YAML migrations this process already ran.
- * Prevents `ConfigFile.relocate()` / repeated `tryLoad()` calls from re-running
- * the migration over and over on the boot path.
- */
 const migratedPaths = new Set<string>();
 
 function migrationKey(jsonPath: string, ymlPath: string): string {
 	return `${jsonPath}\u0000${ymlPath}`;
 }
 
-/**
- * Synchronous JSON → YAML migration kept for callers that still want the
- * eager path (settings init, tests that observe migration completion).
- * Idempotent — re-running is a no-op.
- */
 function migrateJsonToYml(jsonPath: string, ymlPath: string) {
 	const key = migrationKey(jsonPath, ymlPath);
 	if (migratedPaths.has(key)) return;
@@ -147,7 +136,7 @@ export class ConfigFile<T> implements IConfigFile<T> {
 			this.#jsonMigrationPath = `${configPath.slice(0, -5)}.json`;
 		} else if (configPath.endsWith(".json") || configPath.endsWith(".jsonc")) {
 			this.#yamlFallbackPath = null;
-			// JSON configs are still supported without migration.
+
 			this.#jsonMigrationPath = null;
 		} else {
 			this.#yamlFallbackPath = null;
@@ -161,10 +150,6 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		return this.#resolvedSchema;
 	}
 
-	/**
-	 * Run the JSON → YAML migration synchronously, if applicable. Idempotent.
-	 * Sync callers (tests, settings init) hit this implicitly via {@link tryLoad}.
-	 */
 	#ensureMigrated(): void {
 		if (!this.#jsonMigrationPath) return;
 		if (this.#yamlFallbackPath && !fs.existsSync(this.#basePath) && fs.existsSync(this.#yamlFallbackPath)) {

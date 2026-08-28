@@ -12,51 +12,41 @@ import {
 import { keyHint, rawKeyHint } from "./keybinding-hints";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 
-/** Minimum rows reserved for the tree even on short terminals. */
 const MIN_TREE_ROWS = 3;
-/** Fixed chrome rows: top border, two dividers, footer, bottom border. */
+
 const CHROME_ROWS = 5;
 
 interface CopySelectorCallbacks {
-	/** A copy target was chosen — copy its `content`. */
 	onPick: (target: CopyTarget) => void;
-	/** The picker was dismissed. */
+
 	onCancel: () => void;
 }
 
 interface FlatNode {
 	target: CopyTarget;
 	depth: number;
-	/** Last among its siblings (drives └─ vs ├─). */
+
 	isLast: boolean;
-	/** Per-ancestor flag: does ancestor at that level have a following sibling? */
+
 	ancestorHasNext: boolean[];
 }
 
-/** Render one tree connector as exactly three cells (e.g. "├─ ", "└─ ", "|--"). */
 function connectorCells(symbol: string): string {
 	const chars = Array.from(symbol);
 	return (chars[0] ?? " ") + (chars[1] ?? theme.tree.horizontal) + (chars[2] ?? " ");
 }
 
-/** The 3-cell ancestor gutter: a vertical guide when the ancestor continues. */
 function gutterCells(hasNext: boolean): string {
 	return `${hasNext ? theme.tree.vertical : " "}  `;
 }
 
-/**
- * Fullscreen `/copy` picker rendered as a `/tree`-style tree inside one
- * outlined box: a title, the tree of copy targets (recent assistant messages
- * with their code blocks nested beneath), a live preview of the highlighted
- * node, and a keybinding footer. Every node copies its `content` on Enter.
- */
 export class CopySelectorComponent implements Component {
 	#roots: CopyTarget[];
 	#cursorId: string;
 	#lastSourceTarget?: CopyTarget;
 	#lastSource?: string;
 	#treeRows = MIN_TREE_ROWS;
-	// Reused across renders to wrap preview content to the pane width.
+
 	#previewText = new Text("", 0, 0);
 
 	constructor(
@@ -155,8 +145,6 @@ export class CopySelectorComponent implements Component {
 			return out;
 		}
 
-		// Code/command previews are syntax-highlighted; everything else is shown
-		// as plain text. Both are wrapped (not hard-truncated) to the pane width.
 		const isCode = target.language !== undefined;
 		let source: string;
 		if (target === this.#lastSourceTarget && this.#lastSource !== undefined) {

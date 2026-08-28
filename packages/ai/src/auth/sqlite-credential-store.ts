@@ -1,9 +1,3 @@
-/**
- * SQLite-backed credential persistence for AuthStorage.
- *
- * The public AuthCredentialStore interface remains in ../auth-storage so local
- * and remote stores share the same contract.
- */
 import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -35,32 +29,12 @@ import type {
 	UsageHistoryQuery,
 } from "../usage";
 
-// 5 min stale tolerance. Anthropic / OpenAI rate-limit /usage hard at the IP
-// level so we can't fetch all N credentials every cycle; with a long cache
-// each credential's last-known value sticks visible while peers retry. UI
-// data (5h / 7d / monthly limits) is fine being a few minutes stale.
 export const USAGE_REPORT_TTL_MS = 5 * 60_000;
 
-/**
- * Downsample usage history to at most one row per hour per account window: a
- * snapshot landing in the same hour bucket as the series' latest row
- * overwrites it in place. That bound makes further retention pruning
- * unnecessary — 1 row/hour is ~9k rows per account window per year.
- */
 const USAGE_HISTORY_BUCKET_MS = 60 * 60_000;
 
-/**
- * Merge client observed-usage flushes into at most one row per 5 minutes per
- * (install, provider, model): ~300 rows/day per active model per client
- * instead of one row per 10s flush.
- */
 const CLIENT_USAGE_BUCKET_MS = 5 * 60_000;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SqliteAuthCredentialStore
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Row shape for auth_credentials table queries */
 type AuthRow = {
 	id: number;
 	provider: string;
@@ -70,7 +44,6 @@ type AuthRow = {
 	identity_key: string | null;
 };
 
-/** {@link AuthRow} plus `updated_at` — disabled-tombstone queries surface when the row was torn down. */
 type DisabledAuthRow = AuthRow & { updated_at: number | null };
 
 type CredentialBlockRow = {
@@ -93,9 +66,6 @@ const LEGACY_CODEX_BLOCK_PROVIDER_KEY = "openai-codex:oauth";
 const LEGACY_CODEX_BLOCK_SCOPE = "shared";
 const CODEX_METER_BLOCK_SCOPES = ["chat", "spark"] as const;
 
-// SQLite error classifiers live in pi-utils so the credential store and the
-// model cache share one implementation; re-exported here to preserve the
-// pre-existing `@oh-my-pi/pi-ai/auth-storage` surface.
 export { isSqliteBusyError, isSqliteCorruptionError };
 
 function normalizeStoredAccountId(accountId: string | null | undefined): string | null {
@@ -168,21 +138,13 @@ function toStoredAuthCredential(row: AuthRow, credential: AuthCredential): Store
 function resolveProviderCredentialIdentityKey(provider: string, identifiers: string[]): string | null {
 	const emailIdentifier = identifiers.find(identifier => identifier.startsWith("email:"));
 	if (provider === "anthropic" || provider === "openai-codex") {
-		// One account email can hold several organizations/workspaces (e.g. a
-		// Team seat plus a personal plan), each with its own org-scoped token
-		// and limit pools. Scope identity by org so both subscriptions can be
-		// stored side by side. The qualifier rides on whichever base identity
-		// is available, so an unqualified account/project fallback would
-		// still collapse two subscriptions whenever the email could not be
-		// recovered. Org-less credentials (rows written before org capture
-		// existed) keep their bare key.
 		const base =
 			emailIdentifier ??
 			identifiers.find(identifier => identifier.startsWith("account:")) ??
 			identifiers.find(identifier => identifier.startsWith("project:"));
 		const orgIdentifier = identifiers.find(identifier => identifier.startsWith("org:"));
 		if (base) return orgIdentifier ? `${base}|${orgIdentifier}` : base;
-		// No base identity at all: the org alone still distinguishes the row.
+
 		return orgIdentifier ?? null;
 	}
 	const accountIdentifier = identifiers.find(identifier => identifier.startsWith("account:"));
@@ -225,25 +187,7 @@ function matchesReplacementCredential(
 	if (incomingIdentityKey === null) return false;
 	if (incomingIdentityKey === existingIdentityKey) return true;
 	if (existingIdentityKey === null) return false;
-	// One-way upgrade, applied only when the INCOMING identity key carries the
-	// org qualifier (only anthropic and openai-codex keys do, so other
-	// providers never reach the checks below). An org-scoped login `org:<o>`
-	// claims (and re-keys) any existing row that denotes the same subscription:
-	//   - `org:<o>` — org-only row stored when identity recovery failed, claimed
-	//     once a later same-org login recovers a base identity;
-	//   - `<b>` for any base identity `<b>` (email/account/project) the incoming
-	//     credential carries — a pre-org legacy row, mirroring the pre-org
-	//     replace behavior;
-	//   - `<b>|org:<o>` for any such base — the same subscription keyed by a
-	//     different base, e.g. an account-keyed row stored while the email could
-	//     not be recovered, claimed once a later login recovers the email;
-	//   - any same-org row whose STORED credential shares a base identity with
-	//     the incoming one — a stored credential can retain identifiers its key
-	//     does not use (an email-keyed row also carries the account UUID), so a
-	//     later login that loses the email but keeps the account still updates
-	//     its row instead of duplicating the subscription.
-	// The reverse stays a non-match: an org-less credential only ever replaces
-	// via exact key equality above and must never clobber an org-scoped row.
+
 	const orgIdentifier = incomingIdentifiers.find(identifier => identifier.startsWith("org:"));
 	if (orgIdentifier === undefined) return false;
 	if (incomingIdentityKey !== orgIdentifier && !incomingIdentityKey.endsWith(`|${orgIdentifier}`)) return false;
@@ -252,10 +196,7 @@ function matchesReplacementCredential(
 		existing.type === "oauth" && existingIdentityKey.endsWith(`|${orgIdentifier}`)
 			? extractOAuthCredentialIdentifiers(existing)
 			: null;
-	// A base identifier that merely repeats the org qualifier's id carries no
-	// per-user identity (openai-codex stores the ChatGPT workspace id as both
-	// accountId and orgId, shared by every member) — letting it act as a
-	// claimable base would re-key another member's same-org row.
+
 	const orgQualifierId = orgIdentifier.slice("org:".length);
 	for (const identifier of incomingIdentifiers) {
 		const isBase =
@@ -332,14 +273,7 @@ function extractOAuthTokenIdentifiers(token: string | undefined): string[] | und
 		return undefined;
 	}
 }
-/**
- * Default SQLite-backed implementation of {@link AuthCredentialStore}.
- *
- * Used by the pi-ai CLI and as the default store for `AuthStorage.create()`.
- * Also exposes convenience methods (`saveOAuth`, `getOAuth`, `saveApiKey`,
- * `getApiKey`, `listProviders`, `deleteProvider`) that callers can use directly
- * without going through `AuthStorage`.
- */
+
 export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#db: Database;
 	#listActiveStmt: Statement;
@@ -511,10 +445,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 		}
 
-		// Concurrent proto startups can race against WAL recovery and the schema
-		// init's first lock-taking statement. Bun's default `busy_timeout` is 0,
-		// so retry the open on `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY` with bounded
-		// exponential backoff before surfacing the failure. See issue #2421.
 		const maxAttempts = 4;
 		const baseDelayMs = 100;
 		let lastBusyError: Error | undefined;
@@ -522,17 +452,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			let db: Database | undefined;
 			try {
 				db = new Database(dbPath);
-				// Install the busy handler BEFORE the first lock-taking statement
-				// on this connection. The leases DDL below and the constructor's
-				// schema init both acquire locks during WAL recovery; without a
-				// non-zero `busy_timeout` they fail immediately with SQLITE_BUSY.
-				// See issue #2421.
+
 				SqliteAuthCredentialStore.#installBusyTimeout(db);
 				try {
 					await fs.chmod(dbPath, 0o600);
-				} catch {
-					// Best-effort hardening; ignore chmod failures.
-				}
+				} catch {}
 				SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(db);
 				return new SqliteAuthCredentialStore(db);
 			} catch (err) {
@@ -564,24 +488,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		`);
 	}
 
-	/**
-	 * Install the per-connection busy handler so lock-taking statements wait for
-	 * a contended writer instead of failing immediately (Bun defaults
-	 * `busy_timeout` to 0). MUST run before the first lock-taking statement on
-	 * the connection: concurrent proto startups race WAL recovery and the leases
-	 * DDL. Uses the centralized timeout so headless hosts keep their bounded
-	 * busy wait instead of the interactive 5s value. See issues #2421, #7298.
-	 */
 	static #installBusyTimeout(db: Database): void {
 		db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 	}
 
 	#initializeSchema(): void {
-		// Install the busy handler BEFORE any lock-taking statement (incl.
-		// `PRAGMA journal_mode=WAL`, which acquires an exclusive lock during WAL
-		// recovery). Without this, concurrent proto startups can crash here with
-		// `SQLITE_BUSY` / `SQLITE_BUSY_RECOVERY`. Re-setting when opened via
-		// `open()` (which already installed it) is idempotent. See issue #2421.
 		SqliteAuthCredentialStore.#installBusyTimeout(this.#db);
 		this.#db.run(`
 			PRAGMA journal_mode=WAL;
@@ -664,8 +575,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		}
 		this.#createAuthChangeTrackingObjects();
 		this.#backfillCredentialIdentityKeys();
-		// Rewriting an already-current version row is a no-op write transaction
-		// on every boot; only persist when the recorded version actually changes.
+
 		if (recordedVersion !== AUTH_SCHEMA_VERSION && schemaVersion <= AUTH_SCHEMA_VERSION) {
 			this.#writeAuthSchemaVersion(AUTH_SCHEMA_VERSION);
 		}
@@ -801,11 +711,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		`);
 	}
 
-	/**
-	 * Keep a physical Codex `shared` row for pre-meter binaries that read this
-	 * database directly. Meter rows are canonical for current code. The guard
-	 * suppresses feedback while triggers update the compatibility projection.
-	 */
 	#createAuthCredentialBlockCompatibilityTriggers(): void {
 		for (const event of ["INSERT", "UPDATE"] as const) {
 			const eventName = event.toLowerCase();
@@ -1172,8 +1077,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		try {
 			for (const row of rows) {
 				const identityKey = resolveRowCredentialIdentityKey(row.provider, row);
-				// Rows whose identity cannot be derived stay NULL; writing NULL over
-				// NULL would just burn a write transaction on every boot.
+
 				if (identityKey === null) continue;
 				updateIdentity ??= this.#db.prepare("UPDATE auth_credentials SET identity_key = ? WHERE id = ?");
 				updateIdentity.run(identityKey, row.id);
@@ -1182,8 +1086,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			updateIdentity?.finalize();
 		}
 	}
-
-	// ─── AuthCredentialStore interface ──────────────────────────────────────
 
 	listAuthCredentials(provider?: string): StoredAuthCredential[] {
 		const rows =
@@ -1334,11 +1236,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return result;
 	}
 
-	/**
-	 * Hard-deletes disabled rows for a provider when an active replacement exists.
-	 * OAuth credentials match by identity key; API keys match by provider and type.
-	 * Disabled rows without an active same-type replacement remain recoverable.
-	 */
 	#purgeSupersededDisabledRows(provider: string, activeRows: StoredAuthCredential[]): void {
 		try {
 			let hasActiveApiKey = false;
@@ -1366,14 +1263,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 					this.#hardDeleteStmt.run(row.id);
 					continue;
 				}
-				// Exact key equality misses a tombstone whose key predates a format
-				// the active row now uses (pre-org `<b>` vs `<b>|org:<o>`). An active
-				// credential that WOULD have replaced this row had it still been
-				// active supersedes its tombstone too, so mirror the replacement
-				// matcher rather than restating a weaker rule. The one-way upgrade
-				// and shared-workspace guards in matchesReplacementCredential carry
-				// over, so this never over-deletes another member's or subscription's
-				// row.
+
 				const disabledCredential = deserializeCredential(row);
 				if (disabledCredential === null) continue;
 				const superseded = activeOAuthCredentials.some(active =>
@@ -1381,9 +1271,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				);
 				if (superseded) this.#hardDeleteStmt.run(row.id);
 			}
-		} catch {
-			// Best-effort cleanup; don't let it break the main operation
-		}
+		} catch {}
 	}
 
 	updateAuthCredential(id: number, credential: AuthCredential): void {
@@ -1402,9 +1290,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			if (provider) {
 				this.#purgeSupersededDisabledRows(provider, this.listAuthCredentials(provider));
 			}
-		} catch {
-			// Ignore update failures
-		}
+		} catch {}
 	}
 
 	tryUpdateAuthCredentialIfMatches(
@@ -1451,17 +1337,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	deleteAuthCredential(id: number, disabledCause: string): void {
 		try {
 			this.#deleteStmt.run(normalizeDisabledCause(disabledCause), id);
-		} catch {
-			// Ignore delete failures
-		}
+		} catch {}
 	}
 
-	/**
-	 * CAS-style disable: only soft-deletes the row when its `data` column still
-	 * matches `expectedData` and the row has not already been disabled. Used by
-	 * the OAuth refresh-failure path to avoid clobbering a peer that rotated the
-	 * row between our pre-check and the disable.
-	 */
 	tryDisableAuthCredentialIfMatches(
 		id: number,
 		expectedData: string,
@@ -1485,9 +1363,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	deleteAuthCredentialsForProvider(provider: string, disabledCause: string): void {
 		try {
 			this.#deleteByProviderStmt.run(normalizeDisabledCause(disabledCause), provider);
-		} catch {
-			// Ignore delete failures
-		}
+		} catch {}
 	}
 
 	getCache(key: string, options?: { includeExpired?: boolean }): string | null {
@@ -1503,33 +1379,25 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	setCache(key: string, value: string, expiresAtSec: number): void {
 		try {
 			this.#upsertCacheStmt.run(key, value, expiresAtSec);
-		} catch {
-			// Ignore cache set failures
-		}
+		} catch {}
 	}
 
-	/** Drop all cache rows whose keys start with the supplied prefix. */
 	deleteCachePrefix(prefix: string): void {
 		try {
 			this.#deleteCachePrefixStmt.run(prefix.length, prefix);
-		} catch {
-			// Ignore cache delete failures
-		}
+		} catch {}
 	}
 
 	cleanExpiredCache(): void {
 		try {
 			this.#deleteExpiredCacheStmt.run();
-		} catch {
-			// Ignore cleanup errors
-		}
+		} catch {}
 	}
 
 	getCredentialBlock(credentialId: number, providerKey: string, blockScope: string): number | undefined {
 		const nowMs = Date.now();
 		const isCodexBlock = providerKey === LEGACY_CODEX_BLOCK_PROVIDER_KEY;
-		// Current callers use meter scopes. The physical shared row exists only
-		// for direct SQLite readers from pre-meter releases.
+
 		if (isCodexBlock && blockScope === LEGACY_CODEX_BLOCK_SCOPE) {
 			return undefined;
 		}
@@ -1660,9 +1528,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	releaseCredentialRefreshLease(credentialId: number, owner: string): void {
 		try {
 			this.#releaseCredentialRefreshLeaseStmt.run(credentialId, owner);
-		} catch {
-			// Ignore lease release failures; expired leases are stealable.
-		}
+		} catch {}
 	}
 
 	recordUsageSnapshots(entries: UsageHistoryEntry[]): void {
@@ -1700,9 +1566,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 					entry.resetsAt ?? null,
 				);
 			}
-		} catch {
-			// History is best-effort; never break the usage fetch path.
-		}
+		} catch {}
 	}
 
 	listUsageHistory(query?: UsageHistoryQuery): UsageHistoryEntry[] {
@@ -1762,8 +1626,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		);
 		for (const entry of report.entries) {
-			// Merge into the newest row of the same (install, provider, model)
-			// bucket so 10s client flushes don't accrete one row apiece forever.
 			const bucketFloor = entry.at - CLIENT_USAGE_BUCKET_MS;
 			const existing = findBucket.get(report.installId, entry.provider, entry.model, bucketFloor) as {
 				id: number;
@@ -1846,20 +1708,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		};
 	}
 
-	// ─── Convenience methods for CLI ────────────────────────────────────────
-
-	/**
-	 * Save OAuth credentials for a provider.
-	 * Preserves unrelated identities and replaces only the matching credential.
-	 */
 	saveOAuth(provider: string, credentials: OAuthCredentials): void {
 		const credential: AuthCredential = { type: "oauth", ...credentials };
 		this.upsertAuthCredentialForProvider(provider, credential);
 	}
 
-	/**
-	 * Get OAuth credentials for a provider.
-	 */
 	getOAuth(provider: string): OAuthCredentials | null {
 		const rows = this.#listActiveByProviderStmt.all(provider) as AuthRow[];
 		for (const row of rows) {
@@ -1872,17 +1725,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return null;
 	}
 
-	/**
-	 * Save API key for a provider (replaces existing).
-	 */
 	saveApiKey(provider: string, apiKey: string): void {
 		const credential: AuthCredential = { type: "api_key", key: apiKey };
 		this.replaceAuthCredentialsForProvider(provider, [credential]);
 	}
 
-	/**
-	 * Get API key for a provider.
-	 */
 	getApiKey(provider: string): string | null {
 		const rows = this.#listActiveByProviderStmt.all(provider) as AuthRow[];
 		for (const row of rows) {
@@ -1894,9 +1741,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return null;
 	}
 
-	/**
-	 * List all providers with credentials.
-	 */
 	listProviders(): string[] {
 		const rows = this.#listActiveStmt.all() as AuthRow[];
 		const providers = new Set<string>();
@@ -1906,17 +1750,10 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return Array.from(providers);
 	}
 
-	/**
-	 * Delete all credentials for a provider.
-	 */
 	deleteProvider(provider: string): void {
 		this.deleteAuthCredentialsForProvider(provider, "deleted by user");
 	}
 
-	/**
-	 * SQLite increments `data_version` when another connection commits. Own
-	 * writes leave it unchanged and already notify AuthStorage directly.
-	 */
 	pollExternalChanges(): boolean {
 		this.#acknowledgeLocalAuthChanges();
 		const dataVersion = this.#readDataVersion();

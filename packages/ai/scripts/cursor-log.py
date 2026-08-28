@@ -42,23 +42,18 @@ def is_noise(entry: dict, verbose: bool = False) -> bool:
     typ = entry.get("type", "")
     subtype = entry.get("subtype", "")
 
-    # serverMessage:interactionUpdate is redundant (we log the inner update)
     if typ == "serverMessage" and subtype == "interactionUpdate":
         return True
 
-    # KV blob ops are noisy
     if typ == "kvClient" or (typ == "serverMessage" and subtype == "kvServerMessage"):
         return True
 
-    # conversationCheckpointUpdate is noisy
     if typ == "serverMessage" and subtype == "conversationCheckpointUpdate":
         return True
 
-    # execClient:requestContextResult is redundant with info:execClientMessage
     if typ == "execClient" and subtype == "requestContextResult":
         return True
 
-    # Filter streaming deltas that we skip entirely
     delta_type = get_delta_type(entry)
     if delta_type in SKIP_DELTAS:
         return True
@@ -70,7 +65,6 @@ def format_data(typ: str, subtype: str, data: dict | None) -> str:
     if not data or not isinstance(data, dict):
         return ""
 
-    # Extract useful fields based on message type
     if typ == "serverMessage" and subtype == "execServerMessage":
         msg = data.get("message", {})
         case = msg.get("case", "")
@@ -106,7 +100,6 @@ def format_data(typ: str, subtype: str, data: dict | None) -> str:
     if typ == "info" and subtype == "execClientMessage":
         return f" {data.get('messageCase', '')}"
 
-    # Default: show compact JSON
     filtered = {
         k: v
         for k, v in data.items()
@@ -146,10 +139,8 @@ def extract_text_delta(entry: dict) -> str | None:
     """Extract text from a textDelta entry."""
     data = entry.get("data", {})
     if isinstance(data, dict):
-        # Direct textDelta
         if "text" in data:
             return data["text"]
-        # Nested in message.value
         msg = data.get("message", {})
         if isinstance(msg, dict):
             value = msg.get("value", {})
@@ -181,7 +172,6 @@ def coalesce_entries(entries: list[dict], verbose: bool = False) -> list[str]:
         typ = entry.get("type", "")
         subtype = entry.get("subtype", "")
 
-        # Accumulate textDelta
         if typ == "interactionUpdate" and subtype == "textDelta":
             text = extract_text_delta(entry)
             if text:
@@ -190,11 +180,9 @@ def coalesce_entries(entries: list[dict], verbose: bool = False) -> list[str]:
                 text_buffer += text
             continue
 
-        # Skip noise entirely (don't flush for these)
         if is_noise(entry, verbose):
             continue
 
-        # Real entry - flush text buffer first
         flush_text()
 
         formatted = format_entry(entry, verbose)
@@ -228,7 +216,6 @@ def process_file(
         sys.exit(1)
 
     if follow:
-        # Follow mode: buffer briefly then emit
         with open(path) as f:
             f.seek(0, 2)
             buffer = []
@@ -240,7 +227,6 @@ def process_file(
                         buffer.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass
-                # Emit buffered entries every 0.5s or when buffer is large
                 if buffer and (time.time() - last_emit > 0.5 or len(buffer) > 50):
                     for out in coalesce_entries(buffer, verbose):
                         print(out, flush=True)

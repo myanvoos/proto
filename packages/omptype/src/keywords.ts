@@ -339,17 +339,14 @@ const keywordFactories: Record<string, () => IR> = {
 	"parse.bigint": () => morph(pattern(INTEGER, "an integer string"), value => BigInt(value), { k: "bigint" }),
 };
 
-/** Lower a built-in keyword into fresh validation IR. */
 export function keywordIR(name: string): IR | undefined {
 	return keywordFactories[name]?.();
 }
 
-/** Lower a regular expression into a string refinement. */
 export function patternIR(regex: RegExp): IR {
 	return pattern(regex, `a string matching ${regex}`);
 }
 
-/** Lower an ArkType-style template literal into a string pattern. */
 export function templateIR(source: string): IR {
 	let patternSource = "^";
 	let index = 0;

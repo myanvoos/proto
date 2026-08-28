@@ -1,9 +1,3 @@
-/**
- * TinyFish Web Search Provider
- *
- * Calls TinyFish's search API and maps results into the unified
- * SearchResponse shape used by the web search tool.
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -18,7 +12,6 @@ const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 const MAX_PAGE = 10;
 
-/** TinyFish is SERP-backed: common Google-style operators pass through. */
 const TINYFISH_QUERY_SYNTAX: QuerySyntax = { phrases: true, negation: true, filetype: true };
 
 const RECENCY_MINUTES: Record<NonNullable<SearchParams["recency"]>, number> = {
@@ -35,9 +28,9 @@ interface TinyFishSearchParams {
 	page?: number;
 	include_domains?: string[];
 	exclude_domains?: string[];
-	/** ISO 3166-1 alpha-2 region, e.g. `IT`. Geolocates results. */
+
 	location?: string;
-	/** ISO 639-1 language, e.g. `it`. */
+
 	language?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -57,7 +50,6 @@ interface TinyFishSearchResponse {
 	results?: TinyFishSearchResult[] | null;
 }
 
-/** Resolve TinyFish API key through the shared auth storage pipeline. */
 export function findApiKey(
 	authStorage: AuthStorage,
 	sessionId?: string,
@@ -133,7 +125,6 @@ function appendTinyFishSources(
 	}
 }
 
-/** Bare hosts from `site:` values; path constraints remain centrally post-filtered. */
 function siteHosts(sites: readonly string[]): string[] {
 	const hosts = new Set<string>();
 	for (const site of sites) {
@@ -143,12 +134,6 @@ function siteHosts(sites: readonly string[]): string[] {
 	return [...hosts];
 }
 
-/**
- * Derive TinyFish `location` (ISO 3166-1 alpha-2, uppercase) and `language`
- * (ISO 639-1, lowercase) from a parsed `lang:` directive. The region subtag is
- * optional: `lang:it` yields language only, `lang:it-it` yields both. Non-region
- * subtags (e.g. the script in `zh-hans`) never become a location.
- */
 function tinyFishLocale(lang: string | undefined): { location?: string; language?: string } {
 	if (!lang) return {};
 	const match = /^([a-z]{2})(?:[-_]([a-z]{2}))?(?:[-_]|$)/.exec(lang.toLowerCase());
@@ -156,7 +141,6 @@ function tinyFishLocale(lang: string | undefined): { location?: string; language
 	return { language: match[1], location: match[2]?.toUpperCase() };
 }
 
-/** Execute TinyFish web search. */
 export async function searchTinyFish(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const pageSize = Math.min(numResults, DEFAULT_NUM_RESULTS);
@@ -211,7 +195,6 @@ export async function searchTinyFish(params: SearchParams): Promise<SearchRespon
 	};
 }
 
-/** Search provider for TinyFish web search. */
 export class TinyFishProvider extends SearchProvider {
 	readonly id = "tinyfish";
 	readonly label = "TinyFish";

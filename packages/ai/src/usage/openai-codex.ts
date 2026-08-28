@@ -190,11 +190,6 @@ function parseUsagePayload(payload: unknown): ParsedUsage | null {
 	return parsed;
 }
 
-/**
- * Parse the `rate_limit_reset_credits` block from `/wham/usage`. OpenAI Codex
- * reports the count of saved rate-limit resets the account can redeem here; the
- * redeem action itself lives in `./openai-codex-reset`.
- */
 function parseResetCredits(payload: unknown): UsageResetCredits | undefined {
 	if (!isRecord(payload)) return undefined;
 	const block = payload.rate_limit_reset_credits;
@@ -293,10 +288,7 @@ function buildUsageLimit(args: {
 		},
 		window: usageWindow,
 		amount,
-		// The shared account-level rejection flag cannot identify which window
-		// is binding, but an explicit positive verdict applies to both windows.
-		// Preserve 100% as a warning when Codex still allows requests; live
-		// usage_limit_reached responses remain authoritative for blocking.
+
 		status: buildUsageStatus({
 			usedFraction: amount.usedFraction,
 			explicitlyAllowed: args.allowed === true && args.limitReached === false,
@@ -351,8 +343,7 @@ function buildAdditionalUsageLimit(args: {
 		},
 		window: usageWindow,
 		amount,
-		// A positive meter verdict is authoritative even when the advisory
-		// percentage rounds to 100; negative shared verdicts remain window-local.
+
 		status: buildUsageStatus({
 			usedFraction: amount.usedFraction,
 			explicitlyAllowed: args.allowed === true && args.limitReached === false,
@@ -360,12 +351,6 @@ function buildAdditionalUsageLimit(args: {
 	};
 }
 
-/**
- * Parse Codex `x-codex-{primary,secondary}-*` rate-limit response headers into
- * a usage report. The backend attaches these snapshots to every response, so
- * ingesting them lets credential selection block an exhausted account before
- * the next request burns a wire 429.
- */
 export function parseCodexRateLimitHeaders(headers: Record<string, string>, now = Date.now()): UsageReport | null {
 	const parseWindow = (key: "primary" | "secondary"): ParsedUsageWindow | undefined => {
 		const usedPercent = toNumber(headers[`x-codex-${key}-used-percent`]);
@@ -530,9 +515,7 @@ export const openaiCodexUsageProvider: UsageProvider = {
 							status: c.status,
 						}));
 				}
-				// Always sync the live count from the detail endpoint — it may report
-				// fewer or zero available credits after expiry/redeem, even when the
-				// /wham/usage payload still has a stale count.
+
 				if (list) {
 					resetCredits.availableCount = list.availableCount;
 				}
@@ -560,40 +543,29 @@ export const openaiCodexUsageProvider: UsageProvider = {
 	},
 };
 
-// A Codex request gates only on the chat windows it actually consumes. A
-// "-spark" model spends the separate Spark meter; every other Codex model spends
-// the 5h/weekly chat windows. Scoping the gating set this way keeps an exhausted
-// Spark meter from blocking a normal chat request (and vice versa), instead of
-// OR-ing every window and meter in the report into one provider-wide block.
 function scopeCodexLimitsForRequest(report: UsageReport, context?: CredentialRankingContext): UsageLimit[] {
 	const isSparkRequest = isCodexSparkRequest(context);
 	return report.limits.filter(limit => {
 		if (limit.id === "openai-codex:primary" || limit.id === "openai-codex:secondary") {
 			return !isSparkRequest;
 		}
-		// Additional metered features have ids of the form `openai-codex:<slug>:<key>`.
+
 		const slug = limit.id.split(":")[1];
 		return slug === "spark" ? isSparkRequest : false;
 	});
 }
 
-/** True when the requested model spends the separate Spark meter. */
 function isCodexSparkRequest(context?: CredentialRankingContext): boolean {
 	return (context?.modelId ?? "").toLowerCase().includes("-spark");
 }
 
 export const codexRankingStrategy: CredentialRankingStrategy = {
 	scopeLimits: scopeCodexLimitsForRequest,
-	// A `usage_limit_reached` from a Spark request means the Spark meter is
-	// spent, not the chat windows, so the two back off under separate scopes;
-	// one shared block would let an exhausted Spark meter stop ordinary chat
-	// requests, and the reverse.
+
 	blockScope(context) {
 		return isCodexSparkRequest(context) ? "spark" : "chat";
 	},
-	// "shared" is the scope earlier versions persisted under, and it meant "block
-	// everything", so it stays honoured by every request and healed by
-	// reconciliation. Without a context (reconciliation) this is the full set.
+
 	blockScopes(context) {
 		if (!context) return ["chat", "spark", "shared"];
 		return [isCodexSparkRequest(context) ? "spark" : "chat", "shared"];

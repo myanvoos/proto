@@ -13,12 +13,6 @@ interface NamedScopeArgs {
 	error?: string;
 }
 
-/**
- * Parse a slash-invocation string into `name`/`args`.
- *
- * The separator is the earliest whitespace or `:` character so that both
- * `/foo bar` and `/foo:bar` map to `{ name: "foo", args: "bar" }`.
- */
 export function parseSlashCommand(text: string): ParsedSlashCommand | null {
 	if (!text.startsWith("/")) return null;
 	const body = text.slice(1);
@@ -35,18 +29,15 @@ export function parseSlashCommand(text: string): ParsedSlashCommand | null {
 	};
 }
 
-/** Mark a command as fully consumed in the ACP shape. */
 export function commandConsumed(): { consumed: true } {
 	return { consumed: true };
 }
 
-/** Emit a usage/error message and consume the command. */
 export async function usage(text: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	await runtime.output(text);
 	return commandConsumed();
 }
 
-/** Split `<verb> <rest>` on the first whitespace; lowercases `verb`. */
 export function parseSubcommand(input: string): ParsedSubcommand {
 	const trimmed = input.trim();
 	if (!trimmed) return { verb: "", rest: "" };
@@ -59,11 +50,6 @@ export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Parse `<name?> [--scope project|user]`-style argument strings used by
- * remove/rm-style subcommands. `name` is optional so callers can surface
- * "name required" diagnostics with their own messaging.
- */
 export function parseNamedScopeArgs(rest: string, invalidScopeMessage: string): NamedScopeArgs {
 	const tokens = rest.split(/\s+/).filter(Boolean);
 	let name: string | undefined;

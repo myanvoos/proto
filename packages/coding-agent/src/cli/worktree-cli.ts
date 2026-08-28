@@ -1,21 +1,3 @@
-/**
- * CLI handler for `proto worktree` — list and clean up agent-managed worktrees.
- *
- * Layout under `~/.proto/wt/`:
- *
- *   - **PR-checkout worktrees** (`tools/gh.ts`): a regular git worktree dir
- *     containing a `.git` *file* that points back at
- *     `<parent-repo>/.git/worktrees/<name>/`.
- *   - **Task-isolation dirs** (`task/worktree.ts`): a wrapper dir with a
- *     compact `m` subdir mounted/cloned by `natives.isoStart`. Legacy `merged`
- *     subdirs are still recognized. `ensureIsolation` writes an ownership
- *     marker naming the live proto process; a
- *     sandbox whose owner is still running is reported `live` and never
- *     removed without `--all`, so `clear` reclaims only crashed leftovers.
- *
- * Legacy entries from before the encoding change keep working because git still
- * tracks them by branch name. This command exists to GC them on demand.
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getWorktreesDir, isEnoent } from "@oh-my-pi/pi-utils";
@@ -28,15 +10,14 @@ type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
 const WORKER_ISOLATION_MOUNT_DIRS = ["m", "merged"] as const;
 
 interface WorktreeEntry {
-	/** Absolute path to the worktree dir (or stray container) under `~/.proto/wt/`. */
 	path: string;
-	/** Classification of what we found on disk. */
+
 	kind: WorktreeKind;
-	/** Parent repo root, when this is a registered git worktree. */
+
 	parentRepo?: string;
-	/** Branch name extracted from the parent's tracking file, when available. */
+
 	branch?: string;
-	/** When set, the entry is unhealthy and `proto worktree clear` will remove it. */
+
 	orphanReason?: string;
 }
 
@@ -45,9 +26,8 @@ interface ListWorktreesOptions {
 }
 
 interface ClearWorktreesOptions {
-	/** Remove every entry, including live PR-checkout worktrees. */
 	all: boolean;
-	/** Print what would be removed without touching the filesystem. */
+
 	dryRun: boolean;
 	json: boolean;
 }
@@ -105,9 +85,6 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 	for (const target of targets) {
 		try {
 			if (target.kind === "pr-checkout" && target.parentRepo && !target.orphanReason) {
-				// Live worktree: ask git to remove it cleanly. If git refuses (locked,
-				// dirty, etc.), fall back to fs.rm and rely on `worktree prune` to
-				// clean the bookkeeping on the parent side.
 				const removed = await git.worktree.tryRemove(target.parentRepo, target.path, { force: true });
 				if (!removed) {
 					await fs.rm(target.path, { recursive: true, force: true });
@@ -123,13 +100,10 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 		}
 	}
 
-	// Best-effort: drop stale entries from each affected parent's `.git/worktrees/`.
 	for (const parent of parentsToPrune) {
 		try {
 			await git.worktree.prune(parent);
-		} catch {
-			/* parent repo may already be gone or pruned — ignore */
-		}
+		} catch {}
 	}
 
 	const succeeded = results.filter(r => r.ok).length;
@@ -153,10 +127,6 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 	if (failed > 0) process.exitCode = 1;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Scanner
-// ───────────────────────────────────────────────────────────────────────────
-
 async function scanWorktrees(): Promise<WorktreeEntry[]> {
 	const root = getWorktreesDir();
 	let topLevel: string[];
@@ -179,7 +149,6 @@ async function scanWorktrees(): Promise<WorktreeEntry[]> {
 			continue;
 		}
 
-		// Legacy nesting: ~/.proto/wt/<encoded-project>/<branch-or-id>
 		let children: string[];
 		try {
 			children = await fs.readdir(dir);
@@ -214,11 +183,7 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 	if (gitStat?.isFile()) {
 		return classifyPrCheckout(dir, gitEntry);
 	}
-	// A task-isolation sandbox is identified by its ownership marker — written
-	// before the backend materialises the mount — or by the `m`/`merged` mount
-	// dir itself (legacy dirs and crashed pre-marker runs). Recognizing the
-	// marker alone keeps an in-progress sandbox from being mistaken for a stray
-	// during the window between marker creation and mount materialisation.
+
 	let isIsolation = await Bun.file(path.join(dir, ISOLATION_OWNER_FILE)).exists();
 	if (!isIsolation) {
 		for (const mountDir of WORKER_ISOLATION_MOUNT_DIRS) {
@@ -234,8 +199,7 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 	return {
 		path: dir,
 		kind: "task-isolation",
-		// Only after confirming no live owner is the "no live task" claim true.
-		// A running subagent's sandbox stays live so `clear` won't delete it.
+
 		orphanReason: live ? undefined : "task-isolation leftover (no live task owns it)",
 	};
 }
@@ -256,7 +220,7 @@ async function classifyPrCheckout(dir: string, gitEntry: string): Promise<Worktr
 	if (!parentGitDir) {
 		return { path: dir, kind: "pr-checkout", orphanReason: "malformed .git file (no gitdir line)" };
 	}
-	// parentGitDir is `<parent-repo>/.git/worktrees/<name>`; back out the repo root.
+
 	const parentRepo = path.dirname(path.dirname(path.dirname(parentGitDir)));
 	const branch = await readWorktreeBranch(path.join(parentGitDir, "HEAD"));
 

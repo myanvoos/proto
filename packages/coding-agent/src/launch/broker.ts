@@ -46,11 +46,7 @@ const LOG_READ_BYTES = 2 * 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
-/**
- * Cap on terminal (exited/failed) daemons surfaced by `list`. Active daemons
- * are always shown in full; older history is truncated so the response stays
- * bounded over a long-lived project (issue #6517).
- */
+
 const MAX_TERMINAL_DAEMONS_LISTED = 10;
 const TOKEN_FILE = "broker.token";
 const PID_FILE = "broker.pid";
@@ -123,14 +119,6 @@ function publishesCompletionOwners(request: DaemonWireRequest): boolean {
 	return request.completionEvents === true && (request.completionAcks?.length ?? 0) === 0;
 }
 
-/**
- * Order daemons for the `list` response: non-terminal (active) daemons first,
- * oldest to newest, so the process the user is acting on is immediately visible
- * instead of buried behind exited history; then the most recently exited/failed
- * ones, capped at {@link MAX_TERMINAL_DAEMONS_LISTED} to keep the response from
- * growing without bound. Truncated terminal records stay addressable by name
- * via `describe`/`logs`/`restart`.
- */
 function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
 	const active: DaemonSnapshot[] = [];
 	const terminal: DaemonSnapshot[] = [];
@@ -142,13 +130,6 @@ function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
 	return [...active, ...terminal.slice(0, MAX_TERMINAL_DAEMONS_LISTED)];
 }
 
-/**
- * Reap a recovered non-detached daemon snapshot in place. Already-terminal
- * records are left untouched so `list` keeps their real {@link DaemonSnapshot.exitedAt}
- * for recency ranking; records that were still alive when the previous broker
- * exited are marked `exited` at `now`, since their process died with that broker
- * (issue #6517). Returns whether the record was reaped.
- */
 function reapRecoveredSnapshot(snapshot: DaemonSnapshot, now: number): boolean {
 	if (terminalState(snapshot.state)) return false;
 	snapshot.pid = undefined;
@@ -158,7 +139,6 @@ function reapRecoveredSnapshot(snapshot: DaemonSnapshot, now: number): boolean {
 	return true;
 }
 
-/** Mirror per-condition readiness progress into the snapshot so clients can see which condition is unmet. */
 function syncReadyPending(record: ManagedDaemon): void {
 	if (record.snapshot.state !== "starting") {
 		record.snapshot.readyPending = undefined;
@@ -231,9 +211,7 @@ class DaemonLog {
 			await this.#writer.flush();
 			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep);
 		});
-		// Appends that arrive after this call queue behind the file snapshot, so its
-		// cursor can never include bytes that its terminal replay did not read. A read
-		// failure still rejects the caller but must not poison the append queue.
+
 		this.#queue = snapshot.then(
 			() => undefined,
 			() => undefined,
@@ -311,13 +289,9 @@ async function acquireBrokerLease(runtimeDir: string): Promise<BrokerLease | nul
 					try {
 						process.kill(raw.pid, 0);
 						return null;
-					} catch {
-						// Stale PID file; the next loop iteration claims it.
-					}
+					} catch {}
 				}
-			} catch {
-				// Malformed or partially-written PID files are stale.
-			}
+			} catch {}
 			await fs.rm(pidPath, { force: true });
 		}
 	}
@@ -359,14 +333,7 @@ class DaemonBroker {
 	readonly #idleGraceMs: number;
 	readonly #restartBackoffBaseMs: number;
 	readonly #records = new Map<string, ManagedDaemon>();
-	/**
-	 * Names reserved by an in-flight `start` before its record lands in
-	 * `#records`. Requests dispatch concurrently, and `#start` awaits (cwd stat,
-	 * log open) between the duplicate check and the record insert; without a
-	 * synchronous reservation two clients can both pass the check and spawn
-	 * duplicate processes — one exits on a held resource (e.g. a Chromium
-	 * profile lock) or keeps running untracked.
-	 */
+
 	readonly #startingNames = new Set<string>();
 	readonly #clients = new Set<net.Socket>();
 	readonly #ownerSockets = new Map<string, { socket: net.Socket; subscriptionId: string | undefined }>();
@@ -459,9 +426,7 @@ class DaemonBroker {
 				});
 			}
 		});
-		socket.on("error", () => {
-			// Socket closure performs client accounting.
-		});
+		socket.on("error", () => {});
 		socket.on("close", () => {
 			this.#sockets.delete(socket);
 			if (!authenticated) return;
@@ -667,11 +632,6 @@ class DaemonBroker {
 		await this.#launch(record);
 		let readyTimedOut = false;
 		if (spec.ready && !terminalState(record.snapshot.state)) {
-			// Wake on the sticky readyAt marker or any terminal state, not the live
-			// state: a fast process flips starting→ready→exited within one poll
-			// interval, so sampling `state === "ready"` never observes readiness even
-			// though #markReady durably recorded readyAt. A pre-ready exit must also
-			// wake the wait rather than block for the full timeout.
 			const ready = await this.#waitUntil(
 				record,
 				() => record.snapshot.readyAt !== undefined || terminalState(record.snapshot.state),
@@ -919,13 +879,9 @@ class DaemonBroker {
 	}
 
 	async #settle(record: ManagedDaemon, generation: number, exitCode?: number, error?: string): Promise<void> {
-		// `restarting` is a settled state (child exited, relaunch timer armed). Any op that
-		// runs #refreshDetached on such a record must not re-settle it: re-entry double-counts
-		// restartCount and overwrites record.restartTimer, orphaning the armed timer so it fires
-		// after stop() and resurrects the daemon (issue #6852).
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		await this.#readDetachedOutput(record, generation);
-		// The output read yields, so a concurrent refresh may settle this generation first.
+
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.process = undefined;
 		record.input = undefined;
@@ -943,9 +899,7 @@ class DaemonBroker {
 			const uptime = Date.now() - record.snapshot.startedAt;
 			record.consecutiveFailures = uptime >= 30_000 ? 0 : record.consecutiveFailures + 1;
 			record.snapshot.restartCount++;
-			// Readiness belongs to the exited generation; clear it before the backoff
-			// so start / for:"ready" waits don't treat a dead service as ready during
-			// the restart window (readyAt is re-set by #launch once the child is up).
+
 			record.snapshot.readyAt = undefined;
 			record.snapshot.readyMatch = undefined;
 			record.snapshot.state = "restarting";
@@ -987,12 +941,7 @@ class DaemonBroker {
 		) {
 			this.#notifyCompletion(completion);
 		}
-		// Terminal settlement can free the last live persistent daemon. The idle
-		// timer that fired while that daemon was alive returned without rearming
-		// (see #scheduleIdleShutdown), so rearm here or the broker, its endpoint,
-		// timers, and record maps stay alive forever after the daemon exits. The
-		// timer re-checks clients, remaining live persistent records, and detached
-		// project presence before it shuts anything down.
+
 		this.#scheduleIdleShutdown();
 	}
 
@@ -1052,8 +1001,7 @@ class DaemonBroker {
 				throw new Error(`Invalid wait regex: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
-		// Readiness was actually observed: the sticky readyAt survives a fast
-		// ready→exit, a live "ready" state, or a "running" daemon with no ready spec.
+
 		const readyObserved = (): boolean =>
 			record.snapshot.readyAt !== undefined ||
 			record.snapshot.state === "ready" ||
@@ -1066,14 +1014,11 @@ class DaemonBroker {
 				return true;
 			}
 			if (operation.for === "exit") return terminalState(record.snapshot.state);
-			// Wake on observed readiness or any terminal state so the wait never
-			// blocks for the full timeout; success is judged by readyObserved below.
+
 			return readyObserved() || terminalState(record.snapshot.state);
 		};
 		const woke = condition() || (await this.#waitUntil(record, condition, operation.timeoutMs));
-		// A for:"ready" wait that woke on a terminal exit without ever observing
-		// readiness is still "not ready" — surface it as timed out so callers and the
-		// renderer don't chain work against a dead process.
+
 		const timedOut = operation.for === "ready" && !pattern ? !readyObserved() : !woke;
 		return { op: "wait", daemon: record.snapshot, matched, timedOut };
 	}
@@ -1226,9 +1171,6 @@ class DaemonBroker {
 				const detached = spec.detached && recoverableExit && processRef?.status() === "running";
 				const recoveredDead = recoverableExit && !detached;
 				if (!detached) {
-					// Reap only records that were still alive when the previous broker
-					// exited; already-terminal records keep their real exit time so
-					// `list` ranks exited history by true recency (issue #6517).
 					if (!terminalState(snapshot.state) && processRef) {
 						await processRef.terminate({ group: true, gracefulMs: 500, timeoutMs: 2_000 });
 					}
@@ -1340,11 +1282,9 @@ class DaemonBroker {
 }
 
 export interface DaemonBrokerStartOptions {
-	/** Base of the exponential child-restart backoff. */
 	restartBackoffBaseMs?: number;
 }
 
-/** Start the detached project or global daemon broker selected by the CLI worker host. */
 export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStartOptions = {}): Promise<void> {
 	const projectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const runtimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
@@ -1364,15 +1304,13 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 	const lease = await acquireBrokerLease(runtimeDir);
 	if (!lease) return;
 	setProcessName("proto daemon broker");
-	// Record the scope's project dir so `proto ps` can map this hash-keyed runtime
-	// dir back to its project offline.
+
 	void writeDaemonScopeMeta(runtimeDir, projectDir).catch(error => {
 		logger.warn("Failed to record daemon scope metadata", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 	});
-	// Reclaim sibling daemon scopes left behind by dead brokers (issue #8674).
-	// Detached and non-throwing so it never delays clients connecting to us.
+
 	void pruneDeadDaemonRuntimeDirs(runtimeDir).catch(error => {
 		logger.warn("Daemon runtime prune failed", {
 			error: error instanceof Error ? error.message : String(error),

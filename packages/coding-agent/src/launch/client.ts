@@ -30,32 +30,27 @@ interface PendingRequest {
 	removeAbort?: () => void;
 }
 
-/** Broker location and lifecycle overrides used by smoke tests and isolated consumers. */
 interface DaemonBrokerClientOptions {
-	/** Runtime directory override; defaults to the project-scoped config path. */
 	runtimeDir?: string;
-	/** Last-client shutdown grace override in milliseconds. */
+
 	idleGraceMs?: number;
 }
 
 interface DaemonCompletionUnregisterOptions {
-	/** Detach this process without deleting broker-persisted pending notifications. */
 	preservePending?: boolean;
 }
 
-/** Persistent per-process connection to one project or global daemon broker. */
 export interface DaemonBrokerClient {
 	onCompletion(
 		owner: string,
 		sink: (notification: DaemonCompletionNotification) => Promise<void> | void,
 	): (options?: DaemonCompletionUnregisterOptions) => void;
-	/** Canonical project directory or synthetic directory identifying a global scope. */
+
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
 }
 
-/** A request reached the broker and the broker rejected the operation. */
 export class DaemonBrokerRejectedError extends Error {}
 
 async function readOrCreateToken(runtimeDir: string): Promise<string> {
@@ -280,10 +275,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		try {
 			this.#bindSocket(await openSocket(this.#endpoint, 250));
 			return;
-		} catch {
-			// No live broker. Multiple clients may race to spawn; the broker's PID
-			// lease selects one winner before any candidate touches the socket.
-		}
+		} catch {}
 		this.#spawnBroker();
 		const deadline = Date.now() + CONNECT_TIMEOUT_MS;
 		let lastError: Error | undefined;
@@ -322,9 +314,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#buffer = "";
 		socket.setEncoding("utf8");
 		socket.on("data", chunk => this.#onData(chunk));
-		socket.on("error", () => {
-			// The close handler rejects pending requests with one stable error.
-		});
+		socket.on("error", () => {});
 		socket.on("close", () => {
 			if (this.#socket === socket) this.#socket = undefined;
 			this.#rejectPending(new Error("Daemon broker connection closed"));
@@ -458,7 +448,6 @@ function sharedDaemonClient(key: string, create: () => Promise<DaemonBrokerClien
 	return pending;
 }
 
-/** Create an independent socket connection to one daemon broker scope. */
 export async function createDaemonBrokerClient(
 	projectDir: string,
 	options: DaemonBrokerClientOptions = {},
@@ -469,17 +458,14 @@ export async function createDaemonBrokerClient(
 	return new SocketDaemonClient(canonical, runtimeDir, token, options);
 }
 
-/** Get the process-shared daemon broker client for one canonical project directory. */
 export async function daemonClientForProject(projectDir: string): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
 	return sharedDaemonClient(`project:${canonical}`, () => createDaemonBrokerClient(canonical));
 }
 
-/** Get the process-shared client that leases one profile-independent, machine-global daemon broker. */
 export async function daemonClientForGlobal(service: string): Promise<DaemonBrokerClient> {
 	const runtimeDir = getGlobalDaemonRuntimeDir(service);
-	// Canonicalize only after creation so the first caller and later callers
-	// derive the same Windows pipe key even when an ancestor is a symlink.
+
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const canonical = await fs.realpath(runtimeDir);
 	return sharedDaemonClient(`global:${canonical}`, () =>
@@ -489,7 +475,6 @@ export async function daemonClientForGlobal(service: string): Promise<DaemonBrok
 	);
 }
 
-/** Close every project and machine-global broker connection held by this proto process. */
 export async function closeDaemonClients(): Promise<void> {
 	const pending = [...sharedClients.values()];
 	sharedClients.clear();

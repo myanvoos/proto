@@ -9,10 +9,8 @@ const MAX_RPC_MESSAGE_CURSOR_CHARS = 2048;
 export const RPC_MESSAGES_PAGE_BUSY_ERROR = "Cannot page messages while the session is changing";
 export const RPC_MESSAGES_PAGE_STALE_ERROR = "RPC message cursor is stale";
 
-/** Machine-readable reasons a `get_messages_page` request can fail; carried as `code` on the error response. */
 type RpcMessagesPageErrorCode = "session_busy" | "stale_cursor";
 
-/** Paging failure that maps to a structured wire `code`, so clients can react without matching message text. */
 export class RpcMessagesPageError extends Error {
 	constructor(
 		message: string,
@@ -89,7 +87,6 @@ function sameSnapshot(cursor: RpcMessageCursorPayload, snapshot: RpcMessageSnaps
 	);
 }
 
-/** Page one stable in-memory message snapshot without crossing the v1 frame budget. */
 export function pageRpcMessages(
 	messages: readonly AgentMessage[],
 	snapshot: RpcMessageSnapshot,

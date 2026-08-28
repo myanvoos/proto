@@ -1,24 +1,17 @@
 import { LRUCache } from "../lru";
 import { ArchiveError } from "./error";
 
-/**
- * A byte window into an archive — file-backed (lazy, ranged reads) or
- * in-memory. Format readers index through this so ZIP/ASAR/RAR payloads are
- * only read when a member is actually extracted.
- */
 export interface ByteSource {
 	readonly size: number;
 	read(start: number, end: number): Promise<Uint8Array>;
 }
 
-/** Reject a nonsensical `[start, end)` range before any read. */
 export function assertValidRange(start: number, end: number): void {
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
 		throw new ArchiveError("Invalid archive range");
 	}
 }
 
-/** Read an exact in-memory range, throwing (not clamping) when it runs past the buffer. */
 export function readMemoryRange(buffer: Uint8Array, start: number, end: number): Uint8Array {
 	assertValidRange(start, end);
 	if (end > buffer.byteLength) {
@@ -27,7 +20,6 @@ export function readMemoryRange(buffer: Uint8Array, start: number, end: number):
 	return buffer.subarray(start, end);
 }
 
-/** Wrap borrowed bytes as a {@link ByteSource}. */
 export function memoryByteSource(buffer: Uint8Array): ByteSource {
 	return {
 		size: buffer.byteLength,
@@ -37,7 +29,6 @@ export function memoryByteSource(buffer: Uint8Array): ByteSource {
 	};
 }
 
-/** Lazily read ranges of a file on disk as a {@link ByteSource}. */
 export function fileByteSource(filePath: string): ByteSource {
 	const file = Bun.file(filePath);
 	const size = file.size;
@@ -57,39 +48,25 @@ export function fileByteSource(filePath: string): ByteSource {
 	};
 }
 
-/** Materialize an entire {@link ByteSource}; use only under a limits check. */
 export async function readAllBytes(source: ByteSource): Promise<Uint8Array> {
 	return source.read(0, source.size);
 }
 
-/** Options for {@link httpByteSource}. */
 export interface HttpByteSourceOptions {
-	/** Extra request headers (e.g. authorization). */
 	headers?: Record<string, string>;
-	/** Fetch implementation seam for tests; defaults to global `fetch`. */
+
 	fetch?: typeof fetch;
-	/**
-	 * When the server ignores `Range` (responds 200), the body is buffered in
-	 * memory instead, capped to this many bytes. Default 256 MiB.
-	 */
+
 	maxFallbackBytes?: number;
 }
 
 const HTTP_FALLBACK_CAP = 256 * 1024 * 1024;
 
-/**
- * A {@link ByteSource} over HTTP(S) range requests, so remote archives can be
- * indexed and read member-by-member without downloading the whole file.
- * Probes with `Range: bytes=0-0`; servers without range support fall back to
- * one bounded full download. Wrap with {@link cachingByteSource} to coalesce
- * the many small header reads format parsers issue.
- */
 export async function httpByteSource(url: string | URL, options: HttpByteSourceOptions = {}): Promise<ByteSource> {
 	const doFetch = options.fetch ?? fetch;
 	const headers = { ...options.headers, range: "bytes=0-0" };
 	const probe = await doFetch(url, { headers });
 	if (probe.status === 200) {
-		// No range support: buffer the whole body once, bounded.
 		const cap = options.maxFallbackBytes ?? HTTP_FALLBACK_CAP;
 		const declared = Number(probe.headers.get("content-length") ?? 0);
 		if (declared > cap) {
@@ -108,7 +85,7 @@ export async function httpByteSource(url: string | URL, options: HttpByteSourceO
 		throw new ArchiveError(`Remote archive request failed (HTTP ${probe.status})`);
 	}
 	await probe.body?.cancel();
-	// `Content-Range: bytes 0-0/12345` carries the total size.
+
 	const contentRange = probe.headers.get("content-range");
 	const total = contentRange ? Number(/\/(\d+)$/.exec(contentRange)?.[1]) : Number.NaN;
 	if (!Number.isSafeInteger(total) || total < 0) {
@@ -135,21 +112,12 @@ export async function httpByteSource(url: string | URL, options: HttpByteSourceO
 	};
 }
 
-/** Options for {@link cachingByteSource}. */
 export interface CachingByteSourceOptions {
-	/** Cache block size in bytes. Default 256 KiB. */
 	blockSize?: number;
-	/** Max cached blocks. Default 64 (16 MiB at the default block size). */
+
 	maxBlocks?: number;
 }
 
-/**
- * Wrap a high-latency {@link ByteSource} (HTTP, network filesystems) with an
- * aligned-block LRU cache. Small header reads coalesce into shared block
- * fetches (concurrent readers of one block share a single in-flight request);
- * reads spanning more than two blocks bypass the cache to avoid copying large
- * member payloads through it.
- */
 export function cachingByteSource(source: ByteSource, options: CachingByteSourceOptions = {}): ByteSource {
 	const blockSize = options.blockSize ?? 256 * 1024;
 	const blocks = new LRUCache<number, Promise<Uint8Array>>({ max: options.maxBlocks ?? 64 });

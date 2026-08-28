@@ -1,32 +1,3 @@
-//! Declarative filter pipelines loaded from TOML.
-//!
-//! Companion to the Rust-native filters in [`filters`](super::filters). A
-//! pipeline is a small, data-driven transform compiled from a TOML definition
-//! that ships either as a built-in (concatenated at build time) or supplied
-//! through a user-provided settings file via [`MinimizerConfig`].
-//!
-//! ## Pipeline stages (applied in order)
-//!
-//! 1. `strip_ansi`           — remove ANSI CSI escape codes
-//! 2. `replace`              — ordered regex substitutions, line-by-line
-//! 3. `match_output`         — short-circuit to a one-line summary when the
-//!    full output blob matches, honoring an optional `unless` anti-pattern
-//! 4. `strip_lines_matching` / `keep_lines_matching` — a line survives iff it
-//!    matches the keep set (when present) and does not match the strip set
-//!    (when present)
-//! 5. `replace_after`        — ordered regex substitutions, line-by-line,
-//!    applied after line filtering and before truncation so substitutions that
-//!    shorten lines (e.g. path compaction) see the full, untruncated text
-//! 6. `truncate_lines_at`    — per-line Unicode-safe char cap
-//! 7. `head_lines` / `tail_lines` — keep first/last N lines with a marker
-//! 8. `max_lines`            — hard cap after head/tail
-//! 9. `preserve_if_empty`    — keep the original input when filtering removes
-//!    every line
-//! 10. `on_empty`            — replace an empty result with a sentinel
-//!
-//! Pipelines never panic for the caller: regex compilation errors are
-//! surfaced when the pipeline is loaded, and runtime application is total.
-
 use std::borrow::Cow;
 
 use regex::{Regex, RegexSet};
@@ -34,18 +5,14 @@ use serde::Deserialize;
 
 use crate::minimizer::primitives;
 
-/// Raw TOML shape for a single filter definition.
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineDef {
-	/// Human-readable one-liner. Not consumed at runtime.
 	#[serde(default)]
-	pub description:          Option<String>,
-	/// Regex that selects which commands this pipeline claims. Matched against
-	/// the first token of the command (post-wrapper stripping).
-	pub match_command:        String,
-	/// Optional regex matched against the detected subcommand. When absent,
-	/// any subcommand is accepted.
+	pub description: Option<String>,
+
+	pub match_command: String,
+
 	#[serde(default)]
 	pub match_subcommand:     Option<String>,
 	#[serde(default)]
@@ -58,28 +25,23 @@ pub struct PipelineDef {
 	pub strip_lines_matching: Vec<String>,
 	#[serde(default)]
 	pub keep_lines_matching:  Vec<String>,
-	/// Ordered regex substitutions applied after the strip/keep line filter
-	/// and before `truncate_lines_at`, so substitutions that shorten lines
-	/// (e.g. path compaction) see the full, untruncated text.
+
 	#[serde(default)]
-	pub replace_after:        Vec<ReplaceDef>,
-	pub truncate_lines_at:    Option<usize>,
-	pub head_lines:           Option<usize>,
-	pub tail_lines:           Option<usize>,
-	pub max_lines:            Option<usize>,
-	pub on_empty:             Option<String>,
-	/// Return the original input unchanged when all filtering stages remove it.
-	/// Useful for diagnostic filters that must not discard an unrecognized
-	/// successful output, such as a compiler query response.
+	pub replace_after:     Vec<ReplaceDef>,
+	pub truncate_lines_at: Option<usize>,
+	pub head_lines:        Option<usize>,
+	pub tail_lines:        Option<usize>,
+	pub max_lines:         Option<usize>,
+	pub on_empty:          Option<String>,
+
 	#[serde(default)]
-	pub preserve_if_empty:    bool,
-	/// Apply only when the command exit code is in this list. Empty = always.
+	pub preserve_if_empty: bool,
+
 	#[serde(default)]
-	pub only_on_exit:         Vec<i32>,
-	/// Apply only when the command exit code is NOT in this list. Empty =
-	/// always.
+	pub only_on_exit: Vec<i32>,
+
 	#[serde(default)]
-	pub except_on_exit:       Vec<i32>,
+	pub except_on_exit: Vec<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,8 +60,6 @@ pub struct MatchOutputDef {
 	pub unless:  Option<String>,
 }
 
-/// Inline filter test embedded next to pipeline definitions via
-/// `[[tests.NAME]]`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineTest {
@@ -110,7 +70,6 @@ pub struct PipelineTest {
 	pub exit:     Option<i32>,
 }
 
-/// On-disk schema for the builtin / user settings TOML.
 #[derive(Debug, Deserialize, Default)]
 pub struct PipelineFile {
 	pub schema_version: Option<u32>,
@@ -135,7 +94,6 @@ pub struct CompiledMatchOutput {
 	unless:  Option<Regex>,
 }
 
-/// A pipeline with every regex pre-compiled.
 #[derive(Debug)]
 pub struct CompiledPipeline {
 	pub name:              String,
@@ -158,8 +116,6 @@ pub struct CompiledPipeline {
 	pub except_on_exit:    Vec<i32>,
 }
 
-/// Compile an ordered regex-substitution list; `label` names the TOML key
-/// (`replace` or `replace_after`) in error messages.
 fn compile_replaces(rules: Vec<ReplaceDef>, label: &str) -> Result<Vec<CompiledReplace>, String> {
 	rules
 		.into_iter()
@@ -171,8 +127,6 @@ fn compile_replaces(rules: Vec<ReplaceDef>, label: &str) -> Result<Vec<CompiledR
 		.collect()
 }
 
-/// Compile a raw TOML definition. Returns a descriptive error on regex
-/// issues.
 pub fn compile(name: String, def: PipelineDef) -> Result<CompiledPipeline, String> {
 	let match_command =
 		Regex::new(&def.match_command).map_err(|e| format!("invalid match_command: {e}"))?;
@@ -240,7 +194,6 @@ pub fn compile(name: String, def: PipelineDef) -> Result<CompiledPipeline, Strin
 }
 
 impl CompiledPipeline {
-	/// Whether this pipeline claims the given `(program, subcommand)` pair.
 	#[must_use]
 	pub fn matches(&self, program: &str, subcommand: Option<&str>) -> bool {
 		if !self.match_command.is_match(program) {
@@ -255,7 +208,6 @@ impl CompiledPipeline {
 		true
 	}
 
-	/// Whether this pipeline is gated off for the supplied exit code.
 	#[must_use]
 	pub fn skipped_by_exit(&self, exit_code: i32) -> bool {
 		if !self.only_on_exit.is_empty() && !self.only_on_exit.contains(&exit_code) {
@@ -267,20 +219,16 @@ impl CompiledPipeline {
 		false
 	}
 
-	/// Apply the full 10-stage pipeline to `input`.
 	#[must_use]
 	pub fn apply<'a>(&self, input: &'a str) -> Cow<'a, str> {
-		// Stage 1: strip_ansi
 		let stage1: Cow<'_, str> = if self.strip_ansi {
 			Cow::Owned(primitives::strip_ansi(input))
 		} else {
 			Cow::Borrowed(input)
 		};
 
-		// Stage 2: replace (ordered, line-by-line)
 		let stage2 = apply_replaces(stage1, &self.replace);
 
-		// Stage 3: match_output short-circuit
 		if !self.match_output.is_empty() {
 			for rule in &self.match_output {
 				if !rule.pattern.is_match(&stage2) {
@@ -295,8 +243,6 @@ impl CompiledPipeline {
 			}
 		}
 
-		// Stage 4: strip/keep lines (keep AND NOT strip; absent set = no
-		// constraint)
 		let stage4: Cow<'_, str> = if self.strip_lines.is_some() || self.keep_lines.is_some() {
 			Cow::Owned(primitives::filter_lines_regex(
 				&stage2,
@@ -307,12 +253,8 @@ impl CompiledPipeline {
 			stage2
 		};
 
-		// Stage 5: replace_after (ordered, line-by-line) — post-filter so
-		// only surviving lines are substituted, pre-truncate so shortening
-		// substitutions (path compaction) see the full line.
 		let stage5 = apply_replaces(stage4, &self.replace_after);
 
-		// Stage 6: truncate each line
 		let stage6: Cow<'_, str> = if let Some(n) = self.truncate_lines_at {
 			let mut out = String::with_capacity(stage5.len());
 			for line in stage5.lines() {
@@ -324,7 +266,6 @@ impl CompiledPipeline {
 			stage5
 		};
 
-		// Stage 7: head + tail
 		let stage7: Cow<'_, str> = match (self.head_lines, self.tail_lines) {
 			(Some(h), Some(t)) => Cow::Owned(primitives::head_tail_lines(&stage6, h, t)),
 			(Some(h), None) => Cow::Owned(primitives::head_lines_only(&stage6, h)),
@@ -332,21 +273,16 @@ impl CompiledPipeline {
 			(None, None) => stage6,
 		};
 
-		// Stage 8: max_lines
 		let stage8: Cow<'_, str> = if let Some(m) = self.max_lines {
 			Cow::Owned(primitives::max_lines(&stage7, m))
 		} else {
 			stage7
 		};
 
-		// Stage 9: preserve the source when a keep-only filter removed every line.
-		// This prevents a successful query/diagnostic command's meaningful output
-		// from being replaced by the engine's generic "OK" sentinel.
 		if self.preserve_if_empty && stage8.trim().is_empty() {
 			return Cow::Borrowed(input);
 		}
 
-		// Stage 10: on_empty
 		if let Some(msg) = self.on_empty.as_deref()
 			&& stage8.trim().is_empty()
 		{
@@ -357,8 +293,6 @@ impl CompiledPipeline {
 	}
 }
 
-/// Apply an ordered regex-substitution list line-by-line. Returns `input`
-/// untouched (no allocation) when `rules` is empty.
 fn apply_replaces<'a>(input: Cow<'a, str>, rules: &[CompiledReplace]) -> Cow<'a, str> {
 	if rules.is_empty() {
 		return input;
@@ -380,13 +314,8 @@ fn apply_replaces<'a>(input: Cow<'a, str>, rules: &[CompiledReplace]) -> Cow<'a,
 	Cow::Owned(out)
 }
 
-/// Return type of [`parse_file`]: the compiled pipelines alongside their
-/// inline tests grouped by pipeline name.
 pub type ParsedPipelineFile = (Vec<CompiledPipeline>, Vec<(String, Vec<PipelineTest>)>);
 
-/// Compiled registry of all known pipelines, listed in priority order
-/// (builtin last — user definitions win). Also carries the inline tests so
-/// `verify()` can exercise them.
 #[derive(Debug, Default)]
 pub struct PipelineRegistry {
 	pub pipelines: Vec<CompiledPipeline>,
@@ -394,7 +323,6 @@ pub struct PipelineRegistry {
 }
 
 impl PipelineRegistry {
-	/// Find the first pipeline that claims this `(program, subcommand)` pair.
 	#[must_use]
 	pub fn find(&self, program: &str, subcommand: Option<&str>) -> Option<&CompiledPipeline> {
 		self
@@ -404,9 +332,6 @@ impl PipelineRegistry {
 	}
 }
 
-/// Parse and compile a full TOML file. Emits one `Err(String)` with all
-/// parse/compile errors joined; a well-formed file with N filters returns
-/// `Ok((Vec<CompiledPipeline>, tests))`.
 pub fn parse_file(contents: &str, source_label: &str) -> Result<ParsedPipelineFile, String> {
 	let file: PipelineFile =
 		toml::from_str(contents).map_err(|e| format!("[{source_label}] TOML parse error: {e}"))?;
@@ -435,7 +360,6 @@ pub fn parse_file(contents: &str, source_label: &str) -> Result<ParsedPipelineFi
 	Ok((compiled, tests))
 }
 
-/// Outcome for a single inline test.
 #[derive(Debug, Clone)]
 pub struct TestOutcome {
 	pub filter_name: String,
@@ -445,7 +369,6 @@ pub struct TestOutcome {
 	pub expected:    String,
 }
 
-/// Run every inline test in `registry` and return the outcomes.
 #[must_use]
 pub fn run_tests(registry: &PipelineRegistry) -> Vec<TestOutcome> {
 	let mut out = Vec::new();
@@ -466,8 +389,6 @@ pub fn run_tests(registry: &PipelineRegistry) -> Vec<TestOutcome> {
 			if let Some(exit) = test.exit
 				&& pipeline.skipped_by_exit(exit)
 			{
-				// Explicit exit gate — pipeline is disabled for this exit;
-				// expected output should be the raw input unchanged.
 				let passed = test.input == test.expected;
 				out.push(TestOutcome {
 					filter_name: filter_name.clone(),

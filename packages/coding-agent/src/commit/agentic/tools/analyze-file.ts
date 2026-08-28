@@ -37,15 +37,13 @@ function buildToolSession(
 	return {
 		cwd: options.cwd,
 		hasUI: false,
-		// Programmatic fan-out: results feed the commit agent's evidence, not a
-		// model choosing further spawns, so the specialization nudge is noise here.
+
 		getSessionFile: () => ctx.sessionManager.getSessionFile() ?? null,
 		getSessionSpawns: () => options.spawns,
 		settings: options.settings,
 		authStorage: options.authStorage,
 		modelRegistry: options.modelRegistry,
-		// The orchestration tools no longer takes a per-call schema; the inherited session
-		// schema drives structured output for every spawn from this session.
+
 		outputSchema: analyzeFileOutputSchema,
 	};
 }

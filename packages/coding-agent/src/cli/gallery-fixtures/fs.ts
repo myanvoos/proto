@@ -1,5 +1,3 @@
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: sample source-code strings (read fixtures) intentionally contain literal ${...}.
-// Gallery fixtures for the filesystem tools (read, write, glob).
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import type { GalleryFixture, GalleryFixtureState, GalleryResult } from "./types";
@@ -123,7 +121,7 @@ function renderReadGroupFixtureState(state: GalleryFixtureState, width: number, 
 export const fsFixtures: Record<string, GalleryFixture> = {
 	read: {
 		label: "Read",
-		// Streaming: path still being typed, selector not yet appended.
+
 		streamingArgs: { path: "packages/coding-agent/src/tools/glob" },
 		args: { path: "packages/coding-agent/src/tools/glob.ts:437-448" },
 		result: {
@@ -175,7 +173,7 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 
 	write: {
 		label: "Write",
-		// Streaming: path known, content still arriving (only the imports so far).
+
 		streamingArgs: {
 			path: "packages/coding-agent/test/parse-sel.test.ts",
 			content: 'import { describe, expect, it } from "bun:test";\nimport { parseSel } from "../src/tools/read";\n',
@@ -206,7 +204,7 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 
 	glob: {
 		label: "Glob",
-		// Streaming: glob half-typed, no limit yet.
+
 		streamingArgs: { path: "packages/coding-agent/src/tools/*-render" },
 		args: { path: "packages/coding-agent/src/**/*.test.ts", limit: 50 },
 		result: {

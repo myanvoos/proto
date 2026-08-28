@@ -135,7 +135,6 @@ interface Filter {
 	size: number;
 }
 
-/** Stateful RAR5 LZSS decoder; reuse one instance for members in a solid chain. */
 export class Rar5Decoder {
 	#history = new Uint8Array(0);
 	#reps = [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff];

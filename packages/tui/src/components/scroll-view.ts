@@ -14,24 +14,16 @@ export interface ScrollViewTheme {
 
 export interface ScrollViewOptions {
 	height: number;
-	/** Defaults to "auto". "auto" reserves a scrollbar column only when content overflows. */
+
 	scrollbar?: ScrollbarMode | boolean;
-	/** Logical row count for pre-windowed line slices. Defaults to lines.length. */
+
 	totalRows?: number;
 	theme?: ScrollViewTheme;
 	trackChar?: string;
 	thumbChar?: string;
-	/**
-	 * Indicator appended when a row overflows `contentWidth`. Defaults to
-	 * {@link Ellipsis.Unicode}. Pass {@link Ellipsis.Omit} when callers wrap
-	 * lines to width themselves and only trailing padding can overflow (e.g.
-	 * the plan-review overlay), so no stray `…` lands on every padded row.
-	 */
+
 	ellipsis?: Ellipsis;
-	/**
-	 * Rows moved per keystroke when {@link ScrollView.handleScrollKey} sees a
-	 * Shift+Arrow (the "scroll faster" affordance). Defaults to 5.
-	 */
+
 	fastScrollLines?: number;
 }
 
@@ -46,12 +38,6 @@ function firstCellGlyph(value: string, fallback: string): string {
 	return visibleWidth(glyph) === 1 ? glyph : fallback;
 }
 
-/**
- * Fixed-height viewport over pre-rendered lines, with optional right-edge scrollbar.
- *
- * ScrollView owns only the row offset. Callers remain responsible for producing
- * already-wrapped logical lines appropriate for the current render width.
- */
 export class ScrollView implements Component {
 	#lines: string[];
 	#height: number;
@@ -130,14 +116,6 @@ export class ScrollView implements Component {
 		this.#scrollOffset = this.getMaxScrollOffset();
 	}
 
-	/**
-	 * Apply a standard navigation key to the viewport. Shift+Arrow scrolls by
-	 * {@link ScrollViewOptions.fastScrollLines} (the "scroll faster" affordance);
-	 * plain Arrow by one line; PageUp/PageDown by a page; Home/End to the ends.
-	 * Returns true when the key was consumed, so callers can fall through to
-	 * their own (e.g. vim-style) bindings. Generic on purpose: every ScrollView
-	 * consumer gets the same scroll keys, including Shift-to-go-faster.
-	 */
 	handleScrollKey(data: string): boolean {
 		if (matchesKey(data, "shift+up")) {
 			this.scroll(-this.#fastScrollLines);
@@ -174,9 +152,7 @@ export class ScrollView implements Component {
 		return false;
 	}
 
-	invalidate(): void {
-		// No cached layout to invalidate.
-	}
+	invalidate(): void {}
 
 	render(width: number): readonly string[] {
 		this.#clampScrollOffset();

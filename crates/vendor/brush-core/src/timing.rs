@@ -1,4 +1,4 @@
-//! Command timing
+
 
 use crate::error;
 
@@ -50,11 +50,11 @@ fn get_current_stopwatch_time() -> Result<StopwatchTime, error::Error> {
 	Ok(StopwatchTime { now, self_user, self_system, children_user, children_system })
 }
 
-/// Format the given duration in a non-POSIX-y way.
-///
-/// # Arguments
-///
-/// * `duration` - The duration to format.
+
+
+
+
+
 pub fn format_duration_non_posixly(duration: &std::time::Duration) -> String {
 	let minutes = duration.as_secs() / 60;
 	let seconds = duration.as_secs() % 60;
@@ -62,11 +62,11 @@ pub fn format_duration_non_posixly(duration: &std::time::Duration) -> String {
 	format!("{minutes}m{seconds}.{millis:03}s")
 }
 
-/// Format the given duration in a POSIX-y way.
-///
-/// # Arguments
-///
-/// * `duration` - The duration to format.
+
+
+
+
+
 pub fn format_duration_posixly(duration: &std::time::Duration) -> String {
 	let seconds = duration.as_secs();
 	let ten_millis = duration.subsec_millis() / 10;

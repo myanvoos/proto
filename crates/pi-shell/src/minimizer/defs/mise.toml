@@ -1,5 +1,5 @@
-# mise / rtx version manager output.
-# Drop hint lines and "already installed" noise, keep real install activity.
+
+
 
 [filters.mise]
 description = "Compact mise version manager output"

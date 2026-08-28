@@ -9,87 +9,87 @@ use clap::Parser;
 
 #[derive(Parser)]
 struct CommonCompleteCommandArgs {
-	/// Options governing the behavior of completions.
+
 	#[arg(short = 'o')]
 	options: Vec<CompleteOption>,
 
-	/// Actions to apply to generate completions.
+
 	#[arg(short = 'A')]
 	actions: Vec<CompleteAction>,
 
-	/// File glob pattern to be expanded to generate completions.
+
 	#[arg(short = 'G', allow_hyphen_values = true, value_name = "GLOB")]
 	glob_pattern: Option<String>,
 
-	/// List of words that will be considered as completions.
+
 	#[arg(short = 'W', allow_hyphen_values = true)]
 	word_list: Option<String>,
 
-	/// Name of a shell function to invoke to generate completions.
+
 	#[arg(short = 'F', allow_hyphen_values = true, value_name = "FUNC_NAME")]
 	function_name: Option<String>,
 
-	/// Command to execute to generate completions.
+
 	#[arg(short = 'C', allow_hyphen_values = true)]
 	command: Option<String>,
 
-	/// Pattern used as filter for completions.
+
 	#[arg(short = 'X', allow_hyphen_values = true, value_name = "PATTERN")]
 	filter_pattern: Option<String>,
 
-	/// Prefix pattern used as filter for completions.
+
 	#[arg(short = 'P', allow_hyphen_values = true)]
 	prefix: Option<String>,
 
-	/// Suffix pattern used as filter for completions.
+
 	#[arg(short = 'S', allow_hyphen_values = true)]
 	suffix: Option<String>,
 
-	/// Complete with valid aliases.
+
 	#[arg(short = 'a')]
 	action_alias: bool,
 
-	/// Complete with names of shell builtins.
+
 	#[arg(short = 'b')]
 	action_builtin: bool,
 
-	/// Complete with names of executable commands.
+
 	#[arg(short = 'c')]
 	action_command: bool,
 
-	/// Complete with directory names.
+
 	#[arg(short = 'd')]
 	action_directory: bool,
 
-	/// Complete with names of exported shell variables.
+
 	#[arg(short = 'e')]
 	action_exported: bool,
 
-	/// Complete with filenames.
+
 	#[arg(short = 'f')]
 	action_file: bool,
 
-	/// Complete with valid user groups.
+
 	#[arg(short = 'g')]
 	action_group: bool,
 
-	/// Complete with job specs.
+
 	#[arg(short = 'j')]
 	action_job: bool,
 
-	/// Complete with keywords.
+
 	#[arg(short = 'k')]
 	action_keyword: bool,
 
-	/// Complete with names of system services.
+
 	#[arg(short = 's')]
 	action_service: bool,
 
-	/// Complete with valid usernames.
+
 	#[arg(short = 'u')]
 	action_user: bool,
 
-	/// Complete with names of shell variables.
+
 	#[arg(short = 'v')]
 	action_variable: bool,
 }
@@ -98,8 +98,8 @@ impl CommonCompleteCommandArgs {
 	fn create_spec(&self, extglob_enabled: bool) -> completion::Spec {
 		let filter_pattern_excludes;
 		let filter_pattern = if let Some(filter_pattern) = self.filter_pattern.as_ref() {
-			// If the pattern starts with a '!' that's not the start of an extglob pattern,
-			// then we invert.
+
+
 			if let Some(remaining_pattern) = filter_pattern.strip_prefix('!') {
 				if !extglob_enabled || !remaining_pattern.starts_with('(') {
 					filter_pattern_excludes = false;
@@ -214,26 +214,26 @@ impl CommonCompleteCommandArgs {
 	}
 }
 
-/// Configure programmable command completion.
+
 #[derive(Parser)]
 pub(crate) struct CompleteCommand {
-	/// Display registered completion settings.
+
 	#[arg(short = 'p')]
 	print: bool,
 
-	/// Remove the completion settings associated with the given command.
+
 	#[arg(short = 'r')]
 	remove: bool,
 
-	/// Apply these settings to the default completion scenario.
+
 	#[arg(short = 'D')]
 	use_as_default: bool,
 
-	/// Apply these settings to completion of empty lines.
+
 	#[arg(short = 'E')]
 	use_for_empty_line: bool,
 
-	/// Apply these settings to completion of the initial word of the input line.
+
 	#[arg(short = 'I')]
 	use_for_initial_word: bool,
 
@@ -252,7 +252,7 @@ impl builtins::Command for CompleteCommand {
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
 		let mut result = ExecutionResult::success();
 
-		// If -D, -E, or -I are specified, then any names provided are ignored.
+
 		if self.use_as_default
 			|| self.use_for_empty_line
 			|| self.use_for_initial_word
@@ -276,10 +276,10 @@ impl CompleteCommand {
 		&self,
 		context: &mut brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 	) -> Result<ExecutionResult, brush_core::Error> {
-		// Read options before taking mutable borrow on completion_config
+
 		let extended_globbing = context.shell.options().extended_globbing;
 
-		// These are processed in an intentional order.
+
 		let special_option_name;
 		let target_spec = if self.use_as_default {
 			special_option_name = "-D";
@@ -295,7 +295,7 @@ impl CompleteCommand {
 			None
 		};
 
-		// Treat 'complete' with no options the same as 'complete -p'.
+
 		if self.print
 			|| (!self.remove && target_spec.is_none() && !self.common_args.has_completion_spec())
 		{
@@ -477,8 +477,8 @@ impl CompleteCommand {
 				if context.shell.options().interactive {
 					writeln!(context.stderr(), "complete: {name}: not found")?;
 				} else {
-					// For some reason, this is not supposed to be treated as a failure
-					// in non-interactive execution.
+
+
 					result = true;
 				}
 			}
@@ -496,13 +496,13 @@ impl CompleteCommand {
 	}
 }
 
-/// Generate command completions.
+
 #[derive(Parser)]
 pub(crate) struct CompGenCommand {
 	#[clap(flatten)]
 	common_args: CommonCompleteCommandArgs,
 
-	// N.B. The word can only start with a hyphen if it's after a --.
+
 	word: Option<String>,
 }
 
@@ -520,8 +520,8 @@ impl builtins::Command for CompGenCommand {
 
 		let token_to_complete = self.word.as_deref().unwrap_or_default();
 
-		// We unquote the token-to-be-completed before passing it to the completion
-		// system.
+
+
 		let unquoted_token = brush_parser::unquote_str(token_to_complete);
 
 		let completion_context = completion::Context {
@@ -541,8 +541,8 @@ impl builtins::Command for CompGenCommand {
 
 		match result {
 			completion::Answer::Candidates(candidates, _options) => {
-				// We are expected to return 1 if there are no candidates, even if no errors
-				// occurred along the way.
+
+
 				if candidates.is_empty() {
 					return Ok(ExecutionResult::general_error());
 				}
@@ -560,28 +560,28 @@ impl builtins::Command for CompGenCommand {
 	}
 }
 
-/// Set programmable command completion options.
+
 #[derive(Parser)]
 pub(crate) struct CompOptCommand {
-	/// Update the default completion settings.
+
 	#[arg(short = 'D')]
 	update_default: bool,
 
-	/// Update the completion settings for empty lines.
+
 	#[arg(short = 'E')]
 	update_empty: bool,
 
-	/// Update the completion settings for the initial word of the input line.
+
 	#[arg(short = 'I')]
 	update_initial_word: bool,
 
-	/// Enable the specified option for selected completion scenarios.
+
 	#[arg(short = 'o', value_name = "OPT")]
 	enabled_options:  Vec<CompleteOption>,
 	#[arg(long = concat!("+o"), hide = true)]
 	disabled_options: Vec<CompleteOption>,
 
-	/// If specified, scopes updates to completions of the named commands.
+
 	names: Vec<String>,
 }
 
@@ -635,7 +635,7 @@ impl builtins::Command for CompOptCommand {
 				context.shell.completion_config_mut().initial_word = Some(spec);
 			}
 		} else {
-			// If we got here, then we need to apply to any completion actively in-flight.
+
 			if let Some(in_flight_options) = context
 				.shell
 				.completion_config_mut()

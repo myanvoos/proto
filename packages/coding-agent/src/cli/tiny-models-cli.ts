@@ -52,8 +52,7 @@ function downloadErrorSummary(error: string | undefined): string | undefined {
 
 export function resolveModels(model: string | undefined): TinyLocalModelKey[] {
 	if (!model) return [DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY];
-	// `all` is a prefetch convenience: skip models that fail before load (unsupported
-	// runtime), so the bulk download stays green when every *usable* model succeeds.
+
 	if (model === "all")
 		return TINY_LOCAL_MODELS.filter(spec => !("unsupportedReason" in spec) || !spec.unsupportedReason).map(
 			spec => spec.key,

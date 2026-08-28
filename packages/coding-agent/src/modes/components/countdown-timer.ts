@@ -1,6 +1,3 @@
-/**
- * Reusable countdown timer for dialog components.
- */
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 export class CountdownTimer {
@@ -56,7 +53,6 @@ export class CountdownTimer {
 		}, 1000);
 	}
 
-	/** Reset the countdown to its initial value */
 	reset(): void {
 		this.dispose();
 		this.#start();

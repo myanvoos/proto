@@ -3,42 +3,42 @@ use std::io::{Read, Write};
 use brush_core::{ErrorKind, ExecutionExitCode, ExecutionResult, builtins, env, escape, variables};
 use clap::Parser;
 
-/// Read lines from standard input into an indexed array variable.
+
 #[derive(Parser)]
 pub(crate) struct MapFileCommand {
-	/// Delimiter to use (defaults to newline).
+
 	#[arg(short = 'd')]
 	delimiter: Option<String>,
 
-	/// Maximum number of entries to read (0 means no limit).
+
 	#[arg(short = 'n', default_value_t = 0)]
 	max_count: i64,
 
-	/// Index into array at which to start assignment.
+
 	#[arg(short = 'O', allow_hyphen_values = true)]
 	origin: Option<i64>,
 
-	/// Number of initial entries to skip.
+
 	#[arg(short = 's', default_value_t = 0, value_parser = clap::value_parser!(i64).range(0..))]
 	skip_count: i64,
 
-	/// Whether or not to remove the delimiter from each read line.
+
 	#[arg(short = 't')]
 	remove_delimiter: bool,
 
-	/// File descriptor to read from (defaults to stdin).
+
 	#[arg(short = 'u', default_value_t = 0)]
 	fd: brush_core::ShellFd,
 
-	/// Name of function to call for each group of lines.
+
 	#[arg(short = 'C')]
 	callback: Option<String>,
 
-	/// Number of lines to pass the callback for each group.
+
 	#[arg(short = 'c', default_value_t = 5000, value_parser = clap::value_parser!(i64).range(1..))]
 	callback_group_size: i64,
 
-	/// Name of array to read into.
+
 	#[arg(default_value = "MAPFILE")]
 	array_var_name: String,
 }
@@ -78,9 +78,9 @@ impl builtins::Command for MapFileCommand {
 			.try_fd(self.fd)
 			.ok_or_else(|| ErrorKind::BadFileDescriptor(self.fd))?;
 
-		// Read and assign entries. When no origin is specified, bash clears the
-		// target array before reading; callbacks then see earlier assigned entries
-		// but not the entry that is currently being delivered to the callback.
+
+
+
 		if self.origin.is_none() {
 			context.shell.env_mut().update_or_add(
 				&self.array_var_name,
@@ -125,9 +125,9 @@ impl MapFileCommand {
 
 			loop {
 				match input_file.read(&mut buf) {
-					Ok(0) => break,                                         // End of input
-					Ok(1) if buf[0] == b'\x03' => break,                    // Ctrl+C
-					Ok(1) if buf[0] == b'\x04' && line.is_empty() => break, // Ctrl+D
+					Ok(0) => break,
+					Ok(1) if buf[0] == b'\x03' => break,
+					Ok(1) if buf[0] == b'\x04' && line.is_empty() => break,
 					Ok(1) => {
 						let byte = buf[0];
 						line.push(byte);

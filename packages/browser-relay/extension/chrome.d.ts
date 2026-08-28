@@ -1,11 +1,6 @@
-/**
- * Minimal ambient declarations for the Chrome extension APIs the relay
- * extension uses (promise-based MV3 forms only). Declared as a typed const —
- * not namespaces — because `debugger` is a reserved namespace name. Kept
- * local so the package stays dependency-free; extend as the worker grows.
- */
 
-/** Chrome extension event surface (subset). */
+
+
 interface ChromeEvent<T extends (...args: never[]) => void> {
 	addListener(callback: T): void;
 	removeListener(callback: T): void;
@@ -19,7 +14,7 @@ interface ChromeTab {
 	active: boolean;
 	windowId: number;
 	pinned: boolean;
-	/** -1 when ungrouped. */
+	
 	groupId: number;
 }
 
@@ -29,7 +24,7 @@ interface ChromeTabChangeInfo {
 	status?: string;
 }
 
-/** Debuggee with the Chrome 125+ flat-session extension. */
+
 interface ChromeDebuggerSession {
 	tabId?: number;
 	sessionId?: string;

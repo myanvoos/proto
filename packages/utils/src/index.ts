@@ -47,18 +47,14 @@ function isPlainObject(val: object): val is Record<string, unknown> {
 }
 
 export function structuredCloneJSON<T>(value: T): T {
-	// primitives|null|undefined, copy
 	if (!value || typeof value !== "object") {
 		return value;
 	}
 
-	// deep clone
 	if (isPlainObject(value)) {
 		try {
 			return structuredClone(value);
-		} catch {
-			// might still fail due to nested structures
-		}
+		} catch {}
 	}
 	return JSON.parse(JSON.stringify(value)) as T;
 }

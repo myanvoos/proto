@@ -1,22 +1,3 @@
-/**
- * Protocol handlers for `issue://` and `pr://`.
- *
- * Both single-item reads route through the SQLite-backed `github-cache`,
- * sharing rendered markdown across sessions. Root and repo-scoped reads
- * (`issue://`, `pr://owner/repo`) issue a live `gh issue list` / `gh pr list`
- * for browsing.
- *
- * URL shapes:
- * - `issue://` / `pr://` — list recent items in the caller's default repo.
- * - `issue://owner/repo` / `pr://owner/repo` — list recent items for that repo.
- * - `issue://123` / `pr://123` — single item; repo derived from the caller's
- *   session cwd (passed through `ResolveContext`).
- * - `issue://owner/repo/123` / `pr://owner/repo/123` — fully qualified single
- *   item.
- * - `issue://owner/repo/123?comments=0` — single item, comments suppressed.
- * - `issue://owner/repo?state=closed&limit=20` — list options pass through to
- *   `gh`.
- */
 import type { Settings } from "../config/settings";
 import { AgentRegistry } from "../registry/agent-registry";
 import {
@@ -45,11 +26,7 @@ interface ParsedPrDiff {
 	kind: "pr-diff";
 	repo?: string;
 	number: number;
-	/**
-	 * `list` → enumerate changed files.
-	 * `all`  → full unified diff.
-	 * `slice`→ single file's diff section (1-indexed `index`).
-	 */
+
 	mode: "list" | "all" | "slice";
 	index?: number;
 }
@@ -73,9 +50,6 @@ function parseListOptions(url: InternalUrl, scheme: Scheme, repo: string | undef
 	const allowedStates: ParsedList["state"][] =
 		scheme === "pr" ? ["open", "closed", "merged", "all"] : ["open", "closed", "all"];
 	if (stateRaw !== null && !(allowedStates as string[]).includes(stateRaw)) {
-		// Reject instead of silently falling back to "open": a typo'd state
-		// would otherwise return the open list, indistinguishable from "no
-		// matches for the requested state".
 		throw new Error(`Invalid ${scheme}:// list state '${stateRaw}'. Expected one of: ${allowedStates.join(", ")}.`);
 	}
 	const state = (stateRaw ?? "open") as ParsedList["state"];
@@ -104,8 +78,7 @@ function parseListOptions(url: InternalUrl, scheme: Scheme, repo: string | undef
 function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 	const host = url.rawHost || url.hostname;
 	const rawPath = url.rawPathname ?? url.pathname;
-	// Strip a single leading slash so we can detect empty internal segments
-	// (e.g. `pr://owner//77` → pathname `//77` → stripped `/77` → ["", "77"]).
+
 	const stripped = rawPath.startsWith("/") ? rawPath.slice(1) : rawPath;
 	const parts: string[] = [];
 	if (stripped !== "") {
@@ -123,13 +96,6 @@ function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 		}
 	}
 
-	// Shapes:
-	//   scheme://                    → list default repo
-	//   scheme://N                   → single item, default repo
-	//   scheme://owner/repo          → list specific repo
-	//   scheme://owner/repo/N        → single item, specific repo
-	//   pr://N/diff[/<sub>]          → diff family, default repo
-	//   pr://owner/repo/N/diff[/<sub>] → diff family, specific repo
 	let repo: string | undefined;
 	let numberPart: string | undefined;
 	let diffParts: string[] = [];
@@ -138,22 +104,14 @@ function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 		return parseListOptions(url, scheme, undefined);
 	}
 	if (host && parts.length === 0) {
-		// scheme://N (numeric) or scheme://owner (host-only, no repo segment)
 		numberPart = host;
 	} else if (parts[0] === "diff" && parsePositiveDecimalInt(host) !== undefined) {
-		// <scheme>://N/diff[/<sub>] — short form with diff suffix. Restrict this
-		// ambiguity to numeric hosts so `<scheme>://owner/diff` remains the valid
-		// repo-scoped listing for a repository named `diff`. `issue://` falls
-		// through to the `scheme === "issue"` branch below for the "issues have
-		// no diff" rejection rather than being misparsed as repo `<N>/diff`.
 		numberPart = host;
 		diffParts = parts;
 	} else if (host && parts.length === 1) {
-		// scheme://owner/repo  → list
 		repo = `${host}/${parts[0]}`;
 		return parseListOptions(url, scheme, repo);
 	} else if (host && parts.length >= 2) {
-		// scheme://owner/repo/N[/diff[/<sub>]]
 		repo = `${host}/${parts[0]}`;
 		numberPart = parts[1];
 		diffParts = parts.slice(2);
@@ -163,9 +121,6 @@ function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 		);
 	}
 
-	// Reject unrecognized trailing segments before parsing the number so
-	// shapes like `issue://owner/repo/foo/bar` surface as "Invalid URL"
-	// rather than the misleading "Invalid number: foo".
 	if (diffParts.length > 0) {
 		if (scheme === "issue") {
 			throw new Error(
@@ -191,7 +146,6 @@ function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 		return { kind: "single", repo, number: num, comments };
 	}
 
-	// diffParts has already been validated above; scheme is `pr`.
 	if (diffParts.length === 1) {
 		return { kind: "pr-diff", repo, number: num, mode: "list" };
 	}
@@ -206,18 +160,6 @@ function parseUrl(url: InternalUrl, scheme: Scheme): Parsed {
 	return { kind: "pr-diff", repo, number: num, mode: "slice", index: idx };
 }
 
-/**
- * Resolve the working directory the protocol should use.
- *
- * Order:
- * 1. Caller-supplied `context.cwd` (the session that initiated `read`).
- * 2. First registered session via `AgentRegistry` (single-session fallback).
- * 3. `process.cwd()` (last resort).
- *
- * The earlier-fallback drives `gh repo view` and any `gh issue list` /
- * `gh pr list` for short-form URLs, so getting this right is what keeps
- * reads of `issue://N` from picking the wrong repo across concurrent sessions.
- */
 function resolveCwd(context: ResolveContext | undefined): string {
 	if (context?.cwd) return context.cwd;
 	for (const ref of AgentRegistry.global().list()) {
@@ -357,7 +299,7 @@ interface BuildSingleArgs {
 	rendered: string;
 	status: CacheStatus;
 	fetchedAt: number;
-	/** Resolved repo (post short-form expansion) — used for the PR-only diff hint. */
+
 	repo?: string;
 }
 
@@ -462,7 +404,6 @@ async function fetchAndRenderPrDiff(
 		};
 	}
 
-	// mode === "list"
 	const header = `# Pull Request Diff: ${repo}#${parsed.number} (${files.length} file${files.length === 1 ? "" : "s"})`;
 	const body =
 		files.length === 0
@@ -479,9 +420,6 @@ async function fetchAndRenderPrDiff(
 	};
 }
 
-/**
- * Handler for `issue://` URLs.
- */
 export class IssueProtocolHandler implements ProtocolHandler {
 	readonly scheme = "issue";
 	readonly immutable = true;
@@ -499,8 +437,7 @@ export class IssueProtocolHandler implements ProtocolHandler {
 				throw new Error(`issue:// listing failed: ${message}`);
 			}
 		}
-		// parseUrl already rejects `issue://.../diff`; this guard is a belt-and-
-		// suspenders catch in case the union grows.
+
 		if (parsed.kind !== "single") {
 			throw new Error(`Invalid issue:// URL: unexpected variant '${parsed.kind}'`);
 		}
@@ -528,9 +465,6 @@ export class IssueProtocolHandler implements ProtocolHandler {
 	}
 }
 
-/**
- * Handler for `pr://` URLs.
- */
 export class PrProtocolHandler implements ProtocolHandler {
 	readonly scheme = "pr";
 	readonly immutable = true;

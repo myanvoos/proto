@@ -3,7 +3,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { $env } from "@oh-my-pi/pi-utils";
 
-/** INI sections with `profile ` / `sso-session ` prefixes normalized. */
 export type AwsIniFile = Record<string, Record<string, string>>;
 
 export function parseAwsIni(text: string): AwsIniFile {
@@ -40,16 +39,10 @@ function readAwsIniSync(filePath: string): AwsIniFile | undefined {
 	}
 }
 
-/** Resolve the selected shared-credentials profile. */
 export function resolveAwsProfile(profile?: string): string {
 	return profile || $env.AWS_PROFILE || "default";
 }
 
-/**
- * Whether the shared config file participates in profile/region resolution.
- * Explicit profile selection enables it; the implicit default profile follows
- * the AWS SDK's `AWS_SDK_LOAD_CONFIG` opt-in.
- */
 export function shouldLoadAwsSharedConfig(profile?: string): boolean {
 	if (profile || $env.AWS_PROFILE) return true;
 	const value = $env.AWS_SDK_LOAD_CONFIG?.toLowerCase();
@@ -62,12 +55,10 @@ export function resolveAwsProfileRegion(profile?: string): string | undefined {
 	return readAwsIniSync(configPath)?.[resolveAwsProfile(profile)]?.region;
 }
 
-/** Region selected by the environment or active shared-config profile. */
 export function resolveAwsAmbientRegion(profile?: string): string | undefined {
 	return $env.AWS_REGION || $env.AWS_DEFAULT_REGION || resolveAwsProfileRegion(profile);
 }
 
-/** Resolve the region precedence shared by AWS transports and credential exchanges. */
 export function resolveAwsRegion(explicitRegion?: string, profile?: string): string {
 	return explicitRegion || resolveAwsAmbientRegion(profile) || "us-east-1";
 }
@@ -81,14 +72,6 @@ export function hasConfiguredAwsProfile(profile?: string): boolean {
 	return profileHasCredentialSource(selectedProfile, credentialsIni, configIni, new Set());
 }
 
-/**
- * Whether a profile terminates in a usable credential source. Mirrors the
- * resolver's per-profile dispatch (static keys, SSO, `credential_process`,
- * `role_arn` chaining) so the availability probe never diverges from what
- * `resolveAwsCredentials` can actually resolve. `role_arn` chains follow
- * `source_profile` recursively (cycle-guarded by `seen`); MFA-gated roles are
- * treated as unusable because non-interactive resolution cannot supply a token.
- */
 function profileHasCredentialSource(
 	profile: string,
 	credentialsIni: AwsIniFile | undefined,

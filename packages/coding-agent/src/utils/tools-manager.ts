@@ -66,10 +66,10 @@ async function writeResponseBody(
 
 interface ToolConfig {
 	name: string;
-	repo: string; // GitHub repo (e.g., "sharkdp/fd")
-	binaryName: string; // Name of the binary inside the archive
-	tagPrefix: string; // Prefix for tags (e.g., "v" for v1.0.0, "" for 1.0.0)
-	isDirectBinary?: boolean; // If true, asset is a direct binary (not an archive)
+	repo: string;
+	binaryName: string;
+	tagPrefix: string;
+	isDirectBinary?: boolean;
 	getAssetName: (version: string, plat: string, architecture: string) => string | null;
 }
 
@@ -114,7 +114,7 @@ const TOOLS: Record<string, ToolConfig> = {
 		isDirectBinary: true,
 		getAssetName: (_version, plat, architecture) => {
 			if (plat === "darwin") {
-				return "yt-dlp_macos"; // Universal binary
+				return "yt-dlp_macos";
 			} else if (plat === "linux") {
 				return architecture === "arm64" ? "yt-dlp_linux_aarch64" : "yt-dlp_linux";
 			}
@@ -123,11 +123,10 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// CLI packages installed via uv/pip
 interface PythonPackageToolConfig {
 	name: string;
-	package: string; // PyPI package name
-	binaryName: string; // CLI command name after install
+	package: string;
+	binaryName: string;
 }
 
 const PYTHON_TOOLS: Record<string, PythonPackageToolConfig> = {
@@ -140,9 +139,7 @@ const PYTHON_TOOLS: Record<string, PythonPackageToolConfig> = {
 
 export type ToolName = "sd" | "sg" | "yt-dlp" | "trafilatura";
 
-// Get the path to a tool (system-wide or in our tools dir)
 function getToolPath(tool: ToolName): string | null {
-	// Check uv/pip-installed CLI packages first
 	const pythonConfig = PYTHON_TOOLS[tool];
 	if (pythonConfig) {
 		return $which(pythonConfig.binaryName);
@@ -151,17 +148,14 @@ function getToolPath(tool: ToolName): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
-	// Check our tools directory first
 	const localPath = path.join(TOOLS_DIR, config.binaryName);
 	if (fs.existsSync(localPath)) {
 		return localPath;
 	}
 
-	// Check system PATH
 	return $which(config.binaryName);
 }
 
-// Fetch latest release version from GitHub
 async function getLatestVersion(repo: string, signal?: AbortSignal): Promise<string> {
 	let response: Response;
 	try {
@@ -184,7 +178,6 @@ async function getLatestVersion(repo: string, signal?: AbortSignal): Promise<str
 	return data.tag_name.replace(/^v/, "");
 }
 
-/** Download a tool asset without handing the streaming Response to Bun.write. */
 export async function downloadFile(url: string, dest: string, signal?: AbortSignal): Promise<void> {
 	const downloadSignal = ptree.combineSignals(signal, TOOL_DOWNLOAD_TIMEOUT_MS);
 	let response: Response;
@@ -206,7 +199,6 @@ export async function downloadFile(url: string, dest: string, signal?: AbortSign
 	}
 }
 
-// Download and install a tool
 async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
@@ -214,33 +206,27 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 	const plat = os.platform();
 	const architecture = os.arch();
 
-	// Get latest version
 	const version = await getLatestVersion(config.repo, signal);
 
-	// Get asset name for this platform
 	const assetName = config.getAssetName(version, plat, architecture);
 	if (!assetName) {
 		throw new Error(`Unsupported platform: ${plat}/${architecture}`);
 	}
 
-	// Create tools directory
 	await fs.promises.mkdir(TOOLS_DIR, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	const binaryPath = path.join(TOOLS_DIR, config.binaryName);
 
-	// Handle direct binary downloads (no archive extraction needed)
 	if (config.isDirectBinary) {
 		await downloadFile(downloadUrl, binaryPath, signal);
 		await fs.promises.chmod(binaryPath, 0o755);
 		return binaryPath;
 	}
 
-	// Download archive
 	const archivePath = path.join(TOOLS_DIR, assetName);
 	await downloadFile(downloadUrl, archivePath, signal);
 
-	// Extract
 	const tmp = await TempDir.create("@proto-tools-extract-");
 
 	try {
@@ -254,8 +240,6 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 			throw new Error(`Failed to extract ${assetName}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
-		// Find the binary in extracted files
-		// ast-grep releases the binary directly in the zip, not in a subdirectory
 		let extractedBinary: string;
 		if (tool === "sg") {
 			extractedBinary = path.join(tmp.path(), config.binaryName);
@@ -270,10 +254,8 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 			throw new Error(`Binary not found in archive: ${extractedBinary}`);
 		}
 
-		// Make executable
 		await fs.promises.chmod(binaryPath, 0o755);
 	} finally {
-		// Cleanup
 		await tmp.remove();
 		await fs.promises.rm(archivePath, { force: true });
 	}
@@ -281,10 +263,8 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 	return binaryPath;
 }
 
-// Install a Python package via uv (preferred) or pip
 async function installPythonPackage(pkg: string, signal?: AbortSignal): Promise<boolean> {
 	try {
-		// Try uv first (faster, better isolation)
 		const uv = $which("uv");
 		if (uv) {
 			const result = await ptree.exec([uv, "tool", "install", pkg], {
@@ -296,7 +276,6 @@ async function installPythonPackage(pkg: string, signal?: AbortSignal): Promise<
 			if (result.exitCode === 0) return true;
 		}
 
-		// Fall back to pip
 		const pip = $which("pip3") || $which("pip");
 		if (pip) {
 			const result = await ptree.exec([pip, "install", "--user", pkg], {
@@ -317,14 +296,11 @@ async function installPythonPackage(pkg: string, signal?: AbortSignal): Promise<
 	}
 }
 
-// Termux package names for tools
 const TERMUX_PACKAGES: Partial<Record<ToolName, string>> = {
 	sd: "sd",
 	sg: "ast-grep",
 };
 
-// Ensure a tool is available, downloading if necessary
-// Returns the path to the tool, or null if unavailable
 type EnsureToolOptions = {
 	signal?: AbortSignal;
 	silent?: boolean;
@@ -338,8 +314,6 @@ export async function ensureTool(tool: ToolName, silentOrOptions?: EnsureToolOpt
 		return existingPath;
 	}
 
-	// On Android/Termux, Linux binaries don't work due to Bionic libc incompatibility.
-	// Users must install via pkg.
 	if (os.platform() === "android") {
 		const pkgName = TERMUX_PACKAGES[tool] ?? tool;
 		if (!silent) {
@@ -348,7 +322,6 @@ export async function ensureTool(tool: ToolName, silentOrOptions?: EnsureToolOpt
 		return undefined;
 	}
 
-	// Handle uv/pip-installed CLI packages
 	const pythonConfig = PYTHON_TOOLS[tool];
 	if (pythonConfig) {
 		if (!silent) {
@@ -357,7 +330,6 @@ export async function ensureTool(tool: ToolName, silentOrOptions?: EnsureToolOpt
 		notify?.(`Installing ${pythonConfig.name}…`);
 		const success = await installPythonPackage(pythonConfig.package, signal);
 		if (success) {
-			// Re-check for the command after installation
 			const path = $which(pythonConfig.binaryName);
 			if (path) {
 				if (!silent) {
@@ -375,7 +347,6 @@ export async function ensureTool(tool: ToolName, silentOrOptions?: EnsureToolOpt
 	const config = TOOLS[tool];
 	if (!config) return undefined;
 
-	// Tool not found - download it
 	if (!silent) {
 		logger.debug(`${config.name} not found. Downloading...`);
 	}

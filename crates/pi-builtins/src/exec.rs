@@ -6,22 +6,22 @@ use std::{
 use brush_core::{ErrorKind, ExecutionExitCode, ExecutionResult, builtins, commands};
 use clap::Parser;
 
-/// Exec the provided command.
+
 #[derive(Parser)]
 pub(crate) struct ExecCommand {
-	/// Pass given name as zeroth argument to command.
+
 	#[arg(short = 'a', value_name = "NAME")]
 	name_for_argv0: Option<String>,
 
-	/// Exec command with an empty environment.
+
 	#[arg(short = 'c')]
 	empty_environment: bool,
 
-	/// Exec command as a login shell.
+
 	#[arg(short = 'l')]
 	exec_as_login: bool,
 
-	/// Command and args.
+
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	args: Vec<String>,
 }
@@ -34,9 +34,9 @@ impl builtins::Command for ExecCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
 		if self.args.is_empty() {
-			// When no arguments are present, then there's nothing for us to execute -- but
-			// we need to ensure that any redirections setup for this builtin get applied
-			// to the calling shell instance.
+
+
+
 			#[allow(clippy::needless_collect)]
 			let fds: Vec<_> = context.iter_fds().collect();
 
@@ -44,10 +44,10 @@ impl builtins::Command for ExecCommand {
 			return Ok(ExecutionResult::success());
 		}
 
-		// If we know we're already running in a subshell, then `exec`ing is actually
-		// unsafe, since it would also replace the *parent* shell instance. We instead
-		// delegate to the `command` builtin to perform the execution, with an
-		// expectation of returning.
+
+
+
+
 		if context.shell.is_subshell() {
 			if self.empty_environment || self.exec_as_login || self.name_for_argv0.is_some() {
 				return self.execute_external_in_subshell(context).await;

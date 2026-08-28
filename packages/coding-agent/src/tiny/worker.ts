@@ -80,12 +80,6 @@ function getTinyTitleRuntimeDir(): string {
 	);
 }
 
-/** Stops generation at the first occurrence of `text` in the *generated* tokens.
- *
- *  The window must be anchored to the generation boundary, not to the end of the
- *  whole sequence: a prompt that itself contains the stop string (chat-level
- *  few-shot examples ending in `</title>`, for instance) would otherwise match on
- *  prompt tokens and stop before the model emits anything. */
 export function createStopOnTextCriteria(
 	transformers: TransformersRuntime,
 	tokenizer: TextGenerationPipeline["tokenizer"],
@@ -94,7 +88,7 @@ export function createStopOnTextCriteria(
 	class StopOnTextCriteria extends transformers.StoppingCriteria {
 		#tokenizer: TextGenerationPipeline["tokenizer"];
 		#text: string;
-		/** First generated index per batch entry, captured on the first call. */
+
 		#generatedStarts: number[] = [];
 
 		constructor() {
@@ -242,7 +236,7 @@ function buildPrompt(generator: TextGenerationPipeline, message: string, systemP
 function extractTinyTitle(text: string, sourceText: string): string | null {
 	const titleStart = text.lastIndexOf(TITLE_PREFILL);
 	const withoutPrefix = titleStart >= 0 ? text.slice(titleStart + TITLE_PREFILL.length) : text;
-	// Self-closing tag: <title/> or <title /> (only when the prefill is present).
+
 	if (titleStart >= 0 && /^\s*\/>/.test(withoutPrefix)) return null;
 	const closeIndex = withoutPrefix.indexOf(TITLE_CLOSE);
 	const withoutClose = closeIndex >= 0 ? withoutPrefix.slice(0, closeIndex) : withoutPrefix;
@@ -276,11 +270,6 @@ async function generateTitle(
 	return extractTinyTitle(output[0]?.generated_text ?? "", message);
 }
 
-/**
- * Local completion path for small structured-generation tasks. A request may carry a dedicated
- * system prompt and user payload; consolidation retains the generic user-only
- * prompt. Output is capped to keep local inference latency bounded.
- */
 async function generateCompletion(
 	transport: TinyTitleTransport,
 	requestId: string,

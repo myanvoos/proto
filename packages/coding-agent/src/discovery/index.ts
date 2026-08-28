@@ -1,10 +1,3 @@
-/**
- * Discovery Module
- *
- * Auto-registers all providers by importing them.
- * Import this module to ensure all providers are registered with the capability registry.
- */
-// Import capability definitions (ensures capabilities are defined before providers register)
 import "../capability/context-file";
 import "../capability/extension";
 import "../capability/extension-module";
@@ -19,7 +12,7 @@ import "../capability/slash-command";
 import "../capability/ssh";
 import "../capability/system-prompt";
 import "../capability/tool";
-// Import providers (each registers itself on import)
+
 import "./agent-plugins";
 import "./agents-md";
 import "./builtin";
@@ -39,27 +32,21 @@ import "./ssh";
 import "./vscode";
 import "./windsurf";
 
-// Re-export the main API from capability registry
 export {
 	cacheStats,
-	// Provider management
 	disableProvider,
 	enableProvider,
 	getAllCapabilitiesInfo,
 	getAllProvidersInfo,
-	// Introspection
 	getCapability,
 	getCapabilityInfo,
 	getDisabledProviders,
 	getProviderInfo,
-	// Initialization
 	initializeWithSettings,
 	invalidate,
 	isProviderEnabled,
 	listCapabilities,
-	// Loading API
 	loadCapability,
-	// Cache management
 	reset,
 	setDisabledProviders,
 } from "../capability";
@@ -68,7 +55,7 @@ export type { Extension, ExtensionManifest } from "../capability/extension";
 export type { ExtensionModule } from "../capability/extension-module";
 export type { Hook } from "../capability/hook";
 export type { Instruction } from "../capability/instruction";
-// Re-export capability item types
+
 export type { MCPServer } from "../capability/mcp";
 export type { Prompt } from "../capability/prompt";
 export type { Rule, RuleFrontmatter } from "../capability/rule";
@@ -78,5 +65,5 @@ export type { SlashCommand } from "../capability/slash-command";
 export type { SSHHost } from "../capability/ssh";
 export type { SystemPrompt } from "../capability/system-prompt";
 export type { CustomTool } from "../capability/tool";
-// Re-export types
+
 export type * from "../capability/types";

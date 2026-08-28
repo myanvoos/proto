@@ -32,12 +32,8 @@ function normalizeCaptureChunk(chunk: string): string {
 	return sanitizeWithOptionalSixelPassthrough(normalized, sanitizeText);
 }
 
-// Caps only the live xterm display backlog; OutputSink remains the bounded
-// source of truth for the final captured output.
 const MAX_LIVE_WRITE_QUEUE_CHUNKS = 512;
 
-// The virtual terminal is only needed once an interactive PTY session actually starts,
-// so it is loaded lazily (and memoized) instead of weighing down CLI startup.
 let xtermTerminalCtor: typeof XtermModule.Terminal | undefined;
 
 async function loadXtermTerminal(): Promise<typeof XtermModule.Terminal> {
@@ -90,17 +86,17 @@ function normalizeInputForPty(data: string, applicationCursorKeysMode: boolean):
 	if (altMatch) {
 		return `\x1b${altMatch[1]!}`;
 	}
-	// For any other Kitty sequence with a printable codepoint, emit the character directly
+
 	if (kitty.codepoint >= 32 && kitty.codepoint < 127) {
 		let ch = String.fromCharCode(kitty.codepoint);
-		// Apply ctrl modifier if present (modifier bit 4 = ctrl)
+
 		if (kitty.modifier & 4) {
 			const code = kitty.codepoint;
 			if (code >= 97 && code <= 122) {
 				ch = String.fromCharCode(code - 96);
 			}
 		}
-		// Apply alt modifier if present (modifier bit 2 = alt)
+
 		if (kitty.modifier & 2) {
 			ch = `\x1b${ch}`;
 		}
@@ -151,10 +147,6 @@ class BashInteractiveOverlayComponent implements Component {
 	}
 
 	#trimWriteQueue(): void {
-		// Compact the consumed prefix first: the queue only self-resets on a
-		// full drain, which never happens while a fast producer keeps a
-		// backlog alive, so already-written chunks must be released here to
-		// keep the retained array itself bounded.
 		if (this.#writeOffset > 0) {
 			this.#writeQueue.splice(0, this.#writeOffset);
 			this.#writeOffset = 0;
@@ -163,10 +155,7 @@ class BashInteractiveOverlayComponent implements Component {
 		const overflow = this.#writeQueue.length - firstPending - MAX_LIVE_WRITE_QUEUE_CHUNKS;
 		if (overflow > 0) {
 			this.#writeQueue.splice(firstPending, overflow);
-			// Dropped chunks can split an in-flight DCS/OSC/APC string (e.g. a
-			// sixel payload) across the gap; a stray string terminator is a
-			// no-op in the ground state but resynchronizes the parser if the
-			// terminator was dropped.
+
 			this.#writeQueue[firstPending] = `\u001b\\${this.#writeQueue[firstPending]}`;
 		}
 	}
@@ -263,7 +252,7 @@ class BashInteractiveOverlayComponent implements Component {
 		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
 		const chromeRows = 4;
 		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
-		// Propagate terminal resize to PTY session
+
 		const currentCols = innerWidth;
 		const currentRows = maxContentRows;
 		if (this.#session && (currentCols !== this.#lastCols || currentRows !== this.#lastRows)) {
@@ -271,9 +260,7 @@ class BashInteractiveOverlayComponent implements Component {
 			this.#lastRows = currentRows;
 			try {
 				this.#session.resize(currentCols, currentRows);
-			} catch {
-				// Session may have ended
-			}
+			} catch {}
 		}
 		const statusIcon =
 			this.#state === "running"
@@ -331,7 +318,7 @@ export async function runInteractiveBashPty(
 	},
 ): Promise<BashInteractiveResult> {
 	const settings = await Settings.init();
-	// Load the xterm Terminal ctor here (async boundary) — the ui.custom factory below is sync.
+
 	const XtermTerminal = await loadXtermTerminal();
 	const { shell: resolvedShell } = settings.getShellConfig();
 	const sink = new OutputSink({
@@ -374,23 +361,17 @@ export async function runInteractiveBashPty(
 					data => {
 						try {
 							session.write(data);
-						} catch {
-							// ignore writes after command exits
-						}
+						} catch {}
 					},
 					() => {
 						try {
 							session.kill();
-						} catch {
-							// ignore
-						}
+						} catch {}
 					},
 					() => {
 						try {
 							session.kill();
-						} catch {
-							// ignore
-						}
+						} catch {}
 					},
 				);
 				void session
@@ -399,9 +380,7 @@ export async function runInteractiveBashPty(
 							command: options.command,
 							cwd: options.cwd,
 							timeoutMs: options.timeoutMs,
-							// Interactive PTY: inherit the user's environment (the Rust side
-							// applies these as overrides), with a real TERM so editors,
-							// pagers, and TUIs behave like a normal terminal.
+
 							env: {
 								TERM: "xterm-256color",
 								...options.env,

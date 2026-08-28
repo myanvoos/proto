@@ -1,6 +1,6 @@
-//! `cut` builtin: print selected byte, character, or field columns.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -15,7 +15,7 @@ use uucore::{display::Quotable, line_ending::LineEnding, ranges::Range};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
 
-/// Parsed `cut` invocation.
+
 pub(crate) struct Cut {
 	matches: ArgMatches,
 }
@@ -26,8 +26,8 @@ impl Utility for Cut {
 	const NAME: &'static str = "cut";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
-		// GNU cut accepts `-d=` as a delimiter spelling. Clap otherwise parses it
-		// as an empty value assigned to `-d`.
+
+
 		Ok(argv
 			.into_iter()
 			.map(|arg| if arg == "-d=" { OsString::from("--delimiter==") } else { arg })
@@ -46,14 +46,14 @@ impl Utility for Cut {
 mod matcher {
 use memchr::{memchr, memchr2};
 
-// Find the next matching byte sequence positions
-// Return (first, last) where haystack[first..last] corresponds to the matched
-// pattern
+
+
+
 pub trait Matcher {
 	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)>;
 }
 
-// Matches for the exact byte sequence pattern
+
 pub struct ExactMatcher<'a> {
 	needle: &'a [u8],
 }
@@ -70,7 +70,7 @@ impl Matcher for ExactMatcher<'_> {
 		let mut pos = 0usize;
 		loop {
 			let match_idx = memchr(self.needle[0], &haystack[pos..])?;
-			let match_idx = match_idx + pos; // account for starting from pos
+			let match_idx = match_idx + pos;
 
 			if self.needle.len() == 1 || haystack[match_idx + 1..].starts_with(&self.needle[1..]) {
 				return Some((match_idx, match_idx + self.needle.len()));
@@ -81,7 +81,7 @@ impl Matcher for ExactMatcher<'_> {
 	}
 }
 
-// Matches for any number of SPACE or TAB
+
 pub struct WhitespaceMatcher {}
 
 impl Matcher for WhitespaceMatcher {
@@ -106,7 +106,7 @@ impl Matcher for WhitespaceMatcher {
 mod searcher {
 use super::matcher::Matcher;
 
-// Generic searcher that relies on a specific matcher
+
 pub struct Searcher<'a, 'b, M: Matcher> {
 	matcher:  &'a M,
 	haystack: &'b [u8],
@@ -119,9 +119,9 @@ impl<'a, 'b, M: Matcher> Searcher<'a, 'b, M> {
 	}
 }
 
-// Iterate over field delimiters
-// Returns (first, last) positions of each sequence, where
-// `haystack[first..last]` corresponds to the delimiter.
+
+
+
 impl<M: Matcher> Iterator for Searcher<'_, '_, M> {
 	type Item = (usize, usize);
 
@@ -199,7 +199,7 @@ fn cut_bytes<R: Read, W: Write>(
 			} else if opts.out_delimiter.is_some() {
 				print_delim = true;
 			}
-			// change `low` from 1-indexed value to 0-index value
+
 			let low = low - 1;
 			let high = high.min(line.len());
 			out.write_all(&line[low..high])?;
@@ -211,7 +211,7 @@ fn cut_bytes<R: Read, W: Write>(
 	result.map(|_| ())
 }
 
-/// Output delimiter is explicitly specified
+
 fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -231,7 +231,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
-				// Always write the entire line, even if it doesn't end with `newline_char`
+
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -243,17 +243,17 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		for &Range { low, high } in ranges {
 			if low - fields_pos > 0 {
-				// current field is not in the range, so jump to the field corresponding to the
-				// beginning of the range if any
+
+
 				low_idx = match delim_search.nth(low - fields_pos - 1) {
 					Some((_, last)) => last,
 					None => break,
 				};
 			}
 
-			// at this point, current field is the first in the range
+
 			for _ in 0..=high - low {
-				// skip printing delimiter if this is the first matching field for this line
+
 				if print_delim {
 					out.write_all(out_delim)?;
 				} else {
@@ -261,7 +261,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 				}
 
 				if let Some((first, last)) = delim_search.next() {
-					// print the current field up to the next field delim
+
 					let segment = &line[low_idx..first];
 
 					out.write_all(segment)?;
@@ -269,7 +269,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 					low_idx = last;
 					fields_pos = high + 1;
 				} else {
-					// this is the last field in the line, so print the rest
+
 					let segment = &line[low_idx..];
 
 					out.write_all(segment)?;
@@ -289,7 +289,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
-/// Output delimiter is the same as input delimiter
+
 fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -308,7 +308,7 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
-				// Always write the entire line, even if it doesn't end with `newline_char`
+
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -353,8 +353,8 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
-/// Streams and filters fields where the record terminator and
-/// field delimiter are the same character (specified by `newline_char`)
+
+
 fn cut_fields_newline_char_delim<R: Read, W: Write>(
 	reader: R,
 	out: &mut W,
@@ -366,7 +366,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 	let mut reader = BufReader::new(reader);
 	let mut line = Vec::new();
 
-	// We start at 1 because 'cut' field indexing is 1-based
+
 	let mut current_field_idx = 1;
 	let mut first_field_printed = false;
 	let mut has_data = false;
@@ -383,7 +383,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		let mut has_processed_data = false;
 
 		if needs_data {
-			// Standard read: copies bytes into `line`
+
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
@@ -404,12 +404,12 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				reader.consume(len);
 			}
 		} else {
-			// Zero-allocation skip: scans the buffer and advances the cursor without
-			// copying
+
+
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
-					break; // EOF
+					break;
 				}
 
 				has_processed_data = true;
@@ -430,7 +430,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		}
 		has_data = true;
 
-		// To comply with -s when the stream consists of only a single field.
+
 		if current_field_idx == 1 {
 			let is_eof_next = reader.fill_buf()?.is_empty();
 
@@ -438,7 +438,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				if only_delimited {
 					suppressed = true;
 				} else {
-					// GNU cut prints the whole line if no delimiter is found.
+
 					out.write_all(&line)?;
 				}
 				break;
@@ -448,13 +448,13 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		if range_idx < ranges.len() && current_field_idx > ranges[range_idx].high {
 			range_idx += 1;
 
-			// EARLY EXIT: If we've exhausted all ranges, stop reading the stream entirely.
+
 			if range_idx == ranges.len() {
 				break;
 			}
 		}
 
-		// Check if the current field falls inside the current active range
+
 		let is_selected = range_idx < ranges.len() && current_field_idx >= ranges[range_idx].low;
 
 		if is_selected {
@@ -490,7 +490,7 @@ fn cut_fields<R: Read, W: Write>(
 	opts: &Options,
 ) -> io::Result<()> {
 	let newline_char = opts.line_ending.into();
-	let field_opts = opts.field_opts.as_ref().unwrap(); // it is safe to unwrap() here - field_opts will always be Some() for cut_fields() call
+	let field_opts = opts.field_opts.as_ref().unwrap();
 	match field_opts.delimiter {
 		Delimiter::Slice(delim) if delim == [newline_char] => {
 			let out_delim = opts.out_delimiter.unwrap_or(delim);
@@ -592,7 +592,7 @@ where
 	}
 }
 
-/// Gets input and output delimiters, accepting non-UTF-8 bytes like GNU `cut`.
+
 fn get_delimiters(matches: &ArgMatches) -> Result<(Delimiter<'_>, Option<&[u8]>), String> {
 	let whitespace_delimited = matches.get_flag(options::WHITESPACE_DELIMITED);
 	let delim_opt = matches.get_one::<OsString>(options::DELIMITER);
@@ -644,7 +644,7 @@ mod options {
 	pub const WHITESPACE_DELIMITED: &str = "whitespace-delimited";
 	pub const COMPLEMENT: &str = "complement";
 	pub const FILE: &str = "file";
-	// ignored option
+
 	pub const NOTHING: &str = "nothing";
 }
 
@@ -654,8 +654,8 @@ fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
 	let (delimiter, out_delimiter) = get_delimiters(matches)?;
 	let line_ending = LineEnding::from_zero_flag(matches.get_flag(options::ZERO_TERMINATED));
 
-	// Only one, and only one of cutting mode arguments, i.e. `-b`, `-c`, `-f`,
-	// is expected. Count occurrences because repeated modes are an error.
+
+
 	let mode_args_count = [
 		matches.indices_of(options::BYTES),
 		matches.indices_of(options::CHARACTERS),
@@ -732,13 +732,13 @@ fn app() -> Command {
 			 as a file operand to read standard input.",
 		)
 		.infer_long_args(true)
-		// While `args_override_self(true)` for some arguments, such as `-d`
-		// and `--output-delimiter`, is consistent to the behavior of GNU cut,
-		// arguments related to cutting mode, i.e. `-b`, `-c`, `-f`, should
-		// cause an error when there is more than one of them, as described in
-		// the manual of GNU cut: "Use one, and only one of -b, -c or -f".
-		// `ArgAction::Append` is used on `-b`, `-c`, `-f` arguments, so that
-		// the occurrences of those could be counted and be handled accordingly.
+
+
+
+
+
+
+
 		.args_override_self(true)
 		.arg(
 			Arg::new(options::BYTES)
@@ -830,7 +830,7 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `cut` builtin registration.
+
 pub(crate) fn cut_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cut, SE>()
 }

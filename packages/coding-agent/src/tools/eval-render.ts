@@ -1,14 +1,3 @@
-/**
- * TUI rendering for the eval tool.
- *
- * Split out from `eval.ts` so the renderer can be imported by `renderers.ts`
- * without dragging the eval *runtime* (JS/Python/Ruby/Julia backends ->
- * agent bridge -> task executor -> sdk -> extension loader -> root barrel)
- * into the renderer module graph. That transitive chain re-enters
- * `renderers.ts` while `eval.ts` is still initializing, which previously
- * crashed module load with a TDZ `Cannot access 'evalToolRenderer' before
- * initialization`.
- */
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Markdown, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
@@ -103,12 +92,6 @@ function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 
 type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
-/**
- * Append or replace a status event. `agent` events are progress snapshots keyed
- * by `id`, so they coalesce in place (preserving first-seen order); every other
- * op is a discrete action and simply appends. Keeps the persisted event list
- * bounded even when a subagent emits hundreds of throttled progress ticks.
- */
 export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEvent): void {
 	if (event.op === "agent" && typeof event.id === "string") {
 		const id = event.id;
@@ -142,7 +125,6 @@ function agentEventStatus(value: unknown): AgentEventStatus {
 	}
 }
 
-/** Append the toolCount · context · cost · model stat run, mirroring worker results. */
 function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 	let line = "";
 	const toolCount = eventNumber(event.toolCount);
@@ -166,11 +148,6 @@ function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 	return line;
 }
 
-/**
- * Render coalesced `agent()` progress as a Task-tool-style tree, one entry per
- * subagent: a status line (icon · id · stats) plus, while running, the current
- * tool/intent. Drawn below the cell box so progress streams live.
- */
 function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spinnerFrame?: number): string[] {
 	const lines: string[] = [];
 	for (let i = 0; i < events.length; i++) {
@@ -232,7 +209,6 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 	return lines;
 }
 
-/** Format a status event as a single line for display. */
 function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	const { op, ...data } = event;
 
@@ -351,7 +327,6 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
 }
 
-/** Format status event with expanded detail lines. */
 function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string[] {
 	const lines: string[] = [];
 	const { op, ...data } = event;
@@ -413,12 +388,6 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 	return lines;
 }
 
-/**
- * Render status events as tree lines. Shows a tail window (newest events are
- * the live edge for `log()` progress loops) behind an "… N earlier" marker,
- * matching the code/output tail-window convention. Collapsed keeps a small
- * fixed window; expanded widens to the viewport-sized preview window.
- */
 function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean): string[] {
 	if (events.length === 0) return [];
 
@@ -460,11 +429,6 @@ function formatCellOutputLines(
 		return { lines: [], hiddenCount: 0 };
 	}
 
-	// Cell output lands in renderCodeCell → renderOutputBlock, which re-wraps it
-	// at the box's inner content width. Bound the collapsed tail by VISUAL rows
-	// at that width so a long-line tail can't wrap into more rows than budgeted
-	// and scroll its mutating preview above the live-region window — the
-	// duplicate "ctrl+o to expand" scrollback spray.
 	const innerWidth = outputBlockContentWidth(width);
 
 	if (cell.hasMarkdown && cell.status !== "error") {
@@ -524,9 +488,7 @@ export const evalToolRenderer = {
 							status: options.spinnerFrame !== undefined ? "running" : "pending",
 							spinnerFrame: options.spinnerFrame,
 							width,
-							// Viewport-sized tail window following the newest streamed code
-							// line; renderResult keeps the same cap so the cell never snaps
-							// open on completion. Only ctrl+o uncaps.
+
 							codeTail: true,
 							codeMaxLines: previewWindowRows(),
 							expanded: options.expanded,
@@ -557,8 +519,7 @@ export const evalToolRenderer = {
 
 		const rawOutput =
 			options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
-		// Strip the LLM-facing notice (appended by wrappedExecute) before display;
-		// the styled `warningLine` below carries the same text in ⟨…⟩ form.
+
 		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
 
 		const jsonOutputs = details?.jsonOutputs ?? [];
@@ -641,9 +602,7 @@ export const evalToolRenderer = {
 								duration: cell.durationMs,
 								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
 								outputMaxLines: outputLines.length,
-								// Same viewport-sized tail window as the pending preview so the
-								// cell never snaps open on completion; only ctrl+o uncaps.
-								// `output` keeps its own preview cap from above.
+
 								codeTail: true,
 								codeMaxLines: previewWindowRows(),
 								expanded,

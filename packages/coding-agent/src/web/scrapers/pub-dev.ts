@@ -1,22 +1,17 @@
 import { tryParseJson } from "@oh-my-pi/pi-utils";
 import { buildResult, formatNumber, htmlToBasicMarkdown, loadPage, type SpecialHandler } from "./types";
 
-/**
- * Handle pub.dev URLs via API
- */
 export const handlePubDev: SpecialHandler = async (url: string, timeout: number, signal?: AbortSignal) => {
 	try {
 		const parsed = new URL(url);
 		if (parsed.hostname !== "pub.dev" && parsed.hostname !== "www.pub.dev") return null;
 
-		// Extract package name from /packages/{package}
 		const match = parsed.pathname.match(/^\/packages\/([^/]+)/);
 		if (!match) return null;
 
 		const packageName = decodeURIComponent(match[1]);
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from pub.dev API
 		const apiUrl = `https://pub.dev/api/packages/${encodeURIComponent(packageName)}`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
@@ -58,7 +53,6 @@ export const handlePubDev: SpecialHandler = async (url: string, timeout: number,
 		if (publisherId) md += ` · **Publisher:** ${publisherId}`;
 		md += "\n";
 
-		// Add metrics if available
 		const score = metrics?.score;
 		if (score) {
 			const likes = score.likeCount;
@@ -82,7 +76,6 @@ export const handlePubDev: SpecialHandler = async (url: string, timeout: number,
 		if (pubspec.repository) md += `**Repository:** ${pubspec.repository}\n`;
 		if (pubspec.documentation) md += `**Documentation:** ${pubspec.documentation}\n`;
 
-		// SDK constraints
 		if (pubspec.environment) {
 			const constraints: string[] = [];
 			for (const [key, value] of Object.entries(pubspec.environment)) {
@@ -95,7 +88,6 @@ export const handlePubDev: SpecialHandler = async (url: string, timeout: number,
 
 		md += "\n";
 
-		// Dependencies
 		if (pubspec.dependencies) {
 			const deps = Object.keys(pubspec.dependencies);
 			if (deps.length > 0) {
@@ -115,12 +107,10 @@ export const handlePubDev: SpecialHandler = async (url: string, timeout: number,
 			}
 		}
 
-		// Try to fetch README from pub.dev
 		const readmeUrl = `https://pub.dev/packages/${encodeURIComponent(packageName)}/versions/${encodeURIComponent(latest.version)}/readme`;
 		try {
 			const readmeResult = await loadPage(readmeUrl, { timeout: Math.min(timeout, 10), signal });
 			if (readmeResult.ok) {
-				// Extract README content from HTML
 				const readmeMatch = readmeResult.content.match(
 					/<div[^>]*class="[^"]*markdown-body[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
 				);
@@ -132,9 +122,7 @@ export const handlePubDev: SpecialHandler = async (url: string, timeout: number,
 					}
 				}
 			}
-		} catch {
-			// README fetch failed, continue without it
-		}
+		} catch {}
 
 		return buildResult(md, { url, method: "pub.dev", fetchedAt, notes: ["Fetched via pub.dev API"] });
 	} catch {}

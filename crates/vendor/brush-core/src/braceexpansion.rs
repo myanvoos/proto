@@ -20,7 +20,7 @@ fn expand_brace_expr_or_text(
 ) -> Box<dyn Iterator<Item = String>> {
 	match beot {
 		word::BraceExpressionOrText::Expr(members) => {
-			// Chain all member iterators together
+
 			Box::new(members.into_iter().flat_map(expand_brace_expr_member))
 		},
 		word::BraceExpressionOrText::Text(text) => Box::new(std::iter::once(text)),
@@ -39,7 +39,7 @@ fn expand_brace_expr_member(bem: word::BraceExpressionMember) -> Box<dyn Iterato
 			if start <= end {
 				Box::new((start..=end).step_by(increment).map(|n| n.to_string()))
 			} else {
-				// Iterate from start down to end by decrementing.
+
 				#[allow(clippy::cast_possible_wrap)]
 				let increment = increment as i64;
 				Box::new(
@@ -61,7 +61,7 @@ fn expand_brace_expr_member(bem: word::BraceExpressionMember) -> Box<dyn Iterato
 			if start <= end {
 				Box::new((start..=end).step_by(increment).map(|c| c.to_string()))
 			} else {
-				// Iterate from start down to end by decrementing.
+
 				let increment = increment as u32;
 				Box::new(
 					std::iter::successors(Some(start), move |&c| {
@@ -74,7 +74,7 @@ fn expand_brace_expr_member(bem: word::BraceExpressionMember) -> Box<dyn Iterato
 		},
 
 		word::BraceExpressionMember::Child(elements) => {
-			// Chain all element iterators together
+
 			Box::new(generate_and_combine_brace_expansions(elements).into_iter())
 		},
 	}

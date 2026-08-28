@@ -1,17 +1,17 @@
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-/// Push a path onto the current directory stack.
+
 #[derive(Parser)]
 pub(crate) struct PushdCommand {
-	/// Push the path without changing the current working directory.
+
 	#[clap(short = 'n')]
 	no_directory_change: bool,
 
-	/// Directory to push on the directory stack.
+
 	dir: String,
-	//
-	// TODO(pushd): implement +N and -N
+
+
 }
 
 impl builtins::Command for PushdCommand {
@@ -35,7 +35,7 @@ impl builtins::Command for PushdCommand {
 			context.shell.directory_stack_mut().push(prev_working_dir);
 		}
 
-		// Display dirs.
+
 		let dirs_cmd = crate::dirs::DirsCommand::default();
 		dirs_cmd.execute(context).await?;
 

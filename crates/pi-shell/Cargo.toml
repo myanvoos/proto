@@ -5,8 +5,8 @@ edition.workspace = true
 license = "MIT"
 authors.workspace = true
 repository.workspace = true
-# Portions of the minimizer adapt MIT-licensed algorithms from rtk-ai/rtk.
-# See NOTICE at this crate root (packaged on publish).
+
+
 
 [lints]
 workspace = true

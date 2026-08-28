@@ -1,4 +1,4 @@
-//! Arithmetic evaluation
+
 
 use std::borrow::Cow;
 
@@ -6,59 +6,59 @@ use brush_parser::ast;
 
 use crate::{ExecutionParameters, Shell, env, expansion, extensions, variables};
 
-/// Maximum recursion depth for arithmetic variable dereference chains
-/// (e.g., a=b, b=c, c=a would cycle through variable dereferences).
+
+
 const MAX_VARIABLE_DEREF_DEPTH: u32 = 1024;
 
-/// Represents an error that occurs during evaluation of an arithmetic
-/// expression.
+
+
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
-	/// Division by zero.
+
 	#[error("division by zero")]
 	DivideByZero,
 
-	/// Negative exponent.
+
 	#[error("exponent less than 0")]
 	NegativeExponent,
 
-	/// Failed to tokenize an arithmetic expression.
+
 	#[error("failed to tokenize expression")]
 	FailedToTokenizeExpression,
 
-	/// Failed to expand an arithmetic expression.
+
 	#[error("failed to expand expression: {0}")]
 	FailedToExpandExpression(String),
 
-	/// Failed to access an element of an array.
+
 	#[error("failed to access array")]
 	FailedToAccessArray,
 
-	/// Failed to update the shell environment in an assignment operator.
+
 	#[error("failed to update environment")]
 	FailedToUpdateEnvironment,
 
-	/// Failed to parse an arithmetic expression.
+
 	#[error("failed to parse expression: {0}")]
 	ParseError(String),
 
-	/// Error expanding an unset variable.
+
 	#[error("expanding unset variable: {0}")]
 	ExpandingUnsetVariable(String),
 
-	/// Expression recursion level exceeded.
+
 	#[error("expression recursion level exceeded")]
 	RecursionLimitExceeded,
 }
 
-/// Trait implemented by arithmetic expressions that can be evaluated.
+
 pub(crate) trait ExpandAndEvaluate {
-	/// Evaluate the given expression, returning the resulting numeric value.
-	///
-	/// # Arguments
-	///
-	/// * `shell` - The shell to use for evaluation.
-	/// * `trace_if_needed` - Whether to trace the evaluation.
+
+
+
+
+
+
 	async fn eval(
 		&self,
 		shell: &mut Shell<impl extensions::ShellExtensions>,
@@ -78,49 +78,49 @@ impl ExpandAndEvaluate for ast::UnexpandedArithmeticExpr {
 	}
 }
 
-/// Evaluate the given arithmetic expression, returning the resulting numeric
-/// value.
-///
-/// # Arguments
-///
-/// * `shell` - The shell to use for evaluation.
-/// * `expr` - The unexpanded arithmetic expression to evaluate.
-/// * `trace_if_needed` - Whether to trace the evaluation.
+
+
+
+
+
+
+
+
 pub(crate) async fn expand_and_eval(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	expr: &str,
 	trace_if_needed: bool,
 ) -> Result<i64, EvalError> {
-	// Per documentation, first shell-expand it.
+
 	let options = expansion::ExpanderOptions { tilde_expand: false, ..Default::default() };
 	let expanded_self = expansion::basic_expand_word_with_options(shell, params, expr, &options)
 		.await
 		.map_err(|_e| EvalError::FailedToExpandExpression(expr.to_owned()))?;
 
-	// Now parse.
+
 	let expr = brush_parser::arithmetic::parse(&expanded_self)
 		.map_err(|_e| EvalError::ParseError(expanded_self))?;
 
-	// Trace if applicable.
+
 	if trace_if_needed && shell.options().print_commands_and_arguments {
 		shell
 			.trace_command(params, std::format!("(( {expr} ))"))
 			.await;
 	}
 
-	// Now evaluate.
+
 	expr.eval(shell)
 }
 
-/// Trait implemented by evaluatable arithmetic expressions.
+
 pub trait Evaluatable {
-	/// Evaluate the given arithmetic expression, returning the resulting numeric
-	/// value.
-	///
-	/// # Arguments
-	///
-	/// * `shell` - The shell to use for evaluation.
+
+
+
+
+
+
 	fn eval(&self, shell: &mut Shell<impl extensions::ShellExtensions>) -> Result<i64, EvalError>;
 }
 
@@ -145,7 +145,7 @@ fn eval_expr_impl(
 		ast::ArithmeticExpr::Conditional(condition, then_expr, else_expr) => {
 			let conditional_eval = eval_expr_impl(condition, shell, depth)?;
 
-			// Ensure we only evaluate the branch indicated by the condition.
+
 			if conditional_eval != 0 {
 				eval_expr_impl(then_expr, shell, depth)?
 			} else {
@@ -215,9 +215,9 @@ fn deref_lvalue(
 	let parsed_value = brush_parser::arithmetic::parse(value_str.as_ref())
 		.map_err(|_err| EvalError::ParseError(value_str.to_string()))?;
 
-	// Literals don't need depth tracking — they can't cause recursion.
-	// Only increment depth when the parsed value requires further evaluation
-	// (i.e., it references other variables), matching bash's behavior.
+
+
+
 	if matches!(parsed_value, ast::ArithmeticExpr::Literal(_)) {
 		return eval_expr_impl(&parsed_value, shell, depth);
 	}
@@ -253,10 +253,10 @@ fn apply_binary_op(
 	right: &ast::ArithmeticExpr,
 	depth: u32,
 ) -> Result<i64, EvalError> {
-	// First, special-case short-circuiting operators. For those, we need
-	// to ensure we don't eagerly evaluate both operands. After we
-	// get these out of the way, we can easily just evaluate operands
-	// for the other operators.
+
+
+
+
 	match op {
 		ast::BinaryOperator::LogicalAnd => {
 			let left = eval_expr_impl(left, shell, depth)?;
@@ -279,7 +279,7 @@ fn apply_binary_op(
 		_ => (),
 	}
 
-	// The remaining operators unconditionally operate both operands.
+
 	let left = eval_expr_impl(left, shell, depth)?;
 	let right = eval_expr_impl(right, shell, depth)?;
 
@@ -402,9 +402,9 @@ const fn bool_to_i64(value: bool) -> i64 {
 	if value { 1 } else { 0 }
 }
 
-// N.B. We implement our own version of wrapping_pow that takes a 64-bit
-// exponent. This seems to be the best way to guarantee that we handle overflow
-// cases with exponents correctly.
+
+
+
 const fn wrapping_pow_u64(mut base: i64, mut exponent: u64) -> i64 {
 	let mut result: i64 = 1;
 

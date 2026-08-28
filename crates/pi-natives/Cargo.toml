@@ -14,10 +14,10 @@ workspace = true
 
 
 [features]
-# Off by default: the pipewire crate hard-links system libpipewire-0.3 via
-# pkg-config, which no CI triple (musl, arm64) can satisfy, and the shipped
-# addons build with default features anyway. Linux devs who want Wayland
-# screencast opt in with `--features wayland-pipewire`.
+
+
+
+
 default = []
 wayland-pipewire = ["dep:pipewire"]
 
@@ -34,7 +34,7 @@ grep-searcher.workspace = true
 html-to-markdown-rs.workspace = true
 icy_sixel.workspace = true
 image = { workspace = true, features = ["bmp"] }
-# Feature activation only (see workspace manifest): zune-jpeg needs `log` to compile.
+
 zune-jpeg.workspace = true
 inferno.workspace = true
 napi.workspace = true
@@ -83,8 +83,8 @@ objc2-core-foundation = "=0.3.2"
 libc.workspace = true
 
 [dev-dependencies]
-fancy-regex.workspace = true # utok scanner differential oracle
-tiktoken-rs.workspace = true # utok openai differential oracle
+fancy-regex.workspace = true 
+tiktoken-rs.workspace = true 
 xkeysym = "=0.2.1"
 
 [build-dependencies]

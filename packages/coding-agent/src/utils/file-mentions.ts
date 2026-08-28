@@ -1,10 +1,3 @@
-/**
- * Auto-read file mentions from user prompts.
- *
- * When users reference files with @path syntax (e.g., "@src/foo.ts"),
- * we automatically inject the file contents as a FileMentionMessage
- * so the agent doesn't need to read them manually.
- */
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -23,17 +16,14 @@ import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, resizeImage } from "./image-resize";
 
-/** Regex to match @filepath patterns in text */
 const FILE_MENTION_REGEX = /@(?:"([^"]+)"|'([^']+)'|([^\s@]+))/g;
 const LEADING_PUNCTUATION_REGEX = /^[`"'([{<]+/;
 const TRAILING_PUNCTUATION_REGEX = /[)\]}>.,;:!?"'`]+$/;
 const MENTION_BOUNDARY_REGEX = /[\s([{<"'`]/;
 const DEFAULT_DIR_LIMIT = 500;
 
-// Avoid OOM when users @mention very large files. Above these limits we skip
-// auto-reading and only include the path in the message.
-const MAX_AUTO_READ_TEXT_BYTES = 5 * 1024 * 1024; // 5MB
-const MAX_AUTO_READ_IMAGE_BYTES = 25 * 1024 * 1024; // 25MB
+const MAX_AUTO_READ_TEXT_BYTES = 5 * 1024 * 1024;
+const MAX_AUTO_READ_IMAGE_BYTES = 25 * 1024 * 1024;
 
 function isMentionBoundary(text: string, index: number): boolean {
 	if (index === 0) return true;
@@ -58,10 +48,6 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 async function resolveMentionPath(filePath: string, cwd: string): Promise<string | null> {
-	// Exact resolution only. The TUI @-selector inserts the real, complete path, so a
-	// mention that does not resolve to an existing file or directory is prose, not a file
-	// reference. Fuzzy/prefix guessing here previously dragged in unrelated same-named
-	// files; that disambiguation belongs to the selector's display, not post-send.
 	const absolutePath = resolveReadPath(filePath, cwd);
 	return (await pathExists(absolutePath)) ? filePath : null;
 }
@@ -159,7 +145,6 @@ async function buildDirectoryListing(absolutePath: string): Promise<{ output: st
 	return { output, lineCount: output.split("\n").length };
 }
 
-/** Extract all @filepath mentions from text */
 export function extractFileMentions(text: string): string[] {
 	const matches = [...text.matchAll(FILE_MENTION_REGEX)];
 	const mentions: string[] = [];
@@ -180,10 +165,6 @@ export function extractFileMentions(text: string): string[] {
 	return [...new Set(mentions)];
 }
 
-/**
- * Generate a FileMentionMessage containing the contents of mentioned files.
- * Returns empty array if no files could be read.
- */
 export async function generateFileMentionMessages(
 	filePaths: string[],
 	cwd: string,
@@ -277,9 +258,7 @@ export async function generateFileMentionMessages(
 				output = `${formatHashlineHeader(resolvedPath, tag)}\n${formatNumberedLines(output)}`;
 			}
 			files.push({ path: resolvedPath, content: output, lineCount });
-		} catch {
-			// File doesn't exist or isn't readable - skip silently
-		}
+		} catch {}
 	}
 
 	if (files.length === 0) return [];

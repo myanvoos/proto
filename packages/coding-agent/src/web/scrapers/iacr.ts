@@ -2,9 +2,6 @@ import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, loadPage } from "./types";
 import { convertWithMarkit, fetchBinary } from "./utils";
 
-/**
- * Handle IACR ePrint Archive URLs
- */
 export const handleIacr: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -14,7 +11,6 @@ export const handleIacr: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "eprint.iacr.org") return null;
 
-		// Extract paper ID from /year/number or /year/number.pdf
 		const match = parsed.pathname.match(/\/(\d{4})\/(\d+)(?:\.pdf)?$/);
 		if (!match) return null;
 
@@ -23,7 +19,6 @@ export const handleIacr: SpecialHandler = async (
 		const fetchedAt = new Date().toISOString();
 		const notes: string[] = [];
 
-		// Fetch the HTML page for metadata
 		const pageUrl = `https://eprint.iacr.org/${paperId}`;
 		const result = await loadPage(pageUrl, { timeout, signal });
 
@@ -32,7 +27,6 @@ export const handleIacr: SpecialHandler = async (
 		const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
 		const doc = parseHTML(result.content).document;
 
-		// Extract metadata from the page
 		const title =
 			doc.querySelector("h3.mb-3")?.textContent?.trim() ||
 			doc.querySelector('meta[name="citation_title"]')?.getAttribute("content");
@@ -43,7 +37,7 @@ export const handleIacr: SpecialHandler = async (
 		)
 			.map(m => m.getAttribute("content"))
 			.filter((author): author is string => Boolean(author));
-		// Abstract is in <p> after <h5>Abstract</h5>
+
 		const abstractHeading = Array.from(
 			doc.querySelectorAll("h5") as Iterable<{
 				textContent: string | null;
@@ -63,7 +57,6 @@ export const handleIacr: SpecialHandler = async (
 		if (keywords) md += `**Keywords:** ${keywords}\n`;
 		md += `\n---\n\n## Abstract\n\n${abstract || "No abstract available."}\n\n`;
 
-		// If it was a PDF link, try to fetch and convert PDF
 		if (parsed.pathname.endsWith(".pdf")) {
 			const pdfUrl = `https://eprint.iacr.org/${paperId}.pdf`;
 			notes.push("Fetching PDF for full content...");

@@ -1,35 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Configure npm trusted publishers (OIDC) for every package this repo ships.
- *
- * Trusted publishing lets the `release_npm` CI job publish with provenance and
- * no long-lived token, but each package must be linked to this repo's workflow
- * once — see https://docs.npmjs.com/trusted-publishers. The npm website makes
- * you do this by hand, per package; this script drives `npm trust github` over
- * the full published set (the same list `ci-release-publish.ts` uses, imported
- * so the two never drift) in one pass.
- *
- * Run it locally, not in CI: `npm trust` is interactive (web 2FA) and a granular
- * token with the "bypass 2FA" option is rejected by the registry. The first call
- * prompts for two-factor auth; choose "skip 2FA for the next 5 minutes" on the
- * npm site and the rest proceed unattended (npm docs: ~80 packages per window).
- *
- * Prerequisites:
- *   - npm >= 11.16.0 (`npm install -g npm@latest`)
- *   - `npm login` with a 2FA-enabled account that has publish access
- *   - non-native packages must already exist on the registry. Generated native
- *     leaf packages are bootstrapped automatically as inert `0.0.0`
- *     package.json+README placeholders before trust is configured.
- *
- * Usage:
- *   bun scripts/setup-npm-trust.ts                 Configure trust for all packages
- *   bun scripts/setup-npm-trust.ts --list          Show current config, change nothing
- *   bun scripts/setup-npm-trust.ts --dry-run       Print the commands, change nothing
- *   bun scripts/setup-npm-trust.ts --force         Replace any existing config (revoke + recreate)
- *   bun scripts/setup-npm-trust.ts --only a,b      Limit to specific package names
- *   bun scripts/setup-npm-trust.ts --repo o/r      Override the GitHub repo (default: from package.json)
- *   bun scripts/setup-npm-trust.ts --workflow f    Override the workflow file (default: ci.yml)
- */
 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -138,7 +107,6 @@ function printUsageAndExit(code = 0): never {
 	process.exit(code);
 }
 
-/** Parse `owner/repo` out of a package.json `repository` field. */
 function parseRepo(repository: { url?: string } | string | undefined): string | null {
 	const url = typeof repository === "string" ? repository : repository?.url;
 	if (!url) return null;
@@ -152,7 +120,6 @@ interface ManifestShape {
 	repository?: { url?: string } | string;
 }
 
-/** The npm package names to configure, plus a repo slug inferred from a manifest. */
 async function collectTargets(): Promise<{ names: string[]; repoFromManifest: string | null }> {
 	const seen = new Set<string>();
 	const names: string[] = [];
@@ -165,8 +132,7 @@ async function collectTargets(): Promise<{ names: string[]; repoFromManifest: st
 			seen.add(manifest.name);
 			names.push(manifest.name);
 		}
-		// Native leaves are generated per platform at release time; each is its
-		// own published package and needs its own trusted-publisher link.
+
 		if (pkg.kind === "native") {
 			for (const target of LEAF_TARGETS) {
 				const leaf = `@oh-my-pi/pi-natives-${target.tag}`;
@@ -180,17 +146,10 @@ async function collectTargets(): Promise<{ names: string[]; repoFromManifest: st
 	return { names, repoFromManifest };
 }
 
-/** Run npm with the terminal attached so the web 2FA flow stays interactive. */
 function npmInteractive(args: readonly string[]): Promise<number> {
 	return Bun.spawn(["npm", ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited;
 }
 
-/**
- * `npm trust list <pkg> --json`, capturing stdout while leaving stderr/stdin on
- * the terminal so a 2FA challenge can still be answered. The registry allows one
- * config per package, so a non-empty body means "already configured"; the `id`s
- * it carries are what `npm trust revoke --id` needs.
- */
 async function trustListJson(name: string): Promise<{ ok: boolean; hasConfig: boolean; ids: string[] }> {
 	const proc = Bun.spawn(["npm", "trust", "list", name, "--json"], {
 		stdin: "inherit",
@@ -213,15 +172,11 @@ function extractIds(jsonish: string): string[] {
 			if (typeof id === "string") ids.push(id);
 		}
 		if (ids.length > 0) return ids;
-	} catch {
-		// npm prints one JSON object per config (not a single array) when several
-		// exist; fall back to scraping ids out of the concatenated output.
-	}
+	} catch {}
 	for (const match of jsonish.matchAll(/"id"\s*:\s*"([^"]+)"/g)) ids.push(match[1]);
 	return ids;
 }
 
-/** Does the package already exist on the registry? (non-interactive, no 2FA) */
 async function packageExists(name: string): Promise<boolean> {
 	const result = await $`npm view ${name} version`.nothrow().quiet();
 	return result.exitCode === 0;
@@ -400,8 +355,6 @@ async function main(): Promise<void> {
 			bootstrapped++;
 		}
 
-		// Throttle between mutating calls per npm's bulk-config guidance, but not
-		// before the very first one (it carries the interactive 2FA prompt).
 		if (shouldThrottle(first)) await Bun.sleep(2000);
 		first = false;
 

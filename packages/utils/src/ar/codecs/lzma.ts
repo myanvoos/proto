@@ -314,7 +314,6 @@ class LzmaDecoder {
 	}
 }
 
-/** Decompress a raw LZMA1 stream using the standard five-byte properties. */
 export async function lzmaDecompress(props: Uint8Array, bytes: Uint8Array, outSize: number): Promise<Uint8Array> {
 	if (!Number.isSafeInteger(outSize) || outSize < 0) throw new ArchiveError("Invalid LZMA output size");
 	try {
@@ -329,7 +328,6 @@ export async function lzmaDecompress(props: Uint8Array, bytes: Uint8Array, outSi
 	}
 }
 
-/** Decompress an LZMA-alone container, including unknown-size end-marked streams. */
 export async function lzmaAloneDecompress(bytes: Uint8Array, maxOutput: number): Promise<Uint8Array> {
 	if (bytes.byteLength < 13) throw new ArchiveError("Invalid LZMA-alone stream: truncated header");
 	if (!Number.isSafeInteger(maxOutput) || maxOutput < 0) throw new ArchiveError("Invalid LZMA output limit");
@@ -360,7 +358,6 @@ export async function lzmaAloneDecompress(bytes: Uint8Array, maxOutput: number):
 	}
 }
 
-/** Decompress an LZMA2 stream, enforcing its dictionary and output limits. */
 export async function lzma2Decompress(dictSizeProp: number, bytes: Uint8Array, maxOutput: number): Promise<Uint8Array> {
 	if (!Number.isInteger(dictSizeProp) || dictSizeProp < 0 || dictSizeProp > 40)
 		throw new ArchiveError("Unsupported LZMA2 dictionary property");

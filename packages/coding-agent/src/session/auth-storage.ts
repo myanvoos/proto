@@ -1,8 +1,3 @@
-/**
- * Re-exports from @oh-my-pi/pi-ai.
- * All credential storage types and the AuthStorage class now live in the ai package.
- */
-
 export type {
 	ApiKeyCredential,
 	AuthCredential,

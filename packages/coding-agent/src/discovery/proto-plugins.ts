@@ -1,21 +1,3 @@
-/**
- * PROTO extension-package sub-discovery provider.
- *
- * When a user configures an extension via `extensions:` (in settings) or
- * `--extension`/`-e` (on the CLI), the docs promise that the package's
- * sibling directories — `skills/`, `hooks/pre|post/`, `tools/`, `commands/`,
- * `rules/`, `prompts/`, and `.mcp.json` — are picked up by proto's standard
- * discovery surfaces. The native `proto` provider in `builtin.ts` only walks
- * `.proto/` and `~/.proto/agent/`, so without this provider those sub-trees are
- * silently ignored.
- *
- * Provider priority is set below the native `proto` provider (100) so an
- * extension package never shadows the user's own `.proto/` configuration on
- * dedup.
- *
- * @see ./proto-extension-roots.ts
- * @see ../../docs/extension-loading.md
- */
 import * as path from "node:path";
 import { logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
@@ -46,21 +28,11 @@ const DESCRIPTION =
 	"Sub-discovery (skills, hooks, tools, commands, rules, prompts, .mcp.json) inside extension packages";
 const PRIORITY = 90;
 
-/**
- * Extension roots this legacy provider may process for a given surface. Roots
- * whose root `plugin.json` targets the Agent Plugins standard keep their
- * portable components (skills, MCP) exclusive to the `agent-plugins` provider;
- * fatally invalid Agent Plugins packages are skipped entirely.
- */
 async function allowedRoots(ctx: LoadContext, surface: "skills" | "mcp" | "other"): Promise<OmpExtensionRoot[]> {
 	const roots = await listOmpExtensionRoots(ctx);
 	const flags = await Promise.all(roots.map(root => legacyProviderAllowed(root.path, surface)));
 	return roots.filter((_, i) => flags[i]);
 }
-
-// =============================================================================
-// Skills
-// =============================================================================
 
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const roots = await allowedRoots(ctx, "skills");
@@ -79,10 +51,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		warnings: results.flatMap(r => r.warnings ?? []),
 	};
 }
-
-// =============================================================================
-// Slash Commands
-// =============================================================================
 
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const roots = await allowedRoots(ctx, "other");
@@ -106,10 +74,6 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	};
 }
 
-// =============================================================================
-// Rules
-// =============================================================================
-
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const roots = await allowedRoots(ctx, "other");
 	const results = await Promise.all(
@@ -126,10 +90,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 		warnings: results.flatMap(r => r.warnings ?? []),
 	};
 }
-
-// =============================================================================
-// Prompts
-// =============================================================================
 
 async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 	const roots = await allowedRoots(ctx, "other");
@@ -151,10 +111,6 @@ async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 		warnings: results.flatMap(r => r.warnings ?? []),
 	};
 }
-
-// =============================================================================
-// Hooks
-// =============================================================================
 
 const HOOK_TYPES: ReadonlyArray<"pre" | "post"> = ["pre", "post"];
 
@@ -189,10 +145,6 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 		warnings: results.flatMap(r => r.warnings ?? []),
 	};
 }
-
-// =============================================================================
-// Custom Tools
-// =============================================================================
 
 const TOOL_EXTENSIONS = ["json", "md", "ts", "js", "sh", "bash", "py"];
 
@@ -236,7 +188,6 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 				readDirEntries(toolsDir),
 			]);
 
-			// `<tools>/<name>/index.ts` sub-directory tools, mirroring `builtin.ts:loadTools`.
 			const indexCandidates = entries
 				.filter(e => !e.name.startsWith(".") && e.isDirectory())
 				.map(e => path.join(toolsDir, e.name, "index.ts"));
@@ -267,10 +218,6 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	}
 	return { items, warnings };
 }
-
-// =============================================================================
-// MCP Servers
-// =============================================================================
 
 const MCP_FILENAMES = [".mcp.json", "mcp.json"] as const;
 
@@ -323,8 +270,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				warnings.push(`[proto-plugins] Skipping MCP server "${serverName}" in ${mcpPath}: missing command or url`);
 				continue;
 			}
-			// Root relative command/cwd at the plugin's config directory, not the
-			// session cwd (MCP stdio spawning resolves relative values there).
+
 			const rooted = resolvePluginStdioPaths({ command: cfg.command, cwd: cfg.cwd }, root.path);
 			const requestIdFormat = parseRequestIdFormat(cfg.requestIdFormat);
 			items.push({
@@ -348,10 +294,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider<Skill>(skillCapability.id, {
 	id: PROVIDER_ID,

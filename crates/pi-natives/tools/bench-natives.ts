@@ -1,8 +1,8 @@
-// End-to-end N-API token-count throughput probe.
-//
-// Build the host addon first, then run from crates/pi-natives:
-//   bun --cwd ../../packages/natives run build
-//   bun tools/bench-natives.ts
+
+
+
+
+
 
 import { countTokens, Encoding } from "../../../packages/natives/native/index.js";
 
@@ -31,7 +31,7 @@ for (const encoding of ENCODINGS) {
 	for (const name in CASES) {
 		const text = CASES[name];
 		const tokens = countTokens(text, encoding);
-		countTokens(text, encoding); // Warm the lazy table.
+		countTokens(text, encoding); 
 		const start = Bun.nanoseconds();
 		let runs = 0;
 		while ((Bun.nanoseconds() - start) / 1e6 < WINDOW_MS) {

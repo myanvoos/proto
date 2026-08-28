@@ -1,8 +1,3 @@
-/**
- * InspectorPanel - Detail view for selected extension.
- *
- * Shows name, description, origin, status, and kind-specific preview.
- */
 import * as os from "node:os";
 import { arkToWireSchema, isArkSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
@@ -27,15 +22,12 @@ export class InspectorPanel implements Component {
 		const ext = this.#extension;
 		const lines: string[] = [];
 
-		// Name header
 		lines.push(theme.bold(theme.fg("accent", ext.displayName)));
 		lines.push("");
 
-		// Kind badge
 		lines.push(theme.fg("muted", "Type: ") + this.#getKindBadge(ext.kind));
 		lines.push("");
 
-		// Description (wrapped)
 		const desc = ext.description;
 		const isValidDescription = typeof desc === "string" && desc.length > 0;
 		if (isValidDescription && width > 2) {
@@ -45,17 +37,15 @@ export class InspectorPanel implements Component {
 			}
 			lines.push("");
 		} else if (isValidDescription) {
-			// Width too small for wrapping, show truncated single line
 			lines.push(truncateToWidth(desc, width));
 			lines.push("");
 		}
 
-		// Origin
 		lines.push(theme.fg("muted", "Origin:"));
 		const levelLabel = ext.source.level === "user" ? "User" : ext.source.level === "project" ? "Project" : "Native";
 		lines.push(`  ${theme.italic(`via ${ext.source.providerName} (${levelLabel})`)}`);
 		const shortened = shortenPath(ext.path, os.homedir());
-		// If path is very long, show just the last parts
+
 		const displayPath =
 			shortened.length > 40 && shortened.split("/").length > 3
 				? `.../${shortened.split("/").slice(-3).join("/")}`
@@ -63,12 +53,10 @@ export class InspectorPanel implements Component {
 		lines.push(`  ${theme.fg("dim", displayPath)}`);
 		lines.push("");
 
-		// Status badge
 		lines.push(theme.fg("muted", "Status:"));
 		lines.push(`  ${this.#getStatusBadge(ext.state, ext.disabledReason, ext.shadowedBy)}`);
 		lines.push("");
 
-		// Preview section (routed based on kind)
 		const previewLines = this.#renderPreview(ext, width);
 		lines.push(...previewLines);
 
@@ -139,23 +127,15 @@ export class InspectorPanel implements Component {
 	}
 
 	#highlightMarkdown(line: string): string {
-		// Basic markdown syntax highlighting
 		let highlighted = line;
 
-		// Headers
 		if (/^#{1,6}\s/.test(highlighted)) {
 			highlighted = theme.bold(theme.fg("accent", highlighted));
-		}
-		// Code blocks
-		else if (/^```/.test(highlighted)) {
+		} else if (/^```/.test(highlighted)) {
 			highlighted = theme.fg("dim", highlighted);
-		}
-		// Lists
-		else if (/^[\s]*[-*+]\s/.test(highlighted)) {
+		} else if (/^[\s]*[-*+]\s/.test(highlighted)) {
 			highlighted = highlighted.replace(/^([\s]*[-*+]\s)/, theme.fg("accent", "$1"));
-		}
-		// Numbered lists
-		else if (/^[\s]*\d+\.\s/.test(highlighted)) {
+		} else if (/^[\s]*\d+\.\s/.test(highlighted)) {
 			highlighted = highlighted.replace(/^([\s]*\d+\.\s)/, theme.fg("accent", "$1"));
 		}
 
@@ -259,7 +239,6 @@ export class InspectorPanel implements Component {
 				lines.push(`  ${theme.fg("muted", "Args:")}       ${theme.fg("dim", args.join(" "))}`);
 			}
 
-			// Environment variables if present
 			if (mcp?.env && typeof mcp.env === "object") {
 				const envCount = Object.keys(mcp.env).length;
 				if (envCount > 0) {
@@ -277,7 +256,6 @@ export class InspectorPanel implements Component {
 	#renderDefaultPreview(ext: Extension, width: number): string[] {
 		const lines: string[] = [];
 
-		// Show trigger pattern if present
 		if (ext.trigger) {
 			lines.push(theme.fg("muted", "Trigger:"));
 			lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));

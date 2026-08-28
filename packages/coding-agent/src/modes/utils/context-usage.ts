@@ -38,7 +38,6 @@ interface ContextBreakdown {
 	freeTokens: number;
 }
 
-/** Stable inputs used to cache non-message token estimates. */
 export interface NonMessageTokenSource {
 	readonly systemPrompt?: string[];
 	readonly agent?: {
@@ -53,14 +52,6 @@ const EMPTY_STRING_PARTS: string[] = [];
 const EMPTY_TOOLS: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">> = [];
 const EMPTY_SKILLS: readonly Skill[] = [];
 
-/**
- * Skills actually rendered into the system prompt, mirroring the filter in
- * `buildSystemPrompt` (`system-prompt.ts`): the `read` tool must be present so
- * the model can fetch skill content, and skills with frontmatter `hide: true`
- * (or `disable-model-invocation`, normalized onto `hide`) are excluded.
- * Accounting must count only these so the Skills category and the System-prompt
- * subtraction stay aligned with the provider-facing prompt.
- */
 function renderedSkills(
 	skills: readonly Skill[],
 	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
@@ -72,8 +63,6 @@ function renderedSkills(
 function estimateSkillsTokens(skills: readonly Skill[], tokenizer: Tokenizer): number {
 	const fragments: string[] = [];
 	for (const skill of skills) {
-		// "- name: description\n" wire framing tokenizes ~identically to the
-		// concatenated form, so encode each piece separately and sum.
 		fragments.push(skill.name, skill.description ?? "");
 	}
 	return tokenizer.countTokens(fragments);
@@ -85,10 +74,6 @@ export function estimateToolSchemaTokens(
 ): number {
 	const fragments: string[] = [];
 	for (const tool of tools) {
-		// Extension-supplied tools may carry a non-string name/description or a
-		// parameters value whose wire schema stringifies to `undefined` (e.g. a
-		// callable schema that escaped normalization). A non-string fragment is
-		// fatal inside the native tokenizer, so only real strings are counted.
 		if (typeof tool.name === "string") fragments.push(tool.name);
 		if (typeof tool.description === "string") fragments.push(tool.description);
 		try {
@@ -99,40 +84,16 @@ export function estimateToolSchemaTokens(
 			};
 			const wireJson = JSON.stringify(toolWireSchema(wireTool) ?? {});
 			if (typeof wireJson === "string") fragments.push(wireJson);
-		} catch {
-			// Schema may contain functions or cycles; ignore.
-		}
+		} catch {}
 	}
 	return tokenizer.countTokens(fragments);
 }
 
-/**
- * Compute just the NON-MESSAGE token total: system prompt (with its skills
- * section subtracted, since skills are tokenized separately) + system context
- * (the rest of the system-prompt array) + tools + skills.
- *
- * Exposed so callers like `StatusLineComponent` can cache the non-message
- * total separately from the message total. Non-message inputs (skills,
- * tools, system prompt) change rarely; the message list grows on every
- * streaming turn. Splitting the two lets the caller refresh each on its own
- * cadence — non-message recomputed only when the inputs identity changes,
- * messages walked incrementally as new entries append.
- */
-// Non-message inputs (system prompt, tools, skills) change rarely — at most
-// once per turn via setSystemPrompt/setTools — but the per-turn compaction and
-// threshold paths call these helpers several times: getContextBreakdown calls
-// both, and #estimateStoredContextTokens adds a third. Memoize on the identity
-// of the three input arrays so the expensive parts (system-prompt tokenization
-// and the per-tool JSON.stringify(toolWireSchema) inside estimateToolSchemaTokens)
-// run at most once per input change rather than per call. The identity keys are
-// the same stable references the StatusLineComponent cache already trusts
-// (setSystemPrompt/setTools replace the array reference rather than mutating it).
 interface NonMessageTokenCache {
 	systemPromptRef: readonly string[];
 	toolsRef: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
 	skillsRef: readonly Skill[];
-	// The Agent swaps its Tokenizer instance when the model's encoding changes,
-	// so instance identity doubles as the encoding key.
+
 	tokenizerRef: Tokenizer;
 	tokens: number | undefined;
 	breakdown:
@@ -183,12 +144,6 @@ export function computeNonMessageTokens(session: NonMessageTokenSource, tokenize
 	return tokens;
 }
 
-/**
- * Shared helper for the four non-message token totals used by
- * `computeContextBreakdown` (/context panel). Keep this category split stable:
- * the status-line fast path intentionally uses the equivalent collapsed total
- * in `computeNonMessageTokens`.
- */
 export function computeNonMessageBreakdown(
 	session: NonMessageTokenSource,
 	tokenizer: Tokenizer,
@@ -211,10 +166,6 @@ export function computeNonMessageBreakdown(
 	return breakdown;
 }
 
-/**
- * Compute a breakdown of estimated context usage by category for the active
- * session and model.
- */
 export function computeContextBreakdown(session: AgentSession): ContextBreakdown {
 	const model = session.model;
 	const tokenizer = session.agent.tokenizer;
@@ -237,8 +188,6 @@ export function computeContextBreakdown(session: AgentSession): ContextBreakdown
 		systemPromptTokens = breakdown.systemPromptTokens;
 		usedTokens = breakdown.usedTokens;
 	} else {
-		// Category split needs a messages-only number, so this walk stays local:
-		// an anchored total folds the system prompt and tool schemas into it.
 		messagesTokens = tokenizer.countMessages(session.messages ?? []);
 		const nonMessage = computeNonMessageBreakdown(session, tokenizer);
 		skillsTokens = nonMessage.skillsTokens;
@@ -277,7 +226,7 @@ export function computeContextBreakdown(session: AgentSession): ContextBreakdown
 		} else {
 			autoCompactBufferTokens = 0;
 		}
-		// Even when fully disabled, fall back to a sensible reserve floor for display.
+
 		if (autoCompactBufferTokens === 0 && compactionSettings.enabled) {
 			autoCompactBufferTokens = effectiveReserveTokens(contextWindow, compactionSettings);
 		}
@@ -327,12 +276,10 @@ function planCells(breakdown: ContextBreakdown): CellSpec[] {
 
 	let usedCount = categoryCounts.reduce((sum, c) => sum + c.count, 0);
 
-	// Prevent the visualization from over-running the grid.
 	const maxUsable = GRID_CELLS - bufferCount;
 	if (usedCount > maxUsable) {
-		// Scale categories proportionally down to fit.
 		let overflow = usedCount - maxUsable;
-		// Trim from the largest categories first to preserve visibility for small ones.
+
 		const order = [...categoryCounts].sort((a, b) => b.count - a.count);
 		for (const entry of order) {
 			while (overflow > 0 && entry.count > 1) {
@@ -360,7 +307,6 @@ function planCells(breakdown: ContextBreakdown): CellSpec[] {
 		cells.push({ glyph: CELL_BUFFER, color: "warning" });
 	}
 
-	// Pad to exactly GRID_CELLS in case rounding undershot.
 	while (cells.length < GRID_CELLS) {
 		cells.push({ glyph: CELL_FREE, color: "dim" });
 	}
@@ -416,10 +362,6 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 	return lines;
 }
 
-/**
- * Render a colorful context-usage panel as ANSI text. Output is a series of
- * lines pairing the grid (left) with the legend (right).
- */
 export function renderContextUsage(breakdown: ContextBreakdown, theme: typeof Theme): string {
 	if (breakdown.contextWindow <= 0) {
 		return theme.fg("muted", "Context usage is unavailable: no model is selected for this session.");
@@ -441,8 +383,6 @@ export function renderContextUsage(breakdown: ContextBreakdown, theme: typeof Th
 			}
 			gridSegment = rowCells.join(" ");
 		} else {
-			// Pad with blanks the same visible width as a grid row so legend lines
-			// past the grid stay aligned with their column.
 			const blank = " ".repeat(GRID_COLS * 2 - 1);
 			gridSegment = blank;
 		}

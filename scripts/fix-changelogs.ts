@@ -300,13 +300,6 @@ function collectReleasedItemKeys(document: ChangelogDocument): Set<string> {
 	return keys;
 }
 
-/**
- * Drop items from [Unreleased] that already appear verbatim in a released
- * section — the residue of a release that copied [Unreleased] into the new
- * version section without clearing it. The released copy is authoritative, so
- * the Unreleased duplicate is removed. Runs before promotion (while parse line
- * numbers are still real) and only ever mutates the Unreleased section.
- */
 function dropUnreleasedDuplicatesOfReleased(
 	document: ChangelogDocument,
 	historicalReleasedItemKeys: ReadonlySet<string> = new Set<string>(),
@@ -724,19 +717,6 @@ async function changelogBaselineCommit(repoRoot: string): Promise<string | undef
 	return (await gitMaybe(["rev-parse", "--verify", "--quiet", CHANGELOG_BASELINE_REF], repoRoot))?.trim() || undefined;
 }
 
-/**
- * The diff/scan floor for both operations. Prefer the `clog` baseline (the last
- * authoritative changelog rewrite) over the latest version tag whenever the
- * baseline is newer — i.e. a `--recover` landed after the last release. Once the
- * next release tags a commit that descends from the baseline, the version tag
- * wins again, so the pin self-expires without manual cleanup.
- *
- * The baseline lives in a custom ref outside `refs/tags/`, not a tag: this repo
- * runs background `git maintenance` with `fetch.pruneTags=true`, which deletes
- * any local tag not on the remote — a lightweight `clog` tag would vanish. A
- * non-tag ref is never touched by tag pruning and stays invisible to
- * `git describe --tags`.
- */
 async function resolveSince(repoRoot: string, since: string | undefined): Promise<string> {
 	if (since) return since;
 	const versionTag = await latestTag(repoRoot);
@@ -748,12 +728,6 @@ async function resolveSince(repoRoot: string, since: string | undefined): Promis
 	return versionTagIsNewer ? versionTag : CHANGELOG_BASELINE_REF;
 }
 
-/**
- * Tags whose released bullets `--recover` treats as authoritative. Bounded to
- * the commits at or after the `clog` baseline so a recovery never resurrects a
- * bullet that was intentionally dropped before the last authoritative rewrite;
- * without a baseline it falls back to every tag (legacy behavior).
- */
 async function recoveryTags(repoRoot: string): Promise<string[]> {
 	const baseline = await changelogBaselineCommit(repoRoot);
 	const listArgs = baseline ? ["tag", "--contains", baseline, "--sort=v:refname"] : ["tag", "--sort=v:refname"];

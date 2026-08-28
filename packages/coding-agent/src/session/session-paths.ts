@@ -7,10 +7,6 @@ import type { SessionStorage } from "./session-storage";
 
 const migratedSessionRoots = new Set<string>();
 
-/**
- * Merge or rename a legacy session directory into its canonical target.
- * Best effort: callers decide whether migration failures should surface.
- */
 function migrateSessionDirPath(oldPath: string, newPath: string): void {
 	const existing = fs.statSync(newPath, { throwIfNoEntry: false });
 	if (existing?.isDirectory()) {
@@ -42,12 +38,6 @@ function encodeRelativeSessionDirName(prefix: string, relative: string): string 
 	return encoded ? (prefix.endsWith("-") ? `${prefix}${encoded}` : `${prefix}-${encoded}`) : prefix;
 }
 
-/**
- * Reconstruct the short-lived hashed session dir name used by 17.2.5-17.2.8
- * (reverted PR #7397): `<scope>-<readable>-<sha256hex>` keyed by the canonical
- * cwd. Kept only so {@link migrateHashedSessionDir} can recover sessions
- * stranded when 17.2.9 restored the legacy names without a reverse migration.
- */
 function encodeHashedSessionDirName(canonicalCwd: string, scope: "home" | "tmp" | "abs"): string {
 	const normalized = canonicalCwd.replaceAll("\\", "/");
 	const readable = path
@@ -87,10 +77,6 @@ function getDefaultSessionDirName(cwd: string): {
 	return { encodedDirName, hashedDirName: encodeHashedSessionDirName(canonicalCwd, scope), resolvedCwd };
 }
 
-/**
- * Migrate old `--<home-encoded>-*--` session dirs to the new `-*` format.
- * Runs once per sessions root on first access, best-effort.
- */
 function migrateHomeSessionDirs(sessionsRoot: string): void {
 	if (migratedSessionRoots.has(sessionsRoot)) return;
 	migratedSessionRoots.add(sessionsRoot);
@@ -148,11 +134,6 @@ function migrateLegacyAbsoluteSessionDir(cwd: string, sessionDir: string, sessio
 	}
 }
 
-/**
- * Migrate a 17.2.5-17.2.8 hashed session dir back into its legacy path-based
- * directory. The 17.2.9 revert restored the legacy names but dropped migration,
- * stranding sessions written under the hashed scheme (issue #7677). Best-effort.
- */
 function migrateHashedSessionDir(hashedDirName: string, sessionDir: string, sessionsRoot: string): void {
 	const hashedDir = path.join(sessionsRoot, hashedDirName);
 	if (hashedDir === sessionDir || !fs.existsSync(hashedDir)) return;
@@ -177,11 +158,6 @@ export function resolveManagedSessionRoot(sessionDir: string, cwd: string): stri
 	return path.dirname(sessionDir);
 }
 
-/**
- * Compute the default session directory for a cwd.
- * Classifies cwd by canonical location so symlink/alias paths resolve to the
- * same home-relative or temp-root directory names as their real targets.
- */
 export function computeDefaultSessionDir(
 	cwd: string,
 	storage: SessionStorage,
@@ -196,23 +172,6 @@ export function computeDefaultSessionDir(
 	return sessionDir;
 }
 
-// =============================================================================
-// Terminal breadcrumbs: maps terminal (TTY) -> last session file for --continue
-// =============================================================================
-
-/**
- * Write a breadcrumb linking the current terminal to a session file.
- * The breadcrumb contains the cwd and session path so --continue can
- * find "this terminal's last session" even when running concurrent instances.
- *
- * `fresh` marks a `/new` (or freshly-minted) session boundary whose JSONL is
- * not yet materialized (new-session persistence is lazy until assistant output
- * exists). A fresh breadcrumb is honored by {@link readTerminalBreadcrumbEntry}
- * even when its target file is still absent, so relaunch/auto-resume reopens the
- * post-`/new` session instead of falling back to the pre-`/new` transcript. Once
- * the session materializes the caller rewrites the breadcrumb with `fresh:false`
- * so a later external delete is still treated as a genuinely stale crumb.
- */
 export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
 	const terminalId = getTerminalId();
 	if (!terminalId) return;
@@ -220,11 +179,7 @@ export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh 
 	const breadcrumbDir = getTerminalSessionsDir();
 	const breadcrumbFile = path.join(breadcrumbDir, terminalId);
 	const content = fresh ? `${cwd}\n${sessionFile}\nfresh\n` : `${cwd}\n${sessionFile}\n`;
-	// Synchronous + best-effort. Infrequent (session create/switch/reset, never
-	// per-append), and writing in order matters: a lazy `/new` fresh crumb is
-	// re-stamped non-fresh the instant the session materializes, so an async
-	// fire-and-forget could land the two writes out of order and leave a
-	// materialized session marked fresh.
+
 	try {
 		fs.mkdirSync(breadcrumbDir, { recursive: true });
 		fs.writeFileSync(breadcrumbFile, content);
@@ -236,23 +191,12 @@ export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh 
 interface TerminalBreadcrumb {
 	cwd: string;
 	sessionFile: string;
-	/** The recorded session file exists on disk right now. */
+
 	exists: boolean;
-	/** Recorded as a `/new` fresh-session boundary whose JSONL may not exist yet. */
+
 	fresh: boolean;
 }
 
-/**
- * Read the raw terminal breadcrumb for the current terminal.
- * Returns the recorded cwd + session file regardless of whether the recorded
- * cwd still matches the current one. Callers decide how to interpret a cwd
- * mismatch (e.g. a moved/renamed worktree).
- *
- * A missing target file yields `null` UNLESS the breadcrumb is a `fresh`
- * boundary — a lazy `/new` session whose JSONL was never written — in which case
- * the entry is returned with `exists:false` so the caller can distinguish it
- * from a genuinely stale/deleted breadcrumb.
- */
 export async function readTerminalBreadcrumbEntry(): Promise<TerminalBreadcrumb | null> {
 	const terminalId = getTerminalId();
 	if (!terminalId) return null;
@@ -269,12 +213,10 @@ export async function readTerminalBreadcrumbEntry(): Promise<TerminalBreadcrumb 
 
 		const stat = fs.statSync(sessionFile, { throwIfNoEntry: false });
 		const exists = stat?.isFile() === true;
-		// A materialized target resumes normally; a missing target is honored only
-		// for a fresh `/new` boundary (never-written lazy session).
+
 		if (exists || fresh) return { cwd: breadcrumbCwd, sessionFile, exists, fresh };
 	} catch (err) {
 		if (!isEnoent(err)) logger.debug("Terminal breadcrumb read failed", { err });
-		// Breadcrumb doesn't exist or is corrupt — fall through
 	}
 	return null;
 }

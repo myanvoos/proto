@@ -1,13 +1,3 @@
-/**
- * Perplexity Web Search Provider
- *
- * Supports four auth modes:
- * - Cookies (`PERPLEXITY_COOKIES`) via `www.perplexity.ai/rest/sse/perplexity_ask`
- * - OAuth/session bearer via `AuthStorage` and `www.perplexity.ai/rest/sse/perplexity_ask`
- * - API key (`PERPLEXITY_API_KEY`) via `api.perplexity.ai/chat/completions`
- * - Anonymous via `www.perplexity.ai/rest/sse/perplexity_ask`
- */
-
 import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
@@ -47,13 +37,6 @@ const OAUTH_USER_AGENT = "Perplexity/641 CFNetwork/1568 Darwin/25.2.0";
 const ANONYMOUS_USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
-/**
- * Query-string operators Perplexity's search backend tolerates as text signal.
- * `site:`/date/`lang:` directives are excluded: they map onto native request
- * fields (`search_domain_filter`, `search_*_date_filter`,
- * `search_language_filter`) and must be stripped from the query so the engine
- * is not double-constrained.
- */
 const PERPLEXITY_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -63,45 +46,35 @@ const PERPLEXITY_QUERY_SYNTAX: QuerySyntax = {
 	filetype: true,
 };
 
-/** Native Perplexity search filters derived from parsed query directives. */
 interface PerplexityNativeFilters {
-	/** Query rebuilt without natively-mapped directives. */
 	query: string;
-	/** `search_domain_filter`: allow entries as bare hosts, deny entries as `-host`. */
+
 	domainFilter?: string[];
-	/** `search_after_date_filter`, `%m/%d/%Y`. */
+
 	afterDate?: string;
-	/** `search_before_date_filter`, `%m/%d/%Y`. */
+
 	beforeDate?: string;
-	/** `search_language_filter`: ISO 639-1 two-letter codes. */
+
 	languageFilter?: string[];
 }
 
-/**
- * Bare host of a `site:` value (`github.com/anthropics` → `github.com`);
- * Perplexity's domain filter takes hosts only, the path part is enforced by
- * the central lenient post-filter.
- */
 function siteHost(site: string): string {
 	const slash = site.indexOf("/");
 	return slash === -1 ? site : site.slice(0, slash);
 }
 
-/** ISO `YYYY-MM-DD` → Perplexity's documented `%m/%d/%Y` date-filter format (e.g. `3/1/2025`). */
 function toPerplexityDate(iso: string): string {
 	const [year, month, day] = iso.split("-");
 	return `${Number(month)}/${Number(day)}/${year}`;
 }
 
-/** Map parsed query directives onto native Perplexity search filters. */
 function buildNativeFilters(parsed: StructuredQuery, rawQuery: string): PerplexityNativeFilters {
 	if (!parsed.hasDirectives) return { query: rawQuery };
-	// Allow + deny share one array; the API caps it at 20 entries.
+
 	const domains = [
 		...new Set([...parsed.sites.map(siteHost), ...parsed.excludedSites.map(site => `-${siteHost(site)}`)]),
 	].slice(0, 20);
-	// search_language_filter takes ISO 639-1 two-letter codes; pass `en-us` as
-	// `en`, and leave anything else to the central post-filter.
+
 	const langCode = parsed.lang ? /^([a-z]{2})(?:[-_]|$)/.exec(parsed.lang)?.[1] : undefined;
 	return {
 		query: formatQuery(parsed, PERPLEXITY_QUERY_SYNTAX),
@@ -326,19 +299,19 @@ interface PerplexitySearchParams {
 	timeoutMs?: number;
 	query: string;
 	system_prompt?: string;
-	/** Pre-parsed view of `query` from the search pipeline; parsed locally when absent. */
+
 	parsedQuery?: StructuredQuery;
-	/** Direct API model. Defaults to `PI_PERPLEXITY_API_MODEL`, then `sonar-pro`. */
+
 	api_model?: string;
 	search_recency_filter?: "hour" | "day" | "week" | "month" | "year";
-	/** Consumer subscription model preference. Defaults to `PI_PERPLEXITY_MODEL`, then Sonar (`experimental`). */
+
 	subscription_model?: string;
 	num_results?: number;
-	/** Maximum output tokens. Defaults to 8192. */
+
 	max_tokens?: number;
-	/** Sampling temperature (0–1). Lower = more focused/factual. Defaults to 0.2. */
+
 	temperature?: number;
-	/** Number of search results to retrieve. Defaults to 20. */
+
 	num_search_results?: number;
 	authStorage: AuthStorage;
 	sessionId?: string;
@@ -498,7 +471,6 @@ function throwPerplexityStreamError(message: AssistantMessage): never {
 	throw new SearchProviderError("perplexity", `Perplexity API error (${status}): ${details}`, status);
 }
 
-/** Call Perplexity API-key endpoint (or OpenRouter) through the shared OpenAI streaming providers. */
 async function callPerplexityApi(
 	config: ApiConfig,
 	request: PerplexityRequest,
@@ -623,12 +595,7 @@ async function callPerplexityAsk(
 ): Promise<{ answer: string; sources: SearchSource[]; model?: string; requestId?: string }> {
 	const subscriptionModel = params.subscription_model?.trim() || $env.PI_PERPLEXITY_MODEL?.trim() || "experimental";
 	const requestId = crypto.randomUUID();
-	// The consumer `perplexity_ask` endpoint is itself a research assistant and
-	// has no system-message slot. Prepending the API-style system prompt to the
-	// query makes the model read it as a meta-instruction and refuse with
-	// "I don't have access to web-search tools in this turn", so ask-endpoint
-	// searches send the bare query. (The API-key path still uses system_prompt
-	// as a proper `system` message.)
+
 	const effectiveQuery = filters.query;
 
 	const headers: Record<string, string> = {
@@ -640,12 +607,6 @@ async function callPerplexityAsk(
 		"X-Request-ID": requestId,
 	};
 	if (auth.type === "oauth") {
-		// The ask endpoint authenticates via the next-auth session cookie, NOT a
-		// bearer header — a bearer (even a garbage one) is ignored and the request
-		// silently falls back to the anonymous free `turbo` model regardless of
-		// `model_preference`. The stored OAuth token IS the Perplexity session JWT
-		// (the native app injects the same value as this cookie), so sending it as
-		// the cookie is what unlocks the account's Pro model selection.
 		headers.Cookie = `__Secure-next-auth.session-token=${auth.token}`;
 	} else if (auth.type === "cookies") {
 		headers.Cookie = auth.cookies;
@@ -668,24 +629,18 @@ async function callPerplexityAsk(
 		version: OAUTH_API_VERSION,
 		language: "en-US",
 		timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
-		// Recency cannot be combined with absolute date filters; explicit
-		// before:/after: bounds take precedence.
+
 		search_recency_filter: filters.afterDate || filters.beforeDate ? null : (params.search_recency_filter ?? null),
 		is_incognito: true,
 		use_schematized_api: true,
-		// `true` (the native app's default) lets the backend classifier skip
-		// retrieval for queries it deems answerable from memory — the model then
-		// runs ungrounded and refuses with "I don't currently have live access".
-		// We are a search tool; always retrieve.
+
 		skip_search_enabled: false,
-		// Belt and braces with `skip_search_enabled: false`: the web client sets
-		// this to force retrieval even when the skip classifier fires.
+
 		always_search_override: true,
 		prompt_source: "user",
 		source: "default",
 		local_search_enabled: false,
-		// Declare no tool-approval UI and no local (Comet) browser agent, so the
-		// stream never stalls waiting for a confirmation we cannot render.
+
 		should_ask_for_mcp_tool_confirmation: false,
 		supports_tool_approval_modal: false,
 		force_enable_browser_agent: false,
@@ -710,10 +665,6 @@ async function callPerplexityAsk(
 		signal: withHardTimeout(params.signal, params.timeoutMs),
 	};
 
-	// The consumer ask endpoint intermittently drops the socket before sending an
-	// HTTP response (#5315). Retry the transport exactly once; once we hold an
-	// HTTP response (handled below) the outcome — including non-2xx — is final and
-	// never retried, so a real 401/429 is never papered over by a second attempt.
 	let response: Response;
 	try {
 		response = await (params.fetch ?? fetch)(PERPLEXITY_OAUTH_ASK_URL, requestInit);
@@ -877,7 +828,6 @@ function applySourceLimit(result: SearchResponse, limit?: number): SearchRespons
 	return result;
 }
 
-/** Execute Perplexity web search */
 export async function searchPerplexity(params: PerplexitySearchParams): Promise<SearchResponse> {
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const filters = buildNativeFilters(parsed, params.query);
@@ -909,8 +859,7 @@ export async function searchPerplexity(params: PerplexitySearchParams): Promise<
 	if (filters.afterDate) request.search_after_date_filter = filters.afterDate;
 	if (filters.beforeDate) request.search_before_date_filter = filters.beforeDate;
 	if (filters.languageFilter) request.search_language_filter = filters.languageFilter;
-	// The API rejects search_recency_filter combined with absolute date
-	// filters; explicit before:/after: bounds take precedence.
+
 	if (params.search_recency_filter && !filters.afterDate && !filters.beforeDate) {
 		request.search_recency_filter = params.search_recency_filter;
 	}
@@ -929,7 +878,6 @@ export async function searchPerplexity(params: PerplexitySearchParams): Promise<
 				lastError = error;
 			}
 		} else {
-			// Use OAuth/cookies/anonymous path
 			try {
 				const askResult =
 					auth.type === "oauth"
@@ -962,34 +910,14 @@ export async function searchPerplexity(params: PerplexitySearchParams): Promise<
 	throw new SearchProviderError("perplexity", "No authentication method available.", 401);
 }
 
-/** Search provider for Perplexity. */
 export class PerplexityProvider extends SearchProvider {
 	readonly id = "perplexity";
 	readonly label = "Perplexity";
 
-	/**
-	 * Auto-chain admission. Requires a direct Perplexity credential
-	 * (`PERPLEXITY_COOKIES`, OAuth session, or `PERPLEXITY_API_KEY`).
-	 *
-	 * OpenRouter auth is intentionally NOT accepted here: silently using
-	 * OpenRouter's `perplexity/sonar-pro` whenever any OpenRouter key is
-	 * configured surprises users (and bills them) for a path they never
-	 * asked for. The auto chain skips Perplexity in that case and falls
-	 * through to the next configured provider. Users who DO want the
-	 * OpenRouter-backed Perplexity path can still opt in by setting
-	 * `webSearch: perplexity` explicitly — see {@link isExplicitlyAvailable}.
-	 */
 	isAvailable(authStorage: AuthStorage): boolean {
 		return !!$env.PERPLEXITY_COOKIES?.trim() || authStorage.hasAuth("perplexity");
 	}
 
-	/**
-	 * Perplexity accepts anonymous browser-style ask requests, and the
-	 * OpenRouter-backed `perplexity/sonar-pro` path is opt-in through
-	 * explicit selection. Keep auto-chain admission credential-gated so a
-	 * configured provider keeps priority over the anonymous/OpenRouter
-	 * fallbacks.
-	 */
 	override isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
 		return true;
 	}

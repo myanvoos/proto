@@ -12,10 +12,6 @@ import {
 import { getActiveProfile, getAgentDir, getProfileRootDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
 
-/**
- * Application-level keybindings (coding agent specific).
- * Values are always `true` — used for declaration merging.
- */
 interface AppKeybindings {
 	"app.interrupt": true;
 	"app.clear": true;
@@ -60,17 +56,11 @@ declare module "@oh-my-pi/pi-tui" {
 	interface Keybindings extends AppKeybindings {}
 }
 
-/**
- * Resolve default image-paste shortcuts for the current terminal platform.
- */
 export function getDefaultPasteImageKeys(platform: NodeJS.Platform = process.platform): KeyId[] {
 	if (platform === "darwin") return ["ctrl+v", "super+v"];
 	return ["ctrl+v"];
 }
 
-/**
- * All keybindings definitions: TUI + app-specific.
- */
 const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
 	"app.interrupt": {
@@ -130,9 +120,6 @@ const KEYBINDINGS = {
 		description: "Open external editor",
 	},
 	"app.message.followUp": {
-		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
-		// but Windows Terminal does not emit a distinct event for Ctrl+Enter — Ctrl+Q is listed
-		// first so the default binding works there without remapping (#1903).
 		defaultKeys: ["ctrl+q", "ctrl+enter"],
 		description: "Send follow-up message",
 	},
@@ -141,8 +128,6 @@ const KEYBINDINGS = {
 		description: "Retry last failed assistant turn",
 	},
 	"app.message.dequeue": {
-		// Shift+Up is listed alongside Alt+Up because macOS Terminal.app consumes Option
-		// for character composition, leaving Alt+Up unreachable there.
 		defaultKeys: ["alt+up", "shift+up"],
 		description: "Dequeue message",
 	},
@@ -220,11 +205,7 @@ const KEYBINDINGS = {
 	},
 } as const satisfies KeybindingDefinitions;
 
-/**
- * Migration map from old keybinding names to new namespaced IDs.
- */
 const KEYBINDING_NAME_MIGRATIONS = {
-	// App-specific (old names)
 	interrupt: "app.interrupt",
 	clear: "app.clear",
 	exit: "app.exit",
@@ -251,7 +232,7 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	fork: "app.session.fork",
 	resume: "app.session.resume",
 	observeSessions: "app.session.observe",
-	// TUI editor (old names for backward compatibility)
+
 	cursorUp: "tui.editor.cursorUp",
 	cursorDown: "tui.editor.cursorDown",
 	cursorLeft: "tui.editor.cursorLeft",
@@ -273,25 +254,22 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	yank: "tui.editor.yank",
 	yankPop: "tui.editor.yankPop",
 	undo: "tui.editor.undo",
-	// TUI input (old names for backward compatibility)
+
 	newLine: "tui.input.newLine",
 	submit: "tui.input.submit",
 	tab: "tui.input.tab",
 	copy: "tui.input.copy",
-	// TUI select (old names for backward compatibility)
+
 	selectUp: "tui.select.up",
 	selectDown: "tui.select.down",
 	selectPageUp: "tui.select.pageUp",
 	selectPageDown: "tui.select.pageDown",
 	selectConfirm: "tui.select.confirm",
 	selectCancel: "tui.select.cancel",
-	// Upstream additional migrations
+
 	toggleSessionNamedFilter: "app.session.togglePath",
 } as const satisfies Record<string, Keybinding>;
 
-/**
- * Check if a key is a legacy keybinding name.
- */
 function isLegacyKeybindingName(key: string): key is keyof typeof KEYBINDING_NAME_MIGRATIONS {
 	return key in KEYBINDING_NAME_MIGRATIONS;
 }
@@ -314,10 +292,6 @@ function toKeybindingsConfig(value: unknown): KeybindingsConfig {
 	return config;
 }
 
-/**
- * Migrate old keybinding names to new namespaced IDs.
- * Returns both the migrated config and a flag indicating if migration occurred.
- */
 function migrateKeybindingNames(rawConfig: unknown): {
 	config: KeybindingsConfig;
 	migrated: boolean;
@@ -332,7 +306,6 @@ function migrateKeybindingNames(rawConfig: unknown): {
 			migrated[newKey] = value;
 			didMigrate = true;
 		} else {
-			// Already a new-style key
 			migrated[key] = value;
 		}
 	}
@@ -340,9 +313,6 @@ function migrateKeybindingNames(rawConfig: unknown): {
 	return { config: migrated, migrated: didMigrate };
 }
 
-/**
- * Order keybindings config to match KEYBINDINGS key order.
- */
 function orderKeybindingsConfig(config: KeybindingsConfig): KeybindingsConfig {
 	const ordered: KeybindingsConfig = {};
 	for (const key of Object.keys(KEYBINDINGS)) {
@@ -351,7 +321,7 @@ function orderKeybindingsConfig(config: KeybindingsConfig): KeybindingsConfig {
 			ordered[key] = value;
 		}
 	}
-	// Add any remaining keys that aren't in KEYBINDINGS
+
 	for (const key of Object.keys(config)) {
 		if (!(key in ordered)) {
 			ordered[key] = config[key];
@@ -369,16 +339,10 @@ interface KeybindingsConfigPaths {
 	writeBackPath: string;
 }
 
-/** Controls inherited keybinding lookup when creating a manager for a named profile. */
 interface KeybindingsCreateOptions {
-	/** Default-profile agent directory whose keybindings are merged before profile-specific bindings. */
 	inheritedAgentDir?: string;
 }
 
-/**
- * Load raw config from a file synchronously.
- * Returns parsed JSON/YAML or null if file doesn't exist or is invalid.
- */
 function loadRawConfig(filePath: string): unknown {
 	try {
 		const content = fs.readFileSync(filePath, "utf-8");
@@ -459,9 +423,7 @@ function loadMergedKeybindingsConfig(
 	}
 
 	const inheritedPaths = resolveKeybindingsConfigPaths(inheritedAgentDir);
-	// Read-only: a named-profile process must never write migration output into
-	// the default profile's agent dir. Name migration still applies in-memory;
-	// the on-disk migration happens when the default profile itself launches.
+
 	const inherited = loadKeybindingsConfig(inheritedPaths.readPath, undefined);
 	return {
 		config: mergeKeybindingsConfig(inherited.config, profile.config),
@@ -470,10 +432,6 @@ function loadMergedKeybindingsConfig(
 	};
 }
 
-/**
- * Load and migrate keybindings config.
- * Legacy JSON is read for compatibility, but successful write-back goes to YAML.
- */
 function loadKeybindingsConfig(
 	filePath: string,
 	writeBackPath: string | undefined,
@@ -537,10 +495,6 @@ function keyConfigValue(keys: KeyId[]): KeyId | KeyId[] {
 	return [...keys];
 }
 
-/**
- * Manages all keybindings (app + TUI).
- * Extends the TUI KeybindingsManager with app-specific functionality.
- */
 export class KeybindingsManager extends TuiKeybindingsManager {
 	#configPath: string | undefined;
 	#inheritedConfigPath: string | undefined;
@@ -553,28 +507,18 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		this.#userBindings = userBindings;
 	}
 
-	/**
-	 * Create from config files at agentDir/keybindings.yml and the default profile.
-	 * Legacy keybindings.json is migrated to keybindings.yml on load.
-	 */
 	static create(agentDir: string = getAgentDir(), options: KeybindingsCreateOptions = {}): KeybindingsManager {
 		const { config: userBindings, profilePath, inheritedPath } = loadMergedKeybindingsConfig(agentDir, options);
 		const manager = new KeybindingsManager(userBindings, profilePath, inheritedPath);
-		// Set globally so getKeybindings() returns this manager
+
 		setKeybindings(manager);
 		return manager;
 	}
 
-	/**
-	 * Create an in-memory keybindings manager without file persistence.
-	 */
 	static inMemory(userBindings: KeybindingsConfig = {}): KeybindingsManager {
 		return new KeybindingsManager(userBindings);
 	}
 
-	/**
-	 * Reload keybindings from the config files.
-	 */
 	reload(): void {
 		if (!this.#configPath) return;
 		const { config: inheritedConfig } = this.#inheritedConfigPath
@@ -603,24 +547,15 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		return resolved;
 	}
 
-	/**
-	 * Get the effective resolved bindings (defaults + user overrides).
-	 */
 	getEffectiveConfig(): KeybindingsConfig {
 		return this.getResolvedBindings();
 	}
 
-	/**
-	 * Get display string for a keybinding (e.g., "ctrl+c/escape").
-	 */
 	getDisplayString(keybinding: Keybinding): string {
 		const keys = this.getKeys(keybinding);
 		return formatKeyHints(keys.length === 0 ? [] : keys);
 	}
 
-	/**
-	 * Load user bindings from a file, migrating old names if needed.
-	 */
 	static #loadFromFile(
 		filePath: string,
 		writeBackPath?: string,
@@ -629,28 +564,12 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	}
 }
 
-/**
- * Key hint formatting utilities for UI labels.
- *
- * Modifier labels are platform-aware: macOS names the physical keys `Option`
- * (`alt`) and `Cmd` (`super`), so rendering `Alt`/`Super` there would name keys
- * absent from a Mac keyboard. Every other platform keeps `Alt`/`Super`.
- */
-
-/**
- * Platform override for key-hint rendering; `undefined` resolves to the host
- * `process.platform`. Mirrors `setKittyProtocolActive` in the TUI keys module:
- * a single seam that keeps hint output deterministic in tests without mutating
- * the global `process.platform`.
- */
 let keyHintPlatformOverride: NodeJS.Platform | undefined;
 
-/** Pin the platform used to render modifier labels (test seam). */
 export function setKeyHintPlatform(platform: NodeJS.Platform | undefined): void {
 	keyHintPlatformOverride = platform;
 }
 
-/** Platform currently used for key-hint rendering. */
 export function keyHintPlatform(): NodeJS.Platform {
 	return keyHintPlatformOverride ?? process.platform;
 }
@@ -661,10 +580,6 @@ function isModifier(part: string): part is Modifier {
 	return part === "ctrl" || part === "shift" || part === "alt" || part === "super";
 }
 
-/**
- * Human label for a modifier, using each platform's own key names. `ctrl` and
- * `shift` are the same everywhere; `alt`/`super` become `Option`/`Cmd` on macOS.
- */
 export function modifierLabel(mod: Modifier, platform: NodeJS.Platform = keyHintPlatform()): string {
 	switch (mod) {
 		case "ctrl":

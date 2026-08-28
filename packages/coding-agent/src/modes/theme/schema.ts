@@ -1,10 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { SpinnerFramesOverride } from "./symbols";
 
-// ============================================================================
-// Types & Schema
-// ============================================================================
-
 export type ColorValue = string | number;
 
 const themeColorsSchema = type({
@@ -184,7 +180,6 @@ export type ThemeColor =
 	| "infoAccent"
 	| "matchHighlight";
 
-/** Set of all valid ThemeColor string values for runtime validation */
 const THEME_COLOR_RECORD = {
 	accent: true,
 	border: true,
@@ -255,7 +250,6 @@ const THEME_COLOR_RECORD = {
 
 const VALID_THEME_COLORS: ReadonlySet<string> = new Set(Object.keys(THEME_COLOR_RECORD));
 
-/** Check if a string is a valid ThemeColor value */
 export function isValidThemeColor(color: string): color is ThemeColor {
 	return VALID_THEME_COLORS.has(color);
 }

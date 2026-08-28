@@ -1,12 +1,3 @@
-/**
- * Shared helpers for /mcp and /ssh command controllers.
- *
- * Captures argument parsing, source grouping, and chat-message rendering that
- * was duplicated between mcp-command-controller and ssh-command-controller.
- * Intentionally kept narrow: subcommand routing, help text, success/error
- * wording, and add-flow logic stay in the per-controller files because they
- * diverge in workflow.
- */
 import { Text } from "@oh-my-pi/pi-tui";
 import type { SourceMeta } from "../../capability/types";
 import { shortenPath } from "../../tools/render-utils";
@@ -19,9 +10,6 @@ export type ScopeValue = "project" | "user";
 
 type ScopeFlagResult = { ok: true; scope: ScopeValue } | { ok: false; error: string };
 
-/**
- * Validate the value following a `--scope` flag.
- */
 export function readScopeFlag(value: string | undefined): ScopeFlagResult {
 	if (!value || (value !== "project" && value !== "user")) {
 		return { ok: false, error: "Invalid --scope value. Use project or user." };
@@ -33,13 +21,6 @@ type RemoveArgs = { name: string | undefined; scope: ScopeValue };
 
 type ParseRemoveResult = { ok: true; value: RemoveArgs } | { ok: false; error: string };
 
-/**
- * Parse the argument tail of `/<cmd> remove <name> [--scope project|user]`.
- *
- * `rest` is the text after the subcommand keyword. The caller is responsible
- * for emitting the command-specific "<entity> name required" usage hint when
- * `value.name` is undefined.
- */
 export function parseRemoveArgs(rest: string): ParseRemoveResult {
 	const tokens = parseCommandArgs(rest);
 
@@ -67,10 +48,6 @@ export function parseRemoveArgs(rest: string): ParseRemoveResult {
 	return { ok: true, value: { name, scope } };
 }
 
-/**
- * Group capability-loaded items by their source provider+path, yielding each
- * group with a display-ready `shortPath`.
- */
 export function* groupBySource<T>(
 	items: Iterable<T>,
 	getSource: (item: T) => SourceMeta,
@@ -96,10 +73,6 @@ export function* groupBySource<T>(
 	}
 }
 
-/**
- * Render a message block (DynamicBorder / Text / DynamicBorder) into the chat
- * container and request a render.
- */
 export function showCommandMessage(ctx: InteractiveModeContext, text: string): void {
 	const block = new TranscriptBlock();
 	block.addChild(new DynamicBorder());

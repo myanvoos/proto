@@ -5,7 +5,6 @@ import { ComputerWorkerCore } from "./worker";
 
 let started = false;
 
-/** Starts the computer worker once when running inside a Bun worker thread. */
 export function startComputerWorker(): void {
 	if (started || !parentPort) return;
 	started = true;
@@ -29,11 +28,6 @@ export function startComputerWorker(): void {
 	new ComputerWorkerCore(transport);
 }
 
-// Direct-source fallback: loaded as a worker's entry module outside a CLI
-// host there is no selector argv, so start immediately. When any CLI-host
-// worker re-enters cli.ts (which imports this module statically), the
-// selector guard defers to the host's dispatch — an unguarded auto-start
-// would hijack the message port of every other worker kind.
 if (!Bun.argv.some(isWorkerHostSelector)) {
 	startComputerWorker();
 }

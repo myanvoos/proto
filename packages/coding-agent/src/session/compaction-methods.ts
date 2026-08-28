@@ -1,5 +1,3 @@
-/** Ordered automatic context-maintenance methods and their settings metadata. */
-
 import {
 	type CompactionSettings as EngineCompactionSettings,
 	shouldUseProviderNativeCompaction,
@@ -7,7 +5,6 @@ import {
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { CompactionSettings } from "../config/settings-schema";
 
-/** Choices presented by the ordered compaction-method setting. */
 export const COMPACTION_METHOD_CHOICES = [
 	{
 		value: "remote",
@@ -21,10 +18,8 @@ export const COMPACTION_METHOD_CHOICES = [
 	},
 ] as const;
 
-/** One selectable automatic context-maintenance method. */
 export type CompactionMethod = (typeof COMPACTION_METHOD_CHOICES)[number]["value"];
 
-/** Default fallback order: server-native first, portable summary last. */
 export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote", "soft"];
 
 const COMPACTION_METHODS: Record<CompactionMethod, true> = {
@@ -32,15 +27,10 @@ const COMPACTION_METHODS: Record<CompactionMethod, true> = {
 	soft: true,
 };
 
-/** Whether an unknown configuration value names a supported compaction method. */
 function isCompactionMethod(value: unknown): value is CompactionMethod {
 	return typeof value === "string" && Object.hasOwn(COMPACTION_METHODS, value);
 }
 
-/**
- * Filter malformed entries and preserve first occurrence order from a configured
- * compaction-method preference list.
- */
 export function resolveCompactionMethodOrder(value: unknown): CompactionMethod[] {
 	if (!Array.isArray(value)) return [];
 
@@ -56,11 +46,6 @@ const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full"> = 
 	soft: "context-full",
 };
 
-/**
- * Convert the selected preference into the engine's compact operation flags.
- * The engine intentionally remains usable by SDK consumers that do not expose
- * the coding agent's preference list.
- */
 export function resolveMethodSettings(
 	settings: CompactionSettings,
 	method: CompactionMethod,
@@ -72,7 +57,6 @@ export function resolveMethodSettings(
 	};
 }
 
-/** Whether server compaction has either a configured endpoint or an active native route. */
 export function canUseRemoteCompaction(model: Model | null | undefined, settings: EngineCompactionSettings): boolean {
 	return (
 		(typeof settings.remoteEndpoint === "string" && settings.remoteEndpoint.length > 0) ||
@@ -80,12 +64,6 @@ export function canUseRemoteCompaction(model: Model | null | undefined, settings
 	);
 }
 
-/**
- * First configured method a threshold pass would run, or undefined when it is
- * local (shake) — local methods are effectively instant, so there is nothing
- * to speculate. Shared by the maintenance loop's speculation gate and the
- * status line's annotated context gauge (speculation marker).
- */
 export function resolveSpeculationMethod(
 	model: Model | null | undefined,
 	settings: CompactionSettings,

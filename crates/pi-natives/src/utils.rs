@@ -1,6 +1,6 @@
 #[macro_export]
 macro_rules! env_uint {
-	// With clamp range: ... => [$min, $max];
+
 	($( $vis:vis static $name:ident : $type:ty = $env:literal or $default:expr => [$min:expr, $max:expr];)*) => {
 		$(
 			$vis static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
@@ -12,7 +12,7 @@ macro_rules! env_uint {
 			});
 		)*
 	};
-	// Without clamp range: ...; (no => [])
+
 	($( $vis:vis static $name:ident : $type:ty = $env:literal or $default:expr;)*) => {
 		$(
 			$vis static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
@@ -25,7 +25,6 @@ macro_rules! env_uint {
 	};
 }
 
-/// Saturating cast from `u64` to `u32`, clamping at [`u32::MAX`].
 pub const fn clamp_u32(value: u64) -> u32 {
 	if value > u32::MAX as u64 {
 		u32::MAX

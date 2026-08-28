@@ -1,19 +1,6 @@
-/**
- * Schema IR and the ArkType-compatible definition parser.
- *
- * `parseDef` turns the definition subset this repo uses — string DSL
- * (primitives, literals, unions, arrays, bounds, `number.integer`,
- * `string.url`, inline `= literal` defaults), object literals (optional `?`
- * keys, `"+"` undeclared-key policy, `"[string]"` index signatures), tuple
- * `[def, "[]"]` arrays, and embedded `Type` instances — into a small IR tree
- * consumed by the interpreter (`interp.ts`), the JIT compiler (`compile.ts`),
- * and the JSON Schema emitter (`json-schema.ts`).
- */
-
 import { type ErrorConfig, OmpErrors, OmpTypeError } from "./errors";
 import { keywordIR, patternIR, templateIR } from "./keywords";
 
-/** Brand carried by `Type` instances so the parser can embed them in defs. */
 export const IR_BRAND: unique symbol = Symbol("omptype.schema");
 
 const kMorph: unique symbol = Symbol("omptype.hasMorph");
@@ -30,64 +17,54 @@ interface IRAnalysis {
 	[kAliasOwner]?: object;
 	[kSimple]?: boolean;
 	[kSimpleOwner]?: object;
-	/** Node-local metadata used for shallow error formatting. */
+
 	cfg?: ErrorConfig;
-	/** True when `desc` was derived from the node itself rather than authored via `.describe()`. */
+
 	descAuto?: boolean;
 }
 
-/**
- * The parser-facing surface of an embedded `Type` instance.
- * `type.ts` implements this on every schema it creates.
- */
 export interface EmbeddableSchema {
 	[IR_BRAND]: true;
-	/** Structural IR of the schema (base type when runtime steps exist). */
+
 	ir: IR;
-	/** True when the schema carries `.pipe()`/`.narrow()` steps. */
+
 	hasSteps: boolean;
-	/** Output IR of the last `.to(target)` step, when statically known. */
+
 	stepOut?: IR;
-	/** True when the last pipe step is bare — output shape statically unknown. */
+
 	opaqueOutput?: boolean;
-	/** `.default()` payload; a function is a factory invoked per fill. */
+
 	defaultValue?: unknown;
 	hasDefault: boolean;
-	/** Precomputed output for a non-factory default after validation and morphs. */
+
 	defaultOutput?: unknown;
 	hasDefaultOutput?: boolean;
-	/** `.describe()` annotation, emitted into JSON Schema. */
+
 	description?: string;
-	/** Full validate+morph pipeline (identical to calling the schema). */
+
 	run(value: unknown, path?: readonly PropertyKey[]): unknown;
 }
 
-/** Policy for undeclared object keys. */
 export type Extras = "keep" | "reject" | "delete";
 
-/** Constructor accepted by `type.instanceOf` and tuple `instanceof` expressions. */
 export type Constructor = abstract new (...args: never[]) => object;
 
-/** Context available to in-definition morph callbacks. */
 export interface MorphContext {
-	/** Return a validation error at the current path. */
 	error(expectation: string): OmpErrors;
-	/** Alias of `error` matching ArkType's rejection vocabulary. */
+
 	reject(expectation: string): OmpErrors;
 }
 
-/** One fixed tuple position, optionally absent or defaulted. */
 export interface TupleItemIR {
 	val: IR;
 	opt: boolean;
 	def?: unknown;
 	defFactory?: boolean;
 	hasDefault?: boolean;
-	/** True once the default has been validated and static morph output precomputed. */
+
 	defValidated?: boolean;
 }
 
-/** Fixed, optional, variadic, and postfix tuple sequence. */
 export interface TupleIR {
 	k: "tuple";
 	prefix: TupleItemIR[];
@@ -105,7 +82,6 @@ export type IR = IRAnalysis &
 		| { k: "bigint"; desc?: string }
 		| { k: "symbol"; desc?: string }
 		| { k: "never"; desc?: string }
-		/** Any non-null object (the bare `object` keyword). */
 		| { k: "anyobject"; desc?: string }
 		| { k: "string"; min?: number; max?: number; url?: boolean; desc?: string }
 		| {
@@ -149,7 +125,6 @@ export type IR = IRAnalysis &
 		  }
 		| { k: "instance"; ctor: Constructor; expected: string; desc?: string }
 		| { k: "alias"; name: string; resolve: () => IR; desc?: string }
-		/** Embedded schema with runtime steps; validated by calling `run`. */
 		| { k: "sub"; schema: EmbeddableSchema; desc?: string }
 	);
 
@@ -157,18 +132,15 @@ export interface PropIR {
 	key: PropertyKey;
 	opt: boolean;
 	val: IR;
-	/** Default payload (value, or factory when `defFactory`); missing key is filled. */
+
 	def?: unknown;
 	defFactory?: boolean;
 	hasDefault?: boolean;
-	/** True once the default has been validated and static morph output precomputed. */
+
 	defValidated?: boolean;
 }
 
-/** Definition input accepted by `type()` and object property values. */
 export type Def = string | RegExp | Date | EmbeddableSchema | readonly unknown[] | { readonly [k: string]: unknown };
-
-// ── tokenizer ────────────────────────────────────────────────────────────────
 
 type Tok =
 	| { t: "id"; v: string }
@@ -283,8 +255,6 @@ function tokenize(src: string): Tok[] {
 	return toks;
 }
 
-// ── string-definition parser ─────────────────────────────────────────────────
-
 const CMP: Record<string, true> = { "<": true, "<=": true, ">": true, ">=": true };
 
 const KEYWORDS: Record<string, () => IR> = {
@@ -304,21 +274,14 @@ const KEYWORDS: Record<string, () => IR> = {
 	false: () => ({ k: "lit", v: false }),
 };
 
-/** Resolve named scope aliases and, when present, scoped generic invocations. */
 export interface AliasResolver {
 	(name: string): IR | undefined;
 	hasGeneric?(name: string): boolean;
 	generic?(name: string, arguments_: readonly IR[]): IR | undefined;
 }
 
-/**
- * Resolvers that only intercept the `this` self-reference. A parse under such
- * a resolver of a source with no `this` token is identical to a resolver-free
- * parse, so it may read and populate the string-definition cache.
- */
 const THIS_ONLY_RESOLVERS = new WeakSet<AliasResolver>();
 
-/** Declare that `resolve` only intercepts `this` (see THIS_ONLY_RESOLVERS). */
 export function markThisOnlyResolver(resolve: AliasResolver): void {
 	THIS_ONLY_RESOLVERS.add(resolve);
 }
@@ -327,7 +290,7 @@ interface ParsedTop {
 	ir: IR;
 	def?: unknown;
 	hasDefault: boolean;
-	/** Trailing `?` marker — only legal on object property values. */
+
 	optional: boolean;
 }
 
@@ -362,7 +325,6 @@ class StrParser {
 		return false;
 	}
 
-	/** Full definition with optional trailing `= literal` default and/or `?` optional marker. */
 	parseTop(): ParsedTop {
 		const ir = this.parseUnion();
 		let def: unknown;
@@ -418,11 +380,6 @@ class StrParser {
 		return { k: "intersection", members };
 	}
 
-	/**
-	 * `NUM CMP base (CMP NUM)?` or `base (CMP NUM)?`, with `[]*` postfix on the
-	 * base AND after a trailing bound — `string>0[]` is an array of bounded
-	 * strings, matching ArkType precedence (bounds bind tighter than `[]`).
-	 */
 	parseBounded(): IR {
 		const t = this.#peek();
 		const t1 = this.#peek(1);
@@ -471,12 +428,10 @@ class StrParser {
 		if (node.k !== "number") throw new OmpTypeError(`% requires number in "${this.#src}"`);
 		if (!Number.isFinite(divisor.v) || !Number.isInteger(divisor.v) || divisor.v === 0)
 			throw new OmpTypeError(`divisor must be a non-zero integer in "${this.#src}"`);
-		// Copy-on-write: the primary may be a shared node (string-def cache,
-		// generic arguments); stamping it in place would leak into other schemas.
+
 		return { ...node, divisor: Math.abs(divisor.v) };
 	}
 
-	/** Wrap `node` in array IR for each `[]` pair at the cursor. */
 	#eatArraySuffixes(node: IR): IR {
 		for (;;) {
 			const t = this.#peek();
@@ -582,7 +537,6 @@ function isWhitespaceAt(src: string, index: number): boolean {
 	return code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(src[index]));
 }
 
-/** Fast path for the literal unions pervasive in command schemas. */
 function parseLiteralUnion(src: string): IR | undefined {
 	const members: Extract<IR, { k: "lit" }>[] = [];
 	let index = 0;
@@ -733,21 +687,12 @@ function parseGeneric(src: string, resolve?: AliasResolver): IR | undefined {
 	return undefined;
 }
 
-/**
- * Subtype comparison lives in `type.ts` (it needs full traversal), so it is
- * installed here at module load for the parser's `Extract`/`Exclude` support.
- */
 let isAssignable: (source: IR, target: IR) => boolean = () => false;
 
-/** Install the assignability comparator used by `Extract`/`Exclude`. */
 export function useAssignability(compare: (source: IR, target: IR) => boolean): void {
 	isAssignable = compare;
 }
 
-/**
- * Distribute `base` over its union members, keeping those assignable to
- * `target` (`keepAssignable`) or those that are not (`Exclude`).
- */
 export function distributeFilter(base: IR, target: IR, keepAssignable: boolean): IR {
 	const resolved = base.k === "alias" ? base.resolve() : base;
 	const members = resolved.k === "union" ? resolved.members : [resolved];
@@ -756,7 +701,6 @@ export function distributeFilter(base: IR, target: IR, keepAssignable: boolean):
 	return retained.length === 1 ? retained[0] : { k: "union", members: retained };
 }
 
-/** Parse recurring global DSL fragments once; scoped aliases bypass the cache. */
 function parseRegexExec(src: string): IR | undefined {
 	if (!src.startsWith("x/")) return undefined;
 	const end = src.lastIndexOf("/");
@@ -850,11 +794,6 @@ function applyEquality(node: IR, value: number | bigint | Date, src: string): IR
 	throw new OmpTypeError(`equality literal is incompatible with ${node.k} in "${src}"`);
 }
 
-/**
- * Apply `node CMP value` — numeric/string/array ranges or Date bounds.
- * Copy-on-write: `node` may be shared (string-def cache, generic arguments,
- * resolved aliases), so bounds land on a fresh node, never in place.
- */
 function applyBound(node: IR, op: string, value: number | Date, src: string): IR {
 	if (node.k === "alias") return applyBound(node.resolve(), op, value, src);
 	if (node.k === "refine" && !(value instanceof Date)) {
@@ -947,13 +886,10 @@ function acceptsDate(node: IR): boolean {
 	return (node.k === "instance" && node.ctor === Date) || (node.k === "refine" && acceptsDate(node.base));
 }
 
-// ── definition parser ────────────────────────────────────────────────────────
-
 function isEmbedded(def: unknown): def is EmbeddableSchema {
 	return (typeof def === "function" || (typeof def === "object" && def !== null)) && IR_BRAND in def;
 }
 
-/** Embed a schema value: inline pure structure, keep `sub` nodes for stepped schemas. */
 export function embed(schema: EmbeddableSchema): IR {
 	if (schema.hasSteps) return { k: "sub", schema, desc: schema.description, descAuto: schema.ir.desc === undefined };
 	if (schema.description !== undefined && schema.ir.desc === undefined) {
@@ -1078,7 +1014,6 @@ function parseTuple(def: readonly unknown[], resolve?: AliasResolver): IR {
 	return branches.length === 1 ? branches[0] : { k: "union", members: branches };
 }
 
-/** Build the runtime schema for an object's or tuple's keys. */
 export function keyOf(node: IR): IR {
 	if (node.k === "alias") return keyOf(node.resolve());
 	if (node.k === "sub") return keyOf(node.schema.ir);
@@ -1489,7 +1424,6 @@ function parseObjectDefinition(def: Record<PropertyKey, unknown>, resolve?: Alia
 	return object;
 }
 
-/** Parse a definition, optionally resolving names from an enclosing scope. */
 export function parseDef(def: unknown, resolve?: AliasResolver): IR {
 	if (typeof def === "string") {
 		const parsed = parseStringDef(def, resolve);
@@ -1521,7 +1455,6 @@ export function parseDef(def: unknown, resolve?: AliasResolver): IR {
 	throw new OmpTypeError(`unsupported definition ${String(def)} (was ${typeof def})`);
 }
 
-/** Whether `ir` needs no construction-time normalization or morph analysis. */
 export function isSimpleIR(ir: IR): boolean {
 	const cached = ir[kSimpleOwner] === ir ? ir[kSimple] : undefined;
 	if (cached !== undefined) return cached;
@@ -1589,7 +1522,6 @@ function scanSimpleIR(ir: IR): boolean {
 	}
 }
 
-/** True when validating `ir` can produce an output different from its input. */
 export function hasMorph(ir: IR): boolean {
 	const cached = ir[kMorphOwner] === ir ? ir[kMorph] : undefined;
 	if (cached !== undefined) return cached;
@@ -1670,11 +1602,6 @@ function scanMorph(ir: IR, activeAliases?: Set<IR>): boolean {
 	return result;
 }
 
-/**
- * True when a traversal of `ir` can revisit nodes through recursive aliases,
- * requiring cycle guards in the interpreter. Embedded sub-schemas run their
- * own guarded traversal and are intentionally not inspected.
- */
 export function hasAlias(ir: IR): boolean {
 	const cached = ir[kAliasOwner] === ir ? ir[kAlias] : undefined;
 	if (cached !== undefined) return cached;
@@ -1720,7 +1647,6 @@ function scanAlias(ir: IR): boolean {
 	}
 }
 
-/** Human-readable expectation for error messages, e.g. `"a string"`. */
 export function expectedOf(ir: IR): string {
 	if (ir.desc !== undefined) return ir.desc;
 	switch (ir.k) {

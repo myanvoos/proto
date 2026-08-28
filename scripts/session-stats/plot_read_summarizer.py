@@ -33,7 +33,6 @@ DB_PATH = Path.home() / ".proto" / "stats.db"
 OUT_DIR = Path(__file__).resolve().parent / "out"
 DAY_MS = 86_400_000
 
-# Deploy boundary; override with --deploy YYYY-MM-DD.
 DEFAULT_DEPLOY = "2026-05-04"
 
 COHORT_COLORS = {
@@ -42,8 +41,6 @@ COHORT_COLORS = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Classification
 
 
 def has_selector(path: str) -> bool:
@@ -75,8 +72,6 @@ def cohort_of(arg_json: str | None) -> str | None:
     return "selector" if has_selector(path) else "summary-eligible"
 
 
-# --------------------------------------------------------------------------- #
-# Data
 
 
 def fetch_read_calls(conn) -> dict[str, dict[str, np.ndarray]]:
@@ -150,7 +145,6 @@ def daily_sum(ts_ms: np.ndarray, tok: np.ndarray, day_axis: np.ndarray) -> np.nd
         return out
     bucket = (ts_ms // DAY_MS) * DAY_MS
     idx = {int(d): i for i, d in enumerate(day_axis)}
-    # Vectorize via searchsorted on a sorted day_axis (it is).
     pos = np.searchsorted(day_axis, bucket)
     for p, t, b in zip(pos, tok, bucket):
         if p < day_axis.size and day_axis[p] == b:
@@ -190,8 +184,6 @@ def smooth_nan(y: np.ndarray, w: int) -> np.ndarray:
         return np.where(den > 0, num / den, np.nan)
 
 
-# --------------------------------------------------------------------------- #
-# Plot helpers
 
 
 def thousands(x: float, _p=0) -> str:
@@ -298,8 +290,6 @@ def panel_per_call(
     style_time(ax, deploy)
 
 
-# --------------------------------------------------------------------------- #
-# Stats
 
 
 def share_stats(reads, denom_dates, denom, deploy_ms: int) -> None:
@@ -360,8 +350,6 @@ def per_call_stats(reads, deploy_ms: int) -> None:
             )
 
 
-# --------------------------------------------------------------------------- #
-# Entry
 
 
 def main() -> int:

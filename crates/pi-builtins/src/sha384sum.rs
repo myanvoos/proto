@@ -1,6 +1,6 @@
-//! `sha384sum` builtin: compute and check SHA-384 digests.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
@@ -11,7 +11,7 @@ use crate::{
 	host::{Host, Utility, matches_parser, util},
 };
 
-/// Parsed `sha384sum` invocation.
+
 pub(crate) struct Sha384sum {
 	matches: ArgMatches,
 }
@@ -31,7 +31,7 @@ fn app() -> clap::Command {
 	cksum::command(Sha384sum::NAME, false)
 }
 
-/// Creates the `sha384sum` builtin registration.
+
 pub(crate) fn sha384sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sha384sum, SE>()
 }

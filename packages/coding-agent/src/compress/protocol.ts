@@ -1,18 +1,3 @@
-/**
- * The two-tool protocol behind `proto compress`.
- *
- * The agent sees exactly two tools. `rewrite` submits a complete draft plus every
- * loss the agent chose to accept; `approve` accepts the newest draft and ends the
- * run. Approval is gated on a review turn: the command replies to each draft with
- * its measured size and its declared losses and asks for a verdict, so the agent
- * judges its own work with the losses in front of it instead of self-certifying
- * inside the turn that produced them.
- *
- * @example
- * const protocol = new CompressProtocol(source);
- * const tools = [protocol.rewriteTool(), protocol.approveTool()];
- * // …drive a session, then read protocol.latest / protocol.approved
- */
 import { type } from "@oh-my-pi/omptype";
 import { Tokenizer } from "@oh-my-pi/pi-agent-core";
 import type { ToolDefinition } from "../extensibility/extensions";
@@ -40,31 +25,21 @@ const approveSchema = type({
 	"+": "reject",
 }).describe("accept the newest draft as the final output");
 
-/** Transcript details for one `rewrite` call. */
 interface RewriteDetails {
 	round: number;
 	draftTokens: number;
 	losses: number;
 }
 
-/** Transcript details for one `approve` call. */
 interface ApproveDetails {
 	round: number;
 }
 
-// Both tools are plain `ToolDefinition`s rather than concretely parameterized ones:
-// `renderCall`/`renderResult` are contravariant function properties, so a tool carrying
-// a concrete schema or details type is not assignable to the `customTools` element type.
-// Executors therefore validate their arguments through the schema and type the details
-// object they build, instead of asserting either across the boundary.
-
-/** Words in `text`. Guards the `"".split(/\s+/).length === 1` trap. */
 function words(text: string): number {
 	const trimmed = text.trim();
 	return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
 }
 
-/** Draft ledger shared by the protocol tools and the command loop. */
 export class CompressProtocol {
 	readonly #tokenizer: Tokenizer;
 	readonly #sourceWords: number;
@@ -74,48 +49,36 @@ export class CompressProtocol {
 	#approved = false;
 	#verdict: string | undefined;
 
-	/**
-	 * Metrics measure source-vs-draft ratios with the default estimate. The
-	 * compress session resolves its model after this ledger is constructed, so
-	 * no catalog model is available here.
-	 */
 	constructor(source: string) {
 		this.#tokenizer = new Tokenizer();
 		this.#sourceWords = words(source);
 		this.#sourceTokens = this.#tokenizer.countTokens(source);
 	}
 
-	/** Newest submitted draft, or undefined before the first `rewrite`. */
 	get latest(): CompressDraft | undefined {
 		return this.#drafts.at(-1);
 	}
 
-	/** True once `approve` accepted the newest draft. */
 	get approved(): boolean {
 		return this.#approved;
 	}
 
-	/** The agent's stated reason for accepting the final draft. */
 	get verdict(): string | undefined {
 		return this.#verdict;
 	}
 
-	/** Number of drafts submitted so far. */
 	get rounds(): number {
 		return this.#drafts.length;
 	}
 
-	/** Words in the source text. */
 	get sourceWords(): number {
 		return this.#sourceWords;
 	}
 
-	/** Tokens in the source text. */
 	get sourceTokens(): number {
 		return this.#sourceTokens;
 	}
 
-	/** Size of `draft` against the source. */
 	metrics(draft: CompressDraft): CompressMetrics {
 		const draftTokens = this.#tokenizer.countTokens(draft.text);
 		return {
@@ -127,15 +90,10 @@ export class CompressProtocol {
 		};
 	}
 
-	/** Record that the command has shown `round` back to the agent for a verdict. */
 	markReviewed(round: number): void {
 		this.#reviewed = Math.max(this.#reviewed, round);
 	}
 
-	/**
-	 * Record a draft and return it. Supersedes any prior approval, so an accepted
-	 * draft cannot be silently replaced by a later one.
-	 */
 	submit(text: string, losses: readonly CompressLoss[]): CompressDraft {
 		const draft: CompressDraft = {
 			round: this.#drafts.length + 1,
@@ -148,12 +106,6 @@ export class CompressProtocol {
 		return draft;
 	}
 
-	/**
-	 * Accept the newest draft and return it.
-	 *
-	 * Throws when no draft exists, or when the newest draft has not been shown back
-	 * to the agent for a verdict — approval is only meaningful after that review.
-	 */
 	accept(verdict: string): CompressDraft {
 		const draft = this.latest;
 		if (!draft) throw new Error("Call rewrite before approve: there is no draft to accept");
@@ -167,7 +119,6 @@ export class CompressProtocol {
 		return draft;
 	}
 
-	/** Tool that records a draft. Thin adapter over {@link submit}. */
 	rewriteTool(): ToolDefinition {
 		return {
 			name: "rewrite",
@@ -192,7 +143,6 @@ export class CompressProtocol {
 		};
 	}
 
-	/** Tool that accepts the newest reviewed draft. Thin adapter over {@link accept}. */
 	approveTool(): ToolDefinition {
 		return {
 			name: "approve",

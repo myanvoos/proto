@@ -1,6 +1,6 @@
-//! `xargs` builtin: build and execute command lines from standard input.
-//!
-//! Ported from uutils findutils 0.8.0.
+
+
+
 
 use std::{
 	collections::HashMap,
@@ -49,7 +49,7 @@ struct Options {
 	verbose:                 bool,
 }
 
-/// Parsed `xargs` invocation.
+
 pub(crate) struct Xargs {
 	matches: ArgMatches,
 }
@@ -58,11 +58,11 @@ matches_parser!(Xargs, app);
 
 #[derive(Debug, PartialEq, Eq)]
 enum ArgumentKind {
-	/// An argument provided as part of the initial command line.
+
 	Initial,
-	/// An argument that was terminated by a newline or custom delimiter.
+
 	HardTerminated,
-	/// An argument that was terminated by non-newline whitespace.
+
 	SoftTerminated,
 }
 
@@ -77,8 +77,8 @@ struct ExhaustedCommandSpace {
 	out_of_chars: bool,
 }
 
-/// A "limiter" to constrain the size of a single command line. Given a cursor
-/// pointing to the next limiter that should be tried.
+
+
 trait CommandSizeLimiter {
 	fn try_arg(
 		&mut self,
@@ -88,9 +88,9 @@ trait CommandSizeLimiter {
 	fn dyn_clone(&self) -> Box<dyn CommandSizeLimiter>;
 }
 
-/// A pointer to the next limiter. A limiter should *always* call the cursor's
-/// `try_next` *before* updating its own state, to ensure that all other
-/// limiters are okay with the argument first.
+
+
+
 struct LimiterCursor<'collection> {
 	limiters: &'collection mut [Box<dyn CommandSizeLimiter>],
 }
@@ -140,14 +140,14 @@ impl Clone for LimiterCollection {
 #[cfg(windows)]
 fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
 	use std::os::windows::ffi::OsStrExt;
-	// Include +1 for either the null terminator or trailing space.
+
 	s.encode_wide().count() + 1
 }
 
 #[cfg(unix)]
 fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
 	use std::os::unix::ffi::OsStrExt;
-	// Include +1 for the null terminator.
+
 	s.as_bytes().len() + 1
 }
 
@@ -164,15 +164,15 @@ impl MaxCharsCommandSizeLimiter {
 
 	#[cfg(windows)]
 	fn new_system(_env: &HashMap<OsString, OsString>) -> MaxCharsCommandSizeLimiter {
-		// Taken from the CreateProcess docs.
+
 		const MAX_CMDLINE: usize = 32767;
 		MaxCharsCommandSizeLimiter::new(MAX_CMDLINE)
 	}
 
 	#[cfg(unix)]
 	fn new_system(env: &HashMap<OsString, OsString>) -> Self {
-		// POSIX requires that we leave 2048 bytes of space so that the child processes
-		// can have room to set their own environment variables.
+
+
 		const ARG_HEADROOM: usize = 2048;
 		let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) } as usize;
 
@@ -260,10 +260,10 @@ impl CommandSizeLimiter for MaxLinesCommandSizeLimiter {
 	) -> Result<Argument, ExhaustedCommandSpace> {
 		if self.current_line <= self.max_lines {
 			let arg = cursor.try_next(arg)?;
-			// The name of this limiter is a bit of a lie: although this limits
-			// by max "lines", if a custom delimiter is used, xargs uses that
-			// instead. So, this actually limits based on the max amount of hard
-			// terminations.
+
+
+
+
 			if arg.kind == ArgumentKind::HardTerminated {
 				self.current_line += 1;
 			}
@@ -294,7 +294,7 @@ impl CommandResult {
 #[allow(dead_code, reason = "`Killed` is never constructed on Windows")]
 #[derive(Debug)]
 enum CommandExecutionError {
-	// exit code 255
+
 	UrgentlyFailed,
 	Killed { signal: i32 },
 	CannotRun(io::Error),
@@ -373,9 +373,9 @@ impl CommandBuilder<'_> {
 		};
 
 		let final_args: Vec<OsString> = if let Some(replace_str) = &self.options.replace {
-			// Replace all occurrences in initial args with the extra arg,
-			// Thanks to `MaxArgsCommandSizeLimiter`, we only process a single extra arg
-			// here.
+
+
+
 			let replacement = self.extra_args[0].to_string_lossy();
 			initial_args
 				.iter()
@@ -385,7 +385,7 @@ impl CommandBuilder<'_> {
 				})
 				.collect()
 		} else {
-			// don't do any replacement
+
 			initial_args
 				.iter()
 				.cloned()
@@ -413,7 +413,7 @@ impl CommandBuilder<'_> {
 				return Ok(CommandResult::Success);
 			}
 		} else if self.options.verbose {
-			// GNU-style `-t`: echo the command line about to run on stderr.
+
 			let _ = writeln!(host.stderr, "{line}");
 		}
 
@@ -524,7 +524,7 @@ impl ArgumentReader for WhitespaceDelimitedArgumentReader {
 		loop {
 			if i == pending.len() {
 				pending.resize(4096, 0);
-				// Already hit the end of our buffer, so read in some more data.
+
 				let bytes_read = loop {
 					match self.rd.read(host, &mut pending[..]) {
 						Ok(bytes_read) => break bytes_read,
@@ -713,7 +713,7 @@ fn process_input(
 	let mut result = CommandResult::Success;
 
 	while let Some(arg) = args.next(host)? {
-		// Stop launching new children once the host has cancelled the command.
+
 		if host.is_cancelled() {
 			return Ok(result);
 		}
@@ -788,14 +788,14 @@ fn normalize_options<'a>(
 ) -> (Option<usize>, Option<usize>, &'a Option<String>, Option<u8>) {
 	let (max_args, max_lines, replace) =
 		match (options.max_args, options.max_lines, &options.replace) {
-			// These 3 options are mutually exclusive.
-			// But `max_args=1` and `replace` do not actually conflict, so no warning.
+
+
 			(None | Some(1), None, Some(_)) => {
-				// If `replace`, all matches in initial args should be replaced with extra args
-				// read from stdin. It is possible to have multiple matches and multiple
-				// extra args, and the Cartesian product is desired. To be specific, we
-				// process extra args one by one, and replace all matches with the same extra
-				// arg in each time.
+
+
+
+
+
 				(Some(1), None, &options.replace)
 			},
 			(Some(_), None, None) | (None, Some(_), None) | (None, None, None) => {
@@ -839,8 +839,8 @@ fn normalize_options<'a>(
 		},
 		(Some(delimiter), false) => Some(delimiter),
 		(None, true) => Some(b'\0'),
-		// If `replace` and no delimiter specified, each line of stdin turns into a line of stdout,
-		// so the input should be split at newlines only.
+
+
 		(None, false) => replace.as_ref().map(|_| b'\n'),
 	};
 
@@ -1081,7 +1081,7 @@ impl Utility for Xargs {
 	}
 }
 
-/// Creates the `xargs` builtin registration.
+
 pub(crate) fn xargs_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Xargs, SE>()
 }

@@ -1,5 +1,5 @@
-# ty (astral type checker) output. Short-circuit on clean success,
-# otherwise strip ANSI and keep diagnostics.
+
+
 
 [filters.ty]
 description = "Compact ty (astral) type checker output"

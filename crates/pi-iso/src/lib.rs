@@ -1,22 +1,3 @@
-//! Cross-platform isolation PAL.
-//!
-//! A backend gives the caller a writable "merged" view of a read-only
-//! "lower" tree without paying for a deep copy:
-//!
-//! - **macOS** uses `clonefile(2)` to seed an APFS copy-on-write clone.
-//! - **Linux** mounts a kernel `overlay` filesystem, falling back to
-//!   `fuse-overlayfs` when the syscall is denied.
-//! - **`Rcopy`** is the cross-platform fallback: `git worktree` if `lower` is a
-//!   git repo, plain recursive copy otherwise.
-//!
-//! Every backend also knows how to surface the changes the workload made.
-//! When `merged` is a git repository — true for every git-backed task in
-//! proto regardless of which lifecycle backend was used —
-//! [`IsolationBackend::diff`] delegates to `git diff` so the output is
-//! byte-identical to what `git apply` consumes downstream. For non-git trees
-//! (only reachable via `Rcopy`) it walks both trees, using `(size, mtime)` as a
-//! cheap short-circuit before doing a content diff.
-
 #![cfg_attr(
 	not(any(target_os = "macos", target_os = "linux")),
 	allow(unused_imports, dead_code, reason = "platform without an isolation backend")
@@ -36,30 +17,22 @@ mod zfs;
 
 pub use diff::{ChangeKind, Diff, FileChange};
 
-/// Stable identifier for which backend a build was compiled with.
-///
-/// Exposed to callers so they can render diagnostics or pick mode-specific
-/// configuration without re-implementing the per-OS branching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendKind {
-	/// APFS `clonefile(2)` reflink clone (macOS).
 	Apfs,
-	/// btrfs `subvolume snapshot` clone (Linux + btrfs).
+
 	Btrfs,
-	/// ZFS dataset snapshot+clone (Linux/FreeBSD/macOS + a ZFS pool).
+
 	Zfs,
-	/// Linux `FICLONE` per-file reflink tree (btrfs, XFS+reflink, bcachefs, …).
+
 	LinuxReflink,
-	/// Kernel `overlay` filesystem (Linux), with optional `fuse-overlayfs`
-	/// fallback.
+
 	Overlayfs,
-	/// `git worktree` when `lower` is a git repo, otherwise plain recursive
-	/// copy. Always available; the universal fallback.
+
 	Rcopy,
 }
 
 impl BackendKind {
-	/// Short, stable string identifier. Used by the napi shim.
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Apfs => "apfs",
@@ -71,8 +44,6 @@ impl BackendKind {
 		}
 	}
 
-	/// Parse the inverse of [`Self::as_str`]. Returns `None` for unknown
-	/// strings so callers can surface a precise error.
 	#[allow(
 		clippy::should_implement_trait,
 		reason = "Option<Self> return is more ergonomic than FromStr's Result"
@@ -89,9 +60,6 @@ impl BackendKind {
 		})
 	}
 
-	/// Backend chosen for the current build target when the caller doesn't
-	/// specify one. Platform-native `CoW` first, [`Rcopy`](Self::Rcopy) as the
-	/// last resort.
 	pub const fn native() -> Self {
 		#[cfg(target_os = "macos")]
 		{
@@ -127,11 +95,6 @@ impl fmt::Display for BackendKind {
 	}
 }
 
-/// Result of a backend probe.
-///
-/// `available == false` means [`IsolationBackend::start`] will fail with
-/// [`IsoError::Unavailable`]; `reason` is a human-readable explanation
-/// suitable for surfacing in a UI.
 #[derive(Debug, Clone)]
 pub struct ProbeResult {
 	pub available: bool,
@@ -148,12 +111,6 @@ impl ProbeResult {
 	}
 }
 
-/// Error returned by every backend operation.
-///
-/// `Unavailable` is the only variant callers are expected to treat specially —
-/// it indicates the platform prerequisite is missing (no `overlay` support,
-/// etc.) and the workload should fall back rather than
-/// surface a hard failure.
 #[derive(Debug, Clone)]
 pub enum IsoError {
 	Unavailable(String),
@@ -190,11 +147,6 @@ impl std::error::Error for IsoError {}
 
 pub type IsoResult<T> = Result<T, IsoError>;
 
-/// Build the [`IsoError::Other`] for a failed external command, rendered as
-/// `<what> (exit <code>): <trimmed stderr>`.
-///
-/// `stderr` is decoded lossily. `code` is preformatted by the caller so
-/// per-site conventions for signal deaths (`-1` vs `?`) are preserved.
 pub(crate) fn command_failed(
 	what: impl fmt::Display,
 	code: impl fmt::Display,
@@ -204,19 +156,6 @@ pub(crate) fn command_failed(
 	IsoError::other(format!("{what} (exit {code}): {}", stderr.trim()))
 }
 
-/// Backend contract.
-///
-/// `lower` is the read-only source tree; `merged` is the destination where
-/// the writable view is materialised. Implementations are responsible for
-/// creating any auxiliary directories (e.g. overlayfs upper/work dirs) and
-/// for tearing them down in [`stop`](Self::stop).
-///
-/// `start` / `stop` are synchronous because the platform primitives they
-/// wrap (`mount`, `clonefile`) are blocking
-/// syscalls that callers are expected to drive from `spawn_blocking`.
-/// [`diff`](Self::diff) is async because it does heavy I/O — walking
-/// trees, reading files, spawning git — and benefits from the runtime
-/// interleaving requests with other work.
 #[async_trait]
 pub trait IsolationBackend: Send + Sync {
 	fn kind(&self) -> BackendKind;
@@ -227,37 +166,15 @@ pub trait IsolationBackend: Send + Sync {
 
 	fn stop(&self, merged: &Path) -> IsoResult<()>;
 
-	/// Capture the changes between `lower` and the current state of
-	/// `merged`. The default implementation delegates to `git diff` when
-	/// `merged` is a git working tree, otherwise walks both trees using
-	/// `(size, mtime)` to skip equal files before falling back to a
-	/// content comparison.
-	///
-	/// Backends are free to override when they know a cheaper path —
-	/// overlayfs can scan the upper dir — but the default is correct everywhere.
 	async fn diff(&self, lower: &Path, merged: &Path) -> IsoResult<Diff> {
 		diff::default_diff(lower, merged).await
 	}
 }
 
-/// Returns the backend selected for the current build target.
-///
-/// Each backend is a unit struct with no per-call state, so we hand out a
-/// `&'static` reference and avoid the indirection of building a fresh trait
-/// object on every call.
 pub fn default_backend() -> &'static dyn IsolationBackend {
 	backend(BackendKind::native())
 }
 
-/// Look up a backend by [`BackendKind`].
-///
-/// Every kind is dispatchable in every build; backends that aren't compiled
-/// in for the current target (`Apfs` off Linux/macOS, `Overlayfs` off macOS…)
-/// return their own platform stub which fails
-/// [`probe`](IsolationBackend::probe) with `available = false` and rejects
-/// [`start`](IsolationBackend::start) with [`IsoError::Unavailable`]. This way
-/// the napi shim can mirror the user's `task.isolation.mode` setting without an
-/// extra "is this platform" check.
 pub fn backend(kind: BackendKind) -> &'static dyn IsolationBackend {
 	match kind {
 		BackendKind::Apfs => apfs::backend(),
@@ -269,11 +186,6 @@ pub fn backend(kind: BackendKind) -> &'static dyn IsolationBackend {
 	}
 }
 
-/// Backend preference order for automatic isolation on this build target.
-///
-/// The order is intentionally broader than [`BackendKind::native`]: it tries
-/// filesystem-native snapshot/reflink mechanisms first, then mount/projection
-/// overlays, and keeps [`BackendKind::Rcopy`] as the universal final fallback.
 pub const fn auto_order() -> &'static [BackendKind] {
 	#[cfg(target_os = "macos")]
 	{
@@ -289,14 +201,6 @@ pub const fn auto_order() -> &'static [BackendKind] {
 	}
 }
 
-/// Outcome of [`resolve`].
-///
-/// `kind` is the first host-available backend to try. `candidates` contains
-/// every host-available backend in fallback order, starting with `kind`, so
-/// callers can retry when a backend is unavailable for a specific filesystem
-/// path. `fell_back` is `true` when a `preferred` choice (or earlier automatic
-/// candidate) was unusable. `reason` carries the first unavailable probe's
-/// explanation when available.
 #[derive(Debug, Clone)]
 pub struct Resolution {
 	pub kind:       BackendKind,
@@ -305,20 +209,6 @@ pub struct Resolution {
 	pub reason:     Option<String>,
 }
 
-/// Pick the best backend whose host-level prerequisites are available.
-///
-/// Caller priority:
-/// 1. If `preferred` is `Some` and its [`probe`](IsolationBackend::probe)
-///    reports `available`, use it as-is.
-/// 2. Otherwise walk [`auto_order`], skipping `preferred` if present.
-/// 3. [`BackendKind::Rcopy`] is the final automatic candidate and is expected
-///    to be available on every platform.
-///
-/// This is only a host-level probe. Some backends still reject a specific
-/// `lower`/`merged` pair at [`IsolationBackend::start`] time (cross-device
-/// reflinks, non-subvolume btrfs paths, non-ZFS mountpoints). Callers that can
-/// recover should retry the remaining automatic candidates when `start`
-/// returns [`IsoError::Unavailable`].
 pub fn resolve(preferred: Option<BackendKind>) -> Resolution {
 	let mut reason = None;
 	let mut candidates = Vec::with_capacity(auto_order().len() + usize::from(preferred.is_some()));

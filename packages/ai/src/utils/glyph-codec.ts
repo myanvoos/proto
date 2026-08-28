@@ -16,24 +16,20 @@ interface GlyphEncodedContext extends Context {
 	[kGlyphEncoded]: true;
 }
 
-/** Per-request glyph codec applied at the provider wire boundary. */
 export interface GlyphCodec {
-	/** Context with model-bound glyphs encoded and one conditional convention notice. */
 	context: Context;
-	/** Decodes glyph tokens in the stream's terminal assistant message. */
+
 	wrap(inner: AssistantMessageEventStream): AssistantMessageEventStream;
-	/** Decodes Cursor Pi calls and encodes their provider-bound results. */
+
 	wrapCursorExecHandlers(handlers: CursorExecHandlers): CursorExecHandlers;
-	/** Whether this request has encoded at least one glyph or literal token prefix. */
+
 	active: boolean;
 }
 
-/** Encode one string; returns the same reference when nothing changed. */
 export function encodeGlyphText(text: string): string {
 	return encodeGlyphTextInto(text);
 }
 
-/** Decodes glyph tokens and unescapes `⟦E⟧` to `⟦`. */
 export function decodeGlyphText(text: string): string {
 	return text.replace(GLYPH_DECODE_PATTERN, (token: string, hex: string | undefined) => {
 		if (token === GLYPH_ESCAPE) return GLYPH_OPEN;
@@ -42,10 +38,6 @@ export function decodeGlyphText(text: string): string {
 	});
 }
 
-/**
- * Encode a context for the provider wire without mutating stored history.
- * Reapplying it to the returned branded context is an inert identity pass.
- */
 export function applyGlyphCodec(context: Context): GlyphCodec {
 	if (isGlyphEncodedContext(context)) {
 		return {
@@ -62,9 +54,6 @@ export function applyGlyphCodec(context: Context): GlyphCodec {
 	let tools = context.tools;
 	let messages = context.messages;
 
-	// Context.systemPrompt is typed string[], but legacy (earendil-works)
-	// extensions pass a bare string; provider paths tolerate it via
-	// normalizeSystemPrompts, so normalize here before iterating.
 	const rawSystemPrompt = context.systemPrompt;
 	const sourceSystemPrompt = typeof rawSystemPrompt === "string" ? [rawSystemPrompt] : rawSystemPrompt;
 	if (sourceSystemPrompt !== undefined) {
@@ -432,7 +421,6 @@ function createCursorExecHandlersCodec(handlers: CursorExecHandlers, onEncoded: 
 			}
 		: undefined;
 
-	// Preserve class-backed handler objects; object spread drops prototype methods.
 	return new Proxy(handlers, {
 		get(target, property, receiver) {
 			switch (property) {

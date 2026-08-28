@@ -1,6 +1,6 @@
-//! In-process `fd` builtin backed by `pi_walker`, `globset`, and `regex`.
-//!
-//! Relocated from pi-shell's native implementation.
+
+
+
 
 use std::{
 	collections::HashMap,
@@ -33,135 +33,135 @@ use crate::host::{Host, Utility, util};
 	args_override_self = true
 )]
 struct FdCli {
-	/// Include hidden directories and files in the search results.
+
 	#[arg(short = 'H', long, overrides_with = "no_hidden")]
 	hidden: bool,
 
-	/// Do not include hidden directories and files.
+
 	#[arg(long = "no-hidden", overrides_with = "hidden", hide = true)]
 	no_hidden: bool,
 
-	/// Show search results from otherwise ignored files and directories.
+
 	#[arg(short = 'I', long = "no-ignore", overrides_with = "ignore")]
 	no_ignore: bool,
 
-	/// Respect ignore files.
+
 	#[arg(long = "ignore", overrides_with = "no_ignore", hide = true)]
 	ignore: bool,
 
-	/// Show search results ignored by `.gitignore` files.
+
 	#[arg(long = "no-ignore-vcs", overrides_with = "ignore_vcs")]
 	no_ignore_vcs: bool,
 
-	/// Respect `.gitignore` files.
+
 	#[arg(long = "ignore-vcs", overrides_with = "no_ignore_vcs", hide = true)]
 	ignore_vcs: bool,
 
-	/// Respect VCS ignore files even outside a git repository.
+
 	#[arg(long = "no-require-git", overrides_with = "require_git")]
 	no_require_git: bool,
 
-	/// Require a git repository for VCS ignore files.
+
 	#[arg(long = "require-git", overrides_with = "no_require_git", hide = true)]
 	require_git: bool,
 
-	/// Ignore parent-directory ignore files.
+
 	#[arg(long = "no-ignore-parent", overrides_with = "ignore_parent")]
 	no_ignore_parent: bool,
 
-	/// Respect parent-directory ignore files.
+
 	#[arg(long = "ignore-parent", overrides_with = "no_ignore_parent", hide = true)]
 	ignore_parent: bool,
 
-	/// Perform an unrestricted search, including ignored and hidden files.
+
 	#[arg(short = 'u', long = "unrestricted", action = ArgAction::Count)]
 	unrestricted: u8,
 
-	/// Perform a case-sensitive search.
+
 	#[arg(short = 's', long = "case-sensitive", overrides_with = "ignore_case")]
 	case_sensitive: bool,
 
-	/// Perform a case-insensitive search.
+
 	#[arg(short = 'i', long = "ignore-case", overrides_with = "case_sensitive")]
 	ignore_case: bool,
 
-	/// Perform a glob-based search instead of a regular expression search.
+
 	#[arg(short = 'g', long = "glob", overrides_with = "regex", conflicts_with = "fixed_strings")]
 	glob: bool,
 
-	/// Perform a regular-expression based search.
+
 	#[arg(long = "regex", overrides_with = "glob")]
 	regex: bool,
 
-	/// Treat the pattern as a literal substring.
+
 	#[arg(short = 'F', long = "fixed-strings", alias = "literal")]
 	fixed_strings: bool,
 
-	/// Add additional required search patterns.
+
 	#[arg(long = "and", value_name = "pattern", allow_hyphen_values = true)]
 	and_patterns: Vec<String>,
 
-	/// Show absolute instead of relative paths.
+
 	#[arg(short = 'a', long = "absolute-path", overrides_with = "relative_path")]
 	absolute_path: bool,
 
-	/// Show relative paths.
+
 	#[arg(long = "relative-path", overrides_with = "absolute_path", hide = true)]
 	relative_path: bool,
 
-	/// Use a detailed listing format like `ls -l`.
+
 	#[arg(short = 'l', long = "list-details", hide = true)]
 	list_details: bool,
 
-	/// Follow symbolic links.
+
 	#[arg(short = 'L', long = "follow", overrides_with = "no_follow")]
 	follow: bool,
 
-	/// Do not follow symbolic links.
+
 	#[arg(long = "no-follow", overrides_with = "follow", hide = true)]
 	no_follow: bool,
 
-	/// Match the pattern against the full absolute path.
+
 	#[arg(short = 'p', long = "full-path")]
 	full_path: bool,
 
-	/// Separate search results by the null character.
+
 	#[arg(short = '0', long = "print0")]
 	print0: bool,
 
-	/// Limit directory traversal depth.
+
 	#[arg(short = 'd', long = "max-depth", value_name = "depth")]
 	max_depth: Option<usize>,
 
-	/// Only show search results starting at the given depth.
+
 	#[arg(long = "min-depth", value_name = "depth")]
 	min_depth: Option<usize>,
 
-	/// Only show search results at the exact given depth.
+
 	#[arg(long = "exact-depth", value_name = "depth")]
 	exact_depth: Option<usize>,
 
-	/// Exclude files/directories that match the given glob pattern.
+
 	#[arg(short = 'E', long = "exclude", value_name = "pattern")]
 	excludes: Vec<String>,
 
-	/// Do not traverse into directories that match the search criteria.
+
 	#[arg(long = "prune")]
 	prune: bool,
 
-	/// Filter the search by type.
+
 	#[arg(short = 't', long = "type", value_name = "filetype")]
 	types: Vec<String>,
 
-	/// Filter search results by extension.
+
 	#[arg(short = 'e', long = "extension", value_name = "ext")]
 	extensions: Vec<String>,
 
-	/// Limit results based on file size.
+
 	#[arg(short = 'S', long = "size", value_name = "size")]
 	sizes: Vec<String>,
 
-	/// Show files changed within the given duration or after the given date.
+
 	#[arg(
 		long = "changed-within",
 		alias = "change-newer-than",
@@ -171,7 +171,7 @@ struct FdCli {
 	)]
 	changed_within: Option<String>,
 
-	/// Show files changed before the given duration or date.
+
 	#[arg(
 		long = "changed-before",
 		alias = "change-older-than",
@@ -180,87 +180,87 @@ struct FdCli {
 	)]
 	changed_before: Option<String>,
 
-	/// Filter files by numeric user and/or group id.
+
 	#[arg(short = 'o', long = "owner", value_name = "user:group")]
 	owners: Vec<String>,
 
-	/// Print results according to a template.
+
 	#[arg(long = "format", value_name = "fmt")]
 	format_template: Option<String>,
 
-	/// Execute a command for each search result.
+
 	#[arg(short = 'x', long = "exec", value_name = "cmd", num_args = 1.., allow_hyphen_values = true, hide = true)]
 	exec: Vec<OsString>,
 
-	/// Execute a command once with all search results as arguments.
+
 	#[arg(short = 'X', long = "exec-batch", value_name = "cmd", num_args = 1.., allow_hyphen_values = true, hide = true)]
 	exec_batch: Vec<OsString>,
 
-	/// Maximum number of arguments to pass to the command given with -X.
+
 	#[arg(long = "batch-size", default_value_t = 0, hide = true)]
 	batch_size: usize,
 
-	/// Add a custom ignore-file in `.gitignore` format.
+
 	#[arg(long = "ignore-file", value_name = "path")]
 	ignore_files: Vec<PathBuf>,
 
-	/// Declare when to use color for pattern match output.
+
 	#[arg(short = 'c', long = "color", value_enum, default_value_t = When::Auto)]
 	color: When,
 
-	/// Add a terminal hyperlink to a file:// URL for each path in the output.
+
 	#[arg(long = "hyperlink", value_enum, num_args = 0..=1, default_missing_value = "auto")]
 	hyperlink: Option<When>,
 
-	/// Ignore directories containing the named entry.
+
 	#[arg(long = "ignore-contain", value_name = "name")]
 	ignore_contains: Vec<OsString>,
 
-	/// Set number of threads to use for searching and executing.
+
 	#[arg(short = 'j', long = "threads", value_name = "num")]
 	threads: Option<usize>,
 
-	/// Limit the number of search results and quit immediately.
+
 	#[arg(long = "max-results", value_name = "count")]
 	max_results: Option<usize>,
 
-	/// Limit the search to a single result and quit immediately.
+
 	#[arg(short = '1')]
 	max_one_result: bool,
 
-	/// Do not print anything; return 0 if there is at least one match.
+
 	#[arg(short = 'q', long = "quiet", alias = "has-results")]
 	quiet: bool,
 
-	/// Enable display of filesystem errors.
+
 	#[arg(long = "show-errors")]
 	show_errors: bool,
 
-	/// Change the current working directory of fd to the provided path.
+
 	#[arg(short = 'C', long = "base-directory", value_name = "path")]
 	base_directory: Option<PathBuf>,
 
-	/// Set the path separator to use when printing file paths.
+
 	#[arg(long = "path-separator", value_name = "separator")]
 	path_separator: Option<String>,
 
-	/// Provide paths to search instead of positional path arguments.
+
 	#[arg(long = "search-path", value_name = "search-path")]
 	search_paths: Vec<PathBuf>,
 
-	/// Control whether ./ is stripped from command paths.
+
 	#[arg(long = "strip-cwd-prefix", value_enum, num_args = 0..=1, default_missing_value = "always")]
 	strip_cwd_prefix: Option<When>,
 
-	/// Do not descend into a different file system.
+
 	#[arg(long = "one-file-system")]
 	one_file_system: bool,
 
-	/// The search pattern.
+
 	#[arg(allow_hyphen_values = false)]
 	pattern: Option<String>,
 
-	/// Directories where the filesystem search is rooted.
+
 	#[arg(value_name = "path")]
 	paths: Vec<PathBuf>,
 }
@@ -582,9 +582,9 @@ impl Utility for FdCli {
 					0
 				}
 			},
-			// A closed downstream reader (`fd … | head`) surfaces as BrokenPipe on
-			// stdout writes. Real fd dies silently from SIGPIPE; mirror that with
-			// exit 141 (128+SIGPIPE) and no diagnostic.
+
+
+
 			Err(err) if err.kind() == io::ErrorKind::BrokenPipe => 141,
 			Err(err) => {
 				let _ = writeln!(host.stderr, "fd: {err}");
@@ -594,7 +594,7 @@ impl Utility for FdCli {
 	}
 }
 
-/// Creates the `fd` builtin registration.
+
 pub(crate) fn fd_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<FdCli, SE>()
 }
@@ -931,18 +931,18 @@ fn matches_walker_type_filter(
 	true
 }
 
-/// Builds a walker heartbeat closure that observes the host cancel flag.
-///
-/// The shared utility adapter flips `cancelled` when the shell cancellation
-/// token fires, then awaits the blocking task. Without this closure,
-/// `pi_walker`'s per-entry heartbeat never checks the flag and a cancelled walk
-/// keeps traversing until the whole tree is collected.
-/// Returning [`io::ErrorKind::Interrupted`] surfaces as
-/// [`pi_walker::WalkError::Interrupted`], which the callers translate to a
-/// silent break — the shared adapter owns the user-visible exit code (130), so
-/// no `fd:` diagnostic is emitted.
-///
-/// Regression cover for #3949 (fd) and #3933 (grep/rg — same class of defect).
+
+
+
+
+
+
+
+
+
+
+
+
 fn cancel_heartbeat(cancelled: &AtomicBool) -> impl Fn() -> io::Result<()> + Sync + '_ {
 	move || {
 		if cancelled.load(Ordering::Relaxed) {

@@ -1,17 +1,11 @@
-//! Filesystem listing and search filters.
-
 use std::{collections::BTreeMap, path::Path, sync::LazyLock};
 
 use regex::Regex;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, config::OutlineLevel, primitives};
 
-/// For `grep`: `-z` / `--null-data` (NUL line terminators) and `-Z` /
-/// `--null` (NUL after file names).
-/// For `rg`: `-0` / `--null` and `--null-data`.
 fn context_has_nul_output(command: &str, program: &str) -> bool {
 	command.split_whitespace().any(|tok| match program {
-		// -z may be clustered with other short flags (e.g. -zHn); --null-data is long.
 		"grep" => {
 			tok == "--null-data"
 				|| tok == "--null"
@@ -82,10 +76,6 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-/// Date/time anchor in `ls -l` output: month-name day time-or-year.
-/// E.g.: " Apr 28 10:00 " or " Dec 25  2024 " or " 2 feb 21:35 ".
-/// The `(?i)` flag makes month names case-insensitive for non-C locales.
-/// The trailing space ensures we do not match partial tokens.
 static LS_DATE_RE: LazyLock<Regex> = LazyLock::new(|| {
 	Regex::new(r"(?i)\s+(?:(?:\p{L}{3,}\.?\s+\d{1,2}|\d{1,2}\.?\s+\p{L}{3,}\.?)\s+(?:\d{4}|\d{2}:\d{2})|\d{4}[-/]\d{2}(?:[-/]\d{2})?\s+\d{2}:\d{2})\s+").unwrap()
 });
@@ -99,9 +89,6 @@ struct GrepMatch {
 	text:    String,
 }
 
-/// Legacy pre-PR behavior for grep/rg output: passthrough when
-/// `match_count <= 12 && grouped.len() <= 3` (or no recognized matches).
-/// Retained for the `legacy_filters_active` kill-switch.
 fn compact_grep_output_legacy(input: &str) -> String {
 	let mut grouped: BTreeMap<String, Vec<GrepMatch>> = BTreeMap::new();
 	let mut ungrouped = Vec::new();
@@ -216,11 +203,6 @@ fn collapse_match_text(text: &str) -> String {
 	center_truncate_match(&collapsed, 140)
 }
 
-/// Center-truncate grep/ripgrep match text so the match region stays visible.
-///
-/// Instead of truncating from the front (which loses matches deep in long
-/// lines), this centers the visible window. The heuristic biases toward
-/// non-whitespace content when the line has significant leading whitespace.
 fn center_truncate_match(text: &str, max_chars: usize) -> String {
 	if max_chars == 0 {
 		return String::new();
@@ -230,16 +212,6 @@ fn center_truncate_match(text: &str, max_chars: usize) -> String {
 		return text.to_string();
 	}
 
-	// Heuristic:
-	// - If the line has significant leading whitespace, bias toward the code region
-	//   shortly after indentation (common for grep hits inside indented code).
-	// - If the line is effectively one long token, bias earlier so identifiers that
-	//   appear before a long suffix still remain visible.
-	// - Otherwise center in the middle of the full line.
-	// Count leading whitespace in CHARS, not bytes: this value is compared and
-	// combined with char-based quantities (`char_count`, `max_chars`) and used as
-	// a char-stepping floor below. `str::find` returns a byte offset, which would
-	// overstate the index for any multibyte leading whitespace (NBSP, U+3000).
 	let first_non_ws = text.chars().take_while(|c| c.is_whitespace()).count();
 	let has_whitespace = text.chars().any(char::is_whitespace);
 	let anchor = if first_non_ws > 0 && first_non_ws < char_count / 3 {
@@ -256,7 +228,7 @@ fn center_truncate_match(text: &str, max_chars: usize) -> String {
 	if first_non_ws > 0 {
 		window_start = window_start.max(first_non_ws);
 	}
-	// Clamp so the window doesn't overshoot the end.
+
 	window_start = window_start.min(char_count.saturating_sub(window_size));
 
 	let mut out = String::with_capacity(max_chars + 12);
@@ -304,8 +276,6 @@ fn collapse_parenthesized_segment(text: &str, min_len: usize) -> String {
 	out
 }
 
-/// Legacy pre-PR behavior for find output: passthrough when `paths.len() <=
-/// 20`. Retained for the `legacy_filters_active` kill-switch.
 fn compact_find_output_legacy(input: &str) -> String {
 	let paths: Vec<&str> = input
 		.lines()
@@ -500,20 +470,15 @@ fn parse_ls_long_line(line: &str) -> Option<LsEntry> {
 		return None;
 	}
 
-	// Size is the rightmost parseable u64 before the date, but skip
-	// comma-separated device major/minor pairs.
 	let mut size = None;
 	if let Some((i, part)) = before_parts.iter().enumerate().next_back() {
 		if part.ends_with(',') {
-			// Major number of a device file — skip.
 		} else if let Ok(s) = part.parse::<u64>() {
 			if i > 0 && before_parts[i - 1].ends_with(',') {
-				// This numeric field is the minor number of a device file.
 			} else {
 				size = Some(s);
 			}
 		}
-		// Non-numeric field (e.g. owner/group word) before size: no size.
 	}
 
 	Some(LsEntry { name, is_dir: kind == 'd', size, is_file: kind == '-' })
@@ -898,9 +863,6 @@ fn render_source_declaration(trimmed: &str) -> String {
 	line
 }
 
-/// Aggressive source-outline body stripping for brace-based and indent-based
-/// languages. Returns `None` for languages we don't have a strip path for so
-/// the caller falls back to default outline rendering.
 fn aggressive_strip_bodies(input: &str, path: &str) -> Option<String> {
 	let ext = Path::new(path)
 		.extension()
@@ -914,15 +876,6 @@ fn aggressive_strip_bodies(input: &str, path: &str) -> Option<String> {
 	}
 }
 
-/// Replace the body of every function/method declaration with `{ ... }`,
-/// keeping signatures, doc comments, attributes, imports, and container
-/// declarations (`class`/`struct`/`enum`/`trait`/`impl`/`interface`/
-/// `namespace`/`module`) intact. We descend into container bodies so inner
-/// method signatures stay visible.
-///
-/// Brace depth tracking handles nested braces inside string/macro content
-/// imperfectly but conservatively — when in doubt we re-emit the original
-/// line.
 fn strip_brace_bodies(input: &str) -> String {
 	let mut out = String::with_capacity(input.len() / 2);
 	let mut skip_depth: i32 = 0;
@@ -984,10 +937,6 @@ fn brace_delta(line: &str) -> i32 {
 	delta
 }
 
-/// Only function-like declarations whose body we want to strip. Container
-/// declarations (`class`/`struct`/`enum`/`trait`/`impl`/`interface`/
-/// `namespace`/`module`) are intentionally NOT in this set so we keep
-/// descending and strip the methods inside them.
 fn is_function_body_starter(trimmed: &str) -> bool {
 	let without_attr = trimmed.trim_start_matches(['#', '[', ']']);
 	let without_vis = strip_leading_keywords(without_attr.trim_start());
@@ -1002,8 +951,7 @@ fn is_function_body_starter(trimmed: &str) -> bool {
 	{
 		return true;
 	}
-	// Reject container keywords explicitly so the TS-method fallback below
-	// can't mistakenly latch onto `class Foo(...)`/`type Foo = (...) => …`.
+
 	for kw in [
 		"class ",
 		"struct ",
@@ -1049,8 +997,6 @@ fn strip_leading_keywords(s: &str) -> &str {
 	current
 }
 
-/// Heuristic for TypeScript-style class methods: `name(args): Ret {` or
-/// `name(args) {`. We accept any identifier-like token followed by `(`.
 fn starts_with_ts_method(s: &str) -> bool {
 	let mut chars = s.char_indices();
 	let Some((_, first)) = chars.next() else {
@@ -1072,10 +1018,6 @@ fn starts_with_ts_method(s: &str) -> bool {
 	paren_idx.is_some()
 }
 
-/// Strip Python function bodies while preserving class members. Function and
-/// method declarations keep their signatures with a single placeholder body;
-/// class bodies are recursively outlined so method signatures and class
-/// attributes stay visible.
 fn strip_python_bodies(input: &str) -> String {
 	let lines: Vec<&str> = input.lines().collect();
 	let mut out = String::with_capacity(input.len() / 2);
@@ -1163,7 +1105,6 @@ fn compact_summary_output(input: &str, program: &str) -> String {
 			.filter(|line| {
 				let trimmed = line.trim_start();
 				if trimmed.starts_with("overlay") || trimmed.starts_with("none") {
-					// Keep container root: overlay/none mounted at "/"
 					return trimmed.split_whitespace().last() == Some("/");
 				}
 				!trimmed.starts_with("tmpfs")

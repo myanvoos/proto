@@ -1,4 +1,3 @@
-/** Neutral IR and parser for the benchmark's arktype-compatible definitions. */
 export type IR =
 	| { k: "unknown" }
 	| { k: "null" }
@@ -21,7 +20,6 @@ export interface PropIR {
 	hasDefault?: boolean;
 }
 
-/** Arktype-style string DSL, object literal, or `[def, "[]"]` array tuple. */
 export type Def = string | { [key: string]: Def } | readonly Def[];
 
 type Token =
@@ -247,7 +245,6 @@ function applyBound(node: IR, operator: string, value: number): IR {
 	return node;
 }
 
-/** Parse a benchmark definition into the neutral IR. */
 export function parseDef(definition: Def): IR {
 	if (typeof definition === "string") return new Parser(definition).parseTop().ir;
 	if (Array.isArray(definition)) {

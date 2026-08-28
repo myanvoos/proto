@@ -1,8 +1,8 @@
-//! `diff` builtin: compare files line by line using the `similar` library.
-//!
-//! Ported from `pi-uu-diff` 0.8.0, extended toward GNU diff: normal output by
-//! default, unified (`-u`/`-U`) and context (`-c`/`-C`) formats, whitespace and
-//! case ignore flags, `-x` exclusion globs, and `-r`-gated directory recursion.
+
+
+
+
+
 
 use std::{
 	borrow::Cow,
@@ -21,7 +21,7 @@ use similar::{Algorithm, DiffOp, DiffTag, capture_diff_slices};
 
 use crate::host::{Host, Utility, util};
 
-/// Parsed `diff` invocation.
+
 #[derive(Parser)]
 #[command(
 	name = "diff",
@@ -31,19 +31,19 @@ use crate::host::{Host, Utility, util};
 	infer_long_args = true
 )]
 pub(crate) struct Diff {
-	/// Output 3 lines of unified context.
+
 	#[arg(short = 'u', action = ArgAction::SetTrue)]
 	unified_flag: bool,
 
-	/// Output NUM lines of unified context.
+
 	#[arg(short = 'U', long = "unified", value_name = "NUM")]
 	unified: Option<usize>,
 
-	/// Output 3 lines of copied context.
+
 	#[arg(short = 'c', action = ArgAction::SetTrue, conflicts_with_all = ["unified_flag", "unified"])]
 	context_flag: bool,
 
-	/// Output NUM lines of copied context.
+
 	#[arg(
 		short = 'C',
 		long = "context",
@@ -52,52 +52,52 @@ pub(crate) struct Diff {
 	)]
 	context: Option<usize>,
 
-	/// Report only when files differ.
+
 	#[arg(short = 'q', long = "brief", action = ArgAction::SetTrue)]
 	brief: bool,
 
-	/// Report when two files are identical.
+
 	#[arg(short = 's', long = "report-identical-files", action = ArgAction::SetTrue)]
 	report_identical: bool,
 
-	/// Recursively compare any subdirectories found.
+
 	#[arg(short = 'r', long = "recursive", action = ArgAction::SetTrue)]
 	recursive: bool,
 
-	/// Treat absent files as empty.
+
 	#[arg(short = 'N', long = "new-file", action = ArgAction::SetTrue)]
 	new_file: bool,
 
-	/// Ignore case differences in file contents.
+
 	#[arg(short = 'i', long = "ignore-case", action = ArgAction::SetTrue)]
 	ignore_case: bool,
 
-	/// Ignore all white space.
+
 	#[arg(short = 'w', long = "ignore-all-space", action = ArgAction::SetTrue)]
 	ignore_all_space: bool,
 
-	/// Ignore changes in the amount of white space.
+
 	#[arg(short = 'b', long = "ignore-space-change", action = ArgAction::SetTrue)]
 	ignore_space_change: bool,
 
-	/// Ignore changes whose lines are all blank.
+
 	#[arg(short = 'B', long = "ignore-blank-lines", action = ArgAction::SetTrue)]
 	ignore_blank_lines: bool,
 
-	/// Strip trailing carriage return on input.
+
 	#[arg(long = "strip-trailing-cr", action = ArgAction::SetTrue)]
 	strip_trailing_cr: bool,
 
-	/// Exclude files whose base names match the PAT glob (directory diffs).
+
 	#[arg(short = 'x', long = "exclude", value_name = "PAT", action = ArgAction::Append)]
 	exclude: Vec<String>,
 
-	/// Use LABEL instead of a file name and timestamp in headers (may be
-	/// given twice: first for FILE1, second for FILE2).
+
+
 	#[arg(short = 'L', long = "label", value_name = "LABEL", action = ArgAction::Append)]
 	labels: Vec<OsString>,
 
-	/// Accepted for compatibility; output is never colorized.
+
 	#[arg(
 		long = "color",
 		value_name = "WHEN",
@@ -107,13 +107,13 @@ pub(crate) struct Diff {
 	)]
 	_color: Option<String>,
 
-	/// Files or directories to compare.
+
 	#[arg(required = true, num_args = 2, value_hint = clap::ValueHint::AnyPath)]
 	files: Vec<OsString>,
 }
 
-/// Selected output style. Real diff emits normal format unless a unified or
-/// context option is given.
+
+
 #[derive(Clone, Copy)]
 enum Format {
 	Normal,
@@ -137,15 +137,15 @@ struct Options<'a> {
 	excludes:            &'a [glob::Pattern],
 }
 
-/// A classified operand and its resolved filesystem path.
+
 enum Operand {
-	/// The builtin's standard input (`-`).
+
 	Stdin,
-	/// A regular (or other non-directory) file at the resolved path.
+
 	File(PathBuf),
-	/// A directory at the resolved path.
+
 	Dir(PathBuf),
-	/// A missing file tolerated by `-N` and compared as empty.
+
 	Absent,
 }
 
@@ -179,8 +179,8 @@ impl Utility for Diff {
 			host.error("too many file label options", 2);
 			return 2;
 		}
-		// Compile `-x` globs once; a syntactically invalid glob falls back to a
-		// literal name match, like fnmatch treating a bad bracket literally.
+
+
 		let excludes: Vec<glob::Pattern> = self
 			.exclude
 			.iter()
@@ -226,8 +226,8 @@ impl Utility for Diff {
 	}
 }
 
-/// Rewrites the obsolete attached count forms `-u3` / `-c3` into `-U3` / `-C3`,
-/// which clap can parse. Real GNU diff accepts both spellings.
+
+
 fn rewrite_obsolete_count(arg: &OsStr) -> Option<OsString> {
 	let text = arg.to_str()?;
 	let (upper, digits) = text
@@ -245,8 +245,8 @@ fn diff_main(files: &[OsString], opts: Options<'_>, host: &mut Host) -> Result<i
 	let mut op_a = classify(&name_a, opts.new_file, host)?;
 	let mut op_b = classify(&name_b, opts.new_file, host)?;
 
-	// GNU: comparing a directory with a non-directory compares
-	// <dir>/<basename-of-other> with the other operand.
+
+
 	let a_is_dir = matches!(op_a, Operand::Dir(_));
 	let b_is_dir = matches!(op_b, Operand::Dir(_));
 	if a_is_dir != b_is_dir {
@@ -272,8 +272,8 @@ fn diff_main(files: &[OsString], opts: Options<'_>, host: &mut Host) -> Result<i
 	Ok(i32::from(differed))
 }
 
-/// Replaces a directory operand with `<dir>/<basename of other>` for the GNU
-/// dir-vs-file comparison form.
+
+
 fn descend(dir: &Path, other: &Path) -> Result<PathBuf, String> {
 	let base = other
 		.file_name()
@@ -285,8 +285,8 @@ fn classify(name: &Path, new_file: bool, host: &Host) -> Result<Operand, String>
 	if name.as_os_str() == OsStr::new("-") {
 		return Ok(Operand::Stdin);
 	}
-	// Keep `name` for diagnostics and headers; only filesystem access uses the
-	// path resolved against the shell working directory.
+
+
 	let resolved = host.resolve(name);
 	match fs::metadata(&resolved) {
 		Ok(meta) if meta.is_dir() => Ok(Operand::Dir(resolved)),
@@ -296,9 +296,9 @@ fn classify(name: &Path, new_file: bool, host: &Host) -> Result<Operand, String>
 	}
 }
 
-/// Reads an operand's contents plus the modification time shown in unified and
-/// context headers. Stdin has no mtime (the current time is used); a `-N`
-/// absent file reports the epoch, like GNU's `/dev/null` stand-in.
+
+
+
 fn read_operand(
 	op: &Operand,
 	name: &Path,
@@ -323,8 +323,8 @@ fn read_operand(
 	}
 }
 
-/// One input split into lines without terminators, remembering whether the
-/// final line is missing its newline (for `\ No newline at end of file`).
+
+
 struct FileLines<'a> {
 	lines:           Vec<&'a str>,
 	missing_newline: bool,
@@ -340,8 +340,8 @@ impl<'a> FileLines<'a> {
 	}
 }
 
-/// Normalizes one line for comparison per the ignore flags. Output always
-/// shows the original lines; only equality testing sees this form.
+
+
 fn normalize_line<'a>(line: &'a str, opts: Options<'_>) -> Cow<'a, str> {
 	let mut norm: Cow<'a, str> = Cow::Borrowed(line);
 	if opts.strip_trailing_cr {
@@ -362,7 +362,7 @@ fn normalize_line<'a>(line: &'a str, opts: Options<'_>) -> Cow<'a, str> {
 	norm
 }
 
-/// Collapses each run of white space to a single space, GNU `-b` style.
+
 fn collapse_spaces(line: &str) -> String {
 	let mut out = String::with_capacity(line.len());
 	let mut in_space = false;
@@ -380,9 +380,9 @@ fn collapse_spaces(line: &str) -> String {
 	out
 }
 
-/// Comparison keys for a whole file. A final line missing its newline gets a
-/// NUL sentinel so `"a\n"` and `"a"` still compare unequal after
-/// normalization (real diff reports them with the no-newline marker).
+
+
+
 fn normalize_lines<'a>(file: &FileLines<'a>, opts: Options<'_>) -> Vec<Cow<'a, str>> {
 	let mut norm: Vec<Cow<'a, str>> =
 		file.lines.iter().map(|&line| normalize_line(line, opts)).collect();
@@ -394,7 +394,7 @@ fn normalize_lines<'a>(file: &FileLines<'a>, opts: Options<'_>) -> Vec<Cow<'a, s
 	norm
 }
 
-/// `-B`: a change is suppressed when every line it touches is blank.
+
 fn is_suppressed(
 	op: &DiffOp,
 	norm_a: &[Cow<'_, str>],
@@ -408,14 +408,14 @@ fn is_suppressed(
 	norm_a[op.old_range()].iter().all(blank) && norm_b[op.new_range()].iter().all(blank)
 }
 
-/// Writes one line to the builtin's stdout, mapping I/O failures like the
-/// rest of this module.
+
+
 fn wline(host: &mut Host, line: std::fmt::Arguments<'_>) -> Result<(), String> {
 	writeln!(host.stdout, "{line}").map_err(|e| io_msg(&e))
 }
 
-/// Diffs one pair of already-read inputs. `prefix` is the `diff -r A/x B/x`
-/// line emitted before per-pair output in directory mode.
+
+
 #[allow(clippy::too_many_arguments)]
 fn diff_pair(
 	name_a: &Path,
@@ -453,8 +453,8 @@ fn diff_pair(
 	let ops = capture_diff_slices(Algorithm::Myers, &norm_a, &norm_b);
 	let suppressed: Vec<bool> =
 		ops.iter().map(|op| is_suppressed(op, &norm_a, &norm_b, opts)).collect();
-	// Bytes differed, but every change is ignorable (-w/-b/-i/-B/CR): the
-	// files count as identical, exit 0.
+
+
 	if !ops.iter().zip(&suppressed).any(|(op, &sup)| op.tag() != DiffTag::Equal && !sup) {
 		if opts.report_identical {
 			wline(host, format_args!("Files {label_a} and {label_b} are identical"))?;
@@ -488,8 +488,8 @@ fn display_label(label: Option<&OsString>, name: &Path) -> String {
 	label.map_or_else(|| name.display().to_string(), |label| label.to_string_lossy().into_owned())
 }
 
-/// Unified/context header field: the label verbatim when given, otherwise
-/// `NAME<TAB>TIMESTAMP` with the GNU timestamp format.
+
+
 fn header(label: Option<&OsString>, name: &Path, mtime: Option<SystemTime>) -> String {
 	match label {
 		Some(label) => label.to_string_lossy().into_owned(),
@@ -497,8 +497,8 @@ fn header(label: Option<&OsString>, name: &Path, mtime: Option<SystemTime>) -> S
 	}
 }
 
-/// GNU header timestamp: `%Y-%m-%d %H:%M:%S.%N %z` in local time. Stdin has
-/// no mtime and uses the current time, like GNU.
+
+
 fn timestamp(mtime: Option<SystemTime>) -> String {
 	let time = mtime.unwrap_or_else(SystemTime::now);
 	chrono::DateTime::<chrono::Local>::from(time)
@@ -506,8 +506,8 @@ fn timestamp(mtime: Option<SystemTime>) -> String {
 		.to_string()
 }
 
-/// Writes `range` lines of `file` prefixed with `marker`, emitting the GNU
-/// `\ No newline at end of file` marker after the file's final line.
+
+
 fn write_marked(
 	host: &mut Host,
 	marker: &str,
@@ -523,7 +523,7 @@ fn write_marked(
 	Ok(())
 }
 
-/// `N` for a single line, `N,M` for a span; 1-based inclusive, normal format.
+
 fn normal_range(range: &Range<usize>) -> String {
 	if range.len() <= 1 {
 		(range.start + 1).to_string()
@@ -532,7 +532,7 @@ fn normal_range(range: &Range<usize>) -> String {
 	}
 }
 
-/// Default diff output: `3c3` / `<` / `---` / `>` change commands.
+
 fn write_normal(
 	host: &mut Host,
 	ops: &[DiffOp],
@@ -547,8 +547,8 @@ fn write_normal(
 		let (old_range, new_range) = (op.old_range(), op.new_range());
 		match op.tag() {
 			DiffTag::Delete => {
-				// `5d4`: the trailing number is the new-file line *after which*
-				// the deleted lines would have appeared (0 for a leading delete).
+
+
 				wline(host, format_args!("{}d{}", normal_range(&old_range), new_range.start))?;
 				write_marked(host, "< ", old_range, old)?;
 			},
@@ -571,9 +571,9 @@ fn write_normal(
 	Ok(())
 }
 
-/// Groups changed ops into hunks: two changes share a hunk when the equal run
-/// between them is at most `2 * context` lines. Hunks whose every change is
-/// `-B`-suppressed are dropped.
+
+
+
 fn group_ops(ops: &[DiffOp], suppressed: &[bool], context: usize) -> Vec<(usize, usize)> {
 	let mut groups: Vec<(usize, usize)> = Vec::new();
 	for (idx, op) in ops.iter().enumerate() {
@@ -598,15 +598,15 @@ fn group_ops(ops: &[DiffOp], suppressed: &[bool], context: usize) -> Vec<(usize,
 	groups
 }
 
-/// Equal-line context available before and after a hunk, clipped to `context`.
+
 fn group_padding(ops: &[DiffOp], first: usize, last: usize, context: usize) -> (usize, usize) {
 	let lead = if first > 0 { context.min(ops[first - 1].old_range().len()) } else { 0 };
 	let trail = ops.get(last + 1).map_or(0, |op| context.min(op.old_range().len()));
 	(lead, trail)
 }
 
-/// `@@` hunk range: `S,N` with 1-based start (the preceding line for an empty
-/// range); a count of 1 omits `,N`.
+
+
 fn unified_range(start: usize, count: usize) -> String {
 	match count {
 		0 => format!("{start},0"),
@@ -655,7 +655,7 @@ fn write_unified(
 	Ok(())
 }
 
-/// Context-format range: 1-based inclusive `S,E`; single line shows `S` only.
+
 fn context_range(start: usize, count: usize) -> String {
 	match count {
 		0 => start.to_string(),
@@ -681,7 +681,7 @@ fn write_context_format(
 		let group = &ops[first..=last];
 		wline(host, format_args!("***************"))?;
 		wline(host, format_args!("*** {} ****", context_range(old_start, old_count)))?;
-		// GNU omits a side's body entirely when it has no changes.
+
 		if group.iter().any(|op| matches!(op.tag(), DiffTag::Delete | DiffTag::Replace)) {
 			write_marked(host, "  ", old_start..ops[first].old_range().start, old)?;
 			for op in group {
@@ -713,14 +713,14 @@ fn write_context_format(
 	Ok(())
 }
 
-/// The `diff [-r] A/x B/x` line printed before each differing pair in
-/// directory mode.
+
+
 fn pair_prefix(name_a: &Path, name_b: &Path, opts: Options<'_>) -> String {
 	let flag = if opts.recursive { " -r" } else { "" };
 	format!("diff{flag} {} {}", name_a.display(), name_b.display())
 }
 
-/// True when a directory entry's base name matches an `-x` glob.
+
 fn is_excluded(name: &OsStr, excludes: &[glob::Pattern]) -> bool {
 	if excludes.is_empty() {
 		return false;
@@ -729,9 +729,9 @@ fn is_excluded(name: &OsStr, excludes: &[glob::Pattern]) -> bool {
 	excludes.iter().any(|pattern| pattern.matches(&name))
 }
 
-/// Compares two directories over the sorted union of their entries, GNU
-/// style: subdirectories recurse only under `-r`, otherwise a
-/// `Common subdirectories:` line is printed.
+
+
+
 fn diff_dirs(
 	name_a: &Path,
 	res_a: &Path,
@@ -759,8 +759,8 @@ fn diff_dirs(
 			return Err("interrupted".to_string());
 		}
 		let (child_name_a, child_name_b) = (name_a.join(&name), name_b.join(&name));
-		// Resolve every recursively discovered display path through the host too;
-		// the process's current directory is unrelated to the shell's.
+
+
 		let child_res_a = host.resolve(&child_name_a);
 		let child_res_b = host.resolve(&child_name_b);
 		let meta_a = fs::metadata(&child_res_a).ok();
@@ -869,13 +869,13 @@ fn diff_dirs(
 	Ok(differed)
 }
 
-/// NUL byte within the first 8 KiB marks the input as binary, matching GNU
-/// diff's heuristic for deciding between text and binary output.
+
+
 fn is_binary(bytes: &[u8]) -> bool {
 	bytes.iter().take(8192).any(|&byte| byte == 0)
 }
 
-/// Renders an I/O error without Rust's ` (os error N)` suffix.
+
 fn io_msg(err: &std::io::Error) -> String {
 	let msg = err.to_string();
 	match msg.find(" (os error") {
@@ -884,7 +884,7 @@ fn io_msg(err: &std::io::Error) -> String {
 	}
 }
 
-/// Creates the `diff` builtin registration.
+
 pub(crate) fn diff_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Diff, SE>()
 }

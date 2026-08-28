@@ -41,8 +41,6 @@ DB_PATH = Path.home() / ".proto" / "stats.db"
 OUT_DIR = Path(__file__).resolve().parent / "out"
 DEFAULT_SINCE = "2026-05-04"
 
-# Current code defaults, from packages/coding-agent/src/tools/read.ts and
-# packages/coding-agent/src/config/settings-schema.ts.
 CURRENT_DEFAULT = 500
 CURRENT_MAX_LINES = 3000
 CURRENT_LEADING = 3
@@ -108,7 +106,7 @@ class ReadCall:
     session: str
     file: str
     seq: int
-    kind: str  # explicit | open | default | raw | conflicts | other
+    kind: str
     start: int | None
     end: int | None
     arg_tokens: int
@@ -218,7 +216,6 @@ def parse_call(row) -> ReadCall | None:
         return None
     base, kind, start, end = parse_path_selector(path)
 
-    # Legacy/bridge fields override a bare path.
     if kind == "default":
         offset = obj.get("offset")
         limit = obj.get("limit")
@@ -240,15 +237,12 @@ def parse_call(row) -> ReadCall | None:
         return None
     ext = Path(base).suffix.lower()
     if ext not in TEXT_EXTS:
-        # Keep unknown extension text if it has line selectors, skip obvious binary-ish paths.
         if kind not in ("explicit", "open", "default"):
             return None
 
     current_lines = current_line_count(kind, start, end)
     rtok = int(result_tokens or 0)
     if current_lines > 0:
-        # Include the observed framing/line-number overhead in a per-line rate.
-        # Clamp avoids a one-line error response implying giant line cost.
         token_per_line = min(100.0, max(0.25, rtok / current_lines))
     else:
         token_per_line = 0.0
@@ -333,9 +327,6 @@ def estimate_cost(
 ) -> tuple[float, bool, bool]:
     lines = max(0, delivered[1] - delivered[0] + 1)
     line_tokens = call.token_per_line * lines
-    # Approximate byte cap. The implementation scales byte cap as
-    # max(50KiB, maxLinesToCollect * 512). For normal code line lengths this is
-    # rarely binding; keep the indicator so huge-line configs are visible.
     byte_budget = max(CURRENT_MAX_BYTES, lines * 512)
     approx_bytes = line_tokens * 4
     bytes_limited = approx_bytes > byte_budget
@@ -429,7 +420,6 @@ def replay(groups: dict[tuple[str, str], list[ReadCall]], cfg: Config) -> Replay
 
             lines = delivered[1] - delivered[0] + 1
             if lines >= cfg.max_lines and call.kind == "explicit":
-                # Candidate max cap would truncate this explicit request.
                 requested_len = max(
                     1, (call.end or call.start or 1) - (call.start or 1) + 1
                 )
@@ -453,8 +443,6 @@ def replay(groups: dict[tuple[str, str], list[ReadCall]], cfg: Config) -> Replay
 
             coverage = add_interval(coverage, delivered)
             if idx == 0 and selector_first:
-                # Check whether the first delivered interval covers every later
-                # bounded request in the historical group.
                 all_covered = True
                 for later in group[1:]:
                     later_req = requested_interval(later, cfg)
@@ -508,8 +496,6 @@ def pareto(
     max_truncations: int,
     max_regret_tokens: float = math.inf,
 ) -> list[ReplayResult]:
-    # Frontier over (tokens lower, calls lower), excluding configs that truncate
-    # more explicit requests than today's cap.
     clean = [
         r
         for r in results
@@ -528,10 +514,6 @@ def pareto(
 def choose_recommended(
     results: list[ReplayResult], current: ReplayResult
 ) -> ReplayResult:
-    # Objective: minimize tokens plus a small penalty for still needing calls,
-    # while requiring no *additional* explicit-request truncations and at least
-    # current first-call coverage. One avoided read call is valued at ~250
-    # tokens of ergonomics.
     viable = [
         r
         for r in results
@@ -723,7 +705,6 @@ def main() -> int:
         Config(CURRENT_DEFAULT, CURRENT_MAX_LINES, CURRENT_LEADING, CURRENT_TRAILING),
     )
     configs = candidate_grid(args)
-    # Ensure current is present even if user overrides grid.
     cur_cfg = Config(
         CURRENT_DEFAULT, CURRENT_MAX_LINES, CURRENT_LEADING, CURRENT_TRAILING
     )

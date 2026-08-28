@@ -1,12 +1,10 @@
 import type { AnyMessage } from "./transport";
 
-/** Bidirectional JSON-RPC message transport. */
 export interface Stream {
 	writable: WritableStream<AnyMessage>;
 	readable: ReadableStream<AnyMessage>;
 }
 
-/** Converts byte-oriented newline-delimited JSON streams to an ACP message transport. */
 export function ndJsonStream(output: WritableStream<Uint8Array>, input: ReadableStream<Uint8Array>): Stream {
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();

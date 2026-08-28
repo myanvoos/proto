@@ -1,38 +1,28 @@
-//! N-API filesystem DTOs and conversion helpers.
-//!
-//! `pi-walker` owns traversal and cache policy. This module keeps only the
-//! JavaScript-facing shapes plus conversions between walker entries and N-API
-//! payloads.
-
 use napi::{JsString, bindgen_prelude::*};
 use napi_derive::napi;
 
 use crate::js;
 
-/// Resolved filesystem entry kind for glob filters and match metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi]
 pub enum FileType {
-	/// Regular file.
 	File    = 1,
-	/// Directory.
+
 	Dir     = 2,
-	/// Symbolic link.
+
 	Symlink = 3,
 }
 
-/// A single filesystem entry from a directory scan.
 #[derive(Clone)]
 #[napi(object)]
 pub struct GlobMatch {
-	/// Relative path from the search root, using forward slashes.
-	pub path:      String,
-	/// Resolved filesystem type for the match.
+	pub path: String,
+
 	pub file_type: FileType,
-	/// Modification time in milliseconds since Unix epoch.
-	pub mtime:     Option<f64>,
-	/// File size in bytes for regular files.
-	pub size:      Option<f64>,
+
+	pub mtime: Option<f64>,
+
+	pub size: Option<f64>,
 }
 
 fn walker_error_to_napi<E: std::fmt::Display>(err: pi_walker::WalkError<E>) -> Error {
@@ -64,18 +54,10 @@ impl From<pi_walker::CollectedEntry> for GlobMatch {
 	}
 }
 
-/// Converts a native walker error into an N-API error.
 pub(crate) fn map_walker_error<E: std::fmt::Display>(err: pi_walker::WalkError<E>) -> Error {
 	walker_error_to_napi(err)
 }
 
-/// Invalidate the walker scan cache.
-///
-/// When called with a path, removes entries for roots containing that path.
-/// When called without a path, clears the entire cache.
-///
-/// Intended to be called after agent file mutations: write, edit, rename, or
-/// delete.
 #[napi]
 pub fn invalidate_fs_scan_cache(path: Option<JsString>) -> Result<()> {
 	match path {

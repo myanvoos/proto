@@ -14,14 +14,7 @@ const RUST_AFFECTING_FILE_NAMES = [
 	"rustfmt.toml",
 	".rustfmt.toml",
 ] as const satisfies readonly string[];
-// brush-core is a workspace member (kept as a path-patch so the vendored fork
-// stays self-contained), but the cargo dev tasks keep their historical scope:
-// the vendored fork is not held to workspace lint gates.
-//
-// pi-builtins is NOT excluded. It is first-party, and although it opts out of
-// the workspace's pedantic/nursery lints in its own manifest (most of it is
-// ported third-party code), it is held to default clippy and to zero rustc
-// warnings like everything else.
+
 const VENDORED_FORK_EXCLUDES = ["--exclude", "brush-core"] as const satisfies readonly string[];
 const TASK_COMMANDS = {
 	"check:rs": [
@@ -130,10 +123,6 @@ function isOneOf<T extends string>(value: string, values: readonly T[]): value i
 }
 
 async function resolveCargoBinary(): Promise<string> {
-	// On macOS runners, Homebrew's `rustup-init` binary is on PATH before the
-	// rustup proxies in `$CARGO_HOME/bin`, and invoking it as `cargo` falls
-	// through to its installer mode ("unexpected argument 'nextest' found").
-	// Ask rustup directly for the cargo binary in the active toolchain.
 	const result = await $`rustup which cargo`.cwd(repoRoot).quiet().nothrow();
 	if (result.exitCode === 0) {
 		const resolved = result.stdout.toString().trim();
@@ -148,9 +137,6 @@ async function runCommand(command: readonly string[]): Promise<number> {
 	const argv = isCargo ? [cargoBinary, ...rest] : [head, ...rest];
 	const env: Record<string, string> = { ...(process.env as Record<string, string>) };
 	if (isCargo) {
-		// Cargo subprocesses (notably `rustc -vV` from `cargo metadata`) resolve
-		// via PATH; ensure the active toolchain bin dir wins over Homebrew's
-		// rustup-init shadow on macOS runners.
 		const toolchainBin = path.dirname(cargoBinary);
 		const currentPath = env.PATH ?? "";
 		env.PATH = currentPath === "" ? toolchainBin : `${toolchainBin}:${currentPath}`;

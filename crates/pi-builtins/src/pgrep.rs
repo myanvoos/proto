@@ -1,11 +1,11 @@
-//! The `pgrep` process-matching command, moved from `pi-shell`.
+
 
 use brush_core::builtins;
 use clap::Parser;
 
 use crate::proc_match;
 
-/// Finds processes matching the supplied selection criteria.
+
 #[derive(Parser)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
 pub(crate) struct PgrepCommand {

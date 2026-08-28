@@ -1,10 +1,5 @@
 #!/usr/bin/env bun
 
-/**
- * Syncs ALL @oh-my-pi/* package dependency versions to match their current versions.
- * This ensures lockstep versioning across the monorepo.
- */
-
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -25,7 +20,6 @@ const packageDirs = readdirSync(packagesDir, { withFileTypes: true })
 	.filter(dirent => dirent.isDirectory())
 	.map(dirent => dirent.name);
 
-// Read all package.json files and build version map
 const packages: Record<string, PackageInfo> = {};
 const versionMap: Record<string, string> = {};
 
@@ -46,7 +40,6 @@ for (const [name, version] of Object.entries(versionMap).sort()) {
 	console.log(`  ${name}: ${version}`);
 }
 
-// Verify all versions are the same (lockstep)
 const versions = new Set(Object.values(versionMap));
 if (versions.size > 1) {
 	console.error("\nERROR: Not all packages have the same version!");
@@ -59,13 +52,11 @@ if (versions.size > 1) {
 
 console.log("\nAll packages at same version (lockstep)");
 
-// Update all inter-package dependencies
 let totalUpdates = 0;
 for (const dir in packages) {
 	const pkg = packages[dir];
 	let updated = false;
 
-	// Check dependencies
 	if (pkg.data.dependencies) {
 		for (const [depName, currentVersion] of Object.entries(pkg.data.dependencies)) {
 			if (versionMap[depName]) {
@@ -81,7 +72,6 @@ for (const dir in packages) {
 		}
 	}
 
-	// Check devDependencies
 	if (pkg.data.devDependencies) {
 		for (const [depName, currentVersion] of Object.entries(pkg.data.devDependencies)) {
 			if (versionMap[depName]) {
@@ -97,7 +87,6 @@ for (const dir in packages) {
 		}
 	}
 
-	// Write if updated
 	if (updated) {
 		await Bun.write(pkg.path, `${JSON.stringify(pkg.data, null, "\t")}\n`);
 	}

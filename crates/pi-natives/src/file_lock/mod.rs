@@ -1,9 +1,3 @@
-//! Cross-process advisory locks backed by platform ownership primitives.
-//!
-//! Linux uses abstract Unix sockets, so it leaves no filesystem artifact.
-//! Other Unix platforms use `flock(2)` on a persistent sidecar because they
-//! lack a process-owned in-memory name registry with automatic crash recovery.
-
 use napi::JsString;
 use napi_derive::napi;
 
@@ -32,11 +26,6 @@ fn memory_lock_name(path: &str) -> String {
 	format!("proto-file-lock-{high:016x}{low:016x}")
 }
 
-/// Process-owned cross-platform advisory lock.
-///
-/// `tryAcquire()` is non-blocking; its returned handle reports whether it won
-/// through `acquired`. Ownership ends on `release()`, garbage collection, or
-/// process exit; `release()` is idempotent.
 #[napi(js_name = "FileLock")]
 pub struct FileLock {
 	inner: Option<platform::PlatformFileLock>,
@@ -44,7 +33,6 @@ pub struct FileLock {
 
 #[napi]
 impl FileLock {
-	/// Try to acquire `path` without blocking.
 	#[napi(factory)]
 	pub fn try_acquire(path: JsString) -> napi::Result<Self> {
 		let path = js::utf8(path)?;
@@ -57,14 +45,12 @@ impl FileLock {
 		Ok(Self { inner })
 	}
 
-	/// Whether this handle owns the requested lock.
 	#[napi(getter)]
 	#[allow(clippy::missing_const_for_fn, reason = "napi method signature")]
 	pub fn acquired(&self) -> bool {
 		self.inner.is_some()
 	}
 
-	/// Release this handle's ownership without affecting a successor.
 	#[napi]
 	pub fn release(&mut self) -> napi::Result<()> {
 		let Some(mut inner) = self.inner.take() else {

@@ -1,14 +1,3 @@
-/**
- * `proto compress` — rewrite text files into the dense prompt register.
- *
- * One agent per file, two tools each. The agent submits a draft with `rewrite`; the
- * command answers with that draft, its measured size, and the losses the agent declared,
- * then asks for a verdict. The agent either resubmits or calls `approve`, which ends the
- * run. Only an approved draft is ever written.
- *
- * Verification is the agent's declared loss list plus the review turn — the command
- * deliberately runs no diff or keyword check of its own.
- */
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -27,35 +16,24 @@ const DEFAULT_MAX_ROUNDS = 3;
 const DEFAULT_CONCURRENCY = 4;
 const LOSS_PREVIEW = 200;
 
-/** User-facing options for `proto compress`. */
 interface CompressCommandOptions {
-	/** Files and glob patterns to compress. */
 	files: string[];
-	/** Model selector; defaults to the configured session model. */
+
 	model?: string;
-	/** Maximum drafts per file before that file gives up unapproved. Default 3. */
+
 	maxRounds?: number;
-	/** Concurrent files. Default 4. */
+
 	concurrency?: number;
-	/** Write the approved text here instead of stdout. Single file only. */
+
 	output?: string;
-	/** Overwrite each source file with its approved text. */
+
 	inPlace?: boolean;
 }
 
-/**
- * Expand `patterns` into a deduplicated, sorted list of absolute file paths.
- *
- * Entries containing glob metacharacters are matched against `cwd`; everything else is
- * treated as a literal path so filenames containing brackets still resolve. Throws when
- * a literal path is missing or a pattern matches nothing, since silently compressing
- * fewer files than asked is worse than failing.
- */
 export async function resolveCompressTargets(patterns: readonly string[], cwd: string): Promise<string[]> {
 	const found = new Set<string>();
 	for (const pattern of patterns) {
 		if (/[*?[\]{}]/.test(pattern)) {
-			// `dot: true` — prompt corpora live under dot directories such as `.proto/commands`.
 			const matches = new Bun.Glob(pattern).scanSync({ cwd, absolute: true, onlyFiles: true, dot: true });
 			let matched = 0;
 			for (const match of matches) {
@@ -73,15 +51,13 @@ export async function resolveCompressTargets(patterns: readonly string[], cwd: s
 	return [...found].sort();
 }
 
-/** Compress every requested file through the rewrite/approve loop. */
 export async function runCompressCommand(options: CompressCommandOptions): Promise<CompressResult> {
 	const maxRounds = options.maxRounds ?? DEFAULT_MAX_ROUNDS;
 	const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
 	if (!Number.isInteger(maxRounds) || maxRounds <= 0) throw new Error("--rounds must be a positive integer");
 	if (!Number.isInteger(concurrency) || concurrency <= 0) throw new Error("--agents must be a positive integer");
 	if (options.inPlace && options.output) throw new Error("--in-place and --out are mutually exclusive");
-	// Paths and patterns follow the shell's cwd, as a file-taking CLI must; the project
-	// dir only scopes settings discovery for the sessions.
+
 	const invocationDir = process.cwd();
 	const cwd = getProjectDir();
 	const targets = await resolveCompressTargets(options.files, invocationDir);
@@ -104,8 +80,6 @@ export async function runCompressCommand(options: CompressCommandOptions): Promi
 			targets,
 			Math.min(concurrency, targets.length),
 			async (target, index, signal) => {
-				// A failing file must not cancel its peers, and must still be reported: turn
-				// every failure into a result instead of letting it reject the batch entry.
 				let result: CompressFileResult;
 				try {
 					result = await compressFile({
@@ -142,7 +116,7 @@ export async function runCompressCommand(options: CompressCommandOptions): Promi
 			const error = reason instanceof Error ? reason.message : reason ? String(reason) : "Cancelled";
 			const cancelled: CompressFileResult = { path: target, status: "cancelled", rounds: 0, error };
 			files.push(cancelled);
-			// Never streamed from the worker, so report it here regardless of mode.
+
 			if (!progress.interactive) reportFile(cancelled, emitToStdout);
 		}
 		if (progress.interactive) for (const file of files) reportFile(file, emitToStdout);
@@ -154,18 +128,17 @@ export async function runCompressCommand(options: CompressCommandOptions): Promi
 	}
 }
 
-/** Run one file's rewrite/approve loop in its own isolated session. */
 async function compressFile(input: {
 	target: string;
-	/** Project dir scoping settings discovery for the session. */
+
 	cwd: string;
-	/** Shell cwd, used to resolve `--out`. */
+
 	invocationDir: string;
 	options: CompressCommandOptions;
 	maxRounds: number;
 	emitToStdout: boolean;
 	signal?: AbortSignal;
-	/** Position in the batch; only used to keep concurrent agent ids distinct. */
+
 	index: number;
 }): Promise<CompressFileResult> {
 	const { target, cwd, options, maxRounds } = input;
@@ -174,8 +147,7 @@ async function compressFile(input: {
 		return { path: target, status: "stalled", rounds: 0, error: "no text to compress" };
 	}
 	const protocol = new CompressProtocol(source);
-	// Delimiters carry a per-run nonce so a source document — which is itself a prompt,
-	// often full of tags — cannot close its own inert-data block early.
+
 	const nonce = randomUUID().slice(0, 8);
 	const { session } = await createCompressSession({
 		cwd,
@@ -201,8 +173,7 @@ async function compressFile(input: {
 		let reviewed = 0;
 		while (!protocol.approved) {
 			const draft = protocol.latest;
-			// No draft at all, a reviewed draft the agent neither replaced nor approved,
-			// or a draft past the budget: every one of these ends the run.
+
 			if (!draft || draft.round === reviewed || draft.round > maxRounds) break;
 			reviewed = draft.round;
 			protocol.markReviewed(draft.round);
@@ -233,13 +204,11 @@ async function compressFile(input: {
 	}
 }
 
-/** Send one prompt and wait for the agent to settle. */
 async function turn(session: AgentSession, text: string): Promise<void> {
 	await session.prompt(text, { expandPromptTemplates: false, synthetic: true, userInitiated: false });
 	await session.waitForIdle();
 }
 
-/** Quote a draft back to the agent with its size, its declared losses, and the verdict request. */
 function renderReview(input: {
 	protocol: CompressProtocol;
 	draft: CompressDraft;
@@ -266,10 +235,6 @@ function renderReview(input: {
 	});
 }
 
-/**
- * Print one file's outcome and declared losses on stderr, so the approved text can own
- * stdout for a single-file run (`proto compress f.md > out.md`).
- */
 function reportFile(file: CompressFileResult, emitToStdout: boolean): void {
 	const label = shortenPath(file.path);
 	if (file.error) {
@@ -296,7 +261,6 @@ function reportFile(file: CompressFileResult, emitToStdout: boolean): void {
 	if (emitToStdout && file.draft) console.log(file.draft.text);
 }
 
-/** Aggregate per-file outcomes into the command result and print the totals. */
 function summarize(files: CompressFileResult[], emitToStdout: boolean): CompressResult {
 	let sourceTokens = 0;
 	let draftTokens = 0;

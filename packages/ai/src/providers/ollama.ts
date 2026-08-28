@@ -252,32 +252,17 @@ function convertMessages(model: Model<"ollama-chat">, context: Context): OllamaM
 	const isCloud = model.provider === "ollama-cloud";
 	const supportsImages = model.input.includes("image");
 	const converted = transformMessages(messages, model).map((msg, index) => {
-		// Real `systemPrompt` entries (always emitted first) stay on Ollama's
-		// `system` role. After the static prefix, a developer turn keeps `system`
-		// when it's an agent-owned control instruction (empty/unexpected-stop
-		// retries, checkpoint rewind warning, todo reminders — all carry
-		// `attribution: "agent"`), but a user-attributed developer turn (auto-learn
-		// capture nudge, advisor cards, file-mention companions) drops to `user`.
-		// That keeps the in-conversation byte prefix stable for prefix caches
-		// (llama.cpp, #3456) without demoting mandatory agent reminders.
 		const developerRole =
 			msg.role === "developer" && (index < systemPrompts.length || msg.attribution !== "user") ? "system" : "user";
 		const converted = convertMessage(msg, supportsImages, developerRole);
-		// Ollama cloud rejects requests when assistant history messages contain the `thinking`
-		// field — it's valid in model responses but not accepted as a history input. Strip it
-		// to prevent HTTP 400 errors. Local Ollama instances are unaffected.
+
 		if (isCloud && converted.role === "assistant" && converted.thinking) {
 			const { thinking: _t, ...rest } = converted;
 			return rest;
 		}
 		return converted;
 	});
-	// Ollama returns `done_reason: "load"` and generates nothing when a request
-	// carries no `user`-role message (e.g. a plan-approval handoff into a fresh
-	// session whose only non-system turn is an agent-attributed developer message
-	// mapped to `system`). Demote the last non-prefix system turn to `user` so the
-	// request can actually produce output; the static system-prompt prefix stays
-	// on `system` for prefix caching. (#7465)
+
 	if (!converted.some(m => m.role === "user")) {
 		for (let i = converted.length - 1; i >= systemPrompts.length; i--) {
 			if (converted[i].role === "system") {
@@ -303,17 +288,6 @@ function convertTools(tools: Tool[] | undefined): OllamaFunctionTool[] | undefin
 	}));
 }
 
-/**
- * Ollama Cloud rejects `num_predict` above this value with HTTP 400
- * (`max_tokens (...) exceeds model's maximum output tokens (65536)`).
- * The cap currently applies uniformly to cloud-served models; the cloud-side
- * limit was confirmed empirically against `deepseek-v4-pro`/`-flash` and is
- * the same cap surfaced for every other Ollama Cloud model we've probed.
- *
- * Acts as a wire-level safety net so stale `models.db` rows (or custom
- * `modelOverrides` re-enabling `num_predict`) cannot 400 the request — even
- * when `model.omitMaxOutputTokens` was never applied. See #3392.
- */
 const OLLAMA_CLOUD_NUM_PREDICT_CAP = 65_536;
 
 function resolveNumPredict(model: Model<"ollama-chat">, requested: number): number {
@@ -431,9 +405,6 @@ function mapDoneReason(doneReason: string | undefined, output: AssistantMessage)
 		return "toolUse";
 	}
 	if (doneReason === "load") {
-		// Ollama emits done_reason:"load" (model loaded, nothing generated) when a
-		// request has no user-role turn. Surface it as an error rather than a clean
-		// empty stop so it isn't laundered and retried behind a misleading hint. (#7465)
 		return "error";
 	}
 	if (doneReason === undefined && output.content.some(block => block.type === "toolCall")) {
@@ -477,9 +448,7 @@ const streamOllamaOnce = (
 			? new StreamMarkupHealing({ pattern: streamMarkupHealingPattern })
 			: undefined;
 		let healedToolCallEmitted = false;
-		// Once the provider streams native reasoning (`message.thinking`), drop any
-		// thinking the text-channel healer also recovers so a model that emits both
-		// does not double-count its reasoning.
+
 		let suppressHealedThinking = false;
 		const endActiveTextBlock = (): void => {
 			if (activeTextIndex === undefined) return;
@@ -586,16 +555,11 @@ const streamOllamaOnce = (
 				url: `${baseUrl}/api/chat`,
 				body,
 			};
-			// Direct callers that bypass `register-builtins` (which installs
-			// the iterator-level watchdog) need a pre-response timer alongside
-			// `timeout: false`; otherwise an Ollama server that accepts the
-			// POST and never streams headers would hang forever (issue #2422).
+
 			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
 			const firstEventTimeoutMs =
 				options.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
-			// Cleared the instant headers arrive (below) so the pre-response timer
-			// never aborts the actively streaming body — an absolute
-			// `AbortSignal.timeout` would (issue #2422).
+
 			const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
 			let response: Response;
 			try {
@@ -735,10 +699,7 @@ const streamOllamaOnce = (
 			if (output.stopReason === "error" && !output.errorMessage) {
 				output.errorMessage = EMPTY_OLLAMA_LOAD_COMPLETION_MESSAGE;
 			}
-			// Tool calls always mean "execute and continue" in the OpenAI/Ollama contract.
-			// If the turn produced tool-call blocks but reported a natural `stop`, promote
-			// to `toolUse` so the agent loop runs them (it gates execution on the stop
-			// reason). `length`/`aborted`/`error` are intentionally left untouched.
+
 			if (output.stopReason === "stop" && output.content.some(block => block.type === "toolCall")) {
 				output.stopReason = "toolUse";
 			}
@@ -783,6 +744,5 @@ const streamOllamaOnce = (
 	return stream;
 };
 
-/** Retry EOS-only Ollama completions before the agent loop sees an empty stop. */
 export const streamOllama: StreamFunction<"ollama-chat"> = (model, context, options) =>
 	withEmptyCompletionRetry(model, context, options, streamOllamaOnce);

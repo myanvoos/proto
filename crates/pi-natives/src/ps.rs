@@ -1,10 +1,3 @@
-//! N-API bindings for cross-platform process tree management.
-//!
-//! The platform-specific implementation lives in [`pi_shell::process`]; this
-//! module is a thin shim that exposes that crate's `Process` surface to
-//! JavaScript and re-exports the termination primitives used by other native
-//! modules (e.g. [`crate::pty`]).
-
 use std::time::Duration;
 
 use napi::{
@@ -20,36 +13,29 @@ use crate::{js::into_string, task};
 #[derive(Default)]
 #[napi(object)]
 pub struct ProcessTerminateOptions<'env> {
-	/// Also signal the process group when supported by the platform.
-	pub group:       Option<bool>,
-	/// Milliseconds to wait after polite termination before hard-killing.
-	/// Omit to use the default grace period. Pass a negative value to skip the
-	/// graceful phase and hard-kill immediately.
+	pub group: Option<bool>,
+
 	pub graceful_ms: Option<i32>,
-	/// Milliseconds to wait after hard-kill for the process tree to exit.
-	pub timeout_ms:  Option<u32>,
-	/// Abort signal for cancelling termination while waiting.
-	pub signal:      Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
 }
 
-/// Options for waiting on a process exit.
 #[derive(Default)]
 #[napi(object)]
 pub struct ProcessWaitOptions<'env> {
-	/// Milliseconds to wait before returning false. Omit to wait indefinitely.
 	pub timeout_ms: Option<u32>,
-	/// Abort signal for cancelling the wait.
-	pub signal:     Option<Unknown<'env>>,
+
+	pub signal: Option<Unknown<'env>>,
 }
 
-/// Current state of a process reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi(string_enum)]
 pub enum ProcessStatus {
-	/// The referenced process is still running.
 	#[napi(value = "running")]
 	Running,
-	/// The referenced process has exited or is no longer observable.
+
 	#[napi(value = "exited")]
 	Exited,
 }
@@ -63,7 +49,6 @@ impl From<CoreProcessStatus> for ProcessStatus {
 	}
 }
 
-/// Stable process reference.
 #[napi]
 #[derive(Clone)]
 pub struct Process {
@@ -73,13 +58,11 @@ pub struct Process {
 #[napi]
 #[allow(clippy::use_self, reason = "napi return types must name the exported class")]
 impl Process {
-	/// Open a stable process reference from a PID.
 	#[napi]
 	pub fn from_pid(pid: i32) -> Option<Process> {
 		core_process::Process::from_pid(pid).map(Self::from_inner)
 	}
 
-	/// Open stable process references whose executable path matches exactly.
 	#[napi]
 	pub fn from_path(path: JsString) -> Result<Vec<Process>> {
 		Ok(core_process::Process::from_path(into_string(path)?)
@@ -88,39 +71,26 @@ impl Process {
 			.collect())
 	}
 
-	/// Operating-system process identifier for this process reference.
 	#[napi(getter)]
 	pub const fn pid(&self) -> i32 {
 		self.inner.pid()
 	}
 
-	/// Parent process id for this process, when available.
 	#[napi(getter)]
 	pub fn ppid(&self) -> Option<i32> {
 		self.inner.ppid()
 	}
 
-	/// Launch arguments for this process.
 	#[napi]
 	pub fn args(&self) -> Vec<String> {
 		self.inner.args()
 	}
 
-	/// Send `signal` to this process and its descendants, children first.
-	///
-	/// On Linux and macOS the signal is forwarded as-is. On Windows there is no
-	/// signal abstraction, so the `signal` argument is ignored and the entire
-	/// tree is hard-killed via `TerminateProcess`. Defaults to the POSIX
-	/// hard-kill signal.
 	#[napi]
 	pub fn kill_tree(&self, signal: Option<i32>) -> u32 {
 		self.inner.kill_tree(signal)
 	}
 
-	/// Gracefully terminate this process and its descendants.
-	///
-	/// By default this waits 1000ms after polite termination before
-	/// hard-killing. Pass `graceful_ms < 0` to skip the graceful phase.
 	#[napi]
 	pub fn terminate<'env>(
 		&self,
@@ -141,9 +111,6 @@ impl Process {
 		})
 	}
 
-	/// Wait until this process exits.
-	///
-	/// When `options.timeout_ms` is omitted, waits until the process exits.
 	#[napi]
 	pub fn wait_for_exit<'env>(
 		&self,
@@ -164,14 +131,12 @@ impl Process {
 		})
 	}
 
-	/// Process group id for this process, when supported by the platform.
 	#[napi]
 	#[allow(clippy::missing_const_for_fn, reason = "#[napi] generates a non-const wrapper")]
 	pub fn group_id(&self) -> Option<i32> {
 		self.inner.group_id()
 	}
 
-	/// Direct children of this process as stable process references.
 	#[napi]
 	pub fn children(&self) -> Vec<Process> {
 		self
@@ -182,7 +147,6 @@ impl Process {
 			.collect()
 	}
 
-	/// Current status of this process reference.
 	#[napi]
 	pub fn status(&self) -> ProcessStatus {
 		self.inner.status().into()

@@ -1,15 +1,3 @@
-/**
- * `/trajectory` — inspect and export the session's model-visible history.
- *
- * TUI: opens the fullscreen trajectory ledger (turn-aware event list with a
- * per-step inspector), mirroring the DeepSeek-harness trajectory view.
- * Text/ACP: prints a compact ledger summary; `export` verbs work everywhere.
- *
- * Exports:
- * - `otel`     — OTLP/JSON traces document using GenAI semantic conventions
- *                (replayable into any OTLP collector/backend).
- * - `prime-rl` — Prime Intellect verifiers-v1 Episode JSONL (prime-rl-ready).
- */
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { trajectoryToOtlpJson } from "../session/trajectory/export-otel";
@@ -36,7 +24,6 @@ interface ExportRequest {
 	error?: string;
 }
 
-/** Parse `<kind> [<path>] [--reward <score>]` export arguments. */
 function parseExportArgs(rest: string): ExportRequest {
 	const tokens = rest.split(/\s+/).filter(Boolean);
 	const kind = tokens.shift()?.toLowerCase();
@@ -59,7 +46,6 @@ function parseExportArgs(rest: string): ExportRequest {
 	return { kind, path: positional[0], reward };
 }
 
-/** Serialize + write one export file; returns a user-facing status line. */
 async function writeExport(trajectory: Trajectory, request: ExportRequest, cwd: string): Promise<string> {
 	const target = request.path ?? defaultExportPath(cwd, trajectory.header?.id ?? "session", request.kind);
 	const payload =
@@ -72,7 +58,6 @@ async function writeExport(trajectory: Trajectory, request: ExportRequest, cwd: 
 	return `Wrote ${request.kind === "otel" ? "OTLP" : "prime-rl episode"} export (${trajectory.steps.length} steps) → ${target}`;
 }
 
-/** Compact plain-text ledger summary shared by TUI inline output and ACP. */
 function formatStats(trajectory: Trajectory): string {
 	const lines: string[] = [];
 	const title = trajectory.header?.title ?? "(untitled)";
@@ -96,14 +81,12 @@ function formatStats(trajectory: Trajectory): string {
 	return lines.join("\n");
 }
 
-/** Resolve args to a verb plus optional export request. */
 function resolveCommand(args: string): { verb: string; request?: ExportRequest } {
 	const { verb, rest } = parseSubcommand(args);
 	if (verb === "export") return { verb, request: parseExportArgs(rest) };
 	return { verb };
 }
 
-/** Text/ACP-mode handler; the TUI dispatcher supersedes it via `handleTui`. */
 async function handleText(command: ParsedSlashCommand, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const trajectory = buildSessionTrajectory(runtime.sessionManager);
 	const { verb, request } = resolveCommand(command.args);

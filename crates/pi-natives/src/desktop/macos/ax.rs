@@ -23,19 +23,14 @@ const AX_TIMEOUT_SECONDS: f32 = 2.0;
 type GetWindowIdFn = unsafe extern "C" fn(&AXUIElement, *mut u32) -> AXError;
 
 static GET_WINDOW_ID: LazyLock<Option<GetWindowIdFn>> = LazyLock::new(|| {
-	// SAFETY: The symbol name is a static NUL-terminated string for process-wide
-	// lookup.
 	let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"_AXUIElementGetWindow".as_ptr()) };
 	if symbol.is_null() {
 		None
 	} else {
-		// SAFETY: `_AXUIElementGetWindow` has the exact AXUIElementRef, CGWindowID* ->
-		// AXError ABI above.
 		Some(unsafe { mem::transmute::<*mut c_void, GetWindowIdFn>(symbol) })
 	}
 });
 
-/// Processes already asked to expose their renderer accessibility tree.
 static MANUAL_ACCESSIBILITY: LazyLock<Mutex<HashSet<libc::pid_t>>> =
 	LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -45,8 +40,6 @@ unsafe extern "C" {
 }
 
 pub(super) fn is_trusted() -> bool {
-	// SAFETY: This non-prompting TCC query takes no arguments and only reads
-	// current trust state.
 	unsafe { AXIsProcessTrusted() }
 }
 
@@ -63,17 +56,14 @@ impl MacAx {
 		self.perform(&root, "AXRaise")
 	}
 }
-/// Make the addressed window the app's main/focused window while foreground
-/// delivery has deliberately activated the app. This is best-effort at the
-/// input callsite because keyboard delivery must still work without AX trust.
+
 pub(super) fn prepare_foreground_input(window: &DesktopWindow) -> CoreResult<()> {
 	let mut backend = MacAx::new();
 	let root = backend.window_root(window)?;
 	let element = mac_handle(&root)?;
 	for attribute in ["AXMain", "AXFocused"] {
 		let attribute = CFString::from_str(attribute);
-		// SAFETY: The retained element, attribute, and singleton CFBoolean remain
-		// valid for the synchronous setter call.
+
 		let _ = unsafe { element.set_attribute_value(&attribute, CFBoolean::new(true)) };
 	}
 	backend.perform(&root, "AXRaise")
@@ -96,8 +86,7 @@ impl AxBackend for MacAx {
 		if let (Some(get_id), Some(expected_id)) = (*GET_WINDOW_ID, expected_id) {
 			for element in &windows {
 				let mut actual_id = 0u32;
-				// SAFETY: `actual_id` is writable and this retained AX element remains alive
-				// for the call.
+
 				if unsafe { get_id(element, &mut actual_id) } == AXError::Success
 					&& actual_id == expected_id
 				{
@@ -106,8 +95,7 @@ impl AxBackend for MacAx {
 				}
 			}
 		}
-		// Older systems may hide the private window-id SPI. Match title and global
-		// frame together, then title alone only when it is unique.
+
 		let mut title_match = None;
 		for element in windows {
 			let title = copy_string(&element, "AXTitle").unwrap_or_default();
@@ -170,8 +158,7 @@ impl AxBackend for MacAx {
 		let element = mac_handle(h)?;
 		let native = action_name(action);
 		let action = CFString::from_str(&native);
-		// SAFETY: The retained element and action CFString remain valid for the
-		// synchronous AX request.
+
 		let error = unsafe { element.perform_action(&action) };
 		ax_result(error, format!("AX action '{native}' failed"))
 	}
@@ -180,8 +167,7 @@ impl AxBackend for MacAx {
 		let element = mac_handle(h)?;
 		let attribute = CFString::from_str("AXValue");
 		let value = CFString::from_str(value);
-		// SAFETY: The element, attribute, and value remain retained for the synchronous
-		// setter call.
+
 		let error = unsafe { element.set_attribute_value(&attribute, &value) };
 		ax_result(error, "AXValue is not settable; no typing fallback was attempted")
 	}
@@ -189,8 +175,7 @@ impl AxBackend for MacAx {
 	fn focus(&mut self, h: &AxHandle) -> CoreResult<()> {
 		let element = mac_handle(h)?;
 		let attribute = CFString::from_str("AXFocused");
-		// SAFETY: The singleton CFBoolean and retained element remain valid for the
-		// synchronous setter call.
+
 		let error = unsafe { element.set_attribute_value(&attribute, CFBoolean::new(true)) };
 		ax_result(error, "setting AXFocused=true failed")
 	}
@@ -212,8 +197,7 @@ impl AxBackend for MacAx {
 		set_timeout(&system)?;
 		let mut output: *const AXUIElement = ptr::null();
 		let slot = NonNull::from(&mut output);
-		// SAFETY: `slot` is writable and the system-wide element remains retained
-		// through the synchronous hit-test.
+
 		let error = unsafe { system.copy_element_at_position(x as f32, y as f32, slot) };
 		if error == AXError::NoValue {
 			return Ok(None);
@@ -260,24 +244,15 @@ fn ensure_trusted() -> CoreResult<()> {
 }
 
 fn create_application(pid: libc::pid_t) -> CoreResult<CFRetained<AXUIElement>> {
-	// SAFETY: AXUIElementCreateApplication accepts any process id and returns a +1
-	// retained CF object.
 	let raw = unsafe { AXUIElementCreateApplication(pid) };
 	let pointer = NonNull::new(raw).ok_or_else(|| {
 		DesktopError::ax_failed(format!("AXUIElementCreateApplication({pid}) returned null"))
 	})?;
-	// SAFETY: Create-rule ownership transfers the +1 AXUIElement reference into
-	// CFRetained.
+
 	Ok(unsafe { CFRetained::from_raw(pointer) })
 }
 
-/// Chromium-family apps build their renderer accessibility tree lazily. Reading
-/// the application role activates modern Chrome's native AX mode, while older
-/// Chromium/Electron builds also honor `AXManualAccessibility`. A process that
-/// rejects the manual setter incurs no readiness delay.
 fn enable_web_accessibility(pid: libc::pid_t, app: &AXUIElement) {
-	// Modern Chromium treats an assistive client's role query as the activation
-	// signal. Older Chromium/Electron builds use the manual setter below.
 	let _ = copy_string(app, "AXRole");
 	{
 		let mut enabled = MANUAL_ACCESSIBILITY
@@ -287,29 +262,22 @@ fn enable_web_accessibility(pid: libc::pid_t, app: &AXUIElement) {
 			return;
 		}
 		let attribute = CFString::from_str("AXManualAccessibility");
-		// SAFETY: The retained element, attribute, and singleton CFBoolean remain
-		// valid for the synchronous setter call.
+
 		let error = unsafe { app.set_attribute_value(&attribute, CFBoolean::new(true)) };
 		if error != AXError::Success {
-			// Manual activation is unsupported; leave no stale pid marker.
 			enabled.remove(&pid);
 			return;
 		}
 	}
-	// The renderers publish their trees over IPC after the switch flips, so the
-	// first snapshot would otherwise race a still-empty web area.
+
 	thread::sleep(Duration::from_millis(500));
 }
 
 fn create_system_wide() -> CFRetained<AXUIElement> {
-	// SAFETY: The framework constructor returns a valid create-rule retained
-	// system-wide element.
 	unsafe { AXUIElement::new_system_wide() }
 }
 
 fn set_timeout(element: &AXUIElement) -> CoreResult<()> {
-	// SAFETY: The retained AX element remains valid for the synchronous timeout
-	// update.
 	let error = unsafe { element.set_messaging_timeout(AX_TIMEOUT_SECONDS) };
 	ax_result(error, "AXUIElementSetMessagingTimeout(2.0) failed")
 }
@@ -321,8 +289,7 @@ fn copy_attribute_result(
 	let attribute = CFString::from_str(attribute);
 	let mut output: *const CFType = ptr::null();
 	let slot = NonNull::from(&mut output);
-	// SAFETY: `slot` is writable and receives a create-rule retained CF object on
-	// success.
+
 	let error = unsafe { element.copy_attribute_value(&attribute, slot) };
 	if error != AXError::Success {
 		return Err(error);
@@ -330,7 +297,7 @@ fn copy_attribute_result(
 	let Some(pointer) = NonNull::new(output.cast_mut()) else {
 		return Ok(None);
 	};
-	// SAFETY: AXUIElementCopyAttributeValue returns a +1 object on success.
+
 	Ok(Some(unsafe { CFRetained::from_raw(pointer) }))
 }
 
@@ -388,7 +355,7 @@ fn copy_elements_optional(
 	let array = copy_attribute(element, attribute)?
 		.downcast::<CFArray>()
 		.ok()?;
-	// SAFETY: AXWindows/AXChildren are documented CFArray<AXUIElement> values.
+
 	let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
 	Some(
 		array
@@ -401,15 +368,14 @@ fn copy_elements_optional(
 fn copy_attribute_names(element: &AXUIElement) -> CoreResult<Vec<CFRetained<CFType>>> {
 	let mut output: *const CFArray = ptr::null();
 	let slot = NonNull::from(&mut output);
-	// SAFETY: `slot` is writable and receives a create-rule retained CFArray on
-	// success.
+
 	let error = unsafe { element.copy_attribute_names(slot) };
 	ax_result(error, "AXUIElementCopyAttributeNames failed")?;
 	let pointer = NonNull::new(output.cast_mut())
 		.ok_or_else(|| DesktopError::ax_failed("AX attribute names returned null"))?;
-	// SAFETY: The successful copy call returned this array at +1 retain count.
+
 	let array: CFRetained<CFArray> = unsafe { CFRetained::from_raw(pointer) };
-	// SAFETY: AXUIElementCopyAttributeNames returns a CFArray of CFString CFTypes.
+
 	let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
 	Ok(array.iter().collect())
 }
@@ -417,17 +383,16 @@ fn copy_attribute_names(element: &AXUIElement) -> CoreResult<Vec<CFRetained<CFTy
 fn copy_strings_from_action_names(element: &AXUIElement) -> Vec<String> {
 	let mut output: *const CFArray = ptr::null();
 	let slot = NonNull::from(&mut output);
-	// SAFETY: `slot` is writable and receives a create-rule retained CFArray on
-	// success.
+
 	if unsafe { element.copy_action_names(slot) } != AXError::Success {
 		return Vec::new();
 	}
 	let Some(pointer) = NonNull::new(output.cast_mut()) else {
 		return Vec::new();
 	};
-	// SAFETY: The successful copy call returned this array at +1 retain count.
+
 	let array: CFRetained<CFArray> = unsafe { CFRetained::from_raw(pointer) };
-	// SAFETY: AXUIElementCopyActionNames returns a CFArray of CFString CFTypes.
+
 	let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
 	array
 		.iter()
@@ -449,12 +414,10 @@ fn bounds(element: &AXUIElement) -> Option<AxBounds> {
 		.ok()?;
 	let mut point = CGPoint { x: 0.0, y: 0.0 };
 	let mut dimensions = CGSize { width: 0.0, height: 0.0 };
-	// SAFETY: The output pointer targets a live CGPoint and the requested type
-	// matches AXPosition.
+
 	let got_point =
 		unsafe { position.value(AXValueType::CGPoint, NonNull::from(&mut point).cast()) };
-	// SAFETY: The output pointer targets a live CGSize and the requested type
-	// matches AXSize.
+
 	let got_size = unsafe { size.value(AXValueType::CGSize, NonNull::from(&mut dimensions).cast()) };
 	if !got_point || !got_size {
 		return None;
@@ -470,13 +433,10 @@ fn bounds(element: &AXUIElement) -> Option<AxBounds> {
 fn retained_element(pointer: *const AXUIElement) -> CoreResult<CFRetained<AXUIElement>> {
 	let pointer = NonNull::new(pointer.cast_mut())
 		.ok_or_else(|| DesktopError::ax_failed("AX operation returned a null element"))?;
-	// SAFETY: Successful AX copy operations return their output element at +1
-	// retain count.
+
 	Ok(unsafe { CFRetained::from_raw(pointer) })
 }
 
-// Single-arm match kept: the handle-access call contract stays uniform
-// across backends.
 #[allow(clippy::unnecessary_wraps, reason = "uniform handle-access call contract")]
 fn mac_handle(handle: &AxHandle) -> CoreResult<&AXUIElement> {
 	match handle {

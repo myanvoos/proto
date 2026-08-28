@@ -1,11 +1,3 @@
-/**
- * Interactive alt-screen monitor for `proto ps` (btop idiom): a live process
- * table over every selected broker scope with in-place actions.
- *
- * Keys — table: `↑/↓`/`j/k` select, `enter`/`i` info, `l` logs, `s` stop,
- * `x` kill, `r` restart, `a` toggle all scopes, `q`/`esc`/`ctrl+c` quit.
- * Sub-views (info, logs): `esc`/`q` back.
- */
 import { type Component, matchesKey, ProcessTerminal, TUI, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -39,7 +31,6 @@ interface FlatRow {
 
 type PsTopView = "table" | "info" | "logs";
 
-/** Options accepted by the interactive monitor: scope selection from the list flags. */
 interface PsTopOptions extends PsTarget {
 	all: boolean;
 }
@@ -53,7 +44,7 @@ class PsTopComponent implements Component {
 	#reports: PsScopeReport[] = [];
 	#flat: FlatRow[] = [];
 	#selected = 0;
-	/** `runtimeDir\u0000name` of the selection, kept stable across refreshes. */
+
 	#selectedKey: string | undefined;
 	#scrollTop = 0;
 	#view: PsTopView = "table";
@@ -87,8 +78,6 @@ class PsTopComponent implements Component {
 		for (const client of this.#clients.values()) client.close();
 		this.#clients.clear();
 	}
-
-	// -- data ----------------------------------------------------------------
 
 	async #refresh(): Promise<void> {
 		if (this.#refreshing || this.#disposed) return;
@@ -139,8 +128,6 @@ class PsTopComponent implements Component {
 		this.#statusAt = Date.now();
 		this.#ui.requestRender();
 	}
-
-	// -- actions ---------------------------------------------------------------
 
 	async #act(verb: "stop" | "kill" | "restart"): Promise<void> {
 		const entry = this.#flat[this.#selected];
@@ -231,8 +218,6 @@ class PsTopComponent implements Component {
 		this.#ui.requestRender();
 	}
 
-	// -- input -----------------------------------------------------------------
-
 	handleInput(data: string): void {
 		if (matchesKey(data, "ctrl+c")) {
 			this.#done.resolve();
@@ -265,8 +250,6 @@ class PsTopComponent implements Component {
 		this.#selectedKey = flatKey(this.#flat[this.#selected]);
 		this.#ui.requestRender();
 	}
-
-	// -- render ------------------------------------------------------------
 
 	render(width: number): readonly string[] {
 		const height = Math.max(6, this.#ui.terminal.rows);
@@ -309,7 +292,6 @@ class PsTopComponent implements Component {
 		const renderRow = (row: string[]): string =>
 			`   ${row.map((cell, column) => cell + " ".repeat(Math.max(0, widths[column] - Bun.stringWidth(cell)))).join("  ")}`.trimEnd();
 
-		// Body lines with the flat index carried for selection highlighting.
 		const body: { text: string; flat?: number }[] = [];
 		let flatIndex = 0;
 		for (const report of this.#reports) {
@@ -331,7 +313,6 @@ class PsTopComponent implements Component {
 		}
 		if (body.length === 0) body.push({ text: chalk.dim(" No daemon broker scopes found.") });
 
-		// Keep the selected line inside the viewport.
 		const selectedLine = body.findIndex(line => line.flat === this.#selected);
 		if (selectedLine >= 0) {
 			if (selectedLine < this.#scrollTop) this.#scrollTop = selectedLine;
@@ -400,7 +381,6 @@ function flatKey(entry: FlatRow): string {
 	return `${entry.scope.runtimeDir}\u0000${entry.row.snapshot.name}`;
 }
 
-/** Run the fullscreen interactive process monitor until the user quits. */
 export async function runPsTop(options: PsTopOptions): Promise<void> {
 	const ui = new TUI(new ProcessTerminal());
 	const component = new PsTopComponent(ui, options);

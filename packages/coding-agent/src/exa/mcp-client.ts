@@ -1,12 +1,10 @@
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ExaSearchResponse } from "./types";
 
-/** Find EXA_API_KEY from Bun.env or .env files */
 export function findApiKey(): string | null {
 	return $env.EXA_API_KEY;
 }
 
-/** Format search results for LLM */
 export function formatSearchResults(data: ExaSearchResponse): string {
 	const results = data.results ?? [];
 	if (results.length === 0) return "No results found.";
@@ -37,7 +35,7 @@ export function formatSearchResults(data: ExaSearchResponse): string {
 
 	return output.trim();
 }
-/** Check if result is a search response */
+
 export function isSearchResponse(data: unknown): data is ExaSearchResponse {
 	return (
 		typeof data === "object" &&

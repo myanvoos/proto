@@ -1,34 +1,21 @@
 import * as AIError from "../error";
 import type { AssistantMessage, AssistantMessageEvent } from "../types";
 
-/** Anything a stream watchdog can consult for in-flight consumer-side local work. */
 export interface LocalWorkSource {
 	readonly hasPendingLocalWork: boolean;
 }
 
-// Generic event stream class for async iteration
 export class EventStream<T, R = T> implements AsyncIterable<T> {
 	queue: T[] = [];
 	waiting: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (err: unknown) => void }> = [];
 	done = false;
-	/** True once finalResultPromise has been resolved or rejected. */
+
 	resultSettled = false;
 	#failed = false;
 	#error: unknown = undefined;
-	/**
-	 * Consumer-side local operations currently in flight for this stream — a
-	 * provider transport waiting on a server-requested local tool bridge
-	 * (e.g. the Cursor exec channel) before it can send the result upstream.
-	 * While non-zero, event silence is attributable to our own pending work,
-	 * not a provider stall; idle watchdogs consult {@link hasPendingLocalWork}.
-	 */
+
 	#pendingLocalWork = 0;
-	/**
-	 * A downstream stream whose local work also counts as ours — set when this
-	 * stream forwards another stream's events (e.g. the Cursor discovered-id
-	 * retry drains an inner stream), so the watchdog on this stream sees the
-	 * inner exec bridge's busy state instead of aborting a healthy tool run.
-	 */
+
 	#localWorkDelegate: LocalWorkSource | undefined;
 	finalResultPromise: Promise<R>;
 	resolveFinalResult!: (result: R) => void;
@@ -38,8 +25,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 	constructor(isComplete: (event: T) => boolean, extractResult: (event: T) => R) {
 		const { promise, resolve, reject } = Promise.withResolvers<R>();
-		// Prevent an unhandled rejection when fail() is called but nobody awaits result().
-		// Callers who do await result() still receive the rejection normally.
+
 		promise.catch(() => {});
 		this.finalResultPromise = promise;
 		this.resolveFinalResult = resolve;
@@ -57,7 +43,6 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			this.resolveFinalResult(this.extractResult(event));
 		}
 
-		// Deliver to waiting consumer or queue it
 		const waiter = this.waiting.shift();
 		if (waiter) {
 			waiter.resolve({ value: event, done: false });
@@ -81,14 +66,12 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			this.resultSettled = true;
 			this.resolveFinalResult(result);
 		} else if (!this.resultSettled) {
-			// end() without a terminal value must still settle result() —
-			// otherwise complete()/result() awaits hang forever.
 			this.resultSettled = true;
 			this.rejectFinalResult(
 				new AIError.ProviderResponseError("Stream ended without a final result", { kind: "envelope" }),
 			);
 		}
-		// Notify all waiting consumers that we're done
+
 		while (this.waiting.length > 0) {
 			const waiter = this.waiting.shift()!;
 			waiter.resolve({ value: undefined as any, done: true });
@@ -137,25 +120,14 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		return this.finalResultPromise;
 	}
 
-	/** True while local work tracked via {@link trackLocalWork} — on this stream or a forwarded delegate — is pending. */
 	get hasPendingLocalWork(): boolean {
 		return this.#pendingLocalWork > 0 || (this.#localWorkDelegate?.hasPendingLocalWork ?? false);
 	}
 
-	/**
-	 * Count `source`'s pending local work as this stream's own. Used when this
-	 * stream forwards another's events (Cursor discovered-id retry) so the
-	 * watchdog does not abort a live tool run happening on the inner stream.
-	 * Pass `undefined` to detach once forwarding ends.
-	 */
 	forwardLocalWorkFrom(source: LocalWorkSource | undefined): void {
 		this.#localWorkDelegate = source;
 	}
 
-	/**
-	 * Track a local-work promise so idle watchdogs on this stream do not treat
-	 * the event silence while it is pending as a provider stall.
-	 */
 	async trackLocalWork<TWork>(work: Promise<TWork>): Promise<TWork> {
 		this.#pendingLocalWork++;
 		try {
@@ -188,7 +160,6 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 			AIError.classifyMessage(event.error);
 		}
 
-		// Completion resolves the final result and still emits the terminal event.
 		if (this.isComplete(event)) {
 			this.done = true;
 			this.resultSettled = true;
@@ -207,8 +178,6 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 			this.resultSettled = true;
 			this.resolveFinalResult(result);
 		} else if (!this.resultSettled) {
-			// Mirror the base class: a result-less end() must not leave
-			// result() pending forever.
 			this.resultSettled = true;
 			this.rejectFinalResult(
 				new AIError.ProviderResponseError("Stream ended without a final result", { kind: "envelope" }),
@@ -218,7 +187,6 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 	}
 }
 
-/** Create an assistant-message event stream for legacy extension providers. */
 export function createAssistantMessageEventStream(): AssistantMessageEventStream {
 	return new AssistantMessageEventStream();
 }

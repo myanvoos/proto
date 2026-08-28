@@ -1,37 +1,15 @@
 import { scheduler } from "node:timers/promises";
 
-// "reset after 1h2m3s" / "10m15s" / "39s"
 const QUOTA_RESET_PATTERN = /reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
-// "Please retry in 250ms" / "Please retry in 12s"
+
 const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
-// JSON field: "retryDelay": "34.074824224s"
+
 const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
-// "try again in 250ms" / "try again in 12s" / "try again in 12sec" /
-// "try again in 5 min" / "try again in ~158 min." / "try again in 2h" /
-// "try again in 90 minutes" / "try again in 1 hour"
+
 const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
-// "Your limit will reset in 13 minutes" / "reset in 13 minutes" / "will reset in 2h"
+
 const WILL_RESET_IN_PATTERN = /(?:will\s+)?reset in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 
-/**
- * Server-suggested retry delay extraction. Merges the patterns historically used
- * by the OpenAI Codex and Google Gemini retry helpers.
- *
- * Header sources (checked in order):
- *  - `retry-after-ms` (milliseconds)
- *  - `Retry-After` (numeric seconds, or HTTP date)
- *  - `x-ratelimit-reset-ms` (delta ms, or Unix epoch ms/s for large values)
- *  - `x-ratelimit-reset` (Unix epoch seconds)
- *  - `x-ratelimit-reset-after` (seconds)
- *
- * Body patterns:
- *  - `Your quota will reset after 18h31m10s` / `10m15s` / `39s`
- *  - `Please retry in 250ms` / `Please retry in 12s`
- *  - `"retryDelay": "34.074824224s"` (JSON error detail field)
- *  - `try again in 250ms` / `try again in 12s` / `try again in 5 min` / `try again in ~158 min`
- *
- * Returns `undefined` if no signal is found.
- */
 export function extractRetryHint(source: Response | Headers | null | undefined, body?: string): number | undefined {
 	const headers = source instanceof Headers ? source : (source?.headers ?? undefined);
 	if (headers) {
@@ -51,7 +29,6 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 		if (rateLimitResetMs) {
 			const value = Number(rateLimitResetMs);
 			if (Number.isFinite(value) && value > 0) {
-				// > 1e12 → epoch ms; > 1e9 → epoch s; otherwise a delta in ms.
 				const targetMs = value > 1e12 ? value : value > 1e9 ? value * 1000 : undefined;
 				if (targetMs === undefined) return value;
 				const delta = targetMs - Date.now();
@@ -85,10 +62,7 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 			if (totalMs > 0) return totalMs;
 		}
 	}
-	// Account-reset hints ("will reset in …") take precedence over short
-	// retry hints ("please retry in 5s"): a body carrying both must honour the
-	// longer account window, not the shorter generic one. QUOTA_RESET_PATTERN
-	// ("reset after …") above already runs first and stays first.
+
 	for (const pattern of [WILL_RESET_IN_PATTERN, PLEASE_RETRY_PATTERN, RETRY_DELAY_FIELD_PATTERN, TRY_AGAIN_PATTERN]) {
 		const match = pattern.exec(body);
 		if (match?.[1]) {
@@ -127,60 +101,24 @@ function unitToMs(unit: string): number | undefined {
 }
 
 export interface FetchWithRetryOptions extends RequestInit {
-	/** Total fetch attempts (initial + retries). Default `5`. */
 	maxAttempts?: number;
-	/**
-	 * Per-delay cap. Server-provided `Retry-After` hints exceeding this return
-	 * the current response immediately — caller deals with the `!response.ok`.
-	 * Default `60_000`.
-	 */
+
 	maxDelayMs?: number;
-	/**
-	 * Fallback delay schedule when no server hint is present. Number, array
-	 * (indexed by attempt, clamped to last), or function. Default exponential
-	 * `500ms * 2 ** attempt` capped at `maxDelayMs`.
-	 */
+
 	defaultDelayMs?: number | readonly number[] | ((attempt: number) => number);
-	/**
-	 * Optional per-attempt overlay merged into the base `RequestInit` each try.
-	 * Headers from the overlay shallow-merge over the base. Useful for auth
-	 * token refresh or user-agent rotation.
-	 */
+
 	prepareInit?: (attempt: number) => RequestInit | Promise<RequestInit>;
-	/**
-	 * Optional `fetch` implementation override. Defaults to `globalThis.fetch`.
-	 * Useful for routing requests through a proxy, instrumented transport, or
-	 * mock during tests.
-	 */
+
 	fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-	/**
-	 * Optional retry gate for HTTP responses whose status is retryable. Receives a
-	 * cloned body string so callers can fail fast on deterministic provider
-	 * failures that happen to use a 5xx status.
-	 */
+
 	shouldRetryResponse?: (response: Response, bodyText: string, attempt: number) => boolean | Promise<boolean>;
-	/**
-	 * Bun extension forwarded verbatim to the underlying `fetch` call. `false`
-	 * disables Bun's native ~300s pre-response timeout (callers that own a
-	 * configurable first-event/idle watchdog or an external `AbortSignal`
-	 * supply this so the runtime ceiling cannot pre-empt them); a positive
-	 * number sets a custom ceiling in ms. Bare browser/Node fetch ignores it.
-	 */
+
 	timeout?: number | false;
 }
 
 const DEFAULT_MAX_DELAY_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
 
-/**
- * Fetch with bounded retries and sensible defaults. Retries on any
- * `isRetryableStatus` (5xx, 408, 429) and on transient network errors. Server
- * `Retry-After`/quota hints are honoured up to `maxDelayMs`; a hint that exceeds
- * the cap returns the current response so the caller can fail fast. Aborts on
- * `init.signal` propagate as `"Request was aborted"`.
- *
- * The caller is responsible for inspecting `!response.ok` once the call returns.
- */
 export async function fetchWithRetry(
 	url: string | URL | ((attempt: number) => string | URL),
 	options: FetchWithRetryOptions = {},
@@ -200,13 +138,7 @@ export async function fetchWithRetry(
 	for (let attempt = 0; ; attempt++) {
 		if (signal?.aborted) throw new Error("Request was aborted");
 		const requestUrl = typeof url === "function" ? url(attempt) : url;
-		// `timeout` is destructured out of `baseInit`, so forward it to the underlying
-		// fetch on the no-`prepareInit` path too. Without this, callers that pass
-		// `timeout: false` (every streaming provider, to disable Bun's native ~300s
-		// fetch ceiling in favor of their own first-event/idle watchdog) had it
-		// silently dropped, so long-running streams were killed at ~300s (issue #602).
-		// Only forward when the caller actually set `timeout`, so callers that never
-		// set it keep Bun's default ceiling.
+
 		const init = prepareInit
 			? mergeInit(baseInit, await prepareInit(attempt), timeout)
 			: "timeout" in options
@@ -284,12 +216,6 @@ function resolveDefaultDelay(
 	return Math.min(option[Math.min(attempt, option.length - 1)] ?? 0, maxDelayMs);
 }
 
-/**
- * Inspect an arbitrary error value (or its `cause` chain, up to depth 2) for an
- * HTTP status code. Reads `status`, `statusCode`, and `response.status` fields,
- * coerces string values, and falls back to scanning the error message for
- * common patterns like `Error: 401`, `error (429)`, or `HTTP 503`.
- */
 export function extractHttpStatusFromError(error: unknown): number | undefined {
 	return extractHttpStatusFromErrorInternal(error, 0);
 }
@@ -343,18 +269,10 @@ function extractStatusFromMessage(message: string): number | undefined {
 	return undefined;
 }
 
-/**
- * `true` if the given HTTP status code is one we treat as transient: 408
- * (Request Timeout), 429 (Too Many Requests), or any 5xx (server error).
- */
 export function isRetryableStatus(status: number): boolean {
 	return status >= 500 || status === 408 || status === 429;
 }
 
-/**
- * `true` if the message describes an unexpected socket closure — Bun and some
- * proxies surface these for any HTTP/2 stream reset.
- */
 export function isUnexpectedSocketCloseMessage(message: string): boolean {
 	return /\b(?:the\s+)?socket connection (?:was )?closed unexpectedly\b/i.test(message);
 }
@@ -365,12 +283,6 @@ const TRANSIENT_MESSAGE_PATTERN =
 const VALIDATION_MESSAGE_PATTERN =
 	/invalid|validation|bad request|unsupported|schema|missing required|not found|unauthorized|forbidden/i;
 
-/**
- * Identify errors that should be retried: aborts/timeouts in the error name or
- * message, retryable HTTP statuses (see `isRetryableStatus`), unexpected socket
- * closes, and the standard transient phrases. 4xx statuses other than 408/429
- * and validation-shaped messages short-circuit to `false`.
- */
 export function isRetryableError(error: unknown): boolean {
 	const info = error as { message?: string; name?: string } | null;
 	const message = info?.message ?? "";

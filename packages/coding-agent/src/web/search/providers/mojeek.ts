@@ -17,10 +17,7 @@ const MOJEEK_HOME_URL = `${MOJEEK_ORIGIN}/?arc=none&lang=en&lb=en&theme=dark`;
 const MOJEEK_SEARCH_URL = `${MOJEEK_ORIGIN}/search`;
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
-/**
- * ALTCHA can complete quickly, but its verified redirect is occasionally
- * delayed by queueing on the challenge backend.
- */
+
 const CAPTCHA_SOLVE_TIMEOUT_MS = 45_000;
 
 interface ParsedResult {
@@ -29,11 +26,6 @@ interface ParsedResult {
 	snippet?: string;
 }
 
-/**
- * Validate a result href. Mojeek links results directly to the target site
- * (no redirect wrapper), so this only filters out non-HTTP schemes and
- * intra-Mojeek navigation rows (verticals, paging) that share the markup.
- */
 function normalizeResultUrl(href: string): string | undefined {
 	let url: URL;
 	try {
@@ -57,14 +49,6 @@ function normalizeResultUrl(href: string): string | undefined {
 	return url.href;
 }
 
-/**
- * Pull result blocks out of a Mojeek results page in document order.
- *
- * Each organic result renders as `ul.results-standard > li` with the title in
- * `h2 > a.title` (href is the direct target URL) and the preview text in
- * `p.s`. Clustered sub-results (`li.clu-result`) share the same shape; rows
- * without a title anchor (infoboxes, spelling suggestions) are skipped.
- */
 function parseHtmlResults(html: string): ParsedResult[] {
 	const { document } = parseHTML(html);
 	const results: ParsedResult[] = [];
@@ -82,16 +66,6 @@ function parseHtmlResults(html: string): ParsedResult[] {
 	return results;
 }
 
-/**
- * Syntax re-emitted to Mojeek for directive-carrying queries. Mojeek's
- * support page (mojeek.com/support/search-operators.html) confirms `site:`,
- * and the community docs confirm quoted phrases and `-` exclusions. Mojeek
- * also parses `in*:` operators and its own date syntax (`since:`/`before:`
- * with YYYYMMDD), but the latter differs from Google's `after:`/`before:`
- * ISO form and `since` is already claimed by `recency`, so date bounds and
- * `in*` constraints are conservatively left to the pipeline's lenient
- * post-filter instead.
- */
 const MOJEEK_QUERY_SYNTAX: QuerySyntax = { phrases: true, negation: true, site: true };
 
 function buildSearchUrl(params: SearchParams, numResults: number): string {
@@ -102,15 +76,11 @@ function buildSearchUrl(params: SearchParams, numResults: number): string {
 	url.searchParams.set("lang", "en");
 	url.searchParams.set("lb", "en");
 	url.searchParams.set("theme", "dark");
-	// Mojeek's `since` filter accepts the relative tokens day/week/month/year
-	// verbatim — the same vocabulary as `recency` (verified live: each window
-	// returns a near-disjoint, fresher result set). Dates reflect crawl or
-	// last-modification time per Mojeek's operator docs.
+
 	if (params.recency) url.searchParams.set("since", params.recency);
 	return url.href;
 }
 
-/** Solve Mojeek's ALTCHA interstitial and wait for its verified redirect to populate results. */
 async function solveCaptcha(page: Page, signal: AbortSignal): Promise<void> {
 	if (await untilAborted(signal, () => page.$("ul.results-standard li"))) return;
 
@@ -164,10 +134,6 @@ async function callMojeekHtml(params: SearchParams, numResults: number): Promise
 		throw new SearchProviderError("mojeek", `Mojeek search failed: ${message}`, 503);
 	}
 
-	// Robot walls: the ALTCHA proof-of-work captcha page arrives as HTTP 200
-	// (`<title>Captcha</title>`, `altcha-widget`) and the "automated queries"
-	// refusal as HTTP 403. Both bodies are more actionable than their raw
-	// statuses, so check them before the generic status handling.
 	if (isRobotPage(page)) {
 		throw new SearchProviderError(
 			"mojeek",
@@ -183,7 +149,6 @@ async function callMojeekHtml(params: SearchParams, numResults: number): Promise
 	return page.html;
 }
 
-/** Execute a Mojeek web search against the standard HTML results page. */
 export async function searchMojeek(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callMojeekHtml(params, numResults);
@@ -201,7 +166,6 @@ export async function searchMojeek(params: SearchParams): Promise<SearchResponse
 	return { provider: "mojeek", sources };
 }
 
-/** Search provider for Mojeek (independent index, no API key required). */
 export class MojeekProvider extends SearchProvider {
 	readonly id = "mojeek";
 	readonly label = "Mojeek";

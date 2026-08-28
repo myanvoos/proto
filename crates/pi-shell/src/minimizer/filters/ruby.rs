@@ -1,5 +1,3 @@
-//! Ruby test and lint output filters.
-
 use super::lint;
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
@@ -12,8 +10,6 @@ pub fn supports(program: &str, subcommand: Option<&str>) -> bool {
 	}
 }
 
-/// Subcommands that have dedicated TOML defs and must run standalone instead
-/// of being claimed by the generic ruby filter (which would overlay them).
 fn is_def_scoped_subcommand(subcommand: Option<&str>) -> bool {
 	matches!(subcommand, Some("db:migrate" | "db:rollback" | "routes"))
 }
@@ -47,9 +43,6 @@ fn ruby_tool<'a>(program: &'a str, subcommand: Option<&'a str>) -> Option<&'a st
 	}
 }
 
-/// A rake/rails subcommand that runs minitest: the bare `test` task, a scoped
-/// `test:<scope>` task (`test:models`, `test:system`, `test:all`), or a
-/// namespaced `<ns>:test` task (`app:test`).
 fn is_minitest_subcommand(sub: &str) -> bool {
 	sub == "test" || sub.starts_with("test:") || sub.ends_with(":test")
 }
@@ -59,28 +52,14 @@ fn filter_rspec(input: &str, exit_code: i32) -> String {
 		return text;
 	}
 
-	// Strip rtk noise (Spring preloader, SimpleCov coverage block, DEPRECATION
-	// warnings, `Finished in …` timing, Capybara screenshot detail) before both
-	// the success and failure text paths. Ported from
-	// rtk/src/cmds/ruby/rspec_cmd.rs::strip_noise, re-derived against the
-	// minimizer's DEFAULT (non-JSON) output.
 	let stripped = strip_rspec_noise(input);
 
 	if exit_code == 0 {
-		// snip behavior: on success collapse the doc-format tree to the
-		// `N examples, 0 failures` summary (plus any pending lines), discarding
-		// the per-example descriptions.
 		return rspec_success_summary(&stripped);
 	}
 
 	let mut out = String::new();
-	// Each rendered failure block is buffered separately so the total can be
-	// capped at MAX_RENDERED_FAILURES with a `[…N failures elided…]` marker. The
-	// buffered blocks are rendered into `out` the moment the `Failures:` section
-	// ends — at the summary line or the `Failed examples:` boundary — so real
-	// rspec ordering (`Failures:` details, then summary, then `Failed examples:`)
-	// keeps each detail block under its own `Failures:` header instead of being
-	// appended after the `Failed examples:` list.
+
 	let mut blocks: Vec<String> = Vec::new();
 	let mut current = String::new();
 	let mut rendered_blocks = false;
@@ -126,8 +105,7 @@ fn filter_rspec(input: &str, exit_code: i32) -> String {
 			push_line(&mut out, line);
 		}
 	}
-	// Any failure blocks not yet rendered (no summary / `Failed examples:`
-	// boundary was seen) are flushed at the end.
+
 	flush_rspec_block(&mut blocks, &mut current);
 	render_rspec_blocks(&mut out, &mut blocks, &mut rendered_blocks);
 
@@ -138,11 +116,6 @@ fn filter_rspec(input: &str, exit_code: i32) -> String {
 	}
 }
 
-/// Render the buffered `Failures:` detail blocks into `out`, capped at
-/// `MAX_RENDERED_FAILURES` with a `[…N failures elided…]` marker. Runs at most
-/// once — guarded by `rendered` — so the section is emitted exactly where the
-/// `Failures:` block ends (the summary line or `Failed examples:` boundary),
-/// preserving real rspec section ordering.
 fn render_rspec_blocks(out: &mut String, blocks: &mut Vec<String>, rendered: &mut bool) {
 	if *rendered {
 		blocks.clear();
@@ -162,9 +135,6 @@ fn render_rspec_blocks(out: &mut String, blocks: &mut Vec<String>, rendered: &mu
 	blocks.clear();
 }
 
-/// Cap on rendered failure blocks in non-JSON rspec output. rtk uses the same
-/// limit (`MAX_RSPEC_FAILURES = 5`) — failure blocks carry full context, so a
-/// handful is enough before collapsing to a `[…N failures elided…]` marker.
 const MAX_RENDERED_FAILURES: usize = 5;
 
 fn flush_rspec_block(blocks: &mut Vec<String>, current: &mut String) {
@@ -175,7 +145,6 @@ fn flush_rspec_block(blocks: &mut Vec<String>, current: &mut String) {
 	}
 }
 
-/// A numbered failure header like `1) User validates name`.
 fn is_numbered_failure(trimmed: &str) -> bool {
 	let Some(pos) = trimmed.find(')') else {
 		return false;
@@ -184,22 +153,10 @@ fn is_numbered_failure(trimmed: &str) -> bool {
 	!prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())
 }
 
-/// Drop rtk-style rspec noise before the text paths. Mirrors
-/// `rtk/src/cmds/ruby/rspec_cmd.rs::strip_noise`: Spring preloader, `SimpleCov`
-/// coverage block (until the next blank line), `DEPRECATION WARNING:` lines,
-/// the `Finished in …` timing line, and Capybara screenshot detail (kept as a
-/// compact `[screenshot: path]`).
 fn strip_rspec_noise(input: &str) -> String {
 	let mut out = String::new();
 	let mut in_simplecov = false;
-	// The SimpleCov / coverage block only ever appears in the TRAILING region
-	// (after the run completes), never inside a numbered `Failures:` block. The
-	// donor's patterns (`simplecov`, `coverage/`, `.simplecov`) are unscoped
-	// substring/prefix tests, so a failure whose description or assertion path
-	// mentions SimpleCov coverage (e.g. `1) SimpleCov configuration loads`, or an
-	// assertion about a `coverage/index.html` artifact) would falsely enter the
-	// strip and swallow the entire failure block up to the next blank line. Gate
-	// the strip to OUTSIDE the `Failures:` section so failure diagnostics survive.
+
 	let mut in_failures = false;
 
 	for line in input.lines() {
@@ -212,10 +169,6 @@ fn strip_rspec_noise(input: &str) -> String {
 			|| is_rspec_summary_line(trimmed)
 			|| trimmed.starts_with("Finished in ")
 		{
-			// rspec always prints the `Finished in …` timing line AFTER the failure
-			// details and BEFORE the trailing coverage block, so it reliably closes
-			// the `Failures:` region even when the summary line trails the coverage
-			// block (SimpleCov prints between timing and summary).
 			in_failures = false;
 		}
 
@@ -228,11 +181,7 @@ fn strip_rspec_noise(input: &str) -> String {
 		if trimmed.starts_with("Finished in ") {
 			continue;
 		}
-		// Only strip the SimpleCov/coverage block when NOT inside a `Failures:`
-		// section. The `coverage report` banner is anchored to its actual shape
-		// (`Coverage report generated …`) rather than a bare `coverage/` prefix, so
-		// a failure-detail line asserting on a `coverage/`-prefixed artifact path is
-		// not mistaken for the banner.
+
 		if !in_failures
 			&& (is_coverage_banner(&lower)
 				|| lower.contains("simplecov")
@@ -258,16 +207,10 @@ fn strip_rspec_noise(input: &str) -> String {
 	out
 }
 
-/// The `SimpleCov` coverage-report banner that opens the trailing coverage
-/// block, e.g. `Coverage report generated for RSpec to /app/coverage`. Anchored
-/// to the banner shape so a failure-detail line merely mentioning a `coverage/`
-/// path is not misread as the banner.
 fn is_coverage_banner(lower: &str) -> bool {
 	lower.starts_with("coverage report")
 }
 
-/// On a passing rspec run, keep only the `N examples, …` summary line plus any
-/// pending lines; discard the doc-format example tree (snip behavior).
 fn rspec_success_summary(input: &str) -> String {
 	let mut out = String::new();
 	for line in input.lines() {
@@ -455,12 +398,6 @@ fn filter_minitest(input: &str, exit_code: i32) -> String {
 	}
 }
 
-/// `RuboCop` output: keep lint's grouped offense rendering as primary, but
-/// compact the `-a`/`-A` autocorrect run-summary line
-/// (`N files inspected, M offenses detected, K offenses autocorrected`) — which
-/// the grouped output otherwise keeps verbatim and buried — to a single `ok`
-/// line. Ported from `rtk/src/cmds/ruby/rubocop_cmd.rs` autocorrect handling,
-/// re-derived against the minimizer's DEFAULT text output.
 fn filter_rubocop(input: &str, exit_code: i32) -> String {
 	let condensed = lint::condense_lint_output("rubocop", input, exit_code);
 
@@ -483,8 +420,6 @@ fn filter_rubocop(input: &str, exit_code: i32) -> String {
 	if replaced { out } else { condensed }
 }
 
-/// Build `ok rubocop -A (N files, K autocorrected)` from an autocorrect summary
-/// line. Returns `None` when the counts cannot be parsed (keep the line as-is).
 fn compact_rubocop_autocorrect(line: &str) -> Option<String> {
 	let files = leading_number(line)?;
 	let corrected = line
@@ -495,25 +430,11 @@ fn compact_rubocop_autocorrect(line: &str) -> Option<String> {
 	Some(format!("ok rubocop -A ({files} files, {corrected} autocorrected)"))
 }
 
-/// First whitespace-delimited token of `s` parsed as a count.
 fn leading_number(s: &str) -> Option<usize> {
 	s.split_whitespace().next()?.parse().ok()
 }
 
-/// Generic rake/rails task condenser for NON-test tasks. Keeps result/status
-/// lines (mirrors snip's rake keep-lines pattern) plus the HEAD of a
-/// `rake aborted!` traceback (the first few frames, which carry the real
-/// cause). `rake test` / `rails test` never reach here — they route to
-/// `filter_minitest`.
 fn filter_rake(input: &str, exit_code: i32) -> String {
-	// On a FAILING non-test task that prints no `rake aborted!` header, the
-	// keep-lines pass below would retain only individually keyword-matching lines
-	// and silently drop the keyword-less diagnostic body (offending records,
-	// `Expected positive integer, got -3`-style value detail) — exactly the
-	// failure-detail the task warns must survive. The head/tail safety net only
-	// fires when `out` is empty, which a single keyword line defeats. So when the
-	// task failed and produced no `rake aborted!` traceback, preserve the full
-	// diagnostic via head/tail rather than the lossy keep-lines pass.
 	if exit_code != 0 && !input.lines().any(|line| line.trim() == "rake aborted!") {
 		return primitives::head_tail_lines(input, 80, 80);
 	}
@@ -532,14 +453,12 @@ fn filter_rake(input: &str, exit_code: i32) -> String {
 			continue;
 		}
 		if in_aborted {
-			// Keep the head of the traceback — the first few frames pinpoint the
-			// cause — then drop the long tail.
 			if aborted_frames < MAX_ABORTED_FRAMES {
 				push_line(&mut out, line);
 				aborted_frames += 1;
 				continue;
 			}
-			// A blank line ends the traceback block; resume normal keep-lines.
+
 			if trimmed.is_empty() {
 				in_aborted = false;
 			}
@@ -558,21 +477,17 @@ fn filter_rake(input: &str, exit_code: i32) -> String {
 	}
 }
 
-/// Number of `rake aborted!` traceback frames kept (HEAD): enough to localize
-/// the failure without dumping the full Rake/Ruby internal stack.
 const MAX_ABORTED_FRAMES: usize = 5;
 
-/// snip rake.yaml keep-lines pattern, re-derived: task result / status / error
-/// keywords worth surfacing from a non-test rake task.
 fn is_rake_keep_line(trimmed: &str) -> bool {
 	if trimmed.is_empty() {
 		return false;
 	}
-	// rake aborted! always surfaces
+
 	if trimmed.contains("rake aborted") {
 		return true;
 	}
-	// warning: lines from asset compilation, migrations, etc. are signal
+
 	if trimmed.to_ascii_lowercase().starts_with("warning:") {
 		return true;
 	}
@@ -628,8 +543,6 @@ fn is_rspec_summary_line(trimmed: &str) -> bool {
 }
 
 fn is_minitest_summary_line(trimmed: &str) -> bool {
-	// Minitest prints `N runs, …`; minitest-reporters prints `N tests, …`.
-	// Accept either head form.
 	(trimmed.contains(" runs, ") || trimmed.contains(" tests, "))
 		&& trimmed.contains(" assertions, ")
 		&& trimmed.contains(" failures, ")
@@ -646,7 +559,6 @@ fn is_ruby_pass_noise(trimmed: &str) -> bool {
 		|| trimmed.starts_with("Running:")
 		|| trimmed.starts_with("Randomized with seed")
 		|| trimmed.starts_with("Finished in ")
-		// minitest-reporters banner / progress lines.
 		|| trimmed.starts_with("Started with run options")
 		|| trimmed.starts_with("Progress:")
 }

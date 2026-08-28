@@ -44,15 +44,13 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { toolWireSchema } from "../utils/schema/wire";
 import { transformMessages } from "./transform-messages";
 
-/** Base host for Codeium/Windsurf's Cascade chat API (Connect protocol over HTTP/1.1). */
 export const DEVIN_API_URL = "https://server.codeium.com";
 
 export interface DevinOptions extends StreamOptions {
-	/** Cascade conversation id; reused as `cascade_id` so the server threads turns. */
 	conversationId?: string;
-	/** Falls back to `cascade_id` when no `conversationId` is supplied. */
+
 	sessionId?: string;
-	/** Wire model uid selected after thinking-effort routing. */
+
 	chatModelUid?: string;
 }
 
@@ -63,24 +61,11 @@ const DEVIN_SESSION_TOKEN_PREFIX = "devin-session-token$";
 const DEVIN_AUTH_PATH = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_DEFAULT_STOP_PATTERNS = ["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"];
 
-/** Connect streaming framing: flag byte bit 0x01 = gzip payload, 0x02 = end-of-stream JSON trailers. */
 const CONNECT_COMPRESSED_FLAG = 0x01;
 const CONNECT_END_STREAM_FLAG = 0x02;
-/**
- * Hard upper bound on a single Connect frame payload. The 4-byte length prefix
- * is otherwise attacker-controlled (up to `2**32 - 1`), so a malicious or buggy
- * peer could force {@link streamDevin}'s reader to buffer gigabytes via
- * `Buffer.concat` before the idle-timeout wrapper aborts. Well above any
- * legitimate Cascade response but tight enough that a corrupt length prefix
- * fails fast instead of consuming memory.
- */
+
 const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
-/**
- * Recovery heuristic for opaque Devin `invalid_argument` trailers. This is not
- * asserted to be the backend's hard limit: small requests can hit the same
- * intermittent error, while compactable message history this large is likely
- * to benefit from the existing context-overflow maintenance path.
- */
+
 const LARGE_HISTORY_RECOVERY_BYTES = 512 * 1024;
 
 export const streamDevin: StreamFunction<"devin-agent"> = (
@@ -114,14 +99,10 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 
 		let currentTextBlock: TextContent | null = null;
 		let currentThinkingBlock: ThinkingContent | null = null;
-		// Tool-call content blocks keyed by streamed tool-call id, plus the JSON-args text
-		// accumulated per id (kept out of the content object so finalized tool calls stay clean).
+
 		const toolBlocks = new Map<string, ToolCall>();
 		const toolPartialJson = new Map<string, string>();
-		// Last-parsed argument-buffer length per tool-call id — bounds the
-		// mid-stream parse work to O(N log N) via `parseStreamingJsonThrottled`;
-		// the authoritative final parse still runs unconditionally in the
-		// toolcall_end loop below.
+
 		const toolLastParseLen = new Map<string, number>();
 		let activeToolCallId: string | undefined;
 		let latestStopReason = StopReason.UNSPECIFIED;
@@ -212,8 +193,6 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (value && value.length > 0) {
-					// Steady state drains fully per chunk; view the fresh reader chunk
-					// instead of copying it through Buffer.concat (see aws-eventstream.ts).
 					pending =
 						pending.length === 0
 							? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
@@ -237,9 +216,6 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 						const trailerBytes = flag & CONNECT_COMPRESSED_FLAG ? gunzipSync(payload) : payload;
 						const trailerError = readConnectTrailerError(trailerBytes.toString("utf8").trim());
 						if (trailerError) {
-							// #4218: these rejections carry no HTTP error body, so the raw
-							// trailer is the only server-side evidence. Log it with the
-							// request shape before classification discards it.
 							logger.warn("devin: stream rejected via Connect trailer", {
 								model: model.id,
 								code: trailerError.code,
@@ -258,16 +234,11 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 								trailerError.code.toLowerCase() === "invalid_argument" &&
 								/\binternal error\b/i.test(trailerError.message)
 							) {
-								// The full protobuf also contains the system prompt and tool
-								// schemas, which history maintenance cannot shrink. Re-encode
-								// only the repeated history field before choosing recovery.
 								let activeTailCount = 0;
 								const lastRole = context.messages.at(-1)?.role;
 								if (lastRole === "user" || lastRole === "developer") {
 									activeTailCount = 1;
-									// A trailing developer message can accompany the current user
-									// prompt. Earlier user-role records may instead be flushed
-									// execution history and must remain eligible for compaction.
+
 									if (lastRole === "developer") {
 										for (let i = context.messages.length - 2; i >= 0; i--) {
 											const role = context.messages[i].role;
@@ -500,11 +471,6 @@ function decodeDevinUserJwtResponse(payload: Uint8Array) {
 	}
 }
 
-/**
- * Build a {@link GetChatMessageRequest} for one Cascade turn. Auth rides inside
- * `Metadata.apiKey`; the system prompt is the flattened `prompt` string and the
- * conversation history maps to `chatMessagePrompts`.
- */
 function buildDevinChatRequest(
 	model: Model<"devin-agent">,
 	context: Context,
@@ -560,15 +526,13 @@ function buildDevinChatRequest(
 	});
 }
 
-/** Map proto `Message` history onto Cascade `ChatMessagePrompt`s (USER / SYSTEM / TOOL channels). */
 function buildChatMessagePrompts(
 	messages: Message[],
 	cascadeId: string,
 	model: Model<"devin-agent">,
 ): ChatMessagePrompt[] {
 	const prompts: ChatMessagePrompt[] = [];
-	// messageId seeds are `cascadeId\0index\0role[...]` — prompt text is excluded
-	// so ids stay stable across content edits / history rebuilds.
+
 	for (const [index, msg] of messages.entries()) {
 		if (msg.role === "user" || msg.role === "developer") {
 			let promptText = "";
@@ -659,17 +623,12 @@ interface ConnectTrailerError {
 	code: string;
 	message: string;
 	formatted: string;
-	/** Summarized Connect error details entries, when the trailer carried any. */
+
 	detail?: string;
-	/** Raw trailer JSON (truncated) retained for evidence logging; see #4218. */
+
 	raw: string;
 }
 
-/**
- * Parse a Connect end-of-stream JSON trailer and return its structured error
- * when it carries `{ error: { code, message } }`, else `null`. The trailer is
- * untrusted server output, so the shape is checked with guards rather than asserted.
- */
 function readConnectTrailerError(text: string): ConnectTrailerError | null {
 	if (text.length === 0) return null;
 	let parsed: unknown;
@@ -698,19 +657,12 @@ function readConnectTrailerError(text: string): ConnectTrailerError | null {
 	return trailer;
 }
 
-/** Upper bound on retained raw-trailer evidence so log entries stay bounded. */
 const MAX_TRAILER_EVIDENCE_CHARS = 2000;
 
 function truncateTrailerEvidence(text: string): string {
 	return text.length > MAX_TRAILER_EVIDENCE_CHARS ? `${text.slice(0, MAX_TRAILER_EVIDENCE_CHARS)}…` : text;
 }
 
-/**
- * Summarize Connect error `details` entries (loosely `{ type, value, debug }`
- * records). #4218's intermittent `invalid_argument` rejections arrive as
- * end-of-stream trailers with no HTTP error body, so any detail payload here
- * is the only server-side evidence available; previously it was discarded.
- */
 function summarizeTrailerDetails(details: unknown): string | undefined {
 	if (!Array.isArray(details) || details.length === 0) return undefined;
 	let summary = "";

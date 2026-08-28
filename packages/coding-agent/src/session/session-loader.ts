@@ -18,19 +18,17 @@ const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
 
 interface VisitEntriesFromFileStreamOptions {
-	/** Stop after the visitor returns `false`. */
 	shouldContinue?: () => boolean;
-	/** Stop after this many valid or malformed JSONL records have been consumed. */
+
 	maxRecords?: number;
-	/** Yield to the macrotask queue after this many bytes have been consumed. */
+
 	yieldEveryBytes?: number;
-	/** Yield to the macrotask queue after this many entries have been visited. */
+
 	yieldEveryEntries?: number;
-	/** Called once for every malformed JSONL record skipped by the stream. */
+
 	onMalformedRecord?: () => void;
 }
 
-/** Parsed session entries plus corruption metadata needed by writable loaders. */
 export interface SessionLoadResult {
 	entries: FileEntry[];
 	titleSlot: SessionTitleUpdate | undefined;
@@ -62,7 +60,6 @@ function applyTitleSlot(entry: FileEntry | undefined, slot: SessionTitleUpdate |
 	}
 }
 
-/** Parse session JSONL while stripping and folding the optional fixed title slot. */
 export function parseSessionContent(content: string): SessionLoadResult {
 	const { body, slot } = splitTitleSlot(content);
 	let malformedRecords = 0;
@@ -75,7 +72,6 @@ export function parseSessionContent(content: string): SessionLoadResult {
 	return { entries, titleSlot: slot, malformedRecords };
 }
 
-/** Parse session JSONL and visit each entry without retaining prior entries. */
 export async function visitEntriesFromFileStream(
 	filePath: string,
 	visit: (entry: FileEntry) => void | boolean,
@@ -92,11 +88,7 @@ export async function visitEntriesFromFileStream(
 	let visitorThrew = false;
 	const yieldEveryBytes = Math.max(0, options.yieldEveryBytes ?? STREAM_YIELD_BYTES);
 	const yieldEveryEntries = Math.max(0, options.yieldEveryEntries ?? STREAM_YIELD_ENTRIES);
-	// Byte buffer (NOT a decoded string): multibyte UTF-8 sequences that straddle
-	// a stream-chunk boundary stay intact, and Bun.JSONL.parseChunk accepts typed
-	// arrays directly. Only the unconsumed remainder is held (≤ one record + a
-	// chunk), so the ≥8MiB memory guard is preserved (the file is never fully
-	// loaded into memory).
+
 	let buffer: Uint8Array = new Uint8Array();
 	const decoder = new TextDecoder();
 
@@ -152,9 +144,8 @@ export async function visitEntriesFromFileStream(
 			}
 			if (stopped) break;
 			if (error) {
-				// Malformed record: skip past the next newline and continue.
 				const nextNewline = buffer.indexOf(0x0a, read);
-				if (nextNewline === -1) break; // rest of the bad line not yet received
+				if (nextNewline === -1) break;
 				let nonWhitespace = false;
 				for (let index = read; index < nextNewline; index++) {
 					const byte = buffer[index];
@@ -172,7 +163,7 @@ export async function visitEntriesFromFileStream(
 				}
 				continue;
 			}
-			if (read === 0) break; // incomplete record awaiting more data
+			if (read === 0) break;
 			buffer = buffer.subarray(read);
 			if (done) {
 				buffer = new Uint8Array();
@@ -186,11 +177,7 @@ export async function visitEntriesFromFileStream(
 			if (stopped) break;
 			bytesSinceYield += chunk.byteLength;
 			buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
-			// The optional fixed-width title slot is a physical first line that is
-			// NOT JSON; peel it before the parser would (correctly) reject it. The
-			// first line ends at a '\n' byte, so it is a complete UTF-8 sequence and
-			// safe to decode. A non-slot first line is a real entry and is left for
-			// the parser; a blank first line is left for the parser to skip.
+
 			if (!sawFirstLine) {
 				const newline = buffer.indexOf(0x0a);
 				if (newline !== -1) {
@@ -208,8 +195,7 @@ export async function visitEntriesFromFileStream(
 			await drain();
 			await yieldToMacrotask();
 		}
-		// A trailing record without a final newline: terminate it so the parser
-		// can complete it (readline yielded it; parseChunk needs the delimiter).
+
 		if (!stopped && buffer.length > 0 && buffer[buffer.length - 1] !== 0x0a) {
 			buffer = Buffer.concat([buffer, new Uint8Array([0x0a])]);
 			await drain();
@@ -223,7 +209,6 @@ export async function visitEntriesFromFileStream(
 	return titleSlot;
 }
 
-/** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(filePath: string): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
@@ -241,7 +226,6 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 	return { entries, titleSlot, malformedRecords };
 }
 
-/** Exported for compaction.test.ts */
 export function parseSessionEntries(content: string): FileEntry[] {
 	return parseSessionContent(content).entries;
 }
@@ -257,7 +241,6 @@ async function loadWithKnownSize(filePath: string, storage: SessionStorage, size
 	return isValidSessionHeader(loaded.entries[0]) ? loaded : { ...loaded, entries: [] };
 }
 
-/** Load and validate a session while retaining malformed-record diagnostics. */
 export async function loadSessionFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
@@ -270,7 +253,6 @@ export async function loadSessionFile(
 	}
 }
 
-/** Load the valid entries from a session file, skipping malformed records. */
 export async function loadEntriesFromFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
@@ -278,10 +260,6 @@ export async function loadEntriesFromFile(
 	return (await loadSessionFile(filePath, storage)).entries;
 }
 
-/**
- * Visit session entries, using bounded streaming for large file-backed journals.
- * Small files and non-file backends keep the existing full-load path.
- */
 export async function visitEntriesFromFile(
 	filePath: string,
 	visit: (entry: FileEntry) => void | boolean,
@@ -305,10 +283,6 @@ export async function visitEntriesFromFile(
 	}
 }
 
-/**
- * Resolve blob references in loaded entries, restoring both session image blocks and persisted
- * provider image URLs back to the inline data expected by downstream transports. Mutates entries in place.
- */
 function hasImageUrl(value: unknown): value is { image_url: string } {
 	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
 }
@@ -349,12 +323,6 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 	);
 }
 
-/**
- * Cheap synchronous precheck: does this value's tree contain any `blob:sha256:` string?
- * Early-exits on the first hit and allocates no promises, so blob-free entries skip the
- * async {@link resolvePersistedBlobRefs} descent entirely. Conservative — a blob ref in a
- * non-resolved position still returns true, which only costs an extra (no-op) walk.
- */
 function containsBlobRef(value: unknown): boolean {
 	if (typeof value === "string") return isBlobRef(value);
 	if (Array.isArray(value)) {
@@ -372,9 +340,7 @@ function containsBlobRef(value: unknown): boolean {
 
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	const pending: Promise<void>[] = [];
-	// Interleave precheck + initiation per entry so a positive entry begins resolution at the same
-	// relative point as the old filter+map schedule (no scan-all-first pass that could observe a
-	// later entry before an earlier resolution mutates it).
+
 	for (const entry of entries) {
 		if (entry.type === "session") continue;
 		if (!containsBlobRef(entry)) continue;
@@ -383,14 +349,6 @@ export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: 
 	await Promise.all(pending);
 }
 
-/**
- * Read-only transcript view of a session file: load entries, migrate to the
- * current version, resolve blob refs, and build the display transcript along
- * the persisted leaf path (last entry). Uses transcript mode (collapsed to the
- * latest compaction) so failed/aborted tail turns stay visible, unlike the
- * provider-context builder which drops them. Does NOT create a writer or take
- * the session lock — safe to call against a file another session is writing.
- */
 export async function loadSessionMessagesReadOnly(filePath: string): Promise<AgentMessage[]> {
 	const entries = await loadEntriesFromFile(filePath);
 	if (entries.length === 0) return [];

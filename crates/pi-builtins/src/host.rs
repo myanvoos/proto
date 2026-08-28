@@ -1,29 +1,29 @@
-//! Host plumbing for utility builtins (`cat`, `grep`, `sed`, `ls`, …).
-//!
-//! These builtins are ports of standalone command-line utilities: synchronous
-//! programs that read `argv`, talk to fd 0/1/2, resolve relative paths against
-//! the current directory, and exit with a status. [`Host`] hands them exactly
-//! that view of the shell they run inside — as a value, threaded explicitly —
-//! so no process-global or thread-local I/O state is involved: output lands on
-//! the command's (possibly redirected or piped) file descriptors and relative
-//! paths resolve against the *shell's* working directory rather than the host
-//! process's.
-//!
-//! A utility implements [`Utility`]: a `clap` argument model plus a synchronous
-//! [`Utility::run`] body. [`util`] wraps that into a [`Registration`] which
-//!
-//! 1. materializes process-substitution arguments (`diff <(a) <(b)`) into real
-//!    file descriptors,
-//! 2. parses `argv`, rendering `--help`/`--version` on stdout and usage errors
-//!    on stderr with the utility's own exit status,
-//! 3. runs the body on a blocking thread, so a slow utility never stalls the
-//!    async runtime and concurrent pipeline stages stay isolated,
-//! 4. observes the shell's cancellation token (abort/`timeout`), and
-//! 5. contains panics at the builtin boundary instead of taking down the
-//!    long-lived host process.
 
-// The whole module is API consumed by the feature-gated utility modules; a build
-// with no utility features enabled legitimately uses none of it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #![allow(dead_code, reason = "consumed by the feature-gated utility modules")]
 
 use std::{
@@ -49,55 +49,55 @@ use brush_core::{
 	openfiles::{self, OpenFile, OpenFiles},
 };
 
-/// A command-line utility implemented as a shell builtin.
-///
-/// Implementors supply the `clap` argument model (via `derive(Parser)`, or
-/// [`matches_parser!`] for builder-style definitions) and a synchronous body.
-/// Register with [`util`].
+
+
+
+
+
 pub(crate) trait Utility: clap::Parser + Send + Sync + 'static {
-	/// Program name, used in diagnostics (`sed: -e expression #1: …`).
+
 	const NAME: &'static str;
 
-	/// Exit status for a usage error. Most GNU utilities use 1; the
-	/// `ls`/`grep`/`cmp` families reserve 1 for "differences found" and use 2.
+
+
 	const USAGE_ERROR: u8 = 1;
 
-	/// Rewrites raw `argv` before clap parses it.
-	///
-	/// A few utilities accept syntax clap cannot model — GNU's obsolete
-	/// `head -5` count form, for instance. `argv[0]` is the command name.
-	/// Returning `Err(message)` reports `<name>: <message>` on stderr and exits
-	/// with [`Utility::USAGE_ERROR`]. The default is the identity.
+
+
+
+
+
+
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
 		Ok(argv)
 	}
 
-	/// Runs the utility to completion, returning its exit status.
-	///
-	/// Called on a blocking thread, so blocking reads, `rayon`, and long
-	/// filesystem walks are all fine. Long-running loops should poll
-	/// [`Host::is_cancelled`] so shell abort/`timeout` is observed promptly.
+
+
+
+
+
 	fn run(self, host: &mut Host) -> i32;
 }
 
-/// The shell as a utility builtin sees it: standard streams, working
-/// directory, exported environment, cancellation, and accumulated exit status.
-///
-/// The three streams are public fields rather than accessors so a utility can
-/// hold `&mut` borrows of two of them at once (reading stdin while writing
-/// stdout is the common case).
+
+
+
+
+
+
 pub(crate) struct Host {
-	/// Standard input. Reads observe cancellation, so a blocked pipe read
-	/// returns EOF on abort instead of hanging the shell.
+
+
 	pub stdin:  Stdin,
-	/// Standard output; the null device when fd 1 is closed. Raw: utilities
-	/// with bulk output buffer it themselves via [`Host::stdout_writer`].
+
+
 	pub stdout: OpenFile,
-	/// Standard error, buffered with the destination-aware policy of
-	/// [`StreamWriter`]; the null device when fd 2 is closed. When fd 2 shares
-	/// fd 1's destination (`2>&1`, or the default capture pipe), this is the
-	/// same serialized writer [`Host::stdout_writer`] returns, so interleaving
-	/// follows write order exactly.
+
+
+
+
+
 	pub stderr: StreamWriter,
 
 	name:                  String,
@@ -106,8 +106,8 @@ pub(crate) struct Host {
 	cancel:                Arc<AtomicBool>,
 	exit_code:             i32,
 	stdin_is_search_input: bool,
-	/// The shared stdout/stderr writer when both fds point at one
-	/// destination; `None` when they diverge.
+
+
 	merged_out:            Option<Arc<Mutex<StreamWriter>>>,
 }
 
@@ -120,22 +120,22 @@ impl Drop for CancelOnDrop {
 }
 
 impl Host {
-	/// The name the utility was invoked as. Differs from [`Utility::NAME`] when
-	/// one implementation backs several builtins (`grep` and `rg`).
+
+
 	pub fn name(&self) -> &str {
 		&self.name
 	}
 
-	/// The shell working directory that relative paths resolve against.
+
 	pub fn cwd(&self) -> &Path {
 		&self.cwd
 	}
 
-	/// Resolves `path` against [`Host::cwd`]; absolute paths pass through.
-	///
-	/// Every path argument must go through this before touching the
-	/// filesystem: the host process's current directory is unrelated to the
-	/// shell's.
+
+
+
+
+
 	pub fn resolve(&self, path: impl AsRef<Path>) -> PathBuf {
 		let normalized_path = brush_core::sys::fs::normalize_shell_path(path.as_ref());
 		let path = normalized_path.as_ref();
@@ -146,80 +146,80 @@ impl Host {
 		}
 	}
 
-	/// Looks up an exported shell variable.
-	///
-	/// The shell's exported variables are *not* present in the host process
-	/// environment, so `std::env::var` would miss them.
+
+
+
+
 	pub fn var(&self, key: &str) -> Option<&str> {
 		self.env.get(key).map(String::as_str)
 	}
 
-	/// The exported shell environment, for building a child process
-	/// environment (`env_clear().envs(host.env())`).
+
+
 	pub fn env(&self) -> impl Iterator<Item = (&str, &str)> {
 		self.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))
 	}
 
-	/// Whether the host has asked this invocation to stop (shell abort or
-	/// `timeout`). Long internal loops — recursive directory walks in
-	/// particular — poll this so cancellation is observed without waiting for
-	/// stdin or for the whole work item to finish.
+
+
+
+
 	pub fn is_cancelled(&self) -> bool {
 		self.cancel.load(Ordering::Relaxed)
 	}
 
-	/// A cancellation flag that can be moved into worker threads and walker
-	/// callbacks.
+
+
 	pub fn cancel_flag(&self) -> Arc<AtomicBool> {
 		Arc::clone(&self.cancel)
 	}
 
-	/// Whether stdin is a shell pipe or custom stream, and so should be treated
-	/// as implicit input rather than a terminal. `rg PATTERN` uses this to
-	/// decide between searching stdin and searching `.`.
+
+
+
 	pub const fn stdin_is_search_input(&self) -> bool {
 		self.stdin_is_search_input
 	}
 
-	/// Records a non-zero exit status while processing continues (the
-	/// `cat a missing b` case: report, keep going, exit 1).
+
+
 	pub const fn fail(&mut self, code: i32) {
 		if code != 0 {
 			self.exit_code = code;
 		}
 	}
 
-	/// The status accumulated via [`Host::fail`]; 0 when nothing failed.
+
 	pub const fn exit_code(&self) -> i32 {
 		self.exit_code
 	}
 
-	/// Writes `<name>: <message>` to stderr and records exit status `code`.
+
 	pub fn error(&mut self, message: impl std::fmt::Display, code: i32) {
 		let _ = writeln!(self.stderr, "{}: {message}", self.name);
 		self.fail(code);
 	}
 
-	/// Duplicates stdout, for utilities that hand a writer to a helper thread.
+
 	pub fn stdout_clone(&self) -> OpenFile {
 		self.stdout.clone()
 	}
 
-	/// Duplicates stderr as a raw [`OpenFile`], for utilities that hand a
-	/// writer to a helper thread. Data pending in the buffered stderr (at most
-	/// one partial line) is not carried over.
+
+
+
 	pub fn stderr_clone(&self) -> OpenFile {
 		self.stderr.dup_file()
 	}
 
-	/// A buffered stdout with a flush policy chosen by the destination of
-	/// fd 1; see [`StdoutWriter`].
-	///
-	/// Utilities that emit output progressively — stream filters (`grep`,
-	/// `sed`, `cut`) and directory walkers (`ls`, `fd`) — must write through
-	/// this rather than a raw `BufWriter`, so their output is visible as it is
-	/// produced. Batch emitters whose output only exists once all input is
-	/// consumed (`sort`, `tac`, `seq`) may keep plain block buffering.
+
+
+
+
+
+
+
+
 	pub fn stdout_writer(&self) -> StreamWriter {
 		match &self.merged_out {
 			Some(shared) => StreamWriter::Shared(Arc::clone(shared)),
@@ -227,11 +227,11 @@ impl Host {
 		}
 	}
 
-	/// A launcher for child processes started by this utility.
-	///
-	/// Owned and `Clone`, so it can move into worker threads and into helper
-	/// types that never see the `Host` itself — `sort --compress-program` spawns
-	/// its compressor from inside the temp-file abstraction, for instance.
+
+
+
+
+
 	pub fn child_env(&self) -> ChildEnv {
 		ChildEnv {
 			cwd:    self.cwd.clone(),
@@ -246,17 +246,17 @@ impl Host {
 		}
 	}
 
-	/// Runs `command` with stdin from the null device and stdout/stderr piped
-	/// back into this host's streams, returning the child's exit status.
-	///
-	/// The host's streams are in-process `Write` handles (pipes or in-memory
-	/// buffers), not inheritable descriptors, and the process's own fd 0/1/2
-	/// belong to the TUI — a child must never inherit stdio. Child stdout
-	/// streams through on the calling thread while a helper thread drains
-	/// stderr into a buffer, which is forwarded once the child exits.
-	///
-	/// Callers remain responsible for `current_dir` and the child environment
-	/// (`env_clear().envs(host.env())`).
+
+
+
+
+
+
+
+
+
+
+
 	pub fn run_captured(
 		&mut self,
 		command: &mut std::process::Command,
@@ -287,31 +287,31 @@ impl Host {
 	}
 }
 
-/// Buffered writer for a utility's output streams, with a flush policy
-/// matching the destination.
-///
-/// When the destination is a regular file (or the null device), nothing
-/// observes the output until the utility exits, so writes are block-buffered
-/// for throughput. Everywhere else — a pipe to the next pipeline stage, the
-/// harness capture pipe behind the TUI's live tool output (a pipe fd wrapped
-/// in `OpenFile::File`, hence the `fstat` in [`is_regular_file`] rather than
-/// a variant match), or an in-memory stream — writes are line-buffered so
-/// each completed line is visible as soon as it is produced rather than when
-/// the utility exits.
-///
-/// Construct via [`Host::stdout_writer`]; [`StreamWriter::line`] and
-/// [`StreamWriter::block`] force a policy for utilities with explicit
-/// buffering flags (`rg --line-buffered`).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 pub(crate) enum StreamWriter {
-	/// Block-buffered: flushed when full, on drop, and on explicit `flush`.
+
 	Block(BufWriter<OpenFile>),
-	/// Line-buffered: additionally flushed through the last newline of every
-	/// write.
+
+
 	Line(LineWriter<OpenFile>),
-	/// A serialized handle onto a writer shared by stdout and stderr, used
-	/// when fd 1 and fd 2 have the same destination (`2>&1`, or the default
-	/// capture pipe): one buffer means diagnostics and output interleave in
-	/// exactly the order they were written.
+
+
+
+
 	Shared(Arc<Mutex<StreamWriter>>),
 }
 
@@ -319,25 +319,25 @@ impl StreamWriter {
 	const BLOCK_CAPACITY: usize = 64 * 1024;
 	const LINE_CAPACITY: usize = 16 * 1024;
 
-	/// Picks the policy for `file`: block for regular files, line otherwise.
+
 	pub fn new(file: OpenFile) -> Self {
 		if is_regular_file(&file) { Self::block(file) } else { Self::line(file) }
 	}
 
-	/// Forces line buffering regardless of destination.
+
 	pub fn line(file: OpenFile) -> Self {
 		Self::Line(LineWriter::with_capacity(Self::LINE_CAPACITY, file))
 	}
 
-	/// Forces block buffering regardless of destination.
+
 	pub fn block(file: OpenFile) -> Self {
 		Self::Block(BufWriter::with_capacity(Self::BLOCK_CAPACITY, file))
 	}
 
-	/// Duplicates the underlying descriptor as a raw [`OpenFile`], for
-	/// utilities that hand a writer to helper threads. Buffered data pending
-	/// in this writer (at most one partial line under the line policy) is not
-	/// carried over.
+
+
+
+
 	pub fn dup_file(&self) -> OpenFile {
 		match self {
 			Self::Block(w) => w.get_ref().clone(),
@@ -346,8 +346,8 @@ impl StreamWriter {
 		}
 	}
 
-	/// Whether the destination is a terminal, mirroring
-	/// [`OpenFile::is_terminal`].
+
+
 	pub fn is_terminal(&self) -> bool {
 		match self {
 			Self::Block(w) => w.get_ref().is_terminal(),
@@ -383,13 +383,13 @@ impl Write for StreamWriter {
 	}
 }
 
-/// Whether writes to `file` land in a regular file, where output is only ever
-/// observed after the utility exits.
-///
-/// A pipe wrapped in `std::fs::File` (how the shell hands the capture pipe to
-/// a command) reports a fifo file type, and `metadata` on exotic handles can
-/// fail outright; both classify as "not a regular file" and get line
-/// buffering, the visibility-safe default.
+
+
+
+
+
+
+
 pub(crate) fn is_regular_file(file: &OpenFile) -> bool {
 	match file {
 		OpenFile::File(f) => f.metadata().is_ok_and(|m| m.is_file()),
@@ -397,15 +397,15 @@ pub(crate) fn is_regular_file(file: &OpenFile) -> bool {
 	}
 }
 
-/// Whether two open files refer to the same non-seekable destination — the
-/// `2>&1` case (and the harness default, where one capture pipe backs both
-/// fds).
-///
-/// Matching is by `fstat` device+inode and deliberately excludes regular
-/// files: `cmd >f 2>f` opens two descriptions with independent offsets, and
-/// funneling them through one writer would change where the bytes land.
-/// Pipes, fifos, terminals, and sockets have no offset, so a device+inode
-/// match identifies the same object.
+
+
+
+
+
+
+
+
+
 #[cfg(unix)]
 fn same_destination(a: &OpenFile, b: &OpenFile) -> bool {
 	use std::os::unix::fs::MetadataExt;
@@ -429,18 +429,18 @@ fn same_destination(_a: &OpenFile, _b: &OpenFile) -> bool {
 	false
 }
 
-/// A shell-faithful launcher for child processes started by a utility builtin.
-///
-/// Carries the three things a child must inherit from the *shell* rather than
-/// from the host process: the working directory, the exported environment
-/// (which is also what `PATH` lookup resolves against, so a program installed
-/// only on the shell's `PATH` is found), and a duplicate of the command's
-/// standard error.
-///
-/// That last one matters more than it looks: the host process's fd 2 belongs to
-/// the TUI, so a child left with inherited stderr writes straight into the
-/// rendered frame. [`ChildEnv::command`] therefore always pipes stderr, and
-/// [`ChildEnv::forward_stderr`] drains it to the command's own fd 2.
+
+
+
+
+
+
+
+
+
+
+
+
 #[derive(Clone)]
 pub(crate) struct ChildEnv {
 	cwd:    PathBuf,
@@ -449,11 +449,11 @@ pub(crate) struct ChildEnv {
 }
 
 impl ChildEnv {
-	/// Builds a `Command` for `program` with the shell's working directory and
-	/// environment, and with stderr piped.
-	///
-	/// Stdin and stdout are left untouched for the caller to wire; they default
-	/// to inherited, so a caller that leaves them alone MUST redirect them.
+
+
+
+
+
 	pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
 		let mut command = std::process::Command::new(program);
 		command
@@ -464,13 +464,13 @@ impl ChildEnv {
 		command
 	}
 
-	/// Drains a child's piped stderr into the command's standard error on a
-	/// helper thread.
-	///
-	/// The returned handle should be joined once the child has exited, so the
-	/// diagnostic lands before the utility reports its own result. Dropping the
-	/// handle detaches the thread, which is only correct if nothing downstream
-	/// depends on the ordering.
+
+
+
+
+
+
+
 	pub fn forward_stderr(
 		&self,
 		mut child_stderr: std::process::ChildStderr,
@@ -482,13 +482,13 @@ impl ChildEnv {
 	}
 }
 
-/// Standard input for a utility builtin: the command's fd 0 plus the
-/// cancellation flag.
-///
-/// On unix, when fd 0 is a real descriptor, reads wait for readiness in short
-/// slices so an abort or `timeout` is observed even when input never arrives on
-/// a blocked pipe; the utility then sees EOF and unwinds cleanly rather than
-/// leaving a detached thread writing to descriptors the host has moved on from.
+
+
+
+
+
+
+
 pub(crate) struct Stdin {
 	file:   OpenFile,
 	#[cfg_attr(not(unix), allow(dead_code, reason = "readiness polling is unix-only"))]
@@ -497,14 +497,14 @@ pub(crate) struct Stdin {
 }
 
 impl Stdin {
-	/// Mirror of `std::io::Stdin::lock`; the handle is already the lockable
-	/// target, so this is the identity.
+
+
 	pub const fn lock(&mut self) -> &mut Self {
 		self
 	}
 
-	/// The underlying open file, for utilities that need to inspect fd 0
-	/// (`is_terminal`) or hand it to a child process.
+
+
 	pub const fn file(&self) -> &OpenFile {
 		&self.file
 	}
@@ -522,8 +522,8 @@ impl Read for Stdin {
 					return Ok(0);
 				}
 				let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-				// SAFETY: one `pollfd` valid for the call; `fd` is owned by the
-				// live `OpenFile` held in this struct.
+
+
 				let ready = unsafe { libc::poll(&mut pfd, 1, 200) };
 				if ready < 0 {
 					let err = io::Error::last_os_error();
@@ -542,19 +542,19 @@ impl Read for Stdin {
 }
 
 thread_local! {
-	/// Depth of active utility bodies on this thread. The native crash hook
-	/// reads this from inside a panic (see [`panic_scope_active`]) to decide
-	/// whether the panic is about to be caught; a `Cell` is used because the
-	/// panicking code may hold other borrows, and a `RefCell` borrow there
-	/// would panic again and abort the process.
+
+
+
+
+
 	static PANIC_SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Whether a utility builtin body is running on the current thread.
-///
-/// A panic raised here is, by construction, about to be caught at the builtin
-/// boundary, so the native crash hook treats it as recoverable and keeps it out
-/// of the user-facing crash report.
+
+
+
+
+
 #[must_use]
 pub fn panic_scope_active() -> bool {
 	PANIC_SCOPE_DEPTH.with(|depth| depth.get() > 0)
@@ -562,20 +562,20 @@ pub fn panic_scope_active() -> bool {
 
 static RAYON_GLOBAL_POOL_AVAILABLE: AtomicBool = AtomicBool::new(!cfg!(target_os = "windows"));
 
-/// Records whether utility builtins may use Rayon's process-global worker pool
-/// without risking lazy initialization under Windows commit pressure.
+
+
 pub fn set_rayon_global_pool_available(available: bool) {
 	RAYON_GLOBAL_POOL_AVAILABLE.store(available, Ordering::SeqCst);
 }
 
-/// Whether utility builtins may enter Rayon's process-global worker pool.
+
 #[must_use]
 pub fn rayon_global_pool_available() -> bool {
 	RAYON_GLOBAL_POOL_AVAILABLE.load(Ordering::SeqCst)
 }
 
-/// Indents all but the first line of a usage string by 7 spaces, aligning
-/// continuation lines under clap's `Usage: ` prefix.
+
+
 pub(crate) fn format_usage(usage: &str) -> String {
 	debug_assert!(
 		!usage.contains("{}"),
@@ -584,11 +584,11 @@ pub(crate) fn format_usage(usage: &str) -> String {
 	usage.replace('\n', "\n       ")
 }
 
-/// Borrows an `OsStr` as raw bytes.
-///
-/// Unix strings are arbitrary byte sequences, so this is free there. On Windows
-/// only well-formed UTF-16 has a UTF-8 byte view, so an ill-formed value yields
-/// `None`; callers report that as an invalid argument.
+
+
+
+
+
 pub(crate) fn os_bytes(value: &std::ffi::OsStr) -> Option<&[u8]> {
 	#[cfg(unix)]
 	{
@@ -601,8 +601,8 @@ pub(crate) fn os_bytes(value: &std::ffi::OsStr) -> Option<&[u8]> {
 	}
 }
 
-/// Borrows an `OsStr` as raw bytes, substituting replacement characters for
-/// anything unrepresentable. For diagnostics, where losing a byte beats failing.
+
+
 pub(crate) fn os_bytes_lossy(value: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
 	match os_bytes(value) {
 		Some(bytes) => std::borrow::Cow::Borrowed(bytes),
@@ -610,13 +610,13 @@ pub(crate) fn os_bytes_lossy(value: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u
 	}
 }
 
-/// Parses a GNU-style duration: a decimal number with an optional `s`/`m`/`h`/`d`
-/// suffix, as accepted by `sleep` and `timeout`.
-///
-/// GNU also accepts `inf`/`infinity` (optionally signed `+`, any case);
-/// infinite and overflowing values saturate to [`Duration::MAX`]. Callers
-/// treat such durations as "sleep until cancelled". Sub-millisecond precision
-/// is preserved: GNU `sleep 0.0001` really sleeps 100 microseconds.
+
+
+
+
+
+
+
 pub(crate) fn parse_duration(input: &str) -> Option<Duration> {
 	let trimmed = input.trim();
 	if trimmed.is_empty() {
@@ -641,16 +641,16 @@ pub(crate) fn parse_duration(input: &str) -> Option<Duration> {
 	if value.is_infinite() {
 		return Some(Duration::MAX);
 	}
-	// Only overflow remains once NaN and negatives are excluded; saturate.
+
 	Duration::try_from_secs_f64(value * multiplier).map_or(Some(Duration::MAX), Some)
 }
 
 
-/// Shell-quotes `arg` when rebuilding a command line for a child process.
-///
-/// `timeout` and `nohup` reconstruct the command they were handed so it can be
-/// re-parsed by a shell; anything that could be re-split or re-expanded must be
-/// quoted first.
+
+
+
+
+
 pub(crate) fn quote_arg(arg: &str) -> String {
 	if arg.is_empty() {
 		return "''".to_string();
@@ -665,22 +665,22 @@ pub(crate) fn quote_arg(arg: &str) -> String {
 	format!("'{escaped}'")
 }
 
-/// Reads a boolean "disable" flag for the uutils builtins from the session
-/// environment (preferred) then the process environment, mirroring the nohup
-/// builtin gate. Truthy = present and not "", "0", or "false".
 
-/// Returns the [`Registration`] for a [`Utility`].
+
+
+
+
 pub(crate) fn util<U: Utility, SE: ShellExtensions>() -> Registration<SE> {
 	builtins::builtin::<Util<U>, SE>()
 }
 
-/// Adapter turning a [`Utility`] into a brush builtin.
-///
-/// Holds the raw argument vector rather than a parsed `U`: process-substitution
-/// arguments can only be materialized once the shell is in hand, which happens
-/// in [`builtins::Command::execute`], and parse failures must be reported on the
-/// utility's own terms (help on stdout, usage errors with the utility's exit
-/// status) rather than through brush's generic usage-error path.
+
+
+
+
+
+
+
 pub(crate) struct Util<U: Utility> {
 	argv:    Vec<String>,
 	_marker: PhantomData<fn() -> U>,
@@ -726,14 +726,14 @@ impl<U: Utility> builtins::Command for Util<U> {
 	}
 }
 
-/// Drives a utility from raw arguments to an exit status.
+
 async fn run_utility<U: Utility, SE: ShellExtensions>(
 	context: ExecutionContext<'_, SE>,
 	argv: Vec<String>,
 ) -> Result<ExecutionResult, Error> {
-	// Capture everything owned *before* the first await so the returned future
-	// stays `Send`: the borrowed `ExecutionContext` (and its `&mut Shell`) is
-	// dropped before we await the blocking task.
+
+
+
 	#[cfg_attr(not(unix), expect(unused_mut, reason = "rewritten only on unix"))]
 	let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 	#[cfg(unix)]
@@ -750,8 +750,8 @@ async fn run_utility<U: Utility, SE: ShellExtensions>(
 	let parsed = match U::try_parse_from(&argv) {
 		Ok(parsed) => parsed,
 		Err(err) => {
-			// clap reports `--help` and `--version` as errors; those belong on
-			// stdout with a success status, everything else on stderr.
+
+
 			let rendered = err.to_string();
 			if err.use_stderr() {
 				let _ = write!(context.stderr(), "{rendered}");
@@ -774,11 +774,11 @@ async fn run_utility<U: Utility, SE: ShellExtensions>(
 		run_caught::<U>(parsed, &mut host)
 	});
 
-	// Respect shell abort/`timeout`. On cancel we set the host's cancel flag,
-	// which makes a blocked stdin read return EOF; the utility unwinds cleanly
-	// (flushing what it already produced) and the blocking task completes. We
-	// await that completion before returning so no detached thread keeps
-	// writing to the command's (possibly redirected) descriptors.
+
+
+
+
+
 	let code = match cancel {
 		Some(token) => {
 			let token_check = token.clone();
@@ -790,8 +790,8 @@ async fn run_utility<U: Utility, SE: ShellExtensions>(
 					130
 				},
 				result = &mut handle => {
-					// If the token already fired, the task only finished because
-					// our cancel flag unblocked it — report interrupted.
+
+
 					if token_check.is_cancelled() { 130 } else { result.unwrap_or(1) }
 				},
 			}
@@ -802,12 +802,12 @@ async fn run_utility<U: Utility, SE: ShellExtensions>(
 	Ok(ExecutionResult::new((code & 0xff) as u8))
 }
 
-/// Runs a utility body, containing any panic at the builtin boundary.
-///
-/// A port that panics (an `unwrap` on a `BrokenPipe`, say) must not take down
-/// the long-lived host process. With `panic = "unwind"` the panic unwinds to
-/// here, where it becomes a non-zero exit plus a concise note on the command's
-/// own stderr.
+
+
+
+
+
+
 pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	struct Guard;
 	impl Drop for Guard {
@@ -827,15 +827,15 @@ pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	}
 }
 
-/// Snapshots the command's streams, working directory, and exported
-/// environment into an owned [`Host`] that can move to a blocking thread.
+
+
 fn build_host<SE: ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
 	name: &str,
 ) -> Result<Host, Error> {
 	let stdin = context.try_fd(OpenFiles::STDIN_FD);
-	// On unix, capture the raw stdin fd so reads can poll it for cancellation;
-	// the `OpenFile` is kept alive by the `Stdin` below, so the fd stays valid.
+
+
 	#[cfg(unix)]
 	let stdin_fd: Option<i32> = {
 		use std::os::fd::AsRawFd;
@@ -863,14 +863,14 @@ fn build_host<SE: ShellExtensions>(
 		context.command_name.clone()
 	};
 
-	// One flag, shared: the adapter flips it on cancellation, and a blocked
-	// `Stdin::read` must observe the very same flag or it never wakes.
+
+
 	let cancel = Arc::new(AtomicBool::new(false));
 
 	let stdout = or_null(context.try_fd(OpenFiles::STDOUT_FD))?;
 	let stderr_file = or_null(context.try_fd(OpenFiles::STDERR_FD))?;
-	// `2>&1` (and the default capture pipe): one shared writer keeps
-	// diagnostics and output in exact write order.
+
+
 	let (merged_out, stderr) = if same_destination(&stdout, &stderr_file) {
 		let shared = Arc::new(Mutex::new(StreamWriter::new(stderr_file)));
 		(Some(Arc::clone(&shared)), StreamWriter::Shared(shared))
@@ -896,8 +896,8 @@ fn build_host<SE: ShellExtensions>(
 	})
 }
 
-/// Substitutes the null device for a closed descriptor, so a utility reading
-/// from or writing to it sees EOF / discards output instead of failing.
+
+
 fn or_null(file: Option<OpenFile>) -> Result<OpenFile, Error> {
 	match file {
 		Some(file) => Ok(file),
@@ -905,7 +905,7 @@ fn or_null(file: Option<OpenFile>) -> Result<OpenFile, Error> {
 	}
 }
 
-/// Recognizes brush's process-substitution arguments (`/dev/fd/<shell fd>`).
+
 #[cfg(unix)]
 fn process_substitution_fd(arg: &std::ffi::OsStr) -> Option<brush_core::ShellFd> {
 	arg.to_str()?
@@ -914,12 +914,12 @@ fn process_substitution_fd(arg: &std::ffi::OsStr) -> Option<brush_core::ShellFd>
 		.ok()
 }
 
-/// Rewrites `/dev/fd/<shell fd>` arguments to real descriptors of the host
-/// process, returning the owned descriptors that must stay alive for the
-/// duration of the utility.
-///
-/// Brush allocates process-substitution pipes in its own descriptor table, so
-/// the shell fd number in the argument is meaningless to `open`.
+
+
+
+
+
+
 #[cfg(unix)]
 fn materialize_process_substitution_fds<SE: ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
@@ -942,12 +942,12 @@ fn materialize_process_substitution_fds<SE: ShellExtensions>(
 	Ok(fds)
 }
 
-/// Implements `clap::Parser` for a builder-style utility: `$ty` stores the
-/// `ArgMatches` produced by `$app` in a field named `matches`.
-///
-/// Ports whose upstream argument model is built with `clap::Command::new(…)`
-/// use this instead of rewriting dozens of arguments into `derive(Parser)`
-/// form. Brush still renders `--help`, usage, and man content from `$app`.
+
+
+
+
+
+
 #[allow(unused_macros, reason = "used by utility modules, which are feature-gated")]
 macro_rules! matches_parser {
 	($ty:ident, $app:path) => {

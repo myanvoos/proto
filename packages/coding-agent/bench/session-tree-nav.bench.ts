@@ -1,16 +1,5 @@
-/**
- * Benchmark: session-tree navigation context build (perf/sessiontree-dedupe-context-build)
- *
- * Measures the O(N) walk performed by buildSessionContext during navigateTree.
- * Demonstrates the dedupe win: one walk vs two walks per navigation.
- *
- * Run: bun packages/coding-agent/bench/session-tree-nav.bench.ts
- */
-
 import type { SessionEntry } from "../src/session/session-manager";
 import { buildSessionContext } from "../src/session/session-manager";
-
-// ─── Synthetic session ───────────────────────────────────────────────────────
 
 const MSG_COUNT = 100;
 const CODE_BLOCKS_PER_MSG = 5;
@@ -37,7 +26,6 @@ function buildEntries(): SessionEntry[] {
 		).join("\n\n");
 
 		if (i % 2 === 0) {
-			// User message
 			entries.push({
 				type: "message",
 				id,
@@ -49,7 +37,6 @@ function buildEntries(): SessionEntry[] {
 				},
 			} satisfies SessionEntry);
 		} else {
-			// Assistant message
 			entries.push({
 				type: "message",
 				id,
@@ -66,13 +53,10 @@ function buildEntries(): SessionEntry[] {
 	return entries;
 }
 
-// ─── Bench helpers ────────────────────────────────────────────────────────────
-
 const WARMUP = 20;
 const ITERATIONS = 200;
 
 function bench(name: string, fn: () => void): number {
-	// Warmup
 	for (let i = 0; i < WARMUP; i++) fn();
 
 	const start = Bun.nanoseconds();
@@ -83,8 +67,6 @@ function bench(name: string, fn: () => void): number {
 	return perOp;
 }
 
-// ─── Run ──────────────────────────────────────────────────────────────────────
-
 const entries = buildEntries();
 const leafId = makeId(MSG_COUNT - 1);
 
@@ -92,13 +74,11 @@ console.log(
 	`\nBenchmark: session-tree-nav (${MSG_COUNT} messages, ${CODE_BLOCKS_PER_MSG} code blocks each, ${ITERATIONS} iterations)\n`,
 );
 
-// Baseline: two O(N) walks (old behaviour — navigateTree + renderInitialMessages each called buildSessionContext)
 const twoWalks = bench("two walks   [BEFORE — old behaviour]", () => {
 	buildSessionContext(entries, leafId);
 	buildSessionContext(entries, leafId);
 });
 
-// Optimized: one O(N) walk (new behaviour — navigateTree returns context, renderInitialMessages reuses it)
 const oneWalk = bench("one walk    [AFTER  — dedupe fix]    ", () => {
 	buildSessionContext(entries, leafId);
 });

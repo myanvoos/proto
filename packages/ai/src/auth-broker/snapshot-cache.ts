@@ -1,17 +1,9 @@
-/**
- * AES-GCM encrypted local cache for auth-broker snapshots.
- *
- * The cache is defense-in-depth for at-rest snapshots: a copied cache file is
- * useless without the matching broker bearer token and URL. The token itself is
- * still the trust boundary; a process that can read both the token and this file
- * can decrypt the snapshot.
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import type { SnapshotResponse } from "./types";
 
-const MAGIC = new Uint8Array([0x4f, 0x4d, 0x50, 0x53]); // "OMPS"
+const MAGIC = new Uint8Array([0x4f, 0x4d, 0x50, 0x53]);
 const VERSION = 2;
 const VERSION_OFFSET = MAGIC.byteLength;
 const IV_OFFSET = VERSION_OFFSET + 1;
@@ -27,7 +19,7 @@ export interface ReadAuthBrokerSnapshotCacheOptions {
 	token: string;
 	url: string;
 	ttlMs: number;
-	/** Override clock for deterministic tests. */
+
 	now?: () => number;
 }
 
@@ -38,12 +30,6 @@ export interface WriteAuthBrokerSnapshotCacheOptions {
 	snapshot: SnapshotResponse;
 }
 
-/**
- * Cheap structural guard for a decrypted cache payload. The bytes are already
- * AES-256-GCM authenticated, so this only rejects shape/version drift (a cache
- * written by a different proto build, or a buggy write) — not tampering. A
- * mismatch returns null so the caller refetches a fresh snapshot.
- */
 function isSnapshotResponseShape(v: unknown): v is SnapshotResponse {
 	if (typeof v !== "object" || v === null) return false;
 	const o = v as Record<string, unknown>;
@@ -108,14 +94,9 @@ export async function writeAuthBrokerSnapshotCache(opts: WriteAuthBrokerSnapshot
 	}
 	await sweepStaleTempFiles(opts.path);
 }
-/** Temp files older than this are debris from a killed process, never a live write. */
+
 const STALE_TMP_MAX_AGE_MS = 60 * 60_000;
 
-/**
- * Remove abandoned `<cache>.<pid>.<hex>.tmp` siblings. Writes are fire-and-forget
- * from snapshot callbacks, so a process exiting between `open` and `rename`
- * strands its temp file; without this sweep they accumulate unboundedly.
- */
 async function sweepStaleTempFiles(cachePath: string): Promise<void> {
 	const dir = path.dirname(cachePath);
 	const prefix = `${path.basename(cachePath)}.`;

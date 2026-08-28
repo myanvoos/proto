@@ -1,31 +1,15 @@
-//! macOS power assertions for preventing idle sleep.
-//!
-//! Exposes a small N-API handle that acquires a macOS `IOKit` power assertion
-//! on construction and releases it on `stop()`/drop. On non-macOS platforms the
-//! handle is a no-op so higher layers can use one code path.
-
 use napi_derive::napi;
 
-/// Options for starting a macOS power assertion.
-///
-/// Each boolean maps to a `caffeinate(8)` flag and a corresponding `IOKit`
-/// `IOPMAssertion` type. Multiple flags can be combined; when set, one
-/// assertion is taken per flag and all are released together when the
-/// handle is stopped or dropped.
-///
-/// If every flag is unset (or omitted), the handle behaves as if `idle`
-/// were `true` — preserving the historical default of `caffeinate -i`.
 #[napi(object, js_name = "MacOSPowerAssertionOptions")]
 pub struct MacOSPowerAssertionOptions {
-	/// Human-readable reason shown in macOS power diagnostics.
-	pub reason:  Option<String>,
-	/// `caffeinate -i`: prevent the system from idle-sleeping.
-	pub idle:    Option<bool>,
-	/// `caffeinate -s`: prevent the system from sleeping (AC power only).
-	pub system:  Option<bool>,
-	/// `caffeinate -u`: declare the user is active (wakes the display).
-	pub user:    Option<bool>,
-	/// `caffeinate -d`: prevent the display from idle-sleeping.
+	pub reason: Option<String>,
+
+	pub idle: Option<bool>,
+
+	pub system: Option<bool>,
+
+	pub user: Option<bool>,
+
 	pub display: Option<bool>,
 }
 
@@ -46,8 +30,6 @@ mod platform {
 	const PREVENT_USER_IDLE_DISPLAY_SLEEP: &str = "PreventUserIdleDisplaySleep";
 	const USER_IS_ACTIVE: &str = "UserIsActive";
 
-	/// Variants this module knows how to acquire. Mirrors the `caffeinate(8)`
-	/// flag set the public API exposes (`-i`, `-s`, `-u`, `-d`).
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 	pub enum AssertionKind {
 		PreventIdleSystemSleep,
@@ -101,9 +83,7 @@ mod platform {
 			let c_string = CString::new(value).map_err(|_| {
 				Error::from_reason("Power assertion strings must not contain NUL bytes")
 			})?;
-			// SAFETY: `c_string` is a valid, NUL-terminated UTF-8 byte sequence for the
-			// duration of the call, and CoreFoundation copies the contents into a new
-			// `CFString` when creation succeeds.
+
 			let string_ref =
 				unsafe { CFStringCreateWithCString(ptr::null(), c_string.as_ptr(), UTF8_ENCODING) };
 			if string_ref.is_null() {
@@ -124,9 +104,7 @@ mod platform {
 			if self.0.is_null() {
 				return;
 			}
-			// SAFETY: `self.0` was returned by `CFStringCreateWithCString` in
-			// `CfString::new` and this wrapper owns the single outstanding reference, so
-			// releasing it here balances creation exactly once.
+
 			unsafe { CFRelease(self.0) };
 		}
 	}
@@ -140,9 +118,7 @@ mod platform {
 			let assertion_type = CfString::new(kind.iokit_name())?;
 			let assertion_reason = CfString::new(reason)?;
 			let mut assertion_id = ASSERTION_ID_NONE;
-			// SAFETY: both `CFStringRef` values are valid live CoreFoundation strings owned
-			// by this stack frame, `ASSERTION_LEVEL_ON` is the documented enabled value,
-			// and `assertion_id` points to writable storage for the returned identifier.
+
 			let status = unsafe {
 				IOPMAssertionCreateWithName(
 					assertion_type.as_ptr(),
@@ -165,9 +141,7 @@ mod platform {
 			}
 			let assertion_id = self.assertion_id;
 			self.assertion_id = ASSERTION_ID_NONE;
-			// SAFETY: `assertion_id` came from a successful `IOPMAssertionCreateWithName`
-			// call owned by this handle, and we clear local ownership before releasing so
-			// the same assertion cannot be released twice.
+
 			let status = unsafe { IOPMAssertionRelease(assertion_id) };
 			if status != 0 {
 				return Err(Error::from_reason(format!(
@@ -185,12 +159,6 @@ mod platform {
 	}
 }
 
-/// Long-lived macOS power assertion.
-///
-/// On macOS this acquires one or more `IOKit` assertions that prevent the
-/// requested sleep modes until the handle is stopped or dropped. On other
-/// platforms it is a no-op handle so the caller can keep one cross-platform
-/// code path.
 #[napi(js_name = "MacOSPowerAssertion")]
 pub struct MacOSPowerAssertion {
 	#[cfg(target_os = "macos")]
@@ -199,8 +167,6 @@ pub struct MacOSPowerAssertion {
 
 #[napi]
 impl MacOSPowerAssertion {
-	/// Acquire a macOS power assertion. On non-macOS platforms returns a
-	/// no-op handle so callers can stay cross-platform.
 	#[napi(factory)]
 	pub fn start(options: Option<MacOSPowerAssertionOptions>) -> napi::Result<Self> {
 		let reason = options
@@ -213,8 +179,6 @@ impl MacOSPowerAssertion {
 		let user = options.as_ref().and_then(|v| v.user).unwrap_or(false);
 		let display = options.as_ref().and_then(|v| v.display).unwrap_or(false);
 
-		// Preserve historical default: an empty options object behaves as
-		// `caffeinate -i` (prevent idle system sleep).
 		let effective_idle = idle || !(system || user || display);
 
 		#[cfg(target_os = "macos")]
@@ -245,8 +209,6 @@ impl MacOSPowerAssertion {
 		}
 	}
 
-	/// Release every assertion held by this handle. Safe to call multiple
-	/// times; subsequent calls are a no-op.
 	#[napi]
 	#[allow(clippy::missing_const_for_fn, reason = "not const on macOS")]
 	pub fn stop(&mut self) -> napi::Result<()> {

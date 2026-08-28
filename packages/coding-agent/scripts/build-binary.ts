@@ -7,7 +7,6 @@ import { compileCodingAgent } from "./compile-binary";
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
 
-/** Binary cross-compilation settings selected by `CROSS_TARGET`. */
 export interface CrossBuild {
 	readonly id: string;
 	readonly platform: string;
@@ -15,7 +14,6 @@ export interface CrossBuild {
 	readonly target: Bun.Build.CompileTarget;
 }
 
-/** Resolves a CROSS_TARGET value to the Bun compile target used by local binary builds. */
 export function resolveCrossBuild(value: string | undefined): CrossBuild | null {
 	switch (value) {
 		case undefined:
@@ -34,11 +32,6 @@ export function resolveCrossBuild(value: string | undefined): CrossBuild | null 
 	}
 }
 
-// Transformers.js is an optional, native-heavy dependency that is never bundled
-// into the binary; the tiny-model worker `bun install`s it into a runtime cache
-// on first use. The `catalog:` spec cannot be resolved from inside the compiled
-// bunfs (issue #1763), so embed the concrete installed version here for the
-// worker to pin its runtime install against.
 const transformersManifest: unknown = createRequire(import.meta.url)("@huggingface/transformers/package.json");
 if (
 	typeof transformersManifest !== "object" ||

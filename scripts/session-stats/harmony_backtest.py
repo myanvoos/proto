@@ -38,36 +38,29 @@ FAKE_RESULT_RE = re.compile(
 )
 FENCE_RE = re.compile(r"^\s*(```+|~~~+)")
 
-# Python's stdlib re has no Unicode script properties, so keep the exact
-# ranges local and explicit.
 SCRIPT_RUN_RE = re.compile(
     "["
-    "\u3400-\u4dbf"  # CJK Extension A
-    "\u4e00-\u9fff"  # CJK Unified Ideographs
-    "\uf900-\ufaff"  # CJK Compatibility Ideographs
-    "\u0400-\u04ff"  # Cyrillic
-    "\u0e00-\u0e7f"  # Thai
-    "\u10a0-\u10ff"  # Georgian
-    "\u0530-\u058f"  # Armenian
-    "\u0c80-\u0cff"  # Kannada
-    "\u0c00-\u0c7f"  # Telugu
-    "\u0900-\u097f"  # Devanagari
-    "\u0600-\u06ff"  # Arabic
-    "\u0d00-\u0d7f"  # Malayalam
+    "\u3400-\u4dbf"
+    "\u4e00-\u9fff"
+    "\uf900-\ufaff"
+    "\u0400-\u04ff"
+    "\u0e00-\u0e7f"
+    "\u10a0-\u10ff"
+    "\u0530-\u058f"
+    "\u0c80-\u0cff"
+    "\u0c00-\u0c7f"
+    "\u0900-\u097f"
+    "\u0600-\u06ff"
+    "\u0d00-\u0d7f"
     "]{2,}"
 )
 
-# Header detector — matches any of:
-#   ¶PATH or ¶PATH#hash  (current hashline format)
-#   §PATH                (legacy hashline format, pre-2026-05)
-#   *** Update File: PATH (Codex apply_patch envelope)
 HEADER_RE = re.compile(
     r"^(?:§+(?P<hl_legacy>.*)|¶+\s*(?P<hl_new>[^\s#¶]+)(?:#[0-9a-f]{4})?|\*\*\* Update File:\s+(?P<upd>\S.*))\s*$"
 )
 BEGIN_PATCH_RE = re.compile(r"^\*\*\* Begin Patch\s*$")
 END_PATCH_RE = re.compile(r"^\*\*\* End Patch\s*$")
 
-# Legacy hashline ops (kept for historical session corpus).
 LEGACY_INSERT_RE = re.compile(
     r"^(?P<op>[«»])\s*(?P<anchor>BOF|EOF|[1-9][0-9]*[A-Za-z]{2})\s*$"
 )
@@ -78,7 +71,6 @@ LEGACY_REPLACE_RE = re.compile(
     r"^≔\s*(?P<range>[1-9][0-9]*[A-Za-z]{2}(?:\.\.[1-9][0-9]*[A-Za-z]{2})?)\s*$"
 )
 
-# Current hashline ops.
 NEW_INSERT_RE = re.compile(
     r"^\s*(?:[>+\-*]+\s*)?(?P<anchor>[1-9][0-9]*|BOF|EOF)(?P<sigil>[↑↓])(?P<inline>.*)$"
 )
@@ -331,7 +323,6 @@ def line_spans(text: str) -> list[tuple[str, int, int]]:
         return out
     if not text:
         return []
-    # splitlines(keepends=True) already includes the final unterminated line.
     return out
 
 
@@ -479,14 +470,9 @@ def parse_edit_boundary(text: str, *, legacy_loose_tail: bool = False) -> EditBo
     """
     sections: list[EditSection] = []
     cur: EditSection | None = None
-    # Per-section format: "new", "legacy_hl", or "codex". Determines which op
-    # regexes apply and whether `needs_payload` semantics are in effect.
     cur_format: str | None = None
     parsed_end = 0
     line_no = 0
-    # Legacy hashline (`«»`) inserts demand at least one payload line before the
-    # boundary advances. New-format inserts are self-completing on their own
-    # line, so these flags only matter when ``cur_format == "legacy_hl"``.
     needs_payload = False
     payload_allowed = False
     saw_required_payload = False
@@ -543,12 +529,7 @@ def parse_edit_boundary(text: str, *, legacy_loose_tail: bool = False) -> EditBo
             break
 
         if cur_format == "new":
-            # New format: payload lines are anything that does not start a new
-            # op or header. `↑`/`↓`/`:` ops may be followed by additional
-            # payload lines; `!` ops are self-contained.
             if payload_allowed and not line.startswith(new_payload_blockers):
-                # Re-check whether the line itself is an op — an op line ends
-                # the current payload run and starts a new op.
                 if not NEW_INSERT_RE.match(line) and not NEW_RANGE_RE.match(line):
                     cur.payload_lines += 1
                     parsed_end = end
@@ -578,14 +559,11 @@ def parse_edit_boundary(text: str, *, legacy_loose_tail: bool = False) -> EditBo
                 if sigil == ":" and rng.group("inline"):
                     cur.payload_lines += 1
                 parsed_end = end
-                # `!` deletes do not accept payload; `:` replaces may carry
-                # subsequent payload lines.
                 payload_allowed = sigil == ":"
                 continue
 
             break
 
-        # Legacy hashline state machine (preserved verbatim for §«»≔ corpus).
         if payload_allowed and line[:1] not in legacy_payload_blockers:
             cur.payload_lines += 1
             parsed_end = end
@@ -611,7 +589,6 @@ def parse_edit_boundary(text: str, *, legacy_loose_tail: bool = False) -> EditBo
             needs_payload = True
             payload_allowed = True
             saw_required_payload = False
-            # Not complete until at least one payload line appears.
             continue
 
         repl = LEGACY_REPLACE_RE.match(line)

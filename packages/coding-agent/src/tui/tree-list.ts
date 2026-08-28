@@ -1,7 +1,3 @@
-/**
- * Hierarchical tree list rendering helper.
- */
-
 import { replaceTabs } from "@oh-my-pi/pi-tui";
 import type { Theme } from "../modes/theme/theme";
 import { formatMoreItems } from "../tools/render-utils";
@@ -12,21 +8,13 @@ interface TreeListOptions<T> {
 	items: T[];
 	expanded?: boolean;
 	maxCollapsed?: number;
-	/** Strict total-line budget for collapsed mode. When set (and not expanded),
-	 *  rendered item lines plus the trailing summary line must fit within this budget.
-	 */
+
 	maxCollapsedLines?: number;
 	itemType?: string;
 	truncateFrom?: "start" | "end";
-	/** Caller-supplied trailing summary line. When set (and not expanded),
-	 *  `renderTreeList` renders exactly the provided `items` (the caller has
-	 *  already applied its own selection/cap) and appends this text as the
-	 *  final `└` row, with the last item using `├`. Empty string renders the
-	 *  items with no summary. Bypasses the built-in truncation/`maxCollapsed`
-	 *  path. */
+
 	trailingSummary?: string;
-	/** Called once per item with `isLast: false` during budget calculation;
-	 *  line count MUST NOT vary based on `isLast`. */
+
 	renderItem: (item: T, context: TreeContext) => string | string[];
 }
 
@@ -43,10 +31,6 @@ export function renderTreeList<T>(options: TreeListOptions<T>, theme: Theme): st
 	const maxItems = expanded ? items.length : Math.min(items.length, maxCollapsed);
 	const linesBudget = !expanded && maxCollapsedLines !== undefined ? maxCollapsedLines : Infinity;
 
-	// Caller-driven collapse: render exactly the provided items (the caller
-	// already picked/capped them) plus an optional trailing summary row. The
-	// walking-viewport todo policy uses this so item selection lives in the
-	// todo domain, not here.
 	if (!expanded && options.trailingSummary !== undefined) {
 		const summary = options.trailingSummary;
 		const lines: string[] = [];
@@ -87,9 +71,6 @@ export function renderTreeList<T>(options: TreeListOptions<T>, theme: Theme): st
 		}
 	}
 
-	// Pre-render each candidate item once.
-	// isLast cannot be known at this point (fittingCount is not yet determined);
-	// renderItem implementations MUST NOT vary line count based on isLast.
 	const preRendered: string[][] = [];
 	for (let i = 0; i < candidateIndices.length; i++) {
 		const itemIdx = candidateIndices[i];
@@ -143,7 +124,6 @@ export function renderTreeList<T>(options: TreeListOptions<T>, theme: Theme): st
 
 	const hasSummary = !expanded && remaining > 0 && (linesBudget === Infinity || fittedLineCount < linesBudget);
 
-	// Emit pre-rendered content with correct isLast-based branch prefixes.
 	const lines: string[] = [];
 
 	if (truncateFrom === "start" && hasSummary) {

@@ -1,31 +1,12 @@
-//! Encoding-generic text input: UTF-8 / UTF-16 / UTF-32, xutf-style.
-//!
-//! No transcoding, no scratch buffers. The pipeline runs natively in the
-//! input's own code units: the pre-tokenizer scans a codepoint cursor over
-//! `&[U]`, and the BPE stage looks ranks up in a lazily-expanded per-flavor
-//! table view (see `bpe.rs`). A JS UTF-16 string is tokenized directly.
-//!
-//! Decoding is permissive (xutf semantics): malformed sequences and lone
-//! surrogates decode as U+FFFD and consume minimally. Valid text behaves
-//! identically across flavors, so counts/ids are flavor-invariant.
-
 use std::hash::Hash;
 
-/// One code unit: `u8` (UTF-8), `u16` (UTF-16 native-endian), `u32` (UTF-32).
 pub trait Unit: Copy + Eq + Ord + Hash + 'static {
-	/// Decode the codepoint starting at `units[i]`.
-	/// Returns `(codepoint, units_consumed)`; permissive on malformed input.
 	fn decode(units: &[Self], i: usize) -> (char, usize);
 
-	/// Encode `cp` into `out`, returning the unit count written.
-	/// `out` must have room for 4 units.
 	fn encode(cp: char, out: &mut [Self]) -> usize;
 
-	/// Identity byte view when this flavor already is UTF-8 (`u8` only).
-	/// Lets the engine skip per-piece re-encoding for `str` input.
 	fn as_utf8(units: &[Self]) -> Option<&[u8]>;
 
-	/// The unit as an ASCII byte when it encodes one (`< 0x80`).
 	fn ascii(self) -> Option<u8>;
 }
 
@@ -36,8 +17,7 @@ impl Unit for u8 {
 		if b < 0x80 {
 			return (b as char, 1);
 		}
-		// Permissive multi-byte decode: on malformed input yield U+FFFD and
-		// consume one unit.
+
 		let need = match b {
 			0xc0..=0xdf => 2,
 			0xe0..=0xef => 3,
@@ -82,7 +62,6 @@ impl Unit for u16 {
 	fn decode(units: &[Self], i: usize) -> (char, usize) {
 		let u = units[i];
 		if !(0xd800..=0xdfff).contains(&u) {
-			// SAFETY-free: non-surrogate u16 is always a valid scalar.
 			return (char::from_u32(u as u32).unwrap_or(char::REPLACEMENT_CHARACTER), 1);
 		}
 		if u < 0xdc00
@@ -92,7 +71,7 @@ impl Unit for u16 {
 			let cp = 0x10000 + (((u as u32 - 0xd800) << 10) | (lo as u32 - 0xdc00));
 			return (char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER), 2);
 		}
-		(char::REPLACEMENT_CHARACTER, 1) // lone surrogate
+		(char::REPLACEMENT_CHARACTER, 1)
 	}
 
 	#[inline]
@@ -134,8 +113,6 @@ impl Unit for u32 {
 	}
 }
 
-/// Borrowable text in any flavor. Public entry type for
-/// [`Encoding::count`](crate::utok::Encoding::count) / `encode`.
 pub trait Utf {
 	type Unit: Unit;
 	fn units(&self) -> &[Self::Unit];
@@ -195,7 +172,6 @@ impl Utf for Vec<u32> {
 	}
 }
 
-/// Codepoint cursor over units — the pre-tokenizer's scan primitive.
 pub struct Cursor<'a, U: Unit> {
 	pub units: &'a [U],
 	pub pos:   usize,
@@ -207,7 +183,6 @@ impl<'a, U: Unit> Cursor<'a, U> {
 		Self { units, pos: 0 }
 	}
 
-	/// Codepoint at the cursor without advancing.
 	#[inline]
 	pub fn peek(&self) -> Option<(char, usize)> {
 		(self.pos < self.units.len()).then(|| U::decode(self.units, self.pos))

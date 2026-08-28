@@ -1,16 +1,3 @@
-/**
- * Tool-call argument validation pipeline.
- *
- * Tools may declare ArkType schemas or plain JSON Schema. This module builds a
- * cached validation context, normalizes common LLM quirks against the wire
- * schema, validates, performs conservative schema-directed coercions, and
- * returns parsed arguments while preserving unknown root fields.
- *
- * The goal is to be conservative: every coercion is a structural rewrite that
- * keeps the schema in charge of acceptance — we never invent values, only
- * massage shapes the LLM almost got right.
- */
-
 import { type Type, type } from "@oh-my-pi/omptype";
 import { structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
@@ -24,32 +11,10 @@ import {
 import { stamp } from "./schema/stamps";
 import { arkToWireSchema, isArkSchema } from "./schema/wire";
 
-// ============================================================================
-// Type Coercion Utilities
-// ============================================================================
-//
-// LLMs sometimes produce tool arguments where a value has the right meaning but
-// the wrong JSON type. For example, an array parameter might arrive as
-// `"[1, 2, 3]"`, a boolean as `"yes"` or `1`, or a string field as a structured
-// object that should be embedded verbatim.
-//
-// Rather than rejecting these outright, validate against the declared schema
-// and perform only schema-directed rewrites for reported type errors.
-//
-// This is intentionally conservative: each rewrite is small and validation
-// remains the source of truth for whether the result is accepted.
-// ============================================================================
-
-/** Regex matching valid JSON number literals (integers, decimals, scientific notation) */
 const JSON_NUMBER_PATTERN = /^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
-/** Regex matching numeric strings (allows leading zeros) */
 const NUMERIC_STRING_PATTERN = /^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
-/**
- * Checks if a value matches any of the expected JSON Schema types.
- * Used to verify that a parsed JSON value is actually what the schema wants.
- */
 function matchesExpectedType(value: unknown, expectedTypes: string[]): boolean {
 	return expectedTypes.some(type => {
 		switch (type) {
@@ -146,9 +111,6 @@ function tryCoerceString(
 	}
 
 	if (Array.isArray(value) || typeof value === "object") {
-		// JSON.stringify is irreversible (downstream consumers receive encoded
-		// text where they expected structure), so it requires an authoritative
-		// diagnosis — never a union-branch guess.
 		if (!allowLossy) return { value, changed: false };
 		try {
 			const stringified = JSON.stringify(value);
@@ -166,11 +128,6 @@ function tryCoerceString(
 	return { value: String(value), changed: true };
 }
 
-/**
- * Schema-directed value repair for a single type issue. `allowLossy` gates the
- * irreversible repairs (container→string stringification); lossless repairs
- * (JSON parsing, boolean spellings, scalar stringification) always apply.
- */
 function tryCoerceForExpectedTypes(
 	value: unknown,
 	expectedTypes: string[],
@@ -234,22 +191,20 @@ function tryParseLeadingJsonContainer(value: string): unknown | undefined {
 		try {
 			return JSON.parse(prefix) as unknown;
 		} catch {
-			// LLMs sometimes emit literal `\n` or `\t` between JSON tokens
-			// (e.g. `[{...}\n]`). Convert these to real whitespace and retry.
 			const cleaned = cleanLiteralEscapes(prefix);
 			if (cleaned !== prefix) {
 				try {
 					return JSON.parse(cleaned) as unknown;
 				} catch {}
 			}
-			// Try escaping raw control chars that appear inside string literals.
+
 			const escapedControls = escapeRawControlsInJsonStrings(prefix);
 			if (escapedControls !== prefix) {
 				try {
 					return JSON.parse(escapedControls) as unknown;
 				} catch {}
 			}
-			// Also try single-char healing on the extracted prefix.
+
 			return tryHealMalformedJson(prefix);
 		}
 	}
@@ -257,11 +212,6 @@ function tryParseLeadingJsonContainer(value: string): unknown | undefined {
 	return undefined;
 }
 
-/**
- * Replace literal `\n`, `\t`, `\r` sequences that appear OUTSIDE of JSON
- * strings with actual whitespace.  LLMs sometimes produce these when they
- * confuse the tool-call encoding with the content encoding.
- */
 function cleanLiteralEscapes(value: string): string {
 	let result = "";
 	let inString = false;
@@ -285,7 +235,7 @@ function cleanLiteralEscapes(value: string): string {
 			i += 1;
 			continue;
 		}
-		// Outside a string: replace literal \n, \t, \r with whitespace
+
 		if (ch === "\\" && i + 1 < value.length) {
 			const next = value[i + 1];
 			if (next === "n" || next === "t" || next === "r") {
@@ -300,15 +250,6 @@ function cleanLiteralEscapes(value: string): string {
 	return result;
 }
 
-/**
- * Escape raw control characters (0x00–0x1F) that appear *inside* JSON string
- * literals. LLMs sometimes emit literal newlines/tabs/etc. inside string
- * content instead of `\n` / `\t` escape sequences, which `JSON.parse` rejects
- * even though the surrounding structure is valid.
- *
- * This function only rewrites characters while inside a string; structural
- * whitespace outside of strings is preserved unchanged.
- */
 function escapeRawControlsInJsonStrings(value: string): string {
 	let result = "";
 	let inString = false;
@@ -367,31 +308,16 @@ function escapeRawControlsInJsonStrings(value: string): string {
 	return changed ? result : value;
 }
 
-/** Maximum single-character edits to attempt when healing malformed JSON. */
 const MAX_HEAL_DISTANCE = 3;
 const BRACKET_CHARS = ["[", "]", "{", "}"] as const;
 
-/**
- * Attempts to heal near-valid JSON by applying single-character edits near the
- * end of the string. LLMs (especially smaller ones) sometimes produce JSON with
- * a single misplaced, extra, or wrong bracket at the end — e.g. `"}]"` becomes
- * `"]}"` or gets an extra `}` appended. This function tries:
- *   1. Removing a single character from the last few positions
- *   2. Replacing a single character in the last few positions with each bracket type
- *
- * Returns the parsed value on success, undefined on failure.
- */
 function tryHealMalformedJson(value: string): unknown | undefined {
-	// Verify it actually fails to parse
 	try {
 		return JSON.parse(value) as unknown;
 	} catch {}
 
-	// Only attempt edits within the last few characters — the error is always
-	// a bracket issue at the tail for the class of LLM mistakes this targets.
 	const tailStart = Math.max(0, value.length - (MAX_HEAL_DISTANCE * 2 + 1));
 
-	// Strategy 1: remove a single character from the tail
 	for (let i = tailStart; i < value.length; i += 1) {
 		const candidate = value.slice(0, i) + value.slice(i + 1);
 		try {
@@ -399,7 +325,6 @@ function tryHealMalformedJson(value: string): unknown | undefined {
 		} catch {}
 	}
 
-	// Strategy 2: replace a single character in the tail with each bracket type
 	for (let i = tailStart; i < value.length; i += 1) {
 		const original = value[i];
 		for (const replacement of BRACKET_CHARS) {
@@ -455,19 +380,6 @@ function looksLikeJsonContainerString(value: unknown): boolean {
 	);
 }
 
-/**
- * Attempts to parse a string as JSON if it looks like a JSON literal and
- * the parsed result matches one of the expected types.
- *
- * Only attempts parsing for strings that syntactically look like JSON:
- *   - Objects: `{...}`
- *   - Arrays: `[...]`
- *   - Literals: `true`, `false`, `null`, or numeric strings
- *
- * Returns `{ changed: true }` only if parsing succeeded AND the result
- * matches an expected type. This prevents false positives like parsing
- * the string `"123"` when the schema actually wants a string.
- */
 function tryParseJsonForTypes(value: string, expectedTypes: string[], depth = 0): { value: unknown; changed: boolean } {
 	const trimmed = value.trim();
 	if (!trimmed) return { value, changed: false };
@@ -477,7 +389,6 @@ function tryParseJsonForTypes(value: string, expectedTypes: string[], depth = 0)
 		return numberCoercion;
 	}
 
-	// Quick syntactic checks to avoid unnecessary parse attempts
 	const looksJsonObject = trimmed.startsWith("{") && looksLikeJsonContainerString(trimmed);
 	const looksJsonArray = trimmed.startsWith("[") && looksLikeJsonContainerString(trimmed);
 	const looksJsonString = trimmed.startsWith('"') && !expectedTypes.includes("string");
@@ -494,8 +405,6 @@ function tryParseJsonForTypes(value: string, expectedTypes: string[], depth = 0)
 		if (accepted.changed) return accepted;
 	} catch {
 		if (looksJsonObject || looksJsonArray) {
-			// Try escaping raw control chars inside string literals (LLMs sometimes
-			// emit literal newlines/tabs inside string content rather than `\n`/`\t`).
 			const escapedControls = escapeRawControlsInJsonStrings(trimmed);
 			if (escapedControls !== trimmed) {
 				try {
@@ -504,13 +413,13 @@ function tryParseJsonForTypes(value: string, expectedTypes: string[], depth = 0)
 					if (accepted.changed) return accepted;
 				} catch {}
 			}
-			// Try extracting a valid JSON prefix (handles trailing junk after balanced container)
+
 			const leading = tryParseLeadingJsonContainer(trimmed);
 			if (leading !== undefined) {
 				const accepted = acceptParsedJsonForTypes(leading, trimmed, expectedTypes, depth);
 				if (accepted.changed) return accepted;
 			}
-			// Try healing single-character bracket errors near the end of the string
+
 			const healed = tryHealMalformedJson(trimmed);
 			if (healed !== undefined) {
 				const accepted = acceptParsedJsonForTypes(healed, trimmed, expectedTypes, depth);
@@ -523,36 +432,19 @@ function tryParseJsonForTypes(value: string, expectedTypes: string[], depth = 0)
 	return { value, changed: false };
 }
 
-// ============================================================================
-// JSON Pointer Utilities (RFC 6901)
-// ============================================================================
-//
-// Error locations use JSON Pointer syntax so coercion can read and write
-// validator-reported paths uniformly.
-// ============================================================================
-
-/** Encode a structured issue path as a JSON Pointer. */
 function pathToPointer(path: ReadonlyArray<PropertyKey>): string {
 	if (path.length === 0) return "";
 	return `/${path.map(seg => String(seg).replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`;
 }
 
-/**
- * Decodes a JSON Pointer string into path segments.
- * Handles RFC 6901 escape sequences: ~1 -> /, ~0 -> ~
- */
 function decodeJsonPointer(pointer: string): string[] {
 	if (!pointer) return [];
 	return pointer
 		.split("/")
-		.slice(1) // Remove leading empty segment from initial "/"
+		.slice(1)
 		.map(segment => segment.replace(/~1/g, "/").replace(/~0/g, "~"));
 }
 
-/**
- * Retrieves a value from a nested object/array structure using a JSON Pointer.
- * Returns undefined if the path doesn't exist or traversal fails.
- */
 function getValueAtPointer(root: unknown, pointer: string): unknown {
 	if (!pointer) return root;
 	const segments = decodeJsonPointer(pointer);
@@ -573,17 +465,11 @@ function getValueAtPointer(root: unknown, pointer: string): unknown {
 	return current;
 }
 
-/**
- * Sets a value in a nested object/array structure using a JSON Pointer.
- * Mutates the structure in-place. Returns the root (possibly unchanged if
- * the path was invalid).
- */
 function setValueAtPointer(root: unknown, pointer: string, value: unknown): unknown {
 	if (!pointer) return value;
 	const segments = decodeJsonPointer(pointer);
 	let current: unknown = root;
 
-	// Navigate to the parent of the target location
 	for (let index = 0; index < segments.length - 1; index += 1) {
 		const segment = segments[index];
 		if (current === null || current === undefined) return root;
@@ -597,7 +483,6 @@ function setValueAtPointer(root: unknown, pointer: string, value: unknown): unkn
 		current = (current as Record<string, unknown>)[segment];
 	}
 
-	// Set the value at the final segment
 	const lastSegment = segments[segments.length - 1];
 	if (Array.isArray(current)) {
 		const arrayIndex = Number(lastSegment);
@@ -611,13 +496,6 @@ function setValueAtPointer(root: unknown, pointer: string, value: unknown): unkn
 	return root;
 }
 
-/**
- * Returns a new structure with the key at `pointer` removed. Only the
- * containers along the path are shallow-cloned (`O(depth)` allocations);
- * every sibling subtree is shared with the input. Returns the input
- * reference unchanged when the pointer is empty, the path is invalid, or
- * the final key is absent — so callers can detect a no-op via identity.
- */
 function deleteValueAtPointer(root: unknown, pointer: string): unknown {
 	if (!pointer) return root;
 	const segments = decodeJsonPointer(pointer);
@@ -656,15 +534,6 @@ function deleteAtSegment(node: unknown, segments: string[], depth: number): unkn
 	return { ...obj, [segment]: child };
 }
 
-// ============================================================================
-// JSON-Schema-driven normalization passes (LLM quirks).
-// ============================================================================
-
-/**
- * Test a JSON-Schema branch during nullable normalization. Kept deliberately
- * small and synchronous so validation does not need to compile legacy schemas
- * into another schema language.
- */
 function branchMatchesSchema(branch: unknown, value: unknown): boolean {
 	return isJsonSchemaValueValid(branch, value);
 }
@@ -739,9 +608,6 @@ function normalizeOptionalNullsForSchema(
 		return { value: changed ? nextValue : value, changed };
 	}
 
-	// Coerce string → number/integer when the schema branch declares those types.
-	// This fixes anyOf:[{type:"number"},{type:"null"}] (i.e. Optional<number>) where
-	// the validator reports an "anyOf" error rather than a "type" error.
 	if ((schemaObject.type === "number" || schemaObject.type === "integer") && typeof value === "string") {
 		return tryParseNumberString(value, [schemaObject.type as string]);
 	}
@@ -766,9 +632,6 @@ function normalizeOptionalNullsForSchema(
 		const isInvalidEmptyString =
 			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue);
 
-		// Strip null/string "null" from optional fields, and strip empty
-		// strings only when the property schema would reject the explicit value.
-		// LLMs sometimes output these placeholders to mean "no value".
 		if ((isNullish || isInvalidEmptyString) && !required.has(key)) {
 			if (!changed) {
 				nextValue = { ...nextValue };
@@ -778,11 +641,6 @@ function normalizeOptionalNullsForSchema(
 			continue;
 		}
 
-		// Substitute the schema-supplied default when a required field arrives
-		// as null/"null". LLMs commonly emit null for "I have nothing to say
-		// here"; if the schema documents a default, honor it instead of
-		// rejecting the whole call. The default is cloned so mutations on the
-		// validated value never bleed back into the schema.
 		if (isNullish && propertySchema && typeof propertySchema === "object") {
 			const propertyObject = propertySchema as Record<string, unknown>;
 			if ("default" in propertyObject) {
@@ -804,15 +662,6 @@ function normalizeOptionalNullsForSchema(
 		nextValue[key] = normalized.value;
 	}
 
-	// Strip unknown keys with null/"null" values when the schema forbids extras.
-	// LLMs sometimes hallucinate verbs alongside valid ones (e.g. `split: null`,
-	// `original: null`). Rejecting the entire tool call wastes a turn; treating
-	// these the same as null on known optional fields is a safer fallback. Keys
-	// with non-null unknown values are left intact so genuine schema mistakes
-	// still surface as validation errors.
-	//
-	// At the root level unknown null-valued keys stay intact; the
-	// post-validation `preserveUnknownRootFields` pass re-attaches root extras.
 	if (!isRoot && schemaObject.additionalProperties === false) {
 		const knownKeys = new Set(Object.keys(properties));
 		for (const key of Object.keys(nextValue)) {
@@ -975,26 +824,6 @@ function normalizeEnumStringWhitespace(
 	return { value: changed ? nextValue : valueObject, changed };
 }
 
-// ============================================================================
-// Identifier-string trailing-whitespace normalization (LLM quirk).
-// ============================================================================
-//
-// LLMs sometimes emit tool arguments with a trailing newline dangling off a
-// short identifier — a path, URL, or a display label like `title`. These
-// values are never legitimately terminated by line breaks, so we strip trailing
-// line terminators from string values on the well-known keys below before the
-// tool ever sees them. Content-carrying properties (`content`, `input`, `body`,
-// `text`, `command`, `code`) are intentionally not traversed or trimmed so
-// genuine trailing whitespace survives on writes, patches, shell commands, and
-// eval snippets.
-// ============================================================================
-
-/**
- * Property names whose values are treated as short identifiers — filesystem
- * paths, URLs, URIs, or display labels. The trim only fires on strings sitting
- * under one of these keys, so `path: "docs/report "` still targets the file
- * whose name ends in a space.
- */
 const IDENTIFIER_STRING_KEYS: ReadonlySet<string> = new Set([
 	"path",
 	"paths",
@@ -1041,11 +870,6 @@ function trimIdentifierStringLeaf(input: unknown): unknown {
 	return input;
 }
 
-/**
- * Recursively strip trailing line terminators from string values whose property
- * key matches {@link IDENTIFIER_STRING_KEYS}. Runs by property name only so it
- * fires uniformly across ArkType and plain JSON Schema tools.
- */
 function normalizeIdentifierStringWhitespace(value: unknown): { value: unknown; changed: boolean } {
 	if (Array.isArray(value)) {
 		let changed = false;
@@ -1086,30 +910,8 @@ function normalizeIdentifierStringWhitespace(value: unknown): { value: unknown; 
 	return { value: changed ? out : value, changed };
 }
 
-// ============================================================================
-// Double-encoded object-key normalization (LLM quirk).
-// ============================================================================
-//
-// LLMs occasionally serialize an object key one time too many, so the property
-// NAME arrives as the JSON encoding of the real name — literal quote characters
-// and all (e.g. `{ "\"op\"": "done" }` decodes to the JS key `"op"`). The
-// schema never matches such a key, so it reads as an unrecognized extra and is
-// dropped by the unrecognized-key repair, later surfacing as a spurious
-// missing-required error. We walk the whole value (arrays + nested objects)
-// and rename any key that is itself the JSON encoding of a plain string back to
-// that string.
-// ============================================================================
-
-/** Max layers of accidental JSON-encoding to peel off a single object key. */
 const MAX_KEY_DECODE_DEPTH = 3;
 
-/**
- * If `key` is the JSON encoding of a plain string (quote-wrapped and
- * `JSON.parse`s to a string), return the decoded string; otherwise null. Peels
- * up to {@link MAX_KEY_DECODE_DEPTH} nested encodings so multiply-encoded keys
- * collapse in one pass. Conservative: any key that is not a quote-wrapped JSON
- * string literal is left untouched.
- */
 function decodeDoubleEncodedKey(key: string): string | null {
 	let current = key;
 	let decoded: string | null = null;
@@ -1128,13 +930,6 @@ function decodeDoubleEncodedKey(key: string): string | null {
 	return decoded;
 }
 
-/**
- * Recursively unwrap object keys that were accidentally JSON-encoded an extra
- * time. Schema-agnostic by design: such keys are dropped before any schema pass
- * can map them, so this runs first. A key is only renamed when the decoded name
- * differs and does not already exist on the same object — renaming would
- * otherwise clobber a sibling and silently lose data.
- */
 function normalizeDoubleEncodedKeys(value: unknown): { value: unknown; changed: boolean } {
 	if (Array.isArray(value)) {
 		let changed = false;
@@ -1161,8 +956,7 @@ function normalizeDoubleEncodedKeys(value: unknown): { value: unknown; changed: 
 		const nextChild = normalizedChild.changed ? normalizedChild.value : entry;
 
 		const decodedKey = decodeDoubleEncodedKey(key);
-		// `Object.hasOwn` (not `in`) so a decoded `constructor`/`toString` is not
-		// mistaken for a collision via the prototype chain.
+
 		const targetKey =
 			decodedKey !== null &&
 			decodedKey !== key &&
@@ -1172,8 +966,7 @@ function normalizeDoubleEncodedKeys(value: unknown): { value: unknown; changed: 
 				: key;
 
 		if (targetKey !== key || normalizedChild.changed) changed = true;
-		// `defineProperty` so a decoded `__proto__` key becomes an own property
-		// instead of mutating the result object's prototype.
+
 		Object.defineProperty(out, targetKey, {
 			value: nextChild,
 			writable: true,
@@ -1185,17 +978,6 @@ function normalizeDoubleEncodedKeys(value: unknown): { value: unknown; changed: 
 	return { value: changed ? out : value, changed };
 }
 
-// ============================================================================
-// String-encoded array coercion for union(string, array) schemas.
-// ============================================================================
-
-/**
- * Detects whether a schema node accepts BOTH the `string` and `array` JSON
- * Schema types. Recognizes:
- *   - `{ "type": ["string", "array"] }` (multi-type),
- *   - `{ "anyOf": [...] }` / `{ "oneOf": [...] }` with at least one string
- *     branch and one array branch.
- */
 function schemaAcceptsStringAndArray(schema: Record<string, unknown>): boolean {
 	if (Array.isArray(schema.type) && schema.type.includes("string") && schema.type.includes("array")) {
 		return true;
@@ -1245,48 +1027,27 @@ function parsedArrayMatchesArrayBranch(schema: Record<string, unknown>, value: u
 	return false;
 }
 
-/**
- * Pre-validation normalization: when a schema field accepts BOTH `string` and
- * `array`, providers that double-serialize tool arguments can deliver array
- * values as JSON-encoded strings like `'["a","b"]'`. A string-or-array union
- * accepts that value against the string branch before issue-driven coercion.
- *
- * Walk the schema; when both shapes are accepted AND the incoming value is a
- * JSON-array-shaped string, substitute the parsed array only if it validates
- * against the schema's array branch. Conservative: array-shaped strings like
- * `"[1]"` stay on the string branch when the array branch is `string[]`.
- *
- * See https://proto.sh
- */
 function normalizeStringEncodedArrayUnions(schema: unknown, value: unknown): { value: unknown; changed: boolean } {
 	if (value === null || value === undefined) return { value, changed: false };
 	if (schema === null || typeof schema !== "object") return { value, changed: false };
 
 	const schemaObject = schema as Record<string, unknown>;
 
-	// Leaf case: this schema node accepts both string and array.
 	if (typeof value === "string" && schemaAcceptsStringAndArray(schemaObject)) {
 		const trimmed = value.trim();
 		if (!trimmed.startsWith("[")) return { value, changed: false };
 		try {
 			const parsed = JSON.parse(trimmed) as unknown;
 			if (Array.isArray(parsed)) {
-				// Unwrap any double-encoded object keys inside the parsed array
-				// before the branch-match check; otherwise an `array<object>`
-				// branch fails to validate and the value silently stays on the
-				// string branch.
 				const candidate = normalizeDoubleEncodedKeys(parsed).value as unknown[];
 				if (parsedArrayMatchesArrayBranch(schemaObject, candidate)) {
 					return { value: candidate, changed: true };
 				}
 			}
-		} catch {
-			// Not valid JSON — leave the string alone for the validator to handle.
-		}
+		} catch {}
 		return { value, changed: false };
 	}
 
-	// Recurse into array items.
 	if (Array.isArray(value)) {
 		const itemSchema = schemaObject.items;
 		if (!itemSchema || typeof itemSchema !== "object" || Array.isArray(itemSchema)) {
@@ -1306,7 +1067,6 @@ function normalizeStringEncodedArrayUnions(schema: unknown, value: unknown): { v
 		return { value: changed ? nextValue : value, changed };
 	}
 
-	// Recurse into object properties.
 	if (schemaObject.type !== "object") return { value, changed: false };
 	if (typeof value !== "object" || value === null) return { value, changed: false };
 	const properties = schemaObject.properties;
@@ -1329,11 +1089,6 @@ function normalizeStringEncodedArrayUnions(schema: unknown, value: unknown): { v
 	return { value: changed ? nextValue : valueObject, changed };
 }
 
-/**
- * Name of the sole property when a schema declares exactly one required string
- * field, else `undefined`. Recognizes the closed single-argument tool shape
- * (`{ type: "object", properties: { X: { type: "string" } }, required: ["X"] }`).
- */
 function singleRequiredStringKey(schema: unknown): string | undefined {
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
 	const obj = schema as Record<string, unknown>;
@@ -1350,16 +1105,6 @@ function singleRequiredStringKey(schema: unknown): string | undefined {
 	return (propertySchema as Record<string, unknown>).type === "string" ? key : undefined;
 }
 
-/**
- * LLM-quirk repair for single-argument tools. When a tool declares exactly one
- * property — a required string — some providers deliver the payload under a
- * different key (e.g. the `edit` tool's patch arriving as `input`/`_input`, or
- * any single-string tool whose argument the model mislabels). When the declared
- * key is absent but another field holds a string, adopt the first such string
- * as the declared key so the call validates instead of failing with "<key> was
- * missing". A present-but-wrong-type value is left alone so its real type error
- * still surfaces.
- */
 function normalizeSingleStringField(schema: unknown, value: unknown): { value: unknown; changed: boolean } {
 	const key = singleRequiredStringKey(schema);
 	if (key === undefined) return { value, changed: false };
@@ -1377,34 +1122,13 @@ function normalizeSingleStringField(schema: unknown, value: unknown): { value: u
 	return { value, changed: false };
 }
 
-// ============================================================================
-// Flattened array-property normalization (LLM quirk).
-// ============================================================================
-//
-// Some providers (notably Gemini) serialize array arguments using flattened
-// property paths — `questions[0].id`, `questions[0].options[0].label`, ... —
-// instead of a nested `questions` array of objects. The schema sees only
-// unrecognized extra keys and rejects the call. This pass rebuilds the nested
-// structure before the schema ever runs.
-//
-// Conservative by design:
-//   - fires only when at least one key is a well-formed array-index path
-//     (`name[i]`, `name[i].prop`, `name[i][j]`, ...); plain keys and
-//     non-array dotted keys (`a.b`) never match;
-//   - aborts wholesale (returns unchanged) on any shape conflict so genuine
-//     schema mistakes still surface as validation errors;
-//   - array indices are capped so a runaway/hostile payload cannot allocate
-//     oversized arrays.
-// ============================================================================
-
-/** Cap on array indices accepted by the flattened-path parser. */
 const MAX_FLATTENED_INDEX = 100_000;
 
 interface FlattenedPathStep {
 	kind: "prop" | "index";
-	/** For `kind: "prop"` — the property name. */
+
 	name?: string;
-	/** For `kind: "index"` — the resolved array index. */
+
 	index: number;
 }
 
@@ -1415,18 +1139,10 @@ interface ParsedFlattenedPath {
 const FLATTENED_IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*/;
 const FLATTENED_INDEX_RE = /^\[(\d+)\]/;
 
-/**
- * Parse a single flattened array-path key into build steps. Returns `null` for
- * keys that are not flattened array paths:
- *   - no `[<digits>]` index anywhere (`questions`, `a.b`),
- *   - a malformed or non-numeric index (`foo[bar]`),
- *   - an index-first path (`[0].x`),
- *   - an index outside the safety cap.
- */
 function parseFlattenedPath(key: string): ParsedFlattenedPath | null {
 	if (key.length === 0) return null;
 	const steps: FlattenedPathStep[] = [];
-	// The path must start with a property name so `[0].x` / `[0]` are left alone.
+
 	const first = FLATTENED_IDENT_RE.exec(key);
 	if (!first) return null;
 	steps.push({ kind: "prop", name: first[0], index: 0 });
@@ -1451,20 +1167,13 @@ function parseFlattenedPath(key: string): ParsedFlattenedPath | null {
 			pos += m[0].length;
 			continue;
 		}
-		// Any other character (lone `[foo]`, whitespace, invalid ident chars) is
-		// not a flattened array path.
+
 		return null;
 	}
 	if (!sawIndex) return null;
 	return { steps };
 }
 
-/**
- * Write a leaf value into `root` along `steps`, creating intermediate objects
- * and arrays as needed. Returns `false` (and leaves `root` in an undefined
- * partial state — the caller aborts the whole normalization on that) when an
- * existing node has a shape that contradicts the path.
- */
 function buildFlattenedPath(root: Record<string, unknown>, steps: FlattenedPathStep[], value: unknown): boolean {
 	let node: unknown = root;
 	for (let i = 0; i < steps.length - 1; i++) {
@@ -1481,7 +1190,7 @@ function buildFlattenedPath(root: Record<string, unknown>, steps: FlattenedPathS
 				if (Array.isArray(existing) !== nextIsArray) return false;
 				child = existing;
 			}
-			// `defineProperty` so a decoded `__proto__` step becomes an own property.
+
 			Object.defineProperty(obj, step.name!, {
 				value: child,
 				writable: true,
@@ -1528,10 +1237,6 @@ function buildFlattenedPath(root: Record<string, unknown>, steps: FlattenedPathS
 	return true;
 }
 
-/**
- * Rebuild nested arrays/objects from LLM-emitted flattened property paths.
- * See https://proto.sh
- */
 function normalizeFlattenedArrayProperties(value: unknown): { value: unknown; changed: boolean } {
 	if (!isPlainRecord(value)) return { value, changed: false };
 	const source = value as Record<string, unknown>;
@@ -1540,9 +1245,6 @@ function normalizeFlattenedArrayProperties(value: unknown): { value: unknown; ch
 	for (const [key, entry] of Object.entries(source)) {
 		const parsed = parseFlattenedPath(key);
 		if (!parsed) {
-			// Preserve non-flattened sibling keys. A plain key colliding with an
-			// already-built path is ambiguous — bail to the safer failure path so
-			// genuine schema mistakes still surface.
 			if (Object.hasOwn(out, key)) return { value, changed: false };
 			Object.defineProperty(out, key, { value: entry, writable: true, enumerable: true, configurable: true });
 			continue;
@@ -1555,8 +1257,6 @@ function normalizeFlattenedArrayProperties(value: unknown): { value: unknown; ch
 	return { value: out, changed: true };
 }
 
-// Validation issue → coercion bridge
-
 interface FlatIssue {
 	keyword: "type" | "unrecognized" | "other";
 	instancePath: string;
@@ -1564,38 +1264,14 @@ interface FlatIssue {
 	unionBranch: boolean;
 }
 
-/**
- * Repair issues raised by the validator before we surface them to the caller.
- *
- * Two kinds of repair are applied:
- *  - **type**: when a value has a common LLM-produced shape mismatch, rewrite
- *    it only in the direction requested by the schema: parse JSON strings,
- *    accept boolean spellings, stringify non-null values for string fields,
- *    map booleans to numeric 0/1, and wrap singleton array values for non-union
- *    array expectations.
- *  - **unrecognized**: when a closed object received an extra key
- *    (`additionalProperties: false`), drop that key so re-validation succeeds.
- *    This effectively coerces object schemas to loose semantics recursively.
- *
- * The function is safe and conservative:
- *   - Only processes "type" and "unrecognized" issues
- *   - Only attempts schema-directed coercions for the expected type
- *   - Only wraps singleton array values for non-union type expectations
- *   - Clones the args object before mutation (copy-on-write)
- */
 function coerceArgsFromIssues(args: unknown, issues: FlatIssue[]): { value: unknown; changed: boolean } {
 	if (issues.length === 0) return { value: args, changed: false };
 
 	let changed = false;
-	// Tracks whether `nextArgs` is a fully owned deep copy (safe to mutate
-	// leaves). The unrecognized-key path uses path-shallow immutable updates
-	// and does NOT require ownership, so we only pay for the deep clone when
-	// a type coercion actually needs to write into a leaf.
+
 	let owned = false;
 	let nextArgs: unknown = args;
 	for (const issue of issues) {
-		// Failed union branches still contribute schema-directed type repairs.
-		// Container-to-string conversion remains enabled for string branches.
 		if (issue.keyword === "unrecognized") {
 			if (issue.unionBranch) continue;
 			const previous = nextArgs;
@@ -1637,10 +1313,6 @@ function coerceArgsFromIssues(args: unknown, issues: FlatIssue[]): { value: unkn
 	return { value: changed ? nextArgs : args, changed };
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
-
 type ValidationContext =
 	| {
 			kind: "arktype";
@@ -1652,12 +1324,6 @@ type ValidationContext =
 			json: Record<string, unknown>;
 	  };
 
-/**
- * Cache the validation context derived from a tool's parameters schema.
- * Keyed by the parameters object identity (stable across tool registrations),
- * via {@link stamp} so callable ArkType schemas — and any frozen host — degrade
- * to recompute-on-call instead of throwing on assignment.
- */
 const kValidationContext = Symbol("ai.validationContext");
 function getValidationContext(tool: Tool): ValidationContext {
 	return stamp(tool.parameters as object, kValidationContext, params =>
@@ -1710,10 +1376,7 @@ function validateContext(ctx: ValidationContext, value: unknown): ContextValidat
 		if (!(out instanceof type.errors)) {
 			return { success: true, value: preserveUnknownRootFields(value, out) };
 		}
-		// A `.narrow()`/cross-field failure can have ArkType reject while the wire
-		// JSON (its predicate dropped by the toJsonSchema fallback) accepts — then
-		// there are no json issues to coerce and we fall through to the formatted
-		// error built from ArkType's own messages.
+
 		const jr = validateJsonSchemaValue(ctx.json, value);
 		const flatIssues = jr.success ? [] : flattenJsonSchemaIssues(jr.issues);
 		return {
@@ -1732,15 +1395,12 @@ function validateContext(ctx: ValidationContext, value: unknown): ContextValidat
 	};
 }
 
-// In-band `arg_key`/`arg_value` tool-call syntax that leaks into native
-// tool-call arguments when a provider parses the model's owned format
-// server-side and the model botches an `</arg_value>` closer.
 const SPILL_KEY_OPEN = "<arg_key>";
 const SPILL_KEY_CLOSE = "</arg_key>";
 const SPILL_VALUE_OPEN = "<arg_value>";
 const SPILL_VALUE_CLOSE = "</arg_value>";
 const SPILL_TOOL_CLOSE = "</tool_call>";
-/** Plausible spilled argument names; anything else is ordinary content. */
+
 const SPILL_KEY_PATTERN = /^[\w.$-]{1,128}$/;
 
 interface SpillSplit {
@@ -1754,7 +1414,6 @@ function skipSpillWhitespace(text: string, from: number): number {
 	return at;
 }
 
-/** Whether a well-formed `<arg_key>NAME</arg_key>…<arg_value>` pair starts at `at`. */
 function isSpillPairStart(text: string, at: number): boolean {
 	if (!text.startsWith(SPILL_KEY_OPEN, at)) return false;
 	const keyStart = at + SPILL_KEY_OPEN.length;
@@ -1764,12 +1423,6 @@ function isSpillPairStart(text: string, at: number): boolean {
 	return text.startsWith(SPILL_VALUE_OPEN, valueAt);
 }
 
-/**
- * Finds where a spilled `<arg_value>` body ends: the legit closer, a
- * mistyped `</arg_key>` closer (validated by its follow-up), the start of the
- * next pair when the closer is missing entirely, or end of input (the
- * provider's parser consumed the terminating closer).
- */
 function findSpillValueEnd(text: string, from: number): { end: number; next: number } {
 	const close = text.indexOf(SPILL_VALUE_CLOSE, from);
 	let wrong = text.indexOf(SPILL_KEY_CLOSE, from);
@@ -1800,11 +1453,6 @@ function findSpillValueEnd(text: string, from: number): { end: number; next: num
 	}
 }
 
-/**
- * Strictly parses a spill tail as `<arg_key>…</arg_key><arg_value>…` pairs,
- * tolerating a trailing `</tool_call>`. Returns null on any shape that is not
- * pure pair syntax — the caller then treats the text as ordinary content.
- */
 function parseSpilledPairs(text: string): [string, string][] | null {
 	const pairs: [string, string][] = [];
 	let at = skipSpillWhitespace(text, 0);
@@ -1829,11 +1477,6 @@ function parseSpilledPairs(text: string): [string, string][] | null {
 	return pairs;
 }
 
-/**
- * Splits a contaminated string value at the earliest spill boundary: a
- * mistyped `</arg_key>` closer or an inlined next pair. Returns null when no
- * boundary yields a cleanly parseable tail.
- */
 function splitSpilledValue(text: string): SpillSplit | null {
 	let wrong = text.indexOf(SPILL_KEY_CLOSE);
 	let open = text.indexOf(SPILL_KEY_OPEN);
@@ -1853,18 +1496,6 @@ function splitSpilledValue(text: string): SpillSplit | null {
 	return null;
 }
 
-/**
- * Repairs native tool-call arguments contaminated by in-band
- * `<arg_key>`/`<arg_value>` syntax. Some providers parse owned tool-call
- * formats server-side; when the model mistypes or omits an `</arg_value>`
- * closer, every following pair is swallowed into one string argument, e.g.
- * `op: "done</arg_key>\n<arg_key>task</arg_key>\n<arg_value>…"`. Truncates
- * each contaminated top-level string at its spill boundary and restores the
- * swallowed pairs as sibling arguments (never overwriting existing keys).
- *
- * Only invoked after validation and every coercion pass fail, so valid calls
- * whose string content legitimately contains tag-like text are never touched.
- */
 function healInbandArgSpill(value: unknown): { value: unknown; changed: boolean } {
 	if (!isPlainRecord(value)) return { value, changed: false };
 	let changed = false;
@@ -1889,13 +1520,6 @@ function healInbandArgSpill(value: unknown): { value: unknown; changed: boolean 
 
 const MAX_COERCION_PASSES = 5;
 
-/**
- * Finds a tool by name and validates the tool call arguments against its schema.
- * @param tools Array of tool definitions
- * @param toolCall The tool call from the LLM
- * @returns The validated arguments
- * @throws Error if tool is not found or validation fails
- */
 export function validateToolCall(tools: Tool[], toolCall: ToolCall): ToolCall["arguments"] {
 	const tool = tools.find(t => t.name === toolCall.name);
 	if (!tool) {
@@ -1904,7 +1528,6 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): ToolCall["a
 	return validateToolArguments(tool, toolCall);
 }
 
-/** Cap per-field string lengths when embedding received args in an error message. */
 const MAX_ERROR_ARG_STRING_LENGTH = 256;
 
 function truncateArgsForError(value: unknown): unknown {
@@ -1921,12 +1544,6 @@ function truncateArgsForError(value: unknown): unknown {
 	return value;
 }
 
-/**
- * Validates tool call arguments against an ArkType or plain JSON Schema schema.
- * Applies conservative LLM-quirk normalization before declaring failure.
- *
- * @throws Error with a formatted message when validation cannot be reconciled.
- */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall["arguments"] {
 	const originalArgs = toolCall.arguments;
 	if (originalArgs && typeof originalArgs === "object" && "__parseError" in originalArgs) {
@@ -1944,28 +1561,15 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	const ctx = getValidationContext(tool);
 	const { json } = ctx;
 
-	// Always normalize first — strip null/string "null" from optional fields,
-	// strip optional empty strings only when their property schema rejects the
-	// explicit value, and substitute defaults. Handles LLM outputting
-	// placeholders for "no value" even when validation would otherwise pass.
 	let normalizedArgs: unknown = originalArgs;
 	let changed = false;
 
-	// Unwrap accidentally double-JSON-encoded object keys before any schema
-	// pass. LLMs sometimes emit `{ "\"op\"": "done" }`, so the property name
-	// arrives quote-wrapped; left alone it reads as an unrecognized key, gets
-	// dropped by the coercion repair, and re-surfaces as a missing-required
-	// error. Running first means every later pass sees the corrected names.
 	const keyNormalization = normalizeDoubleEncodedKeys(normalizedArgs);
 	if (keyNormalization.changed) {
 		normalizedArgs = keyNormalization.value;
 		changed = true;
 	}
 
-	// Rebuild nested arrays/objects from flattened property paths some
-	// providers emit instead of real arrays (`questions[0].id`, ...). Runs
-	// after key unwrapping but before any schema pass so the validator sees the
-	// structurally correct payload.
 	const flattenedArgs = normalizeFlattenedArrayProperties(normalizedArgs);
 	if (flattenedArgs.changed) {
 		normalizedArgs = flattenedArgs.value;
@@ -1984,19 +1588,12 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 		changed = true;
 	}
 
-	// Strip trailing whitespace from string values on well-known
-	// identifier-like property names (paths, URLs, titles). Some models tack
-	// a newline onto a short-identifier arg from stream artifacts; downstream
-	// tools then either fail to stat the target or annotate a "corrected
-	// from" hint the model misreads as tool corruption.
 	const identifierStringNormalization = normalizeIdentifierStringWhitespace(normalizedArgs);
 	if (identifierStringNormalization.changed) {
 		normalizedArgs = identifierStringNormalization.value;
 		changed = true;
 	}
 
-	// Then re-shape JSON-stringified arrays whose schema accepts both string
-	// and array. Otherwise downstream tools receive the encoded string.
 	const stringEncodedArrayNorm = normalizeStringEncodedArrayUnions(json, normalizedArgs);
 	if (stringEncodedArrayNorm.changed) {
 		normalizedArgs = stringEncodedArrayNorm.value;
@@ -2009,8 +1606,6 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 		changed = true;
 	}
 
-	// Single-argument tools (e.g. `edit`): if the model put the lone required
-	// string under a different key, adopt the first string field as that key.
 	const singleStringNorm = normalizeSingleStringField(json, normalizedArgs);
 	if (singleStringNorm.changed) {
 		normalizedArgs = singleStringNorm.value;
@@ -2026,10 +1621,6 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	result = coercionOutcome.result;
 	if (result.success) return result.value as ToolCall["arguments"];
 
-	// Last resort: some providers parse in-band tool-call syntax server-side,
-	// and a mistyped/missing `</arg_value>` closer inlines the remaining pairs
-	// into one string argument. Gated on validation failure so valid calls
-	// with tag-like string content are never rewritten.
 	const spillHeal = healInbandArgSpill(normalizedArgs);
 	if (spillHeal.changed) {
 		normalizedArgs = spillHeal.value;
@@ -2043,13 +1634,8 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 		if (result.success) return result.value as ToolCall["arguments"];
 	}
 
-	// Format validation errors nicely. The header phrase is asserted by
-	// existing tests; the detailed body is informational.
 	const errors = result.messages.join("\n") || "Unknown validation error";
 
-	// Truncate long per-field strings: the full payload (potentially hundreds
-	// of KB for write/edit-class calls) would otherwise round-trip back to the
-	// model inside the tool error.
 	const receivedArgs = changed
 		? {
 				original: truncateArgsForError(originalArgs),
@@ -2064,12 +1650,6 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	throw new AIError.ValidationError(errorMessage);
 }
 
-/**
- * Runs up to {@link MAX_COERCION_PASSES} issue-driven coercion rounds,
- * re-applying the schema normalizations after each round because a coercion
- * may unwrap JSON-string containers and expose fields the pre-validation
- * passes could not reach.
- */
 function runCoercionPasses(
 	ctx: ValidationContext,
 	args: unknown,
@@ -2087,10 +1667,6 @@ function runCoercionPasses(
 		normalizedArgs = coercion.value;
 		changed = true;
 
-		// `coerceArgsFromIssues` may have just parsed a JSON-string container at
-		// the root or a nested field, exposing double-encoded keys the initial
-		// pass could not reach. Re-unwrap before the unrecognized-key repair on
-		// the next validation pass would delete them.
 		const keyNormalizationPass = normalizeDoubleEncodedKeys(normalizedArgs);
 		if (keyNormalizationPass.changed) {
 			normalizedArgs = keyNormalizationPass.value;
@@ -2111,10 +1687,6 @@ function runCoercionPasses(
 			normalizedArgs = identifierStringNormalizationPass.value;
 		}
 
-		// Re-run the union-string coercion because `coerceArgsFromIssues` may
-		// have just unwrapped a JSON-stringified object at the root or inside a
-		// nested field — exposing `string | string[]` descendants the initial
-		// pre-validation pass could not reach.
 		const stringEncodedArrayNormPass = normalizeStringEncodedArrayUnions(json, normalizedArgs);
 		if (stringEncodedArrayNormPass.changed) {
 			normalizedArgs = stringEncodedArrayNormPass.value;
@@ -2125,9 +1697,6 @@ function runCoercionPasses(
 			normalizedArgs = identifierStringNormalizationAfterArrayPass.value;
 		}
 
-		// Re-run single-string remap: `coerceArgsFromIssues` may have just
-		// unwrapped a JSON-stringified root object, exposing a mislabelled lone
-		// string field the initial pre-pass could not see.
 		const singleStringNormPass = normalizeSingleStringField(json, normalizedArgs);
 		if (singleStringNormPass.changed) {
 			normalizedArgs = singleStringNormPass.value;

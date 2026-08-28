@@ -25,9 +25,6 @@ interface ConventionalAnalysisInput {
 	diff: string;
 }
 
-/**
- * Generate conventional analysis data from a diff and metadata.
- */
 export async function generateConventionalAnalysis({
 	model,
 	apiKey,

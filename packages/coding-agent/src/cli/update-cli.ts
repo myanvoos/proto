@@ -1,9 +1,3 @@
-/**
- * Update CLI command handler.
- *
- * Handles `proto update` to check for and install updates.
- * Uses the installer that owns the active proto executable when it can be detected.
- */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -27,53 +21,27 @@ const PACKAGE = "@oh-my-pi/pi-coding-agent";
 const HOMEBREW_FORMULA = "can1357/tap/proto";
 const MISE_TOOL = "github:can1357/proto";
 const NIX_STORE_DIR = "/nix/store";
-/**
- * Official npm registry origin.
- *
- * Pinned across both the version check and the bun install step so the two
- * agree on which catalog they are talking to. A user's bun may be pointed at
- * an unofficial mirror (corporate proxy, Taobao, etc.) that lags the upstream
- * registry by minutes-to-hours, in which case `getLatestRelease` would resolve
- * a version the mirror has not yet replicated and the install would fail with
- * `No version matching "X" found for specifier "<pkg>" (but package exists)`.
- * See #1686.
- */
+
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const GITHUB_API = "https://api.github.com";
 const RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const BINARY_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 
-/**
- * Core native addon package. Bumped in lock-step with {@link PACKAGE} so the
- * version sentinel the loader looks up at runtime matches the `.node` on
- * disk; see {@link buildBunInstallArgs} for why this must be installed
- * explicitly rather than inherited as a transitive dependency.
- */
 const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
 
-/**
- * Platform tags the release pipeline publishes as
- * `@oh-my-pi/pi-natives-<tag>` leaves. Mirrors `SUPPORTED_PLATFORMS` in
- * `packages/natives/native/loader-state.js` and `LEAF_TARGETS` in
- * `packages/natives/scripts/gen-npm-packages.ts`; kept here as the local
- * source of truth so the update path stays free of cross-package imports.
- */
 const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]);
 
 function currentNativeTag(): string {
 	return `${process.platform}-${process.arch}`;
 }
 
-/** Distribution channel advertised by a release's published npm manifest. */
 type ReleaseDist = "npm" | "binary";
 
-/** npm package names a release installs: the agent package and its natives companion. */
 interface ReleasePackages {
 	pkg: string;
 	natives: string;
 }
 
-/** Parsed `proto.rename` pointer: the new agent package name and optional new natives name. */
 interface ReleaseRename {
 	pkg: string;
 	natives?: string;
@@ -84,9 +52,9 @@ const CURRENT_PACKAGES: ReleasePackages = { pkg: PACKAGE, natives: NATIVES_PACKA
 export interface ReleaseInfo {
 	tag: string;
 	version: string;
-	/** Parsed `proto.dist` from the registry manifest; undefined when absent. */
+
 	dist?: ReleaseDist;
-	/** npm names to install, resolved after following any `proto.rename` pointers. */
+
 	packages: ReleasePackages;
 }
 
@@ -102,16 +70,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-/**
- * Parse the `proto.dist` field from a published package manifest.
- *
- * Forward-compatibility contract with future releases: a release that is not
- * installable as an npm package (e.g. a native rewrite) publishes
- * `"proto": { "dist": "binary" }` in its package.json. Any value other than
- * "npm" — including values this updater does not know yet — maps to "binary"
- * so already-deployed updaters never run a package-manager install against a
- * release that no longer supports it.
- */
 export function resolveReleaseDist(manifest: unknown): ReleaseDist | undefined {
 	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
 	const dist = manifest.proto.dist;
@@ -119,23 +77,6 @@ export function resolveReleaseDist(manifest: unknown): ReleaseDist | undefined {
 	return dist === "npm" ? "npm" : "binary";
 }
 
-/**
- * Parse the `proto.rename` pointer from a published package manifest.
- *
- * Forward-compatibility contract for renaming the npm package: the final
- * version published under an old name is a stub whose manifest carries
- * `"proto": { "rename": { "package": "<new-agent-pkg>", "natives": "<new-natives-pkg>" }, "dist": "binary" }`.
- * Updaters that understand `rename` follow the pointer and resolve the
- * release from the renamed package instead ({@link getLatestRelease});
- * older deployed updaters ignore it and take the `dist: "binary"` escape
- * hatch, replacing the install with the GitHub release binary rather than
- * installing the stub via bun/npm.
- *
- * The renamed package's own manifest MUST declare `"dist": "npm"` (so
- * package-manager installs stay package-managed across a major bump) and
- * MUST continue the old version line (a version reset would compare as
- * "already up to date" against the running build).
- */
 export function resolveReleaseRename(manifest: unknown): ReleaseRename | undefined {
 	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
 	const rename = manifest.proto.rename;
@@ -152,17 +93,6 @@ function majorVersion(version: string): number {
 	return Number.isNaN(major) ? 0 : major;
 }
 
-/**
- * Whether the update must bypass bun/npm and install the release binary.
- *
- * An explicit `proto.dist` wins in both directions. Without one, a release with
- * a higher major than the running build is assumed not npm-installable: the
- * runtime may have changed out from under the package layout, and the pinned
- * `@oh-my-pi/pi-natives*` companions ({@link buildBunInstallArgs}) may not
- * exist at that version, which would strand bun/npm-managed installs behind a
- * hard install failure. Homebrew and mise installs are unaffected — both
- * already pull GitHub release binaries.
- */
 export function shouldForceBinaryUpdate(
 	release: { version: string; dist?: ReleaseDist },
 	currentVersion: string = VERSION,
@@ -171,9 +101,6 @@ export function shouldForceBinaryUpdate(
 	return majorVersion(release.version) > majorVersion(currentVersion);
 }
 
-/**
- * Select and validate the binary asset from GitHub release metadata.
- */
 export function resolveReleaseBinaryAsset(
 	release: unknown,
 	expectedTag: string,
@@ -270,9 +197,6 @@ interface VerifiedBinaryDownloadOptions {
 	fetchImpl?: Fetch;
 }
 
-/**
- * Download a binary and verify its GitHub-reported size and SHA-256 digest.
- */
 export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOptions): Promise<void> {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	await unlinkIfExists(options.targetPath);
@@ -332,14 +256,12 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 	}
 }
 
-/** Result from running the installed binary and parsing its reported version. */
 export interface InstalledVersionVerification {
 	ok: boolean;
 	actual?: string;
 	path?: string;
 }
 
-/** Paths and verifier used while replacing a downloaded binary update. */
 interface BinaryReplacementOptions {
 	targetPath: string;
 	tempPath: string;
@@ -348,10 +270,6 @@ interface BinaryReplacementOptions {
 	verifyInstalledVersion: (expectedVersion: string) => Promise<InstalledVersionVerification>;
 }
 
-/**
- * Parse update subcommand arguments.
- * Returns undefined if not an update command.
- */
 export function parseUpdateArgs(args: string[]): { force: boolean; check: boolean; plugins: boolean } | undefined {
 	if (args.length === 0 || args[0] !== "update") {
 		return undefined;
@@ -454,11 +372,7 @@ function isPathInDirectoryLexical(filePath: string, directoryPath: string): bool
 
 function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 	if (isPathInDirectoryLexical(filePath, directoryPath)) return true;
-	// Layer realpath resolution on top of the lexical guard: path.resolve does
-	// not traverse symlinks; realpath does. Resolve both the file and its parent
-	// directory: the file catches manager links like Homebrew's
-	// `bin/proto -> Cellar/.../bin/proto`; the parent fallback still tolerates fresh
-	// install paths where the file does not exist yet.
+
 	const dirReal = tryRealpath(path.resolve(directoryPath));
 	if (!dirReal) return false;
 	const fileReal = tryRealpath(path.resolve(filePath));
@@ -471,8 +385,7 @@ function isPathInDirectory(filePath: string, directoryPath: string): boolean {
 
 function isPathInManagerRoot(linkTarget: string, nodeModulesDir: string): boolean {
 	if (isPathInDirectoryLexical(linkTarget, nodeModulesDir)) return true;
-	// Resolve only the manager root. Resolving the link target itself would
-	// follow globally linked packages into their checkout and lose ownership.
+
 	const nodeModulesReal = tryRealpath(path.resolve(nodeModulesDir));
 	return nodeModulesReal !== undefined && isPathInDirectoryLexical(linkTarget, nodeModulesReal);
 }
@@ -483,9 +396,6 @@ function resolveNpmGlobalNodeModulesDir(globalBinDir: string | undefined): strin
 }
 
 function isManagerOwnedBinEntry(linkTarget: string | undefined, nodeModulesDir: string | undefined): boolean {
-	// Non-symlink launchers and unreadable links retain the existing bin-dir
-	// classification. A readable link must point through the manager's exact
-	// global node_modules tree.
 	return linkTarget === undefined || (nodeModulesDir !== undefined && isPathInManagerRoot(linkTarget, nodeModulesDir));
 }
 
@@ -496,27 +406,13 @@ interface UpdateMethodResolutionOptions {
 	miseBinDirs?: readonly string[];
 	miseDataDir?: string;
 	npmBinDir?: string;
-	/** Bun's configured global package directory, independent of its bin directory. */
+
 	bunGlobalDir?: string;
-	/**
-	 * Whether the resolved proto path is a plain file (the standalone binary)
-	 * rather than a package-manager symlink. Stops a binary install from being
-	 * misrouted to npm/bun when the global bin dir overlaps the installer's
-	 * target directory.
-	 */
+
 	ompIsRegularFile?: boolean;
-	/**
-	 * Absolute path named by the bin entry's first symlink hop. This deliberately
-	 * preserves a global package symlink instead of resolving into its checkout.
-	 */
+
 	ompLinkTarget?: string;
-	/**
-	 * Whether package-manager routing (bun/npm) is permitted. Binary-only
-	 * releases pass `false`: a manager launcher then resolves to `"binary"` and
-	 * is taken over in place rather than reinstalled through its manager. Defaults
-	 * to `true` in {@link resolveUpdateMethod} so callers that only classify need
-	 * not set it.
-	 */
+
 	allowPackageManagers?: boolean;
 }
 
@@ -547,12 +443,7 @@ function resolveUpdateMethod(
 	if (homebrewPrefix && isPathInDirectory(ompPath, path.join(homebrewPrefix, "bin"))) return "brew";
 	if (miseBinDirs.some(dir => isPathInDirectory(ompPath, dir))) return "mise";
 	if (miseDataDir && isPathInDirectory(ompPath, path.join(miseDataDir, "shims"))) return "mise";
-	// A plain executable file in a package-manager bin dir is the standalone
-	// binary the installer placed there, not an npm/bun-managed install (those
-	// symlink into node_modules on POSIX). When the global bin dir overlaps the
-	// installer's default (~/.local/bin), classifying by directory alone routes
-	// a binary install through npm/bun, whose reinstall then collides with the
-	// existing file (npm EEXIST). Fall through to binary replacement instead.
+
 	const bunNodeModulesDir = resolveBunGlobalNodeModulesDirFromLocations({
 		globalDir: bunGlobalDir,
 		globalBinDir: bunBinDir,
@@ -587,7 +478,6 @@ export function resolveUpdateMethodForTest(
 	return resolveUpdateMethod(ompPath, bunBinDir, options);
 }
 
-/** Resolve an update target from the concrete PATH entry selected by the shell. */
 export function resolveUpdateTargetFromPath(
 	ompPath: string,
 	bunBinDir: string | undefined,
@@ -615,15 +505,6 @@ export function resolveUpdateTargetFromPath(
 		ompLinkTarget,
 	});
 	if (method === "binary") {
-		// A symlinked launcher created by bun/npm is taken over in place on a
-		// binary-only release: routing through the manager is impossible, so the
-		// standalone binary replaces the launcher and keeps the PATH entry live.
-		// Every other symlink — a foreign alias, or an admin symlink into a
-		// shared install — is self-healing: update the real binary it resolves
-		// to and leave the launcher untouched, in every distribution channel.
-		// The old channel gate clobbered these foreign launchers on binary-only
-		// releases (EACCES on a root-owned link dir, or a stale split-brain copy
-		// of the binary shadowing the shared install).
 		const managerLauncher =
 			ompIsSymlink &&
 			!options.allowPackageManagers &&
@@ -639,17 +520,7 @@ export function resolveUpdateTargetFromPath(
 	if (method === "bun" || method === "npm") return { method, path: ompPath };
 	return { method };
 }
-/**
- * Resolve how the running install should be updated.
- *
- * `allowPackageManagers: false` disables bun/npm routing — used for
- * binary-only releases, where reinstalling through a package manager is never
- * valid. The `bun pm bin -g` / `npm prefix -g` probes are then skipped unless
- * the launcher is a symlink, whose bin dirs distinguish a manager launcher
- * (taken over in place) from a foreign symlink (resolved to its real binary).
- * Homebrew/mise detection always runs: both managers install GitHub release
- * binaries and stay valid regardless of how the release is distributed.
- */
+
 async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): Promise<UpdateTarget> {
 	const homebrewPrefix = await getHomebrewFormulaPrefix();
 	const miseAvailable = $which("mise") !== undefined;
@@ -657,11 +528,6 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	const miseDataDir = miseAvailable ? getMiseDataDir() : undefined;
 	const ompPath = resolveOmpPath();
 
-	// Binary-only releases skip package-manager routing, but a symlinked
-	// launcher still needs the manager bin dirs to tell a bun/npm launcher
-	// (taken over in place) from a foreign symlink (resolved to its real
-	// binary). A plain-file install never needs the distinction, so the common
-	// case stays probe-free.
 	const probeManagers = options.allowPackageManagers || (ompPath !== undefined && isSymlinkPath(ompPath));
 	const bunBinDir = probeManagers ? await getBunGlobalBinDir() : undefined;
 	const npmBinDir = probeManagers ? await getNpmGlobalBinDir() : undefined;
@@ -682,7 +548,6 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	throw new Error(`Could not resolve ${BINARY_NAME} binary path in PATH`);
 }
 
-/** Bound on `proto.rename` hops so a broken pointer chain cannot loop forever. */
 const MAX_RENAME_HOPS = 3;
 
 async function fetchLatestManifest(
@@ -714,13 +579,6 @@ async function fetchLatestManifest(
 	return { version: data.version, manifest: data };
 }
 
-/**
- * Get the latest release info from the npm registry, following `proto.rename`
- * pointers ({@link resolveReleaseRename}) when the package has moved to a new
- * npm name. Version, dist, and install names all come from the final manifest
- * in the chain. Uses npm instead of GitHub API to avoid unauthenticated rate
- * limiting.
- */
 export async function getLatestRelease(options: { timeoutMs?: number } = {}): Promise<ReleaseInfo> {
 	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
 	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
@@ -859,15 +717,6 @@ async function removeCacheEntries(paths: string[]): Promise<number> {
 	return paths.length;
 }
 
-/**
- * Prune Bun's package cache so each package keeps only its newest cached version.
- *
- * Bun stores package cache entries as both a package marker directory
- * (`react/19.2.6@@@1`) and a materialized package directory
- * (`react@19.2.6@@@1`). Global `proto` updates can leave one full copy per
- * release. The marker and materialized entries are removed together so the
- * cache stays internally consistent.
- */
 export async function pruneBunInstallCache(
 	cacheDir: string,
 	packageNames?: Set<string>,
@@ -910,7 +759,6 @@ interface BunGlobalInstallLocations {
 	cacheDir?: string;
 }
 
-/** Resolve Bun's global node_modules root from explicit, default, or cache locations. */
 export function resolveBunGlobalNodeModulesDirFromLocations({
 	globalDir,
 	globalBinDir,
@@ -969,12 +817,6 @@ async function pruneBunCacheAfterGlobalInstall(): Promise<BunInstallCachePruneRe
 	return await pruneBunInstallCache(cacheDir, packageNames.size === 0 ? undefined : packageNames);
 }
 
-/**
- * Detect a musl-libc Linux host (Alpine, Void-musl) so self-update replaces a
- * musl binary with the musl release asset instead of the glibc build, which
- * would fail to start on the next run. The loader file alone is not sufficient:
- * glibc hosts may have musl installed for cross-compilation.
- */
 interface MuslDetectionOptions {
 	platform?: NodeJS.Platform;
 	alpineRelease?: boolean;
@@ -996,14 +838,10 @@ function isMuslLinux(options: MuslDetectionOptions = {}): boolean {
 	return /\bmusl\b/i.test(options.lddOutput ?? detectLddOutput() ?? "");
 }
 
-/** Test seam for libc detection. */
 export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boolean {
 	return isMuslLinux(options);
 }
 
-/**
- * Get the appropriate binary name for this platform.
- */
 function getBinaryName(): string {
 	const platform = process.platform;
 	const arch = process.arch;
@@ -1035,22 +873,16 @@ function getBinaryName(): string {
 	return `${BINARY_NAME}-${os}-${archName}`;
 }
 
-/**
- * Resolve the path that `proto` maps to in the user's PATH.
- */
 function resolveOmpPath(): string | undefined {
 	return $which(BINARY_NAME) ?? undefined;
 }
 
-/**
- * Run a specific binary and check if it reports the expected version.
- */
 async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): Promise<InstalledVersionVerification> {
 	try {
 		const result = await $`${binaryPath} --version`.quiet().nothrow();
 		if (result.exitCode !== 0) return { ok: false, path: binaryPath };
 		const output = result.text().trim();
-		// Output format: "proto/X.Y.Z"
+
 		const match = output.match(/\/(\d+\.\d+\.\d+)/);
 		const actual = match?.[1];
 		return { ok: actual === expectedVersion, actual, path: binaryPath };
@@ -1059,9 +891,6 @@ async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): 
 	}
 }
 
-/**
- * Run the PATH-resolved proto binary and check if it reports the expected version.
- */
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
 	const ompPath = resolveOmpPath();
 	if (!ompPath) return { ok: false };
@@ -1079,9 +908,6 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
 	return `could not verify updated version${result.path ? ` at ${result.path}` : ""}`;
 }
 
-/**
- * Print post-update verification result.
- */
 async function printVerification(expectedVersion: string): Promise<void> {
 	const result = await verifyInstalledVersion(expectedVersion);
 	if (result.ok) {
@@ -1100,14 +926,6 @@ async function unlinkIfExists(filePath: string): Promise<void> {
 	}
 }
 
-/**
- * Remove a backup binary without letting the removal abort a completed update.
- *
- * The replacement and verification already succeeded by the time we get here,
- * so every error is swallowed; the leftover is reclaimed by
- * {@link sweepStaleUpdateArtifacts} on the next update once it is no longer in
- * use. Returns whether the file is gone.
- */
 async function removeBackupBestEffort(filePath: string): Promise<boolean> {
 	try {
 		await fs.promises.unlink(filePath);
@@ -1117,20 +935,6 @@ async function removeBackupBestEffort(filePath: string): Promise<boolean> {
 	}
 }
 
-/**
- * Best-effort removal of binary-update leftovers from earlier runs.
- *
- * Each self-update writes to `<binary>.<timestamp>.<pid>.new` and moves the
- * previous executable to `<binary>.<timestamp>.<pid>.bak` before swapping the
- * new one in. A stale backup from a crashed run is reclaimed once it is older
- * than the reaping window. A `.new` temp file only survives
- * a hard kill mid-download; it is reaped once older than the download window,
- * which a live download cannot exceed without timing out and cleaning up after
- * itself — so a concurrent run's in-progress temp is never deleted. Legacy
- * fixed `<binary>.bak` / `<binary>.new` names (from before suffixes were made
- * unique) are matched too, so users upgrading from a buggy release get the
- * orphaned files cleaned up.
- */
 export async function sweepStaleUpdateArtifacts(targetPath: string): Promise<void> {
 	const dir = path.dirname(targetPath);
 	const base = path.basename(targetPath);
@@ -1145,14 +949,11 @@ export async function sweepStaleUpdateArtifacts(targetPath: string): Promise<voi
 		if (!entry.startsWith(`${base}.`)) continue;
 		const suffix = entry.endsWith(".bak") ? ".bak" : entry.endsWith(".new") ? ".new" : undefined;
 		if (!suffix) continue;
-		// Legacy "<base><suffix>" → empty middle; new "<base>.<timestamp>.<pid><suffix>"
-		// → dot-separated numeric run. Anything else is an unrelated file.
+
 		const middle = entry.slice(base.length + 1, entry.length - suffix.length);
 		if (middle.length > 0 && !/^\d+(\.\d+)*$/.test(middle)) continue;
 		const full = path.join(dir, entry);
 		if (suffix === ".new") {
-			// A temp file may belong to a concurrent update still downloading, so
-			// only reap ones older than the download window.
 			let mtimeMs: number;
 			try {
 				mtimeMs = (await fs.promises.stat(full)).mtimeMs;
@@ -1165,15 +966,9 @@ export async function sweepStaleUpdateArtifacts(targetPath: string): Promise<voi
 	}
 }
 
-/**
- * Atomically replace the installed binary and roll back if version verification fails.
- */
 export async function replaceBinaryForUpdate(options: BinaryReplacementOptions): Promise<InstalledVersionVerification> {
 	let backupReady = false;
 	try {
-		// `backupPath` is unique per attempt (see updateViaBinaryAt), so this rename
-		// never has to overwrite — or unlink — a possibly-locked leftover from an
-		// earlier run.
 		await fs.promises.rename(options.targetPath, options.backupPath);
 		backupReady = true;
 		await fs.promises.rename(options.tempPath, options.targetPath);
@@ -1186,8 +981,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		}
 
 		backupReady = false;
-		// Swap done and verified. Removal of the backup must NOT fail an
-		// otherwise-successful update.
+
 		await removeBackupBestEffort(options.backupPath);
 		return verification;
 	} catch (err) {
@@ -1212,36 +1006,6 @@ function buildVersionedPackageInstallArgs(
 	return args;
 }
 
-/**
- * Build the bun argv used to globally install a specific proto version.
- *
- * The version is selected by hitting {@link NPM_REGISTRY} directly in
- * {@link getLatestRelease}, so the install MUST observe the same catalog:
- *
- * - `--registry=${NPM_REGISTRY}` pins the install to the official registry
- *   regardless of the user's bunfig/`.npmrc`. A mirror (corporate proxy,
- *   Taobao, …) that hasn't yet replicated the release would otherwise reject
- *   a version the upstream registry already advertises.
- * - `--no-cache` tells bun to ignore its on-disk manifest snapshot so it
- *   re-fetches metadata from that registry on every invocation.
- *
- * Together these two flags make `proto update` produce exactly the registry
- * lookup the version check just performed. See #1686.
- *
- * Also pins {@link NATIVES_PACKAGE} and the platform-specific
- * `@oh-my-pi/pi-natives-<tag>` leaf to `expectedVersion`. `bun install -g`
- * does not reliably refresh transitive `optionalDependencies` when the
- * top-level package is the only one bumped, so the native addon and its
- * version sentinel can drift out of sync with the freshly installed
- * `@oh-my-pi/pi-coding-agent` and the loader aborts at
- * `validateLoadedBindings` on the next launch
- * (`The .node file on disk is from a different release than this loader`).
- * Listing the natives explicitly forces bun to replace them in lock-step.
- * The leaf is added only on tags the release pipeline actually publishes
- * ({@link SUPPORTED_NATIVE_TAGS}) so unsupported platforms still fail with
- * the original "no matching version" message instead of `EBADPLATFORM`.
- * See #1824.
- */
 export function buildBunInstallArgs(
 	expectedVersion: string,
 	nativeTag: string = currentNativeTag(),
@@ -1256,14 +1020,6 @@ export function buildBunInstallArgs(
 	];
 }
 
-/**
- * Build the npm argv used to update npm-managed global installs.
- *
- * `force` is set only for rename migrations: npm refuses to write the `proto`
- * bin while the old package still owns it (`EEXIST`), and the migration
- * installs the new package BEFORE removing the old one so a failed install
- * never leaves the user without a working `proto`.
- */
 export function buildNpmInstallArgs(
 	expectedVersion: string,
 	nativeTag: string = currentNativeTag(),
@@ -1291,14 +1047,6 @@ export function buildMiseForceInstallArgs(expectedVersion: string): string[] {
 	return ["install", "--force", `${MISE_TOOL}@${expectedVersion}`];
 }
 
-/**
- * Old-name globals a rename migration removes after the new install exists:
- * the set difference between the old install's top-level globals
- * ({@link buildVersionedPackageInstallArgs} installs the agent, natives core,
- * and platform leaf explicitly) and the resolved install's. An agent-only
- * rename keeps the natives names, and removing them would strip the addon
- * the new install just pinned.
- */
 export function buildRenameCleanupPackages(
 	packages: ReleasePackages,
 	nativeTag: string = currentNativeTag(),
@@ -1311,17 +1059,14 @@ export function buildRenameCleanupPackages(
 	return old.filter(name => name !== packages.pkg && name !== packages.natives && name !== newLeaf);
 }
 
-/** Injectable shell steps for {@link migrateRenamedInstall}; commands return process exit codes. */
 export interface RenameMigrationSteps {
-	/** Globally install the new package names. MUST be idempotent: re-running re-links the `proto` bin. */
 	install(): Promise<number>;
-	/** Remove the old-name globals. */
+
 	removeOld(): Promise<number>;
-	/** Check the PATH-resolved `proto` against the expected version. */
+
 	verify(): Promise<InstalledVersionVerification>;
 }
 
-/** Production {@link RenameMigrationSteps}: bun/npm global installs plus PATH verification. */
 function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseInfo): RenameMigrationSteps {
 	const nativeTag = currentNativeTag();
 	return {
@@ -1334,9 +1079,6 @@ function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseIn
 			return (await $`npm ${args}`.nothrow()).exitCode;
 		},
 		async removeOld() {
-			// One invocation per package: a single batched remove fails wholesale
-			// when any name is absent (e.g. the platform leaf on an old install),
-			// which would skip the agent package that actually owns the bin.
 			let agentExit = 0;
 			for (const pkg of buildRenameCleanupPackages(release.packages, nativeTag)) {
 				const result =
@@ -1351,18 +1093,6 @@ function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseIn
 	};
 }
 
-/**
- * Migrate a package-manager install across an `proto.rename` hop without a
- * window where no working `proto` exists:
- *
- * 1. Install the new package FIRST. Nothing has been removed yet, so a
- *    failure here leaves the old install fully functional.
- * 2. Remove the old-name globals. Failure is non-fatal: a stale package
- *    wastes disk, but the bin already points at the new install.
- * 3. Verify the PATH-resolved `proto`. If the removal deleted the shared bin
- *    link (manager-dependent), re-run the idempotent install to restore it
- *    and verify again; only a repeated failure aborts, with a recovery hint.
- */
 export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameMigrationSteps): Promise<void> {
 	console.log(chalk.dim(`npm package renamed to ${release.packages.pkg}; migrating this install.`));
 	const installExit = await steps.install();
@@ -1379,8 +1109,6 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
 
 	let verification = await steps.verify();
 	if (!verification.ok) {
-		// Removing the old package may have taken the shared bin link with it;
-		// reinstalling the new package restores the link.
 		if ((await steps.install()) === 0) {
 			verification = await steps.verify();
 		}
@@ -1393,9 +1121,6 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
 	printVerifiedVersion(release.version);
 }
 
-/**
- * Update via package manager.
- */
 async function updateViaBun(release: ReleaseInfo): Promise<void> {
 	console.log(chalk.dim("Updating via bun..."));
 	if (release.packages.pkg !== PACKAGE) {
@@ -1469,14 +1194,8 @@ async function updateViaMise(expectedVersion: string, force: boolean): Promise<v
 	await printVerification(expectedVersion);
 }
 
-// Monotonic within this process so two updates started in the same millisecond
-// (same pid, same `Date.now()`) still get distinct temp/backup paths. Kept
-// numeric so the artifact sweep's `\d+(\.\d+)*` matcher still reclaims them.
 let updateAttemptSeq = 0;
 
-/**
- * Download a release binary to a target path, replacing an existing file.
- */
 export async function updateViaBinaryAt(
 	targetPath: string,
 	expectedVersion: string,
@@ -1488,15 +1207,7 @@ export async function updateViaBinaryAt(
 	} = {},
 ): Promise<void> {
 	const binaryName = options.binaryName ?? getBinaryName();
-	// Unique per attempt so two overlapping `proto update` runs never share a temp
-	// or backup path. A fixed temp name (`<binary>.new`) let the second run's
-	// pre-download unlink delete the first run's still-downloading temp file; the
-	// first kept writing to its open fd (size + digest still passed), then chmod
-	// hit the missing path and the update aborted (issue #8434). The backup needs
-	// the same uniqueness: a stale backup from an earlier update may still be
-	// locked, so a fixed name would force
-	// the move-aside rename to overwrite it. pid, timestamp, and a process-local
-	// counter keep two updates started in the same millisecond from colliding.
+
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
@@ -1511,10 +1222,6 @@ export async function updateViaBinaryAt(
 	});
 	console.log(chalk.dim(`Verified ${asset.digest}`));
 
-	// Serialize the target swap and stale-artifact sweep per target so two
-	// overlapping `proto update` runs never replace the same binary concurrently
-	// or reclaim each other's live backup/temp files. The download above writes
-	// to a unique temp path and is safe to overlap; only the swap is shared.
 	await withFileLock(targetPath, async () => {
 		console.log(chalk.dim("Installing update..."));
 		await replaceBinaryForUpdate({
@@ -1524,31 +1231,20 @@ export async function updateViaBinaryAt(
 			expectedVersion,
 			verifyInstalledVersion: options.verifyInstalledVersion ?? verifyInstalledVersion,
 		});
-		// Reclaim backups from earlier updates whose owning process has since exited.
+
 		await sweepStaleUpdateArtifacts(targetPath);
 	});
 	printVerifiedVersion(expectedVersion);
 	console.log(chalk.dim(`Restart ${BINARY_NAME} to use the new version`));
 }
 
-/**
- * Installer one-liner for recovery instructions.
- *
- * Forces the installer's binary mode (`--binary`): the default mode prefers a
- * bun-based install whenever bun is present, which would send a user
- * recovering from a binary-only release straight back through bun.
- */
 function installerHint(): string {
 	return "curl -fsSL https://proto.sh/install | sh -s -- --binary";
 }
 
-/**
- * Run the update command.
- */
 export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
 	console.log(chalk.dim(`Current version: ${VERSION}`));
 
-	// Check for updates
 	let release: ReleaseInfo;
 	try {
 		release = await getLatestRelease();
@@ -1574,14 +1270,9 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 	}
 
 	if (opts.check) {
-		// Just check, don't install
 		return;
 	}
 
-	// Choose update method based on the prioritized proto binary in PATH. For
-	// binary-only releases the package managers are never consulted: a bun/npm
-	// symlink resolves to method "binary" and is replaced in place, keeping the
-	// same PATH entry live.
 	try {
 		const forceBinary = shouldForceBinaryUpdate(release);
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });

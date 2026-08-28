@@ -1,9 +1,3 @@
-/**
- * Shared policy resolution and execution for task and eval subagents.
- *
- * The two public frontends deliberately retain their presentation concerns, but
- * every decision that affects what a child may run lives here.
- */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -41,13 +35,10 @@ import {
 } from "./types";
 import { type NestedRepoPatch, parseIsolationMode } from "./worktree";
 
-/** Validation behavior requested for an effective output schema. */
 export type StructuredSubagentSchemaMode = "permissive" | "strict";
 
-/** Where an effective output schema came from. */
 export type StructuredSubagentSchemaSource = "caller" | "agent" | "session" | "none";
 
-/** A selected schema paired with its source and enforcement mode. */
 interface StructuredSubagentSchemaResolution {
 	schema: unknown;
 	source: StructuredSubagentSchemaSource;
@@ -55,22 +46,18 @@ interface StructuredSubagentSchemaResolution {
 	outputSchemaOverridesAgent: boolean;
 }
 
-/** Isolation controls shared by the task and eval surfaces. */
 interface StructuredSubagentIsolationControls {
 	requested?: boolean;
 	merge?: "patch" | "branch";
 	apply?: boolean;
 }
 
-/** Identity and presentation metadata supplied by the calling surface. */
 interface StructuredSubagentIdentity {
-	/** A previously reserved output/registry id. */
 	id?: string;
-	/** Stable user-facing label used when allocating a new id. */
+
 	label?: string;
 }
 
-/** One normalized child invocation. */
 export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "worker" | "eval";
@@ -78,10 +65,10 @@ export interface StructuredSubagentRequest {
 	context?: string;
 	agent?: string;
 	model?: string | string[];
-	/** Presence, rather than truthiness, makes this the highest-priority schema. */
+
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
-	/** Per-spawn thinking effort mapped onto the resolved model's supported range; overrides the agent's default selector. */
+
 	effort?: WorkerEffort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
@@ -90,32 +77,31 @@ export interface StructuredSubagentRequest {
 	invokedAt?: number;
 	acquiredAt?: number;
 	isolation?: StructuredSubagentIsolationControls;
-	/** The parent agent name forbidden from recursively spawning itself. */
+
 	blockedAgent?: string;
-	/** Preserve a completed temporary artifacts directory for an agent:// handle. */
+
 	retainArtifacts?: boolean;
-	/** Task UI agents keep live registry references; eval one-shots normally do not. */
+
 	keepAlive?: boolean;
-	/** Workers share their parent's eval kernel; eval bridge children must not. */
+
 	shareEvalSession?: boolean;
-	/** Task frontends may inherit LSP; eval frontends normally set this false. */
+
 	enableLsp?: boolean;
-	/** Explicitly pass false for invocation kinds that must not use IRC. */
+
 	enableIrc?: boolean;
-	/** `0` disables executor wall-clock timeout. Undefined inherits settings. */
+
 	maxRuntimeMs?: number;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 }
 
-/** A normalized preflight result, reusable by tests and adapters. */
 interface EffectiveSubagentPolicy {
 	discovery: DiscoveryResult;
 	agentName: string;
 	agent: AgentDefinition;
 	effectiveAgent: AgentDefinition;
 	modelOverride?: string | string[];
-	/** Explicit pre-expansion model role alias selected for this run. */
+
 	modelRole?: string;
 	parentActiveModelPattern?: string;
 	schema: StructuredSubagentSchemaResolution;
@@ -126,7 +112,6 @@ interface EffectiveSubagentPolicy {
 	enableIrc: boolean;
 }
 
-/** Settled child execution plus data needed by the frontends' own rendering. */
 interface StructuredSubagentResult {
 	result: SingleResult;
 	policy: EffectiveSubagentPolicy;
@@ -136,7 +121,6 @@ interface StructuredSubagentResult {
 	temporaryArtifacts: boolean;
 }
 
-/** Machine-readable failure category so adapters can retain their native errors. */
 export class StructuredSubagentError extends Error {
 	readonly kind: "preflight" | "isolation" | "execution";
 
@@ -201,11 +185,6 @@ function assertDepthAndSpawnAllowed(request: StructuredSubagentRequest, agentNam
 	}
 }
 
-/**
- * Resolve every policy shared by task and eval before allocating artifacts or
- * dispatching work. Callers translate {@link StructuredSubagentError} into
- * their own wire-level error surface.
- */
 export async function resolveEffectiveSubagentPolicy(
 	request: StructuredSubagentRequest,
 ): Promise<EffectiveSubagentPolicy> {
@@ -251,9 +230,7 @@ export async function resolveEffectiveSubagentPolicy(
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),
 	};
-	// Role identity and patterns come from one call so they cannot be derived
-	// from different sources: the expansion below discards the alias, and the
-	// child's inherited retry-fallback chain is keyed off the role.
+
 	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
 	const isolationMode = request.session.settings.get("orchestrator.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
@@ -287,7 +264,6 @@ export async function resolveEffectiveSubagentPolicy(
 	};
 }
 
-/** Reserve a session-global agent id only after preflight has succeeded. */
 async function reserveStructuredSubagentId(
 	session: ToolSession,
 	identity: StructuredSubagentIdentity | undefined,
@@ -353,8 +329,7 @@ function buildExecutorOptions(
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
 		context: request.context?.trim() || undefined,
-		// Task `name` is the spawn handle (id allocation). Eval `label` is a
-		// real UI description. Copy it only for eval so generateTaskLabel can run.
+
 		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 		index: request.index ?? 0,
 		parentToolCallId: request.parentToolCallId,
@@ -488,10 +463,6 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
 	result.structuredOutput = output;
 }
 
-/**
- * Execute a validated subagent. Preflight errors occur before any artifact
- * lease or child dispatch; callers keep responsibility for their result text.
- */
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
 	const policy = await resolveEffectiveSubagentPolicy(request);
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
@@ -626,7 +597,6 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	}
 }
 
-/** Build the recovery suffix used by adapters after an isolated failure. */
 export async function buildStructuredSubagentRecoveryHint(result: SingleResult, artifactsDir: string): Promise<string> {
 	return isolationRecoveryHint(result, artifactsDir);
 }

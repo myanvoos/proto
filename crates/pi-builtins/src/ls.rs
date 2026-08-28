@@ -1,6 +1,6 @@
-//! `ls` builtin: list directory contents.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -40,7 +40,7 @@ use uucore::{
 use crate::host::{Host, StreamWriter, Utility, format_usage, matches_parser, os_bytes_lossy, util};
 
 mod colors {
-//! Color handling for the `ls` builtin.
+
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::{
@@ -54,7 +54,7 @@ use rustc_hash::FxHashMap;
 
 use super::PathData;
 
-/// ANSI CSI (Control Sequence Introducer)
+
 const ANSI_CSI: &str = "\x1b[";
 const ANSI_SGR_END: &str = "m";
 const ANSI_RESET: &str = "\x1b[0m";
@@ -63,7 +63,7 @@ const EMPTY_STYLE: &str = "\x1b[m";
 
 #[cfg(unix)]
 mod mode {
-	// Unix file mode bits
+
 	pub const SETUID: u32 = 0o4000;
 	pub const SETGID: u32 = 0o2000;
 	pub const EXECUTABLE: u32 = 0o0111;
@@ -77,18 +77,18 @@ enum RawIndicatorStyle {
 	Code(Indicator),
 }
 
-/// We need this struct to be able to store the previous style.
-/// This because we need to check the previous value in case we don't need
-/// the reset
+
+
+
 pub(crate) struct StyleManager<'a> {
-	/// last style that is applied, if `None` that means reset is applied.
+
 	pub(crate) current_style:         Option<Style>,
-	/// `true` if the initial reset is applied
+
 	pub(crate) initial_reset_is_done: bool,
 	pub(crate) colors:                &'a LsColors,
-	/// raw indicator codes as specified in LS_COLORS (if available)
+
 	indicator_codes:                  FxHashMap<Indicator, String>,
-	/// whether ln=target is active
+
 	ln_color_from_target:             bool,
 }
 
@@ -122,13 +122,13 @@ impl<'a> StyleManager<'a> {
 		}
 
 		if let Some(path) = path {
-			// Fast-path: apply LS_COLORS raw SGR codes verbatim,
-			// bypassing LsColors fallbacks so the entry from LS_COLORS
-			// is honored exactly as specified.
+
+
+
 			match self.raw_indicator_style_for_path(path) {
 				Some(RawIndicatorStyle::Empty) => {
-					// An explicit empty entry (e.g. "or=") disables coloring and
-					// bypasses fallbacks, matching GNU ls behavior.
+
+
 					return self.apply_empty_style(name, wrap);
 				},
 				Some(RawIndicatorStyle::Code(indicator)) => {
@@ -145,11 +145,11 @@ impl<'a> StyleManager<'a> {
 			self.append_style_code_for_style(new_style, &mut style_code, &mut force_suffix_reset);
 		}
 
-		// we need this clear to eol code in some terminals, for instance if the
-		// text is in the last row of the terminal meaning the terminal need to
-		// scroll up in order to print new text in this situation if the clear
-		// to eol code is not present the background of the text would stretch
-		// till the end of line
+
+
+
+
+
 		let clear_to_eol = if wrap { ANSI_CLEAR_EOL } else { "" };
 
 		let mut ret: OsString = style_code.into();
@@ -177,7 +177,7 @@ impl<'a> StyleManager<'a> {
 		}
 	}
 
-	// Append a raw SGR sequence for a validated LS_COLORS indicator.
+
 	fn append_raw_style_code_for_indicator(
 		&mut self,
 		indicator: Indicator,
@@ -208,34 +208,34 @@ impl<'a> StyleManager<'a> {
 		force_suffix_reset: &mut bool,
 	) {
 		if let Some(new_style) = new_style {
-			// we only need to apply a new style if it's not the same as the current
-			// style for example if normal is the current style and a file with
-			// normal style is to be printed we could skip printing new color
-			// codes
+
+
+
+
 			if !self.is_current_style(new_style) {
 				style_code.push_str(self.reset(!self.initial_reset_is_done));
 				style_code.push_str(&self.get_style_code(new_style));
 			}
 		}
-		// if new style is None and current style is Normal we should reset it
+
 		else if matches!(self.get_normal_style().copied(), Some(norm_style) if self.is_current_style(&norm_style))
 		{
 			style_code.push_str(self.reset(false));
-			// even though this is an unnecessary reset for gnu compatibility we allow it
-			// here
+
+
 			*force_suffix_reset = true;
 		}
 	}
 
-	/// Resets the current style and returns the default ANSI reset code to
-	/// reset all text formatting attributes. If `force` is true, the reset is
-	/// done even if the reset has been applied before.
+
+
+
 	pub(crate) fn reset(&mut self, force: bool) -> &'static str {
-		// todo:
-		// We need to use style from `Indicator::Reset` but as of now ls colors
-		// uses a fallback mechanism and because of that if `Indicator::Reset`
-		// is not specified it would fallback to `Indicator::Normal` which seems
-		// to be non compatible with gnu
+
+
+
+
+
 		if self.current_style.is_some() || force {
 			self.initial_reset_is_done = true;
 			self.current_style = None;
@@ -249,7 +249,7 @@ impl<'a> StyleManager<'a> {
 		let mut nu_a_style = new_style.to_nu_ansi_term_style();
 		nu_a_style.prefix_with_reset = false;
 		let mut ret = nu_a_style.paint("").to_string();
-		// remove the suffix reset
+
 		ret.truncate(ret.len() - 4);
 		ret
 	}
@@ -555,7 +555,7 @@ impl<'a> StyleManager<'a> {
 	}
 }
 
-/// Colors the provided name based on the style determined for the given path
+
 pub(crate) fn color_name(
 	name: OsString,
 	path: &PathData,
@@ -563,16 +563,16 @@ pub(crate) fn color_name(
 	target_symlink: Option<&PathData>,
 	wrap: bool,
 ) -> OsString {
-	// Check if the file has capabilities
+
 	#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
 	{
-		// Skip checking capabilities if LS_COLORS=ca=:
+
 		let has_capabilities = style_manager
 			.colors
 			.has_explicit_style_for(Indicator::Capabilities)
 			&& uucore::fsxattr::has_security_cap_acl(&path.p_buf);
 
-		// If the file has capabilities, use a specific style for `ca` (capabilities)
+
 		if has_capabilities {
 			let capabilities = style_manager
 				.colors
@@ -589,16 +589,16 @@ pub(crate) fn color_name(
 	}
 
 	if let Some(target) = target_symlink {
-		// use the optional target_symlink
-		// Use fn symlink_metadata directly instead of get_metadata() here because ls
-		// should not exit with an err, if we are unable to obtain the target_metadata
+
+
+
 		return style_manager.apply_style_for_path(target, name, wrap);
 	}
 
 	if !path.must_dereference {
-		// If we need to dereference (follow) a symlink, we will need to get the
-		// metadata There is a DirEntry, we don't need to get the metadata for the
-		// color
+
+
+
 		return style_manager.apply_style_for_path(path, name, wrap);
 	}
 
@@ -616,7 +616,7 @@ pub(crate) enum LsColorsParseError {
 	InvalidSyntax,
 }
 
-/// Validates the shell's `LS_COLORS` value before color output is enabled.
+
 pub(crate) fn validate_ls_colors(ls_colors: &str) -> Result<(), LsColorsParseError> {
 	if ls_colors.is_empty() {
 		return Ok(());
@@ -666,8 +666,8 @@ pub(crate) fn validate_ls_colors(ls_colors: &str) -> Result<(), LsColorsParseErr
 	Ok(())
 }
 
-// Parse a value with GNU-compatible escape sequences, returning the index of
-// the terminator.
+
+
 fn parse_funky_string(
 	bytes: &[u8],
 	mut idx: usize,
@@ -784,8 +784,8 @@ fn parse_indicator_codes(ls_colors: Option<&str>) -> (FxHashMap<Indicator, Strin
 	let mut indicator_codes = FxHashMap::default();
 	let mut ln_color_from_target = false;
 
-	// LS_COLORS validity is checked before enabling color output, so parse
-	// entries directly here for raw indicator overrides.
+
+
 	if let Some(ls_colors) = ls_colors {
 		for entry in ls_colors.split(':') {
 			if entry.is_empty() {
@@ -838,7 +838,7 @@ fn indicator_value_is_disabled(indicator: Indicator, value: &str) -> bool {
 
 }
 mod config {
-//! Configuration parsing for the `ls` builtin.
+
 
 use std::{
 	borrow::Cow,
@@ -988,7 +988,7 @@ pub(crate) enum Files {
 }
 
 pub struct Config {
-	// Dir and vdir needs access to this field
+
 	pub format: Format,
 	pub(crate) files: Files,
 	pub(crate) sort: Sort,
@@ -1007,15 +1007,15 @@ pub struct Config {
 	pub(crate) alloc_size: bool,
 	pub(crate) file_size_block_size: u64,
 	#[allow(dead_code)]
-	pub(crate) block_size: u64, // is never read on Windows
+	pub(crate) block_size: u64,
 	pub(crate) width: u16,
-	// Dir and vdir needs access to this field
+
 	pub quoting_style: QuotingStyle,
 	pub(crate) locale_quoting: Option<LocaleQuoting>,
 	pub(crate) indicator_style: IndicatorStyle,
-	pub(crate) time_format_recent: String, // Time format for recent dates
-	pub(crate) time_format_older: Option<String>, /* Time format for older dates (optional, if not
-	                                        * present, time_format_recent is used) */
+	pub(crate) time_format_recent: String,
+	pub(crate) time_format_older: Option<String>,
+
 	pub(crate) time_zone: TimeZone,
 	pub(crate) context: bool,
 	pub(crate) group_directories_first: bool,
@@ -1026,13 +1026,13 @@ pub struct Config {
 	pub(super) runtime: Rc<LsRuntime>,
 }
 
-/// Extracts the format to display the information based on the options
-/// provided.
-///
-/// # Returns
-///
-/// A tuple containing the Format variant and an Option containing a &'static
-/// str which corresponds to the option used to define the format.
+
+
+
+
+
+
+
 fn extract_format(
 	options: &clap::ArgMatches,
 	stdout_is_terminal: bool,
@@ -1045,7 +1045,7 @@ fn extract_format(
 				"columns" | "vertical" => Format::Columns,
 				"across" | "horizontal" => Format::Across,
 				"commas" => Format::Commas,
-				// below should never happen as clap already restricts the values.
+
 				_ => unreachable!("Invalid field for --format"),
 			},
 			Some(options::FORMAT),
@@ -1065,11 +1065,11 @@ fn extract_format(
 	}
 }
 
-/// Extracts the type of files to display
-///
-/// # Returns
-///
-/// A Files variant representing the type of files to display.
+
+
+
+
+
 fn extract_files(options: &clap::ArgMatches) -> Files {
 	let get_last_index = |flag: &str| -> usize {
 		if options.value_source(flag) == Some(clap::parser::ValueSource::CommandLine) {
@@ -1090,16 +1090,16 @@ fn extract_files(options: &clap::ArgMatches) -> Files {
 	} else if max_index == almost_all_index {
 		Files::AlmostAll
 	} else {
-		// Either -a or -f wins, both show all files
+
 		Files::All
 	}
 }
 
-/// Extracts the sorting method to use based on the options provided.
-///
-/// # Returns
-///
-/// A Sort variant representing the sorting method to use.
+
+
+
+
+
 fn extract_sort(options: &clap::ArgMatches) -> Sort {
 	let get_last_index = |flag: &str| -> usize {
 		if options.value_source(flag) == Some(clap::parser::ValueSource::CommandLine) {
@@ -1130,7 +1130,7 @@ fn extract_sort(options: &clap::ArgMatches) -> Sort {
 
 	match max_sort_index {
 		0 => {
-			// No sort flags specified, use default behavior
+
 			if !options.get_flag(options::format::LONG)
 				&& (options.get_flag(options::time::ACCESS)
 					|| options.get_flag(options::time::CHANGE)
@@ -1166,11 +1166,11 @@ fn extract_sort(options: &clap::ArgMatches) -> Sort {
 	}
 }
 
-/// Extracts the time to use based on the options provided.
-///
-/// # Returns
-///
-/// A `MetadataTimeField` variant representing the time to use.
+
+
+
+
+
 fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 	if let Some(field) = options.get_one::<String>(options::TIME) {
 		field.as_str().into()
@@ -1183,13 +1183,13 @@ fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 	}
 }
 
-/// Some env variables can be passed
-/// For now, we are only verifying if empty or not and known for `TERM`
+
+
 fn is_color_compatible_term(host: &Host) -> bool {
 	let term = host.var("TERM").map(OsString::from);
 	let colorterm = host.var("COLORTERM").map(OsString::from);
 
-	// Search function in the TERM struct to manage the wildcards
+
 	let term_matches = |term: &OsStr| -> bool {
 		uucore::colors::TERMS.iter().any(|&pattern| {
 			term == pattern
@@ -1207,11 +1207,11 @@ fn is_color_compatible_term(host: &Host) -> bool {
 	}
 }
 
-/// Extracts the color option to use based on the options provided.
-///
-/// # Returns
-///
-/// A boolean representing whether or not to use color.
+
+
+
+
+
 fn extract_color(options: &clap::ArgMatches, host: &Host) -> bool {
 	if !is_color_compatible_term(host) {
 		return false;
@@ -1236,28 +1236,28 @@ fn extract_color(options: &clap::ArgMatches, host: &Host) -> bool {
 		Some(val) => match val.as_str() {
 			"" | "always" | "yes" | "force" => true,
 			"auto" | "tty" | "if-tty" => host.stdout.is_terminal(),
-			/* "never" | "no" | "none" | */ _ => false,
+			 _ => false,
 		},
 	};
 
-	// If --color was explicitly specified, always honor it regardless of -f
-	// Otherwise, if -f is present without explicit color, disable color
+
+
 	if color_index > 0 {
-		// Color was explicitly specified
+
 		color_enabled
 	} else if unsorted_all_index > 0 {
-		// -f present without explicit color, disable implicit color
+
 		false
 	} else {
 		color_enabled
 	}
 }
 
-/// Extracts the hyperlink option to use based on the options provided.
-///
-/// # Returns
-///
-/// A boolean representing whether to hyperlink files.
+
+
+
+
+
 fn extract_hyperlink(options: &clap::ArgMatches, stdout_is_terminal: bool) -> bool {
 	let hyperlink = options
 		.get_one::<String>(options::HYPERLINK)
@@ -1272,19 +1272,19 @@ fn extract_hyperlink(options: &clap::ArgMatches, stdout_is_terminal: bool) -> bo
 	}
 }
 
-/// Match the argument given to --quoting-style or the [`QUOTING_STYLE`] env
-/// variable.
-///
-/// # Arguments
-///
-/// * `style`: the actual argument string
-/// * `show_control` - A boolean value representing whether to show control
-///   characters.
-///
-/// # Returns
-///
-/// * An option with None if the style string is invalid, or a `QuotingStyle`
-///   wrapped in `Some`.
+
+
+
+
+
+
+
+
+
+
+
+
+
 struct QuotingStyleSpec {
 	style:         QuotingStyle,
 	fixed_control: bool,
@@ -1330,20 +1330,20 @@ fn match_quoting_style_name(
 	Some((style, spec.locale))
 }
 
-/// Extracts the quoting style to use based on the options provided.
-/// If no options are given, it looks if a default quoting style is provided
-/// through the [`QUOTING_STYLE`] environment variable.
-///
-/// # Arguments
-///
-/// * `options` - A reference to a [`clap::ArgMatches`] object containing
-///   command line arguments.
-/// * `show_control` - A boolean value representing whether or not to show
-///   control characters.
-///
-/// # Returns
-///
-/// A [`QuotingStyle`] variant representing the quoting style to use.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 fn extract_quoting_style(
 	options: &clap::ArgMatches,
 	show_control: bool,
@@ -1366,7 +1366,7 @@ fn extract_quoting_style(
 	} else if options.get_flag(options::DIRED) {
 		(QuotingStyle::Literal { show_control }, None)
 	} else {
-		// If set, the QUOTING_STYLE environment variable specifies a default style.
+
 		if let Some(style) = host.var("QUOTING_STYLE") {
 			match match_quoting_style_name(style, show_control) {
 				Some(pair) => return pair,
@@ -1380,8 +1380,8 @@ fn extract_quoting_style(
 			}
 		}
 
-		// By default, `ls` uses Shell escape quoting style when writing to a terminal
-		// file descriptor and Literal otherwise.
+
+
 		if host.stdout.is_terminal() {
 			(QuotingStyle::SHELL_ESCAPE.show_control(show_control), None)
 		} else {
@@ -1390,11 +1390,11 @@ fn extract_quoting_style(
 	}
 }
 
-/// Extracts the indicator style to use based on the options provided.
-///
-/// # Returns
-///
-/// An [`IndicatorStyle`] variant representing the indicator style to use.
+
+
+
+
+
 fn extract_indicator_style(
 	options: &clap::ArgMatches,
 	stdout_is_terminal: bool,
@@ -1429,8 +1429,8 @@ fn extract_indicator_style(
 	}
 }
 
-/// Parses the width value from either the command line arguments or the
-/// environment variables.
+
+
 fn parse_width(width_match: Option<&String>, host: &Host, runtime: &LsRuntime) -> Result<u16, LsError> {
 	let parse_width_from_args = |s: &str| -> Result<u16, LsError> {
 		let radix = if s.starts_with('0') && s.len() > 1 {
@@ -1471,8 +1471,8 @@ fn parse_width(width_match: Option<&String>, host: &Host, runtime: &LsRuntime) -
 					ws_xpixel: 0,
 					ws_ypixel: 0,
 				};
-				// SAFETY: `size` is valid for writes and `fd` remains borrowed
-				// for the duration of the ioctl.
+
+
 				if unsafe {
 					uucore::libc::ioctl(fd.as_raw_fd(), uucore::libc::TIOCGWINSZ, &mut size)
 				} == 0
@@ -1521,21 +1521,21 @@ impl Config {
 		let (mut format, opt) = extract_format(options, stdout_is_terminal);
 		let files = extract_files(options);
 
-		// The -o, -n and -g options are tricky. They cannot override with each
-		// other because it's possible to combine them. For example, the option
-		// -og should hide both owner and group. Furthermore, they are not
-		// reset if -l or --format=long is used. So these should just show the
-		// group: -gl or "-g --format=long". Finally, they are also not reset
-		// when switching to a different format option in-between like this:
-		// -ogCl or "-og --format=vertical --format=long".
-		//
-		// -1 has a similar issue: it does nothing if the format is long. This
-		// actually makes it distinct from the --format=singe-column option,
-		// which always applies.
-		//
-		// The idea here is to not let these options override with the other
-		// options, but manually whether they have an index that's greater than
-		// the other format options. If so, we set the appropriate format.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 		if format != Format::Long {
 			let idx = opt
 				.and_then(|opt| options.indices_of(opt).map(|x| x.max().unwrap()))
@@ -1612,7 +1612,7 @@ impl Config {
 					(true, true) => (DEFAULT_FILE_SIZE_BLOCK_SIZE, DEFAULT_BLOCK_SIZE),
 					(true, false) => (DEFAULT_FILE_SIZE_BLOCK_SIZE, size),
 					(false, true) => {
-						// --block-size overrides -k
+
 						if opt_block_size.is_some() {
 							(size, size)
 						} else {
@@ -1622,8 +1622,8 @@ impl Config {
 					(false, false) => (size, size),
 				}
 			} else {
-				// only fail if invalid block size was specified with --block-size,
-				// ignore invalid block size from env vars
+
+
 				if let Some(invalid_block_size) = opt_block_size {
 					return Err(LsError::BlockSizeParseError(invalid_block_size.clone()));
 				}
@@ -1662,14 +1662,14 @@ impl Config {
 		};
 		let width = parse_width(options.get_one::<String>(options::WIDTH), host, &runtime)?;
 
-		// pi-uutils: non-tty context, so SHOW_CONTROL_CHARS and the default both
-		// enable control chars; only --hide-control-chars disables them.
+
+
 		let mut show_control = !options.get_flag(options::HIDE_CONTROL_CHARS);
 
 		let (mut quoting_style, mut locale_quoting) =
 			extract_quoting_style(options, show_control, host, &runtime);
 		let indicator_style = extract_indicator_style(options, stdout_is_terminal);
-		// Only parse the value to "--time-style" if it will become relevant.
+
 		let dired = options.get_flag(options::DIRED);
 		let (time_format_recent, time_format_older) = if format == Format::Long || dired {
 			parse_time_style(options, host)?
@@ -1718,13 +1718,13 @@ impl Config {
 			}
 		}
 
-		// According to ls info page, `--zero` implies the following flags:
-		//  - `--show-control-chars`
-		//  - `--format=single-column`
-		//  - `--color=none`
-		//  - `--quoting-style=literal`
-		// Current GNU ls implementation allows `--zero` Behavior to be
-		// overridden by later flags.
+
+
+
+
+
+
+
 		let zero_formats_opts = [
 			options::format::ACROSS,
 			options::format::COLUMNS,
@@ -1888,10 +1888,10 @@ fn parse_time_style(
 	options: &clap::ArgMatches,
 	host: &Host,
 ) -> Result<(String, Option<String>), LsError> {
-	// TODO: Using correct locale string is not implemented.
+
 	const LOCALE_FORMAT: (&str, Option<&str>) = ("%b %e %H:%M", Some("%b %e  %Y"));
 
-	// Convert time_styles references to owned String/option.
+
 	#[expect(clippy::unnecessary_wraps, reason = "internal result helper")]
 	fn ok((recent, older): (&str, Option<&str>)) -> Result<(String, Option<String>), LsError> {
 		Ok((recent.to_string(), older.map(String::from)))
@@ -1902,8 +1902,8 @@ fn parse_time_style(
 		.map(Cow::from)
 		.or_else(|| host.var("TIME_STYLE").map(Cow::from))
 	{
-		//If both FULL_TIME and TIME_STYLE are present
-		//The one added last is dominant
+
+
 		if options.get_flag(options::FULL_TIME)
 			&& options.indices_of(options::FULL_TIME).unwrap().next_back()
 				> options.indices_of(options::TIME_STYLE).unwrap().next_back()
@@ -1911,10 +1911,10 @@ fn parse_time_style(
 			ok((format::FULL_ISO, None))
 		} else {
 			let field = if let Some(field) = field.strip_prefix("posix-") {
-				// See GNU documentation, set format to "locale" if LC_TIME="POSIX",
-				// else just strip the prefix and continue (even "posix+FORMAT" is
-				// supported).
-				// TODO: This needs to be moved to uucore and handled by icu?
+
+
+
+
 				if host.var("LC_TIME") == Some("POSIX") || host.var("LC_ALL") == Some("POSIX")
 				{
 					return ok(LOCALE_FORMAT);
@@ -1927,12 +1927,12 @@ fn parse_time_style(
 			match field {
 				"full-iso" => ok((format::FULL_ISO, None)),
 				"long-iso" => ok((format::LONG_ISO, None)),
-				// ISO older format needs extra padding.
+
 				"iso" => Ok(("%m-%d %H:%M".to_string(), Some(format::ISO.to_string() + " "))),
 				"locale" => ok(LOCALE_FORMAT),
 				_ => match field.chars().next().unwrap() {
 					'+' => {
-						// recent/older formats are (optionally) separated by a newline
+
 						let mut it = field[1..].split('\n');
 						let recent = it.next().unwrap_or_default();
 						let older = it.next();
@@ -1953,42 +1953,42 @@ fn parse_time_style(
 }
 }
 mod dired {
-//! GNU dired position tracking for the `ls` builtin.
+
 
 use std::{
 	fmt,
 	io::{self, Write},
 };
 
-/// `dired` Module Documentation
-///
-/// This module handles the --dired output format, representing file and
-/// directory listings.
-///
-/// Key Mechanisms:
-/// 1. **Position Tracking**:
-///    - The module tracks byte positions for each file or directory entry.
-///    - `BytePosition`: Represents a byte range with start and end positions.
-///    - `DiredOutput`: Contains positions for DIRED and SUBDIRED outputs and
-///      maintains a padding value.
-///
-/// 2. **Padding**:
-///    - Padding is used when dealing with directory names or the "total" line.
-///    - The module adjusts byte positions by adding padding for these cases.
-///    - This ensures correct offset for subsequent files or directories.
-///
-/// 3. **Position Calculation**:
-///    - Functions like `calculate_dired`, `calculate_subdired`, and
-///      `calculate_and_update_positions` compute byte positions based on output
-///      length, previous positions, and padding.
-///
-/// 4. **Output**:
-///    - The module provides functions to print the DIRED output
-///      (`print_dired_output`) based on calculated positions and configuration.
-///    - Helpers like `print_positions` print positions with specific prefixes.
-///
-/// Overall, the module ensures each entry in the DIRED output has the correct
-/// byte position, considering additional lines or padding affecting positions.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 use super::Config;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1997,8 +1997,8 @@ pub struct BytePosition {
 	pub end:   usize,
 }
 
-/// Represents the output structure for DIRED, containing positions for both
-/// DIRED and SUBDIRED.
+
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiredOutput {
 	pub dired_positions:    Vec<BytePosition>,
@@ -2013,10 +2013,10 @@ impl fmt::Display for BytePosition {
 	}
 }
 
-// When --dired is used, all lines starts with 2 spaces
+
 static DIRED_TRAILING_OFFSET: usize = 2;
 
-/// Calculates the byte positions for DIRED
+
 pub fn calculate_dired(
 	dired: &DiredOutput,
 	output_display_len: usize,
@@ -2041,8 +2041,8 @@ pub fn calculate_subdired(dired: &mut DiredOutput, path_len: usize) {
 	dired.subdired_positions.push(BytePosition { start, end });
 }
 
-/// Prints the dired output based on the given configuration and dired
-/// structure.
+
+
 pub fn print_dired_output<W: Write>(
 	config: &Config,
 	dired: &DiredOutput,
@@ -2052,8 +2052,8 @@ pub fn print_dired_output<W: Write>(
 	if !dired.dired_positions.is_empty() {
 		print_positions(out, "//DIRED//", &dired.dired_positions)?;
 	}
-	// SUBDIRED is needed whenever directory headings are printed (multiple args or
-	// -R), so don't gate it on config.recursive.
+
+
 	if !dired.subdired_positions.is_empty() {
 		print_positions(out, "//SUBDIRED//", &dired.subdired_positions)?;
 	}
@@ -2061,7 +2061,7 @@ pub fn print_dired_output<W: Write>(
 	Ok(())
 }
 
-/// Helper function to print positions with a given prefix.
+
 fn print_positions<W: Write>(
 	out: &mut W,
 	prefix: &str,
@@ -2079,13 +2079,13 @@ pub fn add_total(dired: &mut DiredOutput, total_len: usize) {
 	dired.padding += total_len + DIRED_TRAILING_OFFSET;
 }
 
-// when using -R, we have the dirname. we need to add it to the padding
+
 pub fn add_dir_name(dired: &mut DiredOutput, dir_len: usize) {
-	// "  dirname:\n"
+
 	dired.padding += dir_len + DIRED_TRAILING_OFFSET + 2;
 }
 
-/// Calculates byte positions and updates the dired structure.
+
 pub fn calculate_and_update_positions(
 	dired: &mut DiredOutput,
 	output_display_len: usize,
@@ -2096,17 +2096,17 @@ pub fn calculate_and_update_positions(
 	update_positions(dired, start, end, line_len);
 }
 
-/// Updates the dired positions based on the given start and end positions.
-/// update when it is the first element in the list (to manage "total X")
-/// insert when it isn't the about total
+
+
+
 pub fn update_positions(dired: &mut DiredOutput, start: usize, end: usize, line_len: usize) {
-	// padding can be 0 but as it doesn't matter
+
 	let padding = dired.padding;
 	dired
 		.dired_positions
 		.push(BytePosition { start: start + padding, end: end + padding });
 	dired.line_offset += padding + line_len;
-	// Remove the previous padding
+
 	dired.padding = 0;
 }
 
@@ -2114,7 +2114,7 @@ pub fn update_positions(dired: &mut DiredOutput, start: usize, end: usize, line_
 
 }
 mod display {
-//! Output formatting for the `ls` builtin.
+
 
 use core::ops::RangeInclusive;
 #[cfg(unix)]
@@ -2123,7 +2123,7 @@ use std::fmt::Display;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
-/// Show the directory name in the case where several arguments are given to ls
+
 use std::{
 	borrow::Cow,
 	cell::LazyCell,
@@ -2180,7 +2180,7 @@ use super::{
 };
 use crate::host::os_bytes_lossy;
 
-// Fields that can be removed or added to the long format
+
 pub(crate) struct LongFormat {
 	pub(crate) author:          bool,
 	pub(crate) group:           bool,
@@ -2238,16 +2238,16 @@ enum SizeOrDeviceId {
 	Device(String, String),
 }
 
-/// or the recursive flag is passed.
-///
-/// ```no-exec
-/// $ ls -R
-/// .:                  <- This is printed by this function
-/// dir1 file1 file2
-///
-/// dir1:               <- This as well
-/// file11
-/// ```
+
+
+
+
+
+
+
+
+
+
 pub fn show_dir_name<W: Write>(
 	path_data: &PathData,
 	out: &mut W,
@@ -2330,25 +2330,25 @@ fn push_basic_escape(buf: &mut String, byte: u8) {
 }
 
 pub fn should_display(entry: &DirEntry, config: &Config) -> bool {
-	// check if hidden
+
 	if config.files == Files::Normal && is_hidden(entry) {
 		return false;
 	}
 
-	// check if it is among ignore_patterns
+
 	let options = MatchOptions {
-		// setting require_literal_leading_dot to match behavior in GNU ls
+
 		require_literal_leading_dot: true,
 		require_literal_separator:   false,
 		case_sensitive:              true,
 	};
 
 	let file_name = entry.file_name();
-	// If the decoding fails, still match best we can
-	// FIXME: use OsStrings or Paths once we have a glob crate that supports it:
-	// https://github.com/rust-lang/glob/issues/23
-	// https://github.com/rust-lang/glob/issues/78
-	// https://github.com/BurntSushi/ripgrep/issues/1250
+
+
+
+
+
 
 	let file_name = match file_name.to_str() {
 		Some(s) => Cow::Borrowed(s),
@@ -2366,8 +2366,8 @@ fn display_dir_entry_size(
 	config: &Config,
 	state: &mut ListState,
 ) -> (usize, usize, usize, usize, usize, usize) {
-	// TODO: Cache/memorize the display_* results so we don't have to recalculate
-	// them.
+
+
 	if let Some(md) = entry.metadata() {
 		let (size_len, major_len, minor_len) = match display_len_or_rdev(md, config) {
 			SizeOrDeviceId::Device(major, minor) => {
@@ -2397,9 +2397,9 @@ fn digits(num: u64) -> usize {
 	(num.checked_ilog10().unwrap_or(0) + 1) as usize
 }
 
-// A simple, performant, ExtendPad trait to add a string to a Vec<u8>, padding
-// with spaces on the left or right, without making additional copies, or using
-// formatting functions.
+
+
+
 pub trait ExtendPad {
 	fn extend_pad_left(&mut self, string: &str, count: usize);
 	fn extend_pad_right(&mut self, string: &str, count: usize);
@@ -2421,8 +2421,8 @@ impl ExtendPad for Vec<u8> {
 	}
 }
 
-// TODO: Consider converting callers to use ExtendPad instead, as it avoids
-// additional copies.
+
+
 fn pad_left(string: &str, count: usize) -> String {
 	format!("{string:>count$}")
 }
@@ -2434,9 +2434,9 @@ pub fn display_items(
 	state: &mut ListState,
 	dired: &mut DiredOutput,
 ) -> std::io::Result<()> {
-	// `-Z`, `--context`:
-	// Display the SELinux security context or '?' if none is found. When used with
-	// the `-l` option, print the security context to the left of the size column.
+
+
+
 
 	let quoted = items.iter().any(|item| {
 		let name = escape_name_with_locale(item.display_name(), config);
@@ -2472,7 +2472,7 @@ pub fn display_items(
 
 		let padding = calculate_padding_collection(items, config, state);
 
-		// we need to apply normal color to non filename output
+
 		if let Some(style_manager) = &mut state.style_manager {
 			write!(state.out, "{}", style_manager.apply_normal())?;
 		}
@@ -2488,14 +2488,14 @@ pub fn display_items(
 			let more_info = if should_display_leading_info {
 				let mut s = Vec::new();
 				display_additional_leading_info(i, &padding, config, &mut s)?;
-				Some(String::from_utf8(s).unwrap()) // Should always be UTF-8
+				Some(String::from_utf8(s).unwrap())
 			} else {
 				None
 			};
-			// it's okay to set current column to zero which is used to decide
-			// whether text will wrap or not, because when format is grid or
-			// column ls will try to place the item name in a new line if it
-			// wraps.
+
+
+
+
 			let cell = display_item_name(
 				i,
 				config,
@@ -2539,7 +2539,7 @@ pub fn display_items(
 				}
 				for name in names {
 					let name_width = ansi_width(&name.to_string_lossy()) as u16;
-					// If the width is 0 we print one single line
+
 					if config.width != 0 && current_col + name_width + 1 > config.width {
 						current_col = name_width + 2;
 						writeln!(state.out, ",")?;
@@ -2549,8 +2549,8 @@ pub fn display_items(
 					}
 					write_os_str(&mut state.out, &name)?;
 				}
-				// Current col is never zero again if names have been printed.
-				// So we print a newline.
+
+
 				if current_col > 0 {
 					write!(state.out, "{}", config.line_ending)?;
 				}
@@ -2576,7 +2576,7 @@ fn display_grid<W: Write>(
 	tab_size: usize,
 ) -> std::io::Result<()> {
 	if width == 0 {
-		// If the width is 0 we print one single line
+
 		let mut printed_something = false;
 		for name in names {
 			if printed_something {
@@ -2593,19 +2593,19 @@ fn display_grid<W: Write>(
 			let mut buf = Vec::new();
 			names
 				.map(|n| {
-					// In case some names are quoted, GNU adds a space before each
-					// entry that does not start with a quote to make it prettier
-					// on multiline.
-					//
-					// Example:
-					// ```
-					// $ ls
-					// 'a\nb'   bar
-					//  foo     baz
-					// ^       ^
-					// These spaces is added
-					// ```
-					// FIXME: the Grid crate only supports &str, so can't display raw bytes
+
+
+
+
+
+
+
+
+
+
+
+
+
 					buf.clear();
 					if quoted && !os_str_starts_with(&n, b"'") && !os_str_starts_with(&n, b"\"") {
 						buf.push(b' ');
@@ -2616,7 +2616,7 @@ fn display_grid<W: Write>(
 				.collect()
 		};
 
-		// Since tab_size=0 means no \t, use Spaces separator for optimization.
+
 		let filling = match tab_size {
 			0 => Filling::Spaces(DEFAULT_SEPARATOR_SIZE),
 			_ => Filling::Tabs { spaces: DEFAULT_SEPARATOR_SIZE, tab_size },
@@ -2652,8 +2652,8 @@ fn display_additional_leading_info(
 		} else {
 			"?".into()
 		};
-		// extra space is insert to align the sizes, as needed for all formats, except
-		// for the comma format.
+
+
 		if config.format == Format::Commas {
 			out.write_all(s.as_bytes())?;
 			out.write_all(b" ")?;
@@ -2666,8 +2666,8 @@ fn display_additional_leading_info(
 	Ok(())
 }
 
-// Currently getpwuid is `linux` target only. If it's broken state.out into
-// a posix-compliant attribute this can be updated...
+
+
 #[cfg(unix)]
 fn display_uname<'a>(
 	metadata: &Metadata,
@@ -2722,8 +2722,8 @@ fn display_date(
 		return Ok(());
 	};
 
-	// Use "recent" format if the given date is considered recent (i.e., in the last
-	// 6 months), or if no "older" format is available.
+
+
 	let fmt = match &config.time_format_older {
 		Some(time_format_older) if !recent_time_range.contains(&time) => time_format_older,
 		_ => &config.time_format_recent,
@@ -2757,7 +2757,7 @@ fn display_len_or_rdev(metadata: &Metadata, config: &Config) -> SizeOrDeviceId {
 	{
 		let ft = metadata.file_type();
 		if ft.is_char_device() || ft.is_block_device() {
-			// A type cast is needed here as the `dev_t` type varies across OSes.
+
 			let dev = metadata.rdev() as dev_t;
 			let major = major(dev);
 			let minor = minor(dev);
@@ -2776,27 +2776,27 @@ pub fn display_size(size: u64, config: &Config) -> String {
 	human_readable(size, config.size_format)
 }
 
-/// Takes a [`PathData`] struct and returns a cell with a name ready for
-/// displaying.
-///
-/// This function relies on the following parameters in the provided `&Config`:
-/// * `config.quoting_style` to decide how we will escape `name` using
-///   [`locale_aware_escape_name`].
-/// * `config.inode` decides whether to display inode numbers beside names using
-///   [`display_inode`].
-/// * `config.color` decides whether it's going to color `name` using
-///   [`color_name`].
-/// * `config.indicator_style` to append specific characters to `name` using
-///   [`classify_file`].
-/// * `config.format` to display symlink targets if `Format::Long`. This
-///   function is also responsible for coloring symlink target names if
-///   `config.color` is specified.
-/// * `config.context` to prepend security context to `name` if compiled with
-///   `feat_selinux`.
-/// * `config.hyperlink` decides whether to hyperlink the item
-///
-/// Note that non-unicode sequences in symlink targets are dealt with using
-/// [`std::path::Path::to_string_lossy`].
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[allow(clippy::cognitive_complexity)]
 fn display_item_name(
 	path: &PathData,
@@ -2806,8 +2806,8 @@ fn display_item_name(
 	mut style_manager: Option<&mut StyleManager>,
 	current_column: LazyCell<usize, impl FnOnce() -> usize>,
 ) -> DisplayItemName {
-	// This is our return value. We start by `&path.display_name` and modify it
-	// along the way.
+
+
 	let mut name = escape_name_with_locale(path.display_name(), config);
 
 	let is_wrap =
@@ -2836,14 +2836,14 @@ fn display_item_name(
 		let char_opt = match config.indicator_style {
 			IndicatorStyle::Classify => sym,
 			IndicatorStyle::FileType => {
-				// Don't append an asterisk.
+
 				match sym {
 					Some('*') => None,
 					_ => sym,
 				}
 			},
 			IndicatorStyle::Slash => {
-				// Append only a slash.
+
 				match sym {
 					Some('/') => Some('/'),
 					_ => None,
@@ -2867,13 +2867,13 @@ fn display_item_name(
 			Ok(target_path) => {
 				name.push(" -> ");
 
-				// We might as well color the symlink output after the arrow.
-				// This makes extra system calls, but provides important information that
-				// people run `ls -l --color` are very interested in.
+
+
+
 				if let Some(style_manager) = &mut style_manager {
 					let escaped_target = escape_name_with_locale(target_path.as_os_str(), config);
-					// We get the absolute path to be able to construct PathData with valid
-					// Metadata. This is because relative symlinks will fail to get_metadata.
+
+
 					let absolute_target = if target_path.is_relative() {
 						match path.path().parent() {
 							Some(p) => &p.join(&target_path),
@@ -2893,7 +2893,7 @@ fn display_item_name(
 								false,
 							);
 
-							// Check if the target actually needs coloring
+
 							let md_option: Option<Metadata> = target_data
 								.metadata()
 								.cloned()
@@ -2903,7 +2903,7 @@ fn display_item_name(
 								.style_for_path_with_metadata(&target_data.p_buf, md_option.as_ref());
 
 							if style.is_some() {
-								// Only apply coloring if there's actually a style
+
 								name.push(color_name(
 									escaped_target,
 									&target_data,
@@ -2912,7 +2912,7 @@ fn display_item_name(
 									is_wrap(name.len()),
 								));
 							} else {
-								// For regular files with no coloring, just use plain text
+
 								name.push(escaped_target);
 							}
 						},
@@ -2924,8 +2924,8 @@ fn display_item_name(
 						},
 					}
 				} else {
-					// If no coloring is required, we just use target as is.
-					// Apply the right quoting
+
+
 					name.push(escape_name_with_locale(target_path.as_os_str(), config));
 				}
 			},
@@ -2940,8 +2940,8 @@ fn display_item_name(
 		}
 	}
 
-	// Prepend the security context to the `name` and adjust `width` in order
-	// to get correct alignment from later calls to`display_grid()`.
+
+
 	if config.context
 		&& let Some(pad_count) = prefix_context
 	{
@@ -2961,34 +2961,34 @@ fn display_item_name(
 	DisplayItemName { displayed: name, dired_name_len }
 }
 
-/// This writes to `state.out` a single string of the output of `ls -l`.
-///
-/// It writes the following keys, in order:
-/// * `inode` ([`display_inode`], config-optional)
-/// * `permissions` ([`display_permissions`])
-/// * `symlink_count` ([`display_symlink_count`])
-/// * `owner` ([`display_uname`], config-optional)
-/// * `group` ([`display_group`], config-optional)
-/// * `author` ([`display_uname`], config-optional)
-/// * `size / rdev` ([`display_len_or_rdev`])
-/// * `system_time` ([`display_date`])
-/// * `item_name` ([`display_item_name`])
-///
-/// This function needs to display information in columns:
-/// * permissions and `system_time` are already guaranteed to be pre-formatted
-///   in fixed length.
-/// * `item_name` is the last column and is left-aligned.
-/// * Everything else needs to be padded using [`pad_left`].
-///
-/// That's why we have the parameters:
-/// ```txt
-///    longest_link_count_len: usize,
-///    longest_uname_len: usize,
-///    longest_group_len: usize,
-///    longest_context_len: usize,
-///    longest_size_len: usize,
-/// ```
-/// that decide the maximum possible character count of each field.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[allow(clippy::write_literal)]
 #[allow(clippy::cognitive_complexity)]
 fn display_item_long(
@@ -2999,7 +2999,7 @@ fn display_item_long(
 	dired: &mut DiredOutput,
 	quoted: bool,
 ) -> std::io::Result<()> {
-	// apply normal color to non filename outputs
+
 	if let Some(style_manager) = &mut state.style_manager {
 		state
 			.display_buf
@@ -3010,7 +3010,7 @@ fn display_item_long(
 	}
 	if let Some(md) = item.metadata() {
 		#[cfg(any(not(unix), target_os = "android", target_os = "macos"))]
-		// TODO: See how Mac should work here
+
 		let is_acl_set = false;
 		#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
 		let is_acl_set = has_acl(item.path());
@@ -3018,8 +3018,8 @@ fn display_item_long(
 			.display_buf
 			.extend(display_permissions(md, true).as_bytes());
 		if item.security_context(config).len() > 1 {
-			// GNU `ls` uses a "." character to indicate a file with a security context,
-			// but not other alternate access method.
+
+
 			state.display_buf.push(b'.');
 		} else if is_acl_set {
 			state.display_buf.push(b'+');
@@ -3052,8 +3052,8 @@ fn display_item_long(
 				.extend_pad_right(item.security_context(config), padding.context);
 		}
 
-		// Author is only different from owner on GNU/Hurd, so we reuse
-		// the owner, since GNU/Hurd is not currently supported by Rust.
+
+
 		if config.long.author {
 			state.display_buf.push(b' ');
 			state
@@ -3167,8 +3167,8 @@ fn display_item_long(
 		state.display_buf.push(leading_char as u8);
 		state.display_buf.extend(b"?????????");
 		if item.security_context(config).len() > 1 {
-			// GNU `ls` uses a "." character to indicate a file with a security context,
-			// but not other alternate access method.
+
+
 			state.display_buf.push(b'.');
 		}
 		state.display_buf.push(b' ');
@@ -3191,8 +3191,8 @@ fn display_item_long(
 				.extend_pad_right(item.security_context(config), padding.context);
 		}
 
-		// Author is only different from owner on GNU/Hurd, so we reuse
-		// the owner, since GNU/Hurd is not currently supported by Rust.
+
+
 		if config.long.author {
 			state.display_buf.push(b' ');
 			state.display_buf.extend_pad_right("?", padding.uname);
@@ -3246,8 +3246,8 @@ fn classify_file(path: &PathData) -> Option<char> {
 				Some('=')
 			} else if file_type.is_fifo() {
 				Some('|')
-				// Safe unwrapping if the file was removed between listing and
-				// display See https://github.com/uutils/coreutils/issues/5371
+
+
 			} else if path.is_executable_file() {
 				Some('*')
 			} else {
@@ -3260,17 +3260,17 @@ fn classify_file(path: &PathData) -> Option<char> {
 }
 
 fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
-	// The `hostname` crate does not support WASI (no OS-level hostname API),
-	// so we use an empty string for hyperlinks on WASI.
+
+
 	#[cfg(not(target_os = "wasi"))]
 	static HOSTNAME: LazyLock<OsString> = LazyLock::new(|| hostname::get().unwrap_or_default());
 	#[cfg(target_os = "wasi")]
 	static HOSTNAME: LazyLock<OsString> = LazyLock::new(OsString::new);
 
-	// OSC 8 hyperlink format: \x1b]8;;URL\x1b\\TEXT\x1b]8;;\x1b\\
-	// \x1b = ESC, \x1b\\ = ESC backslash
-	// FIXME: switch to constants once OsStr::new() is const-stable and over our
-	// MSRV.
+
+
+
+
 	let osc_8_head = OsStr::new("\x1b]8;;file://");
 	let osc_8_tail = OsStr::new("\x1b]8;;\x1b\\");
 	let esc_bl = OsStr::new("\x1b\\");
@@ -3286,7 +3286,7 @@ fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
 	ret.push(osc_8_head);
 	ret.push(HOSTNAME.as_os_str());
 
-	// a set of safe ASCII bytes that don't need encoding
+
 	#[cfg(not(target_os = "windows"))]
 	let unencoded = |c| matches!(c, '_' | '-' | '.' | '~' | '/');
 	#[cfg(target_os = "windows")]
@@ -3326,7 +3326,7 @@ fn update_dired_for_item(
 	displayed_len: usize,
 	dired_name_len: usize,
 ) {
-	let line_len = output_display_len + displayed_len + 1; // +1 for line ending
+	let line_len = output_display_len + displayed_len + 1;
 	dired::calculate_and_update_positions(dired, output_display_len, dired_name_len, line_len);
 }
 
@@ -3387,11 +3387,11 @@ fn calculate_padding_collection(
 				padding_collections.context = context_len.max(padding_collections.context);
 			}
 
-			// correctly align columns when some files have capabilities/ACLs and others do
-			// not
+
+
 			{
 				#[cfg(any(not(unix), target_os = "android", target_os = "macos"))]
-				// TODO: See how Mac should work here
+
 				let is_acl_set = false;
 				#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
 				let is_acl_set = has_acl(item.display_name());
@@ -3419,8 +3419,8 @@ fn calculate_padding_collection(
 
 #[cfg(not(unix))]
 fn display_symlink_count(_metadata: &Metadata) -> String {
-	// Currently not sure of how to get this on Windows, so I'm punting.
-	// Git Bash looks like it may do the same thing.
+
+
 	String::from("1")
 }
 
@@ -3552,7 +3552,7 @@ impl LsRuntime {
 	}
 }
 
-/// Parsed `ls` invocation.
+
 pub(crate) struct Ls {
 	matches: ArgMatches,
 }
@@ -3618,7 +3618,7 @@ pub fn uu_app() -> Command {
 				.help("Print help information.")
 				.action(ArgAction::Help),
 		)
-		// Format arguments
+
 		.arg(
 			Arg::new(options::FORMAT)
 				.long(options::FORMAT)
@@ -3735,12 +3735,12 @@ pub fn uu_app() -> Command {
 				.value_name("WHEN")
 				.overrides_with(options::DIRED),
 		)
-		// The next four arguments do not override with the other format
-		// options, see the comment in Config::from for the reason.
-		// Ideally, they would use Arg::override_with, with their own name
-		// but that doesn't seem to work in all cases. Example:
-		// ls -1g1
-		// even though `ls -11` and `ls -1 -g -1` work.
+
+
+
+
+
+
 		.arg(
 			Arg::new(options::format::ONE_LINE)
 				.short('1')
@@ -3769,7 +3769,7 @@ pub fn uu_app() -> Command {
 				.help("-l with numeric UIDs and GIDs.")
 				.action(ArgAction::SetTrue),
 		)
-		// Quoting style
+
 		.arg(
 			Arg::new(QUOTING_STYLE)
 				.long(QUOTING_STYLE)
@@ -3832,7 +3832,7 @@ pub fn uu_app() -> Command {
 				])
 				.action(ArgAction::SetTrue),
 		)
-		// Control characters
+
 		.arg(
 			Arg::new(options::HIDE_CONTROL_CHARS)
 				.short('q')
@@ -3848,7 +3848,7 @@ pub fn uu_app() -> Command {
 				.overrides_with_all([options::HIDE_CONTROL_CHARS, options::SHOW_CONTROL_CHARS])
 				.action(ArgAction::SetTrue),
 		)
-		// Time arguments
+
 		.arg(
 			Arg::new(options::TIME)
 				.long(options::TIME)
@@ -3892,7 +3892,7 @@ pub fn uu_app() -> Command {
 				.overrides_with_all([options::TIME, options::time::ACCESS, options::time::CHANGE])
 				.action(ArgAction::SetTrue),
 		)
-		// Hide and ignore
+
 		.arg(
 			Arg::new(options::HIDE)
 				.long(options::HIDE)
@@ -3915,7 +3915,7 @@ pub fn uu_app() -> Command {
 				.help("Ignore entries which end with ~.")
 				.action(ArgAction::SetTrue),
 		)
-		// Sort arguments
+
 		.arg(
 			Arg::new(options::SORT)
 				.long(options::SORT)
@@ -4016,7 +4016,7 @@ pub fn uu_app() -> Command {
 				])
 				.action(ArgAction::SetTrue),
 		)
-		// Dereferencing
+
 		.arg(
 			Arg::new(options::dereference::ALL)
 				.short('L')
@@ -4058,7 +4058,7 @@ pub fn uu_app() -> Command {
 				])
 				.action(ArgAction::SetTrue),
 		)
-		// Long format options
+
 		.arg(
 			Arg::new(options::NO_GROUP)
 				.long(options::NO_GROUP)
@@ -4075,12 +4075,12 @@ pub fn uu_app() -> Command {
 				)
 				.action(ArgAction::SetTrue),
 		)
-		// Other Flags
+
 		.arg(
 			Arg::new(options::files::ALL)
 				.short('a')
 				.long(options::files::ALL)
-				// Overrides -A (as the order matters)
+
 				.overrides_with_all([options::files::ALL, options::files::ALMOST_ALL])
 				.help("Do not ignore hidden files (files with names that start with '.').")
 				.action(ArgAction::SetTrue),
@@ -4089,7 +4089,7 @@ pub fn uu_app() -> Command {
 			Arg::new(options::files::ALMOST_ALL)
 				.short('A')
 				.long(options::files::ALMOST_ALL)
-				// Overrides -a (as the order matters)
+
 				.overrides_with_all([options::files::ALL, options::files::ALMOST_ALL])
 				.help(
 					"In a directory, do not ignore all file names that start with '.',\nonly ignore \
@@ -4217,11 +4217,11 @@ pub fn uu_app() -> Command {
 				]),
 		)
 		.arg(
-			// The --classify flag can take an optional when argument to
-			// control its behavior from version 9 of GNU coreutils.
-			// There is currently an inconsistency where GNU coreutils allows only
-			// the long form of the flag to take the argument while we allow it
-			// for both the long and short form of the flag.
+
+
+
+
+
 			Arg::new(options::indicator_style::CLASSIFY)
 				.short('F')
 				.long(options::indicator_style::CLASSIFY)
@@ -4278,7 +4278,7 @@ pub fn uu_app() -> Command {
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
-			//This still needs support for posix-*
+
 			Arg::new(options::TIME_STYLE)
 				.long(options::TIME_STYLE)
 				.help("time/date format with -l; see TIME_STYLE below")
@@ -4315,7 +4315,7 @@ pub fn uu_app() -> Command {
 				.hide(true)
 				.action(ArgAction::SetTrue),
 		)
-		// Positional arguments
+
 		.arg(
 			Arg::new(options::PATHS)
 				.action(ArgAction::Append)
@@ -4329,35 +4329,35 @@ pub fn uu_app() -> Command {
 		)
 }
 
-/// Creates the `ls` builtin registration.
+
 pub(crate) fn ls_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ls, SE>()
 }
 
-/// Represents the possible values of [`PathData::display_name`]. The reason
-/// this is a separate enum is to avoid a self-referential struct, as it is
-/// moved in hot loops.
+
+
+
 #[derive(Debug)]
 enum PathDataDisplayName<'a> {
 	SelfReferential,
 	Custom(Cow<'a, OsStr>),
 }
 
-/// Represents a Path along with it's associated data.
-/// Any data that will be reused several times makes sense to be added to this
-/// structure. Caching data here helps eliminate redundant syscalls to fetch
-/// same information.
+
+
+
+
 struct PathData<'a> {
-	// Result<MetaData> got from symlink_metadata() or metadata() based on config
+
 	md:               OnceCell<Option<Metadata>>,
 	ft:               OnceCell<Option<FileType>>,
-	// can be used to avoid reading the filetype. Can be also called d_type:
-	// https://www.gnu.org/software/libc/manual/html_node/Directory-Entries.html
+
+
 	de:               RefCell<Option<DirEntry>>,
 	security_context: OnceCell<Box<str>>,
-	// Name of the file - will be empty for . or ..
+
 	display_name:     PathDataDisplayName<'a>,
-	// PathBuf that all above data corresponds to
+
 	p_buf:            Cow<'a, Path>,
 	fs_path:          PathBuf,
 	runtime:          Rc<LsRuntime>,
@@ -4373,8 +4373,8 @@ impl<'a> PathData<'a> {
 		config: &Config,
 		command_line: bool,
 	) -> Self {
-		// We cannot use `Path::ends_with` or `Path::Components`, because they remove
-		// occurrences of '.' For '..', the filename is None
+
+
 		let display_name = if let Some(name) = file_name {
 			PathDataDisplayName::Custom(name)
 		} else if command_line {
@@ -4407,8 +4407,8 @@ impl<'a> PathData<'a> {
 			Dereference::None => false,
 		};
 
-		// Why prefer to check the DirEntry file_type()?  B/c the call is
-		// nearly free compared to a metadata() call on a Path
+
+
 		let ft: OnceCell<Option<FileType>> = OnceCell::new();
 		let md: OnceCell<Option<Metadata>> = OnceCell::new();
 		let security_context: OnceCell<Box<str>> = OnceCell::new();
@@ -4455,10 +4455,10 @@ impl<'a> PathData<'a> {
 				match get_metadata_with_deref_opt(&self.fs_path, self.must_dereference) {
 					Err(err) => {
 						let errno = err.raw_os_error().unwrap_or(1i32);
-						// a bad fd will throw an error when dereferenced,
-						// but GNU will not throw an error until a bad fd "dir"
-						// is entered, here we match that GNU behavior, by handing
-						// back the non-dereferenced metadata upon an EBADF
+
+
+
+
 						if self.must_dereference
 							&& errno == 9i32
 							&& let Ok(file) = self.fs_path.read_link()
@@ -4487,8 +4487,8 @@ impl<'a> PathData<'a> {
 	}
 
 	fn is_dangling_link(&self) -> bool {
-		// deref enabled, self is real dir entry, self has metadata associated with
-		// link, but not with target
+
+
 		self.must_dereference && self.file_type().is_none() && self.metadata().is_none()
 	}
 
@@ -4540,16 +4540,16 @@ impl Colorable for PathData<'_> {
 
 type DirData = (PathBuf, bool);
 
-// A struct to encapsulate state that is passed around from `list` functions.
+
 #[cfg_attr(not(unix), allow(dead_code))]
 struct ListState<'a> {
 	out:               StreamWriter,
 	style_manager:     Option<StyleManager<'a>>,
-	// TODO: More benchmarking with different use cases is required here.
-	// From experiments, BTreeMap may be faster than HashMap, especially as the
-	// number of users/groups is very limited. It seems like nohash::IntMap
-	// performance was equivalent to BTreeMap.
-	// It's possible a simple vector linear(binary?) search implementation would be even faster.
+
+
+
+
+
 	#[cfg(unix)]
 	uid_cache:         FxHashMap<u32, String>,
 	#[cfg(unix)]
@@ -4587,10 +4587,10 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 		uid_cache: (),
 		#[cfg(not(unix))]
 		gid_cache: (),
-		// Time range for which to use the "recent" format. Anything from 0.5 year in the past to now
-		// (files with modification time in the future use "old" format).
-		// According to GNU a Gregorian year has 365.2425 * 24 * 60 * 60 == 31556952 seconds on the
-		// average.
+
+
+
+
 		recent_time_range: (now - Duration::new(31_556_952 / 2, 0))..=now,
 		stack: Vec::new(),
 		listed_ancestors: FxHashSet::default(),
@@ -4605,12 +4605,12 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 	for loc in locs {
 		let path_data = PathData::new(loc.into(), None, None, config, true);
 
-		// Getting metadata here is no big deal as it's just the CWD
-		// and we really just want to know if the strings exist as files/dirs
-		//
-		// Proper GNU handling is don't show if dereferenced symlink DNE
-		// but only for the base dir, for a child dir show, and print ?s
-		// in long format
+
+
+
+
+
+
 		if path_data.metadata().is_none() {
 			continue;
 		}
@@ -4633,8 +4633,8 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 	sort_entries(&mut dirs, config);
 
 	if let Some(style_manager) = state.style_manager.as_mut() {
-		// ls will try to write a reset before anything is written if normal
-		// color is given
+
+
 		if style_manager.get_normal_style().is_some() {
 			let to_write = style_manager.reset(true);
 			write!(state.out, "{to_write}")?;
@@ -4645,11 +4645,11 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 
 	for (pos, path_data) in dirs.iter().enumerate() {
 		let needs_blank_line = pos != 0 || !files.is_empty();
-		// Do read_dir call here to match GNU semantics by printing
-		// read_dir errors before directory headings, names and totals
+
+
 		let read_dir = match fs::read_dir(&path_data.fs_path) {
 			Err(err) => {
-				// flush stdout buffer before the error to preserve formatting and order
+
 				state.out.flush()?;
 				config.runtime.error(LsError::IOErrorContext(
 					path_data.path().to_path_buf(),
@@ -4667,7 +4667,7 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 			path_data.must_dereference,
 		)?);
 
-		// List each of the arguments to ls first.
+
 		depth_first_list(
 			(path_data.path().to_path_buf(), needs_blank_line),
 			read_dir,
@@ -4677,12 +4677,12 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 			true,
 		)?;
 
-		// Only runs if it must list recursively.
+
 		while let Some(dir_data) = state.stack.pop() {
 			let resolved_dir = config.runtime.resolve(&dir_data.0);
 			let read_dir = match fs::read_dir(&resolved_dir) {
 				Err(err) => {
-					// flush stdout buffer before the error to preserve formatting and order
+
 					state.out.flush()?;
 					config.runtime.error(LsError::IOErrorContext(
 						path_data.path().to_path_buf(),
@@ -4697,15 +4697,15 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 
 			depth_first_list(dir_data, read_dir, config, &mut state, &mut dired, false)?;
 
-			// Heuristic to ensure stack does not keep its capacity forever if there is
-			// combinatorial explosion; we decrease it logarithmically here.
+
+
 			let (cap, len) = (state.stack.capacity(), state.stack.len());
 			if cap > (len + 4) * 2 {
 				state.stack.shrink_to(len + (cap - len) / 2);
 			}
 		}
 
-		// No need to clear state.buf since [`enter_directory`] drains it.
+
 		state.listed_ancestors.clear();
 	}
 	if config.dired && !config.hyperlink {
@@ -4726,7 +4726,7 @@ fn sort_entries(entries: &mut [PathData], config: &Config) {
 		Sort::Size => {
 			entries.sort_unstable_by_key(|k| Reverse(k.metadata().map_or(0, Metadata::len)));
 		},
-		// The default sort in GNU ls is case insensitive
+
 		Sort::Name => entries.sort_unstable_by(|a, b| a.display_name().cmp(b.display_name())),
 		Sort::Version => entries.sort_unstable_by(|a, b| {
 			version_cmp(
@@ -4757,8 +4757,8 @@ fn sort_entries(entries: &mut [PathData], config: &Config) {
 	if config.group_directories_first && config.sort != Sort::None {
 		entries.sort_unstable_by_key(|p| {
 			let ft = {
-				// We will always try to deref symlinks to group directories, so PathData.md
-				// is not always useful.
+
+
 				if p.must_dereference {
 					p.file_type()
 				} else {
@@ -4768,7 +4768,7 @@ fn sort_entries(entries: &mut [PathData], config: &Config) {
 
 			!match ft {
 				None => {
-					// If it metadata cannot be determined, treat as a file.
+
 					get_metadata_with_deref_opt(&p.fs_path, true).map_or_else(|_| false, |m| m.is_dir())
 				},
 				Some(ft) => ft.is_dir(),
@@ -4787,7 +4787,7 @@ fn depth_first_list(
 ) -> std::io::Result<()> {
 	let path_data = PathData::new(dir_path.as_path().into(), None, None, config, false);
 
-	// Print dir heading - name... 'total' comes after error display
+
 	if state.initial_locs_len > 1 || config.recursive {
 		if is_top_level {
 			if needs_blank_line {
@@ -4803,9 +4803,9 @@ fn depth_first_list(
 			writeln!(state.out)?;
 			if config.dired {
 				let dir_len = path_data.path().as_os_str().len();
-				// add the //SUBDIRED// coordinates
+
 				dired::calculate_subdired(dired, dir_len);
-				// Add the padding for the dir name
+
 				dired::add_dir_name(dired, dir_len);
 			}
 		} else {
@@ -4822,15 +4822,15 @@ fn depth_first_list(
 		}
 	}
 
-	// Append entries with initial dot files and record their existence
+
 	let (ref mut buf, trim) = if config.files == Files::All {
 		const DOT_DIRECTORIES: usize = 2;
 		let v = vec![
 			PathData::new(path_data.path().into(), None, Some(OsStr::new(".").into()), config, false),
 			PathData::new(
-				// On WASI the sandbox may block access to ".." at the
-				// preopened root.  Fall back to "." so the entry still
-				// appears with valid metadata instead of an error.
+
+
+
 				{
 					let dotdot = path_data.path().join("..");
 					#[cfg(target_os = "wasi")]
@@ -4852,7 +4852,7 @@ fn depth_first_list(
 		(Vec::new(), 0)
 	};
 
-	// Convert those entries to the PathData struct
+
 	for raw_entry in read_dir.by_ref() {
 		match raw_entry {
 			Ok(dir_entry) => {
@@ -4872,7 +4872,7 @@ fn depth_first_list(
 			},
 		}
 	}
-	// Relinquish unused space since we won't need it anymore.
+
 	buf.shrink_to_fit();
 
 	sort_entries(buf, config);
@@ -4893,7 +4893,7 @@ fn depth_first_list(
 			.filter(|p| p.file_type().is_some_and(FileType::is_dir))
 			.rev()
 		{
-			// Try to open only to report any errors in order to match GNU semantics.
+
 			if let Err(err) = fs::read_dir(&e.fs_path) {
 				state.out.flush()?;
 				config.runtime.error(LsError::IOErrorContext(
@@ -4905,7 +4905,7 @@ fn depth_first_list(
 			} else {
 				let fi = FileInformation::from_path(&e.fs_path, e.must_dereference)?;
 				if state.listed_ancestors.insert(fi) {
-					// Push to stack, but with a less aggressive growth curve.
+
 					let (cap, len) = (state.stack.capacity(), state.stack.len());
 					if cap == len {
 						state.stack.reserve_exact(len / 4 + 4);
@@ -4952,9 +4952,9 @@ fn write_total<W: Write>(
 
 #[allow(unused_variables)]
 fn get_block_size(md: &Metadata, config: &Config) -> u64 {
-	/* GNU ls will display sizes in terms of block size
-		md.len() will differ from this value when the file has some holes
-	*/
+
+
+
 	#[cfg(unix)]
 	{
 		use uucore::format::human::SizeFormat;
@@ -4971,25 +4971,25 @@ fn get_block_size(md: &Metadata, config: &Config) -> u64 {
 	}
 	#[cfg(not(unix))]
 	{
-		// no way to get block size for windows, fall-back to file size
+
 		md.len()
 	}
 }
 
 #[cfg(unix)]
 fn file_is_executable(md: &Metadata) -> bool {
-	// Mode always returns u32, but the flags might not be, based on the platform
-	// e.g. linux has u32, mac has u16.
-	// S_IXUSR -> user has execute permission
-	// S_IXGRP -> group has execute permission
-	// S_IXOTH -> other users have execute permission
+
+
+
+
+
 	#[allow(clippy::unnecessary_cast)]
 	return md.mode() & ((S_IXUSR | S_IXGRP | S_IXOTH) as u32) != 0;
 }
 
-/// This returns the `SELinux` security context as UTF8 `String`.
-/// In the long term this should be changed to [`OsStr`], see discussions at
-/// #2621/#2656
+
+
+
 fn get_security_context<'a>(
 	path: &'a Path,
 	must_dereference: bool,
@@ -4997,17 +4997,17 @@ fn get_security_context<'a>(
 ) -> Cow<'a, str> {
 	static SUBSTITUTE_STRING: &str = "?";
 
-	// If we must dereference, ensure that the symlink is actually valid even if the
-	// system does not support SELinux.
-	// Conforms to the GNU coreutils where a dangling symlink results in exit code
-	// 1.
+
+
+
+
 	if must_dereference
 		&& let Err(err) =
 			get_metadata_with_deref_opt(&config.runtime.resolve(path), must_dereference)
 	{
-		// The Path couldn't be dereferenced, so return early and set exit code 1
-		// to indicate a minor error
-		// Only show error when context display is requested to avoid duplicate messages
+
+
+
 		if config.context {
 			config.runtime.error(LsError::IOErrorContext(
 				path.to_path_buf(),

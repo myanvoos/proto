@@ -192,7 +192,6 @@ export class RpcHostToolBridge {
 		}
 	}
 
-	/** Reject active and future host tool requests after the RPC client disconnects. */
 	close(message: string): void {
 		if (!this.#closedError) this.#closedError = new Error(message);
 		const pendingCalls = Array.from(this.#pendingCalls.values());

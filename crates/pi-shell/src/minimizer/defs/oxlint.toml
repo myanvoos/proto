@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/oxlint.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.oxlint]
 description = "Compact oxlint output — strip blank lines, keep diagnostics"

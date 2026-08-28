@@ -1,9 +1,3 @@
-/**
- * Pipeline: Type.Object builds each schema and TypeCompiler.Compile compiles
- * its hot `Check` path. Failures materialize TypeBox's native first error.
- * Default/delete fixtures clone first, then use the sanctioned
- * Value.Default/Value.Clean transforms before Check, preserving input.
- */
 import { type TSchema, Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import type { ValueError } from "@sinclair/typebox/errors";
@@ -143,7 +137,7 @@ export const typeboxCandidate: Candidate = {
 		if (morph === "default") {
 			return (value: unknown) => {
 				const defaulted = Value.Default(schema, structuredClone(value));
-				// Reject extras before Clean; otherwise strict semantics would be weakened.
+
 				if (!compiled.Check(defaulted)) return errorResult(compiled.Errors(defaulted).First());
 				const output = Value.Clean(schema, defaulted);
 				return compiled.Check(output) ? output : errorResult(compiled.Errors(output).First());

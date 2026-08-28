@@ -1,29 +1,29 @@
-//! Call stack management for the shell.
+
 
 use crate::{ExecutionParameters, callstack, env, error, functions, trace_categories};
 
 impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
-	/// Returns whether or not the shell is actively executing in a sourced
-	/// script.
+
+
 	pub fn in_sourced_script(&self) -> bool {
 		self.call_stack.in_sourced_script()
 	}
 
-	/// Returns whether or not the shell is actively executing in a shell
-	/// function.
+
+
 	pub fn in_function(&self) -> bool {
 		self.call_stack.in_function()
 	}
 
-	/// Updates the shell's internal tracking state to reflect that a new
-	/// interactive session is being started.
+
+
 	pub fn start_interactive_session(&mut self) -> Result<(), error::Error> {
 		self.call_stack.push_interactive_session();
 		Ok(())
 	}
 
-	/// Updates the shell's internal tracking state to reflect that the current
-	/// interactive session is ending.
+
+
 	pub fn end_interactive_session(&mut self) -> Result<(), error::Error> {
 		if self
 			.call_stack
@@ -38,14 +38,14 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Updates the shell's internal tracking state to reflect that command
-	/// string mode is being started.
+
+
 	pub fn start_command_string_mode(&mut self) {
 		self.call_stack.push_command_string();
 	}
 
-	/// Updates the shell's internal tracking state to reflect that command
-	/// string mode is ending.
+
+
 	pub fn end_command_string_mode(&mut self) -> Result<(), error::Error> {
 		if self
 			.call_stack
@@ -72,28 +72,28 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		self.call_stack.pop();
 	}
 
-	/// Acquires a block on trap delivery, preventing traps from being delivered
-	/// until the block is released. Multiple blocks may be acquired, and trap
-	/// delivery will remain suppressed until all blocks have been released.
+
+
+
 	pub(crate) const fn acquire_trap_delivery_block(&mut self) {
 		self.call_stack.acquire_trap_delivery_block();
 	}
 
-	/// Releases a block on trap delivery; note that trap delivery will remain
-	/// suppressed until all blocks have been released.
+
+
 	pub(crate) const fn release_trap_delivery_block(&mut self) {
 		self.call_stack.release_trap_delivery_block();
 	}
 
-	/// Updates the shell's internal tracking state to reflect that a new shell
-	/// function is being entered.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function being entered.
-	/// * `function` - The function being entered.
-	/// * `args` - The arguments being passed to the function.
-	/// * `_params` - Current execution parameters.
+
+
+
+
+
+
+
+
+
 	pub(crate) fn enter_function(
 		&mut self,
 		name: &str,
@@ -119,8 +119,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Updates the shell's internal tracking state to reflect that the shell
-	/// has exited the top-most function on its call stack.
+
+
 	pub(crate) fn leave_function(&mut self) -> Result<(), error::Error> {
 		self.env.pop_scope(env::EnvironmentScope::Local)?;
 
@@ -141,16 +141,16 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Returns the *current* positional arguments for the shell ($1 and beyond).
-	/// Influenced by the current call stack.
+
+
 	pub fn current_shell_args(&self) -> &[String] {
 		for frame in self.call_stack.iter() {
 			match frame.frame_type {
-				// Function calls always shadow positional parameters.
+
 				crate::callstack::FrameType::Function(..) => return &frame.args,
-				// Executed scripts always shadow positional parameters.
+
 				_ if frame.frame_type.is_run_script() => return &frame.args,
-				// Sourced scripts shadow positional parameters if they have arguments.
+
 				_ if frame.frame_type.is_sourced_script() && !frame.args.is_empty() => {
 					return &frame.args;
 				},
@@ -161,16 +161,16 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		self.args.as_slice()
 	}
 
-	/// Returns a mutable reference to *current* positional parameters for the
-	/// shell ($1 and beyond).
+
+
 	pub fn current_shell_args_mut(&mut self) -> &mut Vec<String> {
 		for frame in self.call_stack.iter_mut() {
 			match frame.frame_type {
-				// Function calls always shadow positional parameters.
+
 				crate::callstack::FrameType::Function(..) => return &mut frame.args,
-				// Executed scripts always shadow positional parameters.
+
 				_ if frame.frame_type.is_run_script() => return &mut frame.args,
-				// Sourced scripts shadow positional parameters if they have arguments.
+
 				_ if frame.frame_type.is_sourced_script() && !frame.args.is_empty() => {
 					return &mut frame.args;
 				},

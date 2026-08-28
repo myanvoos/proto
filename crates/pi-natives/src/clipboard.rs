@@ -1,9 +1,3 @@
-//! Clipboard utilities backed by arboard.
-//!
-//! Provides text copy and image read support on Linux and macOS.
-//! Performs text copy synchronously so macOS writes run on the caller thread.
-//! This avoids worker-thread `AppKit` pasteboard warnings in CLI contexts.
-
 use std::io::Cursor;
 
 use arboard::{Clipboard, Error as ClipboardError, ImageData};
@@ -13,12 +7,10 @@ use napi_derive::napi;
 
 use crate::{js, task};
 
-/// Clipboard image payload encoded as PNG bytes.
 #[napi(object)]
 pub struct ClipboardImage {
-	/// PNG-encoded image bytes.
-	pub data:      Uint8Array,
-	/// MIME type for the encoded image payload.
+	pub data: Uint8Array,
+
 	pub mime_type: String,
 }
 
@@ -45,31 +37,11 @@ fn rgba_to_png(buffer: RgbaImage) -> Result<Vec<u8>> {
 	Ok(output)
 }
 
-/// Copy plain text to the system clipboard.
-///
-/// # Parameters
-/// - `text`: UTF-8 text to place on the clipboard.
-///
-/// # Errors
-/// Returns an error if clipboard access fails.
 #[napi]
 pub fn copy_to_clipboard(text: JsString) -> Result<()> {
 	set_clipboard_text(&js::utf8(text)?)
 }
 
-/// Linux: keep a single `arboard::Clipboard` alive for the whole process.
-///
-/// X11 (and Wayland) clipboards are owner-based: the process that set the
-/// selection must stay alive and answer `SelectionRequest` events, otherwise
-/// the contents vanish the moment the owner goes away. arboard serves those
-/// requests from a global background thread that only lives as long as a
-/// `Clipboard` instance exists — so creating a throwaway `Clipboard` per copy
-/// (which is then dropped) tears that thread down immediately and leaves the
-/// X11 clipboard empty even while our process keeps running (issue #2075).
-/// Holding one instance for the lifetime of the process keeps that owner thread
-/// serving, without shelling out to `xclip`/`wl-copy`. Wayland is unaffected
-/// (`wl-clipboard-rs` forks its own serving process) but sharing the instance
-/// is harmless there.
 #[cfg(target_os = "linux")]
 fn set_clipboard_text(text: &str) -> Result<()> {
 	use std::sync::OnceLock;
@@ -93,10 +65,6 @@ fn set_clipboard_text(text: &str) -> Result<()> {
 	Ok(())
 }
 
-/// macOS: the OS retains clipboard contents after the writing process
-/// exits, so a transient `Clipboard` is sufficient. Keeping the write on the
-/// calling thread also avoids worker-thread `AppKit` pasteboard warnings on
-/// macOS.
 #[cfg(not(target_os = "linux"))]
 fn set_clipboard_text(text: &str) -> Result<()> {
 	let mut clipboard = Clipboard::new()
@@ -107,12 +75,6 @@ fn set_clipboard_text(text: &str) -> Result<()> {
 	Ok(())
 }
 
-/// Read an image from the system clipboard.
-///
-/// Returns `Ok(None)` when no image data is available.
-///
-/// # Errors
-/// Returns an error if clipboard access fails or image encoding fails.
 #[napi]
 pub fn read_image_from_clipboard() -> task::Promise<Option<ClipboardImage>> {
 	task::blocking("clipboard.read_image", (), move |_| -> Result<Option<ClipboardImage>> {

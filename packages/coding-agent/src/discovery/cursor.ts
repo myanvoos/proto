@@ -1,19 +1,3 @@
-/**
- * Cursor Provider
- *
- * Loads configuration from Cursor's config directories.
- * Priority: 50 (tool-specific provider)
- *
- * Sources:
- * - User: ~/.cursor
- * - Project: .cursor/ (cwd only)
- *
- * Capabilities:
- * - mcps: From mcp.json with mcpServers key
- * - rules: From rules/*.mdc files with MDC frontmatter (description, globs, alwaysApply)
- * - settings: From settings.json if present
- */
-
 import { tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
 import { readFile } from "../capability/fs";
@@ -35,10 +19,6 @@ import {
 const PROVIDER_ID = "cursor";
 const DISPLAY_NAME = "Cursor";
 const PRIORITY = 50;
-
-// =============================================================================
-// MCP Servers
-// =============================================================================
 
 function parseMCPServers(
 	content: string,
@@ -87,8 +67,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 
 	const projectContentPromise = projectPath ? readFile(projectPath) : Promise.resolve(null);
 
-	// Load project entries before user entries so a project `enabled: false`
-	// claims its dedupe key before a same-named user server can survive (#7654).
 	const projectContent = await projectContentPromise;
 	if (projectContent && projectPath) {
 		const result = parseMCPServers(projectContent, projectPath, "project");
@@ -104,10 +82,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Rules
-// =============================================================================
 
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const items: Rule[] = [];
@@ -144,10 +118,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 function transformMDCRule(name: string, content: string, path: string, source: SourceMeta): Rule {
 	return buildRuleFromMarkdown(name, content, path, source, { stripNamePattern: /\.(mdc|md)$/ });
 }
-
-// =============================================================================
-// Settings
-// =============================================================================
 
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const items: Settings[] = [];
@@ -193,10 +163,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider(mcpCapability.id, {
 	id: PROVIDER_ID,

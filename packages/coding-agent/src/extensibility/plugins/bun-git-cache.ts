@@ -44,7 +44,6 @@ async function runBunCommand(command: string[], cwd: string): Promise<CommandRes
 	return { exitCode, stdout, stderr };
 }
 
-/** Fetches current heads and tags into Bun's matching cached bare clone before a plugin update. */
 export async function refreshBunGitCache(source: GitSource, cwd: string): Promise<void> {
 	const cacheResult = await runBunCommand(["bun", "pm", "cache"], cwd);
 	if (cacheResult.exitCode !== 0) {

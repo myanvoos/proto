@@ -1,10 +1,3 @@
-/**
- * Config CLI command handlers.
- *
- * Handles `proto config <command>` subcommands for managing settings.
- * Uses the settings schema as the source of truth for available settings.
- */
-
 import { BINARY_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import {
@@ -23,10 +16,6 @@ import { SETTINGS_SCHEMA } from "../config/settings-schema";
 import { theme } from "../modes/theme/theme";
 import { initXdg } from "./commands/init-xdg";
 
-// =============================================================================
-// Types
-// =============================================================================
-
 export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg";
 
 export interface ConfigCommandArgs {
@@ -37,9 +26,6 @@ export interface ConfigCommandArgs {
 		json?: boolean;
 	};
 }
-// =============================================================================
-// Setting Filtering
-// =============================================================================
 
 type CliSettingDef = {
 	path: SettingPath;
@@ -50,10 +36,8 @@ type CliSettingDef = {
 
 const ALL_SETTING_PATHS = Object.keys(SETTINGS_SCHEMA) as SettingPath[];
 
-/** Printed instead of a credential value in human output only. */
 const REDACTED = "********";
 
-/** Find setting definition by path */
 function findSettingDef(path: string): CliSettingDef | undefined {
 	if (!(path in SETTINGS_SCHEMA)) return undefined;
 	const key = path as SettingPath;
@@ -66,21 +50,12 @@ function findSettingDef(path: string): CliSettingDef | undefined {
 	};
 }
 
-/** Get available values for a setting */
 function getSettingValues(def: CliSettingDef): readonly string[] | undefined {
 	if (def.type === "enum") {
 		return getEnumValues(def.path);
 	}
 	return undefined;
 }
-
-// =============================================================================
-// Argument Parser
-// =============================================================================
-
-// =============================================================================
-// Value Formatting
-// =============================================================================
 
 function formatValue(value: unknown): string {
 	if (value === undefined || value === null) {
@@ -123,10 +98,6 @@ function getTypeDisplay(def: CliSettingDef): string {
 			return "(string)";
 	}
 }
-
-// =============================================================================
-// Schema-Driven Value Parsing
-// =============================================================================
 
 function parseAndSetValue(path: SettingPath, rawValue: string): void {
 	const schemaType = getType(path);
@@ -189,10 +160,6 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 	settings.set(path, parsedValue as SettingValue<typeof path>);
 }
 
-// =============================================================================
-// Command Handlers
-// =============================================================================
-
 export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
 	await Settings.init();
 
@@ -234,15 +201,6 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 	const defs = ALL_SETTING_PATHS.map(path => findSettingDef(path)).filter((def): def is CliSettingDef => !!def);
 
 	if (flags.json) {
-		// A redacted entry omits `value` and says so, rather than substituting a
-		// placeholder string: a consumer cannot tell a stand-in from a real value
-		// and could write it back as the credential.
-		//
-		// Redaction is driven by the value, not by classification alone. Marking an
-		// unset credential as redacted would report every fresh install as having
-		// one configured, which leaks the opposite of what redaction is for. The
-		// settings panel persists "" when a credential is cleared and renders that
-		// as unset; the same semantics apply here (credentials are all strings).
 		const result: Record<string, { value?: unknown; redacted?: true; type: string; description: string }> = {};
 		for (const def of defs) {
 			const value = settings.get(def.path);
@@ -274,11 +232,6 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 	for (const group of sortedGroups) {
 		console.log(chalk.bold.blue(`[${group}]`));
 		for (const def of groups[group]) {
-			// `list` dumps every value without anyone asking for a specific
-			// credential, so redact here. `get <path>` stays an explicit
-			// single-value request and is left alone. An unset or cleared ("")
-			// credential keeps its ordinary rendering: masking it would imply one
-			// is configured.
 			const value = settings.get(def.path);
 			const valueStr = isCredential(def.path) && value ? REDACTED : formatValue(value);
 			const typeStr = getTypeDisplay(def);
@@ -377,7 +330,3 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 function handlePath(): void {
 	console.log(getAgentDir());
 }
-
-// =============================================================================
-// Help
-// =============================================================================

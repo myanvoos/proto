@@ -1,7 +1,7 @@
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-/// Directly invokes a built-in, without going through typical search order.
+
 #[derive(Default, Parser)]
 pub(crate) struct BuiltinCommand {
 	#[clap(skip)]

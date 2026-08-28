@@ -1,10 +1,3 @@
-/**
- * Fleet launch half — supervision of project-scoped long-running processes
- * (dev servers, watchers, debuggers, REPLs) through the shared daemon broker.
- * Fleet ops map 1:1 onto broker operations; the fleet's `ps` op is the broker's
- * `list`, and `send`/`wait` route here when they carry a process `name`.
- */
-
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
@@ -109,7 +102,6 @@ function registerCompletionSink(
 	};
 }
 
-/** Broker-facing launch parameters; the fleet adapts its `ps` op to `list` before calling in. */
 export interface LaunchParams {
 	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe";
 	name?: string;
@@ -148,23 +140,21 @@ const KEY_INPUT: Record<string, string> = {
 	LEFT: "\u001b[D",
 };
 
-/** Terminal daemon lifecycle states — the process is no longer running. */
 const TERMINAL_STATES: Partial<Record<DaemonState, true>> = { exited: true, failed: true };
 
-/** Structured launch state retained for compact TUI rendering. */
 export interface LaunchToolDetails {
 	op: LaunchParams["op"];
 	daemon?: DaemonSnapshot;
 	daemons?: DaemonSnapshot[];
 	cursor?: number;
 	timedOut?: boolean;
-	/** logs: daemon lifecycle state at read time. */
+
 	state?: DaemonState;
-	/** logs: virtual terminal rows for display; model-facing content remains sanitized text. */
+
 	terminalRows?: string[];
-	/** wait: output line that satisfied the pattern. */
+
 	matched?: string;
-	/** describe: immutable launch spec backing the command/cwd detail lines. */
+
 	spec?: DaemonSpec;
 }
 
@@ -270,11 +260,6 @@ function daemonLabel(daemon: DaemonSnapshot): string {
 	)} restarts=${daemon.restartCount}${daemon.detached ? " detached" : daemon.persist ? " persistent" : ""}`;
 }
 
-/**
- * Human sentences for the readiness conditions still unmet, e.g.
- * `port 5173 on 127.0.0.1 never accepted connections`. `ready` (from the start
- * params) adds the concrete pattern/port; absent it falls back to generic labels.
- */
 function readyPendingSummary(daemon: DaemonSnapshot, ready?: LaunchParams["ready"]): string[] {
 	const parts: string[] = [];
 	for (const condition of daemon.readyPending ?? []) {
@@ -374,7 +359,6 @@ async function toolDetails(result: DaemonRpcResult): Promise<LaunchToolDetails> 
 	}
 }
 
-/** Run one broker operation for the calling session's project. */
 export async function executeLaunch(
 	session: ToolSession,
 	params: LaunchParams,
@@ -429,11 +413,6 @@ export async function executeLaunch(
 	}
 }
 
-// =============================================================================
-// TUI Renderer (launch half)
-// =============================================================================
-
-/** Args shape visible to the renderer, possibly mid-stream (every field optional). */
 export type LaunchRenderArgs = Partial<Omit<LaunchParams, "op">> & { op?: string };
 
 function stateColor(state: DaemonState): ThemeColor {
@@ -450,7 +429,6 @@ function stateColor(state: DaemonState): ThemeColor {
 	}
 }
 
-/** Compact `state · pid · uptime` fragments for the status-line meta slot. */
 function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
 	const meta = [theme.fg(stateColor(daemon.state), daemon.state)];
 	if (daemon.readyPending?.length) meta.push(theme.fg("warning", `waiting on ${daemon.readyPending.join("+")}`));
@@ -467,7 +445,6 @@ function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
 	return meta;
 }
 
-/** Op-specific call context (command line, log filters, wait condition, send payload). */
 function callMeta(args: LaunchRenderArgs): string[] {
 	const meta: string[] = [];
 	switch (args.op) {
@@ -490,7 +467,6 @@ function callMeta(args: LaunchRenderArgs): string[] {
 	return meta.map(entry => previewLine(replaceTabs(entry), TRUNCATE_LENGTHS.SHORT));
 }
 
-/** Pending-call frame for launch ops; consumes the spinner while the broker call is live. */
 export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOptions, theme: Theme): Component {
 	const target = args.name ?? args.application;
 	const header = renderStatusLine(
@@ -506,7 +482,6 @@ export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOp
 	return new Text(header, 0, 0);
 }
 
-/** Result frame: one status header per op, meta from structured details, capped body lines. */
 export function launchRenderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: LaunchToolDetails; isError?: boolean },
 	options: RenderResultOptions,
@@ -593,7 +568,7 @@ export function launchRenderResult(
 				if (details?.state) meta.push(theme.fg(stateColor(details.state), details.state));
 				if (details?.cursor !== undefined) meta.push(`cursor ${details.cursor}`);
 				if (details?.timedOut) meta.push(theme.fg("warning", "follow timed out"));
-				// Strip the trailing `[name: state; cursor=N]` status suffix `toolContent` appends.
+
 				const logText = text.replace(/\n?\[[^\n]*\]$/, "").trimEnd();
 				const terminalRows = details?.terminalRows;
 				if (terminalRows) {

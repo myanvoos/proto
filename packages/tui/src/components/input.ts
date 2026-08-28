@@ -21,31 +21,24 @@ interface InputState {
 	cursor: number;
 }
 
-/**
- * Input component - single-line text input with horizontal scrolling
- */
 export class Input implements Component, Focusable {
 	#value: string = "";
-	#cursor: number = 0; // Cursor position in the value
+	#cursor: number = 0;
 	#useTerminalCursor = false;
-	/** Rendered before the editable area; set to "" for chrome-less embedding. */
+
 	prompt = "> ";
-	/** Render the editable value as bullets while retaining the real value internally. */
+
 	mask = false;
 	onSubmit?: (value: string) => void;
 	onEscape?: () => void;
 
-	/** Focusable interface - set by TUI when focus changes */
 	focused: boolean = false;
 
-	// Bracketed paste mode buffering
 	#pasteHandler = new BracketedPasteHandler();
 
-	// Kill ring for Emacs-style kill/yank operations
 	#killRing = new KillRing();
 	#lastAction: "kill" | "yank" | "type-word" | null = null;
 
-	// Undo support
 	#undoStack: InputState[] = [];
 
 	getValue(): string {
@@ -54,7 +47,7 @@ export class Input implements Component, Focusable {
 
 	setValue(value: string): void {
 		this.#value = value;
-		// Callers seed or replace the value wholesale; typing continues at the end.
+
 		this.#cursor = value.length;
 	}
 
@@ -67,7 +60,6 @@ export class Input implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		// Handle bracketed paste mode
 		const paste = this.#pasteHandler.process(data);
 		if (paste.handled) {
 			if (paste.pasteContent !== undefined) {
@@ -81,25 +73,21 @@ export class Input implements Component, Focusable {
 
 		const kb = getKeybindings();
 
-		// Escape/Cancel
 		if (kb.matches(data, "tui.select.cancel")) {
 			if (this.onEscape) this.onEscape();
 			return;
 		}
 
-		// Undo
 		if (kb.matches(data, "tui.editor.undo")) {
 			this.#undo();
 			return;
 		}
 
-		// Submit
 		if (kb.matches(data, "tui.input.submit") || data === "\n") {
 			if (this.onSubmit) this.onSubmit(this.#value);
 			return;
 		}
 
-		// Deletion
 		if (kb.matches(data, "tui.editor.deleteCharBackward")) {
 			this.#handleBackspace();
 			return;
@@ -130,7 +118,6 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		// Kill ring actions
 		if (kb.matches(data, "tui.editor.yank")) {
 			this.#yank();
 			return;
@@ -140,7 +127,6 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		// Cursor movement
 		if (kb.matches(data, "tui.editor.cursorLeft")) {
 			this.#lastAction = null;
 			if (this.#cursor > 0) {
@@ -185,22 +171,19 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		// Regular character input, including Kitty CSI-u text-producing sequences.
 		const printableText = extractPrintableText(data);
 		if (printableText) {
 			this.#insertCharacter(printableText);
 		}
 	}
 
-	/** Apply terminal paste semantics to text from non-bracketed paste transports
-	 *  (e.g. kitty's OSC 5522 enhanced clipboard read). Mirrors `Editor.pasteText`. */
 	pasteText(text: string): void {
 		this.#handlePaste(text);
 	}
 
 	#insertCharacter(text: string): void {
 		const isWordChunk = [...segmenter.segment(text)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
-		// Undo coalescing: consecutive word typing coalesces into one undo unit.
+
 		if (!isWordChunk || this.#lastAction !== "type-word") {
 			this.#pushUndo();
 		}
@@ -275,7 +258,6 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		// Save state before cursor movement (moveWordBackwards resets lastAction).
 		const wasKill = this.#lastAction === "kill";
 		this.#pushUndo();
 
@@ -297,7 +279,6 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
-		// Save state before cursor movement (moveWordForwards resets lastAction).
 		const wasKill = this.#lastAction === "kill";
 		this.#pushUndo();
 
@@ -377,39 +358,19 @@ export class Input implements Component, Focusable {
 		this.#lastAction = null;
 		this.#pushUndo();
 
-		// Clean the pasted text — decode tmux's re-encoded control bytes (both
-		// extended-keys formats, e.g. Ctrl+J → "\n") back to literal bytes so the escape
-		// tail does not leak in, remove newlines/carriage returns, expand tabs, NFC-normalize,
-		// then strip any remaining control bytes. The decoder can synthesize Ctrl+A..Ctrl+Z
-		// (0x01..0x1A) from a paste, and a single-line value must hold none of them — newlines
-		// are already gone and tabs are already spaces by the time the C0/DEL strip runs.
-		//
-		// NFC normalization rationale: macOS Finder drag-drops file paths in NFD
-		// (Conjoining Jamo, U+1100..U+11FF). `Bun.stringWidth` counts each
-		// conjoining jamo as a separate cell — a Korean syllable like `화` is
-		// 1 char and 2 cells in NFC, but 2 chars and 3 cells in NFD (ᄒ=2 cells
-		// + ᅪ=1 cell). The terminal renders the NFD sequence as a single
-		// combined syllable (2 cells visible), so the width mismatch shows up
-		// as cursor drift past the visible filename — N×~1.5 cells for a path
-		// with N Korean syllables. NFC normalization at paste time stores the
-		// value in the same form everything else in the codebase assumes.
 		const cleanText = replaceTabs(
 			decodeReencodedPasteControls(pastedText).replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, ""),
 		)
 			.normalize("NFC")
 			.replace(/[\x00-\x1F\x7F]/g, "");
 
-		// Insert at cursor position
 		this.#value = this.#value.slice(0, this.#cursor) + cleanText + this.#value.slice(this.#cursor);
 		this.#cursor += cleanText.length;
 	}
 
-	invalidate(): void {
-		// No cached state to invalidate currently
-	}
+	invalidate(): void {}
 
 	render(width: number): readonly string[] {
-		// Calculate visible window
 		const prompt = this.prompt;
 		const availableWidth = width - visibleWidth(prompt);
 
@@ -418,7 +379,7 @@ export class Input implements Component, Focusable {
 		}
 
 		let cursorIndex = this.#cursor;
-		// Ensure we always have a grapheme to invert at the cursor (space at end).
+
 		let visibleValue = this.#value;
 		if (this.mask) {
 			const graphemes = [...segmenter.segment(this.#value)];
@@ -430,7 +391,6 @@ export class Input implements Component, Focusable {
 		const totalCols = visibleWidth(displayValue);
 		const cursorCols = visibleWidth(displayValue.slice(0, cursorIndex));
 
-		// Width of the grapheme at the cursor, for ensuring it fits in the viewport.
 		const cursorIter = segmenter.segment(displayValue.slice(cursorIndex))[Symbol.iterator]();
 		const cursorG = cursorIter.next().value?.segment ?? " ";
 		const cursorGWidth = visibleWidth(cursorG);
@@ -441,7 +401,6 @@ export class Input implements Component, Focusable {
 			const half = Math.floor(availableWidth / 2);
 			startCol = Math.max(0, Math.min(maxStart, cursorCols - half));
 
-			// Ensure the cursor grapheme is inside the viewport (and fits fully if wide).
 			const maxCursorRel = Math.max(0, availableWidth - cursorGWidth);
 			const cursorRel = cursorCols - startCol;
 			if (cursorRel > maxCursorRel) {
@@ -454,7 +413,6 @@ export class Input implements Component, Focusable {
 		let cursorDisplay = prefixText.length;
 		cursorDisplay = Math.max(0, Math.min(cursorDisplay, visibleText.length));
 
-		// Build the visible line and insert the cursor marker at the buffer cursor.
 		const graphemes = [...segmenter.segment(visibleText.slice(cursorDisplay))];
 		const cursorGrapheme = graphemes[0];
 
@@ -462,11 +420,9 @@ export class Input implements Component, Focusable {
 		const atCursor = cursorGrapheme?.segment ?? "";
 		const afterCursor = visibleText.slice(cursorDisplay + atCursor.length);
 
-		// Hardware cursor marker (zero-width, emitted before the cursor cell for IME positioning)
 		const marker = this.focused ? CURSOR_MARKER : "";
 		const cursorChar = this.#useTerminalCursor ? atCursor : `\x1b[7m${atCursor || " "}\x1b[27m`;
 
-		// Clamp only the trailing text (measured in terminal cells), keeping the cursor marker intact.
 		const beforeWidth = visibleWidth(beforeCursor);
 		const cursorWidth = this.#useTerminalCursor ? visibleWidth(atCursor) : visibleWidth(atCursor || " ");
 		const remainingAfterWidth = Math.max(0, availableWidth - beforeWidth - cursorWidth);

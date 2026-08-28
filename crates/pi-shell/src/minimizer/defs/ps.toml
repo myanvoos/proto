@@ -1,5 +1,5 @@
-# ps aux / -ef: long process listings compact to head+tail with an omitted
-# marker. Short listings (fewer lines than head+tail) pass through unchanged.
+
+
 
 [filters.ps]
 description = "Compact long ps listings"

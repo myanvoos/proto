@@ -1,6 +1,6 @@
-//! `readlink` builtin: print a symbolic link's value or a canonical file name.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -31,7 +31,7 @@ const OPT_ZERO: &str = "zero";
 
 const ARG_FILES: &str = "files";
 
-/// Parsed `readlink` invocation.
+
 pub(crate) struct Readlink {
 	matches: ArgMatches,
 }
@@ -46,8 +46,8 @@ impl Utility for Readlink {
 		let use_zero = self.matches.get_flag(OPT_ZERO);
 		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var("POSIXLY_CORRECT").is_some();
 
-		// GNU readlink -f/-e/-m follows symlinks first and then applies `..`
-		// (physical resolution). Logical mode would collapse `..` first.
+
+
 		let resolve_mode = if self.matches.get_flag(OPT_CANONICALIZE)
 			|| self.matches.get_flag(OPT_CANONICALIZE_EXISTING)
 			|| self.matches.get_flag(OPT_CANONICALIZE_MISSING)
@@ -121,7 +121,7 @@ impl Utility for Readlink {
 	}
 }
 
-/// The `readlink` argument model.
+
 fn app() -> Command {
 	Command::new(Readlink::NAME)
 		.version("0.8.0")
@@ -204,7 +204,7 @@ fn app() -> Command {
 		)
 }
 
-/// Writes a resolved path verbatim, followed by the selected delimiter.
+
 fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> std::io::Result<()> {
 	let bytes = os_bytes(path.as_os_str())
 		.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
@@ -215,7 +215,7 @@ fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> s
 	out.flush()
 }
 
-/// Creates the `readlink` builtin registration.
+
 pub(crate) fn readlink_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Readlink, SE>()
 }

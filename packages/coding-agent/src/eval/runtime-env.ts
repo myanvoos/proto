@@ -1,13 +1,7 @@
-/**
- * Generic interpreter environment-filtering and runtime-resolution helpers
- * shared by the per-language eval runtime modules (jl/runtime, rb/runtime).
- */
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
 
-// Secret-shaped names that must never leak into eval cells even when they fall
-// under a broad allow-prefix.
 const SECRET_KEY_PATTERN = /API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[_-]?KEY|PRIVATE[_-]?KEY/i;
 
 interface EnvFilterOptions {
@@ -16,9 +10,6 @@ interface EnvFilterOptions {
 	allowPrefixes: string[];
 }
 
-/**
- * Creates an environment filter function based on the provided allowlists, denylists, and prefixes.
- */
 export function createEnvFilter(
 	options: EnvFilterOptions,
 ): (env: Record<string, string | undefined>) => Record<string, string | undefined> {
@@ -44,9 +35,6 @@ export function createEnvFilter(
 	};
 }
 
-/**
- * Resolve an explicitly configured interpreter path, expanding `~` to the home directory.
- */
 export function resolveExplicitPath(interpreter: string, cwd: string): string {
 	const expanded =
 		interpreter === "~"
@@ -57,9 +45,6 @@ export function resolveExplicitPath(interpreter: string, cwd: string): string {
 	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
 }
 
-/**
- * Enumerates candidate runtimes in priority order.
- */
 export function enumerateRuntimes<T>(
 	cwd: string,
 	baseEnv: Record<string, string | undefined>,
@@ -75,9 +60,6 @@ export function enumerateRuntimes<T>(
 	return systemPath ? [createRuntime(systemPath, baseEnv)] : [];
 }
 
-/**
- * Resolves the highest-priority runtime. Throws when none exists.
- */
 export function resolveRuntime<T>(
 	cwd: string,
 	baseEnv: Record<string, string | undefined>,

@@ -1,18 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Estimate token usage for rendered coding-agent tool prompt templates.
- *
- * Usage:
- *   bun scripts/tool-prompt-usage.ts
- *   bun scripts/tool-prompt-usage.ts --json
- *   bun scripts/tool-prompt-usage.ts --encoding cl100k_base
- *   bun scripts/tool-prompt-usage.ts packages/coding-agent/src/prompts/tools/read.md
- *
- * The renderer uses representative default settings for conditional templates.
- * Dynamic runtime payloads (background job output, late diagnostics, task result
- * previews, MCP server lists, SSH hosts, custom agents) are sample-sized unless
- * they are bundled static data.
- */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -27,8 +13,6 @@ const DEFAULT_READ_LIMIT = "300";
 const DEFAULT_MAX_LINES = "3000";
 const DEFAULT_MAX_CONCURRENCY = 32;
 
-// Mirrors the task prompt's READ-ONLY badge semantics without importing the
-// whole task tool module just to render a static estimate.
 const READ_ONLY_TOOL_NAMES: Record<string, true> = {
 	ask: true,
 	ast_grep: true,

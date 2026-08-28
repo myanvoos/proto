@@ -1,15 +1,15 @@
-//! Shell patterns
+
 
 use std::{collections::VecDeque, path::Path};
 
 use crate::{error, regex, sys, trace_categories};
 
-/// Represents a piece of a shell pattern.
+
 #[derive(Clone, Debug)]
 pub(crate) enum PatternPiece {
-	/// A pattern that should be interpreted as a shell pattern.
+
 	Pattern(String),
-	/// A literal string that should be matched exactly.
+
 	Literal(String),
 }
 
@@ -30,25 +30,25 @@ fn component_string(components: &[PatternWord], index: usize) -> Option<String> 
 		.map(|component| component.iter().map(|piece| piece.as_str()).collect())
 }
 
-/// Options for filename expansion.
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FilenameExpansionOptions {
 	pub require_dot_in_pattern_to_match_dot_files: bool,
 }
 
-/// Result of a pattern expansion, distinguishing "no glob metacharacters" from
-/// "glob expansion attempted but found no matches".
+
+
 #[derive(Debug, Default)]
 pub(crate) enum PatternExpansionResult {
-	/// No glob metacharacters found; no expansion was attempted.
+
 	#[default]
 	NoGlob,
-	/// Glob expansion was attempted. Contains matching paths (may be empty).
+
 	Expanded(Vec<String>),
 }
 
 impl PatternExpansionResult {
-	/// Returns the expansion results, regardless of variant.
+
 	pub fn into_paths(self) -> Vec<String> {
 		match self {
 			Self::NoGlob => vec![],
@@ -56,13 +56,13 @@ impl PatternExpansionResult {
 		}
 	}
 
-	/// Returns true if glob expansion was attempted but produced no results.
+
 	pub const fn is_unmatched_glob(&self) -> bool {
 		matches!(self, Self::Expanded(paths) if paths.is_empty())
 	}
 }
 
-/// Encapsulates a shell pattern.
+
 #[derive(Clone, Debug)]
 pub struct Pattern {
 	pieces:                   PatternWord,
@@ -107,56 +107,56 @@ impl From<String> for Pattern {
 }
 
 impl Pattern {
-	/// Enables (or disables) extended globbing support for this pattern.
-	///
-	/// # Arguments
-	///
-	/// * `value` - Whether or not to enable extended globbing (extglob).
+
+
+
+
+
 	#[must_use]
 	pub const fn set_extended_globbing(mut self, value: bool) -> Self {
 		self.enable_extended_globbing = value;
 		self
 	}
 
-	/// Enables (or disables) multiline support for this pattern.
-	///
-	/// # Arguments
-	///
-	/// * `value` - Whether or not to enable multiline matching.
+
+
+
+
+
 	#[must_use]
 	pub const fn set_multiline(mut self, value: bool) -> Self {
 		self.multiline = value;
 		self
 	}
 
-	/// Enables (or disables) case-insensitive matching for this pattern.
-	///
-	/// # Arguments
-	///
-	/// * `value` - Whether or not to enable case-insensitive matching.
+
+
+
+
+
 	#[must_use]
 	pub const fn set_case_insensitive(mut self, value: bool) -> Self {
 		self.case_insensitive = value;
 		self
 	}
 
-	/// Returns whether or not the pattern is empty.
+
 	pub fn is_empty(&self) -> bool {
 		self.pieces.iter().all(|p| p.as_str().is_empty())
 	}
 
-	/// Placeholder function that always returns true.
+
 	pub(crate) const fn accept_all_expand_filter(_path: &Path) -> bool {
 		true
 	}
 
-	/// Expands the pattern into a list of matching file paths.
-	///
-	/// # Arguments
-	///
-	/// * `working_dir` - The current working directory, used for relative paths.
-	/// * `path_filter` - Optionally provides a function that filters paths after
-	///   expansion.
+
+
+
+
+
+
+
 	#[expect(clippy::too_many_lines)]
 	pub(crate) fn expand<PF>(
 		&self,
@@ -167,16 +167,16 @@ impl Pattern {
 	where
 		PF: Fn(&Path) -> bool,
 	{
-		// If the pattern has no pieces at all, short-circuit; there's nothing to
-		// expand. Note: we intentionally do NOT short-circuit when pieces are present
-		// but empty (e.g. from a quoted empty string ""); those fall through to the
-		// literal branch below which correctly returns Expanded([""]) instead of
-		// NoGlob, preserving the argument even when nullglob is enabled.
+
+
+
+
+
 		if self.pieces.is_empty() {
 			return Ok(PatternExpansionResult::NoGlob);
 
-		// Similarly, if we're *confident* the pattern doesn't require expansion,
-		// then we know there's a single expansion (before filtering).
+
+
 		} else if !self.pieces.iter().any(|piece| {
 			matches!(piece, PatternPiece::Pattern(_))
 				&& requires_expansion(piece.as_str(), self.enable_extended_globbing)
@@ -186,9 +186,9 @@ impl Pattern {
 			if let Some(filter) = path_filter
 				&& !filter(Path::new(&concatenated))
 			{
-				// No globs, but the literal was filtered out. Return NoGlob
-				// (not Expanded) so that callers don't mistake this for a
-				// failed glob match (which would trigger failglob).
+
+
+
 				return Ok(PatternExpansionResult::NoGlob);
 			}
 
@@ -219,11 +219,11 @@ impl Pattern {
 			}
 		}
 
-		// Check if the path appears to be absolute by inspecting the first components.
-		// On Unix, a leading `/` produces an empty first component. On Windows, a
-		// drive-letter prefix like `c:` is also recognized, and a forward-slash
-		// MSYS/WSL drive alias (`/d/...`, `/mnt/d/...`) must be translated before
-		// `read_dir()` sees the root.
+
+
+
+
+
 		let starts_with_forward_slash = self
 			.pieces
 			.iter()
@@ -255,16 +255,16 @@ impl Pattern {
 		let prefix_to_remove;
 		let mut paths_so_far = if let Some(root) = absolute_root {
 			prefix_to_remove = None;
-			// Skip the component(s) consumed to determine the root.
+
 			drop(components.drain(0..components_to_remove));
 			vec![root]
 		} else {
-			// Build a prefix to remove after glob expansion so results are
-			// returned relative to the working directory. The prefix is
-			// normalized to use `/` separators because `push_path_for_pattern`
-			// also uses `/` on Windows (to avoid `PathBuf::push` drive-letter
-			// semantics) — if we left `\` here, the strip_prefix below would
-			// miss on Windows and leave results as absolute paths.
+
+
+
+
+
+
 			let working_dir_str = working_dir.to_string_lossy();
 			let mut working_dir_str =
 				sys::fs::normalize_path_separators(&working_dir_str).into_owned();
@@ -341,10 +341,10 @@ impl Pattern {
 					return None;
 				}
 
-				// Normalize separators *before* stripping the working-dir
-				// prefix so that `prefix_to_remove` (already normalized to
-				// use `/`) matches paths that may contain a mix of `\` and
-				// `/` on Windows.
+
+
+
+
 				let path_str = path.to_string_lossy();
 				let normalized = sys::fs::normalize_path_separators(&path_str);
 				let mut path_ref: &str = normalized.as_ref();
@@ -364,14 +364,14 @@ impl Pattern {
 		Ok(PatternExpansionResult::Expanded(results))
 	}
 
-	/// Converts the pattern to a regular expression string.
-	///
-	/// # Arguments
-	///
-	/// * `strict_prefix_match` - Whether or not the pattern should strictly
-	///   match the beginning of the string.
-	/// * `strict_suffix_match` - Whether or not the pattern should strictly
-	///   match the end of the string.
+
+
+
+
+
+
+
+
 	pub(crate) fn to_regex_str(
 		&self,
 		strict_prefix_match: bool,
@@ -411,14 +411,14 @@ impl Pattern {
 		Ok(regex_str)
 	}
 
-	/// Converts the pattern to a regular expression.
-	///
-	/// # Arguments
-	///
-	/// * `strict_prefix_match` - Whether or not the pattern should strictly
-	///   match the beginning of the string.
-	/// * `strict_suffix_match` - Whether or not the pattern should strictly
-	///   match the end of the string.
+
+
+
+
+
+
+
+
 	pub(crate) fn to_regex(
 		&self,
 		strict_prefix_match: bool,
@@ -432,22 +432,22 @@ impl Pattern {
 		Ok(re)
 	}
 
-	/// Checks if the pattern exactly matches the given string. An error result
-	/// is returned if the pattern is found to be invalid or malformed
-	/// during processing.
-	///
-	/// # Arguments
-	///
-	/// * `value` - The string to check for a match.
+
+
+
+
+
+
+
 	pub fn exactly_matches(&self, value: &str) -> Result<bool, error::Error> {
 		let re = self.to_regex(true, true)?;
 		Ok(re.is_match(value)?)
 	}
 }
 
-/// Checks whether a string contains glob metacharacters that would trigger
-/// pathname expansion. Delegates to the pattern parser's grammar, which is
-/// the single source of truth for what constitutes a glob metacharacter.
+
+
+
 fn requires_expansion(s: &str, enable_extended_globbing: bool) -> bool {
 	brush_parser::pattern::pattern_has_glob_metacharacters(s, enable_extended_globbing)
 }
@@ -459,13 +459,13 @@ fn pattern_to_regex_str(
 	Ok(brush_parser::pattern::pattern_to_regex_str(pattern, enable_extended_globbing)?)
 }
 
-/// Removes the largest matching prefix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the prefix from.
-/// * `pattern` - The pattern to match.
+
+
+
+
+
+
+
 pub(crate) fn remove_largest_matching_prefix<'a>(
 	s: &'a str,
 	pattern: Option<&Pattern>,
@@ -488,13 +488,13 @@ pub(crate) fn remove_largest_matching_prefix<'a>(
 	Ok(s)
 }
 
-/// Removes the smallest matching prefix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the prefix from.
-/// * `pattern` - The pattern to match.
+
+
+
+
+
+
+
 pub(crate) fn remove_smallest_matching_prefix<'a>(
 	s: &'a str,
 	pattern: Option<&Pattern>,
@@ -515,13 +515,13 @@ pub(crate) fn remove_smallest_matching_prefix<'a>(
 	Ok(s)
 }
 
-/// Removes the largest matching suffix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the suffix from.
-/// * `pattern` - The pattern to match.
+
+
+
+
+
+
+
 pub(crate) fn remove_largest_matching_suffix<'a>(
 	s: &'a str,
 	pattern: Option<&Pattern>,
@@ -539,13 +539,13 @@ pub(crate) fn remove_largest_matching_suffix<'a>(
 	Ok(s)
 }
 
-/// Removes the smallest matching suffix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the suffix from.
-/// * `pattern` - The pattern to match.
+
+
+
+
+
+
+
 pub(crate) fn remove_smallest_matching_suffix<'a>(
 	s: &'a str,
 	pattern: Option<&Pattern>,

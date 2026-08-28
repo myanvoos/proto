@@ -1,15 +1,3 @@
-/**
- * The public `type()` parser and `Type` schema surface — an ArkType-compatible
- * validator with a lazy JIT:
- *
- * - calls 1-2 run the tree-walking interpreter (near-zero setup cost, so
- *   schemas built per-request or validated once stay cheap)
- * - the third call compiles a specialized validator via `new Function` and
- *   swaps it in; hot schemas validate in tens of nanoseconds
- *
- * A schema is a callable: `schema(data)` returns the (possibly morphed)
- * output, or an `OmpErrors` on failure (`result instanceof type.errors`).
- */
 import { compile, compileAllows } from "./compile";
 import { type ErrorConfig, OmpErrors, OmpTypeError, TraversalError } from "./errors";
 import type { InferDef, InferDefIn, InferObjectLiteral, InferObjectLiteralIn, InferString } from "./infer";
@@ -36,7 +24,6 @@ import {
 import { irToJsonSchema, type JsonSchemaOptions } from "./json-schema";
 import { keywordIR, patternIR } from "./keywords";
 
-// `Extract`/`Exclude` in the string DSL need assignability, which is defined here.
 useAssignability(isSubtype);
 
 export interface NarrowErrorInput {
@@ -46,7 +33,6 @@ export interface NarrowErrorInput {
 	readonly relativePath?: readonly PropertyKey[];
 }
 
-/** Context passed to `.narrow()` / `.pipe()` callbacks. */
 export interface NarrowContext {
 	readonly path: readonly PropertyKey[];
 	error(error: string | NarrowErrorInput): OmpErrors;
@@ -54,17 +40,14 @@ export interface NarrowContext {
 	reject(problem: string | NarrowErrorInput): OmpErrors | false;
 }
 
-/** Schema metadata and validation-message overrides accepted by `.configure()`. */
 export interface SchemaConfig extends ErrorConfig {
 	readonly description?: string;
 }
 
-/** Options accepted by `Type.toJsonSchema`. */
 export interface ToJsonSchemaOptions extends JsonSchemaOptions {}
 
 declare const brand: unique symbol;
 
-/** Inference-only nominal brand attached by `.brand(name)`. */
 export type Brand<t, name extends string> = t & { readonly [brand]: name };
 
 interface SchemaInference<out t, i = t> {
@@ -73,7 +56,6 @@ interface SchemaInference<out t, i = t> {
 	readonly inferIn: i;
 }
 
-/** Property descriptor exposed by object schemas and consumed by `.map()`. */
 export interface TypeProperty {
 	readonly kind: "required" | "optional";
 	readonly key: PropertyKey;
@@ -82,18 +64,12 @@ export interface TypeProperty {
 	readonly meta: Readonly<Record<string, unknown>>;
 }
 
-/** Structural node returned by `.select()`. */
 export interface SelectedNode {
 	readonly kind: string;
 	readonly node: IR;
 	readonly unit?: unknown;
 }
 
-/**
- * Standard Schema V1 (https://standardschema.dev) — the cross-library
- * validation interface consumed by tools like @t3-oss/env, tRPC, and
- * Hono validators. Inlined per the spec's recommendation; no dependency.
- */
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
 	readonly "~standard": StandardSchemaV1.Props<Input, Output>;
 }
@@ -135,46 +111,43 @@ export interface StandardJsonSchemaOptions {
 	};
 }
 
-/** A compiled schema: callable validator plus composition methods. */
 export interface Type<out t = unknown, i = t> {
 	(data: unknown): t | OmpErrors;
 	readonly [IR_BRAND]: true;
-	/** Structural IR (base type; runtime steps live in `steps`). */
+
 	readonly ir: IR;
-	/** `.pipe()` / `.narrow()` steps applied after structural validation. */
+
 	readonly hasSteps: boolean;
 	readonly hasDefault: boolean;
 	readonly defaultValue?: unknown;
 	readonly description?: string;
-	/** Canonical ArkType-compatible expression for diagnostics. */
+
 	readonly expression: string;
-	/** Canonical structural node representation. */
+
 	readonly json: unknown;
-	/** Full validate+morph pipeline; identical to calling the schema. */
+
 	readonly run: (data: unknown) => unknown;
-	/** ArkType-compatible inference alias (type-only; undefined at runtime). */
+
 	readonly t: t;
-	/** Scope that parsed this schema (or the ambient Ark-compatible scope). */
+
 	readonly $: TypeScope | { readonly internal: { readonly name: "ark" } };
 
-	/** Inference-only output type (no runtime value). */
 	readonly infer: t;
-	/** Standalone validator for the schema's accepted input. */
+
 	readonly in: FluentType<i>;
-	/** Standalone validator for its known output, or `unknown` after an opaque morph. */
+
 	readonly out: FluentType<t>;
-	/** Inference-only input type (no runtime value). */
+
 	readonly inferIn: i;
 
-	/** Structural + narrow check without running pipes. */
 	allows(data: unknown): data is i;
-	/** Validate and return output, throwing `TraversalError` on failure. */
+
 	assert(data: unknown): t;
-	/** Validate a statically typed input and return its output. */
+
 	from(data: i): t;
-	/** JSON Schema for this schema's structural base. */
+
 	toJsonSchema(options?: ToJsonSchemaOptions): Record<string, unknown>;
-	/** Standard Schema V1 interop (synchronous validation). */
+
 	readonly "~standard": StandardSchemaV1.Props<i, t>;
 }
 
@@ -199,7 +172,7 @@ type NaryAndOutput<definitions extends readonly unknown[]> = definitions extends
 type NaryAndInput<definitions extends readonly unknown[]> = definitions extends readonly []
 	? unknown
 	: SimplifyNary<UnionToIntersection<InferDefIn<definitions[number]>>>;
-// biome-ignore lint/complexity/noBannedTypes: generic accumulator default
+
 type ReduceNaryMergeOutput<definitions extends readonly unknown[], result = {}> = definitions extends readonly [
 	infer head,
 	...infer tail,
@@ -207,9 +180,8 @@ type ReduceNaryMergeOutput<definitions extends readonly unknown[], result = {}> 
 	? ReduceNaryMergeOutput<tail, SimplifyNary<MergeTypes<result, InferDef<head>>>>
 	: definitions extends readonly []
 		? result
-		: // biome-ignore lint/complexity/noBannedTypes: empty object fallback
-			{};
-// biome-ignore lint/complexity/noBannedTypes: generic accumulator default
+		: {};
+
 type ReduceNaryMergeInput<definitions extends readonly unknown[], result = {}> = definitions extends readonly [
 	infer head,
 	...infer tail,
@@ -217,8 +189,7 @@ type ReduceNaryMergeInput<definitions extends readonly unknown[], result = {}> =
 	? ReduceNaryMergeInput<tail, SimplifyNary<MergeTypes<result, InferDefIn<head>>>>
 	: definitions extends readonly []
 		? result
-		: // biome-ignore lint/complexity/noBannedTypes: empty object fallback
-			{};
+		: {};
 type NaryMergeOutput<definitions extends readonly unknown[]> = definitions extends readonly []
 	? object
 	: ReduceNaryMergeOutput<definitions>;
@@ -350,12 +321,11 @@ type ObjectMethodsFor<t, i> = [t] extends [never]
 		: [t] extends [object]
 			? ObjectMethods<t & object, i>
 			: unknown;
-/** Callable schema with fluent methods specialized to its output and input. */
+
 export type FluentType<t = unknown, i = t> = Type<t, i> & FluentMethods<t, i> & ObjectMethodsFor<t, i>;
 
 type FnDefinition = Def | SchemaInference<unknown, unknown>;
 
-/** Function returned by `type.fn`: arguments and an optional return are validated at every call. */
 export type TypedFunction<
 	parameters extends readonly unknown[] = readonly unknown[],
 	returns = unknown,
@@ -399,7 +369,6 @@ type FnFactory<definitions extends readonly FnDefinition[]> = <result>(
 	implementation: (...arguments_: InferFnParameters<definitions>) => InferFnReturn<definitions, result>,
 ) => TypedFunction<InferFnParameters<definitions>, InferFnReturn<definitions, result>, DeclaredFnReturn<definitions>>;
 
-/** Parses function parameter schemas and validates calls and declared returns. */
 export interface FnParser {
 	<const definitions extends readonly FnDefinition[]>(...definitions: definitions): FnFactory<definitions>;
 	raw<const definitions extends readonly FnDefinition[]>(...definitions: definitions): FnFactory<definitions>;
@@ -407,12 +376,12 @@ export interface FnParser {
 interface Step {
 	kind: "pipe" | "narrow" | "filter";
 	fn: (data: unknown, ctx: NarrowContext) => unknown;
-	/** Convert thrown callback exceptions into validation errors. */
+
 	try?: boolean;
-	/** Output IR when the step validates its output; drives public `.out`. */
+
 	out?: IR;
 }
-/** Runtime constructor-like value used by ArkType-compatible `instanceof Type` checks. */
+
 export const Type = Object.defineProperty(function Type(): void {}, Symbol.hasInstance, {
 	value: (value: unknown): boolean =>
 		(typeof value === "function" || (typeof value === "object" && value !== null)) && IR_BRAND in value,
@@ -572,9 +541,9 @@ interface InternalType
 	ir: IR;
 	hasSteps: boolean;
 	hasDefault: boolean;
-	/** Output IR of the last `.to(target)` step, when any. */
+
 	stepOut?: IR;
-	/** True when the last pipe step is bare — output shape statically unknown. */
+
 	opaqueOutput?: boolean;
 	defaultValue?: unknown;
 	defaultOutput?: unknown;
@@ -586,7 +555,6 @@ interface InternalType
 	run: Validator;
 }
 
-/** Calls before the JIT compiles a schema (first two run the interpreter). */
 const JIT_THRESHOLD = 3;
 
 function metaOf(schema: InternalType): TypeMeta {
@@ -701,7 +669,6 @@ function normalizeDefaults(ir: IR, seen = new WeakSet<object>()): void {
 	}
 }
 
-/** Emitted for `io: 'output'` when a bare pipe makes the output unknowable. */
 const OPAQUE_OUTPUT_IR: IR = { k: "unknown" };
 const typeMethods = {
 	describe(this: InternalType, description: string): InternalType {
@@ -1001,7 +968,7 @@ const typeMethods = {
 		}
 		if (!needsPredicates) {
 			const allows = compileAllows(this.ir);
-			// Shadow the shared dispatcher once this schema has its specialized check.
+
 			this.allows = allows;
 			return allows(data);
 		}
@@ -1140,9 +1107,6 @@ Object.defineProperties(typeMethods, {
 	},
 });
 
-// Share the fluent surface without per-schema method allocations or copies.
-// Function.prototype remains in the chain, except bind is intentionally hidden
-// so generic tool wrappers recognize callable schemas rather than rebinding them.
 Object.setPrototypeOf(typeMethods, Function.prototype);
 Object.defineProperty(typeMethods, "bind", { value: undefined });
 
@@ -1265,11 +1229,6 @@ function makeType(ir: IR, steps: Step[], meta: TypeMeta): unknown {
 		}
 	}
 
-	// Root defaults materialize for absent input: `schema(undefined)` and the
-	// Standard Schema boundary (`~standard.validate(undefined)`) both yield the
-	// default instead of a base-IR rejection. Factories run per call; static
-	// defaults reuse the precomputed validated output (mutable statics are
-	// rejected at `.default()` time).
 	if (meta.hasDefault === true) {
 		const inner = callable;
 		const value = meta.defaultValue;
@@ -1467,8 +1426,7 @@ function assertDeterminateMorphUnions(ir: IR, seen = new Set<IR>()): void {
 				) {
 					continue;
 				}
-				// Unwrap one alias level eagerly: the disjointness probe relies on
-				// intersect() throwing, and deferred alias intersections resolve lazily.
+
 				let leftInput = projectIO(left, "in");
 				let rightInput = projectIO(right, "in");
 				if (leftInput.k === "alias") leftInput = leftInput.resolve();
@@ -1970,17 +1928,12 @@ function intersectTuples(left: TupleIR, right: TupleIR): IR {
 
 const kIntersections = Symbol("omptype.intersections");
 
-/** Deferred alias-pair intersections cached on the left node; cyclic references resolve to one node. */
 interface AliasIntersections {
 	[kIntersections]?: WeakMap<IR, IR>;
 }
 
-/** Intersect two IR nodes, rejecting statically disjoint domains. */
 function intersect(a: IR, b: IR): IR {
 	if (a.k === "alias" || b.k === "alias") {
-		// Defer through a lazy alias so cyclic references terminate: revisiting
-		// the same pair while it is being resolved returns the same node instead
-		// of recursing forever.
 		const target = a as IR & AliasIntersections;
 		target[kIntersections] ??= new WeakMap<IR, IR>();
 		const cache = target[kIntersections];
@@ -2143,7 +2096,6 @@ function intersectResolved(a: IR, b: IR): IR {
 	return { k: "intersection", members };
 }
 
-/** Reduce parsed unions/intersections to their observable semantic form. */
 function normalizeIR(ir: IR): IR {
 	switch (ir.k) {
 		case "intersection": {
@@ -2485,14 +2437,12 @@ interface GenericMeta {
 
 const GENERIC_META = Symbol("omptype.generic");
 
-/** Callable runtime generic returned by `type("<t>", def)` and `type.generic(...)`. */
 export type Generic = (...arguments_: readonly unknown[]) => BaseType;
 
 interface RuntimeGeneric extends Generic {
 	readonly [GENERIC_META]: GenericMeta;
 }
 
-/** Schema arguments passed to a callback-bodied runtime generic. */
 export interface GenericArguments {
 	readonly [name: string]: BaseType;
 }
@@ -2589,8 +2539,6 @@ function parseGenericArgument(definition: unknown, outer?: AliasResolver): IR {
 		resolve.hasGeneric = outer.hasGeneric;
 		resolve.generic = outer.generic;
 	} else {
-		// The retry only exists to serve "this"; parses of this-free member
-		// strings inside the definition may still share the string cache.
 		markThisOnlyResolver(resolve);
 	}
 	root = parseDef(definition, resolve);
@@ -2680,53 +2628,41 @@ export function type<const input, const output>(
 export function type<const expression extends readonly unknown[]>(
 	...definition: expression
 ): FluentType<InferDef<expression>, InferDefIn<expression>>;
-export function type(first?: unknown): FluentType<unknown> | Generic {
-	// biome-ignore lint/complexity/noArguments: Avoid allocating a rest array for the dominant single-definition call.
-	const count = arguments.length;
+export function type(...args: unknown[]): FluentType<unknown> | Generic {
+	const count = args.length;
+	const first = args[0];
 	if (count === 2 && typeof first === "string" && first.trimStart().startsWith("<")) {
-		// biome-ignore lint/complexity/noArguments: The generic path reads its second positional argument without a rest array.
-		return createRuntimeGeneric(parseGenericParameters(first), arguments[1]);
+		return createRuntimeGeneric(parseGenericParameters(first), args[1]);
 	}
 	let definition: unknown = first;
 	if (count !== 1) {
-		const expression: unknown[] = new Array(count);
-		for (let index = 0; index < count; index++) {
-			// biome-ignore lint/complexity/noArguments: Only multi-part expressions pay to materialize an argument array.
-			expression[index] = arguments[index];
-		}
-		definition = expression;
+		definition = args;
 	}
 	return makeType<unknown>(parseGenericArgument(definition), EMPTY_STEPS, EMPTY_META);
 }
 
-/** String keyword with a parser that morphs validated text to another output. */
 export interface ParsedStringKeyword<parsed> extends FluentType<string> {
 	readonly parse: FluentType<parsed, string>;
 }
 
-/** Morphing string keyword paired with its non-morphing preformatted validator. */
 export interface PreformattedKeyword extends FluentType<string, string> {
 	readonly preformatted: FluentType<string>;
 }
 
-/** Base64 keyword with its URL-safe alphabet variant. */
 export interface Base64Keyword extends FluentType<string> {
 	readonly url: FluentType<string>;
 }
 
-/** Date-string keyword family. */
 export interface DateStringKeyword extends ParsedStringKeyword<Date> {
 	readonly iso: ParsedStringKeyword<Date>;
 	readonly epoch: ParsedStringKeyword<Date>;
 }
 
-/** IP address keyword family. */
 export interface IpKeyword extends FluentType<string> {
 	readonly v4: FluentType<string>;
 	readonly v6: FluentType<string>;
 }
 
-/** UUID keyword family. */
 export interface UuidKeyword extends FluentType<string> {
 	readonly v1: FluentType<string>;
 	readonly v2: FluentType<string>;
@@ -2738,7 +2674,6 @@ export interface UuidKeyword extends FluentType<string> {
 	readonly v8: FluentType<string>;
 }
 
-/** String normalization keyword family. */
 export interface NormalizeKeyword extends PreformattedKeyword {
 	readonly NFC: PreformattedKeyword;
 	readonly NFD: PreformattedKeyword;
@@ -2746,7 +2681,6 @@ export interface NormalizeKeyword extends PreformattedKeyword {
 	readonly NFKD: PreformattedKeyword;
 }
 
-/** Runtime string parsers exposed under `type.parse`. */
 export interface ParseKeyword {
 	readonly number: FluentType<number, string>;
 	readonly integer: FluentType<number, string>;
@@ -2757,7 +2691,6 @@ export interface ParseKeyword {
 	readonly bigint: FluentType<bigint, string>;
 }
 
-/** Full string keyword module attached to `type.string`. */
 export interface StringKeyword extends FluentType<string> {
 	readonly alpha: FluentType<string>;
 	readonly alphanumeric: FluentType<string>;
@@ -2782,7 +2715,6 @@ export interface StringKeyword extends FluentType<string> {
 	readonly uuid: UuidKeyword;
 }
 
-/** Number keyword module attached to `type.number`. */
 export interface NumberKeyword extends FluentType<number> {
 	readonly integer: FluentType<number>;
 }
@@ -2817,11 +2749,9 @@ type MatchCaseOutput<cases> = {
 	[key in keyof cases]: cases[key] extends (...args: never[]) => infer output ? output : never;
 }[keyof cases];
 
-/** A finalized matcher. Like a schema, it returns structured errors unless finalized with `"assert"`. */
 export type Matcher<input = unknown, output = unknown> = FluentType<output, input> &
 	(<const value extends input>(value: value, ...args: readonly unknown[]) => output | OmpErrors);
 
-/** Fluent first-match parser exposed as `match` and `type.match`. */
 export interface MatchParser<input = unknown, output = never> {
 	<const cases extends Record<PropertyKey, unknown>>(
 		cases: cases,
@@ -3002,7 +2932,6 @@ function createMatchParser(state: MatchState): MatchParser {
 	return parser;
 }
 
-/** Build a fluent first-match dispatcher from schema definitions. */
 const matchBuilder: MatchParser = createMatchParser({
 	parse: definition => type.raw(definition),
 	branches: [],
@@ -3154,13 +3083,11 @@ function makeFn(resolve?: AliasResolver): FnParser {
 	}
 	return Object.assign(parser, { raw: parser });
 }
-/** Declares a schema output type while preserving its inferred input. */
+
 export interface DeclaredParser<declared> {
 	type<const definition>(definition: definition): FluentType<declared, InferDefIn<definition>>;
 }
 
-/** Fix a schema's externally declared static type without changing its runtime validation. */
-// biome-ignore lint/complexity/noBannedTypes: empty default options object
 export function declare<declared, _options = {}>(): DeclaredParser<declared> {
 	return {
 		type: definition => type(definition) as unknown as FluentType<declared, InferDefIn<typeof definition>>,
@@ -3291,39 +3218,33 @@ function naryStatics(resolve?: AliasResolver) {
 }
 
 export namespace type {
-	/** Error aggregate returned by failed validations (`result instanceof type.errors`). */
 	export const errors = OmpErrors;
 	export type errors = OmpErrors;
 
-	/** Build a union from zero or more definitions. */
 	export function or<const definitions extends readonly unknown[]>(
 		...definitions: definitions
 	): FluentType<NaryOrOutput<definitions>, NaryOrInput<definitions>> {
 		return buildOr<NaryOrOutput<definitions>, NaryOrInput<definitions>>(definitions);
 	}
 
-	/** Build an array schema from an element definition. */
 	export function array<const definition>(
 		definition: definition,
 	): FluentType<InferDef<definition>[], InferDefIn<definition>[]> {
 		return type(definition).array();
 	}
 
-	/** Build a union from a runtime array of definitions. */
 	export function union<const definitions extends readonly unknown[]>(
 		definitions: definitions,
 	): FluentType<NaryOrOutput<definitions>, NaryOrInput<definitions>> {
 		return buildOr<NaryOrOutput<definitions>, NaryOrInput<definitions>>(definitions);
 	}
 
-	/** Build a tuple schema from a runtime array of definitions. */
 	export function tuple<const definitions extends readonly unknown[]>(
 		definitions: definitions,
 	): FluentType<InferDef<definitions>, InferDefIn<definitions>> {
 		return type(definitions);
 	}
 
-	/** Build an open record schema from key and value definitions. */
 	export function record<const key, const value>(
 		key: key,
 		value: value,
@@ -3334,21 +3255,18 @@ export namespace type {
 		return keywords.Record(key, value);
 	}
 
-	/** Build an intersection from zero or more definitions. */
 	export function and<const definitions extends readonly unknown[]>(
 		...definitions: definitions
 	): FluentType<NaryAndOutput<definitions>, NaryAndInput<definitions>> {
 		return buildAnd<NaryAndOutput<definitions>, NaryAndInput<definitions>>(definitions);
 	}
 
-	/** Right-biased object merge over zero or more definitions. */
 	export function merge<const definitions extends readonly unknown[]>(
 		...definitions: definitions
 	): FluentType<NaryMergeOutput<definitions>, NaryMergeInput<definitions>> {
 		return buildMerge<NaryMergeOutput<definitions>, NaryMergeInput<definitions>>(definitions);
 	}
 
-	/** Compose Types, definitions, and morph callbacks from left to right. */
 	export function pipe<const definitions extends readonly unknown[]>(
 		...definitions: definitions
 	): FluentType<NaryPipeOutput<definitions>, NaryPipeInput<definitions>> {
@@ -3384,7 +3302,6 @@ export namespace type {
 		v8: keywordSchema("string.uuid.v8"),
 	});
 
-	/** String validator and its refinement/morph keyword module. */
 	export const string: StringKeyword = Object.defineProperties(
 		makeType<string>({ k: "string" }, [], {}),
 		Object.getOwnPropertyDescriptors({
@@ -3412,7 +3329,6 @@ export namespace type {
 		}),
 	) as unknown as StringKeyword;
 
-	/** Runtime parser keyword family. */
 	export const parse: ParseKeyword = {
 		number: keywordSchema<number, string>("parse.number"),
 		integer: keywordSchema<number, string>("parse.integer"),
@@ -3423,12 +3339,10 @@ export namespace type {
 		bigint: keywordSchema<bigint, string>("parse.bigint"),
 	};
 
-	/** Number validator with integer refinement. */
 	export const number: NumberKeyword = Object.assign(makeType<number>({ k: "number" }, [], {}), {
 		integer: makeType<number>({ k: "number", int: true }, [], {}),
 	});
 
-	/** Schema-valued key representing any non-negative integer array index. */
 	export const arrayIndex = makeType<string>(
 		{
 			k: "refine",
@@ -3440,22 +3354,20 @@ export namespace type {
 		{},
 	);
 
-	/** Boolean validator. */
 	export const boolean = makeType<boolean>({ k: "boolean" }, [], {});
-	/** Bigint validator. */
+
 	export const bigint = makeType<bigint>({ k: "bigint" }, [], {});
-	/** Symbol validator. */
+
 	export const symbol = makeType<symbol>({ k: "symbol" }, [], {});
-	/** Non-null object validator. */
+
 	export const object = makeType<object>({ k: "anyobject" }, [], {});
-	/** Unknown validator. */
+
 	export const unknown = makeType<unknown>({ k: "unknown" }, [], {});
-	/** Alias of the unknown validator. */
+
 	export const any = unknown;
-	/** Validator that rejects every value. */
+
 	export const never = makeType<never>({ k: "never" }, [], {});
 
-	/** ArkType's built-in keyword namespace, including invokable utility generics. */
 	export const keywords = {
 		number: { integer: number.integer },
 		Map: keywordSchema<Map<unknown, unknown>>("Map"),
@@ -3463,7 +3375,7 @@ export namespace type {
 		RegExp: keywordSchema<RegExp>("RegExp"),
 		File: keywordSchema<File>("File"),
 		Error: keywordSchema<Error>("Error"),
-		// biome-ignore lint/complexity/noBannedTypes: built-in Function keyword
+
 		Function: keywordSchema<Function>("Function"),
 		Array: {
 			liftFrom<const definition>(
@@ -3566,11 +3478,9 @@ export namespace type {
 		},
 		unknown: { any: keywordSchema<unknown>("unknown.any") },
 	};
-	/** Date instance validator. */
-	// biome-ignore lint/suspicious/noShadowRestrictedNames: ArkType exposes this exact keyword.
+
 	export const Date = makeType<globalThis.Date>({ k: "instance", ctor: globalThis.Date, expected: "a Date" }, [], {});
 
-	/** Validate instances of `ctor`. */
 	export function instanceOf<const ctor extends Constructor>(ctor: ctor): FluentType<Constructed<ctor>> {
 		if (typeof ctor !== "function" || ctor.prototype === undefined) {
 			throw new OmpTypeError("instanceof operands must be constructors");
@@ -3585,12 +3495,10 @@ export namespace type {
 		return makeType<Constructed<ctor>>({ k: "instance", ctor, expected }, [], {});
 	}
 
-	/** Validate one exact unit value. */
 	export function unit<const value>(value: value): FluentType<value> {
 		return makeType<value>({ k: "lit", v: value }, [], {});
 	}
 
-	/** Union of literal values from a runtime array. */
 	export function enumerated<const values extends readonly unknown[]>(...values: values): FluentType<values[number]> {
 		const members: IR[] = values.map(value => ({ k: "lit", v: value }));
 		const ir: IR =
@@ -3598,13 +3506,10 @@ export namespace type {
 		return makeType<values[number]>(ir, [], {});
 	}
 
-	/** Build a literal union from a runtime array. */
 	export function enumeration<const values extends readonly unknown[]>(values: values): FluentType<values[number]> {
 		return enumerated(...values);
 	}
 
-	/** Enumerate an enum-like object's forward values, excluding numeric reverse mappings. */
-	// biome-ignore lint/suspicious/noShadowRestrictedNames: Object.prototype.valueOf method name API
 	export function valueOf<const values extends Record<PropertyKey, unknown>>(
 		values: values,
 	): FluentType<values[keyof values]> {
@@ -3618,29 +3523,23 @@ export namespace type {
 		return makeType<values[keyof values]>(ir, [], {});
 	}
 
-	/** Fluent first-match dispatcher, also exported as standalone `match`. */
 	export const match: MatchParser = matchBuilder;
-	/** Preserve a definition's literal type while authoring reusable modules. */
+
 	export function define<const definition>(definition: definition): definition {
 		return definition;
 	}
 
-	/** Build a function whose arguments and optional declared return are validated. */
 	export const fn: FnParser = makeFn();
 
-	/** Fix an externally declared static type while retaining runtime validation. */
-	// biome-ignore lint/complexity/noBannedTypes: empty default options object
 	export const declare = <declared, _options = {}>(): DeclaredParser<declared> =>
 		({
 			type: definition => type(definition) as unknown as FluentType<declared, InferDefIn<typeof definition>>,
 		}) as DeclaredParser<declared>;
 
-	/** Build a lazy named scope from aliases and recursive definitions. */
 	export function scope(aliases: Record<string, unknown>, options?: ScopeOptions): TypeScope {
 		return buildScope(aliases, options);
 	}
 
-	/** Compile a named schema module whose definitions may reference each other. */
 	export function module<const definitions extends Record<string, unknown>>(
 		definitions: definitions,
 		options?: ScopeOptions,
@@ -3652,9 +3551,8 @@ export namespace type {
 
 	type GenericParameterSpec = string | readonly [name: string, constraint: unknown];
 
-	/** Build a generic directly from an angle-bracket declaration. */
 	export function generic<const definition>(parameters: `<${string}>`, definition: definition): Generic;
-	/** Build a curried generic from named, optionally constrained parameters. */
+
 	export function generic(...parameters: readonly GenericParameterSpec[]): GenericBuilder;
 	export function generic(...arguments_: readonly (GenericParameterSpec | unknown)[]): Generic | GenericBuilder {
 		if (arguments_.length === 2 && typeof arguments_[0] === "string" && arguments_[0].trimStart().startsWith("<")) {
@@ -3671,26 +3569,10 @@ export namespace type {
 		return (definition: unknown) => createRuntimeGeneric(parameters, definition);
 	}
 
-	/** Untyped builder for runtime-assembled definitions. */
 	export function raw(def: unknown): BaseType {
 		return makeType(parseDef(def), [], {}) as unknown as BaseType;
 	}
 
-	/**
-	 * Return a validation-only schema that emits `json` verbatim — even when
-	 * embedded in an object, array, or union.
-	 *
-	 * A `.toJsonSchema()` method override cannot survive nesting: a parent schema
-	 * emits each child's IR directly and never calls the child's method, so the
-	 * override silently disappears from the wire schema. This stores the override
-	 * on the IR instead.
-	 *
-	 * # Errors
-	 *
-	 * Throws when `schema` has a default or output-changing morph/pipe. A refine
-	 * can preserve validation and the input value, but silently discarding a
-	 * transformed output would violate the returned {@link Type}.
-	 */
 	export function withJsonSchema<t, i = t>(schema: Type<t, i>, json: Record<string, unknown>): Type<t, i> {
 		const internal = schema as unknown as InternalType;
 		if (internal.hasDefault || hasMorph(internal.ir) || internal[kSteps].some(step => step.kind === "pipe")) {
@@ -3713,8 +3595,6 @@ export namespace type {
 	}
 }
 
-// Reserved words cannot be declared as namespace bindings, but ArkType exposes
-// them as runtime keyword properties.
 Object.assign(type, {
 	null: makeType<null>({ k: "null" }, [], {}),
 	undefined: makeType<undefined>({ k: "undefined" }, [], {}),
@@ -3728,7 +3608,6 @@ export interface ScopeOptions {
 	divisor?: SchemaConfig;
 }
 
-/** Callable builder bound to one alias scope. */
 export type ScopedBuilder = (<const definition>(
 	definition: definition,
 ) => FluentType<InferDef<definition>, InferDefIn<definition>>) &
@@ -3740,7 +3619,6 @@ interface RuntimeModule extends Record<string, BaseType | RuntimeModule> {
 	readonly [MODULE_SCOPE]: TypeScope;
 }
 
-/** Named schema scope with scoped parsing, imports, and bound module exports. */
 export interface TypeScope {
 	readonly type: ScopedBuilder;
 	readonly match: MatchParser;
@@ -3751,13 +3629,11 @@ export interface TypeScope {
 	export(...names: readonly string[]): Record<string, BaseType>;
 }
 
-/** Build a scope whose aliases resolve lazily, including recursive cycles. */
 export function scope(aliases: Record<string, unknown>, options?: ScopeOptions): TypeScope {
 	return buildScope(aliases, options);
 }
 
 export namespace scope {
-	/** Preserve a scope definition's literal shape without constructing it. */
 	export function define<const aliases>(definitions: aliases): aliases {
 		return definitions;
 	}
@@ -3957,8 +3833,7 @@ function buildScope(aliases: Record<string, unknown>, options?: ScopeOptions): T
 		export(...names: readonly string[]) {
 			const selected =
 				names.length === 0 ? [...entries.values()].filter(entry => !entry.private).map(entry => entry.name) : names;
-			// Export is the eager boundary: malformed aliases and bad thunks fail here,
-			// while recursive references inside valid definitions stay lazy.
+
 			for (const entry of entries.values()) {
 				if (entry.genericParameters !== undefined) genericFor(entry);
 				else if (!isRuntimeModule(materialize(entry))) targetFor(entry.name);
@@ -3982,19 +3857,8 @@ function buildScope(aliases: Record<string, unknown>, options?: ScopeOptions): T
 	return scopeValue;
 }
 
-/** A schema whose output type is not statically known (`type.raw` results). */
 export type BaseType = FluentType<unknown, unknown>;
 
-/**
- * Minimal structural constraint matching any omptype schema.
- *
- * `FluentType`'s recursive fluent surface makes `T extends FluentType<...>`
- * checks descend until TypeScript's depth limiter reports spurious
- * incompatibilities, and its invariant input parameter rejects concrete
- * schemas outright. This interface exposes only the schema marker plus the
- * members generic helpers commonly need — method syntax keeps parameter
- * positions bivariant, and returns recurse shallowly through `AnyType`.
- */
 export interface AnyType {
 	(data: unknown): unknown;
 	readonly [IR_BRAND]: true;
@@ -4019,28 +3883,23 @@ declare const submoduleType: unique symbol;
 
 type BoundAlias<value> = value extends Submodule<infer aliases> ? Submodule<aliases> : FluentType<value>;
 
-/** Exported aliases from a scope, each bound to that scope's resolver. */
 export type Module<aliases extends Record<string, unknown>> = {
 	readonly [name in keyof aliases]: BoundAlias<aliases[name]>;
 };
 
-/** A module nested under an alias rather than directly parseable as a schema. */
 export type Submodule<aliases extends Record<string, unknown>> = {
 	readonly [submoduleType]?: aliases;
 } & {
 	readonly [name in keyof aliases]: BoundAlias<aliases[name]>;
 };
 
-/** A selected module export whose schemas retain access to the full scope. */
 export type BoundModule<
 	exports extends Record<string, unknown>,
 	_allAliases extends Record<string, unknown> = exports,
 > = Module<exports>;
 
-/** Type-level view of a named scope. */
 export type Scope<aliases extends Record<string, unknown>> = TypeScope & {
 	readonly t: aliases;
 };
 
-/** `hasMorph` re-export for diagnostics/tooling. */
 export { hasMorph };

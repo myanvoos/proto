@@ -35,10 +35,8 @@ OUT_DIR = Path(__file__).resolve().parent / "out"
 DAY_MS = 86_400_000
 WEEK_MS = 7 * DAY_MS
 
-# tool_name normalization: old names → canonical names.
 TOOL_ALIAS = {"grep": "search"}
 
-# 10-class qualitative palette (tab10) — distinct hues for line + area work.
 PALETTE = [
     "#1f77b4",
     "#d62728",
@@ -63,8 +61,6 @@ def normalize_case_sql(col: str) -> str:
     return f"CASE {col} {whens} ELSE {col} END"
 
 
-# --------------------------------------------------------------------------- #
-# Data access
 
 
 def _connect() -> sqlite3.Connection:
@@ -171,8 +167,6 @@ def fetch_per_call(conn: sqlite3.Connection, tools: list[str]) -> dict[str, dict
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
 
 
 def smooth(y: np.ndarray, w: int = 7) -> np.ndarray:
@@ -231,8 +225,6 @@ def weekly_median(ts_ms: np.ndarray, tok: np.ndarray) -> tuple[np.ndarray, np.nd
     return week_dates, p50
 
 
-# --------------------------------------------------------------------------- #
-# Panels
 
 
 def panel_total_tokens(
@@ -344,8 +336,6 @@ def panel_histogram(
     ax.grid(True, which="both", alpha=0.2, linestyle="--")
 
 
-# --------------------------------------------------------------------------- #
-# Entry
 
 
 def main() -> int:
@@ -379,7 +369,6 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"figure.dpi": 110, "font.size": 10})
 
-    # Combined 3x2 dashboard.
     fig, axes = plt.subplots(3, 2, figsize=(15, 13))
     panel_total_tokens(axes[0, 0], daily, tools, colors)
     panel_call_counts(axes[0, 1], daily, tools, colors)
@@ -416,7 +405,6 @@ def main() -> int:
         plt.close(f2)
         print(f"wrote {p}")
 
-    # Summary.
     print()
     print("totals over the window:")
     header = f"  {'tool':<14} {'calls':>9}  {'total':>14}  {'p50':>6}  {'p90':>7}  {'p99':>8}  {'max':>9}"

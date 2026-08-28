@@ -4,30 +4,30 @@ use brush_core::{ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 use itertools::Itertools;
 
-/// Manage shopt-style options.
+
 #[derive(Parser)]
 pub(crate) struct ShoptCommand {
-	/// Manage set -o options.
+
 	#[arg(short = 'o')]
 	set_o_names_only: bool,
 
-	/// Print options' current values.
+
 	#[arg(short = 'p')]
 	print: bool,
 
-	/// Suppress typical output.
+
 	#[arg(short = 'q')]
 	quiet: bool,
 
-	/// Set the specified options.
+
 	#[arg(short = 's')]
 	set: bool,
 
-	/// Unset the specified options.
+
 	#[arg(short = 'u')]
 	unset: bool,
 
-	/// Names of options to operate on.
+
 	options: Vec<String>,
 }
 
@@ -49,7 +49,7 @@ impl builtins::Command for ShoptCommand {
 				return Ok(ExecutionResult::success());
 			}
 
-			// Enumerate all options of the selected type.
+
 			let options = if self.set_o_names_only {
 				brush_core::namedoptions::options(brush_core::namedoptions::ShellOptionKind::SetO)
 					.iter()
@@ -87,7 +87,7 @@ impl builtins::Command for ShoptCommand {
 		} else {
 			let mut return_value = ExecutionResult::success();
 
-			// Enumerate only the specified options.
+
 			for option_name in &self.options {
 				let option_definition = if self.set_o_names_only {
 					brush_core::namedoptions::options(brush_core::namedoptions::ShellOptionKind::SetO)

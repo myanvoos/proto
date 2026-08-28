@@ -123,9 +123,7 @@ function toolArguments(value: unknown): Record<string, unknown> {
 	try {
 		const parsed: unknown = JSON.parse(value);
 		if (isRecord(parsed)) return parsed;
-	} catch {
-		// Custom tools intentionally carry non-JSON input.
-	}
+	} catch {}
 	return { input: value };
 }
 
@@ -453,18 +451,14 @@ function rollback(records: ConvertedRecord[], turns: number): void {
 	}
 }
 
-/** Imports locally stored OpenAI Codex sessions into PROTO's in-memory session format. */
 export class CodexSessionStore implements ForeignSessionStore {
-	/** Foreign-session source discriminator. */
 	readonly source = "codex";
 	readonly #root: string;
 
-	/** Uses the supplied Codex data root, or ~/.codex by default. */
 	constructor(rootDirectory: string = path.join(os.homedir(), ".codex")) {
 		this.#root = path.resolve(rootDirectory);
 	}
 
-	/** Lists Codex sessions from its state index without reading transcript bodies. */
 	async list(): Promise<ForeignSessionInfo[]> {
 		const databasePath = await stateDatabasePath(this.#root);
 		if (databasePath) {
@@ -503,9 +497,7 @@ export class CodexSessionStore implements ForeignSessionStore {
 				} finally {
 					database.close();
 				}
-			} catch {
-				// Older Codex state databases fall back to the rollout metadata path.
-			}
+			} catch {}
 		}
 
 		const index = await loadIndex(this.#root);
@@ -539,7 +531,6 @@ export class CodexSessionStore implements ForeignSessionStore {
 		return sessions;
 	}
 
-	/** Converts one Codex rollout into a non-persistent PROTO session. */
 	async load(info: ForeignSessionInfo): Promise<SessionManager> {
 		if (info.source !== "codex") throw new Error(`Cannot load ${info.source} session with CodexSessionStore`);
 		let records: Record<string, unknown>[];

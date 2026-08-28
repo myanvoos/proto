@@ -1,4 +1,3 @@
-// Adapted from markit-ai (MIT). See ../NOTICE.
 import * as path from "node:path";
 import { archiveEntryText, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
 import { XMLParser } from "@oh-my-pi/pi-utils/xml";
@@ -7,7 +6,6 @@ import type { ConversionResult, Converter, StreamInfo } from "../types";
 const EXTENSIONS = [".pptx"];
 const MIMETYPES = ["application/vnd.openxmlformats-officedocument.presentationml.presentation"];
 
-/** A text value: bare string/number, or a `{ "#text" }` node when the element carries attributes. */
 type XmlText = string | number | { "#text"?: string };
 
 interface TextRun {
@@ -113,13 +111,13 @@ export class PptxConverter implements Converter {
 			textNodeName: "#text",
 			processEntities: { maxTotalExpansions: 1_000_000 },
 		});
-		// Get slide order from presentation.xml
+
 		const presXml = archiveEntryText(entries, "ppt/presentation.xml");
 		if (!presXml) throw new Error("Invalid PPTX: missing presentation.xml");
 		const pres = parser.parse(presXml) as PresentationDoc;
 		const sldIdList = pres["p:presentation"]?.["p:sldIdLst"]?.["p:sldId"];
 		const sldIds = Array.isArray(sldIdList) ? sldIdList : sldIdList ? [sldIdList] : [];
-		// Get relationship mappings
+
 		const relsXml = archiveEntryText(entries, "ppt/_rels/presentation.xml.rels");
 		const rels = relsXml ? (parser.parse(relsXml) as RelationshipsDoc) : null;
 		const relList = rels?.Relationships?.Relationship;
@@ -128,14 +126,14 @@ export class PptxConverter implements Converter {
 		for (const r of relArray) {
 			relMap.set(r["@_Id"], r["@_Target"]);
 		}
-		// Map slide IDs to file paths in order
+
 		const slidePaths: string[] = [];
 		for (const sld of sldIds) {
 			const rId = sld["@_r:id"];
 			const target = relMap.get(rId);
 			if (target) slidePaths.push(`ppt/${target}`);
 		}
-		// If we couldn't resolve from rels, fall back to finding slide files
+
 		if (slidePaths.length === 0) {
 			const slideFiles = Object.keys(entries)
 				.filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f))
@@ -155,7 +153,7 @@ export class PptxConverter implements Converter {
 			const slide = parser.parse(slideXml) as SlideDoc;
 			const spTree = slide["p:sld"]?.["p:cSld"]?.["p:spTree"];
 			if (!spTree) continue;
-			// Parse slide-level rels for image references
+
 			const slideRelsPath = `${slidePaths[i].replace("slides/slide", "slides/_rels/slide")}.rels`;
 			const slideRelsXml = archiveEntryText(entries, slideRelsPath);
 			const slideRelMap = new Map<string, string>();
@@ -180,7 +178,7 @@ export class PptxConverter implements Converter {
 					slideLines.push(text);
 				}
 			}
-			// Extract embedded images
+
 			const pics = toList(spTree["p:pic"]);
 			for (const pic of pics) {
 				const blipFill = pic["p:blipFill"];
@@ -188,9 +186,9 @@ export class PptxConverter implements Converter {
 				if (!rEmbed) continue;
 				const target = slideRelMap.get(rEmbed);
 				if (!target) continue;
-				// Resolve relative target against slide directory
+
 				const imagePath = target.startsWith("/") ? target.slice(1) : `ppt/slides/${target}`;
-				// Normalize path (e.g. ppt/slides/../media/image1.png → ppt/media/image1.png)
+
 				const normalizedPath = imagePath
 					.split("/")
 					.reduce<string[]>((parts, seg) => {
@@ -220,14 +218,14 @@ export class PptxConverter implements Converter {
 					slideLines.push(`<!-- image: ${name} (slide ${i + 1}) -->`);
 				}
 			}
-			// Tables
+
 			const graphicFrames = spTree["p:graphicFrame"];
 			const gfList = Array.isArray(graphicFrames) ? graphicFrames : graphicFrames ? [graphicFrames] : [];
 			for (const gf of gfList) {
 				const table = this.extractTable(gf);
 				if (table) slideLines.push(table);
 			}
-			// Slide notes
+
 			const noteFile = slidePaths[i].replace("slides/slide", "notesSlides/notesSlide");
 			const noteXml = archiveEntryText(entries, noteFile);
 			if (noteXml) {
@@ -238,7 +236,6 @@ export class PptxConverter implements Converter {
 					const noteList = Array.isArray(noteShapes) ? noteShapes : noteShapes ? [noteShapes] : [];
 					const noteTexts: string[] = [];
 					for (const ns of noteList) {
-						// Skip slide image placeholder
 						const phType = ns["p:nvSpPr"]?.["p:nvPr"]?.["p:ph"]?.["@_type"];
 						if (phType === "sldImg") continue;
 						const t = this.extractText(ns);

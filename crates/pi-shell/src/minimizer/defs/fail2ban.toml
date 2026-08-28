@@ -1,4 +1,4 @@
-# fail2ban-client status output. Strip ANSI, blank lines, and ascii banner rules.
+
 
 [filters.fail2ban]
 description = "Compact fail2ban-client output"

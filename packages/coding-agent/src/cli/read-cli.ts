@@ -1,10 +1,3 @@
-/**
- * Read CLI command handler.
- *
- * Handles `proto read` — invokes the `read` agent tool against a path/URL and
- * prints the resulting content blocks exactly as the model would receive them
- * (including truncation/limit notices appended by the meta-notice wrapper).
- */
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
@@ -25,9 +18,6 @@ export interface ReadCommandArgs {
 }
 
 function shouldDiscoverMcp(path: string): boolean {
-	// MCP resource URIs may be hierarchical (`test://notes`) or opaque
-	// (`urn:example:document`); `extractUriScheme` recognizes both while
-	// rejecting Windows drive paths and selector-shaped filesystem inputs.
 	const scheme = extractUriScheme(path);
 	if (!scheme) return false;
 	if (scheme === "mcp") return true;

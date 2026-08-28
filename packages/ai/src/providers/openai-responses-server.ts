@@ -1,14 +1,3 @@
-/**
- * OpenAI Responses HTTP wire-format ↔ proto Context bridge for the auth-gateway.
- *
- * Inbound: parses `POST /v1/responses` request bodies into a {@link ParsedRequest}.
- * Outbound: encodes proto's {@link AssistantMessage} (and event stream) back into
- * the documented `response.*` SSE taxonomy or the non-streaming JSON shape.
- *
- * Spec: https://platform.openai.com/docs/api-reference/responses
- * Inverse direction (source-of-truth for item shapes): ../../providers/openai-responses.ts
- */
-
 import { type } from "@oh-my-pi/omptype";
 import { logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { resolvePromptCacheKey } from "../auth-gateway/http";
@@ -41,8 +30,6 @@ import {
 import { encodeTextSignatureV1, parseTextSignature } from "./openai-shared";
 
 export type { ParsedRequest };
-
-// ─── narrow guards ──────────────────────────────────────────────────────────
 
 const OPENAI_RESPONSE_INCLUDES: Record<NonNullable<ParsedRequest["options"]["include"]>[number], true> = {
 	"file_search_call.results": true,
@@ -117,8 +104,6 @@ function messageTextSignature(id: unknown, phase: unknown): string | undefined {
 	return encodeTextSignatureV1(makeMsgId(), parsedPhase);
 }
 
-// ─── id helpers ─────────────────────────────────────────────────────────────
-
 function uuidNoDashes(): string {
 	return crypto.randomUUID().replace(/-/g, "");
 }
@@ -143,16 +128,9 @@ function makeCustomCallId(): string {
 	return `ctc_${uuidNoDashes()}`;
 }
 
-// ─── once-only warnings ─────────────────────────────────────────────────────
-// Module-scoped so we don't spam logs once per turn.
-
 let warnedReasoningSummaryLevel = false;
 
-// ─── inbound parser helpers ─────────────────────────────────────────────────
-
 function extractReasoningTextFromItem(item: OpenAIResponsesReasoningItem): string {
-	// Prefer `summary[]` — mirrors real OpenAI and the openai-responses provider
-	// which writes the surfaced reasoning summary into `summary[].text`.
 	const fromSummary = (item.summary ?? []).map(c => c.text).join("");
 	if (fromSummary) return fromSummary;
 	return (item.content ?? []).map(c => c.text).join("");
@@ -164,8 +142,6 @@ type InputBlockUnion =
 	| { type: "input_image"; detail?: "auto" | "low" | "high" | "original"; image_url?: string; file_id?: string }
 	| { type: "input_file"; file_id?: string; filename?: string; file_data?: string; file_url?: string };
 
-/** Walk an input message's content array and retain only text for the generic view.
- * Native image/file references are preserved on the message provider payload. */
 function inputContentParts(blocks: OpenAIResponsesInputContent[] | string | undefined): string | TextContent[] {
 	if (typeof blocks === "string") return blocks;
 	if (!blocks) return [];
@@ -199,7 +175,6 @@ function outputTextOf(
 		if (block.type === "output_text" || block.type === "text") {
 			parts.push(block.text);
 		} else if (block.type === "refusal") {
-			// Preserve the refusal reason so history replay still carries it.
 			parts.push(`[refusal: ${block.refusal}]`);
 		}
 	}
@@ -207,8 +182,6 @@ function outputTextOf(
 	return text.length > 0 ? [textContent(text)] : [];
 }
 
-// The schema accepts a much wider tool_choice union than the SDK type so the
-// walker narrows against the local schema shape.
 type ParsedToolChoice =
 	| "auto"
 	| "none"
@@ -233,7 +206,7 @@ function mapToolChoice(value: ParsedToolChoice | undefined): ParsedRequest["opti
 	if ("type" in value) {
 		if (value.type === "function" || value.type === "custom") return { name: value.name };
 		if (value.type === "computer") return { type: "computer" };
-		// Other hosted tools + allowed_tools are not surfaced to pi-ai.
+
 		return "auto";
 	}
 	return undefined;
@@ -252,7 +225,7 @@ function buildTools(tools: Array<OpenAIResponsesTool | { type: string }> | undef
 			});
 			continue;
 		}
-		// Skip non-function tools (web_search, file_search, …).
+
 		if (t.type !== "function") continue;
 		const fn = t as Extract<OpenAIResponsesTool, { type: "function" }>;
 		const tool: Tool = {
@@ -290,7 +263,6 @@ function ensureAssistantPlaceholder(messages: Message[], modelId: string, now: n
 	return placeholder;
 }
 
-/** Flatten a function_call_output array form (text + refusal) into a single string. */
 function flattenFunctionOutputArray(blocks: readonly unknown[]): string {
 	const parts: string[] = [];
 	for (const raw of blocks) {
@@ -307,15 +279,7 @@ function flattenFunctionOutputArray(blocks: readonly unknown[]): string {
 	return parts.join("");
 }
 
-// ─── parseRequest ───────────────────────────────────────────────────────────
-
 export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
-	// Header capture is centralized in `auth-gateway/server.ts` (the
-	// allow-listed set lands on `options.headers` automatically). We also
-	// consult `headers` here to populate `options.promptCacheKey` when the
-	// client signals a cache identity outside the body — see the
-	// `resolvePromptCacheKey` call further down.
-
 	rejectUnsupportedExplicitPromptCacheFields(body);
 	const data = openaiResponsesRequestSchema(body);
 	if (data instanceof type.errors) {
@@ -334,7 +298,6 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 		messages.push({ role: "user", content: data.input, timestamp: now });
 	} else if (data.input) {
 		for (const item of data.input) {
-			// Items may omit `type` and rely on `role` (the convenience shape).
 			const effectiveType = item.type ?? ("role" in item ? "message" : undefined);
 			if (effectiveType === "message") {
 				const msg = item as {
@@ -441,9 +404,7 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 			}
 			if (effectiveType === "custom_tool_call") {
 				const call = item as { id?: string; call_id: string; name: string; input: string };
-				// Custom tools carry a raw input string. We stash it in `arguments.input`
-				// matching pi-ai's openai-shared convention, and tag the call
-				// with `customWireName` so encoders re-emit it as `custom_tool_call`.
+
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: call.call_id,
@@ -523,7 +484,6 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 					timestamp: now,
 				});
 			}
-			// Other item types are tolerated but not bridged.
 		}
 	}
 
@@ -546,9 +506,7 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	if (data.reasoning?.effort && isReasoningEffort(data.reasoning.effort)) {
 		options.reasoning = data.reasoning.effort;
 	}
-	// OpenAI summary: `none` → suppress; `auto`/`concise`/`detailed` → request
-	// visible summary. pi-ai has no per-level plumbing — log once and let the
-	// provider default kick in.
+
 	if (data.reasoning?.summary === "none") {
 		options.hideThinkingSummary = true;
 	} else if (
@@ -575,8 +533,6 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	if (data.previous_response_id !== undefined) options.previousResponseId = data.previous_response_id;
 	if (data.user !== undefined) options.user = data.user;
 	if (isObj(data.metadata)) options.metadata = data.metadata;
-	// `store` is a stateful-storage hint that proto's gateway doesn't honour;
-	// silently accepted by the schema. No typed slot — drop.
 
 	return {
 		modelId: data.model,
@@ -597,16 +553,12 @@ function findToolNameById(messages: Message[], callId: string): string {
 	return "";
 }
 
-// ─── formatError ────────────────────────────────────────────────────────────
-
 export function formatError(status: number, type: string, message: string): Response {
 	return new Response(JSON.stringify({ error: { message, type } }), {
 		status,
 		headers: { "Content-Type": "application/json" },
 	});
 }
-
-// ─── output item builders (shared by streaming + non-streaming encoders) ────
 
 type ReasoningOutputItem = {
 	type: "reasoning";
@@ -676,18 +628,13 @@ function buildReasoningItem(part: ThinkingContent): ReasoningOutputItem {
 			const sigParsed: unknown = JSON.parse(part.thinkingSignature);
 			if (isObj(sigParsed) && sigParsed.type === "reasoning") {
 				const id = part.itemId ?? asString(sigParsed.id) ?? makeReasoningId();
-				// Preserve any extra fields (encrypted_content, …) the original carried,
-				// but normalize the summary into the canonical `{type, text}[]` shape.
+
 				const merged: Record<string, unknown> = { ...sigParsed, type: "reasoning", id };
 				merged.summary = [{ type: "summary_text", text: part.thinking }];
-				// `content[]` is the encrypted/raw side-channel; leave whatever was
-				// already there. If absent, omit — real OpenAI only emits `content[]`
-				// when `include=['reasoning.encrypted_content']` is set.
+
 				return merged as ReasoningOutputItem;
 			}
-		} catch {
-			// Not a serialized Responses reasoning item; fall through to fresh build.
-		}
+		} catch {}
 	}
 	return {
 		type: "reasoning",
@@ -705,28 +652,16 @@ function reasoningItemId(part: ThinkingContent): string {
 				const id = asString(sigParsed.id);
 				if (id) return id;
 			}
-		} catch {
-			// Not a serialized Responses reasoning item.
-		}
+		} catch {}
 	}
 	return makeReasoningId();
 }
 
-/**
- * pi-ai responses providers mint composite `"{call_id}|{item_id}"` tool-call
- * ids ({@link encodeResponsesToolCallId}). Only the call_id half belongs on
- * the wire: third-party clients validate the `call_id` charset
- * (`^[a-zA-Z0-9_-]+$`) or echo it to other backends, and `|` fails both.
- */
 function wireCallId(id: string): string {
 	const sep = id.indexOf("|");
 	return sep >= 0 ? id.slice(0, sep) : id;
 }
 
-/**
- * Walk the assistant content array and group consecutive TextContent into a
- * single message item; each ThinkingContent / ToolCall is its own item.
- */
 function buildOutputItems(message: AssistantMessage): OutputItem[] {
 	const out: OutputItem[] = [];
 	let pendingMessage: MessageOutputItem | null = null;
@@ -796,7 +731,6 @@ function buildOutputItems(message: AssistantMessage): OutputItem[] {
 				});
 			}
 		}
-		// RedactedThinking / Image are silently dropped — no direct Responses wire representation.
 	}
 	flushMessage();
 	return out;
@@ -835,8 +769,6 @@ function buildResponseEnvelope(
 	};
 }
 
-// ─── encodeResponse (non-streaming) ─────────────────────────────────────────
-
 export function encodeResponse(message: AssistantMessage, requestedModelId: string): Record<string, unknown> {
 	const items = buildOutputItems(message);
 	return buildResponseEnvelope(
@@ -848,8 +780,6 @@ export function encodeResponse(message: AssistantMessage, requestedModelId: stri
 		buildUsage(message),
 	);
 }
-
-// ─── encodeStream ───────────────────────────────────────────────────────────
 
 interface OpenMessage {
 	kind: "message";
@@ -874,7 +804,7 @@ interface OpenFunctionCall {
 	callId: string;
 	name: string;
 	argsText: string;
-	/** Set when the underlying ToolCall is a custom-tool emission. */
+
 	customWireName?: string;
 }
 interface OpenComputerCall {
@@ -1176,10 +1106,9 @@ export function encodeStream(
 					switch (ev.type) {
 						case "start": {
 							createdAt = Math.floor((ev.partial.timestamp || Date.now()) / 1000);
-							// response.created — initial envelope.
+
 							emit("response.created", { response: responseSnapshot("in_progress", []) });
-							// response.in_progress — mirrors real OpenAI; some clients gate
-							// on it before reading items.
+
 							emit("response.in_progress", { response: responseSnapshot("in_progress", []) });
 							break;
 						}
@@ -1226,9 +1155,7 @@ export function encodeStream(
 								delta: ev.delta,
 								logprobs: [],
 							});
-							// TODO: when pi-ai surfaces output_text annotations
-							// (web_search citations, …), emit
-							// `response.output_text.annotation.added` here.
+
 							break;
 						}
 						case "text_end": {
@@ -1329,15 +1256,12 @@ export function encodeStream(
 								closeComputerCall(cur);
 								break;
 							}
-							// Promote possibly-late info from the canonical ToolCall.
+
 							if (tc.customWireName && !cur.customWireName) cur.customWireName = tc.customWireName;
 							if (tc.thoughtSignature) cur.itemId = tc.thoughtSignature;
 							cur.callId = wireCallId(tc.id);
 							cur.name = cur.customWireName ?? tc.name;
 							if (cur.customWireName) {
-								// Custom tool: raw input string. Streamed deltas accumulated
-								// the wire-level body; fall back to `arguments.input` from
-								// the finalized ToolCall when nothing streamed (rare).
 								const rawInput =
 									cur.argsText ||
 									(typeof tc.arguments?.input === "string" ? (tc.arguments.input as string) : "");
@@ -1349,8 +1273,6 @@ export function encodeStream(
 									name: cur.name,
 								});
 							} else {
-								// Standard JSON tool: arguments object on the proto side, the
-								// wire wants the JSON string the model emitted (= streamed deltas).
 								const argsJson = cur.argsText || JSON.stringify(tc.arguments ?? {});
 								cur.argsText = argsJson;
 								emit("response.function_call_arguments.done", {
@@ -1396,8 +1318,6 @@ export function encodeStream(
 				closeAllOpenItems();
 				const message = finalMessage ?? ((await events.result().catch(() => null)) as AssistantMessage | null);
 
-				// Build the canonical output from the final message so non-streaming
-				// readers see the exact same shape they'd get from encodeResponse().
 				const items = message ? buildOutputItems(message) : finishedItems;
 				const usage = message ? buildUsage(message) : null;
 				const status = message ? responseStatusForStopReason(message) : "completed";

@@ -6,7 +6,7 @@ export type AgentMetrics = AgentMetricsSummary;
 
 export interface AggregateMetrics extends AgentMetrics {
 	reportedAgents: number;
-	/** Rows whose duration is an observer-measured active runtime. */
+
 	activeDurationAgents: number;
 }
 
@@ -23,7 +23,6 @@ function finiteMetric(value: number | undefined): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-/** Exact observer usage for one roster entry. */
 export function progressMetrics(observed: ObservableSession | undefined): AgentMetrics | undefined {
 	const progress = observed?.progress;
 	if (!progress) return undefined;
@@ -60,11 +59,6 @@ export function progressMetrics(observed: ObservableSession | undefined): AgentM
 	};
 }
 
-/**
- * Read direct assistant usage from a live session. SessionStats also includes
- * usage recorded by completed workers, so using it for a parent
- * row would double-count child rows in the aggregate.
- */
 function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
 	try {
 		const stats = session.getSessionStats();
@@ -104,8 +98,6 @@ function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMet
 			contextWindow: stats.contextUsage?.contextWindow,
 		};
 	} catch {
-		// Render-only doubles and sessions being torn down may not expose a
-		// complete statistics host. Missing metrics are preferable to a broken fleet.
 		return undefined;
 	}
 }
@@ -158,7 +150,6 @@ export function aggregateMetrics(args: {
 	return { metrics: total, hasFallbackLiveSessions };
 }
 
-/** Parent-before-child projection preserving the roster's stable sibling order. */
 export function projectAgentTree(refs: readonly AgentRef[]): AgentTreeProjection {
 	const ids = new Set<string>();
 	const operationalIndex = new Map<string, number>();
@@ -178,8 +169,6 @@ export function projectAgentTree(refs: readonly AgentRef[]): AgentTreeProjection
 		else children.set(parent, [ref]);
 	}
 
-	// A tree group occupies the position of its earliest operational row.
-	// Compute subtree minima iteratively so pathological lineage depth remains stack-safe.
 	const subtreeOrder = new Map<string, number>();
 	const visiting = new Set<string>();
 	const ranked = new Set<string>();
@@ -242,7 +231,7 @@ export function projectAgentTree(refs: readonly AgentRef[]): AgentTreeProjection
 		}
 	};
 	for (const root of children.get(MAIN_AGENT_ID) ?? []) visit(root, 0);
-	// Corrupt persisted parent cycles remain visible as roots instead of disappearing.
+
 	for (const ref of refs) visit(ref, 0);
 	return { rows, depthById, parentById, lastSiblingById };
 }

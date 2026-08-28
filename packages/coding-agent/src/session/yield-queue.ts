@@ -2,11 +2,10 @@ import { type AgentMessage, ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD } from "
 import { logger } from "@oh-my-pi/pi-utils";
 
 interface YieldDispatcher<P> {
-	/** Drop entries already delivered through another path. Called per-entry at flush time. */
 	isStale?(entry: P): boolean;
-	/** Produce one batched AgentMessage from non-stale entries. Return null to skip. */
+
 	build(survivors: P[]): AgentMessage | null;
-	/** If true, entries for this kind are drained only by {@link drainLazy} and never trigger the idle flush. */
+
 	skipIdleFlush?: boolean;
 }
 
@@ -102,7 +101,6 @@ export class YieldQueue {
 		return false;
 	}
 
-	/** Arrange an idle flush for entries queued near the end of a streaming run. */
 	requestIdleFlush(): void {
 		for (const [kind, dispatcher] of this.#dispatchers) {
 			if (!dispatcher.skipIdleFlush && this.has(kind)) {
@@ -156,14 +154,6 @@ export class YieldQueue {
 		}
 	}
 
-	/**
-	 * Snapshot and remove all queued entries, returning one lazy thunk per kind.
-	 * Each thunk applies the dispatcher's staleness filter and builds the batched
-	 * message only when called — so the consumer (the agent loop) decides, at the
-	 * moment it injects, whether the message is still worth delivering (a thunk may
-	 * return null to skip). Background-job completions and late diagnostics reach
-	 * the model between requests without the agent having to stop.
-	 */
 	drainLazy(): Array<() => AgentMessage | null> {
 		const thunks: Array<() => AgentMessage | null> = [];
 		for (const [kind, dispatcher] of this.#dispatchers) {
@@ -179,8 +169,6 @@ export class YieldQueue {
 		return thunks;
 	}
 
-	/** Drop queued entries. With `kind`, drop only that kind's entries (leaving
-	 *  any pending idle-flush for other kinds intact); otherwise drop everything. */
 	clear(kind?: string): void {
 		const error = new Error("Yield queue entry cleared before dispatch");
 		if (kind !== undefined) {
@@ -193,7 +181,6 @@ export class YieldQueue {
 		this.#idleFlushPending = false;
 	}
 
-	/** Clear a scheduled-flush latch when its host task is cancelled before running. */
 	cancelIdleFlushScheduling(): void {
 		this.#idleFlushPending = false;
 	}

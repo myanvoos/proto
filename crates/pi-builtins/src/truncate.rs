@@ -1,6 +1,6 @@
-//! `truncate` builtin: shrink or extend files to a specified size.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -31,14 +31,14 @@ enum TruncateMode {
 }
 
 impl TruncateMode {
-	/// Compute a target size in bytes for this truncate mode.
-	///
-	/// `fsize` is the size of the reference file, in bytes.
-	///
-	/// If the mode is [`TruncateMode::Reduce`] and the value to reduce by is
-	/// greater than `fsize`, this returns 0 (it cannot return a negative number).
-	///
-	/// Returns `None` if rounding by 0, else the target size.
+
+
+
+
+
+
+
+
 	fn to_size(&self, fsize: u64) -> Option<u64> {
 		match self {
 			Self::Absolute(size) => Some(*size),
@@ -51,7 +51,7 @@ impl TruncateMode {
 		}
 	}
 
-	/// The numeric value carried by this mode.
+
 	fn value(&self) -> u64 {
 		match self {
 			Self::Absolute(n)
@@ -64,9 +64,9 @@ impl TruncateMode {
 		}
 	}
 
-	/// Multiply this mode's value by `factor` (for `--io-blocks` scaling).
-	///
-	/// Returns `None` on overflow.
+
+
+
 	fn scale(&self, factor: u64) -> Option<Self> {
 		let value = self.value().checked_mul(factor)?;
 		Some(match self {
@@ -80,7 +80,7 @@ impl TruncateMode {
 		})
 	}
 
-	/// Determine whether this mode specifies an absolute size.
+
 	fn is_absolute(&self) -> bool {
 		matches!(self, Self::Absolute(_))
 	}
@@ -94,7 +94,7 @@ mod options {
 	pub static ARG_FILES: &str = "files";
 }
 
-/// Parsed `truncate` invocation.
+
 pub(crate) struct Truncate {
 	matches: ArgMatches,
 }
@@ -131,7 +131,7 @@ impl Utility for Truncate {
 	}
 }
 
-/// The `truncate` argument model.
+
 fn app() -> Command {
 	Command::new(Truncate::NAME)
 		.version("0.8.0")
@@ -193,8 +193,8 @@ fn app() -> Command {
 		)
 }
 
-/// The I/O block size of a file, falling back to 512 when the filesystem
-/// reports 0 (mirrors GNU's `ST_BLKSIZE`).
+
+
 #[cfg(unix)]
 fn io_blocksize(file_metadata: &Metadata) -> u64 {
 	match file_metadata.blksize() {
@@ -208,13 +208,13 @@ fn io_blocksize(_file_metadata: &Metadata) -> u64 {
 	512
 }
 
-/// Truncate one file according to `mode`.
-///
-/// Unless `no_create` is set, the file is created if it does not already
-/// exist. If the target size is larger than the file, it is padded with
-/// zeros; if smaller, bytes beyond it are discarded. When `io_blocks` is
-/// set, the size is scaled by the file's I/O block size, matching GNU
-/// (which scales by the block size observed after opening the file).
+
+
+
+
+
+
+
 fn file_truncate(
 	host: &Host,
 	no_create: bool,
@@ -225,8 +225,8 @@ fn file_truncate(
 ) -> Result<(), String> {
 	let resolved = host.resolve(filename);
 
-	// A pipe has no length, and opening it for writing would block waiting
-	// for a reader; refuse it before the open.
+
+
 	#[cfg(unix)]
 	if let Ok(pre_metadata) = metadata(&resolved) {
 		if pre_metadata.file_type().is_fifo() {
@@ -263,8 +263,8 @@ fn file_truncate(
 		*mode
 	};
 
-	// The reference size is either the given reference file's size, or the size
-	// of the file to be truncated when no reference was provided.
+
+
 	let actual_reference_size = reference_size.unwrap_or_else(|| file_metadata.len());
 	let Some(truncate_size) = mode.to_size(actual_reference_size) else {
 		return Err("division by zero".to_string());
@@ -306,20 +306,20 @@ fn truncate(
 		None => None,
 	};
 
-	// Omitting the mode is equivalent to extending a file by 0 bytes.
+
 	let mode = match size.as_deref() {
 		Some(string) => parse_mode_and_size(string)
 			.map_err(|error| format!("Invalid number: {error}"))?,
 		None => TruncateMode::Extend(0),
 	};
 
-	// GNU rejects rounding to a multiple of zero up front, before touching
-	// any file.
+
+
 	if matches!(mode, TruncateMode::RoundDown(0) | TruncateMode::RoundUp(0)) {
 		return Err("division by zero".to_string());
 	}
 
-	// If a reference file has been given, the truncate mode cannot be absolute.
+
 	if reference_size.is_some() && mode.is_absolute() {
 		return Err("you must specify a relative '--size' with '--reference'".to_string());
 	}
@@ -335,14 +335,14 @@ fn truncate(
 	Ok(())
 }
 
-/// Decide whether a character is one of the size modifiers, like `+` or `<`.
-///
-/// `=` is the BSD spelling of an absolute size.
+
+
+
 fn is_modifier(c: char) -> bool {
 	c == '+' || c == '-' || c == '<' || c == '>' || c == '/' || c == '%' || c == '='
 }
 
-/// Parse a size string with an optional modifier symbol as its first character.
+
 fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError> {
 	let mut size_string = size_string.trim();
 
@@ -351,8 +351,8 @@ fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError
 			size_string = &size_string[1..];
 		}
 		let mut allow_list = allow_list_with_all_suffixes("EgGkKmMPQRtTYZ");
-		// `b` counts 512-byte blocks (dd-style); accepted here for agent
-		// convenience even though GNU truncate omits it.
+
+
 		allow_list.push("b".to_string());
 		let allow_list_ref = allow_list.iter().map(AsRef::as_ref).collect::<Vec<&str>>();
 		Parser::default()
@@ -372,7 +372,7 @@ fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError
 	}
 }
 
-/// Creates the `truncate` builtin registration.
+
 pub(crate) fn truncate_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Truncate, SE>()
 }

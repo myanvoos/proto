@@ -172,11 +172,7 @@ function cloneParams<T>(params: T): T {
 	return structuredClone(params);
 }
 
-/**
- * Broker-owned, in-process-testable multiplexer for shared language-server children.
- */
 export class LspMuxServer {
-	/** Called after the mux has had no connected sessions for its idle grace period. */
 	onIdle?: () => void;
 	readonly #servers = new Set<ServerInstance>();
 	readonly #sessions = new Set<Session>();
@@ -187,17 +183,14 @@ export class LspMuxServer {
 	#shuttingDown = false;
 	#shutdownPromise?: Promise<void>;
 
-	/** Number of currently connected mux links, including unbound ping links. */
 	get sessionCount(): number {
 		return this.#sessions.size;
 	}
 
-	/** Keys of currently live shared language-server children. */
 	get serverKeys(): string[] {
 		return [...this.#servers].map(server => server.key);
 	}
 
-	/** Listen for Content-Length framed mux links at a Unix socket. */
 	async listen(endpoint: string): Promise<void> {
 		if (this.#netServer) throw new Error("LSP mux is already listening");
 		await this.#clearStaleSocket(endpoint);
@@ -215,7 +208,6 @@ export class LspMuxServer {
 		this.#armMuxIdle();
 	}
 
-	/** Gracefully close all children, links, and the listening endpoint. */
 	async shutdown(): Promise<void> {
 		this.#shutdownPromise ??= this.#performShutdown();
 		await this.#shutdownPromise;
@@ -236,9 +228,7 @@ export class LspMuxServer {
 		if (this.#endpoint) {
 			try {
 				await fs.unlink(this.#endpoint);
-			} catch {
-				// The socket may already have been removed by process cleanup.
-			}
+			} catch {}
 		}
 	}
 
@@ -414,7 +404,7 @@ export class LspMuxServer {
 		const params = isRecord(message.params)
 			? { ...message.params, processId: process.pid }
 			: { processId: process.pid };
-		// Language servers commonly self-terminate with their advertised client pid.
+
 		await this.#writeServer(server, { ...message, id: muxId, params });
 	}
 
@@ -565,7 +555,7 @@ export class LspMuxServer {
 			}
 			return;
 		}
-		// Client-side effects such as applyEdit must reach exactly one, most recently active proto.
+
 		let focus: Session | undefined;
 		for (const session of server.sessions) {
 			if (!focus || session.lastActivity > focus.lastActivity) focus = session;
@@ -725,7 +715,6 @@ export class LspMuxServer {
 	}
 }
 
-/** Start the detached LSP mux selected by the CLI worker host environment. */
 export async function startLspMuxFromEnvironment(): Promise<void> {
 	const endpoint = process.env[LSP_MUX_SOCKET_ENV];
 	const projectDir = process.env[LSP_MUX_PROJECT_DIR_ENV];

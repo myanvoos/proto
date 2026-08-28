@@ -120,11 +120,6 @@ export class IndexedSessionStorage implements SessionStorage {
 	}
 
 	async drain(): Promise<void> {
-		// Quiesce EVERY pending backend operation, not just the drain-tracked
-		// fire-and-forget publishes: an atomic write whose commit guard passed
-		// just before a terminal seal is still on the wire with
-		// `trackDrain: false`, and a graceful shutdown (SessionManager.close)
-		// must not return while it can still publish under a reopened path.
 		while (this.#drainPending.size > 0 || this.#pathPending.size > 0) {
 			await Promise.allSettled([...this.#drainPending, ...this.#pathPending.values()]);
 		}
@@ -133,9 +128,7 @@ export class IndexedSessionStorage implements SessionStorage {
 		if (error) throw error;
 	}
 
-	ensureDirSync(_dir: string): void {
-		// Indexed backends are flat: directories are derived from key prefixes.
-	}
+	ensureDirSync(_dir: string): void {}
 
 	existsSync(path: string): boolean {
 		return this.#index.has(path);
@@ -248,9 +241,7 @@ export class IndexedSessionStorage implements SessionStorage {
 		const commitGuard = options?.commitGuard;
 		if (commitGuard && !commitGuard()) return;
 		await this.#awaitPath(path);
-		// A concurrent flushSync (writeTextSync) may have taken over during the
-		// awaitPath yield and bumped the epoch. Re-check before touching the
-		// index or enqueueing the backend publish.
+
 		if (commitGuard && !commitGuard()) return;
 		const previous = this.#index.get(path);
 		const mtimeMs = this.#allocMtimeMs();
@@ -260,11 +251,6 @@ export class IndexedSessionStorage implements SessionStorage {
 			await this.#enqueuePath(
 				path,
 				async () => {
-					// Final guard immediately before the backend actually publishes.
-					// If a concurrent writer has advanced the index past our
-					// optimistic entry, leave that newer state alone; otherwise
-					// restore the pre-write snapshot so readers do not observe a
-					// body we never wrote.
 					if (commitGuard && !commitGuard()) {
 						const current = this.#index.get(path);
 						if (current?.mtimeMs === mtimeMs) this.#restoreIndex(path, previous);
@@ -278,9 +264,7 @@ export class IndexedSessionStorage implements SessionStorage {
 			const error = toError(err);
 			try {
 				if ((await this.#backend.readFull(path)) === content) return;
-			} catch {
-				// Preserve the original write failure; verification was unavailable.
-			}
+			} catch {}
 			const current = this.#index.get(path);
 			if (current?.mtimeMs === mtimeMs) this.#restoreIndex(path, previous);
 			throw error;
@@ -519,8 +503,7 @@ class IndexedSessionStorageWriter implements SessionStorageWriter {
 	appendSync(line: string): void {
 		if (this.#closed) throw new Error("Writer closed");
 		if (this.#error) throw this.#error;
-		// Local index is updated immediately; remote publish stays ordered on the
-		// path queue. Callers that need remote durability still await append()/flush().
+
 		const mtimeMs = this.#storage._appendForWriter(this.#path, line);
 		void this.#trackPromise(this.#storage._queueAppend(this.#path, line, mtimeMs, () => this.#error));
 	}

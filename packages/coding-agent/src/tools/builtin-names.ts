@@ -33,13 +33,11 @@ const CANONICAL_TOOL_NAMES: Record<string, true> = Object.fromEntries(
 	[...BUILTIN_TOOL_NAMES, ...HIDDEN_TOOL_NAMES].map(name => [name, true]),
 );
 
-/** Canonicalize built-in IDs. Leave plugin names unchanged. */
 export function normalizeToolName(name: string): string {
 	const lower = name.toLowerCase();
 	return Object.hasOwn(CANONICAL_TOOL_NAMES, lower) ? lower : name;
 }
 
-/** Normalize and deduplicate tool names while preserving first-seen order. */
 export function normalizeToolNames(names: Iterable<string>): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
@@ -52,7 +50,6 @@ export function normalizeToolNames(names: Iterable<string>): string[] {
 	return out;
 }
 
-/** MCP tool names carry the `mcp__<server>_<tool>` prefix minted by `createMCPToolName`. */
 export function isMCPToolName(name: string): boolean {
 	return name.startsWith("mcp__");
 }

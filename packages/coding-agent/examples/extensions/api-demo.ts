@@ -1,15 +1,8 @@
-/**
- * API Demo Extension
- *
- * Demonstrates using ExtensionAPI's logger, injected schema builder, and pi
- * module access.
- */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	const z = pi.zod;
 
-	// Access the logger for debugging
 	pi.logger.debug("API demo extension loaded");
 
 	pi.registerTool({
@@ -24,14 +17,11 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _onUpdate, ctx, _signal) {
 			const { message, logLevel } = params;
 
-			// Use logger at specified level
 			pi.logger[logLevel]("API demo tool executed", { message, logLevel });
 
-			// Access pi module utilities
 			const { logger: piLogger } = pi.pi;
 			piLogger.debug("Accessed pi module from extension", { sessionFile: ctx.sessionManager.getSessionFile() });
 
-			// Get session information
 			const sessionInfo = `Session: ${ctx.sessionManager.getSessionFile()}`;
 			const modelInfo = ctx.model ? `Model: ${ctx.model.id}` : "Model: none";
 
@@ -67,7 +57,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Demonstrate event handling with logger
 	pi.on("session_start", async () => {
 		pi.logger.debug("Session started", { extension: "api-demo" });
 	});

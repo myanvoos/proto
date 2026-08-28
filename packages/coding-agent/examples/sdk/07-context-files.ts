@@ -1,18 +1,11 @@
-/**
- * Context Files (AGENTS.md)
- *
- * Context files provide project-specific instructions loaded into the system prompt.
- */
 import { createAgentSession, discoverContextFiles, SessionManager } from "@oh-my-pi/pi-coding-agent";
 
-// Discover AGENTS.md files walking up from cwd
 const discovered = discoverContextFiles();
 console.log("Discovered context files:");
 for (const file of discovered) {
 	console.log(`  - ${file.path} (${file.content.length} chars)`);
 }
 
-// Use custom context files
 await createAgentSession({
 	contextFiles: [
 		...discovered,
@@ -30,6 +23,3 @@ await createAgentSession({
 });
 
 console.log(`Session created with ${discovered.length + 1} context files`);
-
-// Disable context files:
-// contextFiles: []

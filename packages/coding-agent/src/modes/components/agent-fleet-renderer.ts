@@ -15,22 +15,18 @@ export interface RosterRender {
 	hitRows: Array<number | undefined>;
 }
 
-/** Legacy progress snapshots may omit counters; snapshot absence remains distinct. */
 function metricNumber(value: number | undefined): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-/** Compute the max content width for the current terminal, accounting for chrome. */
 export function contentWidth(): number {
 	return Math.max(TRUNCATE_LENGTHS.SHORT, (process.stdout.columns || 80) - 6);
 }
 
-/** Remove terminal controls and normalize a value before it reaches the TUI. */
 export function sanitizeDisplayText(text: string): string {
 	return replaceTabs(sanitizeText(text)).replace(/[\r\n]+/g, " ");
 }
 
-/** Sanitize a line for TUI display and truncate it to the viewport width. */
 export function sanitizeLine(text: string, maxWidth?: number): string {
 	return truncateToWidth(sanitizeDisplayText(text), maxWidth ?? contentWidth());
 }
@@ -39,7 +35,6 @@ export function clampFleetLine(line: string, width: number): string {
 	return truncateToWidth(line.replace(/[\r\n]+/g, " "), Math.max(1, width), Ellipsis.Omit);
 }
 
-/** Status glyph, colored per theme status conventions. The title-line counts spell out the words. */
 export function statusGlyph(status: AgentRef["status"]): string {
 	switch (status) {
 		case "running":
@@ -66,7 +61,6 @@ export function statusText(status: AgentRef["status"], text: string): string {
 	}
 }
 
-/** Model id + thinking level (`sonnet-4-6 ◒ high`), level colored per theme. */
 function formatModelBadge(modelId: string, level: ThinkingLevel | undefined): string {
 	const model = theme.fg("muted", sanitizeDisplayText(modelId));
 	if (!level || level === ThinkingLevel.Off || level === ThinkingLevel.Inherit) return model;
@@ -74,17 +68,14 @@ function formatModelBadge(modelId: string, level: ThinkingLevel | undefined): st
 	return `${model} ${theme.getThinkingBorderColor(level)(display)}`;
 }
 
-/** Textual model-role tag; color reinforces (but never replaces) the label. */
 export function formatRoleBadge(role: string, settings: Settings): string {
 	const info = getRoleInfo(role, settings);
 	return theme.fg(info.color ?? "muted", sanitizeDisplayText(info.tag ?? info.name ?? role));
 }
 
-/** Format a resolved selector, preserving provider identity when requested. */
 function formatResolvedModelBadge(resolved: string, preserveProvider = false, fallbackLevel?: ThinkingLevel): string {
 	const cleanResolved = sanitizeDisplayText(resolved);
-	// Model ids may themselves contain colons (`qwen3:14b`), so only treat the
-	// suffix as a thinking level when it parses as one.
+
 	const colon = cleanResolved.lastIndexOf(":");
 	const explicitLevel = colon >= 0 ? parseThinkingLevel(cleanResolved.slice(colon + 1)) : undefined;
 	const selector = explicitLevel !== undefined ? cleanResolved.slice(0, colon) : cleanResolved;
@@ -92,16 +83,6 @@ function formatResolvedModelBadge(resolved: string, preserveProvider = false, fa
 	return formatModelBadge(label, explicitLevel ?? fallbackLevel);
 }
 
-/**
- * Resolved model + reasoning level for a fleet row. Exact executor progress is
- * authoritative (and survives completion); direct live sessions are the
- * fallback for agents without an observer snapshot — the main session has no
- * snapshot at all, so its row is read straight off the live session.
- *
- * Every source reports the model that produced the row's work, never the one
- * the session merely points at: an armed fallback that has not served yet stays
- * attributed to whichever model last actually spoke.
- */
 export function modelBadge(ref: AgentRef, observed: ObservableSession | undefined): string | undefined {
 	const progress = observed?.progress;
 	const liveThinkingLevel = ref.session?.thinkingLevel;
@@ -148,7 +129,6 @@ export function contextGauge(tokens: number, window: number): string {
 	return `${theme.fg("accent", "━".repeat(filled))}${theme.fg("dim", "─".repeat(10 - filled))} ${formatNumber(tokens)}/${formatNumber(window)} ${Math.round(ratio * 100)}%`;
 }
 
-/** Fit a child-id preview without joining an arbitrarily large child set. */
 export function formatChildIds(children: readonly AgentRef[], width: number): string {
 	const max = Math.max(1, width);
 	let shown = 0;
@@ -169,7 +149,6 @@ export function formatChildIds(children: readonly AgentRef[], width: number): st
 	return text;
 }
 
-/** Bash `tree`-style ancestry prefix, clipped from the left on pathological depth. */
 export function treeBranch(
 	ref: AgentRef,
 	maxWidth: number,

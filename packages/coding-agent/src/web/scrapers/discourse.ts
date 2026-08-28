@@ -97,9 +97,6 @@ function buildPostUrl(baseUrl: string, postId: string): string {
 	return postUrl.toString();
 }
 
-/**
- * Handle Discourse forum URLs via API
- */
 export const handleDiscourse: SpecialHandler = async (
 	url: string,
 	timeout: number,

@@ -1,9 +1,9 @@
-// Pack OpenAI tiktoken rank files into UTOK1 + zstd -19 blobs.
-//
-//   bun tools/pack-openai.ts
-//
-// Reads tools/cache/{o200k_base,cl100k_base}.tiktoken (base64-token + rank
-// per line), asserts rank contiguity, writes data/<name>.bin.zst.
+
+
+
+
+
+
 
 const root = new URL("..", import.meta.url).pathname;
 

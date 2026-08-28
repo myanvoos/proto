@@ -56,18 +56,12 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 				...(model.headers ?? {}),
 				...(options?.headers ?? {}),
 			};
-			// Vertex AI ignores a `serviceTier` request-body field (unlike the direct
-			// Gemini API); priority must travel as a request header. Only `priority`
-			// has a documented Vertex request control — `flex` has none, so it's a no-op.
+
 			if (options?.serviceTier === "priority") {
 				baseHeaders["X-Vertex-AI-LLM-Shared-Request-Type"] = "priority";
 			}
 
 			if (apiKey) {
-				// Explicit `location` is a deliberate residency choice: honor it and let
-				// a 404 surface. An ambient env-derived region falls back to the global
-				// endpoint so a stray GOOGLE_*_LOCATION never breaks a previously-working
-				// global-only request.
 				const explicitLocation = options?.location;
 				const location = explicitLocation ?? resolveAmbientLocation() ?? "global";
 				const host = resolveVertexEndpointHost(location);
@@ -101,8 +95,6 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 };
 
 function resolveApiKey(options?: GoogleVertexOptions): string | undefined {
-	// options.apiKey may contain sentinel values like "<authenticated>" or "N/A"
-	// leaked from the agent loop — only use it if it looks like a real API key.
 	const optKey = options?.apiKey;
 	const realKey = optKey && !optKey.startsWith("<") && optKey !== "N/A" ? optKey : undefined;
 	return realKey || $env.GOOGLE_CLOUD_API_KEY;

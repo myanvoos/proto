@@ -17,10 +17,6 @@ import {
 import { normalizeSpinnerFramesOverride, type SymbolPreset } from "./symbols";
 import { Theme } from "./theme-class";
 
-// ============================================================================
-// Theme Loading
-// ============================================================================
-
 const BUILTIN_THEMES: Record<string, ThemeJson> = {
 	dark: darkThemeJson as ThemeJson,
 	light: lightThemeJson as ThemeJson,
@@ -41,9 +37,7 @@ export async function getAvailableThemes(): Promise<string[]> {
 				themes.add(file.slice(0, -5));
 			}
 		}
-	} catch {
-		// Directory doesn't exist or isn't readable
-	}
+	} catch {}
 	return Array.from(themes).sort();
 }
 
@@ -55,12 +49,10 @@ export interface ThemeInfo {
 export async function getAvailableThemesWithPaths(): Promise<ThemeInfo[]> {
 	const result: ThemeInfo[] = [];
 
-	// Built-in themes (embedded, no file path)
 	for (const name of Object.keys(getBuiltinThemes())) {
 		result.push({ name, path: undefined });
 	}
 
-	// Custom themes
 	const customThemesDir = getCustomThemesDir();
 	try {
 		const files = await fs.promises.readdir(customThemesDir);
@@ -72,9 +64,7 @@ export async function getAvailableThemesWithPaths(): Promise<ThemeInfo[]> {
 				}
 			}
 		}
-	} catch {
-		// Directory doesn't exist or isn't readable
-	}
+	} catch {}
 
 	return result.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -94,7 +84,7 @@ function parseThemeJson(name: string, content: string): ThemeJson {
 		}
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		// Extract color key information if available
+
 		const missingColorMatch = errorMessage.match(/missing keys: (.+)/i);
 		const missingColors: string[] = missingColorMatch ? missingColorMatch[1].split(",").map(s => s.trim()) : [];
 
@@ -127,7 +117,6 @@ export async function loadThemeJson(name: string): Promise<ThemeJson> {
 	}
 }
 
-/** Load a theme definition synchronously for the first terminal frame. */
 function loadThemeJsonSync(name: string): ThemeJson {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
@@ -147,7 +136,6 @@ export interface CreateThemeOptions {
 	colorBlindMode?: boolean;
 }
 
-/** HSV adjustment to shift green toward blue for colorblind mode (red-green colorblindness) */
 const COLORBLIND_ADJUSTMENT = { h: 60, s: 0.71 };
 const QUIET_TOKEN_DEFAULTS = {
 	modeAccent: "accent",
@@ -193,7 +181,7 @@ export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = 
 			fgColors[key as ThemeColor] = value;
 		}
 	}
-	// One glyph vocabulary: unicode everywhere.
+
 	const symbolPreset: SymbolPreset = "unicode";
 	const symbolOverrides = themeJson.symbols?.overrides ?? {};
 	const spinnerFramesOverrides = normalizeSpinnerFramesOverride(themeJson.symbols?.spinnerFrames);
@@ -205,7 +193,6 @@ export async function loadTheme(name: string, options: CreateThemeOptions = {}):
 	return createTheme(themeJson, options);
 }
 
-/** Load and construct a theme synchronously for latency-sensitive first paint. */
 export function loadThemeSync(name: string, options: CreateThemeOptions = {}): Theme {
 	return createTheme(loadThemeJsonSync(name), options);
 }

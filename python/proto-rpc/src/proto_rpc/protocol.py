@@ -810,7 +810,6 @@ class TodoItem:
     status: TodoStatus
     notes: str | None = None
     details: str | None = None
-    # What a `blocked` task is waiting on; None for all other statuses.
     blocker: str | None = None
 
 

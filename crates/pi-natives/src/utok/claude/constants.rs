@@ -1,37 +1,15 @@
-//! Marker notation and the measured character tables.
-//!
-//! Port of ctok's `constants.py`. The tables were measured against Anthropic's
-//! `count_tokens`; tables noted as enumerated must stay enumerated — no Unicode
-//! category rule reproduces them.
-
-/// ⟨bow⟩ — begin-of-word marker byte.
 pub const BOW: u8 = 0x01;
-/// ⟨eow⟩ — end-of-word marker byte.
+
 pub const EOW: u8 = 0x02;
-// 0x03 is ⟨pad⟩, the message-frame marker: it never stands in the marked
-// stream, only inside vocabulary pieces.
-/// ⟨shift⟩ — title-case marker byte.
+
 pub const SHIFT: u8 = 0x04;
-/// ⟨caps⟩ — all-caps marker byte.
+
 pub const CAPS: u8 = 0x05;
 
-/// Whether `b` is one of the five marker bytes, ⟨bow⟩ through ⟨caps⟩.
-///
-/// ctok writes its markers as the noncharacters U+FDD0..=U+FDD4; this port and
-/// its vocabulary generator write one C0 byte each instead, three times shorter
-/// in the stream and in the matching automaton. Text cannot collide with them:
-/// [`super::normalize::nfc`] folds NUL to a space and strips every other C0
-/// control before a stream is written, so a marker byte in a stream is always a
-/// marker — where ctok's spelling has to escape literal noncharacters out of
-/// the way, this needs nothing.
 pub const fn is_marker_byte(b: u8) -> bool {
 	matches!(b, BOW..=CAPS)
 }
 
-/// Non-ASCII symbols/punctuation that tile over the punct vocabulary rather
-/// than standing alone. Enumerated: the behaviour splits per codepoint with no
-/// categorical rule (`（` is punct but `）` is hard). Anything unlisted stays
-/// HARD.
 pub const fn is_punct_sym(c: char) -> bool {
 	matches!(
 		c,
@@ -50,52 +28,33 @@ pub const fn is_punct_sym(c: char) -> bool {
 	)
 }
 
-/// Symbol-letters measured to take the full word model exactly like Latin
-/// letters. Enumerated blocks: category Nl/So/Lu splits both ways, and the
-/// Hangzhou numerals (also Nl) measured markerless, so it is the block that
-/// predicts, not the category.
 pub const fn is_symbol_letter(o: u32) -> bool {
 	matches!(o,
-		0x16ee..=0x16f0     // Runic golden numbers (Nl, caseless)
-		| 0x2160..=0x2188   // Roman numerals (Nl/Lu/Ll, cased pairs)
-		| 0x24b6..=0x24e9   // circled letters (So, cased)
-		| 0xa6e6..=0xa6ef   // Bamum number-letters (Nl, caseless)
+		0x16ee..=0x16f0
+		| 0x2160..=0x2188
+		| 0x24b6..=0x24e9
+		| 0xa6e6..=0xa6ef
 	)
 }
 
-/// Variation selectors are gc=Mn but take no word model. The supplementary
-/// selectors (U+E0100..) are astral and already HARD.
 pub const fn is_variation_selector(c: char) -> bool {
 	matches!(c, '\u{fe00}'..='\u{fe0f}')
 }
 
-/// The one canonical-combining-class-9 character that does not separate word
-/// runs: U+0E3A THAI CHARACTER PHINTHU.
 pub const NON_SEPARATOR: char = '\u{0e3a}';
 
-/// The suffixes an apostrophe binds into the word ahead of it, deleting that
-/// word's ⟨bow⟩. Standard English contraction set, lowercase and whole-word
-/// only; measured per member.
 pub const fn is_contraction_suffix(body: &[u8]) -> bool {
 	matches!(body, b"s" | b"t" | b"d" | b"m" | b"ll" | b"re" | b"ve")
 }
 
-/// C0/C1 controls the API strips before tokenizing (cost 0): every gc=Cc
-/// except TAB, LF and NUL.
 pub const fn is_stripped_control(c: char) -> bool {
 	matches!(c, '\u{01}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
 }
 
-/// BMP private use is stripped the same way; its two neighbours join into one
-/// word. The supplementary private-use planes are unprobed and deliberately
-/// left out.
 pub const fn is_stripped_private(c: char) -> bool {
 	matches!(c, '\u{e000}'..='\u{f8ff}')
 }
 
-/// Space separators the tokenizer treats identically to U+0020: all Zs except
-/// U+3000 (ideographic space), plus Zl/Zp. TAB, LF and U+3000 each have their
-/// own cost.
 pub const fn is_funny_space(c: char) -> bool {
 	matches!(
 		c,
@@ -104,9 +63,6 @@ pub const fn is_funny_space(c: char) -> bool {
 	)
 }
 
-/// The four standard curly quotes fold to their ASCII forms (v3 only; NFC does
-/// not do this). The low-9 mark U+201E is a different token and is deliberately
-/// not folded.
 pub const fn fold_quote(c: char) -> char {
 	match c {
 		'\u{2018}' | '\u{2019}' => '\'',
@@ -115,11 +71,6 @@ pub const fn fold_quote(c: char) -> char {
 	}
 }
 
-/// Marks that terminate the orthographic syllable and so separate word runs,
-/// beyond the ccc-9 viramas: the measured U+0300 combining ranges, the swept
-/// combining-block annotation ranges, and the enumerated separator signs
-/// (Thai/Lao tone marks, nukta, Khmer consonant shifters, …). Merged into one
-/// sorted range table; provenance per group lives in ctok's `constants.py`.
 static SEPARATOR_RANGES: &[(u32, u32)] = &[
 	(0x0300, 0x0344),
 	(0x0346, 0x0362),
@@ -200,8 +151,6 @@ static SEPARATOR_RANGES: &[(u32, u32)] = &[
 	(0xfe20, 0xfe2f),
 ];
 
-/// Whether `o` falls in one of the measured separator ranges (excluding the
-/// ccc-9 virama population, which [`super::normalize::is_separator`] handles).
 pub fn in_separator_ranges(o: u32) -> bool {
 	let idx = SEPARATOR_RANGES.partition_point(|&(lo, _)| lo <= o);
 	idx > 0 && o <= SEPARATOR_RANGES[idx - 1].1

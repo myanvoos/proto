@@ -1,5 +1,3 @@
-//! Shared walker scan cache used by owned-entry collection.
-
 use std::{
 	borrow::Cow,
 	fmt,
@@ -76,30 +74,22 @@ fn normalize_worker_count(configured: usize) -> usize {
 	normalize_worker_count_with_available(configured, available_worker_count())
 }
 
-/// Configured cache TTL in milliseconds.
 pub fn cache_ttl_ms() -> u64 {
 	*CACHE_TTL_MS
 }
 
-/// Configured empty-result recheck threshold in milliseconds.
 pub fn empty_recheck_ms() -> u64 {
 	*EMPTY_RECHECK_MS
 }
 
-/// Configured maximum number of cache entries.
 pub fn max_cache_entries() -> usize {
 	*MAX_CACHE_ENTRIES
 }
 
-/// Effective worker count for filesystem traversal and related parallel work.
-///
-/// `PI_WALK_WORKERS=0` means auto-detect; `PI_WALK_WORKERS=1` forces serial
-/// work.
 pub fn walk_workers() -> usize {
 	*WALK_WORKERS
 }
 
-/// Run parallel traversal-adjacent work on the centralized walker pool.
 pub fn with_walk_pool<R>(operation: impl FnOnce() -> R + Send) -> R
 where
 	R: Send,
@@ -113,12 +103,10 @@ where
 
 const PARALLEL_MIN_FILES: usize = 256;
 
-/// Return whether traversal-adjacent work should run in parallel.
 pub fn should_parallelize(item_count: usize) -> bool {
 	walk_workers() > 1 && item_count >= PARALLEL_MIN_FILES
 }
 
-/// Run traversal-adjacent work serially or on the centralized walker pool.
 pub fn parallel_for_each<T, E>(
 	items: &[T],
 	operation: impl Fn(&T) -> std::result::Result<(), E> + Send + Sync,
@@ -133,8 +121,6 @@ where
 	with_walk_pool(|| items.par_iter().try_for_each(operation))
 }
 
-/// Run traversal-adjacent work with per-worker state on the centralized walker
-/// pool.
 pub fn parallel_for_each_init<T, S, E>(
 	items: &[T],
 	init: impl Fn() -> S + Send + Sync,
@@ -170,12 +156,10 @@ fn cache_key(root: &Path, mut options: WalkOptions) -> CacheKey {
 	CacheKey { root: root.to_path_buf(), options }
 }
 
-/// Normalize a filesystem path to a forward-slash relative string.
 pub fn normalize_relative_path<'a>(root: &Path, path: &'a Path) -> Cow<'a, str> {
 	path.strip_prefix(root).unwrap_or(path).to_string_lossy()
 }
 
-/// Return whether a path contains the exact component name.
 pub fn contains_component(path: &Path, target: &str) -> bool {
 	path.components().any(|component| {
 		component
@@ -185,7 +169,6 @@ pub fn contains_component(path: &Path, target: &str) -> bool {
 	})
 }
 
-/// Return whether user-facing discovery should skip a relative path.
 pub fn should_skip_path(path: &Path, mentions_node_modules: bool) -> bool {
 	if contains_component(path, ".git") {
 		return true;
@@ -216,7 +199,6 @@ fn mtime_ms(metadata: &std::fs::Metadata) -> Option<f64> {
 		.map(|duration| duration.as_millis() as f64)
 }
 
-/// Classify an existing filesystem path, skipping unsupported special files.
 pub fn classify_file_type(path: &Path) -> Option<(FileType, Option<f64>, Option<u64>)> {
 	let metadata = std::fs::symlink_metadata(path).ok()?;
 	let file_type = file_type_from_std(metadata.file_type())?;
@@ -228,7 +210,6 @@ pub fn classify_file_type(path: &Path) -> Option<(FileType, Option<f64>, Option<
 	Some((file_type, mtime_ms(&metadata), size))
 }
 
-/// Resolve a search path string to a canonical directory path.
 pub fn resolve_search_path(path: &str) -> Result<PathBuf, WalkError<String>> {
 	let candidate = PathBuf::from(path);
 	let root = if candidate.is_absolute() {
@@ -316,7 +297,6 @@ where
 	}
 }
 
-/// Invalidate cache entries whose root contains `target`.
 pub fn invalidate_path(target: &Path) {
 	let keys_to_remove: Vec<CacheKey> = SCAN_CACHE
 		.iter()
@@ -328,7 +308,6 @@ pub fn invalidate_path(target: &Path) {
 	}
 }
 
-/// Resolve a possibly relative path and invalidate matching cache roots.
 pub fn invalidate_path_string(path: &str) {
 	let candidate = PathBuf::from(path);
 	let absolute = if candidate.is_absolute() {
@@ -350,7 +329,6 @@ pub fn invalidate_path_string(path: &str) {
 	invalidate_path(&target);
 }
 
-/// Clear the entire scan cache.
 pub fn invalidate_all() {
 	SCAN_CACHE.clear();
 }

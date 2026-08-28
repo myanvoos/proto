@@ -32,7 +32,7 @@ interface PromptActionAutocompleteItem extends AutocompleteItem {
 interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
-	/** Usage count per command name for frequency-ranked slash completions. */
+
 	commandUsage?: (name: string) => number;
 	keybindings: KeybindingsManager;
 	copyCurrentLine: () => void;
@@ -167,9 +167,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
 				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
 				if (argumentSuggestions) return argumentSuggestions;
-				// No slash-argument completion for this input: preserve numeric
-				// GitHub references and internal URLs while keeping prompt-action
-				// tokens such as `#copy` literal.
+
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
 				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);

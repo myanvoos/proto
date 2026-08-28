@@ -5,31 +5,19 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
-/** Abort reason used only when the owning session shuts down the entire manager. */
+
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
-/**
- * Adaptive ("smart") `fleet` poll-wait ladder (ms). A tight poll loop climbs
- * these rungs so each immediate re-poll backs off and stops spending turns on
- * "still running" frames; the floor (first rung) is the shortest wait and the
- * top rung is the longest a smart poll will ever block. Only used when
- * `async.pollWaitDuration` is set to `smart`; fixed durations wait verbatim.
- */
 const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
-/**
- * Going at least this long between poll calls means the agent stepped out of
- * the poll loop to do real work — the next poll drops back to the ladder floor.
- */
+
 const POLL_ESCALATION_RESET_MS = 60_000;
 
 interface PollEscalationState {
-	/** Index into POLL_WAIT_LADDER_MS used for the most recent poll wait. */
 	level: number;
-	/** Timestamp (ms) when the most recent poll wait returned. */
+
 	lastPollEndAt: number;
 }
 
-/** Kind of work a managed job runs; drives job-row badges and delivery labels. */
 export type AsyncJobType = "bash" | "worker" | "eval";
 
 export interface AsyncJob {
@@ -42,41 +30,19 @@ export interface AsyncJob {
 	promise: Promise<void>;
 	resultText?: string;
 	errorText?: string;
-	/** Latest tool-render details reported by the running job. */
+
 	latestDetails?: Record<string, unknown>;
-	/**
-	 * Registry id of the agent that registered the job (e.g. "Main",
-	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
-	 * does not cancel its parent's jobs. Undefined for callers that don't
-	 * supply an id (e.g. legacy tests, SDK consumers without an agent context).
-	 */
+
 	ownerId?: string;
-	/**
-	 * Registry id of the subagent this job runs (worker/tan jobs). Lets
-	 * job-view code link a job row to its AgentRegistry ref even when the job
-	 * id differs from the agent id (worker turn jobs, tan clones).
-	 */
+
 	agentId?: string;
-	/**
-	 * Job is registered but parked behind a caller-managed gate (e.g. a task
-	 * batch semaphore). Queued jobs do not count toward the running-job limit
-	 * until the caller invokes `markRunning()` from the run context.
-	 */
+
 	queued?: boolean;
 }
 
-/** Delivery callback for a settled job's result text. */
 type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
 
 interface AsyncJobManagerOptions {
-	/**
-	 * Delivery sink for UNOWNED completions (jobs registered without an
-	 * `ownerId`). Owned deliveries route exclusively through
-	 * {@link AsyncJobManager.registerDeliverySink}; when the owner has no live
-	 * sink they are dead-lettered (dropped with a warning; the job row keeps
-	 * the result text until retention eviction) — never routed here, which
-	 * would leak one agent's result into another session.
-	 */
 	onJobComplete?: AsyncJobDeliverySink;
 	maxRunningJobs?: number;
 	retentionMs?: number;
@@ -107,20 +73,15 @@ interface AsyncJobReapResult {
 
 export interface AsyncJobRegisterOptions {
 	id?: string;
-	/** Registry id of the agent that owns this job; used to scope cancelAll. */
+
 	ownerId?: string;
-	/** Registry id of the subagent this job runs; see {@link AsyncJob.agentId}. */
+
 	agentId?: string;
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
-	/** Register the job in queued state; see {@link AsyncJob.queued}. */
+
 	queued?: boolean;
 }
 
-/**
- * Filter applied to job query/cancel APIs. With `ownerId`, results are
- * restricted to jobs registered by that agent (registry id from
- * `AgentRegistry`, e.g. "Main", "AuthLoader").
- */
 interface AsyncJobFilter {
 	ownerId?: string;
 }
@@ -128,17 +89,14 @@ interface AsyncJobFilter {
 export class AsyncJobManager {
 	static #instance: AsyncJobManager | undefined;
 
-	/** Process-global instance shared by internal URL protocol handlers and tools. */
 	static instance(): AsyncJobManager | undefined {
 		return AsyncJobManager.#instance;
 	}
 
-	/** Install or clear the process-global instance. */
 	static setInstance(value: AsyncJobManager | undefined): void {
 		AsyncJobManager.#instance = value;
 	}
 
-	/** Reset the process-global instance. Test-only. */
 	static resetForTests(): void {
 		AsyncJobManager.#instance = undefined;
 	}
@@ -174,10 +132,9 @@ export class AsyncJobManager {
 		this.#retentionMs = Math.max(0, Math.floor(options.retentionMs ?? DEFAULT_RETENTION_MS));
 	}
 
-	/** True when the running-job count has reached the configured cap. */
 	get atCapacity(): boolean {
 		if (this.#disposed) return true;
-		// Mirror register(): queued jobs hold no execution slot.
+
 		let activeCount = 0;
 		for (const job of this.#jobs.values()) {
 			if (job.status === "running" && !job.queued) activeCount++;
@@ -192,7 +149,7 @@ export class AsyncJobManager {
 			jobId: string;
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
-			/** Clear the queued flag once the job actually starts executing. */
+
 			markRunning: () => void;
 		}) => Promise<string>,
 		options?: AsyncJobRegisterOptions,
@@ -200,8 +157,7 @@ export class AsyncJobManager {
 		if (this.#disposed) {
 			throw new Error("Async job manager is disposed");
 		}
-		// Queued jobs hold no execution slot yet — only count jobs that are
-		// actually running so a large parked batch cannot starve registration.
+
 		let activeCount = 0;
 		for (const existing of this.#jobs.values()) {
 			if (existing.status === "running" && !existing.queued) activeCount++;
@@ -279,11 +235,6 @@ export class AsyncJobManager {
 		return id;
 	}
 
-	/**
-	 * Cancel a single job by id. When `filter.ownerId` is set and does not
-	 * match the job's owner, the call is treated as not-found (returns false)
-	 * so cross-agent cancellation is rejected at the manager level.
-	 */
 	cancel(id: string, filter?: AsyncJobFilter): boolean {
 		const job = this.#jobs.get(id);
 		if (!job) return false;
@@ -354,14 +305,6 @@ export class AsyncJobManager {
 		return removed;
 	}
 
-	/**
-	 * Compute the next adaptive ("smart") wait (ms) for a blocking `fleet` wait by
-	 * the given owner. Consecutive polls — those starting within
-	 * POLL_ESCALATION_RESET_MS of the previous poll returning — climb
-	 * POLL_WAIT_LADDER_MS so a tight wait loop backs off; a longer gap means the
-	 * agent left to do real work, so the wait resets to the floor. Pair each call
-	 * with `recordPollWaitEnd()` once the wait returns.
-	 */
 	nextPollWaitMs(ownerId: string | undefined, now: number = Date.now()): number {
 		const prev = this.#pollEscalation.get(ownerId);
 		const reset = !prev || now - prev.lastPollEndAt >= POLL_ESCALATION_RESET_MS;
@@ -370,11 +313,6 @@ export class AsyncJobManager {
 		return POLL_WAIT_LADDER_MS[level];
 	}
 
-	/**
-	 * Mark a blocking poll wait as finished so the idle-reset window is measured
-	 * from now. Polling again before POLL_ESCALATION_RESET_MS elapses keeps
-	 * climbing the ladder; waiting longer resets it to the floor.
-	 */
 	recordPollWaitEnd(ownerId: string | undefined, now: number = Date.now()): void {
 		const prev = this.#pollEscalation.get(ownerId);
 		this.#pollEscalation.set(ownerId, { level: prev?.level ?? 0, lastPollEndAt: now });
@@ -398,11 +336,6 @@ export class AsyncJobManager {
 		return before - this.#deliveries.length;
 	}
 
-	/**
-	 * Lift a foreground-wait suppression set via `acknowledgeDeliveries`. If the
-	 * job already finished while suppressed (its delivery enqueue was skipped),
-	 * re-enqueue the completion so the result is still delivered exactly once.
-	 */
 	resumeDeliveries(jobIds: string[]): void {
 		for (const rawId of jobIds) {
 			const jobId = rawId.trim();
@@ -418,16 +351,6 @@ export class AsyncJobManager {
 		}
 	}
 
-	/**
-	 * Cancel running jobs. With `filter.ownerId` set, cancels only jobs the
-	 * matching agent registered; with no filter, cancels every running job
-	 * (used by `dispose()` to nuke the manager's state).
-	 *
-	 * `reason` is forwarded to each job's `AbortController.abort`, so a session
-	 * teardown can tag its owned jobs with {@link ASYNC_JOB_MANAGER_SHUTDOWN_REASON}
-	 * before `dispose()` runs — the task executor reads it to park (not
-	 * tombstone) a subagent interrupted purely by process shutdown.
-	 */
 	cancelAll(filter?: AsyncJobFilter, reason?: unknown): void {
 		this.#cancelJobs(filter, reason);
 	}
@@ -440,16 +363,6 @@ export class AsyncJobManager {
 		}
 	}
 
-	/**
-	 * Immediately evict completed and failed jobs matching the filter instead of
-	 * waiting for retention expiry, dropping every queued delivery so a prior
-	 * session's result can never be injected into a later transcript. Returns the
-	 * number of jobs evicted.
-	 *
-	 * A delivery whose sink call is already in flight (or drained onto a caller's
-	 * yield queue) is guarded by the owner's delivery generation, not the per-id
-	 * suppression marker — that marker is cleared when the id is reused.
-	 */
 	evictCompletedJobs(filter?: AsyncJobFilter): number {
 		let evicted = 0;
 		for (const job of this.#filterJobs(this.#jobs.values(), filter)) {
@@ -464,16 +377,6 @@ export class AsyncJobManager {
 		await Promise.all(Array.from(this.#jobs.values()).map(job => job.promise));
 	}
 
-	/**
-	 * Route completions for jobs owned by `ownerId` to `sink`. Sessions register
-	 * their own sink at construction and unregister on dispose. Owned deliveries
-	 * with no live sink are dead-lettered — `onJobComplete` serves only unowned
-	 * deliveries.
-	 *
-	 * Last registration wins for an owner id; the returned unregister clears the
-	 * mapping only while it still points at `sink`, so a revived session's fresh
-	 * registration survives its parked predecessor's late cleanup.
-	 */
 	registerDeliverySink(ownerId: string, sink: AsyncJobDeliverySink): () => void {
 		this.#deliverySinks.set(ownerId, sink);
 		return () => {
@@ -481,17 +384,6 @@ export class AsyncJobManager {
 		};
 	}
 
-	/**
-	 * Wait until every job owned by `ownerId` has settled — its run promise
-	 * resolved, which for cancelled jobs means the underlying process actually
-	 * exited. Jobs registered while waiting (e.g. by a follow-up turn) are
-	 * awaited too. Returns false when `timeoutMs` elapses first.
-	 *
-	 * `excludeSuppressed` skips jobs whose delivery is suppressed (acknowledged
-	 * or `fleet`-watched): those can never re-wake a run, so quiescence barriers
-	 * pass it to share one contract with the pending-async-wake predicate.
-	 * Teardown reaps omit it — worktree safety concerns every owner process.
-	 */
 	async waitForOwnerJobs(
 		ownerId: string,
 		options?: { timeoutMs?: number; excludeSuppressed?: boolean },
@@ -513,12 +405,6 @@ export class AsyncJobManager {
 		}
 	}
 
-	/**
-	 * Cancel every job owned by `ownerId`, then wait only until `deadlineAt`.
-	 * The returned completion keeps waiting for actual process settlement when
-	 * the deadline expires, so callers can move that cleanup out of the
-	 * user-visible Task wait without losing ownership of the live work.
-	 */
 	async cancelAndReapOwnerJobs(ownerId: string, deadlineAt: number): Promise<AsyncJobReapResult> {
 		this.cancelAll({ ownerId });
 		const timeoutMs = Math.max(0, deadlineAt - Date.now());
@@ -730,7 +616,6 @@ export class AsyncJobManager {
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
-		// Skip delivery if already acknowledged
 		if (this.isDeliverySuppressed(jobId)) {
 			return;
 		}
@@ -786,14 +671,6 @@ export class AsyncJobManager {
 		}
 	}
 
-	/**
-	 * Resolve the sink for one delivery attempt: owned deliveries route ONLY to
-	 * their owner's registered sink (a missing sink dead-letters — never the
-	 * default, which would misroute a dead owner's result into another
-	 * session); unowned deliveries use the constructor default. Resolved per
-	 * attempt so a sink registered between retries (e.g. a revived session)
-	 * picks up the retry.
-	 */
 	#resolveDeliverySink(ownerId: string | undefined): AsyncJobDeliverySink | undefined {
 		if (ownerId !== undefined) return this.#deliverySinks.get(ownerId);
 		return this.#onJobComplete;
@@ -802,10 +679,6 @@ export class AsyncJobManager {
 	#deliverDelivery(delivery: AsyncJobDelivery): Promise<void> {
 		const sink = this.#resolveDeliverySink(delivery.ownerId);
 		if (!sink) {
-			// Dead-letter: owned delivery with no live sink (session disposed or
-			// parked), or unowned delivery with no default sink. Drop it — the
-			// job row keeps its result/error text until retention eviction, so
-			// the outcome stays inspectable via job queries and agent:// reads.
 			logger.warn("Async job delivery dead-lettered: no delivery sink", {
 				jobId: delivery.jobId,
 				ownerId: delivery.ownerId,

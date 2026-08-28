@@ -19,12 +19,6 @@ export function stringifyJson(value: unknown): string {
 	return stringifyJsonValue(value) ?? "null";
 }
 
-/**
- * Render `name(key=value, …)` with Python-literal argument values. Top-level
- * multiline strings render as verbatim `"""…"""` blocks so payload-carrying
- * args (file content, scripts, patches) keep real newlines instead of `\n`
- * escape soup; nested values always use escaped single-line literals.
- */
 export function pyCall(name: string, args: Record<string, unknown>): string {
 	let kwargs = "";
 	for (const key in args) {
@@ -35,9 +29,6 @@ export function pyCall(name: string, args: Record<string, unknown>): string {
 
 function pyArgValue(value: unknown): string {
 	if (typeof value === "string" && value.includes("\n")) {
-		// Verbatim `"""` fencing is only unambiguous when the content cannot
-		// collide with the fence: no `"""` inside, no quote butting against a
-		// fence edge, no trailing backslash swallowing the closer.
 		const fenceSafe =
 			!value.includes('"""') && !value.startsWith('"') && !value.endsWith('"') && !value.endsWith("\\");
 		if (fenceSafe) return `"""${value}"""`;
@@ -45,7 +36,6 @@ function pyArgValue(value: unknown): string {
 	return pyValue(value);
 }
 
-/** Render a JSON-ish value as a Python literal (`True`/`False`/`None`, escaped strings, lists, dicts). */
 export function pyValue(value: unknown): string {
 	if (value === null || value === undefined) return "None";
 	if (typeof value === "boolean") return value ? "True" : "False";

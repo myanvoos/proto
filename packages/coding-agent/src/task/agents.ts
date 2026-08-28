@@ -1,13 +1,8 @@
-/**
- * Bundled agent definitions.
- *
- * Agents are embedded at build time via Bun's import with { type: "text" }.
- */
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { parseAgentFields } from "../discovery/helpers";
 import designerMd from "../prompts/agents/designer.md" with { type: "text" };
-// Embed agent markdown files at build time
+
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
@@ -66,8 +61,6 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	},
 ];
 
-// Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.
-
 class AgentParsingError extends Error {
 	constructor(
 		error: Error,
@@ -91,9 +84,6 @@ class AgentParsingError extends Error {
 	}
 }
 
-/**
- * Parse an agent from embedded content.
- */
 export function parseAgent(
 	filePath: string,
 	content: string,
@@ -116,13 +106,8 @@ export function parseAgent(
 	};
 }
 
-/** Cache for bundled agents */
 let bundledAgentsCache: AgentDefinition[] | null = null;
 
-/**
- * Load all bundled agents from embedded content.
- * Results are cached after first load.
- */
 export function loadBundledAgents(): AgentDefinition[] {
 	if (bundledAgentsCache !== null) {
 		return bundledAgentsCache;
@@ -133,9 +118,6 @@ export function loadBundledAgents(): AgentDefinition[] {
 	return bundledAgentsCache;
 }
 
-/**
- * Get a bundled agent by name.
- */
 export function getBundledAgent(name: string): AgentDefinition | undefined {
 	return loadBundledAgents().find(a => a.name === name);
 }

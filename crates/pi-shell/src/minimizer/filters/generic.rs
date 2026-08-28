@@ -1,5 +1,3 @@
-//! Generic fallback transforms.
-
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
 #[must_use]

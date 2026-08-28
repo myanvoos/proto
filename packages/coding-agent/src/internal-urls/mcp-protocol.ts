@@ -23,13 +23,9 @@ function getUriTemplateMatchScore(
 function extractResourceUri(url: InternalUrl): string {
 	const scheme = url.protocol.replace(/:$/, "").toLowerCase();
 	if (scheme !== "mcp") {
-		// Server-advertised native URI (hierarchical or opaque). Preserve the
-		// input byte-for-byte: `resolveTargetServer` matches by exact string
-		// equality, so e.g. `catalog://root/` must keep its trailing slash.
 		return url.rawHref ?? url.href;
 	}
-	// Legacy `mcp://<resource-uri>` wrapper: reconstruct the wrapped URI and
-	// elide a bare trailing `/` that URL parsing adds to host-only forms.
+
 	const host = url.rawHost || url.hostname;
 	const rawPathname = url.rawPathname ?? url.pathname;
 	const hasPath = rawPathname && rawPathname !== "/";
@@ -106,13 +102,6 @@ function formatAvailableResources(mcpManager: MCPManager): string {
 	return available || "  (none)";
 }
 
-/**
- * Protocol handler for MCP resources.
- *
- * URL forms:
- * - mcp://<resource-uri> (e.g. mcp://test://notes, mcp://ibkr://portfolio/positions)
- * - A resource's native URI when its scheme has no PROTO handler (e.g. ags://capabilities/current-host)
- */
 export class McpProtocolHandler implements ProtocolHandler {
 	readonly scheme = "mcp";
 	readonly immutable = true;

@@ -1,8 +1,3 @@
-/**
- * Setup CLI command handler.
- *
- * Handles `proto setup` for onboarding and `proto setup <component>` for optional dependencies.
- */
 import * as path from "node:path";
 import { getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -33,9 +28,6 @@ function managedPythonPath(): string {
 	return path.join(MANAGED_PYTHON_ENV, "bin", "python");
 }
 
-/**
- * Check Python environment and kernel dependencies.
- */
 export async function checkPythonSetup(cwd: string, interpreter?: string): Promise<PythonCheckResult> {
 	const availability = await checkPythonKernelAvailability(cwd, interpreter, { forceProbe: true });
 	return {
@@ -46,17 +38,6 @@ export async function checkPythonSetup(cwd: string, interpreter?: string): Promi
 	};
 }
 
-/**
- * Install Python packages using uv (preferred) or pip.
- */
-// Python installation helper removed: the subprocess runner has no Python
-// package dependencies beyond a working interpreter. `proto setup python --check`
-// remains as a probe; users install optional libs (pandas, matplotlib, ...)
-// directly via pip or the in-process `%pip` magic.
-
-/**
- * Run the setup command.
- */
 export async function runSetupCommand(cmd: SetupCommandArgs): Promise<void> {
 	switch (cmd.component) {
 		case "python":

@@ -1,11 +1,6 @@
 import { detectTerminalId, getTerminalInfo } from "@oh-my-pi/pi-tui";
 import type { ColorMode, ColorValue } from "./schema";
 
-// ============================================================================
-// Color Utilities
-// ============================================================================
-
-/** Resolve theme color depth from the shared terminal capability model. */
 export function detectColorMode(env: NodeJS.ProcessEnv = Bun.env): ColorMode {
 	if (env.WT_SESSION) return "truecolor";
 	const terminal = getTerminalInfo(detectTerminalId(env), process.platform, env);
@@ -66,24 +61,13 @@ export function resolveThemeColors<T extends Record<string, ColorValue>>(
 	return resolved as Record<keyof T, string | number>;
 }
 
-/**
- * Resolve a theme color value (hex string or 256-color index) to a CSS hex string.
- * Empty string represents the default terminal color.
- */
 export function resolveToHex(value: string | number, isLight: boolean): string {
 	if (typeof value === "number") return ansi256ToHex(value);
 	if (value === "") return isLight ? "#000000" : "#e5e5e7";
 	return value;
 }
 
-/**
- * Convert a 256-color index to hex string.
- * Indices 0-15: basic colors (approximate)
- * Indices 16-231: 6x6x6 color cube
- * Indices 232-255: grayscale ramp
- */
 function ansi256ToHex(index: number): string {
-	// Basic colors (0-15) - approximate common terminal values
 	const basicColors = [
 		"#000000",
 		"#800000",
@@ -106,7 +90,6 @@ function ansi256ToHex(index: number): string {
 		return basicColors[index];
 	}
 
-	// Color cube (16-231): 6x6x6 = 216 colors
 	if (index < 232) {
 		const cubeIndex = index - 16;
 		const r = Math.floor(cubeIndex / 36);
@@ -116,7 +99,6 @@ function ansi256ToHex(index: number): string {
 		return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 	}
 
-	// Grayscale (232-255): 24 shades
 	const gray = 8 + (index - 232) * 10;
 	const grayHex = gray.toString(16).padStart(2, "0");
 	return `#${grayHex}${grayHex}${grayHex}`;

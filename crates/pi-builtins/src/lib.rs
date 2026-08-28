@@ -1,4 +1,4 @@
-//! Standard builtins.
+
 
 #[cfg(feature = "builtin.alias")]
 mod alias;
@@ -56,8 +56,8 @@ mod help;
 mod history;
 #[cfg(feature = "builtin.jobs")]
 mod jobs;
-// Needs either unix signals or the windows process table; no other target
-// has a way to signal a process (upstream brush gated this to unix alone).
+
+
 #[cfg(all(feature = "builtin.kill", any(unix, windows)))]
 mod kill;
 #[cfg(feature = "builtin.let")]
@@ -110,10 +110,10 @@ mod factory;
 mod host;
 mod unimp;
 
-// ── Utility builtins ──────────────────────────────────────────────────────────
-// Ports of the standalone command-line utilities the shell ships in-process.
-// Each runs against the explicit `host::Host` view of the shell; see
-// `src/host.rs` for the contract.
+
+
+
+
 #[cfg(feature = "util.b2sum")]
 mod b2sum;
 #[cfg(feature = "util.base32")]
@@ -124,8 +124,8 @@ mod base64;
 mod basename;
 #[cfg(feature = "util.cat")]
 mod cat;
-/// The `cksum` builtin plus the shared checksum machinery behind `md5sum`,
-/// `sha*sum`, and `b2sum`.
+
+
 #[cfg(feature = "util.cksum")]
 mod cksum;
 #[cfg(feature = "util.md5sum")]
@@ -194,10 +194,10 @@ mod pgrep;
 mod pidwait;
 #[cfg(feature = "util.pkill")]
 mod pkill;
-/// Shared process-matching engine behind `pgrep`, `pkill`, and `pidwait`.
+
 #[cfg(feature = "util.proc-match")]
 mod proc_match;
-/// Shared process-table snapshot behind the process builtins.
+
 #[cfg(feature = "util.procs")]
 mod proc_snapshot;
 #[cfg(feature = "util.ps")]
@@ -260,21 +260,21 @@ mod yes;
 pub use builder::ShellBuilderExt;
 pub use factory::{BuiltinSet, default_builtins, process_builtins, utility_builtins};
 pub use host::{panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available};
-/// The process table the process builtins read, and the liveness state of an
-/// entry in it. Public so an embedding shell can inspect processes through the
-/// same snapshot its `ps`/`pgrep`/`kill` builtins use.
+
+
+
 #[cfg(feature = "util.procs")]
 pub use proc_snapshot::{ProcInfo, ProcessStatus};
 
-/// Macro to define a struct that represents a shell built-in flag argument that
-/// can be enabled or disabled by specifying an option with a leading '+' or '-'
-/// character.
-///
-/// # Arguments
-///
-/// - `$struct_name` - The identifier to be used for the struct to define.
-/// - `$flag_char` - The character to use as the flag.
-/// - `$desc` - The string description of the flag.
+
+
+
+
+
+
+
+
+
 #[macro_export]
 macro_rules! minus_or_plus_flag_arg {
     ($struct_name:ident, $flag_char:literal, $desc:literal) => {

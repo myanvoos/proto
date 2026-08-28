@@ -1,10 +1,10 @@
-//! `tee` builtin: copy standard input to standard output and each named file.
-//!
-//! Ported from uutils coreutils 0.8.0. The standalone utility manipulates
-//! process-global signal disposition for `-i` and SIGPIPE. An in-process builtin
-//! cannot do that safely: `-i` is accepted without changing the shell's signal
-//! policy, while `BrokenPipe` from the invocation's stdout is handled according
-//! to `--output-error` and does not prevent writes to the remaining outputs.
+
+
+
+
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -40,7 +40,7 @@ struct Options {
 	output_error: Option<OutputErrorMode>,
 }
 
-/// Parsed `tee` invocation.
+
 pub(crate) struct Tee {
 	matches: ArgMatches,
 }
@@ -329,7 +329,7 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `tee` builtin registration.
+
 pub(crate) fn tee_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Tee, SE>()
 }

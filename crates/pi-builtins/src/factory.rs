@@ -6,33 +6,33 @@ use brush_core::builtins::{self, builtin, decl_builtin, raw_arg_builtin, simple_
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// Identifies well-known sets of builtins.
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum BuiltinSet {
-	/// Identifies builtins appropriate for POSIX `sh` compatibility.
+
 	ShMode,
-	/// Identifies builtins appropriate for a more full-featured
-	/// `bash`-compatible shell.
+
+
 	BashMode,
 }
 
-/// Returns the default set of built-in commands.
-///
-/// # Arguments
-///
-/// * `set` - The set of built-ins to return.
+
+
+
+
+
 #[allow(clippy::too_many_lines)]
 pub fn default_builtins<SE: brush_core::ShellExtensions>(
 	set: BuiltinSet,
 ) -> HashMap<String, builtins::Registration<SE>> {
 	let mut m = HashMap::<String, builtins::Registration<SE>>::new();
 
-	//
-	// POSIX special builtins
-	//
-	// N.B. There seems to be some inconsistency as to whether 'times'
-	// should be a special built-in.
-	//
+
+
+
+
+
+
 
 	#[cfg(feature = "builtin.break")]
 	m.insert("break".into(), builtin::<break_::BreakCommand, SE>().special());
@@ -66,12 +66,12 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 	#[cfg(feature = "builtin.times")]
 	m.insert("times".into(), builtin::<times::TimesCommand, SE>().special());
 
-	//
-	// Non-special builtins
-	//
+
+
+
 
 	#[cfg(feature = "builtin.alias")]
-	m.insert("alias".into(), builtin::<alias::AliasCommand, SE>()); // TODO(alias): should be exec_declaration_builtin
+	m.insert("alias".into(), builtin::<alias::AliasCommand, SE>());
 	#[cfg(feature = "builtin.bg")]
 	m.insert("bg".into(), builtin::<bg::BgCommand, SE>());
 	#[cfg(feature = "builtin.cd")]
@@ -144,7 +144,7 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.declare")]
 		m.insert("typeset".into(), decl_builtin::<declare::DeclareCommand, SE>());
 
-		// Completion builtins
+
 		#[cfg(feature = "builtin.complete")]
 		m.insert("complete".into(), builtin::<complete::CompleteCommand, SE>());
 		#[cfg(feature = "builtin.compgen")]
@@ -152,7 +152,7 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.compopt")]
 		m.insert("compopt".into(), builtin::<complete::CompOptCommand, SE>());
 
-		// Dir stack builtins
+
 		#[cfg(feature = "builtin.dirs")]
 		m.insert("dirs".into(), builtin::<dirs::DirsCommand, SE>());
 		#[cfg(feature = "builtin.popd")]
@@ -160,21 +160,21 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.pushd")]
 		m.insert("pushd".into(), builtin::<pushd::PushdCommand, SE>());
 
-		// Input configuration builtins
+
 		#[cfg(feature = "builtin.bind")]
 		m.insert("bind".into(), builtin::<bind::BindCommand, SE>());
 
-		// History
+
 		#[cfg(feature = "builtin.history")]
 		m.insert("history".into(), builtin::<history::HistoryCommand, SE>());
 
 		#[cfg(feature = "builtin.caller")]
 		m.insert("caller".into(), builtin::<caller::CallerCommand, SE>());
 
-		// TODO(disown): implement disown builtin
+
 		m.insert("disown".into(), builtin::<unimp::UnimplementedCommand, SE>());
 
-		// TODO(logout): implement logout builtin
+
 		m.insert("logout".into(), builtin::<unimp::UnimplementedCommand, SE>());
 	}
 
@@ -182,12 +182,12 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 }
 
 
-/// Returns every in-process command-line utility builtin, as
-/// `(name, registration)` pairs.
-///
-/// These are kept out of [`default_builtins`] because they shadow real system
-/// binaries: the embedding shell decides whether to install them (and may
-/// withhold the destructive ones — `rm`, `mv`, `ln`).
+
+
+
+
+
+
 #[allow(clippy::too_many_lines, reason = "one line per utility")]
 pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 -> Vec<(&'static str, builtins::Registration<SE>)> {
@@ -316,22 +316,22 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m
 }
 
-/// Returns the process-inspection and process-control builtins:
-/// `pgrep`, `pkill`, `pidwait`, `ps`, `top`, `sleep`, `timeout`, and `nohup`.
-///
-/// Kept separate from [`default_builtins`] because they shadow real system
-/// binaries, and separate from [`utility_builtins`] because the embedding shell
-/// installs them unconditionally — they exist so a long-lived embedded shell can
-/// inspect and control its own children without forking.
+
+
+
+
+
+
+
 pub fn process_builtins<SE: brush_core::ShellExtensions>()
 -> Vec<(&'static str, builtins::Registration<SE>)> {
 	#[allow(unused_mut, reason = "empty when no process features are enabled")]
 	let mut m = Vec::<(&'static str, builtins::Registration<SE>)>::new();
 
 	#[cfg(feature = "util.nohup")]
-	// `nohup` detaches its operand into a new session so a backgrounded server
-	// survives the shell's kill-on-drop teardown; the wrapper flag keeps the
-	// shell from treating it as the job itself.
+
+
+
 	m.push((
 		"nohup",
 		builtin::<nohup::NohupCommand, SE>().transparent_background_wrapper(),

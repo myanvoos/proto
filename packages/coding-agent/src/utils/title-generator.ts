@@ -1,6 +1,3 @@
-/**
- * Generate session titles using a smol, fast model.
- */
 import * as path from "node:path";
 
 import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
@@ -23,30 +20,15 @@ const TITLE_MARKER_INSTRUCTION = prompt.render(titleMarkerInstruction);
 
 const DEFAULT_TERMINAL_TITLE = "π";
 const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
-/**
- * Emit a raw title escape sequence. While the TUI owns stdout its frames are
- * written by an off-thread pump, and a direct `process.stdout.write` can land
- * mid-frame — inside a torn escape sequence — making the terminal print the
- * title payload as text into the viewport. Route through the active terminal's
- * write path; fall back to stdout only when no TUI has the terminal.
- */
+
 function writeTitleSequence(seq: string): void {
 	if (!writeThroughActiveTerminal(seq)) process.stdout.write(seq);
 }
 
 let lastTerminalTitle: string | undefined;
 
-// Cover the "backend ignores `disableReasoning`" case unconditionally: the
-// static `model.reasoning` catalog flag can't distinguish a thinking model that
-// was declared with `reasoning: false` (e.g. Qwen3 served locally via llama.cpp,
-// whose bundled jinja chat template forces `enable_thinking: true`) from one
-// that never emits thinking. `maxTokens` is a hard cap, not a target — the
-// happy-path completion still returns in a handful of tokens, so raising the
-// ceiling costs nothing when thinking is genuinely suppressed and keeps the
-// `<title>` marker output reachable when it isn't (issue #4355).
 const TITLE_MAX_TOKENS = 1024;
 
-/** Matches the title the model wraps in `<title>...</title>`. */
 const TITLE_MARKER_GLOBAL_RE = /<title>([\s\S]*?)<\/title>|<title\s*\/>|<title>\s*$/gi;
 const TITLE_VISIBILITY_SENTINEL = "\uE000omp-title-visible\uE000";
 const THINKING_TAG_ENVELOPE_RE = /<(think|thinking|reasoning)>\s*[\s\S]*?<\/\1>/gi;
@@ -68,21 +50,6 @@ function getTitleModel(registry: ModelRegistry, settings: Settings, currentModel
 	return undefined;
 }
 
-/**
- * Generate a title for a session based on the first user message.
- *
- * @param firstMessage The first user message
- * @param registry Model registry
- * @param settings Settings used to resolve the smol role
- * @param sessionId Optional session id for sticky API key selection
- * @param currentModel Current model (used to derive title model)
- * @param metadataResolver Optional resolver evaluated after credential selection
- *   to produce request metadata (e.g. user_id for session attribution). Using a
- *   resolver instead of a pre-evaluated value ensures the metadata's account_uuid
- *   reflects the credential actually selected for this request.
- * @param customSystemPrompt Optional title-specific system prompt override
- * @param signal Session-lifecycle cancellation for background title requests
- */
 export async function generateSessionTitle(
 	firstMessage: string,
 	registry: ModelRegistry,
@@ -93,10 +60,6 @@ export async function generateSessionTitle(
 	customSystemPrompt?: string,
 	signal?: AbortSignal,
 ): Promise<string | null> {
-	// Defer titling for greetings / acknowledgements / empty input. The default
-	// tiny title model can't reliably decline trivial input, so this happens
-	// deterministically before any model is invoked; the caller retries on the
-	// next user message while the session stays unnamed.
 	if (isLowSignalTitleInput(firstMessage)) {
 		logger.debug("title-generator: skipped low-signal input", { sessionId, reason: "low-signal" });
 		return null;
@@ -117,12 +80,6 @@ export async function generateSessionTitle(
 		);
 	}
 
-	// User explicitly picked a local tiny model. NEVER fall back to the online
-	// smol path (issue #3187): the smol role resolves through priority.json and
-	// silently bills whatever provider holds the resolved API key — OpenRouter
-	// in the reporter's case, leaking real credits without consent. If the
-	// local worker fails (unknown key, download missing, transformers.js
-	// crash, abort), leave the session untitled; the next user turn retries.
 	if (!isTinyTitleLocalModelKey(tinyModel)) {
 		logger.warn("title-generator: unknown local tiny model; skipping title (will not fall back to online)", {
 			sessionId,
@@ -180,11 +137,7 @@ async function generateTitleOnline(
 	}
 
 	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
-	// The model is always asked to wrap the title in `<title>...</title>` and
-	// the title is parsed from text. A forced `set_title` tool call was the old
-	// scheme, but hosts that ignore or reject forced `tool_choice` then echoed
-	// the prompt's `{"title": ...}` JSON example verbatim as the session title;
-	// markers work uniformly everywhere.
+
 	const systemPrompt = titleSystemPrompt ? [titleSystemPrompt, TITLE_MARKER_INSTRUCTION] : [TITLE_SYSTEM_PROMPT];
 	const userMessage = formatTitleUserMessage(firstMessage);
 	const modelName = `${model.provider}/${model.id}`;
@@ -202,13 +155,9 @@ async function generateTitleOnline(
 			logger.warn("title-generator: no API key", { ...modelContext, reason: "missing-api-key" });
 			return null;
 		}
-		// Resolve metadata after getApiKey so the session-sticky credential for this
-		// request is already recorded; metadataResolver can then return the correct
-		// account_uuid rather than the snapshot-at-call-site value.
+
 		const metadata = metadataResolver?.(model.provider);
 
-		// Title generation is a 3-7 word task, but the ceiling has to survive
-		// backends that ignore `disableReasoning` (see TITLE_MAX_TOKENS above).
 		const maxTokens = TITLE_MAX_TOKENS;
 		logger.debug("title-generator: request", { ...modelContext, maxTokens });
 
@@ -224,10 +173,7 @@ async function generateTitleOnline(
 						apiKey: registry.resolver(model, sessionId),
 						maxTokens,
 						disableReasoning: true,
-						// Greedy decode: titling is extraction, not generation. Backends that
-						// default temperature high (e.g. Ollama's 0.8) otherwise garble names
-						// from the message ("hashline" → "HasHroshi"). Providers whose models
-						// reject sampling params drop this via `supportsSamplingParams`.
+
 						temperature: 0,
 						metadata,
 						signal,
@@ -283,11 +229,7 @@ function extractGeneratedTitle(contentBlocks: AssistantMessage["content"]): stri
 			textTitle += content.text;
 		}
 	}
-	// Stay lenient: prefer the first closed title marker in visible text, then
-	// fall back to a plain sentence after stripping only known leading leaked
-	// thinking envelopes plus any stray/unclosed title tag fragment. Reject a
-	// prose thinking preamble only on the markerless path: a later marked title
-	// remains authoritative.
+
 	const markedTitle = extractVisibleMarkedTitle(textTitle);
 	if (markedTitle !== undefined) return unwrapJsonTitle(markedTitle);
 	const cleanedTextTitle = stripLeadingLeakedThinkingMarkup(textTitle)
@@ -350,12 +292,6 @@ function stripLeakedThinkingMarkup(text: string): string {
 	return healer.feed(text) + healer.flushPending();
 }
 
-/**
- * Unwrap a JSON-shaped response (`{"title": "..."}`, optionally code-fenced)
- * into the bare title. Models occasionally emit the structured shape they were
- * trained on for title tasks instead of plain text; without this the raw JSON
- * became the session title.
- */
 function unwrapJsonTitle(candidate: string): string {
 	const text = candidate
 		.replace(/^```(?:json)?\s*/i, "")
@@ -368,7 +304,6 @@ function unwrapJsonTitle(candidate: string): string {
 			return parsed.title.trim();
 		}
 	} catch {
-		// Truncated/malformed JSON: salvage the quoted title value if present.
 		const quoted = /"title"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(text);
 		if (quoted) {
 			const salvaged: unknown = JSON.parse(quoted[1]);
@@ -378,9 +313,6 @@ function unwrapJsonTitle(candidate: string): string {
 	return candidate;
 }
 
-/**
- * Remove control characters so model-generated titles cannot inject terminal escapes.
- */
 function sanitizeTerminalTitlePart(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const sanitized = value.replace(TERMINAL_TITLE_CONTROL_CHARS, "").trim();
@@ -395,11 +327,6 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 	return sanitizeTerminalTitlePart(baseName);
 }
 
-/**
- * Set the terminal title via OSC 0.
- *
- * Repeating the same sanitized title is a no-op on every platform.
- */
 export function setTerminalTitle(title: string): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
@@ -409,19 +336,11 @@ export function setTerminalTitle(title: string): void {
 }
 
 export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: string): void {
-	// An authoritative session title (rename, new session, focus swap) supersedes
-	// any extension override so the base title tracks the real session again.
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
 	emitTerminalTitle();
 }
 
-/**
- * Set a terminal title from an extension's `setTitle()`. Unlike the session base
- * title, this owns the terminal verbatim: periodic and run-state updates will not
- * rewrite it. Cleared when the app next sets an authoritative session title via
- * {@link setSessionTerminalTitle}.
- */
 export function setExtensionTerminalTitle(title: string): void {
 	terminalTitleRuntime.extensionOverride = title;
 	emitTerminalTitle();
@@ -431,9 +350,9 @@ type TerminalTitleState = "idle" | "working" | "attention";
 
 const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TITLE_SPINNER_INTERVAL_MS = 80;
-/** The user's turn: the title reads like a shell prompt awaiting input. */
+
 const TITLE_IDLE_SEPARATOR = ">";
-/** Agent blocked on the user (ask / approval prompt). */
+
 const TITLE_ATTENTION_SEPARATOR = "!";
 
 const terminalTitleRuntime: {
@@ -442,10 +361,7 @@ const terminalTitleRuntime: {
 	frame: number;
 	enabled: boolean;
 	timer: NodeJS.Timeout | undefined;
-	/** A title an extension set via `setTitle()`. While set, it owns the terminal
-	 *  title verbatim: the run-state separator never rewrites it. Cleared when the
-	 *  app next establishes an authoritative session title (rename, new session,
-	 *  focus swap) via `setSessionTerminalTitle`. */
+
 	extensionOverride: string | undefined;
 } = {
 	label: undefined,
@@ -456,15 +372,6 @@ const terminalTitleRuntime: {
 	extensionOverride: undefined,
 };
 
-/**
- * Compose the terminal title from the `π` brand, a state-carrying separator, and
- * the session label. Pure (no I/O) so the state→separator contract is testable:
- *   - `idle` (user's turn):  `π > label`;
- *   - `working`:             `π ⠋ label`;
- *   - `attention`:           `π ! label`;
- *   - disabled:              `π: label`.
- * Without a label the separator trails the brand (`π >`) so the state stays visible.
- */
 export function buildTerminalTitleWithState(
 	label: string | undefined,
 	state: TerminalTitleState,
@@ -482,8 +389,6 @@ export function buildTerminalTitleWithState(
 }
 
 function emitTerminalTitle(): void {
-	// An extension override owns the terminal verbatim; the terminal sink
-	// deduplicates repeated state updates.
 	const next =
 		terminalTitleRuntime.extensionOverride ??
 		buildTerminalTitleWithState(
@@ -506,15 +411,10 @@ function startTerminalTitleSpinner(): void {
 		terminalTitleRuntime.frame = (terminalTitleRuntime.frame + 1) % TITLE_SPINNER_FRAMES.length;
 		emitTerminalTitle();
 	}, TITLE_SPINNER_INTERVAL_MS);
-	// Never keep the event loop alive for a cosmetic animation.
+
 	terminalTitleRuntime.timer.unref?.();
 }
 
-/**
- * Reflect the agent run state in the terminal title's separator: `working`
- * animates a spinner, `idle` shows `>` (your turn), and `attention` shows `!`
- * (agent blocked on you). Gated off by `tui.titleState`.
- */
 export function setTerminalTitleState(state: TerminalTitleState): void {
 	terminalTitleRuntime.state = state;
 	if (state === "working" && terminalTitleRuntime.enabled) startTerminalTitleSpinner();
@@ -522,7 +422,6 @@ export function setTerminalTitleState(state: TerminalTitleState): void {
 	emitTerminalTitle();
 }
 
-/** Enable/disable the run-state separator (driven by the `tui.titleState` setting). */
 export function setTerminalTitleStateEnabled(enabled: boolean): void {
 	terminalTitleRuntime.enabled = enabled;
 	if (enabled && terminalTitleRuntime.state === "working") startTerminalTitleSpinner();
@@ -530,23 +429,16 @@ export function setTerminalTitleStateEnabled(enabled: boolean): void {
 	emitTerminalTitle();
 }
 
-/** Release terminal-title runtime resources. */
 export function disposeTerminalTitleState(): void {
 	stopTerminalTitleSpinner();
 	lastTerminalTitle = undefined;
 }
 
-/**
- * Save the current terminal title on terminals that support xterm window ops.
- */
 export function pushTerminalTitle(): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	writeTitleSequence("\x1b[22;2t");
 }
 
-/**
- * Restore the previously saved terminal title on terminals that support xterm window ops.
- */
 export function popTerminalTitle(): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	writeTitleSequence("\x1b[23;2t");

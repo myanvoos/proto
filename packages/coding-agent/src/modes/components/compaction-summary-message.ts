@@ -3,13 +3,11 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { BranchSummaryMessage, CompactionSummaryMessage } from "../../session/messages";
 
-/** Divider labels per compaction method; unknown/legacy methods fall back to "compacted". */
 const COMPACTION_METHOD_LABELS: Record<string, string> = {
 	remote: "remote-compacted",
 	soft: "soft-compacted",
 };
 
-/** `256K→20K` amount badge, or undefined when the entry predates `tokensAfter`. */
 function compactionAmount(message: CompactionSummaryMessage): string | undefined {
 	if (message.tokensAfter === undefined || message.tokensBefore <= 0) return undefined;
 	return `${formatNumber(message.tokensBefore)}→${formatNumber(message.tokensAfter)}`;
@@ -35,7 +33,7 @@ class SummaryDividerComponent implements Component {
 
 	invalidate(): void {
 		this.#cache = undefined;
-		// Theme may have changed — rebuild the detail box lazily on next render.
+
 		this.#detail = undefined;
 	}
 
@@ -54,13 +52,12 @@ class SummaryDividerComponent implements Component {
 	#divider(width: number): string {
 		const rule = theme.tree.horizontal;
 		const label = this.options.label();
-		// sep.dot ships pre-padded (" · "); trim so the hint joins with single spaces.
+
 		const hint = `${theme.sep.dot.trim()} ctrl+o`;
 		const plainWidth = Bun.stringWidth(`${label} ${hint}`, { countAnsiEscapeCodes: false });
-		// ` label hint ` framed by rules on both sides.
+
 		const remaining = width - plainWidth - 2;
 		if (remaining < 4) {
-			// Too narrow for a framed rule — emit the bare label.
 			return theme.fg("muted", label);
 		}
 		const left = Math.floor(remaining / 2);
@@ -86,25 +83,11 @@ class SummaryDividerComponent implements Component {
 	}
 }
 
-/**
- * Compaction point in the transcript, rendered as a slim horizontal divider:
- *
- *   ──────── remote-compacted · 256K→20K · ctrl+o ────────
- *
- * The label names the maintenance method that fired (remote/soft/handoff;
- * "compacted" for legacy or extension-provided entries) and the
- * before → after context amounts when the entry recorded them. The
- * conversation above the divider stays visible (display transcript keeps
- * full history); only the LLM context was reset. Expanding (ctrl+o) reveals
- * the compaction summary below the divider.
- */
 export class CompactionSummaryMessageComponent implements Component {
 	#divider: SummaryDividerComponent;
 
 	constructor(private readonly message: CompactionSummaryMessage) {
 		this.#divider = new SummaryDividerComponent({
-			// A dead-end warning stamped by the progress guard badges the bar;
-			// the full text lives in the ctrl+o detail block below.
 			label: () => this.#label(),
 			detailMarkdown: () => this.#detailMarkdown(),
 		});
@@ -145,11 +128,6 @@ export class CompactionSummaryMessageComponent implements Component {
 	}
 }
 
-/**
- * A branch summary collapses a side branch back into the main line. Render it
- * with the same slim divider as `/compact` rather than a `[branch]`
- * box, so every history-collapse point reads as one consistent banner.
- */
 export class BranchSummaryMessageComponent implements Component {
 	#divider: SummaryDividerComponent;
 

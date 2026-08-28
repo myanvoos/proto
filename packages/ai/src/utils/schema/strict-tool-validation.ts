@@ -1,21 +1,4 @@
-/**
- * Detects tool-parameter schemas that pass structural JSON-Schema validation
- * (so {@link isValidJsonSchema} accepts them) yet make OpenAI-style providers
- * reject the whole request with HTTP 400 — namely an `enum`/`const` whose
- * value(s) cannot satisfy the node's declared `type`. MCP servers emit these
- * when a nullable/array branch is built incorrectly (e.g. a non-null `enum`
- * copied onto a `type: "null"` branch, or an `enum` placed on an `array`
- * schema instead of its `items`). One such tool 400s the entire turn, so
- * callers quarantine just the offending tool. See issue #2652.
- *
- * xAI additionally rejects a leftover *root* `anyOf`/`oneOf` whose branches
- * are not objects ("tool parameter root must be an object type"). That class
- * is opt-in via {@link FindStrictToolSchemaViolationOptions.rejectXaiRootObjectUnion}
- * so OpenAI/Azure/Codex keep valid object-root unions.
- */
-
 export interface FindStrictToolSchemaViolationOptions {
-	/** xAI (paid + OAuth) only: leftover object-root unions 400 the whole turn. */
 	rejectXaiRootObjectUnion?: boolean;
 }
 
@@ -48,7 +31,6 @@ function jsonValueMatchesType(value: unknown, type: string): boolean {
 		case "array":
 			return Array.isArray(value);
 		default:
-			// Unknown type keyword — don't flag (forward compatibility).
 			return true;
 	}
 }
@@ -75,11 +57,6 @@ const CHILD_SCHEMA_KEYS = [
 ] as const;
 const CHILD_ARRAY_KEYS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
 
-/**
- * Walk a tool parameter schema for OpenAI-strict `enum`/`const`-vs-`type`
- * contradictions. Returns a JSON-pointer-ish path to the first offending node,
- * or `null` when the schema is safe to emit.
- */
 export function findStrictToolSchemaViolation(
 	schema: unknown,
 	path = "#",
@@ -105,9 +82,6 @@ export function findStrictToolSchemaViolation(
 		}
 	}
 
-	// xAI rejects the whole request when the *root* schema is typed as object
-	// (or has properties) AND still carries an anyOf/oneOf with a typeless or
-	// non-object branch. Nested unions and pure root unions are not this error.
 	if (
 		options?.rejectXaiRootObjectUnion &&
 		path === "#" &&

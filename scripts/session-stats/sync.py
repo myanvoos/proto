@@ -46,16 +46,11 @@ except ImportError:
     sys.exit("tiktoken not installed. Run: pip install tiktoken")
 
 
-# --------------------------------------------------------------------------- #
-# Config
 
 SESSIONS_ROOT = Path.home() / ".proto" / "agent" / "sessions"
 DB_PATH = Path.home() / ".proto" / "stats.db"
 TOKENIZER_NAME = "o200k_base"
 SCHEMA_VERSION = 3
-# Bump whenever parse_hashline_input / find_longest_repeat / duplicated_anchors
-# / looks_successful / extract_warnings semantics change. Bump invalidates
-# previously-stored ss_edit_* rows on next sync.
 EDIT_PARSER_VERSION = 6
 
 SCHEMA_SQL = """
@@ -191,8 +186,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Tokenizer (one per worker thread).
 
 _tls = threading.local()
 
@@ -227,30 +220,9 @@ def batch_count_tokens(strings: list[str]) -> list[int]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Hashline edit parser.
-#
-# The session corpus spans several hashline generations, so the parser
-# recognizes all of them and normalizes every `¶`/`§` section into the same
-# EditSection shape. A `¶` section commits to a grammar from its FIRST op line,
-# so the verb and sigil grammars never cross-contaminate (a body line such as
-# `delete 5` inside a sigil-era section stays payload, not a phantom delete op).
-#
-#   verb (current): ¶PATH[#TAG]  replace N..M: / delete N..M /
-#                                insert before N: / insert after N: /
-#                                insert head: / insert tail:    (+ `+TEXT` body rows)
-#   sigil (corpus): ¶PATH[#TAG]  N↑[body] / N↓[body] / A[-B]:[body] / A[-B]!
-#   legacy:         §PATH        «ANCHOR / »ANCHOR / ≔ANCHOR[..ANCHOR]
-#
-# TAG width/case drifted across releases (2-4 hex, lower or upper, sometimes
-# absent), so the header accepts any `#<token>` suffix instead of a fixed width.
-# Legacy "anchor" tokens were `<line><2-letter-hash>` (e.g. `4fb`, `12*`).
 
-# Header: one or more `¶`, optional whitespace, path (no whitespace/#/¶),
-# optional `#TAG` of any width/case.
 _HEADER_NEW_RE = re.compile(r"^¶+\s*([^\s#¶]+)(?:#\S+)?\s*$")
 
-# Verb-based v4 (current) ops; body rows are `+TEXT` on the following lines.
 _VERB_REPLACE_RE = re.compile(
     r"^\s*replace\s+([1-9][0-9]*)(?:\s*(?:\.\.|-|…)\s*([1-9][0-9]*))?\s*:?\s*$"
 )
@@ -261,17 +233,13 @@ _VERB_INSERT_RE = re.compile(
     r"^\s*insert\s+(?:(?P<pos>before|after)\s+(?P<anchor>[1-9][0-9]*)|(?P<edge>head|tail))\s*:?\s*$"
 )
 
-# Sigil/colon ops (historical corpus); body rows are bare lines.
-# Insert op: LINE↑BODY / LINE↓BODY / BOF↑BODY / EOF↓BODY …
 _OP_INSERT_HL_RE = re.compile(
     r"^\s*(?:[>+\-*]+\s*)?(?P<anchor>[1-9][0-9]*|BOF|EOF)(?P<sigil>[↑↓])(?P<inline>.*)$"
 )
-# Replace / delete op: A:BODY / A-B:BODY / A! / A-B!
 _OP_RANGE_HL_RE = re.compile(
     r"^\s*(?:[>+\-*]+\s*)?(?P<a>[1-9][0-9]*)(?:-(?P<b>[1-9][0-9]*))?(?P<sigil>[:!])(?P<inline>.*)$"
 )
 
-# Legacy `§`/`«»≔` ops.
 _LEGACY_RANGE_RE = re.compile(r"^\s*(\d+)[a-z*]+(?:\.\.(\d+)[a-z*]+)?\s*$")
 _LEGACY_SINGLE_ANCHOR_RE = re.compile(r"^\s*(\d+)[a-z*]+\s*$")
 _LEGACY_OP_RE = re.compile(r"^([«»≔])\s*(\S+)\s*$")
@@ -328,9 +296,9 @@ class EditSection:
 def parse_hashline_input(input_str: str) -> list[EditSection]:
     sections: list[EditSection] = []
     cur: EditSection | None = None
-    cur_format: str | None = None  # "hash" (¶) | "legacy" (§)
-    cur_grammar: str | None = None  # within "hash": None | "verb" | "sigil"
-    open_idx: int | None = None  # current open payload block in cur
+    cur_format: str | None = None
+    cur_grammar: str | None = None
+    open_idx: int | None = None
 
     def open_new(s: EditSection) -> int:
         s.payload_blocks.append([])
@@ -345,7 +313,6 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
                 break
             continue
 
-        # Headers — `¶` (verb/sigil eras) first, then legacy `§`.
         new_header = _HEADER_NEW_RE.match(line)
         if new_header:
             if cur is not None:
@@ -371,8 +338,6 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
             continue
 
         if cur_format == "hash":
-            # Verb-based v4 ops; tried only while the grammar is undecided or
-            # already verb, so sigil-era body lines never match a verb keyword.
             if cur_grammar in (None, "verb"):
                 m = _VERB_REPLACE_RE.match(line)
                 if m:
@@ -400,7 +365,7 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
                     cur.touch(a)
                     cur.touch(b)
                     cur.op_count += 1
-                    open_idx = None  # delete carries no body
+                    open_idx = None
                     continue
                 m = _VERB_INSERT_RE.match(line)
                 if m:
@@ -413,12 +378,10 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
                     open_idx = open_new(cur)
                     continue
             if cur_grammar == "verb":
-                # Body rows are `+TEXT` (`+` alone = blank line); skip stray rows.
                 if open_idx is not None and line.startswith("+"):
                     cur.payload_blocks[open_idx].append(line[1:])
                 continue
 
-            # Sigil/colon ops (historical corpus); body rows are bare lines.
             ins = _OP_INSERT_HL_RE.match(line)
             if ins:
                 cur_grammar = "sigil"
@@ -457,10 +420,8 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
                 cur.deleted_lines += size
                 cur.op_count += 1
                 if sigil == "!":
-                    # Delete op: payload forbidden by the production parser; close.
                     open_idx = None
                     continue
-                # sigil == ":" — replace.
                 open_idx = open_new(cur)
                 if inline:
                     cur.payload_blocks[open_idx].append(inline)
@@ -543,8 +504,6 @@ def duplicated_anchors(sections: list[EditSection]) -> list[list]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Edit result classification (port of cmd_followups.rs success/warnings).
 
 _RE_FAILURE_HEAD = re.compile(
     r"^(edit rejected|error\b|failed\b|invalid\b|unrecognized\b|cannot\b|"
@@ -582,8 +541,6 @@ def extract_warnings(text: str) -> list[str]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# JSONL parsing
 
 
 def parse_iso_ms(s: str | None) -> int:
@@ -628,7 +585,6 @@ def session_meta_from_path(path: Path) -> tuple[str, bool, str | None, str | Non
 
 
 def _is_edit_call(name: str) -> bool:
-    # cmd_followups.rs targets `edit` only (hashline).
     return name == "edit"
 
 
@@ -639,12 +595,12 @@ class SessionRecords:
     tool_results: list[list] = field(default_factory=list)
     assistant_msgs: list[list] = field(default_factory=list)
     user_msgs: list[list] = field(default_factory=list)
-    edit_calls: list[tuple] = field(default_factory=list)  # initial stub on toolCall
+    edit_calls: list[tuple] = field(default_factory=list)
     edit_call_results: list[tuple] = field(
         default_factory=list
-    )  # success+warnings on toolResult
-    edit_sections: list[tuple] = field(default_factory=list)  # one row per section
-    pending_tokens: list[tuple] = field(default_factory=list)  # (row, field_idx, text)
+    )
+    edit_sections: list[tuple] = field(default_factory=list)
+    pending_tokens: list[tuple] = field(default_factory=list)
     starting_seq: int = 0
     full_rebuild: bool = False
     starting_offset: int = 0
@@ -731,7 +687,6 @@ def parse_file(
     rec.final_offset = offset
     rec.final_line_count = seq
 
-    # Single batched tokenization pass for the whole file.
     if rec.pending_tokens:
         texts = [p[2] for p in rec.pending_tokens]
         tokens = batch_count_tokens(texts)
@@ -823,7 +778,6 @@ def _ingest_assistant(rec, path, seq, entry_id, ts, msg, content) -> None:
 
 def _ingest_edit_call(rec, sf, seq, ts, call_id, arg_obj, arg_json) -> None:
     """Parse the hashline `input` and emit ss_edit_calls + ss_edit_sections rows."""
-    # Recover `input` from arg_obj (preferred) or arg_json (legacy).
     input_str: str | None = None
     if isinstance(arg_obj, dict):
         v = arg_obj.get("input")
@@ -841,13 +795,11 @@ def _ingest_edit_call(rec, sf, seq, ts, call_id, arg_obj, arg_json) -> None:
         input_str = ""
     raw_input_len = len(input_str.encode("utf-8"))
 
-    # Stub call row (success + warnings come from toolResult later).
     rec.edit_calls.append((sf, call_id, seq, ts, raw_input_len, EDIT_PARSER_VERSION))
 
     if not any(
         line.startswith(("¶", "§")) for line in input_str.lstrip("\ufeff").splitlines()
     ):
-        # Vim-mode or other shape — no sections to record.
         return
 
     sections = parse_hashline_input(input_str)
@@ -926,8 +878,6 @@ def _ingest_user(rec, path, seq, entry_id, ts, content) -> None:
     rec.pending_tokens.append((row, 5, text))
 
 
-# --------------------------------------------------------------------------- #
-# DB
 
 
 def open_db() -> sqlite3.Connection:
@@ -936,7 +886,7 @@ def open_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA mmap_size = 268435456")  # 256 MiB
+    conn.execute("PRAGMA mmap_size = 268435456")
     conn.executescript(SCHEMA_SQL)
     _migrate(conn)
     return conn
@@ -1001,8 +951,6 @@ def write_records(conn: sqlite3.Connection, rec: SessionRecords, now_ms: int) ->
                 rec.user_msgs,
             )
         if rec.edit_calls:
-            # Stub row when seeing toolCall; preserve any existing success/warnings
-            # if a prior sync already paired the result.
             cur.executemany(
                 "INSERT INTO ss_edit_calls "
                 "(session_file, call_id, seq, timestamp, raw_input_len, parser_version) "
@@ -1091,8 +1039,6 @@ def write_records(conn: sqlite3.Connection, rec: SessionRecords, now_ms: int) ->
         raise
 
 
-# --------------------------------------------------------------------------- #
-# Driver
 
 
 def discover_sessions(root: Path, limit: int | None) -> list[Path]:
@@ -1122,7 +1068,6 @@ def decide_action(
         return (True, 0, 0)
     prev_mtime, prev_size, prev_offset, prev_lines, prev_parser = prev
     if prev_parser < EDIT_PARSER_VERSION:
-        # Stale parser output → rebuild this file from scratch.
         return (True, 0, 0)
     if size == prev_size and mtime_ms <= prev_mtime:
         return None

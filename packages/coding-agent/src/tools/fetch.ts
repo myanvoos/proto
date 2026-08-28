@@ -34,14 +34,8 @@ import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
-// =============================================================================
-// Types and Constants
-// =============================================================================
-
 const FETCH_DEFAULT_MAX_LINES = 300;
-// MIME types markit can convert — one per registered converter (pdf, docx,
-// pptx, xlsx, epub). Legacy `application/msword`, `application/vnd.ms-*`, and
-// `application/rtf` are intentionally absent: markit has no converter for them.
+
 const CONVERTIBLE_MIMES = new Set([
 	"application/pdf",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -82,20 +76,10 @@ const SUPPORTED_INLINE_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "i
 const MAX_INLINE_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024;
 const MAX_INLINE_IMAGE_OUTPUT_BYTES = 300 * 1024;
 
-// =============================================================================
-// Utilities
-// =============================================================================
-
-/**
- * Check if a command exists (cross-platform)
- */
 function hasCommand(cmd: string): boolean {
 	return Boolean($which(cmd));
 }
 
-/**
- * Build llms.txt candidates scoped to the requested URL
- */
 function buildLlmEndpointCandidates(url: string): string[] {
 	try {
 		const parsed = new URL(url);
@@ -119,20 +103,11 @@ function buildLlmEndpointCandidates(url: string): string[] {
 	}
 }
 
-/**
- * Repair a URL whose scheme `//` collapsed to a single `/`. Node's `path.normalize`/
- * `path.resolve` collapse `//` → `/`, so any URL routed through path normalization arrives
- * as `https:/host/x` instead of `https://host/x`. No local filesystem path begins with
- * `http:/` or `https:/`, so repairing the scheme back to `//` is unambiguous.
- */
 function repairCollapsedScheme(value: string): string {
 	const m = value.match(/^(https?):\/(?!\/)/i);
 	return m ? `${m[1]}://${value.slice(m[0].length)}` : value;
 }
 
-/**
- * Normalize URL (repair a collapsed scheme, then add a scheme if one is missing).
- */
 function normalizeUrl(url: string): string {
 	url = repairCollapsedScheme(url);
 	if (!url.match(/^https?:\/\//i)) {
@@ -141,29 +116,20 @@ function normalizeUrl(url: string): string {
 	return url;
 }
 
-// URL line selectors mirror the file form: `:50`, `:50-100`, `:50+150`, `:5-10,20-30`, `:raw`,
-// or `:raw:N-M` / `:N-M:raw` to combine raw mode with a range. If a URL would otherwise look
-// like `host:port`, add a trailing slash before the selector (e.g. `https://example.com/:80`
-// to read line 80 of the document at `https://example.com/`).
-
 interface ParsedReadUrlTarget {
 	path: string;
 	raw: boolean;
 	offset?: number;
 	limit?: number;
-	/** Populated only when the selector carries 2+ ranges. Single-range stays on offset/limit. */
+
 	ranges?: readonly LineRange[];
 }
 
-/** Recognize a single selector token (`raw` or one/many line ranges). */
 function isUrlSelectorToken(token: string): boolean {
 	if (token.toLowerCase() === "raw") return true;
 	try {
 		return parseLineRanges(token) !== null;
 	} catch {
-		// `parseLineRanges` throws `ToolError` for malformed ranges (e.g. `5+0`). Only treat the
-		// token as a selector when it parses cleanly so URL ports like `:80` keep flowing
-		// through to the URL path.
 		return false;
 	}
 }
@@ -184,14 +150,12 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 			continue;
 		}
 		if (ranges !== undefined) {
-			// Two range groups on the same URL (`…:5-10:20-30`) — combine with commas instead.
 			throw new ToolError(
 				`URL selector has multiple range groups; combine them with commas (e.g. \`:5-10,20-30\`).`,
 			);
 		}
 		const parsed = parseLineRanges(sel);
 		if (parsed === null) {
-			// Shouldn't happen — isUrlSelectorToken vetted it. Belt-and-suspenders.
 			throw new ToolError(`Invalid URL line selector: ${sel}`);
 		}
 		ranges = parsed;
@@ -210,12 +174,6 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 	return { path: urlPath, raw, ranges };
 }
 
-/**
- * Peel one or more selector tokens off the right of a URL string. Walks back through
- * trailing `:tok` segments while each token (a) looks like a selector and (b) leaves
- * behind a string that still parses as a URL. Returns selectors left-to-right so callers
- * can apply them in source order.
- */
 function tryExtractEmbeddedUrlSelector(readPath: string): { path: string; sels: string[] } | null {
 	let basePath = readPath;
 	const sels: string[] = [];
@@ -243,9 +201,6 @@ function tryExtractEmbeddedUrlSelector(readPath: string): { path: string; sels: 
 	return { path: basePath, sels };
 }
 
-/**
- * Normalize MIME type (lowercase, strip charset/params)
- */
 function normalizeMime(contentType: string): string {
 	return contentType.split(";")[0].trim().toLowerCase();
 }
@@ -256,11 +211,7 @@ function getFilenameExtensionHint(filename: string): string {
 	return path.extname(filename).toLowerCase();
 }
 
-/**
- * Get extension from URL or Content-Disposition
- */
 function getExtensionHint(url: string, contentDisposition?: string): string {
-	// Try Content-Disposition filename first
 	if (contentDisposition) {
 		const match = contentDisposition.match(/filename[*]?=["']?([^"';\n]+)/i);
 		if (match) {
@@ -269,7 +220,6 @@ function getExtensionHint(url: string, contentDisposition?: string): string {
 		}
 	}
 
-	// Fall back to URL path
 	try {
 		const pathname = new URL(url).pathname;
 		const ext = getFilenameExtensionHint(pathname);
@@ -279,9 +229,6 @@ function getExtensionHint(url: string, contentDisposition?: string): string {
 	return "";
 }
 
-/**
- * Check if content type is convertible via markit.
- */
 function isConvertible(mime: string, extensionHint: string): boolean {
 	if (CONVERTIBLE_MIMES.has(mime)) return true;
 	if (mime === "application/octet-stream" && CONVERTIBLE_EXTENSIONS.has(extensionHint)) return true;
@@ -301,9 +248,6 @@ function isInlineImageMimeTypeSupported(mimeType: string): boolean {
 	return SUPPORTED_INLINE_IMAGE_MIME_TYPES.has(mimeType);
 }
 
-/**
- * Try fetching URL with .md appended (llms.txt convention)
- */
 async function tryMdSuffix(url: string, timeout: number, signal?: AbortSignal): Promise<string | null> {
 	const candidates: string[] = [];
 
@@ -312,13 +256,10 @@ async function tryMdSuffix(url: string, timeout: number, signal?: AbortSignal): 
 		const pathname = parsed.pathname;
 
 		if (pathname.endsWith("/")) {
-			// /foo/bar/ -> /foo/bar/index.html.md
 			candidates.push(`${parsed.origin}${pathname}index.html.md`);
 		} else if (pathname.includes(".")) {
-			// /foo/bar.html -> /foo/bar.html.md
 			candidates.push(`${parsed.origin}${pathname}.md`);
 		} else {
-			// /foo/bar -> /foo/bar.md
 			candidates.push(`${parsed.origin}${pathname}.md`);
 		}
 	} catch {
@@ -342,9 +283,6 @@ async function tryMdSuffix(url: string, timeout: number, signal?: AbortSignal): 
 	return null;
 }
 
-/**
- * Try to fetch LLM-friendly endpoints
- */
 async function tryLlmEndpoints(
 	url: string,
 	timeout: number,
@@ -368,9 +306,6 @@ async function tryLlmEndpoints(
 	return null;
 }
 
-/**
- * Try content negotiation for markdown/plain
- */
 async function tryContentNegotiation(
 	url: string,
 	timeout: number,
@@ -396,9 +331,6 @@ async function tryContentNegotiation(
 	return null;
 }
 
-/**
- * Read a single HTML attribute from a tag string
- */
 function getHtmlAttribute(tag: string, attribute: string): string | null {
 	const pattern = new RegExp(`\\b${attribute}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i");
 	const match = tag.match(pattern);
@@ -406,9 +338,6 @@ function getHtmlAttribute(tag: string, attribute: string): string | null {
 	return (match[1] ?? match[2] ?? match[3] ?? "").trim();
 }
 
-/**
- * Extract bounded <head> markup to avoid expensive whole-page parsing
- */
 function extractHeadHtml(html: string): string {
 	const lower = html.toLowerCase();
 	const headStart = lower.indexOf("<head");
@@ -426,9 +355,6 @@ function extractHeadHtml(html: string): string {
 	return html.slice(headStart, headEnd === -1 ? fallbackEnd : headEnd + 7);
 }
 
-/**
- * Parse alternate links from HTML head
- */
 function parseAlternateLinks(html: string, pageUrl: string): string[] {
 	const links: string[] = [];
 
@@ -446,7 +372,6 @@ function parseAlternateLinks(html: string, pageUrl: string): string[] {
 			const type = getHtmlAttribute(tag, "type")?.toLowerCase() ?? "";
 			if (!href) continue;
 
-			// Skip site-wide feeds
 			if (
 				href.includes("RecentChanges") ||
 				href.includes("Special:") ||
@@ -470,9 +395,6 @@ function parseAlternateLinks(html: string, pageUrl: string): string[] {
 	return links;
 }
 
-/**
- * Extract document links from HTML (for PDF/DOCX wrapper pages)
- */
 function extractDocumentLinks(html: string, baseUrl: string): string[] {
 	const links: string[] = [];
 	const seen = new Set<string>();
@@ -497,9 +419,6 @@ function extractDocumentLinks(html: string, baseUrl: string): string[] {
 	return links;
 }
 
-/**
- * Strip CDATA wrapper and clean text
- */
 function cleanFeedText(text: string): string {
 	return text
 		.replace(/<!\[CDATA\[/g, "")
@@ -508,19 +427,15 @@ function cleanFeedText(text: string): string {
 		.replace(/&gt;/g, ">")
 		.replace(/&amp;/g, "&")
 		.replace(/&quot;/g, '"')
-		.replace(/<[^>]+>/g, "") // Strip HTML tags
+		.replace(/<[^>]+>/g, "")
 		.trim();
 }
 
-/**
- * Parse RSS/Atom feed to markdown
- */
 async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string> {
 	const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
 	try {
 		const doc = parseHTML(content).document;
 
-		// Try RSS
 		const channel = doc.querySelector("channel");
 		if (channel) {
 			const title = cleanFeedText(channel.querySelector("title")?.text || "RSS Feed");
@@ -542,7 +457,6 @@ async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<stri
 			return md;
 		}
 
-		// Try Atom
 		const feed = doc.querySelector("feed");
 		if (feed) {
 			const title = cleanFeedText(feed.querySelector("title")?.text || "Atom Feed");
@@ -567,14 +481,9 @@ async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<stri
 		}
 	} catch {}
 
-	return content; // Fall back to raw content
+	return content;
 }
 
-/**
- * Cap on any single remote reader-mode request (Parallel, Jina) so a stalled
- * remote endpoint cannot consume the whole reader-mode budget and starve the
- * local fallback renderers (trafilatura, lynx, native). See #1449.
- */
 const REMOTE_READER_MAX_MS = 10_000;
 const JINA_MARKDOWN_MARKER = "Markdown Content:";
 const JINA_READER_MAX_BYTES = 2 * 1024 * 1024;
@@ -590,26 +499,10 @@ function parseJinaReaderContent(responseBody: string): string | null {
 	return content;
 }
 
-/** Reader backends for {@link renderHtmlToText}, in default priority order. */
 type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "jina";
 
 const FETCH_PROVIDER_ORDER: readonly FetchProvider[] = ["native", "trafilatura", "lynx", "parallel", "jina"];
 
-/**
- * Render HTML to markdown by trying reader backends in priority order: native
- * (in-process), trafilatura, lynx, Parallel, then Jina. The `providers.fetch`
- * setting picks the order — `auto` uses the default above; any specific backend
- * is tried first, then the remaining backends as fallbacks. Every backend's
- * output must clear the same quality gate (>100 non-whitespace chars and not
- * {@link isLowQualityOutput}) before it is accepted, otherwise the next backend
- * is tried.
- *
- * The overall `timeout` budget bounds the whole call; remote backends (Parallel,
- * Jina) are additionally capped at `REMOTE_READER_MAX_MS` so a hung endpoint
- * cannot starve later renderers — especially the purely-local native converter,
- * which always works on already-loaded HTML. Only a real `userSignal`
- * cancellation aborts the chain (#1449).
- */
 export async function renderHtmlToText(
 	url: string,
 	html: string,
@@ -628,14 +521,11 @@ export async function renderHtmlToText(
 		signal: overallSignal,
 	};
 	const remoteBudgetMs = Math.min(timeout * 1000, REMOTE_READER_MAX_MS);
-	// Per-attempt budget for remote endpoints so one stall cannot consume the
-	// whole reader-mode budget and starve the local fallbacks.
+
 	const remoteSignal = () => ptree.combineSignals(userSignal, remoteBudgetMs);
 	const fetchImpl = fetchOverride ?? fetch;
 
 	const runners: Record<FetchProvider, () => Promise<string | null>> = {
-		// Purely local, no network/subprocess: still works on already-loaded HTML
-		// even after remote/subprocess attempts are aborted by the budget.
 		native: () => htmlToMarkdown(html, { cleanContent: true }),
 		trafilatura: async () => {
 			const trafilatura = await ensureTool("trafilatura", { signal: overallSignal, silent: true });
@@ -685,15 +575,9 @@ export async function renderHtmlToText(
 			? FETCH_PROVIDER_ORDER
 			: [preference, ...FETCH_PROVIDER_ORDER.filter(method => method !== preference)];
 
-	// Highest-priority output that is substantial but fails the low-quality gate.
-	// Surfaced (ok: true) only when no backend clears the gate, so the caller's
-	// targeted fallbacks (llms.txt / document extraction) still run and we beat
-	// returning the unrendered raw HTML.
 	let lowQuality: { content: string; method: FetchProvider } | null = null;
 
 	for (const method of order) {
-		// Honour real user cancellation between attempts; remote per-attempt and
-		// overall-budget timeouts still fall through to later (local) renderers.
 		userSignal?.throwIfAborted();
 		try {
 			const content = await runners[method]();
@@ -713,13 +597,9 @@ export async function renderHtmlToText(
 	return { content: "", ok: false, method: "none" };
 }
 
-/**
- * Check if lynx output looks JS-gated or mostly navigation
- */
 function isLowQualityOutput(content: string): boolean {
 	const lower = content.toLowerCase();
 
-	// JS-gated indicators
 	const jsGated = [
 		"enable javascript",
 		"javascript required",
@@ -731,7 +611,6 @@ function isLowQualityOutput(content: string): boolean {
 		return true;
 	}
 
-	// Mostly navigation (high link/menu density)
 	const lines = content.split("\n").filter(l => l.trim());
 	const shortLines = lines.filter(l => l.trim().length < 40);
 	if (lines.length > 10 && shortLines.length / lines.length > 0.7) {
@@ -741,9 +620,6 @@ function isLowQualityOutput(content: string): boolean {
 	return false;
 }
 
-/**
- * Format JSON
- */
 function formatJson(content: string): string {
 	try {
 		return JSON.stringify(JSON.parse(content), null, 2);
@@ -791,11 +667,6 @@ function isArchiveHint(mime: string, extensionHint: string): boolean {
 	return ARCHIVE_MIMES.has(mime) || ARCHIVE_EXTENSIONS.has(extensionHint);
 }
 
-/**
- * Content types whose payload renderUrl always re-fetches via fetchBinary.
- * Skipping the initial body read for them avoids downloading and
- * string-decoding huge binaries (PDFs, archives, images) twice.
- */
 function shouldSkipBodyDownload(contentType: string): boolean {
 	return (
 		CONVERTIBLE_MIMES.has(contentType) ||
@@ -1024,25 +895,13 @@ async function tryRenderBinaryPayload(
 	return null;
 }
 
-// =============================================================================
-// Unified Special Handler Dispatch
-// =============================================================================
-
 let specialHandlersPromise: Promise<SpecialHandler[]> | undefined;
 
-/**
- * Lazily load the site-specific scraper handlers. The scrapers barrel eagerly
- * imports ~80 site modules, none of which are needed until the first fetch that
- * requires a special handler, so we keep them out of the cold-startup graph.
- */
 function loadSpecialHandlers(): Promise<SpecialHandler[]> {
 	specialHandlersPromise ??= import("../web/scrapers").then(m => m.specialHandlers);
 	return specialHandlersPromise;
 }
 
-/**
- * Try all special handlers
- */
 async function handleSpecialUrls(
 	url: string,
 	timeout: number,
@@ -1060,13 +919,6 @@ async function handleSpecialUrls(
 	return null;
 }
 
-// =============================================================================
-// Main Render Function
-// =============================================================================
-
-/**
- * Main render function implementing the full pipeline
- */
 async function renderUrl(
 	url: string,
 	timeout: number,
@@ -1083,7 +935,6 @@ async function renderUrl(
 		throw new ToolAbortError();
 	}
 
-	// Handle internal protocol URLs (e.g., pi-internal://) - return empty
 	if (url.startsWith("pi-internal://")) {
 		return {
 			url,
@@ -1097,16 +948,13 @@ async function renderUrl(
 		};
 	}
 
-	// Step 0: Normalize URL (ensure scheme for special handlers)
 	url = normalizeUrl(url);
 
-	// Step 1: Try special handlers for known sites (unless raw mode)
 	if (!raw) {
 		const specialResult = await handleSpecialUrls(url, timeout, signal, storage);
 		if (specialResult) return specialResult;
 	}
 
-	// Step 2: Fetch page
 	const response = await loadPage(url, { timeout, signal, skipBodyForContentType: shouldSkipBodyDownload });
 	if (signal?.aborted) {
 		throw new ToolAbortError();
@@ -1235,7 +1083,6 @@ async function renderUrl(
 		}
 	}
 
-	// Step 3: Handle convertible binary files (PDF, DOCX, etc.)
 	if (!skipConvertibleBinaryRetry && isConvertible(mime, extHint)) {
 		const binary = await fetchBinary(finalUrl, timeout, signal);
 		if (binary.ok) {
@@ -1283,16 +1130,12 @@ async function renderUrl(
 	);
 	if (binaryPayloadResult) return binaryPayloadResult;
 
-	// Step 4: Handle non-HTML text content
 	const isHtml = mime.includes("html") || mime.includes("xhtml");
 	const isJson = mime.includes("json");
 	const isXml = mime.includes("xml") && !isHtml;
 	const isText = mime.includes("text/plain") || mime.includes("text/markdown");
 	const isFeed = mime.includes("rss") || mime.includes("atom") || mime.includes("feed");
 
-	// Raw mode skips every text-shaping branch below (JSON pretty-print, feed-to-markdown,
-	// HTML extraction) and returns the response body verbatim. Binary-oriented branches
-	// above already ran because raw isn't useful for binary payloads.
 	if (raw) {
 		const output = finalizeOutput(rawContent);
 		return {
@@ -1349,9 +1192,7 @@ async function renderUrl(
 		};
 	}
 
-	// Step 5: For HTML, try digestible formats first (unless raw mode)
 	if (isHtml && !raw) {
-		// 5A: Check for page-specific markdown alternate
 		const alternates = parseAlternateLinks(rawContent, finalUrl);
 		const markdownAlt = alternates.find(alt => alt.endsWith(".md") || alt.includes("markdown"));
 		if (markdownAlt) {
@@ -1373,7 +1214,6 @@ async function renderUrl(
 			}
 		}
 
-		// 5B: Try URL.md suffix (llms.txt convention)
 		const mdSuffix = await tryMdSuffix(finalUrl, timeout, signal);
 		if (mdSuffix) {
 			notes.push("Found .md suffix version");
@@ -1390,7 +1230,6 @@ async function renderUrl(
 			};
 		}
 
-		// 5C: Content negotiation
 		const negotiated = await tryContentNegotiation(url, timeout, signal);
 		if (negotiated) {
 			notes.push(`Content negotiation returned ${negotiated.type}`);
@@ -1407,7 +1246,6 @@ async function renderUrl(
 			};
 		}
 
-		// 5D: Check for feed alternates
 		const feedAlternates = alternates.filter(alt => !alt.endsWith(".md") && !alt.includes("markdown"));
 		for (const altUrl of feedAlternates.slice(0, 2)) {
 			const resolved = altUrl.startsWith("http") ? altUrl : new URL(altUrl, finalUrl).href;
@@ -1433,7 +1271,6 @@ async function renderUrl(
 			throw new ToolAbortError();
 		}
 
-		// 5E: Render HTML via the reader-backend chain (native/trafilatura/lynx/parallel/jina)
 		const htmlResult = await renderHtmlToText(
 			finalUrl,
 			rawContent,
@@ -1475,7 +1312,6 @@ async function renderUrl(
 			};
 		}
 
-		// Step 6: If rendered output is low quality, try more targeted fallbacks
 		if (isLowQualityOutput(htmlResult.content)) {
 			const docLinks = extractDocumentLinks(rawContent, finalUrl);
 			if (docLinks.length > 0) {
@@ -1538,7 +1374,6 @@ async function renderUrl(
 		};
 	}
 
-	// Fallback: return raw content
 	const output = finalizeOutput(rawContent);
 	return {
 		url,
@@ -1551,10 +1386,6 @@ async function renderUrl(
 		notes,
 	};
 }
-
-// =============================================================================
-// Tool Definition
-// =============================================================================
 
 export interface ReadUrlToolDetails {
 	kind: "url";
@@ -1609,7 +1440,6 @@ async function ensureReadUrlArtifact(session: ToolSession, entry: ReadUrlEntry):
 	return artifact?.id ? { ...entry, artifactId: artifact.id, artifactPath: artifact.path } : entry;
 }
 
-/** Fetch and render a URL for a read or search operation. */
 export async function fetchReadUrl(
 	session: ToolSession,
 	params: { path: string; raw?: boolean },
@@ -1713,11 +1543,6 @@ export async function executeReadUrl(
 	return resultBuilder.done();
 }
 
-// =============================================================================
-// TUI Rendering
-// =============================================================================
-
-/** Count non-empty lines */
 function countNonEmptyLines(text: string): number {
 	return text.split("\n").filter(l => l.trim()).length;
 }
@@ -1743,7 +1568,6 @@ function formatReadUrlMetadataValue(url: string, uiTheme: Theme): string {
 	return urlHyperlink(url, uiTheme.fg("mdLinkUrl", url));
 }
 
-/** Render URL read call (URL preview) */
 export function renderReadUrlCall(
 	args: { path?: string; url?: string; raw?: boolean },
 	_options: RenderResultOptions,
@@ -1757,7 +1581,6 @@ export function renderReadUrlCall(
 	return new Text(text, 0, 0);
 }
 
-/** Render URL read result with tree-based layout */
 export function renderReadUrlResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: ReadUrlToolDetails; isError?: boolean },
 	options: RenderResultOptions,

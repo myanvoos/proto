@@ -3,14 +3,14 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-/// Manage aliases within the shell.
+
 #[derive(Parser)]
 pub(crate) struct AliasCommand {
-	/// Print all defined aliases in a reusable format.
+
 	#[arg(short = 'p')]
 	print: bool,
 
-	/// List of aliases to display or update.
+
 	#[arg(name = "name[=value]")]
 	aliases: Vec<String>,
 }

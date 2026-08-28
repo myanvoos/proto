@@ -1,6 +1,3 @@
-/**
- * Simple text input component for hooks.
- */
 import { Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
@@ -55,7 +52,6 @@ export class HookInputComponent extends OverlayPanel {
 	}
 
 	handleInput(keyData: string): void {
-		// Reset countdown on any interaction
 		this.#countdown?.reset();
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			this.#onSubmitCallback(this.#input.getValue());
@@ -66,9 +62,6 @@ export class HookInputComponent extends OverlayPanel {
 		}
 	}
 
-	/** Route non-bracketed paste transports (e.g. kitty's OSC 5522 enhanced clipboard)
-	 *  into the inner input, mirroring bracketed-paste semantics. Pasting counts as
-	 *  interaction, so the timeout countdown resets like any keystroke. */
 	pasteText(text: string): void {
 		this.#countdown?.reset();
 		this.#input.pasteText(text);

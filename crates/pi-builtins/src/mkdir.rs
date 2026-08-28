@@ -1,6 +1,6 @@
-//! `mkdir` builtin: create directories.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -46,7 +46,7 @@ fn get_mode(matches: &ArgMatches) -> Result<u32, String> {
 	if let Some(mode_arg) = matches.get_one::<String>(options::MODE) {
 		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, mode::get_umask())
 	} else {
-		// If no mode argument is specified, return the mode derived from umask.
+
 		Ok(!mode::get_umask() & DEFAULT_PERM)
 	}
 }
@@ -117,7 +117,7 @@ fn normalized_io_message(error: &io::Error) -> String {
 	}
 }
 
-/// Parsed `mkdir` invocation.
+
 pub(crate) struct Mkdir {
 	matches: ArgMatches,
 }
@@ -212,14 +212,14 @@ fn exec(dirs: ValuesRef<'_, OsString>, config: &Config, host: &mut Host) {
 	}
 }
 
-/// Creates a directory at `path`, including parents when requested.
+
 fn mkdir(path: &Path, config: &Config, host: &mut Host) -> Result<(), MkdirError> {
 	if path.as_os_str().is_empty() {
 		return Err(MkdirError::Message(
 			"cannot create directory '': No such file or directory".into(),
 		));
 	}
-	// `mkdir -p foo/.` succeeds, although `std::fs::create_dir("foo/.")` does not.
+
 	let path = fs::dir_strip_dot_for_creation(path);
 	create_dir(&path, false, config, host)
 }
@@ -239,8 +239,8 @@ fn chmod(fs_path: &Path, display_path: &Path, mode: u32) -> Result<(), MkdirErro
 	})
 }
 
-// Uses an iterative approach instead of recursion to avoid stack overflow with
-// deep nesting.
+
+
 fn create_dir(
 	path: &Path,
 	is_parent: bool,
@@ -276,7 +276,7 @@ fn create_dir(
 	create_single_dir(path, is_parent, config, host)
 }
 
-/// Restores the process umask when directory creation finishes or unwinds.
+
 #[cfg(unix)]
 struct UmaskGuard(rustix::fs::Mode);
 
@@ -299,8 +299,8 @@ impl Drop for UmaskGuard {
 fn create_dir_with_mode(path: &Path, mode: u32) -> io::Result<()> {
 	use std::os::unix::fs::DirBuilderExt;
 
-	// GNU mkdir creates with the exact requested mode atomically by temporarily
-	// disabling the process umask.
+
+
 	let _guard = UmaskGuard::set(rustix::fs::Mode::empty());
 	std::fs::DirBuilder::new().mode(mode).create(path)
 }
@@ -322,7 +322,7 @@ fn create_single_dir(
 
 	#[cfg(unix)]
 	let create_mode = if is_parent {
-		// Parents made by `-p` use the umask-derived mode with `u+wx` restored.
+
 		(!mode::get_umask() & 0o777) | 0o300
 	} else {
 		config.mode
@@ -360,7 +360,7 @@ fn create_single_dir(
 	}
 }
 
-/// Creates the `mkdir` builtin registration.
+
 pub(crate) fn mkdir_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Mkdir, SE>()
 }

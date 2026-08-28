@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 #
 # Sign and notarize a compiled macOS `proto` binary with a Developer ID identity.
 #

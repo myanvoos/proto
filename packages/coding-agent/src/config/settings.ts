@@ -1,16 +1,3 @@
-/**
- * Settings singleton with sync get/set and background persistence.
- *
- * Usage:
- *   import { settings } from "./settings";
- *
- *   const enabled = settings.get("compaction.enabled");  // sync read
- *   settings.set("theme.dark", "titanium");               // sync write, saves in background
- *
- * For tests:
- *   const isolated = Settings.isolated({ "compaction.enabled": false });
- */
-
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -53,15 +40,9 @@ import {
 	type SettingValue,
 } from "./settings-schema";
 
-// Re-export types that callers need
 export type * from "./settings-schema";
 export * from "./settings-schema";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Raw settings object as stored in YAML */
 export interface RawSettings {
 	[key: string]: unknown;
 }
@@ -89,27 +70,19 @@ type ConfigOverlayReadResult = {
 };
 
 interface SettingsOptions {
-	/** Current working directory for project settings discovery */
 	cwd?: string;
-	/** Agent directory for config.yml/config.yaml storage */
+
 	agentDir?: string;
-	/** Don't persist to disk (for tests) */
+
 	inMemory?: boolean;
-	/** Read config sources without opening storage or writing migrations */
+
 	readOnly?: boolean;
-	/** Initial overrides */
+
 	overrides?: Partial<Record<SettingPath, unknown>>;
-	/** Extra config.yml-style overlays loaded after global/project settings */
+
 	configFiles?: string[];
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Path Utilities
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Get a nested value from an object by path segments.
- */
 function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
 	let current: unknown = obj;
 	for (const segment of segments) {
@@ -125,10 +98,6 @@ const SETTING_PATH_SEGMENTS: Record<SettingPath, readonly string[]> = Object.fro
 	(Object.keys(SETTINGS_SCHEMA) as SettingPath[]).map(settingPath => [settingPath, settingPath.split(".")]),
 ) as unknown as Record<SettingPath, readonly string[]>;
 
-/**
- * Set a nested value in an object by path segments.
- * Creates intermediate objects as needed.
- */
 function setByPath(obj: RawSettings, segments: string[], value: unknown): void {
 	let current = obj;
 	for (let i = 0; i < segments.length - 1; i++) {
@@ -203,18 +172,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Migrate a v17 leaf rename that used to nest under a boolean parent path
- * (`dev.autoqa.consent` → `dev.autoqaConsent`, `todo.reminders.max` →
- * `todo.remindersMax`). Pre-rename configs left the leaf beneath the parent,
- * so the parent path resolved to an object and truthy checks like
- * `isAutoQaEnabled` treated a consent-only container as "enabled".
- *
- * Handles nested (`{ parent: { leaf } }`) and quoted-dotted (`"parent.leaf"`)
- * legacy sources. An explicit new key always wins; a separately configured
- * boolean parent is preserved; an irrecoverable object-valued parent (only ever
- * a container for the old leaf) is dropped so the schema default applies.
- */
 function migrateNestedLeafRename(
 	raw: RawSettings,
 	root: string,
@@ -254,7 +211,6 @@ function migrateNestedLeafRename(
 		}
 	}
 
-	// Strip legacy leaf sources (nested + flat dotted).
 	delete raw[`${oldParentPath}.${oldLeaf}`];
 	delete raw[`${root}.${newLeaf}`];
 	if (isRecord(raw[root]) && isRecord((raw[root] as Record<string, unknown>)[parent])) {
@@ -265,7 +221,6 @@ function migrateNestedLeafRename(
 		}
 	}
 
-	// The parent path must be a boolean or absent — never a leftover object.
 	if (recoveredParent !== undefined) {
 		const target = ensureRoot();
 		if (typeof target[parent] !== "boolean") {
@@ -331,10 +286,6 @@ function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, 
 	return resolved;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Settings Class
-// ═══════════════════════════════════════════════════════════════════════════
-
 export class Settings {
 	#configPath: string | null;
 	#cwd: string;
@@ -342,57 +293,47 @@ export class Settings {
 	#storage: AgentStorage | null = null;
 
 	#configFiles: string[] = [];
-	/** Global settings from config.yml/config.yaml */
+
 	#global: RawSettings = {};
-	/** Project settings from .claude/settings.yml etc */
+
 	#project: RawSettings = {};
-	/** Last successfully loaded native .proto/config.yml contents. */
+
 	#projectFileSettings: RawSettings = {};
-	/** Logical config paths whose malformed targets were moved aside. */
+
 	#quarantinedYamlTargets = new Map<string, string>();
-	/** Extra config.yml-style overlays passed by CLI */
+
 	#configOverlay: RawSettings = {};
-	/** Project settings file that most recently supplied shellPath. */
+
 	#projectShellPathSource: string | undefined;
-	/** Explicit config overlay that most recently supplied shellPath. */
+
 	#overlayShellPathSource: string | undefined;
-	/** Runtime overrides (not persisted) */
+
 	#overrides: RawSettings = {};
-	/** Merged view (global + project + overrides) */
+
 	#merged: RawSettings = {};
-	/** Cached resolved values from the merged view, including defaults/path scoping */
+
 	#resolvedCache = new Map<SettingPath, unknown>();
 	#editVariantCache: readonly EditVariantEntry[] | undefined;
 
-	/** Paths modified during this session (for partial save) */
 	#modified = new Set<string>();
-	/** Individual project model roles modified during this session */
+
 	#modifiedProjectModelRoles = new Set<string>();
-	/** Individual global model roles modified during this session (for partial save) */
+
 	#modifiedGlobalModelRoles = new Set<string>();
-	/** Changes whenever a live API mutates a persisted layer. */
+
 	#persistedMutationGeneration = 0;
-	/**
-	 * Original process-wide model-role overrides captured before a project edit
-	 * temporarily replaced them via `#updateRuntimeModelRoleOverride`. Restored
-	 * on `reloadForCwd` / `cloneForCwd` so destination projects never inherit the
-	 * source-project value. Maps role → original override value (`undefined`
-	 * when the role had no runtime override).
-	 */
+
 	#savedRuntimeModelRoleOverrides = new Map<string, string | undefined>();
 
-	/** Legacy `lastChangelogVersion` captured from config.yml during migration (now a marker file). */
 	#legacyLastChangelogVersion?: string;
 
-	/** Pending save (debounced) */
 	#saveTimer?: NodeJS.Timeout;
 	#savePromise?: Promise<void>;
 	#projectSaveTimer?: NodeJS.Timeout;
 	#projectSavePromise?: Promise<void>;
-	/** Coalesces concurrent persisted-layer refreshes into one atomic reload. */
+
 	#reloadFromDiskPromise?: Promise<void>;
 
-	/** Whether to persist changes */
 	#persist: boolean;
 
 	private constructor(options: SettingsOptions = {}) {
@@ -414,14 +355,6 @@ export class Settings {
 		}
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Factory Methods
-	// ─────────────────────────────────────────────────────────────────────────
-
-	/**
-	 * Initialize the global singleton.
-	 * Call once at startup before accessing `settings`.
-	 */
 	static init(options: SettingsOptions = {}): Promise<Settings> {
 		if (globalInstancePromise) return globalInstancePromise;
 
@@ -445,27 +378,16 @@ export class Settings {
 		);
 	}
 
-	/**
-	 * Load effective settings from config.yml and project providers without
-	 * opening agent.db, migrating legacy settings, or writing marker files.
-	 */
 	static loadReadOnly(options: SettingsOptions = {}): Promise<Settings> {
 		const instance = new Settings({ ...options, readOnly: true });
 		return instance.#loadReadOnly();
 	}
 
-	/**
-	 * Load a persisted settings instance without touching the global singleton.
-	 */
 	static loadIsolated(options: SettingsOptions = {}): Promise<Settings> {
 		const instance = new Settings(options);
 		return instance.#load();
 	}
 
-	/**
-	 * Create an in-memory settings instance without affecting the global singleton.
-	 * A supplied storage handle remains shared for runtime data while setting overrides stay non-persistent.
-	 */
 	static isolated(
 		overrides: Partial<Record<SettingPath, unknown>> = {},
 		options: { storage?: AgentStorage | null } = {},
@@ -476,10 +398,6 @@ export class Settings {
 		return instance;
 	}
 
-	/**
-	 * Get the global singleton.
-	 * Throws if not initialized.
-	 */
 	static get instance(): Settings {
 		if (!globalInstance) {
 			throw new Error("Settings not initialized. Call Settings.init() first.");
@@ -487,14 +405,6 @@ export class Settings {
 		return globalInstance;
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Core API
-	// ─────────────────────────────────────────────────────────────────────────
-
-	/**
-	 * Get a setting value (sync).
-	 * Returns the merged value from global + project + overrides, or the default.
-	 */
 	get<P extends SettingPath>(path: P): SettingValue<P> {
 		if (this.#resolvedCache.has(path)) {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
@@ -507,19 +417,10 @@ export class Settings {
 		return resolved as SettingValue<P>;
 	}
 
-	/**
-	 * Whether `path` has an explicitly configured value (global config, project
-	 * config, or runtime override) rather than falling back to the schema default.
-	 */
 	isConfigured(path: SettingPath): boolean {
 		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
 	}
 
-	/**
-	 * Set a setting value (sync).
-	 * Updates global settings and queues a background save.
-	 * Triggers hooks for settings that have side effects.
-	 */
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
 		const prev = this.get(path);
 		const segments = path.split(".");
@@ -530,7 +431,6 @@ export class Settings {
 		const next = this.get(path);
 		this.#queueSave();
 
-		// Trigger hook if exists
 		const hook = SETTING_HOOKS[path];
 		if (hook) {
 			hook(next, prev);
@@ -538,9 +438,6 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
 
-	/**
-	 * Apply runtime overrides (not persisted).
-	 */
 	override<P extends SettingPath>(path: P, value: SettingValue<P>): void {
 		if (path === "modelRoles") {
 			this.#savedRuntimeModelRoleOverrides.clear();
@@ -552,9 +449,6 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
-	/**
-	 * Clear a runtime override.
-	 */
 	clearOverride(path: SettingPath): void {
 		if (path === "modelRoles") {
 			this.#savedRuntimeModelRoleOverrides.clear();
@@ -572,12 +466,10 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
-	/** Effective values of every setting that repartitions the Code Mode surface. */
 	#codeModeSignalSnapshot(): unknown[] {
 		return CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
 	}
 
-	/** Fires the Code Mode signal when a persisted-layer refresh changed the partition inputs. */
 	#fireCodeModeChangeIfNeeded(previous: unknown[]): void {
 		if (Bun.deepEquals(this.#codeModeSignalSnapshot(), previous)) return;
 		codeModeSignal.fire();
@@ -593,15 +485,8 @@ export class Settings {
 		}
 	}
 
-	/** Set once this instance is discarded; background saves become no-ops. */
 	#savesCancelled = false;
 
-	/**
-	 * Drop pending debounced saves and refuse any further background writes.
-	 * Used when an instance is being discarded (test teardown): an armed timer
-	 * or a chained in-flight save on a dropped instance would otherwise fire
-	 * later and race the successor's file locks.
-	 */
 	cancelPendingSaves(): void {
 		this.#savesCancelled = true;
 		clearTimeout(this.#saveTimer);
@@ -610,10 +495,6 @@ export class Settings {
 		this.#projectSaveTimer = undefined;
 	}
 
-	/**
-	 * Flush any pending saves to disk.
-	 * Call before exit to ensure all changes are persisted.
-	 */
 	async flush(): Promise<void> {
 		if (this.#saveTimer) {
 			clearTimeout(this.#saveTimer);
@@ -657,14 +538,6 @@ export class Settings {
 		return cloned;
 	}
 
-	/**
-	 * Re-read the current global, project, and explicit overlay layers from disk
-	 * without replacing this instance or discarding runtime overrides.
-	 *
-	 * All sources are loaded before any live layer is replaced, so readers never
-	 * observe a partially refreshed configuration. Concurrent callers share the
-	 * same reload.
-	 */
 	async reloadFromDisk(): Promise<void> {
 		if (!this.#persist) return;
 		if (this.#reloadFromDiskPromise) return this.#reloadFromDiskPromise;
@@ -727,18 +600,6 @@ export class Settings {
 		}
 	}
 
-	/**
-	 * Re-scope this instance to a new working directory *in place*: reload the
-	 * project layer (`.claude/settings.yml` etc.) from `cwd`, re-resolve
-	 * path-scoped settings against it, and re-fire side-effect hooks (theme,
-	 * symbols, tab width, …). Global settings and runtime overrides are preserved.
-	 *
-	 * Unlike {@link cloneForCwd}, this mutates the live instance, so every holder
-	 * (the `settings` proxy, the active session, controllers) observes the new
-	 * project scope without swapping references — used when the process changes
-	 * directory mid-run (`/move`, cross-project resume). No-op when `cwd` is
-	 * already the current scope.
-	 */
 	async reloadForCwd(cwd: string): Promise<void> {
 		const normalized = path.normalize(cwd);
 		if (normalized === this.#cwd) return;
@@ -756,10 +617,6 @@ export class Settings {
 		this.#fireAllHooks();
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Accessors
-	// ─────────────────────────────────────────────────────────────────────────
-
 	getStorage(): AgentStorage | null {
 		return this.#storage;
 	}
@@ -776,9 +633,6 @@ export class Settings {
 		return path.join(this.#agentDir, "plans");
 	}
 
-	/**
-	 * Get shell configuration based on settings.
-	 */
 	getShellConfig() {
 		const shell = this.get("shellPath");
 		let configSource = this.#configPath ?? path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
@@ -794,9 +648,6 @@ export class Settings {
 		return procmgr.getShellConfig(shell, { configSource });
 	}
 
-	/**
-	 * Get all settings in a group with full type safety.
-	 */
 	getGroup<G extends GroupPrefix>(prefix: G): GroupTypeMap[G] {
 		const result: Record<string, unknown> = {};
 		for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
@@ -808,10 +659,6 @@ export class Settings {
 		return result as unknown as GroupTypeMap[G];
 	}
 
-	/**
-	 * Get the edit variant for a specific model.
-	 * Returns "patch", "replace", "hashline", "apply_patch", or null (use global default).
-	 */
 	getEditVariantForModel(model: string | undefined): EditMode | null {
 		if (!model) return null;
 		const variants = this.#getEditVariantEntries();
@@ -852,9 +699,6 @@ export class Settings {
 		return variants;
 	}
 
-	/**
-	 * Get bash interceptor rules (typed accessor for complex array config).
-	 */
 	getBashInterceptorRules(): BashInterceptorRule[] {
 		return this.get("bashInterceptor.patterns");
 	}
@@ -880,13 +724,6 @@ export class Settings {
 		return Object.hasOwn(value, role);
 	}
 
-	/**
-	 * Set the full `modelRoles` map on the runtime override layer without
-	 * routing through the public {@link override} method. Internal callers
-	 * (project edits, global fallback updates) use this so they can control
-	 * capture invalidation independently of the whole-map replacement
-	 * semantics that `override("modelRoles", …)` carries.
-	 */
 	#setRuntimeModelRoleOverrides(next: Record<string, string>): void {
 		const prev = this.get("modelRoles");
 		setByPath(this.#overrides, ["modelRoles"], next);
@@ -907,12 +744,6 @@ export class Settings {
 		this.#setRuntimeModelRoleOverrides(nextRuntimeOverride);
 	}
 
-	/**
-	 * Capture the original process-wide override for `role` the first time a
-	 * project edit temporarily replaces it, so the original can be restored on
-	 * cwd changes. Subsequent edits in the same cwd must not overwrite the
-	 * first captured value.
-	 */
 	#captureRuntimeModelRoleOverride(role: ModelRole | string): void {
 		if (this.#savedRuntimeModelRoleOverrides.has(role)) return;
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
@@ -920,14 +751,6 @@ export class Settings {
 		this.#savedRuntimeModelRoleOverrides.set(role, this.#modelRolesFromLayer(this.#overrides)[role]);
 	}
 
-	/**
-	 * Restore original process-wide model-role overrides that were temporarily
-	 * replaced by project edits, mutating `#overrides` in place without
-	 * rebuilding. All remaining captures are valid because superseding
-	 * operations (late `overrideModelRoles`, global-mode `setModelRole`,
-	 * whole-map `override`/`clearOverride`) invalidate the affected captures
-	 * at the point of supersession. Caller is responsible for `#rebuildMerged()`.
-	 */
 	#restoreRuntimeModelRoleOverrides(): void {
 		if (this.#savedRuntimeModelRoleOverrides.size === 0) return;
 		const runtimeRoles = getByPath(this.#overrides, ["modelRoles"]);
@@ -945,12 +768,6 @@ export class Settings {
 		this.#savedRuntimeModelRoleOverrides.clear();
 	}
 
-	/**
-	 * Produce a deep copy of `#overrides` with original process-wide model-role
-	 * overrides restored, for use by {@link cloneForCwd}. All remaining
-	 * captures are valid (see {@link #restoreRuntimeModelRoleOverrides}).
-	 * Does not mutate the current instance's `#overrides`.
-	 */
 	#buildOriginalOverrides(): RawSettings {
 		if (this.#savedRuntimeModelRoleOverrides.size === 0) {
 			return structuredClone(this.#overrides);
@@ -981,20 +798,6 @@ export class Settings {
 		this.#queueProjectSave();
 	}
 
-	/**
-	 * Set a model role (helper for modelRoles record). Passing `undefined`
-	 * clears the role from the persisted record and any runtime override.
-	 *
-	 * In project storage mode, when a project edit has temporarily replaced
-	 * the process-wide runtime override for `role` and that override is still
-	 * active (the runtime slot currently matches the project value), the
-	 * global-layer write must not rewrite that runtime slot — otherwise the
-	 * global fallback would immediately shadow the still-configured project
-	 * role. The global layer is still persisted; only the runtime override is
-	 * left untouched. The guard is precise so that a later clear, a late
-	 * `overrideModelRoles`, or a storage-mode transition does not leave a
-	 * stale skip in place.
-	 */
 	setModelRole(role: ModelRole | string, modelId: string | undefined): void {
 		const prev = this.get("modelRoles");
 		const current = this.#modelRolesFromLayer(this.#global);
@@ -1003,10 +806,7 @@ export class Settings {
 		} else {
 			current[role] = modelId;
 		}
-		// Persist per-role rather than marking the whole `modelRoles` path
-		// modified: #saveNow merges only the changed role into the re-read
-		// file, so a concurrent external edit to a sibling role is not
-		// clobbered by this process's stale in-memory snapshot.
+
 		setByPath(this.#global, ["modelRoles"], current);
 		this.#modifiedGlobalModelRoles.add(role);
 		this.#persistedMutationGeneration++;
@@ -1020,70 +820,40 @@ export class Settings {
 		this.#updateRuntimeModelRoleOverride(role, modelId);
 	}
 
-	/**
-	 * Whether `role`'s runtime override slot currently holds the temporary
-	 * project-scoped value installed by a prior `setProjectModelRole`. Returns
-	 * `false` when storage is not project-mode, no capture exists, or the
-	 * project role was cleared. With explicit provenance invalidation, a
-	 * surviving capture implies no external supersession occurred.
-	 */
 	isProjectModelRoleRuntimeOverrideActive(role: ModelRole | string): boolean {
 		if (this.get("modelRoleStorage") !== "project") return false;
 		if (!this.#savedRuntimeModelRoleOverrides.has(role)) return false;
 		return !!this.getProjectModelRole(role);
 	}
-	/**
-	 * Set a model role in the current project's settings layer.
-	 */
+
 	setProjectModelRole(role: ModelRole | string, modelId: string): void {
 		this.#setProjectModelRoleValue(role, modelId);
 		this.#captureRuntimeModelRoleOverride(role);
 		this.#updateRuntimeModelRoleOverride(role, modelId);
 	}
-	/**
-	 * Clear a model role from the current project's settings layer.
-	 */
+
 	clearProjectModelRole(role: ModelRole | string): void {
 		this.#setProjectModelRoleValue(role, null);
 		this.#captureRuntimeModelRoleOverride(role);
 		this.#updateRuntimeModelRoleOverride(role, undefined);
 	}
 
-	/**
-	 * Get a model role (helper for modelRoles record).
-	 */
 	getModelRole(role: ModelRole | string): string | undefined {
 		const roles: unknown = this.get("modelRoles");
 		if (!isRecord(roles)) return undefined;
 		return modelRoleValueFromUnknown(roles[role]);
 	}
-	/**
-	 * Get a model role from only the global settings layer.
-	 */
+
 	getGlobalModelRole(role: ModelRole | string): string | undefined {
 		const modelId = this.#modelRolesFromLayer(this.#global)[role];
 		return modelId || undefined;
 	}
 
-	/**
-	 * Get a model role from only the current project settings layer.
-	 */
 	getProjectModelRole(role: ModelRole | string): string | undefined {
 		const modelId = this.#modelRolesFromLayer(this.#project)[role];
 		return modelId || undefined;
 	}
 
-	/**
-	 * Report which layer actually supplies the effective model role across
-	 * full merge precedence (runtime override → config overlay → project →
-	 * global → default). Unlike {@link getModelRoleSource}, this accounts
-	 * for runtime and config-overlay layers and detects ownership by key
-	 * presence rather than normalized value, so a `null` tombstone in the
-	 * overlay or runtime layer correctly blocks lower layers. The project
-	 * layer is checked through {@link #projectSettingsForMerge} because a
-	 * project null is a cleared value (falls back to global), not a
-	 * tombstone.
-	 */
 	getModelRoleProvenance(role: ModelRole | string): "runtime" | "overlay" | "project" | "global" | "default" {
 		if (this.#modelRoleLayerOwns(this.#overrides, role)) return "runtime";
 		if (this.#modelRoleLayerOwns(this.#configOverlay, role)) return "overlay";
@@ -1092,18 +862,12 @@ export class Settings {
 		return "default";
 	}
 
-	/**
-	 * Get the persisted layer supplying a model role (project/global/default only).
-	 */
 	getModelRoleSource(role: ModelRole | string): "project" | "global" | "default" {
 		if (this.getProjectModelRole(role)) return "project";
 		if (this.getGlobalModelRole(role)) return "global";
 		return "default";
 	}
 
-	/**
-	 * Get all model roles (helper for modelRoles record).
-	 */
 	getModelRoles(): ReadOnlyDict<string> {
 		const roles: unknown = this.get("modelRoles");
 		if (!isRecord(roles)) return {};
@@ -1119,9 +883,6 @@ export class Settings {
 		return normalized;
 	}
 
-	/*
-	 * Override model roles (helper for modelRoles record).
-	 */
 	overrideModelRoles(roles: ReadOnlyDict<string>): void {
 		const next = this.#modelRolesFromLayer(this.#overrides);
 		for (const [role, modelId] of Object.entries(roles)) {
@@ -1133,22 +894,11 @@ export class Settings {
 		this.#setRuntimeModelRoleOverrides(next);
 	}
 
-	/**
-	 * Set disabled providers (for compatibility with discovery system).
-	 */
 	setDisabledProviders(ids: string[]): void {
 		this.set("disabledProviders", ids);
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Loading
-	// ─────────────────────────────────────────────────────────────────────────
-
 	async #load(): Promise<Settings> {
-		// Project settings discovery is independent of the persist chain, while
-		// the persist steps themselves remain sequential. Wait for both branches
-		// to settle so simultaneous failures produce one catchable error without
-		// abandoning the other rejection.
 		const [globalResult, projectResult] = await Promise.allSettled([
 			this.#persist ? this.#loadGlobalSettings() : Promise.resolve(),
 			this.#loadProjectSettings(),
@@ -1159,7 +909,6 @@ export class Settings {
 		this.#project = projectResult.value;
 		this.#configOverlay = await this.#loadConfigOverlays();
 
-		// Build merged view (global → project → overrides; project wins over global)
 		this.#rebuildMerged();
 		this.#fireAllHooks();
 		return this;
@@ -1237,9 +986,6 @@ export class Settings {
 			if (!isEnoent(error)) throw error;
 		}
 
-		// realpath fails for a dangling symlink. Resolve its immediate target so
-		// recreating a quarantined config repairs the target without replacing
-		// the user-managed link.
 		try {
 			const stat = await fs.promises.lstat(filePath);
 			if (stat.isSymbolicLink()) {
@@ -1267,11 +1013,6 @@ export class Settings {
 		);
 	}
 
-	/**
-	 * Read a YAML settings file while its write lock is held. Invalid files are
-	 * moved aside before reporting failure, so a later write can never truncate
-	 * the only copy of the user's configuration.
-	 */
 	async #loadYamlIfPresentForWriteLocked(
 		filePath: string,
 		writePath: string,
@@ -1359,8 +1100,6 @@ export class Settings {
 			}
 		} catch {
 			shellPathSource = undefined;
-			// Capability discovery is best-effort; the native project config below
-			// remains authoritative for its model-role layer and must not be hidden.
 		}
 		const projectConfigPath = path.join(this.#cwd, ".proto", "config.yml");
 		const nativeProject = quarantineInvalid
@@ -1402,11 +1141,6 @@ export class Settings {
 		return result.settings;
 	}
 
-	/**
-	 * Strict loader for explicit `--config` overlays: unlike `#loadYaml`,
-	 * missing or malformed files are hard errors so a typo'd path cannot
-	 * silently fall back to the persistent settings.
-	 */
 	async #loadOverlayYaml(filePath: string, captureLegacyChangelogVersion = true): Promise<RawSettings> {
 		let content: string;
 		try {
@@ -1437,7 +1171,6 @@ export class Settings {
 		let settings: RawSettings = {};
 		let migrated = false;
 
-		// 1. Migrate from settings.json
 		const settingsJsonPath = path.join(this.#agentDir, "settings.json");
 		try {
 			const parsed: unknown = JSONC.parse(await Bun.file(settingsJsonPath).text());
@@ -1450,7 +1183,6 @@ export class Settings {
 			}
 		} catch {}
 
-		// 2. Migrate from agent.db
 		try {
 			const dbSettings = this.#storage?.getSettings();
 			if (dbSettings) {
@@ -1459,7 +1191,6 @@ export class Settings {
 			}
 		} catch {}
 
-		// 3. Write merged settings
 		if (migrated && Object.keys(settings).length > 0) {
 			try {
 				await this.#writeYamlAtomically(this.#configPath, settings);
@@ -1468,28 +1199,17 @@ export class Settings {
 		}
 	}
 
-	/** Apply schema migrations to raw settings */
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
-		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;
 			delete raw.queueMode;
 		}
 
-		// lastChangelogVersion moved out of config.yml into the
-		// <agentDir>/last-changelog-version marker file so version bumps no
-		// longer dirty user-tracked configs. Capture for marker seeding (see
-		// #seedLastChangelogVersionMarker), then strip the key — the next
-		// config save drops it from disk.
 		if (captureLegacyChangelogVersion && typeof raw.lastChangelogVersion === "string") {
 			this.#legacyLastChangelogVersion ??= raw.lastChangelogVersion;
 		}
 		delete raw.lastChangelogVersion;
 
-		// collapseChangelog (boolean) -> startup.changelogMode (enum). Preserve
-		// every explicit legacy choice while giving new installs the schema's
-		// "summary" default: true -> summary, false -> expanded. A separately
-		// configured new mode always wins.
 		const startupObj = isRecord(raw.startup) ? (raw.startup as Record<string, unknown>) : undefined;
 		const legacyCollapseChangelog = typeof raw.collapseChangelog === "boolean" ? raw.collapseChangelog : undefined;
 		const flatChangelogMode = raw["startup.changelogMode"];
@@ -1511,7 +1231,6 @@ export class Settings {
 		delete raw.collapseChangelog;
 		delete raw["startup.changelogMode"];
 
-		// ask.timeout: ms -> seconds (if value > 1000, it's old ms format)
 		if (raw.ask && typeof (raw.ask as Record<string, unknown>).timeout === "number") {
 			const oldValue = (raw.ask as Record<string, unknown>).timeout as number;
 			if (oldValue > 1000) {
@@ -1519,25 +1238,16 @@ export class Settings {
 			}
 		}
 
-		// Migrate old flat "theme" string to nested theme.dark/theme.light
 		if (typeof raw.theme === "string") {
 			const oldTheme = raw.theme;
 			if (oldTheme === "light" || oldTheme === "dark") {
-				// Built-in defaults — just remove, let new defaults apply
 				delete raw.theme;
 			} else {
-				// Custom theme — detect luminance to place in correct slot
 				const slot = isLightTheme(oldTheme) ? "light" : "dark";
 				raw.theme = { [slot]: oldTheme };
 			}
 		}
 
-		// inspect_image.enabled (boolean) -> inspect_image.mode (enum). Explicit
-		// user choices are preserved: true -> "on", false -> "off". Configs with
-		// no legacy key get the new "auto" default, which hides the tool for
-		// models with native image input. Handles nested and quoted-dotted
-		// ("inspect_image.enabled") sources; the target is always the nested
-		// form, which is the only shape the resolver reads.
 		const inspectImageObj = isRecord(raw.inspect_image) ? (raw.inspect_image as Record<string, unknown>) : undefined;
 		const legacyEnabled =
 			typeof inspectImageObj?.enabled === "boolean"
@@ -1552,8 +1262,6 @@ export class Settings {
 			const target = raw.inspect_image as Record<string, unknown>;
 			const flatMode = raw["inspect_image.mode"];
 			if (target.mode === undefined) {
-				// A quoted-dotted explicit mode wins over the legacy boolean but
-				// must be normalized into the nested form the resolver reads.
 				target.mode =
 					typeof flatMode === "string" && (INSPECT_IMAGE_MODES as readonly string[]).includes(flatMode)
 						? flatMode
@@ -1566,7 +1274,6 @@ export class Settings {
 			delete raw["inspect_image.mode"];
 		}
 
-		// task.isolation.enabled (boolean) -> task.isolation.mode (enum)
 		const taskObj = raw.task as Record<string, unknown> | undefined;
 		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;
 		if (isolationObj && "enabled" in isolationObj) {
@@ -1576,24 +1283,15 @@ export class Settings {
 			delete isolationObj.enabled;
 		}
 
-		// Legacy task.simple is removed; structured output now belongs to
-		// orchestrate_spawn or the eval agent() bridge.
 		if (taskObj && "simple" in taskObj) {
 			delete taskObj.simple;
 		}
 
-		// todo.eager: boolean -> enum (default | preferred | always).
-		// `true` reproduced the previous "on" behavior, which is now `always`.
 		const todoObj = raw.todo as Record<string, unknown> | undefined;
 		if (todoObj && typeof todoObj.eager === "boolean") {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
-		// task.isolation.mode: legacy values from before the pi-iso PAL refactor.
-		// `worktree` was git worktree → now lives under `rcopy`. `fuse-overlay`
-		// and `fuse-projfs` are now the platform-named `overlayfs` / `projfs`
-		// kinds; the PAL falls back internally when the chosen one isn't
-		// available, so we don't need the old TS-side platform guards.
 		if (isolationObj && typeof isolationObj.mode === "string") {
 			const legacy: Record<string, string> = {
 				worktree: "rcopy",
@@ -1606,7 +1304,6 @@ export class Settings {
 			}
 		}
 
-		// edit.mode: removed "atom" and "vim" variants map back to "hashline"
 		const editObj = raw.edit as Record<string, unknown> | undefined;
 		if (editObj) {
 			if (editObj.mode === "atom" || editObj.mode === "vim") {
@@ -1625,11 +1322,6 @@ export class Settings {
 			raw["edit.mode"] = "hashline";
 		}
 
-		// compaction.strategy / compaction.remoteEnabled → compaction.methodOrder.
-		// The old single strategy could not express a capability-dependent fallback
-		// chain. Preserve explicit remote intent while new installs use the
-		// server → soft default. The removed "handoff" and "shake-summary"/"shake"
-		// strategies collapse onto the surviving summarization methods.
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
 		const configuredMethodOrder = compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
 		const legacyStrategy = compactionObj?.strategy ?? raw["compaction.strategy"];
@@ -1671,15 +1363,10 @@ export class Settings {
 		delete raw["compaction.remoteEnabled"];
 		delete raw["compaction.methodOrder"];
 
-		// inlineToolDescriptors: boolean -> enum (auto | on | off). The old
-		// `true`/`false` mapped directly onto inline-on/inline-off, so preserve
-		// the user's explicit choice; new installs get the `auto` default that
-		// turns it on only for Gemini models.
 		if (typeof raw.inlineToolDescriptors === "boolean") {
 			raw.inlineToolDescriptors = raw.inlineToolDescriptors ? "on" : "off";
 		}
 
-		// statusLine: rename "plan_mode" segment to "mode"
 		const statusLineObj = raw.statusLine as Record<string, unknown> | undefined;
 		if (statusLineObj) {
 			for (const key of ["leftSegments", "rightSegments"] as const) {
@@ -1695,21 +1382,12 @@ export class Settings {
 			}
 		}
 
-		// providers.parallelFetch (boolean) replaced by the providers.fetch reader
-		// priority enum. The new default ("auto") supersedes both old values —
-		// Parallel is now a deep fallback in the auto chain rather than the first
-		// choice — so drop the legacy key (flat and nested) and let the enum
-		// default apply.
 		const providersObj = raw.providers as Record<string, unknown> | undefined;
 		if (providersObj && "parallelFetch" in providersObj) {
 			delete providersObj.parallelFetch;
 		}
 		delete raw["providers.parallelFetch"];
 
-		// codexResets.autoRedeem: boolean -> tri-state enum.
-		// Existing explicit false keeps the old "do not run" behavior; missing
-		// config now falls through to the new "unset" default, which asks before
-		// the first eligible spend.
 		const codexResetsObj = raw.codexResets as Record<string, unknown> | undefined;
 		if (codexResetsObj && typeof codexResetsObj.autoRedeem === "boolean") {
 			codexResetsObj.autoRedeem = codexResetsObj.autoRedeem ? "yes" : "no";
@@ -1718,11 +1396,6 @@ export class Settings {
 			raw["codexResets.autoRedeem"] = raw["codexResets.autoRedeem"] ? "yes" : "no";
 		}
 
-		// power.preventIdleSleep / power.preventSystemSleep / power.declareUserActive
-		// / power.preventDisplaySleep (four booleans) → power.sleepPrevention enum.
-		// The enum is cumulative: each level adds the flags of all lower levels.
-		// Migration picks the highest level whose condition is met, scanning from
-		// most to least aggressive so a single enum value captures the old state.
 		if (
 			!("sleepPrevention" in ((raw.power as Record<string, unknown>) ?? {})) &&
 			raw["power.sleepPrevention"] === undefined
@@ -1745,7 +1418,7 @@ export class Settings {
 				powerRoot.sleepPrevention = mode;
 				raw.power = powerRoot;
 			}
-			// Clean up old keys (nested + flat)
+
 			if (powerObj) {
 				delete powerObj.preventIdleSleep;
 				delete powerObj.preventSystemSleep;
@@ -1758,15 +1431,8 @@ export class Settings {
 			delete raw["power.preventDisplaySleep"];
 		}
 
-		// readHashLines: removed. Hashline anchors are now driven solely by
-		// edit.mode === "hashline"; the separate read toggle only ever produced
-		// the incoherent "hashline edits without addressable anchors" state.
 		delete raw.readHashLines;
 
-		// serviceTier (single enum with scoped openai-only/claude-only sentinels)
-		// → per-family tier.openai/tier.anthropic/tier.google; serviceTierSubagent
-		// → tier.subagent; serviceTierAdvisor → tier.advisor. `fastModeScope` is
-		// dropped — per-family scoping is now expressed by the three tier settings.
 		const tierObj = isRecord(raw.tier) ? raw.tier : {};
 		let tierTouched = false;
 		const setTier = (family: string, value: unknown): void => {
@@ -1810,11 +1476,6 @@ export class Settings {
 		if (tierTouched) raw.tier = tierObj;
 		delete raw.fastModeScope;
 
-		// advisor.subagents (blanket advisor on every spawned subagent) → per-agent
-		// task.agentAdvisor, migrated to the bundled generic `task` agent. An
-		// explicit boolean maps to "on"/"off" IN THE SAME LAYER — migration runs
-		// per file, so a project-level `false` must keep overriding a global
-		// `true` after both layers migrate.
 		{
 			const advisorObj = isRecord(raw.advisor) ? raw.advisor : undefined;
 			const legacySubagents =
@@ -1830,9 +1491,6 @@ export class Settings {
 			delete raw["advisor.subagents"];
 		}
 
-		// Early per-agent toggles were persisted as booleans even though the
-		// runtime record contract is "on"/"off"/model pattern. Normalize each
-		// layer before merging so project-level false still overrides global true.
 		{
 			const taskObj = isRecord(raw.task) ? raw.task : undefined;
 			if (taskObj) {
@@ -1847,9 +1505,6 @@ export class Settings {
 			}
 		}
 
-		// v17 renames that used to nest under a boolean parent path:
-		//   dev.autoqa.consent -> dev.autoqaConsent
-		//   todo.reminders.max -> todo.remindersMax
 		migrateNestedLeafRename(
 			raw,
 			"dev",
@@ -1867,10 +1522,6 @@ export class Settings {
 			value => typeof value === "number" && Number.isFinite(value),
 		);
 
-		// BM25 tool discovery removal: tools.discoveryMode / tools.essentialOverride /
-		// mcp.discoveryMode / mcp.discoveryDefaultServers are gone with no
-		// replacement (`tools.xdev` stays at its own default). Dead keys are
-		// deleted so they stop lingering in config.yml.
 		const toolsObj = raw.tools as Record<string, unknown> | undefined;
 		if (toolsObj) {
 			delete toolsObj.discoveryMode;
@@ -1886,12 +1537,6 @@ export class Settings {
 		delete raw["mcp.discoveryMode"];
 		delete raw["mcp.discoveryDefaultServers"];
 
-		// providers.webSearch / providers.image (single preferred provider) →
-		// providers.webSearchOrder / providers.imageOrder (priority lists). A
-		// concrete legacy choice becomes the head of the new list with every
-		// remaining provider appended in its built-in order, so the old
-		// preference stays #1 and the fallback chain is written out explicitly.
-		// "auto" (or an unknown id) just drops the key — the default chain.
 		const providerPrefsObj = raw.providers as Record<string, unknown> | undefined;
 		const migrateProviderPreference = (
 			legacyKey: string,
@@ -1925,10 +1570,6 @@ export class Settings {
 				: undefined,
 		);
 
-		// Consolidate the retired Exa suite toggles onto the sole remaining
-		// provider switch. The old runtime required both `enabled` and
-		// `enableSearch`, so preserve that AND semantics when both are present.
-		// Researcher and Websets were removed with the standalone Exa tools.
 		const exaObj = isRecord(raw.exa) ? raw.exa : undefined;
 		const exaEnabledValues = [
 			exaObj?.enabled,
@@ -1960,8 +1601,6 @@ export class Settings {
 			delete raw["exa.enableWebsets"];
 		}
 
-		// computer.backend and model-specific controller routing were removed
-		// when the computer tool moved to one native desktop implementation.
 		const computerObj = isRecord(raw.computer) ? raw.computer : undefined;
 		if (computerObj && "backend" in computerObj) {
 			delete computerObj.backend;
@@ -1974,11 +1613,6 @@ export class Settings {
 		return raw;
 	}
 
-	/**
-	 * One-time migration: seed the last-changelog-version marker file from the
-	 * legacy config.yml key. An existing marker always wins — it is the newer
-	 * source of truth.
-	 */
 	async #seedLastChangelogVersionMarker(): Promise<void> {
 		const legacy = this.#legacyLastChangelogVersion;
 		if (!legacy) return;
@@ -1994,10 +1628,6 @@ export class Settings {
 			logger.warn("Settings: failed to seed last-changelog-version marker", { error: String(error) });
 		}
 	}
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Saving
-	// ─────────────────────────────────────────────────────────────────────────
 
 	async #writeYamlAtomically(filePath: string, settings: RawSettings): Promise<void> {
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -2068,7 +1698,6 @@ export class Settings {
 	#queueSave(): void {
 		if (!this.#persist || !this.#configPath) return;
 
-		// Debounce: wait 100ms for more changes
 		clearTimeout(this.#saveTimer);
 		this.#saveTimer = setTimeout(() => {
 			this.#saveTimer = undefined;
@@ -2100,23 +1729,16 @@ export class Settings {
 
 		try {
 			await this.#withYamlWriteLock(configPath, async writePath => {
-				// Re-read to preserve external changes. If this instance moved a
-				// malformed file aside, recover from its last in-memory state
-				// rather than recreating the config from only the pending path.
 				const loaded = await this.#loadYamlIfPresentForWriteLocked(configPath, writePath);
 				const current =
 					loaded ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
 
-				// Apply only our modified whole-value paths
 				for (const modPath of modifiedPaths) {
 					const segments = modPath.split(".");
 					const value = getByPath(this.#global, segments);
 					setByPath(current, segments, value);
 				}
 
-				// Merge only the model roles captured by this save. Then retain
-				// any role changed while the async read/lock was pending before
-				// replacing #global, so the follow-up save still sees its value.
 				const latestGlobalRoles = this.#modelRolesFromLayer(this.#global);
 				const rolesToPreserve = new Set(this.#modifiedGlobalModelRoles);
 				for (const role in globalRolesAtStart) {
@@ -2149,12 +1771,10 @@ export class Settings {
 					setByPath(current, ["modelRoles"], mergedRoles);
 				}
 
-				// Update our global with any external changes we preserved
 				this.#global = current;
 				await this.#writeYamlAtomically(writePath, this.#global);
 				this.#quarantinedYamlTargets.delete(configPath);
-				// These pending roles were included in this write. Remove each
-				// only if no newer local change arrived while the write was in flight.
+
 				const globalRolesAfterWrite = this.#modelRolesFromLayer(this.#global);
 				for (const role of rolesToPreserve) {
 					if (latestGlobalRoles[role] === globalRolesAfterWrite[role]) {
@@ -2164,7 +1784,7 @@ export class Settings {
 			});
 		} catch (error) {
 			logger.warn("Settings: save failed", { error: String(error) });
-			// Re-add failed paths for retry
+
 			for (const p of modifiedPaths) {
 				this.#modified.add(p);
 			}
@@ -2233,10 +1853,6 @@ export class Settings {
 		this.#rebuildMerged();
 	}
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Utilities
-	// ─────────────────────────────────────────────────────────────────────────
-
 	#projectSettingsForMerge(): RawSettings {
 		const projectRoles = getByPath(this.#project, ["modelRoles"]);
 		if (!isRecord(projectRoles)) return this.#project;
@@ -2294,26 +1910,13 @@ export class Settings {
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Setting Hooks
-// ═══════════════════════════════════════════════════════════════════════════
-
 type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
 
-/**
- * Minimal change-notification primitive backing the exported `on*Changed`
- * subscriptions. Holds a listener set, hands out unsubscribe closures, and
- * isolates errors so a single throwing listener can't abort the rest or bubble
- * out of `Settings.set()`.
- *
- * @typeParam A - argument tuple forwarded to each listener on `fire`.
- */
 class SettingSignal<A extends unknown[] = []> {
 	#listeners = new Set<(...args: A) => void>();
 
 	constructor(private readonly label: string) {}
 
-	/** Subscribe `cb`; returns an unsubscribe function. */
 	on(cb: (...args: A) => void): () => void {
 		this.#listeners.add(cb);
 		return () => {
@@ -2321,13 +1924,6 @@ class SettingSignal<A extends unknown[] = []> {
 		};
 	}
 
-	/**
-	 * Invoke every listener with `args`. Iterates a snapshot so a listener may
-	 * (un)subscribe mid-fire without re-entrancy — the Hindsight backend
-	 * re-registers the fresh state's listener on every rebuild — and wraps each
-	 * call so a throwing listener is logged and skipped instead of aborting the
-	 * rest.
-	 */
 	fire(...args: A): void {
 		for (const cb of [...this.#listeners]) {
 			try {
@@ -2371,9 +1967,7 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	extendedContext: () => extendedContextSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
-		// Always call so an unset/empty value clears a previously-applied override.
-		// setWorktreesDir expands `~`, rejects relative paths, and returns the
-		// applied absolute path (or undefined when cleared/rejected).
+
 		if (dir && !setWorktreesDir(dir)) {
 			logger.warn("Settings: worktree.base must be an absolute or ~-relative path; ignoring", { value: dir });
 		} else if (!dir) {
@@ -2381,30 +1975,17 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 		}
 	},
 };
-/** Fires when `provider.appendOnlyContext` changes at runtime. */
+
 const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.appendOnlyContext");
 
-/**
- * Subscribe to append-only mode setting changes.
- * Returns an unsubscribe function. Multiple sessions (main + subagents)
- * can register independently without overwriting each other.
- */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
 
-/** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");
 
-/** Subscribe to model role changes. Returns an unsubscribe function. */
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
 
-/** Fires when Code Mode activation or its direct keep-set changes at runtime. */
 const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
 
-/**
- * Settings whose effective value changes the Code Mode tool partition. `edit.mode`
- * belongs here because it renames `EditTool` on the wire (`apply_patch` vs `edit`),
- * which the namespace metadata is keyed by.
- */
 const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
 	"providers.openai-codex.codeMode",
 	"providers.openai-codex.codeModeDirectTools",
@@ -2412,29 +1993,12 @@ const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
 	"edit.mode",
 ];
 
-/** Subscribe to Code Mode setting changes. Returns an unsubscribe function. */
 export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
 
-/** Fires when `extendedContext` changes at runtime. */
 const extendedContextSignal = new SettingSignal("extendedContext");
 
-/**
- * Subscribe to extended-context setting changes. Sessions re-derive their
- * model's effective context window (the registry clamps premium long-context
- * models to the standard-pricing threshold while the setting is off).
- * Returns an unsubscribe function.
- */
 export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Global Singleton
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Weak registry of every constructed instance so `resetSettingsForTest` can
- * disarm stray background saves on isolated instances too. WeakRefs never
- * retain instances; the set is cleared on every test reset.
- */
 const liveSettingsInstances = new Set<WeakRef<Settings>>();
 
 let globalInstance: Settings | null = null;
@@ -2451,15 +2015,7 @@ export function isSettingsInitialized(): boolean {
 	return globalInstance !== null;
 }
 
-/**
- * Reset the global singleton for testing.
- * @internal
- */
 export function resetSettingsForTest(): void {
-	// Disarm every constructed instance's debounced saves — including isolated
-	// (non-singleton) instances: an armed timer or chained in-flight save on a
-	// dropped instance fires mid-way through the NEXT test and races its file
-	// locks/spies (cross-file pollution).
 	for (const ref of liveSettingsInstances) {
 		ref.deref()?.cancelPendingSaves();
 	}
@@ -2471,10 +2027,6 @@ export function resetSettingsForTest(): void {
 	configureCredentialRedaction(false);
 }
 
-/**
- * The global settings singleton.
- * Must call `Settings.init()` before using.
- */
 export const settings = new Proxy({} as Settings, {
 	get(_target, prop) {
 		if (!globalInstance) {
@@ -2495,7 +2047,3 @@ export const settings = new Proxy({} as Settings, {
 		return value;
 	},
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════════════

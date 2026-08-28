@@ -1,4 +1,4 @@
-# Swift Package Manager build/test output.
+
 
 [filters.swift-build]
 description = "Compact swift build/test output"

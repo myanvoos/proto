@@ -136,9 +136,7 @@ export class HermesInbandScanner implements InbandScanner {
 			this.#name = partial.name;
 			this.#started = true;
 			events.push({ type: "toolStart", id: this.#id, name: this.#name });
-		} catch {
-			// Partial JSON is allowed until the closing tag arrives.
-		}
+		} catch {}
 	}
 
 	#parseCall(body: string): { name: string; arguments: Record<string, unknown> } | undefined {

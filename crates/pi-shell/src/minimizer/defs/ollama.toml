@@ -1,11 +1,11 @@
-# ollama output. For management subcommands (pull/push/list/...), drop
-# pull/download progress spinners and verifying/writing chatter, keep the
-# final lines, and cap. For `ollama run`, the model response IS the payload,
-# so it must pass uncapped — only spinner residue is stripped.
-#
-# BTreeMap/first-match note: `[filters.ollama]` sorts before
-# `[filters.ollama-run]`, but its match_subcommand gate excludes `run`, so the
-# run entry is the one that claims `ollama run`.
+
+
+
+
+
+
+
+
 
 [filters.ollama]
 description = "Compact ollama management output"

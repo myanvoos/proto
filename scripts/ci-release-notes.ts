@@ -1,63 +1,25 @@
 #!/usr/bin/env bun
 
-/**
- * Generate aggregated release notes from per-package CHANGELOG.md files.
- *
- * Walks the version range `(latest-published-release, target]` so changelog
- * sections finalized under intervening *silent* tags (a `vX.Y.Z` tag that
- * exists on the remote but has no GitHub Release — most often because a CI
- * concurrency-cancel killed the publish job, #2596 / #2564) are rolled into
- * the next published release body. Sections are grouped by `package.json`
- * `name`, then merged per `### <category>` bullet bucket. Bullet lines are
- * deduplicated by exact trimmed text so post-release changelog flattening
- * (`fix-changelogs`) does not surface the same entry twice. Sections without
- * entries are skipped.
- *
- * Usage:
- *   bun scripts/ci-release-notes.ts                     # writes release-notes.md
- *   bun scripts/ci-release-notes.ts v15.4.3             # explicit tag/version
- *   bun scripts/ci-release-notes.ts 15.4.3 notes.md     # custom output path
- *
- * The lower bound is resolved by `gh release list`. Set
- * `PROTO_RELEASE_NOTES_FLOOR=v15.12.4` to override (empty string forces
- * single-version mode, matching the pre-#2596 behavior). `PROTO_REPO` /
- * `GITHUB_REPOSITORY` control the queried repo.
- *
- * Intended for the `release_github` CI job: the output is passed to
- * `softprops/action-gh-release` via `body_path:`. The action's
- * `generate_release_notes: true` still appends the auto-generated PR list
- * underneath; this only adds curated context.
- */
-
 import { $, Glob } from "bun";
 import { compareVersions } from "../packages/utils/src/version";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
 const REPO = process.env.PROTO_REPO ?? process.env.GITHUB_REPOSITORY ?? "can1357/proto";
 
-// Canonical ordering used by `fix-changelogs`; unknown categories sort
-// alphabetically after these.
 const CATEGORY_ORDER = ["Breaking Changes", "Added", "Changed", "Fixed", "Removed"] as const;
 
 export interface ChangelogVersionSpan {
 	version: string;
-	/** 0-indexed line of the `## [X.Y.Z]` heading. */
+
 	start: number;
-	/** 0-indexed line just past the last line of this version's body (exclusive). */
+
 	end: number;
 }
 
-/**
- * Locate every `## [X.Y.Z]` heading in a changelog and compute the line span
- * up to (but not including) the next `## [` heading. `## [Unreleased]` and
- * other non-semver `## [...]` headings are ignored, but they still act as
- * span boundaries for the preceding version.
- */
 export function enumerateChangelogVersions(content: string): ChangelogVersionSpan[] {
 	const lines = content.split("\n");
 	const spans: ChangelogVersionSpan[] = [];
-	// Indexes of *any* `## [` heading (including Unreleased) so a version's
-	// span ends at the next heading of any kind.
+
 	const headingIdx: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		if (lines[i].startsWith("## [")) headingIdx.push(i);
@@ -71,15 +33,6 @@ export function enumerateChangelogVersions(content: string): ChangelogVersionSpa
 	return spans;
 }
 
-/**
- * Merge `(floorExclusive, targetInclusive]` version sections from a single
- * package's changelog into one combined body, grouped by `### <category>`.
- *
- * Versions iterate newest → oldest so newer phrasing wins when a bullet was
- * flattened forward by `fix-changelogs` and ends up in both sections.
- * `floorExclusive === null` → take only the target version (legacy behavior).
- * Returns "" when no in-range version contributes any bullet.
- */
 export function mergePackageSection(content: string, floorExclusive: string | null, targetInclusive: string): string {
 	const spans = enumerateChangelogVersions(content)
 		.filter(v => {
@@ -91,7 +44,7 @@ export function mergePackageSection(content: string, floorExclusive: string | nu
 	if (spans.length === 0) return "";
 
 	const lines = content.split("\n");
-	const seenCategories: string[] = []; // first-seen order
+	const seenCategories: string[] = [];
 	const buckets = new Map<string, string[]>();
 	const seenLines = new Set<string>();
 
@@ -114,7 +67,7 @@ export function mergePackageSection(content: string, floorExclusive: string | nu
 				bucket.push(line);
 			}
 		};
-		// Skip the `## [X.Y.Z]` heading line itself.
+
 		for (let i = span.start + 1; i < span.end; i++) {
 			const line = lines[i];
 			const catMatch = line.match(/^### (.+?)\s*$/);
@@ -124,8 +77,7 @@ export function mergePackageSection(content: string, floorExclusive: string | nu
 				buf = [];
 				continue;
 			}
-			// Pre-category prose (rare; usually blank padding) is dropped — there
-			// is no surrounding `###` to attribute it to in the merged output.
+
 			if (currentCat === null) continue;
 			buf.push(line);
 		}
@@ -146,7 +98,7 @@ export function mergePackageSection(content: string, floorExclusive: string | nu
 	const out: string[] = [];
 	for (const cat of seenCategories) {
 		const bucket = buckets.get(cat) ?? [];
-		// Collapse runs of blank lines and strip trailing blanks per bucket.
+
 		const collapsed: string[] = [];
 		let prevBlank = false;
 		for (const line of bucket) {
@@ -174,21 +126,6 @@ async function loadPackageName(pkgDir: string): Promise<string> {
 	}
 }
 
-/**
- * Resolve the highest published, non-prerelease, non-draft semver tag strictly
- * below `targetVersion` via `gh release list`.
- *
- * Failure semantics:
- *   - `PROTO_RELEASE_NOTES_FLOOR` set → honored verbatim (`""` forces null).
- *   - `gh` succeeded, no candidate < target → `null` (legitimate first-ever
- *     publish; legacy single-version output is correct).
- *   - `gh` itself failed (missing binary, missing `GH_TOKEN` in Actions,
- *     network/auth error) → throws. Letting this degrade to single-version
- *     output silently re-strands silent-tag entries (#2596 review); the CI
- *     step must die loudly so the release is rebuilt with the token wired.
- *     Local runs without `gh` should set `PROTO_RELEASE_NOTES_FLOOR=` to opt
- *     into legacy mode explicitly.
- */
 async function resolvePublishedFloorTag(targetVersion: string): Promise<string | null> {
 	const override = process.env.PROTO_RELEASE_NOTES_FLOOR;
 	if (override !== undefined) {

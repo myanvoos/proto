@@ -1,13 +1,3 @@
-/**
- * Top-level CLI command table.
- *
- * Lives in its own module (importable without side effects) so that tests can
- * inspect the registered subcommands without triggering the side-effectful
- * top-level await in `cli.ts`. Adding a new subcommand here is enough to make
- * `runCli` route to it instead of forwarding the argv as a prompt to
- * `launch` — see #1496 for the original "args silently leak to the LLM"
- * regression that motivated the split.
- */
 import type { CommandEntry } from "@oh-my-pi/pi-utils/cli";
 import * as commandHelp from "./cli/command-help";
 import { flagConsumesValue, OPTIONAL_VALUE_FLAGS, STRING_VALUE_FLAGS, VALUELESS_FLAGS } from "./cli/flag-tables";
@@ -185,14 +175,6 @@ export const commands: CommandEntry[] = [
 	},
 ];
 
-// Documented-looking plugin/marketplace verbs that are NOT registered top-level
-// commands. Without a guard `resolveCliArgv` rewrites e.g. `proto marketplace add
-// xyz` to `proto launch marketplace add xyz`, silently forwarding the argv to the
-// model as a prompt instead of managing plugins (#4845; same class as the
-// `list`/`remove` leak fixed in #2935 and the `install` leak in #1496/#1498).
-// The real commands live under `proto plugin <action>`; each entry maps a verb to
-// a hint pointing there. See {@link reservedTopLevelWordMessage} for when a hint
-// fires vs. when the argv still falls through to `launch`.
 const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	extensions:
 		'`proto extensions` is not a management command. Use `proto plugin list` / `proto plugin install`, or run `proto launch extensions` if you meant to send "extensions" as a prompt.',
@@ -213,24 +195,8 @@ const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 		'`proto disable` is not a top-level command. Use `proto plugin disable <name@marketplace>` to disable a plugin, or run `proto launch disable` if you meant to send "disable" as a prompt.',
 };
 
-// Sub-actions that make `proto marketplace <sub>` unambiguously a management
-// command even when multi-word (the reporter's `proto marketplace add xyz`,
-// #4845). Mirrors the switch in `handleMarketplace` (cli/plugin-cli.ts).
 const MARKETPLACE_SUBCOMMANDS: Record<string, true> = { add: true, remove: true, rm: true, update: true, list: true };
 
-/**
- * Hint for a reserved plugin/marketplace verb used as a top-level command, or
- * `undefined` when the argv should fall through to `launch`.
- *
- * A bare verb (`proto marketplace`) always hints. A multi-word invocation only
- * hints when the arguments follow the documented plugin grammar — a marketplace
- * sub-action (`proto marketplace add …`) or a `name@marketplace` plugin id
- * (`proto uninstall foo@bar`) — so genuine prompts that merely begin with one of
- * these words (`proto list all my files`, `proto upgrade the deps`) still launch.
- *
- * Flags (`-…`) and `@file` arguments in the verb slot are never management
- * commands; those fall through to the default `launch` command.
- */
 function reservedTopLevelWordMessage(argv: readonly string[]): string | undefined {
 	const first = argv[0];
 	if (!first || first.startsWith("-") || first.startsWith("@")) return undefined;
@@ -246,12 +212,6 @@ function reservedTopLevelWordMessage(argv: readonly string[]): string | undefine
 	return undefined;
 }
 
-/**
- * Return true when `first` matches a registered subcommand name or alias.
- *
- * Flags (`-…`) and `@file` arguments are never subcommands; for those the CLI
- * runner skips ahead to the default `launch` command.
- */
 export function isSubcommand(first: string | undefined): boolean {
 	if (!first || first.startsWith("-") || first.startsWith("@")) return false;
 	return commands.some(entry => entry.name === first || entry.aliases?.includes(first));
@@ -259,13 +219,6 @@ export function isSubcommand(first: string | undefined): boolean {
 
 type ResolvedCliArgv = { argv: string[] } | { error: string };
 
-/**
- * Index of the first argv token that names a registered subcommand, skipping
- * leading global option flags (and any value they consume) with the same
- * contract as the launch parser ({@link flagConsumesValue}). Returns -1 when
- * scanning hits a non-subcommand positional, an end-of-options `--`, or the end
- * of argv first.
- */
 function leadingSubcommandIndex(argv: string[]): number {
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -276,29 +229,14 @@ function leadingSubcommandIndex(argv: string[]): number {
 	return -1;
 }
 
-/**
- * Subcommands that share the launch flag surface, so leading global flags
- * (`--cwd`, `--model`, `--mode`, …) placed before them are meaningful
- * and must be forwarded ({@link resolveCliArgv}, #2970). Every other subcommand
- * parses only its own flags.
- */
 export const LAUNCH_FLAG_COMMANDS: Record<string, true> = { launch: true, acp: true };
 
-/** Whether `arg` names a flag from the launch surface (bare or `--flag=value`). */
 function isLaunchGlobalFlag(arg: string): boolean {
 	const eq = arg.indexOf("=");
 	const name = arg.startsWith("--") && eq !== -1 ? arg.slice(0, eq) : arg;
 	return STRING_VALUE_FLAGS.has(name) || OPTIONAL_VALUE_FLAGS.has(name) || VALUELESS_FLAGS.has(name);
 }
 
-/**
- * Drop recognized launch-global flags (and any value they consume) from the
- * leading segment before a hoisted non-launch subcommand. `--cwd` and friends
- * belong to the launch surface and mean nothing to a subcommand like `update`,
- * whose strict parser would otherwise reject them with a cryptic
- * `node:util.parseArgs` error (#8891). Tokens the launch tables don't recognize
- * are kept, so a subcommand's own leading flags still reach it.
- */
 function stripLaunchGlobalFlags(leading: readonly string[]): string[] {
 	const kept: string[] = [];
 	for (let index = 0; index < leading.length; index += 1) {
@@ -312,14 +250,6 @@ function stripLaunchGlobalFlags(leading: readonly string[]): string[] {
 	return kept;
 }
 
-/**
- * Decide what the CLI runner should do with raw argv: reject bare reserved
- * management words, pass help/version through untouched, route a recognized
- * subcommand (even behind leading global flags like `--model=opus`) to
- * that command, and forward everything else to `launch` (#2970). Leading
- * launch-global flags are forwarded to launch-shaped commands but stripped for
- * other subcommands that cannot parse them (#8891).
- */
 export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 	const first = argv[0];
 	const reservedMessage = reservedTopLevelWordMessage(argv);
@@ -328,13 +258,7 @@ export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 		return { argv };
 	}
 	if (isSubcommand(first)) return { argv };
-	// A subcommand can hide behind leading global option flags
-	// (`proto --service-tier=flex acp`). `run` dispatches strictly on argv[0], so
-	// hoist the subcommand to the front. Launch-shaped commands share the launch
-	// flag surface, so their leading flags are forwarded and applied; every other
-	// subcommand parses only its own flags, so launch-global flags placed before
-	// it (`proto --cwd <dir> update`) are stripped rather than forwarded into a
-	// crash (#8891). Genuine launch prompts (no trailing subcommand) are untouched.
+
 	const subIndex = leadingSubcommandIndex(argv);
 	if (subIndex >= 0) {
 		const sub = argv[subIndex];

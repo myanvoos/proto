@@ -1,13 +1,3 @@
-/**
- * Fuzzy matching utilities.
- *
- * Matching is deliberately word-local for normal words. This keeps a query like
- * "image provider" from matching a long setting description only because the
- * letters i-m-a-g-e appear somewhere in order across unrelated words.
- *
- * Lower score = better match.
- */
-
 export interface FuzzyMatch {
 	matches: boolean;
 	score: number;
@@ -33,7 +23,7 @@ interface SearchWord {
 interface SearchIndex {
 	normalized: string;
 	compact: string;
-	/** Start offsets of each word within `compact` (cumulative word lengths). */
+
 	compactWordStarts: Set<number>;
 	words: SearchWord[];
 }
@@ -42,14 +32,6 @@ const ALPHANUMERIC_SWAP_PENALTY = 5;
 const COMPACT_PHRASE_BONUS = 1200;
 const PHRASE_BONUS = 1000;
 
-/**
- * Shortest needle worth scanning past its leading occurrence for.
- *
- * One or two characters sit mid-word in nearly every candidate — "im" is inside
- * "experimental" — so rescanning that short would hand the word-start bonus to
- * the whole corpus at once and reshuffle the list on the opening keystrokes of a
- * search instead of narrowing it. Shadowing only misleads for real phrases.
- */
 const MIN_SHADOW_RESCAN_LENGTH = 3;
 
 function normalizeForSearch(value: string): string {
@@ -62,24 +44,11 @@ function normalizeForSearch(value: string): string {
 		.replace(/\s+/g, " ");
 }
 
-// Module-level memo of the per-text search index. `buildSearchIndex` is a pure
-// function of `text`, but selectors call it once per candidate per keystroke —
-// the same stable candidate list is re-filtered as the user types. Caching the
-// index across keystrokes eliminates the redundant normalize + word-split + Set
-// build on every character. Consumers only read the result, so sharing is safe.
-//
-// Admission is conservative so the cache helps the repeated-filter hot path
-// without paying for one-off text: only short texts are cached (long inputs —
-// pasted prompts, transcripts searched via the message selector — would bloat
-// memory), and admission stops at the cap instead of evicting, so a stream of
-// unique texts (message/session search) can't churn the map.
 const INDEX_CACHE_MAX = 4096;
 const MAX_CACHED_TEXT_LEN = 4096;
 const indexCache = new Map<string, SearchIndex>();
 
 function buildSearchIndex(text: string): SearchIndex {
-	// Long inputs (pasted prompts, transcripts) are never cached; bypass the Map
-	// entirely so they don't pay a hash lookup on every search.
 	if (text.length > MAX_CACHED_TEXT_LEN) return buildUncachedSearchIndex(text);
 
 	const cached = indexCache.get(text);
@@ -182,22 +151,6 @@ function isWordBoundaryPhrase(normalized: string, index: number, length: number)
 	return before && after;
 }
 
-/**
- * Offset of the first whole-word occurrence of `phrase` in `normalized`, or -1.
- *
- * A bare `indexOf` reports only the leading occurrence, so a qualifying match is
- * dropped whenever an earlier non-qualifying one shadows it — the whole word
- * "image" in "reimage image provider" loses to the "image" inside "reimage".
- * Occurrences are scanned left to right, so the first qualifying hit is also the
- * best-scoring one: the caller's position tiebreak grows with the offset.
- *
- * Only a hit buried inside a word can shadow. A leading hit that already starts
- * a word is an ordinary prefix match — the query is "image" and the text says
- * "images" — and it is scored exactly as before rather than borrowing a
- * whole-word bonus from some later occurrence; `findCompactWordStart` treats its
- * leading word-start hit the same way. The rescan is additionally limited to
- * {@link MIN_SHADOW_RESCAN_LENGTH} and longer needles.
- */
 function findWordBoundaryPhrase(normalized: string, phrase: string): number {
 	if (phrase.length === 0) return -1;
 	const first = normalized.indexOf(phrase);
@@ -211,11 +164,6 @@ function findWordBoundaryPhrase(normalized: string, phrase: string): number {
 	return -1;
 }
 
-/**
- * Offset of the first occurrence of `needle` that starts a word in `index.compact`,
- * or -1. Same shadowing hazard, and the same length floor, as
- * {@link findWordBoundaryPhrase}.
- */
 function findCompactWordStart(index: SearchIndex, needle: string): number {
 	if (needle.length === 0) return -1;
 	const { compact, compactWordStarts } = index;
@@ -323,8 +271,6 @@ function scoreToken(token: string, index: SearchIndex): FuzzyMatch {
 	return best;
 }
 
-/** A query normalized and split once, so `fuzzyRank` doesn't re-normalize the
- * same query for every candidate in the list. */
 interface PreparedQuery {
 	normalized: string;
 	tokens: string[];
@@ -376,16 +322,6 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
 	return fuzzyMatchCore(pq, buildSearchIndex(text));
 }
 
-/**
- * A text prepared once for repeated fuzzy matching.
- *
- * `fuzzyMatch` builds a search index per call; the module cache only admits
- * texts up to {@link MAX_CACHED_TEXT_LEN}, so long corpora (session or
- * transcript search) rebuild the index on every keystroke — the dominant cost
- * when a selector re-filters a stable candidate list as the user types. Build
- * one `FuzzyText` per candidate and call {@link match} per query instead; the
- * index lives exactly as long as the caller's reference.
- */
 export class FuzzyText {
 	readonly #index: SearchIndex;
 
@@ -393,24 +329,16 @@ export class FuzzyText {
 		this.#index = buildUncachedSearchIndex(text);
 	}
 
-	/** Match `query` (space-separated tokens; all must match) against the prepared text. */
 	match(query: string): FuzzyMatch {
 		return fuzzyMatchCore(prepareQuery(query), this.#index);
 	}
 }
 
-/**
- * Filter and sort items by fuzzy match quality (best matches first).
- * Supports space-separated tokens: all tokens must match.
- */
 export function fuzzyRank<T>(items: T[], query: string, getText: (item: T) => string): FuzzyFilterResult<T>[] {
 	if (!query.trim()) {
 		return items.map(item => ({ item, score: 0 }));
 	}
 
-	// A non-blank query that normalizes to empty (pure punctuation) matches
-	// everything with score 0, but still calls getText per item — consumers rely
-	// on its side effects (see fuzzy-cache.test.ts).
 	const pq = prepareQuery(query);
 	const results: FuzzyFilterResult<T>[] = [];
 	for (const item of items) {
@@ -429,13 +357,6 @@ export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => 
 	return fuzzyRank(items, query, getText).map(result => result.item);
 }
 
-/**
- * Clear the fuzzy search-index cache. Intended for tests/benchmarks so a fresh
- * cold-start typing session can be measured on demand; not part of the supported
- * TUI API.
- *
- * @internal
- */
 export function resetFuzzyIndexCache(): void {
 	indexCache.clear();
 }

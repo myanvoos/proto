@@ -1,12 +1,3 @@
-/**
- * Apply a parsed list of {@link Edit}s to a text body and return the
- * post-edit lines plus any diagnostic warnings. Pure function: no FS, no
- * mutation of the input.
- *
- * Replacement groups are first normalized by {@link repairReplacementBoundaries},
- * which absorbs common model mistakes where a payload restates unchanged range
- * boundaries or duplicates/drops structural closers.
- */
 import {
 	afterInsertLandingShiftWarning,
 	ambiguousBoundaryEchoMessage,
@@ -34,16 +25,11 @@ function getCursorAnchors(cursor: Cursor): Anchor[] {
 	return cursor.kind === "before_anchor" || cursor.kind === "after_anchor" ? [cursor.anchor] : [];
 }
 
-/** Anchors an edit asserts against, over the full Edit union (recovery passes
- *  already-resolved edits, so its `block` arm exists for type-exhaustiveness). */
 export function getEditAnchors(edit: Edit): Anchor[] {
 	if (edit.kind === "delete" || edit.kind === "block") return [edit.anchor];
 	return getCursorAnchors(edit.cursor);
 }
 
-/** Every anchor line touched by a set of edits, in edit order with duplicates
- *  kept. Callers that want a sorted/deduped view post-process this. Sole owner
- *  of "which lines do these edits anchor against" (see {@link getEditAnchors}). */
 export function collectEditAnchorLines(edits: readonly Edit[]): number[] {
 	const lines: number[] = [];
 	for (const edit of edits) {
@@ -53,11 +39,6 @@ export function collectEditAnchorLines(edits: readonly Edit[]): number[] {
 }
 
 function trailingPhantomLine(fileLines: readonly string[]): number {
-	// `split("\n")` on a newline-terminated file yields a trailing "" sentinel.
-	// It is addressable for inserts (append-past-end), but it is not real
-	// content. Deleting it only strips the file's final newline, so ignore delete
-	// edits that land there; inclusive ranges ending at EOF then do the intended
-	// thing and delete through the last concrete line.
 	return fileLines.length > 1 && fileLines[fileLines.length - 1] === "" ? fileLines.length : 0;
 }
 
@@ -67,10 +48,6 @@ function dropTrailingPhantomDeletes(edits: AppliedEdit[], fileLines: readonly st
 	return edits.filter(edit => edit.kind !== "delete" || edit.anchor.line !== phantomLine);
 }
 
-/**
- * Verify every anchored edit points at an existing line. File-version binding is
- * checked once per section via the header hash before this function runs.
- */
 function validateLineBounds(edits: readonly AppliedEdit[], fileLines: readonly string[]): void {
 	for (const edit of edits) {
 		for (const anchor of getEditAnchors(edit)) {
@@ -123,25 +100,8 @@ function bucketAnchorEditsByLine(edits: IndexedEdit[]): Map<number, IndexedEdit[
 	return byLine;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Replacement-boundary repair
-//
-// Models routinely miscount a replacement range's edges. Sometimes the payload
-// re-states unchanged lines that still live on both sides of the range
-// (duplicating a function header and final statement); sometimes it only
-// re-states or omits a structural closer, which leaves delimiter balance broken.
-//
-// A balance-neutral boundary-echo repair fires only when both the leading and
-// trailing payload edges are exact copies of the surviving lines outside the
-// range. One-sided content echoes are left alone unless delimiter-balance repair
-// proves they are duplicated structural boundaries. This preserves intended
-// duplicate statements while absorbing the common "body includes the unchanged
-// wrapper" mistake.
-
-/** A line that is nothing but closing delimiters: `}`, `)`, `];`, `})`, `},`. */
 export const STRUCTURAL_CLOSER_RE = /^\s*[)\]}]+[;,]?\s*$/;
 
-/** A JSX/XML closing boundary that carries structure but no bracket tokens. */
 const JSX_CLOSER_RE = /^\s*(?:<\/>|<\/[A-Za-z][\w.:-]*>|\/>)\s*[;,]?\s*$/;
 const JSX_NAMED_CLOSER_RE = /^\s*<\/([A-Za-z][\w.:-]*)>\s*[;,]?\s*$/;
 const JSX_FRAGMENT_CLOSER_RE = /^\s*<\/>\s*[;,]?\s*$/;
@@ -243,14 +203,6 @@ interface DelimiterBalance {
 	brace: number;
 }
 
-/**
- * Net `()` / `[]` / `{}` delta across `lines`, skipping delimiters inside line
- * comments (`//`), block comments, and string/template literals. Block-comment
- * and backtick-template state carry across lines; `"` / `'` reset at EOL since
- * they cannot span lines. Deliberately language-light: constructs it cannot
- * classify (e.g. regex literals) are counted naively, which can only suppress a
- * repair (the safe direction), never force one.
- */
 function computeDelimiterBalance(lines: readonly string[]): DelimiterBalance {
 	const balance: DelimiterBalance = { paren: 0, bracket: 0, brace: 0 };
 	let inBlockComment = false;
@@ -301,7 +253,7 @@ function computeDelimiterBalance(lines: readonly string[]): DelimiterBalance {
 					break;
 			}
 		}
-		// `"` / `'` cannot span lines; only backtick templates and block comments do.
+
 		if (quote === '"' || quote === "'") quote = "";
 	}
 	return balance;
@@ -341,23 +293,16 @@ function balanceCovers(candidate: DelimiterBalance, target: DelimiterBalance): b
 }
 
 interface ReplacementGroup {
-	/** Positions in the edit array of the payload inserts, in payload order. */
 	insertIndices: number[];
-	/** Positions in the edit array of the range deletes, ascending by line. */
+
 	deleteIndices: number[];
 	payload: string[];
-	/** First deleted line (1-indexed). */
+
 	startLine: number;
-	/** Last deleted line (1-indexed). */
+
 	endLine: number;
 }
 
-/**
- * Detect a replacement group starting at `start`: a run of `before_anchor`
- * replacement inserts sharing one source op line, immediately followed by the
- * contiguous range deletes for that same op. Mirrors how the parser lowers an
- * `replace N.=M:` hunk with a body.
- */
 function findReplacementGroup(edits: readonly AppliedEdit[], start: number): ReplacementGroup | undefined {
 	const first = edits[start];
 	if (first?.kind !== "insert" || first.mode !== "replacement" || first.cursor.kind !== "before_anchor") {
@@ -393,14 +338,6 @@ function findReplacementGroup(edits: readonly AppliedEdit[], start: number): Rep
 	};
 }
 
-/**
- * Largest `k` such that the payload's last `k` lines exactly equal the `k`
- * surviving file lines just below the range AND dropping them zeroes `delta`.
- * Requires a non-zero `delta`: a zero-balance candidate can never account for
- * the imbalance, so intentional duplicates of ordinary statements stay intact,
- * while duplicated structural lines (closers like `});`, openers like `foo(`)
- * are dropped when they exactly explain the imbalance.
- */
 function findDuplicateSuffix(group: ReplacementGroup, fileLines: readonly string[], delta: DelimiterBalance): number {
 	if (balanceIsZero(delta)) return 0;
 	const { payload, endLine } = group;
@@ -419,11 +356,6 @@ function findDuplicateSuffix(group: ReplacementGroup, fileLines: readonly string
 	return 0;
 }
 
-/**
- * Largest `j` such that the payload's first `j` lines exactly equal the `j`
- * surviving file lines just above the range AND dropping them zeroes `delta`.
- * Requires a non-zero `delta`; see {@link findDuplicateSuffix}.
- */
 function findDuplicatePrefix(group: ReplacementGroup, fileLines: readonly string[], delta: DelimiterBalance): number {
 	if (balanceIsZero(delta)) return 0;
 	const { payload, startLine } = group;
@@ -547,13 +479,6 @@ function prefixCanCoverSuffixClosers(
 	return balanceCovers(uncoveredPrefixBalance, neededOpeners);
 }
 
-/**
- * Missing segment of the range's deleted structural-closer suffix that should
- * be spared. Payload lines that already restate the suffix head are not kept
- * again, and projected closers immediately below the range satisfy the suffix
- * tail. The remaining middle segment is kept only when backed by unmatched
- * openers plus the whole-patch residual.
- */
 function findDroppedSuffixClosers(
 	group: ReplacementGroup,
 	fileLines: readonly string[],
@@ -660,15 +585,9 @@ function findBoundaryEcho(group: ReplacementGroup, fileLines: readonly string[])
 	if (leadingMax === 0) return undefined;
 	const trailingMax = countDuplicateTrailingBoundaryLines(group, fileLines);
 	if (trailingMax === 0) return undefined;
-	// Bail when every payload line could be claimed by a boundary echo: any
-	// repair would strip explicit replacement content with no signal that the
-	// payload was a mistake rather than an intentional duplication.
+
 	if (leadingMax + trailingMax >= group.payload.length) return undefined;
-	// Balance-neutrality guard (see header comment): the dropped echo lines must
-	// either be delimiter-neutral on their own or exactly cancel the payload/range
-	// balance delta. In brace-heavy code where bare closer lines repeat, an
-	// "echo" that shifts delimiter balance is structural content the payload
-	// placed intentionally — stripping it would corrupt the result.
+
 	const leadingBalance = computeDelimiterBalance(group.payload.slice(0, leadingMax));
 	const trailingBalance = computeDelimiterBalance(group.payload.slice(group.payload.length - trailingMax));
 	const droppedBalance = balanceDelta(leadingBalance, balanceNegate(trailingBalance));
@@ -697,29 +616,6 @@ function describeBoundaryRepair(group: ReplacementGroup, action: string): string
 	);
 }
 
-/**
- * A single-sided boundary echo in an otherwise delimiter-balanced *multi-line*
- * replacement: the payload's leading XOR trailing edge exactly restates the
- * surviving line(s) just outside the range — the off-by-one "range one line
- * short of the keeper I retyped" mistake (e.g. att: payload ends with
- * `const x = [];` and line B+1 is the same `const x = [];`). Two-sided echoes
- * are handled by {@link findBoundaryEcho}; delimiter-imbalanced one-sided echoes
- * by {@link findDuplicateSuffix}/{@link findDuplicatePrefix}.
- *
- * Scoped broadly for multi-line ranges (a construct rewrite) because retouched
- * neutral keepers are usually boundary mistakes there. Single-line expansions
- * are riskier — ordinary duplicated statements may be intentional — so they are
- * only repaired when the duplicated edge is a structural closer line that
- * carries no delimiter-balance signal itself, such as a JSX `</section>` close.
- * The dropped lines must keep the already-balanced result balanced, and must
- * not consume the whole payload.
- *
- * A detected echo is only *repairable* when the payload is long enough to be
- * the widened range's full content (`payload ≥ range + echo`). Shorter
- * payloads are ambiguous — the echo may instead mean the range itself was
- * shifted by the echo, which keeps the far boundary line(s) the repair would
- * delete — and the caller rejects the edit instead of guessing.
- */
 function findOneSidedBoundaryEcho(
 	group: ReplacementGroup,
 	fileLines: readonly string[],
@@ -751,11 +647,6 @@ function describeOneSidedEchoRepair(group: ReplacementGroup, side: "leading" | "
 	);
 }
 
-/**
- * One pass-1 outcome per source position: resolved edits (with an optional
- * warning) or a deferred missing-closer candidate, resolved against the
- * whole-patch residual in pass 2.
- */
 type RepairSlot =
 	| { kind: "edits"; edits: AppliedEdit[]; warning?: string }
 	| {
@@ -766,15 +657,6 @@ type RepairSlot =
 			delta: DelimiterBalance;
 	  };
 
-/**
- * Delimiter balance of the lines immediately above a group's range that are
- * themselves deleted by other hunks, netted against any payload inserted at
- * those lines. When this covers the group's own delta the matching opener was
- * deleted (or replaced by an opener of the same shape) just above — a deliberate
- * wrapper removal — so the range's deleted closer must stay deleted, not be
- * "kept". Scanned over its own contiguous lines so quote/comment state never
- * bleeds in from elsewhere in the patch.
- */
 function netDeletedPrefixBalance(
 	group: ReplacementGroup,
 	deletedLines: ReadonlySet<number>,
@@ -791,13 +673,6 @@ function netDeletedPrefixBalance(
 	return balanceDelta(computeDelimiterBalance(deleted), computeDelimiterBalance(inserted));
 }
 
-/**
- * Net delimiter balance a slot contributes, computed over the slot's own
- * contiguous insert/delete lines only. Summing these per-slot deltas — never one
- * concatenated scan across non-adjacent hunks — keeps backtick/block-comment
- * state local, so an unterminated quote in one hunk cannot mask a real delimiter
- * in another.
- */
 function slotPatchDelta(slot: RepairSlot, fileLines: readonly string[]): DelimiterBalance {
 	if (slot.kind === "candidate") return slot.delta;
 	const inserted: string[] = [];
@@ -809,21 +684,6 @@ function slotPatchDelta(slot: RepairSlot, fileLines: readonly string[]): Delimit
 	return balanceDelta(computeDelimiterBalance(inserted), computeDelimiterBalance(deleted));
 }
 
-/**
- * Normalize replacement groups so common off-by-one boundaries do not duplicate
- * unchanged surrounding lines or wrongly drop/keep structural closers. Local
- * repairs run in pass 1; the missing-closer repair is deferred to pass 2 and
- * weighed against the whole-patch delimiter residual, so a closer the range
- * deleted is only kept when the patch as a whole is missing it — never when
- * another hunk already removed the matching opener. Returns the repaired edits
- * plus one warning per repaired group.
- *
- * Repairs fire only when exactly one reading explains the mistake. When the
- * evidence is ambiguous — a one-sided echo whose payload is too short for the
- * widened range, or a spared closer the payload neither opens nor indents
- * into — the function throws instead of guessing, so the author re-issues the
- * edit rather than shipping silently corrupted content.
- */
 function repairReplacementBoundaries(
 	edits: readonly AppliedEdit[],
 	fileLines: readonly string[],
@@ -831,10 +691,6 @@ function repairReplacementBoundaries(
 	edits: AppliedEdit[];
 	warnings: string[];
 } {
-	// Pass 1: apply every repair whose correctness is local to one group
-	// (boundary echo, duplicate prefix/suffix). Defer the missing-closer repair:
-	// it must weigh a group's imbalance against the whole patch, which is only
-	// known once the local repairs above have settled.
 	const slots: RepairSlot[] = [];
 	let i = 0;
 	while (i < edits.length) {
@@ -865,10 +721,6 @@ function repairReplacementBoundaries(
 		if (balanceIsZero(delta)) {
 			const oneSided = findOneSidedBoundaryEcho(group, fileLines);
 			if (oneSided) {
-				// A payload shorter than range+echo cannot be the widened
-				// range's full content: the repair would delete range line(s)
-				// the payload never restates, while the "shifted range"
-				// reading keeps them. Reject rather than guess.
 				if (group.payload.length < group.deleteIndices.length + oneSided.count) {
 					throw new Error(
 						ambiguousBoundaryEchoMessage(group.startLine, group.endLine, oneSided.side, oneSided.count),
@@ -966,13 +818,6 @@ function repairReplacementBoundaries(
 			insertedLineMaps,
 		);
 		if (droppedClosers) {
-			// Sparing a closer re-inserts it *after* the payload, which claims
-			// the payload lives inside the block the closer terminates. That
-			// claim needs evidence: the payload carries the closer's unmatched
-			// opener itself, or its indentation sits deeper than the closer.
-			// Without either, "before or after the closer" is a coin flip —
-			// reject rather than guess (e.g. a statement swapped onto a lone
-			// `}` at the closer's own depth belongs after the block).
 			const keptIndent = leadingIndent(fileLines[droppedClosers.startLine - 1] ?? "");
 			const payloadIndent = bodyTargetIndent(slot.group.payload);
 			const payloadOpens = balanceCovers(
@@ -1015,39 +860,6 @@ function repairReplacementBoundaries(
 	return { edits: out, warnings };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// After-insert landing correction
-//
-// The body rows of an `insert after N:` hunk carry an implicit depth claim:
-// their leading indentation says how deep the author expects the new lines
-// to sit. Two corrections share that claim, in opposite directions:
-//
-// Outward (any after-insert): when the depth is shallower than line N itself,
-// the hunk is inserting a sibling of some enclosing construct while anchored
-// inside it — the common shape is anchoring on the last statement of a block
-// and writing the body at the parent's depth. Sliding the landing point
-// forward across the structural closer lines that follow (and nothing else —
-// content lines are never crossed) places the body at the depth its
-// indentation names.
-//
-// Inward (block-lowered inserts only): `insert_after_block N:` anchors on the
-// resolved block's closing line, but a body indented deeper than that closer
-// claims a depth inside the block — the common misreading of the op as
-// "append at the end of block N's body". Sliding the landing point backward
-// across the block's trailing closer lines places the body inside, at its
-// claimed depth. Scoped to block-lowered inserts because there the author
-// named the opener and never saw the closer; a plain `insert after M:` on a
-// closer line stays literal (the escape hatch for genuinely-after content
-// such as method-chain continuations).
-//
-// Both shifts are deliberately conservative: they fire only when the body
-// and anchor indentation are comparable (one is a prefix of the other),
-// cross only pure closing-delimiter lines, stop as soon as depth matches the
-// body's claim, and are abandoned when any other edit in the patch targets a
-// crossed line. Every shift is reported as a warning so the author can
-// re-issue when the original landing was intended.
-
-/** Leading run of tabs and spaces. */
 function leadingIndent(line: string): string {
 	let end = 0;
 	while (end < line.length) {
@@ -1058,30 +870,22 @@ function leadingIndent(line: string): string {
 	return line.slice(0, end);
 }
 
-/** `deeper` strictly extends `shallower` (same indent style, more depth). */
 function isIndentDeeper(deeper: string, shallower: string): boolean {
 	return deeper.length > shallower.length && deeper.startsWith(shallower);
 }
 
 interface AfterInsertGroup {
-	/** Anchor line shared by every insert row of the hunk. */
 	anchor: number;
-	/** Indices into the edit list, in patch order. */
+
 	members: number[];
-	/** First line of the resolved block when lowered from `insert_after_block N:`. */
+
 	blockStart?: number;
 }
 
-/**
- * Depth of an after-insert hunk's body: the shallowest indentation across its
- * non-blank rows. Returns `undefined` when no depth claim can be made — an
- * all-blank or all-closer body, or rows whose indentation styles are not
- * mutually comparable (tabs vs spaces).
- */
 function bodyTargetIndent(rows: readonly string[]): string | undefined {
 	const nonBlank = rows.filter(hasNonWhitespace);
 	if (nonBlank.length === 0) return undefined;
-	// A body of pure closers re-balances delimiters; it claims no depth.
+
 	if (nonBlank.every(row => STRUCTURAL_CLOSER_RE.test(row))) return undefined;
 	let target = leadingIndent(nonBlank[0] ?? "");
 	for (const row of nonBlank) {
@@ -1093,12 +897,6 @@ function bodyTargetIndent(rows: readonly string[]): string | undefined {
 	return target;
 }
 
-/**
- * Resolve where an after-insert hunk anchored on `group.anchor` should land
- * given its body depth `target`: the last structural closer line in the run
- * directly below the anchor whose indentation still covers `target`. Returns
- * `undefined` when the landing stays put.
- */
 function resolveShiftedLanding(
 	group: AfterInsertGroup,
 	target: string,
@@ -1113,25 +911,18 @@ function resolveShiftedLanding(
 	let crossed = 0;
 	for (let line = group.anchor + 1; line <= fileLines.length; line++) {
 		const text = fileLines[line - 1] ?? "";
-		if (!hasNonWhitespace(text)) continue; // look past blanks, never land on them
-		if (!STRUCTURAL_CLOSER_RE.test(text)) break; // content is never crossed
+		if (!hasNonWhitespace(text)) continue;
+		if (!STRUCTURAL_CLOSER_RE.test(text)) break;
 		const indent = leadingIndent(text);
-		if (!indent.startsWith(target)) break; // shallower than the body — crossing would over-escape
-		if (targetedLines.has(line)) return undefined; // another hunk owns this closer
+		if (!indent.startsWith(target)) break;
+		if (targetedLines.has(line)) return undefined;
 		landing = line;
 		crossed++;
-		if (indent.length === target.length) break; // depth returned to the body's level
+		if (indent.length === target.length) break;
 	}
 	return landing === group.anchor ? undefined : { line: landing, crossed };
 }
 
-/**
- * Resolve where a block-lowered after-insert anchored on the block's closing
- * line should land given a body depth `target` deeper than that closer: just
- * above the block's trailing run of closer lines, bounded below by
- * `blockStart` (an empty block lands the body right after its opener).
- * Returns `undefined` when the landing stays put.
- */
 function resolveInwardLanding(
 	group: AfterInsertGroup,
 	target: string,
@@ -1141,9 +932,7 @@ function resolveInwardLanding(
 ): number | undefined {
 	const anchorText = fileLines[group.anchor - 1];
 	if (anchorText === undefined || !hasNonWhitespace(anchorText)) return undefined;
-	// Fires only when the block ends in a pure closer the body out-indents.
-	// Blocks ending in content (indentation-only languages) already land the
-	// body inside the block — nothing to correct.
+
 	if (!STRUCTURAL_CLOSER_RE.test(anchorText)) return undefined;
 	if (!isIndentDeeper(target, leadingIndent(anchorText))) return undefined;
 
@@ -1151,34 +940,23 @@ function resolveInwardLanding(
 	for (let line = group.anchor; line > blockStart; line--) {
 		const text = fileLines[line - 1] ?? "";
 		if (!hasNonWhitespace(text)) {
-			landing = line - 1; // look past trailing blanks, never land after one
+			landing = line - 1;
 			continue;
 		}
-		if (!STRUCTURAL_CLOSER_RE.test(text)) break; // content reached — land right after it
+		if (!STRUCTURAL_CLOSER_RE.test(text)) break;
 		const indent = leadingIndent(text);
-		if (!isIndentDeeper(target, indent)) break; // closer at the body's depth — land after it
-		// Another hunk owns this closer (the group's own rows put the anchor
-		// itself in `targetedLines`; that one is ours to cross).
+		if (!isIndentDeeper(target, indent)) break;
+
 		if (line !== group.anchor && targetedLines.has(line)) return undefined;
 		landing = line - 1;
 	}
 	return landing === group.anchor ? undefined : landing;
 }
 
-/**
- * Slide mis-anchored after-insert hunks to the depth their body indentation
- * claims: outward past the structural closer lines that follow the anchor
- * when the body is shallower, or — for `insert_after_block N:` lowerings —
- * inward across the block's trailing closers when the body is deeper than
- * the block's closing line. Returns the corrected edit list plus one warning
- * per shifted hunk.
- */
 function repairAfterInsertLandings(
 	edits: readonly AppliedEdit[],
 	fileLines: readonly string[],
 ): { edits: readonly AppliedEdit[]; warnings: string[] } {
-	// Group plain (non-replacement) after-anchor inserts per authored hunk:
-	// rows of one hunk share the anchor line and the patch header line.
 	const groups = new Map<string, AfterInsertGroup>();
 	edits.forEach((edit, idx) => {
 		if (edit.kind !== "insert" || edit.mode === "replacement") return;
@@ -1191,7 +969,6 @@ function repairAfterInsertLandings(
 	});
 	if (groups.size === 0) return { edits, warnings: [] };
 
-	// Lines explicitly targeted by any edit; a shift never crosses them.
 	const targetedLines = new Set<number>();
 	for (const edit of edits) {
 		if (edit.kind === "delete") targetedLines.add(edit.anchor.line);
@@ -1226,18 +1003,9 @@ function repairAfterInsertLandings(
 	return { edits: out ?? edits, warnings };
 }
 
-/**
- * Apply a parsed list of edits to a text body. Pure function — no I/O.
- *
- * Returns the post-edit text and the first changed line number (1-indexed).
- * Throws if an anchor is out of bounds.
- */
 export function applyEdits(text: string, edits: readonly Edit[]): ApplyResult {
 	if (edits.length === 0) return { text, firstChangedLine: undefined };
 
-	// Block edits are deferred until `resolveBlockEdits` expands them into
-	// concrete inserts + deletes. Reaching the applier with one still present
-	// is an internal wiring bug, not authored-input error.
 	for (const edit of edits) {
 		if (edit.kind === "block") throw new Error(UNRESOLVED_BLOCK_INTERNAL);
 	}
@@ -1259,7 +1027,6 @@ export function applyEdits(text: string, edits: readonly Edit[]): ApplyResult {
 	const { edits: landed, warnings: landingWarnings } = repairAfterInsertLandings(repaired, fileLines);
 	const warnings = [...boundaryWarnings, ...landingWarnings];
 
-	// Partition edits into bof, eof, and anchor-targeted buckets.
 	const bofLines: string[] = [];
 	const eofLines: string[] = [];
 	const anchorEdits: IndexedEdit[] = [];
@@ -1273,14 +1040,6 @@ export function applyEdits(text: string, edits: readonly Edit[]): ApplyResult {
 		}
 	});
 
-	// Apply per-line buckets in one forward rebuild. A previous version mutated
-	// `fileLines` with a `splice` per changed line; on a large-range edit (e.g.
-	// `DEL 1.=30000`, which expands to 30000 single-line deletes) every splice
-	// shifted the whole tail, making the applier O(edits * n) — ~1.8e9 ops /
-	// ~160ms on a 60k-line file. Walking the original lines once and emitting
-	// each line's replacement into a fresh array is O(n + output). Reading the
-	// current line from the untouched original keeps the result byte-identical
-	// to the old bottom-up in-place pass.
 	const byLine = bucketAnchorEditsByLine(anchorEdits);
 	const rebuiltLines: string[] = [];
 	for (let idx = 0; idx < fileLines.length; idx++) {

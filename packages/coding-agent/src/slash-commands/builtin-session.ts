@@ -197,11 +197,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				if (runtime.session.isStreaming) return usage("Cannot delete the session while streaming.", runtime);
 				const sessionFile = runtime.sessionManager.getSessionFile();
 				if (!sessionFile) return usage("No session file to delete (in-memory session).", runtime);
-				// Route through the active SessionManager so the persist writer is
-				// closed before the file is deleted. Constructing a fresh
-				// FileSessionStorage and calling deleteSessionWithArtifacts leaves
-				// the active writer attached to the now-deleted path, so the next
-				// prompt would silently resurrect or corrupt the "deleted" file.
+
 				try {
 					await runtime.sessionManager.dropSession(sessionFile);
 				} catch (err) {
@@ -219,8 +215,6 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return usage("Usage: /session [info|delete|pin [account]]", runtime);
 		},
 		handleTui: (_command, runtime) => {
-			// TUI /session opens the full-screen unified session browser (global
-			// scope). The info/delete/pin verbs remain on the ACP/text `handle`.
 			runtime.ctx.showAgentsView("global");
 			runtime.ctx.editor.setText("");
 		},
@@ -375,8 +369,6 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "agents",
 		description: "Open the agents view (unified session + subagent browser)",
 		handleTui: (_command, runtime) => {
-			// Scoped at the current session's subtree when it has children
-			// (subagent view); global session list otherwise.
 			runtime.ctx.showAgentsView("current");
 			runtime.ctx.editor.setText("");
 		},

@@ -1,16 +1,3 @@
-//! Cross-platform fallback isolation: git worktree, or plain recursive copy.
-//!
-//! When `lower` is a git working tree, [`start`](IsolationBackend::start)
-//! materializes `merged` via `git worktree add --detach <merged> HEAD`.
-//! Stop tears it down with `git worktree remove --force`. This lets git
-//! itself manage refs/index/HEAD inside `merged`, keeping
-//! [`diff`](IsolationBackend::diff) on the `git diff` path.
-//!
-//! Otherwise we do a vanilla recursive copy, preserving file modes and
-//! mtimes so the default mtime-skipping diff path stays fast. There is no
-//! file-system magic; the caller pays full filesystem-copy cost up front
-//! and an `rm -rf` on teardown.
-
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -26,10 +13,6 @@ impl IsolationBackend for RcopyBackend {
 	}
 
 	fn probe(&self) -> ProbeResult {
-		// Pure-stdlib fallback path is always available. We don't probe for
-		// `git` here because the non-git branch doesn't need it; the git
-		// branch will surface a clear unavailable-error if `lower` is a git
-		// tree but `git` is missing from PATH.
 		ProbeResult::available()
 	}
 
@@ -39,12 +22,7 @@ impl IsolationBackend for RcopyBackend {
 		prepare_destination(&merged)?;
 		if is_git_worktree(&lower) {
 			git_worktree_add(&lower, &merged)?;
-			// `worktree add --detach HEAD` lands on a clean checkout. proto
-			// (and friends) expect `merged` to mirror `lower`'s **live**
-			// working tree, so seed the index + working tree + untracked
-			// files exactly as they exist in lower. No applyBaseline call
-			// in the caller — every backend's post-`start` invariant is
-			// the same.
+
 			seed_dirty_state(&lower, &merged)
 		} else {
 			recursive_copy(&lower, &merged)
@@ -52,9 +30,6 @@ impl IsolationBackend for RcopyBackend {
 	}
 
 	fn stop(&self, merged: &Path) -> IsoResult<()> {
-		// Best-effort: if we recognise this path as a registered worktree,
-		// use git to remove it (so the parent repo's worktree list stays
-		// consistent). Otherwise just rm -rf.
 		if is_git_worktree(merged) {
 			let _ = git_worktree_remove(merged);
 		}
@@ -111,9 +86,6 @@ fn prepare_destination(merged: &Path) -> IsoResult<()> {
 }
 
 fn is_git_worktree(path: &Path) -> bool {
-	// A regular working tree has `.git` as a dir; a linked worktree has it
-	// as a `gitdir: …` text file. Either way, presence of `.git` is the
-	// signal git itself uses.
 	std::fs::symlink_metadata(path.join(".git")).is_ok()
 }
 
@@ -160,22 +132,6 @@ fn git_worktree_remove(merged: &Path) -> IsoResult<()> {
 	Err(command_failed("git worktree remove", output.status.code().unwrap_or(-1), &output.stderr))
 }
 
-/// Replicate `lower`'s live working tree on top of a freshly-checked-out
-/// worktree at `merged`. Three passes mirror what `git status` would
-/// report at `lower`:
-///
-///  1. **Staged** — `git diff --binary --cached` from lower, applied to both
-///     the index and the working tree of `merged`.
-///  2. **Unstaged** — `git diff --binary` from lower, applied to the working
-///     tree only.
-///  3. **Untracked** — every path listed by `git ls-files --others
-///     --exclude-standard -z` from lower, recursively copied into the same
-///     relative location under `merged`.
-///
-/// Result: `git status` inside `merged` reports the same dirty set as
-/// `lower` at the moment `start()` was called, so the rest of the PAL
-/// contract ("merged mirrors lower's live working tree") holds for
-/// rcopy on git inputs too.
 fn seed_dirty_state(lower: &Path, merged: &Path) -> IsoResult<()> {
 	let staged = git_capture(lower, &["diff", "--binary", "--no-color", "--cached"])?;
 	if !staged.is_empty() {
@@ -298,10 +254,6 @@ fn git_apply_with_program(
 	Err(command_failed("git apply", status.code().unwrap_or(-1), &stderr))
 }
 
-/// Copy a single path (regular file, symlink, or directory) from `src`
-/// to `dst`, preserving mode and mtime on supported platforms. Used by
-/// the untracked-files pass; directories are recursed via the existing
-/// [`copy_dir_contents`] helper.
 fn copy_path(src: &Path, dst: &Path) -> IsoResult<()> {
 	let meta = std::fs::symlink_metadata(src)
 		.map_err(|err| IsoError::other(format!("stat {}: {err}", src.display())))?;
@@ -322,11 +274,6 @@ fn copy_path(src: &Path, dst: &Path) -> IsoResult<()> {
 	}
 }
 
-/// Recursive copy preserving file modes (unix) and mtimes on both unix
-/// and windows. We don't use `std::fs::copy` for the final mtime fix-up
-/// because `copy` already preserves mtime on the macOS/Linux platforms we
-/// care about — but we still set it explicitly to keep behaviour
-/// consistent across hosts where the stdlib promise is weaker.
 fn recursive_copy(lower: &Path, merged: &Path) -> IsoResult<()> {
 	std::fs::create_dir_all(merged)
 		.map_err(|err| IsoError::other(format!("create {}: {err}", merged.display())))?;
@@ -374,9 +321,6 @@ fn copy_symlink(_src: &Path, _dst: &Path) -> IsoResult<()> {
 	Err(IsoError::other("symlink copy unsupported on this platform"))
 }
 
-/// Mirror `src`'s mtime onto `dst`. Failures are silently ignored — the
-/// mtime hint is an optimisation for [`crate::diff`], not a correctness
-/// requirement.
 fn copy_file_mtime(src: &Path, dst: &Path) {
 	let Ok(meta) = std::fs::metadata(src) else {
 		return;
@@ -404,8 +348,7 @@ fn filetime_set(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()
 		tv_nsec: dur.subsec_nanos() as libc::c_long,
 	}];
 	let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-	// SAFETY: `c_path` and `times` outlive the syscall; the kernel does
-	// not retain the pointers.
+
 	let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
 	if rc == 0 {
 		Ok(())

@@ -186,9 +186,7 @@ fn named(props: &AxProps) -> bool {
 		.flatten()
 		.any(|value| !value.trim().is_empty())
 }
-/// Display and match name for a node. Many toolbar controls — Chrome's
-/// Back/Forward/Reload among them — carry no `AXTitle` and name themselves
-/// through `AXDescription` alone.
+
 fn label(props: &AxProps) -> Option<&str> {
 	[props.title.as_deref(), props.description.as_deref()]
 		.into_iter()
@@ -319,8 +317,7 @@ fn format_tree(
 	if !node.props.enabled {
 		text.push_str(" (disabled)");
 	}
-	// The root's own AXFocused only reflects app-local focus; report the global
-	// roster flag instead.
+
 	let focused = if depth == 0 {
 		window.focused
 	} else {
@@ -441,8 +438,6 @@ pub fn ax_press(backend: &mut dyn AxBackend, handle: &AxHandle) -> CoreResult<()
 	backend.perform(handle, "press")
 }
 
-/// Maps a raw `AX*` macOS accessibility role onto the cross-platform role
-/// vocabulary. Compiled only where it has a caller (the macOS backend).
 #[cfg(target_os = "macos")]
 pub fn normalize_role_macos(native: &str) -> String {
 	match native {

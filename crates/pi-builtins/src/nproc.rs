@@ -1,6 +1,6 @@
-//! `nproc` builtin: print the number of processing units available.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{io::Write, thread};
 
@@ -13,7 +13,7 @@ use crate::host::{Host, Utility, format_usage, matches_parser, util};
 static OPT_ALL: &str = "all";
 static OPT_IGNORE: &str = "ignore";
 
-/// Parsed `nproc` invocation.
+
 pub(crate) struct Nproc {
 	matches: ArgMatches,
 }
@@ -36,8 +36,8 @@ impl Utility for Nproc {
 		};
 
 		let limit = match host.var("PROTO_THREAD_LIMIT") {
-			// Use the OpenMP variable to limit the number of threads. A parse
-			// failure or zero means no limit.
+
+
 			Some(threads) => match threads.parse() {
 				Ok(0) | Err(_) => usize::MAX,
 				Ok(n) => n,
@@ -50,8 +50,8 @@ impl Utility for Nproc {
 		} else {
 			match host.var("PROTO_NUM_THREADS") {
 				Some(threads) => {
-					// PROTO_NUM_THREADS may be "x,y,z"; GNU nproc uses only the
-					// first value. A parse failure or zero falls back to CPU detection.
+
+
 					match threads.split_terminator(',').next() {
 						None => available_parallelism(),
 						Some(value) => match value.trim().parse() {
@@ -105,8 +105,8 @@ fn app() -> Command {
 
 #[cfg(unix)]
 fn num_cpus_all() -> usize {
-	// In some situations, /proc and /sys are not mounted, and sysconf returns 1.
-	// However, we want to guarantee that `nproc --all` >= `nproc`.
+
+
 	unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) }
 		.try_into()
 		.ok()
@@ -119,12 +119,12 @@ fn num_cpus_all() -> usize {
 	available_parallelism()
 }
 
-/// Returns the available parallelism, falling back to one like GNU `nproc`.
+
 fn available_parallelism() -> usize {
 	thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
-/// Creates the `nproc` builtin registration.
+
 pub(crate) fn nproc_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Nproc, SE>()
 }

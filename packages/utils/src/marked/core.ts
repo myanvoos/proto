@@ -1,24 +1,22 @@
-/** Token shapes emitted by the Markdown lexer. */
 export namespace Tokens {
-	/** A block quote. */
 	export interface Blockquote {
 		type: "blockquote";
 		raw: string;
 		text: string;
 		tokens: Token[];
 	}
-	/** A hard line break. */
+
 	export interface Br {
 		type: "br";
 		raw: string;
 	}
-	/** A task-list checkbox. */
+
 	export interface Checkbox {
 		type: "checkbox";
 		raw: string;
 		checked: boolean;
 	}
-	/** A code block. */
+
 	export interface Code {
 		type: "code";
 		raw: string;
@@ -27,13 +25,13 @@ export namespace Tokens {
 		text: string;
 		escaped?: boolean;
 	}
-	/** An inline code span. */
+
 	export interface Codespan {
 		type: "codespan";
 		raw: string;
 		text: string;
 	}
-	/** A reference-link definition. */
+
 	export interface Def {
 		type: "def";
 		raw: string;
@@ -41,35 +39,34 @@ export namespace Tokens {
 		href: string;
 		title?: string;
 	}
-	/** Deleted text. */
+
 	export interface Del {
 		type: "del";
 		raw: string;
 		text: string;
 		tokens: Token[];
 	}
-	/** Emphasized text. */
+
 	export interface Em {
 		type: "em";
 		raw: string;
 		text: string;
 		tokens: Token[];
 	}
-	/** An escaped punctuation character. */
+
 	export interface Escape {
 		type: "escape";
 		raw: string;
 		text: string;
 	}
-	/** A custom extension token. */
+
 	export interface Generic {
-		// Upstream marked deliberately permits arbitrary extension-token fields.
 		[key: string]: any;
 		type: string;
 		raw: string;
 		tokens?: Token[];
 	}
-	/** A heading. */
+
 	export interface Heading {
 		type: "heading";
 		raw: string;
@@ -77,12 +74,12 @@ export namespace Tokens {
 		text: string;
 		tokens: Token[];
 	}
-	/** A horizontal rule. */
+
 	export interface Hr {
 		type: "hr";
 		raw: string;
 	}
-	/** Raw block or inline HTML. */
+
 	export interface HTML {
 		type: "html";
 		raw: string;
@@ -92,7 +89,7 @@ export namespace Tokens {
 		inLink?: boolean;
 		inRawBlock?: boolean;
 	}
-	/** An image. */
+
 	export interface Image {
 		type: "image";
 		raw: string;
@@ -101,7 +98,7 @@ export namespace Tokens {
 		text: string;
 		tokens: Token[];
 	}
-	/** A hyperlink. */
+
 	export interface Link {
 		type: "link";
 		raw: string;
@@ -110,7 +107,7 @@ export namespace Tokens {
 		text: string;
 		tokens: Token[];
 	}
-	/** A list. */
+
 	export interface List {
 		type: "list";
 		raw: string;
@@ -119,7 +116,7 @@ export namespace Tokens {
 		loose: boolean;
 		items: ListItem[];
 	}
-	/** A list item. */
+
 	export interface ListItem {
 		type: "list_item";
 		raw: string;
@@ -129,7 +126,7 @@ export namespace Tokens {
 		text: string;
 		tokens: Token[];
 	}
-	/** A paragraph. */
+
 	export interface Paragraph {
 		type: "paragraph";
 		raw: string;
@@ -137,26 +134,26 @@ export namespace Tokens {
 		text: string;
 		tokens: Token[];
 	}
-	/** Blank block space. */
+
 	export interface Space {
 		type: "space";
 		raw: string;
 	}
-	/** Strongly emphasized text. */
+
 	export interface Strong {
 		type: "strong";
 		raw: string;
 		text: string;
 		tokens: Token[];
 	}
-	/** A GFM table cell. */
+
 	export interface TableCell {
 		text: string;
 		tokens: Token[];
 		header: boolean;
 		align: "center" | "left" | "right" | null;
 	}
-	/** A GFM table. */
+
 	export interface Table {
 		type: "table";
 		raw: string;
@@ -164,7 +161,7 @@ export namespace Tokens {
 		header: TableCell[];
 		rows: TableCell[][];
 	}
-	/** Plain text. */
+
 	export interface Text {
 		type: "text";
 		raw: string;
@@ -197,7 +194,6 @@ type KnownToken =
 	| Tokens.Table
 	| Tokens.Text;
 
-/** A built-in or extension Markdown token. */
 export type Token = KnownToken | Tokens.Generic;
 
 function isKnownToken(token: Token): token is KnownToken {
@@ -229,24 +225,22 @@ function isKnownToken(token: Token): token is KnownToken {
 	}
 }
 
-/** Reference definitions collected while lexing. */
 export type Links = Record<string, Pick<Tokens.Link | Tokens.Image, "href" | "title">>;
-/** A token array carrying its reference-definition map. */
+
 export type TokensList = Token[] & { links: Links };
 
-/** Context supplied to extension tokenizers. */
 export interface TokenizerThis {
 	lexer: Lexer;
 }
-/** A tokenizer extension callback. */
+
 export type TokenizerExtensionFunction = (
 	this: TokenizerThis,
 	src: string,
 	tokens: Token[] | TokensList,
 ) => Tokens.Generic | undefined;
-/** A tokenizer extension start hint. */
+
 export type TokenizerStartFunction = (this: TokenizerThis, src: string) => number | void;
-/** An inline or block tokenizer extension. */
+
 export interface TokenizerExtension {
 	name: string;
 	level: "block" | "inline";
@@ -254,24 +248,23 @@ export interface TokenizerExtension {
 	tokenizer: TokenizerExtensionFunction;
 	childTokens?: string[];
 }
-/** Context supplied to extension renderers. */
+
 export interface RendererThis {
 	parser: Parser;
 }
-/** A custom renderer extension callback. */
+
 export type RendererExtensionFunction = (this: RendererThis, token: Tokens.Generic) => string | false | undefined;
-/** A named renderer extension. */
+
 export interface RendererExtension {
 	name: string;
 	renderer: RendererExtensionFunction;
 }
-/** A combined tokenizer/renderer extension. */
+
 export type TokenizerAndRendererExtension =
 	| TokenizerExtension
 	| RendererExtension
 	| (TokenizerExtension & RendererExtension);
 
-/** Overrides for built-in tokenizer methods. */
 export interface TokenizerObject {
 	url?(this: Tokenizer, src: string): Tokens.Link | undefined | false;
 	lheading?(this: Tokenizer, src: string): Tokens.Heading | undefined | false;
@@ -298,12 +291,10 @@ interface RendererTokenMap {
 	del: Tokens.Del;
 }
 
-/** Overrides for built-in HTML renderer methods. */
 export type RendererObject = {
 	[K in keyof RendererTokenMap]?: (this: Renderer, token: RendererTokenMap[K]) => string | false;
 };
 
-/** Options supported by the in-house Markdown implementation. */
 export interface MarkedOptions {
 	async?: boolean;
 	breaks?: boolean;
@@ -311,7 +302,7 @@ export interface MarkedOptions {
 	pedantic?: boolean;
 	silent?: boolean;
 	tokenizer?: Tokenizer | TokenizerObject | null;
-	/** Built-in tokenizer overrides composed by Marked.use(). */
+
 	tokenizerOverrides?: TokenizerObject;
 	renderer?: Renderer | RendererObject | null;
 	walkTokens?: ((token: Token) => void | Promise<void>) | null;
@@ -325,7 +316,6 @@ interface ExtensionRegistry {
 	childTokens: Record<string, string[]>;
 }
 
-/** Options accepted by Marked.use(). */
 export interface MarkedExtension extends Omit<MarkedOptions, "extensions"> {
 	extensions?: TokenizerAndRendererExtension[] | null;
 }
@@ -448,15 +438,14 @@ function appendText(tokens: Token[], raw: string, text = raw, escaped = false): 
 	tokens.push({ type: "text", raw, text, escaped });
 }
 
-/** Tokenizes the built-in inline Markdown surface. */
 export class Tokenizer {
 	options: MarkedOptions;
 	lexer!: Lexer;
-	/** Creates a tokenizer with the supplied options. */
+
 	constructor(options: MarkedOptions = {}) {
 		this.options = options;
 	}
-	/** Tokenizes GFM deletion. */
+
 	del(src: string): Tokens.Del | undefined {
 		if (!src.startsWith("~~") || /\s/.test(src[2] ?? "")) return undefined;
 		const end = findDelimiter(src, "~~", 2);
@@ -826,13 +815,7 @@ function parseList(lines: string[], index: number, lexer: Lexer): { token: Token
 			if (/^\s*\n$/.test(next)) {
 				let lookahead = cursor + 1;
 				while (lookahead < lines.length && /^\s*\n$/.test(lines[lookahead]!)) lookahead++;
-				// A blank line closes the list unless the next top-level line is a
-				// compatible item (same bullet char / ordered delimiter) or indented
-				// item content. The blank must stay OUTSIDE the list raw (it becomes
-				// a `space` token) so token shape never depends on what follows —
-				// real marked does the same, and the TUI's streaming freeze relies
-				// on that append-stability. A blank run at end of input closes the
-				// list the same way, keeping it tight and its raw blank-free.
+
 				if (lookahead >= lines.length) break;
 				const following = lines[lookahead]!;
 				const followingIndent = /^ */.exec(following)![0].length;
@@ -1071,12 +1054,7 @@ function blockTokens(src: string, lexer: Lexer, output: Token[]): Token[] {
 		}
 		let raw = line;
 		i++;
-		// An indented code block cannot interrupt a paragraph (CommonMark lazy
-		// continuation): a line indented by at least 4 spaces directly attached to
-		// paragraph text stays inside the paragraph, bypassing every block-start
-		// probe — matching marked's paragraph rule. After a whitespace-padded
-		// blank line the indent is no longer attached, so it still opens an
-		// indented code block.
+
 		let prevBlankish = false;
 		while (i < lines.length) {
 			const next = lines[i]!;
@@ -1147,7 +1125,6 @@ INLINE_RULES.gfm = { ...INLINE_RULES.normal };
 INLINE_RULES.breaks = { ...INLINE_RULES.normal };
 INLINE_RULES.pedantic = { ...INLINE_RULES.normal };
 
-/** Stateful block and inline Markdown lexer. */
 export class Lexer {
 	tokens: TokensList;
 	options: MarkedOptions;
@@ -1156,7 +1133,7 @@ export class Lexer {
 	tokenizer: Tokenizer;
 	tokenizerOverrides: TokenizerObject;
 	extensions: ExtensionRegistry;
-	/** Creates a lexer. */
+
 	constructor(options: MarkedOptions = {}) {
 		this.options = { ...DEFAULTS, ...options };
 		this.tokens = tokenList();
@@ -1166,19 +1143,19 @@ export class Lexer {
 		this.tokenizerOverrides =
 			options.tokenizerOverrides ?? (options.tokenizer instanceof Tokenizer ? {} : (options.tokenizer ?? {}));
 	}
-	/** Exposes rule objects for callers that optimize regular expressions. */
+
 	static get rules() {
 		return { block: BLOCK_RULES, inline: INLINE_RULES };
 	}
-	/** Lexes a complete document. */
+
 	static lex(src: string, options: MarkedOptions = {}): TokensList {
 		return new Lexer(options).lex(src);
 	}
-	/** Lexes inline Markdown. */
+
 	static lexInline(src: string, options: MarkedOptions = {}): Token[] {
 		return new Lexer(options).inlineTokens(src);
 	}
-	/** Lexes and resolves a complete document. */
+
 	lex(src: string): TokensList {
 		this.tokens = tokenList();
 		this.inlineQueue = [];
@@ -1187,113 +1164,111 @@ export class Lexer {
 		this.inlineQueue = [];
 		return this.tokens;
 	}
-	/** Appends block tokens to an output array. */
+
 	blockTokens(src: string, tokens: Token[] | TokensList = this.tokens): Token[] | TokensList {
 		return blockTokens(src, this, tokens);
 	}
-	/** Queues inline tokenization compatibly with marked. */
+
 	inline(src: string, tokens: Token[] = []): Token[] {
 		this.inlineQueue.push({ src, tokens });
 		return tokens;
 	}
-	/** Tokenizes inline Markdown immediately. */
+
 	inlineTokens(src: string, tokens: Token[] = []): Token[] {
 		return inlineTokens(src, this, tokens);
 	}
 }
 
-/** Default HTML renderer. */
 export class Renderer {
 	options: MarkedOptions;
 	parser!: Parser;
 	overrides: RendererObject;
-	/** Creates an HTML renderer. */
+
 	constructor(options: MarkedOptions = {}, overrides: RendererObject = {}) {
 		this.options = options;
 		this.overrides = overrides;
 	}
-	/** Renders blank space. */ space(_token: Tokens.Space): string {
+	space(_token: Tokens.Space): string {
 		return "";
 	}
-	/** Renders a code block. */ code({ text, lang, escaped }: Tokens.Code): string {
+	code({ text, lang, escaped }: Tokens.Code): string {
 		const code = escaped ? text : escapeHtml(text);
 		const language = (lang ?? "").match(/^\S*/)?.[0] ?? "";
 		return `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${code}${text.endsWith("\n") ? "" : "\n"}</code></pre>\n`;
 	}
-	/** Renders a block quote. */ blockquote({ tokens }: Tokens.Blockquote): string {
+	blockquote({ tokens }: Tokens.Blockquote): string {
 		return `<blockquote>\n${this.parser.parse(tokens)}</blockquote>\n`;
 	}
-	/** Passes raw HTML through. */ html({ text }: Tokens.HTML): string {
+	html({ text }: Tokens.HTML): string {
 		return text;
 	}
-	/** Renders a definition as no output. */ def(_token: Tokens.Def): string {
+	def(_token: Tokens.Def): string {
 		return "";
 	}
-	/** Renders a heading. */ heading({ tokens, depth }: Tokens.Heading): string {
+	heading({ tokens, depth }: Tokens.Heading): string {
 		return `<h${depth}>${this.parser.parseInline(tokens)}</h${depth}>\n`;
 	}
-	/** Renders a horizontal rule. */ hr(_token: Tokens.Hr): string {
+	hr(_token: Tokens.Hr): string {
 		return "<hr>\n";
 	}
-	/** Renders a list. */ list(token: Tokens.List): string {
+	list(token: Tokens.List): string {
 		const tag = token.ordered ? "ol" : "ul";
 		const start = token.ordered && token.start !== 1 ? ` start="${token.start}"` : "";
 		return `<${tag}${start}>\n${token.items.map(item => this.parser.renderListItem(item)).join("")}</${tag}>\n`;
 	}
-	/** Renders a list item. */ listitem(item: Tokens.ListItem): string {
+	listitem(item: Tokens.ListItem): string {
 		return `<li>${this.parser.parse(item.tokens)}</li>\n`;
 	}
-	/** Renders a checkbox. */ checkbox({ checked }: Tokens.Checkbox): string {
+	checkbox({ checked }: Tokens.Checkbox): string {
 		return `<input${checked ? ' checked=""' : ""} disabled="" type="checkbox">`;
 	}
-	/** Renders a paragraph. */ paragraph({ tokens }: Tokens.Paragraph): string {
+	paragraph({ tokens }: Tokens.Paragraph): string {
 		return `<p>${this.parser.parseInline(tokens)}</p>\n`;
 	}
-	/** Renders a table. */ table(token: Tokens.Table): string {
+	table(token: Tokens.Table): string {
 		const row = (cells: Tokens.TableCell[]) => `<tr>\n${cells.map(cell => this.tablecell(cell)).join("")}</tr>\n`;
 		return `<table>\n<thead>\n${row(token.header)}</thead>\n${token.rows.length ? `<tbody>${token.rows.map(row).join("")}</tbody>` : ""}</table>\n`;
 	}
-	/** Renders a table row. */ tablerow(text: string): string {
+	tablerow(text: string): string {
 		return `<tr>\n${text}</tr>\n`;
 	}
-	/** Renders a table cell. */ tablecell(token: Tokens.TableCell): string {
+	tablecell(token: Tokens.TableCell): string {
 		const tag = token.header ? "th" : "td";
 		return `<${tag}${token.align ? ` align="${token.align}"` : ""}>${this.parser.parseInline(token.tokens)}</${tag}>\n`;
 	}
-	/** Renders strong text. */ strong({ tokens }: Tokens.Strong): string {
+	strong({ tokens }: Tokens.Strong): string {
 		return `<strong>${this.parser.parseInline(tokens)}</strong>`;
 	}
-	/** Renders emphasized text. */ em({ tokens }: Tokens.Em): string {
+	em({ tokens }: Tokens.Em): string {
 		return `<em>${this.parser.parseInline(tokens)}</em>`;
 	}
-	/** Renders inline code. */ codespan({ text }: Tokens.Codespan): string {
+	codespan({ text }: Tokens.Codespan): string {
 		return `<code>${escapeHtml(text)}</code>`;
 	}
-	/** Renders a line break. */ br(_token: Tokens.Br): string {
+	br(_token: Tokens.Br): string {
 		return "<br>";
 	}
-	/** Renders deleted text. */ del({ tokens }: Tokens.Del): string {
+	del({ tokens }: Tokens.Del): string {
 		return `<del>${this.parser.parseInline(tokens)}</del>`;
 	}
-	/** Renders a link. */ link({ href, title, tokens }: Tokens.Link): string {
+	link({ href, title, tokens }: Tokens.Link): string {
 		const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
 		return `<a href="${escapeHtml(encodeURI(href))}"${titleAttr}>${this.parser.parseInline(tokens)}</a>`;
 	}
-	/** Renders an image. */ image({ href, title, text }: Tokens.Image): string {
+	image({ href, title, text }: Tokens.Image): string {
 		const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
 		return `<img src="${escapeHtml(encodeURI(href))}" alt="${escapeHtml(text)}"${titleAttr}>`;
 	}
-	/** Renders plain text. */ text({ text }: Tokens.Text | Tokens.Escape): string {
+	text({ text }: Tokens.Text | Tokens.Escape): string {
 		return escapeHtml(text, false);
 	}
 }
 
-/** Converts token streams into HTML. */
 export class Parser {
 	options: MarkedOptions;
 	renderer: Renderer;
 	extensions: ExtensionRegistry;
-	/** Creates a parser. */
+
 	constructor(options: MarkedOptions = {}) {
 		this.options = options;
 		this.extensions = options.extensions ?? { block: [], inline: [], renderers: {}, childTokens: {} };
@@ -1301,13 +1276,13 @@ export class Parser {
 		this.renderer = rendererOption instanceof Renderer ? rendererOption : new Renderer(options, rendererOption ?? {});
 		this.renderer.parser = this;
 	}
-	/** Parses block tokens. */ static parse(tokens: Token[], options: MarkedOptions = {}): string {
+	static parse(tokens: Token[], options: MarkedOptions = {}): string {
 		return new Parser(options).parse(tokens);
 	}
-	/** Parses inline tokens. */ static parseInline(tokens: Token[], options: MarkedOptions = {}): string {
+	static parseInline(tokens: Token[], options: MarkedOptions = {}): string {
 		return new Parser(options).parseInline(tokens);
 	}
-	/** Parses block tokens with the configured renderer. */
+
 	parse(tokens: Token[]): string {
 		let out = "";
 		for (const token of tokens) {
@@ -1366,7 +1341,7 @@ export class Parser {
 		}
 		return out;
 	}
-	/** Parses inline tokens with the configured renderer. */
+
 	parseInline(tokens: Token[]): string {
 		let out = "";
 		for (const token of tokens) {
@@ -1422,7 +1397,7 @@ export class Parser {
 		}
 		return out;
 	}
-	/** Renders a list item, including custom renderer overrides. */
+
 	renderListItem(item: Tokens.ListItem): string {
 		return this.call("listitem", item, () => this.renderer.listitem(item));
 	}
@@ -1480,22 +1455,21 @@ function walkTokenTree(
 	return values;
 }
 
-/** Configurable Markdown lexer and HTML parser. */
 export class Marked {
 	defaults: MarkedOptions;
-	/** Creates an isolated Marked instance. */
+
 	constructor(...extensions: MarkedExtension[]) {
 		this.defaults = { ...DEFAULTS, extensions: freshExtensions() };
 		if (extensions.length) this.use(...extensions);
 	}
-	/** Merges default options. */ options(options: MarkedOptions): this {
+	options(options: MarkedOptions): this {
 		return this.setOptions(options);
 	}
-	/** Merges default options. */ setOptions(options: MarkedOptions): this {
+	setOptions(options: MarkedOptions): this {
 		this.defaults = { ...this.defaults, ...options, extensions: options.extensions ?? this.defaults.extensions };
 		return this;
 	}
-	/** Adds tokenizer, renderer, and walk-token extensions. */
+
 	use(...extensions: MarkedExtension[]): this {
 		for (const extension of extensions) {
 			this.defaults.extensions = mergeExtensions(this.defaults.extensions, extension.extensions);
@@ -1525,27 +1499,27 @@ export class Marked {
 		}
 		return this;
 	}
-	/** Lexes Markdown into tokens. */ lexer(src: string, options: MarkedOptions = {}): TokensList {
+	lexer(src: string, options: MarkedOptions = {}): TokensList {
 		return Lexer.lex(src, {
 			...this.defaults,
 			...options,
 			extensions: options.extensions ?? this.defaults.extensions,
 		});
 	}
-	/** Parses a token stream to HTML. */ parser(tokens: Token[], options: MarkedOptions = {}): string {
+	parser(tokens: Token[], options: MarkedOptions = {}): string {
 		return Parser.parse(tokens, {
 			...this.defaults,
 			...options,
 			extensions: options.extensions ?? this.defaults.extensions,
 		});
 	}
-	/** Walks a token tree depth first. */ walkTokens(
+	walkTokens(
 		tokens: Token[] | TokensList,
 		callback: (token: Token) => void | Promise<void>,
 	): Array<void | Promise<void>> {
 		return walkTokenTree(tokens, callback, this.defaults.extensions ?? freshExtensions());
 	}
-	/** Parses Markdown to HTML, synchronously unless async mode is requested. */
+
 	parse(src: string, options: MarkedOptions & { async: true }): Promise<string>;
 	parse(src: string, options: MarkedOptions & { async: false }): string;
 	parse(src: string, options?: MarkedOptions | null): string | Promise<string>;
@@ -1558,31 +1532,31 @@ export class Marked {
 		if (merged.async) return Promise.all(walked).then(() => Parser.parse(tokens, merged));
 		return Parser.parse(tokens, merged);
 	}
-	/** Parses inline Markdown to HTML. */ parseInline(src: string, options: MarkedOptions = {}): string {
+	parseInline(src: string, options: MarkedOptions = {}): string {
 		const merged = { ...this.defaults, ...options, extensions: options.extensions ?? this.defaults.extensions };
 		return Parser.parseInline(Lexer.lexInline(src, merged), merged);
 	}
 }
 
 const shared = new Marked();
-/** Parses Markdown with a shared default instance. */
+
 export function marked(src: string, options: MarkedOptions & { async: true }): Promise<string>;
 export function marked(src: string, options: MarkedOptions & { async: false }): string;
 export function marked(src: string, options?: MarkedOptions | null): string | Promise<string>;
 export function marked(src: string, options: MarkedOptions | null = null): string | Promise<string> {
 	return shared.parse(src, options);
 }
-/** Parses Markdown with a shared default instance. */
+
 export const parse = marked;
-/** Lexes Markdown with default options. */
+
 export const lexer = Lexer.lex;
-/** Parses inline Markdown with default options. */
+
 export const parseInline = (src: string, options: MarkedOptions = {}): string => shared.parseInline(src, options);
-/** Parses a token stream with default options. */
+
 export const parser = Parser.parse;
-/** The default option object. */
+
 export const defaults = DEFAULTS;
-/** Returns a fresh copy of the default options. */
+
 export function getDefaults(): MarkedOptions {
 	return { ...DEFAULTS };
 }

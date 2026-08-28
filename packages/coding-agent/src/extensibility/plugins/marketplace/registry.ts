@@ -1,17 +1,3 @@
-/**
- * Registry read/write operations for the marketplace plugin system.
- *
- * Two registries:
- *   - marketplaces.json at getMarketplacesRegistryPath() — which catalogs the user has added
- *   - installed_plugins.json under getPluginsDir() — which plugins are installed
- *
- * Read/write functions accept explicit file paths so callers control the
- * location. Path helpers compute the default paths from the dir singleton.
- *
- * Both use atomic write (tmp + rename). On Windows, rename over existing file
- * can fail with EPERM — fallback: unlink target then rename.
- */
-
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -38,8 +24,6 @@ export function getPluginsCacheDir(): string {
 	return path.join(getPluginsDir(), "cache", "plugins");
 }
 
-// ── Atomic write ─────────────────────────────────────────────────────
-
 async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
 	const content = `${JSON.stringify(data, null, 2)}\n`;
 	const tmpPath = `${filePath}.tmp`;
@@ -49,27 +33,19 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
 	try {
 		await fs.rename(tmpPath, filePath);
 	} catch (err) {
-		// Windows EPERM fallback: unlink target, then rename
 		if ((err as NodeJS.ErrnoException).code === "EPERM") {
 			try {
 				await fs.unlink(filePath);
-			} catch {
-				// Target may not exist — that's fine
-			}
+			} catch {}
 			await fs.rename(tmpPath, filePath);
 		} else {
-			// Clean up tmp on unexpected errors
 			try {
 				await fs.unlink(tmpPath);
-			} catch {
-				// Best effort
-			}
+			} catch {}
 			throw err;
 		}
 	}
 }
-
-// ── Marketplaces registry ────────────────────────────────────────────
 
 function emptyMarketplacesRegistry(): MarketplacesRegistry {
 	return { version: 1, marketplaces: [] };
@@ -94,8 +70,6 @@ export async function writeMarketplacesRegistry(filePath: string, reg: Marketpla
 	await atomicWriteJson(filePath, reg);
 }
 
-// ── Installed plugins registry ───────────────────────────────────────
-
 function emptyInstalledPluginsRegistry(): InstalledPluginsRegistry {
 	return { version: 2, plugins: {} };
 }
@@ -115,7 +89,7 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 			logger.warn("Invalid installed plugins registry, returning empty", { path: filePath });
 			return emptyInstalledPluginsRegistry();
 		}
-		// Accept any numeric version — forward compatible reads
+
 		return { ...data, version: 2 };
 	} catch (err) {
 		if (isEnoent(err)) return emptyInstalledPluginsRegistry();
@@ -126,10 +100,6 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 export async function writeInstalledPluginsRegistry(filePath: string, reg: InstalledPluginsRegistry): Promise<void> {
 	await atomicWriteJson(filePath, reg);
 }
-
-// ── Marketplace CRUD ─────────────────────────────────────────────────
-// Pure functions that transform registry state. Caller is responsible for
-// reading, mutating, and writing back.
 
 export function addMarketplaceEntry(reg: MarketplacesRegistry, entry: MarketplaceRegistryEntry): MarketplacesRegistry {
 	if (reg.marketplaces.some(m => m.name === entry.name)) {
@@ -149,8 +119,6 @@ export function removeMarketplaceEntry(reg: MarketplacesRegistry, name: string):
 export function getMarketplaceEntry(reg: MarketplacesRegistry, name: string): MarketplaceRegistryEntry | undefined {
 	return reg.marketplaces.find(m => m.name === name);
 }
-
-// ── Installed plugin CRUD ────────────────────────────────────────────
 
 export function addInstalledPlugin(
 	reg: InstalledPluginsRegistry,
@@ -176,11 +144,6 @@ export function getInstalledPlugin(reg: InstalledPluginsRegistry, id: string): I
 	return reg.plugins[id];
 }
 
-/**
- * Collect all installPath values referenced by any of the provided registries.
- * Use this before deleting a cached plugin directory to verify it is not still
- * referenced by another scope's registry.
- */
 export function collectReferencedPaths(...registries: InstalledPluginsRegistry[]): Set<string> {
 	return new Set(
 		registries.flatMap(r =>

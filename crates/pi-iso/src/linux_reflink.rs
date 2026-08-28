@@ -1,12 +1,3 @@
-//! Linux FICLONE-based copy-on-write tree materialisation.
-//!
-//! This backend recursively builds a writable directory tree at `merged` from
-//! `lower`. Directories and symlinks are recreated, while regular files are
-//! cloned with the Linux `FICLONE` ioctl so filesystems such as btrfs, XFS,
-//! OCFS2, and bcachefs can share extents until either side is modified. There
-//! is no mount or kernel state to undo, so [`stop`](IsolationBackend::stop) is
-//! a recursive remove.
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -80,8 +71,6 @@ mod imp {
 
 	use crate::{IsoError, IsoResult};
 
-	// `libc::Ioctl` is `c_int` on musl and `c_ulong` on glibc; the constant fits
-	// both.
 	const FICLONE: libc::Ioctl = 0x4004_9409;
 
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
@@ -211,8 +200,6 @@ mod imp {
 			.open(dst)
 			.map_err(|err| IsoError::other(format!("create {}: {err}", dst.display())))?;
 
-		// SAFETY: both file descriptors are valid for the duration of the call.
-		// FICLONE copies metadata into `dst_file` and does not retain either fd.
 		let rc = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
 		if rc != 0 {
 			let err = std::io::Error::last_os_error();
@@ -252,9 +239,7 @@ mod imp {
 			libc::timespec { tv_sec: meta.mtime() as _, tv_nsec: meta.mtime_nsec() as libc::c_long },
 		];
 		let c_path = CString::new(path.as_os_str().as_bytes())?;
-		// SAFETY: `c_path` and `times` live until the syscall returns; the
-		// kernel does not retain either pointer. AT_SYMLINK_NOFOLLOW preserves
-		// symlink timestamps instead of mutating the link target.
+
 		let rc = unsafe {
 			libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW)
 		};

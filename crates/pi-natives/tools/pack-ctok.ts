@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-// Pack the ctok vocabulary blobs: zstd -19 compress the front-coded binaries
-// produced by tools/gen-ctok-vocab.ts (upstream ctok df3b59b data).
-//
-// Sources (first hit wins): $CTOK_SRC, tools/cache/ (gen-ctok-vocab.ts output).
-// Output: data/ctok_v3.bin.zst, data/ctok_v4_7.bin.zst — consumed by
-// include_bytes! + zstd::decode_all in src/utok/claude/mod.rs.
+
+
+
+
+
+
 
 import { existsSync } from "node:fs";
 import * as path from "node:path";
@@ -14,8 +14,8 @@ const candidates = [process.env.CTOK_SRC, path.join(root, "tools/cache")].filter
 	(d): d is string => !!d,
 );
 
-const MAGIC = "CTOK"; // container magic written by gen-ctok-vocab.ts
-const VERSION = 2; // format version byte (compact C0 marker alphabet)
+const MAGIC = "CTOK"; 
+const VERSION = 2; 
 
 for (const name of ["ctok_v3.bin", "ctok_v4_7.bin"]) {
 	const dir = candidates.find((d) => existsSync(path.join(d, name)));

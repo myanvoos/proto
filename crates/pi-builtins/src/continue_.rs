@@ -1,11 +1,11 @@
 use brush_core::{ExecutionControlFlow, ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-/// Continue to the next iteration of a control-flow loop.
+
 #[derive(Parser)]
 pub(crate) struct ContinueCommand {
-	/// If specified, indicates which nested loop to continue to the next
-	/// iteration of.
+
+
 	#[clap(default_value_t = 1)]
 	which_loop: i8,
 }
@@ -17,7 +17,7 @@ impl builtins::Command for ContinueCommand {
 		&self,
 		_context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
-		// If specified, which_loop needs to be positive.
+
 		if self.which_loop <= 0 {
 			return Ok(ExecutionExitCode::InvalidUsage.into());
 		}

@@ -1,9 +1,3 @@
-/**
- * Compact session-model picker (alt+p / `/switch`): a bottom-anchored
- * floating overlay hosting just a {@link ModelBrowser} — no provider sidebar.
- * Model entries switch the current session only; a search beginning with `@`
- * exposes the configured ctrl+p quick roles.
- */
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -22,38 +16,31 @@ import { bottomBorder, row, topBorder } from "./overlay-box";
 import { resolveSegmentPalette } from "./segment-track";
 
 interface ModelPickerCallbacks {
-	/**
-	 * A model was chosen for a session-only switch. `selector` is `provider/id`.
-	 * `overContext` is true when the session transcript exceeds the model's
-	 * context window — the host must compact before switching.
-	 */
 	onPick: (model: Model, selector: string, meta: { overContext: boolean }) => void;
-	/** A configured ctrl+p quick role was chosen. */
+
 	onPickRole?: (entry: ResolvedRoleModel) => void;
-	/** The picker was dismissed. */
+
 	onCancel: () => void;
 }
 
 export interface ModelPickerOptions {
-	/** Session token count; models with smaller context windows are grayed and compact-first on pick. */
 	currentContextTokens?: number;
-	/** `provider/id` of the session's active model; highlighted and preselected. */
+
 	currentSelector?: string;
-	/** Resolved role models in the same order used by the ctrl+p quick-role cycle. */
+
 	quickRoles?: ReadonlyArray<ResolvedRoleModel>;
-	/** Complete ctrl+p order, including unavailable roles, to preserve segment colors. */
+
 	quickRoleOrder?: ReadonlyArray<string>;
-	/** Active quick role, highlighted when the search begins with `@`. */
+
 	currentQuickRole?: string;
 }
 
-/** Fixed chrome rows: top border, status row, footer, bottom border. */
 const CHROME_ROWS = 4;
-/** Rows the browser renders around its list window (search + blank, blank + two detail rows). */
+
 const BROWSER_FRAME_ROWS = 5;
-/** Minimum rows for the browser list window on short terminals. */
+
 const MIN_VISIBLE = 5;
-/** Fraction of the terminal height the floating overlay occupies. */
+
 const HEIGHT_FRACTION = 0.4;
 
 const STATUS_HINT = "Session-only switch — role models stay unchanged";
@@ -61,11 +48,6 @@ const QUICK_ROLE_STATUS_HINT = "Quick role switch — applies its model and thin
 const FOOTER_HINT = "↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close";
 const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type to search · Esc close";
 
-/**
- * The alt+p picker component. Hosted as a non-fullscreen bottom-anchored
- * overlay (`ui.showOverlay(..., { anchor: "bottom-center" })`); keyboard-only,
- * since mouse tracking is reserved for fullscreen overlays.
- */
 export class ModelPickerComponent implements Component {
 	#tui: TUI;
 	#settings: Settings;
@@ -115,17 +97,11 @@ export class ModelPickerComponent implements Component {
 		this.#browser.onCancel = () => callbacks.onCancel();
 		this.#browser.onQueryChange = query => this.#syncItemsForQuery(query);
 
-		// Hydrate synchronously from the current registry snapshot so the first
-		// Enter after opening acts on cached models instead of being dropped
-		// while the offline refresh promise is still pending.
 		this.#syncFromRegistryState();
 		if (options.currentSelector) {
 			this.#browser.selectSelector(options.currentSelector);
 		}
 
-		// Reconcile with cached discovery state in the background. A --models
-		// scope is registry-independent, so the offline reload would only repeat
-		// the synchronous hydration above.
 		if (this.#scopedModels.length === 0) {
 			this.#registry
 				.refresh("offline")
@@ -139,7 +115,6 @@ export class ModelPickerComponent implements Component {
 
 	invalidate(): void {}
 
-	/** Rebuild model items and role chips from the registry's in-memory state. */
 	#syncFromRegistryState(): void {
 		let models: ReadonlyArray<Model>;
 		if (this.#scopedModels.length > 0) {
@@ -168,7 +143,6 @@ export class ModelPickerComponent implements Component {
 		this.#syncItemsForQuery(this.#browser.query, true);
 	}
 
-	/** Build virtual `@role` rows, colored by their ctrl+p segment position. */
 	#buildQuickRoleItems(
 		quickRoles: ReadonlyArray<ResolvedRoleModel>,
 		quickRoleOrder: ReadonlyArray<string>,
@@ -189,7 +163,6 @@ export class ModelPickerComponent implements Component {
 		});
 	}
 
-	/** Switch browser content only when a leading `@` changes the search mode. */
 	#syncItemsForQuery(query: string, refresh = false): void {
 		const roleMode = query.startsWith("@");
 		const modeChanged = roleMode !== this.#roleMode;
@@ -208,8 +181,6 @@ export class ModelPickerComponent implements Component {
 	}
 
 	handleInput(data: string): void {
-		// Mouse tracking is off outside fullscreen overlays; drop any stray SGR
-		// reports instead of feeding them to the search input.
 		if (data.startsWith("\x1b[<")) return;
 		this.#browser.handleInput(data);
 	}

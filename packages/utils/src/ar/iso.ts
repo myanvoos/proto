@@ -667,10 +667,7 @@ async function readIsoImpl(source: ByteSource, options: Parameters<FormatReader>
 			let totalSize = 0;
 			for (const part of parts) totalSize = safeAdd(totalSize, part.size, "multi-extent member size");
 			assertArchiveMemberSize(totalSize, normalizedPath, options.limits);
-			// Zero-length members never read their extents, and writers record
-			// junk locations for them (bsdtar's Joliet records for Rock Ridge
-			// symlinks, empty files at unallocated blocks) — 7-Zip and bsdtar
-			// both accept these, so validate extents only when bytes exist.
+
 			const extents = totalSize === 0 ? [] : parts.map(part => extentForRecord(part, volume.blockSize));
 			for (const extent of extents)
 				assertSourceRange(
@@ -696,12 +693,10 @@ async function readIsoImpl(source: ByteSource, options: Parameters<FormatReader>
 	return [...entries.values()];
 }
 
-/** Probe an ISO 9660 primary-volume signature at sector 16. */
 export function sniffIso(bytes: Uint8Array): boolean {
 	return bytesMatchAscii(bytes, VOLUME_DESCRIPTOR_START + 1, "CD001");
 }
 
-/** Index an ISO 9660 image lazily, preferring a valid Joliet supplementary tree. */
 export const readIso: FormatReader = async (source, options) => {
 	try {
 		return await readIsoImpl(source, options);

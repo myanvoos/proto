@@ -1,13 +1,13 @@
-//! `combine` builtin: boolean set operations on the lines of two files.
-//!
-//! Ported from the moreutils-inspired in-process implementation in `pi-shell`.
-//! Keeping the utility in process lets it use the shell's scoped streams,
-//! working directory, and cancellation rather than spawning an external tool.
-//!
-//! `combine FILE1 OP FILE2` accepts the case-insensitive operators `and`, `not`,
-//! `or`, and `xor`. `-` names stdin, but only for one operand. Lines remain raw
-//! byte strings; membership ignores a trailing newline, while output preserves
-//! each original line exactly.
+
+
+
+
+
+
+
+
+
+
 
 use std::{
 	collections::HashSet,
@@ -39,7 +39,7 @@ enum Error {
 	Msg(String),
 }
 
-/// Parsed `combine` invocation.
+
 pub(crate) struct Combine {
 	matches: ArgMatches,
 }
@@ -73,7 +73,7 @@ impl Utility for Combine {
 	}
 }
 
-/// The `combine` argument model.
+
 fn command() -> Command {
 	Command::new(Combine::NAME)
 		.version("combine (pi-shell) 17.2.11")
@@ -114,7 +114,7 @@ fn execute(file1: &OsStr, op: &str, file2: &OsStr, host: &mut Host) -> Result<()
 		return Err(Error::Msg("only one file can be stdin".into()));
 	}
 
-	// Open both up front so a missing FILE2 fails before stdin is consumed.
+
 	let input1 = open_input(file1, host)?;
 	let input2 = open_input(file2, host)?;
 	let cancel = host.cancel_flag();
@@ -162,7 +162,7 @@ fn operate(
 ) -> Result<(), Error> {
 	match op {
 		Op::And | Op::Not => {
-			// Membership side must be fully loaded before streaming FILE1.
+
 			let lines2 = read_lines(&mut input2, file2, cancel)?;
 			let set2: HashSet<&[u8]> = lines2.iter().map(|line| key(line)).collect();
 			let keep_member = op == Op::And;
@@ -207,8 +207,8 @@ fn open_input(name: &OsStr, host: &Host) -> Result<Option<File>, Error> {
 	Ok(Some(file))
 }
 
-/// Streams `reader` line by line (trailing `\n` retained when present),
-/// polling for cancellation between lines.
+
+
 fn each_line(
 	reader: &mut dyn BufRead,
 	name: &OsStr,
@@ -244,8 +244,8 @@ fn read_lines(
 	Ok(lines)
 }
 
-/// Membership key: the line with any trailing newline stripped, so `foo`
-/// (no newline) matches `foo\n`.
+
+
 fn key(line: &[u8]) -> &[u8] {
 	line.strip_suffix(b"\n").unwrap_or(line)
 }
@@ -259,7 +259,7 @@ fn input_error(name: &OsStr, err: &str) -> String {
 	format!("{}: {}", name.to_string_lossy(), err)
 }
 
-/// Creates the `combine` builtin registration.
+
 pub(crate) fn combine_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Combine, SE>()
 }

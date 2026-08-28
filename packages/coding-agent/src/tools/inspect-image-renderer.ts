@@ -37,8 +37,7 @@ export const inspectImageToolRenderer = {
 		const pathDisplay = rawPath ? shortenPath(rawPath) : "…";
 		const header = renderStatusLine({ icon: "pending", title: "Inspect", description: pathDisplay }, uiTheme);
 		const question = typeof args.question === "string" ? args.question.trim() : "";
-		// Call is at most a status line plus a one-line question — too small to box.
-		// The container renders a lone Text cleanly with no chrome.
+
 		if (!question) return new Text(header, 0, 0);
 		const tree = ` ${uiTheme.fg("dim", uiTheme.tree.last)} ${questionLine(question, uiTheme)}`;
 		return new Text(`${header}\n${tree}`, 0, 0);
@@ -93,8 +92,6 @@ export const inspectImageToolRenderer = {
 		if (details?.mimeType) metaParts.push(details.mimeType);
 		const metaLine = metaParts.length > 0 ? uiTheme.fg("dim", metaParts.join(" · ")) : "";
 
-		// No answer text: nothing worth boxing — keep it to a clean status line
-		// (plus a trailing meta line, when present).
 		if (!outputText) {
 			return new Text(metaLine ? `${header}\n${metaLine}` : header, 0, 0);
 		}

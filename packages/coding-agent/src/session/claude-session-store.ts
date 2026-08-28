@@ -92,9 +92,7 @@ async function readHistoryIndex(file: string): Promise<Map<string, ClaudeHistory
 			previous.messageCount += 1;
 			if (!previous.cwd && cwd) previous.cwd = cwd;
 		}
-	} catch {
-		// History is an optional index; project files remain independently discoverable.
-	}
+	} catch {}
 	return metadata;
 }
 
@@ -301,17 +299,14 @@ function uniqueEntryId(base: string, used: Set<string>): string {
 	return id;
 }
 
-/** Imports Claude Code JSONL sessions into non-persistent PROTO session managers. */
 export class ClaudeSessionStore implements ForeignSessionStore {
 	readonly source = "claude";
 	readonly #root: string;
 
-	/** Creates a store rooted at Claude's data directory, or at a fixture root when supplied. */
 	constructor(root: string = resolveClaudePaths().configDir) {
 		this.#root = path.resolve(root);
 	}
 
-	/** Lists indexed Claude sessions without reading transcript bodies. */
 	async list(): Promise<ForeignSessionInfo[]> {
 		const [history, files] = await Promise.all([
 			readHistoryIndex(path.join(this.#root, "history.jsonl")),
@@ -335,16 +330,13 @@ export class ClaudeSessionStore implements ForeignSessionStore {
 					firstMessage: indexed?.firstMessage,
 					messageCount: indexed?.messageCount,
 				});
-			} catch {
-				// Files may disappear while Claude rotates its session store.
-			}
+			} catch {}
 		}
 		return sessions.sort(
 			(left, right) => right.modified.getTime() - left.modified.getTime() || left.path.localeCompare(right.path),
 		);
 	}
 
-	/** Loads and converts a Claude transcript while preserving its source tree and timestamps. */
 	async load(info: ForeignSessionInfo): Promise<SessionManager> {
 		if (info.source !== this.source) throw new Error(`Cannot load ${info.source} session with ClaudeSessionStore`);
 		let records: ForeignJsonRecord[];

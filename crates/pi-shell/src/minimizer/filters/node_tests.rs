@@ -1,5 +1,3 @@
-//! Jest, Vitest, and Playwright output filters.
-
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
 #[must_use]
@@ -28,8 +26,7 @@ fn drop_passed_lines(input: &str) -> String {
 			push_line(&mut out, line);
 			continue;
 		}
-		// snip jest.yaml strips: console.log noise and the zero-information
-		// "Ran all test suites" line carry no signal even on success.
+
 		if is_noise_line(trimmed) {
 			continue;
 		}
@@ -57,9 +54,6 @@ fn failures_only(input: &str) -> String {
 	for line in input.lines() {
 		let trimmed = line.trim_start();
 
-		// snip jest.yaml strips: drop console.log noise and the zero-information
-		// "Ran all test suites" line transparently, without breaking the kept
-		// failure block around them.
 		if is_noise_line(trimmed) {
 			continue;
 		}
@@ -99,9 +93,6 @@ fn failures_only(input: &str) -> String {
 		}
 	}
 
-	// A failing run where no failure block was recognized means the format is
-	// unknown; summary counts alone lose the actual error (issue: bun's non-TTY
-	// `(fail)` output). Fall back to head/tail rather than drop the failure.
 	if kept_failure && has_content(&out) {
 		out
 	} else {
@@ -144,9 +135,6 @@ fn starts_count_summary(trimmed: &str) -> bool {
 	matches!(parts.next(), Some("failed" | "passed" | "skipped" | "flaky" | "pass" | "fail"))
 }
 
-/// Zero-information lines worth dropping regardless of pass/fail context.
-/// Ported from snip/filters/jest.yaml's `remove_lines` strips: jest console.log
-/// echoes (`^\s+console\.`) and the trailing `Ran all test suites.` banner.
 fn is_noise_line(trimmed: &str) -> bool {
 	trimmed.starts_with("console.") || trimmed.starts_with("Ran all test suites")
 }
@@ -204,9 +192,6 @@ fn is_error_context_line(trimmed: &str) -> bool {
 		|| trimmed.contains(".test.")
 }
 
-/// Source excerpt rows in bun/jest failure output: `12 | expect(x).toBe(y)`
-/// (optionally behind jest's `> ` pointer). Bun prints the code frame *before*
-/// its `error:` line, so these must open the failure block.
 fn is_code_frame_line(trimmed: &str) -> bool {
 	let rest = trimmed.strip_prefix("> ").unwrap_or(trimmed);
 	let after_digits = rest.trim_start_matches(|ch: char| ch.is_ascii_digit());

@@ -1,14 +1,3 @@
-/**
- * UI adapter over the schema. Reads `ui.options` declared inline in
- * settings-schema.ts and produces typed widget definitions for the
- * settings selector.
- *
- * To add a new setting to the UI: declare it in `settings-schema.ts`
- * with a `ui` block carrying `tab` and `group` (the group must be listed
- * in `TAB_GROUPS[tab]`). If it needs a submenu, include `options: [...]`
- * (or `options: "runtime"` for runtime-injected lists like themes).
- */
-
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import {
@@ -25,26 +14,18 @@ import {
 	TAB_GROUPS,
 } from "../../config/settings-schema";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// UI Definition Types
-// ═══════════════════════════════════════════════════════════════════════════
-
 export type SettingValue = boolean | string;
 
 interface BaseSettingDef {
 	path: SettingPath;
 	label: string;
 	description: string;
-	/** Risk note shown in warning styling; set for settings that can get the user flagged or banned. */
+
 	warning?: string;
 	tab: SettingTab;
-	/** Section within the tab; items are ordered by TAB_GROUPS[tab] and rendered under a heading row. */
+
 	group?: string;
-	/**
-	 * Optional visibility predicate. When supplied and returning false, the
-	 * setting is hidden from the UI. Applies to every variant — booleans,
-	 * enums, submenus, and text inputs.
-	 */
+
 	condition?: () => boolean;
 }
 
@@ -75,7 +56,6 @@ interface ProviderLimitsSettingDef extends BaseSettingDef {
 	type: "providerLimits";
 }
 
-/** Array-of-enum setting edited as a toggle list; `ordered` lists render positions and support reordering. */
 interface MultiSelectSettingDef extends BaseSettingDef {
 	type: "multiselect";
 	options: OptionList;
@@ -89,10 +69,6 @@ export type SettingDef =
 	| TextInputSettingDef
 	| ProviderLimitsSettingDef
 	| MultiSelectSettingDef;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Condition Functions
-// ═══════════════════════════════════════════════════════════════════════════
 
 const CONDITIONS: Record<string, () => boolean> = {
 	macOS: () => process.platform === "darwin",
@@ -119,10 +95,6 @@ const CONDITIONS: Record<string, () => boolean> = {
 		}
 	},
 };
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Schema to UI Conversion
-// ═══════════════════════════════════════════════════════════════════════════
 
 function resolveOptions(ui: AnyUiMetadata): OptionList | "runtime" | undefined {
 	if (!ui.options) return undefined;
@@ -156,34 +128,27 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 		if (options === undefined) {
 			return { ...base, type: "enum", values: getEnumValues(path) ?? [] };
 		}
-		// "runtime" is not a valid sentinel for enums — schema types prevent this,
-		// but treat defensively as an empty submenu.
+
 		return { ...base, type: "submenu", options: options === "runtime" ? [] : options };
 	}
 
 	if (schemaType === "number") {
-		// Numbers without options are intentionally hidden from the UI.
 		if (!options || options === "runtime") return null;
 		return { ...base, type: "submenu", options };
 	}
 
 	if (schemaType === "string") {
 		if (options === "runtime") {
-			// Empty list now; the selector layer (theme handling, etc.) injects choices.
 			return { ...base, type: "submenu", options: [] };
 		}
 		if (options) {
 			return { ...base, type: "submenu", options };
 		}
-		// One classification drives both surfaces: a setting marked `credential`
-		// masks here too, so the panel cannot display one that only the CLI knows
-		// to redact.
+
 		return { ...base, type: "text", secret: isCredential(path) };
 	}
 
 	if (schemaType === "array") {
-		// Arrays without declared options stay config-file only (free-form lists
-		// like extension paths have no finite choice set to toggle).
 		if (!options || options === "runtime") return null;
 		return { ...base, type: "multiselect", options, ordered: ui.ordered === true };
 	}
@@ -197,14 +162,8 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 	return null;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Public API
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Cache of generated definitions */
 let cachedDefs: SettingDef[] | null = null;
 
-/** Get all setting definitions with UI */
 function getAllSettingDefs(): SettingDef[] {
 	if (cachedDefs) return cachedDefs;
 
@@ -219,11 +178,6 @@ function getAllSettingDefs(): SettingDef[] {
 	return defs;
 }
 
-/**
- * Get settings for a specific tab, ordered by the tab's group layout
- * (TAB_GROUPS). Ungrouped settings sort first; within a group, schema
- * declaration order is preserved.
- */
 export function getSettingsForTab(tab: SettingTab): SettingDef[] {
 	const defs = getAllSettingDefs().filter(def => def.tab === tab);
 	const order = TAB_GROUPS[tab];
@@ -235,7 +189,6 @@ export function getSettingsForTab(tab: SettingTab): SettingDef[] {
 	return defs.sort((a, b) => rank(a) - rank(b));
 }
 
-/** Get a setting definition by path */
 export function getSettingDef(path: SettingPath): SettingDef | undefined {
 	return getAllSettingDefs().find(def => def.path === path);
 }

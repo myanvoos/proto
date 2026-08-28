@@ -1,12 +1,3 @@
-/**
- * Client-side {@link AuthCredentialStore} that mirrors a remote broker's
- * snapshot. Refresh tokens never leave the broker; mutating methods (`replace*`,
- * `upsert*`, `delete*ForProvider`) throw because login flows are server-side.
- *
- * Cache (`getCache`/`setCache`/`cleanExpiredCache`) is in-memory and ephemeral —
- * usage reports cache TTL is 5 minutes per credential, so durability across
- * runs isn't required.
- */
 import * as os from "node:os";
 import { scheduler } from "node:timers/promises";
 import { getInstallId, logger } from "@oh-my-pi/pi-utils";
@@ -33,11 +24,6 @@ import type {
 	SnapshotStreamEvent,
 } from "./types";
 
-/**
- * Per-provider OAuth identities visible to this trusted broker client.
- * Missing providers are unrestricted; an empty set excludes that provider's
- * OAuth credentials. API keys are never filtered.
- */
 export type AuthBrokerAccountPool = ReadonlyMap<string, ReadonlySet<string>>;
 
 function isCredentialInAccountPool(
@@ -50,13 +36,6 @@ function isCredentialInAccountPool(
 	return entry.identityKey !== null && identities.has(entry.identityKey);
 }
 
-/**
- * Client-side TTL for the aggregate `/v1/usage` response. The broker dedups
- * upstream `/usage` hits via AuthStorage's 5-minute per-credential cache plus
- * single-flight, so this short client TTL mainly folds the parallel fan-out
- * from `#rankOAuthSelections` into a single round-trip — a ranking pass issues
- * one broker call instead of N.
- */
 const USAGE_CACHE_TTL_MS = 15_000;
 const CREDENTIAL_BLOCK_RECONCILE_DELAY_MS = 5 * 60_000;
 const WAIT_THRESHOLD_MS = 1_000;
@@ -150,12 +129,6 @@ interface CacheEntry {
 }
 
 interface UsageCacheEntry {
-	/**
-	 * `null` means the last aggregate `/v1/usage` fetch failed. Callers treat
-	 * this the same as a successful empty-report response ("no usage signal
-	 * for this cycle"), and the same 15s TTL applies so transient broker
-	 * outages don't turn every ranking pass into a broker retry storm.
-	 */
 	reports: UsageReport[] | null;
 	fetchedAt: number;
 }
@@ -164,12 +137,6 @@ function usageOverlayKey(
 	provider: Provider,
 	ids: { accountId?: string; email?: string; projectId?: string; orgId?: string },
 ): string | undefined {
-	// Org first: one account email can hold several organizations (Anthropic
-	// Team seat + personal Max), each with its own limit pools. Keying the
-	// overlay by account/email would merge the two pools' header ingests.
-	// But the org alone is not enough either: two Team members share the org
-	// id while drawing on per-user pools, so the key stays qualified by the
-	// member's own base identity whenever one is known.
 	let base: string | undefined;
 	const accountId = ids.accountId?.trim().toLowerCase();
 	const email = ids.email?.trim().toLowerCase();
@@ -213,28 +180,15 @@ function mergeUsageReports(base: UsageReport, overlay: UsageReport): UsageReport
 
 export interface RemoteAuthCredentialStoreOptions {
 	client: AuthBrokerClient;
-	/**
-	 * Initial snapshot. When omitted, callers must call
-	 * {@link RemoteAuthCredentialStore.refreshSnapshot} before the first read.
-	 */
+
 	initialSnapshot?: SnapshotResponse;
-	/**
-	 * Subscribe to the broker's SSE snapshot stream when available. Falls back
-	 * to long-poll permanently when the broker returns 404. Default `true`.
-	 */
+
 	streamSnapshots?: boolean;
-	/**
-	 * Called with each broker-sourced raw full snapshot after the filtered
-	 * public view is applied. The constructor's initial snapshot intentionally
-	 * does not trigger this hook.
-	 */
+
 	onSnapshot?: (snapshot: SnapshotResponse, generation: number) => void;
-	/**
-	 * OAuth identities visible through this store. This is a trusted-client
-	 * routing policy, not broker authorization.
-	 */
+
 	accountPool?: AuthBrokerAccountPool;
-	/** Flush cadence for batched observed-usage reports. Default 10s. */
+
 	observedUsageFlushMs?: number;
 }
 
@@ -253,28 +207,23 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#usageInflight?: Promise<UsageReport[] | null>;
 	#credentialBlockReconcileAfter: Map<string, number> = new Map();
 	#usageCacheEpoch = 0;
-	/** Raw broker credentials retained to size aggregate usage requests before account-pool filtering. */
+
 	#brokerUsageProviderByCredentialId = new Map<number, Provider>();
 	#brokerUsageAccountCounts = new Map<Provider, number>();
-	/** Per-snapshot lookup of oauth credentials by provider; rebuilt when `#snapshot` is replaced. */
+
 	#usageFilterLookup?: { snapshot: SnapshotResponse; byProvider: Map<Provider, OAuthCredential[]> };
-	/** Memoized `#filterUsageReports` output, keyed on (input identity, lookup identity). */
+
 	#usageFilterResult?: { input: UsageReport[]; byProvider: Map<Provider, OAuthCredential[]>; output: UsageReport[] };
 	#closed = false;
-	/**
-	 * `true` once the SSE consumer received its first frame and hasn't dropped
-	 * since. Writes consult this to suppress the otherwise-mandatory
-	 * `refreshSnapshot()` follow-up — the stream will deliver the new
-	 * generation without an extra GET.
-	 */
+
 	#streamingActive = false;
-	/** Latched once the broker has answered 404 — never try the stream again. */
+
 	#streamingUnsupported = false;
-	/** Pending observed usage keyed by `provider\u0000model`, merged until flush. */
+
 	#observedUsage = new Map<string, ObservedUsageEntry>();
 	#observedUsageTimer: Timer | undefined;
 	readonly #observedUsageFlushMs: number;
-	/** Latched once the broker answered 404 — old broker, never report again. */
+
 	#observedUsageUnsupported = false;
 
 	constructor(opts: RemoteAuthCredentialStoreOptions) {
@@ -400,7 +349,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#applyStreamEvent(event: SnapshotStreamEvent): void {
 		switch (event.kind) {
 			case "snapshot": {
-				// Strip the discriminator so we store the wire-shape SnapshotResponse.
 				const { kind: _kind, ...snapshot } = event;
 				if (snapshot.generation < this.#generation) {
 					logger.debug("auth-broker stream snapshot older than local; ignoring", {
@@ -467,7 +415,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshotReceivedAt = Date.now();
 	}
 
-	/** Re-hydrate the in-memory snapshot from the broker. */
 	async refreshSnapshot(): Promise<SnapshotResponse> {
 		const result = await this.#client.fetchSnapshot();
 		if (result.status === 200) this.#applySnapshot(result.snapshot, result.generation);
@@ -488,7 +435,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return out;
 	}
 
-	/** Broker-backed disabled tombstones; empty against brokers predating the endpoint. */
 	listDisabledCredentials(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]> {
 		return this.#client.listDisabledCredentials(provider, signal);
 	}
@@ -555,11 +501,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			});
 	}
 
-	deleteCredentialBlock(_credentialId: number, _providerKey: string, _blockScope: string): void {
-		// The broker protocol only supports deleting every block for a credential.
-		// Keep scoped blocks until expiry rather than risk deleting unrelated or
-		// newer broker state through that broader operation.
-	}
+	deleteCredentialBlock(_credentialId: number, _providerKey: string, _blockScope: string): void {}
 
 	deleteCredentialBlocks(credentialId: number): void {
 		this.#deleteSnapshotBlocks(credentialId);
@@ -587,11 +529,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		}
 	}
 
-	/**
-	 * In-memory update from a successful refresh through the broker. AuthStorage
-	 * calls this after `#replaceCredentialAt`; the broker already persisted the
-	 * authoritative row, so we just mirror it.
-	 */
 	updateAuthCredential(id: number, credential: AuthCredential): void {
 		for (const entry of this.#snapshot.credentials) {
 			if (entry.id !== id) continue;
@@ -602,7 +539,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 
 	deleteAuthCredential(id: number, disabledCause: string): void {
 		this.#removeCredentialById(id);
-		// Fire-and-forget: tell the broker to persist the disable.
+
 		this.#client.disableCredential(id, disabledCause).catch(error => {
 			logger.warn("auth-broker disable propagation failed", { id, error: String(error) });
 		});
@@ -674,13 +611,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		);
 	}
 
-	/**
-	 * Upsert a single credential through the broker. The broker server is the
-	 * canonical writer — see `POST /v1/credential`. The redacted snapshot
-	 * entries returned by the server replace the provider's rows in our local
-	 * snapshot, and the global snapshot is then refreshed in the background so
-	 * any concurrent peer (refresh, generation bump) stays in sync.
-	 */
 	async upsertAuthCredentialRemote(provider: string, credential: AuthCredential): Promise<StoredAuthCredential[]> {
 		const { entries } = await this.#client.uploadCredential(provider, credential);
 		this.#applyProviderEntries(provider, entries);
@@ -688,11 +618,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return this.listAuthCredentials(provider);
 	}
 
-	/**
-	 * Replace-all semantics: disable every active credential for the provider,
-	 * then upload each of the new credentials. Used by API-key login so a new
-	 * key clobbers any previously stored key for the same provider.
-	 */
 	async replaceAuthCredentialsRemote(
 		provider: string,
 		credentials: AuthCredential[],
@@ -709,8 +634,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 				});
 			}
 		}
-		// Snapshot reflects the disables before we add the new rows so a concurrent
-		// reader cannot momentarily see old + new together for the same provider.
+
 		this.#removeProviderEntries(provider);
 		for (const credential of credentials) {
 			const { entries } = await this.#client.uploadCredential(provider, credential);
@@ -720,11 +644,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return this.listAuthCredentials(provider);
 	}
 
-	/**
-	 * Logout: disable every active credential for the provider on the broker,
-	 * then drop them from the local snapshot. Refresh fetches the authoritative
-	 * post-state in the background.
-	 */
 	async deleteAuthCredentialsRemote(provider: string, disabledCause: string): Promise<void> {
 		const existing = this.listAuthCredentials(provider);
 		for (const entry of existing) {
@@ -743,9 +662,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	#applyProviderEntries(provider: string, entries: AuthCredentialSnapshotEntry[]): void {
-		// `entries` is the broker's authoritative post-upsert list of rows for
-		// `provider`. Drop our existing rows for the same provider and splice in
-		// the fresh set — preserving every other provider's rows in place.
 		const existingBlocks = new Map(
 			this.#snapshot.credentials
 				.filter(entry => entry.provider === provider && entry.blocks !== undefined)
@@ -853,11 +769,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		if (changed) this.#snapshot = { ...this.#snapshot, credentials };
 	}
 
-	/**
-	 * Fire-and-forget `refreshSnapshot()` after a write. When the SSE stream is
-	 * active the broker will deliver the new generation push, so the extra GET
-	 * is wasted bandwidth and we skip it.
-	 */
 	#maybeRefreshSnapshot(reason: string): void {
 		if (this.#streamingActive) return;
 		void this.refreshSnapshot().catch(error => {
@@ -879,7 +790,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#cache.set(key, { value, expiresAtSec });
 	}
 
-	/** Drop all cache rows whose keys start with the supplied prefix. */
 	deleteCachePrefix(prefix: string): void {
 		for (const key of this.#cache.keys()) {
 			if (key.startsWith(prefix)) this.#cache.delete(key);
@@ -906,12 +816,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#usageCacheEpoch += 1;
 	}
 
-	/**
-	 * Store-level hook consumed by `AuthStorage` — routes refresh through the
-	 * broker so the actual refresh token never leaves the broker host. Returns
-	 * the broker-redacted credential with {@link REMOTE_REFRESH_SENTINEL} in
-	 * the `refresh` slot.
-	 */
 	async refreshOAuthCredential(
 		_provider: Provider,
 		credentialId: number,
@@ -944,27 +848,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		};
 	}
 
-	/**
-	 * Store-level hook consumed by `AuthStorage.fetchUsageReports()` — proxies
-	 * to the broker's `/v1/usage` endpoint. The broker's egress IP isn't
-	 * rate-limited by Anthropic's per-IP `/usage` cap the way a heavy
-	 * residential laptop is, so all credentials surface every cycle.
-	 */
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
 		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
 		if (!reports) return null;
 		return this.#filterUsageReports(this.#applyUsageOverlays(reports));
 	}
 
-	/**
-	 * Per-credential usage hook consumed by `AuthStorage.#getUsageReport`. Pulls
-	 * the aggregate broker `/v1/usage` once and serves all callers from the
-	 * same response (coalesced + cached), then overlays any client-observed
-	 * header hints for the matching credential.
-	 *
-	 * The broker already aggregates with its own 30s TTL on the server side; our
-	 * 15s client TTL is below that so we usually re-use the broker's cache too.
-	 */
 	async getUsageReport(
 		provider: Provider,
 		credential: OAuthCredential,
@@ -978,13 +867,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return overlay ?? matched;
 	}
 
-	/**
-	 * Hot path — called per `getUsageReport()`/`fetchUsageReports()` (status-line
-	 * refresh cadence). The oauth-credential lookup is memoized on `#snapshot`
-	 * identity (every update site replaces the reference), and the filtered
-	 * output on (reports identity, lookup identity) — `#loadUsageReports`
-	 * serves the same array for 15s, so steady-state calls are O(1).
-	 */
 	#filterUsageReports(reports: UsageReport[]): UsageReport[] {
 		const accountPool = this.#accountPool;
 		if (!accountPool) return reports;
@@ -1050,12 +932,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return merged;
 	}
 
-	/**
-	 * Reject the awaited promise when the caller's signal aborts, without
-	 * affecting the shared upstream fetch. Used to give each caller their
-	 * own cancel without one caller's abort cascading into a peer's in-flight
-	 * request through the single-flight `#usageInflight`.
-	 */
 	#raceWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (!signal) return promise;
 		if (signal.aborted) return Promise.reject(new AIError.AbortError("auth-broker request aborted"));
@@ -1127,9 +1003,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			})
 			.catch(error => {
 				logger.warn("auth-broker usage fetch failed", { error: String(error) });
-				// Documented 15s TTL fallback: cache the null so sequential callers
-				// don't re-hit the broker while it's still down. See
-				// docs/auth-broker-gateway.md § "Client-side single-flight".
+
 				if (epoch !== this.#usageCacheEpoch) return this.#loadUsageReports();
 				this.#usageCache = { reports: null, fetchedAt: Date.now() };
 				return null;
@@ -1141,12 +1015,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return inflight;
 	}
 
-	/**
-	 * Fold locally observed request usage into the pending report and schedule
-	 * a flush. One `POST /v1/usage/observed` at most per flush interval; on
-	 * failure the batch is retained and retried with the next flush. A 404
-	 * (pre-endpoint broker) disables reporting for the life of this store.
-	 */
 	recordObservedUsage(entries: ObservedUsageEntry[]): void {
 		if (this.#closed || this.#observedUsageUnsupported) return;
 		for (const entry of entries) {
@@ -1186,14 +1054,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		} catch (error) {
 			const status = error instanceof AuthBrokerError ? error.status : undefined;
 			if (status === 404 || status === 501) {
-				// Broker predates the endpoint (or store can't persist) — stop trying.
 				this.#observedUsageUnsupported = true;
 				logger.debug("auth-broker does not accept observed usage; reporting disabled", { status });
 				return;
 			}
 			logger.debug("auth-broker observed usage flush failed; retrying next flush", { error: String(error) });
-			// Merge the failed batch back under the (possibly refilled) buffer so
-			// nothing is lost; bounded because entries are keyed per (provider, model).
+
 			if (!this.#closed) this.recordObservedUsage(batch);
 		}
 	}
@@ -1206,32 +1072,17 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			clearTimeout(this.#observedUsageTimer);
 			this.#observedUsageTimer = undefined;
 		}
-		// Best-effort final flush; failures are dropped (the process is exiting).
+
 		if (this.#observedUsage.size > 0) void this.#flushObservedUsage();
 		this.#cache.clear();
 		this.#usageOverlays.clear();
 	}
 }
 
-/**
- * Match a broker-supplied usage report to a specific OAuth credential. The
- * broker returns aggregate reports across all credentials it manages, so we
- * pick the one whose identity (accountId / email / projectId) lines up with
- * the credential the caller is asking about.
- *
- * Falls back to the lone candidate when only one matches the provider; falls
- * through to `null` when nothing matches, which `AuthStorage` treats as "no
- * usage data" (ranking proceeds without a usage signal for this credential).
- */
 function matchUsageReport(reports: UsageReport[], provider: Provider, credential: OAuthCredential): UsageReport | null {
 	const all = reports.filter(report => report.provider === provider);
 	if (all.length === 0) return null;
-	// Org precedence, decisive on EITHER side: an org-scoped credential may
-	// only take its own org's report, and an org-less (legacy) credential may
-	// only take org-less reports — the shared email/account would otherwise
-	// hand one subscription the OTHER subscription's pool (e.g. mark healthy
-	// Max exhausted via Team's report, or rank a legacy row on a sibling's
-	// numbers).
+
 	const orgId = credential.orgId?.trim().toLowerCase();
 	const accountId = credential.accountId?.trim().toLowerCase();
 	const email = credential.email?.trim().toLowerCase();
@@ -1246,13 +1097,7 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 				if (metaOrg.toLowerCase() === orgId) sameOrg.push(report);
 			}
 		}
-		// Org-attributed reports exist: the shared org is a GATE, not a match.
-		// Two Team members share the org id while drawing on per-user pools,
-		// so the credential's own base identity must still line up inside the
-		// same-org subset — a lone sibling report is NOT ours. An org-only
-		// credential (no base identifiers) takes the lone same-org report and
-		// treats several as ambiguous. None in our org → "no usage data"
-		// rather than mis-attributing another org's pool.
+
 		if (sawReportOrg) {
 			if (accountId || email || projectId) {
 				for (const report of sameOrg) {
@@ -1262,10 +1107,7 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 			}
 			return sameOrg.length === 1 ? sameOrg[0]! : null;
 		}
-		// No surviving report carries an org at all: presence mismatch is a
-		// non-match too — the sole org-less report may be a legacy sibling
-		// row's pool, and handing it to a scoped credential would rank/block
-		// on the wrong quota. "No usage data" degrades gracefully instead.
+
 		return null;
 	}
 	const candidates = all.filter(
@@ -1300,11 +1142,7 @@ function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): 
 		.filter(candidate => candidate.report.provider === overlay.provider);
 	if (all.length === 0) return -1;
 	const metadata = (overlay.metadata ?? {}) as Record<string, unknown>;
-	// Org precedence — mirror matchUsageReport: an org-attributed overlay may
-	// only merge into a report of the SAME org, and an org-less overlay may
-	// only merge into an org-less report. Within the same org the overlay's
-	// base identity must still match — two Team members' reports share the
-	// org id but must not swallow each other's header ingests.
+
 	const overlayOrg = readMetadataString(metadata, "orgId")?.toLowerCase();
 	const accountId = readMetadataString(metadata, "accountId")?.toLowerCase();
 	const email = readMetadataString(metadata, "email")?.toLowerCase();
@@ -1328,8 +1166,7 @@ function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): 
 			}
 			return sameOrg.length === 1 ? sameOrg[0]!.index : -1;
 		}
-		// Presence mismatch — mirror matchUsageReport: an org-scoped overlay
-		// never merges into an org-less report; it becomes its own report row.
+
 		return -1;
 	}
 	const candidates = all.filter(

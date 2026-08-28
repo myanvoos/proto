@@ -3,10 +3,6 @@ import { getSelectListTheme } from "../../modes/theme/theme";
 import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
-/**
- * Component that renders a theme selector.
- * Themes must be pre-loaded and passed to the constructor.
- */
 export class ThemeSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 	#onPreview: (themeName: string) => void;
@@ -21,17 +17,14 @@ export class ThemeSelectorComponent extends OverlayPanel {
 		super("Theme");
 		this.#onPreview = onPreview;
 
-		// Create select items from provided themes
 		const themeItems: SelectItem[] = themes.map(name => ({
 			value: name,
 			label: name,
 			description: name === currentTheme ? "(current)" : undefined,
 		}));
 
-		// Create selector
 		this.#selectList = new SelectList(themeItems, 10, getSelectListTheme());
 
-		// Preselect current theme
 		const currentIndex = themes.indexOf(currentTheme);
 		if (currentIndex !== -1) {
 			this.#selectList.setSelectedIndex(currentIndex);

@@ -3,7 +3,6 @@ const BACKSLASH = 0x5c;
 const U = 0x75;
 const SQUOTE = 0x27;
 
-// Valid chars after `\`: " \ / b f n r t u
 const VALID_ESCAPE_CHAR = new Uint8Array(128);
 for (const ch of '"\\/bfnrtu') VALID_ESCAPE_CHAR[ch.charCodeAt(0)] = 1;
 
@@ -31,15 +30,9 @@ function isWhitespace(cp: number): boolean {
 }
 
 function isIdentChar(cp: number): boolean {
-	return (
-		(cp >= 0x30 && cp <= 0x39) ||
-		((cp | 0x20) >= 0x61 && (cp | 0x20) <= 0x7a) ||
-		cp === 0x5f /* _ */ ||
-		cp === 0x24 /* $ */
-	);
+	return (cp >= 0x30 && cp <= 0x39) || ((cp | 0x20) >= 0x61 && (cp | 0x20) <= 0x7a) || cp === 0x5f || cp === 0x24;
 }
 
-/** Bareword literals: standard JSON plus Python `True`/`False`/`None`. */
 const KEYWORDS: readonly (readonly [string, unknown])[] = [
 	["true", true],
 	["false", false],
@@ -49,10 +42,6 @@ const KEYWORDS: readonly (readonly [string, unknown])[] = [
 	["None", null],
 ];
 
-/**
- * JS-only atoms never recovered as bareword strings — a tool must not execute
- * with a non-finite or undefined argument masquerading as a string.
- */
 const NON_RECOVERABLE_BAREWORDS: Record<string, true> = {
 	NaN: true,
 	Infinity: true,
@@ -61,19 +50,8 @@ const NON_RECOVERABLE_BAREWORDS: Record<string, true> = {
 	undefined: true,
 };
 
-/**
- * Sentinel returned by partial-mode value parsing when an atomic value
- * (number / keyword) is incomplete at the streaming edge, so the enclosing
- * object/array rolls back to the last valid prefix instead of committing junk.
- */
 const INCOMPLETE = Symbol("incomplete");
 
-/**
- * Lightweight string-level repair of the escape/control-char hazards that make
- * otherwise-valid JSON fail `JSON.parse`: raw control characters inside strings
- * are escaped, and invalid `\x` escapes have their backslash escaped. Returns the
- * input unchanged when no repair is needed. Pure string→string; does not parse.
- */
 export function repairJson(json: string): string {
 	const len = json.length;
 	const parts: string[] = [];
@@ -83,7 +61,6 @@ export function repairJson(json: string): string {
 
 	while (i < len) {
 		if (!inString) {
-			// Fast scan: skip to next quote.
 			while (i < len && json.charCodeAt(i) !== QUOTE) i++;
 			if (i >= len) break;
 			inString = true;
@@ -91,7 +68,6 @@ export function repairJson(json: string): string {
 			continue;
 		}
 
-		// Fast scan inside string: advance past chars that need no handling.
 		while (i < len) {
 			const cp = json.charCodeAt(i);
 			if (cp < 0x20 || cp === QUOTE || cp === BACKSLASH) break;
@@ -108,7 +84,6 @@ export function repairJson(json: string): string {
 		}
 
 		if (cp === BACKSLASH) {
-			// Need at least one char after the backslash; treat EOI as invalid escape.
 			if (i + 1 >= len) {
 				parts.push(json.slice(lastEmit, i), "\\\\");
 				lastEmit = i + 1;
@@ -119,7 +94,6 @@ export function repairJson(json: string): string {
 			const nextCp = json.charCodeAt(i + 1);
 
 			if (nextCp === U) {
-				// Need full \uXXXX, all four digits, all hex.
 				if (
 					i + 5 < len &&
 					isHexDigit(json.charCodeAt(i + 2)) &&
@@ -130,7 +104,7 @@ export function repairJson(json: string): string {
 					i += 6;
 					continue;
 				}
-				// Truncated or non-hex \u — escape the backslash, re-process the rest.
+
 				parts.push(json.slice(lastEmit, i), "\\\\");
 				lastEmit = i + 1;
 				i++;
@@ -148,7 +122,6 @@ export function repairJson(json: string): string {
 			continue;
 		}
 
-		// Control character (cp < 0x20).
 		parts.push(json.slice(lastEmit, i), CONTROL_ESCAPES[cp]);
 		lastEmit = i + 1;
 		i++;
@@ -159,26 +132,6 @@ export function repairJson(json: string): string {
 	return parts.join("");
 }
 
-/**
- * Recursive-descent parser for a forgiving superset of JSON. Beyond strict JSON
- * it accepts, and normalizes, the malformations LLM tool-call bodies leak in
- * practice:
- *
- * - single-quoted strings and unquoted object keys (JSON5);
- * - trailing / stray commas, and `//` + block comments;
- * - Python literals `True` / `False` / `None` and JS `NaN` / `Infinity`;
- * - raw control characters and invalid `\x` escapes inside strings (kept literally);
- * - unescaped quotes inside strings — a quote only closes a string when followed
- *   by a value terminator, recovering apostrophes such as `'it's'`;
- * - unquoted string values in object/array value position (strict mode only) —
- *   an unrecognized bareword such as `{"paths": packages/foo/*}` is recovered as
- *   a string up to the next `,` / `}` / `]` / newline.
- *
- * In `partial` mode an unterminated string/object/array (or a value cut off at
- * end-of-input) is auto-closed with whatever was parsed so far — for streaming.
- * In strict mode, end-of-input mid-value and trailing garbage both throw, so a
- * final parse never silently accepts a half-formed tool call.
- */
 class RelaxedJson {
 	readonly #s: string;
 	readonly #n: number;
@@ -210,14 +163,14 @@ class RelaxedJson {
 		const s = this.#s;
 		for (;;) {
 			while (this.#i < this.#n && isWhitespace(s.charCodeAt(this.#i))) this.#i++;
-			if (this.#i + 1 < this.#n && s.charCodeAt(this.#i) === 0x2f /* / */) {
+			if (this.#i + 1 < this.#n && s.charCodeAt(this.#i) === 0x2f) {
 				const next = s.charCodeAt(this.#i + 1);
-				if (next === 0x2f /* / line comment */) {
+				if (next === 0x2f) {
 					this.#i += 2;
 					while (this.#i < this.#n && s.charCodeAt(this.#i) !== 0x0a) this.#i++;
 					continue;
 				}
-				if (next === 0x2a /* * block comment */) {
+				if (next === 0x2a) {
 					this.#i += 2;
 					while (
 						this.#i + 1 < this.#n &&
@@ -240,17 +193,14 @@ class RelaxedJson {
 		if (c === "[") return this.#array();
 		if (c === '"' || c === "'") return this.#string(s.charCodeAt(this.#i));
 		const cc = s.charCodeAt(this.#i);
-		if (cc === 0x2d /* - */ || cc === 0x2b /* + */ || cc === 0x2e /* . */ || (cc >= 0x30 && cc <= 0x39)) {
-			// JS-only NaN / Infinity are deliberately not accepted: a tool must not
-			// execute with a non-finite numeric arg; they fall through #number's
-			// NaN guard (strict throw / partial rollback) like other bad tokens.
+		if (cc === 0x2d || cc === 0x2b || cc === 0x2e || (cc >= 0x30 && cc <= 0x39)) {
 			return this.#number();
 		}
 		return this.#keyword(allowBareword);
 	}
 
 	#object(): Record<string, unknown> {
-		this.#i++; // consume {
+		this.#i++;
 		const out: Record<string, unknown> = {};
 		for (;;) {
 			this.#ws();
@@ -264,7 +214,6 @@ class RelaxedJson {
 				return out;
 			}
 			if (c === ",") {
-				// Tolerate leading / doubled / trailing commas.
 				this.#i++;
 				continue;
 			}
@@ -301,7 +250,7 @@ class RelaxedJson {
 	}
 
 	#array(): unknown[] {
-		this.#i++; // consume [
+		this.#i++;
 		const out: unknown[] = [];
 		for (;;) {
 			this.#ws();
@@ -339,7 +288,7 @@ class RelaxedJson {
 	#key(): string {
 		const c = this.#s[this.#i];
 		if (c === '"' || c === "'") return this.#string(this.#s.charCodeAt(this.#i));
-		// Unquoted identifier key: read until a structural delimiter / whitespace.
+
 		const start = this.#i;
 		while (this.#i < this.#n) {
 			const ch = this.#s[this.#i];
@@ -356,7 +305,7 @@ class RelaxedJson {
 	#string(quote: number): string {
 		const s = this.#s;
 		const n = this.#n;
-		let i = this.#i + 1; // skip opening quote
+		let i = this.#i + 1;
 		let out = "";
 		let runStart = i;
 		while (i < n) {
@@ -366,22 +315,17 @@ class RelaxedJson {
 				continue;
 			}
 			if (cc === quote) {
-				// Apostrophe / inner-quote recovery (a quote that isn't followed by a
-				// value terminator is literal) is safe for single quotes and in partial
-				// mode. For double quotes in strict mode, close on the first unescaped
-				// quote like standard JSON so malformed structure fails loudly instead
-				// of silently swallowing commas/colons into one string.
 				const lenient = quote === SQUOTE || this.#partial;
 				if (!lenient || this.#closesString(i + 1)) {
 					out += s.slice(runStart, i);
 					this.#i = i + 1;
 					return out;
 				}
-				// Unescaped inner quote (e.g. apostrophe in `'it's'`) — keep it literal.
+
 				i++;
 				continue;
 			}
-			// Backslash escape.
+
 			out += s.slice(runStart, i);
 			i++;
 			if (i >= n) {
@@ -424,12 +368,12 @@ class RelaxedJson {
 						out += String.fromCharCode(parseInt(hex, 16));
 						i += 4;
 					} else {
-						out += "\\u"; // invalid \u — keep literal
+						out += "\\u";
 					}
 					break;
 				}
 				default:
-					out += `\\${s[i]}`; // invalid escape — keep backslash literal
+					out += `\\${s[i]}`;
 			}
 			i++;
 			runStart = i;
@@ -442,7 +386,6 @@ class RelaxedJson {
 		throw new SyntaxError("Unterminated string");
 	}
 
-	/** A quote closes a string only when the next non-space char ends a value. */
 	#closesString(from: number): boolean {
 		const s = this.#s;
 		let k = from;
@@ -487,16 +430,12 @@ class RelaxedJson {
 		const s = this.#s;
 		const i = this.#i;
 		for (const [word, value] of KEYWORDS) {
-			// Require a non-identifier boundary so `Truex` / `nullish` are not misread
-			// as the keyword followed by junk.
 			if (s.startsWith(word, i) && !isIdentChar(s.charCodeAt(i + word.length))) {
 				this.#i += word.length;
 				return value;
 			}
 		}
 		if (this.#partial) {
-			// Incomplete / unrecognized atomic token at the streaming edge — signal the
-			// caller to roll back to the last valid prefix instead of committing junk.
 			this.#i = this.#n;
 			return INCOMPLETE;
 		}
@@ -504,30 +443,18 @@ class RelaxedJson {
 		throw new SyntaxError(`Unexpected token at position ${this.#i}`);
 	}
 
-	/**
-	 * Strict-mode recovery of an unquoted string value, e.g.
-	 * `{"paths": packages/foo/*}`: consume until `,` / `}` / `]` / newline and
-	 * trim trailing whitespace. Recovery still throws — so a final parse never
-	 * accepts a half-formed or non-finite argument — when the token:
-	 * - hits end-of-input before a delimiter (truncated value);
-	 * - contains a `"`, `{`, `[`, or a key-like `:` — this parser accepts
-	 *   unquoted keys, so a missed comma (`{"a": foo "b": 1}`, `{a: foo b: 1}`)
-	 *   would otherwise silently swallow the following field. A colon followed
-	 *   by `/` or `\` stays literal so URL and Windows-path values recover;
-	 * - is a non-finite atom ({@link NON_RECOVERABLE_BAREWORDS}).
-	 */
 	#bareword(): string {
 		const s = this.#s;
 		const start = this.#i;
 		let i = start;
 		while (i < this.#n) {
 			const cc = s.charCodeAt(i);
-			if (cc === 0x2c /* , */ || cc === 0x7d /* } */ || cc === 0x5d /* ] */ || cc === 0x0a || cc === 0x0d) break;
+			if (cc === 0x2c || cc === 0x7d || cc === 0x5d || cc === 0x0a || cc === 0x0d) break;
 			if (
 				cc === QUOTE ||
-				cc === 0x7b /* { */ ||
-				cc === 0x5b /* [ */ ||
-				(cc === 0x3a /* : */ && s.charCodeAt(i + 1) !== 0x2f /* / */ && s.charCodeAt(i + 1) !== 0x5c) /* \ */
+				cc === 0x7b ||
+				cc === 0x5b ||
+				(cc === 0x3a && s.charCodeAt(i + 1) !== 0x2f && s.charCodeAt(i + 1) !== 0x5c)
 			) {
 				throw new SyntaxError(`Unexpected token at position ${start}`);
 			}
@@ -543,13 +470,6 @@ class RelaxedJson {
 	}
 }
 
-/**
- * Final-parse a JSON value, repairing the common LLM malformations
- * ({@link RelaxedJson}). Tries strict `JSON.parse` first (fast path, exact JSON
- * semantics), then the relaxed parser. Throws when the input is unrepairable,
- * truncated, or carries trailing garbage — so callers can skip a bad tool call
- * rather than execute a half-formed one.
- */
 export function parseJsonWithRepair<T>(json: string): T {
 	try {
 		return JSON.parse(json) as T;
@@ -558,11 +478,6 @@ export function parseJsonWithRepair<T>(json: string): T {
 	}
 }
 
-/**
- * Parse possibly-incomplete JSON during streaming. Always returns a value, never
- * throws: `{}` for empty/whitespace/unrecoverable buffers, and an auto-closed
- * best-effort object for truncated ones.
- */
 export function parseStreamingJson<T = Record<string, unknown>>(partialJson: string | undefined): T {
 	const trimmed = partialJson?.trimStart();
 	if (!trimmed) return {} as T;
@@ -577,39 +492,8 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 	}
 }
 
-/**
- * Default minimum byte growth before `parseStreamingJsonThrottled` will
- * re-parse a streaming tool-call argument buffer. Acts as the floor of the
- * geometric gate — see {@link parseStreamingJsonThrottled}.
- */
 export const STREAMING_JSON_PARSE_MIN_GROWTH = 256;
 
-/**
- * Throttled variant of {@link parseStreamingJson} for the per-delta hot path.
- *
- * Tool calls arrive as a long sequence of small deltas — calling
- * `parseStreamingJson(buffer)` on every delta re-parses the entire buffer
- * each time, giving O(N²) work in the total buffer length. A fixed re-parse
- * floor alone does NOT fix this: with `minGrowthBytes` constant, a buffer of
- * length N is parsed N/minGrowthBytes times at an average cost of N/2, which
- * is still O(N²) (the constant just shrinks). Long `write` payloads — where
- * the buffer is the whole file — made this the dominant main-thread stall
- * during streaming.
- *
- * Instead the gate scales geometrically: once the buffer is large, a re-parse
- * requires growth proportional to the current length (`len / 32`, floored at
- * `minGrowthBytes`). Parse points then form a geometric progression, so a
- * buffer of length N is parsed O(log N) times for O(N log N) total work,
- * while small buffers keep the snappy fixed-cadence updates.
- *
- * Each provider tracks the last parsed length on its tool-call block, so the
- * final `toolcall_end` parse (which providers already perform unconditionally)
- * is the authoritative full parse — the throttle only delays mid-stream UI
- * updates, by at most ~3% of the accumulated content for large buffers.
- *
- * @returns the parsed object plus the new `parsedLen` to persist; or `null`
- *          when the buffer has not grown enough to warrant a re-parse.
- */
 export function parseStreamingJsonThrottled<T = Record<string, unknown>>(
 	partialJson: string | undefined,
 	lastParsedLen: number,
@@ -622,17 +506,8 @@ export function parseStreamingJsonThrottled<T = Record<string, unknown>>(
 	return { value: parseStreamingJson<T>(partialJson), parsedLen: len };
 }
 
-/**
- * Classification of a streaming buffer against strict JSON (RFC 8259):
- * - `"complete"`: exactly one whole JSON value (plus surrounding whitespace).
- * - `"prefix"`: a proper prefix of some valid JSON value — more bytes can
- *   still complete it.
- * - `"invalid"`: no suffix can ever make it valid strict JSON (e.g. a raw
- *   control character inside a string, or a second top-level value).
- */
 export type JsonPrefixState = "complete" | "prefix" | "invalid";
 
-/** What the strict-prefix scanner expects at the current position. */
 const enum JsonExpect {
 	Value,
 	ObjKeyOrEnd,
@@ -644,32 +519,15 @@ const enum JsonExpect {
 	End,
 }
 
-/**
- * Classify `text` as a strict-JSON value, prefix, or dead end.
- *
- * Providers use this to disambiguate identifierless streaming tool-call
- * deltas: a chunk starting with `{` is a *new* sibling call only if the
- * current call's argument buffer cannot absorb it — the buffer is already a
- * complete value, already unsalvageable (lossy hosts abandon buffers
- * mid-string, leaving raw control characters strict JSON forbids), or the
- * concatenation would break it. Unlike {@link parseStreamingJson} this is
- * deliberately strict: forgiving repair would mask exactly the corruption
- * signals the caller needs.
- *
- * A top-level number at end-of-input classifies as `"complete"` even though
- * more digits could extend it; tool-argument buffers are always objects, so
- * the ambiguity is immaterial here.
- */
 export function classifyJsonPrefix(text: string): JsonPrefixState {
 	const n = text.length;
 	let i = 0;
-	// Container stack: true = object, false = array.
+
 	const stack: boolean[] = [];
 	let expect = JsonExpect.Value;
 
-	/** Consume a string starting at the opening quote. 1 = ok, 0 = prefix, -1 = invalid. */
 	const scanString = (): 1 | 0 | -1 => {
-		i++; // opening quote
+		i++;
 		while (i < n) {
 			const c = text.charCodeAt(i);
 			if (c === QUOTE) {
@@ -690,33 +548,32 @@ export function classifyJsonPrefix(text: string): JsonPrefixState {
 				}
 				continue;
 			}
-			if (c < 0x20) return -1; // raw control char: strict JSON forbids it
+			if (c < 0x20) return -1;
 			i++;
 		}
 		return 0;
 	};
 
-	/** Consume a number starting at `-` or a digit. 1 = token done, 0 = prefix, -1 = invalid. */
 	const scanNumber = (): 1 | 0 | -1 => {
-		if (text.charCodeAt(i) === 0x2d) i++; // -
+		if (text.charCodeAt(i) === 0x2d) i++;
 		if (i >= n) return 0;
 		let c = text.charCodeAt(i);
 		if (c === 0x30) {
-			i++; // 0: no further integer digits allowed
+			i++;
 		} else if (c >= 0x31 && c <= 0x39) {
 			while (i < n && text.charCodeAt(i) >= 0x30 && text.charCodeAt(i) <= 0x39) i++;
 		} else {
 			return -1;
 		}
 		if (i < n && text.charCodeAt(i) === 0x2e) {
-			i++; // .
+			i++;
 			if (i >= n) return 0;
 			if (text.charCodeAt(i) < 0x30 || text.charCodeAt(i) > 0x39) return -1;
 			while (i < n && text.charCodeAt(i) >= 0x30 && text.charCodeAt(i) <= 0x39) i++;
 		}
 		c = i < n ? text.charCodeAt(i) : 0;
 		if (c === 0x65 || c === 0x45) {
-			i++; // e | E
+			i++;
 			if (i < n && (text.charCodeAt(i) === 0x2b || text.charCodeAt(i) === 0x2d)) i++;
 			if (i >= n) return 0;
 			if (text.charCodeAt(i) < 0x30 || text.charCodeAt(i) > 0x39) return -1;
@@ -725,7 +582,6 @@ export function classifyJsonPrefix(text: string): JsonPrefixState {
 		return 1;
 	};
 
-	/** Consume `true`/`false`/`null`. 1 = done, 0 = prefix, -1 = invalid. */
 	const scanKeyword = (): 1 | 0 | -1 => {
 		for (const word of ["true", "false", "null"] as const) {
 			if (word.charCodeAt(0) !== text.charCodeAt(i)) continue;
@@ -737,7 +593,6 @@ export function classifyJsonPrefix(text: string): JsonPrefixState {
 		return -1;
 	};
 
-	/** A value just finished; the next expectation follows from the stack. */
 	const valueDone = (): JsonExpect =>
 		stack.length === 0
 			? JsonExpect.End
@@ -825,7 +680,7 @@ export function classifyJsonPrefix(text: string): JsonPrefixState {
 				expect = JsonExpect.Value;
 				break;
 			case JsonExpect.End:
-				return "invalid"; // trailing non-whitespace after a complete value
+				return "invalid";
 		}
 	}
 	return expect === JsonExpect.End ? "complete" : "prefix";

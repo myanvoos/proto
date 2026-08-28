@@ -1,23 +1,13 @@
-/**
- * System Prompt Capability
- *
- * Custom system prompt files (SYSTEM.md) that modify the agent's base system prompt.
- * Distinct from context-files which are user instructions shown in conversation.
- */
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
-/**
- * A system prompt customization file.
- */
 export interface SystemPrompt {
-	/** Absolute path to the file */
 	path: string;
-	/** File content */
+
 	content: string;
-	/** Which level this came from */
+
 	level: "user" | "project";
-	/** Source metadata */
+
 	_source: SourceMeta;
 }
 

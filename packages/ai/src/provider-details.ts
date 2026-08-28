@@ -16,11 +16,7 @@ export interface ProviderDetailsContext {
 	model: Model<Api>;
 	sessionId?: string;
 	authMode?: string;
-	/**
-	 * Human-readable description of the active credential, e.g.
-	 * `"broker http://proto.internal:8765 · oauth #5 (foo@bar.com)"`.
-	 * Rendered as a `Source` field; omitted when undefined.
-	 */
+
 	credentialSource?: string;
 	preferWebsockets?: boolean;
 	providerSessionState?: Map<string, ProviderSessionState>;

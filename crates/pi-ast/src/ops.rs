@@ -53,10 +53,7 @@ pub fn compile_pattern(
 	} else {
 		match Pattern::try_new(pattern, lang) {
 			Ok(compiled) => compiled,
-			// A fragment like `"key": $V` parses to multiple root nodes and is
-			// rejected as `MultipleNode`; auto-wrap it in a single-node context
-			// before giving up. Any other error, or a failed fallback, keeps the
-			// original message so genuinely-bad patterns behave as before.
+
 			Err(err @ PatternError::MultipleNode(_)) => {
 				match compile_wrapped_fallback(pattern, strictness, lang) {
 					Some(compiled) => return Ok(compiled),
@@ -70,30 +67,20 @@ pub fn compile_pattern(
 	Ok(compiled)
 }
 
-/// Language-specific wrapper template used to turn a multi-node fragment into a
-/// single selectable node. `None` for languages without a template — those keep
-/// the original `MultipleNode` error.
 const fn wrapper_template(lang: SupportLang) -> Option<(&'static str, &'static str, &'static str)> {
-	// (prefix, suffix, selector-kind); the fragment is spliced between
-	// prefix/suffix.
 	match lang {
 		SupportLang::Json => Some(("{", "}", "pair")),
 		_ => None,
 	}
 }
 
-/// Retry a fragment that failed as `MultipleNode` by wrapping it in a minimal
-/// valid context and selecting the node kind that spans it. Returns the
-/// compiled pattern (with `strictness` applied) or `None` if this language has
-/// no template or the wrapped form still fails to compile.
 fn compile_wrapped_fallback(
 	pattern: &str,
 	strictness: &MatchStrictness,
 	lang: SupportLang,
 ) -> Option<Pattern> {
 	let (prefix, suffix, selector) = wrapper_template(lang)?;
-	// JSON only accepts a bare `$V` inside a string, so quote value-position
-	// metavars; ast-grep still reads the quoted `"$V"` as capture `V`.
+
 	let prepared = if lang == SupportLang::Json {
 		quote_bare_metavars(pattern)
 	} else {
@@ -105,9 +92,6 @@ fn compile_wrapped_fallback(
 	Some(compiled)
 }
 
-/// Wrap bare `$NAME` / `$$$NAME` metavars in double quotes so a JSON wrapper
-/// parses. Metavars already inside a string literal (including `"$V"`) are left
-/// untouched; a quote toggles in/out of string context.
 fn quote_bare_metavars(pattern: &str) -> String {
 	let bytes = pattern.as_bytes();
 	let mut out = String::with_capacity(pattern.len() + 4);
@@ -122,7 +106,6 @@ fn quote_bare_metavars(pattern: &str) -> String {
 			continue;
 		}
 		if byte == b'$' && !in_string {
-			// Consume `$`, an optional `$$` ellipsis, then the identifier.
 			let start = index;
 			index += 1;
 			if bytes[index..].starts_with(b"$$") {
@@ -137,7 +120,7 @@ fn quote_bare_metavars(pattern: &str) -> String {
 			out.push('"');
 			continue;
 		}
-		// Copy this byte's full UTF-8 char so multi-byte content is preserved.
+
 		let char_end = next_char_boundary(bytes, index);
 		out.push_str(&pattern[index..char_end]);
 		index = char_end;
@@ -145,7 +128,6 @@ fn quote_bare_metavars(pattern: &str) -> String {
 	out
 }
 
-/// Byte index of the end of the UTF-8 character starting at `index`.
 const fn next_char_boundary(bytes: &[u8], index: usize) -> usize {
 	let mut end = index + 1;
 	while end < bytes.len() && (bytes[end] & 0b1100_0000) == 0b1000_0000 {
@@ -162,9 +144,7 @@ pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 			.then(a.deleted_length.cmp(&b.deleted_length))
 			.then(a.inserted_text.cmp(&b.inserted_text))
 	});
-	// Byte-identical edits (same span, same replacement) are one deterministic
-	// edit: multiple patterns matching the same node collapse instead of
-	// tripping the overlap check. Only divergent overlaps are ambiguous.
+
 	sorted.dedup_by(|a, b| {
 		a.position == b.position
 			&& a.deleted_length == b.deleted_length

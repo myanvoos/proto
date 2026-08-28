@@ -1,15 +1,3 @@
-//! Kitty keyboard sequence matching utilities.
-//!
-//! # Overview
-//! Parses Kitty keyboard protocol sequences and matches codepoints plus
-//! modifiers.
-//!
-//! # Example
-//! ```ignore
-//! // JS: native.matchesKittySequence("\x1b[65;5u", 65, 4) -> true
-//! // JS: native.parseKey("\x1b[65;5u", false) -> "ctrl+a"
-//! ```
-
 use std::borrow::Cow;
 
 use napi::{JsString, Result};
@@ -20,7 +8,6 @@ use crate::js;
 
 const LOCK_MASK: u32 = 64 + 128;
 
-// Internal sentinel codes for CSI 1;mod <letter> forms:
 const ARROW_UP: i32 = -1;
 const ARROW_DOWN: i32 = -2;
 const ARROW_RIGHT: i32 = -3;
@@ -76,14 +63,12 @@ const MOD_CTRL: u32 = 4;
 const MOD_SUPER: u32 = 8;
 const MOD_NUM_LOCK: u32 = 128;
 
-/// Event types from Kitty keyboard protocol (flag 2).
 #[napi]
 pub enum KeyEventType {
-	/// Key press event.
 	Press   = 1,
-	/// Key repeat event.
+
 	Repeat  = 2,
-	/// Key release event.
+
 	Release = 3,
 }
 
@@ -145,7 +130,6 @@ const fn keypad_operator_text_codepoint(codepoint: i32) -> Option<i32> {
 	}
 }
 
-/// Parsed Kitty keyboard protocol sequence (subset we care about).
 struct ParsedKittySequence {
 	codepoint:       i32,
 	shifted_key:     Option<i32>,
@@ -155,50 +139,47 @@ struct ParsedKittySequence {
 	event_type:      Option<u32>,
 }
 
-/// Parsed Kitty keyboard protocol sequence result for a Kitty input sequence.
 #[napi(object)]
 pub struct ParsedKittyResult {
-	/// Primary codepoint associated with the key.
-	pub codepoint:       i32,
-	/// Optional shifted key codepoint from the sequence.
-	pub shifted_key:     Option<i32>,
-	/// Optional base layout key codepoint from the sequence.
+	pub codepoint: i32,
+
+	pub shifted_key: Option<i32>,
+
 	pub base_layout_key: Option<i32>,
-	/// Modifier bitmask (shift/alt/ctrl), excluding lock bits.
-	pub modifier:        u32,
-	/// Optional event type (1 = press, 2 = repeat, 3 = release).
-	pub event_type:      Option<KeyEventType>,
+
+	pub modifier: u32,
+
+	pub event_type: Option<KeyEventType>,
 }
 
-/// Perfect hash map for legacy sequences - O(1) lookup
 static LEGACY_SEQUENCES: phf::Map<&'static [u8], &'static str> = phf_map! {
-	// Arrow keys (SS3 and CSI)
+
 	b"\x1bOA" => "up", b"\x1bOB" => "down", b"\x1bOC" => "right", b"\x1bOD" => "left",
 	b"\x1b[A" => "up", b"\x1b[B" => "down", b"\x1b[C" => "right", b"\x1b[D" => "left",
-	// Home/End (multiple terminal variants)
+
 	b"\x1bOH" => "home", b"\x1bOF" => "end",
 	b"\x1b[H" => "home", b"\x1b[F" => "end",
 	b"\x1b[1~" => "home", b"\x1b[7~" => "home",
 	b"\x1b[4~" => "end", b"\x1b[8~" => "end",
-	// Clear
+
 	b"\x1b[E" => "clear", b"\x1bOE" => "clear", b"\x1bOe" => "ctrl+clear", b"\x1b[e" => "shift+clear",
-	// Insert/Delete
+
 	b"\x1b[2~" => "insert", b"\x1b[2$" => "shift+insert", b"\x1b[2^" => "ctrl+insert",
 	b"\x1b[3~" => "delete", b"\x1b[3$" => "shift+delete", b"\x1b[3^" => "ctrl+delete",
-	// Page Up/Down
+
 	b"\x1b[5~" => "pageUp", b"\x1b[6~" => "pageDown",
 	b"\x1b[[5~" => "pageUp", b"\x1b[[6~" => "pageDown",
-	// Shift+arrow
+
 	b"\x1b[a" => "shift+up", b"\x1b[b" => "shift+down", b"\x1b[c" => "shift+right", b"\x1b[d" => "shift+left",
-	// Ctrl+arrow
+
 	b"\x1bOa" => "ctrl+up", b"\x1bOb" => "ctrl+down", b"\x1bOc" => "ctrl+right", b"\x1bOd" => "ctrl+left",
-	// Shift+page/home/end
+
 	b"\x1b[5$" => "shift+pageUp", b"\x1b[6$" => "shift+pageDown",
 	b"\x1b[7$" => "shift+home", b"\x1b[8$" => "shift+end",
-	// Ctrl+page/home/end
+
 	b"\x1b[5^" => "ctrl+pageUp", b"\x1b[6^" => "ctrl+pageDown",
 	b"\x1b[7^" => "ctrl+home", b"\x1b[8^" => "ctrl+end",
-	// Function keys (SS3, CSI tilde, Linux console)
+
 	b"\x1bOP" => "f1", b"\x1bOQ" => "f2", b"\x1bOR" => "f3", b"\x1bOS" => "f4",
 	b"\x1b[11~" => "f1", b"\x1b[12~" => "f2", b"\x1b[13~" => "f3", b"\x1b[14~" => "f4",
 	b"\x1b[[A" => "f1", b"\x1b[[B" => "f2", b"\x1b[[C" => "f3", b"\x1b[[D" => "f4", b"\x1b[[E" => "f5",
@@ -206,7 +187,6 @@ static LEGACY_SEQUENCES: phf::Map<&'static [u8], &'static str> = phf_map! {
 	b"\x1b[20~" => "f9", b"\x1b[21~" => "f10", b"\x1b[23~" => "f11", b"\x1b[24~" => "f12",
 };
 
-/// Pre-allocated single ASCII printable characters (33-126)
 static ASCII_PRINTABLE: [&str; 94] = [
 	"!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3",
 	"4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F",
@@ -215,7 +195,6 @@ static ASCII_PRINTABLE: [&str; 94] = [
 	"m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~",
 ];
 
-/// Pre-allocated modifier+letter combinations
 static CTRL_LETTERS: [&str; 26] = [
 	"ctrl+a", "ctrl+b", "ctrl+c", "ctrl+d", "ctrl+e", "ctrl+f", "ctrl+g", "ctrl+h", "ctrl+i",
 	"ctrl+j", "ctrl+k", "ctrl+l", "ctrl+m", "ctrl+n", "ctrl+o", "ctrl+p", "ctrl+q", "ctrl+r",
@@ -291,14 +270,6 @@ static LETTERS: [&str; 26] = [
 	"t", "u", "v", "w", "x", "y", "z",
 ];
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Match Kitty protocol input against a codepoint and modifier mask.
-///
-/// Returns true when the parsed sequence matches the expected codepoint (or
-/// base layout key) and modifier bits.
 #[napi]
 pub fn matches_kitty_sequence(
 	data: JsString,
@@ -328,9 +299,6 @@ fn matches_kitty_sequence_inner(
 		return true;
 	}
 
-	// Only fall back to a base-layout key for modified shortcuts whose codepoint is
-	// not already a recognized ASCII letter or symbol. Unmodified input is text:
-	// matching its physical base key would make Cyrillic "с" trigger plain "c".
 	if actual_mod != 0
 		&& let Some(base) = parsed.base_layout_key
 		&& base == expected_codepoint
@@ -346,58 +314,35 @@ fn matches_kitty_sequence_inner(
 	false
 }
 
-/// Check if a codepoint corresponds to a known symbol key.
 #[inline]
 const fn is_symbol_key(cp: i32) -> bool {
 	matches!(
 		cp,
-		96  | // `
-			34  | // "
-			45  | // -
-		61  | // =
-		91  | // [
-		93  | // ]
-		92  | // \
-		59  | // ;
-		39  | // '
-		44  | // ,
-		46  | // .
-		47  | // /
-		33  | // !
-		64  | // @
-		35  | // #
-		36  | // $
-		37  | // %
-		94  | // ^
-		38  | // &
-		42  | // *
-		40  | // (
-		41  | // )
-		95  | // _
-		43  | // +
-		124 | // |
-		126 | // ~
-		123 | // {
-		125 | // }
-		58  | // :
-		60  | // <
-		62  | // >
-		63 // ?
+		96 | 34
+			| 45 | 61
+			| 91 | 93
+			| 92 | 59
+			| 39 | 44
+			| 46 | 47
+			| 33 | 64
+			| 35 | 36
+			| 37 | 94
+			| 38 | 42
+			| 40 | 41
+			| 95 | 43
+			| 124 | 126
+			| 123 | 125
+			| 58 | 60
+			| 62 | 63
 	)
 }
 
-/// Parse terminal input and return a normalized key identifier.
-///
-/// Returns a key id like "escape" or "ctrl+c", or None if unrecognized.
 #[napi]
 pub fn parse_key(data: JsString, kitty_protocol_active: bool) -> Result<Option<String>> {
 	let data = js::utf8(data)?;
 	Ok(parse_key_inner(data.as_bytes(), kitty_protocol_active).map(|key| key.into_owned()))
 }
 
-/// Check if input matches a legacy escape sequence for the given key name.
-///
-/// Returns true only when the byte sequence maps to the exact key identifier.
 #[napi]
 pub fn matches_legacy_sequence(data: JsString, key_name: JsString) -> Result<bool> {
 	let data = js::utf8(data)?;
@@ -407,9 +352,6 @@ pub fn matches_legacy_sequence(data: JsString, key_name: JsString) -> Result<boo
 		.is_some_and(|&id| id == &*key_name))
 }
 
-/// Match input data against a key identifier string.
-///
-/// Returns true when the bytes represent the specified key with modifiers.
 #[napi]
 pub fn matches_key(data: JsString, key_id: JsString, kitty_protocol_active: bool) -> Result<bool> {
 	let data = js::utf8(data)?;
@@ -417,9 +359,6 @@ pub fn matches_key(data: JsString, key_id: JsString, kitty_protocol_active: bool
 	Ok(matches_key_inner(data.as_bytes(), &key_id, kitty_protocol_active))
 }
 
-/// Parse a Kitty keyboard protocol sequence.
-///
-/// Returns a structured parse result when the input is a valid Kitty sequence.
 #[napi]
 pub fn parse_kitty_sequence(data: JsString) -> Result<Option<ParsedKittyResult>> {
 	let data = js::utf8(data)?;
@@ -432,10 +371,6 @@ pub fn parse_kitty_sequence(data: JsString) -> Result<Option<ParsedKittyResult>>
 	}))
 }
 
-// =============================================================================
-// Key Matching
-// =============================================================================
-
 struct ParsedKeyId<'a> {
 	key:      &'a str,
 	modifier: u32,
@@ -447,8 +382,6 @@ fn parse_key_id(key_id: &str) -> Option<ParsedKeyId<'_>> {
 		return None;
 	}
 
-	// Support plus key as "++" or "ctrl++" etc.
-	// In this case the trailing "++" means: delimiter '+' + key '+'
 	let (prefix, forced_key_plus): (&str, bool) = if s == "+" {
 		("", true)
 	} else if let Some(stripped) = s.strip_suffix("++") {
@@ -486,12 +419,11 @@ fn parse_key_id(key_id: &str) -> Option<ParsedKeyId<'_>> {
 			_ => {},
 		}
 
-		// Treat this as the key token (last non-modifier wins)
 		key = Some(p);
 	}
 
 	let mut key = key?;
-	// Optional aliases
+
 	if key.eq_ignore_ascii_case("plus") {
 		key = "+";
 	} else if key.eq_ignore_ascii_case("esc") {
@@ -506,34 +438,19 @@ const fn raw_ctrl_char(letter: u8) -> u8 {
 	(letter.to_ascii_lowercase() - b'a') + 1
 }
 
-/// Control bytes that legacy terminals send for named keys (Backspace, Tab,
-/// LF, CR/Enter, Escape, DEL).
-///
-/// In legacy encoding (no Kitty protocol, no `modifyOtherKeys`), pressing
-/// Ctrl+H/I/J/M/[ produces the same single byte the terminal also sends for
-/// Backspace/Tab/Enter/Escape. Without an enhanced encoding the two are
-/// physically indistinguishable, so we resolve them to the named key — that's
-/// what every user expects when they press Enter — and require the enhanced
-/// encoding to match `ctrl+<letter>` separately.
 #[inline]
 const fn is_named_key_legacy_byte(b: u8) -> bool {
 	matches!(b, 0x08 | 0x09 | 0x0a | 0x0d | 0x1b | 0x7f)
 }
 
-/// CTRL+symbol legacy mappings
 const fn ctrl_symbol_to_byte(symbol: u8) -> Option<u8> {
 	match symbol {
-		// 0x40 -> 0, 0x5b|0x5c|..-> 0x1b|0x1c|..
 		b'@' | b'[' | b'\\' | b']' | b'^' | b'_' => Some(symbol - 0x40),
 		b'-' => Some(0x1f),
 		_ => None,
 	}
 }
 
-/// Parse xterm "modifyOtherKeys" format:
-///   CSI 27 ; modifiers ; keycode ~
-/// Some implementations omit the trailing '~':
-///   CSI 27 ; modifiers ; keycode
 #[inline]
 fn parse_modify_other_keys(bytes: &[u8]) -> Option<(u32, i32)> {
 	if bytes.len() < 7 || !bytes.starts_with(b"\x1b[27;") {
@@ -548,7 +465,7 @@ fn parse_modify_other_keys(bytes: &[u8]) -> Option<(u32, i32)> {
 		return None;
 	}
 
-	let mut idx = 5; // after "\x1b[27;"
+	let mut idx = 5;
 	let (mod_value, next_idx) = parse_digits(bytes, idx, end)?;
 	idx = next_idx;
 
@@ -574,12 +491,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		return false;
 	};
 
-	// ESC-prefixed sequences (terminals with metaSendsEscape / "Use Option as
-	// Meta"): \x1b\x1b[...] = Alt + inner-key. Strip the ESC prefix and match the
-	// inner sequence against the base key (without alt modifier).
-	// Example: \x1b\x1b[A matches "alt+up" because \x1b[A matches "up".
-	// Active in BOTH legacy and kitty mode (mixed mode) because terminals like
-	// Zellij in mixed mode may send legacy Alt sequences alongside Kitty ones.
 	if modifier & MOD_ALT != 0
 		&& bytes.len() > 2
 		&& bytes[0] == 0x1b
@@ -603,7 +514,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		return matches_key_inner(&bytes[1..], &inner_key_id, true);
 	}
 
-	// Parse Kitty once (avoid repeated parsing in branches).
 	let kitty_parsed = parse_kitty_sequence_bytes(bytes);
 	let kitty_matches = |codepoint: i32, m: u32| -> bool {
 		let Some(p) = kitty_parsed.as_ref() else {
@@ -665,12 +575,10 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		false
 	};
 
-	// Parse modifyOtherKeys once.
 	let mok = parse_modify_other_keys(bytes);
 	let mok_matches =
 		|keycode: i32, m: u32| -> bool { mok.is_some_and(|(mm, kk)| kk == keycode && mm == m) };
 
-	// Named keys (case-insensitive)
 	if key.eq_ignore_ascii_case("escape") || key.eq_ignore_ascii_case("esc") {
 		if modifier != 0 {
 			return false;
@@ -679,11 +587,10 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 	}
 
 	if key.eq_ignore_ascii_case("space") {
-		// legacy ctrl+space
 		if modifier == MOD_CTRL && bytes == b"\x00" {
 			return true;
 		}
-		// legacy alt+space (only reliable when not disambiguated)
+
 		if modifier == MOD_ALT && !kitty_protocol_active && bytes == b"\x1b " {
 			return true;
 		}
@@ -695,37 +602,28 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 	}
 
 	if key.eq_ignore_ascii_case("tab") {
-		// shift+tab classic
 		if modifier == MOD_SHIFT {
 			return bytes == b"\x1b[Z"
 				|| kitty_matches(CP_TAB, MOD_SHIFT)
 				|| mok_matches(CP_TAB, MOD_SHIFT);
 		}
 
-		// alt+tab stays ESC+TAB in many legacy/kitty-disambiguate scenarios (Tab is an
-		// exception).
 		if modifier == MOD_ALT && bytes == b"\x1b\t" {
 			return true;
 		}
 
-		// plain tab (treat LF/CR elsewhere)
 		if modifier == 0 {
 			return bytes == b"\t" || kitty_matches(CP_TAB, 0);
 		}
 
-		// ctrl+tab etc are only distinguishable in enhanced modes (CSI-u /
-		// modifyOtherKeys)
 		return kitty_matches(CP_TAB, modifier) || mok_matches(CP_TAB, modifier);
 	}
 
 	if key.eq_ignore_ascii_case("enter") || key.eq_ignore_ascii_case("return") {
-		// alt+enter is commonly ESC + CR/LF even when kitty disambiguation is on
-		// (Enter is an exception).
 		if modifier == MOD_ALT && (bytes == b"\x1b\r" || bytes == b"\x1b\n") {
 			return true;
 		}
 
-		// unmodified enter
 		if modifier == 0 {
 			return bytes == b"\r"
 				|| bytes == b"\n"
@@ -734,8 +632,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 				|| kitty_matches(CP_KP_ENTER, 0);
 		}
 
-		// modified enter is only reliably representable when encoded (CSI-u /
-		// modifyOtherKeys)
 		return kitty_matches(CP_ENTER, modifier)
 			|| kitty_matches(CP_KP_ENTER, modifier)
 			|| mok_matches(CP_ENTER, modifier)
@@ -743,8 +639,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 	}
 
 	if key.eq_ignore_ascii_case("backspace") {
-		// alt+backspace is commonly ESC + (DEL or BS) even in kitty disambiguate mode
-		// (Backspace is an exception).
 		if modifier == MOD_ALT {
 			return bytes == b"\x1b\x7f"
 				|| bytes == b"\x1b\x08"
@@ -873,7 +767,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			|| kitty_matches(ARROW_RIGHT, modifier);
 	}
 
-	// Function keys (now allow modifiers via CSI forms too)
 	let f_code = match key.as_bytes() {
 		[b'f' | b'F', n @ b'1'..=b'9'] => Some(FUNC_F1 + (n - b'1') as i32),
 		[b'f' | b'F', b'1', b'0'] => Some(FUNC_F10),
@@ -889,7 +782,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		return kitty_matches(cp, modifier);
 	}
 
-	// Single-character keys: accept any ASCII graphic char (0x21..=0x7E).
 	if let [ch] = key.as_bytes() {
 		if !ch.is_ascii_graphic() {
 			return false;
@@ -899,14 +791,6 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		let codepoint = ch as i32;
 		let is_letter = ch.is_ascii_lowercase();
 
-		// Legacy ctrl+alt+letter is ESC followed by the control character.
-		// tmux extkeys/CSI-u and Kitty mixed modes can still pass these legacy Meta
-		// pairs through, so accept them even when enhanced keyboard reporting is
-		// active. If that legacy form does not match, continue so CSI-u and
-		// modifyOtherKeys sequences from tmux can still be recognized.
-		// Legacy ESC+ctrl-char would also match Alt+Enter/Alt+Backspace/etc;
-		// skip the legacy fast-path for those bytes and let kitty/modifyOtherKeys
-		// disambiguate.
 		if modifier == (MOD_CTRL | MOD_ALT) && is_letter {
 			let ctrl_char = raw_ctrl_char(ch);
 			if bytes.len() == 2
@@ -918,15 +802,11 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			}
 		}
 
-		// alt+letter can remain ESC+letter inside tmux/Kitty mixed modes. If that
-		// legacy form does not match, fall through so CSI-u and modifyOtherKeys
-		// encodings still match.
 		if modifier == MOD_ALT && is_letter && bytes.len() == 2 && bytes[0] == 0x1b && bytes[1] == ch
 		{
 			return true;
 		}
 
-		// alt+shift+letter can remain ESC+UPPERCASE inside tmux/Kitty mixed modes.
 		if modifier == (MOD_ALT | MOD_SHIFT)
 			&& is_letter
 			&& bytes.len() == 2
@@ -936,23 +816,16 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			return true;
 		}
 
-		// ctrl+key
 		if modifier == MOD_CTRL {
 			if is_letter {
 				let raw = raw_ctrl_char(ch);
-				// `\r`/`\t`/`\x08`/`\x1b`/`\n` are physically the same byte the terminal
-				// sends for Enter/Tab/Backspace/Escape, so the legacy fast-path can only
-				// claim them when the byte is not a named key. Enhanced encodings still
-				// match below via kitty_matches/mok_matches.
+
 				if bytes.len() == 1 && bytes[0] == raw && !is_named_key_legacy_byte(raw) {
 					return true;
 				}
 				return mok_matches(codepoint, MOD_CTRL) || kitty_matches(codepoint, MOD_CTRL);
 			}
 
-			// ctrl+symbol legacy mapping (layout dependent). Same caveat as above: skip
-			// the fast-path when the produced byte coincides with a named key (e.g.
-			// ctrl+[ → ESC).
 			if let Some(legacy_ctrl) = ctrl_symbol_to_byte(ch)
 				&& bytes == [legacy_ctrl]
 				&& !is_named_key_legacy_byte(legacy_ctrl)
@@ -963,13 +836,11 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			return mok_matches(codepoint, MOD_CTRL) || kitty_matches(codepoint, MOD_CTRL);
 		}
 
-		// ctrl+shift
 		if modifier == (MOD_CTRL | MOD_SHIFT) {
 			return kitty_matches(codepoint, MOD_SHIFT + MOD_CTRL)
 				|| mok_matches(codepoint, MOD_SHIFT + MOD_CTRL);
 		}
 
-		// shift+key (letters can match uppercase in plain legacy mode)
 		if modifier == MOD_SHIFT {
 			if is_letter && bytes.len() == 1 && bytes[0] == ch.to_ascii_uppercase() {
 				return true;
@@ -977,24 +848,20 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			return kitty_matches(codepoint, MOD_SHIFT) || mok_matches(codepoint, MOD_SHIFT);
 		}
 
-		// other modifier combinations
 		if modifier != 0 {
 			return kitty_matches(codepoint, modifier) || mok_matches(codepoint, modifier);
 		}
 
-		// plain key
 		return (bytes.len() == 1 && bytes[0] == ch) || kitty_matches(codepoint, 0);
 	}
 
 	false
 }
 
-/// Check if bytes match a legacy key sequence
 fn matches_legacy_key(bytes: &[u8], key: &str) -> bool {
 	LEGACY_SEQUENCES.get(bytes).is_some_and(|&id| id == key)
 }
 
-/// Check if bytes match a legacy modifier sequence (shift/ctrl variants)
 fn matches_legacy_modifier_sequence(bytes: &[u8], key: &str, modifier: u32) -> bool {
 	if modifier == MOD_SHIFT {
 		let expected = match key {
@@ -1040,37 +907,26 @@ fn matches_legacy_modifier_sequence(bytes: &[u8], key: &str, modifier: u32) -> b
 	false
 }
 
-// =============================================================================
-// Core Parsing
-// =============================================================================
-
 #[inline]
 fn parse_key_inner(bytes: &[u8], kitty_protocol_active: bool) -> Option<Cow<'static, str>> {
-	// Fast path: single byte (most common for typing)
 	if bytes.len() == 1 {
 		return parse_single_byte(bytes[0]);
 	}
 
-	// All escape sequences start with ESC
 	if bytes.first() != Some(&0x1b) {
 		return None;
 	}
 
-	// Two-byte ESC sequences are legacy Meta/Alt keypresses. Handle them before
-	// the legacy table so ESC+p from Ghostty/tmux is parsed as Alt+P rather than
-	// the historical ESC+p Alt+Up compatibility alias.
 	if bytes.len() == 2
 		&& let Some(key) = parse_esc_pair(bytes[1], kitty_protocol_active)
 	{
 		return Some(key);
 	}
 
-	// O(1) lookup in perfect hash map for legacy sequences
 	if let Some(&key_id) = LEGACY_SEQUENCES.get(bytes) {
 		return Some(Cow::Borrowed(key_id));
 	}
 
-	// xterm modifyOtherKeys (CSI 27;...;...~)
 	if let Some((mods, keycode)) = parse_modify_other_keys(bytes) {
 		let key_name = format_key_name(keycode)?;
 		if mods == 0 {
@@ -1079,8 +935,6 @@ fn parse_key_inner(bytes: &[u8], kitty_protocol_active: bool) -> Option<Cow<'sta
 		return Some(Cow::Owned(format_with_mods(mods & !LOCK_MASK, key_name)));
 	}
 
-	// Try Kitty protocol sequences (including enhanced CSI-u with optional text
-	// field)
 	if let Some(parsed) = parse_kitty_sequence_bytes(bytes) {
 		if parsed.event_type == Some(3) {
 			return None;
@@ -1088,11 +942,6 @@ fn parse_key_inner(bytes: &[u8], kitty_protocol_active: bool) -> Option<Cow<'sta
 		return format_kitty_key(&parsed);
 	}
 
-	// ESC-prefixed sequences (terminals with metaSendsEscape / "Use Option as
-	// Meta"): \x1b + inner-sequence = Alt modifier on that key.
-	// Example: iTerm2 "Use Option as Meta" sends \x1b\x1b[A for Alt+Up.
-	// Active in BOTH legacy and kitty mode (mixed mode) because terminals like
-	// Zellij in mixed mode may send legacy Alt sequences alongside Kitty ones.
 	if bytes.len() > 2
 		&& bytes[0] == 0x1b
 		&& bytes[1] == 0x1b
@@ -1102,10 +951,9 @@ fn parse_key_inner(bytes: &[u8], kitty_protocol_active: bool) -> Option<Cow<'sta
 		return Some(Cow::Owned(format!("alt+{inner_key}")));
 	}
 
-	// Fixed CSI / SS3 sequences not covered by LEGACY_SEQUENCES
 	match bytes {
 		b"\x1b[Z" => Some(Cow::Borrowed("shift+tab")),
-		b"\x1bOM" => Some(Cow::Borrowed("enter")), // keypad enter (SS3 M)
+		b"\x1bOM" => Some(Cow::Borrowed("enter")),
 		_ => None,
 	}
 }
@@ -1132,8 +980,6 @@ fn parse_single_byte(code: u8) -> Option<Cow<'static, str>> {
 
 #[inline]
 fn parse_esc_pair(code: u8, kitty_protocol_active: bool) -> Option<Cow<'static, str>> {
-	// These remain ESC-prefixed even in kitty "disambiguate" mode in many
-	// terminals.
 	match code {
 		0x7f | 0x08 => return Some(Cow::Borrowed("alt+backspace")),
 		b'\r' | b'\n' => return Some(Cow::Borrowed("alt+enter")),
@@ -1141,9 +987,6 @@ fn parse_esc_pair(code: u8, kitty_protocol_active: bool) -> Option<Cow<'static, 
 		_ => {},
 	}
 
-	// Historical cursor-key aliases used by some legacy terminals. Keep them in
-	// legacy mode only; in mixed modes (tmux extkeys/CSI-u, Kitty, etc.) ESC+B/F
-	// are real Alt+Shift+B/F keypresses.
 	if !kitty_protocol_active {
 		match code {
 			b' ' => return Some(Cow::Borrowed("alt+space")),
@@ -1161,10 +1004,6 @@ fn parse_esc_pair(code: u8, kitty_protocol_active: bool) -> Option<Cow<'static, 
 	}
 }
 
-// =============================================================================
-// Kitty Protocol Parsing
-// =============================================================================
-
 fn parse_kitty_sequence_bytes(bytes: &[u8]) -> Option<ParsedKittySequence> {
 	if bytes.len() < 4 || bytes[0] != 0x1b || bytes[1] != b'[' {
 		return None;
@@ -1173,7 +1012,7 @@ fn parse_kitty_sequence_bytes(bytes: &[u8]) -> Option<ParsedKittySequence> {
 	match *bytes.last()? {
 		b'u' => parse_csi_u(bytes),
 		b'~' => parse_functional(bytes),
-		// CSI 1;mod <letter>
+
 		b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'H' | b'P' | b'Q' | b'R' | b'S' => {
 			parse_csi_1_letter(bytes)
 		},
@@ -1182,15 +1021,13 @@ fn parse_kitty_sequence_bytes(bytes: &[u8]) -> Option<ParsedKittySequence> {
 }
 
 fn parse_csi_u(bytes: &[u8]) -> Option<ParsedKittySequence> {
-	let end = bytes.len() - 1; // index of 'u'
+	let end = bytes.len() - 1;
 	let mut idx = 2;
 
-	// unicode-key-code
 	let (codepoint_u32, next_idx) = parse_digits(bytes, idx, end)?;
 	let codepoint = i32::try_from(codepoint_u32).ok()?;
 	idx = next_idx;
 
-	// :alternate-key-codes (shifted[:base_layout])
 	let mut shifted_key = None;
 	let mut base_layout_key = None;
 	if idx < end && bytes[idx] == b':' {
@@ -1208,15 +1045,12 @@ fn parse_csi_u(bytes: &[u8]) -> Option<ParsedKittySequence> {
 		}
 	}
 
-	// ;modifiers:event-type   (modifiers field may be omitted OR empty if followed
-	// by ;text)
 	let mut mod_value: u32 = 1;
 	let mut event_type: Option<u32> = None;
 
 	if idx < end && bytes[idx] == b';' {
 		idx += 1;
 
-		// modifiers digits may be absent (e.g. CSI 0;;229u)
 		if idx < end && bytes[idx].is_ascii_digit() {
 			let (v, next_idx) = parse_digits(bytes, idx, end)?;
 			mod_value = v;
@@ -1225,7 +1059,6 @@ fn parse_csi_u(bytes: &[u8]) -> Option<ParsedKittySequence> {
 			mod_value = 1;
 		}
 
-		// :event-type (allow even if modifiers were empty -> treat as modifiers=1)
 		if idx < end && bytes[idx] == b':' {
 			idx += 1;
 			let (ev, next_idx) = parse_digits(bytes, idx, end)?;
@@ -1234,12 +1067,11 @@ fn parse_csi_u(bytes: &[u8]) -> Option<ParsedKittySequence> {
 		}
 	}
 
-	// ;text-as-codepoints (optional, may be empty)
 	let mut text_codepoint: Option<i32> = None;
 	let mut text_count: u32 = 0;
 	if idx < end && bytes[idx] == b';' {
 		idx += 1;
-		// validate "digits(:digits)*" but allow empty and ignore values
+
 		while idx < end {
 			if bytes[idx] == b':' {
 				idx += 1;
@@ -1328,7 +1160,7 @@ fn parse_csi_1_letter(bytes: &[u8]) -> Option<ParsedKittySequence> {
 }
 
 fn parse_functional(bytes: &[u8]) -> Option<ParsedKittySequence> {
-	let end = bytes.len() - 1; // index of '~'
+	let end = bytes.len() - 1;
 	let mut idx = 2;
 	let (key_num, next_idx) = parse_digits(bytes, idx, end)?;
 	idx = next_idx;
@@ -1355,17 +1187,14 @@ fn parse_functional(bytes: &[u8]) -> Option<ParsedKittySequence> {
 	}
 
 	let codepoint = match key_num {
-		// Common functional keys
 		2 => FUNC_INSERT,
 		3 => FUNC_DELETE,
 		5 => FUNC_PAGE_UP,
 		6 => FUNC_PAGE_DOWN,
 
-		// Home/End variants
 		1 | 7 => FUNC_HOME,
 		4 | 8 => FUNC_END,
 
-		// Function keys (terminfo-style)
 		11 => FUNC_F1,
 		12 => FUNC_F2,
 		13 => FUNC_F3,
@@ -1391,10 +1220,6 @@ fn parse_functional(bytes: &[u8]) -> Option<ParsedKittySequence> {
 		event_type,
 	})
 }
-
-// =============================================================================
-// Formatting
-// =============================================================================
 
 fn format_kitty_key(parsed: &ParsedKittySequence) -> Option<Cow<'static, str>> {
 	let effective_mod = parsed.modifier & !LOCK_MASK;
@@ -1479,7 +1304,6 @@ fn format_key_name(codepoint: i32) -> Option<&'static str> {
 		FUNC_F11 => Some("f11"),
 		FUNC_F12 => Some("f12"),
 
-		// Any printable ASCII can be represented without allocation via the static table.
 		33..=126 => Some(ASCII_PRINTABLE[(codepoint - 33) as usize]),
 		_ => None,
 	}
@@ -1503,10 +1327,6 @@ fn format_with_mods(mods: u32, key_name: &str) -> String {
 	result.push_str(key_name);
 	result
 }
-
-// =============================================================================
-// Digit Parsing Helpers
-// =============================================================================
 
 #[inline]
 fn parse_digits(bytes: &[u8], mut idx: usize, end: usize) -> Option<(u32, usize)> {

@@ -32,16 +32,6 @@ export interface HashlineHeaderContext {
 }
 
 export function formatReadHashlineHeader(displayPath: string, tag: string): string {
-	// In-workspace reads keep their workspace-relative path (e.g.
-	// `src/settings.json`), not just the basename: collapsing to the bare name
-	// made a header ambiguous whenever another same-named file exists at cwd —
-	// the edit tool would resolve the bare name against cwd, hit the wrong
-	// file, and reject the valid edit via the snapshot-tag guard (the authored
-	// path exists, so Patcher's tag-path recovery never runs). The relative
-	// path stays directly resolvable against cwd and names the file uniquely.
-	// Out-of-workspace reads use an absolute displayPath; `shortenPath` keeps
-	// `~/.claude/...` (round-trips through resolveToCwd's ~ expansion) instead
-	// of leaking the full home path into the read output.
 	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
 	return formatHashlineHeader(anchor, tag);
 }
@@ -70,11 +60,6 @@ export async function readHashlineHeaderContext(
 	return hashlineHeaderContextForText(session, absolutePath, cwd, await Bun.file(absolutePath).text());
 }
 
-/**
- * {@link readHashlineHeaderContext} for a caller that already holds the file's
- * full text, so the file is not reopened just to hash it. Line endings are
- * normalized here, exactly as the reading variant does.
- */
 export function hashlineHeaderContextForText(
 	session: ToolSession,
 	absolutePath: string,
@@ -128,13 +113,6 @@ export function formatLineEntriesWithMode(
 const BRACE_PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
 const BRACE_TAIL_TRAILING_RE = /^[;,)\]}]*$/;
 
-/**
- * Decide whether the kept lines surrounding an elided range collapse to a
- * single brace-pair line in the rendered summary. Returns true when the head
- * line ends with `{` / `(` / `[` and the tail line is the matching closer
- * (optionally followed by terminating punctuation like `;`, `,`, or further
- * closers — e.g. `};`, `})`, `]);`).
- */
 export function canMergeBracePair(headLine: string, tailLine: string): boolean {
 	const head = headLine.trimEnd();
 	const tail = tailLine.trim();
@@ -176,9 +154,7 @@ export function formatMergedBraceLine(
 
 export function countTextLines(text: string): number {
 	if (text.length === 0) return 0;
-	// Count newlines directly instead of allocating an array via split("\n").
-	// Called on every read of file content; the result is identical (N newlines
-	// ⇒ N+1 lines for non-empty text).
+
 	let lines = 1;
 	for (let i = 0; i < text.length; i++) {
 		if (text.charCodeAt(i) === 10) lines++;
@@ -218,23 +194,13 @@ function lineNumbersFromEntries(entries: readonly LineEntry[]): number[] {
 	return lines;
 }
 
-/** Inclusive line range describing one elided span in a structural summary. */
 export interface ElidedRange {
 	start: number;
 	end: number;
 }
 
-/** Sample ranges shown in the footer to demonstrate the multi-range syntax. */
 const FOOTER_RANGE_SAMPLES = 2;
 
-/**
- * Footer appended to summarized reads telling the model how to recover the
- * elided body. Without this hint, agents either ignore the `…`/`{ … }`
- * markers or burn a turn guessing the right selector (see issue #1046). The
- * footer demonstrates the multi-range selector syntax with concrete sample
- * ranges drawn from the actual elision so the model re-reads only what it
- * needs instead of falling back to `:raw` or whole-file reads.
- */
 export function formatSummaryElisionFooter(
 	readPath: string,
 	elidedRanges: ReadonlyArray<ElidedRange>,
@@ -252,27 +218,9 @@ export function formatSummaryElisionFooter(
 }
 export const READ_CHUNK_SIZE = 8 * 1024;
 
-/**
- * Context lines added around an explicit range read. Anchor-stale failures
- * cluster on edits whose anchors land just outside the most recent read
- * window, but the data (`scripts/session-stats/analyze_selector_reads.py`)
- * shows most follow-up reads are disjoint hops, not adjacent extensions —
- * so symmetric padding rarely pays for itself.
- *
- * Leading=1 catches accidental single-line reads where the anchor is the
- * line immediately above the requested start. Trailing=3 buffers the
- * common case where the agent asks for a narrow range and then needs the
- * next few lines to disambiguate an anchor.
- */
 export const RANGE_LEADING_CONTEXT_LINES = 1;
 export const RANGE_TRAILING_CONTEXT_LINES = 3;
 
-/**
- * Expand a [start, end) range with leading/trailing context lines on the
- * sides where the user actually constrained the range. A start of 0 (no
- * explicit offset) does not get leading context — that's already an
- * open-ended read from the top.
- */
 function expandRangeWithContext(
 	requestedStart: number,
 	requestedEnd: number,
@@ -307,16 +255,11 @@ export function buildInMemoryTextResult(
 	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
-	// User-requested 0-indexed range start. Lines BEFORE this are leading
-	// context (added below if offset is explicit).
+
 	const requestedStart = offset ? Math.max(0, offset - 1) : 0;
 	const ignoreResultLimits = options.ignoreResultLimits ?? false;
 	const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
-	// Expand only on sides the user actually constrained: leading context
-	// when offset>1, trailing context when a finite limit was set. Raw mode
-	// never expands — without line numbers the padding is indistinguishable
-	// from requested content, so `raw:31-31` must return line 31 and nothing
-	// else (verbatim-extraction contract).
+
 	const rawDisplay = options.raw === true;
 	const expanded = expandRangeWithContext(
 		requestedStart,
@@ -479,13 +422,6 @@ export function buildInMemoryTextResult(
 	return resultBuilder.done();
 }
 
-/**
- * Render a multi-range read against in-memory text. Each range emits a
- * formatted block with its own anchors / line numbers, blocks are joined
- * with an elision separator, and ranges past EOF surface as `[…]` notices
- * so the model can correct the next call. No leading/trailing context is
- * added — multi-range callers always specify exact bounds.
- */
 export function buildInMemoryMultiRangeResult(
 	session: ToolSession,
 	text: string,
@@ -589,13 +525,7 @@ export function prependSuffixResolutionNotice(text: string, suffixResolution?: {
 	const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
 	return text ? `${notice}\n${text}` : notice;
 }
-/**
- * Tag Markdown reads for the TUI's formatted preview, gated on the opt-in
- * `read.renderMarkdown` setting. Off by default; when disabled, no local
- * read is tagged `text/markdown`, so the renderer output is identical to
- * the pre-setting behavior. Internal-URL reads keep their protocol-supplied
- * `contentType` and render as Markdown regardless of the setting.
- */
+
 export function markMarkdownContentType(
 	session: ToolSession,
 	details: ReadToolDetails,

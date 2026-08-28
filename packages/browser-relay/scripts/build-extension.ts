@@ -1,15 +1,3 @@
-/**
- * Builds the browser relay extension and its distribution artifacts:
- * - `dist/extension/` — unpacked extension (load via chrome://extensions)
- * - `dist/proto-browser-relay-extension.zip` — packaged extension for GH releases
- * - `../coding-agent/src/tools/browser/relay/extension-assets/*.txt` —
- *   generated text assets embedded into the proto CLI so `proto browser-relay
- *   install` works from the compiled binary (same committed-generated-output
- *   pattern as tool-views.generated.js). Re-run this script after touching
- *   anything under `extension/` and commit the regenerated assets.
- *
- * Dependency-free on purpose: CI runs this without `bun install`.
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $ } from "bun";

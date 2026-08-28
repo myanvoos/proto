@@ -1,10 +1,3 @@
-/**
- * Fully automated Claude Code /v1/messages capture helper.
- *
- * Starts a local CONNECT proxy, MITMs TLS using a local self-signed debug
- * certificate, drives Claude Code through a headless PTY/xterm, and returns the
- * first completed /v1/messages request/response exchange.
- */
 import * as net from "node:net";
 import * as path from "node:path";
 import * as tls from "node:tls";
@@ -24,9 +17,6 @@ const DOUBLE_CRLF = Buffer.from("\r\n\r\n", "latin1");
 const CRLF = Buffer.from("\r\n", "latin1");
 const TEXT_DECODER = new TextDecoder();
 
-// Debug-only local MITM certificate. Claude is launched with
-// NODE_TLS_REJECT_UNAUTHORIZED=0, so the certificate has no trust value; it only
-// lets Node's TLS stack complete the CONNECT tunnel handshake.
 const CLAUDE_TRACE_DEBUG_CERT = `-----BEGIN CERTIFICATE-----
 MIIDFzCCAf+gAwIBAgIUAe9omAqLbydZc5ZYZGhwbbpMSF0wDQYJKoZIhvcNAQEL
 BQAwGzEZMBcGA1UEAwwQb21wLWNsYXVkZS10cmFjZTAeFw0yNjA2MDIwODA2MjFa
@@ -380,9 +370,6 @@ function isMessagesRequest(message: ParsedHttpMessage): boolean {
 	return pathNameFromRequestTarget(message.path ?? "") === "/v1/messages";
 }
 
-// Claude Code fires a background warmup/classification call on its small fast
-// model (a haiku variant, ANTHROPIC_SMALL_FAST_MODEL) before sending the user's
-// real message. Skip it so the capture lands on the actual prompt.
 function isBackgroundModelRequest(message: ParsedHttpMessage): boolean {
 	try {
 		const parsed = JSON.parse(decodeBody(message.headers, message.body)) as { model?: unknown };

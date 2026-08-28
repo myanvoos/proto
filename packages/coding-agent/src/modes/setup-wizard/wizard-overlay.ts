@@ -42,7 +42,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	#activeScene: SetupSceneController | undefined;
 	#done = Promise.withResolvers<void>();
 	#disposed = false;
-	/** Screen row where the active scene's body began in the last rendered frame. */
+
 	#bodyRowStart = 0;
 	#sceneFocusTarget: Component | undefined;
 
@@ -90,15 +90,6 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		this.#activeScene?.handleInput?.(data);
 	}
 
-	/**
-	 * Mouse handling for the fullscreen wizard (SGR tracking is on while the
-	 * overlay holds the alternate screen). The frame paints from screen row 0,
-	 * so report coordinates index directly into the last rendered lines: scene
-	 * body rows start at #bodyRowStart, indented by SCENE_MARGIN_X. Scenes
-	 * that implement routeMouse get hit-tested events (wheel, hover, click);
-	 * for the rest a wheel notch falls back to an arrow key. Raw reports never
-	 * reach scene keyboard input.
-	 */
 	#routeMouseEvent(event: SgrMouseEvent): void {
 		const scene = this.#activeScene;
 		if (!scene) return;
@@ -126,7 +117,6 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		return this.#fitToScreen(lines, safeWidth, height);
 	}
 
-	/** Hero-card metadata source for the scene headers. */
 	#heroInfo(): { version: string; modelName?: string; providerName?: string } {
 		const model = this.ctx.session?.model;
 		return { version: VERSION, modelName: model?.id, providerName: model?.provider };

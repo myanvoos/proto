@@ -137,12 +137,6 @@ async function normalizeNativeResponsesHistoryPayload(
 	return items ? { ...payload, items } : payload;
 }
 
-/**
- * Ollama and its local-backend family decode image input through llama.cpp /
- * `stb_image`, which is compiled without WebP support, so a WebP upload fails
- * with an opaque HTTP 400. Detect those models so the resize pipeline encodes
- * to PNG/JPEG instead — the automatic equivalent of `PROTO_NO_WEBP=1`.
- */
 export function modelLacksWebpSupport(
 	model: Pick<Model, "provider" | "api" | "imageInputDecoder"> | undefined,
 ): boolean {
@@ -158,11 +152,6 @@ export function modelLacksWebpSupport(
 	);
 }
 
-/**
- * `true` when `model` cannot decode WebP, otherwise `undefined` so the
- * `PROTO_NO_WEBP` env fallback in {@link resizeImage} still applies. Feed straight
- * into {@link ImageResizeOptions.excludeWebP}.
- */
 export function webpExclusionForModel(model: Pick<Model, "provider" | "api"> | undefined): true | undefined {
 	return modelLacksWebpSupport(model) ? true : undefined;
 }
@@ -174,18 +163,17 @@ interface LoadImageInputOptions {
 	maxBytes?: number;
 	resolvedPath?: string;
 	detectedMimeType?: string;
-	/** Force non-WebP output (e.g. for Ollama). Leave unset to honor `PROTO_NO_WEBP`. */
+
 	excludeWebP?: boolean;
 }
 
-/** Options for loading an in-memory chat image attachment as a vision-model input. */
 interface LoadImageAttachmentInputOptions {
 	image: ImageContent;
 	label: string;
 	uri: string;
 	autoResize: boolean;
 	maxBytes?: number;
-	/** Force non-WebP output (e.g. for Ollama). Leave unset to honor `PROTO_NO_WEBP`. */
+
 	excludeWebP?: boolean;
 }
 
@@ -210,7 +198,6 @@ export class ImageInputTooLargeError extends Error {
 	}
 }
 
-/** Converts an image to PNG, rejecting when the runtime cannot decode or encode it. */
 export async function convertImageToPng(image: ImageContent): Promise<ImageContent> {
 	const bytes = Buffer.from(image.data, "base64");
 	const data = await new Bun.Image(bytes).png().toBase64();
@@ -229,18 +216,10 @@ export async function ensureSupportedImageInput(image: ImageContent): Promise<Im
 }
 
 interface NormalizeModelContextImagesOptions {
-	/** Model the images are bound for; used to derive encoder constraints (WebP exclusion for Ollama). */
 	model?: Model;
 	resize?: ImageResizeOptions;
 }
 
-/**
- * Normalize image blocks before they enter agent/model context. This keeps
- * provider request construction from having to resize an unbounded batch of
- * large images on the streaming hot path. Images are processed sequentially on
- * purpose: `resizeImage` may fan out multiple encoders for one image, so the
- * outer image batch must stay bounded.
- */
 export async function normalizeModelContextImages(
 	images: ImageContent[] | undefined,
 	options?: NormalizeModelContextImagesOptions,
@@ -255,28 +234,19 @@ export async function normalizeModelContextImages(
 		try {
 			if (excludesWebP && isWebPImage(image)) {
 				const converted = await memoizedStbImageNormalization(image, options?.resize);
-				// Mixed-content callers reassemble normalized images positionally, so
-				// preserve one output slot per input. The provider-boundary pass replaces
-				// an undecodable WebP with an omission note before dispatch.
+
 				normalized.push(converted ?? image);
 				continue;
 			}
 			const resized = await resizeImage(image, resize);
 			normalized.push({ ...image, data: resized.data, mimeType: resized.mimeType });
 		} catch {
-			// Preserve existing caller behavior for decode/resize failures: keep the
-			// user's image block rather than dropping it from the turn.
 			normalized.push(image);
 		}
 	}
 	return normalized;
 }
 
-/**
- * Rewrites historical/resumed WebP blocks in the ephemeral provider request.
- * Persisted session messages remain untouched, while STB-backed local servers
- * never receive a format they cannot decode.
- */
 export async function normalizeModelContextMessages(messages: Message[], model: Model | undefined): Promise<Message[]> {
 	if (!modelLacksWebpSupport(model)) return messages;
 	let output: Message[] | undefined;
@@ -307,9 +277,6 @@ export async function normalizeModelContextMessages(messages: Message[], model: 
 			if (providerPayloadChanged) {
 				normalizedMessage.providerPayload = normalizedProviderPayload;
 			} else if (content) {
-				// Native Responses history takes precedence over message content. If an
-				// image changed but no matching native image was found, discard the opaque
-				// replay payload rather than risk resending stale bytes.
 				delete normalizedMessage.providerPayload;
 			}
 		}
@@ -318,7 +285,6 @@ export async function normalizeModelContextMessages(messages: Message[], model: 
 	return output ?? messages;
 }
 
-/** Normalizes historical image blocks in an ephemeral provider request. */
 export async function normalizeProviderContextImagesForModel(context: Context, model: Model): Promise<Context> {
 	const messages = await normalizeModelContextMessages(context.messages, model);
 	return messages === context.messages ? context : { ...context, messages };
@@ -359,9 +325,7 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
 			dimensionNote = formatDimensionNote(resized);
-		} catch {
-			// keep original image when resize fails
-		}
+		} catch {}
 	}
 
 	let textNote = `Read image file [${outputMimeType}]`;
@@ -379,7 +343,6 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 	};
 }
 
-/** Loads a chat attachment image through the same size and encoder policy as file-backed image inputs. */
 export async function loadImageAttachmentInput(
 	options: LoadImageAttachmentInputOptions,
 ): Promise<LoadedImageInput | null> {
@@ -406,9 +369,7 @@ export async function loadImageAttachmentInput(
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
 			dimensionNote = formatDimensionNote(resized);
-		} catch {
-			// keep original image when resize fails
-		}
+		} catch {}
 	}
 
 	let textNote = `Read image attachment ${options.label} [${outputMimeType}]`;

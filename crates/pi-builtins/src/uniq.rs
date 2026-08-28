@@ -1,6 +1,6 @@
-//! `uniq` builtin: report or omit adjacent repeated lines.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -211,14 +211,14 @@ impl UniqState {
 					return key_start;
 				}
 				if self.is_c_locale {
-					// for C or POSIX we count bytes
+
 					key_start + remainder.len().min(limit)
 				} else if let Ok(valid) = std::str::from_utf8(remainder) {
-					// for UTF-8 we count characters
+
 					let prefix_len = Self::char_prefix_len(valid, limit);
 					key_start + prefix_len
 				} else {
-					// for invalid UTF-8 we count bytes
+
 					key_start + remainder.len().min(limit)
 				}
 			},
@@ -257,15 +257,15 @@ impl UniqState {
 	}
 
 	fn should_print_delimiter(&self, group_count: usize, first_line_printed: bool) -> bool {
-		// if no delimiter option is selected then no other checks needed
+
 		self.delimiters != Delimiters::None
-            // print delimiter only before the first line of a group, not between lines of a group
+
             && group_count == 1
-            // if at least one line has been output before current group then print delimiter
+
             && (first_line_printed
-                // or if we need to prepend delimiter then print it even at the start of the output
+
                 || self.delimiters == Delimiters::Prepend
-                // the 'both' delimit mode should prepend and append delimiters
+
                 || self.delimiters == Delimiters::Both)
 	}
 
@@ -297,9 +297,9 @@ impl UniqState {
 		write_line_terminator!(writer, line_terminator)
 	}
 
-	// This function does not use `self`, so make it an associated function.
-	// Also remove needless explicit lifetimes to satisfy
-	// clippy::needless-lifetimes.
+
+
+
 	fn build_count_prefix(count: usize, buf: &mut [u8; Self::COUNT_PREFIX_BUF_SIZE]) -> &[u8] {
 		let mut digits_buf = [0u8; 20];
 		let mut value = count;
@@ -349,20 +349,20 @@ fn opt_parsed(opt_name: &str, matches: &ArgMatches) -> PortResult<Option<usize>>
 	}
 }
 
-/// Extract obsolete shorthands (if any) for skip fields and skip chars options
-/// following GNU `uniq` behavior
-///
-/// Examples for obsolete skip fields option
-/// `uniq -1 file` would equal `uniq -f1 file`
-/// `uniq -1 -2 -3 file` would equal `uniq -f123 file`
-/// `uniq -1 -2 -f5 file` would equal `uniq -f5 file`
-/// `uniq -u20s4 file` would equal `uniq -u -f20 -s4 file`
-/// `uniq -D1w3 -3 file` would equal `uniq -D -f3 -w3 file`
-///
-/// Examples for obsolete skip chars option
-/// `uniq +1 file` would equal `uniq -s1 file`
-/// `uniq +1 -s2 file` would equal `uniq -s2 file`
-/// `uniq -s2 +3 file` would equal `uniq -s3 file`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 fn handle_obsolete(args: impl uucore::Args) -> (Vec<OsString>, Option<usize>, Option<usize>) {
 	let mut skip_fields_old = None;
 	let mut skip_chars_old = None;
@@ -381,9 +381,9 @@ fn handle_obsolete(args: impl uucore::Args) -> (Vec<OsString>, Option<usize>, Op
 		})
 		.collect();
 
-	// exacted String values (if any) for skip_fields_old and skip_chars_old
-	// are guaranteed to consist of ascii digit chars only at this point
-	// so, it is safe to parse into usize and collapse Result into Option
+
+
+
 	let skip_fields_old: Option<usize> = skip_fields_old.and_then(|v| v.parse::<usize>().ok());
 	let skip_chars_old: Option<usize> = skip_chars_old.and_then(|v| v.parse::<usize>().ok());
 
@@ -404,25 +404,25 @@ fn filter_args(
 			*preceding_long_opt_req_value,
 			*preceding_short_opt_req_value,
 		) {
-			// start of the short option string
-			// that can have obsolete skip fields option value in it
+
+
 			filter = handle_extract_obs_skip_fields(slice, skip_fields_old);
 		} else if should_extract_obs_skip_chars(
 			slice,
 			*preceding_long_opt_req_value,
 			*preceding_short_opt_req_value,
 		) {
-			// the obsolete skip chars option
+
 			filter = handle_extract_obs_skip_chars(slice, skip_chars_old);
 		} else {
-			// either not a short option
-			// or a short option that cannot have obsolete lines value in it
+
+
 			filter = Some(OsString::from(slice));
-			// Check and reset to None obsolete values extracted so far
-			// if corresponding new/documented options are encountered next.
-			// NOTE: For skip fields - occurrences of corresponding new/documented options
-			// inside combined short options ike '-u20s4' or '-D1w3', etc
-			// are also covered in `handle_extract_obs_skip_fields()` function
+
+
+
+
+
 			if slice.starts_with("-f") {
 				*skip_fields_old = None;
 			}
@@ -432,19 +432,19 @@ fn filter_args(
 		}
 		handle_preceding_options(slice, preceding_long_opt_req_value, preceding_short_opt_req_value);
 	} else {
-		// Cannot cleanly convert os_slice to UTF-8
-		// Do not process and return as-is
-		// This will cause failure later on, but we should not handle it here
-		// and let clap panic on invalid UTF-8 argument
+
+
+
+
 		filter = Some(os_slice);
 	}
 	filter
 }
 
-/// Helper function to [`filter_args`]
-/// Checks if the slice is a true short option (and not hyphen prefixed value of
-/// an option) and if so, a short option that can contain obsolete skip fields
-/// value
+
+
+
+
 fn should_extract_obs_skip_fields(
 	slice: &str,
 	preceding_long_opt_req_value: bool,
@@ -459,8 +459,8 @@ fn should_extract_obs_skip_fields(
 		&& !slice.starts_with("-w")
 }
 
-/// Helper function to [`filter_args`]
-/// Checks if the slice is a true obsolete skip chars short option
+
+
 fn should_extract_obs_skip_chars(
 	slice: &str,
 	preceding_long_opt_req_value: bool,
@@ -473,18 +473,18 @@ fn should_extract_obs_skip_chars(
 		&& slice.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
-/// Helper function to [`filter_args`]
-/// Captures if current slice is a preceding option
-/// that requires value
+
+
+
 fn handle_preceding_options(
 	slice: &str,
 	preceding_long_opt_req_value: &mut bool,
 	preceding_short_opt_req_value: &mut bool,
 ) {
-	// capture if current slice is a preceding long option that requires value and
-	// does not use '=' to assign that value following slice should be treaded as
-	// value for this option even if it starts with '-' (which would be treated as
-	// hyphen prefixed value)
+
+
+
+
 	if slice.starts_with("--") {
 		use options as O;
 		*preceding_long_opt_req_value = &slice[2..] == O::SKIP_CHARS
@@ -493,22 +493,22 @@ fn handle_preceding_options(
 			|| &slice[2..] == O::GROUP
 			|| &slice[2..] == O::ALL_REPEATED;
 	}
-	// capture if current slice is a preceding short option that requires value and
-	// does not have value in the same slice (value separated by whitespace)
-	// following slice should be treaded as value for this option
-	// even if it starts with '-' (which would be treated as hyphen prefixed value)
+
+
+
+
 	*preceding_short_opt_req_value = slice == "-s" || slice == "-f" || slice == "-w";
-	// slice is a value
-	// reset preceding option flags
+
+
 	if !slice.starts_with('-') {
 		*preceding_short_opt_req_value = false;
 		*preceding_long_opt_req_value = false;
 	}
 }
 
-/// Helper function to [`filter_args`]
-/// Extracts obsolete skip fields numeric part from argument slice
-/// and filters it out
+
+
+
 fn handle_extract_obs_skip_fields(
 	slice: &str,
 	skip_fields_old: &mut Option<String>,
@@ -520,17 +520,17 @@ fn handle_extract_obs_skip_fields(
 		.chars()
 		.filter(|c| {
 			if c.eq(&'f') {
-				// any extracted obsolete skip fields value up to this point should be discarded
-				// as the new/documented option for skip fields was used after it
-				// i.e. in situation like `-u12f3`
-				// The obsolete skip fields value should still be extracted, filtered out
-				// but the skip_fields_old should be set to None instead of Some(String) later
-				// on
+
+
+
+
+
+
 				obs_overwritten_by_new = true;
 			}
-			// To correctly process scenario like '-u20s4' or '-D1w3', etc
-			// we need to stop extracting digits once alphabetic character is encountered
-			// after we already have something in obs_extracted
+
+
+
 			if c.is_ascii_digit() && !obs_end_reached {
 				obs_extracted.push(*c);
 				false
@@ -544,13 +544,13 @@ fn handle_extract_obs_skip_fields(
 		.collect();
 
 	if obs_extracted.is_empty() {
-		// no obsolete value found/extracted
+
 		Some(OsString::from(slice))
 	} else {
-		// obsolete value was extracted
-		// unless there was new/documented option for skip fields used after it
-		// set the skip_fields_old value (concatenate to it if there was a value there
-		// already)
+
+
+
+
 		if obs_overwritten_by_new {
 			*skip_fields_old = None;
 		} else {
@@ -561,9 +561,9 @@ fn handle_extract_obs_skip_fields(
 			*skip_fields_old = Some(extracted);
 		}
 		if filtered_slice.get(1).is_some() {
-			// there were some short options in front of or after obsolete lines value
-			// i.e. '-u20s4' or '-D1w3' or similar, which after extraction of obsolete lines
-			// value would look like '-us4' or '-Dw3' or similar
+
+
+
 			let filtered_slice: String = filtered_slice.iter().collect();
 			Some(OsString::from(filtered_slice))
 		} else {
@@ -572,34 +572,34 @@ fn handle_extract_obs_skip_fields(
 	}
 }
 
-/// Helper function to [`filter_args`]
-/// Extracts obsolete skip chars numeric part from argument slice
+
+
 fn handle_extract_obs_skip_chars(
 	slice: &str,
 	skip_chars_old: &mut Option<String>,
 ) -> Option<OsString> {
 	let mut obs_extracted: Vec<char> = vec![];
 	let mut slice_chars = slice.chars();
-	slice_chars.next(); // drop leading '+' character
+	slice_chars.next();
 	for c in slice_chars {
 		if c.is_ascii_digit() {
 			obs_extracted.push(c);
 		} else {
-			// for obsolete skip chars option the whole value after '+' should be numeric
-			// so, if any non-digit characters are encountered in the slice (i.e. `+1q`,
-			// etc) set skip_chars_old to None and return whole slice back.
-			// It will be parsed by clap and panic with appropriate error message
+
+
+
+
 			*skip_chars_old = None;
 			return Some(OsString::from(slice));
 		}
 	}
 	if obs_extracted.is_empty() {
-		// no obsolete value found/extracted
-		// i.e. it was just '+' character alone
+
+
 		Some(OsString::from(slice))
 	} else {
-		// successfully extracted numeric value
-		// capture it and return None to filter out the whole slice
+
+
 		*skip_chars_old = Some(obs_extracted.iter().collect());
 		None
 	}
@@ -747,7 +747,7 @@ fn validate_special_clap_errors(args: &[OsString]) -> Result<(), String> {
 	}
 }
 
-/// Parsed `uniq` invocation.
+
 pub(crate) struct Uniq {
 	matches: ArgMatches,
 }
@@ -847,8 +847,8 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 		})
 		.transpose()?;
 
-	// Writer first: `stdout_writer` method-borrows `host`, which must not
-	// overlap the `&mut host.stdin` held by the reader.
+
+
 	let writer: Box<dyn Write + '_> = match output_file {
 		Some(file) => Box::new(BufWriter::with_capacity(OUTPUT_BUFFER_CAPACITY, file)),
 		None => Box::new(host.stdout_writer()),
@@ -999,7 +999,7 @@ fn get_delimiter(matches: &ArgMatches) -> Delimiters {
 	}
 }
 
-/// Creates the `uniq` builtin registration.
+
 pub(crate) fn uniq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Uniq, SE>()
 }

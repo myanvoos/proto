@@ -78,7 +78,6 @@ function attachmentExpiry(url: string, now: number): number {
 	return now + FALLBACK_LIFETIME_MS;
 }
 
-/** Create the built-in Discord webhook uploader, or `null` for another destination. */
 export function createDiscordUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

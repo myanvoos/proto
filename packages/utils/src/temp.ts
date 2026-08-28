@@ -52,17 +52,13 @@ export class TempDir {
 	async [Symbol.asyncDispose](): Promise<void> {
 		try {
 			await this.remove();
-		} catch {
-			// Ignore cleanup errors
-		}
+		} catch {}
 	}
 
 	[Symbol.dispose](): void {
 		try {
 			this.removeSync();
-		} catch {
-			// Ignore cleanup errors
-		}
+		} catch {}
 	}
 }
 
@@ -79,7 +75,6 @@ function normalizePrefix(prefix?: string): string {
 
 const kRemoveOptions = { recursive: true, force: true } as const;
 
-/** Removes a path recursively. */
 export async function removeWithRetries(target: string): Promise<void> {
 	await fsPromises.rm(target, kRemoveOptions);
 }

@@ -1,5 +1,3 @@
-//! Cloud and data command output filters.
-
 use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
@@ -56,10 +54,6 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-/// Returns `true` when the full command is `aws s3 ls [...]` (not `cp`, `sync`,
-/// `rm`, etc.). Skips flags between `s3` and the action token so
-/// `aws --no-cli-pager s3 ls` is still recognised while `aws s3 cp` is
-/// excluded.
 fn is_s3_ls(command: &str) -> bool {
 	let mut past_s3 = false;
 	for token in command.split_whitespace() {
@@ -68,7 +62,6 @@ fn is_s3_ls(command: &str) -> bool {
 				past_s3 = true;
 			}
 		} else if token.starts_with('-') {
-			// skip flags between "s3" and the action word
 		} else {
 			return token == "ls";
 		}
@@ -76,13 +69,6 @@ fn is_s3_ls(command: &str) -> bool {
 	false
 }
 
-/// Returns `true` when an AWS CLI invocation streams object content via a
-/// `-` positional (stdout download `aws s3 cp s3://bucket/key -`, or stdin
-/// upload `aws s3 cp - s3://bucket/key`). In that mode the captured text is
-/// the object body, not CLI progress, so `strip_transfer_progress` must not
-/// run. Any bare `-` token triggers passthrough — even when trailing options
-/// follow the positional (`aws s3 cp s3://bucket/key - --request-payer
-/// requester`); a false positive only skips minimization, which is safe.
 fn is_aws_stdout_pipe(command: &str) -> bool {
 	command.split_whitespace().any(|token| token == "-")
 }
@@ -93,9 +79,7 @@ fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
 	}
 
 	let without_progress = strip_transfer_progress(input);
-	// Only the `ls` listing form should be reshaped into a bucket/date table;
-	// `aws s3 cp`/`sync`/`rm` emit progress/result lines (`upload: ... to
-	// s3://...`) that must not be misparsed as listing rows.
+
 	if exit_code == 0
 		&& ctx.subcommand == Some("s3")
 		&& is_s3_ls(ctx.command)
@@ -113,8 +97,6 @@ fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
 	}
 }
 
-/// Try to parse AWS CLI JSON output and produce a compact representation.
-/// Returns None if input is not recognized JSON or if schema is unexpected.
 fn try_compact_aws_json(ctx: &MinimizerCtx<'_>, input: &str) -> Option<String> {
 	let trimmed = input.trim();
 	if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
@@ -126,17 +108,14 @@ fn try_compact_aws_json(ctx: &MinimizerCtx<'_>, input: &str) -> Option<String> {
 		return Some(compacted);
 	}
 
-	// EC2 describe-instances: {"Reservations":[{"Instances":[...]}]}
 	if let Some(instances) = extract_aws_ec2_instances(&root) {
 		return Some(compact_aws_ec2_instances(&instances));
 	}
 
-	// CloudWatch logs / filtered log events: {"events":[...]}
 	if let Some(events) = extract_aws_cloudwatch_events(&root) {
 		return Some(compact_aws_cloudwatch_events(&events));
 	}
 
-	// DynamoDB get-item/query/scan: {"Item":{...}} or {"Items":[{...}]}
 	if let Some(items) = extract_aws_dynamodb_items(&root) {
 		return Some(compact_aws_dynamodb_items(&items));
 	}
@@ -272,7 +251,6 @@ fn extract_aws_s3_buckets(root: &Value) -> Option<Vec<&Map<String, Value>>> {
 	extract_array(root, &["Buckets", "buckets"])
 }
 
-/// True for an `aws s3 ls` date column (`YYYY-MM-DD`).
 fn is_s3_date(token: &str) -> bool {
 	let mut parts = token.split('-');
 	matches!(
@@ -285,7 +263,6 @@ fn is_s3_date(token: &str) -> bool {
 	)
 }
 
-/// True for an `aws s3 ls` time column (`HH:MM:SS`).
 fn is_s3_time(token: &str) -> bool {
 	let mut parts = token.split(':');
 	matches!(
@@ -304,8 +281,6 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 			continue;
 		};
 		if first == "PRE" {
-			// A common-prefix name may contain spaces (`PRE my folder/`), so
-			// join the remaining tokens instead of keeping only the first one.
 			let prefix: Vec<&str> = parts.collect();
 			if prefix.is_empty() {
 				passthrough_lines.push(line);
@@ -321,9 +296,7 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 			passthrough_lines.push(line);
 			continue;
 		};
-		// Require a real date/time prefix so `--summarize` footers
-		// (`Total Objects: 1`, `Total Size: ...`) and any diagnostic/error
-		// text are not reinterpreted as object rows.
+
 		if !is_s3_date(first) || !is_s3_time(time) {
 			passthrough_lines.push(line);
 			continue;
@@ -335,9 +308,7 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 		if third == "0" && parts.clone().next().is_none() {
 			continue;
 		}
-		// Collect all remaining tokens as the key so that S3 keys
-		// containing spaces (e.g. "reports/June 2026.csv") are
-		// preserved in full rather than truncated to the last token.
+
 		let rest: Vec<&str> = parts.collect();
 		let name = if rest.is_empty() {
 			third.to_string()
@@ -605,8 +576,6 @@ fn infer_level(message: &str) -> &str {
 	"-"
 }
 
-// ── AWS EC2 ──────────────────────────────────────────────────────────────────
-
 fn extract_aws_ec2_instances(root: &Value) -> Option<Vec<&Value>> {
 	let reservations = root.get("Reservations")?.as_array()?;
 	let mut instances = Vec::new();
@@ -666,8 +635,6 @@ fn compact_aws_ec2_instances(instances: &[&Value]) -> String {
 	out
 }
 
-// ── AWS CloudWatch ───────────────────────────────────────────────────────────
-
 fn extract_aws_cloudwatch_events(root: &Value) -> Option<Vec<&Value>> {
 	let events = root.get("events")?.as_array()?;
 	if events.is_empty() {
@@ -713,7 +680,7 @@ fn compact_aws_cloudwatch_events(events: &[&Value]) -> String {
 			.and_then(serde_json::Value::as_i64)
 			.map_or_else(|| "?".to_string(), epoch_ms_to_iso);
 		let msg = event.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-		// Truncate long messages
+
 		let msg = primitives::truncate_line(msg, MAX_LINE_CHARS);
 		out.push_str(&ts);
 		out.push('\t');
@@ -727,9 +694,6 @@ fn compact_aws_cloudwatch_events(events: &[&Value]) -> String {
 	let _ = writeln!(out, "{count} event(s)");
 	out
 }
-
-// ── AWS DynamoDB
-// ──────────────────────────────────────────────────────────────
 
 fn extract_aws_dynamodb_items(root: &Value) -> Option<Vec<&serde_json::Map<String, Value>>> {
 	if let Some(item) = root.get("Item").and_then(Value::as_object) {
@@ -873,8 +837,6 @@ fn http_transfer_suppresses_progress(ctx: &MinimizerCtx<'_>) -> bool {
 		})
 }
 
-/// Returns `true` when the psql invocation requests machine-readable
-/// (unaligned, tuples-only, or CSV) output that must not be truncated.
 fn is_psql_machine_readable(command: &str) -> bool {
 	command
 		.split_whitespace()

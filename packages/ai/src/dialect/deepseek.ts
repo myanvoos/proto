@@ -164,9 +164,6 @@ export class DeepSeekInbandScanner implements InbandScanner {
 	#consumeOutside(final: boolean, events: InbandScanEvent[]): void {
 		while (this.#buffer.length > 0) {
 			if (this.#stripLeadingWhitespace) {
-				// A chat-template control token (e.g. `<｜Assistant｜>`) was just dropped;
-				// swallow the template whitespace that trails it so it never leaks into
-				// visible text. Whitespace can't begin another token, so eager trim is safe.
 				const trimmed = this.#buffer.replace(/^\s+/u, "");
 				if (trimmed.length === 0) {
 					this.#buffer = "";

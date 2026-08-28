@@ -1,9 +1,3 @@
-//! PTY-backed interactive command execution exported via N-API.
-//!
-//! # Overview
-//! Provides a stateful PTY session that supports streaming output and stdin
-//! passthrough while a command is running.
-
 use std::{
 	collections::HashMap,
 	io::{Read, Write},
@@ -23,57 +17,50 @@ use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 
 use crate::{js::into_string, ps, task};
 
-/// Options for running a command in a PTY session.
 #[napi(object)]
 pub struct PtyStartOptions<'env> {
-	/// Command string to execute.
-	pub command:    String,
-	/// Working directory for command execution.
-	pub cwd:        Option<String>,
-	/// Environment variables for this command.
-	pub env:        Option<HashMap<String, String>>,
-	/// Timeout in milliseconds before cancelling.
+	pub command: String,
+
+	pub cwd: Option<String>,
+
+	pub env: Option<HashMap<String, String>>,
+
 	pub timeout_ms: Option<u32>,
-	/// Abort signal for cancelling the operation.
-	pub signal:     Option<Unknown<'env>>,
-	/// PTY column count.
-	pub cols:       Option<u16>,
-	/// PTY row count.
-	pub rows:       Option<u16>,
-	/// Shell binary to use (e.g. "sh", "bash", or an absolute path).
-	/// Defaults to "sh" if not provided.
-	pub shell:      Option<String>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub cols: Option<u16>,
+
+	pub rows: Option<u16>,
+
+	pub shell: Option<String>,
 }
 
-/// Options for running an executable and argument vector in a PTY session.
 #[napi(object)]
 pub struct PtyArgvStartOptions<'env> {
-	/// Executable name or path.
 	pub application: String,
-	/// Arguments passed directly to the executable.
-	pub args:        Vec<String>,
-	/// Working directory for command execution.
-	pub cwd:         Option<String>,
-	/// Environment variables for this command.
-	pub env:         Option<HashMap<String, String>>,
-	/// Timeout in milliseconds before cancelling.
-	pub timeout_ms:  Option<u32>,
-	/// Abort signal for cancelling the operation.
-	pub signal:      Option<Unknown<'env>>,
-	/// PTY column count.
-	pub cols:        Option<u16>,
-	/// PTY row count.
-	pub rows:        Option<u16>,
+
+	pub args: Vec<String>,
+
+	pub cwd: Option<String>,
+
+	pub env: Option<HashMap<String, String>>,
+
+	pub timeout_ms: Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub cols: Option<u16>,
+
+	pub rows: Option<u16>,
 }
 
-/// Result of a PTY command run.
 #[napi(object)]
 pub struct PtyRunResult {
-	/// Exit code when the command completes.
 	pub exit_code: Option<i32>,
-	/// Whether command was cancelled by signal/user kill.
+
 	pub cancelled: bool,
-	/// Whether command timed out.
+
 	pub timed_out: bool,
 }
 
@@ -107,8 +94,7 @@ const CONTROL_MESSAGES_PER_TICK: usize = 64;
 const READER_EVENTS_PER_TICK: usize = 256;
 const POST_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
 const POST_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
-/// How long a cancelled run polls for its SIGKILL'd child before handing the
-/// reap off to a detached thread rather than blocking the PTY promise.
+
 const CANCEL_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 const CANCEL_REAP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const FINAL_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
@@ -117,7 +103,6 @@ struct PtySessionCore {
 	control_tx: flume::Sender<ControlMessage>,
 }
 
-/// Stateful PTY session for interactive stdin/stdout passthrough.
 #[napi]
 pub struct PtySession {
 	core: Arc<Mutex<Option<PtySessionCore>>>,
@@ -136,8 +121,6 @@ impl PtySession {
 		Self { core: Arc::new(Mutex::new(None)) }
 	}
 
-	/// Start a shell command, stream output chunks, and report the spawned child
-	/// PID.
 	#[napi]
 	pub fn start<'env>(
 		&self,
@@ -158,8 +141,6 @@ impl PtySession {
 		self.start_config(env, run_config, options.timeout_ms, options.signal, on_chunk, on_start)
 	}
 
-	/// Start an executable with separate arguments, stream output chunks, and
-	/// report the spawned child PID.
 	#[napi]
 	pub fn start_argv<'env>(
 		&self,
@@ -180,13 +161,11 @@ impl PtySession {
 		self.start_config(env, run_config, options.timeout_ms, options.signal, on_chunk, on_start)
 	}
 
-	/// Write raw input bytes to PTY stdin.
 	#[napi]
 	pub fn write(&self, data: JsString) -> Result<()> {
 		self.send_control(ControlMessage::Input(into_string(data)?))
 	}
 
-	/// Resize the active PTY.
 	#[napi]
 	pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
 		self.send_control(ControlMessage::Resize {
@@ -195,7 +174,6 @@ impl PtySession {
 		})
 	}
 
-	/// Force-kill the active PTY command.
 	#[napi]
 	pub fn kill(&self) -> Result<()> {
 		self.send_control(ControlMessage::Kill)
@@ -215,7 +193,6 @@ impl PtySession {
 		let ct = task::CancelToken::new(timeout_ms, signal);
 		let core = Arc::clone(&self.core);
 
-		// Register control channel synchronously so write()/kill() work immediately.
 		let (control_tx, control_rx) = flume::unbounded::<ControlMessage>();
 		{
 			let mut guard = core.lock();
@@ -334,14 +311,6 @@ fn run_pty_sync(
 	if let Some(callback) = on_start.as_ref() {
 		callback.call(Ok(child_process_id.unwrap_or(0)), ThreadsafeFunctionCallMode::NonBlocking);
 	}
-	// No heartbeat check here: `child` now owns a real, already-`exec`'d OS
-	// process, and bailing out via `?` at this point would drop `pair`
-	// (closing the pty master) without ever killing or reaping it — the
-	// master hangup delivers SIGHUP to the child (it's the pty's session
-	// leader), which kills it almost immediately, but nothing calls
-	// wait()/try_wait() afterward, so it leaks as a permanent zombie. A
-	// cancellation here is instead picked up on the main loop's first
-	// iteration below, which already kills and reaps correctly.
 
 	let master = pair.master;
 	let mut writer = master
@@ -375,7 +344,6 @@ fn run_pty_sync(
 							Err(err) => {
 								let valid_up_to = err.valid_up_to();
 								if valid_up_to > 0 {
-									// SAFETY: [..valid_up_to] is guaranteed valid UTF-8 by valid_up_to().
 									let text = unsafe { str::from_utf8_unchecked(&pending[..valid_up_to]) };
 									let _ = reader_tx.send(ReaderEvent::Chunk(text.to_string()));
 									buf.copy_within(valid_up_to..it, 0);
@@ -503,14 +471,7 @@ fn run_pty_sync(
 		}
 	}
 	if exit_code.is_none() {
-		// `std::process::Child` (what `portable-pty` wraps) never waits on
-		// `Drop`, so a child left unwaited here leaks as a permanent zombie.
 		if terminate_requested {
-			// SIGKILL does not guarantee a prompt exit — a child wedged in
-			// uninterruptible I/O never reaps, and a kill that failed leaves it
-			// running — so blocking here would pin this `spawn_blocking` worker
-			// and the promise well past the caller's deadline. Poll briefly, then
-			// hand the reap to a detached thread so cancellation still returns.
 			let deadline = Instant::now() + CANCEL_REAP_TIMEOUT;
 			while exit_code.is_none() {
 				if let Some(status) = child
@@ -537,15 +498,9 @@ fn run_pty_sync(
 			exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
 		}
 	}
-	// --- Teardown ---
-	// Step 1: Close the pty input pipe first so the child sees EOF on stdin
-	// and can finish flushing its output before the master is dropped.
+
 	drop(writer);
 
-	// Step 2: Drain the reader thread.
-	// After the child exits and input is closed, the pty master should flush
-	// remaining output and signal EOF on the output pipe, causing the reader
-	// thread to exit.
 	if !reader_done {
 		let drain_timeout = FINAL_READER_DRAIN_TIMEOUT;
 		let finalize_deadline = Instant::now() + drain_timeout;
@@ -567,12 +522,8 @@ fn run_pty_sync(
 		}
 	}
 
-	// Step 3: Drop the pty master now that the reader has drained.
 	drop(master);
 
-	// Step 4: Join reader thread if it finished.
-	// A detached descendant can keep the PTY slave open forever; do not block
-	// completion waiting on join when the reader thread did not reach EOF.
 	if reader_done {
 		let _ = reader_thread.join();
 	}

@@ -1,11 +1,3 @@
-/**
- * Data layer shared by the `proto ps` renderers (plain CLI and interactive TUI):
- * broker-scope discovery, daemon snapshot collection, and display cells.
- *
- * Collection never spawns a broker: live scopes are queried over the broker
- * socket, dead scopes are read from the persisted per-daemon `meta.json`
- * snapshots.
- */
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -29,24 +21,23 @@ import {
 	parseDaemonSpec,
 } from "../launch/protocol";
 
-/** One broker scope: a project runtime dir or a machine-global service dir. */
 export interface PsScope {
 	kind: "project" | "global";
 	runtimeDir: string;
-	/** Canonical project dir when known; used to connect and displayed as the scope label. */
+
 	projectDir?: string;
-	/** Global service name (`kind === "global"`). */
+
 	service?: string;
-	/** Live broker PID; undefined when no broker owns the scope. */
+
 	brokerPid?: number;
 }
 
 export interface PsDaemonRow {
 	snapshot: DaemonSnapshot;
-	/** Launch command from the persisted spec, when readable. */
+
 	command?: string;
 	cwd?: string;
-	/** False when the snapshot came from disk with no live broker supervising it. */
+
 	supervised: boolean;
 }
 
@@ -55,22 +46,16 @@ export interface PsScopeReport {
 	daemons: PsDaemonRow[];
 }
 
-/** Scope selector shared by every ps action: current project, `--dir`, or `--global`. */
 export interface PsTarget {
 	dir?: string;
 	global?: string;
 }
 
 const PROJECT_SCOPE_KEY = /^[0-9a-f]{16}$/;
-/** Hard SIGTERM->SIGKILL grace used by `kill`; effectively immediate. */
+
 export const KILL_GRACE_MS = 100;
 export const TERMINAL_STATES: Partial<Record<DaemonState, true>> = { exited: true, failed: true };
 
-// ---------------------------------------------------------------------------
-// Scope discovery
-// ---------------------------------------------------------------------------
-
-/** The single scope named by `target` (defaults to the current project). */
 export async function targetScope(target: PsTarget): Promise<PsScope> {
 	if (target.global) {
 		const runtimeDir = await canonicalRuntimeDir(getGlobalDaemonRuntimeDir(target.global));
@@ -94,7 +79,6 @@ async function canonicalRuntimeDir(dir: string): Promise<string> {
 	}
 }
 
-/** Every scope on this machine: hash-keyed project scopes plus global service scopes. */
 async function discoverScopes(): Promise<PsScope[]> {
 	const scopes: PsScope[] = [];
 	for (const entry of await readdirQuiet(getDaemonRuntimeRoot())) {
@@ -129,11 +113,6 @@ async function readdirQuiet(dir: string): Promise<Dirent[]> {
 	}
 }
 
-/**
- * Map a hash-keyed project runtime dir back to its project directory:
- * broker-written `scope.json` first, then any registered client presence file
- * (covers brokers started before scope metadata existed).
- */
 async function resolveScopeProjectDir(runtimeDir: string): Promise<string | undefined> {
 	const recorded = await readDaemonScopeMeta(runtimeDir);
 	if (recorded) return recorded;
@@ -148,28 +127,17 @@ async function resolveScopeProjectDir(runtimeDir: string): Promise<string | unde
 			) {
 				return decoded.projectDir;
 			}
-		} catch {
-			// Unreadable presence files are skipped; the scope stays unlabeled.
-		}
+		} catch {}
 	}
 	return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot collection
-// ---------------------------------------------------------------------------
-
-/**
- * Connect to a scope's broker. Undefined when the scope cannot be addressed.
- * The caller owns the returned client and must close it.
- */
 export async function scopeClient(scope: PsScope): Promise<DaemonBrokerClient | undefined> {
 	const connectDir = scope.projectDir ?? scope.runtimeDir;
 	if (connectDir === undefined) return undefined;
 	return createDaemonBrokerClient(connectDir, { runtimeDir: scope.runtimeDir });
 }
 
-/** Persisted `{snapshot, spec}` pairs from `<runtimeDir>/daemons/<name>/meta.json`. */
 async function readPersistedDaemons(
 	runtimeDir: string,
 ): Promise<Map<string, { snapshot: DaemonSnapshot; spec: DaemonSpec }>> {
@@ -183,9 +151,7 @@ async function readPersistedDaemons(
 				continue;
 			const snapshot = parseDaemonSnapshot(decoded.daemon);
 			persisted.set(snapshot.name, { snapshot, spec: parseDaemonSpec(decoded.spec) });
-		} catch {
-			// Malformed or torn metadata is skipped; the broker rewrites it on next start.
-		}
+		} catch {}
 	}
 	return persisted;
 }
@@ -200,12 +166,6 @@ function processAlive(pid: number | undefined): boolean {
 	}
 }
 
-/**
- * Collect daemons for one scope. Live brokers are authoritative; dead scopes
- * fall back to persisted snapshots, downgrading non-detached "running" records
- * to exited (their broker took them down with it) and flagging detached
- * survivors as unsupervised.
- */
 async function collectScope(scope: PsScope): Promise<PsScopeReport> {
 	const persisted = await readPersistedDaemons(scope.runtimeDir);
 	if (scope.brokerPid !== undefined) {
@@ -232,9 +192,7 @@ async function collectScope(scope: PsScope): Promise<PsScopeReport> {
 					client.close();
 				}
 			}
-		} catch {
-			// Broker died or refused mid-query; fall through to the offline view.
-		}
+		} catch {}
 	}
 	const daemons: PsDaemonRow[] = [];
 	for (const { snapshot, spec } of persisted.values()) {
@@ -242,7 +200,6 @@ async function collectScope(scope: PsScope): Promise<PsScopeReport> {
 		if (!TERMINAL_STATES[snapshot.state]) {
 			const survivor = spec.detached && snapshot.state !== "stopping" && processAlive(snapshot.pid);
 			if (!survivor) {
-				// The broker died and took its non-detached children with it.
 				row.snapshot = { ...snapshot, state: "exited", exitReason: snapshot.exitReason ?? "broker exited" };
 			}
 		}
@@ -259,34 +216,26 @@ function compareRows(a: PsDaemonRow, b: PsDaemonRow): number {
 	return a.snapshot.name.localeCompare(b.snapshot.name);
 }
 
-/** Collect the scopes selected by `all`/`target`, hiding empty dead scopes in the all view. */
 export async function collectReports(all: boolean, target: PsTarget): Promise<PsScopeReport[]> {
 	const scopes = all ? await discoverScopes() : [await targetScope(target)];
 	const reports = await Promise.all(scopes.map(collectScope));
 	return reports.filter(report => !all || report.daemons.length > 0 || report.scope.brokerPid !== undefined);
 }
 
-// ---------------------------------------------------------------------------
-// Display cells (shared by the plain table and the interactive TUI)
-// ---------------------------------------------------------------------------
-
 export function formatCommand(spec: DaemonSpec | undefined): string | undefined {
 	return spec ? [spec.application, ...spec.args].join(" ") : undefined;
 }
 
-/** Collapse a launch command to one display line (inline scripts embed newlines/tabs). */
 export function collapseCommand(command: string | undefined): string {
 	return command ? command.replaceAll(/\s+/gu, " ").trim() : "";
 }
 
-/** One-line daemon summary used by action results and detail views. */
 export function daemonLabel(daemon: DaemonSnapshot): string {
 	const pid = daemon.pid === undefined ? "" : ` pid=${daemon.pid}`;
 	const exit = daemon.exitCode === undefined ? "" : ` exit=${daemon.exitCode}`;
 	return `${daemon.name}: ${daemon.state}${pid}${exit}`;
 }
 
-/** Colored STATE cell, e.g. `ready`, `exited(143)`. */
 function stateCell(row: PsDaemonRow): string {
 	const { snapshot } = row;
 	let text: string = snapshot.state;
@@ -317,7 +266,6 @@ function uptimeCell(snapshot: DaemonSnapshot): string {
 
 export const TABLE_HEADER = ["NAME", "STATE", "PID", "UPTIME", "RESTARTS", "FLAGS", "COMMAND"];
 
-/** Raw (possibly colored) cells for one daemon row, aligned with {@link TABLE_HEADER}. */
 export function tableCells(row: PsDaemonRow): string[] {
 	return [
 		row.snapshot.name,
@@ -330,7 +278,6 @@ export function tableCells(row: PsDaemonRow): string[] {
 	];
 }
 
-/** Scope heading, e.g. `project /work/pi — broker pid 1234`. */
 export function scopeHeader(scope: PsScope): string {
 	const label =
 		scope.kind === "global"

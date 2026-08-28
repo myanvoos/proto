@@ -6,11 +6,9 @@ import type { Goal, GoalModeState } from "../goals/state";
 import type { TodoItem } from "../tools/todo";
 import type { CustomMessage } from "./messages";
 
-/** Session-specific events that extend the core AgentEvent. */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
 	| (Extract<AgentEvent, { type: "agent_end" }> & {
-			/** False when an async delivery will resume the session before its true final settle. */
 			isTerminal?: boolean;
 	  })
 	| {
@@ -25,7 +23,7 @@ export type AgentSessionEvent =
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
-			/** True when compaction was skipped for a benign reason. */
+
 			skipped?: boolean;
 	  }
 	| {
@@ -57,5 +55,4 @@ export type AgentSessionEvent =
 	  }
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
 
-/** Listener function for agent session events. */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;

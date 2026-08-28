@@ -15,29 +15,18 @@ import type { ToolSession } from "./index";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
-// A single line-range chunk: `N`, `N-M`, `N+K`, or open-ended `N-`. `..` is
-// accepted everywhere `-` is, as a forgiving alias for Rust/Python-style ranges
-// (e.g. `2724..2727` == `2724-2727`, `2724..` == `2724-`); it is normalized to
-// `-` in parseLineRangeChunk. Keep this fragment and LINE_RANGE_CHUNK_RE in sync.
+
 const RANGE_CHUNK_SRC = String.raw`L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?`;
 const RANGE_LIST_SRC = `${RANGE_CHUNK_SRC}(?:,${RANGE_CHUNK_SRC})*`;
 const FILE_LINE_RANGE_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|raw|conflicts)$`, "i");
 const FILE_LINE_RANGE_ONLY_RE = new RegExp(`^${RANGE_LIST_SRC}$`, "i");
 const FILE_RAW_ONLY_RE = /^raw$/i;
-// Permissive selector chunk for internal URLs — accepts well-formed selectors
-// plus common malformed shapes (e.g. `:-N`) so the read tool peels the entire
-// selector chain off before dispatching to a protocol handler.
+
 const INTERNAL_URL_SELECTOR_PART_RE = new RegExp(
 	String.raw`^(?:raw|conflicts|${RANGE_LIST_SRC}|-\d+(?:[-+]\d+)?)$`,
 	"i",
 );
-// Schemes whose host grammar is identifier-shaped, so any trailing
-// `:<selector-chunk>` is unambiguously a read-tool selector. `mcp://` is
-// excluded because mcp resource URIs may legitimately contain colons. `ssh://`
-// is included despite an optional `:port`; `splitInternalUrlSel` skips the peel
-// for an `ssh://host:port` that has no `/path`, so the port colon is never
-// mistaken for a selector (a real ssh selector trails the `/path`, e.g.
-// `ssh://h/f:1-5`).
+
 const INTERNAL_SCHEMES_WITH_SELECTORS: Record<string, true> = {
 	agent: true,
 	artifact: true,
@@ -53,12 +42,7 @@ const INTERNAL_SCHEMES_WITH_SELECTORS: Record<string, true> = {
 	ssh: true,
 	vault: true,
 };
-// Schemes whose resource URIs are server-defined and may legitimately end
-// with selector-shaped tails (e.g. `:raw`, `:conflicts`, `:1-50`, `/:raw`).
-// `McpProtocolHandler` resolves by exact URI match (`r.uri === uri`), so
-// peeling syntactically can make valid resources unreachable. Keep these
-// schemes opaque; selector support for them needs a resolver-aware path that
-// tries the exact URI before interpreting any suffix as a read selector.
+
 const OPAQUE_RESOURCE_SCHEMES: ReadonlySet<string> = new Set(["mcp"]);
 const INTERNAL_URL_SCHEME_RE = /^([a-z][a-z0-9+.-]*):\/\//i;
 const NARROW_NO_BREAK_SPACE = "\u202F";
@@ -82,13 +66,10 @@ function tryMacOSScreenshotPath(filePath: string): string {
 }
 
 function tryNFDVariant(filePath: string): string {
-	// macOS stores filenames in NFD (decomposed) form, try converting user input to NFD
 	return filePath.normalize("NFD");
 }
 
 function tryCurlyQuoteVariant(filePath: string): string {
-	// macOS uses U+2019 (right single quotation mark) in screenshot names like "Capture d'écran"
-	// Users typically type U+0027 (straight apostrophe)
 	return filePath.replace(/'/g, "\u2019");
 }
 
@@ -111,13 +92,10 @@ function normalizeAtPrefix(filePath: string): string {
 
 	const withoutAt = filePath.slice(1);
 
-	// We only treat a leading "@" as a shorthand for a small set of well-known
-	// syntaxes. This avoids mangling literal paths like "@my-file.txt".
 	if (
 		withoutAt.startsWith("/") ||
 		withoutAt === "~" ||
 		withoutAt.startsWith("~/") ||
-		// Internal URL shorthands
 		withoutAt.startsWith("agent://") ||
 		withoutAt.startsWith("artifact://") ||
 		withoutAt.startsWith("skill://") ||
@@ -154,23 +132,11 @@ export function expandTilde(filePath: string, home?: string): string {
 }
 
 export function expandPath(filePath: string): string {
-	// Some models intermittently prefix an otherwise-valid path with a stray
-	// `:` (e.g. `:/abs/path`, `:../rel`, or the Windows forms `:C:\repo\file`
-	// and `:.\src`). No real path starts with `:` and it never begins a
-	// selector against an absolute/relative path, so strip it before
-	// resolution — mirroring the `@`-prefix normalization above and the
-	// implicit stripping `write` already tolerates (issues #5508, #5624). The
-	// lookahead admits POSIX (`/`, `~`, `./`, `../`) and Windows (`\`, `.\`,
-	// `..\`, drive-letter `C:`) path shapes.
 	const deColoned = /^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(filePath) ? filePath.slice(1) : filePath;
 	const normalized = stripFileUrl(normalizeUnicodeSpaces(normalizeAtPrefix(deColoned)));
 	return expandTilde(normalized);
 }
 
-/**
- * Inclusive line range describing one selector segment (e.g. `50-100`,
- * `301-`, or `50+10`). `endLine` is `undefined` for open-ended ranges.
- */
 export interface LineRange {
 	startLine: number;
 	endLine: number | undefined;
@@ -178,7 +144,6 @@ export interface LineRange {
 
 const LINE_RANGE_CHUNK_RE = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i;
 
-/** Parse a single `N`, `N-M`, `N-`, `N+K`, or `..`-aliased (`N..M`, `N..`) chunk. Throws via {@link ToolError} on invalid bounds. */
 export function parseLineRangeChunk(sel: string): LineRange | null {
 	const lineMatch = LINE_RANGE_CHUNK_RE.exec(sel);
 	if (!lineMatch) return null;
@@ -186,7 +151,7 @@ export function parseLineRangeChunk(sel: string): LineRange | null {
 	if (rawStart < 1) {
 		throw new ToolError("Line selector 0 is invalid; lines are 1-indexed. Use :1.");
 	}
-	// `..` is a forgiving alias for `-` (e.g. `2724..2727` == `2724-2727`).
+
 	const sep = lineMatch[2] === ".." ? "-" : lineMatch[2];
 	const rhs = lineMatch[3] ? Number.parseInt(lineMatch[3], 10) : undefined;
 	let rawEnd: number | undefined;
@@ -196,7 +161,6 @@ export function parseLineRangeChunk(sel: string): LineRange | null {
 		}
 		rawEnd = rawStart + rhs - 1;
 	} else if (sep === "-") {
-		// `301-` is shorthand for "from 301 onward" — equivalent to bare `301`.
 		if (rhs !== undefined) {
 			if (rhs < rawStart) {
 				throw new ToolError(`Invalid range ${rawStart}-${rhs}: end must be >= start.`);
@@ -207,11 +171,6 @@ export function parseLineRangeChunk(sel: string): LineRange | null {
 	return { startLine: rawStart, endLine: rawEnd };
 }
 
-/**
- * Parse a comma-separated list of line ranges (e.g. `5-16,960-973`). Returns
- * the ranges in ascending order with overlapping/adjacent ranges merged so
- * downstream consumers can stream the file in a single forward pass per range.
- */
 export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null {
 	const chunks = sel.split(",");
 	const parsed: LineRange[] = [];
@@ -227,9 +186,9 @@ export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null
 	for (let i = 1; i < parsed.length; i++) {
 		const current = parsed[i];
 		const last = merged[merged.length - 1];
-		// Open-ended (endLine undefined) means "to EOF" — any later range is absorbed.
+
 		if (last.endLine === undefined) continue;
-		// Merge when current starts within (or immediately after) the last range.
+
 		if (current.startLine <= last.endLine + 1) {
 			if (current.endLine === undefined || current.endLine > last.endLine) {
 				merged[merged.length - 1] = { startLine: last.startLine, endLine: current.endLine };
@@ -241,16 +200,6 @@ export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null
 	return merged as [LineRange, ...LineRange[]];
 }
 
-/**
- * Extract the line-range component from a read-tool selector that may also
- * carry a verbatim/index display mode (`raw`, `conflicts`) — alone or compounded
- * with a range (`raw:50-100`, `50-100:raw`). Returns the parsed ranges when the
- * selector names any, otherwise `undefined` (pure `raw`/`conflicts`/none).
- *
- * Used by content search, which honors line ranges as a match filter but has no
- * use for verbatim/conflict display modes — so those selectors are accepted and
- * treated as an unfiltered, whole-resource search rather than rejected.
- */
 export function selectorLineRanges(sel: string | undefined): [LineRange, ...LineRange[]] | undefined {
 	if (!sel) return undefined;
 	for (const chunk of sel.split(":")) {
@@ -272,8 +221,6 @@ export function splitPathAndSel(rawPath: string): { path: string; sel?: string }
 	let basePath = rawPath.slice(0, colon);
 	let sel = candidate;
 
-	// Allow a compound trailing selector: `path:1-50:raw` or `path:raw:1-50`.
-	// The two chunks must be one line-range plus one `raw`, in either order.
 	const innerColon = basePath.lastIndexOf(":");
 	if (innerColon > 0) {
 		const innerCandidate = basePath.slice(innerColon + 1);
@@ -290,22 +237,6 @@ export function splitPathAndSel(rawPath: string): { path: string; sel?: string }
 	return { path: basePath, sel };
 }
 
-/**
- * Three-way probe for whether the exact filesystem entry named by `filePath`
- * exists. `stat` (used earlier) failed for reasons other than "no such file"
- * (dangling symlink, `EACCES` on a parent, transient I/O), and each of those
- * silently reinterpreted a real literal path such as `test:1-2` as `test`
- * plus selector `1-2` (issue #4618). `lstat` inspects the entry itself, so a
- * dangling symlink is still detected as present; ambiguous errors resolve to
- * `"unknown"` so callers keep the raw path instead of guessing.
- *
- * `ENAMETOOLONG` resolves to `"missing"` rather than `"unknown"`: a path whose
- * component or whole length exceeds the OS limit can never name a real single
- * entry, so it is strictly stronger evidence of non-existence than `ENOENT`.
- * Without this, a semicolon-joined `path` list long enough to trip the limit
- * (bare filenames past `NAME_MAX`, or a total past `PATH_MAX`) was read as one
- * literal path and the delimited split was suppressed (issue #7597).
- */
 export async function probeLiteralPathExists(filePath: string, cwd: string): Promise<"exists" | "missing" | "unknown"> {
 	const resolved = resolveReadPath(filePath, cwd);
 	try {
@@ -317,16 +248,6 @@ export async function probeLiteralPathExists(filePath: string, cwd: string): Pro
 	}
 }
 
-/**
- * Async sibling of {@link splitPathAndSel} that prefers a literal filesystem
- * path over selector interpretation. Filenames whose tail matches the selector
- * grammar (e.g. `test:1-2`, `log:raw`) are legal on POSIX; without this the
- * strict splitter peels the tail and both `read` and `grep` refuse to open the
- * real file (issue #4618). The literal wins on a confirmed `lstat`, and also
- * on `"unknown"` (`EACCES` on a parent, transient I/O), so an unreachable
- * literal is never silently reinterpreted as `path + selector`. Only a
- * definitive `ENOENT`/`ENOTDIR` falls back to the strict split.
- */
 export async function splitPathAndSelPreferringLiteral(
 	rawPath: string,
 	cwd: string,
@@ -337,40 +258,16 @@ export async function splitPathAndSelPreferringLiteral(
 	return probe === "missing" ? strict : { path: rawPath };
 }
 
-/**
- * Variant of {@link splitPathAndSel} for internal URLs (`scheme://...`).
- *
- * The filesystem-path splitter is intentionally conservative: it refuses to
- * peel a trailing `:<chunk>` unless that chunk matches the strict selector
- * grammar. That rule is right for filesystem paths (a file named `a:1-50` is
- * legal) but wrong for internal URLs, where any trailing `:<chunk>` after the
- * scheme is unambiguously a read-tool selector — even if malformed (e.g.
- * `artifact://3:raw:-100`).
- *
- * This function iteratively peels selector-shaped chunks (well-formed plus
- * common malformed shapes like `:-N`) so the rest of the read tool can pass a
- * clean URL to the protocol handler and surface selector errors via parseSel
- * instead of as misleading "host invalid" errors from the handler. Schemes
- * whose resource URIs may legitimately contain colons (`mcp://`) are skipped.
- *
- * Falls back to the input unchanged when nothing matches.
- */
-
 export function splitInternalUrlSel(rawPath: string): { path: string; sel?: string } {
 	const schemeMatch = rawPath.match(INTERNAL_URL_SCHEME_RE);
 	if (!schemeMatch) return { path: rawPath };
 	const scheme = schemeMatch[1].toLowerCase();
-	// Opaque schemes (mcp://, etc.) carry server-defined resource URIs that may
-	// legitimately end in selector-shaped tails. Forward verbatim — see
-	// OPAQUE_RESOURCE_SCHEMES.
+
 	if (OPAQUE_RESOURCE_SCHEMES.has(scheme)) return { path: rawPath };
 	if (!INTERNAL_SCHEMES_WITH_SELECTORS[scheme]) return { path: rawPath };
 
 	const schemeEnd = schemeMatch[0].length;
-	// ssh:// authority carries an optional `:port`; with no `/path` after the
-	// authority, a trailing `:NNNN` is the port, not a read selector
-	// (e.g. ssh://host:2222). Other schemes' authority-trailing selectors
-	// (artifact://5:1-50) still peel, so this guard is ssh-specific.
+
 	if (scheme === "ssh" && rawPath.indexOf("/", schemeEnd) === -1) {
 		return { path: rawPath };
 	}
@@ -378,7 +275,7 @@ export function splitInternalUrlSel(rawPath: string): { path: string; sel?: stri
 	const chunks: string[] = [];
 	while (true) {
 		const colon = path.lastIndexOf(":");
-		// Stop before crossing into the scheme separator `://`.
+
 		if (colon < schemeEnd) break;
 		const tail = path.slice(colon + 1);
 		if (!INTERNAL_URL_SELECTOR_PART_RE.test(tail)) break;
@@ -389,20 +286,10 @@ export function splitInternalUrlSel(rawPath: string): { path: string; sel?: stri
 	return { path, sel: chunks.join(":") };
 }
 
-/**
- * Peel a read-tool selector off an internal-URL write target so `write` resolves
- * the same file `read` does (e.g. `ssh://h/f:raw` -> `ssh://h/f`). Only the
- * whole-file display modes `raw`/`conflicts` are accepted (they do not change
- * which bytes are written); any other selector-shaped tail `splitInternalUrlSel`
- * peels — a line range, a compound like `raw:1-20`, or a malformed `:-N` — throws,
- * because `write` addresses a whole file, not a partial range, and silently
- * stripping it would write to a path the caller never named. Non-URL paths and
- * URLs without a selector pass through unchanged.
- */
 export function peelWriteUrlSelector(rawPath: string): string {
 	const { path, sel } = splitInternalUrlSel(rawPath);
 	if (sel === undefined) return rawPath;
-	// Case-insensitive to match read's selector grammar (parseSel + the /i regexes above).
+
 	if (/^(?:raw|conflicts)$/i.test(sel)) return path;
 	throw new ToolError(
 		`write does not accept the trailing selector ":${sel}" — it writes a whole file. ` +
@@ -433,24 +320,10 @@ export function isInternalUrlPath(filePath: string): boolean {
 	return false;
 }
 
-/**
- * True when the read tool's URL parser (`parseReadUrlTarget` in fetch.ts) would
- * recognize this path as a readable external URL: a strict `http(s)://`, a
- * collapsed `http(s):/host` (Node path normalization folds `//` → `/`), or a
- * scheme-less `www.` spelling. Keep in sync with `parseReadUrlTarget`.
- */
 export function isReadableUrlPath(value: string): boolean {
 	return /^https?:\/\/?/i.test(value) || /^www\./i.test(value);
 }
 
-/**
- * Resolve a path relative to the given cwd.
- * Handles ~ expansion and absolute paths.
- *
- * A bare root slash is treated as a workspace-root alias for tool inputs. Users
- * often pass `/` to mean “search from here”, and letting tools escape to the
- * filesystem root is almost never what they intended.
- */
 export function resolveToCwd(filePath: string, cwd: string): string {
 	const normalized = normalizeLocalScheme(filePath);
 	const expanded = expandPath(normalized);
@@ -467,55 +340,22 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return path.resolve(cwd, expanded);
 }
 
-/**
- * Resolve a path that MUST stay inside `cwd`, or `null` when it would escape.
- *
- * {@link resolveToCwd} deliberately honors absolute paths, `~`, and `..` —
- * correct for a path a user typed, wrong for one a remote peer supplied.
- * Callers handling untrusted input (Cursor's `download_path`) use this instead:
- * only a non-empty relative path landing under the live cwd is accepted, so
- * neither `/etc/passwd` nor `../../escape` can be written through.
- *
- * The lexical check alone is not containment: a symlink inside the workspace
- * can point anywhere, so `out/config` under a `ws/out -> /elsewhere` link is
- * relative, `..`-free, and still writes outside. Both the target and its
- * deepest existing ancestor are therefore realpath-resolved — the ancestor
- * because a download names a file that does not exist yet, so the link in its
- * path is the only thing that can be resolved before the write.
- *
- * The cwd itself is rejected: a download names a file, never the directory.
- */
 export function confineToWorkspace(filePath: string, cwd: string): string | null {
 	if (!filePath || path.isAbsolute(filePath)) return null;
-	// `~` expands to an absolute path, and an internal URL is not a filesystem
-	// target at all; neither is a relative workspace path.
+
 	if (filePath.startsWith("~") || isInternalUrlPath(filePath)) return null;
 	const root = path.resolve(cwd);
 	const resolved = path.resolve(root, filePath);
 	if (!isUnderRootLexical(resolved, root)) return null;
 
-	// A workspace reached through a link of its own is legitimate (/tmp on
-	// macOS), so the real root is the comparison basis. An unresolvable root is
-	// not a workspace to contain anything in.
 	const realRoot = tryRealpath(root);
 	if (!realRoot) return null;
 
-	// An existing target is authoritative: resolve it outright.
 	const realTarget = tryRealpath(resolved);
 	if (realTarget) return isUnderRootLexical(realTarget, realRoot) ? resolved : null;
 
-	// `realpath` also fails on a *dangling* link, and a write follows that link
-	// to wherever it points. Chasing the chain to decide would mean
-	// reimplementing symlink resolution (multi-hop, relative hops, loops, and
-	// a TOCTOU window against a link that can be re-pointed between the check
-	// and the write). A download names a file to create, so a path that is
-	// already an unresolvable link is refused outright — the one shape where
-	// "cannot tell where this lands" is the whole answer.
 	if (isSymlink(resolved)) return null;
 
-	// Otherwise walk up to the deepest ancestor that does exist and check that,
-	// then re-apply the segments below it. Those segments are `..`-free by the
-	// lexical check above, so they cannot climb back out.
 	let ancestor = path.dirname(resolved);
 	const tail: string[] = [path.basename(resolved)];
 	for (;;) {
@@ -524,15 +364,13 @@ export function confineToWorkspace(filePath: string, cwd: string): string | null
 			return isUnderRootLexical(path.join(real, ...tail.reverse()), realRoot) ? resolved : null;
 		}
 		const parent = path.dirname(ancestor);
-		// Ran past the root without finding anything real: the workspace itself
-		// resolved above, so this cannot happen unless it vanished mid-check.
+
 		if (parent === ancestor || !isUnderRootLexical(ancestor, root)) return null;
 		tail.push(path.basename(ancestor));
 		ancestor = parent;
 	}
 }
 
-/** Whether `target` is a strict descendant of `root`, ignoring symlinks. */
 function isUnderRootLexical(target: string, root: string): boolean {
 	const relative = path.relative(root, target);
 	return !!relative && !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -546,7 +384,6 @@ function tryRealpath(target: string): string | null {
 	}
 }
 
-/** Whether the path itself is a symlink, without following it. */
 function isSymlink(target: string): boolean {
 	try {
 		return fs.lstatSync(target).isSymbolicLink();
@@ -555,56 +392,24 @@ function isSymlink(target: string): boolean {
 	}
 }
 
-/**
- * Resolve the path a syscall on `filePath` would really act on, or `null` when
- * that cannot be established.
- *
- * A lexical path is not a destination. The kernel follows every component above
- * the last, so `ws/link/file` under a `ws/link -> /elsewhere` link lands outside
- * `ws` while still looking relative and `..`-free. Handing such a path to a
- * privileged helper defeats the defence a helper author reaches for first — a
- * prefix allowlist passes, because the link sits inside the allowed root while
- * its target does not. Callers that hand a path to something more privileged
- * than the syscall that just failed resolve it here first.
- *
- * Rejecting symlinked components outright is not an option: `/var` and `/tmp`
- * are links on macOS, so every path under `os.tmpdir()` traverses one. They are
- * resolved instead, and only a path whose real destination cannot be established
- * is refused, because "where would this land" then has no answer to hand over.
- * {@link confineToWorkspace} refuses an unresolvable link for the same reason.
- *
- * @param followFinal `true` for a syscall that follows a link at the final
- *   component (`open`, so every write), `false` for one that acts on the link
- *   itself (`unlink`) and therefore needs it left alone.
- */
 export async function resolveSyscallTarget(filePath: string, followFinal: boolean): Promise<string | null> {
 	const target = path.resolve(filePath);
 	if (followFinal) {
 		const real = await tryRealpathAsync(target);
 		if (real !== null) return real;
-		// `realpath` also fails on a DANGLING link, which a write follows to a place
-		// this cannot name, and on a path whose ancestor may not be searched. Neither
-		// is proof the final component is a plain name, and only proof continues.
+
 		if (!(await isProvenNotSymlink(target))) return null;
 	}
-	// Walk up to the deepest ancestor that does resolve, then re-apply the
-	// components below it. A resolved ancestor vouches for the ones above it, so
-	// re-applying them lexically matches what the kernel would have done.
+
 	const tail: string[] = [path.basename(target)];
 	let ancestor = path.dirname(target);
 	for (;;) {
 		const real = await tryRealpathAsync(ancestor);
 		if (real !== null) return path.join(real, ...tail.reverse());
-		// This component is about to be re-applied lexically without a resolved
-		// ancestor vouching for it, which is exactly the escape being closed — so it
-		// has to prove itself. `realpath` fails here for a component that does not
-		// exist yet AND for one inside a directory the caller may not search (the
-		// usual shape when a sandbox hides a denied path), and the second still
-		// permits `lstat`.
+
 		if (!(await isProvenNotSymlink(ancestor))) return null;
 		const parent = path.dirname(ancestor);
-		// Ran past the filesystem root: `realpath("/")` cannot fail, so only a
-		// filesystem disappearing mid-walk gets here.
+
 		if (parent === ancestor) return null;
 		tail.push(path.basename(ancestor));
 		ancestor = parent;
@@ -613,19 +418,12 @@ export async function resolveSyscallTarget(filePath: string, followFinal: boolea
 
 async function tryRealpathAsync(target: string): Promise<string | null> {
 	try {
-		// `fs.promises.realpath` has no `.native` variant under Bun, unlike its sync
-		// counterpart; the JS implementation resolves links identically.
 		return await fs.promises.realpath(target);
 	} catch {
 		return null;
 	}
 }
 
-/**
- * Whether `target` is known NOT to redirect. A path that does not exist cannot
- * redirect anything, and nothing below it exists either; any other `lstat`
- * failure leaves the question unanswered, which is not proof.
- */
 async function isProvenNotSymlink(target: string): Promise<boolean> {
 	try {
 		return !(await fs.promises.lstat(target)).isSymbolicLink();
@@ -659,13 +457,6 @@ export function formatPathRelativeToCwd(
 	return displayPath;
 }
 
-/**
- * Strip matching surrounding double quotes from a path string.
- * Common when users paste quoted paths from Windows Explorer or shell copy-paste.
- * Only double quotes — single quotes are valid POSIX filename characters.
- * Tradeoff: a POSIX path literally starting AND ending with " would also be unquoted.
- * Accepted because such names are virtually nonexistent in practice.
- */
 export function stripOuterDoubleQuotes(input: string): string {
 	return input.startsWith('"') && input.endsWith('"') && input.length > 1 ? input.slice(1, -1) : input;
 }
@@ -679,11 +470,6 @@ export function normalizePathLikeInput(input: string): string {
 	return stripOuterDoubleQuotes(input.trim());
 }
 
-/**
- * Parse a JSON-encoded array of path strings (e.g. `'["a.ts","b.ts"]'`).
- * Returns `null` when the input is not a bracketed JSON string array, so the
- * caller can fall back to treating the input as a single literal path.
- */
 function parseStringEncodedPathArray(input: string): string[] | null {
 	const trimmed = input.trim();
 	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
@@ -701,12 +487,6 @@ function parseStringEncodedPathArray(input: string): string[] | null {
 	return parsed;
 }
 
-/**
- * Normalize a path argument that may arrive as a single string, a JSON-encoded
- * string array (`'["a.ts"]'`), or an actual array into a flat `string[]`.
- * Delimited single strings (`"a.ts b.ts"`) are split by
- * {@link splitDelimitedPathEntry} when the parts resolve on disk.
- */
 export function toPathList(input: string | string[] | undefined): string[] {
 	if (typeof input === "string") return parseStringEncodedPathArray(input) ?? [input];
 	return input ?? [];
@@ -789,21 +569,11 @@ async function delimitedPathPartResolves(entry: string, cwd: string, splitter: P
 		await fs.promises.stat(absoluteBasePath);
 		return true;
 	} catch (err) {
-		// ENOENT and ENAMETOOLONG both mean this string cannot name an existing
-		// path, so the whole entry does not resolve and the delimited split may
-		// proceed (issue #7597). Other errors (EACCES, transient I/O) stay fatal.
 		if (isEnoent(err) || hasFsCode(err, "ENAMETOOLONG")) return false;
 		throw err;
 	}
 }
 
-/**
- * How many split parts must resolve to an existing path for the split to win.
- * Semicolon is the documented list delimiter, so it splits unconditionally
- * (`"none"`) — an all-missing list must still fan out so multi-path missing
- * semantics can name every entry. Comma is legacy recovery (`"some"`), and
- * whitespace/mixed are aggressive heuristics gated on every part existing.
- */
 type DelimitedResolveRequirement = "all" | "some" | "none";
 
 async function tryDelimitedPathSplit(
@@ -828,11 +598,6 @@ async function tryDelimitedPathSplit(
 	return parts;
 }
 
-/**
- * Split one path-like entry whose multiple targets were flattened into one
- * string. Existing paths are kept intact, so real filenames containing spaces,
- * commas, or semicolons win over delimiter recovery.
- */
 export async function splitDelimitedPathEntry(
 	entry: string,
 	cwd: string,
@@ -849,11 +614,7 @@ export async function splitDelimitedPathEntry(
 		return parts?.every(options.routedUrlPredicate) ? parts : null;
 	}
 	if (isInternalUrlPath(normalizedEntry)) return null;
-	// A real POSIX file may contain the delimiter and a selector-shaped tail
-	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
-	// resolves — or is only ambiguous — so downstream literal-preferring
-	// splitters see it before delimiter expansion peels or splits (issue #4618
-	// reviewer feedback: delimited expansion ran before the literal check).
+
 	if ((await probeLiteralPathExists(normalizedEntry, cwd)) !== "missing") return null;
 	const peeledEntry = splitPathAndSel(normalizedEntry).path;
 	if (!hasGlobPathChars(peeledEntry) && (await delimitedPathPartResolves(normalizedEntry, cwd, splitter))) {
@@ -910,25 +671,21 @@ export function resolveReadPath(filePath: string, cwd: string): string {
 	}
 
 	for (const baseCandidate of baseCandidates) {
-		// Try macOS AM/PM variant (narrow no-break space before AM/PM)
 		const amPmVariant = tryMacOSScreenshotPath(baseCandidate);
 		if (amPmVariant !== baseCandidate && fileExists(amPmVariant)) {
 			return amPmVariant;
 		}
 
-		// Try NFD variant (macOS stores filenames in NFD form)
 		const nfdVariant = tryNFDVariant(baseCandidate);
 		if (nfdVariant !== baseCandidate && fileExists(nfdVariant)) {
 			return nfdVariant;
 		}
 
-		// Try curly quote variant (macOS uses U+2019 in screenshot names)
 		const curlyVariant = tryCurlyQuoteVariant(baseCandidate);
 		if (curlyVariant !== baseCandidate && fileExists(curlyVariant)) {
 			return curlyVariant;
 		}
 
-		// Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
 		const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
 		if (nfdCurlyVariant !== baseCandidate && fileExists(nfdCurlyVariant)) {
 			return nfdCurlyVariant;
@@ -979,10 +736,6 @@ async function findUniqueWorkspaceSuffixWithGlob(
 	};
 }
 
-/**
- * Find a unique workspace entry whose trailing path matches a missing authored path.
- * Returns `null` for no match, ambiguity, timeout, or scan failure.
- */
 export async function findUniqueWorkspaceSuffix(
 	rawPath: string,
 	cwd: string,
@@ -991,22 +744,10 @@ export async function findUniqueWorkspaceSuffix(
 	return findUniqueWorkspaceSuffixWithGlob(rawPath, cwd, signal, glob);
 }
 
-// =============================================================================
-// Authored write-target resolution (`local://`/`vault://` schemes + hashline
-// headers) — shared by `write`, the edit modes, and ACP bridge routing.
-// =============================================================================
-
 const VAULT_SCHEME_PREFIX = "vault:";
 const LOCAL_SCHEME_PREFIX = "local:";
 const HL_TRAILING_TAG_RE = new RegExp(`${HL_FILE_HASH_SEP}[0-9A-Fa-f]{${HL_FILE_HASH_LENGTH}}$`);
 
-/** Resolve the `local://` options the session uses, preferring its own
- *  {@link LocalProtocolOptions} (the mapping `read`/`write`/`eval` resolve
- *  through) over the bare `getArtifactsDir`/`getSessionId` pair. Subagents and
- *  multi-session hosts (cmux/ACP, embedded SDK) pin `local://` to a parent/foreign
- *  root via `localProtocolOptions`; the sandbox root derived here must match
- *  where the artifact actually lives, or tag-based path recovery onto the
- *  sandbox would miss it. */
 function sessionLocalProtocolOptions(session: ToolSession): LocalProtocolOptions {
 	return (
 		session.localProtocolOptions ?? {
@@ -1016,8 +757,6 @@ function sessionLocalProtocolOptions(session: ToolSession): LocalProtocolOptions
 	);
 }
 
-/** Resolve the absolute path of the session's `local://` artifact sandbox.
- *  Returns `null` when the session has no artifact wiring (e.g. tests). */
 function sessionSandboxRoot(session: ToolSession): string | null {
 	try {
 		return path.resolve(resolveLocalRoot(sessionLocalProtocolOptions(session)));
@@ -1026,19 +765,12 @@ function sessionSandboxRoot(session: ToolSession): string | null {
 	}
 }
 
-/** True when `absolutePath` resolves inside `root` (== root or under it). */
 function isWithinRoot(absolutePath: string, root: string): boolean {
 	if (absolutePath === root) return true;
 	const sep = `${root}${path.sep}`;
 	return absolutePath.startsWith(sep);
 }
 
-/** Strip the hashline `[path#TAG]` wrapper from a write/edit target so the inner
- *  filesystem path drives both authorization and resolution. Only unwraps inputs
- *  that match the strict hashline header shape (`[path]` or `[path#XXXX]` with a
- *  4-hex tag); anything else returns the original string so the downstream
- *  resolver surfaces the real error. Exported for callers (e.g. `write`) that
- *  make scheme/bridge-routing decisions before {@link resolveAuthoredPath} runs. */
 export function unwrapHashlineHeaderPath(targetPath: string): string {
 	const trimmed = targetPath.trimEnd();
 	if (
@@ -1051,19 +783,11 @@ export function unwrapHashlineHeaderPath(targetPath: string): string {
 	const inner = trimmed.slice(HL_FILE_PREFIX.length, trimmed.length - HL_FILE_SUFFIX.length);
 	const tagMatch = HL_TRAILING_TAG_RE.exec(inner);
 	const pathPart = tagMatch ? inner.slice(0, tagMatch.index) : inner;
-	// A valid header is exactly `PATH` or `PATH#XXXX`; reject any other shape
-	// (selectors, non-hex tags, embedded `#`) so we never silently rewrite a
-	// path the model did not author.
+
 	if (pathPart.length === 0 || pathPart.includes(HL_FILE_HASH_SEP)) return targetPath;
 	return pathPart;
 }
 
-/** True when `targetPath` resolves into the session-local artifact sandbox.
- *  Routes through {@link resolveAuthoredPath} so routing checks and the eventual
- *  write always agree on the absolute target (including bracketed hashline
- *  headers, `local://` URLs, and bare absolute paths). Files inside the sandbox
- *  are session-owned artifacts, not part of the working tree — tag-based path
- *  recovery may rebind onto them. */
 export function targetsLocalSandbox(session: ToolSession, targetPath: string): boolean {
 	const root = sessionSandboxRoot(session);
 	if (!root) return false;
@@ -1076,9 +800,7 @@ export function targetsLocalSandbox(session: ToolSession, targetPath: string): b
 	if (!path.isAbsolute(resolved)) return false;
 	const absolute = path.resolve(resolved);
 	if (isWithinRoot(absolute, root)) return true;
-	// Compare realpath-normalized forms so that `/tmp/…` vs `/private/tmp/…`
-	// (macOS) and other symlink-collapsed roots both resolve to the same
-	// sandbox identity.
+
 	try {
 		const realRoot = fs.realpathSync.native(root);
 		if (isWithinRoot(absolute, realRoot)) return true;
@@ -1089,12 +811,6 @@ export function targetsLocalSandbox(session: ToolSession, targetPath: string): b
 	}
 }
 
-/**
- * Resolve an authored write/edit target to its absolute filesystem path,
- * honoring the `local://` and `vault://` schemes. Plain paths resolve against
- * the session cwd. Bracketed hashline headers (`[path#TAG]`) are unwrapped
- * first so the inner filesystem path drives resolution.
- */
 export function resolveAuthoredPath(session: ToolSession, targetPath: string): string {
 	const unwrapped = unwrapHashlineHeaderPath(targetPath);
 	const normalized = normalizeLocalScheme(unwrapped);

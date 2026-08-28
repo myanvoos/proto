@@ -3,7 +3,6 @@ interface XmlText {
 	readonly value: string;
 }
 
-/** A minimal XML element used by the DOCX reader. */
 export interface XmlElement {
 	readonly kind: "element";
 	readonly name: string;
@@ -11,7 +10,6 @@ export interface XmlElement {
 	readonly children: readonly XmlNode[];
 }
 
-/** A node in the DOCX reader's minimal XML tree. */
 export type XmlNode = XmlElement | XmlText;
 
 const ENTITY_PATTERN = /&(?:#x[\da-fA-F]+|#\d+|amp|apos|gt|lt|quot);/g;
@@ -40,13 +38,11 @@ function decodeEntities(value: string): string {
 	});
 }
 
-/** Return the namespace-independent part of an XML qualified name. */
 export function localName(name: string): string {
 	const colon = name.indexOf(":");
 	return colon === -1 ? name : name.slice(colon + 1);
 }
 
-/** Parse XML into a small namespace-tolerant element tree. */
 export function parseXml(source: string): XmlElement {
 	const synthetic: { name: string; attributes: Map<string, string>; children: XmlNode[] } = {
 		name: "#document",
@@ -131,20 +127,17 @@ export function parseXml(source: string): XmlElement {
 	return roots[0];
 }
 
-/** Return direct element children, optionally filtered by local name. */
 export function childElements(element: XmlElement, name?: string): XmlElement[] {
 	return element.children.filter(
 		(node): node is XmlElement => node.kind === "element" && (name === undefined || localName(node.name) === name),
 	);
 }
 
-/** Return the first direct child with the given local name. */
 export function firstChild(element: XmlElement | undefined, name: string): XmlElement | undefined {
 	if (!element) return undefined;
 	return element.children.find((node): node is XmlElement => node.kind === "element" && localName(node.name) === name);
 }
 
-/** Return an attribute by qualified or namespace-independent name. */
 export function attribute(element: XmlElement | undefined, name: string): string | undefined {
 	if (!element) return undefined;
 	const exact = element.attributes.get(name);
@@ -155,7 +148,6 @@ export function attribute(element: XmlElement | undefined, name: string): string
 	return undefined;
 }
 
-/** Return all descendant elements with a given local name. */
 export function descendants(element: XmlElement, name: string): XmlElement[] {
 	const matches: XmlElement[] = [];
 	for (const child of childElements(element)) {

@@ -24,9 +24,6 @@ import { normalizeToolNames } from "../tools/builtin-names";
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
 
-/**
- * Standard paths for each config source.
- */
 export const SOURCE_PATHS = {
 	native: {
 		get userBase() {
@@ -70,7 +67,7 @@ export const SOURCE_PATHS = {
 	cline: {
 		userBase: ".cline",
 		userAgent: ".cline",
-		projectDir: null, // Cline uses root-level .clinerules
+		projectDir: null,
 	},
 	github: {
 		userBase: null,
@@ -86,12 +83,7 @@ export const SOURCE_PATHS = {
 
 type SourceId = keyof typeof SOURCE_PATHS;
 
-/**
- * Get user-level path for a source.
- */
 export function getUserPath(ctx: LoadContext, source: SourceId, subpath: string): string | null {
-	// Native user config is profile-scoped via getAgentDir() (the active profile's
-	// agent dir), matching builtin.ts and getMCPConfigPath("user").
 	if (source === "native") return path.join(getAgentDir(), subpath);
 	if (source === "claude") return path.join(resolveClaudePaths(ctx.home).configDir, subpath);
 	const paths = SOURCE_PATHS[source];
@@ -99,9 +91,6 @@ export function getUserPath(ctx: LoadContext, source: SourceId, subpath: string)
 	return path.join(ctx.home, paths.userAgent, subpath);
 }
 
-/**
- * Get project-level path for a source (cwd only).
- */
 export function getProjectPath(ctx: LoadContext, source: SourceId, subpath: string): string | null {
 	const paths = SOURCE_PATHS[source];
 	if (!paths.projectDir) return null;
@@ -109,24 +98,15 @@ export function getProjectPath(ctx: LoadContext, source: SourceId, subpath: stri
 	return path.join(ctx.cwd, paths.projectDir, subpath);
 }
 
-/**
- * Resolve GitHub Copilot CLI's user-global config root. Copilot stores per-user
- * instructions/prompts/agents/MCP under `~/.copilot`, relocatable via the
- * `COPILOT_HOME` env var (mirrors Copilot CLI's `--config-dir`). Falls back to
- * `<home>/.copilot` when the override is unset.
- */
 export function resolveCopilotHome(home: string): string {
 	const override = process.env.COPILOT_HOME?.trim();
 	return override ? override : path.join(home, ".copilot");
 }
 
-/**
- * Create source metadata for an item.
- */
 export function createSourceMeta(provider: string, filePath: string, level: "user" | "project"): SourceMeta {
 	return {
 		provider,
-		providerName: "", // Filled in by registry
+		providerName: "",
 		path: path.resolve(filePath),
 		level,
 	};
@@ -142,18 +122,11 @@ function parseBoolean(value: unknown): boolean | undefined {
 	return undefined;
 }
 
-/**
- * Parse an MCP `requestIdFormat` value. Unrecognized values are dropped so a typo
- * degrades to the default integer ids rather than reaching a transport.
- */
 export function parseRequestIdFormat(value: unknown): MCPRequestIdFormat | undefined {
 	if (value === "string" || value === "number") return value;
 	return undefined;
 }
 
-/**
- * Parse a comma-separated string into an array of trimmed, non-empty strings.
- */
 export function parseCSV(value: string): string[] {
 	return value
 		.split(",")
@@ -161,10 +134,6 @@ export function parseCSV(value: string): string[] {
 		.filter(Boolean);
 }
 
-/**
- * Parse a value that may be an array of strings or a comma-separated string.
- * Returns undefined if the result would be empty.
- */
 function parseArrayOrCSV(value: unknown): string[] | undefined {
 	if (Array.isArray(value)) {
 		const filtered = value.filter((item): item is string => typeof item === "string");
@@ -177,9 +146,6 @@ function parseArrayOrCSV(value: unknown): string[] | undefined {
 	return undefined;
 }
 
-/**
- * Build a canonical rule item from a markdown/markdown-frontmatter document.
- */
 export function buildRuleFromMarkdown(
 	name: string,
 	content: string,
@@ -221,9 +187,6 @@ export function buildRuleFromMarkdown(
 	};
 }
 
-/**
- * Parse model field into a prioritized list.
- */
 function parseModelList(value: unknown): string[] | undefined {
 	const parsed = parseArrayOrCSV(value);
 	if (!parsed) return undefined;
@@ -231,7 +194,6 @@ function parseModelList(value: unknown): string[] | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
 interface ParsedAgentFields {
 	name: string;
 	description: string;
@@ -242,16 +204,12 @@ interface ParsedAgentFields {
 	thinkingLevel?: ThinkingLevel;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
-	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
+
 	prewalk?: boolean | string;
-	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
+
 	advisor?: boolean | string;
 }
 
-/**
- * Parse agent fields from frontmatter.
- * Returns null if required fields (name, description) are missing.
- */
 export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAgentFields | null {
 	const name = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
 	const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined;
@@ -263,12 +221,10 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	let tools = parseArrayOrCSV(frontmatter.tools);
 	if (tools) tools = normalizeToolNames(tools);
 
-	// Subagents with explicit tool lists always need yield
 	if (tools && !tools.includes("yield")) {
 		tools = [...tools, "yield"];
 	}
 
-	// Parse spawns field (array, "*", or CSV)
 	let spawns: string[] | "*" | undefined;
 	if (frontmatter.spawns === "*") {
 		spawns = "*";
@@ -294,13 +250,13 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const thinkingLevel = parseThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
-	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
+
 	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
 	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
 		const trimmed = frontmatter.prewalk.trim();
 		if (trimmed) prewalk = trimmed;
 	}
-	// advisor: true → advise with the default advisor-role model; "<pattern>" → custom advisor model.
+
 	let advisor: boolean | string | undefined = parseBoolean(frontmatter.advisor);
 	if (advisor === undefined && typeof frontmatter.advisor === "string") {
 		const trimmed = frontmatter.advisor.trim();
@@ -343,18 +299,10 @@ interface ScanSkillsFromDirOptions {
 	providerId: string;
 	level: "user" | "project";
 	requireDescription?: boolean;
-	/**
-	 * When true, treat a `SKILL.md` sitting directly under `dir` as a single skill in addition to
-	 * scanning `<dir>/<name>/SKILL.md` children. Matches the Claude plugin manifest convention
-	 * that lets a skill path point at a directory containing `SKILL.md` directly (e.g.
-	 * `"skills": ["./"]`), where the frontmatter `name` determines the invocation name and the
-	 * directory basename is the fallback. Default `false` preserves the strict child-scan
-	 * semantic every non-Claude provider relies on.
-	 */
+
 	includeSelf?: boolean;
 }
 
-// Stable ordering used for skill lists in prompts: name (case-insensitive), then name, then path.
 export function compareSkillOrder(aName: string, aPath: string, bName: string, bPath: string): number {
 	const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 	const lowerCompare = cmp(aName.toLowerCase(), bName.toLowerCase());
@@ -425,16 +373,11 @@ export async function scanSkillsFromDir(
 	}
 	await Promise.all(work);
 
-	// Deterministic ordering: async file reads complete nondeterministically, so sort after loading.
 	items.sort((a, b) => compareSkillOrder(a.name, a.path, b.name, b.path));
 
 	return { items, warnings };
 }
 
-/**
- * Expand environment variables in a string.
- * Supports ${VAR} and ${VAR:-default} syntax.
- */
 function expandEnvVars(value: string, extraEnv?: Record<string, string>): string {
 	return value.replace(/\$\{([^}:]+)(?::-([^}]*))?\}/g, (_, varName: string, defaultValue?: string) => {
 		const envValue = extraEnv?.[varName] ?? Bun.env[varName];
@@ -444,9 +387,6 @@ function expandEnvVars(value: string, extraEnv?: Record<string, string>): string
 	});
 }
 
-/**
- * Recursively expand environment variables in an object.
- */
 export function expandEnvVarsDeep<T>(obj: T, extraEnv?: Record<string, string>): T {
 	if (typeof obj === "string") {
 		return expandEnvVars(obj, extraEnv) as T;
@@ -464,27 +404,22 @@ export function expandEnvVarsDeep<T>(obj: T, extraEnv?: Record<string, string>):
 	return obj;
 }
 
-/**
- * Load files from a directory matching extensions.
- * Uses native glob for fast filesystem scanning with gitignore support.
- */
 export async function loadFilesFromDir<T>(
 	_ctx: LoadContext,
 	dir: string,
 	provider: string,
 	level: "user" | "project",
 	options: {
-		/** File extensions to match (without dot) */
 		extensions?: string[];
-		/** Transform file to item (return null to skip) */
+
 		transform: (name: string, content: string, path: string, source: SourceMeta) => T | null;
-		/** Whether to recurse into subdirectories (default: false) */
+
 		recursive?: boolean;
 	},
 ): Promise<LoadResult<T>> {
 	const items: T[] = [];
 	const warnings: string[] = [];
-	// Build glob pattern based on extensions and recursion
+
 	const { extensions, recursive = false } = options;
 
 	let pattern: string;
@@ -495,7 +430,6 @@ export async function loadFilesFromDir<T>(
 		pattern = recursive ? "**/*" : "*";
 	}
 
-	// Use native glob for fast scanning with gitignore support
 	let matches: Array<{ path: string }>;
 	try {
 		const result = await glob({
@@ -504,19 +438,14 @@ export async function loadFilesFromDir<T>(
 			gitignore: true,
 			hidden: false,
 			fileType: FileType.File,
-			// Thread the caller's non-recursive intent explicitly: the native glob
-			// defaults `recursive` to true and rewrites `*.{ts,js}` -> `**/*.{ts,js}`,
-			// which would walk the entire subtree (e.g. a venv's site-packages under
-			// ~/.codex/tools) and import arbitrary frontend assets as tools (#8552).
+
 			recursive,
 		});
 		matches = result.matches;
 	} catch {
-		// Directory doesn't exist or isn't readable
 		return { items, warnings };
 	}
 
-	// Read all matching files in parallel
 	const fileResults = await Promise.all(
 		matches.map(async match => {
 			const filePath = path.join(dir, match.path);
@@ -546,13 +475,6 @@ export async function loadFilesFromDir<T>(
 	return { items, warnings };
 }
 
-/**
- * Calculate depth of target directory relative to current working directory.
- * Depth is the number of directory levels from cwd to target.
- * - Positive depth: target is above cwd (parent/ancestor)
- * - Zero depth: target is cwd
- * - This uses path splitting to count directory levels
- */
 export function calculateDepth(cwd: string, targetDir: string, separator: string): number {
 	return cwd.split(separator).length - targetDir.split(separator).length;
 }
@@ -612,44 +534,25 @@ async function readExtensionModuleManifest(
 	return null;
 }
 
-/**
- * Discover extension module entry points in a directory.
- *
- * Discovery rules:
- * 1. Direct files: `extensions/*.ts` or `*.js` → load
- * 2. Subdirectory with index: `extensions/<ext>/index.ts` or `index.js` → load
- * 3. Subdirectory with package.json: `extensions/<ext>/package.json` with "proto"/"pi" field → load declared paths
- *
- * No recursion beyond one level. Complex packages must use package.json manifest.
- * Uses native glob for fast filesystem scanning with gitignore support.
- */
 export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: string): Promise<string[]> {
 	const discovered = new Set<string>();
-	// Find all candidate files in parallel using glob
+
 	const [directFiles, globIndexFiles, globPackageJsonFiles, linkedFiles] = await Promise.all([
-		// 1. Direct *.ts or *.js files
 		globIf(dir, "*.{ts,js}", FileType.File, false),
-		// 2. Subdirectory index files
+
 		globIf(dir, "*/index.{ts,js}", FileType.File, false),
-		// 3. Subdirectory package.json files
+
 		globIf(dir, "*/package.json", FileType.File, false),
-		// Native glob does not follow linked extension directories.
+
 		discoverLinkedExtensionModuleFiles(dir),
 	]);
 	const indexFiles = [...globIndexFiles, ...linkedFiles.indexFiles];
 	const packageJsonFiles = [...globPackageJsonFiles, ...linkedFiles.packageJsonFiles];
 
-	// The native glob walker runs with follow_links=false, so a symlinked extension
-	// directory is yielded as a Symlink entry but never descended into: its inner
-	// index.{ts,js}/package.json are invisible to the `*/...` patterns above.
-	// Detect top-level symlinked directories and synthesize the equivalent subdir
-	// matches so the resolution below treats them like real directories. Symlinked
-	// *files* already match, because the native file-type filter resolves a
-	// symlink's target type for File filters.
 	const topLevelEntries = await readDirEntries(dir);
 	for (const entry of topLevelEntries) {
 		if (!entry.isSymbolicLink()) continue;
-		// readDirEntries follows the symlink: a link to a file/dangling link yields [].
+
 		const subEntries = await readDirEntries(path.join(dir, entry.name));
 		const hasEntry = (name: string): boolean =>
 			subEntries.some(e => e.name === name && (e.isFile() || e.isSymbolicLink()));
@@ -658,15 +561,14 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 		else if (hasEntry("index.js")) indexFiles.push({ path: `${entry.name}/index.js` });
 	}
 
-	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
 		discovered.add(path.join(dir, match.path));
 	}
-	// Track which subdirectories have package.json manifests with declared extensions
+
 	const subdirsWithDeclaredExtensions = new Set<string>();
 	for (const match of packageJsonFiles) {
-		const subdir = path.dirname(match.path); // e.g., "my-extension"
+		const subdir = path.dirname(match.path);
 		const packageJsonPath = path.join(dir, match.path);
 		const manifest = await readExtensionModuleManifest(_ctx, packageJsonPath);
 		const declaredExtensions =
@@ -705,9 +607,6 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	return [...discovered];
 }
 
-/**
- * Derive a stable extension name from a path.
- */
 export function getExtensionNameFromPath(extensionPath: string): string {
 	const base = extensionPath.replace(/\\/g, "/").split("/").pop() ?? extensionPath;
 
@@ -725,10 +624,6 @@ export function getExtensionNameFromPath(extensionPath: string): string {
 	return base;
 }
 
-/**
- * Build ExtensionModule items from discovered user/project paths.
- * Shared across providers that expose extension modules via user + project dirs.
- */
 export function buildExtensionModuleItems(
 	providerId: string,
 	userPaths: string[],
@@ -750,15 +645,7 @@ export function buildExtensionModuleItems(
 	];
 }
 
-// =============================================================================
-// Claude Code Plugin Cache Helpers
-// =============================================================================
-
-/**
- * Entry for an installed Claude Code plugin.
- */
 interface ClaudePluginEntry {
-	/** Claude registry scope; project and local entries are restricted to their project path. */
 	scope?: "user" | "project" | "local";
 	installPath: string;
 	version: string;
@@ -766,39 +653,29 @@ interface ClaudePluginEntry {
 	lastUpdated: string;
 	gitCommitSha?: string;
 	enabled?: boolean;
-	/** Project root recorded by Claude for a project-bound installation. */
+
 	projectPath?: string;
 }
 
-/**
- * Claude Code installed_plugins.json registry format.
- */
 export interface ClaudePluginsRegistry {
 	version: number;
 	plugins: Record<string, ClaudePluginEntry[]>;
 }
 
-/**
- * Resolved plugin root for loading.
- */
 export interface ClaudePluginRoot {
-	/** Plugin ID (e.g., "simpleclaude-core@simpleclaude") */
 	id: string;
-	/** Marketplace name */
+
 	marketplace: string;
-	/** Plugin name */
+
 	plugin: string;
-	/** Version string */
+
 	version: string;
-	/** Absolute path to plugin root */
+
 	path: string;
-	/** Whether this is a user or project scope plugin */
+
 	scope: "user" | "project";
 }
 
-/**
- * Parse Claude Code installed_plugins.json content.
- */
 export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegistry | null {
 	const data = tryParseJson<ClaudePluginsRegistry>(content);
 	if (!data || typeof data !== "object") return null;
@@ -812,22 +689,7 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 	return data;
 }
 
-/**
- * Resolve the active project registry path by walking up from `cwd`.
- *
- * Walk order:
- * 1. Walk up from `cwd` looking for the nearest directory containing `.proto/`.
- *    The first match returns `<dir>/.proto/plugins/installed_plugins.json`.
- * 2. If no `.proto/` is found, rescan from `cwd` upward looking for `.git`.
- *    The git root is used as an anchor: `<gitRoot>/.proto/plugins/installed_plugins.json`.
- * 3. If neither is found, return `null` — no project context is active.
- *
- * This is the single source of truth for "active project root" used by install,
- * uninstall, list, upgrade, discovery, and doctor. Deterministic for a given `cwd`.
- */
 export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
-	// Pass 1: walk up looking for an existing .proto/ directory (nearest wins).
-	// Stop before os.homedir() — ~/.proto/ is the user-level config dir, not a project root.
 	const homeDir = os.homedir();
 	let dir = path.resolve(cwd);
 	while (dir !== homeDir) {
@@ -836,48 +698,30 @@ export async function resolveActiveProjectRegistryPath(cwd: string): Promise<str
 			if (stat.isDirectory()) {
 				return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
 			}
-		} catch {
-			// not found at this level — continue up
-		}
+		} catch {}
 		const parent = path.dirname(dir);
-		if (parent === dir) break; // filesystem root
+		if (parent === dir) break;
 		dir = parent;
 	}
 
-	// Pass 2: walk up looking for .git as a fallback anchor.
 	dir = path.resolve(cwd);
 	while (dir !== homeDir) {
 		try {
 			await fs.promises.stat(path.join(dir, ".git"));
 			return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
-		} catch {
-			// not found at this level — continue up
-		}
+		} catch {}
 		const parent = path.dirname(dir);
-		if (parent === dir) break; // filesystem root
+		if (parent === dir) break;
 		dir = parent;
 	}
 
-	return null; // not inside any project
+	return null;
 }
 
-/**
- * Like resolveActiveProjectRegistryPath, but falls back to `<cwd>/.proto/plugins/installed_plugins.json`
- * when no project anchor (.proto/ or .git/) is found.
- *
- * Use this when the caller accepts an explicit --scope project so that installing into a freshly
- * bootstrapped directory (no .proto/ or .git/ yet) works: writeInstalledPluginsRegistry auto-creates
- * the directory tree on first write.
- *
- * Returns undefined when cwd is os.homedir() — that path is already the user registry and must
- * never alias as the project registry.
- */
 export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<string | undefined> {
 	const resolved = await resolveActiveProjectRegistryPath(cwd);
 	if (resolved) return resolved;
-	// Home directory must not be treated as a project root: the fallback path would alias
-	// getInstalledPluginsRegistryPath(), causing MarketplaceManager to load the same file
-	// as both user and project registry and producing duplicates / disambiguation errors.
+
 	if (path.resolve(cwd) === os.homedir()) return undefined;
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
 }
@@ -890,15 +734,6 @@ async function canonicalClaudeProjectPath(projectPath: string): Promise<string |
 	}
 }
 
-/**
- * Claude Code `enabledPlugins` overrides, merged across the same settings
- * layers Claude Code itself consults: `<claude-config>/settings.json`, then
- * `<dir>/.claude/settings.json` and `<dir>/.claude/settings.local.json` for
- * each project directory (later layers win, `.local` wins within a layer).
- *
- * Returns `pluginId -> boolean` for the ids the user toggled explicitly, and
- * the list of settings files that contributed (for cache keying).
- */
 async function readClaudeEnabledPlugins(
 	claudeConfigDir: string,
 	projectDirs: string[],
@@ -928,17 +763,10 @@ const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: 
 
 const pluginCacheInvalidators = new Set<() => void>();
 
-/** Register a process-global plugin cache invalidator called whenever plugin roots are cleared. */
 export function registerPluginCacheInvalidator(invalidator: () => void): void {
 	pluginCacheInvalidators.add(invalidator);
 }
 
-/**
- * List all installed Claude Code plugin roots from its active plugin cache and
- * ~/.proto/plugins/installed_plugins.json, plus the nearest project registry when present.
- *
- * Results are cached per Claude and PROTO config directories, project registry, and canonical active project.
- */
 export async function listClaudePluginRoots(
 	home: string,
 	cwd?: string,
@@ -960,7 +788,6 @@ export async function listClaudePluginRoots(
 	const projectRoots: ClaudePluginRoot[] = [];
 	const canonicalClaudeProjectPaths = new Map<string, string | null>();
 
-	// ── Claude Code registry ──────────────────────────────────────────────────
 	const registryPath = path.join(claudeConfigDir, "plugins", "installed_plugins.json");
 	const content = await readFile(registryPath);
 
@@ -972,7 +799,6 @@ export async function listClaudePluginRoots(
 			for (const [pluginId, entries] of Object.entries(registry.plugins)) {
 				if (!Array.isArray(entries) || entries.length === 0) continue;
 
-				// Parse plugin ID format: "plugin-name@marketplace"
 				const atIndex = pluginId.lastIndexOf("@");
 				if (atIndex === -1) {
 					warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
@@ -982,18 +808,13 @@ export async function listClaudePluginRoots(
 				const pluginName = pluginId.slice(0, atIndex);
 				const marketplace = pluginId.slice(atIndex + 1);
 
-				// Process all valid entries, not just the first one.
-				// This handles plugins with multiple installs (different scopes/versions).
 				for (const entry of entries) {
 					if (!entry.installPath || typeof entry.installPath !== "string") {
 						warnings.push(`Plugin ${pluginId} entry has no installPath`);
 						continue;
 					}
 					if (entry.enabled === false) continue;
-					// Claude Code's own on/off switch: `enabledPlugins` in settings.json /
-					// settings.local.json. `false` hides the plugin here even though it is
-					// installed; `true` opts a project-bound install into this project even
-					// when its recorded projectPath is a different directory.
+
 					const override = enabledOverrides.enabled.get(pluginId);
 					if (override === false) continue;
 					if ((entry.scope === "local" || entry.scope === "project") && override !== true) {
@@ -1019,12 +840,6 @@ export async function listClaudePluginRoots(
 		}
 	}
 
-	// ── PROTO installed plugins registry ───────────────────────────────────────
-	// PROTO registry is authoritative: its entries replace Claude's entries for the same plugin ID.
-	// In production `home` is `os.homedir()`, so `getPluginsDir(home)` resolves to the
-	// same XDG-aware path the marketplace writer uses (reads and writes always agree).
-	// Tests pass a temp dir, which short-circuits the resolver for deterministic isolation.
-	// Computed before the cache lookup because isolated SDK homes select distinct PROTO registries.
 	const ompContent = await readFile(ompRegistryPath);
 	if (ompContent) {
 		const ompRegistry = parseClaudePluginsRegistry(ompContent);
@@ -1040,7 +855,6 @@ export async function listClaudePluginRoots(
 				const pluginName = pluginId.slice(0, atIndex);
 				const marketplace = pluginId.slice(atIndex + 1);
 
-				// PROTO is authoritative: drop all Claude-sourced entries for this plugin ID
 				const filtered = roots.filter(r => r.id !== pluginId);
 				roots.length = 0;
 				roots.push(...filtered);
@@ -1051,7 +865,7 @@ export async function listClaudePluginRoots(
 						continue;
 					}
 					if (entry.enabled === false) continue;
-					// Deduplicate by installPath within same ID
+
 					if (roots.some(r => r.id === pluginId && r.path === entry.installPath)) continue;
 
 					roots.push({
@@ -1069,9 +883,6 @@ export async function listClaudePluginRoots(
 		}
 	}
 
-	// ── Project-scoped PROTO registry ────────────────────────────────────────
-	// Loaded from the nearest .proto/plugins/installed_plugins.json relative to cwd.
-	// Project entries take precedence over user entries for the same plugin ID.
 	if (resolvedProjectPath) {
 		const projectContent = await readFile(resolvedProjectPath);
 		if (projectContent) {
@@ -1108,7 +919,6 @@ export async function listClaudePluginRoots(
 		}
 	}
 
-	// Project entries shadow user entries for the same plugin ID.
 	if (projectRoots.length > 0) {
 		const projectIds = new Set(projectRoots.map(r => r.id));
 		const deduped = roots.filter(r => !projectIds.has(r.id));
@@ -1116,7 +926,6 @@ export async function listClaudePluginRoots(
 		roots.push(...projectRoots, ...deduped);
 	}
 
-	// Merge --plugin-dir roots (highest precedence) on every fresh load
 	if (injectedPluginDirRoots.length > 0) {
 		const injectedIds = new Set(injectedPluginDirRoots.map(r => r.id));
 		const filtered = roots.filter(r => !injectedIds.has(r.id));
@@ -1129,24 +938,16 @@ export async function listClaudePluginRoots(
 	return result;
 }
 
-/**
- * Clear the plugin roots cache (useful for testing or when plugins change).
- */
 export function clearClaudePluginRootsCache(): void {
 	pluginRootsCache.clear();
 	for (const invalidate of pluginCacheInvalidators) invalidate();
 	preloadedPluginRoots = [...injectedPluginDirRoots];
-	// Re-warm preloaded roots asynchronously so sync LSP config reads stay valid
+
 	if (lastPreloadHome) {
 		void preloadPluginRoots(lastPreloadHome, getProjectDir());
 	}
 }
 
-/**
- * Invalidate fs caches for installed-plugin registry files and reset the
- * in-memory plugin roots cache. Used by MarketplaceManager clients after
- * installing/uninstalling/enabling/disabling plugins.
- */
 export function clearPluginRootsAndCaches(extraPaths?: readonly string[]): void {
 	invalidateFsCache(path.join(resolveClaudePaths().configDir, "plugins", "installed_plugins.json"));
 	invalidateFsCache(path.join(getPluginsDir(), "installed_plugins.json"));
@@ -1154,49 +955,25 @@ export function clearPluginRootsAndCaches(extraPaths?: readonly string[]): void 
 	clearClaudePluginRootsCache();
 }
 
-// ── Preloaded plugin roots (for sync consumers like LSP config) ─────────────
-// Populated at startup by preloadPluginRoots(). Read synchronously by
-// getPreloadedPluginRoots(). Safe degradation: empty array if not warmed.
-
 let preloadedPluginRoots: ClaudePluginRoot[] = [];
 let injectedPluginDirRoots: ClaudePluginRoot[] = [];
 let lastPreloadHome: string | undefined;
 
-/**
- * Populate the module-level plugin roots cache for sync consumers.
- * Call during session initialization, after dir resolution completes
- * but before any LSP config is read.
- */
 export async function preloadPluginRoots(home: string, cwd?: string): Promise<void> {
 	lastPreloadHome = home;
 	const { roots } = await listClaudePluginRoots(home, cwd);
 	preloadedPluginRoots = roots;
 }
 
-/**
- * Get pre-loaded plugin roots synchronously.
- * Returns empty array if preloadPluginRoots() hasn't been called.
- */
 export function getPreloadedPluginRoots(): readonly ClaudePluginRoot[] {
 	return preloadedPluginRoots;
 }
 
-// ── --plugin-dir injection ──────────────────────────────────────────────────
-
-/**
- * Inject synthetic plugin roots from --plugin-dir paths.
- * These are prepended to the cache with highest precedence (before PROTO/Claude entries).
- * Must be called before any listClaudePluginRoots() access.
- */
 export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: string): Promise<void> {
 	const injected: ClaudePluginRoot[] = [];
 	for (const dir of dirs) {
 		const resolved = path.resolve(dir);
-		// Read plugin name from manifest: Claude marketplace layout first, then
-		// the Agent Plugins standard root manifest (agent-plugins.org). Each
-		// manifest is resolved and proven inside the plugin directory BEFORE the
-		// read (Agent Plugins §4.1) — an escaping symlink falls back to the
-		// directory basename without consuming outside content.
+
 		let pluginName = path.basename(resolved);
 		const realRoot = await realpathIfExists(resolved);
 		if (realRoot !== null) {
@@ -1212,22 +989,18 @@ export async function injectPluginDirRoots(home: string, dirs: string[], cwd?: s
 						pluginName = manifest.name;
 						break;
 					}
-				} catch {
-					// Invalid manifest — try next, fall back to directory name
-				}
+				} catch {}
 			}
 		}
 
 		injected.push(buildPluginDirRoot(resolved, pluginName));
 	}
 
-	// Set injected roots BEFORE populating cache so listClaudePluginRoots merges them.
 	injectedPluginDirRoots = injected;
-	lastPreloadHome = home; // ensure cache-clear re-warm fires even when injectPluginDirRoots was the startup path
-	// Clear any stale cache entries (populated before injected roots were set).
+	lastPreloadHome = home;
+
 	pluginRootsCache.clear();
-	// Rebuild — cache miss triggers fresh load that includes both user+project registries
-	// and prepends injectedPluginDirRoots at highest precedence.
+
 	const { roots } = await listClaudePluginRoots(home, cwd);
 	preloadedPluginRoots = roots;
 }

@@ -1,11 +1,5 @@
 import * as path from "node:path";
-/**
- * `proto ttsr` — inspect and test Time-Traveling Stream Rules.
- *
- * `proto ttsr test` feeds a snippet (inline, --file, or stdin) through the real
- * TTSR matching pipeline and reports which rules would trigger. `proto ttsr list`
- * shows every TTSR-registered rule the current project/user config would load.
- */
+
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { ttsrHelp as commandHelp } from "../cli/command-help";
 import {
@@ -75,9 +69,6 @@ export default class Ttsr extends Command {
 		const { args, flags } = await this.parse(Ttsr);
 		const action = (args.action ?? "list") as (typeof TTSR_ACTIONS)[number];
 
-		// A positional that resolves to an existing file is a snippet file, not
-		// inline text — so `proto ttsr test src/foo.ts` works without --file.
-		// --file always wins over the positional.
 		let file = flags.file;
 		let snippet = args.snippet;
 		if (action === "test" && snippet && !file) {

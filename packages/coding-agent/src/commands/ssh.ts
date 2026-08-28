@@ -1,7 +1,3 @@
-/**
- * Manage SSH host configurations.
- */
-
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { sshHelp as commandHelp } from "../cli/command-help";
 import { runSSHCommand, type SSHAction, type SSHCommandArgs } from "../cli/ssh-cli";

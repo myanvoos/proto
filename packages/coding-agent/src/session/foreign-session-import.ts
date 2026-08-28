@@ -5,17 +5,14 @@ import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } fr
 import type { SessionInfo } from "./session-listing";
 import type { SessionManager } from "./session-manager";
 
-/** Construct the importer for a supported foreign session source. */
 export function createForeignSessionStore(source: ForeignSessionSource): ForeignSessionStore {
 	return source === "claude" ? new ClaudeSessionStore() : new CodexSessionStore();
 }
 
-/** Display name for a supported foreign session source. */
 export function foreignSessionSourceName(source: ForeignSessionSource): string {
 	return source === "claude" ? "Claude" : "Codex";
 }
 
-/** Convert lightweight foreign metadata for the existing session picker. */
 export function foreignSessionInfoToSessionInfo(info: ForeignSessionInfo): SessionInfo {
 	const firstMessage = info.firstMessage ?? "(no messages)";
 	return {
@@ -32,7 +29,6 @@ export function foreignSessionInfoToSessionInfo(info: ForeignSessionInfo): Sessi
 	};
 }
 
-/** Import and persist one foreign session under a fresh PROTO session identity. */
 export async function persistForeignSession(
 	store: ForeignSessionStore,
 	info: ForeignSessionInfo,

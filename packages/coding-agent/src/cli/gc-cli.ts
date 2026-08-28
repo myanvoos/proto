@@ -522,9 +522,7 @@ async function moveSessionWithArtifacts(candidate: ArchiveCandidate): Promise<vo
 				} else {
 					await movePath(move.destination, move.source);
 				}
-			} catch {
-				// Preserve the original failure; rollback failure is reported by the next scan.
-			}
+			} catch {}
 		}
 		throw error;
 	}
@@ -837,9 +835,7 @@ async function openNewGcLock(lockPath: string): Promise<fs.FileHandle | null> {
 async function releaseGcLockFile(lockPath: string, handle: fs.FileHandle): Promise<void> {
 	try {
 		await handle.close();
-	} catch {
-		// Best effort: stale sidecar locks are recoverable by PID/timestamp.
-	}
+	} catch {}
 	try {
 		await fs.unlink(lockPath);
 	} catch (error) {

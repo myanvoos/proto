@@ -37,72 +37,45 @@ import { ensurePyToolBridge } from "./tool-bridge";
 export type PythonKernelMode = "session" | "per-call";
 
 export interface PythonExecutorOptions {
-	/** Working directory for command execution */
 	cwd?: string;
-	/** Timeout in milliseconds */
+
 	timeoutMs?: number;
-	/** Absolute wall-clock deadline in milliseconds since epoch */
+
 	deadlineMs?: number;
-	/**
-	 * Runtime-work budget (ms). Used only for timeout-annotation text when the
-	 * caller drives cancellation via the eval watchdog `signal` instead of a
-	 * wall-clock `deadlineMs`/`timeoutMs`. Does not arm a timer.
-	 */
+
 	idleTimeoutMs?: number;
-	/** Callback for streaming output chunks (already sanitized) */
+
 	onChunk?: (chunk: string) => Promise<void> | void;
-	/** AbortSignal for cancellation */
+
 	signal?: AbortSignal;
-	/** Session identifier for kernel reuse */
+
 	sessionId?: string;
-	/** Logical owner identifier for retained kernel cleanup */
+
 	kernelOwnerId?: string;
-	/** Kernel mode (session reuse vs per-call) */
+
 	kernelMode?: PythonKernelMode;
-	/**
-	 * Explicit interpreter path (`python.interpreter` resolved from the
-	 * session's settings). Skips automatic runtime discovery when set.
-	 */
+
 	interpreter?: string;
-	/** Restart the kernel before executing */
+
 	reset?: boolean;
-	/** Session file path for accessing task outputs */
+
 	sessionFile?: string;
-	/**
-	 * Effective artifacts directory for the current session. Subagents share
-	 * the parent's directory, so this can differ from `sessionFile`'s sibling
-	 * dir. When present, exported to the kernel as `PI_ARTIFACTS_DIR` and
-	 * preferred over `PI_SESSION_FILE`-derived paths.
-	 */
+
 	artifactsDir?: string;
-	/** Artifact path/id for full output storage */
+
 	artifactPath?: string;
 	artifactId?: string;
-	/**
-	 * On-disk roots the prelude helpers (`read`/`write`) substitute for
-	 * internal-URL schemes (e.g. `{ local: "/…/artifacts/local" }`). Exported to
-	 * the kernel as `PI_EVAL_LOCAL_ROOTS` (JSON) so `write("local://x")` lands
-	 * where `read local://x` resolves instead of a literal `local:/` directory.
-	 */
+
 	localRoots?: Record<string, string>;
-	/**
-	 * ToolSession used to resolve host-side `tool.<name>(args)` calls made from
-	 * the Python prelude's bridge proxy. When omitted, the bridge env vars are
-	 * not injected and any `tool.foo(...)` raises in Python.
-	 */
+
 	toolSession?: ToolSession;
-	/** Callback for status events emitted by tool bridge invocations. */
+
 	emitStatus?: (event: JsStatusEvent) => void;
-	/**
-	 * Live status events streamed as they are emitted (both host-side bridge
-	 * helpers like `agent()` and kernel-side `display`/`log`/`phase`). Mirrors
-	 * what lands in `displayOutputs` so callers can render progress before the
-	 * cell finishes.
-	 */
+
 	onStatus?: (event: JsStatusEvent) => void;
-	/** @internal Bridge session id, set by `executePython` before delegating. */
+
 	bridgeSessionId?: string;
-	/** @internal Bridge endpoint info, set by `executePython` before delegating. */
+
 	bridge?: { url: string; token: string };
 }
 
@@ -111,38 +84,28 @@ export interface PythonKernelExecutor {
 }
 
 export interface PythonResult {
-	/** Combined stdout + stderr output (sanitized, possibly truncated) */
 	output: string;
-	/** Execution exit code (0 ok, 1 error, undefined if cancelled) */
+
 	exitCode: number | undefined;
-	/** Whether the execution was cancelled via signal */
+
 	cancelled: boolean;
-	/** Whether the output was truncated */
+
 	truncated: boolean;
-	/** Artifact ID if full output was saved to artifact storage */
+
 	artifactId?: string;
-	/** Total number of lines in the output stream */
+
 	totalLines: number;
-	/** Total number of bytes in the output stream */
+
 	totalBytes: number;
-	/** Number of lines included in the output text */
+
 	outputLines: number;
-	/** Number of bytes included in the output text */
+
 	outputBytes: number;
-	/** Rich display outputs captured from display_data/execute_result */
+
 	displayOutputs: KernelDisplayOutput[];
-	/** Whether stdin was requested */
+
 	stdinRequested: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Session bookkeeping
-//
-// One PythonKernel subprocess per (session id, cwd, interpreter) tuple. The
-// runner mutates process-global cwd/sys.path during execution, so cross-directory
-// work must never share a live kernel. Multiple agent owners can still register against
-// the same tuple; the kernel stays alive until the last owner detaches.
-// ---------------------------------------------------------------------------
 
 interface SessionKernelReplacement {
 	generation: number;
@@ -165,10 +128,6 @@ function normalizeExplicitInterpreter(cwd: string, interpreter: string | undefin
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Cancellation plumbing
-// ---------------------------------------------------------------------------
-
 class PythonExecutionCancelledError extends Error {
 	readonly timedOut: boolean;
 
@@ -183,10 +142,6 @@ function requireRemainingTimeoutMs(deadlineMs?: number): number | undefined {
 	return requireRemainingKernelTimeoutMs(deadlineMs, PythonExecutionCancelledError);
 }
 
-// ---------------------------------------------------------------------------
-// Result formatting
-// ---------------------------------------------------------------------------
-
 const formatTimeoutAnnotation = formatSessionTimeoutAnnotation;
 
 const formatKernelTimeoutAnnotation = formatSessionKernelTimeoutAnnotation;
@@ -195,10 +150,6 @@ function createCancelledPythonResult(timedOut: boolean, timeoutMs?: number): Pyt
 	const output = timedOut ? (formatTimeoutAnnotation(timeoutMs) ?? "Command timed out") : "";
 	return createCancelledKernelResult(output);
 }
-
-// ---------------------------------------------------------------------------
-// Kernel start helpers
-// ---------------------------------------------------------------------------
 
 async function startKernel(cwd: string, options: PythonExecutorOptions): Promise<PythonKernel> {
 	requireRemainingTimeoutMs(options.deadlineMs);
@@ -304,10 +255,6 @@ async function acquireLiveSessionKernel(
 	}
 	throw new PythonExecutionCancelledError(false);
 }
-
-// ---------------------------------------------------------------------------
-// Execution
-// ---------------------------------------------------------------------------
 
 async function executeWithKernel(
 	kernel: PythonKernelExecutor,

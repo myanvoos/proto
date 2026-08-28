@@ -1,20 +1,3 @@
-/**
- * PROTO extension package roots.
- *
- * An "extension package root" is a directory configured via either
- * `extensions:` in user/project settings or the `--extension`/`-e` CLI flag
- * that points to a packaged extension on disk. The package's standard
- * sub-directories (`skills/`, `hooks/`, `tools/`, `commands/`, `rules/`,
- * `prompts/`, `.mcp.json`) are wired into discovery by `proto-plugins.ts`.
- *
- * CLI-provided paths are injected via {@link injectOmpExtensionCliRoots}
- * before discovery runs; settings paths are read lazily from
- * `<scope>/settings.json` in {@link listOmpExtensionRoots} to mirror what
- * `loadExtensionModules` already does.
- *
- * @see ./proto-plugins.ts
- * @see ./builtin.ts `loadExtensionModules`
- */
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -25,19 +8,17 @@ import { getEnabledPlugins } from "../extensibility/plugins/loader";
 import { expandTilde } from "../tools/path-utils";
 import { listClaudePluginRoots } from "./helpers";
 
-/** A resolved extension package directory wired into the discovery surfaces. */
 export interface OmpExtensionRoot {
-	/** Absolute path to the package directory. */
 	path: string;
-	/** Stable display name (basename of the package directory). */
+
 	name: string;
-	/** Scope from which the path was sourced. */
+
 	level: "user" | "project";
 }
 
 interface InjectedRoot {
 	path: string;
-	/** Relative CLI spelling, rebound against the active project on discovery. */
+
 	relativePath?: string;
 	level: "user" | "project";
 }
@@ -45,7 +26,6 @@ interface InjectedRoot {
 type OmpExtensionRootMode = "merge" | "explicit-only";
 
 interface InvocationRootScope {
-	/** Raw SDK spellings, resolved against the LoadContext that performs discovery. */
 	paths: readonly string[];
 	mode: OmpExtensionRootMode;
 }
@@ -56,22 +36,11 @@ let injectedCliRoots: InjectedRoot[] = [];
 let injectedCliRootMode: OmpExtensionRootMode = "merge";
 
 interface InjectOmpExtensionCliRootOptions {
-	/**
-	 * `explicit-only` exposes only roots named by this CLI invocation. Use it
-	 * with `--no-extensions` so configured and installed packages cannot
-	 * contribute sibling capabilities through the `proto-plugins` provider.
-	 */
 	mode?: OmpExtensionRootMode;
-	/** Replace roots from an earlier invocation instead of extending them. */
+
 	replace?: boolean;
 }
 
-/**
- * Run one SDK invocation with its own extension-package roots. Async resources
- * started inside `callback` retain this scope, including discovery deliberately
- * deferred until the end of session startup. Raw relative paths are resolved by
- * {@link listOmpExtensionRoots} against that invocation's active cwd.
- */
 export function withOmpExtensionRootScope<T>(
 	paths: readonly string[],
 	mode: OmpExtensionRootMode,
@@ -80,15 +49,6 @@ export function withOmpExtensionRootScope<T>(
 	return invocationRootScope.run({ paths: [...paths], mode }, callback);
 }
 
-/**
- * Register CLI-provided extension package paths (e.g. from `--extension`/`-e`)
- * so the sub-discovery providers can find their sibling `skills/`, `hooks/`,
- * etc. Paths that do not resolve to a directory are silently dropped — file
- * entrypoints have no package sub-tree to scan.
- *
- * Call once during startup before any capability load. Repeated calls extend
- * the registered set; {@link clearOmpExtensionCliRoots} resets for tests.
- */
 export function injectOmpExtensionCliRoots(
 	paths: readonly string[],
 	home: string,
@@ -108,13 +68,11 @@ export function injectOmpExtensionCliRoots(
 	const merged = new Map<string, InjectedRoot>();
 	for (const root of injectedCliRoots) merged.set(root.path, root);
 	for (const { path: resolved, relativePath } of expanded) {
-		// CLI scope mirrors how `--extension` is treated elsewhere — user-level overrides win.
 		if (!merged.has(resolved)) merged.set(resolved, { path: resolved, relativePath, level: "user" });
 	}
 	injectedCliRoots = [...merged.values()];
 }
 
-/** Drop every CLI-injected root. Tests use this between cases. */
 export function clearOmpExtensionCliRoots(): void {
 	injectedCliRoots = [];
 	injectedCliRootMode = "merge";
@@ -149,8 +107,7 @@ function resolveAgainst(raw: string, ctx: LoadContext): string {
 async function isDirectory(p: string): Promise<boolean> {
 	const entries = await readDirEntries(p);
 	if (entries.length > 0) return true;
-	// Empty directory still counts; cache returns [] for both empty and missing.
-	// Disambiguate with a single stat — only hit when the cached listing is empty.
+
 	try {
 		const stat = await fs.stat(p);
 		return stat.isDirectory();
@@ -160,25 +117,6 @@ async function isDirectory(p: string): Promise<boolean> {
 	}
 }
 
-/**
- * Resolve every configured extension package directory for the given context.
- *
- * Sources, in order of precedence (later entries with the same absolute path
- * are dropped):
- *
- * 1. Invocation-scoped SDK roots, when present; otherwise CLI roots injected
- *    via {@link injectOmpExtensionCliRoots}
- * 2. Project `<cwd>/.proto/settings.json#extensions`
- * 3. User `~/.proto/agent/settings.json#extensions`
- * 4. Enabled npm/link plugins installed under `<plugins>/node_modules/` (for
- *    `proto install <pkg>` / `proto plugin install` / `proto plugin link`). Marketplace
- *    installs are loaded by the `claude-plugins` provider and are excluded here.
- * Only entries that resolve to a directory on disk are returned; file
- * entrypoints contribute zero sub-discovery surface and are filtered out.
- * Installed-plugin enumeration failures (missing lockfile, unreadable
- * `package.json`, etc.) are logged at `debug` and degrade gracefully — the
- * other sources still surface.
- */
 export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtensionRoot[]> {
 	const scopedRoots = invocationRootScope.getStore();
 	const rootMode = scopedRoots?.mode ?? injectedCliRootMode;
@@ -202,7 +140,6 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
 		];
 	}
 
-	// First-seen-wins dedup preserves invocation/CLI > project-settings > user-settings > installed precedence.
 	const seen = new Set<string>();
 	const unique: InjectedRoot[] = [];
 	for (const candidate of candidates) {
@@ -221,17 +158,6 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
 	return roots;
 }
 
-/**
- * Enumerate every enabled npm/link plugin's package directory so its conventional
- * `skills/`, `hooks/`, `tools/`, `commands/`, `rules/`, `prompts/`, and
- * `.mcp.json` are wired into discovery — mirrors how `getAllPluginExtensionPaths`
- * already feeds the extension factory loader.
- *
- * Marketplace installs also create runtime symlinks for enable-state persistence,
- * but their resources are discovered through the `claude-plugins` provider.
- * Filtering them here prevents `/status` from showing the same plugin under both
- * "Claude Code Marketplace" and "PROTO Extension Packages".
- */
 async function realpathOrResolved(p: string): Promise<string> {
 	try {
 		return await fs.realpath(p);

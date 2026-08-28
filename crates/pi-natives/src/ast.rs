@@ -1,5 +1,3 @@
-//! AST-aware structural search and rewrite powered by ast-grep.
-
 use std::{
 	cmp::Ordering,
 	collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
@@ -18,26 +16,24 @@ use crate::{glob_util, iofs, task};
 
 const DEFAULT_FIND_LIMIT: u32 = 50;
 
-/// ast-grep pattern strictness (controls how patterns match syntax).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi(string_enum)]
 pub enum AstMatchStrictness {
-	/// Match at the concrete syntax tree level.
 	#[napi(value = "cst")]
 	Cst,
-	/// Balanced default suitable for most searches.
+
 	#[napi(value = "smart")]
 	Smart,
-	/// Match at the AST level.
+
 	#[napi(value = "ast")]
 	Ast,
-	/// More permissive matching.
+
 	#[napi(value = "relaxed")]
 	Relaxed,
-	/// Match structural signatures.
+
 	#[napi(value = "signature")]
 	Signature,
-	/// Template-style pattern matching.
+
 	#[napi(value = "template")]
 	Template,
 }
@@ -59,56 +55,51 @@ fn resolve_strictness(value: Option<AstMatchStrictness>) -> MatchStrictness {
 	value.map_or(MatchStrictness::Smart, Into::into)
 }
 
-/// Options for `astGrep`: patterns, scan scope, and match limits.
 #[napi(object)]
 pub struct AstFindOptions<'env> {
-	/// ast-grep patterns to search for (OR across patterns).
-	pub patterns:     Option<Vec<String>>,
-	/// Language override; otherwise inferred from file extension per candidate.
-	pub lang:         Option<String>,
-	/// Single file or directory to scan (combined with `glob` when set).
-	pub path:         Option<String>,
-	/// Optional glob filter relative to the search root.
-	pub glob:         Option<String>,
-	/// Rule selector for multi-rule ast-grep configurations.
-	pub selector:     Option<String>,
-	/// Pattern strictness; defaults to smart matching when omitted.
-	pub strictness:   Option<AstMatchStrictness>,
-	/// Maximum matches to return after `offset` (default applies when omitted).
-	pub limit:        Option<u32>,
-	/// Number of leading matches to skip before applying `limit`.
-	pub offset:       Option<u32>,
-	/// When true, include meta-variable bindings per match.
+	pub patterns: Option<Vec<String>>,
+
+	pub lang: Option<String>,
+
+	pub path: Option<String>,
+
+	pub glob: Option<String>,
+
+	pub selector: Option<String>,
+
+	pub strictness: Option<AstMatchStrictness>,
+
+	pub limit: Option<u32>,
+
+	pub offset: Option<u32>,
+
 	pub include_meta: Option<bool>,
-	/// Reserved for contextual snippets; not used by the current native find
-	/// path.
-	pub context:      Option<u32>,
-	/// Optional cancellation handle (library-specific).
-	pub signal:       Option<Unknown<'env>>,
-	/// Wall-clock timeout for the worker task in milliseconds.
-	pub timeout_ms:   Option<u32>,
+
+	pub context: Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// One ast-grep match with source range and optional meta-variables.
 #[napi(object)]
 pub struct AstFindMatch {
-	/// Display path of the matching file.
-	pub path:           String,
-	/// Matched source text.
-	pub text:           String,
-	/// Start byte offset in the file (UTF-8 byte index).
-	pub byte_start:     u32,
-	/// End byte offset in the file (exclusive UTF-8 byte index).
-	pub byte_end:       u32,
-	/// 1-based start line.
-	pub start_line:     u32,
-	/// 1-based start column.
-	pub start_column:   u32,
-	/// 1-based end line.
-	pub end_line:       u32,
-	/// 1-based end column.
-	pub end_column:     u32,
-	/// Meta-variable name to captured text, when `includeMeta` was enabled.
+	pub path: String,
+
+	pub text: String,
+
+	pub byte_start: u32,
+
+	pub byte_end: u32,
+
+	pub start_line: u32,
+
+	pub start_column: u32,
+
+	pub end_line: u32,
+
+	pub end_column: u32,
+
 	pub meta_variables: Option<HashMap<String, String>>,
 }
 
@@ -230,148 +221,129 @@ fn retained_to_find_match(retained: RetainedAstFindMatch) -> AstFindMatch {
 	}
 }
 
-/// Aggregated search statistics and any parse or compile diagnostics.
 #[napi(object)]
 pub struct AstFindResult {
-	/// Page of matches after sort, offset, and limit.
-	pub matches:            Vec<AstFindMatch>,
-	/// Total matches found before paging (can exceed `matches.length`).
-	pub total_matches:      u32,
-	/// Distinct files that contained at least one match.
+	pub matches: Vec<AstFindMatch>,
+
+	pub total_matches: u32,
+
 	pub files_with_matches: u32,
-	/// Files examined for the query.
-	pub files_searched:     u32,
-	/// True when results were truncated by `limit`.
-	pub limit_reached:      bool,
-	/// Non-fatal parse or pattern errors collected during the run.
-	pub parse_errors:       Option<Vec<String>>,
+
+	pub files_searched: u32,
+
+	pub limit_reached: bool,
+
+	pub parse_errors: Option<Vec<String>>,
 }
 
-/// Options for `astMatch`: run ast-grep patterns against an in-memory source
-/// string instead of files on disk.
 #[napi(object)]
 pub struct AstMatchOptions<'env> {
-	/// Source code to match against (parsed in memory, never read from disk).
-	pub source:       String,
-	/// Language of `source` (required; e.g. "ts", "tsx", "rust", "python").
-	pub lang:         String,
-	/// ast-grep patterns to search for (OR across patterns).
-	pub patterns:     Vec<String>,
-	/// Rule selector for multi-rule ast-grep configurations.
-	pub selector:     Option<String>,
-	/// Pattern strictness; defaults to smart matching when omitted.
-	pub strictness:   Option<AstMatchStrictness>,
-	/// Maximum matches to return after `offset` (default applies when omitted).
-	pub limit:        Option<u32>,
-	/// Number of leading matches to skip before applying `limit`.
-	pub offset:       Option<u32>,
-	/// When true, include meta-variable bindings per match.
+	pub source: String,
+
+	pub lang: String,
+
+	pub patterns: Vec<String>,
+
+	pub selector: Option<String>,
+
+	pub strictness: Option<AstMatchStrictness>,
+
+	pub limit: Option<u32>,
+
+	pub offset: Option<u32>,
+
 	pub include_meta: Option<bool>,
-	/// Optional cancellation handle (library-specific).
-	pub signal:       Option<Unknown<'env>>,
-	/// Wall-clock timeout for the worker task in milliseconds.
-	pub timeout_ms:   Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// Result of an in-memory `astMatch` run.
 #[napi(object)]
 pub struct AstMatchResult {
-	/// Page of matches after sort, offset, and limit.
-	pub matches:       Vec<AstFindMatch>,
-	/// Total matches found before paging (can exceed `matches.length`).
+	pub matches: Vec<AstFindMatch>,
+
 	pub total_matches: u32,
-	/// True when results were truncated by `limit`.
+
 	pub limit_reached: bool,
-	/// Non-fatal parse or pattern-compile errors collected during the run.
-	pub parse_errors:  Option<Vec<String>>,
+
+	pub parse_errors: Option<Vec<String>>,
 }
 
-/// Options for `astEdit`: rewrite rules, scan scope, safety limits, and
-/// dry-run.
 #[napi(object)]
 pub struct AstReplaceOptions<'env> {
-	/// Map of pattern string to replacement template.
-	pub rewrites:            Option<HashMap<String, String>>,
-	/// Language override applied to every file; otherwise inferred per file, so
-	/// mixed-language paths rewrite each file in its own language.
-	pub lang:                Option<String>,
-	/// Single file or directory to rewrite.
-	pub path:                Option<String>,
-	/// Optional glob filter within the search root.
-	pub glob:                Option<String>,
-	/// Rule selector for multi-rule configurations.
-	pub selector:            Option<String>,
-	/// Pattern strictness for rewrites.
-	pub strictness:          Option<AstMatchStrictness>,
-	/// When true (default), compute changes without writing files.
-	pub dry_run:             Option<bool>,
-	/// Cap on replacement applications across all files.
-	pub max_replacements:    Option<u32>,
-	/// Cap on distinct files that may be modified.
-	pub max_files:           Option<u32>,
-	/// Fail the operation when a file cannot be parsed for rewriting.
+	pub rewrites: Option<HashMap<String, String>>,
+
+	pub lang: Option<String>,
+
+	pub path: Option<String>,
+
+	pub glob: Option<String>,
+
+	pub selector: Option<String>,
+
+	pub strictness: Option<AstMatchStrictness>,
+
+	pub dry_run: Option<bool>,
+
+	pub max_replacements: Option<u32>,
+
+	pub max_files: Option<u32>,
+
 	pub fail_on_parse_error: Option<bool>,
-	/// Optional cancellation handle.
-	pub signal:              Option<Unknown<'env>>,
-	/// Wall-clock timeout for the worker task in milliseconds.
-	pub timeout_ms:          Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// One textual replacement applied to a file (before/after slice and
-/// coordinates).
 #[napi(object)]
 pub struct AstReplaceChange {
-	/// File path for this change.
-	pub path:           String,
-	/// Original matched text.
-	pub before:         String,
-	/// Replacement text.
-	pub after:          String,
-	/// Start byte offset of the replaced span.
-	pub byte_start:     u32,
-	/// End byte offset of the replaced span (exclusive).
-	pub byte_end:       u32,
-	/// Length of deleted text in bytes (may differ from `byteEnd - byteStart`
-	/// for edge cases).
+	pub path: String,
+
+	pub before: String,
+
+	pub after: String,
+
+	pub byte_start: u32,
+
+	pub byte_end: u32,
+
 	pub deleted_length: u32,
-	/// 1-based start line of the match.
-	pub start_line:     u32,
-	/// 1-based start column.
-	pub start_column:   u32,
-	/// 1-based end line.
-	pub end_line:       u32,
-	/// 1-based end column.
-	pub end_column:     u32,
+
+	pub start_line: u32,
+
+	pub start_column: u32,
+
+	pub end_line: u32,
+
+	pub end_column: u32,
 }
 
-/// Per-file replacement count after an `astEdit` run.
 #[napi(object)]
 pub struct AstReplaceFileChange {
-	/// File that had replacements.
-	pub path:  String,
-	/// Number of replacements in that file.
+	pub path: String,
+
 	pub count: u32,
 }
 
-/// Summary of an ast-grep rewrite pass, including whether disk writes occurred.
 #[napi(object)]
 pub struct AstReplaceResult {
-	/// Individual replacement records (may be large).
-	pub changes:            Vec<AstReplaceChange>,
-	/// Replacement counts grouped by file.
-	pub file_changes:       Vec<AstReplaceFileChange>,
-	/// Total replacements applied or previewed.
+	pub changes: Vec<AstReplaceChange>,
+
+	pub file_changes: Vec<AstReplaceFileChange>,
+
 	pub total_replacements: u32,
-	/// Files that had at least one replacement.
-	pub files_touched:      u32,
-	/// Files considered for rewriting.
-	pub files_searched:     u32,
-	/// False when `dryRun` prevented writing.
-	pub applied:            bool,
-	/// True when limits stopped further replacements.
-	pub limit_reached:      bool,
-	/// Parse or pattern errors when not failing the whole operation.
-	pub parse_errors:       Option<Vec<String>>,
+
+	pub files_touched: u32,
+
+	pub files_searched: u32,
+
+	pub applied: bool,
+
+	pub limit_reached: bool,
+
+	pub parse_errors: Option<Vec<String>>,
 }
 
 struct FileCandidate {
@@ -401,10 +373,6 @@ fn resolve_language(lang: Option<&str>, file_path: &Path) -> Result<SupportLang>
 	shared_ops::resolve_language(lang, file_path).map_err(|err| Error::from_reason(err.to_string()))
 }
 
-/// Returns true if the file's extension resolves to a supported language.
-/// When `lang` is explicitly provided, all files are considered candidates
-/// (the user chose to treat them as that language). When `lang` is None,
-/// only files with recognizable code extensions are included.
 fn is_supported_file(file_path: &Path, explicit_lang: Option<&str>) -> bool {
 	shared_ops::is_supported_file(file_path, explicit_lang)
 }
@@ -548,10 +516,6 @@ struct CompiledFindPattern {
 	compile_errors_by_lang: HashMap<String, String>,
 }
 
-/// A rewrite rule compiled for every language discovered among the candidate
-/// files. A rule that fails to parse in one language of a mixed tree skips
-/// that language's files (reported as parse errors) instead of failing the
-/// whole call.
 struct CompiledRewriteRule {
 	pattern:                String,
 	rewrite:                String,
@@ -633,8 +597,7 @@ fn compile_find_patterns(
 
 	Ok(compiled)
 }
-/// Search source files with ast-grep patterns; returns a promise resolved on a
-/// worker thread.
+
 #[napi]
 pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 	let AstFindOptions {
@@ -791,13 +754,6 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 	})
 }
 
-/// Match ast-grep patterns against an in-memory source string; returns a
-/// promise resolved on a worker thread.
-///
-/// This is the file-free counterpart to [`ast_grep`]: callers that already hold
-/// the source (streaming buffers, generated code, editor contents) avoid a
-/// temp-file round trip. `lang` is required since there is no path to infer it
-/// from.
 #[napi]
 pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> {
 	let AstMatchOptions {
@@ -901,8 +857,6 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 	})
 }
 
-/// Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
-/// a promise.
 #[napi]
 pub fn ast_edit(options: AstReplaceOptions<'_>) -> task::Promise<AstReplaceResult> {
 	let AstReplaceOptions {
@@ -995,9 +949,7 @@ fn ast_edit_blocking(
 				},
 			}
 		}
-		// A pattern that parses in NO discovered language is a genuine pattern
-		// error; failing in only some languages of a mixed tree is expected (the
-		// pattern targets one language) and surfaces per skipped file below.
+
 		if compiled_by_lang.is_empty() && !languages.is_empty() {
 			let mut entries: Vec<_> = compile_errors_by_lang.iter().collect();
 			entries.sort_by_key(|(lang_key, _)| lang_key.as_str());
@@ -1040,8 +992,7 @@ fn ast_edit_blocking(
 	let mut file_counts: BTreeMap<String, u32> = BTreeMap::new();
 	let mut files_touched = 0u32;
 	let mut limit_reached = false;
-	// Stage writes in memory so a later compute error cannot leave earlier
-	// files partially modified on disk; flush only after the whole pass succeeds.
+
 	let mut pending_writes: Vec<PendingWrite> = Vec::new();
 
 	for resolved in &resolved_candidates {
@@ -1102,9 +1053,7 @@ fn ast_edit_blocking(
 			for matched in ast.root().find_all(compiled.clone()) {
 				ct.heartbeat()?;
 				let edit = matched.replace_by(rewrite);
-				// Multiple rules matching the same node with the same output are one
-				// deterministic edit; list and count it once instead of staging a
-				// duplicate that trips the apply-time overlap check.
+
 				let duplicate = file_changes.iter().any(|entry: &PendingFileChange| {
 					entry.edit.position == edit.position
 						&& entry.edit.deleted_length == edit.deleted_length

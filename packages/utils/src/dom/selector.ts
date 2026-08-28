@@ -261,7 +261,6 @@ function matchComplexAt(element: Element, complex: ComplexSelector, index: numbe
 	return false;
 }
 
-/** Whether an element matches a CSS selector list. */
 export function matchesSelector(element: Element, selector: string): boolean {
 	for (const part of splitTopLevel(selector, ",")) {
 		const complex = parseComplex(part);
@@ -270,7 +269,6 @@ export function matchesSelector(element: Element, selector: string): boolean {
 	return false;
 }
 
-/** Query descendants of a node in document order. */
 export function querySelectorAllFrom(
 	root: Document | DocumentFragment | Element,
 	selector: string,

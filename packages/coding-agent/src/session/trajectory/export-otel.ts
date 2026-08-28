@@ -1,35 +1,17 @@
-/**
- * OpenTelemetry export: serializes a session trajectory into an OTLP JSON
- * traces document using the GenAI semantic conventions already used by the
- * live instrumentation (`@oh-my-pi/pi-agent-core` telemetry).
- *
- * The output is a standard OTLP/JSON `ExportTraceServiceRequest` payload —
- * the same body an SDK would POST to an OTLP/HTTP endpoint — so it can be
- * replayed into any collector or backend that speaks OTLP (`otelcol`, Jaeger
- * OTLP ingestion, Tempo, …) without an SDK in the loop.
- *
- * Span tree (mirrors the live spans):
- *   invoke_agent proto            — one root span for the whole session
- *     chat <model>                — per assistant message (CLIENT)
- *       execute_tool <name>       — per tool call, paired to its result
- */
 import { GenAIAttr, PiGenAIAttr } from "@oh-my-pi/pi-agent-core";
 import type { Trajectory, TrajectoryStep } from "./model";
 
 const SERVICE_NAME = "proto";
 
-/** OTLP SpanKind enum values (protobuf wire numbers). */
 const SPAN_KIND_CLIENT = 3;
 const SPAN_KIND_INTERNAL = 1;
 
-/** OTLP Status codes. */
 const STATUS_OK = 1;
 const STATUS_ERROR = 2;
 
 export interface OtelExportOptions {
-	/** Stamp message/tool content attributes on spans (default true). */
 	captureContent?: boolean;
-	/** Override the service.version resource attribute. */
+
 	serviceVersion?: string;
 }
 
@@ -81,7 +63,6 @@ function strArray(values: readonly string[]): OtlpAnyValue {
 	return { arrayValue: { values: values.map(str) } };
 }
 
-/** Deterministic 128-bit trace id from the session identity, so re-exports of one session stay diffable. */
 export function trajectoryTraceId(sessionId: string): string {
 	const hasher = new Bun.CryptoHasher("sha256");
 	hasher.update(`proto-trajectory:${sessionId}`);
@@ -98,7 +79,6 @@ function msToUnixNano(ms: number): string {
 	return `${BigInt(Math.round(ms)) * 1_000_000n}`;
 }
 
-/** Live-instrumentation stop-reason mapping (`mapStopReason` in pi-agent-core telemetry). */
 function mapStopReason(reason: string | undefined): string | undefined {
 	switch (reason) {
 		case "stop":
@@ -119,7 +99,7 @@ function usageAttributes(step: TrajectoryStep): OtlpKeyValue[] {
 	const usage = step.usage;
 	if (!usage) return [];
 	const attrs: OtlpKeyValue[] = [];
-	// Semconv input tokens include both cache buckets (matches applyUsageAttributes).
+
 	const inputTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	attrs.push({ key: GenAIAttr.UsageInputTokens, value: int(inputTokens) });
 	attrs.push({ key: GenAIAttr.UsageOutputTokens, value: int(usage.output) });
@@ -142,10 +122,6 @@ function usageAttributes(step: TrajectoryStep): OtlpKeyValue[] {
 	return attrs;
 }
 
-/**
- * Serialize the trajectory as an OTLP JSON document object.
- * Stringify (or call {@link trajectoryToOtlpJson}) for the file payload.
- */
 export function trajectoryToOtlp(trajectory: Trajectory, options: OtelExportOptions = {}): OtlpTraceDocument {
 	const captureContent = options.captureContent ?? true;
 	const sessionId = trajectory.header?.id ?? "session";
@@ -183,7 +159,6 @@ export function trajectoryToOtlp(trajectory: Trajectory, options: OtelExportOpti
 		},
 	];
 
-	/** assistant entryId → chat spanId; tool spans parent under their emitting chat. */
 	const chatSpanByEntryId = new Map<string, string>();
 
 	for (const step of trajectory.steps) {
@@ -240,8 +215,6 @@ export function trajectoryToOtlp(trajectory: Trajectory, options: OtelExportOpti
 			];
 			if (step.toolCallId) attributes.push({ key: GenAIAttr.ToolCallId, value: str(step.toolCallId) });
 			if (captureContent) {
-				// Step content holds the pretty-printed call arguments until the
-				// result is appended after a "[result]" marker by the model builder.
 				const separator = "\n\n[result]\n";
 				const splitAt = step.content.indexOf(separator);
 				const argsText = splitAt === -1 ? step.content : step.content.slice(0, splitAt);
@@ -281,7 +254,6 @@ function firstErrorLine(text: string | undefined): string {
 	return line.slice(0, 200);
 }
 
-/** Full OTLP JSON file payload (one line-free, indented=false compact JSON). */
 export function trajectoryToOtlpJson(trajectory: Trajectory, options: OtelExportOptions = {}): string {
 	return JSON.stringify(trajectoryToOtlp(trajectory, options));
 }

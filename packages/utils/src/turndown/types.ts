@@ -1,6 +1,3 @@
-/** Behavior-compatible reimplementation of turndown's used surface. */
-
-/** A DOM-shaped node accepted by conversion rules. */
 export interface TurndownNode {
 	readonly nodeType: number;
 	readonly nodeName: string;
@@ -17,7 +14,6 @@ export interface TurndownNode {
 	hasAttribute(name: string): boolean;
 }
 
-/** Options supported by the HTML-to-Markdown converter. */
 export interface TurndownOptions {
 	headingStyle?: "setext" | "atx";
 	hr?: string;
@@ -34,7 +30,6 @@ export interface TurndownOptions {
 	defaultReplacement?: ReplacementFunction;
 }
 
-/** Fully resolved options passed to replacement callbacks. */
 export interface ResolvedTurndownOptions {
 	headingStyle: "setext" | "atx";
 	hr: string;
@@ -51,25 +46,20 @@ export interface ResolvedTurndownOptions {
 	defaultReplacement?: ReplacementFunction;
 }
 
-/** A tag name, list of tag names, or predicate selecting nodes for a rule. */
 export type RuleFilter =
 	| string
 	| readonly string[]
 	| ((node: TurndownNode, options: ResolvedTurndownOptions) => boolean);
 
-/** Produces Markdown for a matched node and its already-converted children. */
 export type ReplacementFunction = (content: string, node: TurndownNode, options: ResolvedTurndownOptions) => string;
 
-/** A named conversion rule accepted by `addRule`. */
 export interface TurndownRule {
 	filter: RuleFilter;
 	replacement: ReplacementFunction;
 }
 
-/** A plugin that installs one or more conversion rules. */
 export type TurndownPlugin = (service: TurndownServiceLike) => void;
 
-/** Structural service surface available to plugins. */
 export interface TurndownServiceLike {
 	readonly options: ResolvedTurndownOptions;
 	addRule(key: string, rule: TurndownRule): this;

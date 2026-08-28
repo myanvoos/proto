@@ -1,10 +1,3 @@
-/**
- * Fuzzy matching utilities for the edit tool.
- *
- * Provides both character-level and line-level fuzzy matching with progressive
- * fallback strategies for finding text in files.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
@@ -69,9 +62,7 @@ export async function executeReplaceSingle(
 	}
 
 	const absolutePath = resolvePlanPath(session, path);
-	// Recover the BOM from raw bytes: the text reader drops a leading UTF-8 BOM,
-	// so a plain read + stripBom would rewrite the file without it (regression:
-	// "should preserve UTF-8 BOM after edit").
+
 	const { bom, content } = await readEditFileTextWithBom(absolutePath, path);
 	const originalEnding = detectLineEnding(content);
 	const normalizedContent = normalizeToLF(content);
@@ -111,10 +102,8 @@ export async function executeReplaceSingle(
 		bom + restoreLineEndings(result.content, originalEnding),
 	);
 
-	// Route through ACP bridge when available; skips internal artifacts.
 	let diagnostics: FileDiagnosticsResult | undefined;
 	if (await routeWriteThroughBridge(session, path, absolutePath, finalContent, signal)) {
-		// bridge handled the write; diagnostics not available via writethrough
 	} else {
 		diagnostics = await writethrough(absolutePath, finalContent, signal, Bun.file(absolutePath), batchRequest, dst =>
 			dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined,

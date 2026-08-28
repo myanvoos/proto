@@ -5,12 +5,10 @@ export const openaiCodexProvider = {
 	id: "openai-codex",
 	name: "ChatGPT Plus/Pro (Codex Subscription)",
 	login: async (cb: OAuthLoginCallbacks) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { loginOpenAICodex } = await import("./oauth/openai-codex");
 		return loginOpenAICodex(cb);
 	},
 	refreshToken: async (credentials: OAuthCredentials) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { refreshOpenAICodexToken } = await import("./oauth/openai-codex");
 		return refreshOpenAICodexToken(credentials.refresh);
 	},

@@ -29,12 +29,9 @@ export const zaiProvider = {
 export const zaiCodingPlanProvider = {
 	id: "zai-coding-plan",
 	name: "Z.AI (GLM Coding Plan · Sign in)",
-	// Minted key lives in creds.access; getOAuthApiKey returns it for the `zai`
-	// catalog provider verbatim, so store credentials under `zai`.
+
 	storeCredentialsAs: "zai",
-	// Loopback callback server on this port, plus the manual paste-code
-	// fallback (PASTE_CODE_LOGIN_PROVIDERS) for when the browser cannot reach
-	// this machine. Mirrors the Anthropic sign-in wiring.
+
 	callbackPort: 54548,
 	pasteCodeFlow: true,
 	login: (cb: OAuthLoginCallbacks) => import("./oauth/zai").then(m => m.loginZaiOAuth(cb)),

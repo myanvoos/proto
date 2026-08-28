@@ -1,36 +1,6 @@
-//! Python test, type-check, and lint output filters.
-//!
-//! Ported from rtk-ai/rtk@878af7de99e0ba71da2e8fd996f6b52a1836e06c
-//! Path: `src/cmds/python/pytest_cmd.rs`
-//! License: MIT (compatible with workspace MIT). See `NOTICE` at
-//! the `pi-shell` crate root.
-//!
-//! The pytest state machine (`filter_pytest`, `pytest_success`,
-//! `is_pytest_*`, `looks_like_pytest_summary_part`) adapts the
-//! `build_pytest_summary` algorithm from RTK at the pinned SHA above:
-//! preserve failures, errors, and the final summary line; strip header
-//! framing, progress dots, and verbose PASSED rows. Unknown-state lines
-//! fall through unchanged (RTK's defensive default), so xdist `[gwN]`
-//! prefixes and custom reporters never cause data loss.
-
 use super::lint;
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
-/// Cap on rendered verbose failure blocks (the `___ test ___` traceback
-/// sections). Mirrors RTK's `MAX_PYTEST_FAILURES` (== `CAP_WARNINGS` == 10),
-/// re-derived for the minimizer's streaming, line-based renderer: once this
-/// many traceback blocks have been emitted, further blocks are suppressed and
-/// a single `[…N failures elided…]` overflow marker stands in for the
-/// remainder. The compact `FAILED …` short-summary one-liners are NOT capped
-/// here — they name every failed test cheaply and stay intact.
-///
-/// The `=== ERRORS ===` section (collection / fixture-setup errors) is capped
-/// by a SEPARATE counter (see `filter_pytest`): pytest renders ERRORS *before*
-/// FAILURES, and those banners (`___ ERROR collecting … ___`) contain the
-/// substring `test` via their path, so a single shared counter would let a
-/// burst of low-value collection banners exhaust the budget and evict the
-/// real assertion tracebacks that follow. Two counters keep each section's
-/// overflow independent.
 const MAX_PYTEST_FAILURES: usize = 10;
 
 #[must_use]
@@ -44,9 +14,6 @@ pub fn supports(program: &str, subcommand: Option<&str>) -> bool {
 
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
-	// Kill-switch parity (M2): when `legacy_filters_active`, fall back to
-	// the pre-PR passthrough so callers can rollback an RTK-port regression
-	// without recompile.
 	if ctx.config.legacy_filters_active() {
 		return MinimizerOutput::passthrough(input);
 	}
@@ -85,11 +52,7 @@ fn filter_pytest(input: &str, exit_code: i32) -> String {
 
 	let mut out = String::new();
 	let mut in_failure = false;
-	// Verbose traceback blocks seen so far, counted SEPARATELY per pytest
-	// section. `=== ERRORS ===` (collection / fixture-setup) banners render
-	// before `=== FAILURES ===`, so a shared counter would let collection
-	// noise exhaust the budget and evict real assertion tracebacks; two
-	// counters give each section an independent cap + overflow marker.
+
 	let mut failure_blocks = 0usize;
 	let mut error_blocks = 0usize;
 	let mut suppressing = false;
@@ -108,10 +71,7 @@ fn filter_pytest(input: &str, exit_code: i32) -> String {
 			push_pytest_summary_line(&mut out, trimmed);
 			continue;
 		}
-		// XFAIL/XPASS short-summary report lines (emitted under `-r` flags)
-		// must survive verbatim: XPASS in particular signals a behavior change
-		// (something expected-to-fail now passes). Handled before the
-		// in_failure block so the verbose-pass-noise filter can't eat them.
+
 		if trimmed.starts_with("XFAIL ") || trimmed.starts_with("XPASS ") {
 			in_failure = false;
 			suppressing = false;
@@ -119,14 +79,10 @@ fn filter_pytest(input: &str, exit_code: i32) -> String {
 			continue;
 		}
 
-		// `=== ERRORS ===` banners (`___ ERROR collecting … ___`,
-		// `___ ERROR at setup of … ___`) are checked FIRST and counted under
-		// their own cap. They precede the FAILURES section, so counting them
-		// here keeps the failure budget reserved for real assertion blocks.
 		let is_error_banner = is_pytest_error_banner(trimmed);
 		if is_error_banner || is_pytest_failure_header(trimmed) {
 			in_failure = true;
-			// The overflow count for each kind is rendered once after the loop.
+
 			if is_error_banner {
 				error_blocks += 1;
 				suppressing = error_blocks > MAX_PYTEST_FAILURES;
@@ -142,10 +98,7 @@ fn filter_pytest(input: &str, exit_code: i32) -> String {
 
 		if starts_pytest_failure(trimmed) {
 			in_failure = true;
-			// While a capped traceback block is being suppressed, its `E   ` /
-			// `ERROR at ` continuation lines belong to that block and are
-			// dropped too. (`FAILED ` short-summary lines only appear after the
-			// summary header has cleared `suppressing`, so they stay.)
+
 			if !suppressing {
 				push_line(&mut out, line);
 			}
@@ -168,8 +121,6 @@ fn filter_pytest(input: &str, exit_code: i32) -> String {
 		}
 	}
 
-	// Errors render before failures in pytest; mirror that order for the
-	// overflow markers so the compact output reads top-to-bottom.
 	let error_overflow = error_blocks.saturating_sub(MAX_PYTEST_FAILURES);
 	if error_overflow > 0 {
 		out.push_str("[…");
@@ -228,22 +179,10 @@ fn starts_pytest_failure(trimmed: &str) -> bool {
 		|| trimmed.starts_with("FAILED ")
 }
 
-/// A `___ test ___`-style banner that opens one verbose traceback block in the
-/// `=== FAILURES ===` section. These are the units capped by
-/// `MAX_PYTEST_FAILURES`; the `E   `/`FAILED `/`ERROR at ` forms are
-/// continuation or short-summary lines, not block boundaries.
 fn is_pytest_failure_header(trimmed: &str) -> bool {
 	trimmed.starts_with('_') && trimmed.ends_with('_') && trimmed.contains("test")
 }
 
-/// A `___ ERROR … ___` banner that opens an `=== ERRORS ===`-section block:
-/// `___ ERROR collecting <path> ___` (import/collection failure) and
-/// `___ ERROR at setup of <test> ___` / `___ ERROR at teardown of <test> ___`
-/// (fixture errors). These render BEFORE the FAILURES section and their inner
-/// text contains the substring `test` via the path/test name, so without this
-/// distinction they would count against `MAX_PYTEST_FAILURES` and crowd out
-/// the real assertion tracebacks. They are capped by their own counter
-/// instead.
 fn is_pytest_error_banner(trimmed: &str) -> bool {
 	if !(trimmed.starts_with('_') && trimmed.ends_with('_')) {
 		return false;
@@ -331,11 +270,7 @@ fn is_pytest_verbose_pass_line(trimmed: &str) -> bool {
 	if !trimmed.contains("::") {
 		return false;
 	}
-	// `XFAIL …`/`XPASS …` short-summary report lines lead with the status
-	// token (e.g. `XFAIL test.py::case - reason`) and must NOT be treated as
-	// pass-noise — XPASS signals a behavior change. Verbose per-test rows carry
-	// the status token in a trailing column (`test.py::case XFAIL [100%]`), so
-	// keying on the leading token cleanly separates the two.
+
 	if trimmed.starts_with("XFAIL ") || trimmed.starts_with("XPASS ") {
 		return false;
 	}

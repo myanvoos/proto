@@ -1,14 +1,3 @@
-/**
- * Client half of the broker-shared LSP mux.
- *
- * `connectSharedLspTransport` ensures the per-project mux daemon is running
- * under the daemon broker (same lifecycle as the shared Chromium: started on
- * first use, stopped when the last proto process in the project exits), dials
- * its socket, performs the `proto/muxConnect` handshake, and returns an
- * {@link LspTransport} the ordinary LSP client machinery drives exactly like
- * a locally spawned server. Every failure degrades to `null` so callers fall
- * back to a process-local spawn.
- */
 import * as net from "node:net";
 import { logger } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../../jsonrpc/message-framing";
@@ -35,10 +24,9 @@ const CONNECT_TIMEOUT_MS = 3_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 1_500;
 const READY_TIMEOUT_MS = 15_000;
-/** probe→describe→start rounds; bounds cross-process start races and wedged-mux replacement. */
+
 const ENSURE_ATTEMPTS = 3;
 
-/** Dial a mux endpoint (Unix socket or Windows named pipe) with a bounded connect. */
 function connectEndpoint(endpoint: string, timeoutMs: number): Promise<net.Socket> {
 	const { promise, resolve, reject } = Promise.withResolvers<net.Socket>();
 	const socket = net.connect(endpoint);
@@ -59,11 +47,6 @@ function connectEndpoint(endpoint: string, timeoutMs: number): Promise<net.Socke
 	return promise;
 }
 
-/**
- * Send one request on a fresh socket and await its response. Used only
- * before the transport takes over the socket; leftover bytes after the
- * response are returned so the transport's stream can replay them.
- */
 function requestOnSocket(
 	socket: net.Socket,
 	request: LspJsonRpcRequest,
@@ -111,18 +94,11 @@ function requestOnSocket(
 	return promise;
 }
 
-/**
- * Wrap a connected, handshaken mux socket as an {@link LspTransport}.
- * Socket close maps to a clean "process exit" (code 0) so the LSP client's
- * crash-recovery path treats a dead mux exactly like a dead server.
- */
 function socketTransport(socket: net.Socket, leftover: Buffer, pid: number | undefined): LspTransport {
 	const exited = Promise.withResolvers<number>();
 	let exitCode: number | null = null;
 	let needDrain = false;
-	socket.on("error", () => {
-		// "close" always follows; swallowing here prevents an unhandled error event.
-	});
+	socket.on("error", () => {});
 	socket.once("close", () => {
 		exitCode = 0;
 		exited.resolve(0);
@@ -136,9 +112,7 @@ function socketTransport(socket: net.Socket, leftover: Buffer, pid: number | und
 			socket.once("close", () => {
 				try {
 					controller.close();
-				} catch {
-					// already errored/closed
-				}
+				} catch {}
 			});
 		},
 	});
@@ -180,7 +154,6 @@ function socketTransport(socket: net.Socket, leftover: Buffer, pid: number | und
 
 let nextHandshakeId = 1;
 
-/** Dial and handshake one server link; throws on any failure. */
 async function dialMuxServer(endpoint: string, params: MuxConnectParams): Promise<LspTransport> {
 	const socket = await connectEndpoint(endpoint, CONNECT_TIMEOUT_MS);
 	socket.setNoDelay(true);
@@ -198,7 +171,6 @@ async function dialMuxServer(endpoint: string, params: MuxConnectParams): Promis
 	}
 }
 
-/** True when a mux answers the ping handshake at `endpoint`. */
 async function probeMux(endpoint: string): Promise<boolean> {
 	try {
 		const socket = await connectEndpoint(endpoint, PROBE_TIMEOUT_MS);
@@ -217,20 +189,16 @@ async function probeMux(endpoint: string): Promise<boolean> {
 	}
 }
 
-/**
- * Ensure the project's mux daemon is running under the broker and reachable.
- * Returns its endpoint, or null when the shared path is unavailable.
- */
 async function ensureLspMuxDaemon(projectDir: string, signal?: AbortSignal): Promise<string | null> {
 	const client = await daemonClientForProject(projectDir);
 	const endpoint = lspMuxEndpoint(client.projectDir, daemonRuntimeDir(client.projectDir));
-	// The broker connection doubles as the presence lease keeping the daemon alive.
+
 	await client.request({ op: "ping" }, signal);
 	if (await probeMux(endpoint)) return endpoint;
 	const spawn = resolveWorkerSpawnCmd(LSP_MUX_WORKER_ARG);
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		signal?.throwIfAborted();
-		// A concurrent start may have won since the last round; adopt it.
+
 		if (await probeMux(endpoint)) return endpoint;
 		const existing = await describeQuietly(client, LSP_MUX_DAEMON_NAME, "LSP mux", signal);
 		if (existing && existing.state !== "exited" && existing.state !== "failed") {
@@ -238,7 +206,7 @@ async function ensureLspMuxDaemon(projectDir: string, signal?: AbortSignal): Pro
 				await waitReady(client, LSP_MUX_DAEMON_NAME, "LSP mux", signal, READY_TIMEOUT_MS);
 			}
 			if (await probeMux(endpoint)) return endpoint;
-			// Live record but nothing listening: replace the wedged daemon.
+
 			await stopQuietly(client, LSP_MUX_DAEMON_NAME, "LSP mux", signal);
 			continue;
 		}
@@ -269,7 +237,7 @@ async function ensureLspMuxDaemon(projectDir: string, signal?: AbortSignal): Pro
 			await stopQuietly(client, LSP_MUX_DAEMON_NAME, "LSP mux", signal);
 		} catch (error) {
 			signal?.throwIfAborted();
-			// Lost a cross-process start race; the next round adopts the winner.
+
 			logger.debug("LSP mux start contention", {
 				name: LSP_MUX_DAEMON_NAME,
 				error: error instanceof Error ? error.message : String(error),
@@ -279,11 +247,6 @@ async function ensureLspMuxDaemon(projectDir: string, signal?: AbortSignal): Pro
 	return null;
 }
 
-/**
- * Open a broker-shared transport for one language server, ensuring the mux
- * daemon first. Returns null (after a debug log) when the shared path is
- * unavailable so the caller falls back to a process-local spawn.
- */
 export async function connectSharedLspTransport(opts: {
 	command: string;
 	args: string[];

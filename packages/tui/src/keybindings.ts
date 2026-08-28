@@ -1,11 +1,6 @@
 import { type KeyId, parseKey } from "./keys";
 
-/**
- * Global keybinding registry.
- * Downstream packages can add keybindings via declaration merging.
- */
 export interface Keybindings {
-	// Editor navigation and editing
 	"tui.editor.cursorUp": true;
 	"tui.editor.cursorDown": true;
 	"tui.editor.cursorLeft": true;
@@ -28,12 +23,12 @@ export interface Keybindings {
 	"tui.editor.yankPop": true;
 	"tui.editor.undo": true;
 	"tui.editor.spellingSuggestions": true;
-	// Generic input actions
+
 	"tui.input.newLine": true;
 	"tui.input.submit": true;
 	"tui.input.tab": true;
 	"tui.input.copy": true;
-	// Generic selection actions
+
 	"tui.select.up": true;
 	"tui.select.down": true;
 	"tui.select.pageUp": true;
@@ -44,7 +39,6 @@ export interface Keybindings {
 
 export type Keybinding = keyof Keybindings;
 
-// Re-export KeyId from keys.ts
 export type { KeyId };
 
 export interface KeybindingDefinition {
@@ -296,11 +290,6 @@ export class KeybindingsManager {
 		return this.matchesCanonical(canonicalKeyId(parsed), keybinding);
 	}
 
-	/**
-	 * Set-lookup variant of {@link matches} for hot input paths: the caller
-	 * parses `data` once (`parseKey` + `canonicalKeyId`) and probes many
-	 * bindings without re-parsing the raw sequence per probe.
-	 */
 	matchesCanonical(canonical: string | undefined, keybinding: Keybinding): boolean {
 		if (canonical === undefined) return false;
 		return this.#matchKeysById.get(keybinding)?.has(canonical) ?? false;

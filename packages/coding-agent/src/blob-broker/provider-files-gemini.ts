@@ -74,10 +74,6 @@ function isOfficialGeminiModel(model: Model): boolean {
 	}
 }
 
-/**
- * Create a native Gemini Files API client for a direct Google Generative AI model.
- * Unsupported model transports return `null` without issuing a network request.
- */
 export function createGeminiProviderFileClient(
 	model: Model,
 	credential: string,

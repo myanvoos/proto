@@ -55,7 +55,7 @@ export interface ImagesCommandArgs {
 		readonly apply?: boolean;
 		readonly all?: boolean;
 		readonly dir?: string;
-		/** Positive request timeout in seconds. */
+
 		readonly timeout?: number;
 	};
 }
@@ -431,8 +431,6 @@ function configChecks(config: ImagesResolvedConfig, deps: ImagesCliDependencies)
 		});
 		const runtime = configByKind.get(backend);
 		if (backend !== "provider-files" && runtime) {
-			// Serving kinds carry their exposure settings as top-level worker-config fields, while
-			// the registry describes them as option keys; a value in either place is configured.
 			const serveFields: Record<string, string | number | undefined> = {
 				publicBaseUrl: runtime.publicBaseUrl,
 				bindHost: runtime.bindHost,
@@ -607,9 +605,7 @@ async function credentialForEntry(storage: AuthStorage, entry: ProviderFileCache
 	try {
 		const resolved = await storage.getApiKey(entry.provider);
 		if (resolved) values.push(resolved);
-	} catch {
-		// A failed refresh is reported as skipped authentication, never with credential detail.
-	}
+	} catch {}
 	return values.find(value => hashProviderFileCredential(value) === entry.credentialHash);
 }
 
@@ -777,7 +773,6 @@ function renderHuman(result: ImagesCommandResult): string {
 	}
 }
 
-/** Execute one standalone images command with injectable, leak-free runtime seams. */
 export async function runImagesCommand(
 	args: ImagesCommandArgs,
 	overrides?: Partial<ImagesCliDependencies>,

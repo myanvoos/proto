@@ -1,7 +1,3 @@
-/**
- * Kimi Code OAuth flow (device authorization grant)
- */
-
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -57,10 +53,6 @@ function getDeviceModel(): string {
 	return formatDeviceModel(label, release, arch);
 }
 
-// Device id identifies this install to Kimi. Persistence is best-effort: a
-// missing/unwritable agent dir must never break header construction (and with
-// it every usage probe / request that spreads getKimiCommonHeaders()) — fall
-// back to a per-process ephemeral id instead.
 let getDeviceId = (): string => {
 	const deviceIdPath = path.join(getAgentDir(), DEVICE_ID_FILENAME);
 	try {
@@ -69,17 +61,13 @@ let getDeviceId = (): string => {
 			getDeviceId = () => existing;
 			return existing;
 		}
-	} catch {
-		// Unreadable device-id file: regenerate below.
-	}
+	} catch {}
 
 	const deviceId = crypto.randomUUID().replace(/-/g, "");
 	try {
 		fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
 		fs.writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
-	} catch {
-		// Persist failure → ephemeral id for this process.
-	}
+	} catch {}
 	getDeviceId = () => deviceId;
 	return deviceId;
 };
@@ -185,9 +173,7 @@ function parseTokenPayload(payload: TokenResponse, refreshTokenFallback?: string
 				const subject = typeof jwtPayload.sub === "string" ? jwtPayload.sub.trim() : "";
 				accountId = userId || subject || undefined;
 			}
-		} catch {
-			// Opaque access tokens remain valid credentials without account metadata.
-		}
+		} catch {}
 	}
 
 	return {
@@ -271,9 +257,6 @@ async function pollForToken(
 	});
 }
 
-/**
- * Login with Kimi Code OAuth (device code flow).
- */
 export async function loginKimi(options: OAuthController): Promise<OAuthCredentials> {
 	const device = await requestDeviceAuthorization();
 	options.onAuth?.({
@@ -284,9 +267,6 @@ export async function loginKimi(options: OAuthController): Promise<OAuthCredenti
 	return pollForToken(device.deviceCode, device.intervalMs, device.expiresInMs, options.signal);
 }
 
-/**
- * Refresh Kimi OAuth token.
- */
 export async function refreshKimiToken(refreshToken: string): Promise<OAuthCredentials> {
 	const response = await fetch(`${resolveOAuthHost()}/api/oauth/token`, {
 		method: "POST",

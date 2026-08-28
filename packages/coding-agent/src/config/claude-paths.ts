@@ -1,13 +1,11 @@
 import * as os from "node:os";
 import * as path from "node:path";
 
-/** Paths to Claude Code's user data and configuration file. */
 interface ClaudePaths {
 	configDir: string;
 	configFile: string;
 }
 
-/** Resolves Claude Code's user paths, honoring `CLAUDE_CONFIG_DIR`. */
 export function resolveClaudePaths(home: string = os.homedir()): ClaudePaths {
 	const override = process.env.CLAUDE_CONFIG_DIR?.trim();
 	if (override) {

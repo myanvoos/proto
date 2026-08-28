@@ -13,17 +13,6 @@ import {
 } from "./read-format";
 import { throwIfAborted } from "./tool-errors";
 
-// Per-session memo for tree-sitter summaries. `summarizeCode` is a pure function
-// of (code, path, fold settings) but costs ~12-18ms for a ~1500-line file, and a
-// repeat summary read of the same unchanged file re-parses from scratch. Key on
-// the content hash of the freshly-read bytes (+ path + fold settings): the file
-// is still read fresh on every call, so a hit only reuses the deterministic
-// parse — there is no staleness window and no stat guard is needed. Bounded LRU,
-// aged out with the session via WeakMap.
-// Unusable results (not parsed, or nothing elided) are memoized as `false`: the
-// full SummaryResult embeds the whole source in kept segments, and the caller
-// only ever renders `parsed && elided` summaries — caching the segments would
-// retain up to 48 near-2MiB sources just to remember "no summary".
 const SUMMARY_CACHE_MAX = 48;
 const summaryParseCaches = new WeakMap<object, LRUCache<string, SummaryResult | false>>();
 function getSummaryParseCache(session: object): LRUCache<string, SummaryResult | false> {
@@ -36,10 +25,7 @@ function getSummaryParseCache(session: object): LRUCache<string, SummaryResult |
 }
 const MAX_SUMMARY_BYTES = 2 * 1024 * 1024;
 const MAX_SUMMARY_LINES = 20_000;
-/**
- * Prose files (Markdown flavors and plain text) skip code-block summarization
- * unless `read.summarize.prose` opts them in.
- */
+
 export function isProseSummaryPath(filePath: string): boolean {
 	return isMarkdownPath(filePath) || path.extname(filePath).toLowerCase() === ".txt";
 }
@@ -52,12 +38,7 @@ export function routeReadThroughBridge(
 	if (!bridge?.capabilities.readTextFile || !bridge.readTextFile) return undefined;
 	return bridge.readTextFile({ path: absolutePath, ...options });
 }
-/**
- * Structural summary of `absolutePath`, or `null` when the file is too large,
- * too short, or unparseable. `diskText` lets a caller that already read the file
- * hand those bytes over instead of forcing a second read; an ACP bridge still
- * wins, since the editor's buffer is the source of truth.
- */
+
 export async function trySummarize(
 	session: ToolSession,
 	absolutePath: string,
@@ -114,9 +95,6 @@ export function renderSummary(
 	const shouldAddHashLines = displayMode.hashLines;
 	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 
-	// Flatten segments into per-line units so we can merge a kept-head /
-	// elided / kept-tail sandwich into a single brace-pair line when the
-	// boundary lines look like `… {` and `}` (or matching variants).
 	type Unit =
 		| { kind: "line"; line: number; text: string }
 		| { kind: "elided"; startLine: number; endLine: number }
@@ -189,10 +167,9 @@ export function renderSummary(
 			);
 			modelParts.push(formatted.model);
 			displayParts.push(formatted.display);
-			// Suggest the full brace range so re-reading shows both braces
-			// plus the elided body in one shot.
+
 			elidedRanges.push({ start: unit.startLine, end: unit.endLine });
-			// Merged brace pair encloses (start+1)..(end-1) as elided.
+
 			elidedLines += Math.max(0, unit.endLine - unit.startLine - 1);
 			continue;
 		}

@@ -1,4 +1,3 @@
-/** formatLocalCalendarDate formats a Date as YYYY-MM-DD in the host local timezone. */
 export function formatLocalCalendarDate(date: Date = new Date()): string {
 	const year = date.getFullYear();
 	const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -6,7 +5,6 @@ export function formatLocalCalendarDate(date: Date = new Date()): string {
 	return `${year}-${month}-${day}`;
 }
 
-/** Format a local date and minute with a compact numeric UTC offset. */
 export function formatLocalDateTimeWithOffset(date: Date): string {
 	const offsetMinutes = date.getTimezoneOffset();
 	const offsetSign = offsetMinutes <= 0 ? "+" : "-";

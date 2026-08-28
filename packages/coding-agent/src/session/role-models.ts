@@ -11,7 +11,6 @@ import {
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 
-/** Formats a role assignment while preserving its explicit thinking selector. */
 export function formatRoleModelValue(
 	settings: Settings,
 	modelRegistry: ModelRegistry,
@@ -30,7 +29,6 @@ export function formatRoleModelValue(
 	return formatModelSelectorValue(modelKey, thinkingLevel);
 }
 
-/** Resolves a configured model target relative to the current provider. */
 function resolveConfiguredModelTarget(
 	configuredTarget: string | undefined,
 	currentModel: Model,
@@ -49,7 +47,6 @@ function resolveConfiguredModelTarget(
 	return availableModels.find(model => model.provider === currentModel.provider && model.id === trimmedTarget);
 }
 
-/** Resolves a model's configured context-promotion target. */
 export function resolveContextPromotionConfiguredTarget(
 	currentModel: Model,
 	availableModels: Model[],
@@ -57,12 +54,10 @@ export function resolveContextPromotionConfiguredTarget(
 	return resolveConfiguredModelTarget(currentModel.contextPromotionTarget, currentModel, availableModels);
 }
 
-/** Resolves a model's configured compaction target. */
 export function resolveCompactionConfiguredTarget(currentModel: Model, availableModels: Model[]): Model | undefined {
 	return resolveConfiguredModelTarget(currentModel.compactionModel, currentModel, availableModels);
 }
 
-/** Resolves a model role and its explicit thinking selection. */
 export function resolveRoleModelFull(
 	settings: Settings,
 	role: string,

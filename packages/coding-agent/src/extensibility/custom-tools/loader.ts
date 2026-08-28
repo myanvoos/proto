@@ -1,9 +1,3 @@
-/**
- * Custom tool loader - loads TypeScript tool modules using native Bun import.
- *
- * Dependencies are injected through CustomToolAPI so tools loaded from user
- * directories do not depend on workspace module resolution.
- */
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import * as zod from "@oh-my-pi/omptype/zod";
@@ -15,7 +9,7 @@ import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
-// Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
+
 import * as PiCodingAgent from "../../index";
 import { createNoOpUIContext, resolvePath, withHostGuard } from "../utils";
 import type { CustomToolAPI, CustomToolFactory, LoadedCustomTool, ToolLoadError } from "./types";
@@ -48,9 +42,6 @@ function invalidToolError(path: string, index: number, source: ToolLoadError["so
 	};
 }
 
-/**
- * Load a single tool module using native Bun import.
- */
 async function loadTool(
 	toolPath: string,
 	cwd: string,
@@ -59,7 +50,6 @@ async function loadTool(
 ): Promise<LoadToolResult> {
 	const resolvedPath = resolvePath(toolPath, cwd);
 
-	// Skip declarative tool files (.md, .json) - these are metadata only, not executable modules
 	if (resolvedPath.endsWith(".md") || resolvedPath.endsWith(".json")) {
 		return {
 			tools: [],
@@ -107,21 +97,11 @@ async function loadTool(
 	}
 }
 
-/** Tool path with optional source metadata, suitable for forwarding from a
- * parent session to a subagent so the subagent can re-bind tools to its own
- * `CustomToolAPI` without redoing the filesystem scan. */
 export interface ToolPathWithSource {
 	path: string;
 	source?: { provider: string; providerName: string; level: "user" | "project" };
 }
 
-/**
- * Loads custom tools from paths with conflict detection and error handling.
- *
- * Manages a shared API instance passed to all tool factories, providing access to
- * execution context, UI, logger, and injected dependencies. The UI context can be
- * updated after loading via setUIContext().
- */
 class CustomToolLoader {
 	tools: LoadedCustomTool[] = [];
 	errors: ToolLoadError[] = [];
@@ -170,7 +150,6 @@ class CustomToolLoader {
 			this.errors.push(...errors);
 
 			for (const loadedTool of loadedTools) {
-				// Check for name conflicts
 				if (this.#seenNames.has(loadedTool.tool.name)) {
 					this.errors.push({
 						path: toolPath,
@@ -192,12 +171,6 @@ class CustomToolLoader {
 	}
 }
 
-/**
- * Load all tools from configuration.
- * @param pathsWithSources - Array of tool paths with optional source metadata
- * @param cwd - Current working directory for resolving relative paths
- * @param builtInToolNames - Names of built-in tools to check for conflicts
- */
 export async function loadCustomTools(
 	pathsWithSources: ToolPathWithSource[],
 	cwd: string,
@@ -220,24 +193,10 @@ export async function loadCustomTools(
 	};
 }
 
-/**
- * Collect the absolute tool-source paths to load, without importing or
- * binding factories. Hot path on session startup — the scan walks
- * `.proto/tools/`, `.claude/tools/`, the plugin tree, and any configured paths.
- *
- * Subagents reuse the parent's collected paths via the SDK's
- * `preloadedCustomToolPaths` option, then call `loadCustomTools` themselves
- * so each session re-binds factories with its own session-scoped
- * `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
- *
- * @param configuredPaths - Explicit paths from settings.json and CLI --tool flags
- * @param cwd - Current working directory
- */
 export async function discoverCustomToolPaths(configuredPaths: string[], cwd: string): Promise<ToolPathWithSource[]> {
 	const allPathsWithSources: ToolPathWithSource[] = [];
 	const seen = new Set<string>();
 
-	// Helper to add paths without duplicates
 	const addPath = (p: string, source?: { provider: string; providerName: string; level: "user" | "project" }) => {
 		const resolved = path.resolve(p);
 		if (!seen.has(resolved)) {
@@ -246,7 +205,6 @@ export async function discoverCustomToolPaths(configuredPaths: string[], cwd: st
 		}
 	};
 
-	// 1. Discover tools via capability system (user + project from all providers)
 	const discoveredTools = await loadCapability<CustomTool>(toolCapability.id, { cwd });
 	for (const tool of discoveredTools.items) {
 		addPath(tool.path, {
@@ -256,12 +214,10 @@ export async function discoverCustomToolPaths(configuredPaths: string[], cwd: st
 		});
 	}
 
-	// 2. Plugin tools: ~/.proto/plugins/node_modules/*/
 	for (const pluginPath of await getAllPluginToolPaths(cwd)) {
 		addPath(pluginPath, { provider: "plugin", providerName: "Plugin", level: "user" });
 	}
 
-	// 3. Explicitly configured paths (can override/add)
 	for (const configPath of configuredPaths) {
 		addPath(resolvePath(configPath, cwd), { provider: "config", providerName: "Config", level: "project" });
 	}
@@ -269,20 +225,6 @@ export async function discoverCustomToolPaths(configuredPaths: string[], cwd: st
 	return allPathsWithSources;
 }
 
-/**
- * Discover and load tools from standard locations via capability system:
- * 1. User and project tools discovered by capability providers
- * 2. Installed plugins (~/.proto/plugins/node_modules/*)
- * 3. Explicitly configured paths from settings or CLI
- *
- * Composed of {@link discoverCustomToolPaths} (FS scan) + {@link loadCustomTools}
- * (per-session binding). Subagents skip the first step and just call
- * `loadCustomTools` against the parent's collected paths.
- *
- * @param configuredPaths - Explicit paths from settings.json and CLI --tool flags
- * @param cwd - Current working directory
- * @param builtInToolNames - Names of built-in tools to check for conflicts
- */
 export async function discoverAndLoadCustomTools(
 	configuredPaths: string[],
 	cwd: string,

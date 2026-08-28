@@ -1,4 +1,3 @@
-/** Behavior-compatible reimplementation of mammoth's used surface. */
 export {
 	type ConvertToHtmlOptions,
 	convertToHtml,
@@ -14,7 +13,6 @@ export {
 
 import { convertToHtml, images } from "./docx/converter";
 
-/** Mammoth-shaped default export for drop-in consumer imports. */
 const docx = { convertToHtml, images };
 
 export default docx;

@@ -1,7 +1,3 @@
-/**
- * Get the API key or OAuth token for a provider.
- */
-
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
@@ -101,7 +97,6 @@ export default class Token extends Command {
 
 			const modelRegistry = new ModelRegistry(authStorage);
 
-			// Resolve the API key / token
 			let apiKey: string | undefined;
 
 			if (provider === "perplexity") {
@@ -121,7 +116,6 @@ export default class Token extends Command {
 			}
 
 			if (!isAuthenticated(apiKey)) {
-				// Find all active/configured providers
 				const activeProviders = new Set<string>();
 				for (const p of PROVIDER_REGISTRY) {
 					if (authStorage.hasAuth(p.id)) {
@@ -151,9 +145,7 @@ export default class Token extends Command {
 						process.stdout.write(`${parsed.token}\n`);
 						return;
 					}
-				} catch {
-					// Not a JSON string, print as-is
-				}
+				} catch {}
 			}
 
 			process.stdout.write(`${apiKey}\n`);

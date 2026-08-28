@@ -1,7 +1,3 @@
-/**
- * Test grep tool.
- */
-
 import { GrepOutputMode } from "@oh-my-pi/pi-natives";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { grepHelp as commandHelp } from "../cli/command-help";

@@ -7,43 +7,17 @@ import * as zlib from "node:zlib";
 import packageJson from "../package.json" with { type: "json" };
 import { embeddedAddon } from "./embedded-addon.js";
 
-/**
- * Native addon loader for `@oh-my-pi/pi-natives`.
- *
- * Owns every step between "Node imports `native/index.js`" and "the right
- * `pi_natives.<platform>-<arch>*.node` is required, validated, and returned":
- * platform/variant detection, candidate-path resolution, embedded-addon
- * extraction (Bun standalone binaries), version-sentinel validation, and the
- * aggregated error surface for diagnostic-friendly failures.
- *
- * `native/index.js` is reduced to one `loadNative()` call plus the generated
- * surface-area exports between `MARKER_START`/`MARKER_END` (rewritten by
- * `scripts/gen-enums.ts`); everything else lives here so the pure helpers stay
- * unit-testable without triggering the side-effectful module-load path.
- *
- * Background (issue #823): `bun build --compile --define PI_COMPILED=true`
- * substitutes the bare identifier `PI_COMPILED`, NOT `process.env.PI_COMPILED`,
- * so a runtime read of the env var returns `undefined`. Older CommonJS loader
- * code also saw the original build-host absolute path in `__filename`; ESM
- * `import.meta.url` is rewritten to the bunfs URL. The embedded-addon
- * presence (true iff the build pipeline ran `embed:native`, false in the
- * post-build `--reset` stub) is the authoritative compiled-mode signal.
- */
+
 
 const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"];
 
-/**
- * Streaming startup marker, enabled by `PI_DEBUG_STARTUP`. Local copy of the
- * pi-utils helper (this loader cannot depend on pi-utils). Synchronous on
- * purpose: extraction/dlopen hangs must still leave the `:start` marker.
- * @param {string} text
- */
+
 function startupMarker(text) {
 	if (!process.env.PI_DEBUG_STARTUP) return;
 	try {
 		fs.writeSync(2, `[startup] ${text}\n`);
 	} catch {
-		// stderr unavailable; markers are best-effort
+
 	}
 }
 
@@ -64,18 +38,11 @@ function resolveLeafPackageDir(platformTag) {
 	}
 }
 
-// =========================================================================
-// Pure helpers — re-exported for unit tests in `packages/natives/test/`.
-// =========================================================================
 
-/**
- * @param {{
- *   embeddedAddon: { platformTag: string; version: string; files: unknown[] } | null | undefined;
- *   env: Record<string, string | undefined>;
- *   importMetaUrl: string | null | undefined;
- * }} input
- * @returns {boolean}
- */
+
+
+
+
 export function detectCompiledBinary({ embeddedAddon, env, importMetaUrl }) {
 	if (embeddedAddon) return true;
 	if (env && env.PI_COMPILED) return true;
@@ -86,10 +53,7 @@ export function detectCompiledBinary({ embeddedAddon, env, importMetaUrl }) {
 	}
 	return false;
 }
-/**
- * @param {{ tag: string; arch: string; variant: "modern" | "baseline" | null | undefined }} input
- * @returns {string[]}
- */
+
 export function getAddonFilenames({ tag, arch, variant }) {
 	const defaultFilename = `pi_natives.${tag}.node`;
 	if (arch !== "x64" || !variant) return [defaultFilename];
@@ -101,18 +65,7 @@ export function getAddonFilenames({ tag, arch, variant }) {
 	return [baselineFilename, defaultFilename];
 }
 
-/**
- * @param {{
- *   addonFilenames: string[];
- *   isCompiledBinary: boolean;
- *   nativeDir: string;
- *   leafPackageDir?: string | null;
- *   execDir: string;
- *   versionedDir: string;
- *   userDataDir: string;
- * }} input
- * @returns {string[]}
- */
+
 export function resolveLoaderCandidates({
 	addonFilenames,
 	isCompiledBinary,
@@ -140,7 +93,7 @@ export function resolveLoaderCandidates({
 	return [...new Set(releaseCandidates)];
 }
 
-// =========================================================================
+
 
 function parseReleaseVersion(version) {
 	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -159,34 +112,20 @@ function isOlderReleaseVersion(candidate, current) {
 	return false;
 }
 
-// A concurrently starting older PROTO binary creates or refreshes this directory
-// before extracting its addon. Keep fresh directories long enough for that
-// startup to finish; a later launch can reclaim them once they are genuinely
-// stale.
+
+
+
+
 const NATIVE_CACHE_CLEANUP_GRACE_MS = 10 * 60_000;
 
-/**
- * Create a version cache directory and refresh its activity timestamp before
- * extraction or staging begins. Recursive mkdir does not update the mtime of
- * an existing directory, so the explicit touch is what protects interrupted
- * or partially populated caches from concurrent cleanup.
- *
- * @param {string} versionedDir
- */
+
 export function prepareNativeVersionDir(versionedDir) {
 	fs.mkdirSync(versionedDir, { recursive: true });
 	const now = new Date();
 	fs.utimesSync(versionedDir, now, now);
 }
 
-/**
- * Remove version-pinned native cache directories older than the loaded package.
- * Best-effort by design: permission errors and concurrent processes must not
- * abort startup after the native addon has already loaded successfully.
- *
- * @param {{ nativesDir: string; currentVersion: string }} input
- * @returns {string[]}
- */
+
 export function cleanupStaleNativeVersions({ nativesDir, currentVersion }) {
 	const removed = [];
 	let entries;
@@ -205,33 +144,21 @@ export function cleanupStaleNativeVersions({ nativesDir, currentVersion }) {
 			fs.rmSync(targetPath, { recursive: true, force: true });
 			removed.push(targetPath);
 		} catch {
-			// Stale caches are opportunistic cleanup only.
+
 		}
 	}
 	return removed;
 }
 
-// Side-effectful loader. Everything below runs only when `loadNative()` is
-// called from `native/index.js` — tests that only import the pure helpers
-// above pay nothing for variant detection, subprocess spawns, or fs probes.
-// =========================================================================
 
-/**
- * Hidden env key for the resolved x64 variant. Once any context (main thread,
- * worker, subprocess) finishes variant detection, the result is written here
- * so every Bun worker and child process spawned afterwards inherits the same
- * verdict and skips re-detection. See `selectCpuVariant` for the lookup order.
- */
+
+
+
+
+
 const VARIANT_CACHE_ENV_KEY = "__PI_NATIVE_VARIANT_CACHE";
 
-/**
- * Spawn `command` with `args` and capture stdout. Prefers `Bun.spawnSync`
- * because Bun's `child_process.spawnSync` shim has been observed to return
- * non-zero / null in worker threads on macOS even when the same binary works
- * fine from the parent — the failure mode behind issue #3238, where the worker
- * silently falls back to the "baseline" variant. Falls back to the Node shim
- * for non-Bun embeds.
- */
+
 function runCommand(command, args) {
 	if (typeof Bun !== "undefined" && typeof Bun.spawnSync === "function") {
 		try {
@@ -240,7 +167,7 @@ function runCommand(command, args) {
 				return result.stdout.toString("utf-8").trim();
 			}
 		} catch {
-			// fall through to childProcess
+
 		}
 	}
 	try {
@@ -275,8 +202,8 @@ function detectAvx2Support() {
 	}
 
 	if (process.platform === "darwin") {
-		// Try the absolute path before bare `sysctl`: PATH may not include
-		// `/usr/sbin` in worker/embedded spawn contexts (issue #3238).
+
+
 		for (const sysctlBin of ["/usr/sbin/sysctl", "sysctl"]) {
 			const leaf7 = runCommand(sysctlBin, ["-n", "machdep.cpu.leaf7_features"]);
 			if (leaf7 && /\bAVX2\b/i.test(leaf7)) return true;
@@ -289,34 +216,7 @@ function detectAvx2Support() {
 	return false;
 }
 
-/**
- * Pure variant-selection helper, exposed for unit tests. Resolution order:
- *
- *   1. `override` (user-facing `PI_NATIVE_VARIANT` env var). Always wins.
- *   2. The private `__PI_NATIVE_VARIANT_CACHE` env var, populated by the first
- *      context that detected at runtime. Lets child workers / subprocesses
- *      inherit the main thread's verdict instead of re-spawning `sysctl` etc.
- *      from a worker context where the spawn may fail (issue #3238).
- *   3. `detectAvx2()` — the slow path, called at most once per process.
- *
- * Non-x64 architectures return `{ variant: null }` and never set the cache.
- * When detection runs, the result is surfaced as `cacheEnvKey`/`cacheEnvValue`
- * so the caller can write `process.env` (the pure helper itself stays
- * side-effect-free, which keeps it easy to test).
- *
- * @param {{
- *   arch: string;
- *   override: "modern" | "baseline" | null | undefined;
- *   env: Record<string, string | undefined>;
- *   detectAvx2: () => boolean;
- * }} input
- * @returns {{
- *   variant: "modern" | "baseline" | null;
- *   source: "non-x64" | "override" | "cache" | "detect";
- *   cacheEnvKey?: string;
- *   cacheEnvValue?: string;
- * }}
- */
+
 export function selectCpuVariant({ arch, override, env, detectAvx2 }) {
 	if (arch !== "x64") return { variant: null, source: "non-x64" };
 	if (override === "modern" || override === "baseline") {
@@ -416,7 +316,7 @@ function writeEmbeddedAddonFile(targetPath, content) {
 		try {
 			fs.unlinkSync(tempPath);
 		} catch {
-			// Best-effort cleanup only.
+
 		}
 		throw err;
 	}
@@ -535,12 +435,7 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 }
 
 
-/**
- * Before version sentinels were exported, published native addons still shared
- * this stable core ABI. Let those on-disk addons bridge a package-version bump
- * when they expose the signature; keep every versioned addon and a current
- * on-disk file paired with resident old exports on the strict path below.
- */
+
 function isCompatiblePreSentinelNativeAddon(bindings, diskHasExpectedSentinel) {
 	if (diskHasExpectedSentinel) return false;
 	if (Object.keys(bindings).some(key => /^__piNativesV[A-Za-z0-9_]+$/.test(key))) return false;
@@ -556,36 +451,36 @@ function isCompatiblePreSentinelNativeAddon(bindings, diskHasExpectedSentinel) {
 }
 
 export function validateLoadedBindings(ctx, bindings, candidate) {
-	// In workspace dev (running out of `packages/natives/native/` rather than a
-	// `node_modules` install or a compiled bundle) the local `.node` only gains
-	// the renamed sentinel after `bun --cwd=packages/natives run build`. Skip
-	// validation there so a stale post-pull dev tree boots while the rebuild
-	// completes; install and compiled-binary paths still validate.
+
+
+
+
+
 	if (ctx.isWorkspaceLoad) return;
 	if (typeof bindings[ctx.versionSentinelExport] === "function") return;
 
-	// The expected sentinel is missing. Distinguish two failure modes by the
-	// sentinel the bindings DO carry:
-	//   - disk stale: the `.node` on disk predates this loader (its own build);
-	//     reinstalling re-syncs the file.
-	//   - process stale: an in-place upgrade landed a new release on disk while
-	//     this process still holds the previous addon generation resident in the
-	//     dynamic-loader's native-module cache. `require` returns those old
-	//     exports, which carry the PRIOR sentinel — disk is already consistent,
-	//     so reinstall is a no-op and only restarting the process re-syncs.
+
+
+
+
+
+
+
+
+
 	const residentSentinel = Object.keys(bindings).find(
 		key => key !== ctx.versionSentinelExport && /^__piNativesV[A-Za-z0-9_]+$/.test(key),
 	);
-	// A prior sentinel alone cannot distinguish a resident old module from an
-	// actually stale file: `require` returns the same exports in both cases.
-	// The restart diagnosis is valid only when the selected file itself carries
-	// the current sentinel; otherwise a restart would simply reload stale disk.
+
+
+
+
 	let diskHasExpectedSentinel = false;
 	try {
 		diskHasExpectedSentinel = fs.readFileSync(candidate).includes(ctx.versionSentinelExport);
 	} catch {
-		// The successful require above normally guarantees readability. If the
-		// file disappears concurrently, retain the safe reinstall diagnosis.
+
+
 	}
 	if (isCompatiblePreSentinelNativeAddon(bindings, diskHasExpectedSentinel)) return;
 	if (residentSentinel && diskHasExpectedSentinel) {
@@ -606,14 +501,7 @@ export function validateLoadedBindings(ctx, bindings, candidate) {
 	);
 }
 
-/**
- * Install the addon's bounded Tokio runtime now that `dlopen` has returned and
- * the dynamic-loader lock is released. The Rust `#[module_init]` deliberately
- * does NOT build the runtime — spawning worker threads under the loader lock
- * deadlocks on some hosts — so it exposes `__ompInstallTokioRuntime` for the
- * loader to call once, before any async native runs. Best-effort: older addons
- * predating this export simply fall back to napi-rs's default runtime.
- */
+
 function installNativeTokioRuntime(bindings) {
 	const install = bindings.__ompInstallTokioRuntime;
 	if (typeof install !== "function") return;
@@ -648,15 +536,8 @@ function buildHelpMessage(ctx) {
 	);
 }
 
-/**
- * Initialize the loader context: resolves every path, variant, and policy
- * decision once so the inner load loop stays a pure require/validate pipeline.
- * Called from `loadNative()` rather than at module scope so importing pure
- * helpers from this file doesn't trigger AVX2 detection or filesystem probes.
- */
-/**
- * @param {{ nativeDir?: string; platform?: NodeJS.Platform | string; isCompiledBinary?: boolean; leafPackageDir?: string | null }} [overrides]
- */
+
+
 export function initLoaderContext(overrides = {}) {
 	const platform = overrides.platform ?? process.platform;
 	const platformTag = `${platform}-${process.arch}`;
@@ -695,13 +576,13 @@ export function initLoaderContext(overrides = {}) {
 		userDataDir,
 	});
 
-	// Version sentinel emitted by the Rust addon under a `js_name` that encodes
-	// the package version (`__piNativesV{major}_{minor}_{patch}`).
-	// `scripts/release.ts` bumps the name in `crates/pi-natives/src/lib.rs` in
-	// lock-step with the version, so a `.node` from a different release
-	// physically cannot expose the symbol this loader is looking for. That
-	// turns the silent `<sym> is not a function` crash into an actionable
-	// load-time error.
+
+
+
+
+
+
+
 	const versionSentinelExport = `__piNativesV${packageVersion.replace(/[^A-Za-z0-9]/g, "_")}`;
 
 	return {

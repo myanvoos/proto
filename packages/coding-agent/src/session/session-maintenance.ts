@@ -1,5 +1,3 @@
-/** Context maintenance for an active coding-agent session. */
-
 import { scheduler } from "node:timers/promises";
 import {
 	type Agent,
@@ -80,7 +78,6 @@ type CompactionCheckResult = Readonly<{
 	historyRewritten?: boolean;
 }>;
 
-/** Shared no-op result for dispatcher paths that perform no maintenance. */
 export const COMPACTION_CHECK_NONE: CompactionCheckResult = {
 	continuationScheduled: false,
 };
@@ -92,17 +89,10 @@ const COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION: CompactionCheckResult = {
 	automaticContinuationBlocked: true,
 };
 
-/** Whether a configured preference list contains at least one automatic method. */
 function hasConfiguredCompactionMethod(settings: ConfiguredCompactionSettings): boolean {
 	return resolveCompactionMethodOrder(settings.methodOrder).length > 0;
 }
 
-/**
- * User-facing notice for a compaction dead end: maintenance freed too little
- * to retry safely. `remedies` names the recovery actions left on the emitting
- * path — by the time the post-pass dead end fires, the tiered rescue has
- * already attempted both elide and image-drop automatically.
- */
 function compactionDeadEndWarning(remedies: string): string {
 	return (
 		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
@@ -110,7 +100,6 @@ function compactionDeadEndWarning(remedies: string): string {
 	);
 }
 
-/** Creates one provider-scoped compaction lifecycle descriptor. */
 export function createCodexCompactionContext(options: {
 	trigger: CodexCompactionContext["trigger"];
 	reason: CodexCompactionContext["reason"];
@@ -125,49 +114,23 @@ export function createCodexCompactionContext(options: {
 	};
 }
 
-/**
- * Per-turn prune cache window. A tool result whose all-message suffix exceeds
- * this is in the warm, already-sent prompt-cache prefix: re-writing it costs the
- * cacheWrite premium on the whole suffix. Per-turn passes only reclaim inside
- * this tail (matches the supersede pass's default `suffixTokenLimit`); deeper
- * stale/age victims are left to compaction, which rebuilds the cache anyway.
- */
 const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
 
-/**
- * Idle gap after which the supersede pass may flush the whole sent region (the
- * provider cache is cold, so re-writing it is free). MUST exceed the maximum
- * Anthropic prompt-cache TTL — "long" retention (the OAuth default) is 1h — or a
- * still-warm prefix is busted by the flush. 90 min leaves margin over the 1h TTL.
- */
 const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
 
-/**
- * Hysteresis band for the post-maintenance "did we actually create headroom?"
- * check for the context-full tail. A
- * pass counts as having resolved threshold pressure only when residual context
- * lands at or below `COMPACTION_RECOVERY_BAND × threshold`. Re-checking against
- * the raw threshold lets a pass keep reclaiming a trickle of the previous
- * turn's output and land just under the line every turn, sustaining the
- * auto-continue dead loop reported in #2275; the same band stops the
- * context-full tail from re-firing on a history whose single most-recent
- * kept turn already exceeds the threshold.
- */
 const COMPACTION_RECOVERY_BAND = 0.8;
 
-/** A speculation-produced compaction result, ready to commit at threshold. */
 interface ArmedSpeculation {
 	result: CompactionResult;
 	action: "context-full" | "remote";
 	method: CompactionMethod;
 	codexCompaction?: CodexCompactionContext;
-	/** Last branch entry covered by the speculated summary's source snapshot. */
+
 	snapshotLeafId: string;
-	/** Context size when speculation started; drives refresh-on-growth. */
+
 	contextTokensAtStart: number;
 }
 
-/** Result of an in-place elide pass over the branch. */
 interface ShakeElideResult {
 	toolResultsDropped: number;
 	blocksDropped: number;
@@ -175,7 +138,6 @@ interface ShakeElideResult {
 	artifactId?: string;
 }
 
-/** One background speculative-compaction run and (once resolved) its armed result. */
 interface SpeculationRun {
 	controller: AbortController;
 	promise: Promise<void>;
@@ -191,7 +153,6 @@ function mergeLlmCompactionPreserveData(
 	return Object.keys(preserveData).length > 0 ? preserveData : undefined;
 }
 
-/** Capabilities borrowed from the owning AgentSession. */
 export interface SessionMaintenanceHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -274,26 +235,16 @@ export interface SessionMaintenanceHost {
 	}): Promise<void>;
 }
 
-/** Owns compaction, pruning, promotion, and automatic context maintenance. */
 export class SessionMaintenance {
 	#compactionAbortController: AbortController | undefined;
-	/** Resolves after an active manual compaction has reconnected the agent subscription. */
+
 	#manualCompactionCleanup: Promise<void> | undefined;
 	#autoCompactionAbortController: AbortController | undefined;
-	/**
-	 * Live tool-loop contexts parked after mid-turn maintenance hit a no-progress
-	 * dead end. Membership suppresses the repeated rescue + warning while no cut
-	 * point exists; {@link maintainContextMidRun} re-arms the entry once a later
-	 * tool result makes `prepareCompaction` viable again.
-	 */
+
 	readonly #midTurnCompactionDeadEnds = new WeakSet<AgentMessage[]>();
-	/**
-	 * Carries a mid-turn dead end across the loop's final answer to the next
-	 * pre-prompt check. That check must not warn again for the same oversized
-	 * persisted turn, but a new agent loop still gets its own live-array guard.
-	 */
+
 	#midTurnDeadEndPendingPrePrompt = false;
-	/** In-flight or armed background speculative compaction, if any. */
+
 	#speculation: SpeculationRun | undefined;
 	#skipPostTurnMaintenanceAssistantTimestamp: number | undefined;
 	readonly #host: SessionMaintenanceHost;
@@ -314,19 +265,16 @@ export class SessionMaintenance {
 		this.#host = host;
 	}
 
-	/** Whether manual or automatic context maintenance is active. */
 	get isCompacting(): boolean {
 		return this.#autoCompactionAbortController !== undefined || this.#compactionAbortController !== undefined;
 	}
 
-	/** Background speculative-compaction state, for UI indicators. */
 	get speculationState(): "idle" | "running" | "armed" {
 		const run = this.#speculation;
 		if (!run) return "idle";
 		return run.armed ? "armed" : "running";
 	}
 
-	/** Abort and discard any in-flight or armed speculative compaction. */
 	cancelSpeculation(): void {
 		const run = this.#speculation;
 		if (!run) return;
@@ -334,7 +282,6 @@ export class SessionMaintenance {
 		run.controller.abort();
 	}
 
-	/** Assistant timestamp whose post-turn maintenance must be skipped once. */
 	get skipPostTurnMaintenanceAssistantTimestamp(): number | undefined {
 		return this.#skipPostTurnMaintenanceAssistantTimestamp;
 	}
@@ -343,11 +290,6 @@ export class SessionMaintenance {
 		this.#skipPostTurnMaintenanceAssistantTimestamp = timestamp;
 	}
 
-	/**
-	 * Emit a compaction lifecycle event. Mid-turn callers detach only extension
-	 * fan-out for post-commit events; ordered subscriber delivery still completes
-	 * before maintenance returns.
-	 */
 	#emitLifecycleEvent(event: AgentSessionEvent, detach: boolean): Promise<void> {
 		return this.#host.emitSessionEvent(event, detach ? { detachExtensions: true } : undefined);
 	}
@@ -358,8 +300,7 @@ export class SessionMaintenance {
 		const result = pruneToolOutputs(branchEntries, this.#tokenizer, {
 			...DEFAULT_PRUNE_CONFIG,
 			pruneUseless: this.#host.settings.getGroup("compaction").dropUseless,
-			// Cache-stable boundary: never re-write the warm, already-sent prefix
-			// (deep stale/age victims) or summarized-away entries every turn.
+
 			keepBoundaryId,
 			cacheWarmSuffixTokens: PRUNE_CACHE_WARM_SUFFIX_TOKENS,
 		});
@@ -376,19 +317,6 @@ export class SessionMaintenance {
 		return result;
 	}
 
-	/**
-	 * Per-turn stale-result pass: prune older `read` results that a newer read
-	 * of the same file has made stale, plus results their tool flagged
-	 * contextually useless. Cache-aware (only fires when the suffix after a
-	 * candidate is small or the session has been idle long enough that the
-	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
-	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
-	 *
-	 * Persists via `rewriteEntries` like every other history rewrite — the
-	 * session file must match the live (pruned) context or file-based forks
-	 * (`/fork`, `/tan`) and resume rebuild a divergent prefix and cold-miss the
-	 * provider prompt cache.
-	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#host.settings.getGroup("compaction");
 		if (!supersedeReads && !dropUseless) return undefined;
@@ -398,8 +326,7 @@ export class SessionMaintenance {
 			supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
 			pruneUseless: dropUseless,
 			protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
-			// Never re-write summarized-away entries; only flush the whole sent
-			// region once the cache is genuinely cold (idle exceeds the 1h TTL).
+
 			keepBoundaryId,
 			idleFlushMs: PRUNE_IDLE_FLUSH_MS,
 		});
@@ -416,18 +343,6 @@ export class SessionMaintenance {
 		return result;
 	}
 
-	/**
-	 * Strip image content blocks from every message on the current branch and
-	 * persist the rewrite. Walks `SessionManager.getBranch()` in place — both
-	 * `SessionMessageEntry.message` and `CustomMessageEntry.content` arrays
-	 * are mutated, then `rewriteEntries` durably commits the new shape. The
-	 * agent's runtime view is rebuilt from the freshly-mutated entries so any
-	 * provider sessions caching message identity (Codex Responses) are torn
-	 * down to force a clean replay on the next turn.
-	 *
-	 * No-op when the branch carries no images; returns `{ removed: 0 }` and
-	 * skips the disk rewrite.
-	 */
 	async dropImages(): Promise<{ removed: number }> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		let removed = 0;
@@ -466,25 +381,12 @@ export class SessionMaintenance {
 		return { removed };
 	}
 
-	/**
-	 * Elide heavy content in place: whole tool-call results and large fenced/XML
-	 * blocks are replaced with short placeholders that embed an `artifact://`
-	 * recovery link.
-	 *
-	 * Mutates the branch in place, persists via `rewriteEntries`, replays the
-	 * rebuilt context through the agent, and tears down provider sessions that
-	 * cache message identity — same rewrite contract as {@link dropImages}.
-	 * Used by {@link #rescueCompactionDeadEnd} when summary compaction cannot cut.
-	 */
 	async #shakeElide(config: ShakeConfig, _signal: AbortSignal): Promise<ShakeElideResult> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const effectiveConfig = {
 			...config,
-			// Skip entries summarized away by the latest compaction — eliding them
-			// only churns persisted history with no prompt/cache effect. The cut is
-			// unconditional on the wire (see `buildSessionContext`), so a compaction
-			// the active model cannot replay still hides its prefix from the prompt.
+
 			keepBoundaryId: latestCompaction?.firstKeptEntryId,
 		};
 		const regions = collectShakeRegions(branchEntries, this.#tokenizer, effectiveConfig);
@@ -553,12 +455,6 @@ export class SessionMaintenance {
 		return `[shaken ~${region.tokens} tokens]`;
 	}
 
-	/**
-	 * Concatenate the original region contents into one session artifact so the
-	 * agent can read them back via `artifact://<id>`. Returns `undefined` when
-	 * the session is not persisted or the write fails — callers degrade to a
-	 * bare placeholder.
-	 */
 	async #saveShakeArtifact(regions: ShakeRegion[]): Promise<string | undefined> {
 		const parts: string[] = [];
 		for (let i = 0; i < regions.length; i++) {
@@ -572,12 +468,6 @@ export class SessionMaintenance {
 		}
 	}
 
-	/**
-	 * Manually compact the session context.
-	 * Aborts current agent operation first.
-	 * @param customInstructions Optional instructions for the compaction summary
-	 * @param options Optional callbacks for completion/error handling
-	 */
 	async compact(
 		customInstructions?: string,
 		options?: CompactOptions,
@@ -588,8 +478,7 @@ export class SessionMaintenance {
 		if (this.#compactionAbortController && this.#compactionAbortController !== retryController) {
 			throw new Error("Compaction already in progress");
 		}
-		// Resolve the `/compact <mode>` subcommand up front so input validation
-		// runs before we disconnect/abort the active agent operation below.
+
 		const compactMode = options?.mode ? findCompactMode(options.mode) : undefined;
 		let methods: CompactionMethod[] = [];
 		let selectedMethodIndex = -1;
@@ -601,8 +490,7 @@ export class SessionMaintenance {
 			this.#compactionAbortController = compactionAbortController;
 			this.#manualCompactionCleanup = manualCompactionCleanup?.promise;
 		}
-		// A manual pass supersedes any background speculation; running both would
-		// double-bill the summarizer and race the commit.
+
 		this.cancelSpeculation();
 
 		try {
@@ -660,7 +548,6 @@ export class SessionMaintenance {
 			const pathEntries = this.#host.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, effectiveSettings, activeModel, this.#tokenizer);
 			if (!preparation) {
-				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
 				if (lastEntry?.type === "compaction") {
 					throw new Error("Already compacted");
@@ -713,17 +600,7 @@ export class SessionMaintenance {
 					reason: "user_requested",
 					phase: "standalone_turn",
 				});
-				// Generate compaction result. Only convert known abort-shaped
-				// rejections (AbortError raised while the abort signal is set,
-				// or an already-typed sentinel) into `CompactionCancelledError`
-				// so downstream callers can discriminate cancel from generic
-				// failure via `instanceof` without inspecting message strings.
-				// Real compaction bugs (network, server, parsing, etc.) keep
-				// their original shape — they must not be silently relabeled
-				// as cancellations even if the signal happens to be aborted
-				// for an unrelated reason. Assignments live inside the try
-				// block because every catch path throws — the post-try reads
-				// of the result-derived locals are reachable only on success.
+
 				try {
 					const result = await this.#compactWithFallbackModel(
 						preparation,
@@ -815,12 +692,7 @@ export class SessionMaintenance {
 					this.#compactionAbortController = undefined;
 				}
 				this.#host.reconnectToAgent();
-				// Compaction disconnected before `await abort()`, so abort's finally drain
-				// (and any steer/follow-up that arrived mid-compaction — async IRC, an
-				// `xd://` mount notice, an SDK/RPC steer) was suppressed while disconnected
-				// (issue #5800). Unlike `/new`/switchSession, compaction preserves the agent
-				// queues, so nothing else resumes them: re-drain now that the listener is back
-				// and `isCompacting` is false, or the queued turn hangs until the next prompt.
+
 				this.#host.drainStrandedQueuedMessages();
 				if (this.#manualCompactionCleanup === manualCompactionCleanup?.promise) {
 					this.#manualCompactionCleanup = undefined;
@@ -830,10 +702,6 @@ export class SessionMaintenance {
 		}
 	}
 
-	/**
-	 * Cancel in-progress context maintenance and return the active manual pass's
-	 * cleanup barrier. The barrier resolves only after its agent subscription reconnects.
-	 */
 	abortCompaction(reason?: unknown): Promise<void> | undefined {
 		const manualCompactionCleanup = this.#manualCompactionCleanup;
 		this.#compactionAbortController?.abort(reason);
@@ -841,55 +709,34 @@ export class SessionMaintenance {
 		return manualCompactionCleanup;
 	}
 
-	/**
-	 * Resolves once an in-flight manual compaction has reconnected the agent
-	 * subscription and re-drained its preserved queues; `undefined` when no manual
-	 * compaction is active. Callers that must not start a turn against the
-	 * disconnected session (e.g. ordinary prompts) await this first.
-	 */
 	get manualCompactionCleanup(): Promise<void> | undefined {
 		return this.#manualCompactionCleanup;
 	}
 
-	/** Cancel only automatic maintenance while preserving a manual compaction. */
 	abortAutomaticCompaction(): void {
 		this.#autoCompactionAbortController?.abort();
 	}
 
-	/** Trigger idle compaction through the auto-compaction flow (with UI events). */
 	async runIdleCompaction(): Promise<void> {
 		if (this.#host.isStreaming() || this.isCompacting) return;
 		await this.runAutoCompaction("idle", false);
 	}
 
-	/**
-	 * Start a background speculative compaction when context has entered the
-	 * pre-threshold band `[threshold − lead, threshold)`. The produced summary
-	 * is held (armed) and committed instantly by the next real maintenance
-	 * pass, hiding summarization latency. Only LLM-backed methods (remote/soft)
-	 * are speculated. Never rewrites history itself; stale results are
-	 * discarded by apply-time branch validation in {@link #claimArmedSpeculation}.
-	 * A turn that jumps past the threshold before a run armed is handled by
-	 * {@link deferThresholdCompactionToSpeculation}'s grace band instead.
-	 */
 	maybeStartSpeculativeCompaction(contextTokens: number, contextWindow: number): void {
 		if (contextWindow <= 0 || this.#host.isDisposed()) return;
 		const settings = this.#host.settings.getGroup("compaction");
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings)) return;
-		// A running compaction owns the branch; speculating under it would race the rewrite.
+
 		if (this.isCompacting) return;
-		// Extensions that intercept compaction (cancel/replace) keep exact
-		// blocking semantics; a speculated result would bypass their veto.
+
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
-		if (contextTokens >= thresholdTokens) return; // real maintenance owns it now
+		if (contextTokens >= thresholdTokens) return;
 		if (thresholdTokens - contextTokens > resolveSpeculationLeadTokens(thresholdTokens)) return;
 		const current = this.#speculation;
 		if (current) {
-			if (!current.armed) return; // one run at a time
-			// Refresh-on-growth: the armed summary's kept tail grows with every
-			// turn; once the growth exceeds the keep-recent budget, a fresh cut
-			// reclaims materially more context at apply time.
+			if (!current.armed) return;
+
 			const growth = contextTokens - current.armed.contextTokensAtStart;
 			const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
 			if (growth <= refreshBudget && this.#armedSpeculationValid(current.armed)) return;
@@ -902,7 +749,6 @@ export class SessionMaintenance {
 		this.#startSpeculationRun(contextTokens, method);
 	}
 
-	/** Install and launch one background speculation run for `method`. */
 	#startSpeculationRun(contextTokens: number, method: "remote" | "soft"): void {
 		const controller = new AbortController();
 		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
@@ -916,30 +762,12 @@ export class SessionMaintenance {
 		});
 	}
 
-	/**
-	 * Grace band above the compaction threshold: when a single turn jumps past
-	 * the threshold before the background speculation armed (or even started),
-	 * the threshold pass keeps serving the user instead of blocking on a
-	 * synchronous summarization — the speculation finishes in the background
-	 * and the next maintenance boundary splices it in for free. Returns true
-	 * while deferral is in effect (a run was live, or one was started here);
-	 * the caller MUST skip its blocking compaction then.
-	 *
-	 * Deferral ends — and the blocking pass resumes — once context grows past
-	 * `threshold + lead`, clamped to keep {@link SPECULATION_LEAD_MIN_TOKENS}
-	 * of headroom below the window. A provider overflow inside the band is
-	 * recovered by the existing overflow path (compact + retry). Never defers
-	 * when async compaction is disabled or when a `session_before_compact`
-	 * extension must keep exact blocking semantics.
-	 */
 	deferThresholdCompactionToSpeculation(contextTokens: number, contextWindow: number): boolean {
 		if (contextWindow <= 0 || this.#host.isDisposed()) return false;
 		const settings = this.#host.settings.getGroup("compaction");
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings))
 			return false;
-		// A running compaction owns the branch; speculating under it would race the
-		// rewrite. Extensions that intercept compaction (cancel/replace) keep exact
-		// blocking semantics; a speculated result would bypass their veto.
+
 		if (this.isCompacting) return false;
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return false;
 		const model = this.#model;
@@ -954,14 +782,13 @@ export class SessionMaintenance {
 		if (contextTokens >= graceCapTokens) return false;
 		const run = this.#speculation;
 		if (run) {
-			if (run.armed) return false; // ready — the real pass splices it in now
-			return true; // still summarizing in the background
+			if (run.armed) return false;
+			return true;
 		}
 		this.#startSpeculationRun(contextTokens, method);
 		return true;
 	}
 
-	/** Produce and arm one speculative compaction result off a branch snapshot. */
 	async #runSpeculation(run: SpeculationRun, method: "remote" | "soft", contextTokens: number): Promise<void> {
 		const clear = () => {
 			if (this.#speculation === run) this.#speculation = undefined;
@@ -979,8 +806,7 @@ export class SessionMaintenance {
 		let armed: ArmedSpeculation;
 		{
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, undefined);
-			// No hookCompaction is passed above, so "fromHook" is unreachable;
-			// the guard just narrows the union.
+
 			if (compactionPrep.kind === "fromHook") return clear();
 			const candidates = this.#getCompactionModelCandidates(
 				this.#host.modelRegistry.getAvailable(),
@@ -1005,9 +831,7 @@ export class SessionMaintenance {
 					extraContext: compactionPrep.hookContext,
 					remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
 					codexCompaction,
-					// Isolate from the live turn: remote compaction transports key
-					// sticky provider sessions by sessionId, and a speculation
-					// overlapping the live stream must never interleave with it.
+
 					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
 					preferWebsockets: false,
 				},
@@ -1034,12 +858,6 @@ export class SessionMaintenance {
 		});
 	}
 
-	/**
-	 * An armed result is committable only when the branch prefix it summarized
-	 * is still intact: its snapshot leaf is on the active path with no later
-	 * compaction or reset boundary, and any provider-native replay payload is
-	 * still readable by the active model.
-	 */
 	#armedSpeculationValid(armed: ArmedSpeculation): boolean {
 		const model = this.#model;
 		if (!model) return false;
@@ -1060,11 +878,6 @@ export class SessionMaintenance {
 		return true;
 	}
 
-	/**
-	 * Consume the speculation slot for a real maintenance pass. An in-flight run
-	 * is aborted (the real pass supersedes it); an armed result is returned only
-	 * when still valid for the current branch, model, and settings.
-	 */
 	#claimArmedSpeculation(): ArmedSpeculation | undefined {
 		const run = this.#speculation;
 		if (!run) return undefined;
@@ -1079,12 +892,6 @@ export class SessionMaintenance {
 		return this.#armedSpeculationValid(run.armed) ? run.armed : undefined;
 	}
 
-	/**
-	 * Append a compaction entry and run the shared post-commit sequence:
-	 * rebuild the display context, swap live agent messages, re-anchor stats,
-	 * reset advisor/todo runtime state derived from the replaced history,
-	 * reset provider sessions, and emit the `session_compact` extension hook.
-	 */
 	async #commitCompactionEntry(args: {
 		summary: string;
 		shortSummary: string | undefined;
@@ -1146,24 +953,7 @@ export class SessionMaintenance {
 		return savedCompactionEntry;
 	}
 
-	/**
-	 * Local token estimate of the stored conversation (plus any pending messages),
-	 * independent of provider-reported usage. A `before_provider_request` hook
-	 * (e.g. a compression extension such as Headroom) or other on-wire payload
-	 * transform can shrink the request below the real stored conversation; the
-	 * provider then reports deflated prompt tokens, so anchoring the compaction
-	 * decision purely on that usage lets the real history grow unbounded until it
-	 * overflows and native compaction can no longer run. This estimate is the
-	 * floor the compaction decision respects so on-wire compression can never
-	 * suppress it.
-	 */
 	#estimateStoredContextTokens(pendingMessages: AgentMessage[] = []): number {
-		// Local counting is the whole point of this arm: provider usage is
-		// exactly what it must not trust. Exclude encrypted reasoning
-		// (thinkingSignature / redactedThinking) too — its local byte size
-		// diverges from what the provider bills, so counting it would let a
-		// thinking-heavy turn falsely trip the floor. The provider usage (the
-		// other arm of compactionContextTokens) already accounts for it.
 		const opts = { excludeEncryptedReasoning: true } as const;
 		return (
 			computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer) +
@@ -1175,9 +965,7 @@ export class SessionMaintenance {
 	#estimatePrePromptContextTokens(messages: AgentMessage[], contextWindow: number): number {
 		const breakdown = this.#host.getContextBreakdown({ contextWindow, pendingMessages: messages });
 		const localEstimate = this.#estimateStoredContextTokens(messages);
-		// Floor by the local estimate: a payload-shrinking before_provider_request
-		// hook deflates the provider-anchored breakdown, which must not suppress
-		// pre-prompt compaction (see #estimateStoredContextTokens).
+
 		return compactionContextTokens(breakdown?.usedTokens ?? 0, localEstimate);
 	}
 
@@ -1199,14 +987,9 @@ export class SessionMaintenance {
 			prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
 				undefined
 		) {
-			// The prior tool loop already attempted the rescue and warned for this
-			// persisted oversized turn. Only a later persisted cut point makes a
-			// pre-prompt retry useful; the new agent loop may warn for its own turn.
 			return;
 		}
-		// Grace band: a live (or just-started) background speculation absorbs the
-		// blocking summarization; the user's prompt goes out immediately and the
-		// armed result is spliced in at the next boundary.
+
 		if (this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
 			logger.debug("Pre-prompt threshold deferred to speculative compaction", {
 				contextTokens,
@@ -1215,10 +998,6 @@ export class SessionMaintenance {
 			return;
 		}
 
-		// Auto-promote first: switching to a larger-context model avoids compacting
-		// the history at all. The post-turn threshold path already promotes before
-		// compacting; without this, the pre-prompt path would pre-empt promotion and
-		// compact (summarize) a session that should have just been promoted.
 		if (await this.#promoteContextModel()) {
 			logger.debug("Pre-prompt context promotion avoided compaction", {
 				contextTokens,
@@ -1240,15 +1019,6 @@ export class SessionMaintenance {
 		});
 	}
 
-	/**
-	 * Compact continuing tool-loop runs before the next provider request.
-	 *
-	 * `onTurnEnd` is the safe boundary: tool results for the just-finished turn
-	 * are already paired in `activeMessages`, the live array the agent loop reads
-	 * before its next model call. Before compacting, the just-finished turn is
-	 * synchronously persisted if async message hooks have not reached the normal
-	 * append path yet.
-	 */
 	async maintainContextMidRun(
 		activeMessages: AgentMessage[],
 		signal: AbortSignal | undefined,
@@ -1274,11 +1044,6 @@ export class SessionMaintenance {
 			.find((message): message is AssistantMessage => message.role === "assistant");
 		if (!lastAssistant || lastAssistant.stopReason === "aborted" || lastAssistant.stopReason === "error") return;
 
-		// Decide from the live agent context before waiting for the asynchronous
-		// session journal. The persistence barrier is required only when maintenance
-		// will actually rewrite history; awaiting it on every ordinary tool turn lets
-		// a slow message_end listener leave the TUI "generating" with no provider
-		// request or tool running.
 		const billedContextTokens = calculateContextTokens(lastAssistant.usage);
 		const storedContextTokens = this.#estimateStoredContextTokens();
 		const contextTokens = compactionContextTokens(billedContextTokens, storedContextTokens);
@@ -1286,9 +1051,7 @@ export class SessionMaintenance {
 			this.maybeStartSpeculativeCompaction(contextTokens, contextWindow);
 			return;
 		}
-		// Grace band: keep the tool loop moving while a background speculation
-		// (live or started here) produces the summary; checked before the
-		// persistence barrier so deferred boundaries never await the journal.
+
 		if (this.deferThresholdCompactionToSpeculation(contextTokens, contextWindow)) {
 			logger.debug("Mid-run threshold deferred to speculative compaction", {
 				contextTokens,
@@ -1299,15 +1062,6 @@ export class SessionMaintenance {
 
 		if (!(await this.#host.persistTurnMessagesForMidRunCompaction(context))) return;
 		if (this.#midTurnCompactionDeadEnds.has(activeMessages)) {
-			// A prior boundary already ran the dead-end rescue and could not reduce
-			// this turn. Re-running the rescue and re-emitting its warning on every
-			// following tool boundary is wasted work while nothing summarizable
-			// exists. But the tool loop keeps appending turns: once a later
-			// (smaller) tool result gives prepareCompaction a cut point before the
-			// now-older oversized turn, compaction can finally make progress and
-			// MUST run rather than stay suppressed until provider overflow (#7153
-			// review). Stay parked only while no cut point is available; re-arm as
-			// soon as one appears.
 			if (
 				!model ||
 				prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
@@ -1319,12 +1073,6 @@ export class SessionMaintenance {
 			this.#midTurnDeadEndPendingPrePrompt = false;
 		}
 
-		// Promote to a larger-context sibling before compacting, mirroring the
-		// pre-prompt (runPrePromptCompactionIfNeeded) and post-turn threshold
-		// (checkCompaction) paths. Without this, a long mid-turn tool loop that
-		// crosses the threshold compacts the history (and can hit the no-progress
-		// dead-end on a single oversized turn) on a model that should have just
-		// been promoted to a larger window instead.
 		if (await this.#promoteContextModel()) {
 			logger.debug("Mid-run context promotion avoided compaction", {
 				contextTokens,
@@ -1361,68 +1109,33 @@ export class SessionMaintenance {
 			messagesAfter: activeMessages.length,
 		});
 	}
-	/**
-	 * Check if context maintenance or promotion is needed and run it.
-	 * Called after agent_end and before prompt submission.
-	 *
-	 * Four cases (in order):
-	 * 1. Input overflow + promotion: promote to larger model, retry without maintenance.
-	 * 2. Input overflow + no promotion target: run context maintenance, auto-retry on same model.
-	 * 3. Output incomplete (stopReason === "length", e.g. `response.incomplete`): the
-	 *    model burned its output budget without producing an actionable deliverable
-	 *    (reasoning-only or truncated). Drop the dead turn, try promotion, otherwise
-	 *    run compaction and retry.
-	 * 4. Threshold: context over threshold, run context maintenance (no auto-retry).
-	 *
-	 * @param assistantMessage The assistant message to check
-	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
-	 * @param autoContinue Whether maintenance may schedule the agent-authored continuation prompt.
-	 * @returns whether compaction/recovery scheduled a retry, auto-continue, or
-	 *   queued-message drain that already owns the next turn. Callers MUST skip
-	 *   `session_stop` and other agent continuations when `continuationScheduled`
-	 *   is true.
-	 */
+
 	async checkCompaction(
 		assistantMessage: AssistantMessage,
 		skipAbortedCheck = true,
 		autoContinue = true,
 	): Promise<CompactionCheckResult> {
-		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return COMPACTION_CHECK_NONE;
 		const contextWindow = this.#model?.contextWindow ?? 0;
 		const generation = this.#host.promptGeneration();
-		// Skip overflow check if the message came from a different model.
-		// This handles the case where user switched from a smaller-context model (e.g. opus)
-		// to a larger-context model (e.g. codex) - the overflow error from the old model
-		// shouldn't trigger compaction for the new model.
+
 		const sameModel =
 			this.#model && assistantMessage.provider === this.#model.provider && assistantMessage.model === this.#model.id;
-		// This handles the case where an error was kept after compaction (in the "kept" region).
-		// The error shouldn't trigger another compaction since we already compacted.
-		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
-		// is still in context but shouldn't trigger compaction again.
+
 		const compactionEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		if (sameModel && !errorIsFromBeforeCompaction && AIError.isContextOverflow(assistantMessage, contextWindow)) {
-			// Clear the failed turn from active context so the retry (or the next
-			// user prompt) does not replay it. The persisted branch entry stays
-			// for now: when no recovery path runs, the user-facing transcript
-			// MUST keep the only assistant message explaining why the turn
-			// stopped. The branch entry is dropped further down, but only on the
-			// paths that actually schedule a retry/compaction.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
-			// Try context promotion first - switch to a larger model and retry without compacting
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
 				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				// Retry on the promoted (larger) model without compacting
+
 				this.#host.scheduleAgentContinue({ delayMs: 100, generation });
 				return COMPACTION_CHECK_CONTINUATION;
 			}
 
-			// No promotion target available fall through to compaction
 			const compactionSettings = this.#host.settings.getGroup("compaction");
 			if (compactionSettings.enabled && hasConfiguredCompactionMethod(compactionSettings)) {
 				return await this.#host.runRecoveryCompactionWithRollback("overflow", assistantMessage, {
@@ -1431,16 +1144,7 @@ export class SessionMaintenance {
 			}
 			return COMPACTION_CHECK_NONE;
 		}
-		// A context promotion can land while the failing call is already in
-		// flight (or on a run whose loop predates the switch): the overflow
-		// error then arrives stamped with the pre-promotion model while
-		// `this.#host.model()` is already the promoted target. The sameModel guard
-		// above deliberately ignores stale foreign-model errors, but this
-		// state is not stale — recover exactly like the promotion path:
-		// drop the dead turn and retry on the already-promoted model. Gated
-		// narrowly on "current model IS the failed model's promotion target
-		// with a strictly larger window" so genuinely stale errors from
-		// old user-switched models keep surfacing untouched.
+
 		if (
 			!sameModel &&
 			autoContinue &&
@@ -1474,16 +1178,7 @@ export class SessionMaintenance {
 			}
 		}
 
-		// Case 3: Output-side incomplete — `response.incomplete` from OpenAI Responses
-		// (and Codex) maps to stopReason === "length". The model burned its
-		// `max_output_tokens` budget on reasoning/text and emitted no actionable
-		// deliverable. Same recovery class as overflow: promotion if available,
-		// otherwise compaction. Unlike overflow, the *input* is fine, so any
-		// reachable summarization preference may run.
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
-			// Same active-context vs persisted-history split as the overflow path
-			// above: clear the dead turn from agent state so it cannot be replayed,
-			// but keep it on the branch unless promotion or compaction actually runs.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
 			const promoted = await this.#tryContextPromotion(assistantMessage);
@@ -1507,54 +1202,30 @@ export class SessionMaintenance {
 					triggerContextTokens: calculateContextTokens(assistantMessage.usage),
 				});
 			}
-			// Neither promotion nor compaction is available — surface the dead-end so
-			// the user understands why the turn yielded with nothing.
+
 			logger.warn("response.incomplete with no recovery path (promotion + compaction both unavailable)", {
 				model: `${assistantMessage.provider}/${assistantMessage.model}`,
 			});
 			return COMPACTION_CHECK_NONE;
 		}
 
-		// Stale-result pass runs every turn, before any threshold gating: it is
-		// cheap (bails when no candidate) and independent of the compaction
-		// setting.
 		const supersedeResult = await this.#pruneStaleToolResults();
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");
 		if (!compactionSettings.enabled || !hasConfiguredCompactionMethod(compactionSettings))
 			return COMPACTION_CHECK_NONE;
 
-		// Case 4: Threshold - turn succeeded but context is getting large
-		// Skip if this was an error (non-overflow errors don't have usage data)
 		if (assistantMessage.stopReason === "error") return COMPACTION_CHECK_NONE;
 		const pruneResult = await this.#pruneToolOutputs();
 		const maintenanceTokensFreed = (supersedeResult?.tokensSaved ?? 0) + (pruneResult?.tokensSaved ?? 0);
-		// `errorIsFromBeforeCompaction` (computed above) is the general
-		// "this assistant message predates the latest compaction" predicate here,
-		// not just an error-specific one; alias it locally so the threshold intent
-		// reads clearly (#3412 review).
+
 		const assistantPredatesCompaction = errorIsFromBeforeCompaction;
-		// An assistant that predates the latest compaction carries stale, pre-rewrite
-		// `usage`: the scheduled auto-continue re-enters this check with the kept
-		// assistant (#promptWithMessage → checkCompaction), and its old high prompt
-		// count would re-trip the threshold on a freshly compacted history. Drop the
-		// stale provider number for those messages and let the live stored estimate
-		// (the floor applied below) drive the decision instead.
+
 		const assistantUsageContextTokens = assistantPredatesCompaction
 			? 0
 			: calculateContextTokens(assistantMessage.usage);
 		const storedContextTokens = this.#estimateStoredContextTokens();
-		// Pruning frees bytes for the NEXT prompt; it does not change the size of
-		// the prompt the LLM just billed for. Earlier revisions subtracted the
-		// per-turn supersede/prune `tokensSaved` from the threshold input, which
-		// let a long-running `/goal` session sit above `compaction.thresholdTokens`
-		// indefinitely whenever per-turn pruning saved enough to drop the
-		// post-prune estimate below the user-configured trigger — the visible
-		// context (anchored to the same provider billing) still showed >threshold,
-		// but `shouldCompact` no-op'd (#3174). Anchor the initial trigger on the
-		// last turn's billed context tokens, floored by the post-prune
-		// stored-conversation estimate so a payload-compression hook still can't
-		// deflate the trigger.
+
 		const contextTokens = compactionContextTokens(assistantUsageContextTokens, storedContextTokens);
 		const postMaintenanceContextTokens = compactionContextTokens(
 			Math.max(0, assistantUsageContextTokens - maintenanceTokensFreed),
@@ -1580,10 +1251,6 @@ export class SessionMaintenance {
 			contextPromotionEnabled: this.#host.settings.get("contextPromotion.enabled") === true,
 		});
 		if (shouldThresholdCompact) {
-			// Grace band: a live (or just-started) background speculation absorbs
-			// the blocking summarization; the session stays responsive and the
-			// armed result lands at the next boundary. Deferral delays promotion
-			// by at most the band — the eventual real pass still promotes first.
 			if (this.deferThresholdCompactionToSpeculation(postMaintenanceContextTokens, contextWindow)) {
 				logger.debug("Post-turn threshold deferred to speculative compaction", {
 					postMaintenanceContextTokens,
@@ -1591,7 +1258,7 @@ export class SessionMaintenance {
 				});
 				return COMPACTION_CHECK_NONE;
 			}
-			// Try promotion first — if a larger model is available, switch instead of compacting
+
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (!promoted) {
 				return await this.runAutoCompaction("threshold", false, {
@@ -1611,28 +1278,15 @@ export class SessionMaintenance {
 		return COMPACTION_CHECK_NONE;
 	}
 
-	/**
-	 * Attempt context promotion to a larger model.
-	 * Returns true if promotion succeeded (caller should retry without compacting).
-	 */
 	async #tryContextPromotion(assistantMessage: AssistantMessage): Promise<boolean> {
 		const currentModel = this.#model;
 		if (!currentModel) return false;
-		// The overflow/length error may have come from a model the user already
-		// switched away from; only promote when the failing turn was this model.
+
 		if (assistantMessage.provider !== currentModel.provider || assistantMessage.model !== currentModel.id)
 			return false;
 		return this.#promoteContextModel();
 	}
 
-	/**
-	 * Switch to a larger-context sibling when context promotion is enabled and a
-	 * target with a strictly larger window (and a usable key) exists. Returns true
-	 * when the model was switched, so the caller can retry without compacting.
-	 * Message-independent core shared by the post-turn overflow path
-	 * ({@link #tryContextPromotion}) and the pre-prompt threshold path
-	 * ({@link runPrePromptCompactionIfNeeded}).
-	 */
 	async #promoteContextModel(): Promise<boolean> {
 		const promotionSettings = this.#host.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
@@ -1694,9 +1348,7 @@ export class SessionMaintenance {
 			const key = `${model.provider}/${model.id}`;
 			if (seen.has(key)) return;
 			seen.add(key);
-			// `seen` still tracks rejected models so the largest-context fallback
-			// scan below doesn't reintroduce them; the filter just suppresses
-			// inclusion in this caller's candidate chain.
+
 			if (filter && !filter(model)) return;
 			candidates.push(model);
 		};
@@ -1770,24 +1422,14 @@ export class SessionMaintenance {
 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 						telemetry,
-						// Honor the user's /model thinking selection (incl. `off`) on
-						// the manual `/compact` path. Clamped per-model inside compact()
-						// via resolveCompactionEffort so unsupported-effort models
-						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
+
 						thinkingLevel: this.#host.thinkingLevel(),
 						tools: this.#host.agent.state.tools,
 						sessionId: this.#host.sessionId(),
 						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
 						providerSessionState: this.#host.providerSessionState,
 						preferWebsockets: this.#host.preferWebsockets,
-						// Route every summarization HTTP request through the
-						// session's side-stream transport so the provider
-						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
-						// brackets compaction the same way it brackets the live
-						// agent turn — without this, multiple ollama-cloud
-						// subagents auto/manually compacting issued uncapped
-						// summary requests in parallel (chatgpt-codex review on
-						// #3751).
+
 						completeImpl: async (requestModel, requestContext, requestOptions) => {
 							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
 							return stream.result();
@@ -1862,13 +1504,6 @@ export class SessionMaintenance {
 		return { kind: "needsLlm", hookContext, hookPrompt, preserveData };
 	}
 
-	/**
-	 * Estimated context tokens after a compaction commit: fixed non-message
-	 * overhead + the summary message + every message from `firstKeptEntryId` to
-	 * the branch leaf. Mirrors the post-commit context rebuild; persisted as
-	 * `tokensAfter` on the entry so the transcript divider can show the
-	 * before → after amounts.
-	 */
 	#projectCompactedContextTokens(args: {
 		summary: string;
 		shortSummary: string | undefined;
@@ -1891,23 +1526,6 @@ export class SessionMaintenance {
 		return tokens;
 	}
 
-	/**
-	 * Post-maintenance progress check for the context-full tail.
-	 *
-	 * After `appendCompaction` rewrote history and `replaceMessages` swapped in the
-	 * compacted context, measure the residual context off the live message set and
-	 * decide whether maintenance actually created headroom. Mirrors the shake
-	 * recovery-band logic (#2275): a session whose single most-recent turn already
-	 * blows the threshold cannot be reduced by compaction (findCutPoint keeps that
-	 * turn verbatim), so re-firing on the next agent_end just thrashes. We only
-	 * report progress when residual context lands at or below
-	 * `COMPACTION_RECOVERY_BAND × threshold` — a band that sits strictly under the
-	 * compaction threshold, so reaching it guarantees the next turn cannot
-	 * re-trip threshold compaction.
-	 *
-	 * When the model/window is unknown we cannot evaluate the band, so we
-	 * optimistically allow the continuation (preserving prior behavior).
-	 */
 	#compactionCreatedHeadroom(): boolean {
 		const contextWindow = this.#model?.contextWindow ?? 0;
 		if (contextWindow <= 0) return true;
@@ -1918,39 +1536,10 @@ export class SessionMaintenance {
 		);
 		const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
 		const recoveryBand = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
-		// Residual at/below the band is authoritative headroom: the band sits
-		// strictly under the compaction threshold, so the next turn cannot
-		// re-trip threshold compaction regardless of how little this pass shaved.
-		// Don't add a secondary "smaller than the trigger" guard — when stale/
-		// tool-output pruning already dropped context under the band before this
-		// pass, the trigger is itself sub-band, and requiring a strict reduction
-		// would suppress a valid continuation and emit a false no-progress warning
-		// even though compaction left the session safe.
+
 		return residualTokens <= recoveryBand;
 	}
 
-	/**
-	 * Whether the current stored context fits `model`'s usable window
-	 * (`contextWindow - reserve`), using the same reserve resolution as
-	 * compaction. This is deliberately independent of `compaction.enabled`: an
-	 * oversized request overflows the provider whether or not compaction would
-	 * have run, so a fit check must judge the raw budget.
-	 *
-	 * The default absolute reserve can exceed bundled small-context windows, or
-	 * nearly consume a 16k-class window; those known-impossible defaults fall
-	 * back to the proportional 15% reserve. Explicit valid reserves still define
-	 * the usable prompt budget so callers do not enter headroom the user
-	 * intentionally reserved.
-	 *
-	 * Used by the retry-fallback selector to skip a candidate whose window cannot
-	 * hold the retry context before switching onto it, and (via
-	 * {@link #compactionCreatedRetryFit}) to decide whether an overflow recovery
-	 * produced a retryable prompt. `excludedMessage` identifies a failed assistant
-	 * turn that will be removed before retrying; subtracting it makes the selector
-	 * judge the request that will actually be sent. When the window is unknown we
-	 * cannot evaluate the budget, so we optimistically report a fit (preserving
-	 * prior behavior).
-	 */
 	contextFitsModel(model: Model, excludedMessage?: AssistantMessage): boolean {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return true;
@@ -1969,39 +1558,10 @@ export class SessionMaintenance {
 		return residualTokens <= fitBudget;
 	}
 
-	/**
-	 * Retry-side check: whether an overflow/incomplete recovery rebuilt a prompt
-	 * that fits the active model's window again. Callers MUST invoke this AFTER
-	 * dropping the failed assistant from `this.#host.messages()` so the just-failed
-	 * turn (absent from the retry prompt) is excluded from the estimate. Unlike
-	 * the `COMPACTION_RECOVERY_BAND × threshold` hysteresis the auto-continue
-	 * thrash guard uses, a retry only needs to *fit* — a 200k-window prompt
-	 * compacted from overflow down to ~150k is retryable even though it sits above
-	 * `0.8 × 170k` (PR #3412 review).
-	 */
 	#compactionCreatedRetryFit(): boolean {
 		return this.#model ? this.contextFitsModel(this.#model) : true;
 	}
 
-	/**
-	 * Last-resort tiered reducer when {@link runAutoCompaction} would otherwise
-	 * dead-end. The summarizer cut at the only available turn boundary, but the
-	 * kept tail is still over the recovery band because a single recent turn (a
-	 * large tool-result, a heavy fenced/XML block, attached images) is itself
-	 * bigger than the band and `findCutPoint` cannot cut inside one message.
-	 *
-	 * Tier 1 — {@link #shakeElide} reaches INSIDE that tail: heavy tool-result /
-	 * block content is offloaded to one `artifact://` blob behind a recoverable
-	 * placeholder. Tier 2 — `dropImages()`: image blocks are stripped from the
-	 * branch; unlike elided text they are NOT artifact-recoverable, so this tier
-	 * only runs once elide has failed the progress re-test.
-	 *
-	 * Each tier that rewrote history re-anchors the in-flight context snapshot,
-	 * then the caller's progress predicate is re-tested; the first tier that
-	 * restores progress emits one info notice describing everything freed and
-	 * stops. Returns whether progress was restored — `false` falls through to
-	 * the dead-end warning.
-	 */
 	async #rescueCompactionDeadEnd(signal: AbortSignal, hasProgress: () => boolean): Promise<boolean> {
 		let elided = 0;
 		let elidedTokens = 0;
@@ -2012,9 +1572,6 @@ export class SessionMaintenance {
 			elidedTokens = result.tokensFreed;
 			if (result.artifactId) elideSink = "an artifact";
 			if (elided > 0) {
-				// The elide pass rewrote history; re-anchor the in-flight snapshot
-				// so the caller's headroom/retry-fit re-test measures the shaken
-				// context.
 				this.#host.rebaseAfterCompaction();
 			}
 		} catch (error) {
@@ -2052,16 +1609,10 @@ export class SessionMaintenance {
 		return false;
 	}
 
-	/** Notice fragment for a dead-end elide tier: what was freed and where it went. */
 	#describeElideRescue(elided: number, tokensFreed: number, sink: string): string {
 		return `elided ${elided} heavy block${elided === 1 ? "" : "s"} (~${tokensFreed.toLocaleString()} tokens) to ${sink}`;
 	}
 
-	/**
-	 * Internal: Run auto-compaction with events.
-	 *
-	 * @returns whether auto-compaction scheduled a follow-up turn.
-	 */
 	async runAutoCompaction(
 		reason: "overflow" | "threshold" | "idle" | "incomplete",
 		willRetry: boolean,
@@ -2071,9 +1622,9 @@ export class SessionMaintenance {
 			suppressContinuation?: boolean;
 			phase?: CodexCompactionContext["phase"];
 			terminalTextAnswer?: boolean;
-			/** Mid-turn: splice history then return; do not await UI/extension fan-out. */
+
 			detachPostCommit?: boolean;
-			/** Index to resume from after an earlier preferred method failed. */
+
 			methodIndex?: number;
 		} = {},
 	): Promise<CompactionCheckResult> {
@@ -2103,15 +1654,11 @@ export class SessionMaintenance {
 		}
 		if (!method) return COMPACTION_CHECK_NONE;
 
-		// A speculative pass may have already produced this compaction's summary
-		// in the background. Claiming consumes the slot either way: an in-flight
-		// run is aborted (this real pass supersedes it) and an armed result is
-		// returned only when still valid for the current branch/model/settings.
 		const claimedSpec = this.#claimArmedSpeculation();
 		const armedSpec = claimedSpec;
 		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
 		const action: "context-full" | "remote" = armedSpec?.action ?? (method === "remote" ? "remote" : "context-full");
-		// Abort any older auto-compaction before installing this run's controller.
+
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
 		this.#autoCompactionAbortController = autoCompactionAbortController;
@@ -2119,18 +1666,9 @@ export class SessionMaintenance {
 
 		let compactionCommitted = false;
 		try {
-			// Emit start AFTER the controller is installed so isCompacting is already true
-			// for any listener — and for input routed during this emit's event-loop yield:
-			// a message typed as the compaction loader appears must land in the compaction
-			// queue, not the core steering queue.
 			const startEvent = { type: "auto_compaction_start" as const, reason, action };
 			await this.#emitLifecycleEvent(startEvent, false);
 			if (armedSpec) {
-				// A background speculation already produced this compaction's
-				// summary; splice it in instead of paying for a blocking
-				// summarization. tokensBefore reflects the live trigger size when
-				// known — the armed value measured the smaller prefix at compute
-				// time.
 				logger.debug("Applying armed speculative compaction", {
 					method: armedSpec.method,
 					action,
@@ -2200,21 +1738,6 @@ export class SessionMaintenance {
 			let pathEntriesForCompaction = pathEntries;
 			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
 			if (!preparation) {
-				// prepareCompaction found nothing to summarize because the kept region
-				// is a single oversized recent turn — findCutPoint never cuts inside a
-				// tool result, so a huge tool-result / fenced block tail leaves nothing
-				// on the summarizable side and summary compaction cannot even start.
-				// That is exactly the dead-end the elide rescue targets: it reaches
-				// INSIDE the tail and offloads heavy content to an artifact placeholder,
-				// shrinking the tail so findCutPoint can then move the cut and leave
-				// older turns to summarize. Run the same tiered rescue the
-				// post-maintenance guard uses (elide, then image drop), with progress
-				// defined as "prepareCompaction now succeeds on the rewritten branch",
-				// and fall through to the normal compaction body when it does (writing
-				// a compaction entry anchors the stale billed usage so the
-				// auto-continue re-check cannot re-trip and loop the warning — issue
-				// #4786). Skip entirely on the idle timer (it re-checks usage on its
-				// own cadence).
 				let rescueRewroteHistory = false;
 				if (reason !== "idle") {
 					await this.#rescueCompactionDeadEnd(autoCompactionSignal, () => {
@@ -2257,10 +1780,7 @@ export class SessionMaintenance {
 					if (deadEndWarning) {
 						this.#host.emitNotice("warning", deadEndWarning, "compaction");
 					}
-					// A rescue that offloaded content but still could not produce a
-					// preparation rewrote the branch; flag it so the overflow-recovery
-					// rollback does not re-restore the just-failed assistant turn on top
-					// of the elided tail.
+
 					const base = continuationScheduled
 						? COMPACTION_CHECK_CONTINUATION
 						: noProgressDeadEnd
@@ -2371,10 +1891,7 @@ export class SessionMaintenance {
 									initiatorOverride: "agent",
 									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 									telemetry,
-									// Honor the user's /model thinking selection on the
-									// auto-compaction path — the most-fired compaction
-									// site. Clamped per-model inside compact() via
-									// resolveCompactionEffort.
+
 									thinkingLevel: this.#host.thinkingLevel(),
 									tools: this.#host.agent.state.tools,
 									sessionId: this.#host.sessionId(),
@@ -2382,10 +1899,7 @@ export class SessionMaintenance {
 									providerSessionState: this.#host.providerSessionState,
 									preferWebsockets: this.#host.preferWebsockets,
 									codexCompaction,
-									// This loop already retries the whole compaction attempt on
-									// transient errors, so the summarization oneshots must not
-									// retry too — the budgets would multiply and each outer
-									// wait would stack on top of an inner backoff.
+
 									oneshotRetry: false,
 								},
 							);
@@ -2427,12 +1941,7 @@ export class SessionMaintenance {
 							}
 
 							const retryAfterMs = this.#host.parseRetryAfterMsFromError(message);
-							// An input the summarizer cannot fit is deterministic: the same
-							// prompt fails identically every attempt, so the retry budget is
-							// pure latency and the next candidate (a larger window) is the
-							// only move that can succeed. Overflow therefore vetoes the
-							// transient/usage-limit arms, which a provider blob can trip on
-							// coincidence alone.
+
 							const shouldRetry =
 								retrySettings.enabled &&
 								attempt < retrySettings.maxRetries &&
@@ -2453,7 +1962,6 @@ export class SessionMaintenance {
 							const baseDelayMs = retrySettings.baseDelayMs * 2 ** attempt;
 							const delayMs = retryAfterMs !== undefined ? Math.max(baseDelayMs, retryAfterMs) : baseDelayMs;
 
-							// If retry delay is too long (>30s), try next candidate instead of waiting
 							const maxAcceptableDelayMs = 30_000;
 							if (delayMs > maxAcceptableDelayMs && hasMoreCandidates) {
 								if (error instanceof NativeCompactionError) {
@@ -2468,7 +1976,7 @@ export class SessionMaintenance {
 									model: `${candidate.provider}/${candidate.id}`,
 								});
 								lastError = error;
-								break; // Exit retry loop, continue to next candidate
+								break;
 							}
 
 							attempt++;
@@ -2588,13 +2096,6 @@ export class SessionMaintenance {
 		return COMPACTION_CHECK_NONE;
 	}
 
-	/**
-	 * Shared auto-maintenance commit tail: append the compaction entry, splice
-	 * the rebuilt context into the live agent, run the post-commit progress
-	 * checks (retry fit / recovery band with the tiered dead-end rescue), emit
-	 * `auto_compaction_end`, and schedule the follow-up turn. Used by both the
-	 * blocking production path and the armed speculative-apply path.
-	 */
 	async #commitAutoCompactionResult(args: {
 		summary: string;
 		shortSummary: string | undefined;
@@ -2656,23 +2157,9 @@ export class SessionMaintenance {
 			details: args.details,
 			preserveData: args.preserveData,
 		};
-		// Post-maintenance progress guard — evaluated BEFORE emitting
-		// auto_compaction_end so the TUI rebuild triggered by that event
-		// already reflects any rescue rewrite (elide / image-drop) and the
-		// dead-end warning stamped on the compaction entry. The summarizer keeps
-		// findCutPoint can only cut at turn boundaries (never tool results),
-		// so a single oversized recent turn (e.g. a huge tool result) leaves
-		// the rewritten context still above threshold. Scheduling the
-		// continuation regardless means the next agent_end re-enters
-		// checkCompaction over the same oversized tail and re-fires forever.
-		// The retry and the threshold auto-continue use different progress
-		// tests (a recoverable overflow only has to fit; the auto-continue
-		// thrash needs the stricter recovery band), so each branch evaluates
-		// its own below.
+
 		let continuationScheduled = false;
-		// A non-idle pass that wanted to continue (retry or auto-continue) but freed
-		// too little for that path to proceed is a dead-end: warn once so the user
-		// understands why maintenance paused instead of silently looping.
+
 		let noProgressDeadEnd = false;
 		let retryFits = false;
 		let hasHeadroom = false;
@@ -2682,10 +2169,7 @@ export class SessionMaintenance {
 			const lastMsg = messages[messages.length - 1];
 			if (lastMsg?.role === "assistant") {
 				const lastAssistant = lastMsg as AssistantMessage;
-				// Drop the prior turn before retry when it carries no actionable deliverable:
-				// - "error": failure was kept in history but must not re-enter the next turn's prompt.
-				// - reason === "incomplete" && stopReason === "length": truncated output (typically
-				//   reasoning-only) — re-running it produces the same dead-end.
+
 				const shouldDrop =
 					lastAssistant.stopReason === "error" ||
 					(reason === "incomplete" && lastAssistant.stopReason === "length");
@@ -2695,11 +2179,6 @@ export class SessionMaintenance {
 				}
 			}
 
-			// Retry only needs the rebuilt prompt to fit the window again — measured
-			// AFTER the drop above so the just-failed turn (which the retry prompt
-			// won't include) is excluded. Reusing the auto-continue recovery band
-			// here turned recoverable overflows into manual dead-ends (#3412 review),
-			// so use the looser fit budget.
 			retryFits = this.#compactionCreatedRetryFit();
 			if (!retryFits) {
 				retryFits = await this.#rescueCompactionDeadEnd(autoCompactionSignal, () =>
@@ -2710,13 +2189,6 @@ export class SessionMaintenance {
 				noProgressDeadEnd = true;
 			}
 		} else if (reason !== "idle") {
-			// Mirror the shake recovery-band check: only auto-continue when compaction
-			// landed residual context under `COMPACTION_RECOVERY_BAND × threshold`.
-			// Re-firing on a history that still sits just over the line is a
-			// thrash, so require genuine headroom, not a bare fit. Even
-			// when auto-continue is disabled, a no-headroom threshold pass must still
-			// block later automatic continuations (todo reminders/session_stop hooks)
-			// from re-entering the same oversized context.
 			hasHeadroom = this.#compactionCreatedHeadroom();
 			if (!hasHeadroom) {
 				hasHeadroom = await this.#rescueCompactionDeadEnd(autoCompactionSignal, () =>
@@ -2730,12 +2202,6 @@ export class SessionMaintenance {
 
 		const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning("clear large tool output") : undefined;
 		if (deadEndWarning) {
-			// Stamp the divider: the compaction bar badges the dead-end and
-			// carries the full warning in its ctrl+o detail, so the pause
-			// stays explained even after the notice row scrolls away. Stamp
-			// the branch's LATEST compaction entry — a frame rescue may have
-			// superseded `savedCompactionEntry` with a rebuilt one, and the
-			// collapsed transcript badges only the active entry.
 			const stampEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch()) ?? savedCompactionEntry;
 			if (stampEntry) {
 				stampEntry.warning = deadEndWarning;
@@ -2767,9 +2233,6 @@ export class SessionMaintenance {
 		return noProgressDeadEnd ? COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION : COMPACTION_CHECK_NONE;
 	}
 
-	/**
-	 * Toggle auto-compaction setting.
-	 */
 	setAutoCompactionEnabled(enabled: boolean): void {
 		this.#host.settings.set("compaction.enabled", enabled);
 		if (enabled && resolveCompactionMethodOrder(this.#host.settings.get("compaction.methodOrder")).length === 0) {
@@ -2777,7 +2240,6 @@ export class SessionMaintenance {
 		}
 	}
 
-	/** Whether automatic maintenance has an enabled method to run. */
 	get autoCompactionEnabled(): boolean {
 		return (
 			this.#host.settings.get("compaction.enabled") &&

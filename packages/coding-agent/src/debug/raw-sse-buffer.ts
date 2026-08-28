@@ -3,11 +3,9 @@ import type { Model, ProviderResponseMetadata, RawSseEvent } from "@oh-my-pi/pi-
 const MAX_RAW_SSE_EVENTS = 1_000;
 const MAX_RAW_SSE_CHARS = 512_000;
 const MAX_RAW_SSE_EVENT_CHARS = 64_000;
-// Reserve room for the `: proto-debug-truncated` / `: proto-debug-elided` marker
-// lines so a trimmed event stays within MAX_RAW_SSE_EVENT_CHARS overall.
+
 const TRIM_MARKER_RESERVE = 200;
-// Caps applied to individual tool entries when compacting a `tools` array
-// inside an oversized `data:` payload.
+
 const MAX_TOOL_SCHEMA_CHARS = 200;
 const MAX_TOOL_DESCRIPTION_CHARS = 200;
 
@@ -44,18 +42,8 @@ interface RawSseDebugSnapshot {
 	lastUpdatedAt?: number;
 }
 
-// Per-record char counts are stored in a parallel array (`#recordChars`) on
-// the buffer rather than stamped onto each record via a symbol property.
-// Stamping triggered hidden-class transitions in V8/JSC — the previous
-// revision saw `trimRawLines` regress 4× (0.5s → 2.0s in a 50s profile)
-// because every event-record allocation went through the slow dictionary
-// path. The parallel array keeps records as plain monomorphic objects.
 type TrimResult = { raw: string[]; truncated: boolean; originalChars: number; chars: number };
 
-// `chars` uses the historical formula `reduce(line.length + 1, init = 1)` so
-// the accounting matches the previous `countRecordChars` byte-for-byte (the
-// trailing +1 covers the record-level newline that `rawRecordText` appends in
-// `toRawText`).
 function countLines(lines: readonly string[]): number {
 	let chars = 0;
 	for (let i = 0; i < lines.length; i++) chars += lines[i].length + 1;
@@ -67,10 +55,6 @@ function elideText(text: string, max: number): string {
 	return `${text.slice(0, max)}… (+${text.length - max} chars)`;
 }
 
-// Shrinks one tool definition in place: schemas (`parameters` for OpenAI
-// shapes, `input_schema` for Anthropic) become elided JSON strings and long
-// descriptions are cut, while `name`/`type` survive untouched. Chat-completions
-// nests the payload under `function`.
 function compactToolEntry(tool: unknown): boolean {
 	if (typeof tool !== "object" || tool === null) return false;
 	const obj = tool as Record<string, unknown>;
@@ -93,8 +77,6 @@ function compactToolEntry(tool: unknown): boolean {
 	return changed;
 }
 
-// Walks a parsed SSE payload and compacts every `tools` array it finds
-// (e.g. `response.tools` echoed back by the Responses API). Mutates `node`.
 function compactToolsDeep(node: unknown): boolean {
 	if (Array.isArray(node)) {
 		let changed = false;
@@ -115,10 +97,6 @@ function compactToolsDeep(node: unknown): boolean {
 	return changed;
 }
 
-// Rewrites oversized `data:` lines with tool schemas compacted. Returns null
-// when nothing changed (unparseable payloads or no tools to shrink). Only
-// invoked on events that already blew the budget, so the JSON round-trip is
-// off the streaming hot path.
 function compactToolLines(raw: readonly string[]): string[] | null {
 	let changed = false;
 	const out = raw.map(line => {
@@ -136,10 +114,6 @@ function compactToolLines(raw: readonly string[]): string[] | null {
 	return changed ? out : null;
 }
 
-// Keeps the first and last portions of an over-budget event and drops the
-// middle, so leading fields (id/model/status) AND trailing fields
-// (usage/finish_reason) both stay visible. A `: proto-debug-elided` comment
-// marks the cut; split lines carry `…` at the cut edge.
 function headTailTrim(lines: string[], budget: number, elidedTotal: number): string[] {
 	const headBudget = budget >> 1;
 	const tailBudget = budget - headBudget;
@@ -165,8 +139,6 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 
 	let elided = elidedTotal - countLines(out) - countLines(tail);
 	if (i <= j) {
-		// lines[i..j] straddle the cut: keep a head slice of the first and a
-		// tail slice of the last (the same line when i === j).
 		const headSlice = lines[i].slice(0, Math.max(0, headRemaining - 2));
 		const tailStart =
 			i === j
@@ -184,14 +156,6 @@ function headTailTrim(lines: string[], budget: number, elidedTotal: number): str
 	return out;
 }
 
-// Trim pipeline for one SSE event:
-//   1. fits → return `raw` **by reference** (ownership contract at
-//      `RawSseDebugBuffer.recordEvent` below).
-//   2. over budget → compact tool schemas inside `data:` JSON payloads;
-//      if that alone fits, the payload stays parseable JSON.
-//   3. still over → head+tail trim (middle elided).
-// Any trimmed result ends with the `: proto-debug-truncated` marker carrying
-// the original size.
 function trimRawLines(raw: string[]): TrimResult {
 	const originalChars = countLines(raw);
 	if (originalChars <= MAX_RAW_SSE_EVENT_CHARS) {
@@ -244,17 +208,9 @@ function metadataTransport(response: ProviderResponseMetadata): string | undefin
 
 export class RawSseDebugBuffer {
 	#records: RawSseDebugRecord[] = [];
-	// Parallel to `#records`: `#recordChars[i]` is the precomputed char count
-	// for `#records[i]`. Kept in lockstep by `#append` (push both) and
-	// `#enforceLimits` (advance `#head` to evict, then `slice` both together
-	// when compacting). See the comment above the class for why this is a
-	// sidecar array instead of a per-record property.
+
 	#recordChars: number[] = [];
-	// Head-index ring over `#records`/`#recordChars`: index of the oldest live
-	// record. Eviction advances `#head` (amortized O(1)) rather than an O(n)
-	// front `shift()`; the dead `[0, #head)` prefix is reclaimed lazily by
-	// `#enforceLimits`. Live count is `#records.length - #head`; the live
-	// records are `#records[#head ..]`.
+
 	#head = 0;
 	#totalChars = 0;
 	#droppedRecords = 0;
@@ -285,14 +241,6 @@ export class RawSseDebugBuffer {
 		this.#append(record, formatRawSseResponseComment(record).length + 1);
 	}
 
-	// Ownership contract for `event.raw`:
-	//   The caller (`notifyRawSseEvent` in `packages/ai/src/utils/sse-debug.ts`)
-	//   hands us a freshly-allocated `string[]` per event and never retains,
-	//   mutates, or re-dispatches it.
-	//   That lets `trimRawLines` keep the array by reference instead of
-	//   cloning on every chunk — a measurable savings on the streaming hot
-	//   path. If a future observer-chain mutates the array, restore the
-	//   `raw.slice()` defensive copy inside `trimRawLines`.
 	recordEvent(event: RawSseEvent, model?: Model): void {
 		const trimmed = trimRawLines(event.raw);
 		this.#totalEvents += 1;
@@ -324,10 +272,6 @@ export class RawSseDebugBuffer {
 	}
 
 	toRawText(): string {
-		// Reads the live window directly: `rawRecordText` only computes a string
-		// from each record, so no caller-visible mutation is possible. With a
-		// non-empty dead prefix we map a slice past `#head`; `#head === 0` (the
-		// common case) maps `#records` in place with no extra copy.
 		const live = this.#head === 0 ? this.#records : this.#records.slice(this.#head);
 		const body = live.map(rawRecordText).join("\n");
 		if (this.#droppedRecords === 0) return body;
@@ -335,14 +279,6 @@ export class RawSseDebugBuffer {
 		return body.length > 0 ? `${dropped}${body}` : dropped;
 	}
 
-	/**
-	 * Drop every retained record and reset accounting. Called from
-	 * {@link AgentSession} teardown so a disposed (e.g. parked subagent) session
-	 * stops pinning captured wire frames — each trimmed record holds a
-	 * `slice()` of its parent SSE frame, which under JSC keeps the whole
-	 * multi-MB frame alive. Notifies subscribers so a live debug viewer redraws
-	 * empty.
-	 */
 	clear(): void {
 		this.#records = [];
 		this.#recordChars = [];
@@ -373,11 +309,7 @@ export class RawSseDebugBuffer {
 			this.#droppedRecords += 1;
 			this.#droppedChars += chars;
 		}
-		// Reclaim the consumed `[0, #head)` prefix once it grows large: one O(n)
-		// memmove amortized over many O(1) evictions, bounding the backing arrays
-		// to ~2x the live window. `#head >= MAX_RAW_SSE_EVENTS` covers the
-		// full-record-count steady state; `#head > liveCount` covers a small live
-		// window held by a few large records under the char budget.
+
 		const liveCount = this.#records.length - this.#head;
 		if (this.#head >= MAX_RAW_SSE_EVENTS || this.#head > liveCount) {
 			this.#records = this.#records.slice(this.#head);
@@ -389,11 +321,7 @@ export class RawSseDebugBuffer {
 	#emit(): void {
 		const count = this.#listeners.size;
 		if (count === 0) return;
-		// With a single listener (the common case — RawSse debug viewer is the
-		// only subscriber), keep eager emit so per-event semantics are
-		// preserved. With multiple listeners, coalesce bursts of events into
-		// one microtask-deferred fan-out to avoid N×M listener invocations
-		// during a streaming response.
+
 		if (count === 1) {
 			this.#fanOut();
 			return;
@@ -410,9 +338,7 @@ export class RawSseDebugBuffer {
 		for (const listener of this.#listeners) {
 			try {
 				listener();
-			} catch {
-				// Debug viewers must not be able to break stream capture.
-			}
+			} catch {}
 		}
 	}
 }

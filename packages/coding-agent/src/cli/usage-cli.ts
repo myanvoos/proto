@@ -1,12 +1,3 @@
-/**
- * Usage CLI command handler.
- *
- * Handles `proto usage` — fetches provider usage reports for every
- * authenticated account and prints a detailed per-account breakdown
- * (limits, windows, reset times, plan metadata). Accounts whose
- * credentials produced no usage report are listed too, so the output
- * always covers the full credential pool.
- */
 import {
 	ANTHROPIC_OAUTH_GRANT_TTL_MS,
 	type AuthStorage,
@@ -29,13 +20,12 @@ interface UsageCommandArgs {
 	json?: boolean;
 	provider?: string;
 	redact?: boolean;
-	/** Show recorded usage-limit history instead of a live snapshot. */
+
 	history?: boolean;
-	/** History window in days (with `history`). */
+
 	days?: number;
 }
 
-/** Identity slice of a stored credential, for "every account" coverage. */
 export interface UsageAccountIdentity {
 	provider: string;
 	type: "api_key" | "oauth";
@@ -43,24 +33,13 @@ export interface UsageAccountIdentity {
 	accountId?: string;
 	projectId?: string;
 	enterpriseUrl?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+
 	orgId?: string;
 	orgName?: string;
-	/** Epoch ms of the interactive login that minted the OAuth grant (see `OAuthCredentials.authorizedAt`). */
+
 	authorizedAt?: number;
 }
 
-/**
- * Minimal-reveal masks for identity strings (`--redact`).
- *
- * Every mask shows a two-character anchor. When two identities share the
- * anchor, the mask additionally reveals the shortest "middle-out"
- * differentiator — the shortest substring (closest to the string's middle on
- * ties) that no colliding identity contains — as `an*`, `ca*9*`, `ca*nb*`.
- * Prefix growth is deliberately avoided: it leaks the start of the local
- * part (`can.boluk@*`) when a couple of mid-string characters suffice.
- * Duplicate strings (same account on two providers) share a mask.
- */
 export function buildRedactionMap(values: Iterable<string>): Map<string, string> {
 	const unique = [...new Set(values)];
 	const map = new Map<string, string>();
@@ -81,8 +60,7 @@ export function buildRedactionMap(values: Iterable<string>): Map<string, string>
 		const infix = findDistinguishingInfix(value, peers);
 		map.set(value, infix === undefined ? `${anchor}*` : `${anchor}*${infix}*`);
 	}
-	// Residual collisions (a value whose every substring also occurs in a
-	// peer gets the bare anchor mask) fall back to prefix extension.
+
 	const byMask = new Map<string, string[]>();
 	for (const value of unique) {
 		const mask = map.get(value)!;
@@ -106,13 +84,6 @@ export function buildRedactionMap(values: Iterable<string>): Map<string, string>
 	return map;
 }
 
-/**
- * Shortest substring of `value` (past the revealed two-char anchor) that no
- * peer contains. Among equal-length candidates, picks the one centered
- * closest to the middle of the string. Returns undefined when every
- * substring also occurs in a peer (e.g. `value` is contained in a peer —
- * that peer's own differentiator keeps the masks distinct).
- */
 function findDistinguishingInfix(value: string, peers: string[]): string | undefined {
 	const start = Math.min(2, value.length);
 	const center = value.length / 2;
@@ -129,7 +100,6 @@ function findDistinguishingInfix(value: string, peers: string[]): string | undef
 	return undefined;
 }
 
-/** Every identity string the output could surface — input for {@link buildRedactionMap}. */
 function collectIdentityStrings(
 	reports: UsageReport[],
 	accounts: UsageAccountIdentity[],
@@ -187,7 +157,6 @@ const STATUS_COLOR: Record<LimitStatus, (text: string) => string> = {
 	unknown: chalk.dim,
 };
 
-/** Worst-of aggregation: exhausted > warning > ok > unknown. */
 function aggregateStatus(limits: UsageLimit[]): LimitStatus {
 	const statuses = limits.map(resolveStatus);
 	if (statuses.includes("exhausted")) return "exhausted";
@@ -257,7 +226,6 @@ function renderBar(limit: UsageLimit): string {
 	return color("█".repeat(filled)) + chalk.dim("░".repeat(BAR_WIDTH - filled));
 }
 
-/** Append the window label when the limit label doesn't already carry it. */
 function limitTitle(limit: UsageLimit): string {
 	let label = limit.label;
 	const tier = limit.scope.tier;
@@ -282,7 +250,6 @@ function reportAccountLabel(report: UsageReport, index: number): string {
 	return `account ${index + 1}`;
 }
 
-/** Lowercased identity strings a report can be attributed to. */
 function reportIdentifiers(report: UsageReport): Set<string> {
 	const ids = new Set<string>();
 	const add = (value: unknown): void => {
@@ -301,13 +268,6 @@ function reportIdentifiers(report: UsageReport): Set<string> {
 	return ids;
 }
 
-/**
- * Stored credentials that no usage report could be attributed to.
- *
- * Conservative on purpose: when a provider's reports carry no identity at
- * all (or the credential is an API key alongside existing reports), we
- * can't attribute, so we don't claim the account is missing.
- */
 export function collectUnreportedAccounts(
 	reports: UsageReport[],
 	accounts: UsageAccountIdentity[],
@@ -322,19 +282,7 @@ export function collectUnreportedAccounts(
 		const providerReports = byProvider.get(account.provider) ?? [];
 		if (providerReports.length === 0) return true;
 		if (account.type === "api_key") return false;
-		// Org-decisive attribution when EITHER side carries an org (Anthropic
-		// multi-subscription): two orgs share every other identifier, so an
-		// org-scoped account is covered only by its own org's report, and an
-		// org-less legacy account is never covered by an org-attributed sibling
-		// report — its own fetch failing must surface as "no usage data". Its
-		// own ORG-LESS report still covers it, though: a mixed pool (fresh
-		// org-scoped logins beside pre-org-capture rows) must not duplicate
-		// every legacy account. The shared org is a GATE, not a match: two Team
-		// members share the org id while drawing on per-user pools, so coverage
-		// also requires the account's own base identity inside the same-org
-		// subset (an org-only account, with no base identifiers, is covered by
-		// any same-org report). The email/account fallback below applies only
-		// when both sides are org-less.
+
 		const accountOrg = account.orgId?.toLowerCase();
 		const ids = [account.email, account.accountId, account.projectId]
 			.filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -375,14 +323,11 @@ export function collectUnreportedAccounts(
 	});
 }
 
-/** Compose the account label from parts, masking each part individually so `--redact` cannot be bypassed by the composite string. */
 function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<string, string>): string {
 	if (account.type === "api_key") return "API key";
 	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account";
 	const masked = redaction?.get(base) ?? base;
-	// orgId fallback: the uuid is the actual scoped identity; a token response
-	// can carry it without a display name, and two same-email rows must still
-	// be tellable apart.
+
 	const org = account.orgName ?? account.orgId;
 	if (!org || org === base) return masked;
 	return `${masked} · ${redaction?.get(org) ?? org}`;
@@ -474,27 +419,17 @@ function formatMissingLimitLine(template: ProviderLimitTemplate, labelWidth: num
 	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim("not reported")}`;
 }
 
-/** Per-window capacity stat: how much account quota is burned and left. */
 interface ProviderWindowStat {
-	/** Compact window label, e.g. "5h", "7d". */
 	window: string;
 	durationMs?: number;
-	/** Accounts reporting a limit in this window. */
+
 	accounts: number;
-	/** Sum of each account's binding used fraction — accounts' worth of quota burned. */
+
 	usedAccounts: number;
-	/** Accounts' worth of quota still available across reporting accounts. */
+
 	remainingAccounts: number;
 }
 
-/**
- * Aggregate one provider's reports into per-window quota capacity stats.
- *
- * Limits are bucketed by window duration (5h, 7d, ...). Within a bucket each
- * account contributes its single highest used fraction — when an account has
- * several meters on the same window (tiered/metered limits), the most-burned
- * one is what binds.
- */
 export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
 	const buckets = new Map<string, { window: string; durationMs?: number; fractions: number[] }>();
 	for (const report of reports) {
@@ -531,15 +466,8 @@ export function computeProviderWindowStats(reports: UsageReport[]): ProviderWind
 		});
 }
 
-/** Re-login warnings render once remaining grant life drops below this. */
 const RELOGIN_WARN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/**
- * Re-login deadline line for providers whose OAuth grants expire a fixed
- * period after the interactive login (today: Anthropic, ~30 days regardless
- * of refresh rotation). Silent until the deadline is under a week out — a
- * nudge before the broker auto-disables the row, not a permanent countdown.
- */
 function formatReloginDeadline(
 	account: UsageAccountIdentity,
 	nowMs: number,
@@ -555,17 +483,10 @@ function formatReloginDeadline(
 	return `  ${chalk.yellow(`${label} — re-login within ${formatDuration(remaining)} (Anthropic expires OAuth grants ~30d after login)`)}`;
 }
 
-/**
- * Tombstones worth a row in `proto usage`: OAuth credentials torn down
- * automatically (refresh failure, upstream invalidation). Rows the user
- * replaced or deleted deliberately are lifecycle noise, not lost capacity.
- */
 function isActionableDisable(summary: DisabledCredentialSummary, activeAccounts: UsageAccountIdentity[] = []): boolean {
 	if (summary.type !== "oauth") return false;
 	if (/^(replaced by|deleted by user)/i.test(summary.cause)) return false;
 
-	// Do not display tombstone if there is an active account for the same provider
-	// matching the same identity (email, accountId, or org).
 	const summaryEmail = summary.email?.toLowerCase();
 	const summaryAccountId = summary.accountId?.toLowerCase();
 	const summaryOrgId = summary.orgId?.toLowerCase();
@@ -577,11 +498,9 @@ function isActionableDisable(summary: DisabledCredentialSummary, activeAccounts:
 		const accountAccountId = account.accountId?.toLowerCase();
 		const accountOrgId = account.orgId?.toLowerCase();
 
-		// If email or accountId match, it's the same identity
 		if (summaryEmail && accountEmail && summaryEmail === accountEmail) return true;
 		if (summaryAccountId && accountAccountId && summaryAccountId === accountAccountId) return true;
 
-		// Fallback: if orgId matches and neither email nor accountId contradicts
 		if (summaryOrgId && accountOrgId && summaryOrgId === accountOrgId) return true;
 
 		return false;
@@ -590,7 +509,6 @@ function isActionableDisable(summary: DisabledCredentialSummary, activeAccounts:
 	return !matchesActive;
 }
 
-/** Human-sized disable cause: the upstream `error_description` when embedded, else the first clause. */
 function shortDisableCause(cause: string): string {
 	const description = cause.match(/\\?"error_description\\?"\s*:\s*\\?"([^"\\]+)/)?.[1];
 	if (description) return description;
@@ -599,7 +517,6 @@ function shortDisableCause(cause: string): string {
 	return clause.length > 80 ? `${clause.slice(0, 77)}…` : clause;
 }
 
-/** Label for a disabled tombstone, masking each identity part under `--redact`. */
 function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
 	const base = summary.email ?? summary.accountId ?? "OAuth account";
 	const masked = redaction?.get(base) ?? base;
@@ -608,11 +525,6 @@ function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: M
 	return `${masked} · ${redaction?.get(org) ?? org}`;
 }
 
-/**
- * Render the full text breakdown: per provider, per account, every limit
- * with a bar, amounts, and reset times; unattributed credentials trail
- * each provider section as "no usage data" rows.
- */
 export function formatUsageBreakdown(
 	reports: UsageReport[],
 	accounts: UsageAccountIdentity[],
@@ -658,7 +570,7 @@ export function formatUsageBreakdown(
 		lines.push(
 			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountCount === 1 ? "account" : "accounts"}`)}`,
 		);
-		// Provider-wide disclaimers render once per provider, not per limit.
+
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
 		for (const note of providerNotes)
 			lines.push(`  ${chalk.dim(sanitizeText(note.replace(/[\r\n]+/g, " ").replace(/\t/g, "  ")))}`);
@@ -721,7 +633,7 @@ const SPARK_LEVELS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as
 
 interface HistorySeries {
 	title: string;
-	/** Snapshots ascending by recordedAt (listUsageHistory order). */
+
 	entries: UsageHistoryEntry[];
 }
 
@@ -730,7 +642,6 @@ interface HistoryAccount {
 	series: Map<string, HistorySeries>;
 }
 
-/** Mirror of {@link limitTitle} for history rows (no scope/tier available). */
 function historySeriesTitle(entry: UsageHistoryEntry): string {
 	const label = entry.label;
 	const windowLabel = entry.windowLabel;
@@ -752,7 +663,6 @@ function historyStatus(fraction: number | undefined, status: UsageHistoryEntry["
 	return "ok";
 }
 
-/** Peak-per-bucket sparkline over [sinceMs, nowMs]; empty buckets render dim dots. */
 function renderHistorySparkline(entries: UsageHistoryEntry[], sinceMs: number, nowMs: number): string {
 	const span = Math.max(1, nowMs - sinceMs);
 	const buckets: Array<number | undefined> = new Array(HISTORY_SPARK_WIDTH).fill(undefined);
@@ -773,7 +683,6 @@ function renderHistorySparkline(entries: UsageHistoryEntry[], sinceMs: number, n
 		.join("");
 }
 
-/** Identity strings a history rendering could surface — input for {@link buildRedactionMap}. */
 function collectHistoryIdentityStrings(entries: UsageHistoryEntry[]): string[] {
 	const values: string[] = [];
 	for (const entry of entries) {
@@ -784,10 +693,6 @@ function collectHistoryIdentityStrings(entries: UsageHistoryEntry[]): string[] {
 	return values;
 }
 
-/**
- * Render recorded usage-limit history: per provider, per account, one
- * peak-per-bucket sparkline per limit window plus latest/peak percentages.
- */
 export function formatUsageHistory(
 	entries: UsageHistoryEntry[],
 	sinceMs: number,
@@ -811,7 +716,7 @@ export function formatUsageHistory(
 			series = { title: historySeriesTitle(entry), entries: [] };
 			account.series.set(entry.limitId, series);
 		}
-		// Labels can change across snapshots (provider renames); latest wins.
+
 		series.title = historySeriesTitle(entry);
 		series.entries.push(entry);
 	}
@@ -881,19 +786,6 @@ function collectStoredAccounts(authStorage: AuthStorage): UsageAccountIdentity[]
 	return accounts;
 }
 
-/**
- * Keep only accounts worth a usage row: those whose provider has a usage
- * provider, so a missing report is a real gap rather than the absence of any
- * usage concept. Providers with no usage endpoint (web-search keys, local /
- * keyless servers, inference providers without a usage API) would only ever
- * render as noise, so they are dropped.
- *
- * `hasUsageProvider` is injected (in practice {@link AuthStorage.usageProviderFor})
- * so custom/broker resolvers stay authoritative — no provider list is duplicated
- * here. An explicit `--provider` request bypasses the cull, so
- * `proto usage --provider xai` can still confirm the stored credential has no
- * usage endpoint.
- */
 function selectReportableAccounts(
 	accounts: UsageAccountIdentity[],
 	hasUsageProvider: (provider: string) => boolean,
@@ -903,14 +795,12 @@ function selectReportableAccounts(
 	return accounts.filter(account => hasUsageProvider(account.provider));
 }
 
-/** Apply a redaction mask to an optional identity field. */
 function maskIdentity(redaction: Map<string, string>, value: string | undefined): string | undefined {
 	return value === undefined ? undefined : (redaction.get(value) ?? value);
 }
 
 const IDENTITY_METADATA_KEYS = ["email", "accountId", "projectId", "orgId", "orgName"] as const;
 
-/** Mask identity fields in a raw-stripped report for `--redact --json`. */
 function redactReportForJson(
 	report: Omit<UsageReport, "raw">,
 	redaction: Map<string, string>,
@@ -984,30 +874,21 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			(await authStorage.fetchUsageReports({
 				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
 			})) ?? [];
-		// Reports are always fresh (broker-side fetch) but the account list can
-		// come from a disk-cached snapshot up to an hour old — revalidate so a
-		// just-logged-in (or just-rotated-identity) credential isn't rendered
-		// as a stale duplicate. Best-effort: offline broker keeps the cache.
+
 		try {
 			await authStorage.revalidateCredentials();
-		} catch {
-			// Stale identities beat no output.
-		}
+		} catch {}
 		const storedAccounts = collectStoredAccounts(authStorage);
 		let accounts = selectReportableAccounts(
 			storedAccounts,
 			provider => authStorage.usageProviderFor(provider) !== undefined,
 			cmd.provider,
 		);
-		// Tombstones ride alongside the live pool so an auto-disabled account
-		// (e.g. an expired Anthropic grant) is loudly visible instead of just
-		// missing. Best-effort: a broker predating the endpoint yields [].
+
 		let disabled: DisabledCredentialSummary[] = [];
 		try {
 			disabled = await authStorage.listDisabledCredentials();
-		} catch {
-			// Usage output must not fail because tombstone listing did.
-		}
+		} catch {}
 		let filteredReports = reports;
 		if (cmd.provider) {
 			const wanted = cmd.provider.toLowerCase();
@@ -1021,8 +902,6 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			: undefined;
 
 		if (cmd.json) {
-			// Drop the heavy provider-specific `raw` payload — same shape as the
-			// broker/gateway `/v1/usage` endpoints.
 			let trimmed = filteredReports.map(({ raw: _raw, ...rest }) => rest);
 			let unreportedAccounts = collectUnreportedAccounts(filteredReports, accounts);
 			if (redaction) {
@@ -1066,8 +945,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 
 		if (filteredReports.length === 0 && accounts.length === 0) {
 			const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
-			// Credentials exist but every one is for a provider without a usage
-			// endpoint — say so rather than implying nothing is logged in.
+
 			const message =
 				storedAccounts.length > 0
 					? `No usage data${scope}. Stored credentials are for providers without a usage endpoint.\n`

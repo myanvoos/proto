@@ -1,12 +1,3 @@
-/**
- * Protocol handler for skill:// URLs.
- *
- * Resolves skill names to their SKILL.md files or relative paths within skill directories.
- *
- * URL forms:
- * - skill://<name> - Reads SKILL.md
- * - skill://<name>/<path> - Reads relative path within skill's baseDir
- */
 import type * as fsTypes from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -22,9 +13,6 @@ function getContentType(filePath: string): InternalResource["contentType"] {
 	return "text/plain";
 }
 
-/**
- * Validate that a path is safe (no traversal, no absolute paths).
- */
 export function validateRelativePath(relativePath: string): void {
 	if (path.isAbsolute(relativePath)) {
 		throw new Error("Absolute paths are not allowed in skill:// URLs");
@@ -41,9 +29,6 @@ export function validateRelativePath(relativePath: string): void {
 	}
 }
 
-/**
- * Handler for skill:// URLs.
- */
 export class SkillProtocolHandler implements ProtocolHandler {
 	readonly scheme = "skill";
 	readonly immutable = true;
@@ -77,9 +62,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
 				throw new Error("Path traversal is not allowed");
 			}
-			// Agent Plugin skills (§4.1): the resource must canonically resolve
-			// within the plugin root; a dangling or unresolvable path fails closed.
-			// Symlinks may target other files inside the same package.
+
 			if (skill.containRoot) {
 				const contained = await resolveContainedPath(skill.containRoot, resolvedPath);
 				if (contained.status === "outside") {

@@ -6,11 +6,6 @@ import { OverlayPanel } from "./overlay-box";
 
 const RESET_SELECTOR_MAX_VISIBLE = 10;
 
-/**
- * Account picker for `/usage reset`. Lists Codex accounts with their saved
- * rate-limit reset counts; selecting one redeems a reset. Because a reset is a
- * scarce, irreversible credit, Enter requires a second press to confirm.
- */
 export class ResetUsageSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#accounts: ResetUsageAccount[];

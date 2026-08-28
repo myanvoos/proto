@@ -1,4 +1,4 @@
-# iptables -L / -S output. Big tables stay head/tail compact.
+
 
 [filters.iptables]
 description = "Compact iptables rule listings"

@@ -1,8 +1,3 @@
-/**
- * Generate the TypeScript method signatures advertising eval-bridged tools
- * under Codex Code Mode (spliced into the `eval-code-mode.md` prompt),
- * mirroring codex-rs augment_tool_spec_for_code_mode.
- */
 import { arkToWireSchema, isArkSchema } from "@oh-my-pi/pi-ai/utils/schema/wire";
 
 interface JsonSchema {
@@ -30,7 +25,7 @@ function tsType(schema: JsonSchema | undefined, depth: number): string {
 			return "boolean";
 		case "array": {
 			const item = tsType(schema.items, depth + 1);
-			// `"a" | "b"[]` parses as `"a" | ("b"[])`, so a union item needs parens.
+
 			return /[|&]/.test(item) ? `(${item})[]` : `${item}[]`;
 		}
 		case "object": {

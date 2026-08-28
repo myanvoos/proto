@@ -1,9 +1,9 @@
-//! `errno` builtin: look up errno names, numbers, and descriptions.
-//!
-//! Ported from pi-shell's in-process implementation of the moreutils-inspired
-//! `errno` utility. A name prints its `NAME NUMBER Description` line; numeric
-//! arguments reverse-map to the first-listed canonical name. Lists include
-//! aliases and are sorted by number, then name.
+
+
+
+
+
+
 
 use std::io::Write;
 
@@ -16,8 +16,8 @@ const OPT_LIST: &str = "list";
 const OPT_SEARCH: &str = "search";
 const ARG_QUERY: &str = "query";
 
-/// Errno name-to-number table. Duplicate numbers are aliases; the first name
-/// listed for a number is canonical for reverse lookup.
+
+
 const ERRNOS: &[(&str, i32)] = &[
 	("EPERM", libc::EPERM),
 	("ENOENT", libc::ENOENT),
@@ -102,7 +102,7 @@ const ERRNOS: &[(&str, i32)] = &[
 	("EWOULDBLOCK", libc::EWOULDBLOCK),
 ];
 
-/// Parsed `errno` invocation.
+
 pub(crate) struct Errno {
 	matches: ArgMatches,
 }
@@ -140,7 +140,7 @@ impl Utility for Errno {
 	}
 }
 
-/// The `errno` argument model.
+
 fn command() -> Command {
 	Command::new(Errno::NAME)
 		.version(concat!("errno (pi-shell) ", env!("CARGO_PKG_VERSION")))
@@ -173,8 +173,8 @@ fn command() -> Command {
 		)
 }
 
-/// Formats the OS description for an errno number without std's
-/// ` (os error N)` suffix.
+
+
 fn description(number: i32) -> String {
 	let text = std::io::Error::from_raw_os_error(number).to_string();
 	match text.rfind(" (os error ") {
@@ -187,12 +187,12 @@ fn print_entry(host: &mut Host, name: &str, number: i32) {
 	let _ = writeln!(host.stdout, "{name} {number} {}", description(number));
 }
 
-/// Looks up one name or number argument; returns false on failure.
+
 fn lookup(host: &mut Host, arg: &str) -> bool {
 	if let Ok(number) = arg.parse::<i32>() {
-		// Kernel convention returns errors as negative errno values; resolve
-		// `-2` the same as `2`. Reverse lookup: first-listed name for the
-		// number is canonical.
+
+
+
 		match number
 			.checked_abs()
 			.and_then(|number| ERRNOS.iter().find(|(_, value)| *value == number))
@@ -218,7 +218,7 @@ fn lookup(host: &mut Host, arg: &str) -> bool {
 	}
 }
 
-/// Prints every table entry (aliases included) sorted by number, then name.
+
 fn list_all(host: &mut Host) -> i32 {
 	let mut entries: Vec<(&str, i32)> = ERRNOS.to_vec();
 	entries.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(b.0)));
@@ -228,7 +228,7 @@ fn list_all(host: &mut Host) -> i32 {
 	0
 }
 
-/// Prints entries whose descriptions contain all words, case-insensitively.
+
 fn search(host: &mut Host, words: &[String]) -> i32 {
 	let lowered: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
 	let mut entries: Vec<(&str, i32)> = ERRNOS.to_vec();
@@ -242,7 +242,7 @@ fn search(host: &mut Host, words: &[String]) -> i32 {
 	0
 }
 
-/// Creates the `errno` builtin registration.
+
 pub(crate) fn errno_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Errno, SE>()
 }

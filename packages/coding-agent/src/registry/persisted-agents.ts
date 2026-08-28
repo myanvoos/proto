@@ -17,7 +17,6 @@ import {
 	MAIN_AGENT_ID,
 } from "./agent-registry";
 
-/** Maximum prefix entries inspected for task metadata. */
 const MAX_METADATA_LINES = 64;
 
 interface PersistedAgentMetadata {
@@ -25,7 +24,7 @@ interface PersistedAgentMetadata {
 	createdAt?: number;
 	lastActivity?: number;
 	history?: AgentHistorySummary;
-	/** True when the file is only a SessionManager header (no session_init, no messages). */
+
 	incomplete?: boolean;
 }
 
@@ -72,8 +71,7 @@ function inferBundledAgent(systemPrompt: string): { agent?: string; modelRole?: 
 		const rolePrompt = agent.systemPrompt.trim();
 		return rolePrompt.length > 0 && systemPrompt.includes(rolePrompt);
 	});
-	// `worker` and `lightbot` share a prompt body, so prompt-only provenance is
-	// intentionally left unknown when both match.
+
 	if (matches.length !== 1) return {};
 	const [agent] = matches;
 	return {
@@ -94,11 +92,7 @@ interface AssistantMetrics {
 	cost: number;
 	contextTokens?: number;
 	resolvedModel?: string;
-	/**
-	 * True when this turn produced output, making its model the run's. Uses the
-	 * same predicate as the live session, so replaying a transcript reaches the
-	 * same verdict the session reached while running it.
-	 */
+
 	served: boolean;
 }
 
@@ -173,10 +167,7 @@ async function readPersistedAgentHistory(
 		),
 		durationKind: "span",
 	};
-	// Attribution walks leaf → root and stops at the newest turn that actually
-	// produced output: that model did this run's work. A `model_change` newer
-	// than it was never served (a fallback the session died on), so crediting the
-	// run to it would report work the previous model did.
+
 	let resolvedModel: string | undefined;
 	let resolvedModelIsFallback: boolean | undefined;
 	let modelRole: string | undefined;
@@ -192,10 +183,7 @@ async function readPersistedAgentHistory(
 			if (modelChange.role && modelChange.role !== EPHEMERAL_MODEL_CHANGE_ROLE) {
 				modelRole ??= modelChange.role;
 			}
-			// The transition that installed the serving model: it carries the
-			// fallback flag the raw message lacks. Every writer records the selector
-			// through `formatModelStringWithRouting`, which appends an `@upstream`
-			// gateway route the message's bare `provider/model` never has.
+
 			if (
 				servedModel !== undefined &&
 				resolvedModel === undefined &&
@@ -216,10 +204,7 @@ async function readPersistedAgentHistory(
 		metrics.cost += assistant.cost;
 		contextTokens ??= assistant.contextTokens;
 	}
-	// No transition described the serving model (pre-`model_change` transcript, or
-	// the spawn record was pruned) — the message's own model still beats a
-	// transition that never ran. Nothing served at all leaves only the last
-	// transition to report.
+
 	if (resolvedModel === undefined) {
 		resolvedModel = servedModel ?? latestModelChange?.model;
 		resolvedModelIsFallback = servedModel !== undefined ? false : latestModelChange?.resolvedModelIsFallback;
@@ -232,11 +217,6 @@ async function readPersistedAgentHistory(
 	};
 }
 
-/**
- * Read only the small session prefix needed by the Fleet. A subagent's first
- * `session_init` is written before its conversation, so this never walks a
- * multi-megabyte historical transcript just to populate one roster row.
- */
 async function readPersistedAgentMetadata(sessionFile: string): Promise<PersistedAgentMetadata> {
 	const stat = fs.promises.stat(sessionFile).catch(() => undefined);
 	const artifactBase = sessionFile.slice(0, -".jsonl".length);
@@ -290,10 +270,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 			},
 			{ maxRecords: MAX_METADATA_LINES },
 		);
-	} catch {
-		// A readable transcript is still useful even when its optional metadata
-		// prefix is malformed.
-	}
+	} catch {}
 	const [file, [hasOutput, hasPatch]] = await Promise.all([stat, artifactFiles]);
 	return {
 		activity,
@@ -307,11 +284,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 		},
 	};
 }
-/**
- * Raw spawn-task text recorded in a subagent transcript's `session_init`
- * (the assignment that defines the agent), for the agents view's program
- * reveal. Bounded prefix read; undefined when the transcript has no task.
- */
+
 export async function readAgentSpawnTask(sessionFile: string): Promise<string | undefined> {
 	let task: string | undefined;
 	try {
@@ -352,7 +325,6 @@ async function readPersistedOrchestratorWorkerIds(
 	}
 }
 
-/** Register persisted subagent and advisor transcripts as parked registry refs. */
 export async function registerPersistedSubagents(
 	registry: AgentRegistry,
 	sessionFile: string | null | undefined,
@@ -415,25 +387,21 @@ async function registerPersistedSubagentsFromDir(
 		if (!shouldContinue()) return;
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
 		const sessionFile = path.join(dir, entry.name);
-		// The advisor transcript is observability-only: register it as a non-peer
-		// `advisor` kind under its owning session so the Fleet can show its read-only
-		// transcript, but it never joins agent-facing rosters and is not revivable.
+
 		if (isAdvisorTranscriptName(entry.name)) {
 			const owner = parentId ?? MAIN_AGENT_ID;
-			// `__advisor.jsonl` → the default advisor (no slug); `__advisor.<slug>.jsonl`
-			// → a named advisor, keyed and labeled by its slug.
+
 			const slug =
 				entry.name === ADVISOR_TRANSCRIPT_FILENAME ? "" : entry.name.slice("__advisor.".length, -".jsonl".length);
 			const advisorId = slug ? `${owner}/advisor:${slug}` : `${owner}/advisor`;
 			const displayName = slug ? `advisor:${slug}` : "advisor";
 			const existing = registry.get(advisorId);
-			// Never clobber a non-advisor ref that happens to share this id (a freak
-			// user task literally named `<owner>/advisor`): leave it, skip the advisor.
+
 			if (existing && existing.kind !== "advisor") continue;
 			if (existing?.sessionFile !== sessionFile) {
 				const metadata = await readPersistedAgentMetadata(sessionFile);
 				if (!shouldContinue()) return;
-				// The id is reused across `/new`; refresh it to the current session's file.
+
 				if (existing) registry.unregister(advisorId);
 				registry.register({
 					id: advisorId,
@@ -470,13 +438,9 @@ async function registerPersistedSubagentsFromDir(
 		if (!registry.get(id)) {
 			const metadata = await readPersistedAgentMetadata(sessionFile);
 			if (!shouldContinue()) return;
-			// Metadata reads yield. A spawn may claim the id while this scan is
-			// inspecting the file; never replace that live generation with a
-			// transcript-derived parked ref.
+
 			const unclaimed = !registry.get(id);
-			// SessionManager.open writes title+session before createAgentSession
-			// claims the id. Parking that stub makes the spawn's expectedAgentRef:null
-			// CAS fail with "already owned by another session generation".
+
 			if (unclaimed && metadata.incomplete && !tombstoned) continue;
 			if (unclaimed) {
 				registry.register({

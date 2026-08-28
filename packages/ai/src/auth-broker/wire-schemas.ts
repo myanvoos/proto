@@ -1,17 +1,3 @@
-/**
- * ArkType schemas for the auth-broker wire protocol.
- *
- * Shared between the server (validates inbound request bodies) and the client
- * (validates responses from the broker). Schemas mirror the TypeScript types
- * in `./types.ts` 1:1; the types remain the source of truth for static typing,
- * and `Type` is asserted-compatible with them where possible.
- *
- * Envelope and fixed-shape schemas use `"+": "reject"` so unknown keys are
- * rejected — the previous implementation used a hand-rolled `hasOnlyFields`
- * allowlist for the same effect. The OAuth credential schema is the deliberate
- * exception (standard type keeps extra keys): it preserves provider-specific extension fields so
- * they round-trip through the broker instead of being dropped (see below).
- */
 import { type FluentType, type } from "@oh-my-pi/omptype";
 import {
 	type ApiKeyCredential,
@@ -49,9 +35,6 @@ import type {
 	UsageStaleResponse,
 } from "./types";
 
-// ─── Credential payloads ─────────────────────────────────────────────────────
-
-/** Real OAuth credential (broker-side) — refresh token is the actual upstream value. */
 export const oauthCredentialSchema: FluentType<OAuthCredential> = type({
 	"apiEndpoint?": "string",
 	type: "'oauth'",
@@ -71,7 +54,6 @@ export const oauthCredentialSchema: FluentType<OAuthCredential> = type({
 	"authorizedAt?": "number",
 });
 
-/** OAuth credential as it appears in broker snapshots — refresh replaced with sentinel. */
 export const remoteOauthCredentialSchema: FluentType<RemoteOAuthCredential> = type({
 	"apiEndpoint?": "string",
 	type: "'oauth'",
@@ -94,15 +76,11 @@ export const apiKeyCredentialSchema: FluentType<ApiKeyCredential> = type({
 	"source?": "'login'",
 });
 
-/** Discriminated union accepted on POST /v1/credential (writes). */
 export const writableAuthCredentialSchema: FluentType<AuthCredential> =
 	oauthCredentialSchema.or(apiKeyCredentialSchema);
 
-/** Discriminated union returned in snapshots (refresh is sentinel for OAuth). */
 export const snapshotCredentialSchema: FluentType<SnapshotCredential> =
 	remoteOauthCredentialSchema.or(apiKeyCredentialSchema);
-
-// ─── Snapshot ────────────────────────────────────────────────────────────────
 
 export const credentialSnapshotEntrySchema: FluentType<AuthCredentialSnapshotEntry> = type({
 	"+": "reject",
@@ -147,9 +125,6 @@ export const snapshotResponseSchema: FluentType<SnapshotResponse> = type({
 	credentials: snapshotEntrySchema.array(),
 });
 
-// ─── Snapshot stream (SSE) ───────────────────────────────────────────────────
-
-/** First frame on connect — full snapshot embedded inline with a `kind` tag. */
 export const snapshotStreamSnapshotEventSchema: FluentType<SnapshotStreamSnapshotEvent> = type({
 	"+": "reject",
 	generation: "number.integer",
@@ -160,7 +135,6 @@ export const snapshotStreamSnapshotEventSchema: FluentType<SnapshotStreamSnapsho
 	kind: "'snapshot'",
 });
 
-/** Per-credential upsert/refresh delta. */
 export const snapshotStreamEntryEventSchema: FluentType<SnapshotStreamEntryEvent> = type({
 	"+": "reject",
 	kind: "'entry'",
@@ -170,7 +144,6 @@ export const snapshotStreamEntryEventSchema: FluentType<SnapshotStreamEntryEvent
 	entry: snapshotEntrySchema,
 });
 
-/** Per-credential delete delta. */
 export const snapshotStreamRemovedEventSchema: FluentType<SnapshotStreamRemovedEvent> = type({
 	"+": "reject",
 	kind: "'removed'",
@@ -180,20 +153,15 @@ export const snapshotStreamRemovedEventSchema: FluentType<SnapshotStreamRemovedE
 	id: "number.integer",
 });
 
-/** Discriminated union over every event frame the snapshot stream emits. */
 export const snapshotStreamEventSchema: FluentType<SnapshotStreamEvent> = snapshotStreamSnapshotEventSchema
 	.or(snapshotStreamEntryEventSchema)
 	.or(snapshotStreamRemovedEventSchema);
-
-// ─── Healthz ─────────────────────────────────────────────────────────────────
 
 export const healthzResponseSchema: FluentType<HealthzResponse> = type({
 	"+": "reject",
 	ok: "boolean",
 	"version?": "string",
 });
-
-// ─── Usage ───────────────────────────────────────────────────────────────────
 
 const usageWindowSchema = type({
 	id: "string",
@@ -251,12 +219,6 @@ const arkUsageReportSchema = type({
 	"raw?": "unknown",
 });
 
-/**
- * Broker `/v1/usage` response. Reports are full {@link UsageReport}s minus the
- * heavy provider-specific `raw` field (the server strips it before send) — we
- * keep `raw` optional in the underlying schema so a misconfigured broker that
- * forgot to strip still validates.
- */
 export const usageResponseSchema: FluentType<UsageResponse> = type({
 	"+": "reject",
 	generatedAt: "number",
@@ -277,7 +239,6 @@ const usageHistoryEntrySchema = type({
 	"resetsAt?": "number",
 });
 
-/** Broker `/v1/usage/history` response — recorded usage-limit snapshots, oldest first. */
 export const usageHistoryResponseSchema: FluentType<UsageHistoryResponse> = type({
 	"+": "reject",
 	generatedAt: "number",
@@ -296,7 +257,6 @@ const observedUsageEntrySchema = type({
 	costUsd: "number",
 });
 
-/** Broker `POST /v1/usage/observed` request — one client's batched observed usage. */
 export const clientUsageReportRequestSchema: FluentType<ClientUsageReportRequest> = type({
 	"+": "reject",
 	installId: "string",
@@ -325,21 +285,16 @@ const clientUsageClientSummarySchema = type({
 	}).array(),
 });
 
-/** Broker `GET /v1/usage/clients` response — per-client token burn aggregates. */
 export const clientUsageSummaryResponseSchema: FluentType<ClientUsageSummaryResponse> = type({
 	"+": "reject",
 	generatedAt: "number",
 	clients: clientUsageClientSummarySchema.array(),
 });
 
-// ─── Refresh ─────────────────────────────────────────────────────────────────
-
 export const credentialRefreshResponseSchema: FluentType<CredentialRefreshResponse> = type({
 	"+": "reject",
 	entry: credentialSnapshotEntrySchema,
 });
-
-// ─── Disable ─────────────────────────────────────────────────────────────────
 
 export const credentialDisableRequestSchema: FluentType<{ cause?: string }> = type({
 	"+": "reject",
@@ -351,7 +306,6 @@ export const credentialDisableResponseSchema: FluentType<CredentialDisableRespon
 	ok: "boolean",
 });
 
-/** One disabled-credential tombstone — identity + cause, never token material. */
 export const disabledCredentialSummarySchema: FluentType<DisabledCredentialSummary> = type({
 	"+": "reject",
 	id: "number.integer",
@@ -365,14 +319,11 @@ export const disabledCredentialSummarySchema: FluentType<DisabledCredentialSumma
 	"disabledAtMs?": "number",
 });
 
-/** Broker `GET /v1/credentials/disabled` response. */
 export const disabledCredentialsResponseSchema: FluentType<DisabledCredentialsResponse> = type({
 	"+": "reject",
 	generatedAt: "number",
 	disabled: disabledCredentialSummarySchema.array(),
 });
-
-// ─── Credential blocks ───────────────────────────────────────────────────────
 
 export const credentialBlockRequestSchema: FluentType<CredentialBlockRequest> = credentialBlockSnapshotSchema;
 
@@ -390,8 +341,6 @@ export const usageStaleResponseSchema: FluentType<UsageStaleResponse> = type({
 	"+": "reject",
 	ok: "boolean",
 });
-
-// ─── Upload ──────────────────────────────────────────────────────────────────
 
 export const credentialUploadRequestSchema: FluentType<CredentialUploadRequest> = type({
 	"+": "reject",

@@ -1,11 +1,3 @@
-/**
- * Text normalization utilities for the edit tool.
- *
- * Whitespace, Unicode, and indentation helpers. Line-ending and BOM
- * primitives live in `@oh-my-pi/hashline` and are re-exported here so
- * existing consumers see one stable surface.
- */
-
 import { padding } from "@oh-my-pi/pi-tui";
 
 export {
@@ -18,11 +10,6 @@ export {
 	stripBom,
 } from "@oh-my-pi/hashline";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Whitespace Utilities
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Count leading whitespace characters in a line */
 export function countLeadingWhitespace(line: string): number {
 	let count = 0;
 	for (let i = 0; i < line.length; i++) {
@@ -36,7 +23,6 @@ export function countLeadingWhitespace(line: string): number {
 	return count;
 }
 
-/** Get the leading whitespace string from a line */
 export function getLeadingWhitespace(line: string): string {
 	return line.slice(0, countLeadingWhitespace(line));
 }
@@ -45,7 +31,6 @@ function isNonEmptyLine(line: string): boolean {
 	return line.trim().length > 0;
 }
 
-/** Compute minimum indentation of non-empty lines */
 export function minIndent(text: string): number {
 	const lines = text.split("\n");
 	let min = Infinity;
@@ -57,7 +42,6 @@ export function minIndent(text: string): number {
 	return min === Infinity ? 0 : min;
 }
 
-/** Detect the indentation character used in text (space or tab) */
 export function detectIndentChar(text: string): string {
 	const lines = text.split("\n");
 	for (const line of lines) {
@@ -165,24 +149,19 @@ export function convertLeadingTabsToSpaces(text: string, spacesPerTab: number): 
 		.join("\n");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Unicode Normalization
-// ═══════════════════════════════════════════════════════════════════════════
-
 const UNICODE_REPLACEMENTS: [RegExp, string][] = [
-	// Various dash/hyphen code-points → ASCII '-'
 	[/[\u2010-\u2015\u2212]/g, "-"],
-	// Fancy single quotes → '
+
 	[/[\u2018-\u201B]/g, "'"],
-	// Fancy double quotes → "
+
 	[/[\u201C-\u201F]/g, '"'],
-	// Non-breaking space and other odd spaces → normal space
+
 	[/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " "],
-	// Not-equal sign → !=
+
 	[/\u2260/g, "!="],
-	// Vulgar fraction ½ → 1/2
+
 	[/\u00BD/g, "1/2"],
-	// Zero-width characters → remove
+
 	[/[\u200B-\u200D\uFEFF]/g, ""],
 ];
 
@@ -194,26 +173,10 @@ export function normalizeUnicode(s: string): string {
 	return result.normalize("NFC");
 }
 
-/**
- * Normalize a line for fuzzy comparison.
- * Trims, collapses whitespace, and normalizes punctuation.
- */
 export function normalizeForFuzzy(line: string): string {
 	const trimmed = line.trim();
 	if (trimmed.length === 0) return "";
 
-	// Fold the same curly-quote and dash ranges as normalizeUnicode so straight
-	// and smart punctuation compare equal. The ranges cover the COMMON smart
-	// quotes (U+201C/U+201D “ ”, U+2018/U+2019 ‘ ’) that an earlier hand-listed
-	// class silently omitted, plus the low/reversed-9 variants, guillemets, and
-	// the full dash range including U+2015 ―. The final two passes reach whitespace
-	// parity with normalizeUnicode: strip the zero-width characters (U+200B–U+200D,
-	// U+FEFF) it removes, then collapse runs of ASCII space/tab AND the exotic
-	// spaces it folds (non-breaking U+00A0, en/em/thin/hair U+2002–U+200A, and the
-	// narrow/math/ideographic spaces U+202F/U+205F/U+3000) to a single space. Without
-	// this, a line spaced with a non-breaking or zero-width character failed to
-	// fuzzy-match its plain-ASCII twin even though normalizeUnicode treats them as
-	// equal — the same normalizer-parity gap the quote fix above closed.
 	return trimmed
 		.replace(/[“-‟«»]/g, '"')
 		.replace(/[‘-‛`´]/g, "'")
@@ -303,24 +266,11 @@ function hasMixedIndentation(...profiles: IndentProfile[]): boolean {
 	return profiles.some(profile => profile.mixed);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Indentation Adjustment
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Adjust newText indentation to match the indentation delta between
- * what was provided (oldText) and what was actually matched (actualText).
- *
- * If oldText has 0 indent but actualText has 12 spaces, we add 12 spaces
- * to each line in newText.
- */
 export function adjustIndentation(oldText: string, actualText: string, newText: string): string {
-	// If old text already matches actual text exactly, preserve agent's intended indentation
 	if (oldText === actualText) {
 		return newText;
 	}
 
-	// If the patch is purely an indentation change (same trimmed content), apply exactly as specified
 	if (isIndentationOnlyRewrite(oldText, newText)) {
 		return newText;
 	}

@@ -5,10 +5,6 @@ import { AbortError } from "../error/abort";
 import { StreamTimeoutError, ValidationError } from "../error/validation";
 import type { FetchImpl } from "../types";
 
-/**
- * Host:port of a proxy URL for logging. Proxy URLs can carry basic-auth
- * credentials, so never log the raw value.
- */
 function proxyLogTarget(proxyUrl: string): string {
 	try {
 		return new URL(proxyUrl).host;
@@ -17,25 +13,15 @@ function proxyLogTarget(proxyUrl: string): string {
 	}
 }
 
-/**
- * Checks if a host is local or cloud metadata, which should always bypass the proxy
- * (e.g. localhost, 127/8, ::1, 169.254.169.254, metadata.google.internal).
- */
 export function isLocalOrMetadataHost(host: string): boolean {
 	const lowerHost = host.toLowerCase();
 
-	// Hostnames: localhost and the cloud metadata service.
 	if (lowerHost === "localhost" || lowerHost.endsWith(".localhost") || lowerHost === "metadata.google.internal") {
 		return true;
 	}
 
-	// Strip IPv6 brackets before numeric checks.
 	const ip = lowerHost.replace(/^\[|\]$/g, "");
 
-	// IPv4 loopback (127/8), unspecified (0/8), RFC1918 private (10/8, 172.16/12,
-	// 192.168/16) and link-local (169.254/16 — covers IMDS 169.254.169.254 and
-	// ECS credentials 169.254.170.2). None are reachable through a remote egress
-	// proxy, and credential/metadata probes must never leak to one.
 	const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
 	if (v4) {
 		const a = Number(v4[1]);
@@ -47,8 +33,6 @@ export function isLocalOrMetadataHost(host: string): boolean {
 		return false;
 	}
 
-	// IPv6 loopback (::1), unspecified (::), link-local (fe80::/10) and
-	// unique-local (fc00::/7 — covers EC2 IPv6 IMDS fd00:ec2::254).
 	if (ip === "::1" || ip === "::") return true;
 	if (/^fe[89ab][0-9a-f]:/.test(ip)) return true;
 	if (/^f[cd][0-9a-f]{2}:/.test(ip)) return true;
@@ -56,10 +40,6 @@ export function isLocalOrMetadataHost(host: string): boolean {
 	return false;
 }
 
-/**
- * Check if the url should bypass the proxy due to hard-coded localhost/metadata checks
- * or custom NO_PROXY/no_proxy environment variables rules.
- */
 export function shouldBypassProxy(urlObj: URL): boolean {
 	if (isLocalOrMetadataHost(urlObj.hostname)) {
 		return true;
@@ -95,14 +75,12 @@ export function shouldBypassProxy(urlObj: URL): boolean {
 			ruleHost = ruleHost.slice(0, lastColon);
 		}
 
-		// Strip IPv6 brackets
 		ruleHost = ruleHost.replace(/^\[|\]$/g, "");
 
 		if (rulePort && rulePort !== targetPort) {
 			continue;
 		}
 
-		// Match host part
 		if (ruleHost.startsWith(".")) {
 			const suffix = ruleHost;
 			const cleanRule = ruleHost.slice(1);
@@ -121,16 +99,10 @@ export function shouldBypassProxy(urlObj: URL): boolean {
 
 const proxyCache = new Map<string, string | undefined>();
 
-/** Test seam: clears the provider proxy cache. */
 export function __resetProxyCache(): void {
 	proxyCache.clear();
 }
 
-/**
- * Normalizes provider id (e.g. github-copilot -> PI_PROXY_GITHUB_COPILOT) and looks it up.
- * If not found, falls back to PI_PROXY. Results are memoized because env values are static
- * for the lifetime of the process and this function is called for every outgoing request.
- */
 export function getProxyForProvider(provider: string): string | undefined {
 	if (proxyCache.has(provider)) {
 		return proxyCache.get(provider);
@@ -140,9 +112,7 @@ export function getProxyForProvider(provider: string): string | undefined {
 	const envKey = `PI_PROXY_${normalized}`;
 	const value = Bun.env[envKey] || Bun.env.PI_PROXY;
 	proxyCache.set(provider, value);
-	// Once per provider per process: a silently unproxied provider request is
-	// otherwise indistinguishable from a proxied one until the region block
-	// answers 403.
+
 	logger.debug("provider proxy resolved", {
 		provider,
 		source: Bun.env[envKey] ? envKey : value ? "PI_PROXY" : "none",
@@ -151,7 +121,6 @@ export function getProxyForProvider(provider: string): string | undefined {
 	return value;
 }
 
-/** Resolves provider-specific and standard proxy variables for a target URL, honoring NO_PROXY. */
 export function getProxyForUrl(provider: string, url: URL): string | undefined {
 	if (shouldBypassProxy(url)) return undefined;
 	const protocolProxy =
@@ -161,11 +130,6 @@ export function getProxyForUrl(provider: string, url: URL): string | undefined {
 	return getProxyForProvider(provider) || protocolProxy || Bun.env.ALL_PROXY || Bun.env.all_proxy || undefined;
 }
 
-/**
- * Wraps `fetchImpl` so non-local requests tunnel through `proxyUrl`.
- * A caller-supplied `init.proxy` always wins, so stacked wrappers keep the
- * innermost (most specific) proxy decision.
- */
 function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string | undefined): FetchImpl {
 	if (!proxyUrl) {
 		return fetchImpl;
@@ -180,13 +144,10 @@ function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string | undefine
 		try {
 			urlObj = new URL(urlStr);
 		} catch {
-			// Fallback to calling fetch unmodified if URL is unparseable
 			return fetchImpl(input, init);
 		}
 
 		if (shouldBypassProxy(urlObj)) {
-			// A NO_PROXY rule silencing a configured proxy is otherwise invisible
-			// until the unproxied egress is refused; local hosts are routine.
 			if (!isLocalOrMetadataHost(urlObj.hostname)) {
 				logger.debug("proxy bypassed by NO_PROXY", {
 					host: urlObj.host,
@@ -206,42 +167,20 @@ function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string | undefine
 	return wrapped;
 }
 
-/**
- * Wraps a fetch implementation to inject proxy options for non-local hosts.
- */
 export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): FetchImpl {
 	return wrapFetchWithProxyUrl(fetchImpl, getProxyForProvider(provider));
 }
 
 let globalProxyFetchInstalled = false;
 
-/** Test seam: re-arms {@link installGlobalProxyFetch}. */
 export function __resetGlobalProxyFetch(): void {
 	globalProxyFetchInstalled = false;
 }
 
-/**
- * Routes the process-wide `globalThis.fetch` through `PI_PROXY`.
- *
- * Bun's native fetch resolves `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` by
- * itself but knows nothing about `PI_PROXY`. Provider *streams* get their proxy
- * from {@link wrapFetchForProxy}; every other provider-bound request — OAuth
- * token refresh and login, usage probes, model discovery — goes out through the
- * bare global `fetch` and would silently ignore `PI_PROXY`. That asymmetry is
- * fatal wherever a provider geo-blocks its token endpoint: the stream is
- * proxied, the refresh is not, and the credential dies with a 403.
- *
- * A per-request `proxy` (including `PI_PROXY_<PROVIDER>` injected by
- * {@link wrapFetchForProxy}) still wins, and loopback / private-range /
- * `NO_PROXY` targets bypass, so local model servers and MCP hosts are
- * untouched. Idempotent; a no-op when `PI_PROXY` is unset.
- */
 export function installGlobalProxyFetch(): void {
 	if (globalProxyFetchInstalled) return;
 	const proxyUrl = Bun.env.PI_PROXY?.trim();
-	// One line naming every proxy-relevant variable this process can see: a
-	// missing PI_PROXY and a NO_PROXY rule that silences it are otherwise
-	// indistinguishable from a working proxy that the peer rejected.
+
 	const env = {
 		PI_PROXY: proxyUrl ? proxyLogTarget(proxyUrl) : undefined,
 		PI_PROXY_ANTHROPIC: Bun.env.PI_PROXY_ANTHROPIC ? proxyLogTarget(Bun.env.PI_PROXY_ANTHROPIC) : undefined,
@@ -265,18 +204,13 @@ export function installGlobalProxyFetch(): void {
 }
 
 export interface ConnectProxiedSocketOptions {
-	/** Caller cancellation for the proxy TCP/TLS handshake and CONNECT tunnel. */
 	signal?: AbortSignal;
-	/** Maximum wall-clock time to establish the final TLS tunnel. Disabled when absent or non-positive. */
+
 	timeoutMs?: number;
-	/** Target TLS profile. Cursor defaults to HTTP/2 when this is absent. */
+
 	tls?: tls.ConnectionOptions;
 }
 
-/**
- * Tunnel a socket connection through an HTTP CONNECT proxy.
- * This is used specifically to wrap Node's `http2.connect(baseUrl, { createConnection })` for Cursor.
- */
 export async function connectProxiedSocket(
 	proxyUrlStr: string,
 	targetUrlStr: string,

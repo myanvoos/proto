@@ -1,11 +1,3 @@
-/**
- * Gallery fixture for the composer footline — the quiet metadata row under
- * the composer. Renders the real `StatusLineComponent` against a fake session
- * at four usage levels, mapping the gallery lifecycle states to fill levels;
- * `error` shows the >100% overflow case (usage anchored to a larger window
- * than the active model's, e.g. after switching to a smaller model
- * mid-session), where the gauge clamps to full while the percent reports raw.
- */
 import { StatusLineComponent } from "../../modes/components/status-line";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
@@ -13,7 +5,6 @@ import type { GalleryFixture, GalleryFixtureState } from "./types";
 
 const GAUGE_WINDOW = 200_000;
 
-/** Simulated usage per gallery lifecycle state, against {@link GAUGE_WINDOW}. */
 const GAUGE_CASES: Record<GalleryFixtureState, { tokens: number; note: string }> = {
 	streaming: { tokens: 6_000, note: "3% used — fresh session" },
 	progress: { tokens: 124_000, note: "62% used — warning zone" },
@@ -21,7 +12,6 @@ const GAUGE_CASES: Record<GalleryFixtureState, { tokens: number; note: string }>
 	error: { tokens: 240_000, note: "120% used — overflow: the gauge clamps, the percent reports raw" },
 };
 
-/** Minimal session double satisfying every query the footline render makes. */
 function fakeGaugeSession(tokens: number): AgentSession {
 	const model = { id: "test-model", contextWindow: GAUGE_WINDOW };
 	const messages = [{ role: "user", content: "hi" }];
@@ -57,7 +47,6 @@ function fakeGaugeSession(tokens: number): AgentSession {
 	} as unknown as AgentSession;
 }
 
-/** Render the quiet footline for the given usage. */
 function renderFootlineVariant(tokens: number, width: number): string {
 	const component = new StatusLineComponent(fakeGaugeSession(tokens));
 	component.updateSettings({

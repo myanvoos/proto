@@ -5,10 +5,6 @@ import { theme } from "../../modes/theme/theme";
 import { type CustomMessage, LIVE_DELEGATION_MESSAGE_TYPE } from "../../session/messages";
 import { renderFramedMessage } from "./message-frame";
 
-/**
- * Component that renders a custom message entry from extensions.
- * Uses distinct styling to differentiate from user messages.
- */
 export class CustomMessageComponent extends Container {
 	#box: Box;
 	#customComponent?: Component;
@@ -20,7 +16,6 @@ export class CustomMessageComponent extends Container {
 	) {
 		super();
 
-		// Create box with custom background (used for default rendering)
 		this.#box = new Box(1, 1, t => theme.bg("customMessageBg", t));
 		this.#box.setIgnoreTight(true);
 
@@ -46,8 +41,6 @@ export class CustomMessageComponent extends Container {
 		}
 		this.removeChild(this.#box);
 
-		// The transcript dispatch routes both `custom` and legacy `hookMessage` roles here:
-		// tag hooks with the hook glyph, other injected messages with a neutral package.
 		const isHook = (this.message.role as string) === "hookMessage";
 		const isLiveDelegation = this.message.customType === LIVE_DELEGATION_MESSAGE_TYPE;
 		const custom = renderFramedMessage({

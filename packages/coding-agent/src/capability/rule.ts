@@ -1,65 +1,46 @@
-/**
- * Rules Capability
- *
- * Project-specific rules from Cursor (.mdc), Windsurf (.md), and Cline formats.
- * Translated to a canonical shape regardless of source format.
- */
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
 const CONDITION_GLOB_SCOPE_TOOLS = ["edit", "write"] as const;
 
-/**
- * Provider id for the bundled default rules shipped with the agent.
- * Lowest priority, so any user/project/tool rule of the same name overrides
- * a bundled default. Also used to gate the whole bundled set via
- * `ttsr.builtinRules`.
- */
 export const BUILTIN_DEFAULTS_PROVIDER_ID = "builtin-defaults";
 
-/**
- * Parsed frontmatter from rule files.
- */
 export interface RuleFrontmatter {
 	description?: string;
 	globs?: string[];
 	alwaysApply?: boolean;
-	/** New key for TTSR match conditions. */
+
 	condition?: string | string[];
-	/** TTSR match condition(s) expressed as ast-grep patterns (edit/write streams only). */
+
 	astCondition?: string | string[];
-	/** New key for TTSR stream scope. */
+
 	scope?: string | string[];
-	/** Per-rule TTSR interrupt mode override. */
+
 	interruptMode?: "never" | "prose-only" | "tool-only" | "always";
 	[key: string]: unknown;
 }
 
-/**
- * A rule providing project-specific guidance and constraints.
- */
 export interface Rule {
-	/** Rule name (derived from filename) */
 	name: string;
-	/** Absolute path to rule file */
+
 	path: string;
-	/** Rule content (after frontmatter stripped) */
+
 	content: string;
-	/** Globs this rule applies to (if any) */
+
 	globs?: string[];
-	/** Whether to always include this rule */
+
 	alwaysApply?: boolean;
-	/** Description (for agent-requested rules) */
+
 	description?: string;
-	/** Regex condition(s) that can trigger TTSR interruption. */
+
 	condition?: string[];
-	/** ast-grep pattern condition(s) that can trigger TTSR interruption (edit/write streams only). */
+
 	astCondition?: string[];
-	/** Optional stream scope tokens (for example: text, thinking, tool:edit(*.ts)). */
+
 	scope?: string[];
-	/** Per-rule TTSR interrupt mode override (falls back to global ttsr.interruptMode). */
+
 	interruptMode?: "never" | "prose-only" | "tool-only" | "always";
-	/** Source metadata */
+
 	_source: SourceMeta;
 }
 
@@ -161,8 +142,6 @@ function normalizeScopeField(value: unknown): string[] | undefined {
 	const tokens = normalized
 		.flatMap(splitScopeTokens)
 		.map(token => {
-			// Tolerate malformed frontmatter (e.g. `scope: "text","thinking"`) whose
-			// YAML-fallback parse leaves per-token quotes intact (issue #4796).
 			const quote = token[0];
 			if (token.length >= 2 && (quote === '"' || quote === "'") && token[token.length - 1] === quote) {
 				return token.slice(1, -1).trim();
@@ -175,9 +154,7 @@ function normalizeScopeField(value: unknown): string[] | undefined {
 	}
 	return Array.from(new Set(tokens));
 }
-/**
- * Heuristic for condition shorthand that looks like a file glob (for example `*.rs`).
- */
+
 function isLikelyFileGlob(value: string): boolean {
 	const token = value.trim();
 	if (token.length === 0) {
@@ -195,16 +172,6 @@ function isLikelyFileGlob(value: string): boolean {
 	return /^\*\.[^\s/]+$/.test(token);
 }
 
-/**
- * Parse `condition` + `scope` from rule frontmatter.
- *
- * - `condition` accepts string or string[]
- * - `scope` accepts string or string[]
- * - legacy `ttsr_trigger` / `ttsrTrigger` are accepted as a `condition` fallback
- * - condition tokens that look like file globs become scope shorthands:
- *   `*.rs` => `tool:edit(*.rs)`, `tool:write(*.rs)` and a catch-all condition `.*`
- * - `astCondition` holds ast-grep patterns and is kept verbatim (no glob inference)
- */
 export function parseRuleConditionAndScope(
 	frontmatter: RuleFrontmatter,
 ): Pick<Rule, "condition" | "astCondition" | "scope"> {
@@ -237,23 +204,10 @@ export function parseRuleConditionAndScope(
 	};
 }
 
-/** Leading PCRE-style inline flag group, e.g. `(?i)` or `(?ims)`. */
 const INLINE_FLAG_PREFIX = /^\(\?([a-z]+)\)/;
 
-/** Inline flags that map cleanly onto native `RegExp` flags. */
 const TRANSLATABLE_INLINE_FLAGS = /^[ims]+$/;
 
-/**
- * Compile a rule `condition` into a `RegExp`, translating a leading PCRE-style
- * inline flag group into native `RegExp` flags.
- *
- * JS/Bun `RegExp` rejects inline flag prefixes such as `(?i)`, so a rule written
- * `condition: "(?i)pre.existing"` would otherwise throw at compile time and be
- * silently dropped (see issue #4796). Only a *leading* group of `i`/`m`/`s`
- * flags is translated; anything else — mid-pattern groups, unsupported flags —
- * is passed through verbatim so the native error still surfaces for genuinely
- * invalid patterns.
- */
 export function compileRuleCondition(pattern: string): RegExp {
 	const match = INLINE_FLAG_PREFIX.exec(pattern);
 	if (match && TRANSLATABLE_INLINE_FLAGS.test(match[1])) {
@@ -265,20 +219,14 @@ export function compileRuleCondition(pattern: string): RegExp {
 
 let activeRules: readonly Rule[] = [];
 
-/**
- * Process-global snapshot of rules the active session loaded.
- * Read by internal URL protocol handlers (rule://).
- */
 export function getActiveRules(): readonly Rule[] {
 	return activeRules;
 }
 
-/** Replace the active rule snapshot. Called once per top-level session. */
 export function setActiveRules(value: readonly Rule[]): void {
 	activeRules = value;
 }
 
-/** Reset the active rule snapshot. Test-only. */
 export function resetActiveRulesForTests(): void {
 	activeRules = [];
 }

@@ -22,9 +22,6 @@ interface OpenVsxExtension {
 	files?: OpenVsxFileLinks;
 }
 
-/**
- * Handle Open VSX URLs via their API
- */
 export const handleOpenVsx: SpecialHandler = async (
 	url: string,
 	timeout: number,

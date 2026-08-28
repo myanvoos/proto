@@ -1,26 +1,9 @@
 #!/usr/bin/env bun
-/**
- * Boot-time regression guard (Phase A1 of the boot/TUI perf work).
- *
- * Re-runs the `PI_TIMING=x` cold-boot benchmark under hyperfine and fails when
- * the median regresses past `baseline * THRESHOLD`. `PI_TIMING=x` runs the full
- * pre-paint chain in `runRootCommand` and then `process.exit(0)`, so the
- * never-exiting interactive launch becomes a terminating, benchmarkable boot.
- *
- * Boot wall-clock is MACHINE-RELATIVE: a baseline captured on one machine is
- * meaningless on another (and on CI). This is a LOCAL guard — regenerate the
- * baseline on the machine you measure on, then compare on that same machine.
- * It is intentionally NOT wired into CI for that reason.
- *
- *   bun scripts/bench-guard.ts --update   # capture/refresh the baseline
- *   bun scripts/bench-guard.ts            # measure + compare; exit 1 on regression
- *
- * Requires `hyperfine` on PATH.
- */
+
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const THRESHOLD = 1.05; // 5% regression budget
+const THRESHOLD = 1.05;
 const BASELINE_PATH = path.join(import.meta.dir, "..", "bench", "boot-baseline.json");
 const BENCH_COMMAND = "PI_TIMING=x PI_STRICT_EDIT_MODE=1 bun src/cli.ts";
 const cwd = path.join(import.meta.dir, "..");

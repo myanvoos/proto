@@ -1,7 +1,3 @@
-/**
- * View, clean, and push reported tool issues from automated QA.
- */
-
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { grievancesHelp as commandHelp } from "../cli/command-help";
 import { cleanGrievances, listGrievances, pushGrievances } from "../cli/grievances-cli";
@@ -9,9 +5,6 @@ import { cleanGrievances, listGrievances, pushGrievances } from "../cli/grievanc
 export default class Grievances extends Command {
 	static description = commandHelp.description;
 	static args = {
-		// Positional action: "list" (default), "clean", or "push". A positional
-		// arg keeps the historical `proto grievances` invocation working unchanged
-		// while reusing the same command surface for the clean/push verbs.
 		action: Args.string({
 			description: "list (default), clean, or push",
 			required: false,

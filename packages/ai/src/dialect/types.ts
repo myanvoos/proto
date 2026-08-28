@@ -33,9 +33,9 @@ export interface DialectDefinition {
 	readonly dialect: CatalogDialect;
 	readonly prompt: string;
 	createScanner(options?: InbandScannerOptions): InbandScanner;
-	/** Render a single tool-call invocation — the inner element only, WITHOUT any parallel-call block envelope (e.g. anthropic's `<function_calls>` / kimi's section wrapper). */
+
 	renderToolCall(call: ToolCall, options?: DialectRenderOptions): string;
-	/** Render a batch of (parallel) tool calls as one complete block, including whatever envelope the dialect wraps multiple calls in. */
+
 	renderAssistantToolCalls(calls: readonly ToolCall[], options?: DialectRenderOptions): string;
 	renderToolResults(results: readonly DialectToolResult[], options?: DialectRenderOptions): string;
 	renderThinking(text: string): string;
@@ -43,13 +43,12 @@ export interface DialectDefinition {
 }
 
 export interface InbandScannerOptions {
-	/** string-typed arg names for a tool → read verbatim. Ignored by JSON-carrying dialects. */
 	stringArgs?: (toolName: string) => ReadonlySet<string>;
-	/** Full tool schemas for schema-driven dialects such as GLM XML and pi-native. */
+
 	tools?: readonly InbandTool[];
-	/** XML only: parse pipe-wrapped DeepSeek DSML tags vs plain Anthropic invoke/parameter tags. */
+
 	xmlTagset?: "anthropic" | "dsml";
-	/** Emit thinking markers as thinking events instead of visible text when the dialect defines them. */
+
 	parseThinking?: boolean;
 }
 

@@ -1,19 +1,14 @@
-/** Behavior-compatible reimplementation of chalk's used surface. */
-
 import { hexToRgb } from "./color";
 
-/** ANSI color capability level. */
 export type ColorLevel = 0 | 1 | 2 | 3;
 
-/** Details about a terminal's supported color depth. */
 export interface ColorSupport {
-	/** Highest supported ANSI color level. */
 	level: ColorLevel;
-	/** Whether the terminal supports the basic 16 colors. */
+
 	hasBasic: boolean;
-	/** Whether the terminal supports the 256-color palette. */
+
 	has256: boolean;
-	/** Whether the terminal supports 24-bit color. */
+
 	has16m: boolean;
 }
 
@@ -30,102 +25,100 @@ interface ChalkContext {
 	level: number;
 }
 
-/** A callable, chainable ANSI text formatter. */
 export interface ChalkInstance {
 	(...text: unknown[]): string;
-	/** Active color capability level. */
+
 	level: ColorLevel;
-	/** Reset every active terminal style. */
+
 	readonly reset: ChalkInstance;
-	/** Render bold text. */
+
 	readonly bold: ChalkInstance;
-	/** Render faint text. */
+
 	readonly dim: ChalkInstance;
-	/** Render italic text. */
+
 	readonly italic: ChalkInstance;
-	/** Render underlined text. */
+
 	readonly underline: ChalkInstance;
-	/** Swap foreground and background colors. */
+
 	readonly inverse: ChalkInstance;
-	/** Render struck-through text. */
+
 	readonly strikethrough: ChalkInstance;
-	/** Render black text. */
+
 	readonly black: ChalkInstance;
-	/** Render red text. */
+
 	readonly red: ChalkInstance;
-	/** Render green text. */
+
 	readonly green: ChalkInstance;
-	/** Render yellow text. */
+
 	readonly yellow: ChalkInstance;
-	/** Render blue text. */
+
 	readonly blue: ChalkInstance;
-	/** Render magenta text. */
+
 	readonly magenta: ChalkInstance;
-	/** Render cyan text. */
+
 	readonly cyan: ChalkInstance;
-	/** Render white text. */
+
 	readonly white: ChalkInstance;
-	/** Render gray text. */
+
 	readonly gray: ChalkInstance;
-	/** Alias for gray text. */
+
 	readonly grey: ChalkInstance;
-	/** Render bright black text. */
+
 	readonly blackBright: ChalkInstance;
-	/** Render bright red text. */
+
 	readonly redBright: ChalkInstance;
-	/** Render bright green text. */
+
 	readonly greenBright: ChalkInstance;
-	/** Render bright yellow text. */
+
 	readonly yellowBright: ChalkInstance;
-	/** Render bright blue text. */
+
 	readonly blueBright: ChalkInstance;
-	/** Render bright magenta text. */
+
 	readonly magentaBright: ChalkInstance;
-	/** Render bright cyan text. */
+
 	readonly cyanBright: ChalkInstance;
-	/** Render bright white text. */
+
 	readonly whiteBright: ChalkInstance;
-	/** Render text on a black background. */
+
 	readonly bgBlack: ChalkInstance;
-	/** Render text on a red background. */
+
 	readonly bgRed: ChalkInstance;
-	/** Render text on a green background. */
+
 	readonly bgGreen: ChalkInstance;
-	/** Render text on a yellow background. */
+
 	readonly bgYellow: ChalkInstance;
-	/** Render text on a blue background. */
+
 	readonly bgBlue: ChalkInstance;
-	/** Render text on a magenta background. */
+
 	readonly bgMagenta: ChalkInstance;
-	/** Render text on a cyan background. */
+
 	readonly bgCyan: ChalkInstance;
-	/** Render text on a white background. */
+
 	readonly bgWhite: ChalkInstance;
-	/** Render text on a gray background. */
+
 	readonly bgGray: ChalkInstance;
-	/** Alias for a gray background. */
+
 	readonly bgGrey: ChalkInstance;
-	/** Render text on a bright black background. */
+
 	readonly bgBlackBright: ChalkInstance;
-	/** Render text on a bright red background. */
+
 	readonly bgRedBright: ChalkInstance;
-	/** Render text on a bright green background. */
+
 	readonly bgGreenBright: ChalkInstance;
-	/** Render text on a bright yellow background. */
+
 	readonly bgYellowBright: ChalkInstance;
-	/** Render text on a bright blue background. */
+
 	readonly bgBlueBright: ChalkInstance;
-	/** Render text on a bright magenta background. */
+
 	readonly bgMagentaBright: ChalkInstance;
-	/** Render text on a bright cyan background. */
+
 	readonly bgCyanBright: ChalkInstance;
-	/** Render text on a bright white background. */
+
 	readonly bgWhiteBright: ChalkInstance;
-	/** Render text with an arbitrary hexadecimal foreground color. */
+
 	hex(color: string): ChalkInstance;
 }
 
-/** Constructor for an independently configured chalk formatter. */
 export interface ChalkConstructor {
 	new (options?: ChalkOptions): ChalkInstance;
 }
@@ -183,7 +176,6 @@ function parseForcedLevel(value: string | undefined): ColorLevel | undefined {
 	return Math.max(0, Math.min(3, parsed)) as ColorLevel;
 }
 
-/** Detect an ANSI color level from terminal environment and TTY state. */
 export function detectColorLevel(environment: NodeJS.ProcessEnv, isTTY: boolean): ColorLevel {
 	const forced = parseForcedLevel(environment.FORCE_COLOR);
 	if (forced !== undefined) return forced;
@@ -216,7 +208,6 @@ function colorSupport(level: ColorLevel): ColorSupport | false {
 	return { level, hasBasic: true, has256: level >= 2, has16m: level >= 3 };
 }
 
-/** Color support detected for standard output. */
 export const supportsColor = colorSupport(detectColorLevel(process.env, Boolean(process.stdout.isTTY)));
 
 function ansi256(r: number, g: number, b: number): number {
@@ -300,7 +291,6 @@ function ChalkImplementation(this: unknown, options: ChalkOptions = {}): ChalkIn
 	return createBuilder({ level: options.level ?? detectedLevel }, []);
 }
 
-/** Construct an independently configured chalk formatter. */
 export const Chalk = ChalkImplementation as unknown as ChalkConstructor;
 
 const defaultLevel = supportsColor === false ? 0 : supportsColor.level;

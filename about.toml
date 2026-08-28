@@ -1,6 +1,6 @@
-# cargo-about 0.8.2 resolves OR expressions in this priority order. The
-# generated notice therefore chooses a permissive branch where one exists,
-# while cargo-deny's clarifications retain every AND obligation.
+
+
+
 accepted = [
     "MIT",
     "Apache-2.0",
@@ -16,7 +16,7 @@ accepted = [
     "MIT-0",
 ]
 
-# Package-scoped reviews. No copyleft license is globally accepted.
+
 [inferno]
 accepted = ["CDDL-1.0"]
 

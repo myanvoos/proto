@@ -1,7 +1,3 @@
-/**
- * Schema benchmark phases:
- * correctness, compile unique schemas, cold compile plus two calls, and hot calls.
- */
 import type { Candidate } from "./candidate";
 import { omptypeCandidate } from "./candidates/omptype";
 import { typeboxCandidate } from "./candidates/typebox";

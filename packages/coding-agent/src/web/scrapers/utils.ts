@@ -35,9 +35,6 @@ async function readResponseWithLimit(response: Response, maxBytes: number, signa
 	return bytes;
 }
 
-/**
- * Fetch binary content from a URL
- */
 export async function fetchBinary(url: string, timeout: number = 20, signal?: AbortSignal): Promise<BinaryFetchResult> {
 	const requestSignal = ptree.combineSignals(signal, timeout * 1000);
 	try {
@@ -70,9 +67,6 @@ export async function fetchBinary(url: string, timeout: number = 20, signal?: Ab
 	}
 }
 
-/**
- * Convert binary content to markdown using markit.
- */
 export async function convertWithMarkit(
 	buffer: Uint8Array,
 	extension: string,

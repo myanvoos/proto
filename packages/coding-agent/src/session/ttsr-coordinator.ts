@@ -26,7 +26,6 @@ interface TtsrContinueOptions {
 	onError?: () => void;
 }
 
-/** Capabilities the TTSR coordinator borrows from its owning session. */
 export interface TtsrCoordinatorHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -37,7 +36,6 @@ export interface TtsrCoordinatorHost {
 	promptGeneration(): number;
 }
 
-/** Coordinates TTSR stream matching, interruption, injection, and resume gates. */
 export class TtsrCoordinator {
 	readonly #host: TtsrCoordinatorHost;
 	readonly #manager: TtsrManager | undefined;
@@ -53,32 +51,26 @@ export class TtsrCoordinator {
 		this.#manager = manager;
 	}
 
-	/** Configured TTSR manager, when stream rules are enabled. */
 	get manager(): TtsrManager | undefined {
 		return this.#manager;
 	}
 
-	/** Whether a TTSR-triggered stream abort is awaiting its continuation. */
 	get abortPending(): boolean {
 		return this.#abortPending;
 	}
 
-	/** Current resume gate awaited by post-prompt recovery. */
 	get resumeGate(): Promise<void> | undefined {
 		return this.#resumePromise;
 	}
 
-	/** Resets stream buffers at turn start. */
 	onTurnStart(): void {
 		this.#manager?.resetBuffer();
 	}
 
-	/** Advances repeat-after-gap tracking at turn end. */
 	onTurnEnd(): void {
 		this.#manager?.incrementMessageCount();
 	}
 
-	/** Checks one streamed message update and reports whether TTSR consumed it by aborting. */
 	async checkMessageUpdate(event: AgentEvent): Promise<boolean> {
 		if (event.type !== "message_update" || !this.#manager?.hasRules()) return false;
 		const assistantEvent = event.assistantMessageEvent;
@@ -96,8 +88,7 @@ export class TtsrCoordinator {
 		const targetMessageTimestamp = event.message.role === "assistant" ? event.message.timestamp : undefined;
 		const matches = this.#checkStream(assistantEvent.delta, matchContext, streamingToolCall);
 		if (matches.length > 0 && this.#handleMatches(matches, matchContext, targetMessageTimestamp)) return true;
-		// AST rules use the reconstructed edit/write snapshot and are awaited so
-		// the manager self-throttles native matching.
+
 		if (matchContext.source === "tool" && this.#manager.hasAstRules()) {
 			const astMatches = await this.#checkAstStream(matchContext, streamingToolCall);
 			if (astMatches.length > 0 && this.#handleMatches(astMatches, matchContext, targetMessageTimestamp))
@@ -106,14 +97,11 @@ export class TtsrCoordinator {
 		return false;
 	}
 
-	/** Settles the previous resume gate and queues any deferred injection. */
 	onAssistantMessageEnd(message: AssistantMessage): void {
-		// Gate on abortPending, not stopReason: unrelated aborts have no TTSR continuation.
 		if (!this.#abortPending) this.resolveResume();
 		this.#queueDeferredInjectionIfNeeded(message);
 	}
 
-	/** Marks names persisted with a delivered TTSR injection as injected. */
 	markInjectedFromDetails(details: unknown): void {
 		if (!details || typeof details !== "object" || Array.isArray(details)) return;
 		const rules = "rules" in details ? details.rules : undefined;
@@ -121,7 +109,6 @@ export class TtsrCoordinator {
 		this.#markInjected(rules.filter((ruleName): ruleName is string => typeof ruleName === "string"));
 	}
 
-	/** Folds per-tool reminders into the matched tool's result. */
 	afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
 		const rules = this.#perToolInjections.get(ctx.toolCall.id);
 		if (!rules || rules.length === 0) return undefined;
@@ -140,7 +127,6 @@ export class TtsrCoordinator {
 		return { content: [{ type: "text", text: reminder }, ...ctx.result.content] };
 	}
 
-	/** Resolves and clears the current resume gate. */
 	resolveResume(): void {
 		if (!this.#resumeResolve) return;
 		this.#resumeResolve();

@@ -8,12 +8,6 @@ import type {
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
 
-/**
- * Per-request image-count budgets by provider id. These cap how many images an
- * entire request may carry. The values are conservative policy caps under the
- * vendor hard limits (Anthropic 100, OpenAI 500, Gemini ~2500); unknown
- * providers fall to a safe floor rather than sending unbounded attachments.
- */
 const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
 	anthropic: 90,
 	"amazon-bedrock": 90,
@@ -26,10 +20,8 @@ const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
 	umans: 10,
 };
 
-/** Safe floor for unknown providers (strictest mainstream measured: Groq ~5). */
 const DEFAULT_PROVIDER_IMAGE_BUDGET = 5;
 
-/** Per-request image budget for `provider`; unknown providers get the floor. */
 function providerImageBudget(provider: string | undefined): number {
 	return (provider !== undefined ? PROVIDER_IMAGE_BUDGETS[provider] : undefined) ?? DEFAULT_PROVIDER_IMAGE_BUDGET;
 }
@@ -86,7 +78,6 @@ function clampToolResultMessage(message: ToolResultMessage, state: { remainingDr
 	return { ...message, content: content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION] };
 }
 
-/** Drops oldest transient image blocks so outgoing vision requests fit the active provider's image cap. */
 export function clampProviderContextImages(context: Context, model: Model): Context {
 	if (!model.input.includes("image")) return context;
 	const limit = providerImageBudget(model.provider);

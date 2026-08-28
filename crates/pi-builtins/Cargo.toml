@@ -1,15 +1,15 @@
-# Shell builtins for the embedded brush shell.
-#
-# Two layers live here:
-#  * the POSIX/bash builtins (`cd`, `echo`, `test`, `printf`, `read`, …), a
-#    locally-patched fork of the upstream `brush-builtins` crate, and
-#  * the in-process command-line utilities the shell ships (`cat`, `grep`,
-#    `sed`, `ls`, `jq`, `ps`, `top`, `kill`, …), one module per command.
-#
-# The utilities used to be ~50 separate vendored crates driven through a
-# thread-local I/O shim; they now run as ordinary builtins against the explicit
-# `host::Host` view of the shell (see `src/host.rs`). See LICENSE for the
-# third-party notices that come with the ported code.
+
+
+
+
+
+
+
+
+
+
+
+
 [package]
 name = "pi-builtins"
 version.workspace = true
@@ -44,7 +44,7 @@ strum = "0.28.0"
 thiserror = "2.0.18"
 tracing = "0.1.44"
 
-# ── Utility builtin dependencies ──────────────────────────────────────────────
+
 ansi-width = "0.1.0"
 argmax = "0.3.1"
 bigdecimal = "0.4"
@@ -176,7 +176,7 @@ tempfile = "3"
 [features]
 default = ["base", "utils"]
 
-# Every upstream POSIX/bash builtin.
+
 base = [
   "builtin.alias",
   "builtin.bg",
@@ -263,7 +263,7 @@ base = [
 "builtin.help" = []
 "builtin.history" = []
 "builtin.jobs" = []
-# The non-unix existence probe scans the process table.
+
 "builtin.kill" = ["util.procs"]
 "builtin.let" = []
 "builtin.mapfile" = []
@@ -288,9 +288,9 @@ base = [
 "builtin.unset" = []
 "builtin.wait" = []
 
-# ── Utility builtins ──────────────────────────────────────────────────────────
-# One feature per ported utility so a single utility can be built (and checked)
-# in isolation. `utils` turns on the whole set and is part of `default`.
+
+
+
 "util.b2sum" = ["util.cksum"]
 "util.base32" = []
 "util.base64" = ["util.base32"]
@@ -327,9 +327,9 @@ base = [
 "util.pgrep" = ["util.proc-match"]
 "util.pidwait" = ["util.proc-match"]
 "util.pkill" = ["util.proc-match"]
-# Shared process-matching engine behind pgrep/pkill/pidwait.
+
 "util.proc-match" = ["builtin.kill", "util.procs"]
-# Shared process-table snapshot behind ps/top/pgrep/pkill/pidwait/kill.
+
 "util.procs" = []
 "util.ps" = ["util.procs"]
 "util.sleep" = []
@@ -338,7 +338,7 @@ base = [
 "util.printenv" = []
 "util.readlink" = []
 "util.realpath" = []
-# Shares the PCRE2 JIT probe with `grep`.
+
 "util.rg" = ["util.grep"]
 "util.rm" = []
 "util.sed" = []
@@ -436,10 +436,10 @@ utils = [
   "util.yes",
 ]
 
-# Deliberately NOT `lints.workspace = true`: most of this crate is ported
-# third-party code (brush's builtins, uutils, jaq), and holding 70k lines of
-# it to the workspace's pedantic/nursery bar would bury real warnings. rustc
-# warnings still apply and are kept at zero.
+
+
+
+
 [lints.clippy]
 all = { level = "allow", priority = -1 }
 nursery = { level = "allow", priority = -1 }

@@ -1,7 +1,3 @@
-/**
- * Draw a session's entire thread through the production transcript pipeline.
- */
-
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { renderHelp as commandHelp } from "../cli/command-help";

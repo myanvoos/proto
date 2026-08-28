@@ -1,8 +1,3 @@
-/**
- * Builtin Provider (.proto)
- *
- * Primary provider for PROTO native configs. Supports all capabilities.
- */
 import * as path from "node:path";
 import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
@@ -62,8 +57,7 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 	if (projectDir) {
 		result.push({ dir: projectDir, level: "project" });
 	}
-	// Native user config is profile-scoped: getAgentDir() points at the active
-	// profile's agent dir (~/.proto/profiles/<name>/agent), like sessions and MCP.
+
 	const userDir = await ifNonEmptyDir(getAgentDir());
 	if (userDir) {
 		result.push({ dir: userDir, level: "user" });
@@ -98,7 +92,6 @@ async function findNearestProjectConfigDir(
 	return null;
 }
 
-// MCP
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const items: MCPServer[] = [];
 	const warnings: string[] = [];
@@ -112,7 +105,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		for (const [serverName, config] of Object.entries(expanded)) {
 			const serverConfig = config as Record<string, unknown>;
 
-			// Validate enabled: coerce string "true"/"false", warn on other types
 			let enabled: boolean | undefined;
 			if (serverConfig.enabled === undefined || serverConfig.enabled === null) {
 				enabled = undefined;
@@ -131,7 +123,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				enabled = undefined;
 			}
 
-			// Validate timeout: coerce numeric strings, warn on invalid
 			let timeout: number | undefined;
 			if (serverConfig.timeout === undefined || serverConfig.timeout === null) {
 				timeout = undefined;
@@ -155,7 +146,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				timeout = undefined;
 			}
 
-			// Validate requestIdFormat: only the two documented encodings
 			const requestIdFormat = parseRequestIdFormat(serverConfig.requestIdFormat);
 			if (requestIdFormat === undefined && serverConfig.requestIdFormat != null) {
 				logger.warn(
@@ -200,8 +190,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		return result;
 	};
 
-	// User scope tracks the active profile via getAgentDir() (not ctx.home), so it
-	// stays in sync with getMCPConfigPath("user") and the /mcp config writer.
 	const userAgentDir = getAgentDir();
 	const paths = [
 		{ path: path.join(ctx.cwd, PATHS.projectDir, "mcp.json"), level: "project" as const },
@@ -238,7 +226,6 @@ registerProvider<MCPServer>(mcpCapability.id, {
 	load: loadMCPServers,
 });
 
-// System Prompt (SYSTEM.md)
 async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemPrompt>> {
 	const items: SystemPrompt[] = [];
 
@@ -278,9 +265,7 @@ registerProvider<SystemPrompt>(systemPromptCapability.id, {
 	load: loadSystemPrompt,
 });
 
-// Skills
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
-	// Walk up from cwd finding .proto/skills/ in ancestors (closest first)
 	const ancestors = getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home);
 	const projectScans = ancestors.map(({ dir }) =>
 		scanSkillsFromDir(ctx, {
@@ -291,7 +276,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		}),
 	);
 
-	// User-level scan from ~/.proto/agent/skills/
 	const userScan = scanSkillsFromDir(ctx, {
 		dir: path.join(getAgentDir(), "skills"),
 		providerId: PROVIDER_ID,
@@ -306,10 +290,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	};
 }
 
-// Managed skills (auto-learn) are a SEPARATE provider at the lowest skill
-// priority, so an authored skill of the same name from ANY other provider wins
-// the capability-level priority dedup. Discovery is unconditional (an empty
-// managed dir is a no-op); only writing/nudging is gated by `autolearn.enabled`.
 const MANAGED_SKILLS_PRIORITY = 5;
 async function loadManagedSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	return scanSkillsFromDir(ctx, {
@@ -336,7 +316,6 @@ registerProvider<Skill>(skillCapability.id, {
 	load: loadManagedSkills,
 });
 
-// Slash Commands
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const items: SlashCommand[] = [];
 	const warnings: string[] = [];
@@ -368,7 +347,6 @@ registerProvider<SlashCommand>(slashCommandCapability.id, {
 	load: loadSlashCommands,
 });
 
-// Rules
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const items: Rule[] = [];
 	const warnings: string[] = [];
@@ -384,11 +362,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 		if (result.warnings) warnings.push(...result.warnings);
 	}
 
-	// Top-level RULES.md is a sticky always-apply rule. Documented in
-	// https://proto.sh/docs/context-files as the file that gets "re-injected near
-	// the current turn so they keep hold across long conversations".
-	// User scope:    ~/.proto/agent/RULES.md
-	// Project scope: nearest .proto/RULES.md walking up from cwd to repoRoot
 	const userRulesFile = path.join(getAgentDir(), "RULES.md");
 	const userRule = await loadStickyRulesFile(userRulesFile, "user");
 	if (userRule) items.push(userRule);
@@ -403,18 +376,13 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	return { items, warnings };
 }
 
-/**
- * Read a top-level `RULES.md` and synthesize an always-apply rule.
- * Returns null when the file is absent or empty so callers can short-circuit.
- */
 async function loadStickyRulesFile(filePath: string, level: "user" | "project"): Promise<Rule | null> {
 	const content = await readFile(filePath);
 	if (!content) return null;
 	const source = createSourceMeta(PROVIDER_ID, filePath, level);
 	const ruleName = level === "project" ? "RULES@project" : "RULES";
 	const rule = buildRuleFromMarkdown("RULES.md", content, filePath, source, { ruleName });
-	// Force alwaysApply regardless of frontmatter — the whole point of RULES.md
-	// is to be reattached every turn.
+
 	return { ...rule, alwaysApply: true };
 }
 
@@ -426,7 +394,6 @@ registerProvider<Rule>(ruleCapability.id, {
 	load: loadRules,
 });
 
-// Prompts
 async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 	const items: Prompt[] = [];
 	const warnings: string[] = [];
@@ -457,7 +424,6 @@ registerProvider<Prompt>(promptCapability.id, {
 	load: loadPrompts,
 });
 
-// Extension Modules
 async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<ExtensionModule>> {
 	const items: ExtensionModule[] = [];
 	const warnings: string[] = [];
@@ -566,7 +532,6 @@ registerProvider<ExtensionModule>(extensionModuleCapability.id, {
 	load: loadExtensionModules,
 });
 
-// Extensions
 async function loadExtensions(ctx: LoadContext): Promise<LoadResult<Extension>> {
 	const items: Extension[] = [];
 	const warnings: string[] = [];
@@ -633,7 +598,6 @@ registerProvider<Extension>(extensionCapability.id, {
 	load: loadExtensions,
 });
 
-// Instructions
 async function loadInstructions(ctx: LoadContext): Promise<LoadResult<Instruction>> {
 	const items: Instruction[] = [];
 	const warnings: string[] = [];
@@ -668,7 +632,6 @@ registerProvider<Instruction>(instructionCapability.id, {
 	load: loadInstructions,
 });
 
-// Hooks
 async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const items: Hook[] = [];
 
@@ -727,7 +690,6 @@ registerProvider<Hook>(hookCapability.id, {
 	load: loadHooks,
 });
 
-// Custom Tools
 async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	const items: CustomTool[] = [];
 	const warnings: string[] = [];
@@ -783,7 +745,7 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 							_source: source,
 						};
 					}
-					// Executable tool files (.ts, .js, .sh, .bash, .py)
+
 					const toolName = name.replace(/\.(ts|js|sh|bash|py)$/, "");
 					return {
 						name: toolName,
@@ -843,7 +805,6 @@ registerProvider<CustomTool>(toolCapability.id, {
 	load: loadTools,
 });
 
-// Settings
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const items: Settings[] = [];
 	const warnings: string[] = [];
@@ -902,7 +863,6 @@ registerProvider<Settings>(settingsCapability.id, {
 	load: loadSettings,
 });
 
-// Context Files (AGENTS.md)
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];

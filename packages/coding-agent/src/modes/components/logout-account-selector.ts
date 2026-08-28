@@ -6,7 +6,6 @@ import { OverlayPanel } from "./overlay-box";
 
 const LOGOUT_SELECTOR_MAX_VISIBLE = 10;
 
-/** Account picker for `/logout` after the provider has been selected. */
 export class LogoutAccountSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#accounts: LogoutAccount[];

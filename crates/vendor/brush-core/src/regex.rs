@@ -11,12 +11,12 @@ thread_local! {
 		  RefCell::new(cached::SizedCache::with_size(64));
 }
 
-/// Represents a piece of a regular expression.
+
 #[derive(Clone, Debug)]
 pub(crate) enum RegexPiece {
-	/// A pattern that should be interpreted as a regular expression.
+
 	Pattern(String),
-	/// A literal string that should be matched exactly.
+
 	Literal(String),
 }
 
@@ -31,7 +31,7 @@ impl RegexPiece {
 
 type RegexWord = Vec<RegexPiece>;
 
-/// Encapsulates a regular expression usable in the shell.
+
 #[derive(Clone, Debug)]
 pub struct Regex {
 	pieces:           RegexWord,
@@ -46,33 +46,33 @@ impl From<RegexWord> for Regex {
 }
 
 impl Regex {
-	/// Sets the regular expression's case sensitivity.
-	///
-	/// # Arguments
-	///
-	/// * `value` - The new case sensitivity value.
+
+
+
+
+
 	pub const fn set_case_insensitive(mut self, value: bool) -> Self {
 		self.case_insensitive = value;
 		self
 	}
 
-	/// Enables (or disables) multiline support for this pattern.
-	/// This enables matching across lines as well as enables `.`
-	/// to match newline characters.
-	///
-	/// # Arguments
-	///
-	/// * `value` - The new multiline value.
+
+
+
+
+
+
+
 	pub const fn set_multiline(mut self, value: bool) -> Self {
 		self.multiline = value;
 		self
 	}
 
-	/// Computes if the regular expression matches the given string.
-	///
-	/// # Arguments
-	///
-	/// * `value` - The string to check for a match.
+
+
+
+
+
 	pub fn matches(&self, value: &str) -> Result<Option<Vec<Option<String>>>, error::Error> {
 		let regex_pattern: String = self
 			.pieces
@@ -96,7 +96,7 @@ pub(crate) fn compile_regex(
 	case_insensitive: bool,
 	multiline: bool,
 ) -> Result<fancy_regex::Regex, error::Error> {
-	// Move regex_str into the key to avoid cloning on cache-hit path.
+
 	let key = (regex_str, case_insensitive, multiline);
 
 	let cached_regex = REGEX_CACHE.with(|cache| cache.borrow_mut().cache_get(&key).cloned());
@@ -104,15 +104,15 @@ pub(crate) fn compile_regex(
 		return Ok(re);
 	}
 
-	// Handle identified cases where a shell-supported regex isn't supported
-	// directly by `fancy_regex` -- specifically, adding missing escape characters.
+
+
 	let mut regex_str = add_missing_escape_chars_to_regex(key.0.as_str());
 
-	// Handle multiline enablement.
+
 	if multiline {
-		// The fancy_regex crate internally seems to have flags that can be used
-		// to enable multiline support, but they're not exposed via its
-		// RegexBuilder. We instead just prefix with the right flags.
+
+
+
 		let updated_str = std::format!("(?ms){regex_str}");
 		regex_str = updated_str.into();
 	}
@@ -125,7 +125,7 @@ pub(crate) fn compile_regex(
 		Err(e) => return Err(error::ErrorKind::InvalidRegexError(e, regex_str.to_string()).into()),
 	};
 
-	// Release borrow on key.0 before moving key into cache_set.
+
 	drop(regex_str);
 
 	REGEX_CACHE.with(|cache| {
@@ -136,8 +136,8 @@ pub(crate) fn compile_regex(
 }
 
 fn add_missing_escape_chars_to_regex(s: &str) -> Cow<'_, str> {
-	// We may see a character class with an unescaped '[' (open bracket) character.
-	// We need to escape that character.
+
+
 	let mut in_escape = false;
 	let mut in_brackets = false;
 	let mut insertion_positions = vec![];
@@ -151,7 +151,7 @@ fn add_missing_escape_chars_to_regex(s: &str) -> Cow<'_, str> {
 				in_brackets = true;
 			},
 			'[' if !in_escape && in_brackets && !next_is_colon => {
-				// Need to escape.
+
 				insertion_positions.push(byte_offset);
 			},
 			']' if !in_escape && in_brackets => {

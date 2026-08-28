@@ -358,7 +358,6 @@ function createVgymeUploader(config: DestinationRuntimeConfig): BlobUploader {
 	};
 }
 
-/** Create a built-in image-host uploader, or `null` for another destination family. */
 export function createImageHostUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

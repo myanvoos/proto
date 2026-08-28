@@ -44,10 +44,6 @@ export function shouldUseMapReduce(diff: string, settings?: MapReduceSettings): 
 	return files.some(file => estimateTokens(file.content) > maxFileTokens);
 }
 
-/**
- * Run map-reduce analysis for large diffs using smol + primary models.
- */
-
 export async function runMapReduceAnalysis(input: MapReduceInput): Promise<ConventionalAnalysis> {
 	const fileDiffs = parseFileDiffs(input.diff).filter(file => !isExcludedFile(file.filename));
 	const observations = await runMapPhase({

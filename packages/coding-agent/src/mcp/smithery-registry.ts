@@ -411,7 +411,6 @@ export async function searchSmitheryRegistry(
 		headers.set("Authorization", `Bearer ${options.apiKey}`);
 	}
 
-	// Fetch pages until we have enough filtered entries or run out of results.
 	const maxPages = 3;
 	const allEntries: SmitherySearchEntry[] = [];
 	for (let page = 1; page <= maxPages; page++) {
@@ -439,7 +438,6 @@ export async function searchSmitheryRegistry(
 		if (pageEntries.length === 0) break;
 		allEntries.push(...pageEntries);
 
-		// Stop early if we already have enough identity-matching entries.
 		const filtered = isSemantic ? allEntries : allEntries.filter(entry => matchesIdentityQuery(query, entry));
 		if (filtered.length >= limit * 2) break;
 		if (pageEntries.length < pageSize) break;
@@ -447,7 +445,6 @@ export async function searchSmitheryRegistry(
 
 	const entries = isSemantic ? [...allEntries] : [...allEntries].filter(entry => matchesIdentityQuery(query, entry));
 
-	// Only apply local useCount sort when not in semantic mode (preserve API relevance ranking).
 	if (!isSemantic) {
 		entries.sort((a, b) => (b.useCount ?? 0) - (a.useCount ?? 0));
 	}

@@ -1,18 +1,7 @@
-/**
- * Watchdog for eval cell work.
- *
- * A cell's `timeout` bounds time while the Python kernel or JS VM is in control.
- * Host-side bridge calls can {@link pause} the watchdog so delegated
- * `agent()`/`parallel()`/`completion()` work is ignored completely, then {@link resume}
- * starts a fresh timeout window once the runtime gets control back.
- *
- * Pause is reference-counted because `parallel()` can have multiple bridge calls
- * in flight at once.
- */
 export class IdleTimeout {
 	readonly #controller = new AbortController();
 	readonly #idleMs: number;
-	/** Absolute time (epoch ms) at which inactivity is considered to have expired. */
+
 	#deadlineMs: number;
 	#timer: NodeJS.Timeout | undefined;
 	#settled = false;
@@ -24,17 +13,14 @@ export class IdleTimeout {
 		this.#arm(this.#idleMs);
 	}
 
-	/** Aborts with a `TimeoutError` reason once the active timeout window is exhausted. */
 	get signal(): AbortSignal {
 		return this.#controller.signal;
 	}
 
-	/** Configured active timeout window in milliseconds. */
 	get idleMs(): number {
 		return this.#idleMs;
 	}
 
-	/** Suspend timeout accounting while control is delegated to host-side work. */
 	pause(): void {
 		if (this.#settled) return;
 		this.#pauseDepth++;
@@ -45,7 +31,6 @@ export class IdleTimeout {
 		}
 	}
 
-	/** Resume timeout accounting with a fresh timeout window. */
 	resume(): void {
 		if (this.#settled || this.#pauseDepth === 0) return;
 		this.#pauseDepth--;
@@ -54,7 +39,6 @@ export class IdleTimeout {
 		this.#arm(this.#idleMs);
 	}
 
-	/** Stop the watchdog. Safe to call multiple times. */
 	dispose(): void {
 		if (this.#settled) return;
 		this.#settled = true;
@@ -70,7 +54,7 @@ export class IdleTimeout {
 
 	#arm(delayMs: number): void {
 		const timer = setTimeout(() => this.#onExpire(), Math.max(0, delayMs));
-		// Never keep the event loop alive for the watchdog itself.
+
 		timer.unref?.();
 		this.#timer = timer;
 	}
@@ -79,8 +63,6 @@ export class IdleTimeout {
 		if (this.#settled || this.#pauseDepth > 0) return;
 		const remainingMs = this.#deadlineMs - Date.now();
 		if (remainingMs > 0) {
-			// The deadline moved forward (resume re-arming) after this timer was
-			// armed; wait out the remaining window instead of firing early.
 			this.#arm(remainingMs);
 			return;
 		}

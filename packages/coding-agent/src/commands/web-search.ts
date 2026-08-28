@@ -1,7 +1,3 @@
-/**
- * Test web search providers.
- */
-
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { searchHelp as commandHelp } from "../cli/command-help";
 import { runSearchCommand, type SearchCommandArgs } from "../cli/web-search-cli";

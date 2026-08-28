@@ -1,28 +1,5 @@
 import { TERMINAL } from "./terminal-capabilities";
 
-// LaTeX → Unicode/ANSI converter.
-//
-// Terminals cannot lay out real math, but a surprising amount of LaTeX maps
-// cleanly onto Unicode: superscripts/subscripts (x² xᵢ), Greek (α β), big
-// operators (∫ ∑ ∏), relations/arrows (≤ ≠ → ⇒), fonts via the Mathematical
-// Alphanumeric Symbols block (ℝ 𝐱 𝔄 𝒞), accents via combining marks (x̂ x̄ x⃗),
-// fractions (½, (a+b)/c), radicals (√, ∛), and ANSI foreground/background colors
-// (`\textcolor`, `\color`, `\colorbox`, `\fcolorbox`). This module turns a LaTeX math
-//
-// `latexToUnicode(src)` converts a *bare* math fragment (no `$`/`\(` delimiters).
-// `renderMathInText(text)` scans prose for `$$…$$`, `$…$`, `\(…\)`, `\[…\]`
-// spans and converts only those, with anti-currency heuristics so "$5 and $10"
-// is left untouched. The markdown renderer isolates math via a Marked extension
-// and calls `latexToUnicode` directly; `renderMathInText` serves callers that
-// only have raw text.
-
-// ---------------------------------------------------------------------------
-// Character maps
-// ---------------------------------------------------------------------------
-
-// Unicode superscript forms. Letters are incomplete in Unicode (q, and several
-// capitals have no superscript), so the converter falls back to `^(…)` when any
-// character in a script group is unmappable.
 const SUPERSCRIPT: Record<string, string> = {
 	"0": "⁰",
 	"1": "¹",
@@ -97,7 +74,6 @@ const SUPERSCRIPT: Record<string, string> = {
 	χ: "ᵡ",
 };
 
-// Unicode subscript forms (even sparser than superscripts).
 const SUBSCRIPT: Record<string, string> = {
 	"0": "₀",
 	"1": "₁",
@@ -140,10 +116,8 @@ const SUBSCRIPT: Record<string, string> = {
 	χ: "ᵪ",
 };
 
-// Prime runs: f' f'' f''' f''''.
 const PRIMES = ["", "′", "″", "‴", "⁗"] as const;
 
-// Common vulgar fractions, keyed by `${num}/${den}` of the rendered parts.
 const VULGAR: Record<string, string> = {
 	"1/2": "½",
 	"1/3": "⅓",
@@ -166,8 +140,6 @@ const VULGAR: Record<string, string> = {
 	"0/3": "↉",
 };
 
-// `\not<rel>` negations that have a dedicated Unicode glyph (cleaner than the
-// combining-solidus fallback).
 const NOT_MAP: Record<string, string> = {
 	"=": "≠",
 	"<": "≮",
@@ -194,7 +166,6 @@ const NOT_MAP: Record<string, string> = {
 	"⊒": "⋣",
 };
 
-// Combining diacritics for accent commands (applied after each base glyph).
 const ACCENTS: Record<string, string> = {
 	hat: "\u0302",
 	widehat: "\u0302",
@@ -219,7 +190,6 @@ const ACCENTS: Record<string, string> = {
 	underbar: "\u0332",
 };
 
-// Math functions rendered as their literal upright name (sin, cos, lim, …).
 const FUNCTIONS: Record<string, true> = {
 	sin: true,
 	cos: true,
@@ -271,7 +241,6 @@ const FUNCTIONS: Record<string, true> = {
 	mod: true,
 };
 
-// Math-mode font commands → Mathematical Alphanumeric Symbols style.
 type FontStyle =
 	| "bold"
 	| "italic"
@@ -317,15 +286,9 @@ const FONTS: Record<string, FontStyle> = {
 	texttt: "mono",
 	textsf: "sans",
 };
-/**
- * Math font command names (`\mathbf`, `\mathbb`, …) whose single brace argument
- * restyles glyphs. Exported for the display block engine (`latex-block`), which
- * re-wraps inline runs inside these commands when their argument contains 2-D
- * layout (fractions, matrices) so styling survives box boundaries.
- */
+
 export const MATH_FONT_COMMANDS: ReadonlySet<string> = new Set(Object.keys(FONTS));
 
-// Text-mode commands whose argument is passed through literally (no math).
 const TEXT_COMMANDS: Record<string, true> = {
 	text: true,
 	textrm: true,
@@ -341,8 +304,6 @@ const TEXT_COMMANDS: Record<string, true> = {
 	hbox: true,
 };
 
-// Base code points for each style's A, a, and (where it exists) 0 in the
-// Mathematical Alphanumeric Symbols block (U+1D400–U+1D7FF).
 interface Plane {
 	upper: number;
 	lower: number;
@@ -364,8 +325,6 @@ const PLANES: Record<FontStyle, Plane> = {
 	mono: { upper: 0x1d670, lower: 0x1d68a, digit: 0x1d7f6 },
 };
 
-// Reserved code points in the math alphabets that Unicode places in the
-// Letterlike Symbols block instead (the famous "holes").
 const ALPHA_HOLES: Record<string, string> = {
 	"italic:h": "ℎ",
 	"script:B": "ℬ",
@@ -393,7 +352,6 @@ const ALPHA_HOLES: Record<string, string> = {
 	"doublestruck:Z": "ℤ",
 };
 
-// Matrix/cases environment delimiters: [open, close].
 const ENV_DELIMS: Record<string, readonly [string, string]> = {
 	matrix: ["", ""],
 	smallmatrix: ["", ""],
@@ -424,9 +382,7 @@ const ENV_DELIMS: Record<string, readonly [string, string]> = {
 	"equation*": ["", ""],
 };
 
-// Greek, operators, relations, arrows, delimiters, and assorted symbols.
 const SYMBOLS: Record<string, string> = {
-	// Greek lowercase
 	alpha: "α",
 	beta: "β",
 	gamma: "γ",
@@ -459,7 +415,7 @@ const SYMBOLS: Record<string, string> = {
 	psi: "ψ",
 	omega: "ω",
 	digamma: "ϝ",
-	// Greek uppercase
+
 	Gamma: "Γ",
 	Delta: "Δ",
 	Theta: "Θ",
@@ -471,7 +427,7 @@ const SYMBOLS: Record<string, string> = {
 	Phi: "Φ",
 	Psi: "Ψ",
 	Omega: "Ω",
-	// Big operators
+
 	sum: "∑",
 	prod: "∏",
 	coprod: "∐",
@@ -494,7 +450,7 @@ const SYMBOLS: Record<string, string> = {
 	Cap: "⋒",
 	Cup: "⋓",
 	bigstar: "★",
-	// Binary operators
+
 	pm: "±",
 	mp: "∓",
 	times: "×",
@@ -554,7 +510,7 @@ const SYMBOLS: Record<string, string> = {
 	circleddash: "⊝",
 	divideontimes: "⋇",
 	dotplus: "∔",
-	// Relations
+
 	leq: "≤",
 	le: "≤",
 	geq: "≥",
@@ -649,7 +605,7 @@ const SYMBOLS: Record<string, string> = {
 	shortmid: "∣",
 	shortparallel: "∥",
 	pitchfork: "⋔",
-	// Arrows
+
 	leftarrow: "←",
 	gets: "←",
 	rightarrow: "→",
@@ -713,7 +669,7 @@ const SYMBOLS: Record<string, string> = {
 	looparrowleft: "↫",
 	looparrowright: "↬",
 	multimap: "⊸",
-	// Miscellaneous
+
 	infty: "∞",
 	partial: "∂",
 	nabla: "∇",
@@ -789,7 +745,7 @@ const SYMBOLS: Record<string, string> = {
 	backepsilon: "϶",
 	Game: "⅁",
 	eth: "ð",
-	// Dots & ellipses
+
 	ldots: "…",
 	dots: "…",
 	cdots: "⋯",
@@ -801,7 +757,7 @@ const SYMBOLS: Record<string, string> = {
 	dotsb: "⋯",
 	dotsm: "⋯",
 	dotsi: "⋯",
-	// Delimiters
+
 	langle: "⟨",
 	rangle: "⟩",
 	lceil: "⌈",
@@ -829,7 +785,7 @@ const SYMBOLS: Record<string, string> = {
 	lgroup: "⟮",
 	rgroup: "⟯",
 	bracevert: "⎪",
-	// Blackboard / letterlike shortcuts commonly written bare
+
 	Reals: "ℝ",
 	Complex: "ℂ",
 	Natural: "ℕ",
@@ -837,11 +793,6 @@ const SYMBOLS: Record<string, string> = {
 	Rational: "ℚ",
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Map every code point of `text` through `table`; null if any is unmappable. */
 function mapAll(text: string, table: Record<string, string>): string | null {
 	let out = "";
 	for (const ch of text) {
@@ -852,14 +803,12 @@ function mapAll(text: string, table: Record<string, string>): string | null {
 	return out;
 }
 
-/** Number of Unicode code points (not UTF-16 units) in `s`. */
 function codePointLength(s: string): number {
 	let n = 0;
 	for (const _ of s) n++;
 	return n;
 }
 
-/** Style a single ASCII letter/digit via the math alphanumeric block. */
 function styleAlnum(ch: string, style: FontStyle): string {
 	const hole = ALPHA_HOLES[`${style}:${ch}`];
 	if (hole) return hole;
@@ -871,7 +820,6 @@ function styleAlnum(ch: string, style: FontStyle): string {
 	return ch;
 }
 
-/** Identity, or math-alphanumeric styling when a font style is active. */
 function styleChar(ch: string, style: FontStyle | null): string {
 	if (style === null) return ch;
 	const code = ch.charCodeAt(0);
@@ -879,14 +827,12 @@ function styleChar(ch: string, style: FontStyle | null): string {
 	return isAlnum ? styleAlnum(ch, style) : ch;
 }
 
-/** Append a combining mark after each non-space base glyph (accents/radicals). */
 function applyCombining(text: string, mark: string): string {
 	let out = "";
 	for (const ch of text) out += ch === " " ? ch : ch + mark;
 	return out;
 }
 
-/** Light unescape for text-mode content (`\&` → `&`, `~` → space). */
 function unescapeText(s: string): string {
 	return s.replace(/\\([&%$#_{}\s])/g, "$1").replace(/~/g, " ");
 }
@@ -1143,15 +1089,6 @@ function ansiColor(model: string | null, spec: string): AnsiColor | null {
 	return { foreground, background: foreground.replace("\x1b[38;", "\x1b[48;") };
 }
 
-/**
- * Painter for a LaTeX color scope (optional model + spec, e.g. `rgb`/`1,0,0` or
- * `red`): returns a function that paints already-rendered text with the scope's
- * foreground, re-asserting it after embedded foreground resets so nested color
- * runs restore to the scope color; null when the color cannot be resolved. Used
- * by the display block engine (`latex-block`) to paint structural glyphs
- * (fraction bars, stretched delimiters, matrix brackets) inside
- * `\color`/`\textcolor` scopes.
- */
 export function latexColorScope(model: string | null, spec: string): ((text: string) => string) | null {
 	const color = ansiColor(model, spec);
 	if (color === null) return null;
@@ -1185,13 +1122,9 @@ function toSubscript(text: string, group: boolean): string {
 	return group ? `_(${text})` : `_${text}`;
 }
 
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
-
 interface Argument {
 	text: string;
-	/** True when the argument came from a `{…}` group (affects fraction/script parens). */
+
 	group: boolean;
 }
 
@@ -1231,14 +1164,13 @@ class LatexParser {
 		return restoreAnsi(this.parse(null, false), this.#foreground, null, this.#background, null);
 	}
 
-	/** Parse a run until end-of-input, or until `}` when `stopAtBrace`. */
 	parse(style: FontStyle | null, stopAtBrace: boolean): string {
 		let out = "";
 		while (this.#i < this.#s.length) {
 			const c = this.#s[this.#i];
 			if (c === "}") {
 				if (stopAtBrace) break;
-				this.#i++; // stray close brace
+				this.#i++;
 				continue;
 			}
 			out += this.#node(style);
@@ -1261,13 +1193,13 @@ class LatexParser {
 				return this.#script(style, false);
 			case "$":
 				this.#i++;
-				return ""; // stray delimiter
+				return "";
 			case "~":
 				this.#i++;
-				return " "; // non-breaking space
+				return " ";
 			case "&":
 				this.#i++;
-				return "  "; // column separator
+				return "  ";
 			case "'": {
 				let k = 0;
 				while (this.#s[this.#i] === "'") {
@@ -1288,14 +1220,14 @@ class LatexParser {
 	}
 
 	#command(style: FontStyle | null): string {
-		this.#i++; // past backslash
+		this.#i++;
 		if (this.#i >= this.#s.length) return "";
 		const c = this.#s[this.#i];
 		if (!/[A-Za-z]/.test(c)) {
 			this.#i++;
 			switch (c) {
 				case "\\":
-					return "\n"; // row break
+					return "\n";
 				case "{":
 				case "}":
 				case "$":
@@ -1310,18 +1242,18 @@ class LatexParser {
 				case ":":
 				case ";":
 				case ">":
-					return " "; // spacing
+					return " ";
 				case "!":
-					return ""; // negative thin space
+					return "";
 				case "/":
-					return ""; // italic correction
+					return "";
 				case "|":
 					return "‖";
 				case "(":
 				case ")":
 				case "[":
 				case "]":
-					return ""; // bare math delimiters that slipped through
+					return "";
 				default:
 					return c;
 			}
@@ -1331,12 +1263,11 @@ class LatexParser {
 			name += this.#s[this.#i];
 			this.#i++;
 		}
-		if (this.#s[this.#i] === "*") this.#i++; // starred variants (operatorname*, …)
+		if (this.#s[this.#i] === "*") this.#i++;
 		return this.#applyCommand(name, style);
 	}
 
 	#applyCommand(name: string, style: FontStyle | null): string {
-		// Fonts: reparse the argument under the requested style.
 		const font = FONTS[name];
 		if (font) return this.#argument(font).text;
 
@@ -1347,7 +1278,6 @@ class LatexParser {
 			return fn + this.#spaceBeforeArg();
 		}
 
-		// Accents → combining marks over each glyph.
 		const accent = ACCENTS[name];
 		if (accent) return applyCombining(this.#argument(style).text, accent);
 
@@ -1360,8 +1290,8 @@ class LatexParser {
 		if (name === "genfrac") {
 			const left = this.#argument(style).text;
 			const right = this.#argument(style).text;
-			this.#rawArgument(); // rule thickness
-			this.#rawArgument(); // math style
+			this.#rawArgument();
+			this.#rawArgument();
 			const num = this.#argument(style);
 			const den = this.#argument(style);
 			return left + this.#fraction(num, den) + right;
@@ -1402,7 +1332,7 @@ class LatexParser {
 
 		if (name === "left" || name === "right" || name === "middle") return this.#delimiter(style);
 
-		if (BIG_DELIM.test(name)) return this.#delimiter(style); // \big \Bigl \Biggr …
+		if (BIG_DELIM.test(name)) return this.#delimiter(style);
 
 		if (name === "begin") return this.#environment(style);
 		if (name === "end") {
@@ -1446,7 +1376,6 @@ class LatexParser {
 		const symbol = SYMBOLS[name];
 		if (symbol !== undefined) return symbol;
 
-		// Layout-only commands that carry no visible glyph.
 		switch (name) {
 			case "displaystyle":
 			case "textstyle":
@@ -1472,7 +1401,6 @@ class LatexParser {
 				return "";
 		}
 
-		// Unknown command: surface the bare name rather than dropping it silently.
 		return name;
 	}
 
@@ -1531,7 +1459,6 @@ class LatexParser {
 		return `${frame.foreground}[${this.#foreground ?? ANSI_FG_RESET}${body}${frame.foreground}]${this.#foreground ?? ANSI_FG_RESET}`;
 	}
 
-	/** Read one argument: a `{…}` group, a single command, or a single char. */
 	#argument(style: FontStyle | null): Argument {
 		while (this.#s[this.#i] === " ") this.#i++;
 		const c = this.#s[this.#i];
@@ -1544,7 +1471,6 @@ class LatexParser {
 		}
 		if (c === "\\") return { text: this.#command(style), group: false };
 		if (c === "^" || c === "_") {
-			// Bare script with no base (e.g. `{}^{n}`): treat the script as the arg.
 			this.#i++;
 			return { text: this.#script(style, c === "^"), group: false };
 		}
@@ -1552,7 +1478,6 @@ class LatexParser {
 		return { text: styleChar(c, style), group: false };
 	}
 
-	/** Read a raw (unparsed) argument, returning its literal source text. */
 	#rawArgument(): string {
 		while (this.#s[this.#i] === " ") this.#i++;
 		if (this.#s[this.#i] !== "{") {
@@ -1575,7 +1500,7 @@ class LatexParser {
 			this.#i++;
 			return c;
 		}
-		this.#i++; // past {
+		this.#i++;
 		let depth = 1;
 		let out = "";
 		while (this.#i < this.#s.length && depth > 0) {
@@ -1728,7 +1653,7 @@ class LatexParser {
 		const env = this.#rawArgument().trim();
 		if (env === "array" || env === "tabular" || env === "array*" || env === "tabular*") {
 			this.#optionalRawArgument();
-			if (this.#s[this.#i] === "{") this.#rawArgument(); // column spec
+			if (this.#s[this.#i] === "{") this.#rawArgument();
 		} else if (
 			env === "alignedat" ||
 			env === "alignedat*" ||
@@ -1737,7 +1662,7 @@ class LatexParser {
 			env === "gatheredat"
 		) {
 			this.#optionalRawArgument();
-			if (this.#s[this.#i] === "{") this.#rawArgument(); // column count
+			if (this.#s[this.#i] === "{") this.#rawArgument();
 		}
 		let body = "";
 		while (this.#i < this.#s.length) {
@@ -1763,7 +1688,6 @@ class LatexParser {
 		return delims ? delims[0] + body + delims[1] : body;
 	}
 
-	/** A separator space when the next glyph is alphanumeric or a command. */
 	#spaceBeforeArg(): string {
 		const c = this.#s[this.#i];
 		if (c === undefined) return "";
@@ -1771,15 +1695,6 @@ class LatexParser {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Convert a bare LaTeX math fragment (no surrounding `$`/`\(` delimiters) to its
- * best-effort Unicode rendering. Unknown commands degrade to their bare name;
- * `\\` becomes a newline. Always returns a string (never throws).
- */
 export function latexToUnicode(src: string): string {
 	if (typeof src !== "string" || src.length === 0) return src;
 	return new LatexParser(src).render();
@@ -1789,11 +1704,6 @@ const NEWLINES = /\n+/g;
 const BARE_MATH_LINE_COMMAND =
 	/\\(?:operatorname|frac|dfrac|tfrac|cfrac|genfrac|sqrt|sum|prod|coprod|int|iint|iiint|lim|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|sigma|phi|varphi|pi|omega|infty|partial|nabla|forall|exists|mathbb|mathcal|mathscr|mathbf|mathrm|left|right|begin|phantom|hphantom|vphantom|cdots|ldots|dots|to|rightarrow|leftarrow|leq|geq|neq|times|cdot|overline|underline|vec|hat|bar|textcolor|color|normalcolor|colorbox|fcolorbox)\b/;
 
-// Display-math environments eligible for delimiter-less ("bare") rendering in
-// prose. Deliberately excludes text-mode table/list/float environments
-// (`tabular`, `itemize`, `verbatim`, `document`, …) so ordinary LaTeX quoted in
-// prose or fenced code stays verbatim instead of being mangled. Shared by the
-// bare-math text scanner here and the markdown bare-env block tokenizer.
 const BARE_MATH_ENVIRONMENTS = new Set([
 	"matrix",
 	"smallmatrix",
@@ -1821,19 +1731,10 @@ const BARE_MATH_ENVIRONMENTS = new Set([
 	"subarray",
 ]);
 
-/**
- * True when `env` is a math environment safe to auto-render without `$`/`\[`
- * delimiters. The trailing `*` of starred variants (`align*`, `equation*`) is
- * ignored; text-mode environments (`tabular`, `itemize`, …) return false.
- */
 export function isBareMathEnvironment(env: string): boolean {
 	return BARE_MATH_ENVIRONMENTS.has(env.endsWith("*") ? env.slice(0, -1) : env);
 }
 
-// Convert delimiter-less math in prose: whole `\begin{env}…\end{env}` math
-// blocks (optionally pulling in a preceding `lhs =` line) plus standalone
-// math-shaped lines. A non-math environment is emitted verbatim — wrappers *and*
-// body — so a quoted `\begin{verbatim}…\frac…\end{verbatim}` is never touched.
 function renderBareMathInText(text: string): string {
 	let out = "";
 	let i = 0;
@@ -1847,14 +1748,12 @@ function renderBareMathInText(text: string): string {
 		const closeToken = `\\end{${env}}`;
 		const close = text.indexOf(closeToken, envEnd + 1);
 		if (close === -1) {
-			// Unterminated `\begin`: convert lines up to it, then rescan past it.
 			out += renderBareMathLines(text.slice(i, envEnd + 1));
 			i = envEnd + 1;
 			continue;
 		}
 		const blockEnd = close + closeToken.length;
 		if (!isBareMathEnvironment(env)) {
-			// Non-math env: convert preceding lines, emit the whole block verbatim.
 			out += renderBareMathLines(text.slice(i, begin)) + text.slice(begin, blockEnd);
 			i = blockEnd;
 			continue;
@@ -1890,24 +1789,13 @@ function renderBareMathLines(text: string): string {
 function shouldRenderBareMathLine(line: string): boolean {
 	const trimmed = line.trim();
 	if (trimmed === "" || !trimmed.includes("\\")) return false;
-	// A lone `\begin{X}`/`\end{X}` line for a non-math environment never converts.
+
 	const env = /\\(?:begin|end)\{([^}]*)\}/.exec(trimmed);
 	if (env && !isBareMathEnvironment(env[1])) return false;
 	if (!BARE_MATH_LINE_COMMAND.test(trimmed)) return false;
 	return trimmed.startsWith("\\") || /[=<>^_{}&]/.test(trimmed);
 }
 
-/**
- * Scan prose for math spans — `$$…$$`, `\[…\]` (display) and `$…$`, `\(…\)`
- * (inline) — and replace each with its Unicode rendering, leaving everything
- * else verbatim. Newlines inside a span collapse to spaces so the result stays
- * single-line-safe.
- *
- * Inline `$…$` uses pandoc's anti-currency heuristics: the opener must not be
- * followed by whitespace, the closer must not be preceded by whitespace nor
- * followed by a digit, and `\$` is treated as a literal dollar — so "$5 and
- * $10" is left untouched.
- */
 export function renderMathInText(text: string): string {
 	if (typeof text !== "string" || text.length === 0) return text;
 	if (
@@ -1929,7 +1817,6 @@ export function renderMathInText(text: string): string {
 		if (c === "\\") {
 			const d = text[i + 1];
 			if (d === "\\") {
-				// Escaped backslash: emit verbatim so a following `(`/`[` is plain text.
 				out += "\\\\";
 				i += 2;
 				continue;
@@ -1985,14 +1872,6 @@ export function renderMathInText(text: string): string {
 	return renderBareMathInText(out);
 }
 
-/**
- * Index of the `$` that closes an inline math span opened at `open` (the index
- * of the opening `$`), or -1 when the run is not inline math. Applies pandoc's
- * anti-currency heuristics: the opener must not be followed by whitespace, the
- * closer must not be preceded by whitespace nor followed by a digit, `\$` is a
- * literal dollar, and the span may not span a newline. Shared by
- * `renderMathInText` and the markdown math tokenizer so the rule has one home.
- */
 export function inlineMathSpanEnd(text: string, open: number): number {
 	const after = text[open + 1];
 	if (after === undefined || after === " " || after === "\t" || after === "\n" || after === "$") {
@@ -2009,7 +1888,7 @@ export function inlineMathSpanEnd(text: string, open: number): number {
 			const prev = text[j - 1];
 			if (prev === " " || prev === "\t") return -1;
 			const next = text[j + 1];
-			if (next !== undefined && next >= "0" && next <= "9") continue; // currency: keep scanning
+			if (next !== undefined && next >= "0" && next <= "9") continue;
 			return text.slice(open + 1, j).trim().length > 0 ? j : -1;
 		}
 	}

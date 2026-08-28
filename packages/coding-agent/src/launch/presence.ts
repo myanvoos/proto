@@ -6,33 +6,17 @@ import { canonicalProjectDir, daemonRuntimeDir } from "./paths";
 
 const CLIENTS_DIR = "clients";
 const BROKER_PID_FILE = "broker.pid";
-/**
- * Basename of the container holding per-project daemon scopes
- * (`<state>/run/daemons`). {@link pruneDeadDaemonRuntimeDirs} refuses to sweep
- * any other root so a runtime dir passed from outside the state tree cannot
- * turn the reclaim into an rm -rf of unrelated neighbours (issue #8721).
- */
+
 const DAEMONS_DIR = "daemons";
-/**
- * Name shape of a project daemon scope: the 16-hex wyhash of the project dir
- * produced by `getDaemonRuntimeDir`. Only entries matching this are pruned,
- * which excludes the machine-global `global` container and any foreign dir.
- */
+
 const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}$/;
-/**
- * Grace before a dead daemon runtime dir becomes prune-eligible. Guards against
- * deleting a scope whose owning proto process is mid-startup (token written, broker
- * not yet spawned, presence not yet registered). The leak this reclaims is a
- * weeks-scale accumulation, so a few minutes of slack costs nothing.
- */
+
 const DAEMON_RUNTIME_STALE_GRACE_MS = 5 * 60_000;
 
-/** Handle keeping one proto process registered in a project daemon scope. */
 interface DaemonProjectPresence {
 	close(): Promise<void>;
 }
 
-/** Register this proto process so project daemons survive while it remains alive. */
 export async function registerDaemonProjectPresence(
 	projectDir: string,
 	runtimeOverride?: string,
@@ -56,7 +40,6 @@ export async function registerDaemonProjectPresence(
 	return { close };
 }
 
-/** Return whether a registered proto process in this runtime directory is still alive. */
 export async function hasLiveDaemonProjectPresence(runtimeDir: string): Promise<boolean> {
 	const clientsDir = path.join(runtimeDir, CLIENTS_DIR);
 	let entries: string[];
@@ -93,13 +76,12 @@ export async function hasLiveDaemonProjectPresence(runtimeDir: string): Promise<
 	return live;
 }
 
-/** PID recorded in the runtime dir's broker lease when that broker process is still alive; undefined otherwise. */
 export async function readLiveDaemonBrokerPid(runtimeDir: string): Promise<number | undefined> {
 	let raw: unknown;
 	try {
 		raw = await Bun.file(path.join(runtimeDir, BROKER_PID_FILE)).json();
 	} catch {
-		return undefined; // Missing or malformed broker.pid => no owning broker.
+		return undefined;
 	}
 	if (typeof raw !== "object" || raw === null || !("pid" in raw) || typeof raw.pid !== "number") {
 		return undefined;
@@ -112,19 +94,6 @@ export async function readLiveDaemonBrokerPid(runtimeDir: string): Promise<numbe
 	}
 }
 
-/**
- * Remove sibling project daemon runtime directories whose broker is dead and
- * whose client-presence set is empty, reclaiming the disk that short-lived
- * project directories leave behind (issue #8674).
- *
- * Best-effort and non-throwing: a scope is deleted only when its `broker.pid`
- * is absent/dead, no live client presence remains, and it has been untouched
- * for {@link DAEMON_RUNTIME_STALE_GRACE_MS}. The caller's own `currentRuntimeDir`
- * is always skipped, and the sweep runs only inside the {@link DAEMONS_DIR}
- * container over entries named like a {@link DAEMON_SCOPE_KEY} — so a runtime
- * dir relocated elsewhere (e.g. the smoke test under `os.tmpdir()`) never
- * reclaims unrelated neighbours (issue #8721).
- */
 export async function pruneDeadDaemonRuntimeDirs(currentRuntimeDir: string): Promise<void> {
 	const root = path.dirname(currentRuntimeDir);
 	if (path.basename(root) !== DAEMONS_DIR) return;

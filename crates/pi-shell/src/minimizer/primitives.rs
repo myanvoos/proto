@@ -1,5 +1,3 @@
-//! Reusable text transforms shared by minimizer filters.
-
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,7 +26,6 @@ pub const fn reduced(cap: usize, by: usize) -> usize {
 	if reduced == 0 && cap > 0 { 1 } else { reduced }
 }
 
-/// Remove ANSI CSI escape sequences while preserving line endings verbatim.
 #[must_use]
 pub fn strip_ansi(input: &str) -> String {
 	let mut out = String::with_capacity(input.len());
@@ -48,7 +45,6 @@ pub fn strip_ansi(input: &str) -> String {
 	out
 }
 
-/// Collapse consecutive identical lines as `line (×N)`.
 #[must_use]
 pub fn dedup_consecutive_lines(input: &str) -> String {
 	let mut out = String::new();
@@ -80,7 +76,6 @@ fn flush_repeated(out: &mut String, line: Option<&str>, count: usize) {
 	out.push('\n');
 }
 
-/// Keep the first `head` and last `tail` lines with an omission marker.
 #[must_use]
 pub fn head_tail_lines(input: &str, head: usize, tail: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
@@ -103,7 +98,6 @@ pub fn head_tail_lines(input: &str, head: usize, tail: usize) -> String {
 	out
 }
 
-/// Keep head/tail lines using a named cap class.
 #[must_use]
 pub fn head_tail_cap(input: &str, class: CapClass) -> String {
 	let cap = class.lines();
@@ -112,7 +106,6 @@ pub fn head_tail_cap(input: &str, class: CapClass) -> String {
 	head_tail_lines(input, head, tail)
 }
 
-/// Drop lines matching any of the supplied predicates.
 pub fn strip_lines(input: &str, predicates: &[fn(&str) -> bool]) -> String {
 	let mut out = String::new();
 	for line in input.lines() {
@@ -125,7 +118,6 @@ pub fn strip_lines(input: &str, predicates: &[fn(&str) -> bool]) -> String {
 	out
 }
 
-/// Group `file:line:message` style diagnostics by file.
 #[must_use]
 pub fn group_by_file(input: &str, max_per_file: usize) -> String {
 	let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -202,7 +194,6 @@ pub fn command_has_any_token(command: &str, tokens: &[&str]) -> bool {
 	})
 }
 
-/// Dedup consecutive lines then apply a 120-head / 80-tail cap.
 #[must_use]
 pub fn head_tail_dedup(input: &str) -> String {
 	head_tail_lines(&dedup_consecutive_lines(input), 120, 80)
@@ -220,7 +211,6 @@ pub fn is_horizontal_rule(line: &str) -> bool {
 		&& line.chars().any(|ch| matches!(ch, '-' | '*' | '_'))
 }
 
-/// Compact a long plain listing to head/tail form.
 #[must_use]
 pub fn compact_listing(input: &str, max_lines: usize) -> String {
 	let lines: Vec<&str> = input
@@ -245,18 +235,6 @@ pub fn compact_listing(input: &str, max_lines: usize) -> String {
 	out
 }
 
-/// Truncate a single line to at most `max_chars` characters (Unicode scalars,
-/// not bytes).
-///
-/// When truncation happens, appends a `…[+N]` marker where `N` is the number
-/// of dropped Unicode scalars. The bracketed tally lets agents and humans
-/// distinguish minimizer truncation from genuine `…` in the source data
-/// (see issue #1046), and gives a concrete count so the agent can decide
-/// whether the missing tail is recoverable inline or needs the
-/// `artifact://<id>` footer surfaced by the bash wrapper.
-///
-/// `max_chars == 0` is treated as "drop the line"; no marker is emitted in
-/// that case since the caller asked for an empty result.
 #[must_use]
 pub fn truncate_line(line: &str, max_chars: usize) -> String {
 	if max_chars == 0 {
@@ -273,13 +251,12 @@ pub fn truncate_line(line: &str, max_chars: usize) -> String {
 	let dropped = chars.count();
 	if dropped > 0 {
 		use std::fmt::Write as _;
-		// 5–6 bytes typical; this avoids pulling `itoa` for a marker tally.
+
 		let _ = write!(out, "…[+{dropped}]");
 	}
 	out
 }
 
-/// Keep only the first `head` lines; append a summary marker when truncated.
 #[must_use]
 pub fn head_lines_only(input: &str, head: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
@@ -298,7 +275,6 @@ pub fn head_lines_only(input: &str, head: usize) -> String {
 	out
 }
 
-/// Keep only the last `tail` lines; prepend a summary marker when truncated.
 #[must_use]
 pub fn tail_lines_only(input: &str, tail: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
@@ -317,7 +293,6 @@ pub fn tail_lines_only(input: &str, tail: usize) -> String {
 	out
 }
 
-/// Hard cap: keep at most `max` lines, append a truncation marker otherwise.
 #[must_use]
 pub fn max_lines(input: &str, max: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
@@ -336,12 +311,6 @@ pub fn max_lines(input: &str, max: usize) -> String {
 	out
 }
 
-/// Line filter combining an optional keep set and an optional strip set.
-///
-/// A line survives iff it matches the keep set (when present) AND does not
-/// match the strip set (when present) — i.e. keep is `K AND NOT S`. An
-/// absent set imposes no constraint, so pure strip and pure keep filtering
-/// are the degenerate single-set cases.
 #[must_use]
 pub fn filter_lines_regex(
 	input: &str,

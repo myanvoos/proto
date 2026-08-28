@@ -1,9 +1,3 @@
-/**
- * Z.AI Web Search Provider
- *
- * Calls Z.AI's remote MCP server (`webSearchPrime`) and adapts results into
- * the unified SearchResponse shape used by the web search tool.
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
@@ -18,13 +12,6 @@ const ZAI_MCP_URL = "https://api.z.ai/api/mcp/web_search_prime/mcp";
 const ZAI_TOOL_NAME = "web_search_prime";
 const DEFAULT_NUM_RESULTS = 10;
 
-/**
- * webSearchPrime exposes no native filter args (the Web Search API's
- * `search_domain_filter`/`search_recency_filter` are scoped to the
- * `search_pro_jina` engine, not `search-prime`), but its Bing-flavored
- * backend parses the common inline operators. Dates and language are left
- * to the central lenient post-filter.
- */
 const ZAI_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -98,9 +85,7 @@ function parseZaiMcpResponse(rawText: string): unknown {
 		if (!data) continue;
 		try {
 			parsedMessages.push(JSON.parse(data));
-		} catch {
-			// Ignore non-JSON data events.
-		}
+		} catch {}
 	}
 
 	if (parsedMessages.length === 0) {
@@ -199,7 +184,6 @@ function readJsonRpcPayload(parsed: unknown): JsonRpcPayload {
 	return payload;
 }
 
-/** Resolve Z.AI API credentials through the unified auth storage pipeline. */
 export async function findApiKey(
 	authStorage: AuthStorage,
 	sessionId?: string,
@@ -358,14 +342,11 @@ function parseSearchPayload(rawResult: unknown): {
 					if (typeof parsed === "string") {
 						try {
 							parsed = JSON.parse(parsed);
-						} catch {
-							// The decoded string is answer text rather than another JSON payload.
-						}
+						} catch {}
 					}
 					candidates.push(parsed);
 					if (getSearchResults(parsed).length === 0) textParts.push(text);
 				} catch {
-					// Non-JSON content is preserved as answer text.
 					textParts.push(text);
 				}
 			}
@@ -409,7 +390,6 @@ function toSources(results: ZaiSearchResult[]): SearchSource[] {
 	return sources;
 }
 
-/** Execute Z.AI web search via remote MCP endpoint. */
 export async function searchZai(params: ZaiSearchParams): Promise<SearchResponse> {
 	const keyOrResolver: ApiKey = params.authStorage.resolver("zai", {
 		sessionId: params.sessionId,
@@ -436,7 +416,6 @@ export async function searchZai(params: ZaiSearchParams): Promise<SearchResponse
 
 type ZaiProviderSearchParams = SearchParams & { fetch?: FetchImpl };
 
-/** Search provider for Z.AI web search MCP. */
 export class ZaiProvider extends SearchProvider {
 	readonly id = "zai";
 	readonly label = "Z.AI";

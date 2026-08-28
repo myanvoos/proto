@@ -4,12 +4,6 @@ import { theme } from "../modes/theme/theme";
 import { expandPath, normalizeLocalScheme } from "../tools/path-utils";
 import type { HookUIContext } from "./hooks/types";
 
-/**
- * Resolve a file path:
- * - Absolute paths used as-is
- * - Paths starting with ~ expanded to home directory
- * - Relative paths resolved from cwd
- */
 export function resolvePath(filePath: string, cwd: string): string {
 	const expanded = expandPath(filePath);
 	const expandedAndNormalized = normalizeLocalScheme(expanded);
@@ -24,9 +18,6 @@ export function resolvePath(filePath: string, cwd: string): string {
 	return path.resolve(cwd, expanded);
 }
 
-/**
- * Create a no-op UI context for headless modes.
- */
 export function createNoOpUIContext(): HookUIContext {
 	return {
 		select: async () => undefined,
@@ -44,12 +35,6 @@ export function createNoOpUIContext(): HookUIContext {
 	};
 }
 
-/**
- * Raised by {@link withHostGuard} when a guarded callback synchronously
- * attempts to terminate the host process. Callers catch this like any other
- * load-time failure so the extension/hook is skipped with a logged error
- * instead of taking the CLI down with it.
- */
 export class ExtensionExitError extends Error {
 	readonly code: number | string | undefined;
 	constructor(
@@ -67,14 +52,6 @@ export class ExtensionExitError extends Error {
 
 type ExitAliasName = "process.exit" | "process.reallyExit";
 
-/**
- * stdin events a loaded module must not be allowed to leave hijacked. A
- * top-level `new StdioServerTransport()` (or a bare `process.stdin.resume()`)
- * inside a `~/.claude/tools` MCP server attaches a `data` consumer and puts the
- * shared stdin into flowing mode; Bun delivers one `data` event to that
- * consumer and the TUI's own listener (attached later in `terminal.start()`)
- * then never re-arms — every keypress after the first is swallowed (#5618).
- */
 const HOST_GUARD_STDIN_EVENTS = ["data", "readable", "end", "close", "error"] as const;
 type StdinGuardEvent = (typeof HOST_GUARD_STDIN_EVENTS)[number];
 type StdinGuardListener = (...args: unknown[]) => void;
@@ -86,28 +63,6 @@ let hostGuardStdinListeners: Record<StdinGuardEvent, StdinGuardListener[]> | nul
 let hostGuardStdinWasPaused = false;
 let hostGuardStdinWasRaw = false;
 
-/**
- * Run `fn` with host-owned process state fenced off from third-party module
- * evaluation, restored in `finally`. Guards the dynamic-import and
- * factory-invocation sites that load extension / hook / tool / plugin modules
- * from user directories (including Claude Code's `~/.claude/tools`, which PROTO
- * slurps wholesale). Two hazards are neutralized:
- *
- * - **Hard exit.** `process.exit(0)` / `process.reallyExit(0)` in a stranger's
- *   script (e.g. a CLI-shaped module with `main()` at the bottom) would kill
- *   PROTO during startup with no error surface, since `try/catch` cannot
- *   intercept a synchronous exit. Both are patched to throw
- *   {@link ExtensionExitError} instead.
- * - **stdin hijack.** A module that attaches a stdin consumer at evaluation
- *   time (an MCP `StdioServerTransport`, or a bare `resume()`) steals Bun's
- *   single stdin reader, so the TUI goes permanently deaf after one keypress
- *   (#5618). Any `data`/`readable`/`end`/`close`/`error` listener the module
- *   adds is removed, and the stream's paused and raw-mode state is restored to
- *   the pre-load snapshot.
- *
- * Nested and concurrent guard windows are safe: only the outermost guard
- * snapshots and restores host state.
- */
 function guardedExit(alias: ExitAliasName): (code?: number | string) => never {
 	return (code?: number | string): never => {
 		throw new ExtensionExitError(code, alias);
@@ -116,9 +71,6 @@ function guardedExit(alias: ExitAliasName): (code?: number | string) => never {
 
 export async function withHostGuard<T>(fn: () => Promise<T>): Promise<T> {
 	if (hostGuardDepth === 0) {
-		// Stamp each throwing replacement with the native primitive it shadows so
-		// host-owned shutdown (postmortem's signal/fatal handlers) can still exit
-		// through the real exit even while this guard window is open (#6488).
 		hostGuardOriginalProcessExit = process.exit;
 		const processExitGuard = guardedExit("process.exit") as typeof process.exit;
 		Reflect.set(processExitGuard, postmortem.NATIVE_PROCESS_EXIT, hostGuardOriginalProcessExit);
@@ -158,12 +110,7 @@ export async function withHostGuard<T>(fn: () => Promise<T>): Promise<T> {
 				const stdin = process.stdin;
 				for (const event of HOST_GUARD_STDIN_EVENTS) {
 					const before = hostGuardStdinListeners[event];
-					// Reconcile the stream back to the pre-load snapshot: drop any
-					// listener the module added, and reinstate any snapshot listener
-					// it removed (e.g. a factory calling `removeAllListeners("data")`
-					// would otherwise permanently strip ProcessTerminal's input
-					// handler, leaving the parent TUI deaf). removeAllListeners then
-					// re-adding in snapshot order restores both membership and order.
+
 					const current = stdin.rawListeners(event) as StdinGuardListener[];
 					const differs =
 						current.length !== before.length || current.some((listener, index) => listener !== before[index]);

@@ -1,6 +1,3 @@
-/**
- * CLI handler for `proto grievances` — view, clean, and manually push reported tool issues.
- */
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
 import { flushGrievances, openAutoQaDb } from "../tools/report-tool-issue";
@@ -20,18 +17,16 @@ interface ListGrievancesOptions {
 }
 
 interface CleanGrievancesOptions {
-	/** Delete a single grievance by id. */
 	id?: number;
-	/** Delete every grievance recorded for this tool name. */
+
 	tool?: string;
-	/** Delete every grievance regardless of tool/id. */
+
 	all?: boolean;
-	/** Output the deletion count as JSON instead of a status message. */
+
 	json?: boolean;
 }
 
 interface PushGrievancesOptions {
-	/** Emit the {@link FlushResult} as JSON instead of a status line. */
 	json?: boolean;
 }
 export async function listGrievances(options: ListGrievancesOptions): Promise<void> {
@@ -83,14 +78,6 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 	}
 }
 
-/**
- * Delete grievances from the auto-QA database.
- *
- * Selectors are mutually exclusive in intent — exactly one of `id`, `tool`, or
- * `all` is required. Multiple selectors are rejected to prevent ambiguous deletes
- * (e.g. `--id 5 --all` would be a footgun). Returns silently when the database
- * does not exist yet.
- */
 export async function cleanGrievances(options: CleanGrievancesOptions): Promise<void> {
 	const selectors = [options.id !== undefined, !!options.tool, !!options.all].filter(Boolean).length;
 	if (selectors === 0) {
@@ -127,13 +114,10 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 		} else {
 			const result = db.prepare("DELETE FROM grievances").run();
 			deleted = Number(result.changes);
-			// Reset the autoincrement counter so a fresh slate starts at #1 again.
-			// `sqlite_sequence` only exists if AUTOINCREMENT was ever used; ignore failures.
+
 			try {
 				db.prepare("DELETE FROM sqlite_sequence WHERE name = 'grievances'").run();
-			} catch {
-				/* sequence table missing on a brand-new db — nothing to reset */
-			}
+			} catch {}
 		}
 
 		if (options.json) {
@@ -154,16 +138,6 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 	}
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Manual push (`proto grievances push`)
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Single-line ANSI progress reporter. `update(done)` rewrites the line via
- * `\r`; `finish()` newlines out so subsequent log lines land cleanly. On a
- * non-TTY stdout (CI, pipes) both calls no-op so log files don't fill with
- * carriage-return noise.
- */
 interface ProgressBar {
 	update(done: number): void;
 	finish(): void;
@@ -190,13 +164,6 @@ function makeProgressBar(total: number, width = 30): ProgressBar {
 	};
 }
 
-/**
- * Manually drain every unpushed grievance to the configured backend,
- * ignoring the user-facing consent gate (manual push is the user's
- * explicit "yes ship these now" intent).
- *
- * Requires endpoint configuration (default `qa.proto.sh/v1/grievances`).
- */
 export async function pushGrievances(options: PushGrievancesOptions): Promise<void> {
 	const db = openAutoQaDb();
 	if (!db) {

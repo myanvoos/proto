@@ -1,13 +1,3 @@
-/**
- * `proto __complete <kind> [-- <prefix>]` — dynamic completion candidates.
- *
- * Hidden helper invoked by the generated shell completion scripts to resolve
- * values that can't be baked into the script: the live model catalog and
- * on-disk sessions. Output is one `value\tdescription` line per candidate
- * (tab-separated); shells that show descriptions parse the tab, bash uses the
- * first field. The import surface is kept deliberately narrow so a TAB press
- * doesn't pay for the full agent boot.
- */
 import { type GeneratedProvider, getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { completeHelp as commandHelp } from "../cli/command-help";
@@ -29,7 +19,6 @@ export default class Complete extends Command {
 	}
 }
 
-/** Strip control chars that would corrupt the tab-separated line protocol. */
 function clean(text: string): string {
 	return text.replace(/[\t\r\n]+/g, " ").trim();
 }
@@ -40,8 +29,6 @@ function completeModels(prefix: string): void {
 	const lines: string[] = [];
 	for (const provider of getBundledProviders()) {
 		for (const model of getBundledModels(provider as GeneratedProvider)) {
-			// Offer both the fully-qualified `provider/id` and the bare `id`
-			// (matches the fuzzy resolution `--model` accepts).
 			const candidates = [`${model.provider}/${model.id}`, model.id];
 			for (const candidate of candidates) {
 				if (seen.has(candidate)) continue;

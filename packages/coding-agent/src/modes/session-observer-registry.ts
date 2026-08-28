@@ -11,20 +11,14 @@ export interface ObservableSession {
 	status: "active" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
 	parentToolCallId?: string;
-	/**
-	 * Spawn runs as a detached background job (parent turn not blocked on it).
-	 * The anchored subagent HUD only lists detached spawns: sync worker spawns
-	 * and eval `agent()` spawns are already rendered live by their own inline
-	 * tool block / eval cell.
-	 */
+
 	detached?: boolean;
 	index?: number;
 	lastUpdate: number;
-	/** Latest progress snapshot from the subagent executor */
+
 	progress?: AgentProgress;
 }
 
-/** Coarse source of an observer change; callers use it to separate lifecycle work from high-frequency progress. */
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
 
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
@@ -42,7 +36,6 @@ export class SessionObserverRegistry {
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
 
-	/** Add a change listener. Returns unsubscribe function. */
 	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
 		this.#listeners.add(cb);
 		return () => this.#listeners.delete(cb);
@@ -91,7 +84,6 @@ export class SessionObserverRegistry {
 		this.#notifyListeners("main");
 	}
 
-	/** Return one tracked session without copying or sorting the registry. */
 	getSession(id: string): ObservableSession | undefined {
 		return this.#sessions.get(id);
 	}
@@ -123,7 +115,6 @@ export class SessionObserverRegistry {
 		return count;
 	}
 
-	/** Clear all tracked sessions (e.g. on session switch). Keeps EventBus subscriptions and listeners. */
 	resetSessions(): void {
 		this.#sessions.clear();
 		this.#sortOrderById.clear();
@@ -143,7 +134,6 @@ export class SessionObserverRegistry {
 	}
 
 	subscribeToEventBus(eventBus: EventBus): void {
-		// Dispose previous EventBus subscriptions if called again
 		for (const unsub of this.#eventBusUnsubscribers) unsub();
 		this.#eventBusUnsubscribers = [];
 

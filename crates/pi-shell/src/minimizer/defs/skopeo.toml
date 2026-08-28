@@ -1,6 +1,6 @@
-# skopeo copy / inspect output.
-# Drops the verbose layer-by-layer copy progress while keeping manifests and
-# errors (FATA / level=error).
+
+
+
 
 [filters.skopeo]
 description = "Compact skopeo copy/inspect output"

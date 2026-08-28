@@ -1,16 +1,3 @@
-/**
- * Vision fallback for text-only models. When a user attaches an image to a model
- * that cannot accept image input, this:
- *  1. saves each image under the session `local://` root (for later analysis), and
- *  2. asks a vision-capable model to describe it and injects that description as
- *     a text block in place of the image:
- *
- *     <image path="local://image-<hash>.png">
- *     <description>
- *     </image>
- *
- * Without this the provider layer drops the image entirely (NON_VISION_IMAGE_PLACEHOLDER).
- */
 import * as path from "node:path";
 import {
 	type AgentTelemetry,
@@ -28,7 +15,6 @@ import { type LocalProtocolOptions, resolveLocalRoot } from "../internal-urls";
 import describeUserPrompt from "../prompts/tools/image-attachment-describe.md" with { type: "text" };
 import describeSystemPrompt from "../prompts/tools/image-attachment-describe-system.md" with { type: "text" };
 
-/** Telemetry tag for the oneshot vision-description calls. */
 const ONESHOT_KIND = "image_attachment_describe";
 
 const NO_VISION_MODEL_NOTE =
@@ -38,25 +24,22 @@ const NO_VISION_MODEL_NOTE =
 const DESCRIPTION_UNAVAILABLE_NOTE =
 	"[Image description unavailable: the vision model returned no usable text. The image was saved for further analysis.]";
 
-/** Registry surface needed to resolve a vision model and authorize requests. */
 type VisionFallbackRegistry = Pick<ModelRegistry, "getAvailable" | "getApiKey" | "resolver">;
 
 export interface DescribeAttachedImagesDeps {
-	/** Active (text-only) model the prompt is destined for. */
 	activeModel: Model<Api>;
 	modelRegistry: VisionFallbackRegistry;
 	settings: Settings;
-	/** Inputs for resolving the session-scoped `local://` root. */
+
 	localProtocolOptions: LocalProtocolOptions;
-	/** `provider/id` of the active model; a last-resort vision-model candidate (filtered to image-capable). */
+
 	activeModelString?: string;
 	telemetryConfig?: AgentTelemetryConfig;
 	sessionId?: string;
-	/** Test seam: overrides the underlying completeSimple call. */
+
 	completeImpl?: typeof completeSimple;
 }
 
-/** Map an image MIME type to a file extension for the saved artifact. */
 function extensionForMime(mimeType: string): string {
 	const subtype = mimeType.split("/")[1]?.toLowerCase() ?? "";
 	switch (subtype) {
@@ -76,17 +59,15 @@ function extensionForMime(mimeType: string): string {
 	}
 }
 
-/** Content-addressed file name so re-pasting the same image reuses one artifact. */
 function imageFileName(image: ImageContent): string {
 	const hash = Bun.hash(image.data).toString(16);
 	return `image-${hash}.${extensionForMime(image.mimeType)}`;
 }
 
-/** Persist an image under the local root; returns its `local://` URL. */
 async function saveImage(image: ImageContent, localRoot: string): Promise<string> {
 	const fileName = imageFileName(image);
 	const filePath = path.join(localRoot, fileName);
-	// Content-addressed: identical bytes overwrite themselves harmlessly. Bun.write creates parent dirs.
+
 	await Bun.write(filePath, Buffer.from(image.data, "base64"));
 	return `local://${fileName}`;
 }
@@ -95,11 +76,6 @@ function formatImageBlock(localUrl: string, description: string): string {
 	return `<image path="${localUrl}">\n${description}\n</image>`;
 }
 
-/**
- * Resolve a vision-capable model, mirroring the inspect_image priority
- * (`@vision` → `@default` → active → first image-capable available), but
- * never returning a text-only model.
- */
 function resolveVisionModel(deps: DescribeAttachedImagesDeps): Model<Api> | undefined {
 	const available = deps.modelRegistry.getAvailable();
 	if (available.length === 0) return undefined;
@@ -118,7 +94,6 @@ function resolveVisionModel(deps: DescribeAttachedImagesDeps): Model<Api> | unde
 	);
 }
 
-/** Run one vision-description round-trip; returns trimmed text or `null` on any failure. */
 async function describeImage(
 	image: ImageContent,
 	visionModel: Model<Api>,
@@ -163,12 +138,6 @@ async function describeImage(
 	}
 }
 
-/**
- * Save each attached image under `local://` and replace it with a descriptive
- * text block. Returns one {@link TextContent} per input image, in order. Never
- * throws for an individual image: a failed description falls back to a note while
- * the saved-path block is still emitted.
- */
 export async function describeAttachedImagesForTextModel(
 	images: readonly ImageContent[],
 	deps: DescribeAttachedImagesDeps,

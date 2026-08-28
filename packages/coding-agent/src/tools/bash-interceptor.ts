@@ -1,39 +1,25 @@
-/**
- * Bash intent interceptor - redirects common shell patterns to proper tools.
- *
- * When an LLM calls bash with a pattern covered by an interceptor rule
- * (`cat`, `sed -i`, output redirection, …), this interceptor provides a
- * helpful error message directing it to use the specialized tool instead.
- */
 import { type BashInterceptorRule, DEFAULT_BASH_INTERCEPTOR_RULES } from "../config/settings-schema";
 import { extractFlatShellCommandSegments } from "./shell-tokenize";
 
 interface InterceptionResult {
-	/** If true, the bash command should be blocked */
 	block: boolean;
-	/** Error message to return instead of executing */
+
 	message?: string;
-	/** Suggested tool to use instead */
+
 	suggestedTool?: string;
 }
 
-/**
- * Compile bash interceptor rules into regexes, skipping invalid patterns.
- */
 function compileRules(rules: BashInterceptorRule[]): Array<{ rule: BashInterceptorRule; regex: RegExp }> {
 	const compiled: Array<{ rule: BashInterceptorRule; regex: RegExp }> = [];
 	for (const rule of rules) {
 		const flags = rule.flags ?? "";
 		try {
 			compiled.push({ rule, regex: new RegExp(rule.pattern, flags) });
-		} catch {
-			// Skip invalid regex patterns
-		}
+		} catch {}
 	}
 	return compiled;
 }
 
-/** Finds the end of a shell word, respecting quotes and escapes; returns null for incomplete syntax. */
 function skipShellWord(command: string, start: number): number | null {
 	let inSingle = false;
 	let inDouble = false;
@@ -70,7 +56,6 @@ function skipShellWord(command: string, start: number): number | null {
 	return inSingle || inDouble ? null : command.length;
 }
 
-/** Removes leading `NAME=value` assignments without interpreting shell syntax. */
 function withoutLeadingEnvironmentAssignments(command: string): string | null {
 	let index = 0;
 	let foundAssignment = false;
@@ -97,10 +82,6 @@ function withoutLeadingEnvironmentAssignments(command: string): string | null {
 function interceptionCandidates(command: string): string[] {
 	const candidates = [command.trim()];
 	for (const segment of extractFlatShellCommandSegments(command)) {
-		// A segment that consumes the previous stage's stdout via `|` reads piped
-		// stdin, which no path-based dedicated tool (read) — nor any
-		// other dedicated tool — can replace, so it is not an interception
-		// candidate. Standalone and first-stage commands still match.
 		if (segment.pipedStdin) continue;
 		candidates.push(segment.text);
 		const withoutAssignments = withoutLeadingEnvironmentAssignments(segment.text);
@@ -109,13 +90,6 @@ function interceptionCandidates(command: string): string[] {
 	return candidates;
 }
 
-/**
- * Check if a bash command should be intercepted.
- *
- * @param command The bash command to check
- * @param availableTools Set of tool names that are available
- * @returns InterceptionResult indicating if the command should be blocked
- */
 export function checkBashInterception(
 	command: string,
 	availableTools: string[],
@@ -126,13 +100,11 @@ export function checkBashInterception(
 	const candidates = interceptionCandidates(command);
 
 	for (const { rule, regex } of compiled) {
-		// Only block if the suggested tool is actually available
 		if (!availableTools.includes(rule.tool)) {
 			continue;
 		}
 
 		for (const candidate of candidates) {
-			// A configured global or sticky regex carries state across calls.
 			regex.lastIndex = 0;
 			if (regex.test(candidate)) {
 				return {

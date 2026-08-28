@@ -1,6 +1,3 @@
-/**
- * Host-side handler for the eval `agent()` helper.
- */
 import { type } from "@oh-my-pi/omptype";
 import {
 	buildStructuredSubagentRecoveryHint,
@@ -15,7 +12,6 @@ import { ToolError } from "../tools/tool-errors";
 import { withBridgeTimeoutPause } from "./bridge-timeout";
 import type { JsStatusEvent } from "./js/shared/types";
 
-/** Synthetic bridge name reserved for the `agent()` helper across both runtimes. */
 export const EVAL_AGENT_BRIDGE_NAME = "__agent__";
 
 const agentArgsSchema = type({
@@ -51,7 +47,7 @@ interface EvalAgentBridgeOptions {
 
 interface EvalAgentResult {
 	text: string;
-	/** Parsed structured data returned by the child executor. */
+
 	data?: unknown;
 	details: {
 		agent: string;
@@ -116,9 +112,6 @@ function buildSubagentFailureMessage(agentName: string, result: SingleResult): s
 	);
 }
 
-/**
- * Run a single subagent on behalf of an eval cell's `agent()` call.
- */
 export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOptions): Promise<EvalAgentResult> {
 	const parsed = parseAgentArgs(args);
 	const turnBudget = options.session.getTurnBudget?.();
@@ -151,9 +144,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					...(isolation ? { isolation } : {}),
 					...(parsed.handle ? { retainArtifacts: true } : {}),
 					keepAlive: false,
-					// `maxRuntimeMs` is intentionally omitted: the executor then inherits
-					// `orchestrator.maxRuntimeMs`, matching orchestrate_spawn. Pinning it to 0 here
-					// silently overrode the user's wall-clock cap for eval fan-outs.
+
 					shareEvalSession: false,
 					...(options.signal !== undefined ? { signal: options.signal } : {}),
 					...(options.emitStatus

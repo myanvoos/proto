@@ -3,9 +3,6 @@ import { getSelectListTheme } from "../../modes/theme/theme";
 import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
-/**
- * Component that renders a queue mode selector with borders
- */
 export class QueueModeSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 
@@ -25,10 +22,8 @@ export class QueueModeSelectorComponent extends OverlayPanel {
 			{ value: "all", label: "all", description: "Process all queued messages at once" },
 		];
 
-		// Create selector
 		this.#selectList = new SelectList(queueModes, 2, getSelectListTheme());
 
-		// Preselect current mode
 		const currentIndex = queueModes.findIndex(item => item.value === currentMode);
 		if (currentIndex !== -1) {
 			this.#selectList.setSelectedIndex(currentIndex);

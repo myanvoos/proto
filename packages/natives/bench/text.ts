@@ -1,14 +1,3 @@
-/**
- * Micro-benchmarks for native text primitives vs standard JS/Bun equivalents
- * using the mitata benchmarking framework.
- *
- * Run with: `bun packages/natives/bench/text.ts`
- *
- * Every bench body pipes its result through `do_not_optimize`. Without it JSC
- * dead-code-eliminates pure calls with discarded results after warmup, which
- * reports sub-nanosecond phantoms (e.g. string-width at ~180 ps/iter).
- */
-
 import cliTruncate from "cli-truncate";
 import * as diff from "diff";
 import { countTokens as gptCountTokens } from "gpt-tokenizer/model/gpt-4o";
@@ -16,10 +5,7 @@ import { bench, do_not_optimize, run, summary } from "mitata";
 import sliceAnsi from "slice-ansi";
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
-// The TS-side width measurer every TUI render path actually calls. Backed by
-// Bun.stringWidth with a printable-ASCII fast path; the N-API `visibleWidth`
-// below is only the raw binding (its ~150 ns floor is per-call FFI overhead:
-// UTF-16 -> UTF-8 marshal + result box, not the width algorithm).
+
 import { visibleWidth as tuiVisibleWidth } from "../../tui/src/utils";
 import {
 	countTokens,
@@ -71,11 +57,6 @@ const testCases = {
 	},
 };
 
-// Each width bench cycles a pool of 64 distinct strings. This defeats
-// constant-argument hoisting in pure comparators (`do_not_optimize` only
-// protects the result) and mirrors a real redraw workload: a frame re-measures
-// the same visible lines every paint, so pi-tui's bounded width memo hits —
-// but the pool is far larger than any cache that merely fits the bench.
 const WIDTH_VARIANT_COUNT = 64;
 
 function makeWidthVariants(base: string): string[] {
@@ -97,11 +78,6 @@ let widthInputVariantIndex = 0;
 function nextWidthInput(kind: keyof typeof widthInputVariants): string {
 	return widthInputVariants[kind][widthInputVariantIndex++ & (WIDTH_VARIANT_COUNT - 1)];
 }
-
-// ============================================================================
-// 1. visibleWidth: pi-tui hot path vs raw N-API binding vs Bun.stringWidth vs
-//    string-width npm package
-// ============================================================================
 
 summary(() => {
 	bench("visibleWidth: short ascii (pi-tui)", () => do_not_optimize(tuiVisibleWidth(nextWidthInput("shortAscii"))));
@@ -155,10 +131,6 @@ summary(() => {
 	);
 });
 
-// ============================================================================
-// 2. truncateToWidth: Native vs cli-truncate
-// ============================================================================
-
 summary(() => {
 	bench("truncateToWidth: long ascii (native)", () =>
 		do_not_optimize(truncateToWidth(testCases.longAscii, 40, 0, false, 3)),
@@ -180,10 +152,6 @@ bench("truncateToWidth: pads with spaces (native)", () =>
 	do_not_optimize(truncateToWidth(testCases.shortAscii, 60, 0, true, 3)),
 );
 
-// ============================================================================
-// 3. sliceWithWidth: Native vs slice-ansi
-// ============================================================================
-
 summary(() => {
 	bench("sliceWithWidth: ascii slice (native)", () =>
 		do_not_optimize(sliceWithWidth(testCases.shortAscii, 10, 20, false, 3)),
@@ -199,10 +167,6 @@ summary(() => {
 		do_not_optimize(sliceAnsi(testCases.ansiStyled, 15, 45)),
 	);
 });
-
-// ============================================================================
-// 4. wrapTextWithAnsi: Native vs wrap-ansi
-// ============================================================================
 
 summary(() => {
 	bench("wrapTextWithAnsi: single line (native)", () =>
@@ -222,20 +186,12 @@ summary(() => {
 	);
 });
 
-// ============================================================================
-// 5. diffLines: Native vs jsdiff (diff npm package)
-// ============================================================================
-
 summary(() => {
 	bench("diffLines: source files (native)", () => do_not_optimize(diffLines(testCases.diffOld, testCases.diffNew)));
 	bench("diffLines: source files (diff npm)", () =>
 		do_not_optimize(diff.diffLines(testCases.diffOld, testCases.diffNew)),
 	);
 });
-
-// ============================================================================
-// 6. countTokens: Native (o200k_base) vs gpt-tokenizer (pure JS)
-// ============================================================================
 
 summary(() => {
 	bench("countTokens: single string (native)", () => do_not_optimize(countTokens(testCases.longAscii)));
@@ -250,10 +206,6 @@ summary(() => {
 		do_not_optimize(total);
 	});
 });
-
-// ============================================================================
-// 7. Specialized native primitives (standalone)
-// ============================================================================
 
 bench("extractSegments: ansi overlay (native)", () =>
 	do_not_optimize(extractSegments(testCases.ansiStyled, 15, 25, 20, false, 3)),

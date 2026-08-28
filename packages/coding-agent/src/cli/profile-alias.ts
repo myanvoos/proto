@@ -19,14 +19,12 @@ interface ProfileAliasCommand {
 	powerShell: string;
 }
 
-/** Process inputs used to select the installed command or preserve a source invocation. */
 interface ProfileAliasProcessOptions {
 	argv?: readonly string[];
 	cwd?: string;
 	compiled?: boolean;
 }
 
-/** Default alias target: the proto executable on PATH. */
 const DEFAULT_ALIAS_COMMAND: ProfileAliasCommand = {
 	display: BINARY_NAME,
 	posix: BINARY_NAME,
@@ -131,8 +129,6 @@ const POWERSHELL_RESERVED_ALIAS_NAMES: ReadonlySet<string> = new Set([
 	"workflow",
 ]);
 
-// Keep local: importing the pi-utils root here would eagerly load env before
-// cli.ts has applied --profile, regressing profile-specific .env loading.
 function isEnoentError(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT";
 }
@@ -177,7 +173,6 @@ function normalizeShellName(shellPath: string | undefined): ProfileAliasShell {
 	throw new Error(`Unsupported shell${shell ? ` "${shell}"` : ""}. Supported shells: bash, zsh, fish, PowerShell.`);
 }
 
-/** Resolve the command a generated profile alias should invoke. */
 export function resolveProfileAliasCommandFromProcess({
 	argv = process.argv,
 	cwd = process.cwd(),
@@ -190,8 +185,7 @@ export function resolveProfileAliasCommandFromProcess({
 	if (!runtime || !script || !/\.[cm]?[jt]s$/.test(script)) return DEFAULT_ALIAS_COMMAND;
 
 	const scriptPath = path.resolve(cwd, script);
-	// Normalize to forward slashes for POSIX shell fields — bash/zsh/fish
-	// can't resolve backslash-separated paths, even on Windows (Git Bash, WSL).
+
 	const posixScriptPath = scriptPath.replace(/\\/g, "/");
 	const posixRuntime = runtime.replace(/\\/g, "/");
 	const posix = `${quoteForShell(posixRuntime)} ${quoteForShell(posixScriptPath)}`;
@@ -203,21 +197,13 @@ export function resolveProfileAliasCommandFromProcess({
 	};
 }
 
-/** Normalize backslashes to forward slashes for POSIX-shell paths.
- *  path.posix.join only adds / separators — it preserves existing backslashes
- *  in input segments like homeDir ("C:\Users\me"), producing mixed paths.
- *  Windows UNC paths (\\server\share) become //server/share — path.posix.join
- *  would collapse the leading // to /, so we restore it after joining. */
 function toPosix(p: string): string {
 	return p.replace(/\\/g, "/");
 }
 
-/** Like path.posix.join, but preserves leading // (UNC roots) which
- *  path.posix.join collapses to a single /. */
 function posixJoinUnc(...segments: string[]): string {
 	const joined = path.posix.join(...segments);
-	// path.posix.join normalizes // at the start to /, breaking UNC roots.
-	// Restore it if any input segment started with // (a toPosix'd UNC path).
+
 	if (segments.some(s => s.startsWith("//") && !s.startsWith("///"))) {
 		return `/${joined}`;
 	}
@@ -230,9 +216,6 @@ function resolveShellConfigPath(
 	platform: NodeJS.Platform,
 	env: NodeJS.ProcessEnv,
 ): string {
-	// POSIX shells (bash/zsh/fish/pwsh-on-unix) need forward-slash config paths:
-	// path.posix.join adds / separators but preserves existing backslashes in
-	// input segments, so we normalize each component with toPosix.
 	const posixHome = toPosix(homeDir);
 	switch (shell) {
 		case "zsh":
@@ -240,9 +223,6 @@ function resolveShellConfigPath(
 		case "bash":
 			return platform === "darwin" ? posixJoinUnc(posixHome, ".bash_profile") : posixJoinUnc(posixHome, ".bashrc");
 		case "fish": {
-			// fish sources conf.d from $XDG_CONFIG_HOME/fish (default ~/.config/fish);
-			// a hard-coded ~/.config would be silently ignored when the user relocates
-			// their XDG config root, leaving the alias unsourced after a restart.
 			const configHome = env.XDG_CONFIG_HOME ? toPosix(env.XDG_CONFIG_HOME) : posixJoinUnc(posixHome, ".config");
 			return posixJoinUnc(configHome, "fish", "conf.d", "proto-profiles.fish");
 		}

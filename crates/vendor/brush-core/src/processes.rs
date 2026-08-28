@@ -1,4 +1,4 @@
-//! Process management
+
 
 use futures::FutureExt;
 use std::io::Write;
@@ -16,31 +16,31 @@ struct CompletionMarker {
 	end_marker_suffix: String,
 }
 
-/// A waitable future that will yield the results of a child process's
-/// execution.
+
+
 pub(crate) type WaitableChildProcess = std::pin::Pin<
 	Box<dyn futures::Future<Output = Result<std::process::Output, std::io::Error>> + Send + Sync>,
 >;
 
-/// Tracks a child process being awaited.
+
 pub struct ChildProcess {
-	/// A waitable future that will yield the results of a child process's
-	/// execution.
+
+
 	exec_future: WaitableChildProcess,
-	/// Tracks whether this process has already been reaped.
+
 	reaped:      bool,
-	/// If available, the process ID of the child.
+
 	pid:         Option<sys::process::ProcessId>,
-	/// If available, the process group ID of the child.
+
 	pgid:        Option<sys::process::ProcessId>,
-	/// Windows handle duplicated from the child process for safe termination.
+
 	#[cfg(windows)]
 	kill_handle: Option<OwnedHandle>,
 	completion_marker: Option<CompletionMarker>,
 }
 
 impl ChildProcess {
-	/// Wraps a child process and its future.
+
 	pub fn new(
 		child: sys::process::Child,
 		pid: Option<sys::process::ProcessId>,
@@ -60,17 +60,17 @@ impl ChildProcess {
 		}
 	}
 
-	/// Returns the process's ID.
+
 	pub const fn pid(&self) -> Option<sys::process::ProcessId> {
 		self.pid
 	}
 
-	/// Returns the process's group ID.
+
 	pub const fn pgid(&self) -> Option<sys::process::ProcessId> {
 		self.pgid
 	}
 
-	/// Duplicates the process handle for termination use on Windows.
+
 	#[cfg(windows)]
 	pub fn duplicate_kill_handle(&self) -> Option<OwnedHandle> {
 		let handle = self.kill_handle.as_ref()?;
@@ -87,9 +87,9 @@ impl ChildProcess {
 			Some(CompletionMarker { output, end_marker_prefix, end_marker_suffix });
 	}
 
-	/// Waits for the process to exit.
-	///
-	/// If a cancellation token is provided and triggered, the process will be killed.
+
+
+
 	pub async fn wait(
 		&mut self,
 		cancel_token: Option<CancellationToken>,
@@ -131,15 +131,15 @@ impl ChildProcess {
 					}
 				},
 				_ = sys::signal::await_ctrl_c() => {
-					// SIGINT got thrown. Handle it and continue looping. The child should
-					// have received it as well, and either handled it or ended up getting
-					// terminated (in which case we'll see the child exit).
+
+
+
 				},
 			}
 		}
 	}
 
-	/// Sends a kill signal if the process has not already been reaped.
+
 	fn kill(&mut self) {
 		if self.reaped {
 			return;
@@ -194,7 +194,7 @@ impl ChildProcess {
 
 impl Drop for ChildProcess {
 	fn drop(&mut self) {
-		// Ensure we do not leave an unreaped child running when the handle is dropped.
+
 		self.kill();
 	}
 }
@@ -206,14 +206,14 @@ fn duplicate_handle(handle: RawHandle) -> Option<OwnedHandle> {
 		System::Threading::GetCurrentProcess,
 	};
 
-	// SAFETY: GetCurrentProcess returns a pseudo-handle for the current process
-	// and has no preconditions.
+
+
 	let current = unsafe { GetCurrentProcess() };
 	let mut out_handle = std::ptr::null_mut();
-	// SAFETY: `current` is a valid current-process pseudo-handle, `handle` is
-	// an OS process handle owned by Tokio's child process object, and
-	// `out_handle` is a valid out pointer checked below before ownership is
-	// transferred to OwnedHandle.
+
+
+
+
 	let ok = unsafe {
 		DuplicateHandle(
 			current,
@@ -229,8 +229,8 @@ fn duplicate_handle(handle: RawHandle) -> Option<OwnedHandle> {
 		return None;
 	}
 
-	// SAFETY: DuplicateHandle succeeded and returned a non-null owned duplicate
-	// in `out_handle`, so transferring ownership to OwnedHandle is valid.
+
+
 	Some(unsafe { OwnedHandle::from_raw_handle(out_handle) })
 }
 
@@ -238,12 +238,12 @@ fn duplicate_handle(handle: RawHandle) -> Option<OwnedHandle> {
 fn terminate_raw_handle(handle: RawHandle) -> bool {
 	use windows_sys::Win32::System::Threading::TerminateProcess;
 
-	// SAFETY: The caller provides a process handle opened/duplicated for process
-	// termination. The handle remains owned by its original owner.
+
+
 	unsafe { TerminateProcess(handle, 1) != 0 }
 }
 
-/// Checks whether a duplicated Windows process handle still refers to a running process.
+
 #[cfg(windows)]
 #[must_use]
 pub fn process_handle_is_running(handle: &OwnedHandle) -> bool {
@@ -252,11 +252,11 @@ pub fn process_handle_is_running(handle: &OwnedHandle) -> bool {
 		System::Threading::WaitForSingleObject,
 	};
 
-	// SAFETY: `handle` is a live duplicated process handle with synchronization access.
+
 	unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) == WAIT_TIMEOUT }
 }
 
-/// Terminates the process referenced by a duplicated Windows process handle.
+
 #[cfg(windows)]
 #[must_use]
 pub fn terminate_process_handle(handle: &OwnedHandle) -> bool {
@@ -272,15 +272,15 @@ fn terminate_process_id(pid: sys::process::ProcessId) -> bool {
 		return false;
 	};
 
-	// SAFETY: OpenProcess is called with PROCESS_TERMINATE for a numeric process id.
-	// A null handle is handled below.
+
+
 	let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
 	if handle.is_null() {
 		return false;
 	}
 
 	let terminated = terminate_raw_handle(handle);
-	// SAFETY: The handle was returned by OpenProcess and is closed exactly once here.
+
 	let _close_result = unsafe { CloseHandle(handle) };
 	terminated
 }
@@ -301,12 +301,12 @@ fn completion_exit_code(status: &std::process::ExitStatus) -> i32 {
 	127
 }
 
-/// Represents the result of waiting for an executing process.
+
 pub enum ProcessWaitResult {
-	/// The process completed.
+
 	Completed(std::process::Output),
-	/// The process stopped and has not yet completed.
+
 	Stopped,
-	/// The process was killed due to cancellation.
+
 	Cancelled,
 }

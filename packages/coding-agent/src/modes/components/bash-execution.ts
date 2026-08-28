@@ -1,7 +1,3 @@
-/**
- * Component for displaying bash command execution with streaming output.
- */
-
 import {
 	Container,
 	Ellipsis,
@@ -25,12 +21,10 @@ import {
 	resolveExecutionStatus,
 } from "./execution-shared";
 
-// Preview line limit when not expanded (matches tool execution behavior)
 const PREVIEW_LINES = 20;
 const STREAMING_LINE_CAP = PREVIEW_LINES * 5;
 const MAX_DISPLAY_LINE_CHARS = 4000;
-// Minimum interval between processing incoming chunks for display (ms).
-// Chunks arriving faster than this are accumulated and processed in one batch.
+
 const CHUNK_THROTTLE_MS = 50;
 
 export class BashExecutionComponent extends Container {
@@ -40,10 +34,7 @@ export class BashExecutionComponent extends Container {
 	#loader: Loader;
 	#truncation?: TruncationMeta;
 	#expanded = false;
-	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
-	// a completed command's block still mutates on expansion toggles, and the
-	// transcript's width-epoch resolution and committed-render bypass must
-	// observe that.
+
 	#blockVersion = 0;
 	#displayDirty = false;
 	#chunkGate = false;
@@ -57,23 +48,16 @@ export class BashExecutionComponent extends Container {
 	) {
 		super();
 
-		// Use dim border for excluded-from-context commands (!! prefix)
 		const colorKey = excludeFromContext ? "dim" : "bashMode";
 		const { contentContainer, loader } = buildExecutionFrame(this, ui, colorKey);
 		this.#contentContainer = contentContainer;
 		this.#loader = loader;
 
-		// Command header
 		this.#headerText = new Text(theme.fg(colorKey, theme.bold(`$ ${command}`)), 1, 0);
 		this.#contentContainer.addChild(this.#headerText);
 		this.#contentContainer.addChild(this.#loader);
 	}
 
-	/**
-	 * Transcript finalization contract (see `FinalizableBlock`): the collapsed
-	 * streaming preview rewrites its tail window every chunk, so the block must
-	 * stay out of native scrollback until the command completes.
-	 */
 	isTranscriptBlockFinalized(): boolean {
 		return this.#status !== "running";
 	}
@@ -82,9 +66,6 @@ export class BashExecutionComponent extends Container {
 		return this.#blockVersion;
 	}
 
-	/**
-	 * Set whether the output is expanded (shows full output) or collapsed (preview only).
-	 */
 	setExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
@@ -98,10 +79,6 @@ export class BashExecutionComponent extends Container {
 	}
 
 	appendOutput(chunk: string): void {
-		// During high-throughput output (e.g. seq 1 500M), processing every
-		// chunk would saturate the event loop. Instead, accept one chunk per
-		// throttle window and drop the rest — the OutputSink captures everything
-		// for the artifact, and setComplete() replaces with the final output.
 		if (this.#chunkGate) return;
 		this.#chunkGate = true;
 		setTimeout(() => {
@@ -119,7 +96,6 @@ export class BashExecutionComponent extends Container {
 			this.#outputLines.push(...this.#clampLinesPreservingSixel(incomingLines));
 		}
 
-		// Cap stored lines during streaming to avoid unbounded memory growth
 		if (this.#outputLines.length > STREAMING_LINE_CAP) {
 			this.#outputLines = this.#outputLines.slice(-STREAMING_LINE_CAP);
 		}
@@ -139,7 +115,6 @@ export class BashExecutionComponent extends Container {
 			this.#setOutput(options.output);
 		}
 
-		// Stop loader
 		this.#loader.stop();
 
 		this.#updateDisplay();
@@ -156,8 +131,6 @@ export class BashExecutionComponent extends Container {
 	#updateDisplay(): void {
 		const availableLines = this.#outputLines;
 
-		// Full output is shown when expanded or when sixel passthrough renders
-		// the raw payload; the collapsed preview shows only the tail window.
 		const previewLogicalLines = availableLines.slice(-PREVIEW_LINES);
 		const sixelLineMask =
 			TERMINAL.imageProtocol === ImageProtocol.Sixel && isSixelPassthroughEnabled()
@@ -165,17 +138,13 @@ export class BashExecutionComponent extends Container {
 				: undefined;
 		const hasSixelOutput = sixelLineMask?.some(Boolean) ?? false;
 		const showingAllLines = this.#expanded || hasSixelOutput;
-		// Only the collapsed preview hides lines; when the full output is shown
-		// the footer must not keep advertising hidden lines / ctrl+o.
+
 		const hiddenLineCount = showingAllLines ? 0 : availableLines.length - previewLogicalLines.length;
 
-		// Rebuild content container
 		this.#contentContainer.clear();
 
-		// Command header
 		this.#contentContainer.addChild(this.#headerText);
 
-		// Output
 		if (availableLines.length > 0) {
 			if (showingAllLines) {
 				const displayText = availableLines
@@ -183,13 +152,11 @@ export class BashExecutionComponent extends Container {
 					.join("\n");
 				this.#contentContainer.addChild(new Text(`\n${displayText}`, 1, 0));
 			} else {
-				// Use shared visual truncation utility, recomputed per render width
 				const styledOutput = previewLogicalLines.map(line => theme.fg("muted", line)).join("\n");
 				this.#contentContainer.addChild(createCollapsedPreview(`\n${styledOutput}`, PREVIEW_LINES));
 			}
 		}
 
-		// Loader or status
 		if (this.#status === "running") {
 			this.#contentContainer.addChild(this.#loader);
 		} else {
@@ -227,16 +194,10 @@ export class BashExecutionComponent extends Container {
 		this.#outputLines = clean ? this.#clampLinesPreservingSixel(clean.split("\n")) : [];
 	}
 
-	/**
-	 * Get the raw output for creating BashExecutionMessage.
-	 */
 	getOutput(): string {
 		return this.#outputLines.join("\n");
 	}
 
-	/**
-	 * Get the command that was executed.
-	 */
 	getCommand(): string {
 		return this.command;
 	}

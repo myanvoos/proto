@@ -5,9 +5,6 @@ import { urlHyperlinkAlways, WidthAwareText } from "../../tui";
 import { openPath } from "../../utils/open";
 import { OverlayPanel } from "./overlay-box";
 
-/**
- * Login dialog component - replaces editor during OAuth login flow
- */
 export class LoginDialogComponent extends OverlayPanel {
 	#contentContainer: Container;
 	#input: Input;
@@ -26,11 +23,9 @@ export class LoginDialogComponent extends OverlayPanel {
 		super(`Login to ${providerName}`);
 		this.#tui = tui;
 
-		// Dynamic content area
 		this.#contentContainer = new Container();
 		this.addChild(this.#contentContainer);
 
-		// Input (always present, used when needed)
 		this.#input = new Input();
 		this.#input.onSubmit = () => {
 			if (this.#inputResolver) {
@@ -58,17 +53,6 @@ export class LoginDialogComponent extends OverlayPanel {
 		this.onComplete(false, "Login cancelled");
 	}
 
-	/**
-	 * Called by the OAuth `onAuth` callback. Renders the full authorization URL
-	 * as the primary copy target — that works from any machine, including
-	 * SSH/WSL/headless sessions where the PROTO-hosted `launchUrl` would resolve
-	 * against the user's local browser and fail. When `launchUrl` is present it
-	 * is offered as an additional local shortcut so narrow local terminals still
-	 * have a truncation-safe copy target (viewport clipping on a long authorize
-	 * URL silently drops trailing OAuth query parameters — e.g.
-	 * `code_challenge_method=S256`). Every physical URL row carries its own OSC 8
-	 * link to the full URL, so clicking any wrapped fragment opens the same target.
-	 */
 	showAuth(url: string, instructions?: string, launchUrl?: string): void {
 		this.#contentContainer.clear();
 		this.#contentContainer.addChild(new Spacer(1));
@@ -98,19 +82,12 @@ export class LoginDialogComponent extends OverlayPanel {
 			this.#contentContainer.addChild(new Text(theme.fg("warning", instructions), 0, 0));
 		}
 
-		// Open browser (best-effort)
 		openPath(url);
 
 		this.#tui.requestRender();
 	}
 
-	/**
-	 * Show input for manual code/URL entry (for callback server providers)
-	 */
 	showManualInput(prompt: string): Promise<string> {
-		// Invalid pastes re-prompt (the OAuth callback loop calls this again), so
-		// reuse the already-mounted input instead of stacking duplicate prompt and
-		// hint lines beneath the dialog. Reset the value so each retry starts clean.
 		if (!this.#contentContainer.children.includes(this.#input)) {
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(theme.fg("dim", prompt), 0, 0));
@@ -126,10 +103,6 @@ export class LoginDialogComponent extends OverlayPanel {
 		return promise;
 	}
 
-	/**
-	 * Called by onPrompt callback - show prompt and wait for input
-	 * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
-	 */
 	showPrompt(message: string, placeholder?: string): Promise<string> {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("text", message), 0, 0));
@@ -150,9 +123,6 @@ export class LoginDialogComponent extends OverlayPanel {
 		return promise;
 	}
 
-	/**
-	 * Show waiting message (for polling flows like GitHub Copilot)
-	 */
 	showWaiting(message: string): void {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 0, 0));
@@ -160,15 +130,11 @@ export class LoginDialogComponent extends OverlayPanel {
 		this.#tui.requestRender();
 	}
 
-	/**
-	 * Called by onProgress callback
-	 */
 	showProgress(message: string): void {
 		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 0, 0));
 		this.#tui.requestRender();
 	}
 
-	/** Route non-bracketed paste transports into the active login input. */
 	pasteText(text: string): void {
 		this.#input.pasteText(text);
 	}
@@ -181,7 +147,6 @@ export class LoginDialogComponent extends OverlayPanel {
 			return;
 		}
 
-		// Pass to input
 		this.#input.handleInput(data);
 	}
 }

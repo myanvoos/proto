@@ -1,7 +1,7 @@
-//! `mktemp` builtin: create and display a temporary file or directory from a
-//! template.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
+
 
 #[cfg(unix)]
 use std::fs;
@@ -79,25 +79,25 @@ enum MkTempError {
 	Io(#[from] io::Error),
 }
 
-/// Options parsed from the command line.
-///
-/// This provides a layer of indirection between the application logic and
-/// `clap`, allowing each to vary independently.
+
+
+
+
 #[derive(Clone)]
 struct Options {
-	/// Whether to create a temporary directory instead of a file.
+
 	directory: bool,
-	/// Whether to just print the name of a file that would have been created.
+
 	dry_run: bool,
-	/// Whether to suppress file creation error messages.
+
 	quiet: bool,
-	/// The directory in which to create the temporary file.
+
 	tmpdir: Option<PathBuf>,
-	/// The suffix to append to the temporary file, if any.
+
 	suffix: Option<OsString>,
-	/// Whether to treat the template argument as a single file path component.
+
 	treat_as_template: bool,
-	/// The template to use for the name of the temporary file.
+
 	template: OsString,
 }
 
@@ -107,13 +107,13 @@ impl Options {
 			.get_one::<Option<PathBuf>>(OPT_TMPDIR)
 			.or_else(|| matches.get_one::<Option<PathBuf>>(OPT_P))
 			.map(|dir| match dir {
-				// If the argument of -p/--tmpdir is non-empty, use it as the tmpdir.
+
 				Some(dir) => dir.clone(),
-				// Otherwise use $TMPDIR if set, else the system default.
+
 				None => get_tmpdir_env_or_default(host),
 			});
 		let (tmpdir, template) = match matches.get_one::<OsString>(ARG_TEMPLATE) {
-			// If no template argument is given, `--tmpdir` is implied.
+
 			None => (
 				Some(tmpdir.unwrap_or_else(|| get_tmpdir_env_or_default(host))),
 				OsString::from(DEFAULT_TEMPLATE),
@@ -145,19 +145,19 @@ impl Options {
 	}
 }
 
-/// Parameters controlling the path and name of the temporary entry.
+
 struct Params {
-	/// The directory that will contain the temporary entry.
+
 	directory: PathBuf,
-	/// The non-random prefix of the temporary entry.
+
 	prefix: String,
-	/// The number of random characters in the name.
+
 	num_rand_chars: usize,
-	/// The non-random suffix of the temporary entry.
+
 	suffix: String,
 }
 
-/// Finds the last contiguous block of at least three `X` characters.
+
 fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 	let bytes = s.as_bytes();
 	let end = bytes.iter().rposition(|&b| b == b'X')?;
@@ -170,8 +170,8 @@ fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 
 impl Params {
 	fn from(options: Options) -> Result<Self, MkTempError> {
-		// `-t` follows GNU's permissive treatment of invalid UTF-8. Regular
-		// templates retain the upstream strict validation.
+
+
 		let mut template_str = if options.treat_as_template {
 			options.template.to_string_lossy().into_owned()
 		} else {
@@ -190,7 +190,7 @@ impl Params {
 
 		let (i, j) = match find_last_contiguous_block_of_xs(&template_str) {
 			Some(indices) => indices,
-			// BSD `mktemp -t PREFIX` treats PREFIX as a name prefix.
+
 			None if options.treat_as_template => {
 				template_str.push('.');
 				template_str.push_str("XXXXXXXXXX");
@@ -200,8 +200,8 @@ impl Params {
 			None => return Err(MkTempError::TooFewXs(template_str)),
 		};
 
-		// Combine the option directory and the template prefix, then split the
-		// parent directory from the final file-name component.
+
+
 		let tmpdir = options.tmpdir;
 		let prefix_from_option = tmpdir.clone().unwrap_or_default();
 		let prefix_from_template = &template_str[..i];
@@ -225,7 +225,7 @@ impl Params {
 			}
 		};
 
-		// Combine a suffix embedded in the template with `--suffix`.
+
 		let suffix_from_option = options
 			.suffix
 			.map(|s| s.to_string_lossy().into_owned())
@@ -240,7 +240,7 @@ impl Params {
 	}
 }
 
-/// Parses an empty directory option as `None` and a non-empty one as a path.
+
 #[derive(Clone, Debug)]
 struct OptionalPathBufParser;
 
@@ -269,7 +269,7 @@ impl ValueParserFactory for OptionalPathBufParser {
 	}
 }
 
-/// Parsed `mktemp` invocation.
+
 pub(crate) struct Mktemp {
 	matches: ArgMatches,
 }
@@ -280,8 +280,8 @@ impl Utility for Mktemp {
 	const NAME: &'static str = "mktemp";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
-		// Upstream replaces clap's generic positional overflow diagnostic with
-		// GNU mktemp's concise message.
+
+
 		if let Err(err) = app().try_get_matches_from(&argv)
 			&& err.kind() == clap::error::ErrorKind::TooManyValues
 			&& err.context().any(|(kind, value)| {
@@ -297,8 +297,8 @@ impl Utility for Mktemp {
 	fn run(self, host: &mut Host) -> i32 {
 		let options = Options::from(&self.matches, host);
 
-		// Under POSIXLY_CORRECT the template must be the last argument. Clap's
-		// occurrence indices preserve that ordering after short-option expansion.
+
+
 		if host.var("POSIXLY_CORRECT").is_some()
 			&& self.matches.contains_id(ARG_TEMPLATE)
 			&& !template_is_last(&self.matches)
@@ -346,7 +346,7 @@ impl Utility for Mktemp {
 	}
 }
 
-/// Returns whether the template occurred after every option and option value.
+
 fn template_is_last(matches: &ArgMatches) -> bool {
 	let Some(template_index) = matches.index_of(ARG_TEMPLATE) else {
 		return true;
@@ -365,7 +365,7 @@ fn template_is_last(matches: &ArgMatches) -> bool {
 	.all(|index| index < template_index)
 }
 
-/// Builds the `mktemp` command-line model.
+
 fn app() -> Command {
 	Command::new(Mktemp::NAME)
 		.version("0.8.0")
@@ -463,12 +463,12 @@ fn dry_exec(tmpdir: &Path, prefix: &str, rand: usize, suffix: &str) -> PathBuf {
 			_ => unreachable!(),
 		};
 	}
-	// Every byte was mapped into the ASCII alphanumeric range.
+
 	let buf = String::from_utf8(buf).unwrap();
 	tmpdir.join(buf)
 }
 
-/// Creates a temporary directory with owner-only permissions.
+
 fn make_temp_dir(
 	dir: &Path,
 	display_dir: &Path,
@@ -494,7 +494,7 @@ fn make_temp_dir(
 	}
 }
 
-/// Creates a temporary file with owner-only permissions.
+
 fn make_temp_file(
 	dir: &Path,
 	display_dir: &Path,
@@ -528,8 +528,8 @@ fn exec(
 	suffix: &str,
 	make_dir: bool,
 ) -> Result<PathBuf, MkTempError> {
-	// Only the filesystem-facing form is resolved. The returned path retains
-	// the spelling implied by the user's operands, which scripts consume.
+
+
 	let resolved_dir = host.resolve(dir);
 	let created = if make_dir {
 		make_temp_dir(&resolved_dir, dir, prefix, rand, suffix)?
@@ -540,8 +540,8 @@ fn exec(
 	Ok(dir.join(filename))
 }
 
-/// Reads the shell's temporary-directory variable, falling back to the platform
-/// default. An explicitly empty variable uses `/tmp`, matching GNU mktemp.
+
+
 fn get_tmpdir_env_or_default(host: &Host) -> PathBuf {
 	match host.var(TMPDIR_ENV_VAR) {
 		Some(value) if value.is_empty() => PathBuf::from(FALLBACK_TMPDIR),
@@ -550,7 +550,7 @@ fn get_tmpdir_env_or_default(host: &Host) -> PathBuf {
 	}
 }
 
-/// Creates the `mktemp` builtin registration.
+
 pub(crate) fn mktemp_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Mktemp, SE>()
 }

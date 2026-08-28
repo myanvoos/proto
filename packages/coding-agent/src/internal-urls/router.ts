@@ -1,10 +1,3 @@
-/**
- * Internal URL router for internal protocols (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `proto://`, `pr://`, `rule://`, `skill://`, `ssh://`, `vault://`, and `xd://`).
- *
- * One process-global router with one handler per scheme. Access via
- * `InternalUrlRouter.instance()`. Handlers are stateless; per-session and
- * shared state lives in `./state.ts`.
- */
 import { AgentProtocolHandler } from "./agent-protocol";
 import { ArtifactProtocolHandler } from "./artifact-protocol";
 import { HistoryProtocolHandler } from "./history-protocol";
@@ -48,13 +41,11 @@ export class InternalUrlRouter {
 		this.register(new XdProtocolHandler());
 	}
 
-	/** Process-global router instance. */
 	static instance(): InternalUrlRouter {
 		InternalUrlRouter.#instance ??= new InternalUrlRouter();
 		return InternalUrlRouter.#instance;
 	}
 
-	/** Reset the global instance in tests. */
 	static resetForTests(): void {
 		InternalUrlRouter.#instance = undefined;
 	}
@@ -77,21 +68,14 @@ export class InternalUrlRouter {
 		return this.#handlers.has(match[1].toLowerCase());
 	}
 
-	/**
-	 * Whether read can resolve this URL through either a native handler or the
-	 * MCP resource fallback. MCP resources may use arbitrary custom schemes and
-	 * may be opaque (`urn:example:document`) rather than hierarchical.
-	 */
 	canResolve(input: string): boolean {
 		const scheme = extractUriScheme(input);
 		if (!scheme) return false;
-		// Registered handlers only accept the hierarchical `scheme://` form;
-		// opaque inputs reach the MCP resource fallback alone.
+
 		if (this.#handlers.has(scheme)) return this.canHandle(input);
 		return this.#isMcpResourceScheme(scheme);
 	}
 
-	/** Schemes whose handler supports host/path autocomplete. */
 	completionSchemes(): string[] {
 		const schemes: string[] = [];
 		for (const [scheme, handler] of this.#handlers) {
@@ -100,10 +84,6 @@ export class InternalUrlRouter {
 		return schemes;
 	}
 
-	/**
-	 * Candidate completions for the host/path portion of `scheme://<query>`.
-	 * Returns `null` when the scheme is unknown or does not support completion.
-	 */
 	async complete(scheme: string, query: string, context?: ResolveContext): Promise<UrlCompletion[] | null> {
 		const handler = this.#handlers.get(scheme.toLowerCase());
 		if (!handler?.complete) return null;
@@ -129,14 +109,12 @@ export class InternalUrlRouter {
 		return { parsed, handler };
 	}
 
-	/** Resolve an internal URL through its registered protocol handler. */
 	async resolve(input: string, context?: ResolveContext): Promise<InternalResource> {
 		const { parsed, handler } = this.#route(input, true);
 		const resource = await handler.resolve(parsed, context);
 		return { ...resource, immutable: resource.immutable ?? handler.immutable };
 	}
 
-	/** Write an internal URL through its registered protocol handler. */
 	async write(input: string, content: string, context?: WriteContext): Promise<void> {
 		const { parsed, handler } = this.#route(input);
 		if (!handler.write) {

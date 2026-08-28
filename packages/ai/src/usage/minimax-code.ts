@@ -6,19 +6,12 @@ import { HOUR_MS, parsePositiveTimestamp, usageStatus } from "./shared";
 const INTL_PROVIDER = "minimax-code";
 const INTL_BASE_URL = "https://api.minimax.io";
 const REMAINS_PATH = "/v1/token_plan/remains";
-/** `current_*_status` enum reported per window: 1 normal, 2 exhausted, 3 unlimited. */
+
 const STATUS_EXHAUSTED = 2;
 const STATUS_UNLIMITED = 3;
-/**
- * The plan-wide token quota every chat model draws from. It is a quota category,
- * not a catalog model id, so its limits are scoped `shared`: `AuthStorage` has no
- * MiniMax ranking strategy and would otherwise match `scope.modelId` against ids
- * like `MiniMax-M3` and drop the "models with usage data" mapping. Category
- * buckets such as `video` meter a separate quota and keep their own model scope.
- */
+
 const SHARED_BUCKET = "general";
 
-/** One `model_remains[]` bucket: a plan quota tracked over a rolling interval plus a weekly window. */
 interface TokenPlanBucket {
 	modelName: string;
 	intervalStart?: number;
@@ -35,11 +28,10 @@ interface TokenPlanBucket {
 	weeklyStatus?: number;
 }
 
-/** `current_*_remaining_percent` is 0..100 remaining; usage fractions are 0..1 used. */
 function usedFractionFromRemainingPercent(value: unknown): number | undefined {
 	const parsed = toNumber(value);
 	if (parsed === undefined || !Number.isFinite(parsed)) return undefined;
-	// (100 - p) / 100 keeps whole percentages exact; 1 - p / 100 does not (90 → 0.09999999999999998).
+
 	return Math.min(1, Math.max(0, (100 - parsed) / 100));
 }
 
@@ -64,15 +56,6 @@ function parseBucket(value: unknown): TokenPlanBucket | null {
 	};
 }
 
-/**
- * A model outside the current plan is reported as both windows "unlimited"
- * with zero totals and 100% remaining, which would otherwise read as a pristine
- * quota. MiniMax's own CLI treats exactly this shape as "not in plan"
- * ([MiniMax-AI/cli#173](https://github.com/MiniMax-AI/cli/issues/173)), so the
- * bucket is kept out of the limits and named in `metadata.unavailableModels`.
- * Zero totals alone are not enough: a live plan reports `0/0` with status 1 and
- * a real remaining percentage.
- */
 function isUnavailablePlan(bucket: TokenPlanBucket): boolean {
 	return (
 		bucket.intervalTotalCount === 0 &&
@@ -82,12 +65,6 @@ function isUnavailablePlan(bucket: TokenPlanBucket): boolean {
 	);
 }
 
-/**
- * Interval length varies per bucket (text quotas roll every few hours, media
- * quotas daily), so the window id follows the reported span instead of a
- * hardcoded tier. Spans that are not whole hours are labelled in minutes
- * rather than rounded into a wrong hour count.
- */
 function intervalWindowId(durationMs: number | undefined): { id: string; label: string } {
 	if (durationMs === undefined || durationMs <= 0) return { id: "interval", label: "Interval" };
 	if (durationMs % HOUR_MS === 0) {
@@ -112,8 +89,6 @@ function buildLimit(args: {
 	totalCount?: number;
 	accountId?: string;
 }): UsageLimit | undefined {
-	// The endpoint's own status outranks the percentage: an exhausted window may
-	// omit it, or keep a stale one that would otherwise render as healthy quota.
 	const usedFraction = args.windowStatus === STATUS_EXHAUSTED ? 1 : args.usedFraction;
 	if (usedFraction === undefined) return undefined;
 	const totalCount = args.totalCount;
@@ -186,14 +161,6 @@ function buildBucketLimits(provider: string, bucket: TokenPlanBucket, accountId:
 	].filter((limit): limit is UsageLimit => limit !== undefined);
 }
 
-/**
- * MiniMax Token Plan usage provider (international, `api.minimax.io`).
- *
- * `GET /v1/token_plan/remains` returns one `model_remains[]` bucket per plan
- * quota (text, media, …), each carrying a rolling interval window and a weekly
- * window with the remaining percentage. MiniMax answers HTTP 200 even for
- * rejected credentials, so `base_resp.status_code` is the real success signal.
- */
 async function fetchMiniMaxCodeUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
 	if (params.provider !== INTL_PROVIDER) return null;
 	const apiKey = params.credential.apiKey;
@@ -262,7 +229,6 @@ async function fetchMiniMaxCodeUsage(params: UsageFetchParams, ctx: UsageFetchCo
 	}
 }
 
-/** MiniMax Token Plan (international, `api.minimax.io`). */
 export const minimaxCodeUsageProvider: UsageProvider = {
 	id: INTL_PROVIDER,
 	fetchUsage: fetchMiniMaxCodeUsage,

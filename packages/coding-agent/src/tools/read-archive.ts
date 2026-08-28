@@ -92,8 +92,7 @@ async function readArchiveDirectory(
 	const DEFAULT_LIMIT = 500;
 	const effectiveLimit = limit ?? DEFAULT_LIMIT;
 	const allEntries = archive.listDirectory(subPath);
-	// `offset` is 1-indexed (line-selector semantics): `a.zip:dir:50` starts
-	// the listing at the 50th entry instead of being silently ignored.
+
 	const entries = offset !== undefined && offset > 1 ? allEntries.slice(offset - 1) : allEntries;
 
 	const listLimit = applyListLimit(entries, { limit: effectiveLimit });
@@ -142,9 +141,6 @@ export async function readArchive(
 	let sel = parsedSel;
 	let node = archive.getNode(archiveSubPath);
 	if (!node && archiveSubPath) {
-		// `archive.zip:500` / `archive.zip:raw`: the whole subPath is a
-		// selector on the archive root, not a member name. Member names take
-		// precedence (getNode above); fall back to root + selector.
 		const wholeSel = parseSel(archiveSubPath);
 		if (wholeSel.kind !== "none") {
 			node = archive.getNode("");
@@ -186,9 +182,6 @@ export async function readArchive(
 			.done();
 	}
 
-	// Archive members are immutable: there is no edit path for bytes inside
-	// an archive, and a hashline tag keyed to the archive file would invite
-	// (and fail) edits while clobbering sibling members' snapshots.
 	const raw = isRawSelector(sel);
 	const result =
 		isMultiRange(sel) && sel.kind === "lines"

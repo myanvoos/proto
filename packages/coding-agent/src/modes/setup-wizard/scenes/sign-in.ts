@@ -67,11 +67,6 @@ interface PromptState {
 	input: CopyablePromptInput;
 }
 
-/**
- * "Sign in" panel: lets the user authenticate one or more model providers via
- * OAuth. Unlike a standalone scene it never auto-advances the wizard — the user
- * may sign in to several providers and then continue with Esc.
- */
 export class SignInTab implements SetupTab {
 	readonly id = "sign-in";
 	readonly label = "Sign in";
@@ -86,7 +81,7 @@ export class SignInTab implements SetupTab {
 	#loginAbort: AbortController | undefined;
 	#loggingInProvider: string | undefined;
 	#disposed = false;
-	/** Render line where the provider selector begins. */
+
 	#selectorRowStart = 2;
 
 	constructor(private readonly host: SetupSceneHost) {
@@ -94,7 +89,6 @@ export class SignInTab implements SetupTab {
 		this.#selector = this.#createSelector();
 	}
 
-	/** Modal while an OAuth flow is running so the scene won't switch tabs or finish. */
 	get modal(): boolean {
 		return this.#loggingInProvider !== undefined;
 	}
@@ -125,7 +119,6 @@ export class SignInTab implements SetupTab {
 		this.#selector.handleInput(data);
 	}
 
-	/** Forward mouse to the provider selector; pointer is inert during an active login or code prompt. */
 	routeMouse(event: SgrMouseEvent, line: number, col: number): void {
 		if (this.#loggingInProvider || this.#prompt) return;
 		this.#selector.routeMouse(event, line - this.#selectorRowStart, col);
@@ -136,9 +129,6 @@ export class SignInTab implements SetupTab {
 		if (this.#loggingInProvider) {
 			lines.push(theme.bold(`Signing in to ${this.#loggingInProvider}`));
 		} else {
-			// Hint + blank cost two rows; the wizard subtitle already explains
-			// this panel, so on short screens the rows go to the provider list
-			// instead (17 = full selector: 4 chrome above, 10 rows, 3 below).
 			if (maxLines === undefined || maxLines >= 17 + 2) {
 				lines.push(theme.fg("muted", "Pick a provider to sign in — you can connect more than one."), "");
 			}
@@ -200,15 +190,6 @@ export class SignInTab implements SetupTab {
 			await this.#authStorage.login(providerId as OAuthProvider, {
 				signal: this.#loginAbort.signal,
 				onAuth: info => {
-					// Store the full authorization URL as the primary copy/display
-					// target: it works from any machine, including SSH boxes where
-					// the PROTO-hosted `launchUrl` would resolve against the user's
-					// local browser and fail. The wizard render uses
-					// `wrapTextWithAnsi`, so long URLs wrap across lines rather
-					// than getting truncated — the RFC 7636 §4.3 PKCE-downgrade
-					// bug that motivated `launchUrl` is unreachable through this
-					// surface. `launchUrl` is still surfaced as an optional local
-					// shortcut for wide-terminal local users.
 					this.#authUrl = info.url;
 					this.#authLaunchUrl = info.launchUrl && info.launchUrl !== info.url ? info.launchUrl : undefined;
 					this.#statusLines = [];
@@ -230,8 +211,7 @@ export class SignInTab implements SetupTab {
 				onManualCodeInput: () =>
 					this.#showPrompt({ message: "Paste the authorization code (or full redirect URL):" }),
 			});
-			// Provider-scoped online refresh so the just-persisted credential re-runs
-			// discovery instead of reusing a fresh authoritative cache row (#5780).
+
 			await this.host.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			if (this.#disposed) return;
 			this.#statusLines = [
@@ -273,9 +253,7 @@ export class SignInTab implements SetupTab {
 		if (!url) return;
 		try {
 			await copyToClipboard(url);
-		} catch {
-			// Clipboard integration is best-effort; the full URL remains rendered below.
-		}
+		} catch {}
 		this.host.requestRender();
 	}
 

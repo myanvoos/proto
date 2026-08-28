@@ -1,9 +1,3 @@
-/**
- * Claude Code Marketplace Plugin Provider
- *
- * Loads configuration from ~/.claude/plugins/cache/ based on installed_plugins.json registry.
- * Priority: 70 (below claude.ts at 80, so user overrides in .claude/ take precedence)
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -29,14 +23,8 @@ import { resolvePluginStdioPaths, substitutePluginRoot } from "./substitute-plug
 
 const PROVIDER_ID = "claude-plugins";
 const DISPLAY_NAME = "Claude Code Marketplace";
-const PRIORITY = 70; // Below claude.ts (80) so user .claude/ overrides win
+const PRIORITY = 70;
 
-/**
- * Plugin roots this legacy provider may process for a given surface. Roots
- * whose root `plugin.json` targets the Agent Plugins standard keep their
- * portable components (skills, MCP) exclusive to the `agent-plugins` provider;
- * fatally invalid Agent Plugins packages are skipped entirely.
- */
 async function allowedRoots(
 	ctx: LoadContext,
 	surface: "skills" | "mcp" | "other",
@@ -58,15 +46,14 @@ interface ResolvedPluginDir {
 }
 
 interface ResolvedMCPConfig {
-	/** On-disk config file to read, or null when servers are inline or nothing applies. */
 	path: string | null;
-	/** Server map declared inline in the plugin manifest, or null when the source is a file. */
+
 	inlineServers: Record<string, unknown> | null;
-	/** Path recorded as each discovered server's capability source. */
+
 	sourcePath: string;
-	/** Directory that relative stdio `command`/`cwd` values resolve against. */
+
 	baseDir: string;
-	/** True when a plugin manifest named this source, false for the conventional fallback. */
+
 	declared: boolean;
 	warnings: string[];
 }
@@ -111,30 +98,6 @@ function isWithinPluginRoot(rootPath: string, targetPath: string): boolean {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-/**
- * Resolve a manifest-declared directory field to absolute paths within the
- * plugin root.
- *
- * Manifest path fields may be `string` or `string[]`
- * (https://code.claude.com/docs/en/plugins-reference#path-behavior-rules);
- * both shapes are normalized here. The first `manifestKeys` entry that
- * supplies at least one non-empty path wins (later keys are ignored — used for
- * the `commands` > `slash-commands` legacy fallback).
- *
- * `fallback` is the default subdirectory (e.g. `skills/`, `commands/`) and
- * `includeFallback` controls the Claude-documented merge semantic per field:
- *
- * - `skills` **adds to** the default: `fallback` is always scanned, and any
- *   manifest entries load alongside it. Callers pass `includeFallback: true`.
- * - `commands` / `slash-commands` **replace** the default: an explicit
- *   manifest key means the default `commands/` directory is not scanned.
- *   Callers pass `includeFallback: false` (the manifest itself may still
- *   list `./commands` explicitly to keep it).
- *
- * When no matching key is set, the fallback is used regardless. Entries that
- * resolve outside the plugin root are dropped with a warning so misconfigured
- * manifests remain observable and cannot escape via traversal.
- */
 async function resolvePluginDir(
 	root: ClaudePluginRoot,
 	manifestKeys: ReadonlyArray<keyof ClaudePluginManifest>,
@@ -170,10 +133,6 @@ async function resolvePluginDir(
 		return { dirs: [fallbackDir], warnings: [] };
 	}
 
-	// Dedup preserves order: default entry (when included) first, then declared
-	// entries in manifest order. Deduping the paths themselves means a plugin
-	// author can still list `./commands` explicitly when they want the default
-	// alongside extras without producing double-loads.
 	const seen = new Set<string>();
 	const dirs: string[] = [];
 	const warnings: string[] = [];
@@ -196,10 +155,6 @@ async function resolvePluginDir(
 
 	return { dirs, warnings };
 }
-
-// =============================================================================
-// Skills
-// =============================================================================
 
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const items: Skill[] = [];
@@ -230,11 +185,7 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	);
 	for (const { scanResults, resolveWarnings } of results) {
 		warnings.push(...resolveWarnings);
-		// Intentionally do NOT prefix skill names with `root.plugin`.
-		// The `plugin:name` format breaks skill:// URL parsing (colons are
-		// ambiguous with port separators) and is unintuitive for callers.
-		// Dedup-by-key in the capability layer already handles name collisions
-		// across providers using priority ordering.
+
 		for (const result of scanResults) {
 			items.push(...result.items);
 			if (result.warnings) warnings.push(...result.warnings);
@@ -242,10 +193,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	}
 	return { items, warnings };
 }
-
-// =============================================================================
-// Slash Commands
-// =============================================================================
 
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const items: SlashCommand[] = [];
@@ -284,9 +231,7 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 								warnings: [],
 							};
 						}
-					} catch {
-						// Missing entries behave like missing directories: no items, no warning.
-					}
+					} catch {}
 					return loadFilesFromDir<SlashCommand>(ctx, dir, PROVIDER_ID, root.scope, {
 						extensions: ["md"],
 						transform: (name, content, filePath, source) => {
@@ -316,10 +261,6 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Hooks
-// =============================================================================
 
 async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const items: Hook[] = [];
@@ -364,10 +305,6 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Custom Tools
-// =============================================================================
-
 async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	const items: CustomTool[] = [];
 	const warnings: string[] = [];
@@ -402,32 +339,12 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// MCP Servers
-// =============================================================================
-
-/**
- * Unwrap a parsed MCP config file to its server map. Supports the nested
- * `{ mcpServers: { … } }` project shape and the flat `{ name: cfg, … }`
- * marketplace-plugin shape. Returns null when a `mcpServers` field is present
- * but not an object map (malformed) so the caller skips the file.
- */
 function extractServerMap(obj: Record<string, unknown>): Record<string, unknown> | null {
 	if (isRecord(obj.mcpServers)) return obj.mcpServers;
 	if (!("mcpServers" in obj)) return obj;
 	return null;
 }
 
-/**
- * Resolve where a plugin's MCP servers come from, honoring the manifest's
- * `mcpServers` field before the conventional root `.mcp.json`.
- *
- * `.proto-plugin/plugin.json` takes precedence over `.claude-plugin/plugin.json`.
- * The field may be an inline object (the server map itself) or a string path to
- * a config file within the plugin root; a path escaping the root is rejected
- * with a warning. When no manifest declares the field, `<root>/.mcp.json` is the
- * fallback source.
- */
 async function resolvePluginMCPConfig(root: ClaudePluginRoot): Promise<ResolvedMCPConfig> {
 	const fallback = path.join(root.path, ".mcp.json");
 	for (const manifestDir of [".proto-plugin", ".claude-plugin"]) {
@@ -444,8 +361,6 @@ async function resolvePluginMCPConfig(root: ClaudePluginRoot): Promise<ResolvedM
 		if (!isRecord(parsed)) continue;
 		const pointer = parsed.mcpServers;
 
-		// Inline object form: the manifest value is the server map itself, rooted
-		// at the plugin directory (Claude's ${CLAUDE_PLUGIN_ROOT} base).
 		if (isRecord(pointer)) {
 			return {
 				path: null,
@@ -457,7 +372,6 @@ async function resolvePluginMCPConfig(root: ClaudePluginRoot): Promise<ResolvedM
 			};
 		}
 
-		// File-pointer form: resolve the named config file within the plugin root.
 		if (typeof pointer === "string") {
 			const configured = pointer.trim();
 			if (configured.length === 0) continue;
@@ -512,9 +426,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		} else if (resolved.path !== null) {
 			const raw = await readFile(resolved.path);
 			if (raw === null) {
-				// The conventional fallback is optional, but a manifest that names a
-				// missing file is an authoring error that would otherwise register
-				// zero servers with no explanation.
 				if (resolved.declared) {
 					const warning = `[claude-plugins] Missing mcpServers file declared by ${root.id}: ${resolved.path}`;
 					warnings.push(warning);
@@ -531,9 +442,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				logger.warn(`[claude-plugins] Invalid JSON in ${resolved.path}`);
 				continue;
 			}
-			// Two file shapes are supported:
-			//   nested: { "mcpServers": { name: cfg, ... } }   (PROTO/Claude Code project shape)
-			//   flat:   { name: cfg, ... }                      (Claude marketplace plugin shape)
+
 			if (!isRecord(parsed)) continue;
 			servers = extractServerMap(parsed);
 		} else {
@@ -558,9 +467,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				oauth?: MCPServer["oauth"];
 				type?: string;
 			};
-			// Require either command (stdio) or url (HTTP/SSE) — Claude marketplace plugins
-			// occasionally ship .mcp.json entries with neither, which would register a useless
-			// server and surface as a connection error at runtime.
+
 			if (typeof raw.command !== "string" && typeof raw.url !== "string") {
 				warnings.push(
 					`[claude-plugins] Skipping MCP server "${serverName}" in ${sourcePath}: missing command or url`,
@@ -571,8 +478,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 			const substitutedCommand =
 				raw.command !== undefined ? substitutePluginRoot(raw.command, root.path) : undefined;
 			const substitutedCwd = raw.cwd !== undefined ? substitutePluginRoot(raw.cwd, root.path) : undefined;
-			// Root relative command/cwd at the plugin's config directory, not the
-			// session cwd (MCP stdio spawning resolves relative values there).
+
 			const rooted = resolvePluginStdioPaths({ command: substitutedCommand, cwd: substitutedCwd }, baseDir);
 			const server: MCPServer = {
 				name: namespacedName,
@@ -595,10 +501,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider<Skill>(skillCapability.id, {
 	id: PROVIDER_ID,

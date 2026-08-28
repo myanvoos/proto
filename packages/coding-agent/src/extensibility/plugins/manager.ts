@@ -31,41 +31,21 @@ import type {
 	ProjectPluginOverrides,
 } from "./types";
 
-// =============================================================================
-// Validation
-// =============================================================================
-
-/** Valid npm package name pattern (scoped and unscoped, with optional version) */
 const VALID_PACKAGE_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[a-z0-9-._^~>=<]+)?$/i;
 
-/** Characters that are never valid in any plugin install spec — git or npm. */
 const SHELL_METACHARS = /[;&|`$(){}<>\\\n\r\t]/;
 
-/**
- * Validate package name to prevent command injection. npm specs only — git
- * specs (`github:user/repo`, `https://github.com/...`, ...) MUST go through
- * {@link validateGitSpec} instead because they contain characters npm rejects
- * (`:`, `/`, `#`, `+`, `@` in non-version positions).
- */
 function validatePackageName(name: string): void {
-	// Remove version specifier for validation
 	const baseName = extractPackageName(name);
 	if (!VALID_PACKAGE_NAME.test(baseName)) {
 		throw new Error(`Invalid package name: ${name}`);
 	}
-	// Extra safety: no shell metacharacters
+
 	if (/[;&|`$(){}[\]<>\\]/.test(name)) {
 		throw new Error(`Invalid characters in package name: ${name}`);
 	}
 }
 
-/**
- * Validate a git install spec — accepts `:`, `/`, `#`, `+`, `.`, `-`, `_`,
- * `~`, `@` (which would all fail {@link validatePackageName}) but rejects
- * shell metacharacters so the spec stays safe when forwarded to bun install.
- * `Bun.spawn` does not invoke a shell, but defense-in-depth keeps things
- * obvious for future readers.
- */
 function validateGitSpec(spec: string): void {
 	if (SHELL_METACHARS.test(spec)) {
 		throw new Error(`Invalid characters in plugin source: ${spec}`);
@@ -108,9 +88,6 @@ interface RuntimePackageJson {
 	proto?: PluginManifest;
 	pi?: PluginManifest;
 }
-// =============================================================================
-// Plugin Manager
-// =============================================================================
 
 export class PluginManager {
 	#runtimeConfig: PluginRuntimeConfig | null = null;
@@ -119,10 +96,6 @@ export class PluginManager {
 	constructor(cwd: string = getProjectDir()) {
 		this.#cwd = cwd;
 	}
-
-	// ==========================================================================
-	// Runtime Config Management
-	// ==========================================================================
 
 	async #readRuntimeConfigAt(lockPath: string): Promise<PluginRuntimeConfig> {
 		try {
@@ -161,10 +134,6 @@ export class PluginManager {
 		}
 	}
 
-	// ==========================================================================
-	// Directory Management
-	// ==========================================================================
-
 	async #ensurePluginsDir(): Promise<void> {
 		await fs.promises.mkdir(getPluginsDir(), { recursive: true });
 		await fs.promises.mkdir(getPluginsNodeModules(), { recursive: true });
@@ -194,12 +163,6 @@ export class PluginManager {
 		}
 	}
 
-	/**
-	 * Read the `dependencies` map from `plugins/package.json`. Returns an empty
-	 * object when the file does not exist yet so callers can diff `before`
-	 * against `after` to discover the package bun just installed under its
-	 * real name (git specs do not encode the package name in the spec itself).
-	 */
 	async #readDeps(pkgJsonPath: string): Promise<Record<string, string>> {
 		try {
 			const json = await Bun.file(pkgJsonPath).json();
@@ -269,8 +232,6 @@ export class PluginManager {
 		await Promise.all(
 			Object.entries(registry.plugins).flatMap(([pluginId, entries]) =>
 				entries.map(async entry => {
-					// Legacy registries written before `scope` was added omit the field;
-					// `listClaudePluginRoots` treats those as user-scoped, so do the same.
 					if ((entry.scope ?? "user") !== "user") return;
 					const packageJsonPath = path.join(entry.installPath, "package.json");
 					const parsedId = parsePluginId(pluginId);
@@ -361,9 +322,6 @@ export class PluginManager {
 	): Promise<void> {
 		await Bun.write(getPluginsPackageJson(), packageJsonBefore);
 
-		// Restore (or remove) bun's lockfile. Without this, a `bun install` +
-		// `bun update` pair that successfully rewrote `bun.lock` would leave the
-		// rejected commit pinned even when validation rolls everything else back.
 		const bunLockPath = path.join(getPluginsDir(), "bun.lock");
 		if (bunLockBefore === null) {
 			await fs.promises.rm(bunLockPath, { force: true });
@@ -371,9 +329,6 @@ export class PluginManager {
 			await Bun.write(bunLockPath, bunLockBefore);
 		}
 
-		// `actualName` may be undefined when the install failed before the dep
-		// key was resolved — package.json + bun.lock restoration above is the
-		// complete rollback in that case.
 		if (!actualName) {
 			return;
 		}
@@ -414,28 +369,6 @@ export class PluginManager {
 		}
 	}
 
-	// ==========================================================================
-	// Install / Uninstall
-	// ==========================================================================
-
-	/**
-	 * Install a plugin with optional feature selection.
-	 *
-	 * Accepts:
-	 * - npm specs: `pkg`, `pkg@1.2.3`, `@scope/pkg`, `pkg[features]`
-	 * - namespaced git shorthand: `github:user/repo[#ref]`, `gitlab:`, `bitbucket:`,
-	 *   `codeberg:`, `sourcehut:`/`srht:`
-	 * - full git URLs: `https://github.com/user/repo`, `git@github.com:user/repo`,
-	 *   `ssh://…`, `git+https://…`
-	 *
-	 * For git specs the package name is not knowable from the spec, so the
-	 * installer diffs `plugins/package.json` `dependencies` before and after
-	 * to find the newly added key.
-	 *
-	 * @param specString - Package specifier with optional features: "pkg", "pkg[feat]", "pkg[*]", "pkg[]"
-	 * @param options - Install options
-	 * @returns Installed plugin metadata
-	 */
 	async install(specString: string, options: InstallOptions = {}): Promise<InstalledPlugin> {
 		const spec = parsePluginSpec(specString);
 		const gitSource = parseGitUrl(spec.packageName);
@@ -459,11 +392,7 @@ export class PluginManager {
 		}
 		const pkgJsonPath = getPluginsPackageJson();
 		const packageJsonBefore = await Bun.file(pkgJsonPath).text();
-		// Snapshot bun's lockfile so the rollback path can restore the pin. Every
-		// step below — `bun install`, `bun update`, feature/extension validation,
-		// runtime-config save — must either complete entirely or leave the
-		// lockfile pointing at its pre-install state. Absent before install means
-		// "remove on rollback".
+
 		const bunLockPath = path.join(getPluginsDir(), "bun.lock");
 		let bunLockBefore: string | null;
 		try {
@@ -479,15 +408,8 @@ export class PluginManager {
 			: extractPackageName(spec.packageName);
 		const packageSnapshot = await this.#snapshotInstalledPackage(existingActualName);
 
-		// `actualName` is hoisted so the rollback handler can clean up the right
-		// node_modules entry even if a step between `bun install` and the final
-		// validation throws.
 		let actualName: string | undefined;
 		try {
-			// Bun treats a dependency replacement from `repo#old-ref` to the same
-			// package at `repo`/`repo#new-ref` as a self-edge and bails with
-			// DependencyLoop. Remove only the stale manifest edge; rollback restores
-			// the original package.json and node_modules snapshot on failure.
 			if (gitSource && existingActualName) {
 				const installedSource = parseGitUrl(depsBefore[existingActualName] ?? "");
 				if (installedSource && installedSource.ref !== gitSource.ref) {
@@ -495,17 +417,13 @@ export class PluginManager {
 				}
 			}
 
-			// Step 1: write the spec into plugins/package.json + node_modules.
 			const installProc = Bun.spawn(["bun", "install", packageInstallSpec], {
 				cwd: getPluginsDir(),
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
 			});
-			// Drain stdout+stderr concurrently with proc.exited. Awaiting exited
-			// before reading either pipe risks a >64 KiB OS-pipe-buffer deadlock
-			// once bun install prints enough progress; even where Bun currently
-			// buffers eagerly, doing this leaks unbounded memory.
+
 			const [installExit, , installStderr] = await Promise.all([
 				installProc.exited,
 				new Response(installProc.stdout).text(),
@@ -514,8 +432,7 @@ export class PluginManager {
 			if (installExit !== 0) {
 				throw new Error(`bun install failed: ${installStderr}`);
 			}
-			// Resolve actual package name. npm specs encode the name (strip version);
-			// git specs do not, so diff plugins/package.json deps to find the new entry.
+
 			if (gitSource) {
 				const depsAfter = await this.#readDeps(pkgJsonPath);
 				let resolved: string | undefined;
@@ -525,10 +442,7 @@ export class PluginManager {
 						break;
 					}
 				}
-				// Fallback: a force-reinstall of an already-present git plugin will not
-				// add a new key, just rewrite the existing one to the new spec value.
-				// Match by repository identity, not by ref, so failed upgrades from
-				// one ref to another still resolve to the original package name.
+
 				if (!resolved) {
 					resolved = findGitPackageName(gitSource, depsAfter);
 				}
@@ -542,13 +456,6 @@ export class PluginManager {
 				actualName = extractPackageName(spec.packageName);
 			}
 
-			// Step 2: refresh the git lockfile pin when re-installing an existing
-			// git plugin. `bun install <spec>` is a no-op when the spec matches the
-			// lockfile entry, while `bun update <name>` resolves through Bun's bare
-			// clone cache. Fetch the matching cache clone first so a stale cached
-			// ref cannot silently preserve the old pin (#3063, #5401). First-time
-			// installs skip this because the initial `bun install` populated the
-			// cache from the remote. Rollback is handled by the outer catch.
 			if (gitSource && existingActualName) {
 				await refreshBunGitCache(gitSource, getPluginsDir());
 				const updateProc = Bun.spawn(["bun", "update", actualName], {
@@ -557,7 +464,7 @@ export class PluginManager {
 					stdout: "pipe",
 					stderr: "pipe",
 				});
-				// Same drain-concurrent-with-exit pattern as the bun install above.
+
 				const [updateExit, , updateStderr] = await Promise.all([
 					updateProc.exited,
 					new Response(updateProc.stdout).text(),
@@ -581,14 +488,11 @@ export class PluginManager {
 			const manifest: PluginManifest = pkg.proto || pkg.pi || { version: pkg.version };
 			manifest.version = pkg.version;
 
-			// Resolve enabled features
 			let enabledFeatures: string[] | null = null;
 			if (spec.features === "*") {
-				// All features
 				enabledFeatures = manifest.features ? Object.keys(manifest.features) : null;
 			} else if (Array.isArray(spec.features)) {
 				if (spec.features.length > 0) {
-					// Validate requested features exist
 					if (manifest.features) {
 						for (const feat of spec.features) {
 							if (!(feat in manifest.features)) {
@@ -600,11 +504,9 @@ export class PluginManager {
 					}
 					enabledFeatures = spec.features;
 				} else {
-					// Empty array = no optional features
 					enabledFeatures = [];
 				}
 			}
-			// null = use defaults
 
 			const installedPlugin: InstalledPlugin = {
 				name: pkg.name,
@@ -617,7 +519,6 @@ export class PluginManager {
 
 			await this.#validateInstalledExtensions(installedPlugin);
 
-			// Update runtime config
 			const config = await this.#ensureConfigLoaded();
 			config.plugins[pkg.name] = {
 				version: pkg.version,
@@ -646,9 +547,6 @@ export class PluginManager {
 		}
 	}
 
-	/**
-	 * Uninstall a plugin.
-	 */
 	async uninstall(name: string): Promise<void> {
 		validatePackageName(name);
 		await this.#ensurePackageJson();
@@ -660,8 +558,6 @@ export class PluginManager {
 			stderr: "pipe",
 		});
 
-		// Drain both pipes concurrently with proc.exited to avoid a pipe-buffer
-		// deadlock if bun uninstall floods stdout/stderr.
 		const [exitCode] = await Promise.all([
 			proc.exited,
 			new Response(proc.stdout).text(),
@@ -671,23 +567,12 @@ export class PluginManager {
 			throw new Error(`npm uninstall failed for ${name}`);
 		}
 
-		// Remove from runtime config
 		const config = await this.#ensureConfigLoaded();
 		delete config.plugins[name];
 		delete config.settings[name];
 		await this.#saveRuntimeConfig();
 	}
 
-	/**
-	 * Resolve one installed plugin, including a marketplace runtime package that
-	 * is intentionally omitted from {@link list}.
-	 *
-	 * Resolution order mirrors {@link getEnabledPlugins}: an explicit trusted
-	 * `options.path` (marketplace registry entry) wins; otherwise the active
-	 * enabled project plugin root shadows the user root — so inside a project
-	 * where the same package name exists in both scopes, config reads and writes
-	 * act on the package copy active at runtime.
-	 */
 	async getPlugin(name: string, options: { path?: string } = {}): Promise<InstalledPlugin | undefined> {
 		const [config, projectOverrides] = await Promise.all([this.#ensureConfigLoaded(), this.#loadProjectOverrides()]);
 		if (options.path) {
@@ -704,16 +589,6 @@ export class PluginManager {
 		return userPlugin;
 	}
 
-	/**
-	 * Resolve a plugin from the active project plugin root
-	 * (`<anchor>/.proto/plugins`). Project npm/link/marketplace installs all record
-	 * their runtime state and `node_modules` symlink there — invisible to the
-	 * user-root lookup — so this reads the project's own `package.json`
-	 * dependencies plus `proto-plugins.lock.json`, and resolves the package from
-	 * the project `node_modules`. Returns undefined when there is no active
-	 * project, when it coincides with the user root, or when the package is not
-	 * installed there.
-	 */
 	async #resolvePluginAtActiveProjectRoot(
 		name: string,
 		projectOverrides: ProjectPluginOverrides,
@@ -730,9 +605,6 @@ export class PluginManager {
 		return this.#resolvePlugin(name, path.join(projectRoot, "node_modules", name), projectConfig, projectOverrides);
 	}
 
-	/**
-	 * List all installed plugins.
-	 */
 	async list(): Promise<InstalledPlugin[]> {
 		const pkgJsonPath = getPluginsPackageJson();
 		let deps: Record<string, string> = {};
@@ -762,9 +634,6 @@ export class PluginManager {
 		return plugins;
 	}
 
-	/**
-	 * Link a local plugin for development.
-	 */
 	async link(localPath: string): Promise<InstalledPlugin> {
 		const absolutePath = path.resolve(this.#cwd, localPath);
 
@@ -784,13 +653,11 @@ export class PluginManager {
 
 		const linkPath = path.join(getPluginsNodeModules(), pkg.name);
 
-		// Handle scoped packages
 		if (pkg.name.startsWith("@")) {
 			const scopeDir = path.join(getPluginsNodeModules(), pkg.name.split("/")[0]);
 			await fs.promises.mkdir(scopeDir, { recursive: true });
 		}
 
-		// Remove existing
 		try {
 			const stats = await fs.promises.lstat(linkPath);
 			if (stats.isSymbolicLink() || stats.isDirectory()) {
@@ -805,7 +672,6 @@ export class PluginManager {
 		const manifest: PluginManifest = pkg.proto || pkg.pi || { version: pkg.version };
 		manifest.version = pkg.version;
 
-		// Add to runtime config
 		const config = await this.#ensureConfigLoaded();
 		config.plugins[pkg.name] = {
 			version: pkg.version,
@@ -824,13 +690,6 @@ export class PluginManager {
 		};
 	}
 
-	// ==========================================================================
-	// Enable / Disable
-	// ==========================================================================
-
-	/**
-	 * Enable or disable a plugin globally.
-	 */
 	async setEnabled(name: string, enabled: boolean): Promise<void> {
 		const config = await this.#ensureConfigLoaded();
 		if (!config.plugins[name]) {
@@ -840,28 +699,17 @@ export class PluginManager {
 		await this.#saveRuntimeConfig();
 	}
 
-	// ==========================================================================
-	// Features
-	// ==========================================================================
-
-	/**
-	 * Get enabled features for a plugin.
-	 */
 	async getEnabledFeatures(name: string): Promise<string[] | null> {
 		const config = await this.#ensureConfigLoaded();
 		return config.plugins[name]?.enabledFeatures ?? null;
 	}
 
-	/**
-	 * Set enabled features for a plugin.
-	 */
 	async setEnabledFeatures(name: string, features: string[] | null): Promise<void> {
 		const config = await this.#ensureConfigLoaded();
 		if (!config.plugins[name]) {
 			throw new Error(`Plugin ${name} not found in runtime config`);
 		}
 
-		// Validate features if setting specific ones
 		if (features && features.length > 0) {
 			const plugins = await this.list();
 			const plugin = plugins.find(p => p.name === name);
@@ -880,26 +728,15 @@ export class PluginManager {
 		await this.#saveRuntimeConfig();
 	}
 
-	// ==========================================================================
-	// Settings
-	// ==========================================================================
-
-	/**
-	 * Get all settings for a plugin.
-	 */
 	async getPluginSettings(name: string): Promise<Record<string, unknown>> {
 		const config = await this.#ensureConfigLoaded();
 		const global = config.settings[name] || {};
 		const projectOverrides = await this.#loadProjectOverrides();
 		const project = projectOverrides.settings?.[name] || {};
 
-		// Project settings override global
 		return { ...global, ...project };
 	}
 
-	/**
-	 * Set a plugin setting value.
-	 */
 	async setPluginSetting(name: string, key: string, value: unknown): Promise<void> {
 		const config = await this.#ensureConfigLoaded();
 		if (!config.settings[name]) {
@@ -909,9 +746,6 @@ export class PluginManager {
 		await this.#saveRuntimeConfig();
 	}
 
-	/**
-	 * Delete a plugin setting.
-	 */
 	async deletePluginSetting(name: string, key: string): Promise<void> {
 		const config = await this.#ensureConfigLoaded();
 		if (config.settings[name]) {
@@ -920,17 +754,9 @@ export class PluginManager {
 		}
 	}
 
-	// ==========================================================================
-	// Doctor
-	// ==========================================================================
-
-	/**
-	 * Run health checks on the plugin system.
-	 */
 	async doctor(options: DoctorOptions = {}): Promise<DoctorCheck[]> {
 		const checks: DoctorCheck[] = [];
 
-		// Check 1: Plugins directory exists
 		const pluginsDir = getPluginsDir();
 		const pluginsDirExists = fs.existsSync(pluginsDir);
 		checks.push({
@@ -939,7 +765,6 @@ export class PluginManager {
 			message: pluginsDirExists ? `Found at ${pluginsDir}` : "Not created yet",
 		});
 
-		// Check 2: package.json exists
 		const pkgJsonPath = getPluginsPackageJson();
 		let pkg: { dependencies?: Record<string, string> };
 		let hasPkgJson = true;
@@ -959,7 +784,6 @@ export class PluginManager {
 			message: hasPkgJson ? "Found" : "Not created yet",
 		});
 
-		// Check 3: node_modules exists
 		const nodeModulesPath = getPluginsNodeModules();
 		const hasNodeModules = fs.existsSync(nodeModulesPath);
 		checks.push({
@@ -1026,7 +850,6 @@ export class PluginManager {
 					: `v${pluginPkg.version} - No proto/pi manifest (not an proto plugin)`,
 			});
 
-			// Check tools path exists if specified
 			if (manifest?.tools) {
 				const toolsPath = path.join(pluginPath, manifest.tools);
 				if (!fs.existsSync(toolsPath)) {
@@ -1038,7 +861,6 @@ export class PluginManager {
 				}
 			}
 
-			// Check hooks path exists if specified
 			if (manifest?.hooks) {
 				const hooksPath = path.join(pluginPath, manifest.hooks);
 				if (!fs.existsSync(hooksPath)) {
@@ -1050,7 +872,6 @@ export class PluginManager {
 				}
 			}
 
-			// Check extension entry paths exist if specified
 			if (manifest?.extensions) {
 				for (const extensionPath of manifest.extensions) {
 					const resolvedExtensionPath = path.join(pluginPath, extensionPath);
@@ -1064,7 +885,6 @@ export class PluginManager {
 				}
 			}
 
-			// Check enabled features exist in manifest
 			const runtimeState = config.plugins[name];
 			if (runtimeState?.enabledFeatures && manifest?.features) {
 				for (const feat of runtimeState.enabledFeatures) {
@@ -1092,8 +912,7 @@ export class PluginManager {
 				stdout: "pipe",
 				stderr: "pipe",
 			});
-			// Drain pipes concurrently with proc.exited; otherwise a chatty
-			// bun install can block on a full OS pipe buffer.
+
 			const [exit] = await Promise.all([
 				proc.exited,
 				new Response(proc.stdout).text(),
@@ -1125,18 +944,11 @@ export class PluginManager {
 	}
 }
 
-// =============================================================================
-// Setting Validation
-// =============================================================================
-
 export interface ValidationResult {
 	valid: boolean;
 	error?: string;
 }
 
-/**
- * Validate a setting value against its schema.
- */
 export function validateSetting(value: unknown, schema: PluginSettingSchema): ValidationResult {
 	switch (schema.type) {
 		case "string":
@@ -1173,9 +985,6 @@ export function validateSetting(value: unknown, schema: PluginSettingSchema): Va
 	return { valid: true };
 }
 
-/**
- * Parse a string value according to a setting schema's type.
- */
 export function parseSettingValue(valueStr: string, schema: PluginSettingSchema): unknown {
 	switch (schema.type) {
 		case "number":

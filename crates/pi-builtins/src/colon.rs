@@ -1,6 +1,6 @@
 use brush_core::{ExecutionResult, builtins};
 
-/// No-op command.
+
 pub(crate) struct ColonCommand {}
 
 impl builtins::SimpleCommand for ColonCommand {

@@ -10,7 +10,6 @@ import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
-/** Capabilities the IRC bridge borrows from its owning session. */
 export interface IrcBridgeHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -22,7 +21,6 @@ export interface IrcBridgeHost {
 	runEphemeralTurn(args: { promptText: string }): Promise<{ replyText: string }>;
 }
 
-/** Owns incoming IRC queues, injection, and side-channel auto-replies. */
 export class IrcBridge {
 	readonly #host: IrcBridgeHost;
 	#interrupts: CustomMessage[] = [];
@@ -32,17 +30,14 @@ export class IrcBridge {
 		this.#host = host;
 	}
 
-	/** Whether an incoming peer message can interrupt a wait. */
 	hasInterrupts(): boolean {
 		return this.#interrupts.length > 0;
 	}
 
-	/** Whether any undelivered IRC record remains queued. */
 	hasPending(): boolean {
 		return this.#interrupts.length > 0 || this.#asides.length > 0;
 	}
 
-	/** Takes every queued IRC record in interrupt-before-aside order. */
 	drainPending(): CustomMessage[] {
 		const records = [...this.#interrupts, ...this.#asides];
 		this.#interrupts = [];
@@ -50,12 +45,10 @@ export class IrcBridge {
 		return records;
 	}
 
-	/** Queues records whose idle wake must wait for a session transition to finish. */
 	deferWake(records: CustomMessage[]): void {
 		this.#asides.push(...records);
 	}
 
-	/** Surfaces and consumes queued incoming records before automatic injection. */
 	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
 		const messages: IrcMessage[] = [];
 		const remainingInterrupts: CustomMessage[] = [];
@@ -106,7 +99,6 @@ export class IrcBridge {
 		return messages;
 	}
 
-	/** Delivers an IRC message into the recipient session without awaiting any wake turn. */
 	async deliver(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
 		const streaming = this.#host.isStreaming();
@@ -147,12 +139,10 @@ export class IrcBridge {
 		return "woken";
 	}
 
-	/** Emits an IRC relay observation for rendering without persisting it. */
 	emitRelayObservation(record: CustomMessage): void {
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 	}
 
-	/** Persists queued IRC records that missed their step-boundary injection. */
 	flushPending(): void {
 		for (const record of this.drainPending()) {
 			this.#host.agent.emitExternalEvent({ type: "message_start", message: record });

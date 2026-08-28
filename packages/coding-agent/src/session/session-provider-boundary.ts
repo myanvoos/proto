@@ -1,5 +1,3 @@
-/** Provider-facing message, image, secret, and stream normalization for a session. */
-
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
@@ -22,7 +20,6 @@ import type { SessionManager } from "./session-manager";
 
 type NormalizableContentBlock = AssistantMessage["content"][number] | TextContent | ImageContent;
 
-/** Capabilities borrowed from the owning AgentSession. */
 export interface SessionProviderBoundaryHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -39,7 +36,6 @@ export interface SessionProviderBoundaryHost {
 	obfuscator: SecretObfuscator | undefined;
 }
 
-/** Owns the transformations at the session/provider boundary. */
 export class SessionProviderBoundary {
 	readonly #host: SessionProviderBoundaryHost;
 
@@ -47,7 +43,6 @@ export class SessionProviderBoundary {
 		this.#host = host;
 	}
 
-	/** Latest image attachments addressable by tools as `Image #N` or `attachment://N`. */
 	getImageAttachments(): { label: string; uri: string; image: ImageContent; sourcePath: string }[] {
 		for (let i = this.#host.agent.state.messages.length - 1; i >= 0; i--) {
 			const message = this.#host.agent.state.messages[i];
@@ -76,12 +71,10 @@ export class SessionProviderBoundary {
 		return [];
 	}
 
-	/** Builds the current deobfuscated context for agent display and replay. */
 	buildDisplaySessionContext(): SessionContext {
 		return deobfuscateSessionContext(this.#host.sessionManager.buildSessionContext(), this.#host.obfuscator);
 	}
 
-	/** Builds the full display-only transcript context. */
 	buildTranscriptSessionContext(
 		options?: Pick<BuildSessionContextOptions, "collapseCompactedHistory" | "keepDanglingToolCalls">,
 	): SessionContext {
@@ -95,13 +88,11 @@ export class SessionProviderBoundary {
 		);
 	}
 
-	/** Obfuscates optional plaintext before a provider request. */
 	obfuscateText(text: string | undefined): string | undefined {
 		if (!text || !this.#host.obfuscator?.hasSecrets()) return text;
 		return this.#host.obfuscator.obfuscate(text);
 	}
 
-	/** Obfuscates summary plaintext carried into compaction. */
 	obfuscateCompactionPreparation(preparation: CompactionPreparation): CompactionPreparation {
 		if (!this.#host.obfuscator?.hasSecrets()) return preparation;
 		const previousSummary = this.obfuscateText(preparation.previousSummary);
@@ -109,32 +100,27 @@ export class SessionProviderBoundary {
 		return { ...preparation, previousSummary };
 	}
 
-	/** Deobfuscates provider text before exposing it to the session. */
 	deobfuscateText(text: string): string {
 		if (!this.#host.obfuscator?.hasSecrets()) return text;
 		return this.#host.obfuscator.deobfuscate(text);
 	}
 
-	/** Deobfuscates a streamed delta and removes an incomplete secret placeholder suffix. */
 	deobfuscateDelta(text: string): string {
 		const deobfuscated = this.deobfuscateText(text);
 		if (!this.#host.obfuscator?.hasSecrets()) return deobfuscated;
 		return stripPendingSecretPlaceholderSuffix(deobfuscated);
 	}
 
-	/** Converts side-request messages through the session's secret boundary. */
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[] {
 		const converted = convertToLlm(messages);
 		return this.#host.obfuscator?.hasSecrets() ? obfuscateMessages(this.#host.obfuscator, converted) : converted;
 	}
 
-	/** Converts session messages using the configured pre-LLM pipeline. */
 	async convertMessagesToLlm(messages: AgentMessage[], signal?: AbortSignal): Promise<Message[]> {
 		const transformedMessages = await this.#host.transformContext(messages, signal);
 		return await this.#host.convertToLlm(transformedMessages);
 	}
 
-	/** Applies session-level stream hooks and provider defaults to a side request. */
 	prepareSimpleStreamOptions(options: SimpleStreamOptions, provider = "anthropic"): SimpleStreamOptions {
 		const sessionOnPayload = this.#host.onPayload;
 		const sessionOnResponse = this.#host.onResponse;
@@ -208,12 +194,10 @@ export class SessionProviderBoundary {
 		return preparedOptions;
 	}
 
-	/** Normalizes image payloads for the active model. */
 	normalizeImagesForModel(images: ImageContent[] | undefined): Promise<ImageContent[] | undefined> {
 		return normalizeModelContextImages(images, { model: this.#host.model() });
 	}
 
-	/** Builds a hidden vision-model description for attachments sent to a text-only model. */
 	async buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
@@ -258,7 +242,6 @@ export class SessionProviderBoundary {
 		};
 	}
 
-	/** Normalizes every image embedded in an agent message. */
 	async normalizeAgentMessageImages<T extends AgentMessage>(message: T): Promise<T> {
 		if (!("content" in message)) return message;
 		const content = message.content;

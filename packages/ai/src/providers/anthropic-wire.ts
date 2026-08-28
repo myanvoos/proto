@@ -1,29 +1,11 @@
-/**
- * Anthropic Messages API wire types.
- *
- * Hand-maintained against https://docs.anthropic.com/en/api/messages so pi-ai
- * does not depend on `@anthropic-ai/sdk` for type information. Only the shapes
- * this package actually reads or writes are modeled; fields we never touch are
- * intentionally omitted. Names mirror the SDK so call sites read the same.
- *
- * Unlike the SDK, beta fields pi-ai uses (`speed`, `context_management`,
- * `output_config.effort`/`task_budget`, `thinking.display`, cache-control
- * `scope`, tool `strict`/`eager_input_streaming`, mid-conversation `system`
- * role) are first-class here instead of being patched in via casts.
- */
 import type { TokenTaskBudget } from "../types";
 
-// ─── Cache control ──────────────────────────────────────────────────────────
-
-/** Ephemeral prefix-cache breakpoint marker. */
 export type CacheControlEphemeral = {
 	type: "ephemeral";
 	ttl?: "1h" | "5m";
-	/** Claude Code prompt-caching-scope beta: shares the breakpoint across sessions. */
+
 	scope?: "global";
 };
-
-// ─── Content blocks (request) ───────────────────────────────────────────────
 
 export type Base64ImageSource = {
 	type: "base64";
@@ -65,7 +47,6 @@ export type ToolResultBlockParam = {
 	cache_control?: CacheControlEphemeral | null;
 };
 
-/** Anthropic-executed server tool call replayed inside an assistant turn. */
 export type ServerToolUseBlockParam = {
 	type: "server_tool_use";
 	id: string;
@@ -74,15 +55,12 @@ export type ServerToolUseBlockParam = {
 	[key: string]: unknown;
 };
 
-/** Web-search server-tool call whose matching result is replayable by proto. */
 export type WebSearchServerToolUseBlockParam = ServerToolUseBlockParam & { name: "web_search" };
 
-/** Tool-search server-tool call whose matching result is replayable by proto. */
 export type ToolSearchServerToolUseBlockParam = ServerToolUseBlockParam & {
 	name: "tool_search_tool_regex" | "tool_search_tool_bm25";
 };
 
-/** Native web-search result replayed inside an assistant turn. */
 export type WebSearchToolResultBlockParam = {
 	type: "web_search_tool_result";
 	tool_use_id: string;
@@ -90,7 +68,6 @@ export type WebSearchToolResultBlockParam = {
 	[key: string]: unknown;
 };
 
-/** Native tool-search result replayed inside an assistant turn. */
 export type ToolSearchToolResultBlockParam = {
 	type: "tool_search_tool_result";
 	tool_use_id: string;
@@ -98,14 +75,12 @@ export type ToolSearchToolResultBlockParam = {
 	[key: string]: unknown;
 };
 
-/** Anthropic server-tool history variants proto can replay atomically. */
 export type AnthropicServerToolHistoryBlockParam =
 	| WebSearchServerToolUseBlockParam
 	| WebSearchToolResultBlockParam
 	| ToolSearchServerToolUseBlockParam
 	| ToolSearchToolResultBlockParam;
 
-/** True when a block is complete Anthropic server-tool history proto can replay. */
 export function isAnthropicServerToolHistoryBlock(block: {
 	type: string;
 	name?: unknown;
@@ -137,12 +112,6 @@ export type RedactedThinkingBlockParam = {
 	data: string;
 };
 
-/**
- * Server-side fallback beta boundary marker (server-side-fallback-2026-06-01).
- * Emitted by the API mid-stream when a classifier block on the requested
- * model is retried on a fallback model. Only the official Anthropic
- * endpoint accepts this block on replay — cross-provider hops MUST strip it.
- */
 export type FallbackBlockParam = {
 	type: "fallback";
 	from: { model: string };
@@ -161,19 +130,10 @@ export type ContentBlockParam =
 	| RedactedThinkingBlockParam
 	| FallbackBlockParam;
 
-/**
- * A single conversation turn.
- *
- * `system` is the Opus 4.8+ mid-conversation system role
- * (`mid-conversation-system-2026-04-07` beta); the public API otherwise only
- * accepts `user` / `assistant`.
- */
 export type MessageParam = {
 	role: "user" | "assistant" | "system";
 	content: string | ContentBlockParam[];
 };
-
-// ─── Tools ──────────────────────────────────────────────────────────────────
 
 export type ToolInputSchema = {
 	type: "object";
@@ -187,9 +147,9 @@ export type Tool = {
 	description?: string;
 	input_schema: ToolInputSchema;
 	cache_control?: CacheControlEphemeral | null;
-	/** Structured-outputs beta: enforce the schema as a strict grammar. */
+
 	strict?: boolean;
-	/** Fine-grained tool streaming beta: stream tool input as it is generated. */
+
 	eager_input_streaming?: boolean;
 };
 
@@ -200,14 +160,12 @@ export type ToolChoiceNone = { type: "none" };
 
 export type ToolChoice = ToolChoiceAuto | ToolChoiceAny | ToolChoiceTool | ToolChoiceNone;
 
-// ─── Request ────────────────────────────────────────────────────────────────
-
 export type Metadata = { user_id?: string | null };
 
 export type ThinkingConfigEnabled = {
 	type: "enabled";
 	budget_tokens: number;
-	/** Opus 4.7+ reasoning display mode. */
+
 	display?: "summarized" | "omitted";
 };
 
@@ -215,24 +173,18 @@ export type ThinkingConfigDisabled = { type: "disabled" };
 
 export type ThinkingConfigAdaptive = {
 	type: "adaptive";
-	/** Opus 4.7+ reasoning display mode. */
+
 	display?: "summarized" | "omitted";
 };
 
 export type ThinkingConfigParam = ThinkingConfigEnabled | ThinkingConfigDisabled | ThinkingConfigAdaptive;
 
 export type OutputConfig = {
-	/** Adaptive-thinking effort level (effort beta). */
 	effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
-	/** Task-budgets beta. */
+
 	task_budget?: TokenTaskBudget | null;
 };
 
-/**
- * Per-attempt override entry in `MessageCreateParams.fallbacks`
- * (server-side-fallback-2026-06-01 beta). Every field except `model`
- * mirrors a top-level control the beta allows re-specifying per attempt.
- */
 export type FallbackParam = {
 	model: string;
 	max_tokens?: number;
@@ -241,7 +193,6 @@ export type FallbackParam = {
 	speed?: "fast";
 };
 
-/** Claude Code context-management beta payload. */
 export type ContextManagement = {
 	edits: Array<{ type: "clear_thinking_20251015"; keep: "all" }>;
 };
@@ -261,21 +212,15 @@ export type MessageCreateParams = {
 	metadata?: Metadata;
 	thinking?: ThinkingConfigParam;
 	output_config?: OutputConfig;
-	/** Fast-mode beta: realization of priority service tier. */
+
 	speed?: "fast";
-	/** Claude Code context-management beta. */
+
 	context_management?: ContextManagement;
-	/**
-	 * Server-side fallback beta chain — up to three fallback models the API
-	 * retries when a classifier blocks the primary. Required companion beta
-	 * header: `server-side-fallback-2026-06-01`.
-	 */
+
 	fallbacks?: FallbackParam[];
 };
 
 export type MessageCreateParamsStreaming = MessageCreateParams & { stream: true };
-
-// ─── Response / usage ───────────────────────────────────────────────────────
 
 export type StopReason =
 	| "end_turn"
@@ -297,12 +242,6 @@ export type ServerToolUsage = {
 	web_fetch_requests?: number | null;
 };
 
-/**
- * Per-attempt token accounting inside a multi-run turn
- * (server-side-fallback-2026-06-01). Populated whenever a fallback chain
- * ran, including sticky-served turns with no `fallback` content block.
- * A `fallback_message` entry is the definitive "served by fallback" signal.
- */
 export type UsageIteration = {
 	type?: "message" | "fallback_message" | string;
 	model?: string | null;
@@ -322,7 +261,6 @@ export type Usage = {
 	iterations?: UsageIteration[] | null;
 };
 
-/** The `message` envelope carried by `message_start`. */
 export type ResponseMessage = {
 	id: string;
 	type?: "message";
@@ -334,9 +272,6 @@ export type ResponseMessage = {
 	usage: Usage;
 };
 
-// ─── Stream events ──────────────────────────────────────────────────────────
-
-/** `content_block` payload carried by `content_block_start`. */
 export type ResponseContentBlock =
 	| { type: "text"; text: string }
 	| { type: "thinking"; thinking: string; signature?: string }

@@ -218,9 +218,7 @@ function rankZaiRequestLimits(report: UsageReport): UsageLimit[] {
 async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
 	if (params.provider !== "zai") return null;
 	const credential = params.credential;
-	// Sign-in (oauth) stores the minted id.secret key in accessToken; the paste
-	// path stores it in apiKey. Both are the same raw key used verbatim as the
-	// Authorization header (no Bearer prefix).
+
 	const token = credential.type === "oauth" ? credential.accessToken : credential.apiKey;
 	if (!token) return null;
 

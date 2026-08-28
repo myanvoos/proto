@@ -1,7 +1,3 @@
-/**
- * Public exports for shared TUI components.
- */
-
 export * from "./code-cell";
 export * from "./hyperlink";
 export * from "./output-block";

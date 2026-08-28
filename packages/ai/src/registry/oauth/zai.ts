@@ -1,14 +1,3 @@
-/**
- * Z.ai / GLM OAuth flow (GLM Coding Plan · Sign in)
- *
- * Mirrors ZCode's desktop "Individual Plan" browser sign-in: an
- * authorization-code flow (no PKCE) against chat.z.ai, a JSON token exchange
- * that yields a short-lived OAuth access token, and a business-API sequence
- * that provisions a durable `id.secret` API key. The minted key is placed in
- * {@link OAuthCredentials.access}; `getOAuthApiKey` returns it verbatim as the
- * request bearer for the `zai` provider, so no dialect change is needed.
- */
-
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import { OAuthCallbackFlow } from "./callback-server";
@@ -23,13 +12,13 @@ const CLIENT_ID = env("ZAI_OAUTH_CLIENT_ID") ?? "client_P8X5CMWmlaRO9gyO-KSqtg";
 const AUTHORIZE_URL = env("ZAI_OAUTH_AUTHORIZE_URL") ?? "https://chat.z.ai/api/oauth/authorize";
 const TOKEN_URL = env("ZAI_OAUTH_TOKEN_URL") ?? "https://zcode.z.ai/api/v1/oauth/token";
 const BIZ_BASE = env("ZAI_BIZ_BASE") ?? "https://api.z.ai";
-/** Business-login endpoint: exchanges the OAuth access token for a biz token. */
+
 const BUSINESS_LOGIN_URL = env("ZAI_BUSINESS_LOGIN_URL") ?? "https://api.z.ai/api/auth/z/login";
-/** PROTO's own key name so sign-in never mutates ZCode's `zcode-api-key`. */
+
 const KEY_NAME = "oh-my-pi";
 const CALLBACK_PORT = 54548;
 const CALLBACK_PATH = "/callback";
-/** Durable minted key never expires; matches the perplexity NEVER_EXPIRES sentinel. */
+
 const NEVER_EXPIRES = 8.64e15;
 
 function formatErrorDetails(error: unknown): string {
@@ -39,12 +28,6 @@ function formatErrorDetails(error: unknown): string {
 	return String(error);
 }
 
-/**
- * Z.ai's `{ code, msg, data, success }` envelope. The OAuth token endpoint
- * signals success with `code: 0`; the biz endpoints (`api.z.ai`) use
- * `code: 200` / `success: true`. Accept both; throw `msg` on failure. Bodies
- * without a status wrapper pass through unchanged.
- */
 function isSuccessCode(code: unknown): boolean {
 	if (code == null) return true;
 	if (typeof code === "number") return code === 0 || code === 200;
@@ -104,7 +87,6 @@ async function postJson(
 	return responseBody.length > 0 ? JSON.parse(responseBody) : undefined;
 }
 
-/** Coerce an api_keys list response (bare array or common wrapper shapes) to an array. */
 function asKeyArray(value: unknown): Array<Record<string, unknown>> {
 	if (Array.isArray(value)) return value as Array<Record<string, unknown>>;
 	if (value && typeof value === "object") {
@@ -120,11 +102,6 @@ function trimmedString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-/**
- * Exchange the short-lived OAuth access token for a durable biz token via
- * ZCode's business-login endpoint. The biz APIs reject the raw OAuth token;
- * they require this token.
- */
 async function businessLogin(oauthAccessToken: string, fetchImpl: FetchImpl): Promise<string> {
 	const data = unwrapEnvelope(
 		await postJson(BUSINESS_LOGIN_URL, { token: oauthAccessToken }, {}, fetchImpl),
@@ -150,12 +127,6 @@ interface ZaiOrganization {
 	projects?: ZaiProject[];
 }
 
-/**
- * Provision the durable Z.ai API key from a short-lived OAuth access token,
- * mirroring ZCode: business-login → resolve default org/project from
- * `getCustomerInfo` → find/create the PROTO-named key → obtain its secret →
- * return `${apiKey}.${secretKey}` (the 49-char durable key).
- */
 async function mintZaiApiKey(oauthAccessToken: string, fetchImpl: FetchImpl): Promise<string> {
 	const bizToken = await businessLogin(oauthAccessToken, fetchImpl);
 	const auth = { Authorization: `Bearer ${bizToken}` };
@@ -195,9 +166,6 @@ async function mintZaiApiKey(oauthAccessToken: string, fetchImpl: FetchImpl): Pr
 		});
 	}
 
-	// Always fetch the secret via the copy endpoint: list entries mask it
-	// (`*****abcd`) and the create response's inline secret is not reliable
-	// across account states, whereas copy always returns the full secret.
 	const copied = unwrapEnvelope(
 		await getJson(`${keysUrl}/copy/${encodeURIComponent(apiKey)}`, auth, fetchImpl),
 		"api key copy",
@@ -222,7 +190,6 @@ export class ZaiOAuthFlow extends OAuthCallbackFlow {
 	}
 
 	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string; instructions?: string }> {
-		// No PKCE: matches ZCode's authorize request verbatim.
 		const authParams = new URLSearchParams({
 			redirect_uri: redirectUri,
 			response_type: "code",
@@ -243,7 +210,6 @@ export class ZaiOAuthFlow extends OAuthCallbackFlow {
 
 		let body: unknown;
 		try {
-			// Non-standard token body (no grant_type/code_verifier): matches ZCode.
 			body = await postJson(TOKEN_URL, { provider: "zai", code, redirect_uri: redirectUri, state }, {}, this.#fetch);
 		} catch (error) {
 			throw new AIError.OAuthError(
@@ -276,9 +242,6 @@ export class ZaiOAuthFlow extends OAuthCallbackFlow {
 	}
 }
 
-/**
- * Login with Z.ai OAuth (GLM Coding Plan).
- */
 export async function loginZaiOAuth(ctrl: OAuthController): Promise<OAuthCredentials> {
 	const flow = new ZaiOAuthFlow(ctrl);
 	return flow.login();

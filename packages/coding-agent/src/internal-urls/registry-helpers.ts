@@ -1,8 +1,3 @@
-/**
- * Shared helpers for internal-url protocol handlers that resolve IDs against
- * registered agent sessions.
- */
-
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -22,17 +17,6 @@ export function resetRegisteredArtifactDirsForTests(): void {
 	extraArtifactsDirs.clear();
 }
 
-/**
- * Snapshot of artifacts dirs for every registered session, deduped.
- *
- * Collects TWO candidate dirs per ref, because a subagent reads from its
- * adopted (root-wide) `ArtifactManager.dir` but its own children are written
- * one level deeper, under `sessionFile.slice(0, -6)` (`task/index.ts`). A
- * depth-2+ subagent's output therefore lives in the write-time dir, not the
- * adopted one, so `agent://` must scan both or it 404s a live nested peer.
- * `addDir` dedup collapses the depth-0 case (both formulas agree) back to a
- * single entry.
- */
 export function artifactsDirsFromRegistry(): string[] {
 	const dirs: string[] = [];
 	const addDir = (dir: string | null | undefined) => {
@@ -47,20 +31,6 @@ export function artifactsDirsFromRegistry(): string[] {
 	return dirs;
 }
 
-/**
- * Recursively scan artifacts dirs for agent session transcripts, keyed by
- * agent id (the `.jsonl` basename). Used by `history://` so transcripts of
- * agents no longer in the registry (unregistered one-shot helpers, released
- * agents, or any agent after session resume) remain reachable — mirroring how
- * `agent://` reads `.md` outputs straight off disk.
- *
- * Layout follows `task/index.ts`: a subagent's transcript is
- * `<artifactsDir>/<AgentId>.jsonl`, and its own children nest one level deeper
- * under `<artifactsDir>/<AgentId>/<AgentId>.<ChildId>.jsonl`. Advisor
- * transcripts (`__advisor*.jsonl`) are observability-only and excluded;
- * EPERM-rewrite backups (`.bak`) are skipped. When the same id appears in
- * multiple dirs, the first hit wins (registry dirs are scanned first).
- */
 export async function sessionFilesFromDisk(): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	const seenDirs = new Set<string>();
@@ -91,16 +61,6 @@ export async function sessionFilesFromDisk(): Promise<Map<string, string>> {
 	return found;
 }
 
-/**
- * Availability half of the `history://` resolution semantics: true when a
- * transcript for `agentId` can be served from a registered ref's live session
- * or retained session file, or from an on-disk `.jsonl` under a known
- * artifacts dir. Hint surfaces use this so they only advertise
- * `history://<agentId>` links that `HistoryProtocolHandler` can actually
- * resolve. A retained sessionFile path is verified on disk before it counts,
- * and probing never throws: a stale path or unreadable artifacts subtree
- * reads as unavailable instead of disturbing the caller's delivery path.
- */
 export async function hasResolvableTranscript(agentId: string): Promise<boolean> {
 	try {
 		const registry = AgentRegistry.global();
@@ -114,14 +74,10 @@ export async function hasResolvableTranscript(agentId: string): Promise<boolean>
 		for (const id of files.keys()) {
 			if (id.toLowerCase() === lower) return true;
 		}
-	} catch {
-		// Availability probing is advisory; any filesystem failure means the
-		// transcript cannot be promised, never that delivery should fail.
-	}
+	} catch {}
 	return false;
 }
 
-/** True when `file` exists and is a regular file; never throws. */
 async function isReadableFile(file: string): Promise<boolean> {
 	try {
 		const stat = await fs.stat(file);

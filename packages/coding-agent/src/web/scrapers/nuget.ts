@@ -35,9 +35,6 @@ interface NuGetRegistrationIndex {
 	items: NuGetRegistrationPage[];
 }
 
-/**
- * Handle NuGet URLs via API
- */
 export const handleNuGet: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -47,7 +44,6 @@ export const handleNuGet: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "www.nuget.org" && parsed.hostname !== "nuget.org") return null;
 
-		// Extract package name and optional version from /packages/name or /packages/name/version
 		const match = parsed.pathname.match(/^\/packages\/([^/]+)(?:\/([^/]+))?/i);
 		if (!match) return null;
 
@@ -55,7 +51,6 @@ export const handleNuGet: SpecialHandler = async (
 		const requestedVersion = match[2] ? decodeURIComponent(match[2]) : null;
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from NuGet registration API (package name must be lowercase)
 		const apiUrl = `https://api.nuget.org/v3/registration5-gz-semver2/${packageName.toLowerCase()}/index.json`;
 		const result = await loadPage(apiUrl, { timeout, signal });
 
@@ -66,10 +61,8 @@ export const handleNuGet: SpecialHandler = async (
 
 		if (!index.items?.length) return null;
 
-		// Get the latest page (or fetch it if not inlined)
 		let latestPage = index.items[index.items.length - 1];
 
-		// If items are not inlined, fetch the page
 		if (!latestPage.items && latestPage["@id"]) {
 			const pageResult = await loadPage(latestPage["@id"], { timeout, signal });
 			if (!pageResult.ok) return null;
@@ -80,15 +73,12 @@ export const handleNuGet: SpecialHandler = async (
 
 		if (!latestPage.items?.length) return null;
 
-		// Find the requested version or get the latest
 		let targetEntry: NuGetCatalogEntry | null = null;
 
 		if (requestedVersion) {
-			// Search all pages for the requested version
 			for (const page of index.items) {
 				let pageItems = page.items;
 
-				// Fetch page if items not inlined
 				if (!pageItems && page["@id"]) {
 					const pageResult = await loadPage(page["@id"], { timeout: Math.min(timeout, 5), signal });
 					if (pageResult.ok) {
@@ -109,13 +99,11 @@ export const handleNuGet: SpecialHandler = async (
 			}
 		}
 
-		// If no specific version requested or not found, use the latest
 		if (!targetEntry) {
 			const latestItem = latestPage.items[latestPage.items.length - 1];
 			targetEntry = latestItem.catalogEntry;
 		}
 
-		// Fetch download stats via search API
 		let totalDownloads: number | null = null;
 		const searchUrl = `https://api.nuget.org/v3/query?q=packageid:${encodeURIComponent(packageName)}&prerelease=true&take=1`;
 		const searchResult = await loadPage(searchUrl, { timeout: Math.min(timeout, 5), signal });
@@ -125,7 +113,6 @@ export const handleNuGet: SpecialHandler = async (
 			if (searchData) totalDownloads = searchData.data?.[0]?.totalDownloads ?? null;
 		}
 
-		// Format markdown output
 		let md = `# ${targetEntry.id}\n\n`;
 		if (targetEntry.description) md += `${targetEntry.description}\n\n`;
 
@@ -148,7 +135,6 @@ export const handleNuGet: SpecialHandler = async (
 			md += `**Published:** ${formatIsoDate(targetEntry.published)}\n`;
 		}
 
-		// Show dependencies by target framework
 		if (targetEntry.dependencyGroups?.length) {
 			const hasAnyDeps = targetEntry.dependencyGroups.some(g => g.dependencies?.length);
 			if (hasAnyDeps) {
@@ -165,7 +151,6 @@ export const handleNuGet: SpecialHandler = async (
 			}
 		}
 
-		// Show recent versions from the latest page
 		if (latestPage.items && latestPage.items.length > 1) {
 			md += `## Recent Versions\n\n`;
 			const recentVersions = latestPage.items.slice(-5).reverse();

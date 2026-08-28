@@ -6,7 +6,6 @@ export const googleAntigravityProvider = {
 	id: "google-antigravity",
 	name: "Antigravity (Gemini 3, Claude, GPT-OSS)",
 	login: async (cb: OAuthLoginCallbacks) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { loginAntigravity } = await import("./oauth/google-antigravity");
 		return loginAntigravity(cb);
 	},

@@ -16,19 +16,18 @@ const UMANS_PROVIDER = "umans";
 const DEFAULT_ENDPOINT = "https://api.code.umans.ai";
 const USAGE_PATH = "/v1/usage";
 
-/** Umans `GET /v1/usage` response (subset; extras ignored). */
 interface UmansUsagePayload {
 	plan?: { display_name?: string };
 	limits?: {
 		requests?: { limit?: number; hard_cap?: number | null; window_seconds?: number };
 		concurrency?: { limit?: number; hard_cap?: number | null };
 	};
-	/** Rolling 5h window metadata; `resets_at` anchors the status-line countdown. */
+
 	window?: { started_at?: string; resets_at?: string; remaining_minutes?: number };
 	usage?: {
 		requests_in_window?: number;
 		remaining_requests?: number;
-		/** Model-weighted "effective requests" (umans-flash counts 0.5). */
+
 		weighted_in_window?: number;
 		weighted_remaining_requests?: number;
 		concurrent_sessions?: number;
@@ -41,9 +40,7 @@ interface UmansUsagePayload {
 function normalizeBaseUrl(baseUrl?: string): string {
 	if (!baseUrl?.trim()) return DEFAULT_ENDPOINT;
 	const trimmed = baseUrl.trim();
-	// Strip a trailing `/v1` (with optional surrounding slashes) so the usage
-	// path doesn't double it, but preserve any preceding path prefix (e.g. a
-	// path-mounted gateway like `https://gateway.example/team/umans/v1`).
+
 	const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
 	return withoutTrailingSlash.replace(/\/v1$/i, "") || DEFAULT_ENDPOINT;
 }
@@ -60,12 +57,6 @@ function resolveStatus(usedFraction: number | undefined): UsageStatus | undefine
 	return "ok";
 }
 
-/**
- * Soft-cap status never reaches `exhausted`: hitting the effective-request
- * limit only means burst headroom is being consumed — Umans throttles (429)
- * only near the burst ceiling, which the hard row tracks. `exhausted` must
- * stay off this row or the usage-aware fallback demotes a healthy account.
- */
 function softCapStatus(usedFraction: number | undefined): UsageStatus | undefined {
 	if (usedFraction === undefined) return undefined;
 	if (usedFraction >= 0.9) return "warning";
@@ -102,11 +93,6 @@ function buildRequestsLimits(payload: UmansUsagePayload, provider: string): Usag
 	const weightedRemaining = toFiniteNumber(payload.usage?.weighted_remaining_requests);
 	if (limit === undefined && rawUsed === undefined && weightedUsed === undefined) return [];
 
-	// The 5h window is rolling (FIFO: each request ages out five hours after it
-	// fired), but the payload still reports an absolute `resets_at` for the
-	// current window epoch — surface it as an incremental countdown (`tick`)
-	// rather than a hard reset. `window.id` is `"5h"` to match the status-line
-	// usage segment's window-id contract (it only recognizes `"5h"`/`"7d"`).
 	let resetsAt: number | undefined;
 	if (payload.window?.resets_at) {
 		const parsed = Date.parse(payload.window.resets_at);
@@ -119,13 +105,6 @@ function buildRequestsLimits(payload: UmansUsagePayload, provider: string): Usag
 		...(resetsAt !== undefined ? { resetsAt, resetLabel: "tick" } : {}),
 	};
 
-	// Single row: either payloads without weighted counters (legacy) or payloads
-	// that report weighted usage but no burst ceiling (`hard_cap`). Without a
-	// burst ceiling there is no hard row to defer exhaustion to, so the
-	// authoritative counter — weighted when available, else raw — drives the
-	// single row and CAN exhaust at the limit. Raw burst traffic above the
-	// limit still never drives exhaustion on its own: weighted headroom stays
-	// decisive (https://proto.sh).
 	if (weightedUsed === undefined || hardCap === undefined) {
 		const amount = buildAmount({
 			used: weightedUsed ?? rawUsed,
@@ -145,12 +124,6 @@ function buildRequestsLimits(payload: UmansUsagePayload, provider: string): Usag
 		];
 	}
 
-	// Umans weights requests by model ("effective requests": umans-flash counts
-	// 0.5), so the weighted counters are the authoritative utilization against
-	// the soft `limit`; the raw counters include burst/superseded traffic and
-	// read as exhausted mid-window while the account still has weighted
-	// headroom (https://proto.sh). Soft cap hits
-	// warn; only the burst ceiling (`hard_cap`, raw counts) can exhaust.
 	const softAmount = buildAmount({ used: weightedUsed, limit, remaining: weightedRemaining, unit: "requests" });
 	const limits: UsageLimit[] = [
 		{
@@ -184,7 +157,7 @@ function buildConcurrencyLimit(payload: UmansUsagePayload, provider: string): Us
 	return {
 		id: "umans:concurrency",
 		label: "Concurrency",
-		// Concurrency is instantaneous, not windowed.
+
 		scope: { provider, windowId: "concurrency" },
 		amount,
 		status: resolveStatus(amount.usedFraction),
@@ -207,9 +180,6 @@ async function fetchUmansUsage(params: UsageFetchParams, ctx: UsageFetchContext)
 	try {
 		const response = await ctx.fetch(url, { headers, signal: params.signal });
 		if (!response.ok) {
-			// Auth failures (401/403) must throw so checkCredentials flags the bad
-			// key as ok:false rather than ok:null (unknown). Other non-ok statuses
-			// are transient — return null so the probe reports "no data".
 			if (response.status === 401 || response.status === 403) {
 				throw new ProviderHttpError(
 					`Umans usage endpoint returned ${response.status} ${response.statusText}`.trim(),
@@ -226,7 +196,6 @@ async function fetchUmansUsage(params: UsageFetchParams, ctx: UsageFetchContext)
 		}
 		payload = json as unknown as UmansUsagePayload;
 	} catch (error) {
-		// Re-throw auth errors so the credential-health probe can surface them.
 		if (error instanceof ProviderHttpError) throw error;
 		ctx.logger?.warn("Umans usage fetch error", { error: String(error) });
 		return null;

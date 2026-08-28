@@ -39,12 +39,6 @@ interface TinyTitleDownloadOptions {
 	onProgress?: (event: TinyTitleProgressEvent) => void;
 }
 
-/**
- * Per-request controls for {@link TinyTitleClient.generate}.
- *
- * Carries the optional abort signal and title-system-prompt override used by
- * callers that customize automatic session-title generation.
- */
 interface TinyTitleGenerateOptions {
 	signal?: AbortSignal;
 	systemPrompt?: string;
@@ -64,10 +58,6 @@ function normalizeTinyTitleGenerateOptions(
 	return options;
 }
 
-/**
- * Hidden subcommand on the main CLI that boots the tiny-model worker in the
- * spawned subprocess. Kept in sync with the dispatch in `cli.ts`.
- */
 export const TINY_WORKER_ARG = "__proto_worker_tiny_inference";
 
 function readTinyModelSetting(path: "providers.tinyModelDevice" | "providers.tinyModelDtype"): string | undefined {
@@ -75,18 +65,10 @@ function readTinyModelSetting(path: "providers.tinyModelDevice" | "providers.tin
 		const value = settings.get(path);
 		return typeof value === "string" ? value : undefined;
 	} catch {
-		// Settings may be uninitialized in short-lived subprocesses; fall back to env/default.
 		return undefined;
 	}
 }
 
-/**
- * Decide which `PI_TINY_DEVICE` / `PI_TINY_DTYPE` vars to overlay onto the worker
- * env. A present env var wins (left untouched); otherwise the mapped persisted
- * setting is used. Returns only the keys to add — never the default sentinel.
- * Pure for testability; see {@link tinyWorkerEnv} for the spawn-time glue.
- * @internal
- */
 export function tinyWorkerEnvOverlay(
 	env: Record<string, string | undefined>,
 	deviceSetting: string | undefined,
@@ -104,14 +86,6 @@ export function tinyWorkerEnvOverlay(
 	return overlay;
 }
 
-/**
- * Env handed to the tiny-model subprocess. The
- * `PI_TINY_DEVICE` / `PI_TINY_DTYPE` env vars win; otherwise the persisted
- * `providers.tinyModelDevice` / `providers.tinyModelDtype` settings are mapped
- * onto those vars so the subprocess's env-based resolution picks them up.
- * Resolved once at spawn (pipelines are cached for the lifetime of the
- * subprocess).
- */
 function tinyWorkerEnv(): Record<string, string> {
 	return inferenceWorkerEnv(
 		tinyWorkerEnvOverlay(
@@ -122,10 +96,6 @@ function tinyWorkerEnv(): Record<string, string> {
 	);
 }
 
-/**
- * Spawn the tiny-model worker as a subprocess. Exported for tests and the
- * smoke probe; production callers go through {@link spawnTinyTitleWorker}.
- */
 export function createTinyTitleSubprocess(): SpawnedSubprocess<TinyTitleWorkerOutbound> {
 	return createWorkerSubprocess<TinyTitleWorkerOutbound>({
 		spawnCommand: resolveWorkerSpawnCmd(TINY_WORKER_ARG),
@@ -145,16 +115,12 @@ function wrapSubprocess(
 		ref() {
 			try {
 				proc.ref();
-			} catch {
-				// Already gone.
-			}
+			} catch {}
 		},
 		unref() {
 			try {
 				proc.unref();
-			} catch {
-				// Already gone.
-			}
+			} catch {}
 		},
 	};
 }
@@ -199,15 +165,6 @@ export class TinyTitleClient {
 		return () => this.#progressListeners.delete(listener);
 	}
 
-	/**
-	 * Spawn the tiny-model worker ahead of first use without loading any model.
-	 * Called from idle TUI startup so the first {@link generate} reuses a live,
-	 * unref'd subprocess instead of paying subprocess-spawn latency on the submit
-	 * hot path (issue #6462). No-ops for online / non-local keys and for models
-	 * already marked failed. A no-op `ping` round-trips the transport to fault in
-	 * the worker's module graph; no pending request is registered, so
-	 * {@link #syncWorkerRef} leaves the worker unref'd and idle sessions still exit.
-	 */
 	prewarm(modelKey: string): void {
 		if (!isTinyTitleLocalModelKey(modelKey) || this.#failedModels.has(modelKey)) return;
 		try {
@@ -354,9 +311,7 @@ export class TinyTitleClient {
 		this.#refed = false;
 		try {
 			await worker?.terminate();
-		} catch {
-			// Already gone.
-		}
+		} catch {}
 	}
 
 	#ensureWorker(): RefCountedWorkerHandle<TinyTitleWorkerInbound, TinyTitleWorkerOutbound> {
@@ -368,22 +323,15 @@ export class TinyTitleClient {
 		return worker;
 	}
 
-	/** Register a pending request and keep the worker referenced while work is in flight. */
 	#addPending(id: string, request: PendingRequest): void {
 		this.#pending.set(id, request);
 		this.#syncWorkerRef();
 	}
 
-	/** Drop a pending request and unref the worker once nothing is in flight. */
 	#deletePending(id: string): void {
 		if (this.#pending.delete(id)) this.#syncWorkerRef();
 	}
 
-	/**
-	 * Tiny-model workers are spawned `unref`'d so idle TUI sessions can exit.
-	 * Short-lived CLI downloads need the opposite while awaiting worker IPC, or
-	 * Bun can drain the event loop before the subprocess answers.
-	 */
 	#syncWorkerRef(): void {
 		const worker = this.#worker;
 		if (!worker) return;
@@ -450,7 +398,6 @@ export class TinyTitleClient {
 
 export const tinyTitleClient = new TinyTitleClient();
 
-/** Alias for the shared tiny-model worker client (titles + memory completions). */
 export const tinyModelClient = tinyTitleClient;
 
 export async function shutdownTinyTitleClient(): Promise<void> {

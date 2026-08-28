@@ -205,20 +205,13 @@ async function withPreparedMcpConnection<T>(
 	let connection: MCPServerConnection | undefined;
 	try {
 		const manager = new MCPManager(runtime.cwd);
-		// Auth storage must be wired in before prepareConfig so OAuth-backed
-		// servers can refresh credentials and inject Authorization headers.
-		// Without this, `/mcp test|resources|prompts` silently fails for any
-		// server saved by the TUI/reauth path.
+
 		manager.setAuthStorage(runtime.session.modelRegistry.authStorage);
 		const resolvedConfig = await manager.prepareConfig(config);
 		connection = await connectToServer(name, resolvedConfig);
 		return await fn(connection);
 	} finally {
 		if (connection) {
-			// Await cleanup so the stdio subprocess / HTTP DELETE has actually
-			// released the resource before this helper returns. Fire-and-forget
-			// here races with subsequent connect attempts and turns close
-			// failures into unhandled rejections.
 			try {
 				await disconnectServer(connection);
 			} catch (err) {
@@ -242,9 +235,7 @@ async function collectConnectedMcpLines(
 				collect(name, connection),
 			);
 			lines.push(...collected);
-		} catch {
-			// unreachable server: skip silently
-		}
+		} catch {}
 	}
 	return lines;
 }
@@ -388,11 +379,6 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 					const enabled = config.enabled !== false && !disabledSet.has(name) ? "enabled" : "disabled";
 					let location: string | undefined;
 					if (config.type === "http" || config.type === "sse") {
-						// Strip query string and userinfo from URLs to avoid leaking
-						// API keys carried in the query (e.g. `?apiKey=…`). Skip the
-						// redaction entirely for missing/empty URLs so the row falls
-						// back to `(unknown)` rather than the misleading `(hidden)`
-						// label reserved for unparseable values.
 						const raw = (config as { url?: string }).url;
 						if (raw) {
 							try {
@@ -485,7 +471,6 @@ const MCP_HELP_TEXT = [
 
 const TUI_ONLY_MCP_VERBS = new Set(["reauth", "unauth", "smithery-login", "smithery-logout", "reconnect"]);
 
-/** ACP/text-mode `/mcp` handler. Shared by both dispatchers via the spec. */
 export async function handleMcpAcp(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,

@@ -56,10 +56,8 @@ export function tinyModelDeviceLoadOrder(preference: TinyModelDevicePreference):
 	return [preference.device, CPU_DEVICE];
 }
 
-/** Sentinel `providers.tinyModelDevice` value meaning "use the built-in CPU default". */
 export const TINY_MODEL_DEVICE_DEFAULT = "default";
 
-/** Accepted values for the `providers.tinyModelDevice` setting (validation + UI). */
 export const TINY_MODEL_DEVICE_SETTING_VALUES = [
 	TINY_MODEL_DEVICE_DEFAULT,
 	"gpu",
@@ -77,7 +75,6 @@ export const TINY_MODEL_DEVICE_SETTING_VALUES = [
 	"webnn-npu",
 ] as const;
 
-/** Submenu metadata for the `providers.tinyModelDevice` setting. */
 export const TINY_MODEL_DEVICE_SETTING_OPTIONS = [
 	{ value: "default", label: "Default", description: "CPU-only inference" },
 	{ value: "gpu", label: "GPU", description: "Accelerated provider (WebGPU/Metal, CUDA, or DirectML)" },
@@ -99,12 +96,6 @@ export const TINY_MODEL_DEVICE_SETTING_OPTIONS = [
 	description: string;
 }>;
 
-/**
- * Map a `providers.tinyModelDevice` setting value onto a `PI_TINY_DEVICE` env
- * value for the worker. Returns `undefined` for the default sentinel so the
- * worker keeps its built-in CPU default; the worker still validates the
- * forwarded value via {@link normalizeTinyModelDevice}.
- */
 export function tinyModelDeviceSettingToEnv(value: string | undefined): string | undefined {
 	if (!value || value === TINY_MODEL_DEVICE_DEFAULT) return undefined;
 	return value;

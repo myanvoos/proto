@@ -1,4 +1,4 @@
-#!/bin/sh
+
 #
 # Build the shipping pi_natives N-API addons with plain cargo on the host
 # toolchain (matching-host runners; no cross-compilation toolchains).

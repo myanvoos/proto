@@ -32,19 +32,11 @@ interface ParsedCall {
 	arguments: Record<string, unknown>;
 }
 
-/**
- * Scanner for the hosted-Gemini / Gemma 3 Pythonic tool-calling convention
- * (see `docs/toolconv/gemini.md`). Tool calls arrive as a ```` ```tool_code ````
- * fenced block whose body is one or more Python call expressions, e.g.
- * `print(default_api.search(pattern="x", skip=40))`. Like the qwen3 scanner we
- * buffer the whole block until its closing fence, then parse all calls at once
- * (no incremental argument deltas — Python literals are not worth streaming).
- */
 export class GeminiInbandScanner implements InbandScanner {
 	#buffer = "";
 	#state: State = "outside";
 	#thinking = "";
-	/** Fence-aware close-matcher while {@link #state} is "thinking"; undefined otherwise. */
+
 	#fenced: FencedThinkingScanner | undefined;
 	readonly #parseThinking: boolean;
 
@@ -66,8 +58,6 @@ export class GeminiInbandScanner implements InbandScanner {
 		const events: InbandScanEvent[] = [];
 		for (;;) {
 			if (this.#state === "thinking") {
-				// Always run on final so the fenced scanner flushes its held tail even
-				// when #buffer is empty (a partial close held from the previous feed).
 				this.#consumeThinking(final, events);
 				if (this.#state === "thinking") break;
 				continue;
@@ -139,8 +129,6 @@ export class GeminiInbandScanner implements InbandScanner {
 	#consumeTool(final: boolean, events: InbandScanEvent[]): void {
 		const close = this.#buffer.indexOf(FENCE);
 		if (close === -1) {
-			// Inside the fence we emit nothing until it closes; on a truncated
-			// stream the incomplete block is dropped rather than leaked as text.
 			if (final) {
 				this.#buffer = "";
 				this.#state = "outside";
@@ -159,7 +147,6 @@ export class GeminiInbandScanner implements InbandScanner {
 	}
 }
 
-/** Extract every top-level call expression in a `tool_code` body. */
 function parseGeminiCalls(body: string): ParsedCall[] {
 	const calls: ParsedCall[] = [];
 	let i = 0;
@@ -190,7 +177,6 @@ function parseGeminiCalls(body: string): ParsedCall[] {
 	return calls;
 }
 
-/** Identifier immediately preceding a `(` (the callee's final name segment). */
 function identBefore(body: string, parenIndex: number): string | undefined {
 	let j = parenIndex - 1;
 	while (j >= 0 && /\s/.test(body[j]!)) j--;
@@ -200,7 +186,6 @@ function identBefore(body: string, parenIndex: number): string | undefined {
 	return /^[A-Za-z_]\w*$/.test(name) ? name : undefined;
 }
 
-/** Index of the `)` matching the `(` at `openIndex`, skipping string contents. */
 function matchParen(body: string, openIndex: number): number {
 	let depth = 0;
 	let i = openIndex;
@@ -222,7 +207,6 @@ function matchParen(body: string, openIndex: number): number {
 	return -1;
 }
 
-/** Index just past the Python string literal starting at `i` (a quote char). */
 function skipString(body: string, i: number): number {
 	const quote = body[i]!;
 	const triple = quote + quote + quote;
@@ -280,7 +264,7 @@ function parsePyArgs(text: string): Record<string, unknown> {
 		const trimmed = segment.trim();
 		if (trimmed.length === 0) continue;
 		const eq = topLevelIndexOf(trimmed, "=");
-		if (eq === -1) continue; // positional args are not part of the convention
+		if (eq === -1) continue;
 		const key = trimmed.slice(0, eq).trim();
 		if (!/^[A-Za-z_]\w*$/.test(key)) continue;
 		out[key] = parsePyValue(trimmed.slice(eq + 1).trim());
@@ -448,7 +432,6 @@ function unescapePythonString(s: string): string {
 	return out;
 }
 
-/** Split on `sep` at bracket depth 0, skipping string literals. */
 function splitTopLevel(text: string, sep: string): string[] {
 	const parts: string[] = [];
 	let depth = 0;
@@ -477,7 +460,6 @@ function splitTopLevel(text: string, sep: string): string[] {
 	return parts;
 }
 
-/** First index of `ch` at bracket depth 0, skipping string literals. */
 function topLevelIndexOf(text: string, ch: string): number {
 	let depth = 0;
 	let i = 0;
@@ -501,9 +483,6 @@ function topLevelIndexOf(text: string, ch: string): number {
 }
 
 function renderToolCall(call: ToolCall, _options: DialectRenderOptions = {}): string {
-	// Always escaped single-line literals: the scanner round-trips this wire
-	// form through unescapePythonString, so pyCall's verbatim `"""` example
-	// blocks would corrupt backslash-bearing content.
 	let kwargs = "";
 	for (const key in call.arguments) {
 		kwargs += `${kwargs ? ", " : ""}${key}=${pyValue(call.arguments[key])}`;
@@ -512,7 +491,6 @@ function renderToolCall(call: ToolCall, _options: DialectRenderOptions = {}): st
 }
 
 function renderAssistantToolCalls(calls: readonly ToolCall[], options: DialectRenderOptions = {}): string {
-	// One call renders bare; parallel calls render as a Python list `[a, b]`.
 	const body =
 		calls.length === 1
 			? renderToolCall(calls[0]!, options)

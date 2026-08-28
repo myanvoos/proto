@@ -1,17 +1,3 @@
-/**
- * Custom Compaction Hook
- *
- * Replaces the default compaction behavior with a full summary of the entire context.
- * Instead of keeping the last 20k tokens of conversation turns, this hook:
- * 1. Summarizes ALL messages (messagesToSummarize + turnPrefixMessages)
- * 2. Discards all old turns completely, keeping only the summary
- *
- * This example also demonstrates using a different model (Gemini Flash) for summarization,
- * which can be cheaper/faster than the main conversation model.
- *
- * Usage:
- *   proto --hook examples/hooks/custom-compaction.ts
- */
 import { complete, getModel } from "@oh-my-pi/pi-ai";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent";
 import { convertToLlm, serializeConversation } from "@oh-my-pi/pi-coding-agent";
@@ -23,21 +9,18 @@ export default function (pi: HookAPI) {
 		const { preparation, branchEntries: _, signal } = event;
 		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
 
-		// Use Gemini Flash for summarization (cheaper/faster than most conversation models)
 		const model = getModel("google", "gemini-2.5-flash");
 		if (!model) {
 			ctx.ui.notify(`Could not find Gemini Flash model, using default compaction`, "warning");
 			return;
 		}
 
-		// Resolve API key for the summarization model
 		const apiKey = await ctx.modelRegistry.getApiKey(model);
 		if (!apiKey) {
 			ctx.ui.notify(`No API key for ${model.provider}, using default compaction`, "warning");
 			return;
 		}
 
-		// Combine all messages for full summary
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
 
 		ctx.ui.notify(
@@ -47,13 +30,10 @@ export default function (pi: HookAPI) {
 			"info",
 		);
 
-		// Convert messages to readable text format
 		const conversationText = serializeConversation(convertToLlm(allMessages));
 
-		// Include previous summary context if available
 		const previousContext = previousSummary ? `\n\nPrevious session summary for context:\n${previousSummary}` : "";
 
-		// Build messages that ask for a comprehensive summary
 		const summaryMessages = [
 			{
 				role: "user" as const,
@@ -83,7 +63,6 @@ ${conversationText}
 		];
 
 		try {
-			// Pass signal to honor abort requests (e.g., user cancels compaction)
 			const response = await complete(model, { messages: summaryMessages }, { apiKey, maxTokens: 8192, signal });
 
 			const summary = response.content
@@ -96,8 +75,6 @@ ${conversationText}
 				return;
 			}
 
-			// Return compaction content - SessionManager adds id/parentId
-			// Use firstKeptEntryId from preparation to keep recent messages
 			return {
 				compaction: {
 					summary,
@@ -108,7 +85,7 @@ ${conversationText}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`Compaction failed: ${message}`, "error");
-			// Fall back to default compaction on error
+
 			return;
 		}
 	});

@@ -1,10 +1,3 @@
-/**
- * AGENTS.md Provider
- *
- * Discovers standalone AGENTS.md files by walking up from cwd.
- * This handles AGENTS.md files that live in project root (not in config directories
- * like .codex/ or .gemini/, which are handled by their respective providers).
- */
 import * as path from "node:path";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
@@ -15,26 +8,15 @@ import { calculateDepth, createSourceMeta } from "./helpers";
 const PROVIDER_ID = "agents-md";
 const DISPLAY_NAME = "AGENTS.md";
 
-/** Compare resolved absolute paths. */
 function samePath(left: string, right: string): boolean {
 	return path.resolve(left) === path.resolve(right);
 }
 
-/**
- * Return whether `child` is at or below `parent`.
- */
 function isWithin(parent: string, child: string): boolean {
 	const relative = path.relative(path.resolve(parent), path.resolve(child));
 	return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-/**
- * Load standalone AGENTS.md files.
- *
- * When a repository is nested below the user's home directory, continue past
- * the Git root to discover workspace-level AGENTS.md files, but stop before
- * loading the home directory's own AGENTS.md as project context.
- */
 export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];

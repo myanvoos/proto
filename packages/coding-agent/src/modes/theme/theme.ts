@@ -23,26 +23,19 @@ export {
 	setMarkdownMermaidRendering,
 } from "./tui-adapters";
 
-/** Appearance detected via OSC 11 background color query, or undefined if not yet available. */
 var terminalReportedAppearance: "dark" | "light" | undefined;
 
-/** Appearance reported by the macOS fallback observer, or undefined if not yet available. */
 var macOSReportedAppearance: "dark" | "light" | undefined;
 
 function shouldUseMacOSAppearanceFallback(): boolean {
-	// Zellij currently breaks OSC 11 passthrough on macOS, so terminal-derived
-	// appearance cannot be trusted there. Fall back to host macOS appearance
-	// without letting it override valid terminal signals elsewhere.
 	return process.platform === "darwin" && !!Bun.env.ZELLIJ;
 }
 
 function detectTerminalBackground(): "dark" | "light" {
-	// Tier 1: terminal-reported appearance from OSC 11 luminance.
 	if (!shouldUseMacOSAppearanceFallback() && terminalReportedAppearance) {
 		return terminalReportedAppearance;
 	}
 
-	// Tier 2: COLORFGBG env var (static at process start, but still terminal-derived).
 	const colorfgbg = Bun.env.COLORFGBG || "";
 	if (colorfgbg) {
 		const parts = colorfgbg.split(";");
@@ -52,7 +45,6 @@ function detectTerminalBackground(): "dark" | "light" {
 		}
 	}
 
-	// Tier 3: host macOS appearance for known-broken terminal paths only.
 	if (shouldUseMacOSAppearanceFallback()) {
 		const macAppearance = macOSReportedAppearance ?? detectMacOSAppearance();
 		if (macAppearance) return macAppearance;
@@ -66,24 +58,17 @@ function getDefaultTheme(): string {
 	return bg === "light" ? autoLightTheme : autoDarkTheme;
 }
 
-// ============================================================================
-// Global Theme Instance
-// ============================================================================
-
 export var theme: Theme;
 var currentThemeName: string | undefined;
 
-/** Get the name of the currently active theme. */
 export function getCurrentThemeName(): string | undefined {
 	return currentThemeName;
 }
 
-/** Returns unstyled `text` before `initTheme()` assigns the global theme; use only for early-render paths. */
 export function fgOrPlain(color: ThemeColor, text: string, styledText: string = text): string {
 	return typeof theme === "undefined" ? text : theme.fg(color, styledText);
 }
 interface ThemeChangeEvent {
-	/** Preview/presentation-only changes should repaint live UI without replacing native scrollback. */
 	ephemeral?: boolean;
 }
 
@@ -112,7 +97,7 @@ function configureTheme(colorBlindMode?: boolean, darkTheme?: string, lightTheme
 	currentThemeName = name;
 	return name;
 }
-/** Initialize the active theme synchronously before the first terminal paint. */
+
 export function initThemeSync(colorBlindMode?: boolean, darkTheme?: string, lightTheme?: string): void {
 	const name = configureTheme(colorBlindMode, darkTheme, lightTheme);
 	const options: CreateThemeOptions = {
@@ -127,7 +112,6 @@ export function initThemeSync(colorBlindMode?: boolean, darkTheme?: string, ligh
 	}
 }
 
-/** Initialize the default theme only when no earlier prepaint initialized one. */
 export async function ensureTheme(): Promise<void> {
 	if (typeof theme !== "undefined") return;
 	await initTheme();
@@ -150,7 +134,6 @@ export async function initTheme(
 		logger.debug("Theme loading failed, falling back to dark theme", { error: String(err) });
 		currentThemeName = "dark";
 		theme = await loadTheme("dark", getCurrentThemeOptions());
-		// Don't start watcher for fallback theme
 	}
 }
 
@@ -176,14 +159,12 @@ export async function setTheme(
 		if (requestId !== themeLoadRequestId) {
 			return { success: false, error: "Theme change superseded by a newer request" };
 		}
-		// Theme is invalid - fall back to dark theme
+
 		currentThemeName = "dark";
 		theme = await loadTheme("dark", getCurrentThemeOptions());
-		// The active theme just changed to the fallback — bump the epoch so memoized
-		// renderers (e.g. ToolExecutionComponent) re-shape with the fallback colors
-		// instead of holding the failed theme's stale styling.
+
 		notifyThemeChange();
-		// Don't start watcher for fallback theme
+
 		return {
 			success: false,
 			error: error instanceof Error ? error.message : String(error),
@@ -215,29 +196,17 @@ export async function previewTheme(
 	}
 }
 
-/**
- * Enable auto-detection mode, switching to the appropriate dark/light theme.
- */
 export function enableAutoTheme(event: ThemeChangeEvent = {}): void {
 	autoDetectedTheme = true;
 	reevaluateAutoTheme("enableAutoTheme", event);
 }
 
-/**
- * Update the theme mappings for auto-detection mode.
- * When a dark/light mapping changes and auto-detection is active, re-evaluate the theme.
- */
 export function setAutoThemeMapping(mode: "dark" | "light", themeName: string): void {
 	if (mode === "dark") autoDarkTheme = themeName;
 	else autoLightTheme = themeName;
 	reevaluateAutoTheme("setAutoThemeMapping");
 }
 
-/**
- * Called when the terminal detects a dark/light appearance change.
- * The terminal layer queries OSC 11 (background color) and computes luminance;
- * Mode 2031 notifications trigger re-queries rather than providing the value directly.
- */
 export function onTerminalAppearanceChange(
 	mode: "dark" | "light",
 	event: ThemeChangeEvent = { ephemeral: true },
@@ -255,10 +224,6 @@ export function setThemeInstance(themeInstance: Theme): void {
 	notifyThemeChange({ ephemeral: true });
 }
 
-/**
- * Set color blind mode, recreating the theme with the new setting.
- * When enabled, uses blue instead of green for diff additions.
- */
 export async function setColorBlindMode(enabled: boolean): Promise<void> {
 	currentColorBlindMode = enabled;
 	if (!currentThemeName) return;
@@ -270,7 +235,7 @@ export async function setColorBlindMode(enabled: boolean): Promise<void> {
 		theme = loadedTheme;
 	} catch {
 		if (requestId !== themeLoadRequestId) return;
-		// Fall back to dark theme
+
 		theme = await loadTheme("dark", getCurrentThemeOptions());
 		if (requestId !== themeLoadRequestId) return;
 	}
@@ -286,18 +251,10 @@ export function onThemeChange(callback: (event: ThemeChangeEvent) => void): () =
 	};
 }
 
-/**
- * Monotonic counter bumped on any theme-affecting change that should invalidate
- * cached renders: theme swaps and reloads (including the invalid-theme dark
- * fallback), theme previews, symbol-preset changes, and color-blind-mode
- * changes — everything that routes through {@link notifyThemeChange}. Consumers
- * key cached renders on it so the next render re-shapes their output.
- */
 export function getThemeEpoch(): number {
 	return themeEpoch;
 }
 
-/** Bump the theme epoch and notify the registered theme-change listener. */
 function notifyThemeChange(event: ThemeChangeEvent = {}): void {
 	themeEpoch++;
 	onThemeChangeCallback?.(event);
@@ -306,7 +263,6 @@ function notifyThemeChange(event: ThemeChangeEvent = {}): void {
 async function startThemeWatcher(): Promise<void> {
 	stopThemeWatcher();
 
-	// Only watch if it's a custom theme (not built-in)
 	if (!currentThemeName || currentThemeName === "dark" || currentThemeName === "light") {
 		return;
 	}
@@ -316,7 +272,6 @@ async function startThemeWatcher(): Promise<void> {
 	const watchedFileName = `${watchedThemeName}.json`;
 	const themeFile = path.join(customThemesDir, watchedFileName);
 
-	// Only watch if the file exists
 	if (!fs.existsSync(themeFile)) {
 		return;
 	}
@@ -328,12 +283,10 @@ async function startThemeWatcher(): Promise<void> {
 		themeReloadTimer = setTimeout(() => {
 			themeReloadTimer = undefined;
 
-			// Ignore stale timers after switching themes or stopping the watcher
 			if (currentThemeName !== watchedThemeName) {
 				return;
 			}
 
-			// Keep the last successfully loaded theme active if the file is temporarily missing
 			if (!fs.existsSync(themeFile)) {
 				return;
 			}
@@ -343,9 +296,7 @@ async function startThemeWatcher(): Promise<void> {
 					theme = loadedTheme;
 					notifyThemeChange({ ephemeral: true });
 				})
-				.catch(() => {
-					// Ignore errors (file might be in invalid state while being edited)
-				});
+				.catch(() => {});
 		}, 100);
 	};
 
@@ -364,14 +315,9 @@ async function startThemeWatcher(): Promise<void> {
 			}
 			scheduleReload();
 		});
-	} catch {
-		// Ignore errors starting watcher
-	}
+	} catch {}
 }
 
-/**
- * Load and apply an already-resolved auto-theme name.
- */
 function applyResolvedAutoTheme(resolved: string, debugLabel: string, event: ThemeChangeEvent): void {
 	if (resolved === currentThemeName) return;
 	currentThemeName = resolved;
@@ -388,10 +334,6 @@ function applyResolvedAutoTheme(resolved: string, debugLabel: string, event: The
 		});
 }
 
-/**
- * Shared logic for re-evaluating the auto-detected theme.
- * An explicit appearance is provisional input and does not alter terminal-reported state.
- */
 function reevaluateAutoTheme(debugLabel: string, event: ThemeChangeEvent = {}, appearance?: "dark" | "light"): void {
 	if (!autoDetectedTheme) return;
 	const resolved =
@@ -403,10 +345,6 @@ function reevaluateAutoThemeForAppearance(debugLabel: string, appearance?: "dark
 	reevaluateAutoTheme(debugLabel, { ephemeral: true }, appearance);
 }
 
-// ============================================================================
-// macOS Appearance Fallback Observer
-// ============================================================================
-
 type MacOSAppearanceReprobeTerminal = Pick<
 	Terminal,
 	"appearance" | "onAppearanceChange" | "onAppearanceReport" | "onPrivateModeReport" | "refreshAppearance"
@@ -415,15 +353,6 @@ type MacOSAppearanceReprobeTerminal = Pick<
 const MACOS_APPEARANCE_REPROBE_DELAYS_MS = [25, 50, 100, 250, 500, 1000] as const;
 const MACOS_APPEARANCE_RECONCILE_DELAY_MS = 1100;
 
-/**
- * Fall back to native macOS appearance notifications when the terminal
- * explicitly confirms that Mode 2031 notifications are unsupported.
- *
- * Native notifications provisionally repaint from the host appearance and
- * synchronously trigger an OSC 11 probe, followed by a bounded burst of six
- * retries. A changed terminal classification cancels the sequence; otherwise
- * a confirmed terminal classification is restored at the validation deadline.
- */
 export function startMacOSAppearanceReprobeFallback(terminal: MacOSAppearanceReprobeTerminal): () => void {
 	let disposed = false;
 	let observerStartAttempted = false;
@@ -559,11 +488,6 @@ function stopMacAppearanceObserver(): void {
 	macOSReportedAppearance = undefined;
 }
 
-// ============================================================================
-// SIGWINCH Listener
-// ============================================================================
-
-/** Re-check appearance on SIGWINCH and switch dark/light when using auto-detected theme. */
 function startSigwinchListener(): void {
 	stopSigwinchListener();
 	sigwinchHandler = () => {
@@ -594,18 +518,6 @@ export function stopThemeWatcher(): void {
 	terminalReportedAppearance = undefined;
 }
 
-// ============================================================================
-// HTML Export Helpers
-// ============================================================================
-
-/**
- * Classify a parsed theme JSON as light/dark by the perceived luminance of its
- * status-line background. Mirrors {@link Theme.isLight} so the synchronous
- * helpers below stay in lockstep with the runtime classifier — see the comment
- * on `Theme.statusLineLuminance` for why `statusLineBg` is the source of truth
- * (themes like `porcelain` style a dark chat bubble on an otherwise-light
- * theme, so `userMessageBg` is unreliable).
- */
 function isLightThemeJson(themeJson: ThemeJson): boolean {
 	try {
 		const resolved = resolveVarRefs(themeJson.colors.statusLineBg, themeJson.vars ?? {});
@@ -616,11 +528,6 @@ function isLightThemeJson(themeJson: ThemeJson): boolean {
 	}
 }
 
-/**
- * Check if a theme is a "light" theme by analyzing its status-line background
- * luminance. Loads theme JSON synchronously (built-in or custom file on disk)
- * for callers in synchronous flows (settings migration, setup wizard).
- */
 export function isLightTheme(themeName?: string): boolean {
 	const name = themeName ?? "dark";
 	const builtinThemes = getBuiltinThemes();

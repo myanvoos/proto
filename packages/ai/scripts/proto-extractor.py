@@ -322,8 +322,8 @@ def extract_services(
 
     for m in service_pattern.finditer(content):
         groups = m.groups()
-        type_name = groups[3]  # typeName
-        methods_str = groups[4]  # methods content
+        type_name = groups[3]
+        methods_str = groups[4]
         pos = m.start()
 
         if type_name in seen_types:
@@ -334,7 +334,6 @@ def extract_services(
         if not file_path:
             continue
 
-        # Extract comment from the match text before @generated
         full_match = m.group(0)
         comment_end = full_match.find("@generated")
         comment_text = full_match[3:comment_end] if comment_end > 0 else ""
@@ -427,7 +426,6 @@ def get_simple_name(type_name: str) -> str:
     Handles nested types like 'agent.v1.Outer.Inner' by converting to 'Outer_Inner'.
     """
     parts = type_name.split(".")
-    # Skip the package prefix (e.g., 'agent.v1')
     if len(parts) > 2:
         return "_".join(parts[2:])
     return parts[-1]
@@ -572,7 +570,6 @@ def main():
         r"// @generated from file ([^\s]+) \(package ([^,]+), syntax (\w+)\)"
     )
 
-    # Collect all messages, enums, services into one consolidated proto
     all_messages: dict[str, MessageDef] = {}
     all_enums: dict[str, EnumDef] = {}
     all_services: dict[str, ServiceDef] = {}
@@ -602,7 +599,6 @@ def main():
         print("No matching proto files found", file=sys.stderr)
         sys.exit(1)
 
-    # Create consolidated proto file
     consolidated = ProtoFile(
         path=str(output_file),
         package=package,

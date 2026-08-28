@@ -11,9 +11,6 @@ const cliPath = path.join(outDir, "cli.js");
 const shebang = "#!/usr/bin/env bun\n";
 const legacyHtmlExportAssetPattern = /^(?:template-[^.]+\.(?:css|html|js)|tool-views\.generated-[^.]+\.js)$/;
 
-// Native / optional / platform-specific deps are loaded from installed files.
-// `proto-host-modules` exists only in compiled binaries via the build plugin;
-// the npm bundle never executes that `isCompiledBinary()` branch.
 const ALWAYS_EXTERNAL = [
 	"@oh-my-pi/pi-natives",
 	"@huggingface/transformers",
@@ -22,13 +19,6 @@ const ALWAYS_EXTERNAL = [
 	"proto-host-modules",
 ];
 
-// Heavy, lazily-used third-party leaf deps. Each is a declared `dependency`, so the
-// published package resolves it from node_modules at runtime; bundling only embeds a
-// redundant copy that bloats dist/cli.js. NEVER add a patched dependency here — the
-// bundle is where a root `patchedDependencies` patch is baked in, so an externalized
-// import would load the unpatched npm package in users' installs (currently
-// @ark/schema is patched, so it — and arktype, which pulls @ark/schema — stay
-// bundled).
 const RUNTIME_EXTERNAL = ["puppeteer-core", "@babel/parser"];
 
 async function ensureShebang(): Promise<void> {
@@ -44,8 +34,6 @@ function formatBytes(bytes: number): string {
 }
 
 async function cleanBundleOutputs(): Promise<void> {
-	// dist/ is shared with the dev binary (dist/proto); only remove assets
-	// emitted by this script.
 	let entries: string[];
 	try {
 		entries = await fs.readdir(outDir);
@@ -71,14 +59,9 @@ async function cleanBundleOutputs(): Promise<void> {
 async function main(): Promise<void> {
 	const start = Bun.nanoseconds();
 	await cleanBundleOutputs();
-	// One payload for both consumers: inlined into dist/cli.js via `--define` for
-	// the bundled CLI entrypoint, and written to dist/docs-index.generated.txt so
-	// SDK consumers importing `@oh-my-pi/pi-coding-agent/*` (TypeScript source, no
-	// build-time embed) can still resolve proto:// docs (see src/internal-urls/docs-index.ts).
+
 	const docsPayload = await buildDocsIndexPayload();
-	// Build in-process: the docs embed payload is far larger than Linux's
-	// 128KiB per-argv-string cap, so it can never be passed as a CLI
-	// `--define` (posix_spawn fails with E2BIG).
+
 	const output = await Bun.build({
 		entrypoints: [path.join(packageDir, "src/cli.ts")],
 		outdir: outDir,

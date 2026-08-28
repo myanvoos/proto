@@ -1,5 +1,3 @@
-/** Built-in push-mode uploader composition and command uploader support. */
-
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,11 +16,6 @@ import { createSelfHostedUploader } from "./uploaders-self-hosted";
 const UPLOAD_TIMEOUT_MS = 60_000;
 const URL_PATTERN = /https?:\/\/\S+/g;
 
-/**
- * Quote-aware argv split for the command template. Supports single/double
- * quotes and backslash escapes outside single quotes — enough for uploader
- * command lines without invoking a shell.
- */
 export function splitCommandTemplate(template: string): string[] {
 	const argv: string[] = [];
 	let current = "";
@@ -63,7 +56,6 @@ export function splitCommandTemplate(template: string): string[] {
 	return argv;
 }
 
-/** Last URL printed on stdout wins; uploader tools often log progress first. */
 export function extractUploadUrl(stdout: string): string | null {
 	let last: string | null = null;
 	for (const match of stdout.matchAll(URL_PATTERN)) {
@@ -72,11 +64,6 @@ export function extractUploadUrl(stdout: string): string | null {
 	return last;
 }
 
-/**
- * Build an uploader from an argv template. Placeholders, substituted after
- * splitting (paths with spaces stay one argument): `{file}` temp file path,
- * `{mime}` MIME type, `{ext}` bare extension.
- */
 export function createCommandUploader(template: string): BlobUploader {
 	const argvTemplate = splitCommandTemplate(template);
 	if (argvTemplate.length === 0) throw new Error("images.urls.command is empty");
@@ -114,14 +101,6 @@ export function createCommandUploader(template: string): BlobUploader {
 	};
 }
 
-/**
- * Resolve one registry destination to its built-in uploader.
- *
- * Serving destinations deliberately return `null`; the broker selects those
- * through its separate serve-kind predicate. Registry entries known to be
- * unusable, and active entries without an implementation, fail explicitly
- * before an upload can issue a network request.
- */
 export function createConfiguredUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,
@@ -157,7 +136,6 @@ export function createConfiguredUploader(
 	throw new DestinationUnavailableError(destination, "no built-in uploader or serving adapter is implemented");
 }
 
-/** Wrap an uploader with per-hash memoization so bytes upload at most once. */
 export function memoizeUploader(
 	uploader: BlobUploader,
 ): (hash: string, request: BlobUploadRequest) => Promise<BlobPublication | null> {

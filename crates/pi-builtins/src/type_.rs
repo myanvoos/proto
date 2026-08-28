@@ -10,31 +10,31 @@ use brush_core::{
 };
 use clap::Parser;
 
-/// Inspect the type of a named shell item.
+
 #[derive(Parser)]
 pub(crate) struct TypeCommand {
-	/// Display all locations of the specified name, not just the first.
+
 	#[arg(short = 'a')]
 	all_locations: bool,
 
-	/// Don't consider functions when resolving the name.
+
 	#[arg(short = 'f')]
 	suppress_func_lookup: bool,
 
-	/// Force searching by file path, even if the name is an alias, built-in
-	/// command, or shell function.
+
+
 	#[arg(short = 'P')]
 	force_path_search: bool,
 
-	/// Show file path only.
+
 	#[arg(short = 'p')]
 	show_path_only: bool,
 
-	/// Only display the type of the specified name.
+
 	#[arg(short = 't')]
 	type_only: bool,
 
-	/// Names to search for.
+
 	names: Vec<String>,
 }
 
@@ -69,7 +69,7 @@ impl builtins::Command for TypeCommand {
 
 			for resolved_type in resolved_types {
 				if self.show_path_only && !matches!(resolved_type, ResolvedType::File { .. }) {
-					// Do nothing.
+
 				} else if self.type_only {
 					match resolved_type {
 						ResolvedType::Alias(_) => {
@@ -109,8 +109,8 @@ impl builtins::Command for TypeCommand {
 						},
 						ResolvedType::File { path, hashed } => {
 							if hashed && self.all_locations && !self.force_path_search {
-								// Do nothing. When we're displaying all locations, then
-								// we don't show hashed paths.
+
+
 							} else if self.show_path_only || self.force_path_search {
 								writeln!(context.stdout(), "{}", path.to_string_lossy())?;
 							} else if hashed {
@@ -132,7 +132,7 @@ impl builtins::Command for TypeCommand {
 					}
 				}
 
-				// If we only want the first, then break after the first.
+
 				if !self.all_locations {
 					break;
 				}
@@ -152,7 +152,7 @@ impl TypeCommand {
 		let mut types = vec![];
 
 		if !self.force_path_search {
-			// Check for aliases.
+
 			if let Some(a) = shell.aliases().get(name) {
 				types.push(ResolvedType::Alias(a.clone()));
 				if !self.all_locations {
@@ -160,7 +160,7 @@ impl TypeCommand {
 				}
 			}
 
-			// Check for keywords.
+
 			if shell.is_keyword(name) {
 				types.push(ResolvedType::Keyword);
 				if !self.all_locations {
@@ -168,7 +168,7 @@ impl TypeCommand {
 				}
 			}
 
-			// Check for functions.
+
 			if !self.suppress_func_lookup {
 				if let Some(registration) = shell.funcs().get(name) {
 					types.push(ResolvedType::Function(registration.definition()));
@@ -178,7 +178,7 @@ impl TypeCommand {
 				}
 			}
 
-			// Check for builtins.
+
 			if shell.builtins().get(name).is_some_and(|b| !b.disabled) {
 				types.push(ResolvedType::Builtin);
 				if !self.all_locations {
@@ -187,7 +187,7 @@ impl TypeCommand {
 			}
 		}
 
-		// Look in path.
+
 		if sys::fs::contains_path_separator(name) {
 			if shell.absolute_path(Path::new(name)).executable() {
 				types.push(ResolvedType::File { path: PathBuf::from(name), hashed: false });

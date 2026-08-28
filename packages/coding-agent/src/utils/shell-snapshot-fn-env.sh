@@ -1,4 +1,4 @@
-#!/bin/sh
+
 
 # Helpers inlined into `generateSnapshotScript` (shell-snapshot.ts).
 #

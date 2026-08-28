@@ -33,9 +33,7 @@ pub(super) struct MacInput {
 	clippy::non_send_fields_in_send_ty,
 	reason = "CGEventSource is an immutable CF object; `&mut self` receivers serialize all posting"
 )]
-// SAFETY: Core Graphics event sources are immutable CF objects after setup,
-// and all access through `MacInput` requires `&mut self`, so events are posted
-// serially after ownership moves between threads.
+
 unsafe impl Send for MacInput {}
 
 impl MacInput {
@@ -151,18 +149,6 @@ fn window_identity(window: &DesktopWindow) -> CoreResult<(libc::pid_t, u32)> {
 	Ok((pid, wid))
 }
 
-/// Prepares background keyboard delivery for `window`, or refuses it.
-///
-/// macOS posts key events to a *process*, which hands them to whichever window
-/// it treats as key; unlike pointer events they carry no window id, and neither
-/// the `SkyLight` focus records nor any accessibility attribute reliably
-/// predicts or redirects that choice. Delivery is therefore refused whenever
-/// the process owns more than one window, rather than typing into another of
-/// the user's windows. `DesktopWindow::focused` cannot disambiguate: xcap
-/// reports every window owned by the active application as focused on macOS.
-///
-/// The refusal decision itself reads no mutable state, so it cannot be fooled
-/// by the activation below.
 fn prepare_background_keys(
 	window: &DesktopWindow,
 	pid: libc::pid_t,
@@ -181,9 +167,7 @@ fn prepare_background_keys(
 			 delivery:\"foreground\" or use ax actions",
 		)));
 	}
-	// Sole window of its process, so the target is unambiguous: make it key
-	// without raising it or changing the frontmost application. A background app
-	// otherwise has no key window and drops the keystrokes entirely.
+
 	skylight::activate_without_raise(pid, wid)
 }
 
@@ -252,8 +236,7 @@ unsafe extern "C" {
 fn source() -> CoreResult<CGEventSource> {
 	let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
 		.map_err(|()| DesktopError::input_failed("failed to create a Quartz input event source"))?;
-	// SAFETY: `source` is a live CGEventSource and both setters accept these
-	// documented masks/states.
+
 	unsafe {
 		set_local_events_suppression_interval(source.as_ptr(), 0.0);
 		set_local_events_filter_during_suppression_state(
@@ -563,8 +546,7 @@ fn post_mouse(
 ) -> CoreResult<()> {
 	let event = CGEvent::new_mouse_event(source, event_type, CGPoint::new(x, y), button)
 		.map_err(|()| DesktopError::input_failed("failed to create a Quartz pointer event"))?;
-	// Flags are exactly the caller-requested modifier set; no background bypass
-	// modifier is injected.
+
 	event.set_flags(flags);
 	let local = if x == -1.0 && y == -1.0 {
 		CGPoint::new(-1.0, -1.0)

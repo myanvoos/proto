@@ -1,7 +1,3 @@
-/**
- * Show provider usage limits for every authenticated account.
- */
-
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { usageHelp as commandHelp } from "../cli/command-help";
 import { runUsageCommand } from "../cli/usage-cli";

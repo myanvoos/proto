@@ -6,7 +6,6 @@ export const googleGeminiCliProvider = {
 	id: "google-gemini-cli",
 	name: "Google Cloud Code Assist (Gemini CLI)",
 	login: async (cb: OAuthLoginCallbacks) => {
-		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { loginGeminiCli } = await import("./oauth/google-gemini-cli");
 		return loginGeminiCli(cb);
 	},

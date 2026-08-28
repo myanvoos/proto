@@ -1,13 +1,3 @@
-/**
- * Google Gemini Web Search Provider
- *
- * Uses Gemini's Google Search grounding via Cloud Code Assist API.
- * Auth is resolved through `AuthStorage.getOAuthAccess(...)` for both
- * `google-gemini-cli` (stable prod) and `google-antigravity` (daily sandbox)
- * — the broker is the sole refresh authority, so this module never opens a
- * sibling SQLite store and never POSTs the broker sentinel to a Google token
- * endpoint.
- */
 import { type AuthStorage, type FetchImpl, type OAuthAccess, withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { getAntigravityUserAgent, getGeminiCliHeaders } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { fetchWithRetry, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
@@ -76,13 +66,13 @@ interface GeminiToolParams {
 
 interface GeminiSearchParams extends GeminiToolParams {
 	query: string;
-	/** Pre-parsed structured query; falls back to parsing `query` when omitted. */
+
 	parsedQuery?: StructuredQuery;
 	system_prompt?: string;
 	num_results?: number;
-	/** Maximum output tokens. */
+
 	max_output_tokens?: number;
-	/** Sampling temperature (0–1). Lower = more focused/factual. */
+
 	temperature?: number;
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -104,14 +94,12 @@ export function buildGeminiRequestTools(params: GeminiToolParams): Array<Record<
 	return tools;
 }
 
-/** Resolved auth for a Gemini API request. */
 interface GeminiAuth {
 	accessToken: string;
 	projectId: string;
 	isAntigravity: boolean;
 }
 
-/** First configured Gemini OAuth provider plus its pre-resolved access. */
 interface GeminiAuthSeed {
 	provider: GeminiProviderId;
 	access: OAuthAccess;
@@ -127,13 +115,6 @@ interface GeminiSearchResult {
 	usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
-/**
- * Walks the configured Gemini OAuth providers in deterministic order and
- * returns the first one that yields a usable access token + projectId via
- * {@link AuthStorage.getOAuthAccess}. AuthStorage handles refresh + broker
- * routing internally; this helper never touches refresh tokens directly.
- * The resolved access seeds `withOAuthAccess` so the happy path resolves once.
- */
 async function findGeminiAuth(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -151,7 +132,6 @@ function hasGeminiOAuth(authStorage: AuthStorage): boolean {
 	return GEMINI_PROVIDERS.some((provider: GeminiProviderId) => authStorage.hasOAuth(provider));
 }
 
-/** Cloud Code Assist API response types */
 interface GeminiGroundingChunk {
 	web?: {
 		uri?: string;
@@ -362,14 +342,6 @@ async function finalizeGeminiSearchResult(
 	return result;
 }
 
-/**
- * Calls the Cloud Code Assist API with Google Search grounding enabled.
- *
- * If a request returns a refreshable auth failure (401/403/auth-flavoured 400),
- * we ask AuthStorage to invalidate + refresh the credential and retry once.
- * Provider-direct refresh helpers are intentionally not used: AuthStorage owns
- * the single-flight refresh and broker round-trip.
- */
 async function callGeminiSearch(
 	auth: GeminiAuth,
 	model: string,
@@ -580,15 +552,9 @@ async function callGeminiDeveloperSearch(
 	return finalizeGeminiSearchResult(await parseGeminiSearchStream(response.body, model), fetchImpl, signal);
 }
 
-/**
- * Executes a web search using Google Gemini with Google Search grounding.
- */
 export async function searchGemini(params: GeminiSearchParams): Promise<SearchResponse> {
 	const selectedModel = resolveGeminiSearchModel(params.geminiModel);
-	// Gemini's googleSearch grounding forwards the query to Google Search, which
-	// understands the classic operator set natively. Normalize directive aliases
-	// (domain: → site:, since: → after:, …) to canonical Google forms; leave
-	// directive-free queries byte-identical.
+
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const searchQuery = parsed.hasDirectives ? formatQuery(parsed, GOOGLE_QUERY_SYNTAX) : params.query;
 	const seed = await findGeminiAuth(params.authStorage, params.sessionId, params.signal);
@@ -600,10 +566,6 @@ export async function searchGemini(params: GeminiSearchParams): Promise<SearchRe
 			params.authStorage,
 			seed.provider,
 			access =>
-				// Derive bearer + projectId from the access this attempt received; a
-				// re-resolved access may omit projectId, in which case the seed's
-				// project is still the right tenant for the credential. The
-				// `fetchWithRetry` transport backoff stays INSIDE this attempt — auth
 				callGeminiSearch(
 					{
 						accessToken: access.accessToken,
@@ -675,15 +637,11 @@ export async function searchGemini(params: GeminiSearchParams): Promise<SearchRe
 	};
 }
 
-/** Search provider for Google Gemini web search. */
 export class GeminiProvider extends SearchProvider {
 	readonly id = "gemini";
 	readonly label = "Gemini";
 
 	isAvailable(authStorage: AuthStorage): boolean {
-		// Cheap, in-memory check — avoids driving the refresh pipeline during
-		// the provider-chain probe. `searchGemini` refreshes OAuth lazily on the
-		// actual request and resolves developer API keys through AuthStorage.
 		if (hasGeminiOAuth(authStorage)) return true;
 		try {
 			return authStorage.hasAuth(resolveGeminiDeveloperEndpoint().authProvider);

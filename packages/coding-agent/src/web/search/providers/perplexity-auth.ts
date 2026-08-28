@@ -35,7 +35,6 @@ interface PerplexityAuthOptions {
 	forceRefresh?: boolean;
 }
 
-/** Detect API-key endpoints to try in priority order (Perplexity direct, then OpenRouter). */
 async function getApiConfigs(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -44,13 +43,6 @@ async function getApiConfigs(
 	const useResponses = $env.PI_PERPLEXITY_RESPONSES === "1";
 	const configs: ApiConfig[] = [];
 
-	// A Perplexity OAuth session and a real API key are mutually exclusive here:
-	// when the active credential origin is OAuth, `getApiKey("perplexity")`
-	// returns the OAuth session JWT (OAuth wins in AuthStorage.getApiKey), not an
-	// api.perplexity.ai key. Emitting it as a direct api-key config makes the
-	// search loop send the session token as a Bearer to the direct API endpoint,
-	// which rejects it with 401 and masks the real (transport) failure — see #5315.
-	// Skip the direct config in that case; the OAuth ask-endpoint method covers it.
 	if (authStorage.getCredentialOrigin("perplexity")?.kind !== "oauth") {
 		const perplexityKey = await authStorage.getApiKey("perplexity", sessionId, options);
 		if (perplexityKey) {
@@ -82,11 +74,6 @@ async function getApiConfigs(
 	return configs;
 }
 
-/**
- * Decode a Perplexity JWT's `exp` claim, in ms. Returns `undefined` when the
- * token has no `exp` (which is the common case — Perplexity sessions are
- * server-side and effectively non-expiring from the client's POV).
- */
 function jwtExpiryMs(token: string): number | undefined {
 	const parts = token.split(".");
 	if (parts.length !== 3) return undefined;
@@ -101,7 +88,6 @@ function jwtExpiryMs(token: string): number | undefined {
 	}
 }
 
-/** Collect all available auth methods to try in priority order */
 export async function getAvailableAuthMethods(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -109,13 +95,11 @@ export async function getAvailableAuthMethods(
 ): Promise<PerplexityAuth[]> {
 	const methods: PerplexityAuth[] = [];
 
-	// 1. Cookies take precedence over OAuth as noted in comments/docs
 	const cookies = $env.PERPLEXITY_COOKIES?.trim();
 	if (cookies) {
 		methods.push({ type: "cookies", cookies });
 	}
 
-	// 2. Perplexity OAuth (session bearer)
 	try {
 		const access = await authStorage.getOAuthAccess("perplexity", sessionId, options);
 		const token = access?.accessToken;
@@ -125,15 +109,11 @@ export async function getAvailableAuthMethods(
 				methods.push({ type: "oauth", access });
 			}
 		}
-	} catch {
-		// ignored
-	}
+	} catch {}
 
-	// 3. API key configs (direct, then openrouter)
 	const apiConfigs = await getApiConfigs(authStorage, sessionId, options);
 	methods.push(...apiConfigs);
 
-	// 4. Fallback to Perplexity free (anonymous)
 	if (methods.length === 0) {
 		methods.push({ type: "anonymous" });
 	}

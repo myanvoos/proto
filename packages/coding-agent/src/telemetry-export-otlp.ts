@@ -1,16 +1,3 @@
-/**
- * OTLP provider registration and signal recording for telemetry export.
- *
- * Loaded on demand by `./telemetry-export` only when an `OTEL_*` endpoint is
- * configured — the OTel SDK + OTLP exporter graph costs ~100ms of module
- * evaluation, so it must stay out of default CLI startup.
- *
- * Only the `http/protobuf` transport is supported — an
- * `OTEL_EXPORTER_OTLP*_PROTOCOL` of `grpc` or `http/json` declines rather than
- * misrouting protobuf payloads. The exporter line is pinned to the 0.218/2.7
- * family validated under Bun; the 1.x OTLP line deadlocks when its
- * `req.on("close")` handler fires after a successful export.
- */
 import type {
 	AgentRunCoverage,
 	AgentRunSummary,
@@ -41,11 +28,6 @@ import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { TelemetrySignalConfig } from "./telemetry-export";
 
-/**
- * Periodic flush interval. A long-lived `proto` process (the ACP server is
- * spawned once and reused across many turns) would otherwise hold finished
- * telemetry until a batch window elapses or the process exits.
- */
 const FLUSH_INTERVAL_MS = 30_000;
 
 const SERVICE_NAME = "proto";
@@ -75,7 +57,6 @@ let metricRecorder: AgentMetricRecorder | undefined;
 let otelLogger: OtelLogger | undefined;
 let unregisterLogSink: (() => void) | undefined;
 
-/** Whether {@link registerProviders} registered any real OTLP signal provider. */
 export function isTelemetryExportEnabled(): boolean {
 	if (traceProvider) return true;
 	if (logProvider) return true;
@@ -83,13 +64,6 @@ export function isTelemetryExportEnabled(): boolean {
 	return false;
 }
 
-/**
- * Merge OTLP metrics/log hooks into an existing agent telemetry config.
- *
- * The caller still owns content-capture policy, cost estimation, and custom
- * attributes. This only appends host-level metrics/log forwarding for the
- * providers registered by {@link registerProviders}.
- */
 export function createTelemetryExportConfig(
 	config: AgentTelemetryConfig | undefined,
 ): AgentTelemetryConfig | undefined {
@@ -112,12 +86,7 @@ export function createTelemetryExportConfig(
 	};
 }
 
-/** Register global trace/log/meter providers for the enabled signals. */
 export async function registerProviders(signalConfig: TelemetrySignalConfig): Promise<void> {
-	// `envDetector` parses OTEL_RESOURCE_ATTRIBUTES (percent-decoded, per spec) and
-	// OTEL_SERVICE_NAME; merged last so both take precedence over the fallback
-	// service.name — with OTEL_SERVICE_NAME still winning service.name inside the
-	// detector itself.
 	const resource = resourceFromAttributes({ "service.name": SERVICE_NAME }).merge(
 		detectResources({ detectors: [envDetector] }),
 	);
@@ -412,7 +381,6 @@ function logAttributeValue(value: unknown): AttributeValue | undefined {
 	return String(value);
 }
 
-/** Flush buffered spans, log records, and metrics across all registered providers. */
 export async function flushTelemetryExport(): Promise<void> {
 	const flushes: Promise<void>[] = [];
 	if (traceProvider) flushes.push(traceProvider.forceFlush());

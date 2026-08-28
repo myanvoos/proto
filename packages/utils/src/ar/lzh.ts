@@ -6,7 +6,7 @@ import { type ByteSource, readAllBytes } from "./source";
 import type { ArchiveIndexEntry, FormatReader, FormatReadOptions, MemberSource } from "./types";
 
 const LEGACY_DECODER = new TextDecoder("windows-1252");
-// WHATWG maps the "utf-16" label to the UTF-16LE decoder used by LZH name extensions.
+
 const UTF16LE_DECODER = new TextDecoder("utf-16");
 const LHA_METHOD_PATTERN = /^-(?:lh[0-7d]|lz[45s])-$/;
 
@@ -192,7 +192,6 @@ function readPositionTree(
 	return CanonicalHuffman.build(lengths, symbolCount, label);
 }
 
-/** @internal Decode the static-Huffman LZSS stream shared by LZH and ARJ methods 1-3. */
 export function decompressLhStatic(
 	packed: Uint8Array,
 	outSize: number,
@@ -589,14 +588,12 @@ function parseLzhHeader(bytes: Uint8Array, offset: number, options: FormatReadOp
 	};
 }
 
-/** Probe whether bytes begin with an LZH/LHA member header. */
 export function sniffLzh(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < 22 || bytes[2] !== 0x2d || bytes[6] !== 0x2d || bytes[3] !== 0x6c) return false;
 	const method = String.fromCharCode(...bytes.subarray(2, 7));
 	return LHA_METHOD_PATTERN.test(method) && bytes[20]! <= 2;
 }
 
-/** Index an LZH/LHA archive and lazily decode its members from the bounded archive buffer. */
 export const readLzh: FormatReader = async (
 	source: ByteSource,
 	options: FormatReadOptions,

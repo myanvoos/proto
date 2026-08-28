@@ -1,13 +1,3 @@
-//! ANSI-aware text measurement and slicing utilities.
-//!
-//! Optimized for JS string interop (UTF-16).
-//! - Single-pass ANSI scanning (no O(n²) `next_ansi` rescans)
-//! - ASCII fast-path (no grapheme segmentation, no UTF-8 conversion)
-//! - Non-ASCII uses a reused scratch String for grapheme segmentation
-//! - Width checks early-exit
-//! - Ellipsis decoded lazily
-//! - truncateToWidth returns the original `JsString` when possible
-
 use std::{
 	cell::RefCell,
 	sync::atomic::{AtomicU8, Ordering},
@@ -30,14 +20,12 @@ fn clamp_tab_width_for_ops(width: u32) -> usize {
 	width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH) as usize
 }
 
-/// Ellipsis strategy for [`truncate_to_width`].
 #[napi]
 pub enum Ellipsis {
-	/// Use a single Unicode ellipsis character ("…").
 	Unicode = 0,
-	/// Use three ASCII dots ("...").
+
 	Ascii   = 1,
-	/// Omit ellipsis entirely.
+
 	Omit    = 2,
 }
 
@@ -48,36 +36,23 @@ fn build_utf16_string(mut data: Vec<u16>) -> Utf16String {
 	Utf16String::from(data)
 }
 
-// ============================================================================
-// Results
-// ============================================================================
-
-/// Visible slice of a line after ANSI-aware column selection
-/// (`sliceWithWidth`).
 #[napi(object)]
 pub struct SliceResult {
-	/// UTF-16 slice containing the selected text.
-	pub text:  Utf16String,
-	/// Visible width of the slice in terminal cells.
+	pub text: Utf16String,
+
 	pub width: u32,
 }
 
-/// Before/after UTF-16 segments around an overlay region, with measured widths.
 #[napi(object)]
 pub struct ExtractSegmentsResult {
-	/// UTF-16 content before the overlay region.
-	pub before:       Utf16String,
-	/// Visible width of the `before` segment.
-	pub before_width: u32,
-	/// UTF-16 content after the overlay region.
-	pub after:        Utf16String,
-	/// Visible width of the `after` segment.
-	pub after_width:  u32,
-}
+	pub before: Utf16String,
 
-// ============================================================================
-// ANSI State Tracking - Zero Allocation
-// ============================================================================
+	pub before_width: u32,
+
+	pub after: Utf16String,
+
+	pub after_width: u32,
+}
 
 const ATTR_BOLD: u16 = 1 << 0;
 const ATTR_DIM: u16 = 1 << 1;
@@ -340,10 +315,6 @@ fn write_u32_u16(out: &mut Vec<u16>, mut val: u32) {
 	out[start..].reverse();
 }
 
-// ============================================================================
-// ANSI Sequence Detection - UTF-16
-// ============================================================================
-
 #[inline]
 fn ansi_seq_len_u16(data: &[u16], pos: usize) -> Option<usize> {
 	if pos >= data.len() || data[pos] != ESC {
@@ -355,7 +326,6 @@ fn ansi_seq_len_u16(data: &[u16], pos: usize) -> Option<usize> {
 
 	match data[pos + 1] {
 		0x5b => {
-			// '[' CSI
 			for (i, b) in data[pos + 2..].iter().enumerate() {
 				if (0x40..=0x7e).contains(b) {
 					return Some(i + 3);
@@ -364,7 +334,6 @@ fn ansi_seq_len_u16(data: &[u16], pos: usize) -> Option<usize> {
 			None
 		},
 		0x5d => {
-			// ']' OSC
 			for (i, &b) in data[pos + 2..].iter().enumerate() {
 				if b == 0x07 {
 					return Some(i + 3);
@@ -376,9 +345,6 @@ fn ansi_seq_len_u16(data: &[u16], pos: usize) -> Option<usize> {
 			None
 		},
 		0x50 | 0x58 | 0x5e | 0x5f => {
-			// 'P' DCS, 'X' SOS, '^' PM, '_' APC — string sequences terminated by ST
-			// (`ESC \`) or, as most terminals also accept (like OSC), BEL. The TUI's
-			// cursor marker is a BEL-terminated APC, so BEL must close these too.
 			for (i, &b) in data[pos + 2..].iter().enumerate() {
 				if b == 0x07 {
 					return Some(i + 3);
@@ -390,7 +356,6 @@ fn ansi_seq_len_u16(data: &[u16], pos: usize) -> Option<usize> {
 			None
 		},
 		0x20..=0x2f => {
-			// ESC + intermediates + final byte
 			for (i, b) in data[pos + 2..].iter().enumerate() {
 				if (0x30..=0x7e).contains(b) {
 					return Some(i + 3);
@@ -576,10 +541,6 @@ const fn is_ascii_grapheme_extender_u16(u: u16) -> bool {
 	)
 }
 
-// ============================================================================
-// Grapheme / Width
-// ============================================================================
-
 #[inline]
 const fn ascii_cell_width_u16(u: u16, tab_width: usize) -> usize {
 	let b = u as u8;
@@ -592,15 +553,6 @@ const fn ascii_cell_width_u16(u: u16, tab_width: usize) -> usize {
 
 const HANGUL_COMPAT_JAMO_NARROW_WIDTH: usize = 1;
 
-/// Runtime override for Hangul Compatibility Jamo (U+3131..=U+318E) cell width.
-///   0 = unset → platform default (macOS: narrow 1 cell; otherwise UAX#11)
-///   1 = force narrow (1 cell)
-///   2 = force wide (2 cells)
-///   3 = force Unicode width (no correction)
-/// The actual width is decided by the *client* terminal, not the host OS, so it
-/// is resolved at runtime from the terminal identity (see packages/tui
-/// terminal.ts) and pushed here through
-/// `set_hangul_compat_jamo_width_override`.
 static HANGUL_COMPAT_JAMO_WIDTH_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[napi]
@@ -614,9 +566,6 @@ const fn is_hangul_compat_jamo(c: char) -> bool {
 	cp >= 0x3131 && cp <= 0x318e
 }
 
-/// Effective target cell width for Compatibility Jamo, or `None` to follow the
-/// Unicode width (no correction). Reads the runtime override, falling back to
-/// the compile-time platform default when unset.
 #[inline]
 fn hangul_compat_jamo_target_width() -> Option<usize> {
 	match HANGUL_COMPAT_JAMO_WIDTH_OVERRIDE.load(Ordering::Relaxed) {
@@ -642,11 +591,7 @@ fn apply_hangul_compat_jamo_delta(width: usize, c: char) -> usize {
 		return width;
 	};
 	let unicode_width = xutf::width_char(c);
-	// The zero-width filler (U+3164 HANGUL FILLER) is an invisible placeholder.
-	// The target is set for *visible* jamo, so only the narrow correction
-	// (target 1) applies to the filler; a wide terminal renders it at its
-	// Unicode width (0), not the wide target. Never widen a
-	// zero-width jamo past the narrow correction.
+
 	if unicode_width == 0 && target > 1 {
 		return width;
 	}
@@ -659,17 +604,9 @@ fn apply_hangul_compat_jamo_delta(width: usize, c: char) -> usize {
 
 #[inline]
 fn char_width_corrected(c: char) -> usize {
-	// Hangul Compatibility Jamo U+3131..=U+318E render as 1 cell on some
-	// terminals (Terminal.app, iTerm2) but follow UAX#11 at 2 cells on others
-	// (Ghostty, most Linux terminals). The width is resolved at runtime from the
-	// terminal identity and applied through the override; absent an override we
-	// fall back to the compile-time platform default.
 	if is_hangul_compat_jamo(c)
 		&& let Some(target) = hangul_compat_jamo_target_width()
 	{
-		// Zero-width filler (U+3164): only the narrow correction applies — a
-		// wide terminal renders it at its Unicode width (0), not the effective
-		// wide target set for visible jamo. See apply_hangul_compat_jamo_delta.
 		let unicode_width = xutf::width_char(c);
 		if unicode_width == 0 && target > 1 {
 			return unicode_width;
@@ -691,11 +628,7 @@ fn grapheme_width_str(g: &str, tab_width: usize) -> usize {
 	if it.next().is_none() {
 		return char_width_corrected(c0);
 	}
-	// Multi-char grapheme: keep UnicodeWidthStr as the source of truth for
-	// sequence-level width rules (VS16 emoji presentation, keycaps, ZWJ emoji,
-	// CRLF, script ligatures). A per-char sum is not equivalent. Apply only the
-	// same local Compatibility Jamo delta that char_width_corrected applies to
-	// standalone code points; the delta is a no-op when no correction is active.
+
 	let mut width = xutf::width_str(g);
 	for c in g.chars() {
 		width = apply_hangul_compat_jamo_delta(width, c);
@@ -707,9 +640,6 @@ thread_local! {
   static SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// Iterate graphemes in a non-ASCII UTF-16 segment.
-///
-/// Callback returns `true` to continue, `false` to stop early.
 #[inline]
 fn for_each_grapheme_u16_slow<F>(segment: &[u16], tab_width: usize, mut f: F) -> bool
 where
@@ -744,7 +674,6 @@ where
 	})
 }
 
-/// Visible width, with early-exit if width exceeds `limit`.
 fn visible_width_u16_up_to(data: &[u16], limit: usize, tab_width: usize) -> (usize, bool) {
 	let mut width = 0usize;
 	let mut i = 0usize;
@@ -905,10 +834,6 @@ fn flush_pending_ansi(
 	pending.clear();
 }
 
-// ============================================================================
-// wrapTextWithAnsi
-// ============================================================================
-
 #[inline]
 fn write_active_codes(state: &WrapState, out: &mut Vec<u16>) {
 	state.write_restore_u16(out);
@@ -1000,13 +925,7 @@ fn split_into_tokens_with_ansi(line: &[u16]) -> SmallVec<[Vec<u16>; 4]> {
 			&& let Some(seq_len) = ansi_seq_len_u16(line, i)
 		{
 			let seq = &line[i..i + seq_len];
-			// A sequence that follows visible content closes it (color reset,
-			// underline off) and must ride along with that token so the closer
-			// cannot migrate into whitespace discarded at a soft wrap (#8582).
-			// A sequence after whitespace opens the *next* token's style, so it
-			// waits for it: gluing it to the whitespace token would keep that
-			// space alive past the wrap point and open the style on the line
-			// being broken instead of the one carrying the styled word.
+
 			if current.is_empty() || in_whitespace {
 				pending_ansi.extend_from_slice(seq);
 			} else {
@@ -1081,9 +1000,6 @@ fn break_long_word(
 		}
 
 		if word[i] == ESC {
-			// An ESC that ansi_seq_len_u16 could not classify (truncated or unknown
-			// sequence). Emit it as a zero-width byte and advance — otherwise the
-			// non-ESC scan below cannot move past it and the loop spins forever.
 			current_line.push(word[i]);
 			i += 1;
 			continue;
@@ -1248,10 +1164,6 @@ fn wrap_text_with_ansi_impl(
 	result
 }
 
-/// Wrap text to a visible width, preserving ANSI escape codes across line
-/// breaks.
-///
-/// Returns UTF-16 lines with active SGR codes carried across line boundaries.
 #[napi]
 pub fn wrap_text_with_ansi(text: JsString, width: u32, tab_width: u32) -> Result<Vec<Utf16String>> {
 	let text = js::utf16(text)?;
@@ -1262,13 +1174,6 @@ pub fn wrap_text_with_ansi(text: JsString, width: u32, tab_width: u32) -> Result
 		.collect())
 }
 
-// ============================================================================
-// truncateToWidth
-// ============================================================================
-
-/// Truncate text to a visible width, preserving ANSI codes.
-///
-/// Pads with spaces when requested.
 #[napi]
 pub fn truncate_to_width(
 	text: JsString<'_>,
@@ -1294,11 +1199,9 @@ fn truncate_to_width_impl<'env>(
 	pad: bool,
 	tab_width: usize,
 ) -> Either<JsString<'env>, Utf16String> {
-	// Fast path: early-exit width check
 	let (text_w, exceeded) = visible_width_u16_up_to(text, max_width, tab_width);
 	if !exceeded {
 		if !pad {
-			// Return original JsString handle: zero output allocation.
 			return Either::A(original);
 		}
 
@@ -1309,13 +1212,11 @@ fn truncate_to_width_impl<'env>(
 			return Either::B(build_utf16_string(out));
 		}
 
-		// Exactly fits and padding requested: return original is still fine.
 		return Either::A(original);
 	}
 
-	// Map ellipsis kind to UTF-16 data and width
-	const ELLIPSIS_UNICODE: &[u16] = &[0x2026]; // "…"
-	const ELLIPSIS_ASCII: &[u16] = &[0x2e, 0x2e, 0x2e]; // "..."
+	const ELLIPSIS_UNICODE: &[u16] = &[0x2026];
+	const ELLIPSIS_ASCII: &[u16] = &[0x2e, 0x2e, 0x2e];
 	const ELLIPSIS_OMIT: &[u16] = &[];
 
 	let (ellipsis, ellipsis_w): (&[u16], usize) = match ellipsis_kind {
@@ -1326,7 +1227,6 @@ fn truncate_to_width_impl<'env>(
 
 	let target_w = max_width.saturating_sub(ellipsis_w);
 
-	// If ellipsis alone doesn't fit, return ellipsis cut to max_width
 	if target_w == 0 {
 		let mut out = Vec::with_capacity(ellipsis.len().min(max_width * 2));
 		let mut w = 0usize;
@@ -1345,7 +1245,6 @@ fn truncate_to_width_impl<'env>(
 		return Either::B(build_utf16_string(out));
 	}
 
-	// Main truncation
 	let mut out = Vec::with_capacity(text.len().min(max_width * 2) + ellipsis.len() + 8);
 	let mut w = 0usize;
 	let mut i = 0usize;
@@ -1433,7 +1332,6 @@ fn truncate_to_width_impl<'env>(
 		}
 	}
 
-	// Only reset if we actually copied SGR codes into the output.
 	if saw_sgr {
 		out.extend_from_slice(&[ESC, b'[' as u16, b'0' as u16, b'm' as u16]);
 	}
@@ -1448,10 +1346,6 @@ fn truncate_to_width_impl<'env>(
 
 	Either::B(build_utf16_string(out))
 }
-
-// ============================================================================
-// sliceWithWidth
-// ============================================================================
 
 fn slice_with_width_impl(
 	line: &[u16],
@@ -1469,7 +1363,6 @@ fn slice_with_width_impl(
 	let mut i = 0usize;
 	let line_len = line.len();
 
-	// Store pending ANSI ranges (pos, len) to avoid copying until needed
 	let mut pending_ansi: SmallVec<[(usize, usize); 4]> = SmallVec::new();
 
 	while i < line_len && current_col < end_col {
@@ -1567,7 +1460,6 @@ fn slice_with_width_impl(
 		}
 	}
 
-	// Include trailing ANSI sequences (e.g., reset codes) that immediately follow
 	while i < line.len() {
 		if line[i] == ESC
 			&& let Some(len) = ansi_seq_len_u16(line, i)
@@ -1585,10 +1477,6 @@ fn slice_with_width_impl(
 	(out, out_w)
 }
 
-/// Slice a range of visible columns from a line.
-///
-/// Counts terminal cells, skipping ANSI escapes, and optionally enforces strict
-/// width.
 #[napi]
 pub fn slice_with_width(
 	line: JsString,
@@ -1608,10 +1496,6 @@ pub fn slice_with_width(
 		slice_with_width_impl(&line, start_col as usize, length as usize, strict, tab_width);
 	Ok(SliceResult { text: build_utf16_string(out), width: crate::utils::clamp_u32(width as u64) })
 }
-
-// ============================================================================
-// extractSegments
-// ============================================================================
 
 fn extract_segments_impl(
 	line: &[u16],
@@ -1633,7 +1517,6 @@ fn extract_segments_impl(
 	let mut i = 0usize;
 	let line_len = line.len();
 
-	// Store pending ANSI ranges for "before"
 	let mut pending_before_ansi: SmallVec<[(usize, usize); 4]> = SmallVec::new();
 
 	let mut after_started = false;
@@ -1803,10 +1686,6 @@ fn extract_segments_impl(
 	(before, before_w, after, after_w)
 }
 
-/// Extract the before/after slices around an overlay region.
-///
-/// Preserves ANSI state so the `after` segment renders correctly after
-/// truncation.
 #[napi]
 pub fn extract_segments(
 	line: JsString,
@@ -1835,13 +1714,6 @@ pub fn extract_segments(
 	})
 }
 
-// ============================================================================
-// visibleWidth
-// ============================================================================
-
-/// Calculate visible width of text, excluding ANSI escape sequences.
-///
-/// Tabs count as a fixed-width cell.
 #[napi]
 pub fn visible_width(text: JsString, tab_width: u32) -> Result<u32> {
 	let text = js::utf16(text)?;

@@ -5,24 +5,16 @@ import type { ExtensionUIContext } from "../../extensibility/extensions/types";
 import type { AgentSession } from "../../session/agent-session";
 import { AcpAgent } from "./acp-agent";
 
-/** Session and deferred tool UI hook created for an ACP client workspace. */
 export interface AcpSessionHandle {
 	session: AgentSession;
 	setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 }
 
-/**
- * Creates sessions requested by an ACP client.
- *
- * Session-only results remain supported for embedders that do not need the
- * deferred interactive-prompt bridge.
- */
 export type AcpSessionFactory = (
 	cwd: string,
 	options?: { interactivePrompts?: boolean },
 ) => Promise<AgentSession | AcpSessionHandle>;
 
-/** Creates an ACP connection and exposes its agent when process-level teardown must own it. */
 export function createAcpConnection(
 	transport: Stream,
 	createSession: AcpSessionFactory,
@@ -36,12 +28,7 @@ export function createAcpConnection(
 	}, transport);
 }
 
-/** Serves ACP over stdio until the peer disconnects, then awaits session teardown before exit. */
 export async function runAcpMode(createSession: AcpSessionFactory, initialSession?: AgentSession): Promise<void> {
-	// Humans who run `proto acp` by hand see a silent process and assume it is
-	// broken (stdout is the JSON-RPC transport, so nothing may be printed
-	// there). When stdin is a TTY no ACP client is attached — say so on stderr
-	// before the transport starts.
 	if (process.stdin.isTTY) {
 		process.stderr.write(
 			"proto acp: ACP server speaking JSON-RPC over stdio.\n" +

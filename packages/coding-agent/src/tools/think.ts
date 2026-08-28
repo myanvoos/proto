@@ -5,7 +5,6 @@ import { type Component, Markdown } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 
-/** Whether a model transport can suppress native reasoning while private scratchpad thoughts are active. */
 export function supportsExternalThinking(model: Model | null | undefined): boolean {
 	if (!model) return false;
 	const compat = model.compat;
@@ -17,9 +16,7 @@ export function supportsExternalThinking(model: Model | null | undefined): boole
 	if (model.reasoning && (requiresThinking || (model.thinking?.requiresEffort && !model.thinking.suppressWhenOff))) {
 		return false;
 	}
-	// Transports that reject `reasoning.effort` (xAI Grok 4 and the other
-	// reasoning-only Responses models) cannot honour `forceReasoningOff`, so the
-	// scratchpad would run alongside native reasoning instead of replacing it.
+
 	if (
 		model.reasoning &&
 		compat !== undefined &&
@@ -71,7 +68,6 @@ interface ThinkToolDetails {
 	recorded: true;
 }
 
-/** Records private scratchpad thoughts while native model reasoning is disabled. */
 export class ThinkTool implements AgentTool<typeof thinkSchema, ThinkToolDetails> {
 	readonly name = "think";
 	readonly label = "Think";

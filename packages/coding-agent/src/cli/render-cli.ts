@@ -1,16 +1,3 @@
-/**
- * `proto render` — draw a session's entire thread through the production
- * transcript pipeline, headlessly.
- *
- * Replays the session into a real `InteractiveMode` + `TUI` wired to an
- * in-process byte-sink terminal, then prints the composed transcript lines.
- * `--timing` reports phase costs; `--repaint N` re-runs the clear-scrollback
- * full repaint that `/tree`, Esc-Esc navigation, `/resume`, and theme changes
- * issue — the frame whose cost users feel as a frozen UI on big sessions.
- *
- * The session file is copied to a temp dir before opening, so rendering never
- * takes the single-writer lock on (or appends breadcrumbs to) a live session.
- */
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -30,23 +17,21 @@ import { findMostRecentSession, resolveResumableSession } from "../session/sessi
 import { SessionManager } from "../session/session-manager";
 
 interface RenderCommandArgs {
-	/** Session file path or id prefix; default: most recent session for cwd. */
 	session?: string;
-	/** Terminal width in columns. Default: current terminal width, else 120. */
+
 	width?: number;
-	/** Terminal height in rows. Default: current terminal height, else 40. */
+
 	height?: number;
-	/** Print phase timings and byte counts to stderr. */
+
 	timing?: boolean;
-	/** Re-run the full clear-scrollback repaint N times and report each cost. */
+
 	repaint?: number;
-	/** Strip ANSI styling from the printed transcript. */
+
 	plain?: boolean;
-	/** Suppress the transcript output (timing/benchmark runs). */
+
 	quiet?: boolean;
 }
 
-/** Byte-sink terminal: counts emitted output, never touches a real TTY. */
 class SinkTerminal implements Terminal {
 	bytes = 0;
 	writes = 0;
@@ -92,10 +77,6 @@ class SinkTerminal implements Terminal {
 	}
 }
 
-/**
- * Deterministic render scheduler: queues callbacks instead of arming timers so
- * the command can drain every pending paint synchronously between phases.
- */
 class DrainScheduler implements RenderScheduler {
 	#time = 0;
 	#immediate: (() => void)[] = [];
@@ -117,7 +98,6 @@ class DrainScheduler implements RenderScheduler {
 		return { cancel: () => void this.#renders.delete(id) };
 	}
 
-	/** Run queued callbacks until no render work remains. */
 	drain(): void {
 		for (let rounds = 0; this.#immediate.length > 0 || this.#renders.size > 0; rounds++) {
 			if (rounds > 100) throw new Error("render scheduler did not settle after 100 drain rounds");
@@ -132,7 +112,6 @@ class DrainScheduler implements RenderScheduler {
 	}
 }
 
-/** Resolve the target session file from a path, id prefix, or cwd default. */
 async function resolveTargetSession(sessionArg: string | undefined, cwd: string): Promise<string> {
 	if (sessionArg) {
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
@@ -164,7 +143,6 @@ function formatMs(ms: number): string {
 	return `${ms.toFixed(0)} ms`;
 }
 
-/** Render the resolved session and report timings. Returns the exit code. */
 export async function runRenderCommand(args: RenderCommandArgs): Promise<number> {
 	const cwd = getProjectDir();
 	const settings = await Settings.init({ cwd });
@@ -173,9 +151,6 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 	const sourcePath = await resolveTargetSession(args.session, cwd);
 	const sourceSize = (await fs.stat(sourcePath)).size;
 
-	// Copy before opening: SessionManager.open takes the single-writer lock and
-	// session teardown appends a session_exit entry — neither may touch a live
-	// session file the user has open in another proto.
 	const tempDir = TempDir.createSync("@proto-render-");
 	const workingCopy = path.join(tempDir.path(), path.basename(sourcePath));
 
@@ -214,14 +189,10 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		await mode.init();
 		scheduler.drain();
 
-		// Replay: transcript context build + component construction (the phase
-		// renderInitialMessages runs after /tree navigation and on resume).
 		const replayStart = performance.now();
 		await mode.renderInitialMessages({ clearTerminalHistory: true });
 		const replayMs = performance.now() - replayStart;
 
-		// First full paint: compose every transcript row and emit it, exactly
-		// what the clear-scrollback repaint after navigation writes to the PTY.
 		const paintStart = performance.now();
 		const bytesBeforePaint = terminal.bytes;
 		scheduler.drain();

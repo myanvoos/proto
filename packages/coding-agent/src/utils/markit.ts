@@ -9,16 +9,6 @@ import {
 	writeMarkitConversionCache,
 } from "./markit-cache";
 
-/**
- * File extensions markit can actually convert to markdown — one per registered
- * converter in `src/markit/registry.ts` (pdf, docx, pptx, xlsx, epub). This is
- * the single source of truth shared by the read, fetch, and CLI file tools so
- * the advertised set never drifts from the converters that back it. Legacy
- * binary formats (`.doc`, `.ppt`, `.xls`, `.rtf`) are intentionally absent:
- * markit has no converter for them, so routing them here only produced an
- * `Unsupported format` error instead of letting them fall through to the
- * binary-file handling.
- */
 export const CONVERTIBLE_EXTENSIONS: ReadonlySet<string> = new Set([".pdf", ".docx", ".pptx", ".xlsx", ".epub"]);
 
 interface MarkitConversionResult {
@@ -29,17 +19,10 @@ interface MarkitConversionResult {
 }
 
 interface MarkitFileConversionOptions {
-	/**
-	 * Directory converters may use for extracted image or diagram files. Since
-	 * those files are conversion side effects, conversions using this option
-	 * bypass the markdown cache.
-	 */
 	imageDir?: string;
 }
 
 let markit: () => Markit | Promise<Markit> = async () => {
-	// Lazy: keep the document engine off the startup import graph — it loads
-	// only when a document is first converted.
 	const promise = import("../markit").then(({ Markit }) => {
 		const instance = new Markit();
 		markit = () => instance;
@@ -136,9 +119,6 @@ export async function convertFileWithMarkit(
 	options?: MarkitFileConversionOptions,
 ): Promise<MarkitConversionResult> {
 	if (options?.imageDir) {
-		// Image extraction writes files into imageDir as a side effect; a
-		// markdown-only cache hit would leave the directory missing members, so
-		// this path stays uncached.
 		try {
 			const result = await runMarkitConversion(
 				markit => markit.convertFile(filePath, { imageDir: options.imageDir }),

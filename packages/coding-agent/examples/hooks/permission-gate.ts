@@ -1,9 +1,3 @@
-/**
- * Permission Gate Hook
- *
- * Prompts for confirmation before running potentially dangerous bash commands.
- * Patterns checked: rm -rf, sudo, chmod/chown 777
- */
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: HookAPI) {
@@ -17,7 +11,6 @@ export default function (pi: HookAPI) {
 
 		if (isDangerous) {
 			if (!ctx.hasUI) {
-				// In non-interactive mode, block by default
 				return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
 			}
 

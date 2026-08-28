@@ -51,28 +51,16 @@ const CACHE_PREFIX_PLACEHOLDER = "__PROTO_CACHE_BENCH_RAW_PREFIX__";
 const CACHE_PREFIX_CHUNK_BYTES = UTF8_ENCODER.encode(CACHE_PREFIX_CHUNK).byteLength;
 const RESPONSE_CACHE_STATUS_HEADERS = ["cf-aig-cache-status"] as const;
 
-/**
- * One built-in workload a bench run exercises:
- * - `chat`: balanced prompt/output — the everyday latency + throughput picture.
- * - `prefill`: large cache-busted input, tiny output — isolates input-token
- *   processing (TTFT and prefill tok/s).
- * - `generation`: tiny prompt, long forced output — isolates sustained decode
- *   throughput.
- */
 type BenchChallengeKind = "chat" | "prefill" | "generation";
 
-/** `mix` (the default) rotates through every challenge kind; a kind name isolates one. */
 type BenchProfile = "mix" | BenchChallengeKind;
 
 const CHALLENGE_KINDS = ["chat", "prefill", "generation"] as const;
 
-/** Default max output tokens per challenge kind (`--max-tokens` overrides all). */
 const CHALLENGE_MAX_TOKENS: Record<BenchChallengeKind, number> = { chat: 512, prefill: 64, generation: 2048 };
 
-/** Default requests per model; mix needs a multiple of the kind count. */
 const PROFILE_DEFAULT_RUNS: Record<BenchProfile, number> = { mix: 9, chat: 10, prefill: 5, generation: 5 };
 
-/** Chat-challenge topics; one is drawn at random per run so runs never repeat a request. */
 const CHAT_TOPICS = [
 	"how a web browser turns an HTML payload into pixels on screen",
 	"how a garbage collector reclaims memory in a managed runtime",
@@ -86,7 +74,6 @@ const CHAT_TOPICS = [
 	"how a distributed consensus protocol keeps replicas consistent",
 ] as const;
 
-/** Generation-challenge topics; long, low-ambiguity narrations that sustain decoding. */
 const GENERATION_TOPICS = [
 	"the history of computing",
 	"the history of aviation",
@@ -104,13 +91,13 @@ interface BenchCommandArgs {
 		runs?: number;
 		maxTokens?: number;
 		prompt?: string;
-		/** Service-tier setting value (`none` omits); overrides the configured `serviceTier` setting. */
+
 		serviceTier?: string;
 		json?: boolean;
 		par?: number;
-		/** Benchmark workload: `mix` (default) rotates challenge kinds; a kind name isolates one. */
+
 		profile?: string;
-		/** Synthetic input size for prefill challenges (default: 32768 bytes). */
+
 		prefillBytes?: number;
 		cache?: boolean;
 		cachePrefixFile?: string;
@@ -136,33 +123,29 @@ interface BenchRuntime {
 
 interface BenchRunSuccess {
 	ok: true;
-	/** Challenge kind this run exercised; absent in `--cache` mode. */
+
 	challenge?: BenchChallengeKind;
-	/** Request start → first streamed token: queue + prefill window. */
+
 	ttftMs: number;
-	/** First streamed token → done: decode window (0 when the response arrived buffered). */
+
 	generationMs: number;
 	durationMs: number;
-	/** Total prompt tokens: `usage.input` plus cache reads/writes (providers report cached prompt tokens outside `input`). */
+
 	inputTokens: number;
 	outputTokens: number;
-	/** Output tokens/sec over the total request duration. */
+
 	tokensPerSecond: number;
-	/**
-	 * Output tokens/sec over the decode window. Inflated on providers that hide
-	 * reasoning until completion (tiny decode window); 0 for fully buffered
-	 * responses. Compare `tokensPerSecond` for a buffering-proof number.
-	 */
+
 	generationTps: number;
-	/** Prompt tokens/sec over the TTFT window (queue-inclusive prefill rate). */
+
 	prefillTps: number;
-	/** Priced cost of the request; 0 when pricing is unavailable. */
+
 	cost: number;
 }
 
 interface BenchRunFailure {
 	ok: false;
-	/** Challenge kind this run exercised; absent in `--cache` mode. */
+
 	challenge?: BenchChallengeKind;
 	error: string;
 }
@@ -195,68 +178,65 @@ interface BenchCacheRunReport {
 interface BenchCachePairReport {
 	cold: BenchCacheRunReport;
 	warm: BenchCacheRunReport;
-	/** The nominal cold request showed cache reuse, so it is not a true cold baseline. */
+
 	coldAlreadyWarm: boolean;
-	/** Structural-only comparisons: prompt text and cache keys are never emitted. */
+
 	stablePrefix: true;
 	suffixChanged: true;
 	promptCacheKeyStable: true;
 	statefulResponsesDisabled: true;
 	freshProviderSessionState: true;
-	/** "unavailable" when a transport does not expose the provider payload locally. */
+
 	payloadStructureStable: boolean | "unavailable";
 }
 
-/** Distribution summary over successful runs. */
 interface MetricStats {
 	mean: number;
 	min: number;
-	/** Median (nearest-rank). */
+
 	p50: number;
-	/** 95th percentile (nearest-rank). */
+
 	p95: number;
 	max: number;
 }
 
-/** Aggregates over successful runs. */
 interface BenchStats {
 	ttftMs: MetricStats;
 	durationMs: MetricStats;
 	tokensPerSecond: MetricStats;
 	generationTps: MetricStats;
 	prefillTps: MetricStats;
-	/** Mean input tokens per successful run. */
+
 	inputTokens: number;
-	/** Mean output tokens per successful run. */
+
 	outputTokens: number;
-	/** Mean priced cost per successful run; 0 when pricing is unavailable. */
+
 	cost: number;
 }
 
 interface BenchModelReport {
-	/** Selector as the user typed it (e.g. "opus" or "gemini-3.5:low"). */
 	selector: string;
-	/** Resolved `provider/id`. */
+
 	model: string;
-	/** Explicit thinking level from a `:level` selector suffix; undefined = provider default. */
+
 	thinking?: ResolvedThinkingLevel;
 	results: BenchRunResult[];
-	/** Aggregates over successful runs; null when every run failed. */
+
 	stats: BenchStats | null;
-	/** Aggregates per challenge kind; empty in `--cache` mode. */
+
 	byChallenge: Partial<Record<BenchChallengeKind, BenchStats>>;
 	cachePairs?: BenchCachePairReport[];
 }
 
 export interface BenchSummary {
 	runs: number;
-	/** Explicit `--max-tokens` override (cache mode: resolved value); absent when per-challenge defaults apply. */
+
 	maxTokens?: number;
-	/** Benchmark workload; absent in `--cache` mode. */
+
 	profile?: BenchProfile;
 	models: BenchModelReport[];
 	failures: number;
-	/** Requested per-family service tiers, resolved per model before reaching the wire. */
+
 	serviceTierByFamily?: ServiceTierByFamily;
 	cache?: {
 		pairs: number;
@@ -278,7 +258,7 @@ interface BenchDependencies {
 	setExitCode?: (code: number) => void;
 	streamSimple?: BenchStreamSimple;
 	now?: () => number;
-	/** Uniform [0,1) source for challenge randomization; default `Math.random`. */
+
 	random?: () => number;
 	readTextFile?: (path: string, maxBytes: number) => Promise<string>;
 	stdoutIsTTY?: boolean;
@@ -320,7 +300,6 @@ function isFirstTokenEvent(event: AssistantMessageEvent): boolean {
 	}
 }
 
-/** Final message carries visible output — non-empty text/thinking, an image, or a tool call. */
 function hasVisibleFinalContent(message: AssistantMessage): boolean {
 	return message.content.some(block => {
 		switch (block.type) {
@@ -361,7 +340,7 @@ function payloadStructure(payload: unknown): string {
 function asNonNegativeNumber(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
-/** Nearest-rank distribution summary; `values` MUST be non-empty. */
+
 function metricStats(values: number[]): MetricStats {
 	const sorted = [...values].sort((a, b) => a - b);
 	const at = (q: number): number =>
@@ -430,10 +409,7 @@ function renderCacheBenchmarkPrefix(prefix: string, namespace: string): string {
 	if (!rendered.includes(CACHE_PREFIX_PLACEHOLDER)) {
 		throw new Error("Cache benchmark prefix template is missing its raw prefix placeholder");
 	}
-	// Render the static wrapper first, then inject caller bytes so prompt
-	// normalization cannot trim spaces or collapse blank lines in prefix files.
-	// Function replacer: a prefix containing `$&`/`$'`/`` $` `` must not be
-	// expanded as a string-replacement pattern.
+
 	return rendered.replace(CACHE_PREFIX_PLACEHOLDER, () => prefix);
 }
 
@@ -455,7 +431,7 @@ function cacheBenchmarkMessages(stablePrefix: string, suffix: string): Context["
 		{ role: "user", content: suffix, timestamp, attribution: "user" },
 	];
 }
-/** One concrete bench request: kind, output budget, and randomized messages. */
+
 interface BenchChallenge {
 	kind: BenchChallengeKind;
 	maxTokens: number;
@@ -463,19 +439,17 @@ interface BenchChallenge {
 }
 
 interface BenchChallengeOptions {
-	/** Replaces the built-in prompt (chat/generation only). */
 	promptOverride?: string;
-	/** Synthetic input size for prefill challenges. */
+
 	prefillBytes: number;
-	/** Per-run unique token; leads the prefill body so provider prefix caches can never reuse an earlier run's prefill. */
+
 	nonce: string;
-	/** Uniform [0,1) source for topic selection. */
+
 	random: () => number;
-	/** Explicit `--max-tokens`; overrides the kind default. */
+
 	maxTokensOverride?: number;
 }
 
-/** Build a randomized challenge so repeated runs never send a byte-identical request. */
 function buildBenchChallenge(kind: BenchChallengeKind, opts: BenchChallengeOptions): BenchChallenge {
 	const maxTokens = opts.maxTokensOverride ?? CHALLENGE_MAX_TOKENS[kind];
 	const pick = (topics: readonly string[]): string => topics[Math.floor(opts.random() * topics.length)] ?? topics[0]!;
@@ -545,14 +519,14 @@ function formatCachePairLine(pair: BenchCachePairReport, index: number, total: n
 interface BenchRequestOptions {
 	apiKey: ApiKeyResolver;
 	sessionId: string;
-	/** Native PROTO messages; cache mode splits the stable prefix from the suffix. */
+
 	messages: Context["messages"];
 	maxTokens: number;
-	/** Explicit effort from a `:level` selector suffix; absent = provider default. */
+
 	reasoning?: Effort;
-	/** Only set for an explicit `:off` suffix — some endpoints reject disablement. */
+
 	disableReasoning?: boolean;
-	/** Requested service tier passed to `streamSimple`; absent omits the option. The provider layer applies scope/support gating before it reaches the wire. */
+
 	serviceTier?: ServiceTier;
 	promptCacheKey?: string;
 	statefulResponses?: false;
@@ -570,8 +544,6 @@ async function runBenchRequest(
 	const providerSessionState = new Map<string, ProviderSessionState>();
 	try {
 		const context: Context = {
-			// Codex's Responses endpoint 400s with "Instructions are required" when no
-			// system prompt is present — same guard as eval's completion bridge.
 			systemPrompt: ["You are a helpful assistant."],
 			messages: options.messages,
 		};
@@ -603,11 +575,7 @@ async function runBenchRequest(
 			serviceTier: options.serviceTier,
 			providerSessionState,
 			preferWebsockets: true,
-			// pi-ai opts every OpenRouter request into response caching (1h TTL).
-			// Bench sends a byte-identical request each run, so within the TTL
-			// OpenRouter replays the cached generation with zeroed usage — the run
-			// shows "tokens 0, TPS 0.0" at line speed. Opt back out so every run
-			// measures a fresh generation.
+
 			headers: model.provider === "openrouter" ? { "X-OpenRouter-Cache": "false" } : undefined,
 		});
 		let message: AssistantMessage | undefined;
@@ -631,12 +599,7 @@ async function runBenchRequest(
 		const rawTtft = message.ttft ?? (firstTokenAt === undefined ? durationMs : firstTokenAt - startedAt);
 		const ttftMs = Number.isFinite(rawTtft) && rawTtft > 0 ? rawTtft : 0;
 		const outputTokens = Number.isFinite(message.usage.output) && message.usage.output > 0 ? message.usage.output : 0;
-		// A run that streamed no content (no delta/end event set firstTokenAt),
-		// carries no visible final content, and measured no output tokens
-		// benchmarked nothing — a genuinely empty stream (e.g. a gateway that 200s
-		// with an empty body). Surface it as a failure instead of a misleading
-		// 0-token "✓". Streaming and buffered providers that produce content keep
-		// passing even when usage is omitted.
+
 		if (firstTokenAt === undefined && outputTokens === 0 && !hasVisibleFinalContent(message)) {
 			return {
 				ok: false,
@@ -644,9 +607,7 @@ async function runBenchRequest(
 			};
 		}
 		if (options.cacheCapture) options.cacheCapture.usage = captureUsage(message);
-		// Providers report cache-written/read prompt tokens outside `usage.input`
-		// (e.g. Anthropic auto-caching moves nearly the whole prompt into
-		// cacheWrite), so total prompt size must sum all three.
+
 		const inputTokens =
 			asNonNegativeNumber(message.usage.input) +
 			asNonNegativeNumber(message.usage.cacheRead) +
@@ -659,11 +620,7 @@ async function runBenchRequest(
 			durationMs,
 			inputTokens,
 			outputTokens,
-			// TPS over the TOTAL request duration, deliberately not the post-TTFT
-			// decode window: reasoning models can spend seconds generating hidden
-			// thinking tokens (counted in usage.output) before the first visible
-			// byte, so "duration - TTFT" inflates TPS several-fold on providers
-			// that buffer or hide reasoning (e.g. google vs google-vertex).
+
 			tokensPerSecond: durationMs > 0 ? (outputTokens * 1000) / durationMs : 0,
 			generationTps: generationMs > 0 ? (outputTokens * 1000) / generationMs : 0,
 			prefillTps: ttftMs > 0 ? (inputTokens * 1000) / ttftMs : 0,
@@ -727,7 +684,7 @@ function formatRunLine(result: BenchRunResult, index: number, total: number): st
 	}
 	return `  ${chalk.red("✗")} ${prefix} ${kind}${chalk.red(truncateToWidth(replaceTabs(result.error).replace(/\r?\n/g, " "), ERROR_WIDTH))}`;
 }
-/** Mutable per-model progress backing the live status line. */
+
 interface BenchLiveProgress {
 	label: string;
 	unit: "runs" | "pairs";
@@ -761,8 +718,7 @@ interface BenchTableColumn {
 
 function benchTableColumns(models: BenchModelReport[]): BenchTableColumn[] {
 	const has = (kind: BenchChallengeKind): boolean => models.some(report => report.byChallenge[kind] !== undefined);
-	// Chat runs carry the representative latency; fall back to overall stats
-	// for single-kind profiles and cache mode.
+
 	const ttft = (report: BenchModelReport): MetricStats | undefined =>
 		(report.byChallenge.chat ?? report.stats ?? undefined)?.ttftMs;
 	const columns: BenchTableColumn[] = [
@@ -792,12 +748,6 @@ function benchTableColumns(models: BenchModelReport[]): BenchTableColumn[] {
 	return columns;
 }
 
-/**
- * Ranked comparison table over model reports: one headline column per
- * challenge kind present (`tok/s` chat, `decode` generation, `prefill`
- * ingest rate); the winner's model cell is highlighted. Medians (not means)
- * so one queue hiccup cannot reorder rows.
- */
 function formatBenchTable(summary: BenchSummary): string {
 	const rank = (report: BenchModelReport): number =>
 		report.byChallenge.chat?.tokensPerSecond.p50 ??
@@ -860,7 +810,6 @@ interface BenchTarget {
 	thinking: ResolvedThinkingLevel | undefined;
 }
 
-/** Highest-priority provider variant: native/OAuth transports outrank mirrors. */
 function pickHighestPriorityProvider(models: Model<Api>[], providerOrder?: readonly string[]): Model<Api> | undefined {
 	if (models.length <= 1) return models[0];
 	const priority = buildModelProviderPriorityRank(providerOrder);
@@ -871,13 +820,6 @@ function pickHighestPriorityProvider(models: Model<Api>[], providerOrder?: reado
 	})[0];
 }
 
-/**
- * Bench resolves selectors against the entire catalog (credentials are ignored),
- * so an ambiguous id shared by several providers can land on one the user never
- * authenticated. For non-pinned selectors, redirect to an equivalent model under
- * a provider with configured auth. An explicit `provider/id` selector is honored
- * verbatim — even unauthenticated — so forced benchmarking keeps working.
- */
 function resolveAuthenticatedAlternative(
 	selector: string,
 	model: Model<Api>,
@@ -885,7 +827,7 @@ function resolveAuthenticatedAlternative(
 	providerOrder?: readonly string[],
 ): Model<Api> | undefined {
 	if (!modelRegistry.hasConfiguredAuth) return undefined;
-	// A pinned `provider/...` selector is authoritative; never redirect off it.
+
 	if (selector.trim().toLowerCase().startsWith(`${model.provider.toLowerCase()}/`)) return undefined;
 	if (modelRegistry.hasConfiguredAuth(model)) return undefined;
 
@@ -897,7 +839,7 @@ function resolveAuthenticatedAlternative(
 		seen.add(key);
 		if (modelRegistry.hasConfiguredAuth?.(candidate)) authenticated.push(candidate);
 	};
-	// Same-id fallback for equivalent entries under providers with configured auth.
+
 	for (const candidate of modelRegistry.getAll()) {
 		if (candidate.id === model.id) consider(candidate);
 	}
@@ -914,10 +856,6 @@ function resolveBenchModels(
 	const resolved: BenchTarget[] = [];
 	const errors: string[] = [];
 	for (const selector of selectors) {
-		// Bench intentionally resolves against the full catalog first, then applies
-		// its own exact-id credential fallback below. Using the CLI resolver's
-		// authenticated default here would silently redirect non-equivalent bare
-		// ids and suppress the warning for equivalent cross-provider models.
 		const result = resolveCliModel({
 			cliModel: selector,
 			modelRegistry,
@@ -1064,9 +1002,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 	try {
 		const targets = resolveBenchModels(command.models, runtime.modelRegistry, runtime.settings, writeStderr);
 		if (cacheMode) assertCacheModeSupported(targets);
-		// Explicit `--service-tier` (a single value broadcast across families) wins;
-		// otherwise fall back to the configured per-family `tier.*` settings. Each
-		// model resolves its own family's tier below before reaching the wire.
+
 		const flagTier = command.flags.serviceTier ? serviceTierSettingToTier(command.flags.serviceTier) : undefined;
 		const serviceTierByFamily = command.flags.serviceTier
 			? serviceTierForAllFamilies(flagTier)
@@ -1097,9 +1033,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			}
 			const results: BenchRunResult[] = [];
 
-			// Preflight check: let's verify credentials before starting any runs.
-			// This matches the old sequential break behavior exactly and avoids launching/printing
-			// multiple failures.
 			const testSessionId = randomSessionId();
 			const preflightKey = await runtime.modelRegistry.getApiKey(model, testSessionId);
 			if (!preflightKey) {
@@ -1136,9 +1069,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 							requestIdObserved: false,
 							responseCacheHit: false,
 						};
-						// Keep the gateway's credential selection stable for both phases.
-						// Provider-session state is still recreated by runBenchRequest and
-						// stateful Responses chaining is disabled below.
+
 						const credentialAffinitySessionId = pairIndex === 0 ? testSessionId : randomSessionId();
 						const credentialResolver = runtime.modelRegistry.resolver(model, credentialAffinitySessionId);
 						const coldResult = await runBenchRequest(
@@ -1221,8 +1152,6 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 				continue;
 			}
 
-			// We will launch up to `par` workers/requests concurrently.
-			// To keep output clean, non-JSON output emits entries in correct index order.
 			let nextToPrint = 0;
 			const runWorker = async (index: number) => {
 				const sessionId = index === 0 ? testSessionId : randomSessionId();

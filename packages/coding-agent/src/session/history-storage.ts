@@ -3,17 +3,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { AsyncDrain, getDbBusyTimeoutMs, getHistoryDbPath, logger } from "@oh-my-pi/pi-utils";
 
-/** A unique prompt with provenance from its most recent submission. */
 export interface HistoryEntry {
-	/** Stable row identifier used by the full-text index. */
 	id: number;
-	/** Trimmed prompt text, unique across the history database. */
+
 	prompt: string;
-	/** Unix timestamp of the most recent submission. */
+
 	created_at: number;
-	/** Project working directory of the most recent submission. */
+
 	cwd?: string;
-	/** Session ID of the most recent submission, if known. */
+
 	sessionId?: string;
 }
 
@@ -27,28 +25,19 @@ type HistoryRow = {
 
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
-// Escape LIKE wildcards so user input is treated as literal text.
-// Matches the `ESCAPE '\\'` clause used by substring-search statements.
 function escapeLikePattern(text: string): string {
 	return text.replace(/[\\%_]/g, "\\$&");
 }
 
-/**
- * Canonical stored form of a prompt: CRLF/CR folded to LF, trailing whitespace
- * stripped from every line, outer whitespace trimmed. Terminal copies pad each
- * line with spaces to the screen width, so without this a resubmitted copy of
- * an existing prompt lands as a byte-distinct duplicate row.
- */
 function normalizePrompt(prompt: string): string {
 	return prompt
 		.replace(/\r\n?/g, "\n")
 		.replace(/[^\S\n]+\n/g, "\n")
 		.trim();
 }
-/** Bumped when stored rows need the one-time dump-and-rebuild pass on open; see `#rebuildHistory`. */
+
 const HISTORY_DATA_VERSION = 1;
 
-/** Canonical `history` schema; `#rebuildHistory` recreates the table from this exact DDL. */
 const HISTORY_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS history (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,18 +49,16 @@ CREATE TABLE IF NOT EXISTS history (
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
 `;
 
-/** Stores searchable prompts with only their latest project and session metadata. */
 export class HistoryStorage {
 	#db: Database;
 	static #instance?: HistoryStorage;
 	#drain = new AsyncDrain<Pick<HistoryEntry, "prompt" | "cwd" | "sessionId">>(100);
 	#sessionResolver?: () => string | undefined;
 
-	// Prepared statements
 	#upsertRowStmt: Statement;
 	#recentStmt: Statement;
 	#searchStmt: Statement;
-	// Cache substring-fallback prepared statements keyed by token count.
+
 	#substringStmts = new Map<number, Statement>();
 
 	private constructor(dbPath: string) {
@@ -79,9 +66,6 @@ export class HistoryStorage {
 
 		this.#db = new Database(dbPath);
 
-		// Install the busy handler BEFORE any lock-taking statement. See #2421.
-		// Headless hosts bound the wait so lock contention cannot freeze the
-		// protocol loop for the full interactive timeout.
 		this.#db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 
 		const hadFts = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_fts'").get();
@@ -124,7 +108,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		`);
 	}
 
-	/** Opens the process-wide prompt history database. */
 	static open(dbPath: string = getHistoryDbPath()): HistoryStorage {
 		if (!HistoryStorage.#instance) {
 			HistoryStorage.#instance = new HistoryStorage(dbPath);
@@ -132,7 +115,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		return HistoryStorage.#instance;
 	}
 
-	/** @internal Reset the singleton and close its database — test-only. */
 	static resetInstance(): void {
 		const instance = HistoryStorage.#instance;
 		HistoryStorage.#instance = undefined;
@@ -156,16 +138,10 @@ ON CONFLICT(prompt) DO UPDATE SET
 		})(rows);
 	}
 
-	/**
-	 * Register a resolver that supplies the current session ID for prompts added
-	 * without an explicit `sessionId`. Evaluated synchronously at `add()` time so
-	 * batched writes capture the session active when the prompt was submitted.
-	 */
 	setSessionResolver(resolver: () => string | undefined): void {
 		this.#sessionResolver = resolver;
 	}
 
-	/** Stores a prompt and replaces its provenance with the latest submission. */
 	add(prompt: string, cwd?: string, sessionId?: string): Promise<void> {
 		const trimmed = normalizePrompt(prompt);
 		if (!trimmed) return Promise.resolve();
@@ -175,7 +151,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		});
 	}
 
-	/** Returns unique prompts ordered by their most recent submission. */
 	getRecent(limit: number): HistoryEntry[] {
 		const safeLimit = this.#normalizeLimit(limit);
 		if (safeLimit === 0) return [];
@@ -189,7 +164,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		}
 	}
 
-	/** Finds unique prompts matching every query token, newest first. */
 	search(query: string, limit: number): HistoryEntry[] {
 		const safeLimit = this.#normalizeLimit(limit);
 		if (safeLimit === 0) return [];
@@ -197,21 +171,14 @@ ON CONFLICT(prompt) DO UPDATE SET
 		const tokens = this.#tokenize(query);
 		if (tokens.length === 0) return [];
 
-		// 1. FTS5 prefix match (token AND, prefix-wildcard per token).
-		//    Handles punctuation by tokenizing query the same way unicode61 tokenizer
-		//    indexed the stored text, so "git-commit" -> "git"* "commit"*.
 		const ftsQuery = tokens.map(tok => `"${tok.replace(/"/g, '""')}"*`).join(" ");
 		let ftsRows: HistoryRow[] = [];
 		try {
 			ftsRows = this.#searchStmt.all(ftsQuery, safeLimit) as HistoryRow[];
 		} catch (error) {
-			// Malformed FTS expression - fall through to substring path.
 			logger.debug("HistoryStorage FTS query failed, using substring only", { error: String(error) });
 		}
 
-		// 2. Substring fallback (token-AND LIKE). Catches infix matches FTS5's
-		//    prefix-only wildcard cannot reach (e.g. "mit" -> "commit"). Bounded
-		//    by safeLimit, ordered by recency - no full-table load into JS.
 		let subRows: HistoryRow[] = [];
 		try {
 			subRows = this.#searchSubstring(tokens, safeLimit);
@@ -237,11 +204,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 			.map(row => this.#toEntry(row));
 	}
 
-	/**
-	 * IDs of the sessions whose stored prompts match `query`, ordered by prompt
-	 * recency and de-duplicated. Used to augment session ranking in the resume
-	 * picker with prompts that the 4KB session-list prefix never sees.
-	 */
 	matchingSessionIds(query: string, limit = 500): string[] {
 		const seen = new Set<string>();
 		const ids: string[] = [];
@@ -264,16 +226,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		return columns.some(col => col.name === column);
 	}
 
-	/**
-	 * One-time dump-and-rebuild pass, gated by `PRAGMA user_version` (owned by
-	 * this pass — nothing else versions history.db). Dumps every row, folds each
-	 * prompt through {@link normalizePrompt} in JS, keeps the most recent
-	 * submission per normalized prompt (the upsert's "latest wins" rule), and
-	 * recreates the table from {@link HISTORY_TABLE_DDL}. Subsumes every legacy
-	 * shape at once — unixepoch defaults, missing session_id, non-unique prompt,
-	 * per-line trailing padding — without per-shape SQL migrations. Returns
-	 * whether it ran so the caller can rebuild the FTS index.
-	 */
 	#rebuildHistory(): boolean {
 		const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
 		if (versionRow.user_version >= HISTORY_DATA_VERSION) return false;
@@ -292,7 +244,7 @@ ON CONFLICT(prompt) DO UPDATE SET
 			const prompt = normalizePrompt(row.prompt);
 			if (!prompt) continue;
 			const incumbent = winners.get(prompt);
-			// Most recent submission wins, matching the upsert's "latest provenance" rule.
+
 			const rowWins =
 				!incumbent ||
 				row.created_at > incumbent.created_at ||
@@ -325,11 +277,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 		return Math.min(clamped, 1000);
 	}
 
-	/**
-	 * Split on non-alphanumeric runs, mirroring FTS5's `unicode61` tokenizer so
-	 * query tokens align with how stored prompts were indexed. Lowercases for
-	 * stable substring matching.
-	 */
 	#tokenize(query: string): string[] {
 		return query
 			.toLowerCase()

@@ -37,7 +37,7 @@ export function createMCPTimeout(
 	signal?: AbortSignal;
 	clear: () => void;
 	isTimeoutAbort: (error: unknown) => boolean;
-	/** True when this operation's own timer fired (regardless of what error a consumer saw). */
+
 	timedOut: () => boolean;
 } {
 	if (!isMCPTimeoutEnabled(timeoutMs)) {
@@ -50,13 +50,7 @@ export function createMCPTimeout(
 	}
 
 	const abortController = new AbortController();
-	// Track which abort source fired first so neither a later caller abort nor
-	// a later timer can overwrite the earlier one. Without this:
-	// - Timer fires during response.json(), caller aborts before catch →
-	//   both signals aborted, old `!signal?.aborted` was false → timeout
-	//   leaked as SyntaxError ("Unexpected end of JSON input").
-	// - Caller aborts first, body-read rejects after timeoutMs → timer still
-	//   fires → caller cancellation misreported as timeout.
+
 	let timerFired = false;
 	let callerAborted = false;
 	const clearFns: Array<() => void> = [];

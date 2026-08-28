@@ -1,50 +1,35 @@
-/**
- * Kagi API Client
- *
- * Implements the Kagi V1 Search API (POST /api/v1/search), the public-preview
- * successor to the sunset V0 endpoint. Authentication is resolved exclusively
- * through the shared {@link AuthStorage} broker (Bearer token), and responses
- * are categorized result buckets rather than the legacy flat object array.
- */
 import { type AuthStorage, type FetchImpl, withAuth } from "@oh-my-pi/pi-ai";
 import { withHardTimeout } from "./search/providers/utils";
 
 const KAGI_SEARCH_URL = "https://kagi.com/api/v1/search";
 
-// ---------------------------------------------------------------------------
-// Request / Response Types
-// ---------------------------------------------------------------------------
-
-/** V1 search request body. */
 export interface KagiSearchRequest {
 	query: string;
-	/** Workflow mode: "search" | "research". */
+
 	workflow?: string;
-	/** Number of results (1-100). */
+
 	limit?: number;
-	/** Lens identifier (e.g. "news", "reddit"). */
+
 	lens?: string;
-	/** Time-based filters as ISO date strings (YYYY-MM-DD). */
+
 	filters?: {
 		after?: string;
 		before?: string;
 	};
 }
 
-/** Individual V1 result item. */
 interface KagiSearchResultItem {
 	url: string;
 	title: string;
 	snippet?: string;
-	/** ISO timestamp or relative string ("2h ago"). */
+
 	time?: string;
-	/** Thumbnail image. */
+
 	image?: { url: string; height?: number; width?: number };
-	/** Extra metadata key-value pairs. */
+
 	props?: Record<string, unknown>;
 }
 
-/** V1 categorizes results into named buckets; only consumed buckets are typed. */
 interface KagiSearchData {
 	search?: KagiSearchResultItem[];
 	video?: KagiSearchResultItem[];
@@ -55,7 +40,6 @@ interface KagiSearchData {
 	direct_answer?: KagiSearchResultItem[];
 }
 
-/** V1 error entry. */
 interface KagiErrorEntry {
 	code?: number;
 	url?: string;
@@ -64,7 +48,6 @@ interface KagiErrorEntry {
 	location?: string;
 }
 
-/** V1 success response. */
 interface KagiSearchResponse {
 	meta?: {
 		trace?: string;
@@ -75,17 +58,12 @@ interface KagiSearchResponse {
 	error?: KagiErrorEntry[];
 }
 
-/** V1 error response. */
 interface KagiErrorResponse {
 	meta?: Record<string, unknown>;
 	error?: string | KagiErrorEntry[];
 	message?: string;
 	detail?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Error Handling
-// ---------------------------------------------------------------------------
 
 export class KagiApiError extends Error {
 	readonly statusCode?: number;
@@ -178,10 +156,6 @@ function parseKagiSuccessResponse(statusCode: number, responseText: string): Kag
 	return payload as KagiSearchResponse;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 interface KagiSearchOptions {
 	limit?: number;
 	recency?: "day" | "week" | "month" | "year";
@@ -205,12 +179,6 @@ interface KagiSearchResult {
 	answer?: string;
 }
 
-/**
- * Compute a YYYY-MM-DD date string `recency` units before now, in UTC.
- * UTC keeps the recency window deterministic regardless of host timezone and
- * matches Kagi's date-formatted `filters.after`. Date setters handle month
- * drift (Mar 31 −1mo → Feb 28/29) and leap years correctly.
- */
 function recencyToDate(recency: "day" | "week" | "month" | "year"): string {
 	const d = new Date();
 	switch (recency) {
@@ -254,7 +222,6 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
 	return undefined;
 }
 
-/** Push every valid item in a result bucket as a source, with an optional title tag. */
 function collectSources(sources: KagiSearchSource[], items: unknown, tag?: string): void {
 	if (!Array.isArray(items)) return;
 	for (const value of items) {
@@ -272,7 +239,6 @@ function collectSources(sources: KagiSearchSource[], items: unknown, tag?: strin
 	}
 }
 
-/** Pull a related/adjacent question from an item's props or fall back to title. */
 function questionOf(value: unknown): string | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const item = value as Record<string, unknown>;

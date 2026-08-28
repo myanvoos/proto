@@ -26,7 +26,6 @@ import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } fro
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
-/** Capabilities borrowed from the owning AgentSession. */
 export interface SessionToolsHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -42,24 +41,24 @@ export interface SessionToolsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
-	/** Session-scoped `/vision` override; undefined means "follow the persisted setting". */
+
 	getInspectImageModeOverride(): InspectImageMode | undefined;
 	setInspectImageModeOverride(mode: InspectImageMode | undefined): void;
-	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
+
 	setCodeModeNamespacesInfo?(info: unknown): void;
 }
 
 interface SessionToolsOptions {
 	toolRegistry?: Map<string, AgentTool>;
 	createComputerTool?: () => Promise<AgentTool | null>;
-	/** Creates the private `think` scratchpad tool for runtime setting changes. */
+
 	createThinkTool?: () => Promise<AgentTool | null>;
-	/** Creates the built-in `inspect_image` tool for session-scoped runtime enablement (see {@link SessionTools.setInspectImageMode}). */
+
 	createInspectImageTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	requiredToolNames?: ReadonlySet<string>;
-	/** MCP tool names whose current registry entries came from the manager snapshot. */
+
 	mcpManagerToolNames?: Iterable<string>;
 	ensureWriteRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
@@ -102,7 +101,6 @@ interface MCPXdevGuidanceProjection {
 const MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH = 4000;
 const MAX_MCP_XDEV_GUIDANCE_MAPPINGS = 64;
 
-/** Yield exact mounted MCP ownership and route metadata. */
 export function* collectMountedMCPToolRoutes(
 	tools: Iterable<MountedMCPToolRouteSource>,
 ): Generator<MountedMCPToolRoute> {
@@ -123,10 +121,6 @@ function formatMCPXdevGuidanceLabel(label: string): string {
 		.replaceAll("\u2029", "\\u2029");
 }
 
-/**
- * Project exact live MCP routes into the bounded, Markdown-safe mapping data
- * rendered by the static MCP guidance prompt.
- */
 export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRoute>): MCPXdevGuidanceProjection {
 	const mappings: MCPXdevGuidanceMapping[] = [];
 	let remainingMappingDataLength = MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH;
@@ -152,19 +146,11 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 
-/**
- * Structured payload persisted on each {@link XDEV_MOUNT_NOTICE_MESSAGE_TYPE}
- * custom message. Lets a resumed session reconstruct which dynamic devices the
- * model has already been told about, so reconnecting hosts do not re-announce
- * (and re-splice a redundant developer message that busts the provider
- * prompt-cache prefix).
- */
 interface XdevMountNoticeDetails {
 	added: string[];
 	removed: string[];
 }
 
-/** Owns tool registration, presentation, prompt rebuilding, skills, and permissions. */
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#toolRegistry: Map<string, AgentTool>;
@@ -177,43 +163,25 @@ export class SessionTools {
 	#extensionMcpTools = new Map<string, AgentTool>();
 	#xdev: XdevState | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
-	/**
-	 * Dynamic (`xd://`) devices the model has already been told are mounted.
-	 * Seeded lazily from persisted history on resume (see
-	 * {@link #ensureAnnouncedMountsSeeded}) and updated as notices are emitted, so
-	 * a host reconnect that re-mounts the same device does not re-announce it.
-	 */
+
 	#announcedMounts = new Set<string>();
 	#announcedMountsSeeded = false;
 	#presentationPinnedToolNames: ReadonlySet<string> | undefined;
 	#requiredToolNames: ReadonlySet<string>;
 	#runtimeSelectedToolNames: ReadonlySet<string> | undefined;
 	#baseSystemPrompt: string[];
-	/**
-	 * Per-turn system prompt returned by a `before_agent_start` extension hook
-	 * ("replace the system prompt for this turn"). While set, base-prompt
-	 * rebuilds keep this override on the agent instead of the rebuilt base, so a
-	 * rebuild landing in the prompt window (compaction/promotion, MCP/RPC tool
-	 * refresh) cannot silently drop it before the request. Cleared when the turn
-	 * ends.
-	 */
+
 	#turnSystemPromptOverride: string[] | undefined;
 	#lastAppliedToolSignature: string | undefined;
-	/** Full enabled set, including tools demoted from the model-visible surface. */
+
 	#enabledToolNames = new Set<string>();
-	/** Names currently exposed through tool-session `isToolActive` predicates. */
+
 	#toolPredicateNames: readonly string[] | undefined;
-	/** Wire-name snapshot for the direct Code Mode tools last applied successfully. */
+
 	#codeModeDirectWireSignature: string | undefined;
-	/** Direct partition of the last applied Code Mode surface; undefined when inactive. */
+
 	#codeModeDirectToolNames: readonly string[] | undefined;
-	/**
-	 * `xd://` device names the current base system prompt renders in its catalog
-	 * (the last rebuild's {@link BuildSystemPromptResult.xdevCatalogNames}). Consulted
-	 * when a pending mount notice is delivered: a device the outgoing prompt already
-	 * lists is recorded as announced without a redundant notice line. Empty when the
-	 * prompt carries no catalog (no mounts, or a custom prompt that omits the section).
-	 */
+
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#toolRegistryMutationScope = new AsyncLocalStorage<boolean>();
 	#toolRegistryMutationTail: Promise<void> = Promise.resolve();
@@ -263,57 +231,39 @@ export class SessionTools {
 		this.#promptModelKey = this.#currentPromptModelKey();
 	}
 
-	/** Mutable registry shared with controller hosts that inspect available tools. */
 	get registry(): Map<string, AgentTool> {
 		return this.#toolRegistry;
 	}
 
-	/** Current stable base system prompt. */
 	get baseSystemPrompt(): string[] {
 		return this.#baseSystemPrompt;
 	}
 
-	/** Replaces the controller-owned base prompt without applying it to the agent. */
 	setBaseSystemPrompt(prompt: string[]): void {
 		this.#baseSystemPrompt = prompt;
 	}
 
-	/**
-	 * Pushes `base` to the agent as the effective system prompt, unless an active
-	 * per-turn {@link #turnSystemPromptOverride} takes precedence. Every base
-	 * rebuild applies its result through here so a mid-turn rebuild preserves the
-	 * override.
-	 */
 	#applyAgentSystemPrompt(base: string[]): void {
 		this.#host.agent.setSystemPrompt(this.#turnSystemPromptOverride ?? base);
 	}
 
-	/**
-	 * Registers the per-turn `before_agent_start` system-prompt override and
-	 * applies it to the agent. Base rebuilds during the turn preserve it until
-	 * {@link clearTurnSystemPromptOverride}.
-	 */
 	setTurnSystemPromptOverride(prompt: string[]): void {
 		this.#turnSystemPromptOverride = prompt;
 		this.#host.agent.setSystemPrompt(prompt);
 	}
 
-	/** Drops the active per-turn override; later rebuilds fall back to the base prompt. */
 	clearTurnSystemPromptOverride(): void {
 		this.#turnSystemPromptOverride = undefined;
 	}
 
-	/** Skills currently rendered into the system prompt. */
 	get skills(): Skill[] {
 		return this.#skills;
 	}
 
-	/** Diagnostics produced while loading the current skills. */
 	get skillWarnings(): SkillWarning[] {
 		return this.#skillWarnings;
 	}
 
-	/** Settings snapshot used for the current skill discovery. */
 	get skillsSettings(): SkillsSettings | undefined {
 		return this.#skillsSettings;
 	}
@@ -322,11 +272,10 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => !isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	/** Names of tools currently exposed at the top level. */
 	getActiveToolNames(): string[] {
 		return this.#host.agent.state.tools.map(t => t.name);
 	}
-	/** Enabled top-level, `xd://`, and Code Mode bridge tool names. */
+
 	getEnabledToolNames(): string[] {
 		if (this.#enabledToolNames.size > 0) return [...this.#enabledToolNames];
 		const mountedNames = this.#xdev?.mountedNames;
@@ -334,33 +283,27 @@ export class SessionTools {
 		return [...this.getActiveToolNames(), ...mountedNames];
 	}
 
-	/** Names currently presented as `xd://` devices. */
 	getMountedXdevToolNames(): string[] {
 		return [...(this.#xdev?.mountedNames ?? [])];
 	}
 
-	/** Whether the edit tool is registered. */
 	get hasEditTool(): boolean {
 		return this.#toolRegistry.has("edit");
 	}
 
-	/** Looks up a registered tool by name. */
 	getToolByName(name: string): AgentTool | undefined {
 		return this.#toolRegistry.get(name);
 	}
 
-	/** Looks up an enabled tool for the eval bridge. */
 	getToolForEvalBridge(name: string): AgentTool | undefined {
 		if (!this.getEnabledToolNames().includes(name)) return undefined;
 		return this.#toolRegistry.get(name);
 	}
 
-	/** Canonical allowlist advertised by and enforced for the eval bridge. */
 	getEvalBridgeToolNames(): string[] {
 		return this.getEnabledToolNames();
 	}
 
-	/** Tools left directly model-visible by the last applied Code Mode partition; undefined when inactive. */
 	getCodeModeDirectToolNames(): readonly string[] | undefined {
 		return this.#codeModeDirectToolNames;
 	}
@@ -370,22 +313,10 @@ export class SessionTools {
 			| (AgentTool & { supportsCodeModeTransport?: () => boolean })
 			| undefined;
 		if (!evalTool) return false;
-		// A replacement `eval` that cannot state the capability cannot be assumed
-		// to run `tool.<name>()`; demoting the direct surface behind it would
-		// leave every other tool unreachable.
+
 		return evalTool.supportsCodeModeTransport?.() ?? false;
 	}
 
-	/**
-	 * Whether a registry entry came from a built-in factory.
-	 *
-	 * Resolves `customWireName` aliases too: a built-in tool may present on the
-	 * wire under a different name (e.g. `edit` exposes itself as `apply_patch` in
-	 * apply_patch mode), and tool cards render the call under that wire name. An
-	 * extension registering the literal alias name shadows it — the agent loop
-	 * routes exact-name matches ahead of wire aliases — so a registered non-built-in
-	 * tool with that name wins and the alias no longer counts as built-in.
-	 */
 	hasBuiltInTool(name: string): boolean {
 		if (this.#builtInToolNames.has(name)) return true;
 		if (this.#toolRegistry.has(name)) return false;
@@ -395,7 +326,6 @@ export class SessionTools {
 		return false;
 	}
 
-	/** Updates source provenance when a live registry entry is replaced or restored. */
 	setToolBuiltIn(name: string, builtIn: boolean): void {
 		if (builtIn) {
 			this.#builtInToolNames.add(name);
@@ -404,17 +334,14 @@ export class SessionTools {
 		}
 	}
 
-	/** Whether the live registry entry is owned by the RPC host. */
 	hasRpcHostTool(name: string): boolean {
 		return this.#rpcHostToolNames.has(name);
 	}
 
-	/** Whether the current MCP entry came from the manager snapshot. */
 	hasMCPManagerTool(name: string): boolean {
 		return this.#mcpManagerToolNames.has(name);
 	}
 
-	/** Restores manager ownership after a lifecycle registration rollback. */
 	setMCPManagerTool(name: string, managerOwned: boolean): void {
 		if (managerOwned) {
 			this.#mcpManagerToolNames.add(name);
@@ -423,12 +350,10 @@ export class SessionTools {
 		}
 	}
 
-	/** Current extension-owned MCP entry retained across manager refreshes. */
 	getExtensionMCPTool(name: string): AgentTool | undefined {
 		return this.#extensionMcpTools.get(name);
 	}
 
-	/** Updates extension ownership when a lifecycle registration commits or rolls back. */
 	setExtensionMCPTool(name: string, tool: AgentTool | undefined): void {
 		if (!isMCPToolName(name)) return;
 		if (tool) {
@@ -439,7 +364,6 @@ export class SessionTools {
 		}
 	}
 
-	/** Serializes every registry and presentation mutation for this session. */
 	runToolRegistryMutation<T>(mutation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (this.#toolRegistryMutationScope.getStore()) return untilAborted(signal, mutation);
 		const serialized = this.#toolRegistryMutationTail.then(() => {
@@ -454,19 +378,10 @@ export class SessionTools {
 		return operation;
 	}
 
-	/** Names of every registered tool. */
 	getAllToolNames(): string[] {
 		return Array.from(this.#toolRegistry.keys());
 	}
 
-	/**
-	 * Full metadata for every registered tool, including source provenance.
-	 *
-	 * Backs the `getAllTools()` ExtensionAPI method. Returns {@link ToolInfo}
-	 * objects (not bare names) so extensions authored against upstream
-	 * pi-coding-agent — which promises `ToolInfo[]` — can read
-	 * `sourceInfo.source` unchanged.
-	 */
 	getAllToolInfos(): ToolInfo[] {
 		return Array.from(this.#toolRegistry, ([name, tool]) => {
 			const source = this.#builtInToolNames.has(name)
@@ -502,7 +417,6 @@ export class SessionTools {
 		} as const;
 	}
 
-	/** Resolves the edit mode for the active model and settings. */
 	resolveActiveEditMode(): EditMode {
 		return resolveEditMode(this.#getEditModeSession());
 	}
@@ -524,11 +438,10 @@ export class SessionTools {
 		});
 	}
 
-	/** Rebuilds model-dependent tool prompts after a model change. */
 	async syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
 		const currentEditMode = this.resolveActiveEditMode();
 		const editModeChanged = previousEditMode !== currentEditMode && this.getActiveToolNames().includes("edit");
-		// The system prompt selects model-specific policy even when it does not display the model id.
+
 		const modelChanged = this.#currentPromptModelKey() !== this.#promptModelKey;
 		if (editModeChanged || modelChanged) {
 			await this.refreshBaseSystemPrompt();
@@ -549,12 +462,9 @@ export class SessionTools {
 			this.#logComputerState("Computer tool retained after model change", true);
 		}
 
-		// inspect_image auto mode keys off model image capability, so a model
-		// switch can flip the tool either way.
 		await this.reconcileInspectImageAfterModelChange();
 	}
 
-	/** Whether a model transition crosses a Code Mode presentation boundary. */
 	codeModeChangesBetween(previousModel: Model | undefined, nextModel: Model): boolean {
 		const enabledToolNames = this.getEnabledToolNames();
 		const setting = this.#host.settings.get("providers.openai-codex.codeMode");
@@ -593,19 +503,14 @@ export class SessionTools {
 		return signature;
 	}
 
-	/** Reapplies the enabled set after model or Code Mode setting changes. */
 	reconcileCodeMode(): Promise<void> {
 		return this.applyActiveToolsByName(this.getEnabledToolNames());
 	}
 
-	/** Enabled MCP tools in their current presentation partition. */
 	getSelectedMCPToolNames(): string[] {
-		// Every connected MCP tool is enabled; presentation (top-level vs xd://) is
-		// decided by loadMode. Return the enabled MCP tools in the current set.
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	/** Applies an enabled tool set and reconciles its `xd://` partition. */
 	applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		return this.runToolRegistryMutation(
 			() => this.#applyActiveToolsByName(toolNames, forcePromptRefresh, signal),
@@ -647,8 +552,7 @@ export class SessionTools {
 				isMountableUnderXdev(tool),
 		);
 		const mountNames = new Set(mountCandidates.map(({ name }) => name));
-		// Demoted tools stay reachable through the eval bridge, so nothing is
-		// mounted under xd:// while code mode restricts the direct surface.
+
 		if (codeMode.active) mountNames.clear();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
@@ -687,8 +591,7 @@ export class SessionTools {
 		let nextCodeModeNamespacesInfo: ToolNamespacesInfo | undefined;
 		if (codeMode.active) {
 			for (const name of this.#requiredToolNames) codeMode.directToolNames.add(name);
-			// The write tool survives demotion only when a deferrable
-			// tool still needs it as the staging transport.
+
 			if (transportNeeded && validToolNames.includes("write")) codeMode.directToolNames.add("write");
 			appliedTools = tools.filter(tool => codeMode.directToolNames.has(tool.name));
 			appliedNames = validToolNames.filter(name => codeMode.directToolNames.has(name));
@@ -720,8 +623,7 @@ export class SessionTools {
 		this.#setMountedNames(mountNames);
 		this.#toolPredicateNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames);
-		// The eval tool advertises whatever stays direct, so the applied
-		// partition lands before the rebuild reads the tool descriptions.
+
 		this.#codeModeDirectToolNames = codeMode.active ? appliedNames : undefined;
 
 		let rebuiltSystemPrompt: string[] | undefined;
@@ -729,11 +631,6 @@ export class SessionTools {
 		let rebuiltXdevCatalogNames: readonly string[] | undefined;
 		try {
 			if (this.#rebuildSystemPrompt) {
-				// The provider receives only `appliedNames`, but prompt capability and
-				// safety gates must see every enabled tool that remains callable via
-				// the Code Mode eval bridge. The rendered tool inventory is restricted
-				// to the direct names so the prompt never advertises bridge-only tools
-				// as provider-callable functions.
 				const promptToolNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
 				const promptTools = codeMode.active
 					? promptToolNames.flatMap(name => {
@@ -795,26 +692,13 @@ export class SessionTools {
 		for (const name of names) mountedNames.add(name);
 	}
 
-	/**
-	 * Record a mid-session `xd://` mount delta for the model. Non-MCP mount
-	 * churn remains notice-only, leaving the system prompt and provider cache
-	 * prefix byte-stable; mounted MCP route changes additionally rebuild the
-	 * global route guidance through the applied-tool signature. The delta is NOT
-	 * steered immediately — a steered notice landing at a run's stop boundary
-	 * (or while the session is idle) forces an unsolicited extra assistant turn
-	 * — so it is coalesced into {@link #pendingXdevMountDelta} and rides along
-	 * with the next prompt (docs + schema stay one `read xd://<tool>` away).
-	 * Full docs join the system prompt opportunistically on a rebuild.
-	 */
 	#notifyXdevMountDelta(previousMounted: ReadonlySet<string>): void {
 		const current = this.#xdev?.mountedNames;
 		if (!current) return;
 		const addedNames = [...current].filter(name => !previousMounted.has(name));
 		const removedNames = [...previousMounted].filter(name => !current.has(name));
 		if (addedNames.length === 0 && removedNames.length === 0) return;
-		// Coalesce against the unannounced delta: an unmount cancels a pending
-		// mount the model never learned about, and a remount cancels a pending
-		// unmount.
+
 		const pending = this.#pendingXdevMountDelta ?? { added: new Set<string>(), removed: new Set<string>() };
 		for (const name of addedNames) {
 			if (!pending.removed.delete(name)) pending.added.add(name);
@@ -830,29 +714,11 @@ export class SessionTools {
 		this.#host.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
 	}
 
-	/**
-	 * Forget the announced-mount baseline for a replaced transcript. Called when
-	 * session history is swapped wholesale (`/new`, `switchSession`, `branch`): the
-	 * previous transcript's persisted notices no longer apply, so the next notice
-	 * re-seeds from the new history and a device reconnecting into it announces
-	 * again.
-	 *
-	 * The pending delta is deliberately preserved: it holds mounts that are still
-	 * live but not yet delivered to the model, and `branch()` does not rebuild the
-	 * base system prompt, so dropping it would leave the branched transcript
-	 * unaware of a still-mounted device that no later refresh would re-queue.
-	 */
 	resetAnnouncedMounts(): void {
 		this.#announcedMounts.clear();
 		this.#announcedMountsSeeded = false;
 	}
 
-	/**
-	 * Seed {@link #announcedMounts} from persisted mount notices the first time a
-	 * notice is consumed. On resume the in-memory mount set is rebuilt from
-	 * scratch, so without replaying history every already-announced dynamic device
-	 * would look freshly mounted and re-announce.
-	 */
 	#ensureAnnouncedMountsSeeded(): void {
 		if (this.#announcedMountsSeeded) return;
 		this.#announcedMountsSeeded = true;
@@ -871,9 +737,6 @@ export class SessionTools {
 				continue;
 			}
 
-			// Releases before structured notice details persisted only the rendered
-			// prompt. Replay its two stable inventory sections so the first resume
-			// after upgrading does not re-announce every dynamic device once.
 			if (typeof message.content !== "string") continue;
 			let section: "added" | "removed" | undefined;
 			for (const line of message.content.split("\n")) {
@@ -900,30 +763,18 @@ export class SessionTools {
 		}
 	}
 
-	/** Consumes the hidden notice for unannounced `xd://` mount changes. */
 	takePendingXdevMountNotice(baseCatalogDelivered: boolean): CustomMessage<XdevMountNoticeDetails> | undefined {
 		const pending = this.#pendingXdevMountDelta;
 		if (!pending) return undefined;
 		this.#pendingXdevMountDelta = undefined;
 		this.#ensureAnnouncedMountsSeeded();
-		// A pending add for a device the outgoing base prompt already lists in its
-		// catalog needs no notice line — but only when the final provider prompt
-		// still carries that base catalog. A `before_agent_start` replacement drops
-		// it, so its additions must remain in the notice. Record prompt-carried
-		// devices announced here, after the final prompt is known and immediately
-		// before delivery. The pending delta remains untouched by rebuilds, letting
-		// {@link #notifyXdevMountDelta} cancel a mount followed by an unmount before
-		// any request is sent (issue #7139 reviews).
+
 		if (baseCatalogDelivered) {
 			for (const name of pending.added) {
 				if (this.#basePromptXdevNames.has(name)) this.#announcedMounts.add(name);
 			}
 		}
-		// Only announce a net change relative to what the model already knows (from
-		// this session and persisted history): a re-mount of an already-announced
-		// device — the common resume/reconnect case — and an unmount for a device
-		// it was never told about are both suppressed, keeping the provider prompt
-		// cache prefix byte-stable across resumes.
+
 		const addedNames = [...pending.added].filter(name => !this.#announcedMounts.has(name));
 		const removedNames = [...pending.removed].filter(name => this.#announcedMounts.has(name));
 		if (addedNames.length === 0 && removedNames.length === 0) return undefined;
@@ -951,7 +802,6 @@ export class SessionTools {
 		};
 	}
 
-	/** Rediscovers reloadable skills and refreshes prompt metadata. */
 	async refreshSkills(): Promise<void> {
 		resetCapabilities();
 		if (this.#skillsReloadable) {
@@ -973,12 +823,10 @@ export class SessionTools {
 		this.#host.notifyCommandMetadataChanged();
 	}
 
-	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			const normalized = normalizeToolNames(toolNames);
-			// Transport-write eligibility keys off the *current* active set: an ordinary
-			// selection change should not demote `write` unless it is already active.
+
 			await this.#applyToolPresentation(
 				normalized,
 				this.#xdev?.mountedNames ?? new Set(),
@@ -987,23 +835,6 @@ export class SessionTools {
 		});
 	}
 
-	/**
-	 * Restore an enabled tool set with its exact top-level versus `xd://` partition.
-	 *
-	 * Both inputs are required because {@link setActiveToolsByName} only receives the
-	 * enabled name list and classifies mounts from the current presentation set.
-	 * Rollback/restore callers must pass the snapshotted mounted subset so names that
-	 * were top-level stay pinned (`#runtimeSelectedToolNames`) and names that were under
-	 * `xd://` remain mount-eligible, even when the live mount set has drifted.
-	 *
-	 * Names outside `mountedToolNames` are pinned top-level for this application;
-	 * names in the mounted subset remain eligible for xdev mounting. Set
-	 * `forcePromptRefresh` when an enabled tool's schema or prompt-visible metadata
-	 * changed without changing its name or presentation.
-	 *
-	 * Delegates the actual apply through {@link applyActiveToolsByName} and restores
-	 * the prior runtime selection if that apply throws.
-	 */
 	setActiveToolPresentation(
 		toolNames: string[],
 		mountedToolNames: string[],
@@ -1012,8 +843,7 @@ export class SessionTools {
 	): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			const normalized = normalizeToolNames(toolNames);
-			// Restoration targets a snapshot, so write eligibility comes from the
-			// *target* set rather than whatever happens to be active mid-rollback.
+
 			await this.#applyToolPresentation(
 				normalized,
 				new Set(normalizeToolNames(mountedToolNames)),
@@ -1024,11 +854,6 @@ export class SessionTools {
 		}, signal);
 	}
 
-	/**
-	 * Shared body for {@link setActiveToolsByName} and {@link setActiveToolPresentation}:
-	 * pins non-mounted names as the runtime selection (holding `write` back when it is
-	 * transport-only) and applies the set, rolling the selection back if apply throws.
-	 */
 	async #applyToolPresentation(
 		normalized: string[],
 		mounted: ReadonlySet<string>,
@@ -1053,19 +878,6 @@ export class SessionTools {
 		}
 	}
 
-	/**
-	 * Session-scoped enable/disable for the settings-gated `computer` tool.
-	 *
-	 * `createTools` derives the built-in slate once at session start, so a runtime
-	 * `computer.enabled` override alone never changes the active tools. Enabling
-	 * builds the tool through the config factory on first use (later toggles reuse
-	 * the registry entry, so only one desktop controller is ever registered) and
-	 * activates it; disabling drops it from the active set while keeping the
-	 * registry entry. Takes effect before the next model call.
-	 *
-	 * @returns false when enabling was requested but this session cannot build the
-	 * tool (e.g. restricted child sessions have no factory).
-	 */
 	setComputerToolEnabled(enabled: boolean): Promise<boolean> {
 		return this.runToolRegistryMutation(async () => {
 			const logState = (): void => this.#logComputerState("Computer tool state changed", enabled);
@@ -1098,19 +910,10 @@ export class SessionTools {
 		});
 	}
 
-	/**
-	 * Session-scoped enable/disable for the private `think` scratchpad tool.
-	 *
-	 * Enabling constructs the tool once and refreshes the model's tool contract;
-	 * disabling removes it from the active set while preserving its registry entry.
-	 *
-	 * @returns false when enabling was requested but this session cannot build the tool.
-	 */
 	setThinkToolEnabled(enabled: boolean): Promise<boolean> {
 		return this.#setThinkToolActive(enabled && supportsExternalThinking(this.#host.model()));
 	}
 
-	/** Reconciles the external scratchpad after the active model changes. */
 	reconcileThinkTool(): Promise<boolean> {
 		return this.#setThinkToolActive(
 			this.#host.settings.get("externalThinking") && supportsExternalThinking(this.#host.model()),
@@ -1140,7 +943,6 @@ export class SessionTools {
 		});
 	}
 
-	/** Current effective inspect_image state for `/vision status`. */
 	inspectImageState(): { mode: InspectImageMode; active: boolean; model: string | undefined } {
 		const model = this.#host.model();
 		return {
@@ -1150,16 +952,6 @@ export class SessionTools {
 		};
 	}
 
-	/**
-	 * Brings the active tool set in line with the effective inspect_image state
-	 * (mode setting, `/vision` override, active-model image capability).
-	 * Mirrors {@link setComputerToolEnabled}: enabling builds the tool through
-	 * the config factory on first use and reuses the registry entry afterwards.
-	 * Idempotent — safe to call from every model/settings change path.
-	 *
-	 * @returns false when the tool should be active but this session cannot
-	 *   build it (e.g. restricted child sessions have no factory).
-	 */
 	reconcileInspectImageTool(): Promise<boolean> {
 		return this.runToolRegistryMutation(async () => {
 			const expected = isInspectImageToolActive({
@@ -1167,9 +959,7 @@ export class SessionTools {
 				getActiveModel: () => this.#host.model(),
 				getInspectImageModeOverride: () => this.#host.getInspectImageModeOverride(),
 			});
-			// Keep the read tool's advertised description in sync BEFORE any prompt
-			// rebuild below, passing the post-change availability so the prompt never
-			// lags a flip in either direction. Per-read lazy sync is the backstop.
+
 			const syncReadDescription = (available: boolean): void => {
 				const readTool = this.#toolRegistry.get("read") as
 					| { syncInspectImageState?: (available?: boolean) => boolean }
@@ -1206,12 +996,6 @@ export class SessionTools {
 		});
 	}
 
-	/**
-	 * Reconciles inspect_image after a model change and surfaces a notice when
-	 * the visible tool set actually flipped. Called from every model-change
-	 * path — including retry-fallback switches that bypass
-	 * {@link syncAfterModelChange}.
-	 */
 	reconcileInspectImageAfterModelChange(): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			const before = this.getEnabledToolNames().includes("inspect_image");
@@ -1230,14 +1014,6 @@ export class SessionTools {
 		});
 	}
 
-	/**
-	 * Session-scoped `/vision` override. `auto` clears the override so the
-	 * persisted `inspect_image.mode` setting (itself possibly `auto`) decides;
-	 * `on`/`off` force the tool for this session only. Takes effect before the
-	 * next model call.
-	 *
-	 * @returns false when `on` was requested but the tool cannot be built here.
-	 */
 	setInspectImageMode(mode: InspectImageMode): Promise<boolean> {
 		return this.runToolRegistryMutation(async () => {
 			this.#host.setInspectImageModeOverride(mode === "auto" ? undefined : mode);
@@ -1248,7 +1024,6 @@ export class SessionTools {
 		});
 	}
 
-	/** Rebuilds the stable base prompt for the current tools and model. */
 	refreshBaseSystemPrompt(): Promise<void> {
 		return this.runToolRegistryMutation(() => this.#refreshBaseSystemPrompt());
 	}
@@ -1258,7 +1033,7 @@ export class SessionTools {
 		const activeToolNames = this.getActiveToolNames();
 		const promptToolNames =
 			this.#codeModeDirectWireSignature === undefined ? activeToolNames : this.getEnabledToolNames();
-		// Under Code Mode the active names are exactly the direct keep-set.
+
 		const directToolNames = this.#codeModeDirectWireSignature === undefined ? undefined : activeToolNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames ?? activeToolNames);
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
@@ -1274,58 +1049,14 @@ export class SessionTools {
 		}
 		this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 		this.#promptModelKey = this.#currentPromptModelKey();
-		// Refresh the cached signature so a subsequent `applyActiveToolsByName` with
-		// the same tool set does not re-rebuild on top of the explicit refresh we
-		// just performed (and conversely, a different set forces a fresh rebuild).
+
 		const promptTools = promptToolNames
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool != null);
 		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(promptToolNames, promptTools, directToolNames);
 	}
 
-	/**
-	 * Compose a stable signature for the inputs that `rebuildSystemPrompt` reads.
-	 * Two calls producing identical signatures are guaranteed to produce identical
-	 * system prompt bytes, so the rebuild can be skipped.
-	 *
-	 * The signature covers:
-	 *   1. Active tool names in order (the prompt renders them in this order).
-	 *   2. Active tool labels, descriptions, and wire-visible names — all are
-	 *      rendered into the prompt body (see `system-prompt.md` `{{label}}: \`{{name}}\``
-	 *      and `toolPromptNames` in `buildSystemPrompt`). The wire name comes from
-	 *      `tool.customWireName` and overrides the internal name on the model wire
-	 *      (e.g. `edit` exposes itself as `apply_patch` to GPT-5 in apply_patch mode);
-	 *      a stale wire name would desync prompt guidance from actual tool routing.
-	 *   3. The bounded mounted-MCP projection: escaped original-name labels,
-	 *      actual `xd://` paths, and the omission flag in catalog order. These are
-	 *      the exact values rendered by the global transport guidance; catalog
-	 *      churn wholly behind the fallback does not change the prompt.
-	 *   4. MCP server instructions text (per server), since `rebuildSystemPrompt`
-	 *      embeds these in the appended prompt under "## MCP Server Instructions".
-	 *      A server upgrade can change instructions while keeping tools identical.
-	 *
-	 * Settings-driven tool metadata is covered automatically: built-in tools that
-	 * depend on settings expose `description`/`label` via getters (see orchestration tools,
-	 * `SearchToolBm25Tool`, `EditTool`), and the signature reads them live on every
-	 * call - so a settings flip that mutates the rendered string differs the signature
-	 * the next time {@link applyActiveToolsByName} runs. Do not refactor `describeTool`
-	 * to cache per-tool strings without preserving this property.
-	 *
-	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
-	 * and SDK-init-time closure constants in `sdk.ts` (`inlineToolDescriptors`,
-	 * `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
-	 * closure-captured ones cannot change at runtime regardless of skip behavior.
-	 * For everything else, callers must explicitly call {@link refreshBaseSystemPrompt}
-	 * after side-effecting changes; see the memory hooks and {@link syncAfterModelChange}.
-	 *
-	 * The calendar date is deliberately NOT part of the signature: the date/cwd
-	 * reminder rides on the first user turn at request time (`date-cwd-reminder`),
-	 * so a session spanning midnight must NOT rebuild a prompt that no longer
-	 * embeds the date — the reminder picks up the new day on its own.
-	 */
 	#computeAppliedToolSignature(toolNames: string[], tools: AgentTool[], directToolNames?: readonly string[]): string {
-		// Order-preserving join: any reorder must produce a different signature so
-		// the rebuild fires and the new tool list reaches the API.
 		const nameSegment = toolNames.join("\u0001");
 		const describeTool = (tool: AgentTool): string =>
 			`${tool.name}=${tool.label ?? ""}|${tool.description ?? ""}|${tool.customWireName ?? ""}`;
@@ -1341,7 +1072,6 @@ export class SessionTools {
 		const serverInstructions = this.#getMcpServerInstructions?.();
 		let instructionsSegment = "";
 		if (serverInstructions && serverInstructions.size > 0) {
-			// Sort by server name so transport flap order does not perturb the signature.
 			const entries: string[] = [];
 			for (const [server, instructions] of serverInstructions) {
 				entries.push(`${server}=${instructions}`);
@@ -1349,25 +1079,11 @@ export class SessionTools {
 			entries.sort();
 			instructionsSegment = entries.join("\u0006");
 		}
-		// The non-MCP remainder of the xd:// inventory is deliberately NOT part
-		// of the signature: its mount/unmount announces itself through
-		// `#notifyXdevMountDelta` rather than rewriting the system prompt, keeping
-		// the provider cache prefix byte-stable. Mounted MCP routes are the narrow
-		// exception above, bounded to the exact projection rendered in the global
-		// route guidance so churn wholly behind its fallback does not rebuild.
-		// Direct Code Mode names render the restricted tool inventory, so a
-		// `codeModeDirectTools` change must rebuild even when the enabled set is
-		// unchanged.
+
 		const directSegment = directToolNames === undefined ? "" : `\u0004${directToolNames.join("\u0001")}`;
 		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}${directSegment}`;
 	}
 
-	/**
-	 * Replace MCP tools in the registry and enable them immediately. Refreshes
-	 * are serialized so an older asynchronous prompt rebuild cannot commit
-	 * after a newer catalog snapshot. Every connected MCP tool becomes available
-	 * (mounted under `xd://` when that transport is active, else top-level).
-	 */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		const snapshot = [...mcpTools];
 		return this.runToolRegistryMutation(() =>
@@ -1420,8 +1136,6 @@ export class SessionTools {
 			if (managerToolSet.has(tool)) this.#mcpManagerToolNames.add(tool.name);
 		}
 
-		// Connected manager tools become active immediately. Extension-owned MCP
-		// tools retain their prior selection while both sets share one registry.
 		const retainedActiveExtensionToolNames = previousActiveMcpToolNames.filter(
 			name => this.#extensionMcpTools.has(name) && this.#toolRegistry.has(name),
 		);
@@ -1441,7 +1155,6 @@ export class SessionTools {
 		}
 	}
 
-	/** Replaces RPC host-owned tools and refreshes the active set before the next model call. */
 	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
 		const snapshot = [...rpcTools];
 		return this.runToolRegistryMutation(() => this.#applyRpcHostToolRefresh(snapshot));

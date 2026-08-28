@@ -3,47 +3,47 @@ use std::{fs::File, io::Write, path::PathBuf};
 use brush_core::{ExecutionExitCode, ExecutionResult, builtins, history};
 use clap::Parser;
 
-/// Query or manipulate the shell's command history.
-// TODO(history): Evaluate which of the options conflict with each other.
+
+
 #[derive(Parser)]
 #[expect(clippy::option_option)]
 pub(crate) struct HistoryCommand {
-	/// Clears all history.
+
 	#[arg(short = 'c')]
 	clear_history: bool,
 
-	/// Deletes the history entry at the given offset. Positive offsets are
-	/// relative to the beginning of the history, while negative offsets are
-	/// relative to the end of the history.
+
+
+
 	#[arg(short = 'd', value_name = "OFFSET")]
 	delete_offset: Option<i64>,
 
-	/// Appends the history from the current session to the history file.
+
 	#[arg(short = 'a', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_session_to_file: Option<Option<String>>,
 
-	/// Appends any remaining history from the history file to the current
-	/// session.
+
+
 	#[arg(short = 'n', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_rest_of_file_to_session: Option<Option<String>>,
 
-	/// Appends the history from the history file to the current session.
+
 	#[arg(short = 'r', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_file_to_session: Option<Option<String>>,
 
-	/// Replaces the history file with the current session history.
+
 	#[arg(short = 'w', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	write_session_to_file: Option<Option<String>>,
 
-	/// History-expands positional arguments and displays them.
+
 	#[arg(short = 'p', num_args = 0.., value_name = "ARG")]
 	expand_args: Option<Vec<String>>,
 
-	/// Appends positional arguments as an entry in the current session.
+
 	#[arg(short = 's', num_args = 0.., value_name = "ARG")]
 	append_args_to_session: Option<Vec<String>>,
 
-	/// Arguments.
+
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	args: Vec<String>,
 }
@@ -60,7 +60,7 @@ impl builtins::Command for HistoryCommand {
 		&self,
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
-		// Retrieve the shell's history config while we still can.
+
 		let config = HistoryConfig {
 			default_history_file_path: context.shell.history_file_path(),
 			time_format:               context.shell.history_time_format(),
@@ -99,7 +99,7 @@ impl HistoryCommand {
 			}
 
 			if offset > 0 {
-				// Convert to 0-based index.
+
 				let index = (offset - 1) as usize;
 				if !history.remove_nth_item(index) {
 					writeln!(stderr, "index past end of history")?;
@@ -126,9 +126,9 @@ impl HistoryCommand {
 			) {
 				history.flush(
 					file_path,
-					true,                         /* append? */
-					true,                         /* unsaved items only */
-					config.time_format.is_some(), /* write timestamps? */
+					true,
+					true,
+					config.time_format.is_some(),
 				)?;
 			}
 
@@ -161,9 +161,9 @@ impl HistoryCommand {
 			{
 				history.flush(
 					file_path,
-					false,                        /* append? */
-					false,                        /* unsaved items only? */
-					config.time_format.is_some(), /* write timestamps? */
+					false,
+					false,
+					config.time_format.is_some(),
 				)?;
 			}
 
@@ -422,8 +422,8 @@ fn display_history(
 			}
 		}
 
-		// Output format is something like:
-		//     1  echo hello world
+
+
 		std::writeln!(
 			stdout,
 			"{:>5}  {formatted_timestamp}{}",

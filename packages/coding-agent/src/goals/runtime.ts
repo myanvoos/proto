@@ -63,12 +63,6 @@ export function renderTrustedObjective(objective: string): string {
 }
 
 export function goalTokenDelta(current: GoalTokenUsage, baseline: GoalTokenUsage): number {
-	// Diverges from codex-rs: codex omits cache creation because its target providers
-	// do not bill cache writes distinctly through the token-usage stream. Pi receives
-	// cacheWrite separately on Anthropic/Bedrock; rotating a 1h ephemeral cache or
-	// re-anchoring a changed system prompt can write 100K+ tokens, which the goal
-	// budget must account for. cacheRead is excluded because it is reused prefix,
-	// not new work consumed by the goal.
 	return (
 		Math.max(0, current.input - baseline.input) +
 		Math.max(0, current.cacheWrite - baseline.cacheWrite) +
@@ -345,9 +339,7 @@ export class GoalRuntime {
 		if (this.#wallClock.activeGoalId === state.goal.id && wallSeconds > 0) {
 			this.#wallClock.lastAccountedAt += wallSeconds * 1000;
 		}
-		// Persisting wall-clock-only accounting on every tool event bloats /goal sessions with full
-		// objective snapshots. Keep normal tool flushes in memory/UI only, but make wall-clock
-		// usage durable before internal session switches because the active runtime is leaving.
+
 		const shouldPersistUsage = tokenDelta > 0 || flippedToBudgetLimited || (persistWallClock && wallSeconds > 0);
 		await this.#commitState(state, { persist: shouldPersistUsage ? "goal" : undefined });
 

@@ -5,7 +5,6 @@ import type { ArchiveLimits } from "../limits";
 import { assertInMemorySize } from "../limits";
 import type { ByteSource } from "../source";
 
-/** One 7z coder and its global folder-stream coordinates. */
 export interface SevenZipCoder {
 	id: bigint;
 	properties: Uint8Array;
@@ -15,13 +14,11 @@ export interface SevenZipCoder {
 	numOutputs: number;
 }
 
-/** One binding from a coder output stream to another coder input stream. */
 export interface SevenZipBindPair {
 	input: number;
 	output: number;
 }
 
-/** Parsed folder graph and its lazy packed-data coordinates. */
 export interface SevenZipFolderRecord {
 	coders: SevenZipCoder[];
 	bindPairs: SevenZipBindPair[];
@@ -137,7 +134,6 @@ function x86Decode(bytes: Uint8Array, startOffset: number): void {
 	}
 }
 
-/** Shared lazy decoder/cache for a single 7z folder (solid block). */
 export class SevenZipFolderSource {
 	readonly #source: ByteSource;
 	readonly #folder: SevenZipFolderRecord;

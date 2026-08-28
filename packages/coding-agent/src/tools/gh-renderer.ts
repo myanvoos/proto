@@ -354,8 +354,6 @@ function renderFallbackComponent(
 	while (allLines.length > 0 && allLines[0].trim() === "") allLines.shift();
 	while (allLines.length > 0 && allLines[allLines.length - 1].trim() === "") allLines.pop();
 
-	// Trivial one-line *success* result: a clean status line beats an almost-empty box.
-	// Errors always frame so the message reads as a structured block, never a raw red wrap.
 	if (allLines.length <= 1 && !isError) {
 		const body = allLines[0];
 		if (!body) return new Text(header, 0, 0);
@@ -415,9 +413,6 @@ function renderWatchCall(args: GithubToolRenderArgs, options: RenderResultOption
 }
 
 export const githubToolRenderer = {
-	// No animatedPendingPreview: renderCall materializes plain Text components
-	// once per display rebuild (no render closure), so a live spinner interval
-	// would request 30fps repaints while the visible glyph stays frozen.
 	renderCall(args: GithubToolRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const op = typeof args.op === "string" && args.op.trim().length > 0 ? args.op.trim() : undefined;
 		if (op === "run_watch") {

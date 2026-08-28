@@ -6,18 +6,11 @@ function stripHtmlComments(content: string): string {
 	return content.replace(/<!--[\s\S]*?-->/g, "");
 }
 
-/** Convert kebab-case to camelCase (e.g. "thinking-level" -> "thinkingLevel") */
 function kebabToCamel(key: string): string {
 	if (!key.includes("-")) return key;
 	return key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 }
 
-/**
- * Recursively normalize object keys from kebab-case to camelCase — the
- * representation convention for frontmatter consumed inside this codebase.
- * Exported for loaders that parse with `rawKeys: true` to validate exact
- * spec-defined keys, then normalize for storage.
- */
 export function normalizeFrontmatterKeys<T>(obj: T): T {
 	if (obj === null || typeof obj !== "object") return obj;
 	if (Array.isArray(obj)) {
@@ -77,7 +70,6 @@ export class FrontmatterError extends Error {
 	}
 
 	override toString(): string {
-		// Format the error with stack and detail, including the error message, stack, and source if present
 		const details: string[] = [this.message];
 		if (this.source !== undefined) {
 			details.push(`Source: ${JSON.stringify(this.source)}`);
@@ -92,36 +84,21 @@ export class FrontmatterError extends Error {
 }
 
 export interface FrontmatterOptions {
-	/** Source of the content (alias: source) */
 	location?: unknown;
-	/** Source of the content (alias for location) */
+
 	source?: unknown;
-	/** Fallback frontmatter values */
+
 	fallback?: Record<string, unknown>;
-	/** Normalize the content */
+
 	normalize?: boolean;
-	/** Level of error handling */
+
 	level?: "off" | "warn" | "fatal";
-	/**
-	 * Attempt lenient recovery of near-miss input before failing: quote
-	 * ambiguous plain scalars, replace tabs with spaces, and strip leading HTML
-	 * comments ahead of the opening delimiter. Default `true`. Spec-conformant
-	 * loaders set `false` so malformed input is rejected instead of silently
-	 * repaired (CRLF newline normalization still applies).
-	 */
+
 	repair?: boolean;
-	/**
-	 * Preserve frontmatter keys verbatim instead of normalizing kebab-case to
-	 * camelCase. Default `false`. Strict spec loaders use this so a standard
-	 * key (e.g. `allowed-tools`) is never aliased with its camelCase form.
-	 */
+
 	rawKeys?: boolean;
 }
 
-/**
- * Parse YAML frontmatter from markdown content
- * Returns { frontmatter, body } where body has frontmatter stripped
- */
 export function parseFrontmatter(
 	content: string,
 	options?: FrontmatterOptions,
@@ -163,9 +140,7 @@ export function parseFrontmatter(
 			try {
 				const loaded = parseYamlRecord(quotedMetadata, true);
 				return { frontmatter: finalizeKeys({ ...frontmatter, ...loaded }), body };
-			} catch {
-				// Fall through to the existing warning + simple key/value fallback.
-			}
+			} catch {}
 		}
 
 		const err = new FrontmatterError(
@@ -179,10 +154,6 @@ export function parseFrontmatter(
 			throw err;
 		}
 
-		// Simple key: value fallback. Reparse each value on its own so one
-		// malformed line (e.g. `scope: "text","thinking"`) can't leave sibling
-		// values wrapped in literal quotes; values that don't parse as YAML fall
-		// back to the raw trimmed string (issue #4796).
 		for (const line of metadata.split("\n")) {
 			const match = line.match(/^([\w-]+):\s*(.*)$/);
 			if (!match) continue;
@@ -193,9 +164,7 @@ export function parseFrontmatter(
 					const parsed = YAML.parse(raw);
 					if (parsed !== null && typeof parsed !== "object") value = parsed;
 					else if (Array.isArray(parsed)) value = parsed;
-				} catch {
-					// keep the raw string
-				}
+				} catch {}
 			}
 			frontmatter[match[1]] = value;
 		}

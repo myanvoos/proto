@@ -94,7 +94,6 @@ function dropJsonField(args: readonly string[], field: string): string[] | undef
 	return next;
 }
 
-/** Runs `gh --json` for issue data, retrying without optional stateReason on older gh releases. */
 export async function githubIssueJsonWithStateReasonFallback<T>(
 	cwd: string,
 	args: readonly string[],
@@ -202,8 +201,6 @@ async function fetchPrReviewComments(
 			.filter((comment): comment is GhPrReviewComment => comment !== null);
 		reviewComments.push(...pageComments);
 
-		// Compare the raw page length: a dropped malformed item must not end
-		// pagination early and silently lose the remaining pages.
 		if (response.length < REVIEW_COMMENTS_PAGE_SIZE) {
 			break;
 		}
@@ -454,18 +451,10 @@ export async function executeRepoView(
 	return buildTextResult(formatRepoView(data, { repo, branch }), data.url);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Cached issue/PR view fetchers
-//
-// Used by `executeIssueView`/`executePrView` and by the `issue://` / `pr://`
-// internal-URL protocol handlers. The cache wrapper lives in `./github-cache`;
-// the fresh fetchers stay here to share the existing formatter helpers.
-// ────────────────────────────────────────────────────────────────────────────
-
 export interface IssueViewLookupOptions {
 	cwd: string;
 	repo?: string;
-	/** Issue number or GitHub issue URL. */
+
 	issue: string;
 	includeComments?: boolean;
 	signal?: AbortSignal;
@@ -526,10 +515,6 @@ async function fetchPrViewFresh(
 	return { rendered, sourceUrl: data.url, payload: data };
 }
 
-/**
- * Cache-aware issue/view fetcher. Used by both the `github` tool op and the
- * `issue://` protocol handler so a single shared row services both surfaces.
- */
 export async function getOrFetchIssue(options: IssueViewLookupOptions): Promise<ViewLookupResult<GhIssueViewData>> {
 	const identifier = requireNonEmpty(options.issue, "issue");
 	if (identifier.startsWith("-")) {
@@ -538,8 +523,7 @@ export async function getOrFetchIssue(options: IssueViewLookupOptions): Promise<
 	const includeComments = options.includeComments ?? true;
 	const authKey = options.cacheAuthKey === undefined ? (resolveGithubCacheAuthKey() ?? null) : options.cacheAuthKey;
 	const urlParse = parseIssueUrl(identifier);
-	// Prefer the URL's repo when the identifier is a full URL; fall back to the
-	// explicit `repo` option, then to the cwd's default repo.
+
 	let repo = urlParse.repo ?? normalizeOptionalString(options.repo);
 	let cacheNumber = urlParse.issueNumber;
 	if (cacheNumber === undefined) {
@@ -549,9 +533,6 @@ export async function getOrFetchIssue(options: IssueViewLookupOptions): Promise<
 		try {
 			repo = await resolveDefaultRepoMemoized(options.cwd, options.signal);
 		} catch {
-			// Resolution failure leaves `repo` undefined: we'll fall through to a
-			// direct fetch below so gh produces its own error message instead of
-			// us masking it with a friendlier one.
 			repo = undefined;
 		}
 	}
@@ -581,11 +562,6 @@ export async function getOrFetchIssue(options: IssueViewLookupOptions): Promise<
 	};
 }
 
-/**
- * Cache-aware PR view fetcher. Caller must supply a numeric PR number;
- * branch-name / current-branch lookups bypass the cache entirely upstream
- * (see `executePrView`).
- */
 export async function getOrFetchPr(options: PrViewLookupOptions): Promise<ViewLookupResult<GhPrViewData>> {
 	const includeComments = options.includeComments ?? true;
 	const authKey = options.cacheAuthKey === undefined ? (resolveGithubCacheAuthKey() ?? null) : options.cacheAuthKey;

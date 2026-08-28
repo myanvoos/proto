@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/uv-sync.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.uv-sync]
 description = "Compact uv sync/pip install output — strip downloads, short-circuit when up-to-date"

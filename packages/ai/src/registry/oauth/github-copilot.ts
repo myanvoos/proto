@@ -1,6 +1,3 @@
-/**
- * GitHub Copilot OAuth flow (opencode OAuth app)
- */
 import { scheduler } from "node:timers/promises";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
@@ -205,13 +202,8 @@ async function pollForGitHubAccessToken(
 	throw new AIError.OAuthError("Device flow timed out", { kind: "timeout", provider: "github-copilot" });
 }
 
-/** Far-future expiry (10 years). GitHub OAuth tokens are long-lived; no JWT exchange needed. */
 const FAR_FUTURE_MS = Date.now() + 10 * 365.25 * 24 * 60 * 60 * 1000;
 
-/**
- * Refresh GitHub Copilot token.
- * With the opencode OAuth flow, the GitHub token is used directly — no JWT exchange needed.
- */
 export function refreshGitHubCopilotToken(
 	refreshToken: string,
 	enterpriseDomain?: string,
@@ -226,10 +218,6 @@ export function refreshGitHubCopilotToken(
 	};
 }
 
-/**
- * Enable a model for the user's GitHub Copilot account.
- * This is required for some models (like Claude, Grok) before they can be used.
- */
 async function enableGitHubCopilotModel(
 	token: string,
 	modelId: string,
@@ -258,10 +246,6 @@ async function enableGitHubCopilotModel(
 	}
 }
 
-/**
- * Enable all known GitHub Copilot models that may require policy acceptance.
- * Called after successful login to ensure all models are available.
- */
 async function enableAllGitHubCopilotModels(
 	token: string,
 	enterpriseDomain: string | undefined,
@@ -269,8 +253,6 @@ async function enableAllGitHubCopilotModels(
 	fetchImpl: FetchImpl,
 	onProgress?: (model: string, success: boolean) => void,
 ): Promise<void> {
-	// Synthesized catalog variants (Copilot long-context `-1m` entries) share
-	// the upstream model id; enable each wire id exactly once.
 	const wireModelIds = [...new Set(getBundledModels("github-copilot").map(model => model.requestModelId ?? model.id))];
 	const BATCH_SIZE = 5;
 	for (let i = 0; i < wireModelIds.length; i += BATCH_SIZE) {
@@ -284,14 +266,6 @@ async function enableAllGitHubCopilotModels(
 	}
 }
 
-/**
- * Login with GitHub Copilot OAuth (device code flow)
- *
- * @param options.onAuth - Callback with URL and optional instructions (user code)
- * @param options.onPrompt - Callback to prompt user for input
- * @param options.onProgress - Optional progress callback
- * @param options.signal - Optional AbortSignal for cancellation
- */
 export async function loginGitHubCopilot(options: GitHubCopilotLoginOptions): Promise<OAuthCredentials> {
 	const fetchImpl = options.fetch ?? fetch;
 	const input = await options.onPrompt({
@@ -332,7 +306,6 @@ export async function loginGitHubCopilot(options: GitHubCopilotLoginOptions): Pr
 
 	const apiEndpoint = await discoverGitHubCopilotApiEndpoint(githubAccessToken, fetchImpl);
 
-	// With opencode OAuth, the GitHub token is used directly for all API requests
 	const credentials: OAuthCredentials = {
 		refresh: githubAccessToken,
 		access: githubAccessToken,
@@ -341,7 +314,6 @@ export async function loginGitHubCopilot(options: GitHubCopilotLoginOptions): Pr
 		apiEndpoint,
 	};
 
-	// Enable all models after successful login
 	options.onProgress?.("Enabling models...");
 	await enableAllGitHubCopilotModels(githubAccessToken, enterpriseDomain ?? undefined, apiEndpoint, fetchImpl);
 	return credentials;

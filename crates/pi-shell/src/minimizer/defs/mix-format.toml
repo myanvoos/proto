@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/mix-format.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.mix-format]
 description = "Compact mix format output"

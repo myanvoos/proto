@@ -1,18 +1,6 @@
-/**
- * Shared scaffolding for the TUI selector/list/dashboard components: viewport
- * windowing, scrollbar-aware row widths, ScrollView rendering, selection
- * clamping, search-character classification, tab-cycling keys, and full-screen
- * padding. Behaviour is identical to the per-component copies these helpers
- * replace.
- */
 import { extractPrintableText, matchesKey, ScrollView } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
 
-/**
- * Render `rows` through a {@link ScrollView} with the shared list theme (muted
- * track / accent thumb) and an "auto" scrollbar, positioned at `scrollOffset`.
- * Returns the rendered lines for the caller to append to its output.
- */
 export function renderScrollableList(
 	rows: readonly string[],
 	options: { width: number; totalRows: number; scrollOffset: number },
@@ -27,11 +15,6 @@ export function renderScrollableList(
 	return sv.render(options.width);
 }
 
-/**
- * Center a viewport window of `maxVisible` rows on `selectedIndex` within a
- * list of `total` rows, clamped to valid bounds. Used by the selection-centered
- * list panes (history search, tree selector).
- */
 export function centeredWindow(
 	selectedIndex: number,
 	total: number,
@@ -42,20 +25,11 @@ export function centeredWindow(
 	return { startIndex, endIndex };
 }
 
-/**
- * Width available for row content, reserving the rightmost column for the
- * scrollbar when the list overflows its visible window.
- */
 export function contentRowWidth(width: number, total: number, maxVisible: number): number {
 	const overflow = total > maxVisible;
 	return Math.max(0, width - (overflow ? 1 : 0));
 }
 
-/**
- * Clamp `selectedIndex` into `[0, total)` and nudge `scrollOffset` so the
- * selection stays within the visible window of `maxVisible` rows. Returns the
- * adjusted pair; on an empty list both reset to 0.
- */
 export function clampSelection(
 	selectedIndex: number,
 	scrollOffset: number,
@@ -78,12 +52,6 @@ export function clampSelection(
 	return { selectedIndex: selected, scrollOffset: scroll };
 }
 
-/**
- * Classify a key event for search-query text entry. Returns the single
- * printable character to append to the query, or `null` when the key is not a
- * searchable character: non-printable, multi-byte, or a reserved `j`/`k`
- * navigation key.
- */
 export function searchableChar(data: string): string | null {
 	const printableText = extractPrintableText(data);
 	if (printableText && printableText.length === 1) {
@@ -98,11 +66,6 @@ export function searchableChar(data: string): string | null {
 	return null;
 }
 
-/**
- * Handle the shared tab-cycling keys: Tab/Right advance to the next tab,
- * Shift+Tab/Left to the previous. Invokes `switchTab` with the direction and
- * returns true when the key was consumed.
- */
 export function handleTabSwitchKey(data: string, switchTab: (direction: 1 | -1) => void): boolean {
 	if (matchesKey(data, "tab") || matchesKey(data, "right")) {
 		switchTab(1);

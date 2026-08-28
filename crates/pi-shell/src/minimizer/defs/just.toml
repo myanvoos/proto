@@ -1,5 +1,5 @@
-# just task runner output.
-# Mostly passes through; drops blank lines and caps length.
+
+
 
 [filters.just]
 description = "Compact just task runner output"

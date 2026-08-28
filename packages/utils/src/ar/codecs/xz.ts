@@ -484,12 +484,10 @@ async function decodeBlock(bytes: Uint8Array, offset: number, record: XzRecord, 
 	return output;
 }
 
-/** Whether bytes begin with the XZ stream-header magic. */
 export function isXz(bytes: Uint8Array): boolean {
 	return bytes.byteLength >= XZ_MAGIC.byteLength && equalBytes(bytes.subarray(0, XZ_MAGIC.byteLength), XZ_MAGIC);
 }
 
-/** Decompress all concatenated streams in an XZ container within `maxOutput`. */
 export async function xzDecompress(bytes: Uint8Array, maxOutput: number): Promise<Uint8Array> {
 	if (!Number.isSafeInteger(maxOutput) || maxOutput < 0) throw new ArchiveError("Invalid XZ output limit");
 	try {

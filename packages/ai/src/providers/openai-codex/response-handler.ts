@@ -15,14 +15,13 @@ export type CodexRateLimits = {
 export type CodexErrorInfo = {
 	message: string;
 	status: number;
-	/** Machine-readable error code (`error.code` or `error.type` from the response body), when present. */
+
 	code?: string;
 	friendlyMessage?: string;
 	rateLimits?: CodexRateLimits;
 	raw?: string;
 };
 
-/** Non-2xx response from the Codex backend, with the parsed body retained. */
 export class CodexApiError extends ProviderHttpError {
 	readonly info: CodexErrorInfo;
 
@@ -81,9 +80,7 @@ export async function parseCodexError(response: Response): Promise<CodexErrorInf
 
 		const errMessage = (err as { message?: string }).message;
 		message = errMessage || friendlyMessage || message;
-	} catch {
-		// raw body not JSON
-	}
+	} catch {}
 
 	return {
 		message,

@@ -2,7 +2,6 @@ import type { DeferredDiagnosticsEntry, ToolSession } from "../tools";
 import { getDiagnosticsLedger } from "./diagnostics-ledger";
 import type { FileDiagnosticsResult, WritethroughDeferredHandle } from "./index";
 
-/** Coordinates late LSP diagnostics for one mutation tool instance. */
 export class DeferredDiagnostics {
 	readonly #pendingFetches = new Map<string, AbortController>();
 	readonly #fallbackVersions = new Map<string, number>();
@@ -12,7 +11,6 @@ export class DeferredDiagnostics {
 		private readonly deduplicate: boolean,
 	) {}
 
-	/** Begin a file mutation and return the handle consumed by LSP writethrough. */
 	begin(path: string): WritethroughDeferredHandle {
 		const existing = this.#pendingFetches.get(path);
 		if (existing) {

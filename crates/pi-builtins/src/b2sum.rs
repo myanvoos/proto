@@ -1,6 +1,6 @@
-//! `b2sum` builtin: compute and check BLAKE2b digests.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
@@ -11,7 +11,7 @@ use crate::{
 	host::{Host, Utility, matches_parser, util},
 };
 
-/// Parsed `b2sum` invocation.
+
 pub(crate) struct B2sum {
 	matches: ArgMatches,
 }
@@ -43,7 +43,7 @@ fn app() -> clap::Command {
 	cksum::command(B2sum::NAME, true)
 }
 
-/// Creates the `b2sum` builtin registration.
+
 pub(crate) fn b2sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<B2sum, SE>()
 }

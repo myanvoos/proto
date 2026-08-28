@@ -1,20 +1,3 @@
-/**
- * Remote compaction utilities.
- *
- * Provider-side conversation summarization endpoints. Three flavors:
- *
- * - **OpenAI remote compaction V2** (Responses streaming): appends a
- *   `compaction_trigger` input item to the normal stream and stores the returned
- *   `compaction` item with retained real user messages in `preserveData`.
- * - **OpenAI remote compaction V1** (`/responses/compact`): preserves encrypted
- *   reasoning across compactions by submitting the full responses-API native
- *   history and storing the returned `compaction` / `compaction_summary`
- *   item in `preserveData` so future turns can replay the encrypted state.
- * - **Generic remote compaction**: a thin POST helper for self-hosted
- *   summarization endpoints that accept `{ systemPrompt, prompt }` and reply
- *   with `{ summary, shortSummary? }`.
- */
-
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import {
@@ -57,20 +40,8 @@ import contextWindowTruncatedOutputPrompt from "./prompts/context-window-truncat
 
 export * from "./compaction-v2-streaming";
 
-// ============================================================================
-// Public types
-// ============================================================================
-
 export const OPENAI_REMOTE_COMPACTION_PRESERVE_KEY = "openaiRemoteCompaction";
 
-/**
- * Hard ceiling on remote compaction HTTP requests. Unlike every provider
- * stream (guarded by first-event/idle watchdogs in pi-ai), these are raw
- * fetches awaiting one non-streamed JSON body — a connection silently dropped
- * by a middlebox would otherwise hang the whole compaction pipeline forever
- * (frozen "Auto context-full maintenance…" spinner, manual /compact queueing
- * behind it). On timeout the caller falls back to local summarization.
- */
 export const REMOTE_COMPACTION_TIMEOUT_MS = 180_000;
 
 const DEFAULT_AZURE_API_VERSION = "v1";
@@ -124,21 +95,12 @@ export interface TrimRemoteCompactionInputResult {
 	estimatedTokensAfter: number;
 }
 
-/** Verdict for one remote-compaction request measured against the model window. */
 interface RemoteCompactionBudgetProbe {
-	/** Estimated request tokens; the text part is exact when the cheap bound busted. */
 	tokens: number;
-	/** Whether the request fits the window. Always true when no window is known. */
+
 	fits: boolean;
 }
 
-/**
- * Cheap-first sizing of a remote-compaction request. Images and the request
- * frame are charged flat, so they come off the budget rather than through the
- * tokenizer; the serialized transcript is then probed with
- * {@link Tokenizer.checkTokenBudget}, which only pays for an exact count when
- * the byte bound cannot already prove the request fits.
- */
 function probeRemoteCompactionInputBudget(
 	input: Array<Record<string, unknown>>,
 	tokenizer: Tokenizer,
@@ -179,12 +141,6 @@ function isToolResultImageAttachment(item: Record<string, unknown>): boolean {
 	return hasLabel && hasImage;
 }
 
-/**
- * Preserve the full native transcript unless trailing tool outputs alone push a
- * remote compaction request beyond the model window. Replacing only those
- * outputs keeps call/result pairing and all earlier assistant/reasoning history,
- * matching Codex's recovery path for oversized tool turns.
- */
 export function trimRemoteCompactionInputToContextWindow(
 	input: Array<Record<string, unknown>>,
 	tokenizer: Tokenizer,
@@ -233,7 +189,6 @@ export function trimRemoteCompactionInputToContextWindow(
 	};
 }
 
-/** Race the caller's signal against the request timeout; `timeoutMs <= 0` disables the watchdog. */
 function withRequestTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
 	if (timeoutMs <= 0) return signal;
 	const timeout = AbortSignal.timeout(timeoutMs);
@@ -275,10 +230,6 @@ export interface RemoteCompactionResponse {
 	summary: string;
 	shortSummary?: string;
 }
-
-// ============================================================================
-// OpenAI provider gating + endpoint resolution
-// ============================================================================
 
 function isOpenAiRemoteCompactionApi(api: Api | undefined): boolean {
 	return api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
@@ -356,10 +307,6 @@ function normalizeOpenAiCompactionToolCallId(id: string): string {
 	return `${normalized.callId}|${normalized.itemId ?? normalized.callId}`;
 }
 
-// ============================================================================
-// Preserve-data helpers
-// ============================================================================
-
 export function getPreservedOpenAiRemoteCompactionData(
 	preserveData: Record<string, unknown> | undefined,
 ): OpenAiRemoteCompactionPreserveData | undefined {
@@ -402,23 +349,12 @@ export function withOpenAiRemoteCompactionPreserveData(
 	return Object.keys(rest).length > 0 ? rest : undefined;
 }
 
-// ============================================================================
-// Input/output filtering for OpenAI compact endpoint
-// ============================================================================
-
 function shouldKeepOpenAiCompactOutputItem(item: Record<string, unknown>): boolean {
 	if (item.type === "compaction" || item.type === "compaction_summary") return true;
 	if (item.type !== "message") return false;
 	return item.role === "assistant" || item.role === "user";
 }
 
-// Register every tool-call id in `items` (and the subset using the custom-tool
-// wire shape) into the running sets. The history builder maintains both sets
-// incrementally as native history is appended, so this only scans the
-// newly-added items (or, after a full-snapshot replace, the fresh input) rather
-// than re-scanning the whole growing history per message — the latter was
-// O(N²) and blocked the event loop for seconds while compacting large codex
-// contexts (frozen spinner until the next forced render).
 function addOpenAiCallIds(
 	items: Array<Record<string, unknown>>,
 	knownCallIds: Set<string>,
@@ -483,22 +419,6 @@ function computerFailureNote(call: Record<string, unknown>, output: string): Rec
 	};
 }
 
-// ============================================================================
-// Native history construction (responses-API shape)
-// ============================================================================
-
-/**
- * Build the OpenAI Responses-API native history array from LLM messages.
- *
- * Caller is responsible for converting any custom message types to
- * `Message[]` first (e.g. via the agent's `convertToLlm`); this function
- * operates purely on the LLM-domain shape.
- *
- * @param messages - LLM messages to encode.
- * @param model - Target model (used for provider gating + tool-call id rules).
- * @param previousReplacementHistory - History from a prior compaction whose
- *   encrypted reasoning we want to preserve.
- */
 export function buildOpenAiNativeHistory(
 	messages: Message[],
 	model: Model,
@@ -771,9 +691,6 @@ export function buildOpenAiNativeHistory(
 	return stripOpenAIResponsesOutputOnlyStatusesForReplay(hoistInterleavedResponsesToolBatchMessages(input));
 }
 
-// ============================================================================
-// Endpoint requests
-// ============================================================================
 export async function requestOpenAiRemoteCompaction(
 	model: Model,
 	apiKey: string,
@@ -808,9 +725,7 @@ export async function requestOpenAiRemoteCompaction(
 	}
 	const request: OpenAiRemoteCompactionRequest = {
 		model: requestModel,
-		// Preserve the native transcript. Only oversized trailing tool outputs are
-		// rewritten above, reducing the request without losing assistant turns,
-		// reasoning, or call/result pairing.
+
 		input: trimmed.input,
 		instructions,
 	};
@@ -829,7 +744,6 @@ export async function requestOpenAiRemoteCompaction(
 				...(model.headers ?? {}),
 			};
 
-	// Codex endpoints require additional auth headers
 	if (isCodexResponses) {
 		const accountId = getCodexAccountId(apiKey);
 		if (accountId) {
@@ -855,9 +769,7 @@ export async function requestOpenAiRemoteCompaction(
 				includeInstallationHeader: true,
 			}).headers,
 		);
-		// Responses Lite models take the same rewrite on `/responses/compact`:
-		// instructions ride as an input item and the lite marker header is set
-		// (codex-rs routes compaction through `build_responses_request`).
+
 		if (model.useResponsesLite) {
 			applyCodexResponsesLiteShape(request);
 			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
@@ -922,21 +834,6 @@ export async function requestOpenAiRemoteCompaction(
 	return { provider: model.provider, replacementHistory, compactionItem };
 }
 
-/**
- * Generic remote-compaction POST. Two wire shapes are auto-selected by
- * endpoint suffix so a single `compaction.remoteEndpoint` setting can point at
- * either a purpose-built proto summarizer (`{systemPrompt, prompt}` → `{summary}`)
- * or any OpenAI-compatible chat-completions server (`/chat/completions`,
- * `/v1/chat/completions`, …) as reported for llama.cpp / vLLM / etc. in
- * issue #4630: without this, the proto payload was rejected with
- * HTTP 400 `"'messages' is required"`, compaction silently fell back to
- * local summarization, and context grew unbounded.
- *
- * When `context.model` is provided the chat-completions body is tagged with
- * that model's wire id (llama.cpp requires the field) and `context.apiKey` is
- * forwarded as `Authorization: Bearer`. Callers wrap this in `withAuth` so
- * 401s force-refresh through the standard credential rotation policy.
- */
 export async function requestRemoteCompaction(
 	endpoint: string,
 	request: RemoteCompactionRequest,
@@ -946,9 +843,7 @@ export async function requestRemoteCompaction(
 	let endpointPath = endpoint;
 	try {
 		endpointPath = new URL(endpoint).pathname;
-	} catch {
-		// Keep the raw endpoint for relative/custom fetch implementations.
-	}
+	} catch {}
 	const isChatCompletions = /\/chat\/completions\/?$/.test(endpointPath);
 	const headers: Record<string, string> = { "content-type": "application/json" };
 	if (isChatCompletions) {

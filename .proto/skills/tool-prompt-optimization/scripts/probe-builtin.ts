@@ -1,22 +1,5 @@
 #!/usr/bin/env bun
-/**
- * Builtin shortcut for the prompt-inference probe.
- *
- * Instead of hand-writing a tool's JSON schema + outline, point this at a live
- * builtin tool name. It resolves the tool (direct constructor for availability-gated
- * `github`/`irc`, else the BUILTIN_TOOLS/HIDDEN_TOOLS factory map), pulls the EXACT wire
- * schema the model sees (`toolWireSchema`) and the rendered prompt (`tool.description`),
- * derives an outline by blanking section bodies, then runs the same `probe()` panel.
- *
- * Usage:
- *   bun probe-builtin.ts --tool <name> [--no-summary] [--show]
- *     --tool <name>      builtin tool name (e.g. irc, github, read). Required.
- *     --no-summary       ablation: blank the one-line summary too (isolate schema-alone).
- *     --show             print resolved schema + outline + real prompt and exit (no API calls).
- *     --samples / --model / --max-tokens / --json  forwarded to probe().
- *
- * The heavy coding-agent import lives here; probe.ts stays pi-ai-only.
- */
+
 import { parseArgs } from "node:util";
 import { toolWireSchema } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -27,7 +10,7 @@ const OPEN_TAG = /^<[a-z_][\w-]*>$/i;
 const CLOSE_TAG = /^<\/[a-z_][\w-]*>$/i;
 const MD_HEADER = /^#{1,6}\s/;
 
-/** Keep the summary + every section header/tag; collapse each body run to a single `...`. */
+
 function deriveOutline(description: string, dropSummary: boolean): string {
 	const lines = description.split("\n");
 	let i = 0;
@@ -64,9 +47,9 @@ function deriveOutline(description: string, dropSummary: boolean): string {
 async function resolveTool(name: string): Promise<Tool> {
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
 	const settings = Settings.isolated({});
-	// Enriched stub: we only read `.parameters` / `.description`, never `execute`, so the
-	// availability-gated factories (irc needs a registry + agent id; github needs `gh`) can
-	// still construct. Factory map bypasses the settings allowlist (`isToolAllowed`).
+
+
+
 	const session = {
 		cwd: process.cwd(),
 		hasUI: false,
@@ -77,9 +60,9 @@ async function resolveTool(name: string): Promise<Tool> {
 		getAgentId: () => "Probe",
 		agentRegistry: {},
 	} as ToolSession;
-	// `github`/`irc` map to `*.createIf`, which gates on external availability (gh CLI) or a
-	// live agent registry. We only read `.parameters`/`.description`, so direct-construct those
-	// two — keeps the probe gh-independent. Everything else goes through the factory map.
+
+
+
 	const direct: Record<string, (s: ToolSession) => Tool> = {
 		github: s => new GithubTool(s),
 		irc: s => new IrcTool(s),

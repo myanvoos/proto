@@ -1,12 +1,3 @@
-/**
- * Remote Compaction V2: streaming Responses compaction.
- *
- * Mirrors Codex `core/src/compact_remote_v2.rs`: append a `compaction_trigger`
- * input item to the normal Responses stream, require exactly one streamed
- * compaction output item, then install retained real user messages plus that
- * compaction item as replacement history.
- */
-
 import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
@@ -33,24 +24,16 @@ import {
 } from "@oh-my-pi/pi-catalog/wire/codex";
 import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
 
-// ============================================================================
-// Types & Configuration
-// ============================================================================
-
-/** Retained-message budget Codex uses after streamed V2 compaction. */
 export const V2_RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
 
-/** Max retries for V2 streaming compaction on transient stream errors. */
 export const V2_COMPACTION_MAX_RETRIES = 2;
 
-/** Timeout for V2 streaming compaction (3 minutes, same as V1). */
 export const V2_COMPACTION_TIMEOUT_MS = 180_000;
 
 const DEFAULT_AZURE_API_VERSION = "v1";
 const OPENAI_REMOTE_COMPACTION_PRESERVE_KEY = "openaiRemoteCompaction";
 const COMPACTION_TRIGGER_ITEM = { type: "compaction_trigger" } as const;
-// OpenAI image metering depends on detail and dimensions; charge the common
-// high-detail 1024px-path budget so retained image history cannot be unbounded.
+
 const IMAGE_TOKEN_ESTIMATE = 765;
 const CONTEXTUAL_USER_PREFIXES = [
 	"<environment_context>",
@@ -61,7 +44,6 @@ const CONTEXTUAL_USER_PREFIXES = [
 	"<model_switch>",
 ];
 
-/** Token usage reported by the streamed V2 Responses completion. */
 export interface CompactionV2Usage {
 	inputTokens: number;
 	outputTokens: number;
@@ -70,20 +52,18 @@ export interface CompactionV2Usage {
 	reasoningOutputTokens?: number;
 }
 
-/** Request body fields needed for Responses-stream V2 compaction. */
 export interface CompactionV2Request {
 	model: string;
 	input: unknown[];
 	instructions: string;
 	retainedMessageBudget: number;
 	tools?: unknown[];
-	/** Responses reasoning param (effort + summary), matching a normal turn; omitted for non-reasoning models. */
+
 	reasoning?: { effort: string; summary: string };
 	sessionId?: string;
 	promptCacheKey?: string;
 }
 
-/** Response collected from the V2 stream and converted into replacement history. */
 export interface CompactionV2Response {
 	compactionItem: Record<string, unknown>;
 	replacementHistory: Array<Record<string, unknown>>;
@@ -92,11 +72,6 @@ export interface CompactionV2Response {
 	retainedImageCount: number;
 }
 
-// ============================================================================
-// Endpoint Resolution
-// ============================================================================
-
-/** Resolve the streaming Responses endpoint for a V2-capable model. */
 export function getCompactionV2Endpoint(model: Model): string | undefined {
 	if (model.remoteCompaction?.enabled === false) return undefined;
 	if (!isOpenAiV2CompatibleModel(model)) return undefined;
@@ -114,7 +89,6 @@ export function getCompactionV2Endpoint(model: Model): string | undefined {
 	return resolveOpenAiResponsesEndpoint(model.baseUrl);
 }
 
-/** Check whether a model can use streaming V2 compaction. */
 export function shouldUseCompactionV2Streaming(
 	model: Model,
 ): model is Model<"openai-responses" | "azure-openai-responses" | "openai-codex-responses"> {
@@ -181,17 +155,11 @@ function resolveCompactionV2Model(model: Model): string {
 	return mappedDeployment ?? requestModel;
 }
 
-// ============================================================================
-// Request Building
-// ============================================================================
-
-/** Clamp the retained-message budget to Codex's known-safe 64K ceiling. */
 export function resolveCompactionV2RetainedMessageBudget(value: number | undefined): number {
 	if (value === undefined || !Number.isFinite(value)) return V2_RETAINED_MESSAGE_TOKEN_BUDGET;
 	return Math.min(V2_RETAINED_MESSAGE_TOKEN_BUDGET, Math.max(1, Math.floor(value)));
 }
 
-/** Build a V2 streaming compaction request from Responses-native history. */
 export function buildCompactionV2Request(
 	model: Model,
 	input: unknown[],
@@ -216,18 +184,12 @@ export function buildCompactionV2Request(
 	};
 }
 
-// ============================================================================
-// Streaming Request Handler
-// ============================================================================
-
-/** Race the caller's signal against the V2 request timeout. */
 function withRequestTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
 	if (timeoutMs <= 0) return signal;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-/** Request V2 compaction over the normal OpenAI Responses streaming endpoint. */
 export async function requestCompactionV2Streaming(
 	model: Model,
 	apiKey: string,
@@ -310,9 +272,6 @@ async function attemptCompactionV2Streaming(
 		preferWebsockets?: boolean;
 	},
 ): Promise<CompactionV2Response> {
-	// Faithful to Codex: append the compaction trigger as the final input item
-	// of an otherwise-normal Responses request, then stream the result. `store`
-	// stays false — compaction must never persist a server-side response object.
 	const cacheOptions = { sessionId: request.sessionId, promptCacheKey: request.promptCacheKey };
 	const promptCacheKey = getOpenAIPromptCacheKey(cacheOptions);
 	const body: OpenAICodexCompactionBody = {
@@ -323,7 +282,6 @@ async function attemptCompactionV2Streaming(
 		store: false,
 		...(request.reasoning || model.useResponsesLite
 			? {
-					// Lite implies gpt-5.4+, where codex-rs sends `all_turns` replay.
 					reasoning: model.useResponsesLite
 						? { ...(request.reasoning ?? {}), context: "all_turns" }
 						: request.reasoning,
@@ -336,9 +294,7 @@ async function attemptCompactionV2Streaming(
 	if (options.codexMetadata) {
 		body.client_metadata = options.codexMetadata.clientMetadata;
 	}
-	// Responses Lite models take the same rewrite on the compaction stream:
-	// instructions/tools ride as input items (codex-rs `compact_remote_v2`
-	// builds through `build_responses_request`).
+
 	if (model.useResponsesLite) {
 		applyCodexResponsesLiteShape(body);
 	}
@@ -626,9 +582,6 @@ function formatCompactionV2Failure(event: Record<string, unknown>, type: string)
 }
 
 function isRetryableCompactionError(error: Error): boolean {
-	// The gateway's synthetic auth_unavailable is an HTTP 503, but the
-	// captured response cause classifies it as auth. Let provider fallback run
-	// immediately instead of spending the transient retry budget.
 	if (AIError.is(AIError.classify(error), AIError.Flag.AuthFailed)) return false;
 	if (
 		error.name === "AbortError" ||
@@ -651,11 +604,6 @@ function isRetryableCompactionError(error: Error): boolean {
 	);
 }
 
-// ============================================================================
-// Replacement History
-// ============================================================================
-
-/** Build Codex-style V2 replacement history from prompt input plus compaction output. */
 export function buildCompactionV2ReplacementHistory(
 	input: unknown[],
 	compactionItem: Record<string, unknown>,
@@ -799,11 +747,6 @@ function approxTokenCount(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-// ============================================================================
-// Preserve Data
-// ============================================================================
-
-/** Store V2 replacement history in the OpenAI remote-compaction preserve slot. */
 export function storeCompactionV2PreserveData(response: CompactionV2Response, model: Model): Record<string, unknown> {
 	return {
 		[OPENAI_REMOTE_COMPACTION_PRESERVE_KEY]: {
@@ -817,7 +760,6 @@ export function storeCompactionV2PreserveData(response: CompactionV2Response, mo
 	};
 }
 
-/** Retrieve preserved OpenAI replacement history that V2 can extend. */
 export function getCompactionV2PreserveData(
 	preserveData: Record<string, unknown> | undefined,
 ): { provider: string; replacementHistory: Array<Record<string, unknown>>; usedTokens: number } | undefined {

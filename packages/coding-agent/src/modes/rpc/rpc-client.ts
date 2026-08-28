@@ -1,9 +1,3 @@
-/**
- * RPC Client for programmatic access to the coding agent.
- *
- * Spawns the agent in RPC mode and provides a typed API for all operations.
- */
-
 import { isPromise } from "node:util/types";
 import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
@@ -40,30 +34,27 @@ import type {
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
-/** Distributive Omit that works with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
-/** RpcCommand without the id field (for internal send) */
 type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
-	/** Path to the CLI entry point (default: searches for dist/cli.js) */
 	cliPath?: string;
-	/** Working directory for the agent */
+
 	cwd?: string;
-	/** Environment variables */
+
 	env?: Record<string, string>;
-	/** Provider to use */
+
 	provider?: string;
-	/** Model ID to use */
+
 	model?: string;
-	/** Session directory for the agent */
+
 	sessionDir?: string;
-	/** Additional CLI arguments */
+
 	args?: string[];
-	/** Grace period before escalating process termination (default: process utility default, 1000ms) */
+
 	terminationGraceMs?: number;
-	/** Custom tools owned by the embedding host and exposed over the RPC transport */
+
 	customTools?: RpcClientCustomTool[];
 }
 
@@ -219,7 +210,6 @@ function normalizeToolResult<TDetails>(result: RpcClientToolResult<TDetails>): A
 	return result;
 }
 
-/** Failed RPC command; `code` mirrors the server's machine-readable error code when present. */
 export class RpcCommandError extends Error {
 	constructor(
 		message: string,
@@ -231,17 +221,12 @@ export class RpcCommandError extends Error {
 	}
 }
 
-/** True when a high-level `getMessages()` drain should discard partial pages and fall back to `get_messages`. */
 function isPageFallbackError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	if (error instanceof RpcCommandError && (error.code === "session_busy" || error.code === "stale_cursor"))
 		return true;
 	return error.message === RPC_MESSAGES_PAGE_BUSY_ERROR || error.message === RPC_MESSAGES_PAGE_STALE_ERROR;
 }
-
-// ============================================================================
-// RPC Client
-// ============================================================================
 
 export class RpcClient {
 	#process: ptree.ChildProcess | null = null;
@@ -265,22 +250,12 @@ export class RpcClient {
 		this.#customTools = [...(options.customTools ?? [])];
 	}
 
-	/**
-	 * Start the RPC agent process.
-	 *
-	 * Safe to call again after {@link stop} on the same instance: a fresh
-	 * {@link AbortController} is minted for each start, and any failure after
-	 * the child spawn kills the child and clears internal state so callers may
-	 * retry without leaking processes.
-	 */
 	async start(): Promise<void> {
 		await this.#reaping;
 		if (this.#process) {
 			throw new Error("Client already started");
 		}
 
-		// Mint a fresh controller so a previous stop()'s abort does not
-		// short-circuit the new stdout reader (issue #4079).
 		this.#abortController = new AbortController();
 		this.#protocolVersion = 1;
 
@@ -307,7 +282,6 @@ export class RpcClient {
 		});
 		this.#process = child;
 
-		// Wait for the "ready" signal or process exit
 		const { promise: readyPromise, resolve: readyResolve, reject: readyReject } = Promise.withResolvers<void>();
 		let readySettled = false;
 		let protocolV2Supported = false;
@@ -326,14 +300,11 @@ export class RpcClient {
 
 			try {
 				child.kill(undefined, this.options.terminationGraceMs);
-			} catch {
-				// The process may already have exited.
-			}
+			} catch {}
 			await this.#waitForExit(child);
 			for (const request of pendingRequests) request.reject(error);
 		};
 
-		// Process lines in background, intercepting the ready signal.
 		const lines = readJsonl(child.stdout, this.#abortController.signal);
 		void (async () => {
 			for await (const line of lines) {
@@ -348,15 +319,8 @@ export class RpcClient {
 				const decoded = frameDecoder.push(line);
 				if (decoded) this.#handleLine(decoded);
 			}
-			// A closed stdout is terminal even if the child remains alive. Startup
-			// failures are reaped by the readyPromise catch below; established
-			// workers are reaped here so pending requests cannot hang indefinitely.
+
 			if (!readySettled) {
-				// Stdout can close before the exit reaper finishes draining stderr.
-				// child.exited settles only after the stderr tail is complete (for
-				// nonzero exits), so give it a bounded head start: the exit watcher
-				// below was registered first and rejects with the real stderr text
-				// instead of an empty "Stderr:" (flaked under full-suite load).
 				await Promise.race([child.exited.catch(() => {}), Bun.sleep(250)]);
 				if (readySettled) return;
 				readySettled = true;
@@ -389,7 +353,6 @@ export class RpcClient {
 			await reapAfterOutputFailure(new Error(`Agent output reader failed: ${error.message}`, { cause: error }));
 		});
 
-		// Also race against process exit (in case stdout closes before we read it)
 		void child.exited.then(
 			(exitCode: number) => {
 				if (readySettled) return;
@@ -397,15 +360,12 @@ export class RpcClient {
 				readyReject(new Error(`Agent process exited with code ${exitCode}. Stderr: ${child.peekStderr()}`));
 			},
 			(err: Error) => {
-				// Killed or reaped without an exit code (e.g. stop() during
-				// startup); surface it instead of leaking an unhandled rejection.
 				if (readySettled) return;
 				readySettled = true;
 				readyReject(new Error(`Agent process exited before ready. Stderr: ${child.peekStderr()}`, { cause: err }));
 			},
 		);
 
-		// Timeout to prevent hanging forever
 		const readyTimeout = this.#startTimeout(30000, () => {
 			if (readySettled) return;
 			readySettled = true;
@@ -430,8 +390,6 @@ export class RpcClient {
 				await this.setCustomTools(this.#customTools);
 			}
 		} catch (cause) {
-			// Startup failed after spawning the child. Reap it before returning
-			// so a retry cannot inherit a live worker or its session lock.
 			const error = cause instanceof Error ? cause : new Error(String(cause));
 			await reapAfterOutputFailure(error);
 			throw cause;
@@ -440,9 +398,6 @@ export class RpcClient {
 		}
 	}
 
-	/**
-	 * Stop the RPC agent process.
-	 */
 	stop(): Promise<void> {
 		if (!this.#process) return this.#reaping ?? Promise.resolve();
 
@@ -460,9 +415,6 @@ export class RpcClient {
 		return this.#waitForExit(child);
 	}
 
-	/**
-	 * Stop the RPC agent process and clean up resources.
-	 */
 	[Symbol.dispose](): void {
 		void this.stop();
 	}
@@ -479,9 +431,6 @@ export class RpcClient {
 		return reaping;
 	}
 
-	/**
-	 * Subscribe to agent events.
-	 */
 	onEvent(listener: RpcEventListener): () => void {
 		this.#eventListeners.push(listener);
 		return () => {
@@ -492,9 +441,6 @@ export class RpcClient {
 		};
 	}
 
-	/**
-	 * Subscribe to all top-level session events, including non-core session state events.
-	 */
 	onSessionEvent(listener: RpcSessionEventListener): () => void {
 		this.#sessionEventListeners.push(listener);
 		return () => {
@@ -505,41 +451,26 @@ export class RpcClient {
 		};
 	}
 
-	/**
-	 * Subscribe to subagent lifecycle frames after setSubagentSubscription("progress" | "events").
-	 */
 	onSubagentLifecycle(listener: RpcSubagentLifecycleListener): () => void {
 		this.#subagentLifecycleListeners.add(listener);
 		return () => this.#subagentLifecycleListeners.delete(listener);
 	}
 
-	/**
-	 * Subscribe to aggregated subagent progress frames after setSubagentSubscription("progress" | "events").
-	 */
 	onSubagentProgress(listener: RpcSubagentProgressListener): () => void {
 		this.#subagentProgressListeners.add(listener);
 		return () => this.#subagentProgressListeners.delete(listener);
 	}
 
-	/**
-	 * Subscribe to raw subagent session events. Call setSubagentSubscription(\"events\") to enable them server-side.
-	 */
 	onSubagentEvent(listener: RpcSubagentEventListener): () => void {
 		this.#subagentEventListeners.add(listener);
 		return () => this.#subagentEventListeners.delete(listener);
 	}
 
-	/**
-	 * Subscribe to slash-command availability updates emitted by the RPC server.
-	 */
 	onAvailableCommandsUpdate(listener: RpcAvailableCommandsUpdateListener): () => void {
 		this.#availableCommandsUpdateListeners.add(listener);
 		return () => this.#availableCommandsUpdateListeners.delete(listener);
 	}
 
-	/**
-	 * Get collected stderr output (useful for debugging).
-	 */
 	getStderr(): string {
 		return this.#process?.peekStderr() ?? "";
 	}
@@ -550,60 +481,31 @@ export class RpcClient {
 		return timer;
 	}
 
-	// =========================================================================
-	// Command Methods
-	// =========================================================================
-
-	/**
-	 * Send a prompt to the agent.
-	 * Returns immediately after sending; use onEvent() to receive streaming events.
-	 * Use waitForIdle() to wait for completion.
-	 */
 	async prompt(message: string, images?: ImageContent[]): Promise<void> {
 		await this.#send({ type: "prompt", message, images });
 	}
 
-	/**
-	 * Queue a steering message to interrupt the agent mid-run.
-	 */
 	async steer(message: string, images?: ImageContent[]): Promise<void> {
 		await this.#send({ type: "steer", message, images });
 	}
 
-	/**
-	 * Queue a follow-up message to be processed after the agent finishes.
-	 */
 	async followUp(message: string, images?: ImageContent[]): Promise<void> {
 		await this.#send({ type: "follow_up", message, images });
 	}
 
-	/**
-	 * Abort current operation.
-	 */
 	async abort(): Promise<void> {
 		await this.#send({ type: "abort" });
 	}
 
-	/**
-	 * Abort current operation and immediately start a new turn with the given message.
-	 */
 	async abortAndPrompt(message: string, images?: ImageContent[]): Promise<void> {
 		await this.#send({ type: "abort_and_prompt", message, images });
 	}
 
-	/**
-	 * Start a new session, optionally with parent tracking.
-	 * @param parentSession - Optional parent session path for lineage tracking
-	 * @returns Object with `cancelled: true` if an extension cancelled the new session
-	 */
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		const response = await this.#send({ type: "new_session", parentSession });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Get current session state.
-	 */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.#send({ type: "get_state" });
 		const state = this.#getData<RpcSessionState>(response);
@@ -618,34 +520,21 @@ export class RpcClient {
 		};
 	}
 
-	/**
-	 * Enable or disable fast mode for the active model family.
-	 */
 	async setFastMode(enabled: boolean): Promise<{ enabled: boolean; active: boolean }> {
 		const response = await this.#send({ type: "set_fast_mode", enabled });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Configure subagent frames emitted by the RPC server. Servers default to "off".
-	 * "progress" emits lifecycle/progress frames; "events" additionally emits raw subagent session events.
-	 */
 	async setSubagentSubscription(level: RpcSubagentSubscriptionLevel): Promise<RpcSubagentSubscriptionLevel> {
 		const response = await this.#send({ type: "set_subagent_subscription", level });
 		return this.#getData<{ level: RpcSubagentSubscriptionLevel }>(response).level;
 	}
 
-	/**
-	 * Return the RPC server's current subagent snapshot.
-	 */
 	async getSubagents(): Promise<RpcSubagentSnapshot[]> {
 		const response = await this.#send({ type: "get_subagents" });
 		return this.#getData<{ subagents: RpcSubagentSnapshot[] }>(response).subagents;
 	}
 
-	/**
-	 * Read persisted transcript entries for a tracked subagent session.
-	 */
 	async getSubagentMessages(selector: {
 		subagentId?: string;
 		sessionFile?: string;
@@ -660,17 +549,11 @@ export class RpcClient {
 		return this.#getData<RpcSubagentMessagesResult>(response);
 	}
 
-	/**
-	 * Set model by provider and ID.
-	 */
 	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
 		const response = await this.#send({ type: "set_model", provider, modelId });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Cycle to next model.
-	 */
 	async cycleModel(): Promise<{
 		model: { provider: string; id: string };
 		thinkingLevel: ThinkingLevel | undefined;
@@ -680,146 +563,89 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
-	/**
-	 * Get list of available models.
-	 */
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		const response = await this.#send({ type: "get_available_models" });
 		return this.#getData<{ models: ModelInfo[] }>(response).models;
 	}
 
-	/**
-	 * Get list of available slash commands.
-	 */
 	async getAvailableCommands(): Promise<RpcAvailableSlashCommand[]> {
 		const response = await this.#send({ type: "get_available_commands" });
 		return this.#getData<{ commands: RpcAvailableSlashCommand[] }>(response).commands;
 	}
 
-	/**
-	 * Set thinking level.
-	 */
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		await this.#send({ type: "set_thinking_level", level });
 	}
 
-	/**
-	 * Cycle thinking level.
-	 */
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		const response = await this.#send({ type: "cycle_thinking_level" });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Set steering mode.
-	 */
 	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.#send({ type: "set_steering_mode", mode });
 	}
 
-	/**
-	 * Set follow-up mode.
-	 */
 	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.#send({ type: "set_follow_up_mode", mode });
 	}
 
-	/**
-	 * Compact session context.
-	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		const response = await this.#send({ type: "compact", customInstructions });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Set auto-compaction enabled/disabled.
-	 */
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.#send({ type: "set_auto_compaction", enabled });
 	}
 
-	/**
-	 * Set auto-retry enabled/disabled.
-	 */
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		await this.#send({ type: "set_auto_retry", enabled });
 	}
 
-	/**
-	 * Abort in-progress retry.
-	 */
 	async abortRetry(): Promise<void> {
 		await this.#send({ type: "abort_retry" });
 	}
 
-	/**
-	 * Execute a bash command.
-	 */
 	async bash(command: string): Promise<BashResult> {
 		const response = await this.#send({ type: "bash", command });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Abort running bash command.
-	 */
 	async abortBash(): Promise<void> {
 		await this.#send({ type: "abort_bash" });
 	}
 
-	/**
-	 * Get session statistics.
-	 */
 	async getSessionStats(): Promise<SessionStats> {
 		const response = await this.#send({ type: "get_session_stats" });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Switch to a different session file.
-	 * @returns Object with `cancelled: true` if an extension cancelled the switch
-	 */
 	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
 		const response = await this.#send({ type: "switch_session", sessionPath });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Branch from a specific message.
-	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
-	 */
 	async branch(entryId: string): Promise<{ text: string; cancelled: boolean }> {
 		const response = await this.#send({ type: "branch", entryId });
 		return this.#getData(response);
 	}
 
-	/**
-	 * Get messages available for branching.
-	 */
 	async getBranchMessages(): Promise<Array<{ entryId: string; text: string }>> {
 		const response = await this.#send({ type: "get_branch_messages" });
 		return this.#getData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
 	}
 
-	/**
-	 * Get text of last assistant message.
-	 */
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.#send({ type: "get_last_assistant_text" });
 		return this.#getData<{ text: string | null }>(response).text;
 	}
 
-	/**
-	 * Get one stable, byte-bounded message page.
-	 */
 	async getMessagesPage(options: RpcMessagesPageOptions = {}): Promise<RpcMessagesPage> {
 		const response = await this.#send({ type: "get_messages_page", ...options });
 		return this.#getData<RpcMessagesPage>(response);
 	}
 
-	/** Get all messages, draining stable pages when protocol v2 is available. */
 	async getMessages(): Promise<AgentMessage[]> {
 		if (this.#protocolVersion === 2) {
 			try {
@@ -852,9 +678,6 @@ export class RpcClient {
 		return this.#getData<{ messages: AgentMessage[] }>(response).messages;
 	}
 
-	/**
-	 * Get list of OAuth providers available for login, with their current authentication status.
-	 */
 	async getLoginProviders(): Promise<Array<{ id: string; name: string; available: boolean; authenticated: boolean }>> {
 		const response = await this.#send({ type: "get_login_providers" });
 		return this.#getData<{
@@ -862,20 +685,6 @@ export class RpcClient {
 		}>(response).providers;
 	}
 
-	/**
-	 * Trigger OAuth login for the given provider.
-	 * The server will emit an `open_url` extension_ui_request for the auth URL.
-	 * Providers that require pasted-code completion may then emit an `input`
-	 * extension_ui_request; pass `onManualCodeInput` to satisfy it.
-	 * Resolves when login completes or rejects on failure.
-	 *
-	 * @param onOpenUrl Called when the server emits the auth URL. The host must
-	 *   open `url` in a browser. When the flow's callback server hosts a
-	 *   `/launch` redirect, `launchUrl` is a short loopback URL that 302s to
-	 *   `url` — hosts SHOULD surface it as the truncation-safe copy target so
-	 *   terminal viewport clipping cannot corrupt trailing OAuth query
-	 *   parameters (e.g. `code_challenge_method=S256`).
-	 */
 	async login(
 		providerId: string,
 		options?: {
@@ -918,10 +727,6 @@ export class RpcClient {
 		}
 	}
 
-	/**
-	 * Replace the host-owned custom tools exposed to the RPC session.
-	 * Changes take effect before the next model call.
-	 */
 	async setCustomTools(tools: RpcClientCustomTool[]): Promise<string[]> {
 		this.#customTools = [...tools];
 		if (!this.#process) {
@@ -939,14 +744,6 @@ export class RpcClient {
 		return this.#getData<{ toolNames: string[] }>(response).toolNames;
 	}
 
-	// =========================================================================
-	// Helpers
-	// =========================================================================
-
-	/**
-	 * Wait for agent to become idle (no streaming).
-	 * Resolves when agent_end event is received.
-	 */
 	waitForIdle(timeout = 60000): Promise<void> {
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		let settled = false;
@@ -968,9 +765,6 @@ export class RpcClient {
 		return promise;
 	}
 
-	/**
-	 * Collect events until agent becomes idle.
-	 */
 	collectEvents(timeout = 60000): Promise<AgentEvent[]> {
 		const { promise, resolve, reject } = Promise.withResolvers<AgentEvent[]>();
 		const events: AgentEvent[] = [];
@@ -994,21 +788,13 @@ export class RpcClient {
 		return promise;
 	}
 
-	/**
-	 * Send prompt and wait for completion, returning all events.
-	 */
 	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<AgentEvent[]> {
 		const eventsPromise = this.collectEvents(timeout);
 		await this.prompt(message, images);
 		return eventsPromise;
 	}
 
-	// =========================================================================
-	// Internal
-	// =========================================================================
-
 	#handleLine(data: unknown): void {
-		// Check if it's a response to a pending request
 		if (isRpcResponse(data)) {
 			const id = data.id;
 			if (id && this.#pendingRequests.has(id)) {
@@ -1197,8 +983,7 @@ export class RpcClient {
 			const errorResponse = response as Extract<RpcResponse, { success: false }>;
 			throw new RpcCommandError(errorResponse.error, errorResponse.command, errorResponse.code);
 		}
-		// Type assertion: we trust response.data matches T based on the command sent.
-		// This is safe because each public method specifies the correct T for its command.
+
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}

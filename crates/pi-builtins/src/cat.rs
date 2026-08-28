@@ -1,6 +1,6 @@
-//! `cat` builtin: concatenate files to standard output.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
@@ -29,12 +29,12 @@ struct LineNumber {
 	num_end:     usize,
 }
 
-// Logic to store a string for the line number. Manually incrementing the value
-// represented in a buffer like this is significantly faster than storing a
-// `usize` and using the standard Rust formatting macros to format a `usize` to
-// a string each time it's needed.
-// Buffer is initialized to "     1\t" and incremented each time `increment` is
-// called, using uucore's fast_inc function that operates on strings.
+
+
+
+
+
+
 impl LineNumber {
 	fn new() -> Self {
 		let mut buf = [b'0'; LINE_NUMBER_BUF_SIZE];
@@ -66,13 +66,13 @@ impl LineNumber {
 
 #[derive(Error, Debug)]
 enum CatError {
-	/// Wrapper around `io::Error`.
+
 	#[error("{}", strip_errno(.0))]
 	Io(io::Error),
-	/// The downstream reader closed its pipe; this ends the copy quietly.
+
 	#[error("broken pipe")]
 	BrokenPipe,
-	/// Unknown file type; it is not a regular file, socket, or known device.
+
 	#[error("unknown filetype: {ft_debug}")]
 	UnknownFiletype { ft_debug: String },
 	#[error("Is a directory")]
@@ -112,15 +112,15 @@ enum NumberingMode {
 }
 
 struct OutputOptions {
-	/// Line numbering mode.
+
 	number: NumberingMode,
-	/// Suppress repeated empty output lines.
+
 	squeeze_blank: bool,
-	/// Display TAB characters as `tab`.
+
 	show_tabs: bool,
-	/// Show end of lines.
+
 	show_ends: bool,
-	/// Use ^ and M- notation, except for LF and TAB.
+
 	show_nonprint: bool,
 }
 
@@ -133,7 +133,7 @@ impl OutputOptions {
 		if self.show_ends { "$\n" } else { "\n" }
 	}
 
-	/// We can write fast when no output augmentation is requested.
+
 	fn can_write_fast(&self) -> bool {
 		!(self.show_tabs
 			|| self.show_nonprint
@@ -143,7 +143,7 @@ impl OutputOptions {
 	}
 }
 
-/// State that persists between files on the augmented-output path.
+
 struct OutputState {
 	line_number: LineNumber,
 	at_line_start: bool,
@@ -152,13 +152,13 @@ struct OutputState {
 }
 
 
-/// An input stream and whether it is connected to an interactive terminal.
+
 struct InputHandle<R: Read> {
 	reader:         R,
 	is_interactive: bool,
 }
 
-/// Concrete enum of recognized file types.
+
 enum InputType {
 	Directory,
 	File,
@@ -188,7 +188,7 @@ mod options {
 	pub static IGNORED_U: &str = "ignored-u";
 }
 
-/// Parsed `cat` invocation.
+
 pub(crate) struct Cat {
 	matches: ArgMatches,
 }
@@ -235,7 +235,7 @@ impl Utility for Cat {
 	}
 }
 
-/// The `cat` argument model.
+
 fn app() -> Command {
 	Command::new(Cat::NAME)
 		.version("0.8.0")
@@ -266,8 +266,8 @@ fn app() -> Command {
 				.short('b')
 				.long(options::NUMBER_NONBLANK)
 				.help("number nonempty output lines, overrides -n")
-				// This must not override NUMBER: clap overriding is symmetric,
-				// while `-b -n` must still use `-b` semantics.
+
+
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
@@ -345,7 +345,7 @@ fn cat_path(
 	host: &mut Host,
 	stdout: &mut impl Write,
 ) -> CatResult<()> {
-	// Resolve every operand at the boundary, but retain `path` for diagnostics.
+
 	let resolved = host.resolve(path);
 	match get_input_type(path, &resolved)? {
 		InputType::StdIn => {
@@ -393,7 +393,7 @@ where
 	host.exit_code()
 }
 
-/// Classifies the input at `resolved`; `path` is retained to recognize `-`.
+
 fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	if path == "-" {
 		return Ok(InputType::StdIn);
@@ -403,7 +403,7 @@ fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 		Ok(metadata) => metadata.file_type(),
 		Err(error) => {
 			if let Some(raw_error) = error.raw_os_error() {
-				// ELOOP differs on Darwin and FreeBSD.
+
 				#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 				let too_many_symlink_code = 40;
 				#[cfg(any(target_os = "macos", target_os = "freebsd"))]
@@ -431,7 +431,7 @@ fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	}
 }
 
-/// Writes a handle to stdout with no output transformation.
+
 fn write_fast<R: Read>(
 	handle: &mut InputHandle<R>,
 	stdout: &mut impl Write,
@@ -449,7 +449,7 @@ fn write_fast<R: Read>(
 	Ok(())
 }
 
-/// Outputs a handle line by line with the requested transformations.
+
 fn write_lines<R: Read>(
 	handle: &mut InputHandle<R>,
 	options: &OutputOptions,
@@ -499,13 +499,13 @@ fn write_lines<R: Read>(
 			}
 			pos += offset + 1;
 		}
-		// Flush before a pipe read can block so available output stays visible.
+
 		stdout.flush()?;
 	}
 	Ok(())
 }
 
-/// Writes a newline, accounting for delayed carriage returns and numbering.
+
 fn write_new_line<W: Write>(
 	writer: &mut W,
 	options: &OutputOptions,
@@ -547,8 +547,8 @@ fn write_end<W: Write>(
 	}
 }
 
-// Write all symbols until newline, carriage return, or the buffer end. The
-// nonprinting path need not stop at carriage return because it always emits ^M.
+
+
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> io::Result<usize> {
 	if let Some(position) = memchr2(b'\n', b'\r', in_buf) {
 		writer.write_all(&in_buf[..position])?;
@@ -617,7 +617,7 @@ fn write_end_of_line<W: Write>(
 	Ok(())
 }
 
-/// Creates the `cat` builtin registration.
+
 pub(crate) fn cat_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cat, SE>()
 }

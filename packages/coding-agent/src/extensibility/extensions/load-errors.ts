@@ -1,7 +1,6 @@
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { LoadExtensionsResult } from "./types";
 
-/** Formats extension load failures for user-visible startup diagnostics. */
 export function formatExtensionLoadNotifications(errors: LoadExtensionsResult["errors"]): string[] {
 	const messages: string[] = [];
 	for (const { path, error } of errors) {

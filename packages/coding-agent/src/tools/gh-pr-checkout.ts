@@ -48,7 +48,6 @@ function sanitizeRemoteName(value: string): string {
 	return sanitized.length > 0 ? `fork-${sanitized}` : "fork";
 }
 
-/** Maximum disambiguation suffixes we try before giving up on a worktree path. */
 const WORKTREE_PATH_MAX_SUFFIX = 100;
 
 function toLocalBranchRef(value: string): string {
@@ -73,17 +72,6 @@ async function requirePrimaryGitRepoRoot(cwd: string, signal?: AbortSignal): Pro
 	return primaryRepoRoot;
 }
 
-/**
- * Resolve a worktree path that is free of conflicts.
- *
- * Given a `basePath`, return either `basePath` itself or `${basePath}-2`,
- * `${basePath}-3`, … up to {@link WORKTREE_PATH_MAX_SUFFIX} — whichever is the
- * first variant that is **not** registered with git as another worktree and
- * **not** present on disk. The numeric tail salvages two rare cases that
- * would otherwise abort a checkout: stale leftover dirs from an interrupted
- * `git worktree add`, and the (vanishingly unlikely) `hashPath` collision
- * between two repos that happen to produce the same 7-hex digest.
- */
 async function resolveAvailableWorktreePath(
 	basePath: string,
 	existingWorktrees: git.GitWorktreeEntry[],
@@ -314,8 +302,7 @@ export async function executePrCheckout(
 			if (failures.length === 1) throw failures[0].reason;
 			throw new ToolError(`all ${failures.length} PR checkouts failed:\n${failureLines.join("\n")}`);
 		}
-		// Partial success: report the worktrees that did get created alongside
-		// the failures so the agent does not lose track of them.
+
 		const sections = outcomes.map(formatPrCheckoutResult);
 		const header = `# ${outcomes.length}/${settled.length} Pull Request Worktrees checked out (${failures.length} failed)`;
 		const text = [header, "", ...joinSections(sections), "", "## Failed", ...failureLines].join("\n").trim();
@@ -397,14 +384,6 @@ async function checkoutPullRequest(
 	const localBranch = `pr-${prNumber}`;
 	const worktreePath = getWorktreeDir(`${prNumber}-${hashPath(primaryRepoRoot)}`);
 
-	// Every git mutation against `repoRoot` from here on must run under the
-	// per-repo lock. Worktrees of the same primary repo share `.git/config`,
-	// `commit-graph` chain, `packed-refs`, and worktree metadata files — git
-	// uses O_EXCL lock files for each, with no waiter. Concurrent in-process
-	// callers (e.g. parallel `pr_checkout` calls) would otherwise lose lock
-	// races and surface "could not lock config file" / "Another git process
-	// seems to be running" errors. The gh API call above stays outside the
-	// lock so multiple checkouts can fetch PR metadata in parallel.
 	return git.withRepoLock(
 		repoRoot,
 		async () => {
@@ -516,9 +495,6 @@ export async function executePrPush(
 		signal,
 	});
 
-	// A successful push changes what `pr://N` and `pr://N/diff` should show;
-	// drop the cached rows so the canonical "push → re-read diff" flow sees
-	// fresh data instead of a soft-TTL stale snapshot.
 	const pushedPr = parsePullRequestUrl(target.prUrl);
 	if (pushedPr.prNumber !== undefined) {
 		invalidateAllForNumber(pushedPr.prNumber, pushedPr.repo);
@@ -580,14 +556,11 @@ export async function executePrCreate(
 	try {
 		if (!fill) {
 			if (body !== undefined && body.length > 0) {
-				// Route through a temp file so multi-KB bodies stay clear of any
-				// argv-length limits and shell-quoting hazards on uncommon platforms.
 				bodyDir = await fs.mkdtemp(path.join(os.tmpdir(), "gh-pr-body-"));
 				const bodyFile = path.join(bodyDir, "body.md");
 				await Bun.write(bodyFile, body);
 				args.push("--body-file", bodyFile);
 			} else {
-				// Avoid gh dropping into an interactive editor when no body is given.
 				args.push("--body", "");
 			}
 		}
@@ -620,9 +593,7 @@ export async function executePrCreate(
 					signal,
 					{ repoProvided: true },
 				);
-			} catch {
-				// Best-effort summary; PR creation already succeeded.
-			}
+			} catch {}
 		}
 
 		const text = formatPrCreateResult({

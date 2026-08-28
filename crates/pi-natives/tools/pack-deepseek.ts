@@ -1,21 +1,21 @@
-// Pack DeepSeek V3..V4 base vocabulary (128,000 entries) into UTOK1 + zstd -19.
-//
-// Source: tools/cache/deepseek-v4.tokenizer.json (HF tokenizers format).
-// model.vocab keys are GPT-2 byte-level alphabet strings; the three
-// sentinel specials at ids 0..2 live inside model.vocab (not byte-level
-// decodable) and are merge-unreachable, so they are packed as EMPTY byte
-// strings per fleet protocol (rank contiguity kept; RankTable::parse
-// skips zero-length entries). The 1,283 added_tokens are excluded per
-// encode_ordinary semantics.
-//
-// Usage: bun tools/pack-deepseek.ts
+
+
+
+
+
+
+
+
+
+
+
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SRC = `${ROOT}tools/cache/deepseek-v4.tokenizer.json`;
 const OUT = `${ROOT}data/deepseek3.bin.zst`;
 const VOCAB_SIZE = 128_000;
 
-// GPT-2 bytes_to_unicode, inverted: alphabet char -> original byte.
+
 function unicodeToByte(): Map<string, number> {
 	const bs: number[] = [];
 	for (let i = 0x21; i <= 0x7e; i++) bs.push(i);
@@ -53,7 +53,7 @@ const added: { id: number; content: string }[] = json.added_tokens;
 
 if (added.length !== 1283) throw new Error(`expected 1283 added_tokens, got ${added.length}`);
 
-// rank -> token bytes, asserting contiguity 0..127999.
+
 const byRank: (Uint8Array | undefined)[] = new Array(VOCAB_SIZE);
 let entries = 0;
 for (const tok in vocab) {
@@ -64,7 +64,7 @@ for (const tok in vocab) {
 	if (decoded === null && id > 2) {
 		throw new Error(`non-byte-level token at unexpected rank ${id}: "${tok}"`);
 	}
-	// Dead sentinel specials -> empty (reachability asserted below).
+
 	byRank[id] = decoded ?? new Uint8Array(0);
 	entries++;
 }
@@ -73,7 +73,7 @@ for (let r = 0; r < VOCAB_SIZE; r++) {
 	if (byRank[r] === undefined) throw new Error(`rank ${r} missing — vocab not contiguous`);
 }
 
-// Non-empty byte keys must be unique or RankTable lookups are ambiguous.
+
 const seen = new Set<string>();
 for (const bytes of byRank as Uint8Array[]) {
 	if (bytes.length === 0) continue;
@@ -82,14 +82,14 @@ for (const bytes of byRank as Uint8Array[]) {
 	seen.add(key);
 }
 
-// Merge reachability: a rank-table engine can whole-piece-match any vocab
-// entry, but HF (ignore_merges=false) only ever emits alphabet chars and
-// merge products. Assert the ONLY unreachable entries are the three
-// sentinel specials (ids 0..2), which the pretokenizer can never yield as
-// a whole piece — so no drift is possible.
+
+
+
+
+
 {
-	// Merges are "left right" strings; byte-level alphabet never contains
-	// a raw space (space maps to Ġ), so a single split is unambiguous.
+
+
 	const merges: string[] = json.model.merges;
 	if (merges.length !== 127_741) throw new Error(`expected 127741 merges, got ${merges.length}`);
 	const reachable = new Set<string>();
@@ -108,7 +108,7 @@ for (const bytes of byRank as Uint8Array[]) {
 	}
 }
 
-// UTOK1: magic, u32le count, per entry LEB128(len) + raw bytes.
+
 const parts: Uint8Array[] = [new TextEncoder().encode("UTOK1\n")];
 const count = new Uint8Array(4);
 new DataView(count.buffer).setUint32(0, VOCAB_SIZE, true);

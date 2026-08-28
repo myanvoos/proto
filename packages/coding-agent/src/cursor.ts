@@ -32,22 +32,10 @@ import type { MCPResourceReadResult } from "./mcp/types";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
 import type { TodoPhase, TodoStatus } from "./tools/todo";
 
-/** Phase used for Cursor-owned tasks with no local phase grouping. */
 const CURSOR_TODO_PHASE = "Tasks";
 
-/**
- * A tool instance the bridge can run, matching the erased shape the session's
- * tool registry stores. The concrete tools have narrower `execute` parameter
- * types than the default `AgentTool`, which only unify through this alias.
- */
 type CursorBridgeTool = AgentTool<any, any, any>;
 
-/**
- * The live MCP connections Cursor's resource frames are answered from.
- *
- * Named so every construction site can hand over the same adapter; a session
- * and its advisors share one set of connections.
- */
 export interface CursorMcpResourceAdapter {
 	serverNames(): string[];
 	getServerResources(
@@ -60,99 +48,23 @@ interface CursorExecBridgeOptions {
 	cwd: string;
 	getCwd?: () => string;
 	tools: Map<string, AgentTool>;
-	/** Resolves execution overrides (mounted-device permission wrappers) before the canonical map. */
+
 	getExecutableTool?: (name: string) => AgentTool | undefined;
-	/**
-	 * The `replace`-mode `edit` instance `pi_edit` must run, when the session
-	 * granted `edit` at all.
-	 *
-	 * `PiEditExecArgs` is that mode's schema verbatim, and the session's own
-	 * `edit` may be in any mode — `hashline` by default — whose schema rejects
-	 * `old_string`/`new_string` outright. {@link tools} therefore cannot be trusted
-	 * for this one frame: a session that starts on another provider keeps its
-	 * configured instance in the map (only Cursor sessions move `edit` out), and
-	 * switching to Cursor later does not rebuild the roster.
-	 */
+
 	getEditReplaceTool?: () => CursorBridgeTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	emitEvent?: (event: AgentEvent) => void;
-	/**
-	 * Whether frames that mutate the filesystem WITHOUT running a registry tool
-	 * may do so: the native `delete` frame, and a `read_mcp_resource` carrying
-	 * `download_path`. Both write or remove workspace files directly instead of
-	 * consulting {@link tools}, so a background read-only advisor could touch
-	 * files it was never granted a mutating tool for (issue #5680 review).
-	 *
-	 * This is a grant, not a policy: it answers "did the session hand this
-	 * channel a file-writing tool", which callers derive from their own roster
-	 * before any bridge-specific rewriting. The primary Cursor session moves
-	 * `edit` out of {@link tools} and serves it through
-	 * {@link getEditReplaceTool}, so reading the map here would deny an
-	 * edit-only session. Defaults to allowed to preserve the primary agent's
-	 * behavior; callers with a restricted tool set (advisors) opt out.
-	 */
+
 	allowDirectFileMutation?: boolean;
-	/**
-	 * Mirror Cursor's server-owned todo list into local session state. Cursor
-	 * resolves `update_todos` / `read_todos` remotely, so without this bridge
-	 * the provider's list and the local `todo` state diverge silently.
-	 */
+
 	setTodoPhases?: (phases: TodoPhase[]) => void;
 	getTodoPhases?: () => TodoPhase[];
-	/**
-	 * Persist the mirrored list to the session branch so it survives reloads.
-	 * Cursor emits no local `todo` toolResult, so nothing else records it.
-	 */
+
 	persistTodoPhases?: (phases: TodoPhase[]) => void;
-	/**
-	 * The session's live MCP connections, for Cursor's resource frames.
-	 *
-	 * `list_mcp_resources` / `read_mcp_resource` ask what this client's servers
-	 * advertise. Without this the bridge answers an empty catalog and
-	 * `not_found`, hiding resources the session is in fact connected to.
-	 *
-	 * `getServerResources` is async because a server's catalog loads in the
-	 * background after its tools register: a frame arriving in that window would
-	 * otherwise read the not-yet-populated cache and report an empty catalog,
-	 * which is indistinguishable from a server that advertises nothing.
-	 */
+
 	mcpResources?: CursorMcpResourceAdapter;
 }
 
-/**
- * Write a downloaded resource without following a link at the target.
- *
- * The containment check and the write are separate syscalls, so a link planted
- * at the target in between would redirect the bytes — the check cannot close
- * that window on its own. `O_NOFOLLOW` decides it atomically for symlinks.
- *
- * A hard link needs a second check: it is a regular file that passes both the
- * containment check and `O_NOFOLLOW` while sharing its inode with a file
- * anywhere else on the volume, so truncating it overwrites that file too.
- * `nlink > 1` on the OPEN handle is the test — statting the path first would
- * reintroduce the race the open just closed. Same reasoning, and the same
- * refusal, as `autolearn/managed-skills.ts`.
- *
- * Truncation therefore happens after that check rather than through `O_TRUNC`,
- * which would have already destroyed the contents by the time it ran.
- *
- * Scope: `O_NOFOLLOW` applies to the FINAL component only. A parent directory
- * swapped for an outward symlink between the check and this open is still
- * followed; refusing that needs an `openat`/dirfd walk of every segment, which
- * this does not attempt — an attacker who can rewrite the workspace tree
- * mid-download is already inside the boundary this guard defends.
- *
- * Parent directories are created first, since the frame may name a path whose
- * directories do not exist yet.
- *
- * `O_NONBLOCK` is what keeps the guard below reachable. A write-only open of a
- * FIFO blocks until a reader arrives, so a `download_path` naming one would
- * hang the turn forever WITHOUT the non-regular check ever running — the open
- * itself never returns. Non-blocking turns that into `ENXIO` when no reader is
- * attached, and hands back a descriptor the `isFile()` check refuses when one
- * is. The flag has no effect on regular files, which is every legitimate
- * target.
- */
 async function writeWithoutFollowingLinks(absolutePath: string, payload: string | Buffer): Promise<void> {
 	await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
 	const handle = await fs.promises
@@ -161,8 +73,6 @@ async function writeWithoutFollowingLinks(absolutePath: string, payload: string 
 			fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
 		)
 		.catch((error: NodeJS.ErrnoException) => {
-			// A readerless FIFO. Reported as the refusal it is, rather than the
-			// bare "no such device or address" the errno spells out.
 			if (error.code === "ENXIO") {
 				throw new Error(`Refusing to download onto a special file: ${absolutePath}`);
 			}
@@ -222,8 +132,6 @@ async function executeTool(
 		return createToolResultMessage(toolCallId, toolName, result, true);
 	}
 
-	// Same rule as synthesizeCursorExecToolCall: optional kwargs must be absent,
-	// not `undefined`, or ArkType validation rejects the call.
 	const toolArgs = omitUndefinedArgs(args);
 
 	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName, args: toolArgs });
@@ -333,11 +241,6 @@ function formatMcpToolErrorMessage(toolName: string, availableTools: string[]): 
 	return `MCP tool "${toolName}" not found. Available tools: ${list}`;
 }
 
-/**
- * One-line summary for the synthesized todo result. Cursor's server-resolved
- * call produces no local tool output, but the transcript entry still needs
- * text content alongside the phases the UI renders.
- */
 function formatTodoSyncSummary(phases: TodoPhase[]): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) return "No todos";
@@ -345,19 +248,6 @@ function formatTodoSyncSummary(phases: TodoPhase[]): string {
 	return `${done}/${tasks.length} tasks completed`;
 }
 
-/**
- * Persisted result for a server-resolved todo call.
- *
- * `details` is only attached for an authoritative snapshot, and then
- * `details.phases` is load-bearing rather than decoration: `todoToolRenderer`
- * rebuilds the rendered list exclusively from it, so a mirrored update that
- * omitted it would replay as `Todo 0 tasks` after a reload.
- *
- * A refusal or a server error carries no `details`. Echoing the current phases
- * there would replay a call that changed nothing as if it had re-asserted the
- * whole list — and `event-controller` feeds `details.phases` straight into
- * `setTodos`, so a refused `read_todos` would overwrite live UI state.
- */
 function buildTodoSyncResult(
 	toolCallId: string,
 	phases: TodoPhase[] | undefined,
@@ -379,17 +269,10 @@ function buildTodoSyncResult(
 export class CursorExecHandlers implements ICursorExecHandlers {
 	constructor(private options: CursorExecBridgeOptions) {}
 
-	/**
-	 * Modern Cursor builds paginate the legacy `read` frame with
-	 * `offset`/`limit`, exactly as `pi_read` does. Dropping them returns the
-	 * whole file (or its own truncation) for every page, so a model walking a
-	 * large file never advances. Composed with the same helper, so both frames
-	 * translate a range identically.
-	 */
 	async read(args: Parameters<NonNullable<ICursorExecHandlers["read"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
 		const composed = piReadPath(args.path, args.offset, args.limit);
-		// A present `limit: 0` asks for zero lines; no selector expresses that.
+
 		if (composed === null) {
 			return createToolResultMessage(toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
 		}
@@ -398,17 +281,11 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async ls(args: Parameters<NonNullable<ICursorExecHandlers["ls"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		// Redirect ls to read tool, which handles directories
+
 		const toolResultMessage = await executeTool(this.options, "read", toolCallId, { path: args.path });
 		return toolResultMessage;
 	}
 
-	/**
-	 * Modern Cursor builds paginate this frame with `offset`. The local `grep`
-	 * paginates by file through `skip`, which is the same unit its own
-	 * "use skip=N for the next page" advice counts in — so an unforwarded
-	 * offset re-runs the identical search and returns page one forever.
-	 */
 	async grep(args: Parameters<NonNullable<ICursorExecHandlers["grep"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
 		const searchPath = args.glob ? `${args.path || "."}/${args.glob}` : args.path || ".";
@@ -505,9 +382,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 				}
 				return;
 			}
-			// Cursor's shell-stream callback is append-only. Once the sanitized snapshot
-			// stops being a prefix extension, we can no longer repair the stream safely.
-			// Keep emitting full snapshots via tool_execution_update, but stop stdout deltas.
+
 			canStreamSanitizedDelta = false;
 		};
 
@@ -520,8 +395,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		}
 		isError ||= result.isError === true;
 
-		// onUpdate may not fire for every chunk — flush any remaining output
-		// from the final result that wasn't already streamed.
 		const finalRawText = result.content.map(c => (c.type === "text" ? c.text : "")).join("");
 		if (finalRawText !== rawText) {
 			rawText = finalRawText;
@@ -557,28 +430,11 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 		return toolResultMessage;
 	}
-	/**
-	 * Modern Cursor CLI Pi tool frames (`ExecServerMessage` 45-51).
-	 *
-	 * These are a separate frame family from the legacy `read`/`shell`/... set,
-	 * not aliases: different args, different result oneofs, and no `tool_call_id`
-	 * (the provider mints one and passes it in `call.toolCallId`). Each maps onto
-	 * the local tool with matching semantics, so the same sandboxing and
-	 * extension-event plumbing applies as for a model-issued call.
-	 */
-	/**
-	 * `offset`/`limit` are a 1-indexed start line plus a line count (verified
-	 * against the reference `LocalPiReadExecutor`), which is exactly the local
-	 * `read` tool's `:N+K` inline selector — the tool takes no range kwargs, so
-	 * the range has to be composed onto the path or ranged reads silently
-	 * return the whole file.
-	 */
+
 	async piRead(call: Parameters<NonNullable<ICursorExecHandlers["piRead"]>>[0]) {
 		const { path: readPath, offset, limit } = call.args;
 		const composed = piReadPath(readPath, offset, limit);
-		// A present `limit: 0` asks for zero lines. The reference slices an empty
-		// string for it; no `read` selector expresses that, so answer directly
-		// rather than falling back to a whole-file read.
+
 		if (composed === null) {
 			return createToolResultMessage(call.toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
 		}
@@ -592,18 +448,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 	}
 
-	/**
-	 * `PiEditExecArgs` carries a path plus `oldText`/`newText` replacement
-	 * pairs. A single replacement maps onto the model-facing single-edit
-	 * `replace` schema verbatim; a multi-replacement frame still runs as ONE
-	 * tool lifecycle (one start/end event pair, one aggregate diff), so it is
-	 * sent in the tool's internal `edits` batch form (`ReplaceBatchParams`),
-	 * which only this bridge produces.
-	 *
-	 * The replace-mode instance is requested explicitly rather than resolved
-	 * from {@link CursorExecBridgeOptions.tools}: the registry's `edit` is in
-	 * the session's configured mode, whose schema rejects these arguments.
-	 */
 	async piEdit(call: Parameters<NonNullable<ICursorExecHandlers["piEdit"]>>[0]) {
 		const edits = call.args.edits.map(edit => ({ old_string: edit.oldText, new_string: edit.newText }));
 		const args = edits.length === 1 ? { path: call.args.path, ...edits[0] } : { path: call.args.path, edits };
@@ -617,16 +461,9 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 	}
 
-	/**
-	 * `literal` makes the pattern a fixed string; the local tool is regex-only,
-	 * so the pattern is escaped on the way in (same translation the legacy pi
-	 * shim does).
-	 */
 	async piGrep(call: Parameters<NonNullable<ICursorExecHandlers["piGrep"]>>[0]) {
 		const { pattern, path, glob, ignoreCase, literal } = call.args;
-		// Same arg mapping as the legacy `grep` handler: the local tool takes one
-		// path spec, and its `case` flag is case-SENSITIVITY, the inverse of the
-		// frame's `ignore_case`.
+
 		return await executeTool(this.options, "grep", call.toolCallId, {
 			pattern: literal === true ? piEscapeRegexLiteral(pattern) : pattern,
 			path: glob ? piJoinPath(path, glob) : path || ".",
@@ -634,26 +471,15 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 	}
 
-	/**
-	 * Redirected to `read`, which lists directories — same as the legacy `ls`.
-	 * The frame's entry `limit` is not mapped; see {@link piLsPath}.
-	 */
 	async piLs(call: Parameters<NonNullable<ICursorExecHandlers["piLs"]>>[0]) {
 		return await executeTool(this.options, "read", call.toolCallId, { path: piLsPath(call.args.path) });
 	}
 
-	/**
-	 * The resources this client's MCP servers advertise.
-	 *
-	 * Cursor addresses a later read by `server`, so every entry carries the name
-	 * it came from. An absent `server` filter means "all of them".
-	 */
 	async listMcpResources({ server }: { server?: string }): Promise<CursorMcpResource[]> {
 		const mcp = this.options.mcpResources;
 		if (!mcp) return [];
 		const names = server ? [server] : mcp.serverNames();
-		// Concurrently: each name may block on that server's first catalog load,
-		// and a slow server should not delay the rest of the listing.
+
 		const catalogs = await Promise.all(names.map(async name => [name, await mcp.getServerResources(name)] as const));
 		const listed: CursorMcpResource[] = [];
 		for (const [name, catalog] of catalogs) {
@@ -670,22 +496,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return listed;
 	}
 
-	/**
-	 * Read one resource, or `null` when the server or uri is unknown.
-	 *
-	 * MCP returns a list of content items; the wire carries exactly one text or
-	 * blob. Text items are joined, since a multi-part text resource is one
-	 * document; otherwise the first blob stands in. `blob` arrives base64 and
-	 * the wire wants bytes.
-	 *
-	 * A `downloadPath` frame is a different contract: write the bytes to that
-	 * workspace-relative path and answer with the path alone, so a large binary
-	 * lands on disk instead of in the model's context. That makes it a workspace
-	 * mutation reached without a registry tool, so it is gated exactly like the
-	 * native `delete` frame — on the session actually granting a file-writing
-	 * tool, and on the user's `write`-tier policy. The gate runs before the read
-	 * so a refused download never fetches the resource either.
-	 */
 	async readMcpResource({
 		server,
 		uri,
@@ -704,10 +514,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		if (!mcp) return null;
 		const read = await mcp.readServerResource(server, uri);
 		if (!read) return null;
-		// The mime type must describe the bytes actually sent, not whatever item
-		// happened to be first: an image blob followed by a text note would
-		// otherwise label the text `image/png` and mislead the model about what
-		// it is holding. Each branch below takes the type from its own producer.
+
 		const textItems = read.contents.filter(item => item.text !== undefined);
 		const texts = textItems.map(item => item.text as string);
 		const blobItem = read.contents.find(item => item.blob !== undefined);
@@ -716,21 +523,15 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const blobMimeType = blobItem?.mimeType;
 
 		if (downloadPath) {
-			// Text resources download as their own bytes; a blob decodes first.
 			const payload =
 				texts.length > 0 ? texts.join("\n") : blob !== undefined ? Buffer.from(blob, "base64") : undefined;
 			if (payload === undefined) return null;
-			// The path is workspace-relative BY CONTRACT, but it arrives from the
-			// server, and `resolveToCwd` deliberately honors absolute paths and
-			// `..` for user-authored tool input. Taking it at its word would let a
-			// frame write anywhere this process can reach, so confine it here
-			// rather than trusting the declaration.
+
 			const cwd = this.options.getCwd?.() ?? this.options.cwd;
 			const absolutePath = confineToWorkspace(downloadPath, cwd);
 			if (!absolutePath) throw new Error(`Refusing to download outside the workspace: ${downloadPath}`);
 			await writeWithoutFollowingLinks(absolutePath, payload);
-			// The path echoed back is the one the frame asked for; the model
-			// addresses it the same relative way.
+
 			return { uri, mimeType: texts.length > 0 ? textMimeType : blobMimeType, downloadPath };
 		}
 
@@ -739,46 +540,10 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return { uri, mimeType: blobMimeType, blob: Buffer.from(blob, "base64") };
 	}
 
-	/**
-	 * Settle a completed native Cursor todo call, mirroring its list when the
-	 * server supplied an authoritative one.
-	 *
-	 * Cursor's snapshot is a flat list, so tasks already known locally keep
-	 * their phase and only their status is updated; unknown tasks land in a
-	 * single fallback phase. Statuses come straight from the server snapshot —
-	 * no local normalization, or an all-pending remote list would gain a
-	 * phantom in-progress task the remote list does not have.
-	 *
-	 * The snapshot is also persisted to the session branch. Every other
-	 * provider's todo state survives a reload because `todo` runs locally and
-	 * its `toolResult` (carrying `details.phases`) lands in the branch, which
-	 * `#syncTodoPhasesFromBranch` replays. Cursor resolves the tool remotely and
-	 * emits no such result, so without an explicit entry the list is in-memory
-	 * only and every reload, rewind, compaction, or session switch drops it.
-	 *
-	 * This ALWAYS settles the call and returns the result to persist, even when
-	 * nothing is mirrored. Two reasons it cannot bail out early:
-	 *
-	 * - the interactive card leaves `pendingTools` only on a matching
-	 *   `tool_execution_end`, so staying silent leaves it animating forever;
-	 * - an unpaired `toolCall` is stripped as dangling by `buildSessionContext`,
-	 *   erasing the interaction from every rebuilt transcript.
-	 *
-	 * A `null` snapshot means nothing may be mirrored — a server `error`, or a
-	 * benign refusal: a filtered, truncated, or empty read, or a snapshot the
-	 * local model cannot represent. Local state is left untouched, and the result
-	 * carries no `details` (text `"Todo snapshot not mirrored"`): `event-controller`
-	 * feeds `details.phases` straight into `setTodos`, so echoing the current list
-	 * back would let a call that changed nothing overwrite live UI state.
-	 */
 	todoSync(snapshot: CursorTodoSnapshot | null, toolCallId: string, error: string | null = null): ToolResultMessage {
 		const setPhases = this.options.setTodoPhases;
 		const existing = this.options.getTodoPhases?.() ?? [];
 
-		// Mirroring is gated on having both a snapshot and somewhere to put it.
-		// Settling the call is NOT: the interactive card leaves `pendingTools`
-		// only on a matching `tool_execution_end`, so a refusal, a server error,
-		// or a host with no local todo state must still resolve it.
 		let phases: TodoPhase[] | undefined;
 		if (snapshot && setPhases) {
 			const phaseByContent = new Map<string, string>();
@@ -797,7 +562,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 				tasks.push({ content: todo.content, status: todo.status as TodoStatus });
 			}
 
-			// Preserve the local phase order; phases new to this snapshot append.
 			const next: TodoPhase[] = [];
 			for (const phase of existing) {
 				const tasks = grouped.get(phase.name);
@@ -812,16 +576,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		}
 
 		const result = buildTodoSyncResult(toolCallId, phases, error);
-		// This completion is emitted synchronously mid-parse, while the streamed
-		// `toolcall_start` that creates the visible card rides
-		// `AssistantMessageEventStream` and lands a microtask later. When Cursor
-		// packs start and completion into one HTTP/2 chunk the completion arrives
-		// first; the interactive controller holds it as an orphan and replays it
-		// once the streamed block creates the card (`event-controller.ts`,
-		// `#orphanedToolCompletions`). Emitting a synthetic `tool_execution_start`
-		// here instead was measured and rejected: settling deletes the pending
-		// entry, and the next cumulative `message_update` re-creates the card —
-		// one settled card plus one stuck forever.
+
 		this.options.emitEvent?.({
 			type: "tool_execution_end",
 			toolCallId,

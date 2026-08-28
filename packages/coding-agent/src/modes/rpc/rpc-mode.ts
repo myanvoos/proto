@@ -1,15 +1,3 @@
-/**
- * RPC mode: Headless operation with JSON stdin/stdout protocol.
- *
- * Used for embedding the agent in other applications.
- * Receives commands as JSON on stdin, outputs events and responses as JSON on stdout.
- *
- * Protocol:
- * - Commands: JSON objects with `type` field, optional `id` for correlation
- * - Responses: JSON objects with `type: "response"`, `command`, `success`, and optional `data`/`error`
- * - Events: AgentSessionEvent objects streamed as they occur
- * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
- */
 import { once } from "node:events";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -58,7 +46,6 @@ import type {
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
-// Re-export types for consumers
 export type * from "./rpc-types";
 
 export type PendingExtensionRequest = {
@@ -66,7 +53,6 @@ export type PendingExtensionRequest = {
 	reject: (error: Error) => void;
 };
 
-/** Pending extension UI request map that can fail closed when the RPC client disconnects. */
 export class RpcPendingExtensionRequests extends Map<string, PendingExtensionRequest> {
 	#closedError: Error | undefined;
 
@@ -78,7 +64,6 @@ export class RpcPendingExtensionRequests extends Map<string, PendingExtensionReq
 		return super.set(id, request);
 	}
 
-	/** Reject every active and future extension UI request. */
 	rejectAll(message: string): void {
 		if (!this.#closedError) this.#closedError = new Error(message);
 		const requests = Array.from(this.values());
@@ -165,12 +150,6 @@ type RpcExtensionUserMessageScope = {
 	pendingAgentMessageTasks: Set<Promise<void>>;
 };
 
-/**
- * Tracks extension-originated messages while an RPC prompt is executing.
- * A slash command can resolve the outer prompt as local-only while also
- * scheduling agent work through pi.sendUserMessage() or pi.sendMessage()
- * with triggerTurn; that prompt must not report agentInvoked:false to the host.
- */
 export class RpcExtensionUserMessageTracker {
 	#activePromptScopes = new Set<RpcExtensionUserMessageScope>();
 
@@ -250,10 +229,6 @@ export function watchAndReportLocalOnlyPromptResult(input: {
 	});
 }
 
-/**
- * Dependencies for {@link dispatchRpcInputFrame}. Provided by the RPC mode
- * entrypoint; broken out so tests can drive the input loop with stubs.
- */
 export interface RpcInputFrameDeps {
 	handleCommand: (command: RpcCommand) => Promise<RpcResponse>;
 	output: RpcOutput;
@@ -265,18 +240,11 @@ export interface RpcInputFrameDeps {
 	onHostUriResult: (frame: RpcHostUriResult) => void;
 }
 
-/**
- * Structural guard for a well-formed extension UI response frame. Mirrors the
- * shape declared in {@link RpcExtensionUIResponse} — a truthy record with
- * `type === "extension_ui_response"` and a string `id`. Payload variants (value,
- * confirmed, cancelled) are validated at the read site.
- */
 function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
 	if (!isRecord(value)) return false;
 	return value.type === "extension_ui_response" && typeof value.id === "string";
 }
 
-/** Dispatch side-channel frames that must overtake the serialized command queue. */
 function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): boolean {
 	if (isRpcExtensionUIResponse(parsed)) {
 		const pending = deps.pendingExtensionRequests.get(parsed.id);
@@ -302,33 +270,11 @@ function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): bool
 	return false;
 }
 
-/**
- * Dispatch a single parsed frame from the RPC input stream.
- *
- * Bash commands are dispatched in the background so the caller can keep reading
- * subsequent frames while a shell command is still running. This lets a client
- * send `abort_bash` while a long-running `bash` is in flight. Response
- * correlation is preserved via each command's `id`; ordering across concurrent
- * commands is not guaranteed and clients MUST match on `id`.
- *
- * @returns `undefined` when the frame was routed to a side-channel handler
- *   (extension UI response, host tool/URI frames) or dispatched in the
- *   background (`bash`). Otherwise a promise that resolves once the response
- *   for the command has been emitted via `output`. Errors from `handleCommand`
- *   on non-`bash` commands propagate; the caller is expected to wrap them.
- */
 export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps): Promise<void> | undefined {
 	if (dispatchRpcControlFrame(parsed, deps)) return undefined;
-	// Regular RPC command. The transport contract states each remaining frame
-	// is an {@link RpcCommand}; `handleCommand`'s `default` arm surfaces
-	// unknown discriminants as an error response, so we do not shape-check
-	// the union here.
+
 	const command = parsed as RpcCommand;
 
-	// `bash` can run for a long time. Dispatch it in the background so a
-	// subsequent `abort_bash` frame can be read and handled without waiting
-	// for the shell command to finish on its own. The response is emitted
-	// when `handleCommand` resolves; clients correlate via `command.id`.
 	if (command.type === "bash") {
 		const task = (async () => {
 			try {
@@ -347,7 +293,6 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	})();
 }
 
-/** Serializes ordinary RPC commands while allowing control frames to dispatch immediately. */
 export class RpcInputDispatcher {
 	#tail: Promise<void> = Promise.resolve();
 	#tasks = new Set<Promise<void>>();
@@ -359,7 +304,6 @@ export class RpcInputDispatcher {
 		this.#afterSerialCommand = options.afterSerialCommand;
 	}
 
-	/** Accept a parsed input frame without blocking the stdin reader. */
 	dispatch(parsed: unknown): void {
 		try {
 			if (dispatchRpcControlFrame(parsed, this.#deps)) return;
@@ -385,7 +329,6 @@ export class RpcInputDispatcher {
 		}
 	}
 
-	/** Await every accepted serial command, including commands queued before EOF. */
 	async drain(): Promise<void> {
 		while (this.#tasks.size > 0) {
 			await Promise.allSettled(Array.from(this.#tasks));
@@ -405,18 +348,6 @@ export class RpcInputDispatcher {
 	}
 }
 
-/**
- * Coordinates deferred shutdown with in-flight background input tasks.
- *
- * `pi.shutdown()` from an extension only *requests* shutdown; the process must
- * not exit while a background-dispatched command (`bash`, see
- * {@link dispatchRpcInputFrame}) still owes the client a response frame. The
- * coordinator tracks those tasks, re-checks the shutdown request whenever one
- * settles (covering a shutdown requested mid-bash with no follow-up client
- * frame), and drains every tracked task before invoking `performShutdown`.
- * The shutdown sequence is latched so concurrent triggers (input loop and
- * settling tasks) run it exactly once.
- */
 export class RpcShutdownCoordinator {
 	#tasks = new Set<Promise<void>>();
 	#shutdown: Promise<void> | undefined;
@@ -428,33 +359,21 @@ export class RpcShutdownCoordinator {
 		this.#performShutdown = options.performShutdown;
 	}
 
-	/**
-	 * Track a background input task. When it settles it is untracked and the
-	 * shutdown request is re-checked, so a deferred shutdown fires even when
-	 * no further client frames arrive.
-	 */
 	track(task: Promise<void>): void {
 		this.#tasks.add(task);
 		void task.finally(() => {
 			this.#tasks.delete(task);
-			// Fire-and-forget: performShutdown ends the process. Rejections are
-			// not expected — hook errors are caught inside extensionRunner.emit,
-			// and background tasks catch their own dispatch errors.
+
 			void this.checkShutdownRequested();
 		});
 	}
 
-	/** Await every tracked task, including tasks tracked while draining. */
 	async drain(): Promise<void> {
 		while (this.#tasks.size > 0) {
 			await Promise.allSettled(Array.from(this.#tasks));
 		}
 	}
 
-	/**
-	 * If shutdown was requested, drain background tasks (so every owed
-	 * response frame is written) before running the shutdown sequence.
-	 */
 	checkShutdownRequested(): Promise<void> {
 		if (!this.#shutdown) {
 			if (!this.#isShutdownRequested()) return Promise.resolve();
@@ -542,7 +461,6 @@ function isSubagentSubscriptionLevel(value: unknown): value is RpcSubagentSubscr
 	return value === "off" || value === "progress" || value === "events";
 }
 
-/** Sends an RPC select request while retaining aligned option descriptions. */
 export function requestRpcSelect(
 	pendingRequests: Map<string, PendingExtensionRequest>,
 	output: RpcOutput,
@@ -642,7 +560,6 @@ export function requestRpcEditor(
 	return promise;
 }
 
-/** Sends an RPC extension dialog and cancels the remote presentation when its signal aborts. */
 export function requestRpcDialog<T>(
 	pendingRequests: Map<string, PendingExtensionRequest>,
 	output: RpcOutput,
@@ -692,27 +609,17 @@ export function requestRpcDialog<T>(
 	output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
 	return promise;
 }
-/**
- * Run in RPC mode.
- * Listens for JSON commands on stdin, outputs events and responses on stdout.
- */
+
 export async function runRpcMode(
 	session: AgentSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	eventBus?: EventBus,
 	input: ReadableStream<Uint8Array> = claimRpcInput(),
 ): Promise<never> {
-	// Signal to RPC clients that the server is ready to accept commands
-	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
-	// process.stdout with no newline, which the reader merges with the next JSON line and
-	// breaks JSON.parse. In RPC mode stdout is the JSON protocol channel — nothing else
-	// may write there.
 	process.env.PI_NOTIFICATIONS = "off";
 
 	const frameEncoder = new RpcFrameEncoder();
-	// Ordered stdout writer honoring backpressure: chunked v2 frames are produced
-	// lazily by the encoder and written one physical line at a time, so a near-limit
-	// logical frame never materializes its full base64 transport in memory.
+
 	let stdoutQueue: Promise<void> = Promise.resolve();
 	const writeFrames = (frames: Iterable<string>) => {
 		stdoutQueue = stdoutQueue
@@ -721,7 +628,7 @@ export async function runRpcMode(
 					if (!process.stdout.write(line)) await once(process.stdout, "drain");
 				}
 			})
-			// stdout gone (host exited) — nothing left to deliver; keep the queue alive.
+
 			.catch(() => {});
 	};
 	writeFrames(
@@ -762,12 +669,8 @@ export async function runRpcMode(
 	const hostUriBridge = new RpcHostUriBridge(output);
 	const subagentRegistry = eventBus ? new RpcSubagentRegistry(eventBus, output) : undefined;
 
-	// Shutdown request flag (wrapped in object to allow mutation with const)
 	const shutdownState = { requested: false };
 
-	/**
-	 * Extension UI context that uses the RPC protocol.
-	 */
 	class RpcExtensionUIContext implements ExtensionUIContext {
 		constructor(
 			private pendingRequests: Map<string, PendingExtensionRequest>,
@@ -816,12 +719,10 @@ export async function runRpcMode(
 		}
 
 		onTerminalInput(): () => void {
-			// Raw terminal input not supported in RPC mode
 			return () => {};
 		}
 
 		notify(message: string, type?: "info" | "warning" | "error"): void {
-			// Fire and forget - no response needed
 			this.output({
 				type: "extension_ui_request",
 				id: Snowflake.next() as string,
@@ -832,7 +733,6 @@ export async function runRpcMode(
 		}
 
 		setStatus(key: string, text: string | undefined): void {
-			// Fire and forget - no response needed
 			this.output({
 				type: "extension_ui_request",
 				id: Snowflake.next() as string,
@@ -842,12 +742,9 @@ export async function runRpcMode(
 			} as RpcExtensionUIRequest);
 		}
 
-		setWorkingMessage(_message?: string): void {
-			// Not supported in RPC mode
-		}
+		setWorkingMessage(_message?: string): void {}
 
 		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only support string arrays in RPC mode - factory functions are ignored
 			if (content === undefined || Array.isArray(content)) {
 				this.output({
 					type: "extension_ui_request",
@@ -858,19 +755,13 @@ export async function runRpcMode(
 					widgetPlacement: options?.placement,
 				} as RpcExtensionUIRequest);
 			}
-			// Component factories are not supported in RPC mode - would need TUI access
 		}
 
-		setFooter(_factory: unknown): void {
-			// Custom footer not supported in RPC mode - requires TUI access
-		}
+		setFooter(_factory: unknown): void {}
 
-		setHeader(_factory: unknown): void {
-			// Custom header not supported in RPC mode - requires TUI access
-		}
+		setHeader(_factory: unknown): void {}
 
 		setTitle(title: string): void {
-			// Title updates are low-value noise for most RPC hosts; opt in via PI_RPC_EMIT_TITLE=1.
 			if (!emitRpcTitles) return;
 			this.output({
 				type: "extension_ui_request",
@@ -881,17 +772,14 @@ export async function runRpcMode(
 		}
 
 		async custom(): Promise<never> {
-			// Custom UI not supported in RPC mode
 			return undefined as never;
 		}
 
 		pasteToEditor(text: string): void {
-			// Paste handling not supported in RPC mode - falls back to setEditorText
 			this.setEditorText(text);
 		}
 
 		setEditorText(text: string): void {
-			// Fire and forget - host can implement editor control
 			this.output({
 				type: "extension_ui_request",
 				id: Snowflake.next() as string,
@@ -901,8 +789,6 @@ export async function runRpcMode(
 		}
 
 		getEditorText(): string {
-			// Synchronous method can't wait for RPC response
-			// Host should track editor state locally if needed
 			return "";
 		}
 
@@ -915,9 +801,7 @@ export async function runRpcMode(
 			return requestRpcEditor(this.pendingRequests, this.output, title, prefill, dialogOptions, editorOptions);
 		}
 
-		addAutocompleteProvider(): void {
-			// Autocomplete provider composition is not supported in RPC mode
-		}
+		addAutocompleteProvider(): void {}
 
 		get theme(): Theme {
 			return theme;
@@ -932,31 +816,21 @@ export async function runRpcMode(
 		}
 
 		setTheme(_theme: string | Theme): Promise<{ success: boolean; error?: string }> {
-			// Theme switching not supported in RPC mode
 			return Promise.resolve({ success: false, error: "Theme switching not supported in RPC mode" });
 		}
 
 		getToolsExpanded() {
-			// Tool expansion not supported in RPC mode - no TUI
 			return false;
 		}
 
-		setToolsExpanded(_expanded: boolean) {
-			// Tool expansion not supported in RPC mode - no TUI
-		}
+		setToolsExpanded(_expanded: boolean) {}
 
-		setEditorComponent(): void {
-			// Custom editor components not supported in RPC mode
-		}
+		setEditorComponent(): void {}
 	}
 
-	// Wire up UI context for tool execution (ask tool, etc.) and extensions.
-	// A single shared instance routes all responses received on stdin to the
-	// correct waiting promise regardless of which code path created the request.
 	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
 	setToolUIContext?.(rpcUiContext, true);
 
-	// Set up extensions with RPC-based UI context
 	await initializeExtensions(session, {
 		mode: "rpc",
 		reportSendError: (action, err) => {
@@ -974,7 +848,6 @@ export async function runRpcMode(
 		uiContext: rpcUiContext,
 	});
 
-	// Output all agent events as JSON
 	session.subscribe(event => {
 		output(event);
 	});
@@ -997,7 +870,6 @@ export async function runRpcMode(
 	});
 	await emitAvailableCommandsUpdate();
 
-	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
 
@@ -1007,10 +879,6 @@ export async function runRpcMode(
 					return error(id, "negotiate_protocol", `Unsupported RPC protocol version: ${command.protocolVersion}`);
 				return success(id, "negotiate_protocol", { protocolVersion: 2 });
 			}
-
-			// =================================================================
-			// Prompting
-			// =================================================================
 
 			case "prompt": {
 				const skillResult = await tryRunRpcSkillCommand(session, command.message, command.streamingBehavior);
@@ -1044,14 +912,10 @@ export async function runRpcMode(
 						});
 						return success(id, "prompt");
 					}
-					// A consumed builtin is local-only work: no agent turn was
-					// scheduled, so the host may finalize the request now.
+
 					return success(id, "prompt");
 				}
 
-				// Don't await - events will stream
-				// Extension commands are executed immediately, file prompt templates are expanded
-				// If streaming and streamingBehavior specified, queues via steer/followUp
 				watchAndReportLocalOnlyPromptResult({
 					id,
 					startPrompt: () =>
@@ -1096,10 +960,6 @@ export async function runRpcMode(
 				if (!result.data.cancelled) await emitAvailableCommandsUpdate();
 				return success(id, result.type, result.data);
 			}
-
-			// =================================================================
-			// State
-			// =================================================================
 
 			case "get_state": {
 				const state: RpcSessionState = {
@@ -1206,20 +1066,10 @@ export async function runRpcMode(
 				}
 			}
 
-			// =================================================================
-			// Model
-			// =================================================================
-
 			case "set_model": {
 				let models = session.getAvailableModels();
 				let model = models.find(m => m.provider === command.provider && m.id === command.modelId);
 				if (!model) {
-					// Model not in the current catalog. Wait for in-flight
-					// background discovery before declaring it missing: on cold
-					// start, discovery-backed providers (proxy / ollama / etc.)
-					// populate seconds after session ready. Models already in
-					// the bundled catalog skip this await entirely so the RPC
-					// queue is not stalled behind unrelated discovery.
 					await session.modelRegistry.awaitBackgroundRefresh();
 					models = session.getAvailableModels();
 					model = models.find(m => m.provider === command.provider && m.id === command.modelId);
@@ -1245,10 +1095,6 @@ export async function runRpcMode(
 				return success(id, "get_available_models", { models });
 			}
 
-			// =================================================================
-			// Thinking
-			// =================================================================
-
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level);
 				return success(id, "set_thinking_level");
@@ -1261,10 +1107,6 @@ export async function runRpcMode(
 				}
 				return success(id, "cycle_thinking_level", { level });
 			}
-
-			// =================================================================
-			// Queue Modes
-			// =================================================================
 
 			case "set_steering_mode": {
 				session.setSteeringMode(command.mode);
@@ -1281,10 +1123,6 @@ export async function runRpcMode(
 				return success(id, "set_interrupt_mode");
 			}
 
-			// =================================================================
-			// Compaction
-			// =================================================================
-
 			case "compact": {
 				const result = await session.compact(command.customInstructions);
 				return success(id, "compact", result);
@@ -1294,10 +1132,6 @@ export async function runRpcMode(
 				session.setAutoCompactionEnabled(command.enabled);
 				return success(id, "set_auto_compaction");
 			}
-
-			// =================================================================
-			// Retry
-			// =================================================================
 
 			case "set_auto_retry": {
 				session.setAutoRetryEnabled(command.enabled);
@@ -1309,10 +1143,6 @@ export async function runRpcMode(
 				return success(id, "abort_retry");
 			}
 
-			// =================================================================
-			// Bash
-			// =================================================================
-
 			case "bash": {
 				const result = await session.executeBash(command.command);
 				return success(id, "bash", result);
@@ -1322,10 +1152,6 @@ export async function runRpcMode(
 				session.abortBash();
 				return success(id, "abort_bash");
 			}
-
-			// =================================================================
-			// Session
-			// =================================================================
 
 			case "get_session_stats": {
 				const stats = session.getSessionStats();
@@ -1353,10 +1179,6 @@ export async function runRpcMode(
 				}
 				return success(id, "set_session_name");
 			}
-
-			// =================================================================
-			// Messages
-			// =================================================================
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
@@ -1390,10 +1212,6 @@ export async function runRpcMode(
 				}
 			}
 
-			// =================================================================
-			// Login
-			// =================================================================
-
 			case "get_login_providers": {
 				const providers = getOAuthProviders().map(provider => ({
 					id: provider.id,
@@ -1410,9 +1228,7 @@ export async function runRpcMode(
 					return error(id, "login", `Unknown OAuth provider: ${command.providerId}`);
 				}
 				const uiCtx = new RpcExtensionUIContext(pendingExtensionRequests, output);
-				// Track whether onAuth has fired. Providers that require interactive
-				// input before a browser URL cannot be satisfied headlessly; after
-				// onAuth, prompt input is the pasted OAuth code/redirect URL path.
+
 				let authEmitted = false;
 				try {
 					await session.modelRegistry.authStorage.login(command.providerId, {
@@ -1432,8 +1248,6 @@ export async function runRpcMode(
 						},
 						onPrompt: async prompt => {
 							if (!authEmitted) {
-								// onPrompt called before any auth URL — provider requires
-								// interactive input that cannot be satisfied headlessly.
 								return Promise.reject(
 									new Error(
 										`Provider '${command.providerId}' requires interactive prompts ` +
@@ -1444,9 +1258,7 @@ export async function runRpcMode(
 							return (await uiCtx.input(prompt.message, prompt.placeholder, { timeout: 600_000 })) ?? "";
 						},
 					});
-					// Provider-scoped online refresh so the just-persisted credential
-					// re-runs discovery instead of reusing a fresh authoritative cache
-					// row (#5780).
+
 					await session.modelRegistry.refreshProvider(command.providerId, "online");
 					return success(id, "login", { providerId: command.providerId });
 				} catch (err: unknown) {
@@ -1461,18 +1273,9 @@ export async function runRpcMode(
 		}
 	};
 
-	// Deferred shutdown (pi.shutdown() from an extension) must not kill the
-	// process while a background-dispatched bash still owes the client its
-	// response frame. The coordinator drains tracked tasks before exiting and
-	// re-checks the request as each task settles.
 	const shutdownCoordinator = new RpcShutdownCoordinator({
 		isShutdownRequested: () => shutdownState.requested,
 		performShutdown: async () => {
-			// Route through the idempotent session.dispose() so the browser
-			// reaper (releaseTabsForOwner) and other bounded teardown run before
-			// the process exits. dispose() also emits `session_shutdown`, so we
-			// must NOT emit it separately here or the event fires twice. Skipping
-			// dispose left PROTO-owned Chromium alive after RPC shutdown (#5643).
 			await session.dispose();
 			process.exit(0);
 		},
@@ -1494,30 +1297,19 @@ export async function runRpcMode(
 		afterSerialCommand: () => shutdownCoordinator.checkShutdownRequested(),
 	});
 
-	// Keep the stdin reader moving: side-channel frames dispatch immediately,
-	// ordinary commands serialize through inputDispatcher, and bash remains
-	// background-dispatched so abort_bash can overtake it. Frames are read
-	// line-by-line by readRpcInputFrames so a single malformed line is reported
-	// as an error frame and the loop keeps running instead of throwing out of
-	// the reader and killing the whole process (issue #5194).
 	await readRpcInputFrames(
 		input ?? Bun.stdin.stream(),
 		parsed => inputDispatcher.dispatch(parsed),
 		message => output(error(undefined, "parse", message)),
 	);
 
-	// stdin closed — RPC client is gone. Fail pending side-channel requests
-	// first so active/queued commands can settle, then drain accepted work.
 	pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
 	hostToolBridge.close("RPC client disconnected before host tool execution completed");
 	hostUriBridge.clear("RPC client disconnected before host URI request completed");
 	await inputDispatcher.drain();
 	await shutdownCoordinator.drain();
 	subagentRegistry?.dispose();
-	// Dispose the main session before exiting so the browser reaper and other
-	// bounded teardown run on the stdin-EOF path too (#5643). Idempotent: a
-	// prior pi.shutdown() through the coordinator makes this await settle
-	// immediately.
+
 	await session.dispose();
 	process.exit(0);
 }

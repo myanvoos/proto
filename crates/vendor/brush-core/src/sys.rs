@@ -1,4 +1,4 @@
-//! Platform abstraction facilities
+
 
 #![allow(unused)]
 

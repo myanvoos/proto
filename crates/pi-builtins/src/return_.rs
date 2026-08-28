@@ -3,10 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionControlFlow, ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-/// Return from the current function.
+
 #[derive(Parser)]
 pub(crate) struct ReturnCommand {
-	/// The exit code to return.
+
 	code: Option<i32>,
 }
 

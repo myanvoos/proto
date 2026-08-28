@@ -1,5 +1,5 @@
-# Nx monorepo task runner output.
-# Strip the NX banner / "Running target" chatter, keep the actual task output.
+
+
 
 [filters.nx]
 description = "Compact Nx task runner output"
@@ -35,10 +35,10 @@ name = "strips separator cache-replay and footer ad"
 input = "————————————————————————————————————————\n > NX   Nx read the output from the cache instead of running the command\nCompiled successfully.\n   Nx (powered by Nx Cloud)\n"
 expected = "Compiled successfully.\n"
 
-# Wrapper invocations: `pnpm nx build`, `npx nx ...`, `yarn nx ...` detect as
-# (program=pnpm|npx|yarn, subcommand=nx) and fall through pkg::supports to the
-# builtin defs. The bare `nx` entry only matches the program token, so this
-# companion claims the wrapped form with the same strip/cap/on_empty rules.
+
+
+
+
 [filters.nx-wrapped]
 description = "Compact Nx task runner output (pnpm/npx/yarn wrapper invocations)"
 match_command = "^(pnpm|npx|yarn)$"

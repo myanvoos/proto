@@ -22,7 +22,6 @@ export async function* readLines(stream: ReadableStream<Uint8Array>, signal?: Ab
 			}
 		}
 	} catch (err) {
-		// Abort errors are expected — just stop the generator.
 		if (signal?.aborted) return;
 		throw err;
 	}
@@ -50,29 +49,17 @@ export async function* readJsonl<T>(stream: ReadableStream<Uint8Array>, signal?:
 			}
 		}
 	} catch (err) {
-		// Abort errors are expected — just stop the generator.
 		if (signal?.aborted) return;
 		throw err;
 	}
 }
 
-// =============================================================================
-// Byte-limited reads
-// =============================================================================
-
 export interface ReadBytesLimitResult {
-	/** Bytes read from the stream, capped at `maxBytes`. */
 	bytes: Uint8Array;
-	/** True when the stream produced more than `maxBytes` and the tail was discarded. */
+
 	truncated: boolean;
 }
 
-/**
- * Read a binary stream up to `maxBytes`. Once the cap is exceeded the source
- * reader is cancelled (propagating HTTP-client disconnects to the backend) and
- * {@link ReadBytesLimitResult.truncated} is set; nothing is thrown for an
- * over-long stream. Aborts via `signal` reject with {@link AbortError}.
- */
 export async function readBytesWithLimit(
 	stream: ReadableStream<Uint8Array>,
 	maxBytes: number,
@@ -102,10 +89,6 @@ export async function readBytesWithLimit(
 	}
 	return { bytes, truncated };
 }
-
-// =============================================================================
-// SSE (Server-Sent Events)
-// =============================================================================
 
 class ConcatSink {
 	#space?: Buffer;
@@ -244,51 +227,24 @@ class ConcatSink {
 	}
 }
 
-/**
- * Stream parsed JSON objects from SSE `data:` lines.
- *
- * Thin wrapper over {@link readSseEvents}: yields one parsed JSON value per
- * dispatched SSE event, skipping events with empty `data` and stopping at the
- * OpenAI-style `[DONE]` sentinel. If your consumer doesn't care about `event:`
- * names or doesn't need a custom parse step, use this; otherwise call
- * `readSseEvents` directly.
- *
- * @example
- * ```ts
- * for await (const obj of readSseJson(response.body!)) {
- *   console.log(obj);
- * }
- * ```
- */
 export type SseEventObserver = (event: ServerSentEvent) => void;
 
 function notifySseEventObserver(observer: SseEventObserver | undefined, event: ServerSentEvent): void {
 	if (!observer) return;
 	try {
 		observer(event);
-	} catch {
-		// Diagnostic observers must never perturb provider stream consumption.
-	}
+	} catch {}
 }
 
 function isRecoverableTrailingJson(data: string): boolean {
 	const first = data.trimStart()[0];
 	if (first !== "{" && first !== "[") return false;
-	// Best-effort relaxed recovery via the shared streaming JSON parser: a
-	// container-shaped final event that fails strict `JSON.parse` is treated as a
-	// cut-off (or lightly malformed) stream tail and ends iteration cleanly instead
-	// of throwing. Non-container final events (plain-text errors, bare scalars) are
-	// not recoverable and still surface as a SyntaxError.
+
 	const recovered = parseStreamingJson<unknown>(data);
 	return typeof recovered === "object" && recovered !== null;
 }
 
 export interface ReadSseJsonOptions {
-	/**
-	 * How to handle a `data:` payload that fails strict `JSON.parse`:
-	 * `"throw"` (default) surfaces the SyntaxError; `"skip"` drops the event
-	 * and continues, tolerating lightly malformed third-party streams.
-	 */
 	malformed?: "skip" | "throw";
 }
 
@@ -320,19 +276,6 @@ export async function* readSseJson<T>(
 	}
 }
 
-/**
- * A single Server-Sent Event dispatched on a blank-line boundary.
- *
- * - `event` is the value of the most recent `event:` field, or `null` if none.
- * - `data` is the concatenation (joined by `\n`) of every `data:` field in the
- *   event, exactly as required by the SSE spec.
- * - `raw` is the list of decoded non-empty lines that made up the event,
- *   preserved for diagnostic context (error reporting, debugging). The
- *   dispatching blank line is not included.
- * - `id` and `retry` are present only when the event carried valid fields with
- *   those names. Control-only events are yielded so reconnecting transports can
- *   retain the cursor and server-requested retry interval.
- */
 export interface ServerSentEvent {
 	event: string | null;
 	data: string;
@@ -343,18 +286,13 @@ export interface ServerSentEvent {
 
 interface SseEventState {
 	event: string | null;
-	// `data` accumulates across multiple `data:` lines per the SSE spec, joined
-	// by `\n`. We keep the running string here and append as lines arrive instead
-	// of buffering an array and joining at flush. `null` means "no data: field
-	// seen yet" (distinct from a `data:` field with an empty value).
+
 	data: string | null;
 	raw: string[];
 	id?: string;
 	retry?: number;
 }
 
-// Complete lines are decoded in one batch per source chunk. Each batch ends on
-// LF, which cannot split a multi-byte UTF-8 sequence.
 const SSE_DECODER = new TextDecoder("utf-8");
 
 function flushSseEvent(state: SseEventState): ServerSentEvent | null {
@@ -378,15 +316,12 @@ function flushSseEvent(state: SseEventState): ServerSentEvent | null {
 }
 
 function pushSseLine(line: string, state: SseEventState): ServerSentEvent | null {
-	// Complete-line batches split on LF only; strip a trailing CR so CRLF sources
-	// don't leak `\r` into field values.
-	if (line.charCodeAt(line.length - 1) === 0x0d /* '\r' */) {
+	if (line.charCodeAt(line.length - 1) === 0x0d) {
 		line = line.slice(0, -1);
 	}
 	if (line.length === 0) return flushSseEvent(state);
 
-	// Comment line: keep in `raw` for diagnostic context, skip parsing.
-	if (line.charCodeAt(0) === 0x3a /* ':' */) {
+	if (line.charCodeAt(0) === 0x3a) {
 		state.raw.push(line);
 		return null;
 	}
@@ -396,7 +331,7 @@ function pushSseLine(line: string, state: SseEventState): ServerSentEvent | null
 	const colon = line.indexOf(":");
 	const fieldName = colon === -1 ? line : line.slice(0, colon);
 	let value = colon === -1 ? "" : line.slice(colon + 1);
-	if (value.charCodeAt(0) === 0x20 /* ' ' */) value = value.slice(1);
+	if (value.charCodeAt(0) === 0x20) value = value.slice(1);
 
 	if (fieldName === "event") {
 		state.event = value;
@@ -426,25 +361,6 @@ function pushSseLine(line: string, state: SseEventState): ServerSentEvent | null
 	return null;
 }
 
-/**
- * Stream raw Server-Sent Events from an HTTP response body.
- *
- * Yields one `ServerSentEvent` per blank-line dispatch. The consumer is
- * responsible for parsing `data` (e.g. JSON, plain text, error envelope).
- * Use `readSseJson` instead when every event is a single `data:` JSON object
- * and you don't need access to the `event:` field.
- *
- * Internally backed by a Buffer-based reader (`ConcatSink`) that batches all
- * complete lines in each source chunk into one UTF-8 decode.
- *
- * @example
- * ```ts
- * for await (const sse of readSseEvents(response.body!)) {
- *   if (sse.event === "ping") continue;
- *   const obj = JSON.parse(sse.data);
- * }
- * ```
- */
 export async function* readSseEvents(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
@@ -464,7 +380,7 @@ export async function* readSseEvents(
 				start = newline + 1;
 			}
 		}
-		// Treat any trailing partial line (no terminating LF) as a complete line.
+
 		if (!lineBuffer.isEmpty) {
 			const tail = lineBuffer.flush();
 			if (tail) {
@@ -476,7 +392,7 @@ export async function* readSseEvents(
 				}
 			}
 		}
-		// Real services don't always close on a blank line — flush any pending event.
+
 		const trailing = flushSseEvent(state);
 		if (trailing) {
 			trailingEvents.add(trailing);
@@ -488,18 +404,6 @@ export async function* readSseEvents(
 	}
 }
 
-/**
- * Parse a complete JSONL string, skipping malformed lines instead of throwing.
- *
- * Uses `Bun.JSONL.parseChunk` internally. On parse errors, the malformed
- * region is skipped up to the next newline and parsing continues.
- *
- * @param options.onMalformedRecord Called once for every skipped JSONL record.
- * @example
- * ```ts
- * const entries = parseJsonlLenient<MyType>(fileContents);
- * ```
- */
 export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecord?: () => void } = {}): T[] {
 	let entries: T[] | undefined;
 

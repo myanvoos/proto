@@ -1,9 +1,3 @@
-/**
- * Interactive marketplace plugin selector.
- *
- * Shows available plugins from all configured marketplaces in a SelectList.
- * Selecting a plugin triggers installation. Esc cancels.
- */
 import { type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { getSelectListTheme } from "../theme/theme";
 import { OverlayPanel } from "./overlay-box";
@@ -17,7 +11,7 @@ interface PluginSelectorCallbacks {
 interface PluginItem {
 	plugin: { name: string; version?: string; description?: string };
 	marketplace: string;
-	/** Scope of this entry. When set, appended to the label and forwarded to onSelect. */
+
 	scope?: "user" | "project";
 }
 
@@ -33,8 +27,6 @@ export class PluginSelectorComponent extends OverlayPanel {
 		super("Plugins");
 
 		const items: SelectItem[] = plugins.map(({ plugin, marketplace, scope }) => {
-			// Encode scope into the value so onSelect can recover it without a parallel Map.
-			// Format: "name@marketplace" or "name@marketplace#scope"
 			const id = scope ? `${plugin.name}@${marketplace}#${scope}` : `${plugin.name}@${marketplace}`;
 			const installed = installedIds.has(`${plugin.name}@${marketplace}`);
 			const version = plugin.version ? `@${plugin.version}` : "";
@@ -87,7 +79,6 @@ export class PluginSelectorComponent extends OverlayPanel {
 }
 
 function splitPluginId(id: string): [string, string, "user" | "project" | undefined] | [null, null, null] {
-	// value format: "name@marketplace" or "name@marketplace#scope"
 	const hashIdx = id.indexOf("#");
 	const base = hashIdx >= 0 ? id.slice(0, hashIdx) : id;
 	const scope = hashIdx >= 0 ? (id.slice(hashIdx + 1) as "user" | "project") : undefined;

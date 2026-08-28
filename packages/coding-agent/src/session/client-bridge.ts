@@ -1,19 +1,8 @@
-/**
- * ClientBridge — abstraction over capabilities provided by an external client
- * (e.g. ACP editor host) that the agent can route through instead of operating
- * directly on the local filesystem / spawning local subprocesses.
- *
- * When `undefined`, tools fall back to local IO. When populated (currently
- * only by `AcpAgent`), tools route requests through the client so it can
- * surface unsaved buffer state or render terminals in the IDE.
- */
-
 export interface ClientBridgeCapabilities {
-	/** Client implements `fs/read_text_file`. */
 	readTextFile?: boolean;
-	/** Client implements `fs/write_text_file`. */
+
 	writeTextFile?: boolean;
-	/** Client implements the `terminal/*` family. */
+
 	terminal?: boolean;
 }
 
@@ -46,7 +35,7 @@ export interface ClientBridgeCreateTerminalParams {
 
 export interface ClientBridge {
 	readonly capabilities: ClientBridgeCapabilities;
-	/** ACP v1 clients cannot show server-initiated turns as busy after prompt response. */
+
 	readonly deferAgentInitiatedTurns?: boolean;
 	readTextFile?(params: { path: string; line?: number; limit?: number }): Promise<string>;
 	writeTextFile?(params: { path: string; content: string }): Promise<void>;

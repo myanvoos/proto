@@ -1,30 +1,30 @@
 // Copyright 2017 Google Inc.
-//
-// Use of this source code is governed by a MIT-style
-// license that can be found in the LICENSE file or at
-// https://opensource.org/licenses/MIT.
 
-//! `find` builtin ported from uutils findutils.
+
+
+
+
+
 
 pub mod matchers {
 	// Copyright 2017 Google Inc.
-	//
-	// Use of this source code is governed by a MIT-style
-	// license that can be found in the LICENSE file or at
-	// https://opensource.org/licenses/MIT.
+
+
+
+
 
 	mod access {
 		// Copyright 2022 Tavian Barnes
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use faccess::PathExt;
 
 		use super::{Matcher, MatcherIO, WalkEntry};
 
-		/// Matcher for -{read,writ,execut}able.
+
 		pub enum AccessMatcher {
 			Readable,
 			Writable,
@@ -44,14 +44,14 @@ pub mod matchers {
 		}
 	}
 	mod delete {
-		/*
-		 * This file is part of the uutils findutils package.
-		 *
-		 * (c) Arcterus <arcterus@mail.com>
-		 *
-		 * For the full copyright and license information, please view the LICENSE
-		 * file that was distributed with this source code.
-		 */
+
+
+
+
+
+
+
+
 
 		use std::{
 			fs,
@@ -82,9 +82,9 @@ pub mod matchers {
 				let path = file_info.path();
 				let path_str = path.to_string_lossy();
 
-				// This is a quirk in find's traditional semantics probably due to
-				// POSIX rmdir() not accepting "." (EINVAL). std::fs::remove_dir()
-				// inherits the same behavior, so no reason to buck tradition.
+
+
+
 				if path_str == "." {
 					return true;
 				}
@@ -106,10 +106,10 @@ pub mod matchers {
 	}
 	mod empty {
 		// Copyright 2021 Collabora, Ltd.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{fs::read_dir, io::Write};
 
@@ -161,7 +161,7 @@ pub mod matchers {
 		}
 	}
 	mod entry {
-		//! Paths encountered during a walk.
+
 
 		#[cfg(unix)]
 		use std::os::unix::fs::FileTypeExt;
@@ -177,7 +177,7 @@ pub mod matchers {
 
 		use super::Follow;
 
-		/// File types.
+
 		#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 		pub enum FileType {
 			Unknown,
@@ -236,40 +236,40 @@ pub mod matchers {
 			}
 		}
 
-		/// An error encountered while walking a file system.
+
 		#[derive(Clone, Debug)]
 		pub struct WalkError {
-			/// The path that caused the error, if known.
+
 			path:  Option<PathBuf>,
-			/// The depth below the root path, if known.
+
 			depth: Option<usize>,
-			/// The io::Error::raw_os_error(), if known.
+
 			raw:   Option<i32>,
 		}
 
 		impl WalkError {
-			/// Get the path this error occurred on, if known.
+
 			pub fn path(&self) -> Option<&Path> {
 				self.path.as_deref()
 			}
 
-			/// Get the traversal depth when this error occurred, if known.
+
 			pub fn depth(&self) -> Option<usize> {
 				self.depth
 			}
 
-			/// Get the kind of I/O error.
+
 			pub fn kind(&self) -> ErrorKind {
 				io::Error::from(self).kind()
 			}
 
-			/// Check for ErrorKind::{NotFound,NotADirectory}.
+
 			pub fn is_not_found(&self) -> bool {
 				if self.kind() == ErrorKind::NotFound {
 					return true;
 				}
 
-				// NotADirectory is nightly-only
+
 				#[cfg(unix)]
 				{
 					if self.raw == Some(uucore::libc::ENOTDIR) {
@@ -280,7 +280,7 @@ pub mod matchers {
 				false
 			}
 
-			/// Check for ErrorKind::FilesystemLoop.
+
 			pub fn is_loop(&self) -> bool {
 				#[cfg(unix)]
 				return self.raw == Some(uucore::libc::ELOOP);
@@ -329,50 +329,50 @@ pub mod matchers {
 			}
 		}
 
-		/// A path encountered while walking a file system.
+
 		#[derive(Debug)]
 		pub struct WalkEntry {
-			/// Filesystem path for this entry.
+
 			path:    PathBuf,
-			/// Depth below the traversal root.
+
 			depth:   usize,
-			/// Whether to follow symlinks.
+
 			follow:  Follow,
-			/// Cached metadata.
+
 			meta:    OnceCell<Result<Metadata, WalkError>>,
-			/// Operand-relative path used for display and path-based matching, when it
-			/// differs from the real filesystem path. The shell host roots the walk at
-			/// a working-directory-resolved (often absolute) path so stat/exec/delete
-			/// target the correct files even though the process cwd differs from the
-			/// shell cwd; this preserves the operand-prefixed path GNU find prints and
-			/// matches against (e.g. `find .` -> `./a`). `None` falls back to `path()`.
+
+
+
+
+
+
 			display: Option<PathBuf>,
 		}
 
 		impl WalkEntry {
-			/// Create a new WalkEntry for a specific file.
+
 			pub fn new(path: impl Into<PathBuf>, depth: usize, follow: Follow) -> Self {
 				Self { path: path.into(), depth, follow, meta: OnceCell::new(), display: None }
 			}
 
-			/// Get the path to this entry.
+
 			pub fn path(&self) -> &Path {
 				self.path.as_path()
 			}
 
 
-			/// Path used for display (`-print`, `-ls`) and path-based matching
-			/// (`-path`, `-regex`, `-printf %p/%h/%P/%H`). Falls back to [`Self::path`]
-			/// when no display override was installed (explicit entries, unit tests).
+
+
+
 			pub fn display_path(&self) -> &Path {
 				self.display.as_deref().unwrap_or_else(|| self.path())
 			}
 
-			/// Install an operand-relative display path derived from the original
-			/// starting-point `operand` and the `resolved_root` the walk was rooted at.
-			/// The real filesystem path is left untouched. When this entry's path is
-			/// not under `resolved_root` (e.g. a followed symlink escaping the root)
-			/// the override is left unset and display falls back to the real path.
+
+
+
+
+
 			pub fn set_display_root(&mut self, operand: &Path, resolved_root: &Path) {
 				let display = match self.path().strip_prefix(resolved_root) {
 					Ok(rel) if rel.as_os_str().is_empty() => operand.to_path_buf(),
@@ -382,9 +382,9 @@ pub mod matchers {
 				self.display = Some(display);
 			}
 
-			/// Get the name of this entry.
+
 			pub fn file_name(&self) -> &OsStr {
-				// Path::file_name() only works if the last component is normal.
+
 				self
 					.path
 					.components()
@@ -393,30 +393,30 @@ pub mod matchers {
 					.unwrap_or_else(|| self.path.as_os_str())
 			}
 
-			/// Get the depth of this entry below the root.
+
 			pub fn depth(&self) -> usize {
 				self.depth
 			}
 
-			/// Get whether symbolic links are followed for this entry.
+
 			pub fn follow(&self) -> bool {
 				self.follow.follow_at_depth(self.depth())
 			}
 
-			/// Get the metadata on a cache miss.
+
 			fn get_metadata(&self) -> Result<Metadata, WalkError> {
 				self.follow.metadata_at_depth(&self.path, self.depth)
 			}
 
-			/// Get the [Metadata] for this entry, following symbolic links if
-			/// appropriate. Multiple calls to this function will cache and re-use the
-			/// same [Metadata].
+
+
+
 			pub fn metadata(&self) -> Result<&Metadata, WalkError> {
 				let result = self.meta.get_or_init(|| self.get_metadata());
 				result.as_ref().map_err(|e| e.clone())
 			}
 
-			/// Get the file type of this entry.
+
 			pub fn file_type(&self) -> FileType {
 				self
 					.metadata()
@@ -424,8 +424,8 @@ pub mod matchers {
 					.unwrap_or(FileType::Unknown)
 			}
 
-			/// Check whether this entry is a symbolic link, regardless of whether links
-			/// are being followed.
+
+
 			pub fn path_is_symlink(&self) -> bool {
 				if self.follow() {
 					self
@@ -440,10 +440,10 @@ pub mod matchers {
 	}
 	pub mod exec {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{cell::RefCell, error::Error, ffi::OsString, io::Write, path::Path, process::Command};
 
@@ -472,7 +472,7 @@ pub mod matchers {
 					.map(|&a| {
 						let parts = a.split("{}").collect::<Vec<_>>();
 						if parts.len() == 1 {
-							// No {} present
+
 							Arg::LiteralArg(OsString::from(a))
 						} else {
 							Arg::FileArg(parts.iter().map(OsString::from).collect())
@@ -506,25 +506,25 @@ pub mod matchers {
 				if self.exec_in_parent_dir {
 					match file_info.path().parent() {
 						None => {
-							// Root paths like "/" have no parent.  Run them from the root to match GNU
-							// find.
+
+
 							command.current_dir(file_info.path());
 						},
 						Some(parent) if parent == Path::new("") => {
-							// Paths like "foo" have a parent of "".  Avoid chdir("").
+
 						},
 						Some(parent) => {
 							command.current_dir(parent);
 						},
 					}
 				} else {
-					// GNU runs `-exec` in find's working directory; resolve the
-					// operand-relative `{}` against the shell cwd, not the host cwd.
+
+
 					command.current_dir(matcher_io.host().cwd());
 				}
 				command.env_clear().envs(matcher_io.host().env());
-				// The host process's stdio belongs to the embedding TUI; route the
-				// child's output through the scope streams instead of inheriting.
+
+
 				match matcher_io.host().run_captured(&mut command) {
 					Ok(status) => status.success(),
 					Err(e) => {
@@ -543,7 +543,7 @@ pub mod matchers {
 			executable:         String,
 			args:               Vec<OsString>,
 			exec_in_parent_dir: bool,
-			/// Command to build while matching.
+
 			command:            RefCell<Option<argmax::Command>>,
 		}
 
@@ -567,18 +567,18 @@ pub mod matchers {
 				let mut command = argmax::Command::new(&self.executable);
 				command.try_args(&self.args).unwrap();
 				if !self.exec_in_parent_dir {
-					// `-exec ... +` (non-execdir) dispatches in find's working dir;
-					// resolve the operand-relative paths against the shell cwd.
+
+
 					command.current_dir(matcher_io.host().cwd());
 				}
 				command
 			}
 
 			fn run_command(&self, command: &mut argmax::Command, matcher_io: &mut MatcherIO) {
-				// `argmax::Command` only Derefs immutably into `std::process::Command`,
-				// so rebuild a std command from its accumulated state to attach the
-				// scope environment and context-captured stdio — the host process's
-				// stdio belongs to the embedding TUI and must never be inherited.
+
+
+
+
 				let mut std_command = Command::new(command.get_program());
 				std_command.args(command.get_args());
 				if let Some(dir) = command.get_current_dir() {
@@ -613,17 +613,17 @@ pub mod matchers {
 				let mut command = self.command.borrow_mut();
 				let command = command.get_or_insert_with(|| self.new_command(matcher_io));
 
-				// Build command, or dispatch it before when it is long enough.
+
 				if command.try_arg(&path_to_file).is_err() {
 					if self.exec_in_parent_dir {
 						match file_info.path().parent() {
 							None => {
-								// Root paths like "/" have no parent.  Run them from the root to match GNU
-								// find.
+
+
 								command.current_dir(file_info.path());
 							},
 							Some(parent) if parent == Path::new("") => {
-								// Paths like "foo" have a parent of "".  Avoid chdir("").
+
 							},
 							Some(parent) => {
 								command.current_dir(parent);
@@ -632,7 +632,7 @@ pub mod matchers {
 					}
 					self.run_command(command, matcher_io);
 
-					// Reset command status.
+
 					*command = self.new_command(matcher_io);
 					if let Err(e) = command.try_arg(&path_to_file) {
 						writeln!(
@@ -649,7 +649,7 @@ pub mod matchers {
 			}
 
 			fn finished_dir(&self, dir: &Path, matcher_io: &mut MatcherIO) {
-				// Dispatch command for -execdir.
+
 				if self.exec_in_parent_dir {
 					let mut command = self.command.borrow_mut();
 					if let Some(mut command) = command.take() {
@@ -660,7 +660,7 @@ pub mod matchers {
 			}
 
 			fn finished(&self, matcher_io: &mut MatcherIO) {
-				// Dispatch command for -exec.
+
 				if !self.exec_in_parent_dir {
 					let mut command = self.command.borrow_mut();
 					if let Some(mut command) = command.take() {
@@ -675,33 +675,33 @@ pub mod matchers {
 		}
 	}
 	pub mod fs {
-		// This file is part of the uutils findutils package.
-		//
-		// For the full copyright and license information, please view the LICENSE
-		// file that was distributed with this source code.
+
+
+
+
 		#[cfg(unix)]
 		use std::{cell::RefCell, io, io::Write, path::Path};
 
 		use super::{Matcher, MatcherIO, WalkEntry};
 
-		/// The latest mapping from dev_id to fs_type, used for saving mount info reads
+
 		#[cfg(unix)]
 		pub struct Cache {
 			dev_id:  String,
 			fs_type: String,
 		}
 
-		/// Get the filesystem type of a file.
-		/// 1. get the metadata of the file
-		/// 2. get the device ID of the metadata
-		/// 3. search the cache, then the filesystem list
-		///
-		/// Returns an empty string when no file system list matches.
-		///
-		/// # Errors
-		/// Returns an error if the metadata or the mount table could not be read.
-		///
-		/// This is only supported on Unix.
+
+
+
+
+
+
+
+
+
+
+
 		#[cfg(unix)]
 		pub fn get_file_system_type(
 			path: &Path,
@@ -709,9 +709,9 @@ pub mod matchers {
 		) -> io::Result<String> {
 			use std::os::unix::fs::MetadataExt;
 
-			// use symlink_metadata (lstat under the hood) instead of metadata (stat) to
-			// make sure that it does not return an error when there is a (broken) symlink;
-			// this is aligned with GNU find.
+
+
+
 			let dev_id = path.symlink_metadata()?.dev().to_string();
 
 			if let Some(cache) = cache.borrow().as_ref()
@@ -720,24 +720,24 @@ pub mod matchers {
 				return Ok(cache.fs_type.clone());
 			}
 
-			// `read_fs_list` reports failures through uucore's error type; the mount
-			// table is either readable or it is not, so flatten it to an io error.
+
+
 			let fs_list = uucore::fsext::read_fs_list().map_err(|err| io::Error::other(err.to_string()))?;
 			let result = fs_list
 				.into_iter()
 				.find(|fs| fs.dev_id == dev_id)
 				.map_or_else(String::new, |fs| fs.fs_type);
 
-			// cache the latest query if not a match before
+
 			cache.replace(Some(Cache { dev_id, fs_type: result.clone() }));
 
 			Ok(result)
 		}
 
-		/// This matcher handles the -fstype argument.
-		/// It matches the filesystem type of the file.
-		///
-		/// This is only supported on Unix.
+
+
+
+
 		pub struct FileSystemMatcher {
 			#[cfg(unix)]
 			fs_text: String,
@@ -783,64 +783,64 @@ pub mod matchers {
 	}
 	mod glob {
 		// Copyright 2022 Tavian Barnes
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use onig::{Regex, RegexOptions, Syntax};
 
-		/// Parse a string as a POSIX Basic Regular Expression.
+
 		fn parse_bre(expr: &str, options: RegexOptions) -> Result<Regex, onig::Error> {
 			let bre = Syntax::posix_basic();
 			Regex::with_options(expr, bre.options() | options, bre)
 		}
 
-		/// Push a literal character onto a regex, escaping it if necessary.
+
 		fn regex_push_literal(regex: &mut String, ch: char) {
-			// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_03_03
+
 			if matches!(ch, '.' | '[' | '\\' | '*' | '^' | '$') {
 				regex.push('\\');
 			}
 			regex.push(ch);
 		}
 
-		/// Extracts a bracket expression from a glob.
+
 		fn extract_bracket_expr(pattern: &str) -> Option<(String, &str)> {
-			// https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_13_01
-			//
-			//     If an open bracket introduces a bracket expression as in XBD RE Bracket
-			// Expression,     except that the <exclamation-mark> character ( '!' ) shall
-			// replace the <circumflex>     character ( '^' ) in its role in a non-matching
-			// list in the regular expression notation,     it shall introduce a pattern
-			// bracket expression. A bracket expression starting with an     unquoted
-			// <circumflex> character produces unspecified results. Otherwise, '[' shall
-			// match     the character itself.
-			//
-			// To check for valid bracket expressions, we scan for the closing bracket and
-			// attempt to parse that segment as a regex.  If that fails, we treat the '['
-			// literally.
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 			let mut expr = "[".to_string();
 
 			let mut chars = pattern.chars();
 			let mut next = chars.next();
 
-			// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_03_05
-			//
-			//     3. A non-matching list expression begins with a <circumflex> ( '^' ) ...
-			//
-			// (but in a glob, '!' is used instead of '^')
+
+
+
+
+
 			if next == Some('!') {
 				expr.push('^');
 				next = chars.next();
 			}
 
-			// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_03_05
-			//
-			//     1. ... The <right-square-bracket> ( ']' ) shall lose its special meaning
-			//        and represent itself in a bracket expression if it occurs first in the
-			//        list (after an initial <circumflex> ( '^' ), if any).
+
+
+
+
+
 			if next == Some(']') {
 				expr.push(']');
 				next = chars.next();
@@ -851,17 +851,17 @@ pub mod matchers {
 
 				match ch {
 					'[' => {
-						// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_03_05
-						//
-						//     4. A collating symbol is a collating element enclosed within
-						//        bracket-period ( "[." and ".]" ) delimiters. ...
-						//
-						//     5. An equivalence class expression shall ... be expressed by enclosing
-						//        any one of the collating elements in the equivalence class within
-						//        bracket- equal ( "[=" and "=]" ) delimiters.
-						//
-						//     6. ...  A character class expression is expressed as a character class
-						//        name enclosed within bracket- <colon> ( "[:" and ":]" ) delimiters.
+
+
+
+
+
+
+
+
+
+
+
 						next = chars.next();
 						if let Some(delim) = next {
 							expr.push(delim);
@@ -875,12 +875,12 @@ pub mod matchers {
 						}
 					},
 					']' => {
-						// https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_03_05
-						//
-						//     1. ... The <right-square-bracket> ( ']' ) shall ... terminate the bracket
-						//        expression, unless it appears in a collating symbol (such as "[.].]" )
-						//        or is the ending <right-square-bracket> for a collating symbol,
-						//        equivalence class, or character class.
+
+
+
+
+
+
 						break;
 					},
 					_ => {},
@@ -896,13 +896,13 @@ pub mod matchers {
 			}
 		}
 
-		/// Converts a POSIX glob into a POSIX Basic Regular Expression
+
 		fn glob_to_regex(pattern: &str) -> Option<String> {
 			let mut regex = String::new();
 
 			let mut chars = pattern.chars();
 			while let Some(ch) = chars.next() {
-				// https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_13
+
 				match ch {
 					'?' => regex.push('.'),
 					'*' => regex.push_str(".*"),
@@ -925,13 +925,13 @@ pub mod matchers {
 			Some(regex)
 		}
 
-		/// An fnmatch()-style glob matcher.
+
 		pub struct Pattern {
 			regex: Option<Regex>,
 		}
 
 		impl Pattern {
-			/// Parse an fnmatch()-style glob.
+
 			pub fn new(pattern: &str, caseless: bool) -> Self {
 				let options = if caseless {
 					RegexOptions::REGEX_OPTION_IGNORECASE
@@ -939,22 +939,22 @@ pub mod matchers {
 					RegexOptions::REGEX_OPTION_NONE
 				};
 
-				// As long as glob_to_regex() is correct, this should never fail
+
 				let regex = glob_to_regex(pattern).map(|r| parse_bre(&r, options).unwrap());
 				Self { regex }
 			}
 
-			/// Test if this pattern matches a string.
+
 			pub fn matches(&self, string: &str) -> bool {
 				self.regex.as_ref().is_some_and(|r| r.is_match(string))
 			}
 		}
 	}
 	mod group {
-		// This file is part of the uutils findutils package.
-		//
-		// For the full copyright and license information, please view the LICENSE
-		// file that was distributed with this source code.
+
+
+
+
 
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
@@ -972,7 +972,7 @@ pub mod matchers {
 		impl GroupMatcher {
 			#[cfg(unix)]
 			pub fn from_group_name(group: &str) -> Option<Self> {
-				// get gid from group name
+
 				let group = Group::from_name(group).ok()??;
 				let gid = group.gid.as_raw();
 				Some(Self::from_gid(gid))
@@ -1003,8 +1003,8 @@ pub mod matchers {
 
 			#[cfg(windows)]
 			fn matches(&self, _file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
-				// The user group acquisition function for Windows systems is not implemented in
-				// MetadataExt, so it is somewhat difficult to implement it. :(
+
+
 				false
 			}
 		}
@@ -1043,10 +1043,10 @@ pub mod matchers {
 	}
 	mod lname {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{io::Write, path::PathBuf};
 
@@ -1057,8 +1057,8 @@ pub mod matchers {
 			match file_info.path().read_link() {
 				Ok(target) => Some(target),
 				Err(err) => {
-					// If it's not a symlink, then it's not an error that should be
-					// shown.
+
+
 					if err.kind() != std::io::ErrorKind::InvalidInput {
 						writeln!(
 							&mut matcher_io.host().stderr,
@@ -1074,8 +1074,8 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher makes a comparison of the link target against a shell wildcard
-		/// pattern. See `glob::Pattern` for details on the exact syntax.
+
+
 		pub struct LinkNameMatcher {
 			pattern: Pattern,
 		}
@@ -1099,24 +1099,24 @@ pub mod matchers {
 	}
 	mod logical_matchers {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
 
-		//! This modules contains the matchers used for combining other matchers and
-		//! performing boolean logic on them (and a couple of trivial always-true and
-		//! always-false matchers). The design is strongly tied to the precedence rules
-		//! when parsing command-line options (e.g. "-foo -o -bar -baz" is equivalent
-		//! to "-foo -o ( -bar -baz )", not "( -foo -o -bar ) -baz").
+
+
+
+
+
+
+
+
+
 		use std::{error::Error, path::Path};
 
 		use super::{Matcher, MatcherIO, WalkEntry};
 
-		/// This matcher contains a collection of other matchers. A file only matches
-		/// if it matches ALL the contained sub-matchers. For sub-matchers that have
-		/// side effects, the side effects occur in the same order as the sub-matchers
-		/// were pushed into the collection.
+
+
+
+
 		pub struct AndMatcher {
 			submatchers: Vec<Box<dyn Matcher>>,
 		}
@@ -1128,9 +1128,9 @@ pub mod matchers {
 		}
 
 		impl Matcher for AndMatcher {
-			/// Returns true if all sub-matchers return true. Short-circuiting does take
-			/// place. If the nth sub-matcher returns false, then we immediately return
-			/// and don't make any further calls.
+
+
+
 			fn matches(&self, dir_entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool {
 				for matcher in &self.submatchers {
 					if !matcher.matches(dir_entry, matcher_io) {
@@ -1177,21 +1177,21 @@ pub mod matchers {
 				self.submatchers.push(matcher.into_box());
 			}
 
-			/// Builds a Matcher: consuming the builder in the process.
+
 			pub fn build(mut self) -> Box<dyn Matcher> {
-				// special case. If there's only one submatcher, just return that directly
+
 				if self.submatchers.len() == 1 {
-					// safe to unwrap: we've just checked the size
+
 					return self.submatchers.pop().unwrap();
 				}
 				AndMatcher::new(self.submatchers).into_box()
 			}
 		}
 
-		/// This matcher contains a collection of other matchers. A file matches
-		/// if it matches any of the contained sub-matchers. For sub-matchers that have
-		/// side effects, the side effects occur in the same order as the sub-matchers
-		/// were pushed into the collection.
+
+
+
+
 		pub struct OrMatcher {
 			submatchers: Vec<Box<dyn Matcher>>,
 		}
@@ -1203,9 +1203,9 @@ pub mod matchers {
 		}
 
 		impl Matcher for OrMatcher {
-			/// Returns true if any sub-matcher returns true. Short-circuiting does take
-			/// place. If the nth sub-matcher returns true, then we immediately return
-			/// and don't make any further calls.
+
+
+
 			fn matches(&self, dir_entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool {
 				for matcher in &self.submatchers {
 					if matcher.matches(dir_entry, matcher_io) {
@@ -1245,7 +1245,7 @@ pub mod matchers {
 
 		impl OrMatcherBuilder {
 			pub fn new_and_condition(&mut self, matcher: impl Matcher) {
-				// safe to unwrap. submatchers always has at least one member
+
 				self
 					.submatchers
 					.last_mut()
@@ -1269,11 +1269,11 @@ pub mod matchers {
 				o
 			}
 
-			/// Builds a Matcher: consuming the builder in the process.
+
 			pub fn build(mut self) -> Box<dyn Matcher> {
-				// Special case: if there's only one submatcher, just return that directly
+
 				if self.submatchers.len() == 1 {
-					// safe to unwrap: we've just checked the size
+
 					return self.submatchers.pop().unwrap().build();
 				}
 				let mut submatchers = vec![];
@@ -1284,11 +1284,11 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher contains a collection of other matchers. In contrast to
-		/// `OrMatcher` and `AndMatcher`, all the submatcher objects are called
-		/// regardless of the results of previous submatchers. This is primarily used
-		/// for submatchers with side-effects. For such sub-matchers the side effects
-		/// occur in the same order as the sub-matchers were pushed into the collection.
+
+
+
+
+
 		pub struct ListMatcher {
 			submatchers: Vec<Box<dyn Matcher>>,
 		}
@@ -1300,8 +1300,8 @@ pub mod matchers {
 		}
 
 		impl Matcher for ListMatcher {
-			/// Calls matches on all submatcher objects, with no short-circuiting.
-			/// Returns the result of the call to the final submatcher
+
+
 			fn matches(&self, dir_entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool {
 				let mut rc = false;
 				for matcher in &self.submatchers {
@@ -1339,7 +1339,7 @@ pub mod matchers {
 
 		impl ListMatcherBuilder {
 			pub fn new_and_condition(&mut self, matcher: impl Matcher) {
-				// safe to unwrap. submatchers always has at least one member
+
 				self
 					.submatchers
 					.last_mut()
@@ -1386,11 +1386,11 @@ pub mod matchers {
 				o
 			}
 
-			/// Builds a Matcher: consuming the builder in the process.
+
 			pub fn build(mut self) -> Box<dyn Matcher> {
-				// Special case: if there's only one submatcher, just return that directly
+
 				if self.submatchers.len() == 1 {
-					// safe to unwrap: we've just checked the size
+
 					return self.submatchers.pop().unwrap().build();
 				}
 				let mut submatchers = vec![];
@@ -1401,7 +1401,7 @@ pub mod matchers {
 			}
 		}
 
-		/// A simple matcher that always matches.
+
 		pub struct TrueMatcher;
 
 		impl Matcher for TrueMatcher {
@@ -1410,7 +1410,7 @@ pub mod matchers {
 			}
 		}
 
-		/// A simple matcher that never matches.
+
 		pub struct FalseMatcher;
 
 		impl Matcher for FalseMatcher {
@@ -1419,7 +1419,7 @@ pub mod matchers {
 			}
 		}
 
-		/// Matcher that wraps another matcher and inverts matching criteria.
+
 		pub struct NotMatcher {
 			submatcher: Box<dyn Matcher>,
 		}
@@ -1449,10 +1449,10 @@ pub mod matchers {
 		}
 	}
 	mod ls {
-		// This file is part of the uutils findutils package.
-		//
-		// For the full copyright and license information, please view the LICENSE
-		// file that was distributed with this source code.
+
+
+
+
 
 		use std::{fs::File, io::Write};
 
@@ -1468,7 +1468,7 @@ pub mod matchers {
 				_ => "?",
 			};
 
-			// S_$$USR means "user permissions"
+
 			let user_perms = format!(
 				"{}{}{}",
 				if mode & uucore::libc::S_IRUSR != 0 {
@@ -1488,7 +1488,7 @@ pub mod matchers {
 				}
 			);
 
-			// S_$$GRP means "group permissions"
+
 			let group_perms = format!(
 				"{}{}{}",
 				if mode & uucore::libc::S_IRGRP != 0 {
@@ -1508,7 +1508,7 @@ pub mod matchers {
 				}
 			);
 
-			// S_$$OTH means "other permissions"
+
 			let other_perms = format!(
 				"{}{}{}",
 				if mode & uucore::libc::S_IROTH != 0 {
@@ -1535,7 +1535,7 @@ pub mod matchers {
 		fn format_permissions(file_attributes: u32) -> String {
 			let mut attributes = Vec::new();
 
-			// https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
+
 			if file_attributes & 0x0001 != 0 {
 				attributes.push("read-only");
 			}
@@ -1732,15 +1732,15 @@ pub mod matchers {
 	}
 	mod name {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use super::{Matcher, MatcherIO, WalkEntry, glob::Pattern};
 
-		/// This matcher makes a comparison of the name against a shell wildcard
-		/// pattern. See `glob::Pattern` for details on the exact syntax.
+
+
 		pub struct NameMatcher {
 			pattern: Pattern,
 		}
@@ -1770,15 +1770,15 @@ pub mod matchers {
 	}
 	mod path {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use super::{Matcher, MatcherIO, WalkEntry, glob::Pattern};
 
-		/// This matcher makes a comparison of the path against a shell wildcard
-		/// pattern. See `glob::Pattern` for details on the exact syntax.
+
+
 		pub struct PathMatcher {
 			pattern: Pattern,
 		}
@@ -1799,14 +1799,14 @@ pub mod matchers {
 	}
 	mod perm {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
 
-		//! find's permission matching uses a very unix-centric approach, that would
-		//! be tricky to both implement and use on a windows platform. So we don't
-		//! even try.
+
+
+
+
+
+
+
 
 		use std::{error::Error, io::Write};
 
@@ -1818,12 +1818,12 @@ pub mod matchers {
 		#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 		#[cfg(unix)]
 		pub enum ComparisonType {
-			/// mode bits have to match exactly
+
 			Exact,
-			/// all specified mode bits must be set. Others can be as well
+
 			AtLeast,
-			/// at least one of the specified bits must be set (or if no bits are
-			/// specified then any mode will match)
+
+
 			AnyOf,
 		}
 
@@ -1847,8 +1847,8 @@ pub mod matchers {
 
 				match chars.next() {
 					Some('-') => (ComparisonType::AtLeast, chars.as_str()),
-					// GNU spells "any of these bits" as /mode; BSD find spells
-					// it +mode. Accept both.
+
+
 					Some('/') | Some('+') => (ComparisonType::AnyOf, chars.as_str()),
 					_ => (ComparisonType::Exact, pattern),
 				}
@@ -1931,10 +1931,10 @@ pub mod matchers {
 	}
 	mod printer {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{fs::File, io::Write};
 
@@ -1955,7 +1955,7 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher just prints the name of the file to stdout.
+
 		pub struct Printer {
 			delimiter:   PrintDelimiter,
 			output_file: Option<File>,
@@ -2009,10 +2009,10 @@ pub mod matchers {
 	}
 	mod printf {
 		// Copyright 2021 Collabora, Ltd.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		#[cfg(unix)]
 		use std::os::unix::prelude::MetadataExt;
@@ -2039,11 +2039,11 @@ pub mod matchers {
 
 		#[derive(Debug, PartialEq, Eq)]
 		enum TimeFormat {
-			/// Follow ctime(3).
+
 			Ctime,
-			/// Seconds since the epoch, as a float w/ nanosecond part.
+
 			SinceEpoch,
-			/// Follow strftime-compatible syntax
+
 			Strftime(String),
 		}
 
@@ -2062,7 +2062,7 @@ pub mod matchers {
 							.to_string()
 					},
 					Self::Strftime(format) => {
-						// Handle a special case
+
 						let custom_format = format.replace("%+", "%Y-%m-%d+%H:%M:%S%.f0");
 						DateTime::<Local>::from(time)
 							.format(&custom_format)
@@ -2077,56 +2077,56 @@ pub mod matchers {
 		#[derive(Debug, PartialEq, Eq)]
 		enum PermissionsFormat {
 			Octal,
-			// trwxrwxrwx
+
 			Symbolic,
 		}
 
-		/// A single % directive in a format string.
+
 		#[derive(Debug, PartialEq, Eq)]
 		enum FormatDirective {
-			// %a, %Ak
+
 			AccessTime(TimeFormat),
-			// %b, %k
+
 			Blocks { large_blocks: bool },
-			// %c, %Ck
+
 			ChangeTime(TimeFormat),
-			// %d
+
 			Depth,
-			// %D
+
 			Device,
-			// %f
+
 			Basename,
-			// %F
+
 			Filesystem,
-			// %g, %G
+
 			Group { as_name: bool },
-			// %h
+
 			Dirname,
-			// %H
+
 			StartingPoint,
-			// %i
+
 			Inode,
-			// %l
+
 			SymlinkTarget,
-			// %m
+
 			Permissions(PermissionsFormat),
-			// %n
+
 			HardlinkCount,
-			// %p, %P
+
 			Path { strip_starting_point: bool },
-			// %s
+
 			Size,
-			// %S
+
 			Sparseness,
-			// %t, %Tk
+
 			ModificationTime(TimeFormat),
-			// %u, %U
+
 			User { as_name: bool },
-			// %y, %Y
+
 			Type { follow_links: bool },
 		}
 
-		/// A component in a full format string.
+
 		#[derive(Debug, PartialEq, Eq)]
 		enum FormatComponent {
 			Literal(String),
@@ -2173,13 +2173,13 @@ pub mod matchers {
 				const OCTAL_LEN: usize = 3;
 				const OCTAL_RADIX: u32 = 8;
 
-				// Try parsing an octal sequence first.
+
 				let first = self.front()?;
 				if first.is_digit(OCTAL_RADIX)
 					&& let Ok(code) = self.peek(OCTAL_LEN).and_then(|octal| {
 						u32::from_str_radix(octal, OCTAL_RADIX).map_err(std::convert::Into::into)
 					}) {
-					// safe to unwrap: .peek() already succeeded above.
+
 					let octal = self.advance_by(OCTAL_LEN).unwrap();
 					return match char::from_u32(code) {
 						Some(c) => Ok(FormatComponent::Literal(c.to_string())),
@@ -2215,13 +2215,13 @@ pub mod matchers {
 
 				while self.front().map(|c| c.is_ascii_digit()).unwrap_or(false) {
 					digits += 1;
-					// safe to unwrap: the front() check already succeeded above.
+
 					self.advance_one().unwrap();
 				}
 
 				if digits > 0 {
-					// safe to unwrap: we already know all the digits are valid due to
-					// the above checks.
+
+
 					Some((start[0..digits]).parse().unwrap())
 				} else {
 					None
@@ -2233,9 +2233,9 @@ pub mod matchers {
 					'@' => Ok(TimeFormat::SinceEpoch),
 					'S' => Ok(TimeFormat::Strftime("%S.%f0".to_string())),
 					c => {
-						// We can't store the parsed items inside TimeFormat, because the items
-						// take a reference to the full format string, but we still try to parse
-						// it here so that errors get caught early.
+
+
+
 						let format = format!("%{c}");
 						match StrftimeItems::new(&format).next() {
 							None | Some(chrono::format::Item::Error) => {
@@ -2256,7 +2256,7 @@ pub mod matchers {
 						_ => break,
 					}
 
-					// safe to unwrap: .front() already succeeded above.
+
 					self.advance_one().unwrap();
 				}
 
@@ -2297,7 +2297,7 @@ pub mod matchers {
 					'U' => FormatDirective::User { as_name: false },
 					'y' => FormatDirective::Type { follow_links: false },
 					'Y' => FormatDirective::Type { follow_links: true },
-					// TODO: %Z
+
 					_ => return Ok(FormatComponent::Literal(first.to_string())),
 				};
 
@@ -2309,16 +2309,16 @@ pub mod matchers {
 
 				while let Some(i) = self.string.find(['%', '\\']) {
 					if i > 0 {
-						// safe to unwrap: i is an index into the string, so it cannot
-						// be any shorter.
+
+
 						let literal = self.advance_by(i).unwrap();
 						if !literal.is_empty() {
 							components.push(FormatComponent::Literal(literal.to_owned()));
 						}
 					}
 
-					// safe to unwrap: we've only advanced as far as 'i', which is right
-					// before the character it identified.
+
+
 					let component = match self.advance_one().unwrap() {
 						'\\' => self.parse_escape_sequence()?,
 						'%' => self.parse_format_specifier()?,
@@ -2350,8 +2350,8 @@ pub mod matchers {
 				.display_path()
 				.ancestors()
 				.nth(file_info.depth())
-				// safe to unwrap: the file's depth should never be longer than its path
-				// (...right?).
+
+
 				.unwrap()
 		}
 
@@ -2373,11 +2373,11 @@ pub mod matchers {
 		) -> Result<Cow<'entry, str>, Box<dyn Error>> {
 			let meta = || file_info.metadata();
 
-			// NOTE ON QUOTING:
-			// GNU find's man page claims that several directives that print names (like
-			// %f) are quoted like ls; however, I could not reproduce this at all in
-			// practice, thus the set of rules is undoubtedly very different (if this is
-			// still done at all).
+
+
+
+
+
 
 			let res: Cow<'entry, str> = match directive {
 				FormatDirective::AccessTime(tf) => tf.apply(meta()?.accessed()?)?,
@@ -2388,15 +2388,15 @@ pub mod matchers {
 					#[cfg(unix)]
 					let blocks = meta()?.blocks();
 					#[cfg(not(unix))]
-					// Estimate using a ceiling division by the block size.
+
 					let blocks = (meta()?.len() + STANDARD_BLOCK_SIZE - 1) / STANDARD_BLOCK_SIZE;
 
-					// GNU find says it returns the number of 512-byte blocks for %b,
-					// but in reality it just returns the number of blocks, *regardless
-					// of their size on the filesystem*. That behavior is copied here,
-					// even though it's arguably not 100% correct.
+
+
+
+
 					if *large_blocks {
-						// Ceiling divide in half.
+
 						blocks.div_ceil(2)
 					} else {
 						blocks
@@ -2425,12 +2425,12 @@ pub mod matchers {
 				#[cfg(unix)]
 				FormatDirective::Device => meta()?.dev().to_string().into(),
 
-				// GNU find's behavior for this is a bit...odd:
-				// - Both the root directory and the paths immediately underneath return an empty string
-				// - Any path without any slashes (i.e. relative to cwd) returns "."
-				// - "." also returns "."
-				// - ".." returns "." (???)
-				// These are all (thankfully) documented on the find(1) man page.
+
+
+
+
+
+
 				FormatDirective::Dirname => match file_info.display_path().parent() {
 					None => "".into(),
 					Some(p) if p == Path::new("/") => "".into(),
@@ -2483,8 +2483,8 @@ pub mod matchers {
 					} else {
 						Path::new("")
 					})
-					// safe to unwrap: the prefix is derived *from* the path to begin
-					// with, so it cannot be invalid.
+
+
 					.unwrap()
 					.to_string_lossy(),
 
@@ -2509,8 +2509,8 @@ pub mod matchers {
 					if meta.len() > 0 {
 						format!(
 							"{:.1}",
-							// GNU find hardcodes a block size of 512 bytes, regardless
-							// of the true filesystem block size.
+
+
 							(meta.blocks() * STANDARD_BLOCK_SIZE) as f64 / (meta.len() as f64)
 						)
 						.into()
@@ -2566,8 +2566,8 @@ pub mod matchers {
 			Ok(res)
 		}
 
-		/// This matcher prints information about its files to stdout, following GNU
-		/// find's printf syntax.
+
+
 		pub struct Printf {
 			format:      FormatString,
 			output_file: Option<File>,
@@ -2634,14 +2634,14 @@ pub mod matchers {
 	}
 	mod prune {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use super::{Matcher, MatcherIO, WalkEntry};
 
-		/// This matcher checks the type of the file.
+
 		pub struct PruneMatcher;
 
 		impl PruneMatcher {
@@ -2662,14 +2662,14 @@ pub mod matchers {
 	}
 	mod quit {
 		// Copyright 2017 Tavian Barnes
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use super::{Matcher, MatcherIO, WalkEntry};
 
-		/// This matcher quits the search immediately.
+
 		pub struct QuitMatcher;
 
 		impl Matcher for QuitMatcher {
@@ -2681,10 +2681,10 @@ pub mod matchers {
 	}
 	mod regex {
 		// Copyright 2022 Collabora, Ltd.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{error::Error, fmt, str::FromStr};
 
@@ -2746,7 +2746,7 @@ pub mod matchers {
 					"grep" => Ok(Self::Grep),
 					"posix-basic" => Ok(Self::PosixBasic),
 					"posix-extended" => Ok(Self::PosixExtended),
-					// ed and sed are the same as posix-basic
+
 					"ed" | "sed" => Ok(Self::PosixBasic),
 					_ => Err(ParseRegexTypeError(s.to_owned())),
 				}
@@ -2786,10 +2786,10 @@ pub mod matchers {
 		impl Matcher for RegexMatcher {
 			fn matches(&self, file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
 				let path = file_info.display_path().to_string_lossy();
-				// `-regex` must match the WHOLE path (POSIX/GNU/BSD), not a
-				// substring: anchor the match at the start of the path and
-				// require it to end at the end of the path (backtracking
-				// retries alternatives that stop short).
+
+
+
+
 				self
 					.regex
 					.match_with_options(path.as_ref(), 0, SearchOptions::SEARCH_OPTION_WHOLE_STRING, None)
@@ -2798,10 +2798,10 @@ pub mod matchers {
 		}
 	}
 	mod samefile {
-		// This file is part of the uutils findutils package.
-		//
-		// For the full copyright and license information, please view the LICENSE
-		// file that was distributed with this source code.
+
+
+
+
 
 		use std::{error::Error, path::Path};
 
@@ -2814,8 +2814,8 @@ pub mod matchers {
 			info: FileInformation,
 		}
 
-		/// Gets FileInformation, possibly following symlinks, but falling back on
-		/// broken links.
+
+
 		fn get_file_info(path: &Path, follow: bool) -> Result<FileInformation, WalkError> {
 			if follow {
 				let result = FileInformation::from_path(path, true).map_err(WalkError::from);
@@ -2849,10 +2849,10 @@ pub mod matchers {
 	}
 	mod size {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::{error::Error, io::Write, str::FromStr};
 
@@ -2895,7 +2895,7 @@ pub mod matchers {
 		}
 
 		fn byte_size_to_unit_size(unit: Unit, byte_size: u64) -> u64 {
-			// Short circuit (to avoid a overflow error when subtracting 1 later on)
+
 			if byte_size == 0 {
 				return 0;
 			}
@@ -2909,17 +2909,17 @@ pub mod matchers {
 				Unit::TebiByte => 40,
 				Unit::PebiByte => 50,
 			};
-			// Skip pointless arithmetic.
+
 			if bits_to_shift == 0 {
 				return byte_size;
 			}
-			// We want to round up (e.g. 1 byte - 1024 bytes = 1k.
-			// 1025 bytes to 2048 bytes = 2k etc.
+
+
 			((byte_size - 1) >> bits_to_shift) + 1
 		}
 
-		/// Matcher that checks whether a file's size if {less than | equal to | more
-		/// than} N units in size.
+
+
 		pub struct SizeMatcher {
 			value_to_match: ComparableValue,
 			unit:           Unit,
@@ -2957,16 +2957,16 @@ pub mod matchers {
 	#[cfg(unix)]
 	mod stat {
 		// Copyright 2022 Tavian Barnes
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::os::unix::fs::MetadataExt;
 
 		use super::{ComparableValue, Matcher, MatcherIO, WalkEntry};
 
-		/// Inode number matcher.
+
 		pub struct InodeMatcher {
 			ino: ComparableValue,
 		}
@@ -2986,7 +2986,7 @@ pub mod matchers {
 			}
 		}
 
-		/// Link count matcher.
+
 		pub struct LinksMatcher {
 			nlink: ComparableValue,
 		}
@@ -3008,10 +3008,10 @@ pub mod matchers {
 	}
 	pub mod time {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
@@ -3031,7 +3031,7 @@ pub mod matchers {
 
 		fn get_time(matcher_io: &mut MatcherIO, today_start: bool) -> SystemTime {
 			if today_start {
-				// the time at 00:00:00 of today
+
 				let duration_since_unix_epoch = matcher_io.now().duration_since(UNIX_EPOCH).unwrap();
 				let seconds_since_unix_epoch = duration_since_unix_epoch.as_secs();
 				let utc_time = DateTime::from_timestamp(seconds_since_unix_epoch as i64, 0).unwrap();
@@ -3045,8 +3045,8 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher checks whether a file is newer than the file the matcher is
-		/// initialized with.
+
+
 		pub struct NewerMatcher {
 			given_modification_time: SystemTime,
 		}
@@ -3057,14 +3057,14 @@ pub mod matchers {
 				Ok(Self { given_modification_time: metadata.modified()? })
 			}
 
-			/// Implementation of matches that returns a result, allowing use to use try!
-			/// to deal with the errors.
+
+
 			fn matches_impl(&self, file_info: &WalkEntry) -> Result<bool, Box<dyn Error>> {
 				let this_time = file_info.metadata()?.modified()?;
-				// duration_since returns an Ok duration if this_time <= given_modification_time
-				// and returns an Err (with a duration) otherwise. So if this_time >
-				// given_modification_time (in which case we want to return true) then
-				// duration_since will return an error.
+
+
+
+
 				Ok(self
 					.given_modification_time
 					.duration_since(this_time)
@@ -3090,12 +3090,12 @@ pub mod matchers {
 			}
 		}
 
-		/// `-newerXY` option.
-		/// a is meaning Accessed time
-		/// B is meaning Birthed time
-		/// c is meaning Changed time
-		/// m is meaning Modified time
-		/// It should be noted that not every file system supports birthed time.
+
+
+
+
+
+
 		#[derive(Clone, Copy, Debug)]
 		pub enum NewerOptionType {
 			Accessed,
@@ -3125,9 +3125,9 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher checks whether the X timestamp of the file being
-		/// considered is newer than the Y timestamp of the reference file,
-		/// captured once when the matcher is built (`-newerXY reference`).
+
+
+
 		pub struct NewerOptionMatcher {
 			x_option:       NewerOptionType,
 			reference_time: SystemTime,
@@ -3145,8 +3145,8 @@ pub mod matchers {
 			fn matches_impl(&self, file_info: &WalkEntry) -> Result<bool, Box<dyn Error>> {
 				let x_option_time = self.x_option.get_file_time(file_info.metadata()?)?;
 
-				// duration_since returns Err when x_option_time is strictly
-				// newer than the reference time.
+
+
 				Ok(self
 					.reference_time
 					.duration_since(x_option_time)
@@ -3173,8 +3173,8 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher checks whether files's accessed|creation|modification time is
-		/// newer than the given times.
+
+
 		pub struct NewerTimeMatcher {
 			time:            i64,
 			newer_time_type: NewerOptionType,
@@ -3191,8 +3191,8 @@ pub mod matchers {
 					.duration_since(UNIX_EPOCH)
 					.unwrap_or_else(|e| e.duration());
 
-				// timestamp.as_millis() return u128 but time is i64
-				// This may leave memory implications. :(
+
+
 				Ok(self.time
 					<= timestamp
 						.as_millis()
@@ -3220,10 +3220,10 @@ pub mod matchers {
 			}
 		}
 
-		/// Provide access to the *change* timestamp, since std::fs::Metadata doesn't
-		/// expose it.
+
+
 		pub trait ChangeTime {
-			/// Returns the time of the last change to the metadata.
+
 			fn changed(&self) -> std::io::Result<SystemTime>;
 		}
 
@@ -3244,8 +3244,8 @@ pub mod matchers {
 		#[cfg(not(unix))]
 		impl ChangeTime for Metadata {
 			fn changed(&self) -> std::io::Result<SystemTime> {
-				// Rust's stdlib doesn't (yet) expose ChangeTime on Windows
-				// https://github.com/rust-lang/rust/issues/121478
+
+
 				Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 			}
 		}
@@ -3267,8 +3267,8 @@ pub mod matchers {
 			}
 		}
 
-		/// This matcher checks whether a file's accessed|creation|modification time is
-		/// {less than | exactly | more than} N days old.
+
+
 		pub struct FileTimeMatcher {
 			days:           ComparableValue,
 			file_time_type: FileTimeType,
@@ -3296,8 +3296,8 @@ pub mod matchers {
 		}
 
 		impl FileTimeMatcher {
-			/// Implementation of matches that returns a result, allowing use to use try!
-			/// to deal with the errors.
+
+
 			fn matches_impl(
 				&self,
 				file_info: &WalkEntry,
@@ -3305,8 +3305,8 @@ pub mod matchers {
 			) -> Result<bool, Box<dyn Error>> {
 				let this_time = self.file_time_type.get_file_time(file_info.metadata()?)?;
 				let mut is_negative = false;
-				// durations can't be negative. So duration_since returns a duration
-				// wrapped in an error if now < this_time.
+
+
 				let age = match start_time.duration_since(this_time) {
 					Ok(duration) => duration,
 					Err(e) => {
@@ -3316,13 +3316,13 @@ pub mod matchers {
 				};
 				let age_in_seconds: i64 = age.as_secs() as i64 * if is_negative { -1 } else { 1 };
 
-				// rust division truncates towards zero (see
-				// https://github.com/rust-lang/rust/blob/master/src/libcore/ops.rs#L580 )
-				// so a simple age_in_seconds / SECONDS_PER_DAY gives the wrong answer
-				// for negative ages: a file whose age is 1 second in the future needs to
-				// count as -1 day old, not 0.
-				// If today_start is true, we should count it as 0 days old.
-				// because today is 00:00:00, so we need to subtract 1 day.
+
+
+
+
+
+
+
 				let negative_offset = if is_negative && !self.today_start {
 					-1
 				} else {
@@ -3391,24 +3391,24 @@ pub mod matchers {
 	}
 	mod type_matcher {
 		// Copyright 2017 Google Inc.
-		//
-		// Use of this source code is governed by a MIT-style
-		// license that can be found in the LICENSE file or at
-		// https://opensource.org/licenses/MIT.
+
+
+
+
 
 		use std::error::Error;
 
 		use super::{FileType, Follow, Matcher, MatcherIO, WalkEntry};
 
-		/// This matcher checks the type of the file against a list of accepted
-		/// types (GNU findutils 4.9+ accepts comma-separated lists, e.g. `f,d`).
+
+
 		pub struct TypeMatcher {
 			file_types: Vec<FileType>,
 		}
 
-		/// Parses one type letter. `Ok(None)` means the letter is accepted but
-		/// can never match here (BSD `w` — whiteouts don't exist on this
-		/// platform's walk results).
+
+
+
 		fn parse_one(type_string: &str) -> Result<Option<FileType>, Box<dyn Error>> {
 			let file_type = match type_string {
 				"f" => FileType::Regular,
@@ -3416,11 +3416,11 @@ pub mod matchers {
 				"l" => FileType::Symlink,
 				"b" => FileType::BlockDevice,
 				"c" => FileType::CharDevice,
-				"p" => FileType::Fifo, // named pipe (FIFO)
+				"p" => FileType::Fifo,
 				"s" => FileType::Socket,
-				// w: whiteout (BSD); accepted but never produced by the walker
+
 				"w" => return Ok(None),
-				// D: door (Solaris)
+
 				"D" => return Err(From::from(format!("Type argument {type_string} not supported yet"))),
 				_ => return Err(From::from(format!("Unrecognised type argument {type_string}"))),
 			};
@@ -3453,7 +3453,7 @@ pub mod matchers {
 			}
 		}
 
-		/// Like [TypeMatcher], but toggles whether symlinks are followed.
+
 		pub struct XtypeMatcher {
 			file_types: Vec<FileType>,
 		}
@@ -3480,7 +3480,7 @@ pub mod matchers {
 
 				match file_type {
 					Ok(file_type) if self.file_types.contains(&file_type) => true,
-					// Since GNU find 4.10, ELOOP will match -xtype l
+
 					Err(e) if self.file_types.iter().any(|t| t.is_symlink()) && e.is_loop() => true,
 					_ => false,
 				}
@@ -3488,10 +3488,10 @@ pub mod matchers {
 		}
 	}
 	mod user {
-		// This file is part of the uutils findutils package.
-		//
-		// For the full copyright and license information, please view the LICENSE
-		// file that was distributed with this source code.
+
+
+
+
 
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
@@ -3509,7 +3509,7 @@ pub mod matchers {
 		impl UserMatcher {
 			#[cfg(unix)]
 			pub fn from_user_name(user: &str) -> Option<Self> {
-				// get uid from user name
+
 				let user = User::from_name(user).ok()??;
 				let uid = user.uid.as_raw();
 				Some(Self::from_uid(uid))
@@ -3624,19 +3624,19 @@ pub mod matchers {
 	use super::{Config, Dependencies};
 	use crate::host::Host;
 
-	/// Symlink following mode.
+
 	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 	pub enum Follow {
-		/// Never follow symlinks (-P; default).
+
 		Never,
-		/// Follow symlinks on root paths only (-H).
+
 		Roots,
-		/// Always follow symlinks (-L).
+
 		Always,
 	}
 
 	impl Follow {
-		/// Check whether to follow a path of the given depth.
+
 		pub fn follow_at_depth(self, depth: usize) -> bool {
 			match self {
 				Self::Never => false,
@@ -3645,28 +3645,28 @@ pub mod matchers {
 			}
 		}
 
-		/// Get metadata for a [WalkEntry].
+
 		pub fn metadata(self, entry: &WalkEntry) -> Result<Metadata, WalkError> {
 			if self.follow_at_depth(entry.depth()) == entry.follow() {
-				// Same follow flag, re-use cached metadata
+
 				entry.metadata().cloned()
 			} else if !entry.follow() && !entry.file_type().is_symlink() {
-				// Not a symlink, re-use cached metadata
+
 				entry.metadata().cloned()
 			} else if entry.follow() && entry.file_type().is_symlink() {
-				// Broken symlink, re-use cached metadata
+
 				entry.metadata().cloned()
 			} else {
 				self.metadata_at_depth(entry.path(), entry.depth())
 			}
 		}
 
-		/// Get metadata for a path from the command line.
+
 		pub fn root_metadata(self, path: impl AsRef<Path>) -> Result<Metadata, WalkError> {
 			self.metadata_at_depth(path, 0)
 		}
 
-		/// Get metadata for a path, following symlinks as necessary.
+
 		pub fn metadata_at_depth(
 			self,
 			path: impl AsRef<Path>,
@@ -3686,8 +3686,8 @@ pub mod matchers {
 		}
 	}
 
-	/// Struct holding references to outputs and any inputs that can't be derived
-	/// from the file/directory info.
+
+
 	pub struct MatcherIO<'a> {
 		should_skip_dir: bool,
 		exit_code:       i32,
@@ -3738,12 +3738,12 @@ pub mod matchers {
 		}
 	}
 
-	/// A basic interface that can be used to determine whether a directory entry
-	/// is what's being searched for. To a first order approximation, find consists
-	/// of building a chain of Matcher objects, and then walking a directory tree,
-	/// passing each entry to the chain of Matchers.
+
+
+
+
 	pub trait Matcher: 'static {
-		/// Boxes this matcher as a trait object.
+
 		fn into_box(self) -> Box<dyn Matcher>
 		where
 			Self: Sized,
@@ -3751,25 +3751,25 @@ pub mod matchers {
 			Box::new(self)
 		}
 
-		/// Returns whether the given file matches the object's predicate.
+
 		fn matches(&self, entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool;
 
-		/// Returns whether the matcher has any side-effects (e.g. executing a
-		/// command, deleting a file). Iff no such matcher exists in the chain, then
-		/// the filename will be printed to stdout. While this is a compile-time
-		/// fact for most matchers, it's run-time for matchers that contain a
-		/// collection of sub-Matchers.
+
+
+
+
+
 		fn has_side_effects(&self) -> bool {
-			// most matchers don't have side-effects, so supply a default implementation.
+
 			false
 		}
 
-		/// Notification that find is leaving a given directory.
+
 		fn finished_dir(&self, _finished_directory: &Path, _matcher_io: &mut MatcherIO) {}
 
-		/// Notification that find has finished processing all directories -
-		/// allowing for any cleanup that isn't suitable for destructors (e.g.
-		/// blocking calls, I/O etc.)
+
+
+
 		fn finished(&self, _matcher_io: &mut MatcherIO) {}
 	}
 
@@ -3811,7 +3811,7 @@ pub mod matchers {
 			}
 		}
 
-		/// same as matches, but takes a signed value
+
 		fn imatches(&self, value: i64) -> bool {
 			match *self {
 				Self::MoreThan(limit) => value >= 0 && (value as u64) > limit,
@@ -3821,8 +3821,8 @@ pub mod matchers {
 		}
 	}
 
-	/// Builds a single `AndMatcher` containing the Matcher objects corresponding
-	/// to the passed in predicate arguments.
+
+
 	pub fn build_top_level_matcher(
 		args: &[&str],
 		config: &mut Config,
@@ -3830,7 +3830,7 @@ pub mod matchers {
 	) -> Result<Box<dyn Matcher>, Box<dyn Error>> {
 		let (_, top_level_matcher) = (build_matcher_tree(args, config, 0, false, host))?;
 
-		// if the matcher doesn't have any side-effects, then we default to printing
+
 		if !top_level_matcher.has_side_effects() {
 			let mut new_and_matcher = AndMatcherBuilder::new();
 			new_and_matcher.new_and_condition(top_level_matcher);
@@ -3840,7 +3840,7 @@ pub mod matchers {
 		Ok(top_level_matcher)
 	}
 
-	/// Helper function for `build_matcher_tree`.
+
 	fn are_more_expressions(args: &[&str], index: usize) -> bool {
 		(index < args.len() - 1) && args[index + 1] != ")"
 	}
@@ -3901,18 +3901,18 @@ pub mod matchers {
 		)))
 	}
 
-	/// Converts a `-newerXt`-style reference time string into a Unix timestamp
-	/// (milliseconds).
-	///
-	/// Accepts, in order:
-	/// - `@N[.N]` seconds since the epoch (GNU extension)
-	/// - RFC 3339 datetimes with an explicit offset, e.g.
-	///   "2026-01-01T00:00:00Z"
-	/// - ISO-style naive dates/datetimes ("2026-01-01",
-	///   "2026-01-01 12:30[:45]", with ` ` or `T` separators), interpreted in
-	///   local time like GNU find
-	/// - "(month abbreviation) (date), (year) (time)" strings, e.g.
-	///   "jan 01, 2025 00:00:01" (time defaults to 00:00:00)
+
+
+
+
+
+
+
+
+
+
+
+
 	fn parse_date_str_to_timestamps(date_str: &str) -> Option<i64> {
 		if let Some(epoch) = date_str.strip_prefix('@')
 			&& let Ok(seconds) = epoch.parse::<f64>()
@@ -3944,11 +3944,11 @@ pub mod matchers {
 			let month_day = captures
 				.get(1)
 				.map_or(format!("{} {}", now.format("%b"), now.format("%d")), |m| m.as_str().to_string());
-			// If no year input.
+
 			let year = captures
 				.get(2)
 				.map_or(now.year(), |m| m.as_str().parse().unwrap());
-			// If the user does not enter a specific time, it will be filled with 0
+
 			let time_str = captures.get(3).map_or("00:00:00", |m| m.as_str());
 			let date_time_str = format!("{month_day}, {year} {time_str}");
 			let datetime = NaiveDateTime::parse_from_str(&date_time_str, "%b %d, %Y %H:%M:%S").ok()?;
@@ -3959,17 +3959,17 @@ pub mod matchers {
 		}
 	}
 
-	/// This function implements the function of matching substrings of
-	/// X and Y from the -newerXY string.
-	/// X and Y are constrained to a/B/c/m and t.
-	/// such as: "-neweraB" -> Some(a, B) "-neweraD" -> None
-	///
-	/// Additionally, there is support for the -anewer and -cnewer short arguments.
-	/// as follows:
-	/// 1. -anewer is equivalent to -neweram
-	/// 2. -cnewer is equivalent to - newercm
-	///
-	/// If -newer is used it will be resolved to -newermm.
+
+
+
+
+
+
+
+
+
+
+
 	fn parse_str_to_newer_args(input: &str) -> Option<(String, String)> {
 		if input.is_empty() {
 			return None;
@@ -3997,17 +3997,17 @@ pub mod matchers {
 		}
 	}
 
-	/// Creates a file if it doesn't exist.
-	/// If it does exist, it will be overwritten.
+
+
 	fn get_or_create_file(path: &str, host: &Host) -> Result<File, Box<dyn Error>> {
 		let file = File::create(host.resolve(path))?;
 		Ok(file)
 	}
 
-	/// The main "translate command-line args into a matcher" function. Will call
-	/// itself recursively if it encounters an opening bracket. A successful return
-	/// consists of a tuple containing the new index into the args array to use (if
-	/// called recursively) and the resulting matcher.
+
+
+
+
 	fn build_matcher_tree(
 		args: &[&str],
 		config: &mut Config,
@@ -4019,10 +4019,10 @@ pub mod matchers {
 
 		let mut regex_type = regex::RegexType::default();
 
-		// can't use getopts for a variety or reasons:
-		// order of arguments is important
-		// arguments can start with + as well as -
-		// multiple-character flags don't start with a double dash
+
+
+
+
 		let mut i = arg_index;
 		let mut invert_next_matcher = false;
 		while i < args.len() {
@@ -4050,9 +4050,9 @@ pub mod matchers {
 						return Err(From::from(format!("missing argument to {}", args[i])));
 					}
 
-					// Action: -fprintf file format
-					// Args + 1: output file path
-					// Args + 2: format string
+
+
+
 					i += 1;
 					let file = get_or_create_file(args[i], host)?;
 					i += 1;
@@ -4145,7 +4145,7 @@ pub mod matchers {
 					Some(FileSystemMatcher::new(args[i].to_string()).into_box())
 				},
 				"-delete" => {
-					// -delete implicitly requires -depth
+
 					config.depth_first = true;
 					Some(DeleteMatcher::new().into_box())
 				},
@@ -4164,8 +4164,8 @@ pub mod matchers {
 						"-atime" => FileTimeType::Accessed,
 						"-ctime" => FileTimeType::Changed,
 						"-mtime" => FileTimeType::Modified,
-						// This shouldn't be possible. We've already checked the value
-						// is one of those three values.
+
+
 						_ => unreachable!("Encountered unexpected value {}", args[i]),
 					};
 					let days = convert_arg_to_comparable_value(args[i], args[i + 1])?;
@@ -4209,8 +4209,8 @@ pub mod matchers {
 						2
 					};
 					if arg_index < i + required_arg || arg_index == args.len() {
-						// at the minimum we need the executable and the ';'
-						// or the executable and the '{} +'
+
+
 						return Err(From::from(format!("missing argument to {}", args[i])));
 					}
 					let expression = args[i];
@@ -4299,7 +4299,7 @@ pub mod matchers {
 					if i >= args.len() - 1 {
 						return Err(From::from(format!("missing argument to {}", args[i])));
 					}
-					// check if the argument is a number
+
 					let uid = convert_arg_to_comparable_value(args[i], args[i + 1])?;
 					i += 1;
 					Some(UserMatcher::from_comparable(uid).into_box())
@@ -4326,7 +4326,7 @@ pub mod matchers {
 					if i >= args.len() - 1 {
 						return Err(From::from(format!("missing argument to {}", args[i])));
 					}
-					// check if the argument is a number
+
 					let gid = convert_arg_to_comparable_value(args[i], args[i + 1])?;
 					i += 1;
 					Some(GroupMatcher::from_comparable(gid).into_box())
@@ -4390,16 +4390,16 @@ pub mod matchers {
 					return Ok((i, top_level_matcher.build()));
 				},
 				"-follow" => {
-					// This option affects multiple matchers.
-					// 1. It will use noleaf by default. (but -noleaf No change of behavior)
-					// Unless -L or -H is specified:
-					// 2. changes the behaviour of the -newer predicate.
-					// 3. consideration applies to -newerXY, -anewer and -cnewer
-					// 4. -type predicate will always match against the type of the file that a
-					//    symbolic link points to rather than the link itself.
-					//
-					// 5. causes the -lname and -ilname predicates always to return false. (unless
-					//    they happen to match broken symbolic links)
+
+
+
+
+
+
+
+
+
+
 					config.follow = Follow::Always;
 					config.no_leaf_dirs = true;
 					Some(TrueMatcher.into_box())
@@ -4409,22 +4409,22 @@ pub mod matchers {
 					Some(TrueMatcher.into_box())
 				},
 				"-noleaf" => {
-					// No change of behavior
+
 					config.no_leaf_dirs = true;
 					Some(TrueMatcher.into_box())
 				},
 				"-d" | "-depth" => {
-					// TODO add warning if it appears after actual testing criterion
+
 					config.depth_first = true;
 					Some(TrueMatcher.into_box())
 				},
 				"-mount" | "-xdev" => {
-					// TODO add warning if it appears after actual testing criterion
+
 					config.same_file_system = true;
 					Some(TrueMatcher.into_box())
 				},
 				"-sorted" => {
-					// TODO add warning if it appears after actual testing criterion
+
 					config.sorted_output = true;
 					Some(TrueMatcher.into_box())
 				},
@@ -4477,7 +4477,7 @@ pub mod matchers {
 							if y_option == "t" {
 								let time = args[i + 1];
 								let newer_time_type = NewerOptionType::from_str(x_option.as_str());
-								// Convert args to unix timestamps. (expressed in numeric types)
+
 								let Some(comparable_time) = parse_date_str_to_timestamps(time) else {
 									return Err(From::from(format!(
 										"find: I cannot figure out how to interpret ‘{}’ as a date or time",
@@ -4498,7 +4498,7 @@ pub mod matchers {
 			};
 			i += 1;
 			if config.help_requested || config.version_requested {
-				// Ignore anything, even invalid expressions, after -help/-version
+
 				expecting_bracket = false;
 				break;
 			}
@@ -4522,10 +4522,10 @@ pub mod matchers {
 		Ok((i, top_level_matcher.build()))
 	}
 
-	// https://www.gnu.org/software/findutils/manual/html_node/find_html/Starting-points.html
-	// This allows users to take the entry point for find from stdin (eg. pipe) or
-	// from a text file. eg. dummy | find -files0-from -
-	// eg. find -files0-from rust.txt -name "cargo"
+
+
+
+
 	fn parse_files0_args(config: &mut Config, host: &mut Host) -> Result<(), Box<dyn Error>> {
 		let mode = config.files0_argument.as_ref().unwrap();
 		let mut buffer = Vec::new();
@@ -4540,7 +4540,7 @@ pub mod matchers {
 		}
 
 		let mut buffer_split: Vec<&[u8]> = buffer.split(|&b| b == 0).collect();
-		// if the pipe/file ends with ASCII NULL
+
 		if buffer_split.last().is_some_and(|s| s.is_empty()) {
 			buffer_split.remove(buffer_split.len() - 1);
 		}
@@ -4550,10 +4550,10 @@ pub mod matchers {
 			.filter_map(|s| std::str::from_utf8(s).ok())
 			.map(|s| s.to_string())
 			.collect();
-		// empty starting point checker
+
 		if string_segments.iter().any(|s| s.is_empty()) {
 			let _ = writeln!(host.stderr, "find: invalid zero-length file name");
-			// remove the empty ones so as to avoid file not found error
+
 			string_segments.retain(|s| !s.is_empty());
 		}
 
@@ -4603,25 +4603,25 @@ impl Default for Config {
 			help_requested:    false,
 			version_requested: false,
 			today_start:       false,
-			// Directory information and traversal are handled by pi_walker,
-			// and this configuration field exists as a compatibility item for
-			// GNU findutils.
+
+
+
 			no_leaf_dirs:      false,
 			follow:            Follow::Never,
-			new_paths:         None, // This option exclusively for -files0-from argument.
-			files0_argument:   None, //This option also is used for file0-from
+			new_paths:         None,
+			files0_argument:   None,
 		}
 	}
 }
 
-/// Trait that encapsulates various dependencies (output, clocks, etc.) that we
-/// might want to fake out for unit tests.
+
+
 pub trait Dependencies {
 	fn get_output(&self) -> &RefCell<dyn Write>;
 	fn now(&self) -> SystemTime;
 }
 
-/// Struct that holds the dependencies we use when run as the real executable.
+
 struct StandardDependencies {
 	output: Rc<RefCell<dyn Write>>,
 	now:    SystemTime,
@@ -4645,15 +4645,15 @@ impl Dependencies for StandardDependencies {
 	}
 }
 
-/// The result of parsing the command-line arguments into useful forms.
+
 struct ParsedInfo {
 	matcher: Box<dyn self::matchers::Matcher>,
 	paths:   Vec<String>,
 	config:  Config,
 }
 
-/// Function to generate a `ParsedInfo` from the strings supplied on the
-/// command-line.
+
+
 fn parse_args(args: &[&str], host: &mut Host) -> Result<ParsedInfo, Box<dyn Error>> {
 	let mut paths = vec![];
 	let mut i = 0;
@@ -4663,19 +4663,19 @@ fn parse_args(args: &[&str], host: &mut Host) -> Result<ParsedInfo, Box<dyn Erro
 	while i < args.len() {
 		match args[i] {
 			"-O0" | "-O1" | "-O2" | "-O3" => {
-				// GNU find optimization level flag (ignored)
+
 			},
 			"-H" => config.follow = Follow::Roots,
 			"-L" => config.follow = Follow::Always,
 			"-P" => config.follow = Follow::Never,
-			// BSD find leading flags (macOS muscle memory).
+
 			"-E" => extended_regex = true,
-			// -x is the BSD spelling of -xdev.
+
 			"-x" => config.same_file_system = true,
-			// -s sorts output lexicographically.
+
 			"-s" => config.sorted_output = true,
 			"--" => {
-				// End of flags
+
 				i += 1;
 				break;
 			},
@@ -4698,8 +4698,8 @@ fn parse_args(args: &[&str], host: &mut Host) -> Result<ParsedInfo, Box<dyn Erro
 		paths.push(".".to_string());
 	}
 	let matcher = if extended_regex {
-		// BSD -E selects POSIX extended regular expressions; GNU spells that
-		// -regextype posix-extended, which must precede any -regex/-iregex.
+
+
 		let mut expression = Vec::with_capacity(args.len() - i + 2);
 		expression.extend(["-regextype", "posix-extended"]);
 		expression.extend_from_slice(&args[i..]);
@@ -4761,7 +4761,7 @@ fn finish_find_walk(
 		matcher.finished_dir(dir.as_path(), &mut matcher_io);
 	}
 	matcher.finished(&mut matcher_io);
-	// This is implemented for exec +.
+
 	match matcher_io.exit_code() {
 		0 => {},
 		code => *ret = code,
@@ -4983,15 +4983,15 @@ fn print_version(host: &mut Host) {
 	let _ = writeln!(host.stdout, "find (Rust) 0.8.0");
 }
 
-/// pi-uutils: BSD `find -E` compatibility (macOS muscle memory).
-///
-/// BSD `-E` selects POSIX extended regular expressions before the path list;
-/// GNU find rejects it, but supports the equivalent `-regextype
-/// posix-extended`. Rewriting is limited to otherwise-unparseable invocations:
-/// a valid GNU expression may use `-E` as an operand, so it must retain its
-/// existing meaning. The inserted setting starts the expression, before every
-/// `-regex`/`-iregex`, because matcher construction applies the current regex
-/// type as it encounters those predicates.
+
+
+
+
+
+
+
+
+
 fn rewrite_bsd_invocation(args: &[&str], host: &mut Host) -> Option<Vec<String>> {
 	if !args.contains(&"-E") {
 		return None;
@@ -5031,7 +5031,7 @@ fn rewrite_bsd_invocation(args: &[&str], host: &mut Host) -> Option<Vec<String>>
 	Some(rewritten)
 }
 
-/// Parsed `find` invocation.
+
 pub(crate) struct Find {
 	matches: ArgMatches,
 }
@@ -5077,7 +5077,7 @@ impl Utility for Find {
 	}
 }
 
-/// Creates the `find` builtin registration.
+
 pub(crate) fn find_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Find, SE>()
 }

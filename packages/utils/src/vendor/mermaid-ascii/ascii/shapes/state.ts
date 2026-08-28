@@ -1,6 +1,6 @@
-// ============================================================================
-// State pseudo-state renderers — UML start and end states
-// ============================================================================
+
+
+
 
 import type { Canvas, DrawingCoord, Direction } from '../types'
 import { Up, Down, Left, Right, UpperLeft, UpperRight, LowerLeft, LowerRight } from '../types'
@@ -8,22 +8,10 @@ import { mkCanvas } from '../canvas'
 import type { ShapeRenderer, ShapeDimensions, ShapeRenderOptions } from './types'
 import { dirEquals } from '../edge-routing'
 
-/**
- * State start pseudo-state renderer — filled circle in rounded box.
- * Renders as:
- *   ╭───╮
- *   │ ● │   (Unicode)
- *   ╰───╯
- *
- *   .---.
- *   | * |   (ASCII)
- *   '---'
- *
- * This represents the UML initial pseudo-state.
- */
+
 export const stateStartRenderer: ShapeRenderer = {
   getDimensions(_label: string, _options: ShapeRenderOptions): ShapeDimensions {
-    // Start state is a 5x3 rounded box with centered symbol
+
     const width = 5
     const height = 3
 
@@ -40,10 +28,10 @@ export const stateStartRenderer: ShapeRenderer = {
     const { width, height } = dimensions
     const canvas = mkCanvas(width - 1, height - 1)
 
-    const centerX = Math.floor(width / 2)  // = 2
+    const centerX = Math.floor(width / 2)  
 
     if (!options.useAscii) {
-      // Unicode rounded box with filled circle: ╭───╮ │ ● │ ╰───╯
+
       canvas[0]![0] = '╭'
       canvas[1]![0] = '─'
       canvas[2]![0] = '─'
@@ -60,7 +48,7 @@ export const stateStartRenderer: ShapeRenderer = {
       canvas[3]![2] = '─'
       canvas[4]![2] = '╯'
     } else {
-      // ASCII rounded box: .---. | * | '---'
+
       canvas[0]![0] = '.'
       canvas[1]![0] = '-'
       canvas[2]![0] = '-'
@@ -94,28 +82,15 @@ export const stateStartRenderer: ShapeRenderer = {
     if (dirEquals(dir, Down)) return { x: centerX, y: baseCoord.y + height - 1 }
     if (dirEquals(dir, Left)) return { x: baseCoord.x, y: centerY }
     if (dirEquals(dir, Right)) return { x: baseCoord.x + width - 1, y: centerY }
-    // All diagonals and middle point to center
+
     return { x: centerX, y: centerY }
   },
 }
 
-/**
- * State end pseudo-state renderer — bullseye in double-bordered box.
- * Renders as:
- *   ╔═══╗
- *   ║ ◎ ║   (Unicode)
- *   ╚═══╝
- *
- *   #===#
- *   # * #   (ASCII)
- *   #===#
- *
- * This represents the UML final state. The double border distinguishes it
- * from the start state's single rounded border.
- */
+
 export const stateEndRenderer: ShapeRenderer = {
   getDimensions(_label: string, _options: ShapeRenderOptions): ShapeDimensions {
-    // End state is a 5x3 double-bordered box with centered symbol
+
     const width = 5
     const height = 3
 
@@ -132,10 +107,10 @@ export const stateEndRenderer: ShapeRenderer = {
     const { width, height } = dimensions
     const canvas = mkCanvas(width - 1, height - 1)
 
-    const centerX = Math.floor(width / 2)  // = 2
+    const centerX = Math.floor(width / 2)  
 
     if (!options.useAscii) {
-      // Unicode double-bordered box with bullseye: ╔═══╗ ║ ◎ ║ ╚═══╝
+
       canvas[0]![0] = '╔'
       canvas[1]![0] = '═'
       canvas[2]![0] = '═'
@@ -152,7 +127,7 @@ export const stateEndRenderer: ShapeRenderer = {
       canvas[3]![2] = '═'
       canvas[4]![2] = '╝'
     } else {
-      // ASCII double-bordered box: #===# # * # #===#
+
       canvas[0]![0] = '#'
       canvas[1]![0] = '='
       canvas[2]![0] = '='
@@ -186,7 +161,7 @@ export const stateEndRenderer: ShapeRenderer = {
     if (dirEquals(dir, Down)) return { x: centerX, y: baseCoord.y + height - 1 }
     if (dirEquals(dir, Left)) return { x: baseCoord.x, y: centerY }
     if (dirEquals(dir, Right)) return { x: baseCoord.x + width - 1, y: centerY }
-    // All diagonals and middle point to center
+
     return { x: centerX, y: centerY }
   },
 }

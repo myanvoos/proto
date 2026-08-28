@@ -1,5 +1,5 @@
-# go-task task runner output.
-# Drop "is up to date" lines, keep executed task output.
+
+
 
 [filters.task]
 description = "Compact go-task task runner output"

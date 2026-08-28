@@ -1,6 +1,6 @@
-//! `md5sum` builtin: compute and check MD5 digests.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
@@ -11,7 +11,7 @@ use crate::{
 	host::{Host, Utility, matches_parser, util},
 };
 
-/// Parsed `md5sum` invocation.
+
 pub(crate) struct Md5sum {
 	matches: ArgMatches,
 }
@@ -31,7 +31,7 @@ fn app() -> clap::Command {
 	cksum::command(Md5sum::NAME, false)
 }
 
-/// Creates the `md5sum` builtin registration.
+
 pub(crate) fn md5sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Md5sum, SE>()
 }

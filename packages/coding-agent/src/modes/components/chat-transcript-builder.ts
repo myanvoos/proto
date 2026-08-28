@@ -1,16 +1,3 @@
-/**
- * Builds transcript components from persisted session message entries — the
- * file/remote-backed counterpart to {@link UiHelpers.addMessageToChat} (which is
- * bound to the live InteractiveModeContext). Used by the fullscreen transcript
- * viewer ({@link AgentTranscriptViewer}) to render a parked subagent / advisor
- * transcript that has no live session.
- *
- * Unlike the old incremental hub sync, {@link ChatTranscriptBuilder.rebuild}
- * always discards prior components and rebuilds the whole transcript from the
- * supplied entries. Re-rendering a growing transcript is therefore O(n) in the
- * entry count, but it cannot duplicate or misorder rows the way incremental
- * component reuse could.
- */
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
@@ -57,7 +44,7 @@ import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user
 interface ChatTranscriptBuilderDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
-	/** Whether the active registry entry came from a built-in factory. */
+
 	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	cwd: string;
@@ -66,7 +53,6 @@ interface ChatTranscriptBuilderDeps {
 	requestRender: () => void;
 }
 
-/** Extracts the plain-text content of a user message (string or text blocks). */
 function userMessageText(message: Extract<AgentMessage, { role: "user" }>): string {
 	if (typeof message.content === "string") return message.content;
 	return message.content
@@ -95,28 +81,22 @@ export class ChatTranscriptBuilder {
 		this.container.setToolActivityVisible(!settings.get("display.hideToolActivity"));
 	}
 
-	/** Whether the transcript currently holds any rendered rows. */
 	get isEmpty(): boolean {
 		return this.container.children.length === 0;
 	}
 
-	/** Discard all components and rebuild the whole transcript from `entries`. */
 	rebuild(entries: SessionMessageEntry[]): void {
 		this.reset();
 		for (const entry of entries) this.#appendChatMessage(entry.message);
-		// Flush the trailing turn's usage row only once its tools are materialized
-		// (a read whose result has not arrived stays pending); otherwise the row
-		// would sit above its tools. The drain happens here at the end of the pass.
+
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
 	}
 
-	/** Append newly persisted entries without rebuilding already rendered rows. */
 	append(entries: SessionMessageEntry[]): void {
 		for (const entry of entries) this.#appendChatMessage(entry.message);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
 	}
 
-	/** Toggle tool-output expansion across every expandable component. */
 	setExpanded(expanded: boolean): void {
 		this.#expanded = expanded;
 		for (const component of this.#expandables) component.setExpanded(expanded);
@@ -126,7 +106,6 @@ export class ChatTranscriptBuilder {
 		return this.#expanded;
 	}
 
-	/** Tear down components (sealing pending spinners) and clear build state. */
 	reset(): void {
 		for (const pending of this.#pendingTools.values()) pending.seal();
 		this.#pendingTools.clear();
@@ -154,7 +133,6 @@ export class ChatTranscriptBuilder {
 		this.#expandables.push(component);
 	}
 
-	/** A `fleet` wait showing all-running is displaced by the next `fleet` call. */
 	#resolveWaitingPoll(nextToolName?: string): void {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
@@ -196,9 +174,6 @@ export class ChatTranscriptBuilder {
 		return this.#readGroup;
 	}
 
-	// Defer per-turn metrics until the turn's tool results have materialized.
-	// Read-only invisible turns attach the metrics to their shared compact
-	// group; every other turn keeps the standalone row below its tool blocks.
 	#flushPendingUsage(): void {
 		if (!this.#pendingUsage) return;
 		const usageAttached =
@@ -245,17 +220,12 @@ export class ChatTranscriptBuilder {
 				break;
 			case "user":
 			case "developer": {
-				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
-					// Synthetic (agent-attributed) inputs — chiefly the advisor's `Session
-					// update` replay dumps — can be hundreds of KiB of Markdown each.
-					// Rendering their full body on cold open blocked the TUI (issue #6308);
-					// collapse them behind a compact summary that builds Markdown only on
-					// ctrl+o expand. Real user prompts stay fully rendered.
+
 					if (isSynthetic) {
 						const collapsed = new CollapsedSyntheticMessageComponent(textContent);
 						this.#trackExpandable(collapsed);
@@ -297,8 +267,6 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "fileMention": {
-				// Indent one column to match the transcript's other rows (the viewer renders
-				// body rows without an outer gutter; rows own their left pad).
 				const block = buildFileMentionBlock(message.files, 1);
 				if (block.children.length > 0) this.container.addChild(block);
 				break;
@@ -316,7 +284,7 @@ export class ChatTranscriptBuilder {
 			timeline.beforeTools,
 			hideThinkingBlock,
 			() => this.deps.requestRender(),
-			this.deps.getMessageRenderer ? undefined : [], // placeholder for thinkingRenderers
+			this.deps.getMessageRenderer ? undefined : [],
 			this.deps.ui.imageBudget,
 			proseOnlyThinking,
 		);
@@ -335,7 +303,6 @@ export class ChatTranscriptBuilder {
 
 		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 		if (hasVisibleAssistantContent) {
-			// New visible turn content closes the current read run (mirrors rebuild).
 			this.#readGroup?.seal();
 			this.#readGroup = null;
 		}
@@ -392,8 +359,7 @@ export class ChatTranscriptBuilder {
 				content.arguments,
 				{
 					useBuiltInRenderer: this.deps.isBuiltInTool?.(content.name) ?? true,
-					// Stable ids and Kitty placeholder cells keep images anchored
-					// while the transcript viewport scrolls and reflows.
+
 					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
@@ -453,9 +419,6 @@ export class ChatTranscriptBuilder {
 			pending instanceof ToolExecutionComponent &&
 			pending.canBeDisplacedBy("todo")
 		) {
-			// A successful todo result supersedes the prior live snapshot. Failed
-			// follow-ups return false from canBeDisplacedBy("todo"), so the
-			// last-good panel stays on screen.
 			this.#resolveTodoSnapshot("todo");
 			this.#todoSnapshot = pending;
 		}

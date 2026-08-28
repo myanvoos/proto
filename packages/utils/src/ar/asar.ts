@@ -359,7 +359,6 @@ async function readAsarIndex(source: ByteSource, options: FormatReadOptions): Pr
 	return entries;
 }
 
-/** Read an Electron ASAR index while keeping packed and unpacked member payloads lazy. */
 export const readAsar: FormatReader = async (source, options) => {
 	try {
 		return await readAsarIndex(source, options);
@@ -369,7 +368,6 @@ export const readAsar: FormatReader = async (source, options) => {
 	}
 };
 
-/** Whether bytes begin with a structurally plausible Electron ASAR Pickle header. */
 export function sniffAsar(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < ASAR_JSON_OFFSET + 1) return false;
 	const outerPayload = readUInt32LE(bytes, 0);
@@ -401,7 +399,6 @@ function writerPath(rawPath: string): string {
 	return normalized;
 }
 
-/** Encode file members in Electron's Pickle-framed ASAR layout. */
 export async function encodeAsar(members: Iterable<readonly [string, Uint8Array]>): Promise<Uint8Array> {
 	try {
 		const root: AsarDirectoryNode = { files: Object.create(null) as Record<string, AsarNode> };

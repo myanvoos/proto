@@ -18,12 +18,6 @@ import { OverlayPanel } from "./overlay-box";
 
 const OAUTH_SELECTOR_MAX_VISIBLE = 10;
 
-/**
- * Provider ids the user has disabled via settings. `/login` (login mode) hides
- * these so a disabled provider's models stay out of reach end-to-end, mirroring
- * the model picker's `disabledProviders` filtering. Reads the settings singleton
- * defensively: it throws before `Settings.init()`, in which case nothing is disabled.
- */
 function getDisabledProviderIds(): ReadonlySet<string> {
 	try {
 		return new Set(settings.get("disabledProviders"));
@@ -32,13 +26,8 @@ function getDisabledProviderIds(): ReadonlySet<string> {
 	}
 }
 
-/**
- * Rendered lines before the provider rows: top border
- * (must mirror the constructor's addChild order).
- */
 const LIST_ROW_OFFSET = 1;
 
-/** Compact, human-readable tag for each credential-origin leg. */
 const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
 	runtime: "--api-key",
 	config: "config",
@@ -47,9 +36,7 @@ const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
 	env: "env",
 	fallback: "custom provider",
 };
-/**
- * Component that renders an OAuth provider selector.
- */
+
 export class OAuthSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#allProviders: OAuthProviderInfo[] = [];
@@ -57,10 +44,10 @@ export class OAuthSelectorComponent extends OverlayPanel {
 	#searchQuery = "";
 	#selectedIndex: number = 0;
 	#hoveredIndex: number | null = null;
-	/** First provider index of the visible ScrollView window (last #updateList). */
+
 	#scrollStart = 0;
 	#visibleCount = 0;
-	/** Visible list window, shrunk by {@link setMaxHeight} on short screens. */
+
 	#maxVisible = OAUTH_SELECTOR_MAX_VISIBLE;
 	#mode: "login" | "logout";
 	#authStorage: AuthStorage;
@@ -90,12 +77,12 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		this.#onCancelCallback = onCancel;
 		this.#validateAuthCallback = options?.validateAuth;
 		this.#requestRenderCallback = options?.requestRender;
-		// Load all OAuth providers
+
 		this.#loadProviders();
-		// Create list container
+
 		this.#listContainer = new Container();
 		this.addChild(this.#listContainer);
-		// Initial render
+
 		this.#updateList();
 		this.#startValidation();
 	}
@@ -105,17 +92,9 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		this.#stopSpinner();
 	}
 
-	/**
-	 * Fit the selector into `lines` rendered rows by shrinking the visible list
-	 * window (the window is centered on the selection, so the selected row is
-	 * always visible at any height). Prefers keeping the full chrome — borders,
-	 * spacers, title, search status — but sacrifices the trailing spacer/border
-	 * (clipped by the host) before dropping below three visible rows.
-	 */
 	setMaxHeight(lines: number): void {
-		// Above the rows: LIST_ROW_OFFSET; below: search status + border.
 		const strict = lines - LIST_ROW_OFFSET - 2;
-		// Keeps only the rows + search status inside `lines`.
+
 		const relaxed = lines - LIST_ROW_OFFSET - 1;
 		const rows = Math.min(OAUTH_SELECTOR_MAX_VISIBLE, Math.max(1, strict, Math.min(relaxed, 3)));
 		if (rows === this.#maxVisible) return;
@@ -129,15 +108,10 @@ export class OAuthSelectorComponent extends OverlayPanel {
 	#loadProviders(): void {
 		const providers = getOAuthProviders();
 		if (this.#mode === "logout") {
-			// Logout stays unfiltered by `disabledProviders`: a now-disabled
-			// provider may still hold stored credentials worth removing.
 			this.#allProviders = providers.filter(provider => this.#hasSelectableAuth(provider.id));
 		} else {
 			const disabled = getDisabledProviderIds();
-			// Hide a login entry when either its own id or the provider id it
-			// stores credentials under is disabled, so alias logins (e.g.
-			// `openai-codex-device` ⇒ `openai-codex`) disappear alongside the
-			// model provider they authenticate.
+
 			this.#allProviders = providers.filter(
 				provider =>
 					!disabled.has(provider.id) &&
@@ -207,10 +181,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		}
 	}
 
-	/**
-	 * Muted provenance suffix (" (env: COPILOT_GITHUB_TOKEN)", " (login)", …) so
-	 * the list distinguishes a real login from an env var aliasing the provider.
-	 */
 	#getSourceLabel(providerId: string): string {
 		const origin = this.#authStorage.getCredentialOrigin(providerId);
 		if (!origin) return "";
@@ -340,7 +310,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 			this.#listContainer.addChild(sv);
 		}
 
-		// Search status line (scrollbar covers overflow indication)
 		if (this.#shouldRenderSearchStatus()) {
 			this.#listContainer.addChild(new TruncatedText(this.#renderStatusLine(total), 0, 0));
 		}
@@ -360,7 +329,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		}
 	}
 	handleInput(keyData: string): void {
-		// Escape or Ctrl+C
 		if (matchesSelectCancel(keyData)) {
 			this.stopValidation();
 			this.#onCancelCallback();
@@ -371,7 +339,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 			return;
 		}
 
-		// Up arrow
 		if (matchesSelectUp(keyData)) {
 			if (this.#filteredProviders.length > 0) {
 				this.#selectedIndex =
@@ -379,39 +346,30 @@ export class OAuthSelectorComponent extends OverlayPanel {
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();
-		}
-		// Down arrow
-		else if (matchesSelectDown(keyData)) {
+		} else if (matchesSelectDown(keyData)) {
 			if (this.#filteredProviders.length > 0) {
 				this.#selectedIndex =
 					this.#selectedIndex === this.#filteredProviders.length - 1 ? 0 : this.#selectedIndex + 1;
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();
-		}
-		// Page up - jump up by one visible page
-		else if (matchesKey(keyData, "pageUp")) {
+		} else if (matchesKey(keyData, "pageUp")) {
 			if (this.#filteredProviders.length > 0) {
 				this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#maxVisible);
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();
-		}
-		// Page down - jump down by one visible page
-		else if (matchesKey(keyData, "pageDown")) {
+		} else if (matchesKey(keyData, "pageDown")) {
 			if (this.#filteredProviders.length > 0) {
 				this.#selectedIndex = Math.min(this.#filteredProviders.length - 1, this.#selectedIndex + this.#maxVisible);
 			}
 			this.#statusMessage = undefined;
 			this.#updateList();
-		}
-		// Enter
-		else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			this.#confirmSelection();
 		}
 	}
 
-	/** Confirm the selected provider (Enter or mouse click). */
 	#confirmSelection(): void {
 		const selectedProvider = this.#filteredProviders[this.#selectedIndex];
 		if (selectedProvider?.available) {
@@ -424,7 +382,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		}
 	}
 
-	/** Move the selection one step for a wheel notch (clamped, no wrap). */
 	handleWheel(delta: -1 | 1): void {
 		if (this.#filteredProviders.length === 0) return;
 		const next = Math.max(0, Math.min(this.#selectedIndex + delta, this.#filteredProviders.length - 1));
@@ -434,12 +391,6 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		this.#updateList();
 	}
 
-	/**
-	 * Route an SGR mouse report at component-local coordinates. Provider rows
-	 * start LIST_ROW_OFFSET lines into the render; the ScrollView window shows
-	 * #visibleCount rows from #scrollStart. Wheel moves the selection, motion
-	 * drives the hover band, and a left click selects and confirms like Enter.
-	 */
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
 		if (event.wheel !== null) {
 			this.handleWheel(event.wheel);

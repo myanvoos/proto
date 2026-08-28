@@ -1,9 +1,3 @@
-/**
- * GitHub Copilot usage provider.
- *
- * Normalizes Copilot quota usage into the shared UsageReport schema.
- */
-
 import { toBoolean, toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { OPENCODE_HEADERS } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import * as AIError from "../error";

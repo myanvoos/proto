@@ -1,10 +1,3 @@
-/**
- * HTTP discovery protocols for configured and implicit providers — ollama,
- * llama.cpp, lm-studio, openai-models-list, and new-api/one-api-style proxies.
- * `ModelRegistry` owns the orchestration (status, state, caching) and calls
- * `discoverModelsByProviderType` with a `DiscoveryContext`; built-in provider
- * discovery lives in pi-catalog's provider-models.
- */
 import { type ApiKey, type FetchImpl, withAuth } from "@oh-my-pi/pi-ai";
 import type { Api, Model, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -26,28 +19,9 @@ import type { ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ProviderDiscovery } from "./models-config-schema";
 
-// Default cap on `max_tokens` for auto-discovered models that do not advertise
-// their own output limit (OpenAI-models-list, Ollama, llama.cpp, new-api/
-// one-api proxies). 32K matches the upper end of what mainstream
-// OpenAI-compatible providers (DeepSeek, MiMo, OpenRouter, etc.) actually
-// accept and keeps `min(contextWindow, …)` honoring smaller local windows.
-// Conservative caps below this caused providers to drop the connection
-// mid-stream when models hit the cap on legitimate large tool calls (see
-// issue #1528: `write` payloads >~5KB on deepseek-v4-pro surfaced as
-// "socket connection was closed unexpectedly").
 const DISCOVERY_DEFAULT_CONTEXT_WINDOW = OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 export const DISCOVERY_DEFAULT_MAX_TOKENS = OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS;
 
-/**
- * Run `fn` with a hard deadline while also signalling cooperative transports
- * to abort. The independent rejection keeps discovery bounded when a runtime
- * leaves its fetch promise pending after `AbortSignal.abort()` (observed with
- * Windows localhost probes).
- *
- * The backing timer is cleared as soon as `fn` settles, unlike
- * `AbortSignal.timeout()`, whose delayed reason previously crashed Bun's
- * concurrent GC during an unrelated allocation.
- */
 async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
 	const controller = new AbortController();
 	const timeout = Promise.withResolvers<never>();
@@ -63,20 +37,8 @@ async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal)
 	}
 }
 
-/** Generous discovery budget for a non-loopback (remote / LAN) inference host. */
 const REMOTE_DISCOVERY_TIMEOUT_MS = 10_000;
 
-/**
- * Pick a discovery-probe timeout for a local-engine base URL.
- *
- * The implicit `127.0.0.1` default probe keeps a tight `loopbackMs` cap so a
- * busy or foreign service on the default port never stalls startup. But that
- * cap is far too short for a host reached over the network: a user who points
- * `LLAMA_CPP_BASE_URL` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` at a remote or LAN
- * machine has real round-trip latency, and a 250ms cap made that server look
- * empty (issue #7087). Anything that is not strictly loopback therefore gets
- * {@link REMOTE_DISCOVERY_TIMEOUT_MS}.
- */
 export function discoveryProbeTimeoutMs(baseUrl: string, loopbackMs: number, customTimeoutMs?: number): number {
 	if (typeof customTimeoutMs === "number" && customTimeoutMs > 0 && Number.isFinite(customTimeoutMs)) {
 		return customTimeoutMs;
@@ -132,17 +94,8 @@ export function getOllamaContextLengthOverride(): number | undefined {
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-// Anthropic-safe variant of the discovery cap. The Anthropic stream converter
-// in `packages/ai/src/providers/anthropic.ts` derives the request limit as
-// `(model.maxTokens / 3) | 0`, so the 32K default would surface as 10,922
-// requested output tokens — above the 8,192 hard cap on classic Claude 3.x
-// Sonnet/Haiku/Opus endpoints. Discovered models routed through
-// `anthropic-messages` (proxy `supported_endpoint_types: ["anthropic"]` or a
-// custom provider with `api: anthropic-messages` + openai-models-list
-// discovery) fall back to this conservative value.
 const DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC = 8_192;
 
-/** Routes discovered-model `maxTokens` defaults around Anthropic's 3× output divisor. */
 function discoveryDefaultMaxTokens(api: Api | undefined): number {
 	return api === "anthropic-messages" ? DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC : DISCOVERY_DEFAULT_MAX_TOKENS;
 }
@@ -158,16 +111,9 @@ export interface DiscoveryProviderConfig {
 	optional?: boolean;
 }
 
-/** Registry-provided capabilities the protocol probes need; never the registry itself. */
 export interface DiscoveryContext {
-	/** Injected fetch implementation (tests stub this). */
 	fetch: FetchImpl;
-	/**
-	 * Resolve a provider's bearer credential for `Authorization: Bearer …`.
-	 * Returns undefined when no key is stored or it is a local/no-auth
-	 * sentinel; otherwise an {@link ApiKey} whose resolver participates in the
-	 * central force-refresh/rotate auth-retry policy on 401/usage-limit.
-	 */
+
 	getBearerApiKeyResolver(provider: string): Promise<ApiKey | undefined>;
 }
 
@@ -193,14 +139,7 @@ type LlamaCppModelListEntry = {
 	id: string;
 	input?: ("text" | "image")[];
 	runtimeContextWindow?: number;
-	/**
-	 * `--ctx-size` extracted from the entry's `status.args` (rendered CLI arg
-	 * vector) or `status.preset` INI. Populated for llama-server router-mode
-	 * presets so unloaded models surface the user's configured window instead
-	 * of falling through to the 128K default — the router-level `/props`
-	 * reports a dummy `n_ctx: 0` and `meta.n_ctx` is only merged in after a
-	 * child instance loads (issue #4190).
-	 */
+
 	configuredContextWindow?: number;
 	trainingContextWindow?: number;
 };
@@ -228,14 +167,6 @@ function isLlamaCppUnlimitedSentinel(value: unknown): boolean {
 	return false;
 }
 
-/**
- * llama.cpp `/props.default_generation_settings.params.{max_tokens,n_predict}`
- * are per-request defaults the server applies when a client omits the field —
- * clients can still raise them per call. Positive values therefore are NOT
- * hard model caps; only the `-1` unlimited sentinel reliably tells us the
- * server bounds generation by the runtime context window. Anything else
- * leaves the discovery default in place.
- */
 function extractLlamaCppMaxTokens(payload: Record<string, unknown>): "contextWindow" | undefined {
 	const generationSettings = payload.default_generation_settings;
 	const params = isRecord(generationSettings) ? generationSettings.params : undefined;
@@ -343,9 +274,6 @@ function parseLlamaCppModelList(payload: unknown): LlamaCppModelListEntry[] {
 	});
 }
 
-// llama-server's `to_args()` renders the long form `--ctx-size` (never `-c`),
-// but tolerate the short form and the embedded `--flag=value` shape so a
-// hand-rolled forwarder cannot silently downgrade the discovered window.
 const LLAMA_CPP_CTX_SIZE_FLAGS = new Set(["--ctx-size", "-c"]);
 
 function extractLlamaCppCtxSizeFromArgs(value: unknown): number | undefined {
@@ -365,8 +293,6 @@ function extractLlamaCppCtxSizeFromArgs(value: unknown): number | undefined {
 	return undefined;
 }
 
-// `common_preset::to_ini()` emits one option per line as `<long-arg-without-dashes> = <value>`,
-// so `ctx-size = 8192` is the exact wire form (issue #4190).
 function extractLlamaCppCtxSizeFromIni(value: unknown): number | undefined {
 	if (typeof value !== "string") {
 		return undefined;
@@ -552,31 +478,10 @@ async function discoverLlamaCppServerMetadata(
 	}
 }
 
-/**
- * PrismLM Ternary/1-bit Bonsai GGUFs are Qwen3.6-27B derivatives served locally
- * via llama.cpp; their ids do not contain "qwen", so match them explicitly here
- * rather than broadening the global `isQwenModelId` predicate.
- */
 function isBonsaiQwenGguf(id: string): boolean {
 	return /(?:ternary-)?bonsai-27b/i.test(id);
 }
 
-/**
- * applyLlamaCppQwenThinking rewrites a discovered or cached llama.cpp model so a
- * Qwen-family chat template (which defaults `enable_thinking: true`) can be
- * turned off. Qwen ids and the Qwen3.6-based PrismLM Ternary Bonsai GGUFs are
- * routed through chat-completions (the implicit llama.cpp provider defaults to
- * `openai-responses`, whose disable path has no Qwen encoding) with the
- * `qwen-template-false` dialect; proto emits `preserve_thinking` inside
- * `chat_template_kwargs` for Qwen, so the toggle rides there too and history
- * `<think>` blocks survive (`qwenPreserveThinking`). The runtime base URL gets a
- * `/v1` suffix because the chat-completions request would otherwise POST to the
- * native root, which does not serve it. A model with a custom transport (e.g.
- * `pi-native`, whose client appends `/v1/pi/stream`) keeps its base URL so the
- * suffix is not doubled. Non-Qwen models pass through unchanged. Applied on both
- * fresh discovery and cache load, so an upgraded cache is corrected without
- * waiting for re-discovery.
- */
 export function applyLlamaCppQwenThinking(model: Model<Api>): Model<Api> {
 	if (!isQwenModelId(model.id) && !isBonsaiQwenGguf(model.id)) return model;
 	return buildModel({
@@ -636,9 +541,7 @@ export async function discoverLlamaCppModels(
 			serverMetadata?.contextWindow ??
 			item.trainingContextWindow ??
 			DISCOVERY_DEFAULT_CONTEXT_WINDOW;
-		// Local llama.cpp models stamp `reasoning: false` with a minimal compat;
-		// applyLlamaCppQwenThinking upgrades Qwen-family ids (which cannot disable
-		// their default-on thinking otherwise) after the base model is built.
+
 		discovered.push(
 			applyLlamaCppQwenThinking(
 				buildModel({
@@ -672,10 +575,7 @@ export async function discoverLlamaCppModelRuntimeMetadata(
 	customTimeoutMs?: number,
 ): Promise<DiscoveredModelRuntimeMetadata | undefined> {
 	const baseUrl = normalizeLlamaCppBaseUrl(model.baseUrl);
-	// Probe the native `/models` endpoint (not the OpenAI-compatible `/v1/models`)
-	// so the runtime `meta`, `status.args`, and `architecture.input_modalities`
-	// fields survive; a Qwen model routed to chat-completions carries a `/v1`
-	// base URL, which would otherwise send this to `/v1/models`.
+
 	const nativeBaseUrl = toLlamaCppNativeBaseUrl(baseUrl);
 	const modelsUrl = `${nativeBaseUrl}/models`;
 	const baseHeaders: Record<string, string> = { ...(model.headers ?? {}) };
@@ -725,25 +625,6 @@ export async function discoverLlamaCppModelRuntimeMetadata(
 	}
 }
 
-/**
- * Re-probe LM Studio's native `/api/v0/models` for a single selected model so
- * its context window tracks the runtime lifecycle rather than the snapshot
- * captured at discovery time.
- *
- * A model discovered while unloaded is registered with `max_context_length`
- * (the architectural ceiling). When LM Studio JIT-loads it on first inference,
- * the running instance may serve a smaller `loaded_context_length` (user load
- * settings or context auto-fit). `getLmStudioNativeContextWindow` — invoked
- * inside `fetchLmStudioNativeModelMetadata` — prefers `loaded_context_length`
- * once `state === "loaded"`, so refreshing after selection swaps the stale
- * ceiling for the window the backend actually accepts (issue #9001). A later
- * unload re-probes back to `max_context_length`. This mirrors the llama.cpp
- * lazy-load refresh from #3310/#3311.
- *
- * `maxTokens` is carried through so the caller can re-cap output at the new
- * (possibly smaller) window; LM Studio native metadata reports no output cap
- * of its own.
- */
 export async function discoverLmStudioModelRuntimeMetadata(
 	model: Pick<Model<Api>, "provider" | "id" | "baseUrl" | "headers" | "maxTokens">,
 	ctx: DiscoveryContext,
@@ -780,12 +661,6 @@ export async function discoverLmStudioModelRuntimeMetadata(
 	}
 }
 
-/**
- * Read image-input support from an OpenAI-compatible `/v1/models` row. Handles
- * direct `input` arrays, Synthetic-style top-level `input_modalities`, and
- * OpenRouter-style `architecture.input_modalities`; returns undefined when none
- * is present so the bundled reference (or the `["text"]` default) can take over.
- */
 function extractOpenAIModelsListInputCapabilities(item: {
 	input?: unknown;
 	input_modalities?: unknown;
@@ -858,15 +733,7 @@ async function discoverOpenAIModelsList(
 		const id = item.id;
 		if (!id) continue;
 		const nativeMetadataForModel = nativeMetadata?.get(id);
-		// Thin OpenAI-compatible proxies frequently omit `context_length`/
-		// `max_model_len` on `/v1/models`, leaving discovered models pinned at
-		// the 128K default even when the underlying model is e.g. a proxied
-		// Claude with a 1M window. Resolve the id against the bundled catalog
-		// (same pattern as `discoverProxyModels` and `discoverLiteLLMModels`) so
-		// intrinsic metadata — context/output limits, display name, modality,
-		// reasoning support — flows through when the provider is silent. Local
-		// runtime state and provider-reported values still win; proxy-specific
-		// headers/baseUrl/cost stay local.
+
 		const reference = resolveModelReference(id, references) as ModelSpec<Api> | undefined;
 		const referenceCompat = reference?.compat as OpenAICompat | undefined;
 		const api =
@@ -892,14 +759,10 @@ async function discoverOpenAIModelsList(
 					extractOpenAIModelsListInputCapabilities(item) ??
 					reference?.input ?? ["text"],
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
-				// Proxy/gateway pricing is provider-specific and rarely matches
-				// upstream bundled catalogs, so keep costs local-unknown even
-				// when we successfully recover the upstream model identity.
+
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow,
-				// Cap the reference's output limit at the discovered context
-				// window so an ID collision with a larger bundled model can
-				// never request more tokens than the local runtime advertises.
+
 				maxTokens: Math.min(reference?.maxTokens ?? discoveryDefaultMaxTokens(api), contextWindow),
 				headers,
 				compat: {
@@ -976,21 +839,6 @@ export async function discoverLiteLLMModels(
 	return richModels.map(spec => buildModel({ ...spec, headers }));
 }
 
-/**
- * Discover models from an Anthropic+OpenAI-compatible reseller proxy that
- * exposes both `/v1/messages` and `/v1/chat/completions`, advertising each
- * model's wire capabilities through `supported_endpoint_types` on
- * `GET /v1/models` (new-api / one-api-style proxies).
- *
- * Routing per model:
- *   supported_endpoint_types: ["anthropic", ...] -> api: "anthropic-messages"
- *   supported_endpoint_types: ["openai"]         -> api: "openai-completions"
- *   missing / neither                            -> provider-level api fallback
- *
- * Anthropic models share the same baseUrl; the Anthropic SDK strips a
- * trailing `/v1` itself before appending `/v1/messages`, so the discovery
- * URL (which ends in `/v1`) round-trips correctly.
- */
 async function discoverProxyModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
@@ -1049,23 +897,16 @@ async function discoverProxyModels(
 				reasoning: reference?.reasoning ?? false,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input: reference?.input ?? ["text"],
-				// Proxy pricing is provider-specific and usually does not match
-				// upstream bundled catalogs, so keep costs local-unknown even when
-				// we successfully recover the upstream model identity.
+
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				// Prefer the context_length the API reports for this model; fall
-				// back to the bundled reference, then a sane default.
+
 				contextWindow:
 					toPositiveNumberOrUndefined(item.context_length) ??
 					reference?.contextWindow ??
 					DISCOVERY_DEFAULT_CONTEXT_WINDOW,
 				maxTokens: reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
 				headers,
-				// OpenAI-compat fields are no-ops on anthropic models; the
-				// Anthropic SDK ignores them. Provider-level disableStrictTools
-				// flows in via #applyProviderCompat for the third-party-Anthropic
-				// path. Cross-wire bundled compat is intentionally not copied:
-				// request-shaping fields are provider-wire specific.
+
 				compat: isAnthropic
 					? undefined
 					: {
@@ -1091,9 +932,6 @@ export function normalizeLlamaCppBaseUrl(baseUrl?: string): string {
 	}
 }
 
-// ensureLlamaCppV1BaseUrl appends the OpenAI-compatible `/v1` prefix a
-// chat-completions request needs; native discovery keeps the bare root, which
-// serves `/models` and `/props` but not `/chat/completions`.
 export function ensureLlamaCppV1BaseUrl(baseUrl: string): string {
 	return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 }

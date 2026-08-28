@@ -1,35 +1,15 @@
-/**
- * Parser and renderer for V8 `.cpuprofile` files (emitted by `node --cpu-prof`,
- * `bun --cpu-prof`, Chrome DevTools, and the CDP `Profiler` domain).
- *
- * The raw file is a JSON blob with a flat node table and up to millions of
- * sample/timestamp entries — useless to read directly. `renderCpuProfile`
- * converts it into a compact bottleneck summary:
- *
- * - the hot-path call tree, pruned to frames with meaningful self time,
- *   with pass-through chains collapsed and direct recursion flattened
- * - `(idle)` time excluded from on-CPU totals
- * - a profile-wide "top functions by self time" table
- *
- * Consumed by the read tool: `*.cpuprofile` reads show the summary, `:raw`
- * returns the original JSON.
- */
-
 import { formatPct, mergeInto, type ProfileNode, type RenderTreeContext, renderProfileNode } from "./profile-tree";
 
-/** Matches paths the read tool should treat as V8 CPU profiles. */
 export function isCpuProfilePath(filePath: string): boolean {
 	return /\.cpuprofile$/i.test(filePath);
 }
 
-/** Call-site metadata of one profile node. `lineNumber` is 0-based. */
 interface CpuProfileCallFrame {
 	functionName: string;
 	url?: string;
 	lineNumber?: number;
 }
 
-/** One node in the flat profile tree; `children` are node ids. */
 interface CpuProfileNode {
 	id: number;
 	callFrame: CpuProfileCallFrame;
@@ -37,7 +17,6 @@ interface CpuProfileNode {
 	children?: number[];
 }
 
-/** Parsed V8 CPU profile. `startTime`/`endTime`/`timeDeltas` are microseconds. */
 interface CpuProfile {
 	nodes: CpuProfileNode[];
 	startTime: number;
@@ -50,11 +29,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-/**
- * Parse a `.cpuprofile` JSON blob. Accepts both the bare profile and the CDP
- * `Profiler.stop` result shape (`{ profile: {...} }`). Returns null when the
- * text is not a structurally valid V8 CPU profile.
- */
 export function parseCpuProfile(text: string): CpuProfile | null {
 	let data: unknown;
 	try {
@@ -80,11 +54,9 @@ export function parseCpuProfile(text: string): CpuProfile | null {
 	};
 }
 
-/** Fraction of total on-CPU time a subtree needs to stay visible. */
 const PRUNE_FRACTION = 0.02;
 const TOP_FUNCTIONS = 20;
 
-/** Trim a call-frame URL for display: drop `file://`, keep the tail. */
 function shortUrl(url: string): string {
 	let u = url.startsWith("file://") ? url.slice("file://".length) : url;
 	const nm = u.lastIndexOf("node_modules/");
@@ -101,11 +73,6 @@ function frameLabel(frame: CpuProfileCallFrame): string {
 	return `${name} (${shortUrl(frame.url)}${line})`;
 }
 
-/**
- * Self time per node id in microseconds. Prefers the sample/delta streams
- * (each delta is attributed to the sample that closes its interval); falls
- * back to `hitCount × average interval` for profiles without samples.
- */
 function selfMicros(profile: CpuProfile): Map<number, number> {
 	const self = new Map<number, number>();
 	const { samples, timeDeltas } = profile;
@@ -113,7 +80,7 @@ function selfMicros(profile: CpuProfile): Map<number, number> {
 		const n = Math.min(samples.length, timeDeltas.length);
 		for (let i = 0; i < n; i++) {
 			const delta = timeDeltas[i];
-			// V8 occasionally emits negative/zero deltas around timer adjustments.
+
 			if (typeof delta !== "number" || delta <= 0) continue;
 			const id = samples[i];
 			self.set(id, (self.get(id) ?? 0) + delta);
@@ -130,7 +97,6 @@ function selfMicros(profile: CpuProfile): Map<number, number> {
 	return self;
 }
 
-/** Meta-frames that represent time off the JS stack rather than user code. */
 const IDLE_FRAME = "(idle)";
 const ROOT_FRAME = "(root)";
 
@@ -138,11 +104,6 @@ function formatMs(micros: number): string {
 	return (micros / 1000).toFixed(1);
 }
 
-/**
- * Render a V8 CPU profile as an agent-friendly bottleneck summary.
- * Returns null when `text` is not a CPU profile (caller falls back to the
- * plain-text path).
- */
 export function renderCpuProfile(text: string): string | null {
 	const profile = parseCpuProfile(text);
 	if (!profile) return null;
@@ -155,7 +116,6 @@ export function renderCpuProfile(text: string): string | null {
 	}
 	const self = selfMicros(profile);
 
-	// Guard against malformed child cycles; V8 output is a proper tree.
 	const visited = new Set<number>();
 	const build = (node: CpuProfileNode): ProfileNode => {
 		visited.add(node.id);
@@ -175,7 +135,6 @@ export function renderCpuProfile(text: string): string | null {
 		return { key: label, label, value, recursion: 0, children };
 	};
 
-	// Promote past the synthetic "(root)" frame so hot paths start at real code.
 	const roots: ProfileNode[] = [];
 	for (const node of profile.nodes) {
 		if (referenced.has(node.id) || visited.has(node.id)) continue;

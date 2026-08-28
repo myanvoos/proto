@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/tofu-plan.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.tofu-plan]
 description = "Compact OpenTofu plan output"

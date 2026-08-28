@@ -27,7 +27,6 @@ interface PendingLegacySseRequest {
 	abortHandler?: () => void;
 }
 
-/** Legacy MCP HTTP+SSE transport from protocol revision 2024-11-05. */
 export class LegacySseTransport implements MCPTransport {
 	#connected = false;
 	#endpointUrl: string | null = null;
@@ -40,14 +39,13 @@ export class LegacySseTransport implements MCPTransport {
 	onError?: (error: Error) => void;
 	onNotification?: (method: string, params: unknown) => void;
 	onRequest?: (method: string, params: unknown) => Promise<unknown>;
-	/** Called on 401/403 to attempt token refresh. Returns updated headers or null. */
+
 	onAuthError?: () => Promise<Record<string, string> | null>;
 
 	constructor(config: MCPSseServerConfig) {
 		this.#config = config;
 	}
 
-	/** Fetch an endpoint with header precedence and origin policy. */
 	#fetch(url: string, init: MCPFetchInit, generated: Record<string, string>): Promise<Response> {
 		return mcpFetch(
 			url,
@@ -214,10 +212,7 @@ export class LegacySseTransport implements MCPTransport {
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
 		const operation = createMCPTimeout(timeout, options?.signal);
 		const deferred = Promise.withResolvers<unknown>();
-		// Observe the response promise synchronously so a stream-close rejection
-		// from `#rejectPending` that lands while `request()` is still awaiting the
-		// POST round-trip is never flagged as an unhandled rejection. The real
-		// `await deferred.promise` below still receives and propagates the error.
+
 		void deferred.promise.catch(() => undefined);
 		const pending: PendingLegacySseRequest = {
 			resolve: deferred.resolve,
@@ -364,7 +359,6 @@ export class LegacySseTransport implements MCPTransport {
 	}
 }
 
-/** Create and connect a legacy HTTP+SSE transport. */
 export async function createSseTransport(config: MCPSseServerConfig): Promise<LegacySseTransport> {
 	const transport = new LegacySseTransport(config);
 	await transport.connect();

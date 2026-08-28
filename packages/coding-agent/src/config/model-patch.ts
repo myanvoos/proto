@@ -5,7 +5,7 @@ import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ModelOverride } from "./models-config-schema";
-/** Provider override config (baseUrl, headers, apiKey, compat, transport) without custom models */
+
 export interface ProviderOverride {
 	baseUrl?: string;
 	headers?: Record<string, string>;
@@ -16,32 +16,6 @@ export interface ProviderOverride {
 	transport?: Model<Api>["transport"];
 }
 
-/**
- * Merge a freshly discovered model with the matching bundled/configured entry
- * (or a runtime provider override when no bundled entry exists).
- *
- * `baseUrl` resolution priority:
- *   1. User-set `providerOverride.baseUrl` (explicit override in models.json)
- *   2. Discovered baseUrl (xiaomi `tp-` token-plan keys resolve to
- *      `token-plan-sgp.xiaomimimo.com` at discovery time)
- *   3. Existing bundled baseUrl (the host baked into `models.json`)
- *
- * `transport` resolution priority:
- *   1. `providerOverride.transport` (e.g. `pi-native` for auth-gateway users)
- *   2. `existing.transport` (carried over from boot-time override application)
- *   3. `model.transport` (rarely set — discovery defaults omit it)
- *
- * Without (1), the user's override would lose to discovery; without (2)
- * preferred over (3), the bundled `api.xiaomimimo.com` would shadow the
- * tp- token-plan host and produce 401s on the first stream call.
- * Without explicit transport propagation, an openrouter (or any) entry
- * marked `transport: pi-native` in models.yml silently reverts to the
- * default openai-completions transport after the background catalog
- * refresh — so the first `/model` switch after boot hits the raw OpenAI
- * chat-completions URL instead of the gateway's `/v1/pi/stream` (#2555).
- * See `xiaomi-tp-discovery-merge.test.ts` and the `refresh()` baseUrl-override
- * regression in `model-registry.test.ts`.
- */
 export function mergeDiscoveredModel<TApi extends Api>(
 	model: Model<TApi>,
 	existing: Model<Api> | undefined,
@@ -106,11 +80,6 @@ export function dropProviderModels(models: readonly Model<Api>[], providers: Rea
 	return models.filter(model => !providers.has(model.provider));
 }
 
-/**
- * Merge `incoming` entries into a copy of `base`, keyed by `provider`+`id`.
- * Matches are replaced with `combine(existing, entry)`; new entries are
- * appended as `combine(undefined, entry)`.
- */
 export function mergeByModelKey<T extends { provider: string; id: string }>(
 	base: readonly Model<Api>[],
 	incoming: readonly T[],
@@ -165,11 +134,6 @@ export function mergeProviderRemoteCompactionConfig(
 	return mergeRemoteCompactionConfig(providerConfig, modelConfig);
 }
 
-/**
- * The patchable subset of `Model` fields shared by `modelOverrides` entries,
- * custom model definitions, and parsed custom-model overlays. `undefined`
- * always means "leave the base value alone".
- */
 export interface ModelPatch {
 	name?: string;
 	reasoning?: boolean;
@@ -190,13 +154,6 @@ export interface ModelPatch {
 	premiumMultiplier?: number;
 }
 
-/**
- * How a patch treats the base model's transport metadata (headers/compat):
- * - `merge`: fold the patch into the base's (modelOverrides semantics).
- * - `replace`: the patch owns transport wholesale — same-id custom definitions
- *   already folded provider-level headers/compat in during parsing, so bundled
- *   transport metadata must not be re-merged (see `#mergeCustomModels`).
- */
 type ModelTransportPolicy = "merge" | "replace";
 export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: ModelTransportPolicy): Model<Api> {
 	const result = { ...base };
@@ -238,8 +195,6 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 	}
 	const built = buildModel({ ...toModelSpec(result), compat } as ModelSpec<Api>);
 	if (patch.thinking !== undefined && built.thinking !== undefined) {
-		// Config-authored capability metadata owns the explicit surface; build
-		// first so non-reasoning and wire-disabled models still suppress it.
 		built.thinking = patch.thinking;
 	}
 	return built;

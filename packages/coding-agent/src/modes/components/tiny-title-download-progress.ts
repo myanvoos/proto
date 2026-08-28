@@ -67,9 +67,7 @@ export class TinyTitleDownloadProgressComponent implements Component {
 		return this.#event?.status === "ready" || this.#event?.status === "error";
 	}
 
-	invalidate(): void {
-		// No cached state.
-	}
+	invalidate(): void {}
 
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);

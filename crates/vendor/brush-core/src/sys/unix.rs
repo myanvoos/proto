@@ -13,10 +13,10 @@ pub mod signal;
 pub mod terminal;
 pub(crate) mod users;
 
-/// Platform-specific errors.
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
-	/// A system error occurred.
+
 	#[error("system error: {0}")]
 	ErrnoError(#[from] nix::errno::Errno),
 }

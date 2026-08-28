@@ -26,7 +26,7 @@ if (
 	throw new Error("@huggingface/transformers package manifest has no string version");
 }
 const transformersVersion = transformersManifest.version;
-// Worker threads re-enter the binary's single CLI host entry.
+
 const isDryRun = process.argv.includes("--dry-run");
 const targets: BinaryTarget[] = [
 	{
@@ -141,7 +141,7 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 		minifyIdentifiers: true,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
 	});
-	// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
+
 	if (shouldAdhocSignDarwinBinary(target)) {
 		await runCommand(["codesign", "--force", "--sign", "-", path.join(repoRoot, target.outfile)], repoRoot);
 	}
@@ -173,8 +173,7 @@ async function main(): Promise<void> {
 	}
 
 	await fs.mkdir(binariesDir, { recursive: true });
-	// Build inside the try so resetArtifacts() always restores the empty
-	// checked-in placeholders, even if a build step throws.
+
 	try {
 		for (const target of selectedTargets) {
 			await buildBinary(target);

@@ -24,11 +24,6 @@ export function collectToolCallsById(entries: readonly SessionEntry[]): Map<stri
 	return toolCalls;
 }
 
-/**
- * Extract the `path` argument from a paired `read` tool call, when the result
- * is a `read` result carrying a string path. Returns `undefined` otherwise.
- * Shared primitive for read-targeted protection matchers (skills, plans, …).
- */
 export function getReadToolPath({ toolResult, toolCall }: ProtectedToolContext): string | undefined {
 	if (toolResult.toolName !== "read" || toolCall?.name !== "read") return undefined;
 	const path = (toolCall.arguments as Record<string, unknown>).path;
@@ -41,7 +36,6 @@ export function isSkillReadToolResult(context: ProtectedToolContext): boolean {
 
 const ARTIFACT_INTERNAL_URL_PREFIX = "artifact://";
 
-/** Recovery reads of session artifacts — eliding one only mints another artifact and can repeat indefinitely. */
 export function isArtifactRecoveryToolResult(context: ProtectedToolContext): boolean {
 	if (getReadToolPath(context)?.startsWith(ARTIFACT_INTERNAL_URL_PREFIX)) return true;
 	const meta = (context.toolResult.details as { meta?: { source?: { type?: string; value?: string } } } | undefined)

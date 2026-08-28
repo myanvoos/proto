@@ -3,7 +3,7 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, timing};
 use clap::Parser;
 
-/// Report on usage time.
+
 #[derive(Parser)]
 pub(crate) struct TimesCommand {}
 

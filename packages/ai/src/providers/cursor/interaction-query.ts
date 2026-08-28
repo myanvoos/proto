@@ -52,8 +52,8 @@ function protoUnknownFields(message: object): ProtoUnknownField[] {
 }
 
 function attachUnknownApprovedField(response: InteractionResponse, fieldNo: number): void {
-	const bag: ProtoUnknownBag = response; // protobuf-es unnamed oneof members live on $unknown
-	// protobuf-es writes tag + raw(data); LEN fields need the length prefix in data.
+	const bag: ProtoUnknownBag = response;
+
 	const field: ProtoUnknownField = { no: fieldNo, wireType: 2, data: new Uint8Array([0x02, 0x0a, 0x00]) };
 	const existing = bag.$unknown;
 	if (Array.isArray(existing)) {
@@ -84,8 +84,6 @@ function sendUnknownApprovedInteractionResponse(
 	queryId: number,
 	fieldNo: number,
 ): void {
-	// `approved {}` on the matching response oneof: field N, empty message whose
-	// first member is field 1 (`approved`) with an empty length-delimited payload.
 	const response = create(InteractionResponseSchema, { id: queryId });
 	attachUnknownApprovedField(response, fieldNo);
 	const clientMessage = create(AgentClientMessageSchema, {
@@ -95,18 +93,6 @@ function sendUnknownApprovedInteractionResponse(
 	log("interactionResponse", "unknownApproved", { id: queryId, field: fieldNo });
 }
 
-/**
- * Answer a Cursor `interaction_query` so the Run RPC can continue.
- *
- * Hosted web search / Exa / unnamed permission gates (field 9 = WebFetch on
- * current Cursor builds) block the turn until the client writes an
- * `interaction_response`. Dropping the frame leaves the HTTP/2 stream alive
- * on heartbeats that are not semantic progress; the lazy idle watchdog then
- * aborts with "Provider stream stalled while waiting for the next event".
- *
- * Unsupported interactive queries are rejected so the server is not stranded.
- * VM setup is left unanswered rather than reporting a fake success.
- */
 export function handleInteractionQuery(query: InteractionQuery, h2Request: http2.ClientHttp2Stream): void {
 	const queryCase = query.query.case;
 	log("interactionQuery", queryCase, query.query.value);
@@ -147,8 +133,6 @@ export function handleInteractionQuery(query: InteractionQuery, h2Request: http2
 			});
 			return;
 		case "webFetchRequestQuery":
-			// Hosted WebFetch permission prompt. Field 9 is what cursor-grok-4.6-xhigh
-			// sends after "I'll fetch the page…"; answering lets the server continue.
 			sendInteractionResponse(h2Request, query.id, {
 				case: "webFetchRequestResponse",
 				value: create(WebFetchRequestResponseSchema, {
@@ -200,8 +184,6 @@ export function handleInteractionQuery(query: InteractionQuery, h2Request: http2
 			});
 			return;
 		case "setupVmEnvironmentArgs":
-			// Result oneof is success-only. Do not invent a VM; silence is better
-			// than a false SetupVmEnvironmentSuccess (review of #8047).
 			log("warn", "unhandledInteractionQuery", { queryCase, id: query.id });
 			return;
 		default: {

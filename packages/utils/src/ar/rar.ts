@@ -11,7 +11,7 @@ import type { ArchiveIndexEntry, FormatReader, FormatReadOptions, MemberSource }
 const RAR4_MARKER = Uint8Array.of(0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00);
 const RAR5_MARKER = Uint8Array.of(0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00);
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
-// WHATWG maps the "latin1" label to windows-1252; bun-types only names the latter.
+
 const LATIN1 = new TextDecoder("windows-1252");
 
 interface RarRecord {
@@ -141,12 +141,10 @@ class RarArchive {
 	}
 }
 
-/** Probe the RAR 1.5-4.x or RAR5 signature. */
 export function sniffRar(bytes: Uint8Array): boolean {
 	return findMarker(bytes) !== undefined;
 }
 
-/** Index a RAR4 or RAR5 archive and defer member decompression until extraction. */
 export const readRar: FormatReader = async (source, options) => {
 	if (!Number.isSafeInteger(source.size) || source.size < 0) {
 		throw new ArchiveError("Archive is too large to read safely");

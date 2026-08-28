@@ -25,7 +25,7 @@ from rich.text import Text
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "python/proto-rpc/src"))
 
-from proto_rpc import (  # noqa: E402
+from proto_rpc import (
     AgentEndEvent,
     AutoRetryEndEvent,
     AutoRetryStartEvent,
@@ -1275,7 +1275,7 @@ def run_model_sync(
                 "thinkingLevel": "high",
             }
             status = "ok"
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         error_message = (
             f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
         )

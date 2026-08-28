@@ -1,5 +1,3 @@
-/** Behavior-compatible reimplementation of @puppeteer/browsers' used surface. */
-
 import type * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -9,7 +7,6 @@ import { extractArchive } from "./ar";
 const CHROME_FOR_TESTING_BASE_URL = "https://storage.googleapis.com/chrome-for-testing-public";
 const CHROME_METADATA_BASE_URL = "https://googlechromelabs.github.io/chrome-for-testing";
 
-/** Supported browser products. */
 export enum Browser {
 	CHROME = "chrome",
 	CHROMEHEADLESSSHELL = "chrome-headless-shell",
@@ -18,7 +15,6 @@ export enum Browser {
 	CHROMEDRIVER = "chromedriver",
 }
 
-/** Browser download platform identifiers. */
 export enum BrowserPlatform {
 	LINUX = "linux",
 	LINUX_ARM = "linux_arm",
@@ -40,7 +36,6 @@ const BROWSER_PLATFORMS = [
 	BrowserPlatform.MAC_ARM,
 ] as const;
 
-/** Chrome-for-Testing release channel tags accepted by {@link resolveBuildId}. */
 export enum BrowserTag {
 	CANARY = "canary",
 	NIGHTLY = "nightly",
@@ -52,13 +47,11 @@ export enum BrowserTag {
 	LATEST = "latest",
 }
 
-/** Download progress reported while a browser archive is streamed to disk. */
 export interface BrowserDownloadProgress {
 	downloadedBytes: number;
 	totalBytes: number;
 }
 
-/** Inputs used to locate an installed browser executable. */
 export interface ComputeExecutablePathOptions {
 	browser: Browser;
 	buildId: string;
@@ -66,13 +59,11 @@ export interface ComputeExecutablePathOptions {
 	platform?: BrowserPlatform;
 }
 
-/** Inputs used to download and install a browser. */
 export interface InstallOptions extends ComputeExecutablePathOptions {
 	baseUrl?: string;
 	downloadProgressCallback?: (progress: BrowserDownloadProgress) => void;
 }
 
-/** Metadata for one browser installation found in a Puppeteer cache. */
 export interface InstalledBrowser {
 	browser: Browser;
 	buildId: string;
@@ -93,7 +84,6 @@ interface PatchVersions {
 	builds: Record<string, { version: string }>;
 }
 
-/** Detect the current host's Puppeteer browser platform. */
 export function detectBrowserPlatform(): BrowserPlatform | undefined {
 	const platform = os.platform();
 	const arch = os.arch();
@@ -102,7 +92,6 @@ export function detectBrowserPlatform(): BrowserPlatform | undefined {
 	return undefined;
 }
 
-/** Resolve a Chrome-for-Testing channel, milestone, or build prefix to a full build ID. */
 export async function resolveBuildId(
 	browser: Browser,
 	_platform: BrowserPlatform,
@@ -131,7 +120,6 @@ export async function resolveBuildId(
 	return tag;
 }
 
-/** Return the Chrome-for-Testing archive URL for a browser build. */
 export function getDownloadUrl(
 	browser: Browser,
 	platform: BrowserPlatform,
@@ -144,7 +132,6 @@ export function getDownloadUrl(
 	return new URL(`${root}/${buildId}/${archivePlatform}/chrome-${archivePlatform}.zip`);
 }
 
-/** Compute the executable path in Puppeteer's cache layout. */
 export function computeExecutablePath(options: ComputeExecutablePathOptions): string {
 	const platform = options.platform ?? detectBrowserPlatform();
 	if (!platform) throw new Error("Cannot determine a browser platform for this host");
@@ -175,7 +162,6 @@ export function computeExecutablePath(options: ComputeExecutablePathOptions): st
 	}
 }
 
-/** Scan a Puppeteer cache for browser installation directories. */
 export async function getInstalledBrowsers(options: { cacheDir: string }): Promise<InstalledBrowser[]> {
 	const installed: InstalledBrowser[] = [];
 	for (const browser of BROWSERS) {
@@ -205,15 +191,12 @@ export async function getInstalledBrowsers(options: { cacheDir: string }): Promi
 						platform: parsed.platform,
 					}),
 				});
-			} catch {
-				// Other browser products are not part of the surface used by PROTO.
-			}
+			} catch {}
 		}
 	}
 	return installed;
 }
 
-/** Download and unpack Chrome into Puppeteer's existing cache layout. */
 export async function install(options: InstallOptions): Promise<InstalledBrowser> {
 	const platform = options.platform ?? detectBrowserPlatform();
 	if (!platform) throw new Error("Cannot determine a browser platform for this host");

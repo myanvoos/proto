@@ -29,10 +29,6 @@ function displaySelectorSuffix(sel: string | undefined): string {
 	return chunks.length > 0 ? `:${chunks.join(":")}` : "";
 }
 
-/**
- * Extract the read call's target path. `path` is the canonical arg; `file_path`
- * is the legacy alias still tolerated by the read tool schema.
- */
 function readArgsTarget(args: unknown): string | undefined {
 	if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
 	const record = args as Record<string, unknown>;
@@ -47,24 +43,12 @@ export function readArgsHaveTarget(args: unknown): boolean {
 	return readArgsTarget(args) !== undefined;
 }
 
-/**
- * Whether a read collapses into the compact {@link ReadToolGroupComponent}
- * rather than a full tool execution. Filesystem/external targets always
- * collapse; other internal URLs (`skill://`, `agent://`, …) render full so
- * their resolved content is visible. `xd://` device reads are the exception —
- * they list devices/docs and read better in the compact grouped view.
- */
 export function readArgsCollapseIntoGroup(args: unknown): boolean {
 	const target = readArgsTarget(args);
 	if (target === undefined) return false;
 	return target.startsWith(XD_URL_PREFIX) || !InternalUrlRouter.instance().canHandle(target);
 }
 
-/**
- * Return the collapsed read calls that can own a turn's usage row. Mixed-tool
- * turns and visible content after a read keep the standalone row so request
- * metrics retain their transcript ordering.
- */
 export function groupedReadUsageCallIds(message: AssistantMessage): string[] | undefined {
 	const toolCallIds: string[] = [];
 	let sawToolCall = false;
@@ -150,7 +134,6 @@ type ReadUsageRow = {
 	timestamp?: number;
 };
 
-/** Number of code lines to show in collapsed preview mode */
 const COLLAPSED_PREVIEW_LINES = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 
 type ReadDisplayTarget = {
@@ -352,21 +335,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#expanded = false;
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
-	// A read group accretes entries across multiple assistant completions for as
-	// long as the run of reads is uninterrupted. While it is the active group it
-	// must stay in the transcript's repaintable live region — its header line
-	// re-layouts from `Read <path>` to `Read (N)` + tree as entries arrive, so a
-	// frozen snapshot taken on a risk terminal would strand the single-entry form
-	// (see TranscriptContainer / NativeScrollbackLiveRegion). The controller calls
-	// `finalize()` once the run breaks so the block can commit to native scrollback.
+
 	#finalized = false;
-	// Forced terminal even with a still-pending entry: the turn ended (abort or
-	// completion) so no late result is coming. Set via `seal()`.
+
 	#sealed = false;
-	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
-	// a finalized group can still change — a late read result landing after the
-	// run broke, seal(), or an expansion toggle — and the transcript's
-	// width-epoch resolution and committed-render bypass must observe it.
+
 	#blockVersion = 0;
 
 	constructor(options: ReadToolGroupOptions = {}) {
@@ -384,11 +357,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
 		if (!this.#finalized) return false;
-		// Closed to new entries, but a still-pending entry means its result is in
-		// flight — parallel reads can finalize the group (a sibling tool starts and
-		// breaks the run) before a read's `tool_execution_end` lands. Stay live so
-		// the late result repaints instead of freezing the pending preview into
-		// native scrollback on ED3-risk terminals (#issue: stuck "Read <path>").
+
 		return !this.#hasPendingEntries();
 	}
 
@@ -403,11 +372,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#finalized = true;
 	}
 
-	/**
-	 * Force the group terminal even if an entry never received its result (the
-	 * turn aborted or ended). Lets it freeze and stop pinning the transcript live
-	 * region instead of lingering on a pending preview until the next thaw.
-	 */
 	seal(): void {
 		if (!this.#sealed) this.#blockVersion++;
 		this.#sealed = true;
@@ -430,12 +394,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
-	/**
-	 * Re-key an entry whose streamed tool-call id changed mid-stream (a provider
-	 * rewriting the id across deltas; see EventController's
-	 * `#streamedToolCallIdByIndex`). Preserves row order so a sibling read run is
-	 * not visibly reshuffled, and no-ops when the rename would collide.
-	 */
 	renameEntry(oldId: string, newId: string): void {
 		if (oldId === newId || !newId) return;
 		const entry = this.#entries.get(oldId);
@@ -449,7 +407,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		for (const [key, value] of reordered) this.#entries.set(key, value);
 		this.#updateDisplay();
 	}
-	/** Remove one call without discarding successful siblings in the shared group. */
+
 	removeEntry(toolCallId: string): boolean {
 		if (!this.#entries.delete(toolCallId)) return this.#entries.size === 0;
 		this.#updateDisplay();
@@ -482,8 +440,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			typeof details?.conflictCount === "number" && details.conflictCount > 0 ? details.conflictCount : undefined;
 		entry.conflictCount = conflictCount;
 		entry.status = result.isError ? "error" : suffixResolution ? "warning" : "success";
-		// Store clean display content for preview/expanded display when the read
-		// tool provides it; fall back to model-facing text for legacy results.
+
 		const displayContent = details?.displayContent;
 		const textContent = result.content?.find(c => c.type === "text")?.text;
 		if (displayContent !== undefined || textContent !== undefined) {
@@ -494,10 +451,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
-	/**
-	 * Nest one request's usage beneath the last visible read call from that
-	 * request. Parallel reads share one row rather than duplicating request totals.
-	 */
 	attachUsage(
 		toolCallIds: readonly string[],
 		usage: Usage,
@@ -549,7 +502,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const displayTargets = this.#displayTargetsForEntries(entries);
 		const displayRows = this.#buildSummaryRows(displayTargets);
 
-		// Clear previous children and rebuild the summary and preview blocks.
 		this.clear();
 		this.#text = new Text("", 0, 0);
 
@@ -810,11 +762,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		return ` ${theme.fg("warning", `(${n} conflict${n === 1 ? "" : "s"})`)}`;
 	}
 
-	/**
-	 * Add a code-cell content preview below the entry summary.
-	 * When collapsed: shows first COLLAPSED_PREVIEW_LINES lines with a "… N more lines ⟨<key>: Expand⟩" hint.
-	 * When expanded: shows full content.
-	 */
 	#addContentPreview(entry: ReadEntry): void {
 		const split = splitPathAndSel(entry.path);
 		const lang = getLanguageFromPath(split.path);

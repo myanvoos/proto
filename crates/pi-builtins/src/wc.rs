@@ -1,16 +1,16 @@
-//! `wc` builtin: print newline, word, byte, character, and maximum-line-length counts.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 mod count_fast {
 	use std::io::{self, ErrorKind, Read};
 	#[cfg(unix)]
 	use std::os::fd::AsRawFd;
-	
+
 	#[cfg(unix)]
 	use libc::{_SC_PAGESIZE, S_IFREG, sysconf};
 	use uucore::hardware::SimdPolicy;
-	
+
 	use super::WordCountable;
 	use super::{wc_simd_allowed, word_count::WordCount};
 	#[cfg(windows)]
@@ -19,39 +19,39 @@ mod count_fast {
 	const FILE_ATTRIBUTE_ARCHIVE: u32 = 32;
 	#[cfg(windows)]
 	const FILE_ATTRIBUTE_NORMAL: u32 = 128;
-	
+
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	use std::os::fd::AsFd;
-	
+
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	use libc::S_IFIFO;
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	use uucore::pipes::{MAX_ROOTLESS_PIPE_SIZE, pipe, splice, splice_exact};
-	
+
 	const BUF_SIZE: usize = 256 * 1024;
-	
-	/// This is a Linux-specific function to count the number of bytes using the
-	/// `splice` system call, which is faster than using `read`.
-	///
-	/// On error it returns the number of bytes it did manage to read, since the
-	/// caller will fall back to a simpler method.
+
+
+
+
+
+
 	#[inline]
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	fn count_bytes_using_splice(fd: &impl AsFd) -> Result<usize, usize> {
 		let null_file = uucore::pipes::dev_null().ok_or(0_usize)?;
-		// todo: avoid generating broker if input is pipe (fcntl_setpipe_size succeed)
-		// and directly splice() to /dev/null to save RAM usage
+
+
 		let (pipe_rd, pipe_wr) = pipe().map_err(|_| 0_usize)?;
-	
+
 		let mut byte_count = 0;
-		// improve throughput from pipe
+
 		let _ = rustix::pipe::fcntl_setpipe_size(fd, MAX_ROOTLESS_PIPE_SIZE);
 		loop {
 			match splice(fd, &pipe_wr, MAX_ROOTLESS_PIPE_SIZE) {
 				Ok(0) => break,
 				Ok(res) => {
 					byte_count += res;
-					// Silent the warning as we want to the error message
+
 					if splice_exact(&pipe_rd, &null_file, res).is_err() {
 						return Err(byte_count);
 					}
@@ -59,23 +59,23 @@ mod count_fast {
 				Err(_) => return Err(byte_count),
 			}
 		}
-	
+
 		Ok(byte_count)
 	}
-	
-	/// In the special case where we only need to count the number of bytes. There
-	/// are several optimizations we can do:
-	///   1. On Unix,  we can simply `stat` the file if it is regular.
-	///   2. On Linux -- if the above did not work -- we can use splice to count the
-	///      number of bytes if the file is a FIFO.
-	///   3. On Windows we can use `std::os::windows::fs::MetadataExt` to get file
-	///      size for regular files
-	///   3. Otherwise, we just read normally, but without the overhead of counting
-	///      other things such as lines and words.
+
+
+
+
+
+
+
+
+
+
 	#[inline]
 	pub(crate) fn count_bytes_fast<T: WordCountable>(handle: &mut T) -> (usize, Option<io::Error>) {
 		let mut byte_count = 0;
-	
+
 		#[cfg(unix)]
 		if let Some(fd) = handle.inner_fd() {
 			let stat = rustix::fs::fstat(fd);
@@ -108,13 +108,13 @@ mod count_fast {
 				}
 			}
 		}
-	
+
 		#[cfg(windows)]
 		{
 			if let Some(file) = handle.inner_file() {
 				if let Ok(metadata) = file.metadata() {
 					let attributes = metadata.file_attributes();
-	
+
 					if (attributes & FILE_ATTRIBUTE_ARCHIVE) != 0
 						|| (attributes & FILE_ATTRIBUTE_NORMAL) != 0
 					{
@@ -123,8 +123,8 @@ mod count_fast {
 				}
 			}
 		}
-	
-		// Fall back on `read`, but without the overhead of counting words and lines.
+
+
 		let mut buf = [0_u8; BUF_SIZE];
 		loop {
 			match handle.read(&mut buf) {
@@ -137,30 +137,30 @@ mod count_fast {
 			}
 		}
 	}
-	
-	/// A simple structure used to align a [`BUF_SIZE`] buffer to 32-byte boundary.
-	///
-	/// This is useful as bytecount uses 256-bit wide vector operations that run
-	/// much faster on aligned data (at least on x86 with AVX2 support).
+
+
+
+
+
 	#[repr(align(32))]
 	struct AlignedBuffer {
 		data: [u8; BUF_SIZE],
 	}
-	
+
 	impl Default for AlignedBuffer {
 		fn default() -> Self {
 			Self { data: [0; BUF_SIZE] }
 		}
 	}
-	
-	/// Returns a [`WordCount`] that counts the number of bytes, lines, and/or the
-	/// number of Unicode characters encoded in UTF-8 read via a Reader.
-	///
-	/// This corresponds to the `-c`, `-l` and `-m` command line flags to wc.
-	///
-	/// # Arguments
-	///
-	/// * `R` - A Reader from which the UTF-8 stream will be read.
+
+
+
+
+
+
+
+
+
 	pub(crate) fn count_bytes_chars_and_lines_fast<
 		R: Read,
 		const COUNT_BYTES: bool,
@@ -203,11 +203,11 @@ mod count_fast {
 }
 
 mod countable {
-	//! Traits and implementations for iterating over lines in a file-like object.
-	//!
-	//! This module provides a [`WordCountable`] trait and implementations
-	//! for some common file-like objects. Use the [`WordCountable::buffered`]
-	//! method to get an iterator over lines of a file-like object.
+
+
+
+
+
 	use std::{
 		fs::File,
 		io::{BufRead, BufReader, Read},
@@ -264,51 +264,51 @@ mod countable {
 }
 
 mod utf8 {
-	
-	
+
+
 	use std::{cmp, str};
-	
+
 	pub use read::{BufReadDecoder, BufReadDecoderError};
-	
-	///
-	/// Incremental, zero-copy UTF-8 decoding with error handling
-	///
-	/// The original implementation was written by Simon Sapin in the utf-8 crate <https://crates.io/crates/utf-8>.
-	/// `uu_wc` used to depend on that crate.
-	/// The author archived the repository <https://github.com/SimonSapin/rust-utf8>.
-	/// They suggested incorporating the source directly into `uu_wc` <https://github.com/uutils/coreutils/issues/4289>.
-	
+
+
+
+
+
+
+
+
+
 	#[derive(Debug, Copy, Clone)]
 	pub struct Incomplete {
 		pub buffer:     [u8; 4],
 		pub buffer_len: u8,
 	}
-	
+
 	impl Incomplete {
 		pub fn empty() -> Self {
 			Self { buffer: [0, 0, 0, 0], buffer_len: 0 }
 		}
-	
+
 		pub fn is_empty(self) -> bool {
 			self.buffer_len == 0
 		}
-	
+
 		pub fn new(bytes: &[u8]) -> Self {
 			let mut buffer = [0, 0, 0, 0];
 			let len = bytes.len();
 			buffer[..len].copy_from_slice(bytes);
 			Self { buffer, buffer_len: len as u8 }
 		}
-	
+
 		fn take_buffer(&mut self) -> &[u8] {
 			let len = self.buffer_len as usize;
 			self.buffer_len = 0;
 			&self.buffer[..len]
 		}
-	
-		/// `(consumed_from_input, None)`: not enough input
-		/// `(consumed_from_input, Some(Err(())))`: error bytes in buffer
-		/// `(consumed_from_input, Some(Ok(())))`: UTF-8 string in buffer
+
+
+
+
 		fn try_complete_offsets(&mut self, input: &[u8]) -> (usize, Option<Result<(), ()>>) {
 			let initial_buffer_len = self.buffer_len as usize;
 			let copied_from_input;
@@ -345,71 +345,71 @@ mod utf8 {
 	}
 
 	// Copyright (c) Simon Sapin and many others
-	//
+
 	// Permission is hereby granted, free of charge, to any
-	// person obtaining a copy of this software and associated
-	// documentation files (the "Software"), to deal in the
-	// Software without restriction, including without
-	// limitation the rights to use, copy, modify, merge,
-	// publish, distribute, sublicense, and/or sell copies of
-	// the Software, and to permit persons to whom the Software
-	// is furnished to do so, subject to the following
-	// conditions:
-	//
-	// The above copyright notice and this permission notice
-	// shall be included in all copies or substantial portions
-	// of the Software.
-	//
-	// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-	// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-	// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-	// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-	// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-	// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-	// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-	// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-	// DEALINGS IN THE SOFTWARE.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	mod read {
 		use std::io::{self, BufRead};
-		
+
 		use thiserror::Error;
-		
+
 		use super::{Incomplete, str};
-		
-		/// Wraps a `std::io::BufRead` buffered byte stream and decode it as UTF-8.
+
+
 		pub struct BufReadDecoder<B: BufRead> {
 			buf_read:       B,
 			bytes_consumed: usize,
 			incomplete:     Incomplete,
 		}
-		
+
 		#[derive(Debug, Error)]
 		pub enum BufReadDecoderError<'a> {
-			/// Represents one UTF-8 error in the byte stream.
-			///
-			/// In lossy decoding, each such error should be replaced with U+FFFD.
-			/// (See `BufReadDecoder::next_lossy` and `BufReadDecoderError::lossy`.)
+
+
+
+
 			#[error("invalid byte sequence: {:02x?}", .0)]
 			InvalidByteSequence(&'a [u8]),
-		
-			/// An I/O error from the underlying byte stream
+
+
 			#[error("underlying bytestream error: {}", .0)]
 			Io(#[source] io::Error),
 		}
-		
+
 		impl<B: BufRead> BufReadDecoder<B> {
 			pub fn new(buf_read: B) -> Self {
 				Self { buf_read, bytes_consumed: 0, incomplete: Incomplete::empty() }
 			}
-		
-			/// Decode and consume the next chunk of UTF-8 input.
-			///
-			/// This method is intended to be called repeatedly until it returns `None`,
-			/// which represents EOF from the underlying byte stream.
-			/// This is similar to `Iterator::next`,
-			/// except that decoded chunks borrow the decoder (~iterator)
-			/// so they need to be handled or copied before the next chunk can start
-			/// decoding.
+
+
+
+
+
+
+
+
+
 			#[allow(clippy::cognitive_complexity)]
 			pub fn next_strict(&mut self) -> Option<Result<&str, BufReadDecoderError<'_>>> {
 				enum BytesSource {
@@ -430,12 +430,12 @@ mod utf8 {
 						self.bytes_consumed = 0;
 					}
 					let buf = try_io!(self.buf_read.fill_buf());
-		
-					// Force loop iteration to go through an explicit `continue`
+
+
 					enum Unreachable {}
 					let _: Unreachable = if self.incomplete.is_empty() {
 						if buf.is_empty() {
-							return None; // EOF
+							return None;
 						}
 						match str::from_utf8(buf) {
 							Ok(_) => break (BytesSource::BufRead(buf.len()), Ok(())),
@@ -449,19 +449,19 @@ mod utf8 {
 								}
 								self.bytes_consumed = buf.len();
 								self.incomplete = Incomplete::new(buf);
-								// need more input bytes
+
 								continue;
 							},
 						}
 					} else {
 						if buf.is_empty() {
-							break (BytesSource::Incomplete, Err(())); // EOF with incomplete code point
+							break (BytesSource::Incomplete, Err(()));
 						}
 						let (consumed, opt_result) = self.incomplete.try_complete_offsets(buf);
 						self.bytes_consumed = consumed;
 						match opt_result {
 							None => {
-								// need more input bytes
+
 								continue;
 							},
 							Some(result) => break (BytesSource::Incomplete, result),
@@ -490,7 +490,7 @@ mod word_count {
 		cmp::max,
 		ops::{Add, AddAssign},
 	};
-	
+
 	#[derive(Debug, Default, Copy, Clone)]
 	pub struct WordCount {
 		pub bytes:           usize,
@@ -499,10 +499,10 @@ mod word_count {
 		pub words:           usize,
 		pub max_line_length: usize,
 	}
-	
+
 	impl Add for WordCount {
 		type Output = Self;
-	
+
 		fn add(self, other: Self) -> Self {
 			Self {
 				bytes:           self.bytes + other.bytes,
@@ -513,7 +513,7 @@ mod word_count {
 			}
 		}
 	}
-	
+
 	impl AddAssign for WordCount {
 		fn add_assign(&mut self, other: Self) {
 			*self = *self + other;
@@ -549,7 +549,7 @@ use self::{
 };
 use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes_lossy, util};
 
-/// The minimum character width for formatting counts when reading from stdin.
+
 const MINIMUM_WIDTH: usize = 7;
 
 struct Settings {
@@ -566,7 +566,7 @@ struct Settings {
 
 impl Default for Settings {
 	fn default() -> Self {
-		// Defaults if none of -c, -m, -l, -w, nor -L are specified.
+
 		Self {
 			show_bytes:           true,
 			show_chars:           false,
@@ -643,14 +643,14 @@ mod options {
 static ARG_FILES: &str = "files";
 static STDIN_REPR: &str = "-";
 
-/// Supported inputs.
+
 #[derive(Debug)]
 enum Inputs {
-	/// Default standard input, i.e. no arguments.
+
 	Stdin,
-	/// Command-line paths or a small `--files0-from` file.
+
 	Paths(Vec<InputIterItem>),
-	/// A streaming or large `--files0-from` source, whose width is not precomputed.
+
 	Files0From(Vec<InputIterItem>),
 }
 
@@ -696,13 +696,13 @@ impl Inputs {
 
 #[derive(Clone, Copy, Debug)]
 enum StdinKind {
-	/// Specified on command-line with "-" ([`STDIN_REPR`]).
+
 	Explicit,
-	/// Implied by the lack of any arguments.
+
 	Implicit,
 }
 
-/// Represents a single input, either to be counted or processed for other file names.
+
 #[derive(Clone, Debug)]
 enum Input {
 	Path(PathBuf),
@@ -720,7 +720,7 @@ impl From<PathBuf> for Input {
 }
 
 impl Input {
-	/// Converts input to the title that appears in stats.
+
 	fn to_title(&self) -> Option<Cow<'_, OsStr>> {
 		match self {
 			Self::Path(path) => {
@@ -739,7 +739,7 @@ impl Input {
 		}
 	}
 
-	/// Converts input into the form that appears in errors.
+
 	fn path_display(&self) -> String {
 		match self {
 			Self::Path(path) => escape_name_wrapper(path.as_os_str()),
@@ -748,7 +748,7 @@ impl Input {
 	}
 }
 
-/// When to show the "total" line
+
 #[derive(Clone, Copy, Default, PartialEq)]
 enum TotalWhen {
 	#[default]
@@ -818,7 +818,7 @@ impl WcError {
 	}
 }
 
-/// Parsed `wc` invocation.
+
 pub(crate) struct Wc {
 	matches: ArgMatches,
 }
@@ -933,42 +933,42 @@ fn word_count_from_reader<T: WordCountable>(
 		settings.show_max_line_length,
 		settings.show_words,
 	) {
-		// Specialize scanning loop to improve the performance.
+
 		(false, false, false, false, false) => unreachable!(),
 
-		// show_bytes
+
 		(true, false, false, false, false) => {
-			// Fast path when only show_bytes is true.
+
 			let (bytes, error) = count_bytes_fast(&mut reader);
 			(WordCount { bytes, ..WordCount::default() }, error)
 		},
 
-		// Fast paths that can be computed without Unicode decoding.
-		// show_lines
+
+
 		(false, false, true, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, false, false, true>(&mut reader)
 		},
-		// show_chars
+
 		(false, true, false, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, false, true, false>(&mut reader)
 		},
-		// show_chars, show_lines
+
 		(false, true, true, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, false, true, true>(&mut reader)
 		},
-		// show_bytes, show_lines
+
 		(true, false, true, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, true, false, true>(&mut reader)
 		},
-		// show_bytes, show_chars
+
 		(true, true, false, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, true, true, false>(&mut reader)
 		},
-		// show_bytes, show_chars, show_lines
+
 		(true, true, true, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, true, true, true>(&mut reader)
 		},
-		// show_words
+
 		(_, false, false, false, true) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -976,7 +976,7 @@ fn word_count_from_reader<T: WordCountable>(
 			false,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_max_line_length
+
 		(_, false, false, true, false) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -984,7 +984,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			false,
 		>(reader, settings.posixly_correct),
-		// show_max_line_length, show_words
+
 		(_, false, false, true, true) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -992,7 +992,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_lines, show_words
+
 		(_, false, true, false, true) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -1000,7 +1000,7 @@ fn word_count_from_reader<T: WordCountable>(
 			false,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_lines, show_max_line_length
+
 		(_, false, true, true, false) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -1008,7 +1008,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			false,
 		>(reader, settings.posixly_correct),
-		// show_lines, show_max_line_length, show_words
+
 		(_, false, true, true, true) => word_count_from_reader_specialized::<
 			_,
 			false,
@@ -1016,7 +1016,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_words
+
 		(_, true, false, false, true) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1024,7 +1024,7 @@ fn word_count_from_reader<T: WordCountable>(
 			false,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_max_line_length
+
 		(_, true, false, true, false) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1032,7 +1032,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			false,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_max_line_length, show_words
+
 		(_, true, false, true, true) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1040,7 +1040,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_lines, show_words
+
 		(_, true, true, false, true) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1048,7 +1048,7 @@ fn word_count_from_reader<T: WordCountable>(
 			false,
 			true,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_lines, show_max_line_length
+
 		(_, true, true, true, false) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1056,7 +1056,7 @@ fn word_count_from_reader<T: WordCountable>(
 			true,
 			false,
 		>(reader, settings.posixly_correct),
-		// show_chars, show_lines, show_max_line_length, show_words
+
 		(_, true, true, true, true) => word_count_from_reader_specialized::<
 			_,
 			true,
@@ -1090,7 +1090,7 @@ fn process_chunk<
 			if is_space {
 				*in_word = false;
 			} else if !(*in_word) {
-				// This also counts control characters! (As of GNU coreutils 9.5)
+
 				*in_word = true;
 				total.words += 1;
 			}
@@ -1177,19 +1177,19 @@ fn word_count_from_reader_specialized<
 }
 
 enum CountResult {
-	/// Nothing went wrong.
+
 	Success(WordCount),
-	/// Managed to open but failed to read.
+
 	Interrupted(WordCount, io::Error),
-	/// Didn't even manage to open.
+
 	Failure(io::Error),
 }
 
-/// If we fail to open a file, we only show the error. If we fail reading the
-/// file, we show a count for what we managed to read.
-///
-/// Therefore, the reading implementations always return a total and sometimes
-/// return an error: ([`WordCount`], `Option<io::Error>`).
+
+
+
+
+
 fn word_count_from_input(input: &Input, settings: &Settings, host: &mut Host) -> CountResult {
 	let (total, maybe_err) = match input {
 		Input::Stdin(_) => word_count_from_reader(&mut host.stdin, settings),
@@ -1204,25 +1204,25 @@ fn word_count_from_input(input: &Input, settings: &Settings, host: &mut Host) ->
 	}
 }
 
-/// Compute the number of digits needed to represent all counts in all inputs.
-///
-/// For [`Inputs::Stdin`], [`MINIMUM_WIDTH`] is returned, unless there is only
-/// one counter number to be printed, in which case 1 is returned.
-///
-/// For [`Inputs::Files0From`], [`MINIMUM_WIDTH`] is returned.
-///
-/// An [`Inputs::Paths`] may include zero or more "-" entries, each of which
-/// represents reading from `stdin`. The presence of any such entry causes this
-/// function to return a width that is at least [`MINIMUM_WIDTH`].
-///
-/// If an [`Inputs::Paths`] contains only one path and only one number needs to
-/// be printed then this function is optimized to return 1 without making any
-/// calls to get file metadata.
-///
-/// If file metadata could not be read from any of the [`Input::Path`] input,
-/// that input does not affect number width computation.  Otherwise, the file
-/// sizes from the files' metadata are summed and the number of digits in that
-/// total size is returned.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 fn compute_number_width(inputs: &Inputs, settings: &Settings, host: &Host) -> usize {
 	match inputs {
 		Inputs::Stdin if settings.number_enabled() == 1 => 1,
@@ -1264,7 +1264,7 @@ fn compute_number_width(inputs: &Inputs, settings: &Settings, host: &Host) -> us
 
 type InputIterItem = Result<Input, WcError>;
 
-/// Reads NUL-delimited names from standard input.
+
 fn files0_iter_stdin(host: &mut Host) -> impl Iterator<Item = InputIterItem> + '_ {
 	files0_iter(&mut host.stdin, STDIN_REPR.into()).map(|item| match item {
 		Ok(Input::Stdin(_)) => Err(WcError::StdinReprNotAllowed),
@@ -1552,7 +1552,7 @@ fn print_stats(
 	writeln!(stdout)
 }
 
-/// Creates the `wc` builtin registration.
+
 pub(crate) fn wc_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Wc, SE>()
 }

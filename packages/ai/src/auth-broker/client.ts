@@ -1,11 +1,3 @@
-/**
- * HTTP client for the proto auth-broker server.
- *
- * Used by {@link RemoteAuthCredentialStore} (snapshot pulls) and by
- * `proto auth-broker status` (liveness checks). All endpoints except
- * `/v1/healthz` require a bearer token.
- */
-
 import { type } from "@oh-my-pi/omptype";
 import { readSseEvents } from "@oh-my-pi/pi-utils";
 import type { AuthCredential, DisabledCredentialSummary } from "../auth-storage";
@@ -47,7 +39,6 @@ import {
 	usageStaleResponseSchema,
 } from "./wire-schemas";
 
-/** Response schema per endpoint, keyed by the name `#request` callers pass. */
 const RESPONSE_SCHEMAS = {
 	clientUsageReportResponseSchema,
 	clientUsageSummaryResponseSchema,
@@ -66,15 +57,14 @@ const RESPONSE_SCHEMAS = {
 type AuthBrokerResponseSchemaName = keyof typeof RESPONSE_SCHEMAS;
 
 export interface AuthBrokerClientOptions {
-	/** Base URL (e.g. `https://broker.tailnet:8765`). Trailing slashes are trimmed. */
 	url: string;
-	/** Bearer token used for everything except `healthz`. */
+
 	token: string;
-	/** Per-request timeout in milliseconds. Default 10s. */
+
 	timeoutMs?: number;
-	/** Retry connection errors this many times. Default 1. */
+
 	maxRetries?: number;
-	/** Override fetch (used in tests). Default global `fetch`. */
+
 	fetchImpl?: typeof fetch;
 }
 
@@ -89,11 +79,6 @@ export class AuthBrokerError extends Error {
 	}
 }
 
-/**
- * Thrown when a broker responds 404 to `GET /v1/snapshot/stream` — old
- * brokers that predate the SSE endpoint. Callers (`RemoteAuthCredentialStore`)
- * detect this sentinel to fall back to long-polling permanently.
- */
 export class AuthBrokerStreamUnsupportedError extends AuthBrokerError {
 	constructor(message = "Auth broker does not support /v1/snapshot/stream") {
 		super(message, { status: 404 });
@@ -185,15 +170,6 @@ export class AuthBrokerClient {
 		return { status: 200, snapshot, generation: etagGeneration ?? snapshot.generation };
 	}
 
-	/**
-	 * Subscribe to the broker's SSE snapshot stream. The first frame is always
-	 * a full `snapshot`; subsequent frames are `entry` upserts / refreshes or
-	 * `removed` deletes. Caller controls lifecycle via `opts.signal`.
-	 *
-	 * Throws {@link AuthBrokerStreamUnsupportedError} when the broker responds
-	 * 404 — older brokers predate this endpoint and the caller should fall back
-	 * to long-polling for the remainder of its lifetime.
-	 */
 	async *openSnapshotStream(opts: { signal?: AbortSignal } = {}): AsyncGenerator<SnapshotStreamEvent> {
 		const url = `${this.#baseUrl}/v1/snapshot/stream`;
 		const headers: Record<string, string> = {
@@ -204,11 +180,9 @@ export class AuthBrokerClient {
 		if (opts.signal?.aborted) {
 			throw new AuthBrokerError("Auth broker request aborted", { cause: opts.signal.reason });
 		}
-		// No timeout: this connection is intentionally long-lived. Caller's signal
-		// is the only cancel path.
+
 		const response = await this.#fetch(url, { method: "GET", headers, signal: opts.signal });
 		if (response.status === 404) {
-			// Drain the body so the socket can be reused; tiny payload.
 			await response.text().catch(() => {});
 			throw new AuthBrokerStreamUnsupportedError();
 		}
@@ -233,7 +207,7 @@ export class AuthBrokerClient {
 
 		let sawFirstEvent = false;
 		for await (const sse of readSseEvents(response.body, opts.signal)) {
-			if (sse.event === null && sse.data === "") continue; // keepalive comment frames
+			if (sse.event === null && sse.data === "") continue;
 			let parsed: unknown;
 			try {
 				parsed = JSON.parse(sse.data);
@@ -268,10 +242,6 @@ export class AuthBrokerClient {
 		}
 	}
 
-	/**
-	 * Fetch aggregate broker usage with a timeout sized for serialized
-	 * same-provider account probes.
-	 */
 	fetchUsage(options: { signal?: AbortSignal; maxAccountsPerProvider?: number } = {}): Promise<UsageResponse> {
 		const requestedAccountCount = options.maxAccountsPerProvider;
 		const accountCount =
@@ -287,7 +257,6 @@ export class AuthBrokerClient {
 		});
 	}
 
-	/** Recorded usage-limit snapshots from the broker host, oldest first. */
 	fetchUsageHistory(
 		query?: { sinceMs?: number; provider?: string },
 		signal?: AbortSignal,
@@ -299,7 +268,6 @@ export class AuthBrokerClient {
 		return this.#request<UsageHistoryResponse>("GET", path, { schema: "usageHistoryResponseSchema", signal });
 	}
 
-	/** Report this client's batched observed request usage for per-install burn tracking. */
 	reportClientUsage(report: ClientUsageReportRequest, signal?: AbortSignal): Promise<ClientUsageReportResponse> {
 		return this.#request<ClientUsageReportResponse>("POST", "/v1/usage/observed", {
 			body: report,
@@ -308,7 +276,6 @@ export class AuthBrokerClient {
 		});
 	}
 
-	/** Per-client token burn aggregates recorded by the broker host. */
 	fetchClientUsageSummary(query?: { sinceMs?: number }, signal?: AbortSignal): Promise<ClientUsageSummaryResponse> {
 		const params = new URLSearchParams();
 		if (query?.sinceMs !== undefined) params.set("sinceMs", String(query.sinceMs));
@@ -342,11 +309,6 @@ export class AuthBrokerClient {
 		});
 	}
 
-	/**
-	 * Disabled-credential tombstones (identity + cause, no token material).
-	 * Returns an empty list against brokers predating `GET
-	 * /v1/credentials/disabled` (404).
-	 */
 	async listDisabledCredentials(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]> {
 		const params = new URLSearchParams();
 		if (provider) params.set("provider", provider);
@@ -453,8 +415,6 @@ export class AuthBrokerClient {
 			headers["Content-Type"] = "application/json";
 		}
 
-		// Fast-fail when the caller's signal is already aborted — avoids spinning
-		// up a fetch + timer that the first `await` would just abort anyway.
 		if (opts.signal?.aborted) {
 			throw new AuthBrokerError("Auth broker request aborted", { cause: opts.signal.reason });
 		}
@@ -488,13 +448,12 @@ export class AuthBrokerClient {
 				return response;
 			} catch (error) {
 				lastError = error;
-				// Caller-driven abort wins over retry — the caller said stop.
+
 				if (opts.signal?.aborted) {
 					if (error instanceof AuthBrokerError && error.status !== undefined) throw error;
 					throw new AuthBrokerError("Auth broker request aborted", { cause: opts.signal.reason });
 				}
 				if (error instanceof AuthBrokerError && error.status !== undefined) {
-					// HTTP errors (4xx/5xx) don't retry — caller knows what to do.
 					throw error;
 				}
 				if (attempt >= this.#maxRetries) break;

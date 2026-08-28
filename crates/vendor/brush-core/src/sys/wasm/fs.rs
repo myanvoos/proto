@@ -1,4 +1,4 @@
-//! Filesystem utilities for WASM.
+
 
 pub use crate::sys::stubs::fs::*;
 
@@ -48,10 +48,10 @@ impl crate::sys::fs::PathExt for std::path::Path {
 	}
 }
 
-/// Splits a PATH-like value into individual paths.
-///
-/// On WASM, `std::env::split_paths` is not available, so this
-/// implementation splits by the `:` separator.
+
+
+
+
 pub fn split_paths<T: AsRef<std::ffi::OsStr> + ?Sized>(
 	s: &T,
 ) -> impl Iterator<Item = std::path::PathBuf> {

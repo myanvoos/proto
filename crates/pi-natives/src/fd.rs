@@ -1,8 +1,3 @@
-//! Fuzzy file path discovery for autocomplete and @-mention resolution.
-//!
-//! Searches for files and directories whose paths match a query string via
-//! subsequence scoring. Uses `pi-walker` for directory traversal and caching.
-
 use std::{cmp::Ordering, collections::BinaryHeap, path::Path};
 
 use napi::bindgen_prelude::*;
@@ -10,44 +5,38 @@ use napi_derive::napi;
 
 use crate::{iofs, task};
 
-/// Options for fuzzy file path search.
 #[napi(object)]
 pub struct FuzzyFindOptions<'env> {
-	/// Fuzzy query to match against file paths (case-insensitive).
-	pub query:       String,
-	/// Directory to search.
-	pub path:        String,
-	/// Include hidden files (default: false).
-	pub hidden:      Option<bool>,
-	/// Respect .gitignore (default: true).
-	pub gitignore:   Option<bool>,
-	/// Enable walker scan caching (default: false).
-	pub cache:       Option<bool>,
-	/// Maximum number of matches to return (default: 100).
+	pub query: String,
+
+	pub path: String,
+
+	pub hidden: Option<bool>,
+
+	pub gitignore: Option<bool>,
+
+	pub cache: Option<bool>,
+
 	pub max_results: Option<u32>,
-	/// Abort signal for cancelling the operation.
-	pub signal:      Option<Unknown<'env>>,
-	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:  Option<u32>,
+
+	pub signal: Option<Unknown<'env>>,
+
+	pub timeout_ms: Option<u32>,
 }
 
-/// A single match in fuzzy find results.
 #[napi(object)]
 pub struct FuzzyFindMatch {
-	/// Relative path from the search root (uses `/` separators).
-	pub path:         String,
-	/// Whether this entry is a directory.
+	pub path: String,
+
 	pub is_directory: bool,
-	/// Match quality score (higher is better).
-	pub score:        u32,
+
+	pub score: u32,
 }
 
-/// Result of fuzzy file path search.
 #[napi(object)]
 pub struct FuzzyFindResult {
-	/// Matched entries (up to `maxResults`).
-	pub matches:       Vec<FuzzyFindMatch>,
-	/// Total number of matches found (may exceed `matches.len()`).
+	pub matches: Vec<FuzzyFindMatch>,
+
 	pub total_matches: u32,
 }
 
@@ -98,9 +87,6 @@ fn score_fuzzy_path(
 		return if is_directory { 11 } else { 1 };
 	}
 
-	// Match against the full relative path only when the user typed a path-style
-	// query (contains '/'). Plain queries should match by basename only, otherwise
-	// '@plan' surfaces every file whose ancestor directories contain 'plan'.
 	let query_has_slash = query_lower.contains('/');
 
 	let file_name = Path::new(path)
@@ -151,20 +137,10 @@ fn score_fuzzy_path(
 	score
 }
 
-/// Directory depth of a relative match path (trailing slash ignored).
-/// Used as a sort tie-break so equally scored matches surface shallow paths
-/// first — `@scripts` should rank cwd-root `scripts/` above
-/// `packages/*/scripts/`.
 fn path_depth(path: &str) -> usize {
 	path.trim_end_matches('/').matches('/').count()
 }
 
-/// A scored match carrying its precomputed depth, ordered worst-first.
-///
-/// The ordering is the exact inverse of the final result comparator (score
-/// descending, then `path_depth` ascending, then `path` ascending), so the
-/// greatest element of a `BinaryHeap<RankedMatch>` is the candidate that must
-/// be evicted first, and `into_sorted_vec` yields the final best-first order.
 struct RankedMatch {
 	depth: usize,
 	entry: FuzzyFindMatch,
@@ -202,8 +178,6 @@ impl PartialEq for RankedMatch {
 
 impl Eq for RankedMatch {}
 
-/// Bounded collector retaining at most `capacity` best matches while counting
-/// every hit, so `totalMatches` stays exact even when it exceeds `maxResults`.
 struct TopMatches {
 	capacity: usize,
 	total:    u64,
@@ -225,21 +199,17 @@ impl TopMatches {
 			self.heap.push(candidate);
 			return;
 		}
-		// The root is the worst retained candidate; replace it only when the new
-		// candidate outranks it under the final comparator.
+
 		if self.heap.peek().is_some_and(|worst| candidate < *worst) {
 			self.heap.pop();
 			self.heap.push(candidate);
 		}
 	}
 
-	/// Exact number of scoring hits, clamped to the `u32` wire type.
 	const fn total_matches(&self) -> u32 {
 		crate::utils::clamp_u32(self.total)
 	}
 
-	/// Retained matches ordered by score descending, then shallower paths, then
-	/// path ascending.
 	fn into_sorted_matches(self) -> Vec<FuzzyFindMatch> {
 		self
 			.heap
@@ -338,7 +308,6 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 	Ok(FuzzyFindResult { matches, total_matches })
 }
 
-/// Fuzzy file path search for autocomplete.
 #[napi(js_name = "fuzzyFind")]
 pub fn fuzzy_find(options: FuzzyFindOptions<'_>) -> task::Promise<FuzzyFindResult> {
 	let FuzzyFindOptions { query, path, hidden, gitignore, cache, max_results, timeout_ms, signal } =

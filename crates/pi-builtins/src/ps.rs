@@ -1,4 +1,4 @@
-//! The `ps` process-status builtin, moved from `pi-shell`.
+
 
 #[cfg(unix)]
 use std::collections::HashSet;
@@ -19,7 +19,7 @@ use jiff::{Timestamp, fmt::strtime, tz::TimeZone};
 
 #[derive(Parser)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
-/// Implements the `ps` process-status builtin.
+
 pub(crate) struct PsCommand {
 	#[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
 	argv: Vec<String>,
@@ -395,7 +395,7 @@ fn resolve_user(value: &str) -> Option<u32> {
 	let mut record = std::mem::MaybeUninit::<libc::passwd>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0u8; 16 * 1024];
-	// SAFETY: all pointers refer to live, writable storage for this call.
+
 	let status = unsafe {
 		libc::getpwnam_r(
 			name.as_ptr(),
@@ -408,7 +408,7 @@ fn resolve_user(value: &str) -> Option<u32> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: a successful getpwnam_r call initialized `record`.
+
 	Some(unsafe { record.assume_init() }.pw_uid)
 }
 
@@ -427,7 +427,7 @@ fn resolve_group(value: &str) -> Option<u32> {
 	let mut record = std::mem::MaybeUninit::<libc::group>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0u8; 16 * 1024];
-	// SAFETY: all pointers refer to live, writable storage for this call.
+
 	let status = unsafe {
 		libc::getgrnam_r(
 			name.as_ptr(),
@@ -440,7 +440,7 @@ fn resolve_group(value: &str) -> Option<u32> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: a successful getgrnam_r call initialized `record`.
+
 	Some(unsafe { record.assume_init() }.gr_gid)
 }
 
@@ -1261,8 +1261,8 @@ fn ps_total_memory_bytes() -> Option<u64> {
 fn ps_total_memory_bytes() -> Option<u64> {
 	let mut value = 0_u64;
 	let mut size = std::mem::size_of::<u64>();
-	// SAFETY: the output pointer names a writable u64 and `size` reports its
-	// exact capacity; hw.memsize has no input buffer.
+
+
 	let status = unsafe {
 		libc::sysctlbyname(
 			c"hw.memsize".as_ptr(),
@@ -1286,8 +1286,8 @@ fn ps_user_name(uid: u32) -> Option<String> {
 	let mut record = std::mem::MaybeUninit::<libc::passwd>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0_u8; 16 * 1024];
-	// SAFETY: all pointers refer to live storage for this call; a non-null
-	// result guarantees `record` and its pw_name pointer were initialized.
+
+
 	let status = unsafe {
 		libc::getpwuid_r(
 			uid,
@@ -1300,7 +1300,7 @@ fn ps_user_name(uid: u32) -> Option<String> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: getpwuid_r succeeded and the backing buffer remains alive.
+
 	let name = unsafe { CStr::from_ptr(record.assume_init().pw_name) };
 	Some(name.to_string_lossy().into_owned())
 }
@@ -1316,8 +1316,8 @@ fn ps_group_name(gid: u32) -> Option<String> {
 	let mut record = std::mem::MaybeUninit::<libc::group>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0_u8; 16 * 1024];
-	// SAFETY: all pointers refer to live storage for this call; a non-null
-	// result guarantees `record` and its gr_name pointer were initialized.
+
+
 	let status = unsafe {
 		libc::getgrgid_r(
 			gid,
@@ -1330,7 +1330,7 @@ fn ps_group_name(gid: u32) -> Option<String> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: getgrgid_r succeeded and the backing buffer remains alive.
+
 	let name = unsafe { CStr::from_ptr(record.assume_init().gr_name) };
 	Some(name.to_string_lossy().into_owned())
 }
@@ -1340,10 +1340,10 @@ fn ps_group_name(_gid: u32) -> Option<String> {
 	None
 }
 
-/// System memory page size in bytes, used for the SZ (pages) column.
+
 #[cfg(unix)]
 fn ps_page_size() -> Option<u64> {
-	// SAFETY: sysconf reads a process-global constant.
+
 	u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
 		.ok()
 		.filter(|value| *value > 0)

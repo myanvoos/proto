@@ -16,7 +16,6 @@ import { outputMeta } from "../tools/output-meta";
 import type { PythonExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
-/** Capabilities the eval runner borrows from its owning session. */
 export interface EvalRunnerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -26,7 +25,6 @@ export interface EvalRunnerHost {
 	appendSessionMessage(message: PythonExecutionMessage): void;
 }
 
-/** Owns user-initiated Python execution and retained eval-kernel lifecycle. */
 export class EvalRunner {
 	readonly #host: EvalRunnerHost;
 	readonly #kernelOwnerId: string;
@@ -42,7 +40,6 @@ export class EvalRunner {
 		this.#parentSessionId = options.parentSessionId;
 	}
 
-	/** Executes Python in the session's shared kernel. */
 	async executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
@@ -88,12 +85,10 @@ export class EvalRunner {
 		return await this.trackExecution(execution, abortController);
 	}
 
-	/** Rejects new eval work once session disposal begins. */
 	assertExecutionAllowed(): void {
 		if (this.#disposing) throw new Error("Python execution is unavailable while session disposal is in progress");
 	}
 
-	/** Tracks externally started Python work so disposal can await and abort it. */
 	trackExecution<T>(execution: Promise<T>, abortController: AbortController): Promise<T> {
 		this.#abortControllers.add(abortController);
 		this.#activeExecutions.add(execution);
@@ -110,7 +105,6 @@ export class EvalRunner {
 		return execution;
 	}
 
-	/** Records a Python execution result in session history. */
 	recordPythonResult(code: string, result: PythonResult, options?: { excludeFromContext?: boolean }): void {
 		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 		const message: PythonExecutionMessage = {
@@ -131,27 +125,22 @@ export class EvalRunner {
 		}
 	}
 
-	/** Cancels every running Python execution. */
 	abort(): void {
 		for (const abortController of this.#abortControllers) abortController.abort();
 	}
 
-	/** Whether a Python execution is currently running. */
 	get isRunning(): boolean {
 		return this.#abortControllers.size > 0;
 	}
 
-	/** Whether Python results are waiting for a safe persistence boundary. */
 	get hasPendingMessages(): boolean {
 		return this.#pendingMessages.length > 0;
 	}
 
-	/** Returns the stable owner shared by eval and session-owned tools. */
 	getKernelOwnerId(): string {
 		return this.#kernelOwnerId;
 	}
 
-	/** Returns the eval session shared with the Python backend. */
 	getSessionId(): string | null {
 		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
 		return defaultEvalSessionId({
@@ -160,19 +149,16 @@ export class EvalRunner {
 		});
 	}
 
-	/** Flushes deferred Python results into agent state and persistence. */
 	flushPending(): void {
 		if (this.#pendingMessages.length === 0) return;
 		for (const message of this.#pendingMessages) this.#host.appendSessionMessage(message);
 		this.#pendingMessages = [];
 	}
 
-	/** Prevents new Python executions before asynchronous disposal starts. */
 	beginDispose(): void {
 		this.#disposing = true;
 	}
 
-	/** Waits for active work and disposes every retained eval kernel owned by the session. */
 	async disposeKernels(): Promise<void> {
 		const settled = await this.#prepareExecutionsForDispose();
 		if (!settled) {

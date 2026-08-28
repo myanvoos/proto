@@ -1,19 +1,9 @@
-/**
- * Exposure backends for the blob broker: make the loopback blob server
- * reachable by provider-side image fetchers.
- *
- * Every adapter resolves to a public base URL. Tunnel adapters own a child
- * process whose exit is observable via {@link ActiveExposure.exited} so the
- * broker can stop advertising URLs the moment the tunnel dies.
- */
-
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which, logger } from "@oh-my-pi/pi-utils";
 import { credentialString, type DestinationRuntimeConfig, optionString } from "./uploader-runtime";
 
-/** User-selectable exposure strategy. */
 export type ExposureKind =
 	| "cloudflared"
 	| "ngrok"
@@ -29,30 +19,25 @@ export type ExposureKind =
 
 export interface ExposureConfig {
 	kind: ExposureKind;
-	/**
-	 * Externally reachable base URL. Required for `ssh` (the remote web server
-	 * fronting the forwarded port); optional for `direct`, which otherwise
-	 * advertises the bind address itself (LAN / same-host use).
-	 */
+
 	publicBaseUrl?: string;
-	/** Blob server bind host. Loopback for tunnels; `0.0.0.0` for direct serving. */
+
 	bindHost: string;
-	/** `user@host[:port]` destination for the ssh reverse forward. */
+
 	sshTarget?: string;
-	/** Remote listen port of the ssh reverse forward. */
+
 	sshRemotePort?: number;
-	/** Destination-specific non-secret tunnel settings. */
+
 	options: DestinationRuntimeConfig["options"];
-	/** Destination credentials. Values must never be included in logs or errors. */
+
 	credentials: DestinationRuntimeConfig["credentials"];
 }
 
-/** Live exposure of one local port. */
 export interface ActiveExposure {
 	readonly kind: ExposureKind;
-	/** Public origin (no trailing slash) that reaches the local blob server. */
+
 	readonly baseUrl: string;
-	/** Resolves when the tunnel child exits; `null` for processless kinds. */
+
 	readonly exited: Promise<void> | null;
 	stop(): void;
 }
@@ -66,43 +51,34 @@ const MAX_HEALTH_BACKOFF_MS = 5_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 3_000;
 const MAX_HEALTH_TIMEOUT_MS = 30_000;
 
-/** Retry and timeout limits for an exposure edge-to-origin health probe. */
 interface ExposureHealthProbeOptions {
-	/** Maximum fetch attempts before the exposure is rejected. */
 	attempts?: number;
-	/** Delay between attempts, in milliseconds. */
+
 	backoffMs?: number;
-	/** Per-attempt fetch timeout, in milliseconds. */
+
 	timeoutMs?: number;
 }
 
-/** ssh prints nothing on success; alive past this grace period means forwarded. */
 const SSH_READY_GRACE_MS = 1_500;
 
-/** First `https://<sub>.trycloudflare.com` origin in a cloudflared log line. */
 function parseCloudflaredUrl(line: string): string | null {
 	return /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(line)?.[0] ?? null;
 }
 
-/** Public URL from an ngrok `--log-format json` line (`started tunnel`). */
 function parseNgrokUrl(line: string): string | null {
 	if (!line.includes('"url"')) return null;
 	try {
 		const parsed = JSON.parse(line) as { msg?: string; url?: string };
 		if (typeof parsed.url === "string" && parsed.url.startsWith("https://")) return parsed.url;
-	} catch {
-		// Interleaved non-JSON output; keep scanning.
-	}
+	} catch {}
 	return null;
 }
 
-/** Funnel URL from `tailscale funnel` foreground output. */
 function parseTailscaleUrl(line: string): string | null {
 	const match = /https:\/\/[a-z0-9.-]+\.ts\.net[^\s|]*/.exec(line);
 	return match ? match[0].replace(/\/+$/, "") : null;
 }
 
-/** Registered localhost.run TLS origin from its JSON or text output. */
 export function parseLocalhostRunUrl(line: string): string | null {
 	if (line.includes('"domain"')) {
 		try {
@@ -114,14 +90,11 @@ export function parseLocalhostRunUrl(line: string): string | null {
 			) {
 				return `https://${parsed.domain.toLowerCase()}`;
 			}
-		} catch {
-			// localhost.run may interleave its JSON events with SSH diagnostics.
-		}
+		} catch {}
 	}
 	return /https:\/\/[a-z0-9-]+\.(?:lhr\.life|lhr\.rocks|localhost\.run)/i.exec(line)?.[0] ?? null;
 }
 
-/** Public HTTPS origin printed by Pinggy's SSH endpoint. */
 export function parsePinggyUrl(line: string): string | null {
 	return (
 		/https:\/\/[a-z0-9-]+\.(?:a\.pinggy\.link|free\.pinggy\.link|pinggy\.link|pinggy\.online)/i.exec(line)?.[0] ??
@@ -129,17 +102,14 @@ export function parsePinggyUrl(line: string): string | null {
 	);
 }
 
-/** Public HTTPS origin printed by `devtunnel host`. */
 export function parseDevtunnelUrl(line: string): string | null {
 	return /https:\/\/[a-z0-9-]+-\d+\.[a-z0-9.-]+\.devtunnels\.ms/i.exec(line)?.[0] ?? null;
 }
 
-/** Public frontend origin printed by `zrok share public`. */
 export function parseZrokUrl(line: string): string | null {
 	return /https:\/\/[a-z0-9-]+\.share\.zrok\.io/i.exec(line)?.[0] ?? null;
 }
 
-/** HTTP origin constructed from the host and port reported by `bore local`. */
 export function parseBoreUrl(line: string, fallbackHost?: string): string | null {
 	const match = /listening at (?:(?<host>[a-z0-9.-]+):)?(?<port>\d+)/i.exec(line);
 	const host = match?.groups?.host ?? fallbackHost;
@@ -164,13 +134,6 @@ function boundedInteger(value: number | undefined, fallback: number, maximum: nu
 	return Math.min(maximum, Math.max(0, Math.floor(value)));
 }
 
-/**
- * Verify that a public exposure reaches the local blob origin.
- *
- * Each request is cache-busted and time-bounded. Only the broker health
- * endpoint's exact 204 response is accepted; errors expose only the sanitized
- * destination origin and final status.
- */
 export async function probeExposureHealth(
 	baseUrl: string,
 	fetchFn: typeof globalThis.fetch = globalThis.fetch,
@@ -194,9 +157,7 @@ export async function probeExposureHealth(
 			finalStatus = `HTTP ${response.status}`;
 			try {
 				await response.body?.cancel();
-			} catch {
-				// The response status is authoritative even if body disposal fails.
-			}
+			} catch {}
 		} catch (error) {
 			finalStatus = error instanceof DOMException && error.name === "TimeoutError" ? "timeout" : "request failed";
 		}
@@ -206,11 +167,6 @@ export async function probeExposureHealth(
 	throw new Error(`Exposure health probe for ${destination} failed with status ${finalStatus}`);
 }
 
-/**
- * SIGTERM, escalating to SIGKILL after a grace period. `tailscale funnel`
- * observably survives a bare SIGTERM mid-startup, and a leaked funnel child
- * blocks every later funnel invocation on the machine.
- */
 function killTunnelProcess(proc: Bun.Subprocess): void {
 	proc.kill();
 	const timer = setTimeout(() => {
@@ -219,17 +175,6 @@ function killTunnelProcess(proc: Bun.Subprocess): void {
 	timer.unref();
 }
 
-/**
- * Spawn a tunnel process with its output redirected to a temp log file and
- * poll the file until `extract` yields the public URL. Kills the child and
- * throws on exit or timeout.
- *
- * Deliberately avoids piped stdio: a piped subprocess with an active reader
- * spuriously settles `proc.exited` after `unref()` (observed on Bun 1.3.14,
- * exit code 143 with the process still alive), and an unconsumed pipe would
- * eventually block — or SIGPIPE-kill — the Go tunnel binaries. A file sink
- * has neither failure mode, so `exited` remains a trustworthy death signal.
- */
 async function spawnUrlTunnel(
 	argv: string[],
 	extract: (line: string) => string | null,
@@ -251,9 +196,7 @@ async function spawnUrlTunnel(
 		let text = "";
 		try {
 			text = await Bun.file(logPath).text();
-		} catch {
-			// Log file not flushed yet; keep polling.
-		}
+		} catch {}
 		if (text.length > scanned) {
 			if (baseUrl === undefined) {
 				for (const line of text.slice(scanned).split("\n")) {
@@ -265,8 +208,7 @@ async function spawnUrlTunnel(
 				}
 				scanned = text.lastIndexOf("\n") + 1;
 			}
-			// The URL banner can precede edge registration (cloudflared prints the
-			// hostname before any connection is live); wait for the ready marker.
+
 			if (baseUrl !== undefined && (!readyPattern || readyPattern.test(text))) {
 				return { proc, baseUrl };
 			}
@@ -290,11 +232,6 @@ function processExposure(kind: ExposureKind, baseUrl: string, proc: Bun.Subproce
 	};
 }
 
-/**
- * Keep an authenticated Pinggy tunnel behind its configured stable hostname.
- * Random-hostname modes deliberately return their child exit to the broker:
- * restarting those would silently invalidate every already-published URL.
- */
 function restartingPinggyExposure(baseUrl: string, argv: string[], initialProc: Bun.Subprocess): ActiveExposure {
 	let proc = initialProc;
 	let stopping = false;
@@ -329,10 +266,6 @@ function restartingPinggyExposure(baseUrl: string, argv: string[], initialProc: 
 	};
 }
 
-/**
- * Expose `port` per `config`. Throws when the backend is missing,
- * misconfigured, or fails to come up; the caller degrades to inline base64.
- */
 export async function startExposure(config: ExposureConfig, port: number): Promise<ActiveExposure> {
 	switch (config.kind) {
 		case "direct": {

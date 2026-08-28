@@ -1,23 +1,10 @@
-/**
- * Resolve configuration values that may be shell commands, environment variables, or literals.
- *
- * Note: command execution is async to avoid blocking the TUI.
- */
-
 import { executeShell } from "@oh-my-pi/pi-natives";
 import { $envExact } from "@oh-my-pi/pi-utils";
 
-/** Cache for successful shell command results (persists for process lifetime). */
 const commandResultCache = new Map<string, string>();
 
-/** De-duplicates concurrent executions for the same command. */
 const commandInFlight = new Map<string, Promise<string | undefined>>();
 
-/**
- * Resolve a config value (API key, header value, etc.) to an actual value.
- * - If starts with "!", executes the rest as a shell command and uses stdout (cached)
- * - Otherwise checks environment variable first, then treats as literal (not cached)
- */
 export async function resolveConfigValue(config: string): Promise<string | undefined> {
 	if (config.startsWith("!")) {
 		return await executeCommand(config);

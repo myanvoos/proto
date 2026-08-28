@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/brew-install.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.brew-install]
 description = "Compact brew install/upgrade output — strip downloads, short-circuit when already installed"

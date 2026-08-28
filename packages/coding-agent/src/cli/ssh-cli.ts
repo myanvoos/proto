@@ -1,16 +1,6 @@
-/**
- * SSH CLI command handlers.
- *
- * Handles `proto ssh <command>` subcommands for SSH host configuration management.
- */
-
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../ssh/config-writer";
-
-// =============================================================================
-// Types
-// =============================================================================
 
 export type SSHAction = "add" | "remove" | "list";
 
@@ -29,10 +19,6 @@ export interface SSHCommandArgs {
 	};
 }
 
-// =============================================================================
-// Main dispatcher
-// =============================================================================
-
 export async function runSSHCommand(cmd: SSHCommandArgs): Promise<void> {
 	switch (cmd.action) {
 		case "add":
@@ -50,10 +36,6 @@ export async function runSSHCommand(cmd: SSHCommandArgs): Promise<void> {
 			process.exitCode = 1;
 	}
 }
-
-// =============================================================================
-// Handlers
-// =============================================================================
 
 async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	const name = cmd.args[0];
@@ -74,7 +56,6 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 		return;
 	}
 
-	// Validate port if provided
 	if (cmd.flags.port !== undefined) {
 		const port = Number.parseInt(cmd.flags.port, 10);
 		if (Number.isNaN(port) || port < 1 || port > 65535) {
@@ -162,10 +143,6 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 		printHosts(userHosts);
 	}
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 function printHosts(hosts: Record<string, SSHHostConfig>): void {
 	for (const [name, config] of Object.entries(hosts)) {

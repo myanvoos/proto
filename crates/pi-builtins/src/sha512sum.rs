@@ -1,6 +1,6 @@
-//! `sha512sum` builtin: compute and check SHA-512 digests.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
@@ -11,7 +11,7 @@ use crate::{
 	host::{Host, Utility, matches_parser, util},
 };
 
-/// Parsed `sha512sum` invocation.
+
 pub(crate) struct Sha512sum {
 	matches: ArgMatches,
 }
@@ -31,7 +31,7 @@ fn app() -> clap::Command {
 	cksum::command(Sha512sum::NAME, false)
 }
 
-/// Creates the `sha512sum` builtin registration.
+
 pub(crate) fn sha512sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sha512sum, SE>()
 }

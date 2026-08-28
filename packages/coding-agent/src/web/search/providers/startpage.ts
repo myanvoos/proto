@@ -10,24 +10,11 @@ import type { LoadedHtmlPage } from "./browser-page";
 import { browserFetch } from "./browser-page";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
-/**
- * Startpage proxies Google's index behind a privacy frontend and serves fully
- * server-rendered result pages — no JS challenge on the happy path. Its bot
- * defense keys on requests that skip the homepage handshake: the search form
- * carries a session token (`sc`) plus sibling hidden inputs, and posting the
- * form with a stale/absent token 302s to the `/en/errors/` CAPTCHA shell.
- * The robust flow is therefore the same dance a real browser performs: GET
- * the homepage, lift the form's hidden inputs, POST them back with the query.
- */
 const STARTPAGE_HOME_URL = "https://www.startpage.com/";
 const STARTPAGE_SEARCH_URL = "https://www.startpage.com/sp/search";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 
-/**
- * Recency → Startpage `with_date` param. Accepts single letters; an absent
- * value returns the unfiltered default.
- */
 const RECENCY_TO_STARTPAGE_WITH_DATE: Record<NonNullable<SearchParams["recency"]>, string> = {
 	day: "d",
 	week: "w",
@@ -35,7 +22,6 @@ const RECENCY_TO_STARTPAGE_WITH_DATE: Record<NonNullable<SearchParams["recency"]
 	year: "y",
 };
 
-/** One organic result lifted from the Startpage results page. */
 interface ParsedResult {
 	title: string;
 	url: string;
@@ -46,24 +32,11 @@ function normalizeText(value: string | null | undefined): string {
 	return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
-/**
- * `true` when Startpage answered with its CAPTCHA/error shell instead of
- * results. Rejected requests 302 to `/en/errors/` (legacy: `/sp/captcha`), a
- * Gatsby SPA whose chunk map names the captcha page components; the body
- * marker matters because mocked fetch responses carry no final URL. A bare
- * "captcha" substring is deliberately not used — result snippets for
- * captcha-related queries would false-positive.
- */
 function isChallengeResponse(page: LoadedHtmlPage): boolean {
 	if (/\/(?:errors|captcha)\//.test(page.url) || page.url.includes("/sp/captcha")) return true;
 	return page.html.includes("component---src-pages-captcha") || page.html.includes("/sp/captcha");
 }
 
-/**
- * Lift the hidden inputs from the homepage's `/sp/search` form. Returns
- * `undefined` when the form or its `sc` anti-bot token cannot be found so the
- * caller can degrade to a tokenless GET instead of posting a doomed form.
- */
 function parseSearchFormInputs(html: string): Record<string, string> | undefined {
 	const { document } = parseHTML(html);
 	const form = document.querySelector('form[action="/sp/search"]');
@@ -76,7 +49,6 @@ function parseSearchFormInputs(html: string): Record<string, string> | undefined
 	return inputs.sc ? inputs : undefined;
 }
 
-/** Accept only http(s) result targets that point away from Startpage itself. */
 function sanitizeResultUrl(href: string | null | undefined): string | undefined {
 	if (!href) return undefined;
 	let url: URL;
@@ -90,16 +62,6 @@ function sanitizeResultUrl(href: string | null | undefined): string | undefined 
 	return url.href;
 }
 
-/**
- * Walk the server-rendered results page in document order.
- *
- * Each organic hit lives in a `div.result` container holding the title
- * anchor `a.result-link` (with an `h2.wgl-title` heading) and an optional
- * `p.description` snippet. Hrefs are direct target URLs — Startpage does not
- * wrap outbound clicks. The offscreen adblock-honeypot div uses the class
- * token `a-bg-result`, which a CSS class selector correctly ignores, and
- * sponsored placements render outside `div.result` containers.
- */
 function parseHtmlResults(html: string): ParsedResult[] {
 	const { document } = parseHTML(html);
 	const results: ParsedResult[] = [];
@@ -116,11 +78,6 @@ function parseHtmlResults(html: string): ParsedResult[] {
 	return results;
 }
 
-/**
- * Fetch the homepage and lift the search form's hidden inputs. Best effort:
- * any failure (network, non-OK status, challenge shell, markup drift) yields
- * `undefined` and the caller falls back to a direct GET.
- */
 async function fetchFormInputs(
 	fetchImpl: FetchImpl,
 	signal: AbortSignal,
@@ -141,10 +98,7 @@ async function callStartpageHtml(params: SearchParams): Promise<string> {
 	const fetchImpl = params.fetch ?? fetch;
 	const signal = withHardTimeout(params.signal, params.timeoutMs);
 	const withDate = params.recency ? RECENCY_TO_STARTPAGE_WITH_DATE[params.recency] : undefined;
-	// Startpage proxies Google, so the operator set works inline; rebuild via
-	// the shared scraper formatter to canonicalize aliases (domain: → site:,
-	// since: → after:, …) and demote scraper-hostile operators. Directive-free
-	// queries pass through byte-identical.
+
 	const query = formatScraperQuery(params.query, params.parsedQuery);
 
 	const formInputs = await fetchFormInputs(fetchImpl, signal, params.timeoutMs);
@@ -188,7 +142,6 @@ async function callStartpageHtml(params: SearchParams): Promise<string> {
 	return page.html;
 }
 
-/** Execute a Startpage web search via the homepage-token form flow. */
 async function searchStartpage(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callStartpageHtml(params);
@@ -206,7 +159,6 @@ async function searchStartpage(params: SearchParams): Promise<SearchResponse> {
 	return { provider: "startpage", sources };
 }
 
-/** Search provider for Startpage (no API key required). */
 export class StartpageProvider extends SearchProvider {
 	readonly id = "startpage";
 	readonly label = "Startpage";

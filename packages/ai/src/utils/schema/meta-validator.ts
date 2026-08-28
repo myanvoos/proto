@@ -1,15 +1,6 @@
 import { areJsonValuesEqual } from "./equality";
 import { epochNext, once } from "./stamps";
 
-/**
- * Hand-rolled JSON Schema meta-validator.
- *
- * Replaces the old AJV meta-schema check in request hot paths with a small
- * structural validator for the JSON Schema subset this repo emits and forwards.
- * Unknown keywords are accepted for forward compatibility; known keywords are
- * checked so malformed provider payloads still fall back instead of being sent.
- */
-
 type Json = unknown;
 
 function isPlainObject(value: Json): value is Record<string, Json> {
@@ -62,9 +53,7 @@ function checkSchemaMap(value: Json, epoch: number): boolean {
 	return true;
 }
 
-/** Validate a single sub-schema node. */
 function checkNode(node: Json, epoch: number): boolean {
-	// Boolean schemas (`true` / `false`) are valid JSON Schema.
 	if (node === true || node === false) return true;
 	if (!isPlainObject(node)) return false;
 	if (!once(node, epoch)) return true;
@@ -102,8 +91,7 @@ function checkNode(node: Json, epoch: number): boolean {
 		if (!checkNode(items, epoch)) return false;
 	}
 	if ("prefixItems" in node && !checkSchemaArray(node.prefixItems, epoch)) return false;
-	// Obsolete tuple/dependency keywords are not valid in the 2020-12 schema
-	// shape we emit and forward.
+
 	if ("additionalItems" in node || "dependencies" in node) return false;
 
 	for (const key of ["additionalProperties", "unevaluatedProperties", "unevaluatedItems"] as const) {
@@ -157,7 +145,6 @@ function checkNode(node: Json, epoch: number): boolean {
 	return true;
 }
 
-/** Validate that `schema` is structurally a valid JSON Schema (subset). */
 export function isValidJsonSchema(schema: unknown): boolean {
 	try {
 		return checkNode(schema, epochNext());

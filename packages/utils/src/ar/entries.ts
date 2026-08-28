@@ -2,13 +2,6 @@ import { ArchiveError } from "./error";
 import { type ArchiveLimits, assertEntryCount } from "./limits";
 import type { ArchiveIndexEntry } from "./types";
 
-/**
- * Insert `entry` into the index map with archive append/update semantics:
- * files replace directories of the same path, directories never shadow files,
- * and same-kind duplicates keep the later record while earlier metadata fills
- * gaps (matching system tar extraction). Returns the retained entry, or
- * `undefined` when the incoming entry was dropped.
- */
 export function upsertArchiveEntry(
 	map: Map<string, ArchiveIndexEntry>,
 	entry: ArchiveIndexEntry,
@@ -38,11 +31,6 @@ export function upsertArchiveEntry(
 	return merged;
 }
 
-/**
- * Synthesize directory entries for every ancestor of every indexed path, so
- * containers that omit directory records (ZIP, cpio, most tars) still list
- * correctly. Enforces `limits.maxEntries` as the map grows.
- */
 export function ensureParentDirectories(map: Map<string, ArchiveIndexEntry>, limits: ArchiveLimits): void {
 	assertEntryCount(map.size, limits);
 	for (const entry of [...map.values()]) {
@@ -61,11 +49,6 @@ export function ensureParentDirectories(map: Map<string, ArchiveIndexEntry>, lim
 	}
 }
 
-/**
- * Rewrite `archivePath` through symlink aliases until it no longer crosses
- * one. Bounded: an exact revisit and an alias chain that keeps growing the
- * path (e.g. `a -> a/b`) both throw a catchable cyclic-symlink error.
- */
 export function resolveArchiveLinkPath(
 	entries: ReadonlyMap<string, ArchiveIndexEntry>,
 	archivePath: string,
@@ -88,8 +71,7 @@ export function resolveArchiveLinkPath(
 			break;
 		}
 		if (replacement === undefined) return resolvedPath;
-		// The bound counts performed rewrites, so a chain of exactly
-		// maxLinkDepth aliases still resolves; only needing one more trips it.
+
 		if (++rewrites > maxLinkDepth) break;
 		resolvedPath = replacement;
 	}

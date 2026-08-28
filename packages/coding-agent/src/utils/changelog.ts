@@ -11,20 +11,17 @@ export interface ChangelogEntry {
 	content: string;
 }
 
-/** Number of changelog releases shown by automatic and default recent views. */
 export const RECENT_CHANGELOG_ENTRY_LIMIT = 3;
-/** Maximum Markdown source bytes allowed in automatic startup release notes. */
+
 export const STARTUP_CHANGELOG_MAX_BYTES = 64 * 1024;
-/** Hint appended when automatic startup release notes are truncated. */
+
 export const STARTUP_CHANGELOG_FULL_HINT = "Truncated — see CHANGELOG.md in the install for full notes.";
 
-/** Markdown generated from selected changelog entries and whether it hit a size cap. */
 interface RenderedChangelog {
 	markdown: string;
 	truncated: boolean;
 }
 
-/** Automatic startup changelog decision, including whether the marker should advance. */
 export interface StartupChangelogSelection {
 	markdown: string | undefined;
 	persistCurrentVersion: boolean;
@@ -90,7 +87,6 @@ function categoryLabel(category: string, count: number): string {
 	return category.toLowerCase();
 }
 
-/** Format the compact, deterministic startup update notice. */
 export function formatStartupChangelogSummary(selection: StartupChangelogSelection): string {
 	const latestVersion = selection.latestVersion;
 	if (!latestVersion || selection.selectedEntries === 0) {
@@ -127,13 +123,6 @@ export function formatStartupChangelogSummary(selection: StartupChangelogSelecti
 	return breakdown ? `${firstLine}\n${breakdown} · ${detailHint}` : `${firstLine}\n${detailHint}`;
 }
 
-/**
- * Parse changelog entries from proto's package asset when available, falling back
- * to the copy embedded in compiled binaries.
- *
- * The embedded fallback keeps standalone binaries self-contained without
- * resolving relative to the host project's cwd, which caused issue #1423.
- */
 export function resolveBundledChangelogPath(assetPath: string, moduleUrl: string | URL): string | URL {
 	if (path.isAbsolute(assetPath)) return assetPath;
 	return new URL(assetPath, moduleUrl);
@@ -280,19 +269,12 @@ async function parseStartupChangelogFile(
 	return { entries, totalUnseenEntries };
 }
 
-/**
- * Compare changelog entries by their parsed version parts.
- * Returns: -1 if v1 < v2, 0 if v1 === v2, 1 if v1 > v2
- */
 function compareChangelogEntries(v1: ChangelogEntry, v2: ChangelogEntry): number {
 	if (v1.major !== v2.major) return v1.major - v2.major;
 	if (v1.minor !== v2.minor) return v1.minor - v2.minor;
 	return v1.patch - v2.patch;
 }
 
-/**
- * Parse an proto changelog marker version into comparable parts.
- */
 function parseChangelogVersion(version: string | undefined): ChangelogEntry | undefined {
 	const match = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
 	if (!match) {
@@ -307,9 +289,6 @@ function parseChangelogVersion(version: string | undefined): ChangelogEntry | un
 	};
 }
 
-/**
- * Get entries newer than lastVersion.
- */
 export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
 	const parsedLastVersion = parseChangelogVersion(lastVersion);
 	if (!parsedLastVersion) {
@@ -319,9 +298,6 @@ export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): C
 	return entries.filter(entry => compareChangelogEntries(entry, parsedLastVersion) > 0);
 }
 
-/**
- * Render changelog entries oldest-first by default and optionally cap the Markdown source size.
- */
 export function renderChangelogEntries(
 	entries: ChangelogEntry[],
 	options: { maxBytes?: number; truncationHint?: string; oldestFirst?: boolean } = {},
@@ -373,9 +349,6 @@ function selectStartupChangelogEntries(
 	};
 }
 
-/**
- * Select bounded release notes for interactive startup.
- */
 export function selectStartupChangelog(
 	entries: ChangelogEntry[],
 	lastVersion: string | undefined,
@@ -394,12 +367,6 @@ export function selectStartupChangelog(
 	return selectStartupChangelogEntries(allNewEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT), allNewEntries.length);
 }
 
-/**
- * Resolve and persist the automatic startup changelog decision.
- *
- * Hidden mode advances the marker only for an upgrade, so downgrades do not
- * erase knowledge of a newer version the user has already seen.
- */
 export async function resolveStartupChangelogForDisplay(options: {
 	mode: SettingValue<"startup.changelogMode">;
 	currentVersion: string;
@@ -413,7 +380,6 @@ export async function resolveStartupChangelogForDisplay(options: {
 		return undefined;
 	}
 	if (lastVersion === options.currentVersion) {
-		// Steady state: skip the changelog file read and parse.
 		return undefined;
 	}
 	if (options.mode === "hidden") {
@@ -431,14 +397,8 @@ export async function resolveStartupChangelogForDisplay(options: {
 	return startupChangelog.markdown ? startupChangelog : undefined;
 }
 
-// Re-export getChangelogPath from paths.ts for convenience
 export { getChangelogPath } from "../config";
 
-/**
- * Last proto version whose changelog the user has seen. Stored as a plain-text
- * marker file (`~/.proto/agent/last-changelog-version`) rather than in
- * `config.yml`, so version bumps never dirty user-tracked config files.
- */
 export async function readLastChangelogVersion(agentDir?: string): Promise<string | undefined> {
 	try {
 		const value = (await Bun.file(getLastChangelogVersionPath(agentDir)).text()).trim();
@@ -451,7 +411,6 @@ export async function readLastChangelogVersion(agentDir?: string): Promise<strin
 	}
 }
 
-/** Persist the last-seen changelog version marker. Best-effort: failures are logged, never thrown. */
 export async function writeLastChangelogVersion(version: string, agentDir?: string): Promise<void> {
 	try {
 		await Bun.write(getLastChangelogVersionPath(agentDir), version);

@@ -18,8 +18,6 @@ export type HangulCompatibilityJamoWidth = "platform" | "unicode" | 1 | 2;
 
 let hangulCompatibilityJamoWidth: HangulCompatibilityJamoWidth = "platform";
 
-// Wire encoding for the native override (see crates/pi-natives text.rs):
-// 0 = platform default, 1 = narrow, 2 = wide, 3 = unicode (no correction).
 function nativeHangulCompatibilityJamoOverride(width: HangulCompatibilityJamoWidth): number {
 	if (width === "unicode") return 3;
 	if (typeof width === "number") return width;
@@ -30,10 +28,6 @@ export function getHangulCompatibilityJamoWidth(): HangulCompatibilityJamoWidth 
 	return hangulCompatibilityJamoWidth;
 }
 
-// Monotonic epoch for width-affecting runtime configuration. Any cache or
-// carried-width sidecar derived from `visibleWidth` results must be stamped
-// with the epoch at computation time and discarded on mismatch, so a Hangul
-// Compatibility Jamo width change invalidates every derived width.
 let widthConfigEpoch = 0;
 
 export function getWidthConfigEpoch(): number {
@@ -46,13 +40,8 @@ interface LineWidthsEntry {
 	widths: readonly number[];
 }
 
-// Per-render-result visible widths, keyed by the exact lines array a component
-// returned. The copied strings and widths are the single publication snapshot:
-// they cannot be changed through either publisher array and do not retain the
-// WeakMap key. Entries therefore die with their lines-array owners.
 const lineWidthSidecar = new WeakMap<readonly string[], LineWidthsEntry>();
 
-/** Publish exact per-line visible widths for a rendered lines array. */
 export function publishLineWidths(lines: readonly string[], widths: readonly number[]): void {
 	if (lines.length !== widths.length) {
 		throw new RangeError(`Cannot publish ${widths.length} widths for ${lines.length} lines`);
@@ -64,7 +53,6 @@ export function publishLineWidths(lines: readonly string[], widths: readonly num
 	});
 }
 
-/** Exact per-line visible widths for an unchanged `lines` array under the current width config. */
 export function getPublishedLineWidths(lines: readonly string[]): readonly number[] | undefined {
 	const entry = lineWidthSidecar.get(lines);
 	if (entry === undefined || entry.epoch !== widthConfigEpoch || entry.lines.length !== lines.length) {
@@ -130,11 +118,6 @@ function textSizingHorizontalAlignValue(align: TextSizingHorizontalAlign | undef
 	}
 }
 
-/**
- * Encode a plain-text span using Kitty's OSC 66 text-sizing protocol. The TUI
- * emits only safe UTF-8 payloads and ST terminators so its ANSI parser and the
- * terminal agree on span boundaries.
- */
 export function encodeTextSized(text: string, options: TextSizingOptions = {}): string {
 	const metadata: string[] = [];
 	if (options.scale !== undefined) metadata.push(`s=${options.scale}`);
@@ -161,8 +144,7 @@ export function truncateToWidth(
 	pad?: boolean | null,
 ): string {
 	maxWidth = Math.max(0, maxWidth | 0);
-	// Fast path: every UTF-16 unit is at most 3 cells wide, so a string whose
-	// `length * 3` already fits within `safeWidth` cannot need truncation.
+
 	if (!pad && text.length * 3 <= maxWidth) {
 		return text;
 	}
@@ -175,12 +157,6 @@ export function truncateToWidth(
 	);
 }
 
-/**
- * Left-truncate `text` so it fits within `maxWidth` terminal cells, keeping
- * the tail and prefixing an ellipsis when clipped (e.g. long paths in a
- * fixed-width status segment). Width-aware: grapheme clusters are never split
- * mid-cluster and wide characters count their full cell width.
- */
 export function truncateStartToWidth(text: string, maxWidth: number): string {
 	maxWidth = Math.max(0, maxWidth | 0);
 	const total = visibleWidth(text);
@@ -205,73 +181,38 @@ export function extractSegments(
 	return nativeExtractSegments(line, beforeEnd, afterStart, afterLen, strictAfter, DEFAULT_TAB_WIDTH);
 }
 
-// Pre-allocated space buffer for padding
 const SPACE_BUFFER = " ".repeat(512);
 const TAB_SPACES = " ".repeat(DEFAULT_TAB_WIDTH);
 
-/*
- * Replace tabs with the fixed display tab width for consistent rendering.
- */
 export function replaceTabs(text: string): string {
 	return text.replaceAll("\t", TAB_SPACES);
 }
 
-/**
- * Returns a string of n spaces. Uses a pre-allocated buffer for efficiency.
- */
 export function padding(n: number): string {
 	if (n <= 0) return "";
 	if (n <= 512) return SPACE_BUFFER.slice(0, n);
 	return " ".repeat(n);
 }
 
-// Grapheme segmenter (shared instance)
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/**
- * Get the shared grapheme segmenter instance.
- */
 export function getSegmenter(): Intl.Segmenter {
 	return segmenter;
 }
 
-// Kitty OSC 66 text-sizing spans: `\x1b]66;<meta>;<payload>` terminated by BEL
-// or ST. `Bun.stringWidth` strips the whole span (payload included) to zero
-// cells, but the payload is visible and scales by the `s=` factor, so each is
-// added back so width matches the native truncate/slice/wrap helpers.
 const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
 const OSC66_PREFIX = "\x1b]66;";
-// APC sequences (`ESC _ ... ST|BEL`) — Kitty graphics commands such as the
-// virtual-placement prefix on Unicode-placeholder image lines, or the TUI's
-// BEL-terminated cursor marker. `Bun.stringWidth` strips CSI/OSC but counts APC
-// payloads as printable text, so they are removed before measuring (they occupy
-// zero cells — matching the native width engine in pi-natives/text.rs).
+
 const APC_SPAN_REGEX = /\x1b_[\s\S]*?(?:\x07|\x1b\\)/g;
 const APC_PREFIX = "\x1b_";
 const PRINTABLE_ASCII_REGEX = /^[\u0020-\u007e]*$/;
 
-// Pin Bun.stringWidth semantics to the native width engine and guard against Bun
-// default drift: strip ANSI/OSC (don't count escape bytes) and treat
-// ambiguous-width East Asian chars as narrow (1 cell), matching `unicode-width`'s
-// non-CJK tables that back truncate/slice/wrap. Hoisted so no per-call alloc.
 const STRING_WIDTH_OPTS = { countAnsiEscapeCodes: false, ambiguousIsNarrow: true } as const;
 
-// Hangul Compatibility Jamo (U+3131..=U+318E). `Bun.stringWidth` follows UAX#11
-// and reports these at 2 cells (the U+3164 HANGUL FILLER at 0), but the actual
-// rendered width is decided by the *client* terminal (1 cell on Terminal.app /
-// iTerm2, 2 on Ghostty and most Linux terminals). The width is resolved from
-// the terminal identity and pushed into the native engine through
-// `setHangulCompatibilityJamoWidth`; mirror the same correction here so the TS
-// width stays in parity with the native truncate/slice/wrap model — and so the
-// hardware cursor column lands on the actual glyph during Korean IME input.
 const HANGUL_FILLER_CODE_POINT = 0x3164;
-// `Bun.stringWidth` counts every code point in the Compatibility Jamo block as
-// 2 cells (even the U+3164 filler that `unicode-width` treats as zero-width).
+
 const HANGUL_COMPAT_JAMO_BUN_WIDTH = 2;
 
-// Effective target cell width for Compatibility Jamo, or `null` to follow the
-// Unicode width (no correction). Mirrors `hangul_compat_jamo_target_width` in
-// crates/pi-natives/src/text.rs.
 function hangulCompatibilityJamoTargetWidth(): 1 | 2 | null {
 	switch (hangulCompatibilityJamoWidth) {
 		case 1:
@@ -281,18 +222,10 @@ function hangulCompatibilityJamoTargetWidth(): 1 | 2 | null {
 		case "unicode":
 			return null;
 		default:
-			// "platform": macOS terminals historically render these narrow.
 			return process.platform === "darwin" ? 1 : null;
 	}
 }
 
-// Reconcile the `Bun.stringWidth` count for Compatibility Jamo to the native
-// width engine: subtract Bun's per-jamo cell count and add back the effective
-// width — the runtime target when one is active, otherwise the `unicode-width`
-// value. Mirrors `char_width_corrected` / `apply_hangul_compat_jamo_delta` in
-// crates/pi-natives/src/text.rs, including the rule that the zero-width filler
-// (U+3164) is never widened past the narrow correction (a wide terminal still
-// renders it at its Unicode width of 0).
 function correctHangulCompatibilityJamoWidth(
 	width: number,
 	compatibilityJamoCount: number,
@@ -303,26 +236,11 @@ function correctHangulCompatibilityJamoWidth(
 	return target === 1 ? width - compatibilityJamoCount : width - fillerCount * HANGUL_COMPAT_JAMO_BUN_WIDTH;
 }
 
-// Terminal redraws re-measure the same visible lines every frame, usually as
-// the same string objects (JSC caches their hashes, so repeat lookups are
-// O(1) — cheaper than even the ASCII fast scan). Strings longer than the
-// length gate skip the cache entirely: hashing them costs as much as measuring
-// them, and retaining them would pin large render buffers. Worst-case
-// retention is MAX * MAX_LEN UTF-16 units (~2 MiB); cleared when the width
-// configuration epoch changes.
 const VISIBLE_WIDTH_CACHE_MAX = 2048;
 const VISIBLE_WIDTH_CACHE_MAX_LEN = 512;
 const visibleWidthCache = new Map<string, number>();
 let visibleWidthCacheEpoch = widthConfigEpoch;
 
-/**
- * Visible width of a string in terminal columns, excluding ANSI/OSC escapes.
- *
- * `Bun.stringWidth` does the heavy lifting (UAX#11 width tables + ANSI/OSC
- * stripping); this adds the corrections it omits — tabs (expanded to
- * `tabWidth` cells), OSC 66 text-sizing payloads (scaled by `s=`), and APC
- * sequences (counted as printable by Bun, actually zero cells).
- */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
 	const cacheable = str.length <= VISIBLE_WIDTH_CACHE_MAX_LEN;
@@ -335,8 +253,6 @@ export function visibleWidth(str: string): number {
 		if (cached !== undefined) return cached;
 	}
 
-	// This regex compiles to a native ASCII scan, cheaper than Bun's width
-	// scanner for the overwhelmingly common source-code path.
 	if (PRINTABLE_ASCII_REGEX.test(str)) {
 		if (cacheable) {
 			if (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) visibleWidthCache.clear();
@@ -392,19 +308,10 @@ export function visibleWidth(str: string): number {
 	return width;
 }
 
-/**
- * Scaled spans must bypass wrapping/padding and, when scaled up, reserve the
- * terminal rows their multicell glyphs flow into.
- */
 export function isOsc66Line(line: string): boolean {
 	return line.includes(OSC66_PREFIX);
 }
 
-/**
- * Largest `s=` scale among the OSC 66 spans in a line (1 when none is scaled).
- * A scale-`s` heading occupies `s` terminal rows, so the `s - 1` blank rows
- * beneath it are the glyph's lower half and must never be erased or overdrawn.
- */
 export function osc66MaxScale(line: string): number {
 	if (!line.includes(OSC66_PREFIX)) return 1;
 	let max = 1;
@@ -421,12 +328,6 @@ export function osc66MaxScale(line: string): number {
 
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
 
-/**
- * Normalize text for terminal output without changing logical editor content.
- * Some terminals render precomposed Thai/Lao AM vowels inconsistently during
- * differential repaint. Their compatibility decompositions have the same cell
- * width but avoid stale-cell artifacts in terminal renderers.
- */
 export function normalizeTerminalOutput(str: string): string {
 	if (str.indexOf("\u0e33") === -1 && str.indexOf("\u0eb3") === -1) return str;
 	return str.replace(THAI_LAO_AM_GLOBAL_REGEX, char => (char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"));
@@ -445,9 +346,6 @@ const makeBoolArray = (chars: string): Uint8Array => {
 
 const ASCII_WHITESPACE = makeBoolArray("\x09\x0a\x0b\x0c\x0d\x20");
 
-/**
- * Check if a character is whitespace.
- */
 export function isWhitespaceChar(char: string): boolean {
 	const code = char.codePointAt(0) ?? 0;
 	return code < 128 && ASCII_WHITESPACE[code] === 1;
@@ -455,9 +353,6 @@ export function isWhitespaceChar(char: string): boolean {
 
 const ASCII_PUNCTUATION = makeBoolArray("(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`");
 
-/**
- * Check if a character is punctuation.
- */
 export function isPunctuationChar(char: string): boolean {
 	const code = char.codePointAt(0) ?? 0;
 	return code < 128 && ASCII_PUNCTUATION[code] === 1;
@@ -481,10 +376,6 @@ function firstCodePointChar(str: string): string {
 	return String.fromCodePoint(cp);
 }
 
-/**
- * Coarse Unicode-aware character classification for word navigation (Option/Alt + Left/Right).
- * This intentionally avoids language-specific word segmentation for predictability across scripts.
- */
 export function getWordNavKind(grapheme: string): WordNavKind {
 	if (!grapheme) return "other";
 	const ch = firstCodePointChar(grapheme);
@@ -511,11 +402,6 @@ export function isWordNavJoiner(grapheme: string): boolean {
 	return WORD_NAV_JOINERS.has(ch);
 }
 
-/**
- * Move the cursor one "word" to the left using Unicode-aware coarse navigation.
- *
- * Returns a new cursor index in the range [0, text.length].
- */
 export function moveWordLeft(text: string, cursor: number): number {
 	const len = text.length;
 	if (len === 0) return 0;
@@ -525,7 +411,6 @@ export function moveWordLeft(text: string, cursor: number): number {
 	const graphemes = [...segmenter.segment(text.slice(0, i))];
 	if (graphemes.length === 0) return 0;
 
-	// Skip trailing whitespace.
 	while (graphemes.length > 0 && getWordNavKind(graphemes[graphemes.length - 1]?.segment || "") === "whitespace") {
 		i -= graphemes.pop()?.segment.length || 0;
 	}
@@ -540,7 +425,6 @@ export function moveWordLeft(text: string, cursor: number): number {
 	}
 
 	if (kind === "word") {
-		// Skip word run (letters/numbers/underscore), keeping common joiners inside words.
 		let hasRightWord = false;
 		while (graphemes.length > 0) {
 			const g = graphemes[graphemes.length - 1]?.segment || "";
@@ -562,16 +446,10 @@ export function moveWordLeft(text: string, cursor: number): number {
 		return i;
 	}
 
-	// Fallback: move by one grapheme.
 	i -= graphemes.pop()?.segment.length || 0;
 	return Math.max(0, i);
 }
 
-/**
- * Move the cursor one "word" to the right using Unicode-aware coarse navigation.
- *
- * Returns a new cursor index in the range [0, text.length].
- */
 export function moveWordRight(text: string, cursor: number): number {
 	const len = text.length;
 	if (len === 0) return 0;
@@ -581,7 +459,6 @@ export function moveWordRight(text: string, cursor: number): number {
 	const iterator = segmenter.segment(text.slice(i))[Symbol.iterator]();
 	let next = iterator.next();
 
-	// Skip leading whitespace.
 	while (!next.done && getWordNavKind(next.value.segment) === "whitespace") {
 		i += next.value.segment.length;
 		next = iterator.next();
@@ -621,33 +498,17 @@ export function moveWordRight(text: string, cursor: number): number {
 		return i;
 	}
 
-	// Fallback: move by one grapheme.
 	return i + next.value.segment.length;
 }
 
-/**
- * Apply background color to a line, padding to full width.
- *
- * @param line - Line of text (may contain ANSI codes)
- * @param width - Total width to pad to
- * @param bgFn - Background color function
- * @returns Line with background applied and padded to width
- */
 export function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
-	// Calculate padding needed
 	const visibleLen = visibleWidth(line);
 	const paddingNeeded = Math.max(0, width - visibleLen);
 
-	// Apply background to content + padding
 	const withPadding = line + padding(paddingNeeded);
 	return bgFn(withPadding);
 }
 
-/**
- * Extract a range of visible columns from a line. Handles ANSI codes and wide chars.
- *
- * @param strict - If true, exclude wide chars at boundary that would extend past the range
- */
 export function sliceByColumn(line: string, startCol: number, length: number, strict = false): string {
 	return sliceWithWidth(line, startCol, length, strict).text;
 }

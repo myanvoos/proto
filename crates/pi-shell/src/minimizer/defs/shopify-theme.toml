@@ -1,4 +1,4 @@
-# Shopify CLI `shopify theme` push / pull / dev output.
+
 
 [filters.shopify-theme]
 description = "Compact shopify theme push/pull/dev output"

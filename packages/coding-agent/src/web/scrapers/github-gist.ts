@@ -2,9 +2,6 @@ import { fetchGitHubApi } from "./github";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult } from "./types";
 
-/**
- * Handle GitHub Gist URLs via GitHub API
- */
 export const handleGitHubGist: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -14,17 +11,14 @@ export const handleGitHubGist: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "gist.github.com") return null;
 
-		// Extract gist ID from /username/gistId or just /gistId
 		const parts = parsed.pathname.split("/").filter(Boolean);
 		if (parts.length === 0) return null;
 
-		// Gist ID is always the last path segment (or only segment for anonymous gists)
 		const gistId = parts[parts.length - 1];
 		if (!gistId || !/^[a-f0-9]+$/i.test(gistId)) return null;
 
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch via GitHub API
 		const result = await fetchGitHubApi(`/gists/${gistId}`, timeout, signal);
 		if (!result.ok || !result.data) return null;
 

@@ -1,4 +1,4 @@
-//! Job management
+
 
 use std::{collections::VecDeque, fmt::Display, time::Duration};
 
@@ -14,24 +14,24 @@ pub(crate) type JobResult = (Job, Result<ExecutionResult, error::Error>);
 
 const WAIT_NEXT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Selects a managed job by shell job ID or child process ID.
+
 #[derive(Clone, Copy)]
 pub enum JobSelector {
-	/// Shell-internal job ID.
+
 	JobId(usize),
-	/// Child process ID.
+
 	ProcessId(i32),
 }
 
-/// Result returned when waiting for a single managed job.
+
 pub struct WaitedJob {
-	/// Shell-internal job ID.
+
 	pub id: usize,
-	/// Process ID when known, otherwise the shell-internal job ID.
+
 	pub identifier: String,
-	/// Command line associated with the job.
+
 	pub command_line: String,
-	/// Exit status returned by the job.
+
 	pub result: ExecutionResult,
 }
 
@@ -41,36 +41,36 @@ impl WaitedJob {
 	}
 }
 
-/// Manages the jobs that are currently managed by the shell.
+
 #[derive(Default)]
 pub struct JobManager {
-	/// The jobs that are currently managed by the shell.
+
 	pub jobs: Vec<Job>,
 }
 
-/// Represents a task that is part of a job.
+
 pub enum JobTask {
-	/// An external process.
+
 	External(processes::ChildProcess),
-	/// An internal asynchronous task.
+
 	Internal(JobJoinHandle),
 }
 
-/// Represents the result of waiting on a job task.
+
 pub enum JobTaskWaitResult {
-	/// The task has completed.
+
 	Completed(ExecutionResult),
-	/// The task was stopped.
+
 	Stopped,
 }
 
 impl JobTask {
-	/// Returns whether the task is an external process.
+
 	pub const fn is_external(&self) -> bool {
 		matches!(self, Self::External(_))
 	}
 
-	/// Waits for the task to complete. Returns the result of the wait.
+
 	pub async fn wait(
 		&mut self,
 		wait_for_terminate: bool,
@@ -93,10 +93,10 @@ impl JobTask {
 		}
 	}
 
-	/// Polls the task for completion. Returns `Some(result)` if the task has
-	/// completed, or `None` if it is still running. The result is the execution
-	/// result of the task. Behaves in a best-effort manner; if an internal
-	/// error occurs during polling, it will return `None`.
+
+
+
+
 	fn poll(&mut self) -> Option<Result<ExecutionResult, error::Error>> {
 		match self {
 			Self::External(process) => {
@@ -112,17 +112,17 @@ impl JobTask {
 }
 
 impl JobManager {
-	/// Returns a new job manager.
+
 	pub fn new() -> Self {
 		Self::default()
 	}
 
-	/// Adds a job to the job manager and marks it as the current job;
-	/// returns an immutable reference to the job.
-	///
-	/// # Arguments
-	///
-	/// * `job` - The job to add.
+
+
+
+
+
+
 	#[allow(clippy::missing_panics_doc, reason = "push() guarantees the vector length is >= 1")]
 	pub fn add_as_current(&mut self, mut job: Job) -> &Job {
 		for j in &mut self.jobs {
@@ -141,7 +141,7 @@ impl JobManager {
 		self.jobs.last().unwrap()
 	}
 
-	/// Returns the current job, if there is one.
+
 	pub fn current_job(&self) -> Option<&Job> {
 		self
 			.jobs
@@ -149,7 +149,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Current))
 	}
 
-	/// Returns a mutable reference to the current job, if there is one.
+
 	pub fn current_job_mut(&mut self) -> Option<&mut Job> {
 		self
 			.jobs
@@ -157,7 +157,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Current))
 	}
 
-	/// Returns the previous job, if there is one.
+
 	pub fn prev_job(&self) -> Option<&Job> {
 		self
 			.jobs
@@ -165,7 +165,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Previous))
 	}
 
-	/// Returns a mutable reference to the previous job, if there is one.
+
 	pub fn prev_job_mut(&mut self) -> Option<&mut Job> {
 		self
 			.jobs
@@ -173,11 +173,11 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Previous))
 	}
 
-	/// Tries to resolve the given job specification to a job.
-	///
-	/// # Arguments
-	///
-	/// * `job_spec` - The job specification to resolve.
+
+
+
+
+
 	pub fn resolve_job_spec(&mut self, job_spec: &str) -> Option<&mut Job> {
 		let remainder = job_spec.strip_prefix('%')?;
 
@@ -195,11 +195,11 @@ impl JobManager {
 		}
 	}
 
-	/// Tries to resolve the given job specification to a wait selector.
-	///
-	/// # Arguments
-	///
-	/// * `job_spec` - The job specification to resolve.
+
+
+
+
+
 	pub fn resolve_job_spec_selector(&self, job_spec: &str) -> Option<JobSelector> {
 		let remainder = job_spec.strip_prefix('%')?;
 
@@ -221,26 +221,26 @@ impl JobManager {
 		}
 	}
 
-	/// Returns whether a managed job contains the given process ID.
+
 	pub fn contains_process_id(&self, pid: i32) -> bool {
 		self.jobs.iter().any(|job| job.contains_process_id(pid))
 	}
 
-	/// Tries to resolve the given process ID to a managed job.
-	///
-	/// # Arguments
-	///
-	/// * `pid` - The process ID to resolve.
+
+
+
+
+
 	pub fn resolve_process_id(&mut self, pid: i32) -> Option<&mut Job> {
 		self.jobs.iter_mut().find(|job| job.contains_process_id(pid))
 	}
 
-	/// Waits for all managed jobs to complete.
+
 	pub async fn wait_all(&mut self) -> Result<Vec<Job>, error::Error> {
 		self.wait_all_with_policy(false).await
 	}
 
-	/// Waits for all managed jobs to terminate, ignoring stopped-state changes.
+
 	pub async fn wait_all_for_termination(&mut self) -> Result<Vec<Job>, error::Error> {
 		self.wait_all_with_policy(true).await
 	}
@@ -256,7 +256,7 @@ impl JobManager {
 		Ok(self.sweep_completed_jobs())
 	}
 
-	/// Waits for the next matching managed job to complete.
+
 	pub async fn wait_next(
 		&mut self,
 		selectors: &[JobSelector],
@@ -299,7 +299,7 @@ impl JobManager {
 		}
 	}
 
-	/// Polls all managed jobs for completion.
+
 	pub fn poll(&mut self) -> Result<Vec<JobResult>, error::Error> {
 		let mut results = vec![];
 
@@ -309,8 +309,8 @@ impl JobManager {
 				let job = self.jobs.remove(i);
 				results.push((job, result));
 			} else if matches!(self.jobs[i].state, JobState::Done) {
-				// TODO(jobs): This is a workaround to remove jobs that are done but for which
-				// we don't know what happened.
+
+
 				results.push((self.jobs.remove(i), Ok(ExecutionResult::success())));
 			} else {
 				i += 1;
@@ -336,16 +336,16 @@ impl JobManager {
 	}
 }
 
-/// Represents the current execution state of a job.
+
 #[derive(Clone)]
 pub enum JobState {
-	/// Unknown state.
+
 	Unknown,
-	/// The job is running.
+
 	Running,
-	/// The job is stopped.
+
 	Stopped,
-	/// The job has completed.
+
 	Done,
 }
 
@@ -360,14 +360,14 @@ impl Display for JobState {
 	}
 }
 
-/// Represents an annotation for a job.
+
 #[derive(Clone)]
 pub enum JobAnnotation {
-	/// No annotation.
+
 	None,
-	/// The job is the current job.
+
 	Current,
-	/// The job is the previous job.
+
 	Previous,
 }
 
@@ -381,24 +381,24 @@ impl Display for JobAnnotation {
 	}
 }
 
-/// Encapsulates a set of processes managed by the shell as a single unit.
+
 pub struct Job {
-	/// The tasks that make up the job.
+
 	tasks: VecDeque<JobTask>,
 
-	/// If available, the process group ID of the job's processes.
+
 	pgid: Option<sys::process::ProcessId>,
 
-	/// The annotation of the job (e.g., current, previous).
+
 	annotation: JobAnnotation,
 
-	/// The shell-internal ID of the job.
+
 	pub id: usize,
 
-	/// The command line of the job.
+
 	pub command_line: String,
 
-	/// The current operational state of the job.
+
 	pub state: JobState,
 }
 
@@ -416,13 +416,13 @@ impl Display for Job {
 }
 
 impl Job {
-	/// Returns a new job object.
-	///
-	/// # Arguments
-	///
-	/// * `children` - The job's known child processes.
-	/// * `command_line` - The command line of the job.
-	/// * `state` - The current operational state of the job.
+
+
+
+
+
+
+
 	pub(crate) fn new<I>(tasks: I, command_line: String, state: JobState) -> Self
 	where
 		I: IntoIterator<Item = JobTask>,
@@ -437,7 +437,7 @@ impl Job {
 		}
 	}
 
-	/// Returns a pid-style string for the job.
+
 	pub fn to_pid_style_string(&self) -> String {
 		let display_pid = self
 			.representative_pid()
@@ -445,12 +445,12 @@ impl Job {
 		std::format!("[{}]{}\t{}", self.id, self.annotation, display_pid)
 	}
 
-	/// Returns the annotation of the job.
+
 	pub fn annotation(&self) -> JobAnnotation {
 		self.annotation.clone()
 	}
 
-	/// Returns the command name of the job.
+
 	pub fn command_name(&self) -> &str {
 		self
 			.command_line
@@ -459,17 +459,17 @@ impl Job {
 			.unwrap_or_default()
 	}
 
-	/// Returns whether the job is the current job.
+
 	pub const fn is_current(&self) -> bool {
 		matches!(self.annotation, JobAnnotation::Current)
 	}
 
-	/// Returns whether the job is the previous job.
+
 	pub const fn is_prev(&self) -> bool {
 		matches!(self.annotation, JobAnnotation::Previous)
 	}
 
-	/// Polls whether the job has completed.
+
 	pub fn poll_done(
 		&mut self,
 	) -> Result<Option<Result<ExecutionResult, error::Error>>, error::Error> {
@@ -497,12 +497,12 @@ impl Job {
 		Ok(result)
 	}
 
-	/// Waits for the job to complete.
+
 	pub async fn wait(&mut self) -> Result<ExecutionResult, error::Error> {
 		self.wait_with_policy(false).await
 	}
 
-	/// Waits for the job to terminate, ignoring stopped-state changes.
+
 	pub async fn wait_for_termination(&mut self) -> Result<ExecutionResult, error::Error> {
 		self.wait_with_policy(true).await
 	}
@@ -531,7 +531,7 @@ impl Job {
 		Ok(result)
 	}
 
-	/// Moves the job to execute in the background.
+
 	pub fn move_to_background(&mut self) -> Result<(), error::Error> {
 		match &self.state {
 			JobState::Stopped => {
@@ -547,7 +547,7 @@ impl Job {
 		}
 	}
 
-	/// Moves the job to execute in the foreground.
+
 	pub fn move_to_foreground(&mut self) -> Result<(), error::Error> {
 		if matches!(self.state, JobState::Stopped) {
 			if let Some(pgid) = self.process_group_id() {
@@ -565,11 +565,11 @@ impl Job {
 		Ok(())
 	}
 
-	/// Kills the job.
-	///
-	/// # Arguments
-	///
-	/// * `signal` - The signal to send to the job.
+
+
+
+
+
 	pub fn kill(&self, signal: traps::TrapSignal) -> Result<(), error::Error> {
 		if let Some(pid) = self.process_group_id() {
 			sys::signal::kill_process(pid, signal)
@@ -578,11 +578,11 @@ impl Job {
 		}
 	}
 
-	/// Aborts shell-internal background tasks and drops their join handles.
-	///
-	/// External process jobs are intentionally left alone; callers that abort
-	/// internal tasks are still responsible for signalling any process trees
-	/// those tasks may have spawned.
+
+
+
+
+
 	pub fn abort_internal_tasks(&mut self) {
 		let mut aborted = false;
 		self.tasks.retain_mut(|task| {
@@ -617,12 +617,12 @@ impl Job {
 			.representative_pid()
 			.map_or_else(|| self.id.to_string(), |pid| pid.to_string())
 	}
-	/// Returns the number of external processes retained by this job.
+
 	pub fn external_process_count(&self) -> usize {
 		self.tasks.iter().filter(|task| task.is_external()).count()
 	}
 
-	/// Iterates over the external process IDs that make up this job.
+
 	pub fn process_ids(&self) -> impl Iterator<Item = sys::process::ProcessId> + '_ {
 		self.tasks.iter().filter_map(|task| match task {
 			JobTask::External(process) => process.pid(),
@@ -631,7 +631,7 @@ impl Job {
 	}
 
 
-	/// Tries to retrieve a "representative" pid for the job.
+
 	pub fn representative_pid(&self) -> Option<sys::process::ProcessId> {
 		for task in &self.tasks {
 			match task {
@@ -646,13 +646,13 @@ impl Job {
 		None
 	}
 
-	/// Tries to retrieve the process group ID (PGID) of the job.
+
 	pub fn process_group_id(&self) -> Option<sys::process::ProcessId> {
-		// TODO(jobs): Don't assume that the first PID is the PGID.
+
 		self.pgid.or_else(|| self.representative_pid())
 	}
 
-	/// Duplicates process handles for termination on Windows.
+
 	#[cfg(windows)]
 	pub fn duplicate_kill_handles(&self) -> Vec<OwnedHandle> {
 		self

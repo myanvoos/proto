@@ -13,11 +13,6 @@ import type { ToolSession } from "./index";
 import { ToolError, throwIfAborted } from "./tool-errors";
 import { clampTimeout } from "./tool-timeouts";
 
-// Image transports that cannot preserve native screenshot detail resize frames
-// without returning transformed dimensions. Keep their native coordinate frames
-// below the empirically verified threshold so pointer actions match what the
-// model sees. Claude paths predate the resolved transport capability and retain
-// their established model-family fallback.
 const COORDINATE_SAFE_MAX_CAPTURE_WIDTH = 1280;
 const COORDINATE_SAFE_MAX_CAPTURE_HEIGHT = 896;
 
@@ -53,7 +48,6 @@ const getComputerSchema: () => ComputerSchema = once(() =>
 	}),
 );
 
-/** Renderer and artifact metadata produced by a computer tool run. */
 export interface ComputerToolDetails {
 	code?: string;
 	readOnly?: boolean;
@@ -65,9 +59,8 @@ export interface ComputerToolDetails {
 	axPermission?: string;
 }
 
-/** Creates the session-scoped controller used by the computer tool. */
 type ComputerControllerFactory = (session: ToolSession) => ComputerController;
-/** Executes persistent desktop JavaScript through one lazy worker session. */
+
 export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";
 	readonly label = "Computer";
@@ -187,7 +180,6 @@ function populateCapabilityDetails(details: ComputerToolDetails, capabilities: D
 	details.axPermission = capabilities.axPermission;
 }
 
-/** Persist over-cap computer run output as a session artifact; mirrors the browser run save path. */
 async function saveComputerOutputArtifact(session: ToolSession, fullText: string): Promise<string | undefined> {
 	try {
 		const alloc = await session.allocateOutputArtifact?.("computer-original");

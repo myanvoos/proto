@@ -1,5 +1,5 @@
-//! Core implementation of the brush shell. Implements the shell's abstraction,
-//! its interpreter, and various facilities used internally by the shell.
+
+
 
 pub mod arithmetic;
 mod braceexpansion;
@@ -42,7 +42,7 @@ pub mod traps;
 pub mod variables;
 mod wellknownvars;
 
-/// Re-export parser types used in core definitions.
+
 pub mod parser {
 	pub use brush_parser::{
 		BindingParseError, ParseError, ParserImpl, SourcePosition, SourcePositionOffset, SourceSpan,

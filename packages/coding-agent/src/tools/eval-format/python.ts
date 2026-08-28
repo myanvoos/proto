@@ -534,7 +534,6 @@ function formatPythonPrefix(source: string): string {
 	return chunks.join("");
 }
 
-/** Formats an arbitrary Python source prefix for stable, readable display. */
 export function formatPythonForDisplay(source: string): string {
 	try {
 		return formatPythonPrefix(source);

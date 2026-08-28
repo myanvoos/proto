@@ -1,7 +1,3 @@
-/**
- * `proto auth-gateway` — run a forward proxy that injects auth from the broker.
- */
-
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
 import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 import {

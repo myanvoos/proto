@@ -1,8 +1,3 @@
-/**
- * Helpers shared by the per-language eval backend definitions (jl/js/py/rb
- * index modules): session-id namespacing, settings access, and projection of
- * executor results into the ExecutorBackend result shape.
- */
 import type { ToolSession } from "../tools";
 import type { ExecutorBackendResult } from "./backend";
 import type { EvalDisplayOutput } from "./types";

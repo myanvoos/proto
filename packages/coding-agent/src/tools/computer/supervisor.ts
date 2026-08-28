@@ -18,7 +18,6 @@ const CLOSE_TIMEOUT_MS = 1_500;
 const GRACE_MS = 750;
 const RESTART_MESSAGE = "computer worker restarted; captures and ax refs were reset";
 
-/** Runs desktop scripts and owns their persistent worker session. */
 export interface ComputerController {
 	run(
 		code: string,
@@ -30,7 +29,6 @@ export interface ComputerController {
 	close(): Promise<void>;
 }
 
-/** Minimal Bun worker lifecycle surface used by the supervisor. */
 export interface ComputerWorkerHandle {
 	send(message: ComputerWorkerInbound): void;
 	onMessage(handler: (message: ComputerWorkerOutbound) => void): () => void;
@@ -38,7 +36,6 @@ export interface ComputerWorkerHandle {
 	terminate(): Promise<void>;
 }
 
-/** Startup and shutdown deadlines for a computer worker. */
 interface ComputerSupervisorTimeouts {
 	startMs: number;
 	closeMs: number;
@@ -49,14 +46,12 @@ const DEFAULT_TIMEOUTS: ComputerSupervisorTimeouts = {
 	closeMs: CLOSE_TIMEOUT_MS,
 };
 
-/** Dispatches a tool call requested from desktop JavaScript. */
 type ComputerSessionToolCaller = (
 	name: string,
 	args: unknown,
 	options: { session: ToolSession; signal?: AbortSignal; emitStatus?: () => void },
 ) => Promise<unknown>;
 
-/** Creates an isolated computer worker handle. */
 type ComputerWorkerFactory = () => ComputerWorkerHandle;
 
 interface PendingRun {
@@ -97,7 +92,6 @@ function wrapWorker(worker: Worker): ComputerWorkerHandle {
 	};
 }
 
-/** Spawns the computer worker through the active CLI host when available. */
 function spawnComputerWorker(): ComputerWorkerHandle {
 	const hostEntry = workerHostEntry();
 	const worker = hostEntry
@@ -130,7 +124,6 @@ function toErrorPayload(error: unknown): RunErrorPayload {
 	return { name: "Error", message: String(error), isAbort: false, isToolError: false };
 }
 
-/** Supervises one lazy, crash-isolated computer worker per agent session. */
 export class ComputerSupervisor implements ComputerController {
 	readonly #session: ToolSession;
 	readonly #createWorker: ComputerWorkerFactory;
@@ -342,7 +335,6 @@ export class ComputerSupervisor implements ComputerController {
 			worker.send({ type: "close" });
 			await withTimeout(closed.promise, this.#timeouts.closeMs, "Timed out closing computer worker");
 		} catch {
-			// Forced termination below is the bounded close fallback.
 		} finally {
 			unsubscribe();
 			await this.#terminate(new ToolError("Computer session closed"));
@@ -352,7 +344,6 @@ export class ComputerSupervisor implements ComputerController {
 
 const ownedSupervisors = new Map<string, Set<ComputerController>>();
 
-/** Registers a controller for owner-scoped session cleanup. */
 export function registerComputerController(ownerId: string | undefined, controller: ComputerController): () => void {
 	if (!ownerId) return () => {};
 	const controllers = ownedSupervisors.get(ownerId) ?? new Set<ComputerController>();
@@ -364,7 +355,6 @@ export function registerComputerController(ownerId: string | undefined, controll
 	};
 }
 
-/** Closes every computer session owned by an agent session. */
 export async function releaseComputerSessionsForOwner(ownerId: string | undefined): Promise<void> {
 	if (!ownerId) return;
 	const controllers = ownedSupervisors.get(ownerId);

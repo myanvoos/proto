@@ -1,13 +1,3 @@
-/**
- * Internal URL routing system for internal protocols like agent://,
- * skill://, mcp://, local://, and xd://.
- *
- * One process-global `InternalUrlRouter` is shared across sessions. Handlers
- * are stateless; they pull whatever they need (active skills/rules, active
- * MCP/async managers, AgentRegistry-listed sessions) from the owning module
- * on each resolve call.
- */
-
 export * from "./agent-protocol";
 export * from "./artifact-protocol";
 export * from "./history-protocol";

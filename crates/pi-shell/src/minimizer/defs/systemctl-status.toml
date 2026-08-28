@@ -1,5 +1,5 @@
-# Ported from https://github.com/rtk-ai/rtk/blob/master/src/filters/systemctl-status.toml
-# match_command adapted for the local (program, subcommand) dispatch model.
+
+
 
 [filters.systemctl-status]
 description = "Compact systemctl status output — strip blank lines, limit to 20 lines"

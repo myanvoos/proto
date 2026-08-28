@@ -1,6 +1,6 @@
-//! `printenv` builtin: display values from the shell's exported environment.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::io::Write;
 
@@ -13,7 +13,7 @@ use crate::host::{Host, Utility, format_usage, matches_parser, util};
 const OPT_NULL: &str = "null";
 const ARG_VARIABLES: &str = "variables";
 
-/// Parsed `printenv` invocation.
+
 pub(crate) struct Printenv {
 	matches: ArgMatches,
 }
@@ -33,8 +33,8 @@ impl Utility for Printenv {
 		let separator = LineEnding::from_zero_flag(self.matches.get_flag(OPT_NULL));
 
 		if variables.len() == 0 {
-			// Hash map iteration order is intentionally hidden from callers. Sort by
-			// name so repeated invocations produce the same environment dump.
+
+
 			let mut environment = host
 				.env()
 				.map(|(name, value)| (name.to_owned(), value.to_owned()))
@@ -55,8 +55,8 @@ impl Utility for Printenv {
 
 		let mut error_found = false;
 		for env_var in variables {
-			// We silently ignore a=b as a variable, but still report failure in
-			// the exit status.
+
+
 			if env_var.contains('=') {
 				error_found = true;
 				continue;
@@ -79,7 +79,7 @@ impl Utility for Printenv {
 	}
 }
 
-/// The `printenv` argument model.
+
 fn app() -> Command {
 	Command::new(Printenv::NAME)
 		.version("0.8.0")
@@ -103,7 +103,7 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `printenv` builtin registration.
+
 pub(crate) fn printenv_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Printenv, SE>()
 }

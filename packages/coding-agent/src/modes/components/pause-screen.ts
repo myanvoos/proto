@@ -1,16 +1,3 @@
-/**
- * Fullscreen `/pause` screen.
- *
- * `/pause` engages the process-global {@link agentPauseGate}, freezing every
- * agent loop in the process (main agent, in-process subagents, advisor) at its
- * next safe boundary — nothing is aborted, so a later resume continues exactly
- * where each loop parked. While engaged, this component owns the alternate
- * screen (the fullscreen overlay idiom) and paints a large pause glyph with a
- * live hold timer; esc / enter / space / ctrl+c releases the gate.
- *
- * Use case: freeze a busy session, hand-edit the repo, resume, then explain
- * the change via a normal steering message.
- */
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
@@ -24,10 +11,6 @@ import { formatDuration } from "../../slash-commands/helpers/format";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt } from "../utils/keybinding-matchers";
 
-/**
- * Slice of `InteractiveModeContext` the pause screen drives. Narrow so tests
- * can exercise the full engage → hold → release lifecycle without a real TUI.
- */
 export interface PauseScreenHost {
 	ui: {
 		showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
@@ -39,15 +22,12 @@ export interface PauseScreenHost {
 	readonly sessionName?: string;
 }
 
-/** Refresh cadence for the live "paused for" clock. */
 const TICK_MS = 1_000;
 
-/** Pause-bar glyph geometry (rows × columns of full blocks per bar). */
 const BAR_ROWS = 7;
 const BAR_WIDTH = 5;
 const BAR_GAP = 4;
 
-/** Below either bound the full scene cannot breathe; drop to the compact card. */
 const MIN_FULL_WIDTH = 64;
 const MIN_FULL_HEIGHT = 18;
 
@@ -63,7 +43,6 @@ function centerLine(line: string, width: number): string {
 	return pad > 0 ? " ".repeat(pad) + line : line;
 }
 
-/** Live hold clock, seconds-precise: `0:07`, `12:34`, `1:02:03`. */
 function formatClock(ms: number): string {
 	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
 	const seconds = totalSeconds % 60;
@@ -73,10 +52,6 @@ function formatClock(ms: number): string {
 	return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-/**
- * Paint the pause scene as exactly `height` rows, vertically centered.
- * Exported for tests.
- */
 export function renderPauseScreen(width: number, height: number, elapsedMs: number, sessionName?: string): string[] {
 	const compact = width < MIN_FULL_WIDTH || height < MIN_FULL_HEIGHT;
 	const content: string[] = [];
@@ -120,7 +95,6 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 	return lines.slice(0, Math.max(1, height));
 }
 
-/** Fullscreen overlay component; resolves {@link run} when a resume key lands. */
 export class PauseScreenComponent implements Component, OverlayFocusOwner {
 	#timer: NodeJS.Timeout | undefined;
 	#done = Promise.withResolvers<void>();
@@ -129,7 +103,6 @@ export class PauseScreenComponent implements Component, OverlayFocusOwner {
 
 	constructor(readonly host: PauseScreenHost) {}
 
-	/** Start the clock; resolves once the user asks to resume. */
 	run(): Promise<void> {
 		this.#startedAt = agentPauseGate.pausedAt ?? Date.now();
 		this.#timer ??= setInterval(() => {
@@ -152,9 +125,6 @@ export class PauseScreenComponent implements Component, OverlayFocusOwner {
 	}
 
 	handleInput(data: string): void {
-		// Every dismissal path resumes — including ctrl+c, which must never
-		// double as "abort agents" while the whole point of the screen is that
-		// nothing gets lost.
 		if (
 			matchesAppInterrupt(data) ||
 			matchesKey(data, "enter") ||
@@ -177,12 +147,6 @@ export class PauseScreenComponent implements Component, OverlayFocusOwner {
 	}
 }
 
-/**
- * Engage the global pause gate and hold the fullscreen pause screen until the
- * user resumes. No-op when the gate is already engaged. Always releases the
- * gate on the way out (including teardown throws) — a leaked pause would
- * freeze every agent in the process with no UI left to release it.
- */
 export async function runPauseScreen(host: PauseScreenHost): Promise<void> {
 	if (!agentPauseGate.pause()) return;
 	const component = new PauseScreenComponent(host);

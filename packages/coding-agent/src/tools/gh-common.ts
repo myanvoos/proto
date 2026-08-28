@@ -110,11 +110,6 @@ export function parsePullRequestUrl(value: string | undefined): { repo?: string;
 	};
 }
 
-/**
- * Parse a digit-only decimal positive integer or return undefined. Rejects
- * `1e2`, `0x10`, `12.0`, leading +/-, or any other shape `Number()` would
- * accept — those would otherwise key the cache against the wrong row.
- */
 export function parsePositiveDecimalInt(value: string | undefined): number | undefined {
 	if (!value || !/^\d+$/.test(value)) return undefined;
 	const num = Number(value);
@@ -171,17 +166,6 @@ export async function resolveGitHubRepo(
 	return requireNonEmpty(resolved, "repo");
 }
 
-/**
- * Process-lifetime cache of `gh repo view --json nameWithOwner` lookups keyed
- * by absolute cwd. Avoids repeated `gh` chatter when the same protocol handler
- * or tool call resolves the default repo many times in a row.
- *
- * The shared lookup is intentionally **not** bound to any caller's
- * AbortSignal. Cancelling one caller would otherwise kill the underlying
- * `gh repo view` for every concurrent waiter on the same cwd. Each caller's
- * signal is honored at the wait point via `untilAborted` instead, so an abort
- * unwinds only that caller.
- */
 const DEFAULT_REPO_RESOLVED = new Map<string, string>();
 const DEFAULT_REPO_INFLIGHT = new Map<string, Promise<string>>();
 
@@ -192,8 +176,6 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 	let pending = DEFAULT_REPO_INFLIGHT.get(key);
 	if (!pending) {
 		pending = (async () => {
-			// No caller signal: this lookup is shared across every concurrent
-			// waiter on the same cwd.
 			const resolved = await git.github.text(cwd, [
 				"repo",
 				"view",
@@ -206,8 +188,7 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 			DEFAULT_REPO_RESOLVED.set(key, value);
 			return value;
 		})();
-		// Drop the in-flight slot on settle so failures don't poison the cache
-		// and so a successful resolution survives only in `DEFAULT_REPO_RESOLVED`.
+
 		void pending.then(
 			() => DEFAULT_REPO_INFLIGHT.delete(key),
 			() => DEFAULT_REPO_INFLIGHT.delete(key),
@@ -217,12 +198,6 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 	return untilAborted(signal, pending);
 }
 
-/**
- * Best-effort cached cwd → `owner/repo` resolution that swallows any failure
- * (not a git checkout, no GitHub remote, `gh` unauthenticated, …) into
- * `undefined`. Use where the cwd repo is a convenience fallback, not a safety
- * check.
- */
 export async function tryResolveCurrentRepo(cwd: string, signal: AbortSignal | undefined): Promise<string | undefined> {
 	try {
 		return await resolveDefaultRepoMemoized(cwd, signal);
@@ -231,11 +206,6 @@ export async function tryResolveCurrentRepo(cwd: string, signal: AbortSignal | u
 	}
 }
 
-/**
- * Best-effort fresh cwd → `owner/repo` resolution for safety checks that must
- * reflect the repository currently mounted at `cwd`, not the process-lifetime
- * default-repo cache.
- */
 export async function tryResolveCurrentRepoFresh(
 	cwd: string,
 	signal: AbortSignal | undefined,

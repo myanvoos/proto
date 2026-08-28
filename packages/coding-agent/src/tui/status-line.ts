@@ -1,14 +1,10 @@
-/**
- * Standardized status header rendering for tool output.
- */
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import type { ToolUIStatus } from "../tools/render-utils";
 import { formatStatusIcon } from "../tools/render-utils";
 
 interface StatusLineOptions {
 	icon?: ToolUIStatus;
-	/** Pre-rendered glyph that replaces the status icon (e.g. a magnifier for
-	 * search-family tools). Takes precedence over `icon`. */
+
 	iconOverride?: string;
 	spinnerFrame?: number;
 	title: string;
@@ -18,13 +14,6 @@ interface StatusLineOptions {
 	meta?: string[];
 }
 
-/**
- * Flatten CR/LF runs in caller-supplied header fragments so a single newline
- * embedded in `description` or `meta` cannot expand the status line into
- * multiple rows — which would otherwise break the bordered output block the
- * header sits on. Tab characters are left alone; tool renderers that need
- * tab-safe text run `replaceTabs()` themselves.
- */
 function flattenForHeader(text: string): string {
 	return text.replace(/\r\n?|\n/g, " ");
 }

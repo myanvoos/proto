@@ -34,7 +34,6 @@ import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
-/** Capabilities borrowed from the owning AgentSession. */
 export interface ModelControlsHost {
 	agent: Agent;
 	settings: Settings;
@@ -55,12 +54,11 @@ export interface ModelControlsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 }
 
-/** Owns model selection, thinking effort, role cycling, and service tiers. */
 export class ModelControls {
 	readonly #host: ModelControlsHost;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	#thinkingLevel: ThinkingLevel | undefined;
-	/** Hard per-session effort ceiling (e.g. a worker spawn's `orchestrator.maxEffort` cap); recovery paths re-clamp to it. */
+
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#serviceTierByFamily: ServiceTierByFamily;
 
@@ -85,42 +83,30 @@ export class ModelControls {
 		return this.#host.model();
 	}
 
-	/** Effective metadata-clamped thinking level applied to the agent. */
 	get thinkingLevel(): ThinkingLevel | undefined {
 		return this.#thinkingLevel;
 	}
 
-	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
 	get thinkingLevelCeiling(): Effort | undefined {
 		return this.#thinkingLevelCeiling;
 	}
 
-	/** Effective thinking level applied to the agent. */
 	configuredThinkingLevel(): ThinkingLevel | undefined {
 		return this.#thinkingLevel;
 	}
 
-	/** Models explicitly scoped to the session's cycle command. */
 	get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
 		return this.#scopedModels;
 	}
 
-	/**
-	 * Replace the Ctrl+P cycle scope. Startup resolves the scope before background
-	 * provider discovery runs; the CLI re-pushes the fuller list here once discovery
-	 * completes so a newly-discovered `enabledModels` model joins the cycle and the
-	 * scoped `/models` picker (issue #9220).
-	 */
 	setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void {
 		this.#scopedModels = scopedModels;
 	}
 
-	/** Live per-provider-family service-tier selection. */
 	get serviceTierByFamily(): ServiceTierByFamily {
 		return this.#serviceTierByFamily;
 	}
 
-	/** Restores thinking state from a transcript without persisting a new entry. */
 	restoreThinkingLevel(level: ThinkingLevel | undefined): void {
 		this.#thinkingLevel = resolveThinkingLevelForModel(
 			this.#model,
@@ -129,7 +115,6 @@ export class ModelControls {
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
 	}
 
-	/** Restores service tiers without persisting a duplicate transcript entry. */
 	restoreServiceTiers(tiers: ServiceTierByFamily): void {
 		this.#serviceTierByFamily = tiers;
 	}
@@ -197,20 +182,11 @@ export class ModelControls {
 		}
 		this.#host.settings.getStorage()?.recordModelUsage(`${targetModel.provider}/${targetModel.id}`);
 
-		// Re-apply thinking for the newly selected model. Prefer the model's
-		// configured defaultLevel; otherwise preserve the current level (or auto).
 		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		await this.#host.syncAfterModelChange(previousEditMode);
 		return { switched: true };
 	}
 
-	/**
-	 * Set model temporarily (for this session only).
-	 * Validates that a credential source is configured (synchronously, without
-	 * refreshing OAuth or running command-backed key programs), saves to session
-	 * log but NOT to settings.
-	 * @throws Error if no API key available for the model
-	 */
 	async setModelTemporary(
 		model: Model,
 		thinkingLevel?: ThinkingLevel,
@@ -232,8 +208,6 @@ export class ModelControls {
 		);
 		this.#host.settings.getStorage()?.recordModelUsage(`${targetModel.provider}/${targetModel.id}`);
 
-		// Apply explicit thinking level if given; otherwise prefer the model's
-		// configured defaultLevel; otherwise re-clamp the current level (or auto).
 		if (thinkingLevel !== undefined) {
 			this.setThinkingLevel(thinkingLevel);
 		} else {
@@ -242,12 +216,6 @@ export class ModelControls {
 		await this.#host.syncAfterModelChange(previousEditMode);
 	}
 
-	/**
-	 * Cycle to next/previous model.
-	 * Uses scoped models (from --models flag) if available, otherwise all available models.
-	 * @param direction - "forward" (default) or "backward"
-	 * @returns The new model info, or undefined if only one model available
-	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
 		if (this.#scopedModels.length > 0) {
 			return this.#cycleScopedModel(direction);
@@ -255,16 +223,6 @@ export class ModelControls {
 		return this.#cycleAvailableModel(direction);
 	}
 
-	/**
-	 * Resolve the configured role models in the given order plus the index of
-	 * the currently active one. Roles that have no configured model, or whose
-	 * configured model is not currently available, are skipped. The `default`
-	 * role falls back to the active model when no explicit assignment exists.
-	 *
-	 * Returns `undefined` only when there is no current model or no available
-	 * models at all; an empty `models` array is never returned (callers should
-	 * still guard on `models.length`).
-	 */
 	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
 		const availableModels = this.#host.modelRegistry.getAvailable();
 		if (availableModels.length === 0) return undefined;
@@ -297,11 +255,6 @@ export class ModelControls {
 
 		if (models.length === 0) return undefined;
 
-		// Trust the recorded role only while its resolved model still IS the
-		// active model. A model switch through another surface (alt+m, retry
-		// fallback, /model) or a role re-configuration leaves the recorded role
-		// pointing at a model the session no longer runs; cycling from that
-		// stale slot lands on the wrong neighbor and reads as a skipped entry.
 		const lastRole = this.#host.sessionManager.getLastModelChangeRole();
 		let currentIndex = lastRole ? models.findIndex(entry => entry.role === lastRole) : -1;
 		if (currentIndex !== -1 && !modelsAreEqual(models[currentIndex].model, currentModel)) {
@@ -315,10 +268,6 @@ export class ModelControls {
 		return { models, currentIndex };
 	}
 
-	/**
-	 * Apply a resolved role model as the active model without changing global
-	 * settings. Shared with role cycling and the plan-approval model slider.
-	 */
 	async applyRoleModel(entry: ResolvedRoleModel): Promise<void> {
 		await this.setModel(entry.model, entry.role);
 		if (entry.explicitThinkingLevel && entry.thinkingLevel !== undefined) {
@@ -326,12 +275,6 @@ export class ModelControls {
 		}
 	}
 
-	/**
-	 * Cycle through configured role models in a fixed order.
-	 * Skips missing roles and changes only the active session model.
-	 * @param roleOrder - Order of roles to cycle through (e.g., ["slow", "default", "smol"])
-	 * @param direction - "forward" (default) or "backward"
-	 */
 	async cycleRoleModels(
 		roleOrder: readonly string[],
 		direction: "forward" | "backward" = "forward",
@@ -382,14 +325,12 @@ export class ModelControls {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 
-		// Apply model
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(next.model));
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(next.model);
 		this.#host.sessionManager.appendModelChange(`${next.model.provider}/${next.model.id}`);
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
-		// Apply the scoped model's configured thinking level.
 		this.setThinkingLevel(next.thinkingLevel);
 		await this.#host.syncAfterModelChange(previousEditMode);
 
@@ -419,17 +360,13 @@ export class ModelControls {
 		await this.#host.setModelWithProviderSessionReset(nextModel);
 		this.#host.sessionManager.appendModelChange(`${nextModel.provider}/${nextModel.id}`);
 		this.#host.settings.getStorage()?.recordModelUsage(`${nextModel.provider}/${nextModel.id}`);
-		// Re-apply the current thinking level (or auto) for the newly selected model
+
 		this.#reapplyThinkingLevel();
 		await this.#host.syncAfterModelChange(previousEditMode);
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}
 
-	/**
-	 * Get all available models with valid API keys, filtered by `enabledModels` when configured.
-	 * See {@link filterAvailableModelsByEnabledPatterns} for supported pattern forms and limitations.
-	 */
 	getAvailableModels(): Model[] {
 		const all = this.#host.modelRegistry.getAvailable();
 		const patterns = this.#host.settings.get("enabledModels");
@@ -437,18 +374,11 @@ export class ModelControls {
 		return filterAvailableModelsByEnabledPatterns(all, patterns, this.#host.settings);
 	}
 
-	// =========================================================================
-	// Thinking Level Management
-	// =========================================================================
-
 	#applyThinkingLevelToAgent(level: ThinkingLevel | undefined): void {
 		this.#host.agent.setThinkingLevel(toReasoningEffort(level));
 		this.#host.agent.setDisableReasoning(shouldDisableReasoning(level));
 	}
 
-	/**
-	 * Set the thinking level.
-	 */
 	setThinkingLevel(level: ThinkingLevel | undefined, persist: boolean = false): void {
 		const effectiveLevel = resolveThinkingLevelForModel(
 			this.#model,
@@ -469,18 +399,10 @@ export class ModelControls {
 		}
 	}
 
-	/**
-	 * Re-apply the active thinking selection after a model change. Re-applies the
-	 * preferred default or the current effective level.
-	 */
 	#reapplyThinkingLevel(preferredDefault?: ThinkingLevel): void {
 		this.setThinkingLevel(preferredDefault ?? this.#thinkingLevel);
 	}
 
-	/**
-	 * Cycle to next thinking level: off → minimal..max → off.
-	 * @returns New selector, or undefined if model doesn't support thinking
-	 */
 	cycleThinkingLevel(): ThinkingLevel | undefined {
 		if (!this.#model?.reasoning) return undefined;
 
@@ -495,26 +417,11 @@ export class ModelControls {
 		return nextLevel;
 	}
 
-	/**
-	 * True when the currently selected model's family is set to `priority` — the
-	 * `/fast` on/off state for the active model. Returns false when no model is
-	 * selected or the model exposes no service-tier family (e.g. Fireworks, which
-	 * has its own Providers › Fireworks Tier toggle).
-	 *
-	 * For "is priority actually applied to the next request?" use
-	 * {@link isFastModeActive} instead.
-	 */
 	isFastModeEnabled(): boolean {
 		const family = this.#model ? serviceTierFamily(this.#model) : undefined;
 		return family ? this.#serviceTierByFamily[family] === "priority" : false;
 	}
 
-	/**
-	 * True when `priority` is actually realized on the wire for the currently
-	 * selected model (OpenAI/Google `service_tier`, direct Anthropic fast mode,
-	 * or Fireworks priority). Returns false for tiers the active model can't
-	 * realize and when no model is selected.
-	 */
 	isFastModeActive(): boolean {
 		const model = this.#model;
 		if (!model || !realizesPriorityServiceTier(this.effectiveServiceTier(model), model)) return false;
@@ -524,13 +431,6 @@ export class ModelControls {
 		return true;
 	}
 
-	/**
-	 * Effective wire service-tier for a request to `model`. Fireworks models take
-	 * the Priority serving path only when the Providers › Fireworks Tier setting
-	 * is `"priority"` (and never for `-fast` variants, whose Fast serving path is
-	 * mutually exclusive with Priority). Every other model resolves the live
-	 * per-family tier map down to the entry for its family.
-	 */
 	effectiveServiceTier(model: Model | undefined = this.#model): ServiceTier | undefined {
 		if (model?.provider === "fireworks") {
 			return this.#host.settings.get("providers.fireworksTier") === "priority" && !isFireworksFastModelId(model.id)
@@ -541,12 +441,10 @@ export class ModelControls {
 		return resolveModelServiceTier(this.#serviceTierByFamily, model);
 	}
 
-	/** The live per-family tier map, or `null` when empty (for session persistence). */
 	serviceTierEntry(): ServiceTierByFamily | null {
 		return Object.keys(this.#serviceTierByFamily).length > 0 ? this.#serviceTierByFamily : null;
 	}
 
-	/** Set one family's tier (or clear it with `undefined`); persists the change. */
 	setServiceTierFamily(family: ServiceTierFamily, tier: ServiceTier | undefined): void {
 		if (this.#serviceTierByFamily[family] === tier) return;
 		const next: ServiceTierByFamily = { ...this.#serviceTierByFamily };
@@ -555,10 +453,7 @@ export class ModelControls {
 		this.#applyServiceTierByFamily(next);
 	}
 
-	/** Replace the whole per-family tier map; persists + re-arms Anthropic fast mode. */
 	#applyServiceTierByFamily(next: ServiceTierByFamily): void {
-		// Re-arming Anthropic priority clears the per-session fast-mode auto-disable
-		// so the next request actually carries `speed: "fast"` again.
 		if (next.anthropic === "priority" && this.#serviceTierByFamily.anthropic !== "priority") {
 			clearAnthropicFastModeFallback(this.#host.providerSessionState);
 		}
@@ -566,12 +461,6 @@ export class ModelControls {
 		this.#host.sessionManager.appendServiceTierChange(this.serviceTierEntry());
 	}
 
-	/**
-	 * `/fast on|off` targets the family of the currently selected model: it sets
-	 * (or clears) that family's `priority` tier. Returns `false` when the model
-	 * has no service-tier family, so callers can report that fast mode is
-	 * unavailable instead of claiming success.
-	 */
 	setFastMode(enabled: boolean): boolean {
 		const family = this.#model ? serviceTierFamily(this.#model) : undefined;
 		if (!family) {
@@ -598,9 +487,6 @@ export class ModelControls {
 		return this.isFastModeEnabled();
 	}
 
-	/**
-	 * Get available thinking levels for current model.
-	 */
 	getAvailableThinkingLevels(): ReadonlyArray<Effort> {
 		if (!this.#model) return [];
 		return getSupportedEfforts(this.#model);

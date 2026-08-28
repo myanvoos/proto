@@ -1,14 +1,14 @@
-//! Shared process-matching engine behind `pgrep`, `pkill`, and `pidwait`.
-//!
-//! The three commands differ only in what they do with the processes they
-//! select — print them, signal them, or wait for them — so selection, argument
-//! parsing, and help rendering all live here, and each command is a thin front
-//! end over [`run`].
-//!
-//! Ported from `pi-shell`, which previously defined all three inline.
 
-// The three front ends are each feature-gated, so a build with only some of
-// them enabled legitimately uses only part of this module.
+
+
+
+
+
+
+
+
+
+
 #![allow(dead_code, reason = "consumed by the feature-gated pgrep/pkill/pidwait front ends")]
 
 use std::{
@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{kill::signal_number, proc_snapshot};
 
-/// What a process-matching command does with the processes it selects.
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcMatchMode {
 	Grep,
@@ -71,11 +71,11 @@ struct ProcMatchOptions {
 	interactive:       bool,
 }
 
-/// Runs the process-matching body for `mode`.
-///
-/// `pgrep`, `pkill`, and `pidwait` each call this with their own mode; the
-/// invoked name still comes from the execution context, so diagnostics and help
-/// name the command the user actually typed.
+
+
+
+
+
 pub(crate) fn run<SE: brush_core::ShellExtensions>(
 	mode: ProcMatchMode,
 	argv: Vec<String>,
@@ -183,10 +183,10 @@ pub(crate) fn run<SE: brush_core::ShellExtensions>(
 						if context.is_cancelled() {
 							return Ok(ExecutionExitCode::Interrupted.into());
 						}
-						// Selection may legitimately include an ancestor — `pgrep`
-						// should still list the terminal — but signalling one would
-						// tear down the session this shell runs in. Refuse late, at
-						// delivery, so only the destructive mode is affected.
+
+
+
+
 						if host.pids.contains(&process.pid()) {
 							if !options.quiet {
 								writeln!(
@@ -622,12 +622,12 @@ fn has_proc_selectors(options: &ProcMatchOptions) -> bool {
 		|| !options.states.is_empty()
 }
 
-/// Selects the processes matching `options`, and resolves the host chain from the
-/// same process-table snapshot.
-///
-/// Both come from one `ProcInfo::all()`: `pkill` needs the chain to decide what it
-/// may signal, and taking a second snapshot for it would walk the whole table
-/// again.
+
+
+
+
+
+
 fn select_processes(
 	options: &mut ProcMatchOptions,
 ) -> std::result::Result<(Vec<proc_snapshot::ProcInfo>, proc_snapshot::HostProcesses), String> {
@@ -785,7 +785,7 @@ fn resolve_user(value: &str) -> Option<u32> {
 	let mut record = std::mem::MaybeUninit::<libc::passwd>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0u8; 16 * 1024];
-	// SAFETY: all pointers refer to live, writable storage for this call.
+
 	let status = unsafe {
 		libc::getpwnam_r(
 			name.as_ptr(),
@@ -798,7 +798,7 @@ fn resolve_user(value: &str) -> Option<u32> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: a successful getpwnam_r call initialized `record`.
+
 	Some(unsafe { record.assume_init() }.pw_uid)
 }
 
@@ -817,7 +817,7 @@ fn resolve_group(value: &str) -> Option<u32> {
 	let mut record = std::mem::MaybeUninit::<libc::group>::zeroed();
 	let mut result = std::ptr::null_mut();
 	let mut buffer = vec![0u8; 16 * 1024];
-	// SAFETY: all pointers refer to live, writable storage for this call.
+
 	let status = unsafe {
 		libc::getgrnam_r(
 			name.as_ptr(),
@@ -830,7 +830,7 @@ fn resolve_group(value: &str) -> Option<u32> {
 	if status != 0 || result.is_null() {
 		return None;
 	}
-	// SAFETY: a successful getgrnam_r call initialized `record`.
+
 	Some(unsafe { record.assume_init() }.gr_gid)
 }
 
@@ -905,7 +905,7 @@ fn pidfile_is_locked(file: &fs::File) -> io::Result<bool> {
 		l_len:    0,
 		l_pid:    0,
 	};
-	// SAFETY: `file` owns a valid fd and `lock` is writable for F_GETLK.
+
 	if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &raw mut lock) } == -1 {
 		return Err(io::Error::last_os_error());
 	}

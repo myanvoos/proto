@@ -31,7 +31,6 @@ import { clampTimeout } from "./tool-timeouts";
 
 export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
 
-/** Language tokens the eval tool accepts, in stable display order. */
 type EvalLanguageToken = "py" | "js" | "rb" | "jl";
 const EVAL_LANGUAGE_ORDER: readonly EvalLanguageToken[] = ["py", "js", "rb", "jl"];
 const EVAL_LANGUAGE_RUNTIME: Record<EvalLanguageToken, string> = {
@@ -47,7 +46,6 @@ const EVAL_LANGUAGE_NAME: Record<EvalLanguageToken, string> = {
 	jl: "Julia",
 };
 
-/** Join names as an English "or" list: ["A"]→"A", ["A","B"]→"A or B", 3+→"A, B, or C". */
 function joinWithOr(items: readonly string[]): string {
 	if (items.length <= 1) return items[0] ?? "";
 	if (items.length === 2) return `${items[0]} or ${items[1]}`;
@@ -60,8 +58,7 @@ function describeLanguageField(langs: readonly EvalLanguageToken[]): string {
 
 function describeCodeField(langs: readonly EvalLanguageToken[]): string {
 	const replLangs = langs.filter(lang => lang === "rb" || lang === "jl");
-	// No persistent REPL backends → keep the original py/js phrasing verbatim so the
-	// default (rb/jl off) wire schema stays byte-identical to the pre-feature one.
+
 	if (replLangs.length === 0) return "code to run in this eval call, verbatim. Use top-level await freely.";
 	const awaitLangs = langs.filter(lang => lang === "py" || lang === "js");
 	const clauses: string[] = [];
@@ -70,16 +67,14 @@ function describeCodeField(langs: readonly EvalLanguageToken[]): string {
 	return `code to run in this eval call, verbatim. ${clauses.join("; ")}.`;
 }
 
-/** One-line discovery summary listing the runtimes available this session. */
 function summarizeEvalLanguages(langs: readonly EvalLanguageToken[]): string {
 	const names = langs.map(lang => EVAL_LANGUAGE_NAME[lang]);
 	const list = names.length > 0 ? joinWithOr(names) : "Python or JavaScript";
-	// "in-process" matches the historical py/js summary; persistent kernels (rb/jl) switch wording.
+
 	const backend = langs.some(lang => lang === "rb" || lang === "jl") ? "a persistent" : "an in-process";
 	return `Execute ${list} code in ${backend} eval backend`;
 }
 
-/** Resolved-allowance → enabled language tokens, preserving display order. */
 function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToken[] {
 	const allowed: Record<EvalLanguageToken, boolean> = {
 		py: backends.python,
@@ -96,13 +91,6 @@ const evalCellCommonFields = {
 	"reset?": type("boolean").describe("wipe this language's kernel before running. Other languages are untouched."),
 };
 
-/**
- * Per-call input: a single cell. State persists within a language across
- * separate eval calls and across tool calls, so each call is one logical step
- * and later calls reuse what earlier ones defined. This static schema carries
- * the full language union for typing; {@link buildEvalSchema} narrows the wire
- * copy per session so disabled backends are never advertised to the model.
- */
 const evalSchema = type({
 	language: type("'py' | 'js' | 'rb' | 'jl'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
 	...evalCellCommonFields,
@@ -110,13 +98,6 @@ const evalSchema = type({
 });
 type EvalToolParams = typeof evalSchema.infer;
 
-/**
- * Build a session-scoped copy of the eval schema whose `language` enum and field
- * descriptions advertise only the runtimes enabled for this session. Disabled
- * backends never reach the model: the wire schema, BM25 discovery corpus, and
- * tool description stay in lockstep with {@link resolveEvalBackends}. The static
- * {@link evalSchema} (full union) remains the type-level source of truth.
- */
 function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema {
 	const schema = type({
 		language: type.enumerated(...langs).describe(describeLanguageField(langs)),
@@ -133,7 +114,6 @@ type EvalToolResult = {
 
 type EvalProxyExecutor = (params: EvalToolParams, signal?: AbortSignal) => Promise<EvalToolResult>;
 
-/** Cap per `display()` value sent back to the model. */
 const MAX_DISPLAY_TEXT_BYTES = 8000;
 
 function formatDisplayJsonForText(value: unknown): string {
@@ -149,11 +129,6 @@ function formatDisplayJsonForText(value: unknown): string {
 	return text;
 }
 
-/**
- * Format display() JSON values into text the model can see. Images are surfaced
- * separately as ImageContent so the model can actually inspect them; this helper
- * intentionally does not touch images.
- */
 function formatDisplayOutputsForText(outputs: EvalDisplayOutput[]): string {
 	const chunks: string[] = [];
 	let displayIndex = 0;
@@ -170,12 +145,9 @@ interface EvalToolDescriptionOptions {
 	js?: boolean;
 	rb?: boolean;
 	jl?: boolean;
-	/**
-	 * Parent spawn policy (`getSessionSpawns`). `true`/omitted means unrestricted,
-	 * `false`/`""` hides `agent()`, and a comma list drives the advertised default.
-	 */
+
 	spawns?: boolean | string | null;
-	/** Advertise auto-backgrounding of long-running cells in the tool prompt. */
+
 	autoBackgroundEnabled?: boolean;
 }
 
@@ -215,7 +187,6 @@ interface ResolvedEvalCell {
 	resolved: ResolvedBackend;
 }
 
-/** Settlement handed from a managed eval job to its foreground waiter. */
 type ManagedEvalJobCompletion =
 	| { kind: "completed"; result: AgentToolResult<EvalToolDetails | undefined> }
 	| { kind: "failed"; error: unknown };
@@ -321,12 +292,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return this.#codeModeDescription(base) ?? base;
 	}
 
-	/**
-	 * Codex Code Mode advertisement, pulled from the session's applied direct
-	 * partition on every read so the declarations can never advertise a tool the
-	 * model can already call directly (a transport `write`), nor drift
-	 * from the active model or tool registry.
-	 */
 	#codeModeDescription(baseDescription: string): string | undefined {
 		const session = this.session;
 		const directToolNames = session?.getCodeModeDirectToolNames?.();
@@ -341,7 +306,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		);
 		return prompt.render(evalCodeModeDescription, { baseDescription, declarations });
 	}
-	/** All reuse-chain examples; the `examples` getter filters by enabled languages. */
+
 	private static readonly ALL_EXAMPLES: readonly ToolExample<typeof evalSchema.infer>[] = [
 		{
 			caption: "First call — set up once",
@@ -411,10 +376,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	#paramsKey?: string;
 	#cachedParams?: typeof evalSchema;
 
-	/**
-	 * Languages enabled for this session, in display order. Detached tools (no
-	 * session) fall back to the shipped defaults (py/js; rb/jl are opt-in).
-	 */
 	#enabledLanguages(): EvalLanguageToken[] {
 		return this.session ? enabledEvalLanguages(resolveEvalBackends(this.session)) : ["py", "js"];
 	}
@@ -488,8 +449,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		};
 
 		const autoBgManager = session.asyncJobManager;
-		// At the running-job cap, fall through to direct foreground execution
-		// instead of failing every eval call until a slot frees up.
+
 		if (!session.settings.get("eval.autoBackground.enabled") || !autoBgManager || autoBgManager.atCapacity) {
 			return await run(signal, emitToolUpdate);
 		}
@@ -498,10 +458,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			0,
 			Math.floor(session.settings.get("eval.autoBackground.thresholdMs") ?? DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS),
 		);
-		// The wait budget mirrors #runCells' clamped cell timeout. The cell budget
-		// is runtime work (it pauses across agent()/tool bridge calls), so a cell
-		// can legitimately outlive it in wall time — exactly the case
-		// backgrounding exists for.
+
 		const cellTimeoutMs =
 			cells[0].timeoutMs === 0
 				? undefined
@@ -530,13 +487,9 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					});
 					const finalText = result.content.find(block => block.type === "text")?.text ?? "";
 					latestText = finalText;
-					// Hand the full result (images included) to the foreground waiter
-					// before deciding the job's terminal state.
+
 					completion.resolve({ kind: "completed", result });
 					if (result.isError === true) {
-						// A failed, cancelled, or timed-out cell is a completed execution
-						// that errored. Re-enter the failure path so the job manager
-						// records it as failed and delivers the error text.
 						throw new ToolError(finalText || "Eval cell failed");
 					}
 					await reportProgress(finalText, { async: { state: "completed", jobId, type: "eval" } });
@@ -555,9 +508,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		if (startBackgrounded) {
 			return this.#buildBackgroundStartResult(jobId, cells, languages, notice, latestText, latestDetails);
 		}
-		// Suppress the completion delivery up front so a job finishing while we
-		// foreground-wait cannot also be injected by the delivery loop. Lifted
-		// via resumeDeliveries() if we end up backgrounding after all.
+
 		autoBgManager.acknowledgeDeliveries([jobId]);
 		const waitResult = await raceJobSettlement(
 			completion.promise,
@@ -577,8 +528,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		}
 		forwardUpdates = false;
 		autoBgManager.resumeDeliveries([jobId]);
-		// "steer": a queued user/peer message arrived mid-wait — background the
-		// cell (it keeps running) so the message injects promptly.
+
 		const steerNotice =
 			waitResult.kind === "steer"
 				? "Backgrounded early to handle an incoming message; the cell keeps running."
@@ -586,11 +536,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return this.#buildBackgroundStartResult(jobId, cells, languages, notice, latestText, latestDetails, steerNotice);
 	}
 
-	/**
-	 * Tool result returned when a cell converts into a background job: the live
-	 * output tail plus the background notice, with details carrying the running
-	 * cell snapshot and the async job marker the transcript renderer keys on.
-	 */
 	#buildBackgroundStartResult(
 		jobId: string,
 		cells: ResolvedEvalCell[],
@@ -600,8 +545,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		latestDetails: EvalToolDetails | undefined,
 		extraNotice?: string,
 	): AgentToolResult<EvalToolDetails> {
-		// latestDetails snapshots are per-update copies (buildUpdateDetails), so
-		// tagging the async marker on cannot leak into later job progress.
 		const details: EvalToolDetails = latestDetails ?? {
 			language: languages[0],
 			languages,
@@ -628,11 +571,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return { content: [{ type: "text", text: lines.join("\n") }], details };
 	}
 
-	/**
-	 * Execute the resolved cells against their backends, streaming tail/detail
-	 * updates through `emitUpdate`. Runs identically in the foreground path and
-	 * inside a managed background job (which passes the job's own signal).
-	 */
 	async #runCells(options: {
 		session: ToolSession;
 		cells: ResolvedEvalCell[];
@@ -673,12 +611,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				status: "pending",
 			}));
 			const cellOutputs: string[] = [];
-			// The cell currently inside backend.execute(). Streamed stdout is
-			// appended to its rendered `output` live so a long-running cell (e.g. a
-			// sleep loop) shows progress instead of nothing until it returns. A
-			// dedicated per-cell tail buffer keeps attribution correct and avoids
-			// double-counting against the aggregate `tailBuffer`; on completion the
-			// authoritative `cellResult.output` (below) overwrites this live tail.
+
 			let activeLiveCell: { result: EvalCellResult; buf: TailBuffer } | undefined;
 
 			const appendTail = (text: string) => {
@@ -736,13 +669,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			for (let i = 0; i < cells.length; i++) {
 				const cell = cells[i];
 				const backend = cell.resolved.backend;
-				// The per-cell `timeout` is a budget on the cell runtime's *own*
-				// work. Host-side `agent()`/`parallel()`/`completion()` bridge calls suspend
-				// that budget entirely and restart a fresh timeout window when control
-				// returns to the active backend runtime. Compute, stdout, `log()`/`phase()`, and
-				// ordinary tool calls all count against the budget. The watchdog drives
-				// `combinedSignal`; we pass no wall-clock deadline downstream so the
-				// backends never arm a competing fixed timer.
+
 				const idleTimeoutMs =
 					cell.timeoutMs === 0
 						? undefined

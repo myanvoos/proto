@@ -1,13 +1,10 @@
-/** Gallery fixtures for the edit tools (edit, apply_patch). */
 import type { GalleryFixture } from "./types";
 
 export const editFixtures: Record<string, GalleryFixture> = {
 	edit: {
 		label: "Edit",
 		editMode: "replace",
-		// `previewDiff` is surfaced verbatim by the renderer's call preview, and the
-		// harness diff strategy skips `{ file_path, previewDiff }` (no `path`/`edits`),
-		// so the canned diff survives the streaming and progress states.
+
 		streamingArgs: {
 			file_path: "packages/coding-agent/src/tools/read.ts",
 			previewDiff: [
@@ -64,9 +61,7 @@ export const editFixtures: Record<string, GalleryFixture> = {
 
 	edit_delete: {
 		label: "Delete",
-		// The registry has no `edit_delete` key, so `renderer: "edit"` routes this
-		// fixture through the real built-in edit renderer (see the harness in
-		// `gallery-cli`), keeping the sample identical to a production delete.
+
 		renderer: "edit",
 		streamingArgs: { file_path: "scripts/prune-changelogs.ts", op: "delete" },
 		args: { file_path: "scripts/prune-changelogs.ts", op: "delete" },

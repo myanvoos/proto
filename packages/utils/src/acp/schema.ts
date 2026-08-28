@@ -6,21 +6,20 @@ import type {
 	SessionNotification,
 } from "./protocol";
 
-/** Validation failure compatible with the used Zod error surface. */
 export interface ValidationError {
 	issues: Array<{ path: Array<string | number>; message: string }>;
 }
-/** Successful validation result. */
+
 export interface ValidationSuccess<T> {
 	success: true;
 	data: T;
 }
-/** Failed validation result. */
+
 export interface ValidationFailure {
 	success: false;
 	error: ValidationError;
 }
-/** Runtime validator compatible with the used schema call shape. */
+
 export interface Validator<T> {
 	safeParse(value: unknown): ValidationSuccess<T> | ValidationFailure;
 	parse(value: unknown): T;
@@ -120,22 +119,21 @@ function sessionNotification(value: unknown): boolean {
 	}
 }
 
-/** Validator for new-session responses. */
 export const zNewSessionResponse = validator<NewSessionResponse>(
 	value => sessionResponse(value, true),
 	"new session response",
 );
-/** Validator for load-session responses. */
+
 export const zLoadSessionResponse = validator<LoadSessionResponse>(
 	value => sessionResponse(value, false),
 	"load session response",
 );
-/** Validator for fork-session responses. */
+
 export const zForkSessionResponse = validator<ForkSessionResponse>(
 	value => sessionResponse(value, true),
 	"fork session response",
 );
-/** Validator for prompt responses. */
+
 export const zPromptResponse = validator<PromptResponse>(value => {
 	if (typeof value !== "object" || value === null) return false;
 	const stopReason = (value as Record<string, unknown>).stopReason;
@@ -147,10 +145,9 @@ export const zPromptResponse = validator<PromptResponse>(value => {
 		stopReason === "cancelled"
 	);
 }, "prompt response");
-/** Validator for session notifications. */
+
 export const zSessionNotification = validator<SessionNotification>(sessionNotification, "session notification");
 
-/** ACP runtime validators. */
 export const schema = {
 	zNewSessionResponse,
 	zLoadSessionResponse,

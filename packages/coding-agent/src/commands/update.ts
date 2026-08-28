@@ -1,7 +1,3 @@
-/**
- * Check for and install updates.
- */
-
 import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { updateHelp as commandHelp } from "../cli/command-help";
 import * as pluginCli from "../cli/plugin-cli";

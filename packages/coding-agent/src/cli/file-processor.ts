@@ -1,6 +1,3 @@
-/**
- * Process @file CLI arguments into text, document content, and image attachments
- */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -11,10 +8,8 @@ import { formatBytes } from "../tools/render-utils";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 
-// Keep CLI startup responsive and avoid OOM when users pass huge files.
-// If a file exceeds these limits, we include it as a path-only <file/> block.
-const MAX_CLI_TEXT_BYTES = 5 * 1024 * 1024; // 5MB
-const MAX_CLI_IMAGE_BYTES = 25 * 1024 * 1024; // 25MB
+const MAX_CLI_TEXT_BYTES = 5 * 1024 * 1024;
+const MAX_CLI_IMAGE_BYTES = 25 * 1024 * 1024;
 
 interface ProcessedFiles {
 	text: string;
@@ -22,18 +17,15 @@ interface ProcessedFiles {
 }
 
 interface ProcessFileOptions {
-	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
 }
 
-/** Process @file arguments into text, document content, and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	let text = "";
 	const images: ImageContent[] = [];
 
 	for (const fileArg of fileArgs) {
-		// Expand and resolve path (handles ~ expansion and macOS screenshot Unicode spaces)
 		const absolutePath = path.resolve(resolveReadPath(fileArg, getProjectDir()));
 
 		const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
@@ -54,7 +46,6 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			continue;
 		}
 
-		// Read file, handling not-found gracefully
 		let buffer: Uint8Array;
 		try {
 			buffer = await Bun.file(absolutePath).bytes();
@@ -70,7 +61,6 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 		}
 
 		if (mimeType) {
-			// Handle image file
 			const base64Content = buffer.toBase64();
 			let attachment: ImageContent;
 			let dimensionNote: string | undefined;
@@ -85,7 +75,6 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 						data: resized.data,
 					};
 				} catch {
-					// Fall back to original image on resize failure
 					attachment = {
 						type: "image",
 						mimeType,
@@ -102,7 +91,6 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 
 			images.push(attachment);
 
-			// Add text reference to image with optional dimension note
 			if (dimensionNote) {
 				text += `<file name="${absolutePath}">${dimensionNote}</file>\n`;
 			} else {
@@ -116,7 +104,6 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 				text += `<file name="${absolutePath}">[Cannot read ${ext} file: ${result.error || "conversion failed"}]</file>\n`;
 			}
 		} else {
-			// Handle text file
 			try {
 				const content = new TextDecoder().decode(buffer);
 				text += `<file name="${absolutePath}">\n${content}\n</file>\n`;

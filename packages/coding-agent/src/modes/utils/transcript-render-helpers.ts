@@ -1,9 +1,3 @@
-/**
- * Render helpers shared between the live transcript ({@link UiHelpers}) and the
- * file/remote-backed {@link ChatTranscriptBuilder}. Both surfaces build the same
- * transcript rows from persisted message entries; holding the row construction
- * here keeps the two byte-for-byte identical.
- */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
@@ -25,11 +19,6 @@ import { theme } from "../theme/theme";
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
 
-/**
- * Render an `async-result` custom message (a completed background bash/task job,
- * or a batch of them) as a transcript block of one "Background job completed"
- * row per job.
- */
 export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = (
 		message as CustomMessage<{
@@ -69,11 +58,6 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 	return new ToolActivityContainer(block);
 }
 
-/**
- * Render a `launch-completion` custom message (terminal supervised-process
- * exits from the launch broker) as a transcript block of one compact
- * "Supervised process ..." row per daemon, matching background-job rows.
- */
 export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = (message as CustomMessage<{ daemons?: DaemonSnapshot[] }>).details;
 	const block = new TranscriptBlock();
@@ -102,11 +86,6 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 	return new ToolActivityContainer(block);
 }
 
-/**
- * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
- * `irc:relay`) as a transcript card. `getExpanded` supplies the live
- * expanded-state getter for the cached card.
- */
 export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
 	const details = (
 		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>
@@ -131,12 +110,6 @@ export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: (
 	);
 }
 
-/**
- * Render a `fileMention` message's files as a transcript block of "Read <path>"
- * rows. `indent` sets the left pad: the live chat renders within an outer gutter
- * (0), the transcript viewer renders body rows without one so rows own their pad
- * (1).
- */
 export function buildFileMentionBlock(files: FileMentionMessage["files"], indent: number): TranscriptBlock {
 	const block = new TranscriptBlock();
 	for (const file of files) {
@@ -160,10 +133,6 @@ export function buildFileMentionBlock(files: FileMentionMessage["files"], indent
 	return block;
 }
 
-/**
- * Whether an assistant turn has visible text, thinking, or image content — i.e.
- * content that closes the current read-tool run.
- */
 export function assistantHasVisibleContent(message: AssistantAgentMessage): boolean {
 	return message.content.some(
 		content =>
@@ -173,13 +142,6 @@ export function assistantHasVisibleContent(message: AssistantAgentMessage): bool
 	);
 }
 
-/**
- * Split mixed assistant turns into visible text before tool execution and
- * visible text segments that must render immediately after the preceding tool.
- * Cursor can return intro text, tool calls, progress text, and the final answer
- * in one assistant message; keeping every text block in the leading assistant
- * block buries post-tool text above tool results in the transcript.
- */
 export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage): {
 	beforeTools: AssistantAgentMessage;
 	afterToolCalls: ReadonlyMap<string, AssistantAgentMessage>;
@@ -227,10 +189,6 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 	return { beforeTools: displaySegment(beforeTools), afterToolCalls, hasToolCalls: true };
 }
 
-/**
- * Normalize raw tool-call arguments to a plain record, collapsing non-object or
- * array values to an empty object.
- */
 export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 	return args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 }
@@ -245,12 +203,6 @@ function sanitizeRecoveredRetryNote(note: string): string {
 	return truncateToWidth(normalized || "retried", TRUNCATE_LENGTHS.CONTENT);
 }
 
-/**
- * Resolve the turn-ending assistant error presentation, if any.
- * Silent and user-interrupt aborts yield no label. Recovered retry attempts
- * render a compact note; attempts superseded by an exhausted budget are hidden
- * while the final terminal error keeps its full presentation.
- */
 export function resolveAssistantErrorPresentation(
 	message: AssistantAgentMessage,
 	retryAttempt = 0,
@@ -276,13 +228,6 @@ export function resolveAssistantErrorPresentation(
 	return { kind: "none" };
 }
 
-/**
- * Whether an assistant turn's `usage` reflects work the operator was billed
- * for. Empty automated turns from providers that emit `usage: 0` collapse to
- * `false`, but any input, output, cache, or premium request keeps the row so
- * cost transparency survives — the live path and the resume/rebuild path
- * agree turn-by-turn.
- */
 export function assistantUsageIsBilled(usage: AssistantAgentMessage["usage"]): boolean {
 	if (usage.input > 0 || usage.output > 0) return true;
 	if (usage.cacheRead > 0 || usage.cacheWrite > 0) return true;

@@ -2,7 +2,6 @@ import { logger } from "@oh-my-pi/pi-utils";
 
 const pendingCleanups = new Set<Promise<void>>();
 
-/** Keep timed-out cleanup reachable until its resources really settle. */
 export function trackLateCleanup(work: Promise<void>, context: Record<string, unknown>): void {
 	let tracked: Promise<void>;
 	tracked = work

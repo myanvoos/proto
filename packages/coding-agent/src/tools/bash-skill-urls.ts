@@ -9,11 +9,8 @@ import type { ImageAttachmentEntry } from ".";
 import { normalizeLocalScheme } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
-/** Regex to find skill:// tokens in command text. */
 const SKILL_URL_PATTERN = /'skill:\/\/[^'\s")`\\]+'|"skill:\/\/[^"\s')`\\]+"|skill:\/\/[^\s'")`\\;&|<>($]+/g;
 
-// Unquoted URLs stop before shell syntax so expansion cannot quote an adjacent
-// operator or substitution into the resolved path.
 const INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL =
 	/'(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
 
@@ -36,10 +33,6 @@ export interface InternalUrlExpansionOptions {
 	ensureLocalParentDirs?: boolean;
 }
 
-/**
- * Resolve a single skill:// URL to its absolute filesystem path.
- * Does NOT read file content or verify existence.
- */
 export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): string {
 	const parsed = /^skill:\/\/([^/?#]+)(\/[^?#]*)?(?:[?#].*)?$/.exec(url);
 	if (!parsed) {
@@ -50,16 +43,11 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	if (!rawSkillSegment) {
 		throw new ToolError(`skill:// URL requires a skill name: ${url}`);
 	}
-	// Decode percent-encoded colons (%3A) used for namespaced skill names
+
 	try {
 		rawSkillSegment = decodeURIComponent(rawSkillSegment);
-	} catch {
-		// Leave as-is if decoding fails
-	}
+	} catch {}
 
-	// Resolve skill name by longest-prefix match against registered skills.
-	// This handles namespaced skills ("plugin:skill") where the URI may also
-	// carry a colon-delimited suffix (e.g., ":1-5" line range).
 	const { skill, suffix } = matchSkillName(rawSkillSegment, skills);
 	if (!skill) {
 		const available = skills.map(s => s.name);
@@ -67,7 +55,6 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 		throw new ToolError(`Unknown skill: ${rawSkillSegment}. Available: ${availableStr}`);
 	}
 
-	// Combine any colon suffix (line range like ":1-5") with the path segment
 	const rawPath = (parsed[2] ?? "") + (suffix ? `/${suffix}` : "");
 	const hasRelativePath = rawPath !== "" && rawPath !== "/";
 
@@ -94,10 +81,7 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
 		throw new ToolError("Path traversal is not allowed in skill:// URLs");
 	}
-	// Agent Plugin skills (§4.1): the resource must canonically resolve within
-	// the plugin root. Fail closed: a dangling or unresolvable path is rejected
-	// rather than handed to bash, where writing through it could create the
-	// outside target. Symlinks may target other files inside the same package.
+
 	if (skill.containRoot) {
 		const contained = resolveContainedPathSync(skill.containRoot, resolvedPath);
 		if (contained.status === "outside") {
@@ -112,24 +96,13 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	return resolvedPath;
 }
 
-/**
- * Match a raw skill segment against registered skills using longest-prefix match.
- * Handles colons in both skill names (namespacing) and suffixes (line ranges).
- *
- * For "superpowers:brainstorming:1-5" with skill "superpowers:brainstorming":
- *   -> skill = superpowers:brainstorming, suffix = "1-5"
- * For "brainstorming" with skill "brainstorming":
- *   -> skill = brainstorming, suffix = undefined
- */
 function matchSkillName(
 	rawSegment: string,
 	skills: readonly Skill[],
 ): { skill: Skill | undefined; suffix: string | undefined } {
-	// Exact match first (most common case)
 	const exact = skills.find(s => s.name === rawSegment);
 	if (exact) return { skill: exact, suffix: undefined };
 
-	// Try stripping colon-delimited suffixes from the right
 	let candidate = rawSegment;
 	while (true) {
 		const lastColon = candidate.lastIndexOf(":");
@@ -163,7 +136,6 @@ function unquoteToken(token: string): string {
 function isInsideShellQuote(command: string, index: number): boolean {
 	type ShellQuote = "'" | '"' | undefined;
 	interface CommandSubstitution {
-		/** `$(` … `)` tracks paren depth; `` ` `` … `` ` `` is a plain toggle. */
 		kind: "dollar" | "backtick";
 		outerQuote: ShellQuote;
 		depth: number;
@@ -173,8 +145,7 @@ function isInsideShellQuote(command: string, index: number): boolean {
 	const substitutions: CommandSubstitution[] = [];
 	for (let i = 0; i < index; i++) {
 		const char = command[i];
-		// Inside a backtick substitution nested in double quotes, bash treats `\"`
-		// as a quote delimiter for the inner command, not as an escaped literal.
+
 		if (
 			char === "\\" &&
 			command[i + 1] === '"' &&
@@ -236,7 +207,6 @@ function isEmbeddedInQuotedText(command: string, token: string, index: number): 
 	return isInsideShellQuote(command, index);
 }
 
-/** Shell-escape a path using single quotes. */
 function shellEscape(p: string): string {
 	return `'${p.replace(/'/g, "'\\''")}'`;
 }
@@ -303,11 +273,6 @@ async function resolveInternalUrlToPath(
 	return path.resolve(resource.sourcePath);
 }
 
-/**
- * Expand all skill:// URIs in a bash command string.
- * Returns the command with URIs replaced by shell-escaped absolute paths.
- * Throws ToolError if any URI cannot be resolved.
- */
 export function expandSkillUrls(command: string, skills: readonly Skill[]): string {
 	if (skills.length === 0 || !command.includes("skill://")) {
 		return command;
@@ -320,11 +285,6 @@ export function expandSkillUrls(command: string, skills: readonly Skill[]): stri
 	});
 }
 
-/**
- * Expand supported internal URLs in a bash command string to shell-escaped absolute paths.
- * Unresolvable URLs and literal mentions inside larger quoted text are left unchanged.
- * Supported schemes: skill://, agent://, artifact://, rule://, local://, attachment://
- */
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
 	if (!command.includes("://") && !command.includes("local:/")) return command;
 

@@ -1,5 +1,3 @@
-/** Behavior-compatible reimplementation of linkedom's used surface. */
-
 import { DOMWindow } from "./dom/core";
 import { parseDocument } from "./dom/parser";
 
@@ -27,7 +25,6 @@ export {
 	Text,
 } from "./dom/core";
 
-/** Parse HTML or XML-like markup into a lightweight window and document. */
 export function parseHTML(html: string): DOMWindow {
 	return new DOMWindow(parseDocument(html));
 }

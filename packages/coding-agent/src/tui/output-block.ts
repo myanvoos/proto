@@ -12,8 +12,7 @@ interface OutputBlockOptions {
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
 	contentPaddingLeft?: number;
-	/** Override the state-derived border color. Used for muted "legacy" tool
-	 * frames that should not visually compete with framed-output tools. */
+
 	borderColor?: ThemeColor;
 }
 
@@ -82,7 +81,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const h = theme.boxSharp.horizontal;
 	const rail = theme.symbol("block.rail");
 	const lineWidth = Math.max(0, width);
-	// Border colors: running/pending use accent, success uses dim (gray), error/warning keep their colors
+
 	const requestedColor: ThemeColor =
 		options.borderColor ??
 		(state === "error"
@@ -164,17 +163,9 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	return lines;
 }
 
-/**
- * Cached wrapper around `renderOutputBlock`.
- *
- * Since output blocks are re-rendered on every frame (via `render(width)` closures),
- * but their content rarely changes, this cache avoids redundant `visibleWidth()` and
- * `padding()` computations on ~99% of render calls.
- */
 export class CachedOutputBlock {
 	#cache?: RenderCache;
 
-	/** Render with caching. Returns the cached (shared, caller-immutable) lines if options haven't changed. */
 	render(options: OutputBlockOptions, theme: Theme): readonly string[] {
 		const key = this.#buildKey(options);
 		if (this.#cache?.key === key) return this.#cache.lines;
@@ -183,7 +174,6 @@ export class CachedOutputBlock {
 		return lines;
 	}
 
-	/** Invalidate the cache, forcing a rebuild on next render. */
 	invalidate(): void {
 		this.#cache = undefined;
 	}
@@ -209,17 +199,9 @@ export class CachedOutputBlock {
 	}
 }
 
-/**
- * Build a self-framing tool component backed by a cached output block. The
- * `build` callback returns the block options for a given width; the cache
- * dedupes re-renders. Pass `borderColor: "borderMuted"` for the dim "legacy"
- * look that does not compete with the state-colored framed tools.
- */
 export function framedBlock(theme: Theme, build: (width: number) => OutputBlockOptions): Component {
 	const block = new CachedOutputBlock();
-	// Marked so the tool-execution container treats it as self-framing (renders
-	// flush, no extra padding/background) the same way `markFramedBlockComponent`
-	// blocks are treated.
+
 	return markFramedBlockComponent({
 		render: (width: number): readonly string[] => block.render(build(width), theme),
 		invalidate: () => block.invalidate(),

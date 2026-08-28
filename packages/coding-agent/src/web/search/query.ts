@@ -1,118 +1,73 @@
-/**
- * Structured web-search query parsing.
- *
- * Agents habitually embed Google-style directives in search queries —
- * `site:`, `before:`/`after:`, `inurl:`, `filetype:`, quoted phrases, `OR`
- * groups, `-exclusions` — regardless of whether the backing engine parses
- * them. This module turns a raw query into a {@link StructuredQuery} so each
- * provider can:
- *
- * 1. map constraints onto native API parameters where they exist (Perplexity
- *    `search_domain_filter`, Tavily `include_domains`, Exa date bounds, …),
- * 2. rebuild a query string containing only the syntax the target engine
- *    understands ({@link formatQuery}), and
- * 3. post-filter returned sources leniently ({@link applyQueryConstraints}):
- *    a constraint dimension that would eliminate every result is dropped and
- *    reported rather than returning nothing.
- */
-
 import type { SearchSource } from "./types";
 
-/** One free-text token of the query (everything that is not a recognized directive). */
 interface QueryTerm {
-	/** Term text without quotes or operator prefixes. */
 	text: string;
-	/** Quoted exact phrase (`"like this"`) or verbatim-required (`+term`). */
+
 	phrase?: boolean;
-	/** Excluded via `-term` or `NOT term`. */
+
 	negated?: boolean;
-	/**
-	 * OR-group id. Terms sharing an id are alternatives (`a OR b`); terms
-	 * without a group are implicitly AND-ed. Groups are always contiguous
-	 * runs in {@link StructuredQuery.terms}.
-	 */
+
 	group?: number;
 }
 
-/**
- * A raw query decomposed into free text plus every recognized constraint.
- *
- * All list fields are always present (possibly empty) so consumers can map
- * over them without null checks. Values are stored as typed by the user
- * except for normalization noted per field.
- */
 export interface StructuredQuery {
-	/** Original query string, verbatim. */
 	raw: string;
-	/**
-	 * Free-text remainder with all recognized directives removed; phrases
-	 * stay quoted, exclusions keep `-`, OR groups keep `OR`. Empty when the
-	 * query was directives only — use {@link formatQuery} for a never-empty
-	 * engine query.
-	 */
+
 	text: string;
-	/** Ordered free-text terms (phrases, exclusions, OR groups). */
+
 	terms: QueryTerm[];
-	/** `site:`/`domain:`/`host:` includes — any-of. Lowercased, scheme stripped, may carry a path (`github.com/anthropics`). */
+
 	sites: string[];
-	/** `-site:` exclusions, same normalization as {@link sites}. */
+
 	excludedSites: string[];
-	/** `inurl:`/`url:`/`allinurl:` substrings — all must appear in the URL. */
+
 	inUrl: string[];
-	/** `-inurl:` substrings — none may appear in the URL. */
+
 	excludedInUrl: string[];
-	/** `intitle:`/`title:`/`allintitle:` substrings — all must appear in the title. */
+
 	inTitle: string[];
-	/** `-intitle:` substrings — none may appear in the title. */
+
 	excludedInTitle: string[];
-	/** `intext:`/`inbody:`/`inanchor:`/`allintext:` body substrings. Not post-filterable (snippets are partial); query-building only. */
+
 	inText: string[];
-	/** `-intext:` body exclusions. Query-building only. */
+
 	excludedInText: string[];
-	/** `filetype:`/`ext:` extensions — any-of. Lowercased, no leading dot. */
+
 	filetypes: string[];
-	/** `-filetype:`/`-ext:` extensions — none may match. */
+
 	excludedFiletypes: string[];
-	/** Inclusive lower publish-date bound from `after:`/`since:`, ISO `YYYY-MM-DD`. */
+
 	after?: string;
-	/** Exclusive upper publish-date bound from `before:`/`until:`, ISO `YYYY-MM-DD`. */
+
 	before?: string;
-	/** Language code from `lang:`/`language:`, lowercased (e.g. `en`, `en-us`). */
+
 	lang?: string;
-	/** True when any directive or boolean operator was recognized. */
+
 	hasDirectives: boolean;
-	/** True when any post-filterable constraint is set (sites, url/title terms, filetypes, date bounds). */
+
 	hasConstraints: boolean;
 }
 
-/**
- * Query-syntax capabilities of a target engine, used by {@link formatQuery}
- * to decide which parsed features are re-emitted as query text. Everything
- * defaults to `false`: the zero-value produces plain keywords suitable for
- * natural-language APIs.
- */
 export interface QuerySyntax {
-	/** Emit `"quoted phrases"`. */
 	phrases?: boolean;
-	/** Emit `-term` exclusions (negated terms are dropped otherwise). */
+
 	negation?: boolean;
-	/** Emit `OR` between alternatives (groups are flattened to keywords otherwise). */
+
 	or?: boolean;
-	/** Emit `site:`/`-site:`. */
+
 	site?: boolean;
-	/** Emit `inurl:`/`-inurl:`. */
+
 	inUrl?: boolean;
-	/** Emit `intitle:`/`-intitle:`. */
+
 	inTitle?: boolean;
-	/** Emit `intext:`/`-intext:`. */
+
 	inText?: boolean;
-	/** Emit `filetype:`/`-filetype:`. */
+
 	filetype?: boolean;
-	/** Emit `before:`/`after:` ISO date bounds. */
+
 	dateRange?: boolean;
 }
 
-/** Full Google-style syntax: engines that parse the classic operator set (Google, Startpage, Ecosia, Brave, Kagi, Mojeek, SearXNG…). */
 export const GOOGLE_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -125,15 +80,9 @@ export const GOOGLE_QUERY_SYNTAX: QuerySyntax = {
 	dateRange: true,
 };
 
-/** Result of {@link applyQueryConstraints}. */
 interface ConstraintFilterResult {
-	/** Sources surviving the lenient filter — never empty when the input was non-empty. */
 	sources: SearchSource[];
-	/**
-	 * Directive renderings (`site:arxiv.org`, `before:2024-01-01`, …) of the
-	 * constraint dimensions that matched zero sources and were therefore
-	 * relaxed instead of enforced.
-	 */
+
 	dropped: string[];
 }
 
@@ -143,9 +92,9 @@ type AllMode = "inTitle" | "inUrl" | "inText";
 
 interface RawToken {
 	text: string;
-	/** Entire token was a quoted phrase. */
+
 	quoted: boolean;
-	/** Directive value was quoted (`intitle:"a b"`). */
+
 	quotedValue?: boolean;
 }
 
@@ -153,10 +102,8 @@ function isQuote(ch: string): boolean {
 	return ch === '"' || ch === "\u201c" || ch === "\u201d";
 }
 
-/** Unicode-aware whitespace (agents paste NBSP and friends). */
 const WHITESPACE = /\s/;
 
-/** Split a raw query into whitespace-delimited tokens, honoring quoted spans and standalone parens. */
 function tokenize(raw: string): RawToken[] {
 	const tokens: RawToken[] = [];
 	const n = raw.length;
@@ -178,8 +125,7 @@ function tokenize(raw: string): RawToken[] {
 			i = j + 1;
 			continue;
 		}
-		// Bare word; a quote directly after `name:` swallows the quoted span
-		// into the same token (`intitle:"budget tips"`).
+
 		let buf = "";
 		let quotedValue = false;
 		while (i < n && !WHITESPACE.test(raw[i])) {
@@ -194,7 +140,7 @@ function tokenize(raw: string): RawToken[] {
 				i = j + 1;
 				continue;
 			}
-			if (isQuote(c)) break; // `foo"bar` — stop the word, let the quote start a phrase
+			if (isQuote(c)) break;
 			buf += c;
 			i++;
 		}
@@ -203,10 +149,6 @@ function tokenize(raw: string): RawToken[] {
 	return splitParens(tokens);
 }
 
-/**
- * Split leading `(` and unbalanced trailing `)` into standalone tokens so
- * `(react OR vue)` parses while `site:wikipedia.org/Foo_(bar)` stays whole.
- */
 function splitParens(tokens: RawToken[]): RawToken[] {
 	const out: RawToken[] = [];
 	for (const tok of tokens) {
@@ -221,7 +163,6 @@ function splitParens(tokens: RawToken[]): RawToken[] {
 		}
 		let trailing = 0;
 		while (text.endsWith(")")) {
-			// Only strip parens that do not close an opener inside the word.
 			const body = text.slice(0, -1);
 			let depth = 0;
 			for (const c of body) {
@@ -238,19 +179,11 @@ function splitParens(tokens: RawToken[]): RawToken[] {
 	return out;
 }
 
-/** Convert year/month/day parts to a validated ISO date, or undefined. */
 function isoDate(year: number, month: number, day: number): string | undefined {
 	if (year < 1000 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) return undefined;
 	return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-/**
- * Parse a `before:`/`after:` value into ISO `YYYY-MM-DD`.
- * Accepts `YYYY`, `YYYY-MM`, `YYYY-MM-DD` (also `/` and `.` separators) and
- * `MM/DD/YYYY` (day-first assumed when the first field exceeds 12).
- * Bare years/months resolve to the first day of the period, matching
- * Google's `after:2024` ≙ `after:2024-01-01` semantics.
- */
 export function parseDateValue(value: string): string | undefined {
 	const t = value.trim();
 	let m = /^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$/.exec(t);
@@ -265,7 +198,6 @@ export function parseDateValue(value: string): string | undefined {
 	return undefined;
 }
 
-/** Lowercase a `site:` value and strip scheme, `*.` wildcard, and trailing slash/dot. */
 function normalizeSite(value: string): string {
 	let site = value.trim().toLowerCase();
 	site = site.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
@@ -274,7 +206,6 @@ function normalizeSite(value: string): string {
 	return site;
 }
 
-/** Directive names mapped to their canonical field. */
 const DIRECTIVE_FIELDS: Record<
 	string,
 	"site" | "inUrl" | "inTitle" | "inText" | "filetype" | "before" | "after" | "lang"
@@ -299,14 +230,12 @@ const DIRECTIVE_FIELDS: Record<
 	language: "lang",
 };
 
-/** `allin*:` directives that capture every following plain term. */
 const ALL_MODES: Record<string, AllMode> = {
 	allintitle: "inTitle",
 	allinurl: "inUrl",
 	allintext: "inText",
 };
 
-/** True for operator/paren tokens and recognized directives — anything a bare `name:` must not adopt as its value. */
 function isReservedToken(text: string): boolean {
 	if (
 		text === "(" ||
@@ -327,14 +256,6 @@ function isReservedToken(text: string): boolean {
 	return DIRECTIVE_FIELDS[name] !== undefined || ALL_MODES[name] !== undefined;
 }
 
-/**
- * Parse a raw query into a {@link StructuredQuery}.
- *
- * Lenient by construction: unknown `name:value` tokens (URLs, `C:\paths`,
- * `TS2345:`, jargon) stay in the free text verbatim, and a directive with an
- * unparseable value (`before:someday`) degrades to a plain term instead of
- * being dropped.
- */
 export function parseSearchQuery(raw: string): StructuredQuery {
 	const q: StructuredQuery = {
 		raw,
@@ -428,7 +349,6 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 			continue;
 		}
 
-		// Boolean operators and grouping parens.
 		if (tok.text === "(" || tok.text === ")") continue;
 		if (tok.text === "OR" || tok.text === "|" || tok.text === "||") {
 			orPending = true;
@@ -445,7 +365,6 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 			continue;
 		}
 		if (tok.text === "-" || tok.text === "+") {
-			// The tokenizer splits `-"exact phrase"` into `-` + phrase; carry the negation over.
 			if (tok.text === "-" && tokens[idx + 1]?.quoted) negateNext = true;
 			continue;
 		}
@@ -458,7 +377,7 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 		if (match && allMatch) {
 			allMode = allMatch;
 			q.hasDirectives = true;
-			// `allintitle:budget tips` — inline value plus every following term.
+
 			const inline = match[3].trim();
 			if (inline) pushConstraint(allMatch, inline, match[1] === "-");
 			orPending = false;
@@ -468,7 +387,7 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 
 		if (match && field) {
 			let value = match[3].trim();
-			// `site: example.com` — lenient: adopt the next plain token as the value.
+
 			if (!value) {
 				const next = tokens[idx + 1];
 				if (next && (next.quoted || !isReservedToken(next.text))) {
@@ -509,14 +428,13 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 			continue;
 		}
 
-		// Plain term with optional +/- prefix.
 		let text = tok.text;
 		if (text.startsWith("-") && text.length > 1) {
 			negateNext = true;
 			q.hasDirectives = true;
 			text = text.replace(/^-+/, "");
 			if (!text) continue;
-			// `-site:x` arrives pre-split only when written `- site:x`; re-check directive.
+
 			const negMatch = DIRECTIVE_PATTERN.exec(text);
 			const negName = negMatch?.[2].toLowerCase();
 			const negField = negName ? DIRECTIVE_FIELDS[negName] : undefined;
@@ -529,7 +447,6 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 			continue;
 		}
 		if (text.startsWith("+") && text.length > 1) {
-			// Legacy Google `+term`: verbatim/required — treat as an exact phrase.
 			pushTerm(text.slice(1), true);
 			q.hasDirectives = true;
 			continue;
@@ -552,12 +469,10 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 	return q;
 }
 
-/** Quote a directive value when it contains whitespace. */
 function quoteValue(value: string): string {
 	return /\s/.test(value) ? `"${value}"` : value;
 }
 
-/** Render the free-text terms per the target syntax. */
 function renderTerms(terms: readonly QueryTerm[], syntax: QuerySyntax): string {
 	const parts: string[] = [];
 	for (let i = 0; i < terms.length; i++) {
@@ -586,15 +501,6 @@ function renderTerm(term: QueryTerm, syntax: QuerySyntax): string | undefined {
 	return term.negated ? `-${body}` : body;
 }
 
-/**
- * Rebuild a query string for an engine with the given {@link QuerySyntax}.
- *
- * Constraints whose syntax the engine lacks are omitted (the caller maps
- * them onto API parameters or relies on {@link applyQueryConstraints}).
- * Never returns an empty string for a non-empty input: a directives-only
- * query falls back to the constraint values as keywords, then to `raw` — an
- * engine searching *something* beats an empty-query error.
- */
 export function formatQuery(q: StructuredQuery, syntax: QuerySyntax = {}): string {
 	const parts: string[] = [];
 	const text = renderTerms(q.terms, syntax);
@@ -629,34 +535,12 @@ export function formatQuery(q: StructuredQuery, syntax: QuerySyntax = {}): strin
 
 	let result = parts.join(" ").trim();
 	if (!result) {
-		// Directives-only query and no directive syntax: search the constraint
-		// values as plain keywords so the engine still gets a meaningful query.
 		const fallback = [...q.sites, ...q.inTitle, ...q.inUrl, ...q.inText, ...q.filetypes];
 		result = fallback.join(" ").trim();
 	}
 	return result || q.raw.trim();
 }
 
-/**
- * Build the engine query for a credential-free HTML engine (Google,
- * Startpage, DuckDuckGo, Ecosia, Mojeek, SearXNG, and the Public Web
- * fan-out over them).
- *
- * Canonicalizes directives via {@link formatQuery} with the engine's
- * {@link QuerySyntax} (default: full Google syntax), after demoting the
- * operators that zero-match across the scraper set: engines only match
- * `site:` against a bare domain (a path yields zero results everywhere),
- * and DuckDuckGo ignores `inurl:` entirely — so either operator silently
- * empties the result set. The raw URL as a plain term matches fine, so
- * bare-domain `site:` filters are kept while path-carrying `site:` and all
- * `inurl:` values become plain keywords; the demotion is structural (before
- * formatting), so OR-grouped and quoted directives are covered. Negated
- * forms (`-site:`, `-inurl:`) pass through untouched — demoting them would
- * invert an exclusion into a search term; the pipeline post-filter
- * ({@link applyQueryConstraints}) enforces every demoted or unsupported
- * constraint on the returned sources. Directive-free queries pass through
- * byte-identical.
- */
 export function formatScraperQuery(
 	query: string,
 	parsedQuery?: StructuredQuery,
@@ -674,7 +558,6 @@ export function formatScraperQuery(
 	return formatQuery(downgraded, syntax);
 }
 
-/** Hostname (lowercased) and pathname of a URL, or undefined when unparsable. */
 function hostAndPath(url: string): { host: string; path: string } | undefined {
 	try {
 		const u = new URL(url);
@@ -684,10 +567,6 @@ function hostAndPath(url: string): { host: string; path: string } | undefined {
 	}
 }
 
-/**
- * `site:` matcher: exact host or subdomain of `site`; when `site` carries a
- * path (`github.com/anthropics`), the URL path must start with it.
- */
 export function matchesSite(url: string, site: string): boolean {
 	const parsed = hostAndPath(url);
 	if (!parsed) return false;
@@ -699,7 +578,6 @@ export function matchesSite(url: string, site: string): boolean {
 	return true;
 }
 
-/** `filetype:` matcher: URL pathname ends with `.ext`. */
 function matchesFiletype(url: string, ext: string): boolean {
 	const parsed = hostAndPath(url);
 	if (!parsed) return false;
@@ -726,7 +604,6 @@ const RELATIVE_UNIT_SECONDS: Record<string, number> = {
 	year: 31_536_000,
 };
 
-/** Best-effort publish time (ms epoch) of a source from `ageSeconds`, ISO, or relative dates. */
 function sourceTime(source: SearchSource): number | undefined {
 	if (typeof source.ageSeconds === "number" && Number.isFinite(source.ageSeconds)) {
 		return Date.now() - source.ageSeconds * 1000;
@@ -741,12 +618,6 @@ function sourceTime(source: SearchSource): number | undefined {
 	return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-/**
- * Strict per-source constraint check: every filterable dimension of `q` must
- * pass. Sources without a resolvable date pass date bounds (a missing date
- * is not proof of violation). For custom provider flows; the standard path
- * is {@link applyQueryConstraints}.
- */
 export function matchesQueryConstraints(source: SearchSource, q: StructuredQuery): boolean {
 	for (const dim of constraintDimensions(q)) {
 		if (!dim.pred(source)) return false;
@@ -755,7 +626,6 @@ export function matchesQueryConstraints(source: SearchSource, q: StructuredQuery
 }
 
 interface ConstraintDimension {
-	/** Directive rendering for relaxation notes (`site:arxiv.org`). */
 	label: string;
 	pred: (source: SearchSource) => boolean;
 }
@@ -820,7 +690,7 @@ function constraintDimensions(q: StructuredQuery): ConstraintDimension[] {
 			label,
 			pred: src => {
 				const time = sourceTime(src);
-				if (time === undefined) return true; // undated → cannot prove violation
+				if (time === undefined) return true;
 				if (afterMs !== undefined && time < afterMs) return false;
 				if (beforeMs !== undefined && time >= beforeMs) return false;
 				return true;
@@ -830,13 +700,6 @@ function constraintDimensions(q: StructuredQuery): ConstraintDimension[] {
 	return dims;
 }
 
-/**
- * Lenient post-filter: applies each constraint dimension of `q` in turn,
- * skipping (and reporting) any dimension that would eliminate every
- * remaining source. Guarantees a non-empty result for a non-empty input, so
- * a mis-scoped directive degrades to unfiltered results plus a note instead
- * of a dead search.
- */
 export function applyQueryConstraints(sources: readonly SearchSource[], q: StructuredQuery): ConstraintFilterResult {
 	let current = [...sources];
 	const dropped: string[] = [];

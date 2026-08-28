@@ -508,7 +508,6 @@ function createPlikUploader(config: DestinationRuntimeConfig): BlobUploader {
 	};
 }
 
-/** Create an uploader for the built-in self-hosted and filesystem destination family. */
 export function createSelfHostedUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

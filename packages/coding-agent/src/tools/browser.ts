@@ -72,10 +72,8 @@ const browserSchema = type({
 	"kill?": type("boolean").describe("also kill spawned-app browsers"),
 });
 
-/** Input schema for the browser tool. */
 export type BrowserParams = typeof browserSchema.infer;
 
-/** Details describing a browser tool execution result (for renderers + transcript). */
 export interface BrowserToolDetails {
 	action: BrowserParams["action"];
 	name?: string;
@@ -98,16 +96,12 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 		return { kind: "spawned", path: exe };
 	}
 	const relayUrl = session.settings.get("browser.relayUrl") as string | undefined;
-	// Explicit app.relay wins over every setting; PI_BROWSER_RELAY stays the
-	// final kill switch (a relay that is down would otherwise brick the tool).
+
 	if (app?.relay) {
 		const relayKind = resolveRelayKind({ settingEnabled: true, url: relayUrl });
 		if (relayKind) return relayKind;
 	}
-	// Relay before cdpUrl among settings: enabling the opt-out-by-default relay
-	// is a deliberate mode selection, while cdpUrl is a standing fallback
-	// endpoint. A configured endpoint is a default, not an override: explicit
-	// app options win.
+
 	if (app?.relay !== false) {
 		const relayKind = resolveRelayKind({
 			settingEnabled: session.settings.get("browser.relay") as boolean | undefined,
@@ -129,12 +123,6 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 	return { kind: "headless", headless };
 }
 
-/**
- * Browser tool: stateful, multi-tab. Three actions:
- * - `open`  → acquire/create a named tab on a browser kind (headless | spawned | connected) and optionally goto a url.
- * - `close` → release a named tab handle (or all handles); attached/relay pages remain open, and spawned pages remain unless killed.
- * - `run`   → execute JS code against an existing tab with `page`/`browser`/`tab` helpers in scope.
- */
 export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolDetails> {
 	readonly name = "browser";
 	readonly label = "Browser";
@@ -201,7 +189,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		return this.#description;
 	}
 
-	/** Restart browser to apply mode changes (e.g. headless toggle). Drops only headless browsers. */
 	async restartForModeChange(): Promise<void> {
 		await dropHeadlessTabs();
 	}
@@ -249,7 +236,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		const kind = resolveBrowserKind(params, this.session);
 		details.browser = kind.kind;
 
-		// If a tab with this name already exists on a different browser kind, fail fast — caller must close first.
 		const existing = getTab(name);
 		if (existing && !sameBrowserKind(existing.browser.kind, kind)) {
 			throw new ToolError(
@@ -257,11 +243,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			);
 		}
 
-		// The requested timeout must cover the *entire* open — browser
-		// acquisition (CDP discovery/connect), queued tab acquisition, worker
-		// creation, and navigation — not only `acquireTab`. Compose one deadline
-		// from the caller signal and `params.timeout` and thread it through both
-		// stages so a stalled acquisition rejects at the requested boundary.
 		const timeoutSignal = AbortSignal.timeout(timeoutMs);
 		const openSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		try {
@@ -280,14 +261,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 				}),
 			);
 
-			// Hold one open-acquisition lease across the whole tab acquisition.
-			// A freshly-created browser sits in the registry at refCount 0 until a
-			// tab takes a hold; without this lease an abort/timeout mid-acquisition
-			// (or a sibling open of a different tab name on the same browser that
-			// fails) could dispose it out from under this operation. The lease is
-			// released exactly once — the success and failure paths are mutually
-			// exclusive — transferring ownership to the published tab on success or
-			// rolling the fresh browser back on failure.
 			holdBrowser(browser);
 			let result: AcquireTabResult;
 			try {
@@ -329,8 +302,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			details.result = lines.join("\n");
 			return toolResult(details).text(lines.join("\n")).done();
 		} catch (error) {
-			// Caller cancellation stays a ToolAbortError; the requested timeout
-			// becomes a timeout ToolError; anything else passes through unchanged.
 			if (signal?.aborted) throw error instanceof ToolAbortError ? error : new ToolAbortError();
 			if (timeoutSignal.aborted) throw new ToolError(`Browser open timed out after ${timeoutMs}ms`);
 			throw error;
@@ -391,10 +362,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map(c => c.text)
 			.join("\n");
-		// Final defense at the tool-result boundary: a single run can display
-		// tens of KB (large JSON returns, dumped observations). Cap the combined
-		// text inline; the full text stays recoverable via the artifact footer
-		// when allocation succeeds.
+
 		const cappedText = await enforceInlineByteCap(textOnly, {
 			saveArtifact: full => saveBrowserOutputArtifact(this.session, full),
 		});
@@ -409,7 +377,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 	}
 }
 
-/** Persist over-cap browser run output as a session artifact; mirrors the bash minimizer's save path. */
 async function saveBrowserOutputArtifact(session: ToolSession, fullText: string): Promise<string | undefined> {
 	try {
 		const alloc = await session.allocateOutputArtifact?.("browser-original");

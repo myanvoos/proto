@@ -39,59 +39,59 @@ crate::minus_or_plus_flag_arg!(
 );
 crate::minus_or_plus_flag_arg!(MakeExportedFlag, 'x', "Mark the variable for export.");
 
-/// Display or update variables and their attributes.
+
 #[derive(Parser)]
 #[clap(override_usage = "declare [OPTIONS] [DECLARATIONS]...")]
 pub(crate) struct DeclareCommand {
-	/// Constrain to function names or definitions.
+
 	#[arg(short = 'f')]
 	function_names_or_defs_only: bool,
 
-	/// Constrain to function names only.
+
 	#[arg(short = 'F')]
 	function_names_only: bool,
 
-	/// Create global variable, if applicable.
+
 	#[arg(short = 'g')]
 	create_global: bool,
 
-	/// When creating a local variable that shadows another variable of the same
-	/// name, then initialize it with the contents and attributes of the
-	/// variable being shadowed.
+
+
+
 	#[arg(short = 'I')]
 	locals_inherit_from_prev_scope: bool,
 
-	/// Display each item's attributes and values.
+
 	#[arg(short = 'p')]
 	print: bool,
 
-	//
-	// Attribute options
-	#[clap(flatten)] // -a
+
+
+	#[clap(flatten)]
 	make_indexed_array: MakeIndexedArrayFlag,
-	#[clap(flatten)] // -A
+	#[clap(flatten)]
 	make_associative_array: MakeAssociativeArrayFlag,
-	#[clap(flatten)] // -c
+	#[clap(flatten)]
 	capitalize_value_on_assignment: CapitalizeValueOnAssignmentFlag,
-	#[clap(flatten)] // -i
+	#[clap(flatten)]
 	make_integer: MakeIntegerFlag,
-	#[clap(flatten)] // -l
+	#[clap(flatten)]
 	lowercase_value_on_assignment: LowercaseValueOnAssignmentFlag,
-	#[clap(flatten)] // -n
+	#[clap(flatten)]
 	make_nameref: MakeNameRefFlag,
-	#[clap(flatten)] // -r
+	#[clap(flatten)]
 	make_readonly: MakeReadonlyFlag,
-	#[clap(flatten)] // -t
+	#[clap(flatten)]
 	make_traced: MakeTracedFlag,
-	#[clap(flatten)] // -u
+	#[clap(flatten)]
 	uppercase_value_on_assignment: UppercaseValueOnAssignmentFlag,
-	#[clap(flatten)] // -x
+	#[clap(flatten)]
 	make_exported: MakeExportedFlag,
 
-	//
-	// Declarations
-	//
-	// N.B. These are skipped by clap, but filled in by the BuiltinDeclarationCommand trait.
+
+
+
+
 	#[clap(skip)]
 	declarations: Vec<brush_core::CommandArg>,
 }
@@ -145,12 +145,12 @@ impl builtins::Command for DeclareCommand {
 				}
 			}
 		} else {
-			// Display matching declarations from the variable environment.
+
 			if !self.function_names_only && !self.function_names_or_defs_only {
 				self.display_matching_env_declarations(&context, verb)?;
 			}
 
-			// Do the same for functions.
+
 			if !matches!(verb, DeclareVerb::Local | DeclareVerb::Readonly)
 				&& (!self.print || self.function_names_only || self.function_names_or_defs_only)
 			{
@@ -196,7 +196,7 @@ impl DeclareCommand {
 				}
 				Ok(true)
 			} else {
-				// For some reason, bash does not print an error message in this case.
+
 				Ok(false)
 			}
 		} else if let Some(variable) = context.shell.env().get_using_policy(name, lookup) {
@@ -240,33 +240,33 @@ impl DeclareCommand {
 			return self.try_display_declaration(context, declaration, verb);
 		}
 
-		// Extract the variable name and the initial value being assigned (if any).
+
 		let (name, assigned_index, initial_value, name_is_array) =
 			Self::declaration_to_name_and_value(declaration)?;
 
-		// Special-case: `local -`
+
 		if name == "-" && matches!(verb, DeclareVerb::Local) {
-			// TODO(local): `local -` allows shadowing the current `set` options (i.e., $-),
-			// with subsequent updates getting discarded when the current local scope is
-			// popped.
+
+
+
 			tracing::warn!("not yet implemented: local -");
 			return Ok(true);
 		}
 
-		// Make sure it's a valid name.
+
 		if !env::valid_variable_name(name.as_str()) {
 			writeln!(context.stderr(), "{}: {name}: not a valid variable name", context.command_name)?;
 			return Ok(false);
 		}
 
-		// Figure out where we should look.
+
 		let lookup = if create_var_local {
 			EnvironmentLookup::OnlyInCurrentLocal
 		} else {
 			EnvironmentLookup::Anywhere
 		};
 
-		// Look up the variable.
+
 		if let Some(var) = context
 			.shell
 			.env_mut()
@@ -282,7 +282,7 @@ impl DeclareCommand {
 			self.apply_attributes_before_update(var)?;
 
 			if let Some(initial_value) = initial_value {
-				// We append if the declaration included an explicit index.
+
 				var.assign(initial_value, assigned_index.is_some())?;
 			}
 
@@ -355,9 +355,9 @@ impl DeclareCommand {
 
 		match declaration {
 			brush_core::CommandArg::String(s) => {
-				// We need to handle the case of someone invoking `declare array[index]`.
-				// In such case, we ignore the index and treat it as a declaration of
-				// the array.
+
+
+
 				#[allow(
 					clippy::unwrap_in_result,
 					clippy::unwrap_used,
@@ -433,22 +433,22 @@ impl DeclareCommand {
 		context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 		verb: DeclareVerb,
 	) -> Result<(), brush_core::Error> {
-		//
-		// Dump all declarations. Use attribute flags to filter which variables are
-		// dumped.
-		//
 
-		// We start by excluding all variables that are not enumerable.
+
+
+
+
+
 		#[expect(clippy::type_complexity)]
 		let mut filters: Vec<Box<dyn Fn((&String, &ShellVariable)) -> bool>> =
 			vec![Box::new(|(_, v)| v.is_enumerable())];
 
-		// Add filters depending on verb.
+
 		if matches!(verb, DeclareVerb::Readonly) {
 			filters.push(Box::new(|(_, v)| v.is_readonly()));
 		}
 
-		// Add filters depending on attribute flags.
+
 		if let Some(value) = self.make_indexed_array.to_bool() {
 			filters.push(Box::new(move |(_, v)| {
 				matches!(v.value(), ShellValue::IndexedArray(_)) == value
@@ -496,8 +496,8 @@ impl DeclareCommand {
 			EnvironmentLookup::Anywhere
 		};
 
-		// Iterate through an ordered list of all matching declarations tracked in the
-		// environment.
+
+
 		for (name, variable) in context
 			.shell
 			.env()

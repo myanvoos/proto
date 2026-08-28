@@ -39,24 +39,15 @@ import { handleTabSwitchKey } from "./selector-helpers";
 const OTHER_OPTION = "Other (type your own)";
 const SUBMIT_OPTION = "Submit";
 
-/** Fraction of the terminal the dialog may occupy. The box height is fixed
- *  at spawn from the tallest tab's content (re-measured only on viewport
- *  resize) and clamped to this ratio; it rises from the bottom as a stable
- *  panel that never resizes on tab switches or cursor moves. */
 const DIALOG_HEIGHT_RATIO = 0.7;
 const MIN_DIALOG_ROWS = 12;
 const MIN_BODY_ROWS = 5;
 const MAX_HEADER_CHIP_WIDTH = 16;
-/** Maximum number of title lines shown in the prompt editor overlay, so a
- *  long or multi-line question cannot push the input row off-screen. Mirrors
- *  the bounded-title pattern from the legacy ask path without its option-window
- *  coupling. */
+
 const MAX_PROMPT_TITLE_ROWS = 3;
-/** Border (2) + padX (2) columns consumed by the HookEditor chrome. */
+
 const PROMPT_TITLE_CHROME_COLUMNS = 4;
-/** Maximum number of wrapped lines for an in-body question header, so a long
- *  or multi-line question cannot push the option list off-screen. Mirrors the
- *  row-cap pattern used by boundPromptTitle for the prompt editor overlay. */
+
 const MAX_HEADER_ROWS = 4;
 
 function promptTitleContentWidth(): number {
@@ -64,8 +55,6 @@ function promptTitleContentWidth(): number {
 	return Math.max(1, cols - PROMPT_TITLE_CHROME_COLUMNS);
 }
 
-/** Bound a prompt editor title to a fixed row/width budget so long or
- *  multi-line questions stay usable inside the small prompt overlay. */
 function boundPromptTitle(prefix: string, question: string): string {
 	const width = promptTitleContentWidth();
 	const flat = normalizedInlineInput(`${prefix}${question}`);
@@ -86,9 +75,7 @@ interface AskDialogInputGuard {
 	isBlocked(): boolean;
 	handleInput(keyData: string): void;
 	hint: string;
-	/** Mirror the guard's blocked state onto the proxied draft surface each
-	 *  render, so a draft that owns input shows a visible insertion cursor even
-	 *  though this dialog holds TUI focus. */
+
 	syncPresentation?(): void;
 }
 
@@ -317,10 +304,7 @@ function renderRowLabel(
 	const cursor = selected ? theme.fg("accent", `${theme.nav.cursor} `) : "  ";
 	const label = renderInlineMarkdown(rowItem.label, mdTheme, t => theme.fg(color, t));
 	const noteMarker = state.note && state.noteRowKey === rowItem.key ? theme.fg("success", "  ✎ note") : "";
-	// `width` is already the inner content width consumed by row(); when a
-	// scrollbar is needed, renderRows() calls this again with one less column.
-	// Keep the cursor, option marker, first wrapped label line, and optional
-	// note marker within that budget so the outer fit() never truncates them.
+
 	const noteWidth = noteMarker ? visibleWidth(noteMarker) : 0;
 	const labelWidth = Math.max(1, width - visibleWidth(cursor) - visibleWidth(marker) - noteWidth);
 	const wrappedLabel = wrapTextWithAnsi(label, labelWidth);
@@ -350,15 +334,6 @@ function renderRowLabel(
 	return lines;
 }
 
-/**
- * Coerce untrusted dialog questions into a render-safe shape. The live ask
- * dialog is reached from the public `askDialog` extension surface and from
- * streamed tool args, where a question entry can arrive with a missing or
- * non-string `question` field. The render helpers (`replaceTabs`,
- * `renderQuestionTitle`, `questionTabLabel`) assume strings, so a malformed
- * entry throws and takes down the whole TUI render loop. Mirrors
- * `normalizeRenderQuestions` on the transcript path.
- */
 function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): ExtensionAskDialogQuestion[] {
 	if (!Array.isArray(questions)) return [];
 	const out: ExtensionAskDialogQuestion[] = [];
@@ -452,8 +427,7 @@ export class AskDialogComponent implements Component {
 
 	handleInput(keyData: string): void {
 		if (this.#closed || this.#promptActive) return;
-		// Reset the inactivity countdown on any key that reaches past the
-		// closed/prompt guards, matching HookSelector/HookInput semantics.
+
 		this.#countdown?.reset();
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
@@ -477,21 +451,12 @@ export class AskDialogComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		// Keep the proxied draft's cursor visible while it owns input (the editor
-		// renders as the next sibling in the same container, so this lands in the
-		// same frame).
 		this.options.inputGuard?.syncPresentation?.();
 		const innerWidth = Math.max(1, width - 4);
-		// Fixed panel height: measured from the tallest tab at spawn and
-		// re-measured only when the viewport changes. Tab switches, cursor
-		// moves, and later answers never resize the box; content that
-		// outgrows it scrolls.
+
 		const totalRows = this.#dialogHeight(innerWidth, process.stdout.rows || 40);
 		const headerLines = this.#renderHeader(innerWidth);
-		// topBorder(1) + header(N) + divider(1) + divider(1) + footer(1) +
-		// bottomBorder(1) = N + 5 fixed rows outside the body. Without the
-		// bottomBorder term the dialog overflowed the viewport by one row
-		// (PRRT_kwDOQxs0bc6OFbDY).
+
 		const fixedRows = 1 + headerLines.length + 1 + 1 + 1 + 1;
 		const bodyRows = Math.max(MIN_BODY_ROWS, totalRows - fixedRows);
 		this.#bodyRows = bodyRows;
@@ -518,13 +483,9 @@ export class AskDialogComponent implements Component {
 		return total;
 	}
 
-	/** Measure the tallest tab's natural content height, clamped to
-	 *  DIALOG_HEIGHT_RATIO of the terminal. Derived from questions and
-	 *  viewport only — never from cursor, tab, or answer state — so the box
-	 *  size is stable for the dialog's lifetime at a given terminal size. */
 	#measureHeight(width: number, termRows: number): number {
 		const maxHeight = Math.max(MIN_DIALOG_ROWS, Math.floor(termRows * DIALOG_HEIGHT_RATIO));
-		const chrome = 5; // topBorder + divider + divider + footer + bottomBorder
+		const chrome = 5;
 		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
 		const mdTheme = getMarkdownTheme();
 		let needed = MIN_DIALOG_ROWS;
@@ -545,8 +506,6 @@ export class AskDialogComponent implements Component {
 			needed = Math.max(needed, chrome + headerRows + Math.max(MIN_BODY_ROWS, body));
 		}
 		if (this.#hasSubmitTab()) {
-			// Warning line + blank, one summary line per question, blank, and
-			// the Submit row; note lines added later scroll within the body.
 			const body = 2 + this.#questions.length + 2;
 			needed = Math.max(needed, chrome + tabBarRows + 1 + Math.max(MIN_BODY_ROWS, body));
 		}
@@ -558,9 +517,6 @@ export class AskDialogComponent implements Component {
 	}
 
 	#hasSubmitTab(): boolean {
-		// Multi questions confirm on the Submit tab (Enter toggles, never
-		// submits), so any multi question forces the tab even when there is
-		// only one question.
 		return this.#questions.length > 1 || this.#questions.some(question => question.multi);
 	}
 
@@ -614,7 +570,7 @@ export class AskDialogComponent implements Component {
 			return `Enter submit · ↑/↓ scroll ·${scroll} ${cancel}`;
 		}
 		const question = this.#questions[this.#currentQuestionIndex()];
-		// Enter advances in multi-question dialogs and submits single-question ones.
+
 		const enterAction = this.#questions.length > 1 ? "next" : "submit";
 		const action = question?.multi ? `Space toggle · Enter ${enterAction}` : "Enter select · n note";
 		const tabs = this.#hasSubmitTab() ? " · Tab/←/→" : "";
@@ -695,10 +651,6 @@ export class AskDialogComponent implements Component {
 		if (!option) return;
 		if (question.multi) {
 			if (isEnter) {
-				// Enter confirms the current selection without toggling the
-				// focused option; Space toggles. Advances to the next question
-				// (submitting only for a single-question dialog), matching
-				// single-select Enter (#8252).
 				this.#advanceAfterQuestion();
 				return;
 			}
@@ -724,7 +676,6 @@ export class AskDialogComponent implements Component {
 			return;
 		}
 		if (matchesSelectDown(keyData)) {
-			// Clamped against the rendered line count in #renderSubmitBody.
 			this.#submitScrollOffset += 1;
 			this.#requestRender();
 			return;
@@ -763,7 +714,6 @@ export class AskDialogComponent implements Component {
 			);
 			if (input === undefined || this.#closed) return;
 			if (input.trim() === "") {
-				// Submitting an empty value unselects the custom answer.
 				state.customInput = undefined;
 				clearNoteIfRow(state, rowItem.key);
 				return;
@@ -938,7 +888,6 @@ export class AskDialogComponent implements Component {
 		let nextOffset = clamp(currentOffset, 0, maxOffset);
 		const cursorRows = cursorEnd - cursorStart;
 		if (manualScroll && cursorRows > rows) {
-			// A page must not expose another option while Enter still targets this one.
 			nextOffset = clamp(nextOffset, cursorStart, cursorEnd - rows);
 		} else if (cursorStart < nextOffset || cursorEnd > nextOffset + rows) {
 			nextOffset = cursorRows <= rows ? cursorEnd - rows : cursorStart;

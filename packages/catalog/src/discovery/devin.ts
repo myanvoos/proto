@@ -18,7 +18,6 @@ const DEVIN_SESSION_TOKEN_PREFIX = "devin-session-token$";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
 
-/** Best-effort match for labels whose wording implies a thinking / reasoning-effort variant. */
 const REASONING_LABEL_PATTERN = /think|thinking|minimal|high|medium|low|xhigh|max|reasoning/i;
 const NO_REASONING_LABEL_PATTERN = /\bno thinking\b/i;
 function supportsDevinThinking(config: ClientModelConfig): boolean {
@@ -26,29 +25,18 @@ function supportsDevinThinking(config: ClientModelConfig): boolean {
 	return config.modelInfo?.modelFeatures?.supportsThinking === true || REASONING_LABEL_PATTERN.test(config.label);
 }
 
-/**
- * Options for fetching dynamic Devin (Codeium Cascade) models from `GetCliModelConfigs`.
- */
 export interface DevinModelDiscoveryOptions {
-	/** Codeium session token carried inside protobuf `Metadata.apiKey`. */
 	apiKey?: string;
-	/** Optional Codeium API base URL override. */
+
 	baseUrl?: string;
-	/** Optional request timeout in milliseconds (default 5000). */
+
 	timeoutMs?: number;
-	/** Optional caller abort signal, combined with the internal timeout. */
+
 	signal?: AbortSignal;
-	/** Optional fetch implementation for request-debug/proxy/test transports. */
+
 	fetch?: FetchImpl;
 }
 
-/**
- * Fetches Devin models through the `GetCliModelConfigs` unary Connect RPC and
- * normalizes them into canonical model entries.
- *
- * Returns `null` on request/decode failures.
- * Returns `[]` only when the endpoint responds successfully with no usable models.
- */
 export async function fetchDevinModels(
 	options: DevinModelDiscoveryOptions,
 ): Promise<ModelSpec<"devin-agent">[] | null> {
@@ -102,11 +90,6 @@ function normalizeDevinSessionToken(apiKey: string | undefined): string {
 	return apiKey.startsWith(DEVIN_SESSION_TOKEN_PREFIX) ? apiKey : `${DEVIN_SESSION_TOKEN_PREFIX}${apiKey}`;
 }
 
-/**
- * Decodes a raw (unframed) `GetCliModelConfigsResponse`. Bun's `fetch` usually
- * auto-decompresses gzip, so the direct decode is attempted first; a
- * `gunzipSync` fallback covers runtimes that hand back the still-compressed body.
- */
 function decodeCliModelConfigsResponse(payload: Uint8Array) {
 	try {
 		return fromBinary(GetCliModelConfigsResponseSchema, payload);

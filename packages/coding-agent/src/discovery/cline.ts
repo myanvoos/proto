@@ -1,9 +1,3 @@
-/**
- * Cline Provider
- *
- * Loads rules from .clinerules (can be single file or directory with *.md files).
- * Project-only (no user-level config).
- */
 import * as path from "node:path";
 import { registerProvider } from "../capability";
 import { readDirEntries, readFile } from "../capability/fs";
@@ -34,22 +28,16 @@ async function findClinerules(startDir: string): Promise<{ path: string; isDir: 
 	}
 }
 
-/**
- * Load rules from .clinerules
- */
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const items: Rule[] = [];
 	const warnings: string[] = [];
 
-	// Project-level only (Cline uses root-level .clinerules)
 	const found = await findClinerules(ctx.cwd);
 	if (!found) {
 		return { items, warnings };
 	}
 
-	// Check if .clinerules is a directory or file
 	if (found.isDir) {
-		// Directory format: load all *.md files
 		const result = await loadFilesFromDir(ctx, found.path, PROVIDER_ID, "project", {
 			extensions: ["md"],
 			transform: (name, content, path, source) =>
@@ -59,7 +47,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 		items.push(...result.items);
 		if (result.warnings) warnings.push(...result.warnings);
 	} else {
-		// Single file format
 		const content = await readFile(found.path);
 		if (content === null) {
 			warnings.push(`Failed to read .clinerules at ${found.path}`);
@@ -73,7 +60,6 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	return { items, warnings };
 }
 
-// Register provider
 registerProvider<Rule>(ruleCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,

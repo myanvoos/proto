@@ -15,9 +15,6 @@ on:
          - "THIRD-PARTY-NOTICES.txt"
          - "rust-toolchain.toml"
          - "rustfmt.toml"
-         # A root dependency change (lockfile/catalog/patches) affects every
-         # job; without these a lockfile-only push shipped untested — and a
-         # release retagged onto such a commit never triggered its run.
          - "bun.lock"
          - "bunfig.toml"
          - "package.json"
@@ -49,14 +46,6 @@ on:
             type: boolean
             default: false
 
-# Release runs publish a `v*` tag pushed atomically with main HEAD; sharing
-# the cheap branch-wide `CI-refs/heads/main` group meant a later main push
-# silently cancelled the in-flight release and left the tag without a GitHub
-# Release or npm publish (#2564). Detect release runs at workflow-scheduling
-# time via the release-script commit subject (`chore: bump version to vX.Y.Z`),
-# via `v*` tag-ref dispatches, and via manual dispatches whose tag-on-HEAD
-# status is only known after checkout; scope them to a per-sha group with no
-# cancellation. Every other event keeps branch-wide cancellation for PR/main churn.
 concurrency:
    group: "${{ github.workflow }}-${{ (startsWith(github.event.head_commit.message, 'chore: bump version to ') || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && format('release-{0}', github.sha) || github.ref }}"
    cancel-in-progress: "${{ !(startsWith(github.event.head_commit.message, 'chore: bump version to ') || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
@@ -68,31 +57,13 @@ permissions:
    contents: read
 
 jobs:
-   # scripts/release.ts pushes the version-bump commit and its `v*` tag
-   # atomically (`git push --atomic origin refs/heads/main:refs/heads/main
-   # <sha>:refs/tags/v<version>`), so a release now arrives as a single `push` to
-   # `refs/heads/main` — we no longer trigger on the tag ref at all (see
-   # `on.push`). This one branch-push run is therefore authoritative: it runs the
-   # full build AND, when HEAD carries a release tag, the release/publish jobs.
-   # `release_metadata` resolves that tag once so downstream jobs switch on
-   # `is-release` and address the tag by name — `github.ref` is
-   # `refs/heads/main` here, not the tag. A `workflow_dispatch` from a `v*` tag
-   # ref (or from a tagged main HEAD) is also treated as a release.
    release_metadata:
       name: Resolve release metadata
-      # Hosted, not proto-kata: this ~20 s git-tag probe gates the whole release
-      # chain, and queueing it behind the 4-runner kata pool adds dead minutes
-      # to the darwin critical path.
       runs-on: ubuntu-22.04
       outputs:
          is-release: ${{ steps.detect.outputs.is-release }}
          release-tag: ${{ steps.detect.outputs.release-tag }}
       steps:
-         # Only a main-branch run needs tags fetched, so `git tag --points-at
-         # HEAD` can see the freshly-pushed `v*`. A tag-ref dispatch reads the
-         # tag straight from `github.ref_name`, and fetching `--tags` while
-         # checkout uses an explicit tag refspec makes git refuse — so scope
-         # fetch-tags to main refs.
          - uses: actions/checkout@v4
            with:
               fetch-tags: ${{ github.ref == 'refs/heads/main' }}
@@ -141,11 +112,6 @@ jobs:
          - name: Type check workspace
            run: bun run ci:check:full
 
-   # Rust linting (clippy, rustfmt) runs on non-PR events only.
-   # Native-changing PRs are rare enough that they do not warrant PR-side
-   # Rust validation or a PR-side addon build (see native_addons): Rust is
-   # validated post-merge on main and again at release. A skipped required
-   # check still satisfies branch protection.
    rust_validate:
       name: Validate Rust workspace
       if: github.event_name != 'pull_request'
@@ -153,11 +119,8 @@ jobs:
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
-         # Plain cargo has no server or shared remote cache; registry/git and
-         # the shared target dir are keyed on the lockfile so main/release
-         # runs (this job only runs on non-PR events) warm one reusable entry.
          - name: Cache cargo registry and target dir
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
            with:
               path: |
                  ~/.cargo/registry
@@ -165,30 +128,17 @@ jobs:
                  target
               key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
               restore-keys: cargo-${{ runner.os }}-
-         # Cargo reads [lints] directly, so the old three-scope clippy split is
-         # automatic now: crates with `[lints] workspace = true` get the strict
-         # workspace policy, pi-builtins' manifest allowances apply to itself,
-         # and brush-core stays excluded exactly like VENDORED_FORK_EXCLUDES in
-         # scripts/run-rs-task.ts.
          - name: Clippy
            run: cargo clippy --workspace --exclude brush-core --no-deps -- -D warnings
          - name: Rustfmt
            run: cargo fmt --all --check
 
-   # Provides the native addons the release jobs install. PRs never
-   # build: they fetch the latest release's Linux x64 pair from the
-   # @oh-my-pi/pi-natives-linux-x64 npm leaf instead. The workspace loader
-   # skips its version sentinel for workspace loads, so release addons load
-   # fine under a newer checkout; native changes land via main.
-   # Main (proto-kata) builds all Linux-hosted targets via
-   # scripts/build-natives.sh (plain cargo on the matching host).
    native_addons:
       name: Build native addons
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
       steps:
          - uses: actions/checkout@v4
 
-         # ---- PR path: latest release addons from npm ----
          - name: Fetch release native addons (npm)
            if: github.event_name == 'pull_request'
            shell: bash
@@ -201,8 +151,6 @@ jobs:
               cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" \
                  "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" \
                  "$RUNNER_TEMP/native-addons/"
-         # A corrupt download must fail here, not as a confusing dlopen error
-         # in every downstream test shard.
          - name: Smoke release addons
            if: github.event_name == 'pull_request'
            shell: bash
@@ -225,9 +173,6 @@ jobs:
               "$loader" "$RUNNER_TEMP/smoke-addons.js" \
                 "$RUNNER_TEMP/native-addons/pi_natives.linux-x64-baseline.node" \
                 "$RUNNER_TEMP/native-addons/pi_natives.linux-x64-modern.node"
-         # Make the policy visible on the rare native-touching PR instead of
-         # leaving a reviewer to wonder which addons the tests exercised.
-         # Best-effort: a diff-API failure must not fail the job over a notice.
          - name: Note native changes tested against release addons
            if: github.event_name == 'pull_request'
            shell: bash
@@ -255,16 +200,13 @@ jobs:
                  linux-musl-x64-baseline linux-x64-baseline linux-x64-modern \
                  --dest "$RUNNER_TEMP/native-addons"
          - name: Upload native addon artifacts
-           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
            with:
               name: native-addons
               path: ${{ runner.temp }}/native-addons/*.node
               if-no-files-found: error
               retention-days: 1
 
-   # Aggregates every validation job so publish-side release jobs gate on one
-   # result. Binary BUILDS deliberately do not wait for this gate — they run
-   # in parallel with validation and only publishing is held back.
    release_gate:
       name: Release validation gate
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
@@ -278,11 +220,6 @@ jobs:
          - uses: ./.github/actions/bun-install
          - run: echo "release validation green"
 
-   # Builds (does not publish) the Linux-hosted release binaries in parallel
-   # with validation; the single need is native_addons, whose artifact
-   # supplies their addons. Darwin builds live in release_binary_darwin so
-   # they start at release_metadata time instead. Publishing (npm leaves,
-   # GitHub release, core npm) is gated on release_gate downstream.
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
@@ -329,12 +266,12 @@ jobs:
       permissions:
          contents: read
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4"
          - name: Cache bun dependencies
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
@@ -347,8 +284,6 @@ jobs:
            env:
               RELEASE_TARGETS: ${{ matrix.target_id }}
            run: bun run ci:release:build-binaries
-         # Musl binaries need the musl loader, which glibc runners lack —
-         # they are smoked in the Alpine container step below instead.
          - name: Smoke release binary
            if: matrix.libc != 'musl'
            run: |
@@ -366,15 +301,11 @@ jobs:
                 HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" proto --version
               '
          - name: Upload release binary artifact
-           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
            with:
               name: proto-binary-${{ matrix.target_id }}
               path: ${{ matrix.binary_path }}
 
-   # Darwin release builds are the longest leg of a release (cargo-built
-   # addons on macOS runners), build their own addons, and touch nothing from
-   # native_addons — so they gate on release_metadata alone and start the
-   # moment the release run is detected, fully overlapped with the tests.
    release_binary_darwin:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() }}
@@ -401,20 +332,16 @@ jobs:
       env:
          MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4"
          - name: Cache bun dependencies
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
-         # Darwin runners build their own architecture; cross-hosted artifacts
-         # do not exist for macOS. No cache wiring here: cold cargo builds are
-         # accepted on release legs (the runner has Xcode and rustup resolves
-         # the pinned nightly via rust-toolchain.toml).
          - name: Build native addon
            run: sh scripts/build-natives.sh ${{ matrix.native_targets }} --dest packages/natives/native
          - name: Build release binary
@@ -422,10 +349,6 @@ jobs:
               RELEASE_TARGETS: ${{ matrix.target_id }}
            run: bun run ci:release:build-binaries
          - name: Sign and notarize macOS binary (Developer ID)
-           # Replaces the ad-hoc signature with a Developer ID + hardened-runtime
-           # one (+JIT/library-validation entitlements; proto dlopens its
-           # runtime-extracted native addon, which has a different Team ID) and
-           # notarizes. Auto-skips until the APPLE_* secrets are configured.
            if: env.MACOS_SIGNING == 'true'
            env:
               APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -438,26 +361,19 @@ jobs:
            run: |
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
-         # Darwin addons exist only on these runners; export them so
-         # release_native_leaves can publish every leaf package after the
-         # validation gate. Non-darwin leaves reuse the native-addons artifact.
          - name: Upload darwin native addon artifact
-           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
            with:
               name: native-addons-${{ matrix.target_id }}
               path: packages/natives/native/pi_natives.${{ matrix.target_id }}*.node
               if-no-files-found: error
               retention-days: 1
          - name: Upload release binary artifact
-           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
            with:
               name: proto-binary-${{ matrix.target_id }}
               path: ${{ matrix.binary_path }}
 
-   # Publishes the five @oh-my-pi/pi-natives-<tag> leaf packages once
-   # validation passes and every binary built. Runs on one linux runner: leaf
-   # publishing is platform-agnostic file packaging (gen-npm-packages reads
-   # packages/natives/native), so no per-platform runners are needed.
    release_native_leaves:
       name: Publish native leaf packages
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
@@ -467,49 +383,38 @@ jobs:
          !inputs.skip_npm }}
       needs: [release_metadata, release_gate, release_binary, release_binary_darwin]
       runs-on: ubuntu-22.04
-      # id-token lets npm mint the OIDC token for trusted publishing; the
-      # NODE_AUTH_TOKEN below is the fallback for unconfigured packages.
       permissions:
          id-token: write
          contents: read
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4"
-         - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+         - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
            with:
               node-version: "24"
               registry-url: "https://registry.npmjs.org"
-         # npm runs under Bun when invoked by the release script; npm 12
-         # requires a newer emulated Node version than Bun 1.3 provides.
          - name: Ensure npm supports trusted publishing
            run: npm install -g npm@11.17.0
          - name: Cache bun dependencies
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
-         # Linux addons from the native_addons artifact (gnu targets only —
-         # musl reuses the linux filenames and has no leaf package).
          - name: Install linux native addons
            uses: ./.github/actions/native-artifacts
            with:
               targets: linux-x64-baseline linux-x64-modern linux-arm64
-         # Darwin addons come flat (canonical filenames) from the
-         # release_binary_darwin legs.
          - name: Install darwin native addons
-           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
            with:
               pattern: native-addons-darwin-*
               path: packages/natives/native
               merge-multiple: true
          - name: Publish native leaf packages
            env:
-              # Fallback auth: setup-node wrote an .npmrc referencing
-              # NODE_AUTH_TOKEN; npm uses it only when OIDC has no trusted
-              # publisher for the package (or on a first publish).
               NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
            run: |
               set -euo pipefail
@@ -528,32 +433,22 @@ jobs:
       permissions:
          contents: write
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4"
          - name: Generate release notes from CHANGELOGs
            env:
-              # `gh release list` (used to find the latest published GitHub
-              # Release tag below the target so silent-tag changelog sections
-              # roll forward — #2596) requires GH_TOKEN in Actions. Without
-              # it gh exits non-zero and the script would degrade to legacy
-              # single-version notes, defeating the recovery.
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            run: bun scripts/ci-release-notes.ts ${{ needs.release_metadata.outputs.release-tag }}
          - name: Download release binaries
-           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
            with:
               pattern: proto-binary-*
               path: packages/coding-agent/binaries
               merge-multiple: true
-         # Dependency-free build (bun APIs + zip only), so no `bun install`
-         # is needed on this runner.
          - name: Build browser relay artifacts
            run: bun run --cwd packages/browser-relay build
-         # Generated after every other release asset is in place and before
-         # the release is created, so SHA256SUMS.txt itself ships as an asset
-         # and covers every other file uploaded alongside it.
          - name: Generate checksums
            run: |
               bun run ci:release:checksums SHA256SUMS.txt \
@@ -562,7 +457,7 @@ jobs:
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
          - name: Create GitHub Release
-           uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+           uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
            with:
               tag_name: ${{ needs.release_metadata.outputs.release-tag }}
               files: |
@@ -615,56 +510,37 @@ jobs:
          needs.release_github_verify.result == 'success' &&
          needs.release_native_leaves.result == 'success' &&
          !inputs.skip_npm }}
-      # release_native_leaves must finish first: the core package lists the
-      # leaf packages as lockstep-versioned optionalDependencies, so installs
-      # resolve them the moment the core version is live.
       needs: [release_metadata, release_binary, release_binary_darwin, release_github_verify, release_native_leaves]
       runs-on: ubuntu-22.04
-      # `id-token: write` lets npm mint the GitHub OIDC token it exchanges for a
-      # short-lived publish token (trusted publishing + provenance). When a
-      # package has no matching trusted publisher configured, npm silently falls
-      # back to NODE_AUTH_TOKEN below — which also covers first-ever publishes.
       permissions:
          id-token: write
          contents: read
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4"
-         - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+         - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
            with:
               node-version: "24"
               registry-url: "https://registry.npmjs.org"
-         # npm runs under Bun when invoked by the release script; npm 12
-         # requires a newer emulated Node version than Bun 1.3 provides.
          - name: Ensure npm supports trusted publishing
            run: npm install -g npm@11.17.0
          - name: Cache bun dependencies
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
            with:
               path: ~/.bun/install/cache
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - run: bun install --frozen-lockfile
-         # The prepack executes workspace code which loads the Linux x64
-         # addon, so install the native_addons job's artifact before publishing.
          - name: Install prebuilt native addons
            uses: ./.github/actions/native-artifacts
            with:
               targets: linux-x64-baseline linux-x64-modern
          - name: Publish to npm
            env:
-              # Fallback auth: setup-node wrote an .npmrc referencing
-              # NODE_AUTH_TOKEN; npm uses it only when OIDC has no trusted
-              # publisher for the package (or on a first publish).
               NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
            run: bun run ci:release:publish
 
-   # Regenerate the Homebrew tap formula (can1357/homebrew-tap) from the freshly
-   # published release assets and push it. Gated on release_github_verify so the
-   # tap only cuts over to a release whose published binary was verified (matches
-   # how release_npm is gated). No-ops when HOMEBREW_TAP_DEPLOY_KEY is unset, so a
-   # release never blocks on tap access.
    release_brew:
       name: Update Homebrew tap
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
@@ -674,15 +550,15 @@ jobs:
       env:
          HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
       steps:
-         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
            if: env.HAS_TAP_KEY == 'true'
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            if: env.HAS_TAP_KEY == 'true'
            with:
               bun-version: "1.4"
          - name: Check out the Homebrew tap
            if: env.HAS_TAP_KEY == 'true'
-           uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
            with:
               repository: can1357/homebrew-tap
               ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

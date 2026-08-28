@@ -35,11 +35,6 @@ export interface GithubInput {
 	tail?: number;
 }
 
-// /search/<endpoint> API response shapes (subset). Used when projecting raw
-// REST results into the normalized `GhSearch*Result` shapes the formatters
-// consume. We talk to the API directly because `gh search prs`/`issues`
-// quotes multi-token positional queries (`is:"merged is:pr"`) and returns 0
-// hits — see https://github.com/cli/cli for the upstream regression.
 export interface GhApiSearchResponse<T> {
 	total_count?: number;
 	incomplete_results?: boolean;

@@ -26,9 +26,6 @@ interface RepologyPackage {
 	maintainers?: string[];
 }
 
-/**
- * Prettify repository name
- */
 function prettifyRepo(repo: string): string {
 	const mapping: Record<string, string> = {
 		arch: "Arch Linux",
@@ -62,24 +59,18 @@ function prettifyRepo(repo: string): string {
 		hackage: "Hackage",
 	};
 
-	// Check exact match first
 	if (mapping[repo]) return mapping[repo];
 
-	// Check partial matches
 	for (const [key, value] of Object.entries(mapping)) {
 		if (repo.startsWith(key)) return value;
 	}
 
-	// Fallback: titlecase with underscores replaced
 	return repo
 		.split("_")
 		.map(w => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(" ");
 }
 
-/**
- * Handle Repology URLs via API
- */
 export const handleRepology: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -89,14 +80,12 @@ export const handleRepology: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (parsed.hostname !== "repology.org" && parsed.hostname !== "www.repology.org") return null;
 
-		// Extract package name from /project/{name}/versions or /project/{name}/information
 		const match = parsed.pathname.match(/^\/project\/([^/]+)/);
 		if (!match) return null;
 
 		const packageName = decodeURIComponent(match[1]);
 		const fetchedAt = new Date().toISOString();
 
-		// Fetch from Repology API
 		const apiUrl = `https://repology.org/api/v1/project/${encodeURIComponent(packageName)}`;
 		const result = await loadPage(apiUrl, {
 			timeout,
@@ -112,10 +101,8 @@ export const handleRepology: SpecialHandler = async (
 		const packages = tryParseJson<RepologyPackage[]>(result.content);
 		if (!packages) return null;
 
-		// Empty response means package not found
 		if (!Array.isArray(packages) || packages.length === 0) return null;
 
-		// Find newest version(s) and extract metadata
 		const newestVersions = new Set<string>();
 		let summary: string | undefined;
 		let licenses: string[] = [];
@@ -132,19 +119,16 @@ export const handleRepology: SpecialHandler = async (
 			}
 		}
 
-		// If no newest found, find the highest version
 		if (newestVersions.size === 0) {
 			const versions = packages.map(p => p.version);
 			if (versions.length > 0) newestVersions.add(versions[0]);
 		}
 
-		// Group packages by status for counting
 		const statusCounts: Record<string, number> = {};
 		for (const pkg of packages) {
 			statusCounts[pkg.status] = (statusCounts[pkg.status] || 0) + 1;
 		}
 
-		// Build markdown
 		let md = `# ${packageName}\n\n`;
 		if (summary) md += `${summary}\n\n`;
 
@@ -154,7 +138,6 @@ export const handleRepology: SpecialHandler = async (
 		if (categories.size) md += `**Categories:** ${Array.from(categories).join(", ")}\n`;
 		md += "\n";
 
-		// Status summary
 		md += "## Version Status Summary\n\n";
 		const statusOrder = [
 			"newest",
@@ -175,7 +158,6 @@ export const handleRepology: SpecialHandler = async (
 		}
 		md += "\n";
 
-		// Sort packages: newest first, then by repo name
 		const sortedPackages = [...packages].sort((a, b) => {
 			const statusPriority: Record<string, number> = {
 				newest: 0,
@@ -195,7 +177,6 @@ export const handleRepology: SpecialHandler = async (
 			return a.repo.localeCompare(b.repo);
 		});
 
-		// Show top repositories (up to 15)
 		md += "## Package Versions by Repository\n\n";
 		md += "| Repository | Version | Status |\n";
 		md += "|------------|---------|--------|\n";
@@ -203,7 +184,6 @@ export const handleRepology: SpecialHandler = async (
 		const shownRepos = new Set<string>();
 		let count = 0;
 		for (const pkg of sortedPackages) {
-			// Skip duplicate repos (some have multiple entries)
 			const repoKey = pkg.subrepo ? `${pkg.repo}/${pkg.subrepo}` : pkg.repo;
 			if (shownRepos.has(repoKey)) continue;
 			shownRepos.add(repoKey);

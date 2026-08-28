@@ -1,19 +1,3 @@
-/**
- * Orchestrator worker runtime.
- *
- * Owns the persistent, addressable workers the top-level Orchestrator spawns
- * through `orchestrate_spawn`. Each worker is a real subagent with full tool
- * access: spawned once through {@link runSubprocess} (keep-alive), continued
- * turn-by-turn through {@link runSubagentFollowUpTurn}. Between turns the
- * worker lives in the AgentRegistry / AgentLifecycleManager as an adopted idle
- * agent (TTL park + JSONL revive), so its conversation context survives across
- * turns and even across parking.
- *
- * Every turn runs as an AsyncJobManager job, so a completed turn self-delivers
- * into the orchestrator's conversation exactly like a background job result,
- * and `orchestrate_wait` can block on the first settling turn with fleet-wait
- * semantics.
- */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -42,25 +26,22 @@ import { buildOutputValidator } from "../tools/output-schema-validator";
 import { formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
 
-/** Worker session lifecycle as shown to the director. */
 export type WorkerState = "starting" | "running" | "idle" | "dead";
 
-/** One completed tool call in the per-turn activity trace. */
 interface TraceEntry {
 	tool: string;
 	args: string;
 	endMs: number;
 }
 
-/** Cap on trace entries retained per turn (the run monitor keeps 5; we widen the window). */
 const TURN_TRACE_CAP = 40;
-/** Cap on a single rendered trace line. */
+
 const TRACE_LINE_MAX = 120;
-/** Default `orchestrate_wait` window when no timeout was given (ms). */
+
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
-/** Response text cap inside a delivered turn result; full output stays at agent://<id>. */
+
 const RESPONSE_PREVIEW_MAX = 6000;
-/** Grace period for worker cancellation/release cleanup before teardown detaches (ms). */
+
 const TEARDOWN_GRACE_MS = 5_000;
 
 const ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE = "orchestrator-worker-lifecycle";
@@ -128,7 +109,7 @@ interface RestoreCandidate {
 interface ResolvedWorker {
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
-	/** Pre-expansion role alias behind {@link modelOverride}, when the worker agent named one. */
+
 	modelRole?: string;
 }
 
@@ -142,15 +123,15 @@ interface WorkerTurn {
 	jobId: string;
 	message: string;
 	startedAt: number;
-	/** Trace of tool calls completed during this turn, oldest first. */
+
 	trace: TraceEntry[];
-	/** Total completed tool calls (trace may be narrower than this). */
+
 	toolCount: number;
 }
 
 interface WorkerRecord {
 	id: string;
-	/** Resolved agent type name (display + persistence identity). */
+
 	agentName: string;
 	ownerId: string;
 	parentSessionId: string;
@@ -158,9 +139,9 @@ interface WorkerRecord {
 	childSessionFile?: string;
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
-	/** Pre-expansion role alias behind {@link modelOverride}, when the worker agent named one. */
+
 	modelRole?: string;
-	/** Caller-requested coarse effort for this worker's turns. */
+
 	effort?: WorkerEffort;
 	outputSchema?: unknown;
 	outputSchemaMode: StructuredSubagentSchemaMode;
@@ -168,54 +149,49 @@ interface WorkerRecord {
 	state: WorkerState;
 	createdAt: number;
 	lastActivityAt: number;
-	/** One-line gist of the latest activity (intent, tool, or result preview). */
+
 	lastActivity?: string;
-	/** Resolved model display string once known. */
+
 	resolvedModel?: string;
 	turn?: WorkerTurn;
-	/** Live view of the in-flight turn (current tool, intent, streamed text tail). */
+
 	live?: {
 		currentTool?: string;
 		currentToolArgs?: string;
 		lastIntent?: string;
-		/** Latest streamed assistant text lines, oldest first. */
+
 		outputTail: string[];
 	};
-	/** Job id of the most recently settled turn (wait snapshots after settle). */
+
 	lastJobId?: string;
-	/** Messages queued while a turn was in flight; drained into the next turn. */
+
 	queue: string[];
 	turnCount: number;
 	killed: boolean;
-	/** True while a parent switch is detaching this process-local record without terminating it. */
+
 	suspended: boolean;
-	/** True only after a terminal lifecycle event has durably flushed. */
+
 	terminalPersisted: boolean;
 }
 
-/**
- * Live per-session "screen" for rich rendering: what the worker is doing right
- * now (tool trace, current tool, streamed text tail) plus roster metadata.
- * Every string is already one-line sanitized.
- */
 export interface WorkerScreen {
 	id: string;
-	/** Agent type name shown as the screen's badge. */
+
 	agent: string;
 	state: WorkerState;
 	model?: string;
 	turns: number;
 	queued: number;
-	/** Start of the in-flight turn, when running. */
+
 	turnStartedAt?: number;
-	/** Gist of the message that started the in-flight turn. */
+
 	turnMessage?: string;
 	currentTool?: string;
 	currentToolArgs?: string;
 	lastIntent?: string;
-	/** Completed tool calls of the in-flight turn, oldest first (tail). */
+
 	trace: string[];
-	/** Latest streamed worker text lines, oldest first. */
+
 	outputTail: string[];
 	lastActivity?: string;
 	lastActivityAt: number;
@@ -228,26 +204,20 @@ interface SpawnOutcome {
 
 export interface SendOutcome {
 	id: string;
-	/**
-	 * - `turn`: a new background turn was started (`jobId` set).
-	 * - `steered`: worker was mid-turn and streaming; delivered as steering.
-	 * - `queued`: worker was mid-turn but not steerable; drained into the next turn.
-	 */
+
 	mode: "turn" | "steered" | "queued";
 	jobId?: string;
 }
 
 export interface KillOutcome {
 	id: string;
-	/** True when an in-flight turn job was cancelled along the way. */
+
 	cancelledTurn: boolean;
 }
 
 export interface WaitOutcome {
-	/** Watched sessions whose snapshotted turn settled during (or before) the wait.
-	 * May overlap `stillRunning` when a queued follow-up turn already started. */
 	settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled"; resultText: string }>;
-	/** Watched sessions with a turn in flight when the wait returned. */
+
 	stillRunning: string[];
 	timedOut: boolean;
 }
@@ -259,7 +229,6 @@ interface TrackedTeardown {
 	status: () => TeardownStatus;
 }
 
-/** Observe cleanup without propagating a detached late rejection. */
 function trackTeardown(promise: Promise<unknown>, onError: (error: unknown) => void): TrackedTeardown {
 	let status: TeardownStatus = "pending";
 	return {
@@ -276,7 +245,6 @@ function trackTeardown(promise: Promise<unknown>, onError: (error: unknown) => v
 	};
 }
 
-/** Wait for cleanup only until the caller's shared absolute deadline. */
 async function waitForTeardown(tasks: readonly TrackedTeardown[], deadline: number): Promise<boolean> {
 	if (tasks.length === 0 || tasks.every(task => task.status() !== "pending")) return true;
 	const remainingMs = deadline - Date.now();
@@ -294,7 +262,6 @@ async function waitForTeardown(tasks: readonly TrackedTeardown[], deadline: numb
 	}
 }
 
-/** Normalize a text fragment to one bounded roster/trace line. */
 function firstLine(text: string, max = 100): string {
 	return oneLineLabel(text, max);
 }
@@ -361,7 +328,6 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 	return undefined;
 }
 
-/** Child ids claimed by valid orchestrator spawn records from untrusted persisted JSON. */
 export function persistedOrchestratorWorkerIds(entries: Iterable<unknown>): Set<string> {
 	const ids = new Set<string>();
 	for (const value of entries) {
@@ -379,7 +345,6 @@ export function persistedOrchestratorWorkerIds(entries: Iterable<unknown>): Set<
 	return ids;
 }
 
-/** Merge the monitor's rolling `recentTools` window (newest first) into the per-turn trace (oldest first). */
 function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 	turn.toolCount = progress.toolCount;
 	for (let i = progress.recentTools.length - 1; i >= 0; i--) {
@@ -392,14 +357,8 @@ function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 	}
 }
 
-/** Thrown from a turn job body so the job manager marks the job failed while carrying the formatted result. */
 class WorkerTurnError extends Error {}
 
-/**
- * Process-global registry of orchestrator workers, scoped by both owner agent
- * id and stable parent session id. Persisted lifecycle events rebuild idle
- * records after a process restart; live turn jobs remain process-local.
- */
 export class OrchestratorRuntime {
 	static #global: OrchestratorRuntime | undefined;
 
@@ -410,15 +369,10 @@ export class OrchestratorRuntime {
 		return OrchestratorRuntime.#global;
 	}
 
-	/** Reset the global registry. Test-only. */
 	static resetGlobalForTests(): void {
 		OrchestratorRuntime.#global = undefined;
 	}
 
-	/**
-	 * Insert a bare worker record without the spawn machinery. Test-only —
-	 * lets focused runtime tests attach an optional synthetic in-flight job.
-	 */
 	registerRecordForTests(record: {
 		id: string;
 		agentName?: string;
@@ -461,7 +415,6 @@ export class OrchestratorRuntime {
 	readonly #waitedJobIds = new Set<string>();
 	#teardownGraceMs = TEARDOWN_GRACE_MS;
 
-	/** Override the teardown grace period for deterministic lifecycle tests. */
 	setTeardownGraceForTesting(timeoutMs: number): void {
 		this.#teardownGraceMs = Math.max(1, timeoutMs);
 	}
@@ -510,13 +463,6 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	/**
-	 * Resolve a worker's agent definition (any discovered type — bundled,
-	 * user-level, or project-level) and its model selection. Same contract as
-	 * the spawn path: the expansion discards the role alias (`@worker`,
-	 * `@smol`), so patterns and role identity come from one call — the child's
-	 * inherited retry-fallback chain is keyed off the role.
-	 */
 	async #resolveWorker(
 		session: OrchestratorParent,
 		cwd: string,
@@ -665,12 +611,6 @@ export class OrchestratorRuntime {
 		return this.#listIds(this.ownerScope(session));
 	}
 
-	/**
-	 * Live screen snapshots for rich rendering (the "TV wall"): one entry per
-	 * session in creation order, carrying the in-flight turn's trace, current
-	 * tool, and streamed text tail. All strings are one-line sanitized here so
-	 * renderers can print them verbatim.
-	 */
 	screens(session: ToolSession, ids?: string[]): WorkerScreen[] {
 		const scope = this.ownerScope(session);
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
@@ -680,7 +620,7 @@ export class OrchestratorRuntime {
 			if (wanted && !wanted.has(record.id)) continue;
 			records.push(record);
 		}
-		// Stable TV-wall ordering: spawn order, not activity order.
+
 		records.sort((a, b) => a.createdAt - b.createdAt);
 		return records.map(record => ({
 			id: record.id,
@@ -811,7 +751,6 @@ export class OrchestratorRuntime {
 		});
 	}
 
-	/** Reconcile resumable and terminal workers from the persisted parent journal. */
 	async rehydrate(session: OrchestratorParent): Promise<number> {
 		const sessionFile = session.getSessionFile();
 		const sessionManager = session.sessionManager;
@@ -935,7 +874,6 @@ export class OrchestratorRuntime {
 		return restored;
 	}
 
-	/** Spawn a persistent worker and start its first turn in the background. */
 	async spawn(
 		session: ToolSession,
 		args: {
@@ -1043,7 +981,6 @@ export class OrchestratorRuntime {
 			record.lastActivityAt = Date.now();
 			record.lastActivity = "spawn failed";
 			if (childSessionFile) {
-				// A rejected terminal write leaves this dead record in the map so kill can retry it.
 				record.terminalPersisted = await this.#appendTombstone(session, record, "spawn-failed");
 				if (!record.terminalPersisted) {
 					throw new ToolError("Orchestrator parent session changed before spawn failure could be persisted.");
@@ -1054,11 +991,6 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	/**
-	 * Send a message to a worker. Mid-turn and streaming → steering; mid-turn
-	 * otherwise → queued for the next turn; idle/parked → starts a new
-	 * background turn immediately.
-	 */
 	async send(session: ToolSession, args: { session: string; message: string }): Promise<SendOutcome> {
 		const scope = this.ownerScope(session);
 		const record = this.#record(scope, args.session);
@@ -1093,30 +1025,17 @@ export class OrchestratorRuntime {
 		return { id: record.id, mode: "turn", jobId };
 	}
 
-	/**
-	 * Block until one watched worker's in-flight turn settles, the timeout
-	 * elapses, or `signal` aborts — fleet-wait semantics. Settled turns are
-	 * acknowledged against the job manager so their results are not delivered
-	 * a second time as async follow-ups.
-	 */
 	async wait(
 		session: ToolSession,
 		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
 	): Promise<WaitOutcome> {
 		const scope = this.ownerScope(session);
 		const manager = this.#manager(session);
-		// Named workers are watched regardless of state (a just-settled turn is
-		// reported from its retained job); the no-args form watches every
-		// worker with a turn actually in flight.
+
 		const watched = args.sessions?.length
 			? args.sessions.map(id => this.#record(scope, id))
 			: [...this.#records.values()].filter(record => matchesScope(record, scope) && record.turn !== undefined);
 
-		// Snapshot each watched turn's job at entry: #finishTurn installs a
-		// queued follow-up turn inside the settling job's callback (before that
-		// job's promise resolves), so re-reading record.turn after the race
-		// would inspect the *next* running job and silently drop the settled
-		// result — whose async delivery watchJobs is suppressing on our behalf.
 		const snapshots: Array<{ record: WorkerRecord; jobId: string }> = [];
 		for (const record of watched) {
 			const jobId = record.turn?.jobId ?? record.lastJobId;
@@ -1180,13 +1099,11 @@ export class OrchestratorRuntime {
 		const settled = collectSettled();
 		for (const entry of settled) this.#waitedJobIds.add(entry.jobId);
 		manager.acknowledgeDeliveries(settled.map(entry => entry.jobId));
-		// Current in-flight state, independent of the snapshot: a session whose
-		// watched turn settled may already be mid queued follow-up.
+
 		const stillRunning = watched.filter(record => record.turn !== undefined).map(record => record.id);
 		return { settled, stillRunning, timedOut: waitEndedByTimeout && settled.length === 0 };
 	}
 
-	/** Detach one parent's process-local workers without tombstoning their persisted conversations. */
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
 		const records = [...this.#records.values()].filter(record => matchesScope(record, scope));
 		const teardown = records.map(record => ({
@@ -1250,7 +1167,6 @@ export class OrchestratorRuntime {
 			});
 	}
 
-	/** Terminate one worker; a tombstone failure still tears it down before reconciliation and error delivery. */
 	async kill(session: ToolSession, id: string): Promise<KillOutcome> {
 		const scope = this.ownerScope(session);
 		return this.#withTerminationLock(scope, () => {
@@ -1387,7 +1303,6 @@ export class OrchestratorRuntime {
 			});
 	}
 
-	/** Build the ExecutorOptions for a first spawn, mirroring the shared worker/eval plumbing. */
 	async #buildSpawnOptions(
 		session: ToolSession,
 		record: WorkerRecord,
@@ -1451,7 +1366,6 @@ export class OrchestratorRuntime {
 		};
 	}
 
-	/** Register one background job that runs a single worker turn and self-delivers its result. */
 	#registerTurnJob(
 		session: ToolSession,
 		manager: AsyncJobManager,
@@ -1471,7 +1385,7 @@ export class OrchestratorRuntime {
 		const onProgress = (progress: AgentProgress): void => {
 			mergeTrace(turn, progress);
 			record.resolvedModel = progress.resolvedModel ?? record.resolvedModel;
-			// recentOutput is newest-first; keep the latest lines oldest-first for display.
+
 			record.live = {
 				currentTool: progress.currentTool,
 				currentToolArgs: progress.currentToolArgs,
@@ -1559,7 +1473,6 @@ export class OrchestratorRuntime {
 		return jobId;
 	}
 
-	/** Post-turn bookkeeping shared by success and failure paths: clear the in-flight turn, flush the queue. */
 	async #finishTurn(
 		session: ToolSession,
 		manager: AsyncJobManager,
@@ -1574,7 +1487,7 @@ export class OrchestratorRuntime {
 			record.state = "dead";
 			return;
 		}
-		// Only an idle/parked ref with this parent's exact child file is resumable.
+
 		const registered = this.#registeredAgent(record);
 		record.state = registered && (registered.status === "idle" || registered.status === "parked") ? "idle" : "dead";
 		if (record.state === "dead") {
@@ -1599,7 +1512,6 @@ export class OrchestratorRuntime {
 		try {
 			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });
 		} catch (error) {
-			// Leave the messages recoverable: a later orchestrate_send flushes again.
 			record.queue.unshift(nextMessage);
 			logger.warn("orchestrator: failed to start queued follow-up turn", {
 				id: record.id,
@@ -1608,7 +1520,6 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	/** Format a settled turn into the self-delivering result text (activity trace + response). */
 	async #settleTurn(
 		session: ToolSession,
 		manager: AsyncJobManager,
@@ -1660,8 +1571,6 @@ export class OrchestratorRuntime {
 				})
 				.trim();
 		} catch (error) {
-			// A formatting bug must never turn a finished worker turn into a false
-			// failure — the work is done; degrade to a plain-text assembly.
 			logger.warn("orchestrator: turn-result template render failed; using plain fallback", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),

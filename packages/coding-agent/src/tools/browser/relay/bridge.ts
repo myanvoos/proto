@@ -1,29 +1,5 @@
-/**
- * CDP façade over `chrome.debugger`.
- *
- * Puppeteer clients (the proto browser tool: one supervisor connection plus one
- * per tab worker) connect to this bridge as if it were Chrome's browser
- * debugging endpoint. Chrome only allows a single debugger attachment per tab,
- * so the bridge owns ONE `chrome.debugger` attachment per tab (via the
- * extension) and multiplexes every downstream connection over it with minted
- * per-connection session ids.
- *
- * Emulated surface (everything else is forwarded to `chrome.debugger`):
- * - the browser target (`/json/version` handshake, `Browser.getVersion`)
- * - the `Target.*` domain, including puppeteer's tab → page auto-attach
- *   hierarchy (see puppeteer-core `cdp/ExtensionTransport.ts`, the reference
- *   implementation for this emulation)
- *
- * Session id namespaces seen by a downstream connection:
- * - minted tab pseudo-sessions (`ST<tab>.<conn>.<n>`) — Target emulation only
- * - minted page pseudo-sessions (`SP<tab>.<conn>.<n>`) — forwarded to the
- *   tab's root debugger session
- * - real child session ids (OOPIFs, workers) — created by Chrome under the
- *   shared root session and passed through verbatim
- */
 import type { ExtToRelayMessage, RelayRpcRequest, RelayToExtMessage, TabSnapshot } from "./protocol";
 
-/** Transport-agnostic websocket surface the bridge writes to. */
 export interface RelaySocket {
 	send(text: string): void;
 	close(): void;
@@ -53,9 +29,9 @@ interface TargetInfo {
 class CdpConnection {
 	discover = false;
 	autoAttach = false;
-	/** Minted pseudo-sessions owned by this connection. */
+
 	readonly sessions = new Map<string, SessionRef>();
-	/** Tabs this connection claimed as drive targets (`PROTO.claimTarget` / `Target.createTarget`). */
+
 	readonly claims = new Set<number>();
 
 	constructor(
@@ -78,23 +54,23 @@ class TabState {
 	active: boolean;
 	windowId: number;
 	pinned: boolean;
-	/** Chrome tab group id from the last snapshot; -1 when ungrouped. */
+
 	groupId: number;
-	/** Whether `chrome.debugger` is currently attached to this tab. */
+
 	attached = false;
-	/** Set when attach failed or the user cancelled the debugger; cleared on navigation. */
+
 	banned = false;
-	/** Whether targets for this tab were announced to discovering connections. */
+
 	announced = false;
 	attaching: Promise<boolean> | null = null;
-	/** True after the relay put this tab in the proto group; `ompGroupId` holds that group. */
+
 	grouped = false;
-	/** Group RPC in flight — suppresses duplicate requests from load-time tabUpdated bursts. */
+
 	grouping = false;
 	ompGroupId: number | undefined;
-	/** User pulled the tab out of the proto group — never re-group it. */
+
 	groupOptOut = false;
-	/** Real Chrome session ids (OOPIF/worker children) living under this tab's root session. */
+
 	readonly realSessions = new Set<string>();
 
 	constructor(
@@ -119,7 +95,6 @@ class TabState {
 	}
 }
 
-/** URLs `chrome.debugger` cannot attach to; hidden from downstream discovery entirely. */
 const INELIGIBLE_URL = /^(chrome|devtools|edge|view-source|chrome-extension|chrome-untrusted|chrome-search):/i;
 
 const RPC_TIMEOUT_MS = 20_000;
@@ -134,18 +109,12 @@ function pageTargetId(tabId: number): string {
 	return `PAGE${tabId}`;
 }
 
-/** Reverse of {@link tabTargetId}/{@link pageTargetId}; null for foreign ids. */
 function parseTargetId(targetId: string): { kind: "tab" | "page"; tabId: number } | null {
 	const match = /^(TAB|PAGE)(\d+)$/.exec(targetId);
 	if (!match) return null;
 	return { kind: match[1] === "TAB" ? "tab" : "page", tabId: Number(match[2]) };
 }
 
-/**
- * Multiplexing CDP bridge between downstream puppeteer connections and the
- * relay extension. One instance per relay server; all state lives here so an
- * extension service-worker restart only has to re-handshake.
- */
 export class RelayBridge {
 	#tabs = new Map<number, TabState>();
 	#conns = new Map<number, CdpConnection>();
@@ -158,20 +127,20 @@ export class RelayBridge {
 		number,
 		{ resolve: (value: unknown) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }
 	>();
-	/** Real child session id → owning tab, learned from `Target.attachedToTarget` events. */
+
 	#realSessionTabs = new Map<string, number>();
 	#log: (message: string, data?: Record<string, unknown>) => void;
-	/** Tab-group appearance for driven tabs; null disables grouping. */
+
 	#group: { title: string; color: string } | null;
-	/** Tabs awaiting the next group RPC; drained one batch at a time. */
+
 	#groupQueue: TabState[] = [];
-	/** True while {@link #drainGroupQueue} runs — group RPCs must never overlap. */
+
 	#groupDraining = false;
 
 	constructor(
 		opts: {
 			log?: (message: string, data?: Record<string, unknown>) => void;
-			/** Group tabs the agent actively drives under one per-window Chrome tab group. */
+
 			group?: { title: string; color: string } | null;
 		} = {},
 	) {
@@ -179,12 +148,10 @@ export class RelayBridge {
 		this.#group = opts.group ?? null;
 	}
 
-	/** True once the extension has completed its hello handshake. */
 	get ready(): boolean {
 		return this.#ext !== null && this.#extInfo !== null;
 	}
 
-	/** Payload for `GET /json/version`. */
 	versionInfo(wsUrl: string): Record<string, string> {
 		const ua = this.#extInfo?.userAgent ?? "";
 		return {
@@ -197,7 +164,6 @@ export class RelayBridge {
 		};
 	}
 
-	/** Payload for `GET /json/list` (debugging aid; per-target endpoints are not served). */
 	listTargets(): Array<Record<string, string>> {
 		const out: Array<Record<string, string>> = [];
 		for (const tab of this.#tabs.values()) {
@@ -207,9 +173,6 @@ export class RelayBridge {
 		return out;
 	}
 
-	// ---- extension lifecycle -------------------------------------------------
-
-	/** A new extension socket connected; replaces any previous one. */
 	extConnected(socket: RelaySocket): void {
 		if (this.#ext && this.#ext !== socket) {
 			this.#log("replacing extension socket");
@@ -230,10 +193,7 @@ export class RelayBridge {
 		for (const tab of this.#tabs.values()) {
 			tab.attached = false;
 			tab.attaching = null;
-			// The extension dissolves proto groups on disconnect (or died along
-			// with them); grouping state is unknowable until the next hello.
-			// Without this reset, the next hello's groupId=-1 snapshots would
-			// read as the user dragging every tab out (permanent opt-out).
+
 			tab.grouped = false;
 			tab.grouping = false;
 			tab.ompGroupId = undefined;
@@ -299,8 +259,7 @@ export class RelayBridge {
 			const wasAttached = tab.attached;
 			tab.attached = attachedNow.has(tab.tabId);
 			tab.attaching = null;
-			// A service-worker restart can drop attachments while downstream
-			// connections still hold sessions: restore them best-effort.
+
 			if (wasAttached && !tab.attached && this.#sessionHolders(tab.tabId).length > 0) {
 				void this.#ensureAttached(tab).then(ok => {
 					if (!ok) this.#onTabDetached(tab.tabId, "reattach_failed");
@@ -311,9 +270,6 @@ export class RelayBridge {
 		this.#log("extension connected", { tabs: this.#tabs.size, version: msg.browserVersion });
 	}
 
-	// ---- downstream (puppeteer) lifecycle -------------------------------------
-
-	/** Register a downstream CDP websocket; returns the connection id. */
 	cdpConnected(socket: RelaySocket): number {
 		const conn = new CdpConnection(++this.#connSeq, socket);
 		this.#conns.set(conn.id, conn);
@@ -328,15 +284,13 @@ export class RelayBridge {
 		const touched = new Set<number>();
 		for (const ref of conn.sessions.values()) touched.add(ref.tabId);
 		conn.sessions.clear();
-		// Tabs this client claimed leave the proto group unless another claimant
-		// remains — session holders don't count: the long-lived registry
-		// connection holds sessions on every tab without driving any of them.
+
 		for (const tabId of conn.claims) {
 			const tab = this.#tabs.get(tabId);
 			if (tab) this.#syncTabGrouping(tab);
 		}
 		conn.claims.clear();
-		// Drop the debugger (and its infobar) from tabs nobody drives anymore.
+
 		for (const tabId of touched) {
 			if (this.#sessionHolders(tabId).length > 0) continue;
 			const tab = this.#tabs.get(tabId);
@@ -362,8 +316,6 @@ export class RelayBridge {
 			this.#replyError(conn, msg, err instanceof Error ? err.message : String(err));
 		});
 	}
-
-	// ---- command routing -------------------------------------------------------
 
 	async #handleCdpCommand(conn: CdpConnection, msg: CdpCommand): Promise<void> {
 		const sessionId = msg.sessionId;
@@ -394,13 +346,11 @@ export class RelayBridge {
 		tabId: number,
 		realSessionId: string | undefined,
 	): Promise<void> {
-		// Guard rail: a page session must never take the whole browser down.
 		if (msg.method === "Browser.close") {
 			this.#reply(conn, msg, {});
 			return;
 		}
-		// Relay-private claim: the proto tab worker marks the page it was spawned
-		// to drive. Never forwarded — real Chrome rejects the unknown method.
+
 		if (msg.method === "PROTO.claimTarget") {
 			this.#claimTab(conn, tabId);
 			this.#reply(conn, msg, {});
@@ -420,12 +370,6 @@ export class RelayBridge {
 		}
 	}
 
-	/**
-	 * Record `conn` as a driver of the tab and reconcile grouping. Claims are
-	 * explicit (worker adoption or tab creation) rather than inferred from
-	 * command traffic: target discovery scans every page with the same
-	 * commands a driver sends, so inference would sweep all tabs.
-	 */
 	#claimTab(conn: CdpConnection, tabId: number): void {
 		const tab = this.#tabs.get(tabId);
 		if (!tab) return;
@@ -436,7 +380,6 @@ export class RelayBridge {
 		this.#syncTabGrouping(tab);
 	}
 
-	/** True while any downstream connection claims the tab as its drive target. */
 	#claimed(tabId: number): boolean {
 		for (const conn of this.#conns.values()) {
 			if (conn.claims.has(tabId)) return true;
@@ -444,7 +387,6 @@ export class RelayBridge {
 		return false;
 	}
 
-	/** Tab pseudo-sessions only exist to satisfy puppeteer's Target hierarchy. */
 	#handleTabSessionCommand(conn: CdpConnection, msg: CdpCommand, ref: SessionRef): void {
 		switch (msg.method) {
 			case "Target.setAutoAttach": {
@@ -453,8 +395,7 @@ export class RelayBridge {
 					this.#replyError(conn, msg, `Tab ${ref.tabId} is gone`);
 					return;
 				}
-				// Emit before replying: puppeteer's TargetManager counts page
-				// children attached before the setAutoAttach response resolves.
+
 				const pageSession = this.#mintSession(conn, "page", tab.tabId);
 				this.#emit(
 					conn,
@@ -515,8 +456,6 @@ export class RelayBridge {
 				await Promise.all(tabs.map(tab => this.#ensureAttached(tab)));
 				for (const tab of tabs) {
 					if (!tab.attached) {
-						// Attach failed (DevTools open, another debugger, …): retract
-						// the target so puppeteer's init never waits on it.
 						this.#retractTab(tab);
 						continue;
 					}
@@ -553,7 +492,7 @@ export class RelayBridge {
 					typeof msg.params?.url === "string" && msg.params.url.length > 0 ? msg.params.url : "about:blank";
 				const result = (await this.#rpc({ op: "createTab", url })) as { tab: TabSnapshot };
 				this.#onTabUpsert(result.tab);
-				// Creating a tab is an explicit act of driving it.
+
 				this.#claimTab(conn, result.tab.tabId);
 				this.#reply(conn, msg, { targetId: pageTargetId(result.tab.tabId) });
 				return;
@@ -597,7 +536,6 @@ export class RelayBridge {
 				return;
 			}
 			case "Browser.close":
-				// Never close the user's browser; acknowledge and ignore.
 				this.#log("refusing Browser.close from downstream client", { conn: conn.id });
 				this.#reply(conn, msg, {});
 				return;
@@ -612,8 +550,6 @@ export class RelayBridge {
 		}
 	}
 
-	// ---- extension events -------------------------------------------------------
-
 	#onCdpEvent(
 		tabId: number,
 		sourceSessionId: string | undefined,
@@ -622,7 +558,7 @@ export class RelayBridge {
 	): void {
 		const tab = this.#tabs.get(tabId);
 		if (!tab) return;
-		// Track real child sessions so downstream commands can route back.
+
 		if (method === "Target.attachedToTarget") {
 			const child = params?.sessionId;
 			if (typeof child === "string") {
@@ -637,15 +573,13 @@ export class RelayBridge {
 			}
 		}
 		if (sourceSessionId) {
-			// Event from a real child session: pass through verbatim to every
-			// connection that observes this tab.
 			const payload = JSON.stringify({ sessionId: sourceSessionId, method, params });
 			for (const conn of this.#conns.values()) {
 				if (conn.sessionsForTab(tabId, "page").length > 0) conn.socket.send(payload);
 			}
 			return;
 		}
-		// Root-session event: fan out once per minted page session.
+
 		for (const conn of this.#conns.values()) {
 			for (const pageSession of conn.sessionsForTab(tabId, "page")) {
 				conn.socket.send(JSON.stringify({ sessionId: pageSession, method, params }));
@@ -660,8 +594,7 @@ export class RelayBridge {
 		tab.attached = false;
 		tab.attaching = null;
 		tab.banned = true;
-		// The user dismissed the debugger infobar (or the attach was torn
-		// down): release the tab's proto-group membership too.
+
 		this.#syncTabGrouping(tab);
 		this.#retractTab(tab);
 	}
@@ -681,8 +614,7 @@ export class RelayBridge {
 			this.#tabs.set(snap.tabId, tab);
 		} else {
 			if (tab.url !== snap.url) tab.banned = false;
-			// The user dragging a tab out of the proto group is an opt-out; the
-			// relay never fights the user over grouping.
+
 			if (tab.grouped && tab.ompGroupId !== undefined && snap.groupId !== tab.ompGroupId) {
 				tab.grouped = false;
 				tab.groupOptOut = true;
@@ -720,22 +652,17 @@ export class RelayBridge {
 		}
 	}
 
-	// ---- tab grouping -----------------------------------------------------------
-
-	/** A tab belongs in the proto group when claimed by a client, controllable, unpinned, not user-opted-out, and not already in a user group. */
 	#groupWorthy(tab: TabState): boolean {
 		if (!this.#claimed(tab.tabId) || !this.#eligible(tab) || tab.pinned || tab.groupOptOut) return false;
 		return tab.grouped || tab.groupId === -1;
 	}
 
-	/** Re-group every claimed tab (extension hello / reconnect). */
 	#syncGrouping(): void {
 		if (!this.#group) return;
 		const worthy = [...this.#tabs.values()].filter(tab => this.#groupWorthy(tab) && !tab.grouped && !tab.grouping);
 		if (worthy.length > 0) this.#requestGroup(worthy);
 	}
 
-	/** Reconcile one tab's group membership after a lifecycle event. */
 	#syncTabGrouping(tab: TabState): void {
 		if (!this.#group) return;
 		if (this.#groupWorthy(tab)) {
@@ -749,11 +676,6 @@ export class RelayBridge {
 		}
 	}
 
-	/**
-	 * Queue tabs for grouping and drain serially. Overlapping group RPCs race
-	 * the extension's non-atomic query→create→set-title sequence and mint
-	 * duplicate proto groups, so at most one group RPC is ever in flight.
-	 */
 	#requestGroup(tabs: TabState[]): void {
 		if (!this.#group) return;
 		for (const tab of tabs) {
@@ -773,7 +695,7 @@ export class RelayBridge {
 				const tabIds = batch.map(tab => tab.tabId);
 				try {
 					const result = await this.#rpc({ op: "group", tabIds, title: group.title, color: group.color });
-					// Extension replies { grouped: { [tabId]: groupId } }; validate per entry.
+
 					const grouped: Record<string, unknown> =
 						result &&
 						typeof result === "object" &&
@@ -800,7 +722,6 @@ export class RelayBridge {
 		}
 	}
 
-	/** Tear a tab out of every downstream connection (closed, detached, or now ineligible). */
 	#retractTab(tab: TabState): void {
 		for (const realSession of tab.realSessions) this.#realSessionTabs.delete(realSession);
 		tab.realSessions.clear();
@@ -827,8 +748,6 @@ export class RelayBridge {
 		tab.announced = false;
 	}
 
-	// ---- session + attach bookkeeping --------------------------------------------
-
 	#mintSession(conn: CdpConnection, kind: "tab" | "page", tabId: number): string {
 		const sessionId = `S${kind === "tab" ? "T" : "P"}${tabId}.${conn.id}.${++this.#sessionSeq}`;
 		conn.sessions.set(sessionId, { kind, tabId });
@@ -843,7 +762,6 @@ export class RelayBridge {
 		this.#emit(conn, "Target.detachedFromTarget", { sessionId, targetId }, parentSessionId);
 	}
 
-	/** Connections currently holding any session on a tab. */
 	#sessionHolders(tabId: number): CdpConnection[] {
 		const out: CdpConnection[] = [];
 		for (const conn of this.#conns.values()) {
@@ -914,8 +832,6 @@ export class RelayBridge {
 			canAccessOpener: false,
 		};
 	}
-
-	// ---- plumbing ---------------------------------------------------------------
 
 	#reply(conn: CdpConnection, msg: CdpCommand, result: Record<string, unknown>): void {
 		conn.socket.send(JSON.stringify({ id: msg.id, sessionId: msg.sessionId, result }));

@@ -10,7 +10,7 @@ use itertools::Itertools as _;
 use strum::IntoEnumIterator;
 use tokio::sync::Mutex;
 
-/// Identifier for a keymap
+
 #[derive(Clone, ValueEnum)]
 enum BindKeyMap {
 	#[clap(name = "emacs-standard", alias = "emacs")]
@@ -36,75 +36,75 @@ impl BindKeyMap {
 	}
 }
 
-/// Inspect and modify key bindings and other input configuration.
+
 #[derive(Parser)]
 pub(crate) struct BindCommand {
-	/// Name of key map to use.
+
 	#[arg(short = 'm')]
 	keymap: Option<BindKeyMap>,
-	/// List functions.
+
 	#[arg(short = 'l')]
 	list_funcs: bool,
-	/// List functions and bindings.
+
 	#[arg(short = 'P')]
 	list_funcs_and_bindings: bool,
-	/// List functions and bindings in a format suitable for use as input.
+
 	#[arg(short = 'p')]
 	list_funcs_and_bindings_reusable: bool,
-	/// List key sequences that invoke macros.
+
 	#[arg(short = 'S')]
 	list_key_seqs_that_invoke_macros: bool,
-	/// List key sequences that invoke macros in a format suitable for use as
-	/// input.
+
+
 	#[arg(short = 's')]
 	list_key_seqs_that_invoke_macros_reusable: bool,
-	/// List variables.
+
 	#[arg(short = 'V')]
 	list_vars: bool,
-	/// List variables in a format suitable for use as input.
+
 	#[arg(short = 'v')]
 	list_vars_reusable: bool,
-	/// Find the keys bound to the given named function.
+
 	#[arg(short = 'q', value_name = "FUNC_NAME")]
 	query_func_bindings: Option<String>,
-	/// Remove all bindings for the given named function.
+
 	#[arg(short = 'u', value_name = "FUNC_NAME")]
 	remove_func_bindings: Option<String>,
-	/// Remove the binding for the given key sequence.
+
 	#[arg(short = 'r', value_name = "KEY_SEQ")]
 	remove_key_seq_binding: Option<String>,
-	/// Import bindings from the given file.
+
 	#[arg(short = 'f', value_name = "PATH")]
 	bindings_file: Option<String>,
-	/// Bind key sequence to command.
+
 	#[arg(short = 'x', value_name = "BINDING")]
 	key_seq_bindings: Vec<String>,
-	/// List key sequence bindings.
+
 	#[arg(short = 'X')]
 	list_key_seq_bindings: bool,
-	/// Key sequence binding to readline function or command.
+
 	key_sequence: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BindError {
-	/// Unknown function specified.
+
 	#[error("unknown function: {0}")]
 	UnknownFunction(String),
 
-	/// Unknown key binding function.
+
 	#[error("unknown key binding function: {0}")]
 	UnknownKeyBindingFunction(String),
 
-	/// Unimplemented functionality.
+
 	#[error("unimplemented: {0}")]
 	Unimplemented(&'static str),
 
-	/// An I/O error occurred.
+
 	#[error("I/O error occurred")]
 	IoError(#[from] std::io::Error),
 
-	/// A binding parse error occurred.
+
 	#[error(transparent)]
 	BindingParseError(#[from] brush_parser::BindingParseError),
 }
@@ -130,9 +130,9 @@ impl builtins::Command for BindCommand {
 			tracing::debug!(target: trace_categories::INPUT,
                  "bind: key bindings not supported in this config");
 
-			// Silently succeed when key bindings are unavailable (e.g., in
-			// non-interactive mode or with an input backend that doesn't
-			// yet support them).
+
+
+
 			Ok(ExecutionExitCode::Success.into())
 		}
 	}
@@ -154,25 +154,25 @@ impl BindCommand {
 		}
 
 		if self.list_funcs_and_bindings {
-			display_funcs_and_bindings(&*bindings, context, false /* reusable? */)?;
+			display_funcs_and_bindings(&*bindings, context, false )?;
 		}
 
 		if self.list_funcs_and_bindings_reusable {
-			display_funcs_and_bindings(&*bindings, context, true /* reusable? */)?;
+			display_funcs_and_bindings(&*bindings, context, true )?;
 		}
 
 		if self.list_key_seqs_that_invoke_macros {
-			display_macros(&*bindings, context, false /* reusable? */)?;
+			display_macros(&*bindings, context, false )?;
 		}
 
 		if self.list_key_seqs_that_invoke_macros_reusable {
-			display_macros(&*bindings, context, true /* reusable? */)?;
+			display_macros(&*bindings, context, true )?;
 		}
 
 		if self.list_vars {
 			let options = &context.shell.completion_config().fallback_options;
 
-			// For now we'll just display a few items and show defaults.
+
 			writeln!(
 				context.stdout(),
 				"mark-directories is set to `{}'",
@@ -188,7 +188,7 @@ impl BindCommand {
 		if self.list_vars_reusable {
 			let options = &context.shell.completion_config().fallback_options;
 
-			// For now we'll just display a few items and show defaults.
+
 			writeln!(context.stdout(), "set mark-directories {}", to_onoff(options.mark_directories))?;
 			writeln!(
 				context.stdout(),
@@ -241,7 +241,7 @@ impl BindCommand {
 
 		if !self.key_seq_bindings.is_empty() {
 			if self.keymap.as_ref().is_some_and(|k| k.is_vi()) {
-				// NOTE(vi): Quietly ignore since we don't support vi mode.
+
 				return Ok(ExecutionResult::success());
 			}
 
@@ -253,7 +253,7 @@ impl BindCommand {
 
 		if let Some(key_sequence) = &self.key_sequence {
 			if self.keymap.as_ref().is_some_and(|k| k.is_vi()) {
-				// NOTE(vi): Quietly ignore since we don't support vi mode.
+
 				return Ok(ExecutionResult::success());
 			}
 
@@ -268,7 +268,7 @@ impl BindCommand {
 }
 
 fn parse_key_sequence(input: &str) -> Result<interfaces::KeySequence, BindError> {
-	// First trim any whitespace.
+
 	let input = input.trim();
 
 	let parsed = brush_parser::readline_binding::parse_key_sequence(input)?;
@@ -284,11 +284,11 @@ fn parse_key_sequence_and_shell_command(
 		 "parsing key binding entry: '{input}'"
 	);
 
-	// First trim any whitespace.
+
 	let input = input.trim();
 
-	// This should be something of the form:
-	//     "KEY-SEQUENCE": SHELL-COMMAND
+
+
 	let binding = brush_parser::readline_binding::parse_key_sequence_shell_cmd_binding(input)?;
 	let abstract_seq = key_sequence_to_abstract_strokes(&binding.seq)?;
 
@@ -309,12 +309,12 @@ fn parse_key_sequence_and_readline_target(
 		 "parsing key binding entry: '{input}'"
 	);
 
-	// First trim any whitespace.
+
 	let input = input.trim();
 
-	// This should be of one of these forms:
-	//     "KEY-SEQUENCE":function-name
-	//     "KEY-SEQUENCE":readline-command
+
+
+
 	let binding = brush_parser::readline_binding::parse_key_sequence_readline_binding(input)?;
 	let abstract_seq = key_sequence_to_abstract_strokes(&binding.seq)?;
 
@@ -357,7 +357,7 @@ fn bind_key_sequence_to_readline_target(
 			);
 
 			if matches!(func, interfaces::InputFunction::ViEditingMode) {
-				// NOTE(vi): We don't support vi mode; silently ignore.
+
 				return Ok(());
 			}
 
@@ -380,15 +380,15 @@ fn key_sequence_to_abstract_strokes(
 ) -> Result<interfaces::KeySequence, BindError> {
 	let phys_strokes = brush_parser::readline_binding::key_sequence_to_strokes(seq)?;
 
-	// Lift from key codes to abstract keys.
+
 	let mut abstract_strokes = vec![];
 	let mut key_code_bytes = vec![];
 	let mut uninterpretable = false;
 	for mut phys_stroke in phys_strokes {
 		let mut key = sys::input::try_get_key_from_key_code(phys_stroke.key_code.as_slice());
 
-		// If we couldn't interpret it directly but we see it starts with the escape
-		// character, try to see if we can parse it as an Alt+<key> sequence.
+
+
 		if key.is_none() && phys_stroke.key_code.len() > 1 && phys_stroke.key_code[0] == b'\x1b' {
 			key = sys::input::try_get_key_from_key_code(&phys_stroke.key_code[1..]);
 			if key.is_some() {
@@ -396,11 +396,11 @@ fn key_sequence_to_abstract_strokes(
 			}
 		}
 
-		// When storing as bytes, apply control modifier to the key code.
+
 		let mut raw_bytes = phys_stroke.key_code.clone();
 		if phys_stroke.control {
 			for byte in &mut raw_bytes {
-				// Control characters are computed by ANDing with 0x1F
+
 				*byte &= 0x1f;
 			}
 		}

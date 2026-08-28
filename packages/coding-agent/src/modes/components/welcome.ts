@@ -58,18 +58,10 @@ function centerLine(text: string, width: number): string {
 	return padding(Math.floor((width - visLen) / 2)) + text;
 }
 
-/**
- * Hero-card wordmark text: letter-spaced binary name under the silver ramp,
- * bolded. Callers center it against the terminal width.
- */
 export function heroWordmark(): string {
 	return theme.bold(silverWordmark(BINARY_NAME.split("").join(" ")));
 }
 
-/**
- * Hero-card metadata text: `v<version> · <model> · <provider>`, falling back to
- * a `/model` hint when no model is selected yet. Callers center it.
- */
 export function heroMeta(version: string, modelName?: string, providerName?: string): string {
 	const model = modelName && providerName ? `${modelName} · ${providerName}` : modelName || providerName;
 	return model

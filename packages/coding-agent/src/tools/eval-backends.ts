@@ -8,7 +8,6 @@ export interface EvalBackendsAllowance {
 	julia: boolean;
 }
 
-/** Read per-backend allowance from settings (py/js default on; rb/jl opt-in, default off). */
 function readEvalBackendsAllowance(session: ToolSession): EvalBackendsAllowance {
 	return {
 		python: session.settings.get("eval.py") ?? true,
@@ -18,11 +17,6 @@ function readEvalBackendsAllowance(session: ToolSession): EvalBackendsAllowance 
 	};
 }
 
-/**
- * Materialize the active eval backend allowance: PI_PY / PI_JS / PI_RB / PI_JL
- * env flags override the per-key settings; otherwise settings win (py/js default
- * on, rb/jl default off).
- */
 export function resolveEvalBackends(session: ToolSession): EvalBackendsAllowance {
 	const settings = readEvalBackendsAllowance(session);
 	return {

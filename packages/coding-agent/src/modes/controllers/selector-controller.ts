@@ -115,19 +115,10 @@ import { buildCopyTargets } from "../utils/copy-targets";
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
 export class SelectorController {
-	/**
-	 * Agents-view state shared across open/close within this process
-	 * (query, selection, scope frames). Created lazily on first open and handed
-	 * to every AgentsViewComponent construction, honoring the component's
-	 * documented controller-owned persistence semantics.
-	 */
 	#agentsViewState: AgentsViewPersistentState | undefined;
 
 	constructor(private ctx: InteractiveModeContext) {}
-	/**
-	 * Mount a primary fullscreen menu through the one polished modal path shared
-	 * by Settings, Model Hub, and Agent Fleet.
-	 */
+
 	#showFullscreenMenu(component: Component): OverlayHandle {
 		const handle = this.ctx.ui.showOverlay(component, {
 			anchor: "bottom-center",
@@ -162,25 +153,11 @@ export class SelectorController {
 		);
 	}
 
-	/**
-	 * Restore keyboard focus to whatever currently owns the editor slot. The
-	 * slot can hold the editor itself or a hook selector/input/editor pushed
-	 * in by `ExtensionUiController` — e.g. an approval prompt that fired while
-	 * a fullscreen overlay was up. `overlayHandle.hide()` restores focus to
-	 * the component focused when the overlay opened, which is stale in that
-	 * case (the editor was swapped out): keys land on a hidden editor and the
-	 * visible prompt receives nothing (issue #3349). Call this after the
-	 * overlay hides to re-target focus at the visible slot owner.
-	 */
 	focusActiveEditorArea(): void {
 		const visible = this.ctx.editorContainer.children[0] ?? this.ctx.editor;
 		this.ctx.ui.setFocus(visible);
 	}
 
-	/**
-	 * Shows a selector component in place of the editor.
-	 * @param create Factory that receives a `done` callback and returns the component and focus target
-	 */
 	showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
 		const done = () => {
 			this.ctx.editorContainer.clear();
@@ -196,9 +173,6 @@ export class SelectorController {
 
 	showSettingsSelector(): void {
 		getAvailableThemes().then(availableThemes => {
-			// Fullscreen settings editor on the alternate screen: the overlay
-			// enables mouse tracking (click/hover/wheel) for its lifetime and
-			// the transcript stays untouched underneath.
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
 				overlayHandle?.hide();
@@ -227,7 +201,6 @@ export class SelectorController {
 						}
 					},
 					onStatusLinePreview: previewSettings => {
-						// Update status line with preview settings
 						this.ctx.statusLine.updateSettings({
 							leftSegments: settings.get("statusLine.leftSegments"),
 							rightSegments: settings.get("statusLine.rightSegments"),
@@ -254,7 +227,7 @@ export class SelectorController {
 					},
 					onCancel: () => {
 						done();
-						// Restore status line to saved settings
+
 						this.ctx.statusLine.updateSettings({
 							leftSegments: settings.get("statusLine.leftSegments"),
 							rightSegments: settings.get("statusLine.rightSegments"),
@@ -276,8 +249,6 @@ export class SelectorController {
 		const agentDir = getAgentDir() ?? getProjectDir();
 		const initialScope: AdvisorConfigScope = "project";
 		void (async () => {
-			// "Project" scope edits the repo-root WATCHDOG.yml (the project-level file
-			// discovery walks), not the launch subdir — `getProjectDir()` is only cwd.
 			let projectDir = cwd;
 			try {
 				projectDir = (await repo.root(cwd)) ?? cwd;
@@ -286,16 +257,14 @@ export class SelectorController {
 			}
 			const dirs = { projectDir, agentDir };
 			const initialDoc = await loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(initialScope, dirs));
-			// Fullscreen editor on the alternate screen (the /settings idiom): the
-			// overlay holds the alt buffer + mouse tracking; the transcript stays put.
+
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
 				overlayHandle?.hide();
 				this.focusActiveEditorArea();
 				this.ctx.ui.requestRender();
 			};
-			// Label the seeded implicit-default row with the actual advisor-role model
-			// (NOT the first live advisor, which may be a named advisor from another scope).
+
 			const advisorRoleSel = resolveAdvisorRoleSelection(
 				this.ctx.settings,
 				this.ctx.session.modelRegistry.getAvailable(),
@@ -314,8 +283,7 @@ export class SelectorController {
 				loadDoc: async scope => loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs)),
 				save: async (scope, doc) => {
 					await saveWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs), doc);
-					// Re-discover the merged roster (project + user) so the live advisors
-					// reflect cross-level precedence, not just the edited file.
+
 					const discovered = await discoverAdvisorConfigs(cwd, agentDir);
 					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
 					this.ctx.statusLine.invalidate();
@@ -370,15 +338,9 @@ export class SelectorController {
 		});
 	}
 
-	/**
-	 * Show the Extension Control Center dashboard.
-	 * Replaces /status with a unified view of all providers and extensions.
-	 */
 	async showExtensionsDashboard(): Promise<void> {
 		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
-		// Fullscreen dashboard on the alternate screen (the /settings idiom): the
-		// overlay borrows the terminal's alt buffer and enables mouse tracking for
-		// its lifetime, leaving the transcript untouched underneath.
+
 		const overlay = this.ctx.ui.showOverlay(dashboard, {
 			width: "100%",
 			maxHeight: "100%",
@@ -396,12 +358,6 @@ export class SelectorController {
 		};
 	}
 
-	/**
-	 * Full-screen unified session + subagent browser (the /session and /agents
-	 * surface). Global scope is the flat session switcher; "current" scope roots
-	 * the hierarchical view at the attached session's subtree, or no-ops when it
-	 * has no subagents.
-	 */
 	async showAgentsView(scope: AgentsViewScope = "global"): Promise<void> {
 		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
 		let initialScopeIdentity: string | undefined;
@@ -413,8 +369,7 @@ export class SelectorController {
 			}
 			const sessions = await SessionManager.listAll();
 			const registry = AgentRegistry.global();
-			// Seed this session's on-disk children before the has-children probe,
-			// so /agents scopes correctly right after a resume.
+
 			if (currentSessionFile) await registerPersistedSubagents(registry, currentSessionFile);
 			const index = buildAgentsViewIndex(reconcileAgentsViewRecords(registry.list(), sessions));
 			const identity = `file:${path.resolve(currentSessionFile)}`;
@@ -423,8 +378,6 @@ export class SelectorController {
 				initialScopeIdentity = identity;
 				initialScopeTitle = getRecordTitle(root);
 			} else {
-				// No subagents to browse: no-op. There is deliberately no
-				// fallback — the only global view is the double-← flat switcher.
 				this.ctx.showStatus("No subagents in this session");
 				return;
 			}
@@ -467,8 +420,7 @@ export class SelectorController {
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
-			// The only global-scope view is the flat session switcher; the
-			// hierarchical browser exists solely inside a "current" scope.
+
 			hideSubagents: scope === "global",
 			initialScopeIdentity,
 			initialScopeTitle,
@@ -476,10 +428,6 @@ export class SelectorController {
 		overlayHandle = this.#showFullscreenMenu(view);
 	}
 
-	/**
-	 * Open the fullscreen trajectory ledger for the current session
-	 * (`/trajectory`). Snapshot at open time — live growth is not tailed.
-	 */
 	showTrajectoryView(): void {
 		const trajectory = buildSessionTrajectory(this.ctx.sessionManager);
 		if (trajectory.steps.length === 0) {
@@ -504,13 +452,7 @@ export class SelectorController {
 		overlayHandle = this.#showFullscreenMenu(view);
 	}
 
-	/**
-	 * Handle setting changes from the settings selector.
-	 * Most settings are saved directly via SettingsManager in the definitions.
-	 * This handles side effects and session-specific settings.
-	 */
 	handleSettingChange(id: string, value: unknown): void {
-		// Discovery provider toggles
 		if (id.startsWith("discovery.")) {
 			const providerId = id.replace("discovery.", "");
 			if (value) {
@@ -522,7 +464,6 @@ export class SelectorController {
 		}
 
 		switch (id) {
-			// Session-managed settings (not in SettingsManager)
 			case "autoCompact":
 				this.ctx.session.setAutoCompactionEnabled(value as boolean);
 				this.ctx.statusLine.setAutoCompactEnabled(value as boolean);
@@ -578,7 +519,6 @@ export class SelectorController {
 				this.ctx.ui.requestRender();
 				break;
 
-			// Settings with UI side effects
 			case "display.hideToolActivity": {
 				const hidden = value as boolean;
 				this.ctx.hideToolActivity = hidden;
@@ -616,9 +556,7 @@ export class SelectorController {
 						child.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 					}
 				}
-				// Full clear + replay so blocks frozen in committed scrollback on
-				// ED3-risk terminals retire their stale snapshots too (see
-				// InputController.toggleThinkingBlockVisibility).
+
 				this.ctx.ui.resetDisplay();
 				break;
 			case "proseOnlyThinking":
@@ -634,22 +572,14 @@ export class SelectorController {
 				this.ctx.session.agent.hideThinkingSummary = value as boolean;
 				break;
 			case "display.cacheMissMarker":
-				// Rebuild re-runs the usage-based detection under the new setting so
-				// markers appear/disappear; full reset retires any already committed
-				// to native scrollback (mirrors hideThinking).
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
 			case "display.collapseCompacted":
-				// Rebuild swaps between the collapsed tail and the full inline
-				// history; full reset retires blocks already committed to native
-				// scrollback (mirrors cacheMissMarker).
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
 			case "display.showTokenUsage":
-				// Rebuild reruns usage-row detection under the new setting; resetDisplay
-				// retires rows already committed to native scrollback.
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
@@ -754,7 +684,6 @@ export class SelectorController {
 				break;
 			}
 
-			// Provider settings - update runtime preferences
 			case "providers.webSearchOrder":
 				if (Array.isArray(value)) {
 					setSearchProviderOrder(value.filter(isSearchProviderId));
@@ -771,13 +700,9 @@ export class SelectorController {
 				}
 				break;
 
-			// MCP update injection - live subscribe/unsubscribe
 			case "mcp.notifications":
 				this.ctx.mcpManager?.setNotificationsEnabled(value as boolean);
 				break;
-
-			// All other settings are handled by the definitions (get/set on SettingsManager)
-			// No additional side effects needed
 		}
 	}
 
@@ -789,11 +714,6 @@ export class SelectorController {
 		this.#showModelHub({});
 	}
 
-	/**
-	 * Compact session-only model picker (alt+p / `/switch`): a floating
-	 * bottom-anchored overlay over the transcript. The current model is
-	 * highlighted and preselected; a leading `@` searches ctrl+p quick roles.
-	 */
 	#showModelPicker(): void {
 		const currentContextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;
 		const current = this.ctx.session.model;
@@ -815,7 +735,6 @@ export class SelectorController {
 			this.ctx.session.scopedModels,
 			{
 				onPick: async (model, selector, { overContext }) => {
-					// Session-only: update agent state but don't persist the model to settings.
 					const applySessionModel = async () => {
 						const roleThinkingLevel = this.ctx.session.resolveTemporaryModelThinkingLevel(model);
 						await this.ctx.session.setModelTemporary(model, roleThinkingLevel);
@@ -826,14 +745,6 @@ export class SelectorController {
 					};
 					try {
 						if (overContext) {
-							// Over-context pick: close the picker so the compaction loader is
-							// visible, compact with the current model, then switch. The switch
-							// runs in the before-flush hook so any prompt queued during
-							// compaction executes on the target model, not the old one; the
-							// early "nothing to compact" return skips the hook, so the
-							// idempotent post-return call covers it. A cancelled or failed
-							// compaction keeps the current model — the target still cannot
-							// fit the transcript.
 							done();
 							let switched = false;
 							const switchAfterCompaction = async (outcome: CompactionOutcome) => {
@@ -887,19 +798,11 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Fullscreen model hub on the alternate screen (the /settings idiom): the
-	 * overlay enables mouse tracking for its lifetime and the transcript stays
-	 * untouched underneath. `initialProviderId` preselects a provider's sidebar
-	 * entry — used when reopening the hub after a /login round-trip.
-	 */
 	#showModelHub(hubOptions: { initialProviderId?: string }): void {
 		let overlayHandle: OverlayHandle | undefined;
 		let hub: ModelHubComponent | undefined;
 		let closed = false;
 		const done = () => {
-			// Re-entrant guard: cancel paths (Esc, login forward) may race;
-			// the overlay must hide exactly once.
 			if (closed) return;
 			closed = true;
 			hub?.dispose();
@@ -923,8 +826,6 @@ export class SelectorController {
 					const defaultStatusLabel = configuredStorage === "project" ? `${scopeLabel}default` : "Default";
 					try {
 						if (role === "default") {
-							// The picker's level applies to the session; a role value cannot
-							// persist an explicit suffix and must not mutate the current model.
 							const concreteThinking =
 								thinkingLevel !== undefined && thinkingLevel !== ThinkingLevel.Inherit
 									? thinkingLevel
@@ -972,7 +873,6 @@ export class SelectorController {
 							}
 							this.ctx.showStatus(`${defaultStatusLabel} model: ${selector ?? model.id}`);
 						} else {
-							// Other roles (smol, slow, custom): update settings, not the current model.
 							const modelRoleValue = formatModelSelectorValue(selectorValue, thinkingLevel);
 							if (targetScope === "project") {
 								this.ctx.settings.setProjectModelRole(role, modelRoleValue);
@@ -1009,11 +909,7 @@ export class SelectorController {
 						this.ctx.showStatus(
 							`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} role cleared — auto-selection applies`,
 						);
-						// Clearing either persisted scope can also remove a captured
-						// runtime override. When that changes the effective default,
-						// resolve the newly exposed persisted layer and switch the live
-						// session without writing it back to global settings. Overlay
-						// and runtime provenance remain authoritative and session-neutral.
+
 						if (role === "default") {
 							const fallbackRoleValue = this.ctx.settings.getModelRole("default");
 							const fallbackProvenance = this.ctx.settings.getModelRoleProvenance("default");
@@ -1098,7 +994,6 @@ export class SelectorController {
 		overlayHandle = this.#showFullscreenMenu(hub);
 	}
 
-	/** /login round-trip for a locked provider; reopen the hub on that provider only after a successful login. */
 	async #loginThenReopenModelHub(providerId: string): Promise<void> {
 		const succeeded = await this.#handleOAuthLogin(providerId);
 		if (succeeded) {
@@ -1120,7 +1015,6 @@ export class SelectorController {
 		const installedIds = new Set(installed.map(p => p.id));
 
 		if (mode === "uninstall") {
-			// Show only installed plugins for uninstall
 			const items = installed.map(p => {
 				const entry = p.entries[0];
 				const atIdx = p.id.lastIndexOf("@");
@@ -1157,7 +1051,6 @@ export class SelectorController {
 			return;
 		}
 
-		// Install mode: show all available plugins from all marketplaces
 		const allPlugins: Array<{
 			plugin: { name: string; version?: string; description?: string };
 			marketplace: string;
@@ -1205,10 +1098,6 @@ export class SelectorController {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map(m => ({ id: m.entryId, text: m.text })),
 				async entryId => {
-					// Branching rewinds to a strict prefix of the rendered transcript:
-					// the selected user message and everything after it are dropped.
-					// Capture the boundary before branch() so the tail can be dropped
-					// in place when it never reached native scrollback.
 					const branchEntry = this.ctx.sessionManager.getEntry(entryId);
 					const branchMessage =
 						branchEntry?.type === "message" && branchEntry.message.role === "user"
@@ -1216,16 +1105,11 @@ export class SelectorController {
 							: undefined;
 					const result = await this.ctx.session.branch(entryId);
 					if (result.cancelled) {
-						// Hook cancelled the branch
 						done();
 						this.ctx.ui.requestRender();
 						return;
 					}
 
-					// A leaf that moved past the branch point (e.g. a session_branch
-					// hook persisted entries) invalidates the prefix assumption.
-					// Root branches (parentId null) start a fresh session file and may
-					// leave pre-message components stale — always replay those.
 					const fastRewind =
 						branchMessage !== undefined &&
 						branchEntry?.parentId != null &&
@@ -1294,10 +1178,6 @@ export class SelectorController {
 				realLeafId,
 				this.ctx.ui.terminal.rows,
 				async (entryId, options) => {
-					// Selecting the current leaf is normally a no-op (already there) —
-					// unless it's an `ask` toolResult, in which case the re-answer flow
-					// must still be allowed to reopen the picker even though the leaf
-					// doesn't move (chatgpt-codex review on #5895).
 					if (entryId === realLeafId) {
 						const currentEntry = this.ctx.sessionManager.getEntry(entryId);
 						const currentIsAskResult =
@@ -1311,18 +1191,10 @@ export class SelectorController {
 						}
 					}
 
-					// Ask about summarization
-					done(); // Close selector first
+					done();
 
-					// Pure-rewind probe (before navigation mutates the leaf): when the
-					// target sits on the current leaf's path and no summary is added,
-					// the post-navigation transcript is a strict prefix of the rendered
-					// one and the tail can be dropped in place.
 					const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
 
-					// Loop until user makes a complete choice or cancels to tree.
-					// Shift+Enter in the tree selector pre-answers "Summarize" and
-					// skips the prompt entirely.
 					let wantsSummary = options.summarize;
 					let customInstructions: string | undefined;
 
@@ -1336,7 +1208,6 @@ export class SelectorController {
 						]);
 
 						if (summaryChoice === undefined) {
-							// User pressed escape - re-show tree selector
 							this.showTreeSelector();
 							return;
 						}
@@ -1346,16 +1217,13 @@ export class SelectorController {
 						if (summaryChoice === "Summarize with custom prompt") {
 							customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
 							if (customInstructions === undefined) {
-								// User cancelled - loop back to summary selector
 								continue;
 							}
 						}
 
-						// User made a complete choice
 						break;
 					}
 
-					// Set up escape handler and loader if summarizing
 					let summaryLoader: Loader | undefined;
 					const originalOnEscape = this.ctx.editor.onEscape;
 
@@ -1382,9 +1250,6 @@ export class SelectorController {
 							allowAskReopen: true,
 						});
 
-						// Selecting an `ask` toolResult doesn't land the leaf directly —
-						// re-open the picker with the original questions first, then
-						// complete the navigation as a new sibling branch (issue #5642).
 						if (result.reopenAsk) {
 							const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
 							if (!reanswer) {
@@ -1400,7 +1265,6 @@ export class SelectorController {
 						}
 
 						if (result.aborted) {
-							// Summarization aborted - re-show tree selector
 							this.ctx.showStatus("Branch summarization cancelled");
 							this.showTreeSelector();
 							return;
@@ -1410,8 +1274,6 @@ export class SelectorController {
 							return;
 						}
 
-						// Update UI — rebuild the display transcript for the new leaf (the
-						// context from navigateTree is the LLM context, not the transcript).
 						const fastRewind =
 							treeRewind !== undefined &&
 							!wantsSummary &&
@@ -1428,11 +1290,6 @@ export class SelectorController {
 						}
 						this.ctx.showStatus("Navigated to selected point");
 
-						// Re-answering a past `ask` commits a new sibling answer but,
-						// unlike a live `ask`, leaves the agent idle. Resume it now —
-						// after the transcript rebuild above — so the model consumes the
-						// new answer without the resumed turn rendering against the stale
-						// pre-rebuild UI (issue #6483).
 						if (result.askReanswerCommitted) {
 							this.ctx.session.resumeAfterAskReanswer();
 						}
@@ -1460,16 +1317,6 @@ export class SelectorController {
 		});
 	}
 
-	/**
-	 * First rendered message a pure tree rewind drops, plus the leaf id the
-	 * navigation is expected to land on. `targetId` must sit on the current
-	 * leaf's path; a user-message target rewinds PAST itself (navigateTree
-	 * moves the leaf to its parent and hands the text back as an editor
-	 * draft), every other target keeps the target as the new leaf. Returns
-	 * undefined when the navigation is not a pure rewind or the boundary entry
-	 * cannot anchor an in-place truncation (non-message boundary; custom
-	 * messages render unkeyed components).
-	 */
 	#treeRewindBoundary(
 		targetId: string,
 		leafId: string | null,
@@ -1479,8 +1326,7 @@ export class SelectorController {
 		if (!target) return undefined;
 		const rewindsPastTarget = target.type === "message" && target.message.role === "user";
 		if (!rewindsPastTarget && target.type === "custom_message") return undefined;
-		// Walk leaf → root: proves the target is on the current path and finds
-		// the first entry the rewind drops.
+
 		let firstDropped: SessionEntry | undefined;
 		let cursor = this.ctx.sessionManager.getEntry(leafId);
 		while (cursor && cursor.id !== targetId) {
@@ -1490,9 +1336,7 @@ export class SelectorController {
 		if (!cursor) return undefined;
 		const boundary = rewindsPastTarget ? target : firstDropped;
 		if (boundary?.type !== "message") return undefined;
-		// A root rewind (expected leaf null) empties the transcript but may leave
-		// components rendered before the first message stale — take the
-		// destructive replay instead.
+
 		const expectedLeafId = rewindsPastTarget ? target.parentId : targetId;
 		if (expectedLeafId === null) return undefined;
 		return {
@@ -1501,13 +1345,6 @@ export class SelectorController {
 		};
 	}
 
-	/**
-	 * Re-open the `ask` picker with the original `questions` (issue #5642):
-	 * runs a standalone `AskTool.execute()` outside a normal agent turn,
-	 * reusing the same picker/dialog primitives a live `ask` tool call gets.
-	 * Returns `undefined` when the user cancels — mirrors `navigateTree`'s
-	 * cancellation contract instead of throwing.
-	 */
 	async #reanswerAsk(questions: AskToolInput["questions"]): Promise<AgentToolResult<AskToolDetails> | undefined> {
 		const uiContext = this.ctx.getToolUIContext();
 		if (!uiContext) {
@@ -1530,11 +1367,7 @@ export class SelectorController {
 			if (error instanceof ToolAbortError) return undefined;
 			throw error;
 		}
-		// "Chat about this" (`AskTool`'s `chatRedirect` result) only means
-		// something inside a live agent turn, where the model sees the redirect
-		// and starts a conversation; this standalone re-answer has no turn to
-		// hand it to — completing the navigation with it would silently drop
-		// the user's intent to chat (roboomp review on #5895).
+
 		if (result.details?.chatRedirect) {
 			this.ctx.showError(
 				"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
@@ -1624,8 +1457,6 @@ export class SelectorController {
 			};
 		}
 
-		// Keep the fullscreen picker on the alternate buffer while a selected
-		// session is loaded and its transcript is rebuilt.
 		let overlayHandle: OverlayHandle | undefined;
 		const done = () => {
 			overlayHandle?.hide();
@@ -1652,8 +1483,6 @@ export class SelectorController {
 			},
 			done,
 			() => {
-				// Release the alt buffer before teardown: shutdown() awaits flush/save/
-				// dispose/drain before stop() leaves the alt screen.
 				done();
 				void this.ctx.shutdown();
 			},
@@ -1714,9 +1543,7 @@ export class SelectorController {
 		const switchingToDifferentSession = previousFile
 			? path.resolve(previousFile) !== path.resolve(sessionPath)
 			: true;
-		// Flush pending settings writes before switching sessions so a save
-		// failure leaves the session, process project dir, and Settings in the
-		// source scope — the switch below mutates the SessionManager cwd.
+
 		if (!options?.settingsFlushed) {
 			try {
 				await this.ctx.settings.flush();
@@ -1731,25 +1558,14 @@ export class SelectorController {
 			!!previousFile?.endsWith(".jsonl") &&
 			this.ctx.settings.get("session.detachedMainSessions") !== false;
 
-		// Park BEFORE any mutation: the holder takes ownership of the live
-		// instance untouched — same agent, same manager, still appending to its
-		// own transcript. The foreground role moves to a different session
-		// below; a parked entry never aliases it.
 		let parkedOurs = false;
 		if (canPark && previousFile) {
 			detachedSessionHolder.park(previousFile, this.ctx.session, this.ctx.sessionManager);
 			parkedOurs = true;
 		}
 
-		// Re-attach path: the target has a parked live instance (still thinking
-		// in background). Swap it in wholesale instead of cold-loading from disk.
-		// The swap must NOT route through switchSession: on the taken instance
-		// previousSessionFile === sessionPath, so switchSession would
-		// disconnect+abort+cold-reload the very turn the park preserved.
 		const parkedTarget = switchingToDifferentSession ? detachedSessionHolder.take(sessionPath) : undefined;
 
-		// ctx.sessionManager is a live getter over ctx.session — assigning the
-		// session is sufficient; writing it directly throws (getter-only).
 		const mutableCtx = this.ctx as unknown as { session: unknown; agent: unknown };
 		let swappedIn = false;
 		if (parkedTarget) {
@@ -1759,15 +1575,8 @@ export class SelectorController {
 			AgentRegistry.global().attachSession(MAIN_AGENT_ID, parkedTarget.session, sessionPath);
 			swappedIn = true;
 		} else if (!parkedOurs) {
-			// Nothing to preserve: switch the live instance in place (aborts any
-			// in-flight turn first). Emits hook/tool session events; the
-			// SessionManager adopts the resumed session's own cwd when it differs.
 			await this.ctx.session.switchSession(sessionPath);
 		} else if (previousFile) {
-			// Parked ours, cold target: build a fresh foreground pair for the
-			// target instead of repurposing the parked instance. If construction
-			// fails, hand the parked entry back — no stale holder state mapping
-			// the still-live previous session.
 			let created: AgentSession;
 			try {
 				created = await this.#createResumedForegroundSession(sessionPath);
@@ -1784,23 +1593,16 @@ export class SelectorController {
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
 		if (movedProject) {
-			// Resumed a session from another project: re-point the process and every
-			// cwd-derived cache at it before rendering.
 			await this.ctx.applyCwdChange(newCwd);
 		}
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
-		// Clear and re-render the chat. Wholesale swap-ins already rendered the
-		// attached instance's transcript inside attachSessionView; only cold
-		// in-place loads need an explicit replay here.
 		if (!swappedIn) {
 			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		}
 		await this.ctx.reloadTodos();
-		// LRU cap after any park. Merge any eviction notice into the single
-		// status toast: back-to-back showStatus calls coalesce into one line and
-		// would silently hide whichever came first.
+
 		const evicted = await detachedSessionHolder.evictLRU(8);
 		const evictionNote =
 			evicted.length > 0
@@ -1818,13 +1620,6 @@ export class SelectorController {
 		return true;
 	}
 
-	/**
-	 * Build a foreground session pair for a cold resume target while the
-	 * previous main session stays parked in the detached holder. Shares the
-	 * process-level runtime (model registry, MCP manager, event bus, settings)
-	 * with the current session and re-wires extension tool UI context when the
-	 * view already initialized it.
-	 */
 	async #createResumedForegroundSession(sessionPath: string): Promise<AgentSession> {
 		const manager = await SessionManager.open(sessionPath, undefined, undefined, {
 			initialCwd: this.ctx.sessionManager.getCwd(),
@@ -1850,7 +1645,6 @@ export class SelectorController {
 			return;
 		}
 
-		// Check if session file exists (may not exist for brand new sessions)
 		const storage = new FileSessionStorage();
 		const fileExists = await storage.exists(sessionFile);
 		if (!fileExists) {
@@ -1873,21 +1667,12 @@ export class SelectorController {
 			return;
 		}
 
-		// Delete the session file and artifacts directory
 		await storage.deleteSessionWithArtifacts(sessionFile);
 
-		// Show session selector
 		this.ctx.showStatus("Session deleted");
 		await this.showSessionSelector();
 	}
 
-	/**
-	 * Run the OAuth login flow for `providerId` inside a cancellable
-	 * {@link LoginDialogComponent} that replaces the editor slot. Esc aborts:
-	 * the dialog's abort signal reaches the provider flow, any pending prompt
-	 * rejects, and the editor is restored immediately. Returns true when
-	 * credentials were stored.
-	 */
 	async #handleOAuthLogin(providerId: string): Promise<boolean> {
 		this.ctx.showStatus(`Logging in to ${providerId}…`);
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
@@ -1901,8 +1686,6 @@ export class SelectorController {
 			this.ctx.ui.requestRender();
 		};
 		const dialog = new LoginDialogComponent(this.ctx.ui, providerId, (_success, message) => {
-			// Fires on Esc: unblock the editor immediately; the aborted flow's
-			// rejection settles the awaited login below.
 			restoreEditor();
 			if (message) this.ctx.showStatus(message);
 		});
@@ -1914,8 +1697,6 @@ export class SelectorController {
 			const identity = await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
 				signal: dialog.signal,
 				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
-					// The dialog renders the full URL (SSH-safe copy target) and
-					// opens the browser best-effort.
 					dialog.showAuth(info.url, info.instructions, info.launchUrl);
 				},
 				onPrompt: (prompt: { message: string; placeholder?: string }) =>
@@ -1923,26 +1704,13 @@ export class SelectorController {
 				onProgress: (message: string) => {
 					dialog.showProgress(message);
 				},
-				// Paste-code providers (e.g. Codex) may need the user to paste the
-				// fallback redirect URL when the loopback callback can't complete
-				// (headless/remote/Windows). Mount a focused input in the dialog so
-				// the paste lands somewhere the OAuth flow consumes — the hidden
-				// editor's `/login <url>` path is unreachable while the dialog holds
-				// focus (#5339).
+
 				onManualCodeInput: useManualInput ? () => dialog.showManualInput(MANUAL_LOGIN_PROMPT) : undefined,
 			});
-			// Scope the post-login refresh to the just-authenticated provider with an
-			// `online` strategy: the default all-provider `online-if-uncached` reuses
-			// a fresh authoritative cache row (e.g. an empty result fetched before
-			// login), so newly persisted credentials would never re-run discovery and
-			// models would stay unavailable in-session (#5780). Unrelated providers
-			// are left untouched. `refreshProvider` swallows discovery failures, so
-			// awaiting cannot reject the login.
+
 			await this.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			const block = new TranscriptBlock();
-			// Name the account (and Anthropic organization) that was stored so a
-			// login that lands on an unintended account/subscription is visible
-			// immediately instead of silently replacing an existing registration.
+
 			const whoBase = identity?.type === "oauth" ? (identity.email ?? identity.accountId) : undefined;
 			const whoOrg = identity?.type === "oauth" ? (identity.orgName ?? identity.orgId) : undefined;
 			const who = whoBase ? ` as ${whoBase}${whoOrg ? ` (${whoOrg})` : ""}` : whoOrg ? ` as ${whoOrg}` : "";
@@ -1958,8 +1726,6 @@ export class SelectorController {
 			return true;
 		} catch (error: unknown) {
 			if (dialog.signal.aborted) {
-				// User-cancelled: the dialog already restored the editor and
-				// surfaced "Login cancelled".
 				return false;
 			}
 			this.ctx.showError(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1978,11 +1744,6 @@ export class SelectorController {
 				return;
 			}
 
-			// Provider-scoped online refresh so the removed credential's stale
-			// endpoint/deployment models are invalidated deterministically; the
-			// default all-provider `online-if-uncached` would reuse the fresh
-			// authoritative cache row and keep showing models the credential
-			// unlocked (#5780). Other providers are left untouched.
 			await this.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			const block = new TranscriptBlock();
 			block.addChild(
@@ -2158,7 +1919,7 @@ export class SelectorController {
 		const message = describeRedeemOutcome(outcome, account.label);
 		if (outcome.ok) {
 			this.ctx.showStatus(message);
-			// Refresh the status-line usage so the freshly-reset window shows.
+
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
 		} else {
@@ -2182,8 +1943,7 @@ export class SelectorController {
 			closed = true;
 			fleet.dispose();
 			overlayHandle?.hide();
-			// A gated empty fleet may never have been mounted. Restoring editor
-			// focus in that case would steal focus from a menu opened meanwhile.
+
 			if (overlayHandle) this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
@@ -2208,15 +1968,12 @@ export class SelectorController {
 
 		const showReadyFleet = () => {
 			if (closed) return;
-			// The double-← gesture stays inert when neither live nor persisted
-			// subagents are available, so wait for discovery before making the gate.
+
 			if (options?.requireContent && fleet.isEmpty) {
 				done();
 				return;
 			}
 
-			// Prime the detector before the first frame when the editor's double-←
-			// gesture opened the fleet, so the next single ← dismisses it.
 			if (options?.armCloseTap) fleet.armCloseTap();
 			overlayHandle = this.#showFullscreenMenu(fleet);
 		};

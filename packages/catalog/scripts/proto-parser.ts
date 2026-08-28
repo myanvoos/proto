@@ -1,9 +1,3 @@
-/**
- * Lightweight protobuf (.proto) parser and TypeScript code generator for @oh-my-pi/pi-catalog.
- *
- * Generates type-safe schema definitions and message types using the discovery/protobuf runtime codecs.
- */
-
 export type ProtoScalarType =
 	| "bool"
 	| "bytes"
@@ -521,7 +515,6 @@ class Parser {
 			} else if (this.#matchIdent("extend")) {
 				this.#skipExtendBlock();
 			} else if (this.#matchSymbol(";")) {
-				// empty top-level semicolon
 			} else {
 				throw new Error(
 					`Unexpected token '${this.#current.value}' at ${this.#filename}:${this.#current.line}:${this.#current.col}`,
@@ -553,7 +546,6 @@ class Parser {
 			} else if (this.#matchIdent("reserved")) {
 				this.#skipUntilSemicolon();
 			} else if (this.#matchSymbol(";")) {
-				// extra semicolon
 			} else {
 				const valComment = this.#current.comment;
 				const valName = this.#expectIdent();
@@ -614,7 +606,6 @@ class Parser {
 			} else if (this.#matchIdent("group")) {
 				this.#skipGroupBlock();
 			} else if (this.#matchSymbol(";")) {
-				// empty semicolon
 			} else {
 				message.fields.push(this.#parseField());
 			}
@@ -707,7 +698,6 @@ class Parser {
 				this.#parseOption();
 				this.#expectSymbol(";");
 			} else if (this.#matchSymbol(";")) {
-				// empty semicolon
 			} else {
 				const fieldComment = this.#current.comment;
 				const typeName = this.#expectIdent();
@@ -785,7 +775,6 @@ class Parser {
 							options.push(this.#parseOption());
 							this.#expectSymbol(";");
 						} else if (this.#matchSymbol(";")) {
-							// skip
 						} else {
 							this.#skipUntilSemicolon();
 						}
@@ -806,7 +795,6 @@ class Parser {
 					options,
 				});
 			} else if (this.#matchSymbol(";")) {
-				// empty semicolon
 			} else {
 				this.#skipUntilSemicolon();
 			}
@@ -1031,7 +1019,6 @@ class Parser {
 	}
 }
 
-/** Parses a protobuf definition source string into a ProtoFile AST. */
 export function parseProto(source: string, filename?: string): ProtoFile {
 	return new Parser(source, filename).parse();
 }
@@ -1053,13 +1040,11 @@ function normalizeScalarType(t: string): ProtoScalarType {
 	}
 }
 
-/** Converts snake_case protobuf identifiers to camelCase TypeScript property names. */
 function protoToCamelCase(name: string): string {
 	if (!name.includes("_")) return name;
 	return name.replace(/_([a-zA-Z0-9])/g, (_, ch: string) => ch.toUpperCase());
 }
 
-/** Converts PascalCase or camelCase to SCREAMING_SNAKE_CASE. */
 function toScreamingSnake(name: string): string {
 	return name
 		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
@@ -1067,7 +1052,6 @@ function toScreamingSnake(name: string): string {
 		.toUpperCase();
 }
 
-/** Context managing parsed proto files and symbol resolution. */
 export class ProtoContext {
 	readonly files: ProtoFile[] = [];
 	readonly #enumsByFullName = new Map<string, ProtoEnum>();
@@ -1238,7 +1222,6 @@ export class ProtoContext {
 	): { kind: "message"; target: ProtoMessage } | { kind: "enum"; target: ProtoEnum } | { kind: "none" } {
 		const clean = typeName.startsWith(".") ? typeName.slice(1) : typeName;
 
-		// Check nested in parent message
 		if (parentMsg) {
 			const nestedName = `${parentMsg.fullName}_${clean}`;
 			const nestedMsg = this.#messagesByFullName.get(nestedName);
@@ -1247,7 +1230,6 @@ export class ProtoContext {
 			if (nestedEnm) return { kind: "enum", target: nestedEnm };
 		}
 
-		// Check full name with package
 		if (pkg) {
 			const qualified = `${pkg}.${clean}`;
 			const msg = this.#messagesByFullName.get(qualified);
@@ -1256,13 +1238,11 @@ export class ProtoContext {
 			if (enm) return { kind: "enum", target: enm };
 		}
 
-		// Check full name direct
 		const directMsg = this.#messagesByFullName.get(clean);
 		if (directMsg) return { kind: "message", target: directMsg };
 		const directEnm = this.#enumsByFullName.get(clean);
 		if (directEnm) return { kind: "enum", target: directEnm };
 
-		// Check short name
 		const shortMsg = this.#messagesByShortName.get(clean);
 		if (shortMsg) return { kind: "message", target: shortMsg };
 		const shortEnm = this.#enumsByShortName.get(clean);
@@ -1288,7 +1268,6 @@ interface GenerateProtoOptions {
 	sortAlphabetically?: boolean;
 }
 
-/** Generates TypeScript definitions and protobuf schemas from parsed Proto files or a ProtoContext. */
 export function generateProtoTs(
 	input: ProtoFile | ProtoFile[] | ProtoContext,
 	options: GenerateProtoOptions = {},
@@ -1305,7 +1284,6 @@ export function generateProtoTs(
 	const protobufPath = options.protobufImportPath ?? "./protobuf";
 	const pkgPrefix = options.packagePrefix ?? "Cursor agent";
 
-	// Collect all flat enums and messages
 	const allEnums: ProtoEnum[] = [];
 	const allMessages: ProtoMessage[] = [];
 
@@ -1452,7 +1430,6 @@ export function generateProtoTs(
 	lines.push(`import { pb, type MessageCodec, type ProtoMessage } from "${protobufPath}";`);
 	lines.push("");
 
-	// Emit Enums
 	for (const enm of targetEnums) {
 		lines.push(`/** ${pkgPrefix} enum ${enm.name}. */`);
 		lines.push(`export enum ${enm.name} {`);
@@ -1478,7 +1455,6 @@ export function generateProtoTs(
 		lines.push("");
 	}
 
-	// Emit Messages
 	for (const msg of targetMessages) {
 		const emittedName = ctx.getEmittedName(msg);
 		const schemaName = `${emittedName}Schema`;

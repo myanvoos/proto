@@ -1,9 +1,3 @@
-/**
- * Quiet daemon-broker ensure helpers shared by broker-owned singleton daemons
- * (shared Chromium, browser relay, LSP mux). Each treats broker/daemon errors
- * as "absent" so ensure loops can retry or adopt a cross-process race winner
- * instead of failing the caller.
- */
 import { logger } from "@oh-my-pi/pi-utils";
 import { throwIfAborted } from "../tools/tool-errors";
 import type { DaemonBrokerClient } from "./client";
@@ -12,7 +6,6 @@ import type { DaemonSnapshot } from "./protocol";
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 5_000;
 
-/** Snapshot a broker daemon, treating "unknown daemon" and broker errors as absent. */
 export async function describeQuietly(
 	client: DaemonBrokerClient,
 	name: string,
@@ -32,7 +25,6 @@ export async function describeQuietly(
 	}
 }
 
-/** Block until the daemon reports ready; undefined on timeout or pre-ready exit. */
 export async function waitReady(
 	client: DaemonBrokerClient,
 	name: string,
@@ -54,7 +46,6 @@ export async function waitReady(
 	}
 }
 
-/** Best-effort stop before replacing a wedged or endpoint-less daemon. */
 export async function stopQuietly(
 	client: DaemonBrokerClient,
 	name: string,

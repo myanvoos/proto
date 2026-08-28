@@ -110,7 +110,6 @@ function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
 	return sessionFile.slice(0, -JSONL_SUFFIX_LENGTH);
 }
 
-/** Copy a session's artifact directory to another session, matching interactive `/fork`. */
 export async function copySessionArtifacts(sourceSessionFile: string, destinationSessionFile: string): Promise<void> {
 	const sourceArtifactsDir = artifactsDirectoryFor(sourceSessionFile);
 	const destinationArtifactsDir = artifactsDirectoryFor(destinationSessionFile);
@@ -133,19 +132,9 @@ export async function copySessionArtifacts(sourceSessionFile: string, destinatio
 	}
 }
 
-/**
- * Resolve a breadcrumb's recorded session file to its interactive root. Subagent
- * (and other artifact) sessions live inside a parent session's artifacts dir —
- * `<parent>.jsonl` strips its suffix to `<parent>/`, and a child writes
- * `<parent>/<agentId>.jsonl`. A breadcrumb that points at such a child — a
- * pre-fix poisoned crumb left by a subagent that opened in the parent's TTY, or
- * any nested artifact — must resolve back up to the top-level session so
- * `--continue` resumes the real conversation instead of a subagent transcript.
- */
 function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
 	let current = path.resolve(sessionFile);
-	// Walk up while the containing dir is itself a session's artifacts dir
-	// (`<dir>.jsonl` exists). Capped to defend against pathological layouts.
+
 	for (let depth = 0; depth < 8; depth++) {
 		const parentSessionFile = `${path.dirname(current)}.jsonl`;
 		if (!fs.existsSync(parentSessionFile)) return current;
@@ -194,12 +183,6 @@ function isAssistantEntry(entry: SessionEntry): boolean {
 }
 
 function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
-	// Startup-recorded selector state that does not survive as user intent
-	// once the draft is cleared. `mode_change` covers `/goal`-style toggles
-	// that leave the session otherwise empty; entries carrying
-	// real conversation state — messages, compactions, branch summaries,
-	// custom/custom_message, session_init, labels, title/tool selection — never
-	// reach this branch and always keep the file resumable.
 	switch (entry.type) {
 		case "model_change":
 		case "thinking_level_change":
@@ -216,12 +199,6 @@ function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
 	return new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime();
 }
 
-/**
- * Maintains the derived views over a session's entry list: id lookup, the
- * parent→children adjacency, the resolved label map, the active leaf, and the
- * running usage totals. Kept in lockstep with the manager's `#entries` so reads
- * stay O(1)/O(children) instead of rescanning the whole journal.
- */
 class SessionEntryIndex {
 	#entriesById = new Map<string, SessionEntry>();
 	#children = new Map<string | null, SessionEntry[]>();
@@ -266,10 +243,6 @@ class SessionEntryIndex {
 		return this.#entriesById.get(id);
 	}
 
-	/**
-	 * The live id→entry map. Read-only for callers (lookups + `generateId`
-	 * collision checks); never mutate it directly — go through `insert`/`rebuild`.
-	 */
 	entriesById(): Map<string, SessionEntry> {
 		return this.#entriesById;
 	}
@@ -404,10 +377,6 @@ interface AtomicEntryBatch {
 	externalLeafId: string | null;
 }
 
-/**
- * The storage may have published a write that rejected, and an authoritative
- * repair could not be proven durable. Callers must fail closed until recovery.
- */
 export class SessionPersistenceIndeterminateError extends AggregateError {
 	readonly operationError: Error;
 	readonly recoveryErrors: readonly Error[];
@@ -423,33 +392,9 @@ export class SessionPersistenceIndeterminateError extends AggregateError {
 	}
 }
 
-/**
- * Stores and navigates an append-only conversation journal.
- *
- * A session is a JSONL file: one header line followed by entries. Entries form a
- * tree by `(id, parentId)`, and the mutable leaf pointer selects which path is
- * active for future appends and for LLM context construction.
- *
- * Durability is software-crash safe but not power-loss safe: completed entries
- * (user/assistant/toolResult messages, tool_execution_start markers, custom
- * entries) are handed to the OS synchronously in-body on append and never
- * `fsync`'d. In-flight streaming text is intentionally not durable until
- * `message_end` persists the finished message.
- *
- * While an in-place atomic rewrite is publishing, a concurrent completed append
- * supersedes that publish with a synchronous full-body rewrite so the entry is
- * software-crash durable before the append returns; the abandoned atomic's
- * `commitGuard` then refuses to clobber the fresher body.
- *
- * During {@link moveTo}, appends write a full body to the live relocation path
- * (source until rename, destination once the rename has landed) so a crash mid-
- * move still preserves completed entries without recreating a vacated source.
- * A trailing atomic rewrite still rewrites the header cwd after the path is
- * repointed.
- */
 export class SessionManager {
 	#cwd: string;
-	/** Additional workspace directories beyond cwd (multi-root). Normalized absolute, deduped, excludes cwd. */
+
 	#additionalDirectories: string[] = [];
 	#sessionDir: string;
 	readonly #persist: boolean;
@@ -466,23 +411,14 @@ export class SessionManager {
 	#entries: SessionEntry[] = [];
 	#index = new SessionEntryIndex();
 
-	/** File reflects all current entries; appends can go incrementally. */
 	#fileIsCurrent = false;
-	/** In-memory entries diverged from disk (load-migration/sanitize) → next persist must full-rewrite. */
+
 	#rewriteRequired = false;
-	/** Lazy gate crossed (ensureOnDisk / loaded file): every entry must persist from now on. */
+
 	#forceFileCreation = false;
-	/**
-	 * Armed only when this manager observed a draft sidecar lifecycle that
-	 * materialized an otherwise metadata-only session file. Explicit
-	 * ensureOnDisk() callers (ACP session/new, handoff) must survive close().
-	 */
+
 	#draftOnlySessionCleanupArmed = false;
 
-	/**
-	 * Entry tap: invoked for every appended entry with the
-	 * in-memory (pre-blob-externalization) entry, so inline images survive.
-	 */
 	onEntryAppended?: (entry: SessionEntry) => void;
 
 	#turnBudgetTotal: number | null = null;
@@ -490,39 +426,26 @@ export class SessionManager {
 	#turnOutputBaseline = 0;
 	#turnEvalOutput = 0;
 
-	/** The single open append writer; the manager only ever writes one file at a time. */
 	#writer: SessionStorageWriter | undefined;
-	/** Sealed by {@link releaseRetainedEntries}: every later append/title/rewrite is a dropped no-op. */
+
 	#released = false;
-	/** Serializes async disk work (flush/close/atomic rewrite). Appends are synchronous and bypass it. */
+
 	#diskTail: Promise<void> = Promise.resolve();
 	#diskFailure: Error | undefined;
 	#diskFailureLogged = false;
-	/** FIFO reservation for atomic batches and authoritative recovery. */
+
 	#atomicPersistenceTail: Promise<void> = Promise.resolve();
-	/** Observer notifications withheld until their entries are proven durable. */
+
 	#pendingDurabilityNotifications: SessionEntry[] = [];
-	/** Bumped on every sync rewrite / chain reset so stale queued tasks become no-ops. */
+
 	#diskEpoch = 0;
-	/**
-	 * Epoch of the in-flight atomic rewrite, or `null` when no rewrite is running.
-	 * The fence in {@link #appendToSessionFile} only applies while this matches
-	 * `#diskEpoch`: once a synchronous rewrite (`flushSync` → `#rewriteSynchronously`)
-	 * bumps the epoch, the pending atomic publish is guaranteed to abandon via
-	 * its `commitGuard`, and appends can safely take the hot path against the
-	 * freshly-published file.
-	 */
+
 	#atomicRewriteFenceEpoch: number | null = null;
-	/** Set by synchronous appends that land while an atomic replacement is active. */
+
 	#atomicRewriteDirty = false;
-	/**
-	 * Active {@link moveTo} relocation. Concurrent completed appends write a
-	 * full body to the live path: source while it still exists, destination
-	 * once rename has landed (source gone). Never recreates a vacated source.
-	 * `null` outside an active relocation.
-	 */
+
 	#sessionFileRelocating: { source: string; dest: string } | null = null;
-	/** Atomic entry batch currently staged for a full-file commit. */
+
 	#atomicEntryBatch: AtomicEntryBatch | undefined;
 
 	#artifactManager: ArtifactManager | null = null;
@@ -532,12 +455,7 @@ export class SessionManager {
 	#inMemoryArtifactCounter = 0;
 
 	#suppressBreadcrumb = false;
-	/**
-	 * The last breadcrumb this manager wrote marked a lazy `/new` boundary whose
-	 * JSONL is not yet on disk. Cleared (and the crumb re-stamped non-fresh) once
-	 * the session materializes, so a materialized-then-deleted session still falls
-	 * back to the most-recent session instead of being treated as a fresh crumb.
-	 */
+
 	#breadcrumbFresh = false;
 	#sessionNameChangedCallbacks = new Set<() => void>();
 	#persistenceErrorCallbacks = new Set<(error: Error) => void>();
@@ -557,10 +475,6 @@ export class SessionManager {
 		if (!this.#suppressBreadcrumb) writeTerminalBreadcrumb(cwd, sessionFile, fresh);
 	}
 
-	/**
-	 * Re-stamp a fresh `/new` breadcrumb as non-fresh once the session has
-	 * materialized on disk. A no-op unless the current breadcrumb is still fresh.
-	 */
 	#materializeBreadcrumb(): void {
 		if (!this.#breadcrumbFresh || !this.#sessionFile) return;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile, false);
@@ -678,10 +592,6 @@ export class SessionManager {
 
 	async #authoritativelyRewriteCurrentStateLocked(operationError: Error): Promise<void> {
 		if (this.#released) {
-			// Terminal seal: repair would reset the disk tail (escaping the
-			// close() serialization) and atomically publish #fileBody() — after
-			// release that truncates, and a revival may already own the file.
-			// The original operation error still propagates to the caller.
 			logger.warn("Skipped authoritative session repair after terminal release", {
 				error: String(operationError),
 			});
@@ -812,30 +722,15 @@ export class SessionManager {
 		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
 	}
 
-	/**
-	 * Live path for concurrent completed appends during {@link moveTo}.
-	 * Prefers destination once rename has landed (source gone); otherwise
-	 * source. Never invents a path that does not already exist.
-	 */
 	#liveRelocationWritePath(): string | null {
 		const relocating = this.#sessionFileRelocating;
 		if (!relocating) return null;
 		if (this.#storage.existsSync(relocating.dest)) return relocating.dest;
 		if (this.#storage.existsSync(relocating.source)) return relocating.source;
-		// Rename in flight with neither path visible (rare cross-device edge):
-		// fall back to destination so we do not recreate a vacated source.
+
 		return relocating.dest;
 	}
 
-	/**
-	 * Synchronously rewrite the whole file (header + entries) and keep no open
-	 * writer; the next append re-opens one. `writeTextSync` returns with the
-	 * bytes in the kernel page cache, so the file is software-crash durable.
-	 *
-	 * During {@link moveTo}, writes to the live relocation path (source pre-
-	 * rename, destination post-rename) rather than always `#sessionFile`, so
-	 * concurrent completed entries are durable without recreating a vacated source.
-	 */
 	#rewriteSynchronously(): void {
 		if (this.#released) return;
 		if (!this.#persist || !this.#shouldHaveSessionFile()) return;
@@ -849,17 +744,13 @@ export class SessionManager {
 			this.#closeWriterEventually();
 			this.#storage.writeTextSync(targetPath, body);
 			this.#clearDiskError();
-			// Only mark the manager current when writing the active session path.
-			// Mid-move writes update the live relocation path; `#sessionFile` is
-			// still the pre-repoint source until moveTo repoints it.
+
 			if (!this.#sessionFileRelocating || targetPath === this.#sessionFile) {
 				this.#fileIsCurrent = true;
 				this.#materializeBreadcrumb();
 				this.#rewriteRequired = false;
 				this.#hasTitleSlot = true;
 			} else {
-				// Destination body is current on disk; in-memory still needs a
-				// header-cwd rewrite after repoint, but entries are durable.
 				this.#fileIsCurrent = false;
 				this.#rewriteRequired = true;
 				this.#hasTitleSlot = true;
@@ -869,16 +760,6 @@ export class SessionManager {
 		}
 	}
 
-	/**
-	 * Rewrite the whole file atomically (temp-write + rename, EPERM-safe) on the
-	 * disk chain. The body is serialized after the writer is closed. The fence
-	 * is enabled BEFORE `#closeWriterHandle()` and stays active until the last
-	 * atomic publish returns, so a sync append landing in the close-yield window
-	 * cannot open a fresh writer that the pending replacement would then detach
-	 * from the current JSONL path. A `commitGuard` also prevents a superseding
-	 * synchronous rewrite from being overwritten by the stale body serialized
-	 * before it ran.
-	 */
 	async #rewriteAtomically(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#released) return;
@@ -897,15 +778,6 @@ export class SessionManager {
 		);
 	}
 
-	/**
-	 * Shared fenced atomic-rewrite loop used by `#rewriteAtomically` and the
-	 * `#persistTitleChangeEntry` fallback. Holds `#atomicRewriteActive` across
-	 * the writer close and the full-file replace, and loops on
-	 * `#atomicRewriteDirty` so any fenced append that lands during the rewrite
-	 * is captured before the task resolves. Returns `false` when the disk epoch
-	 * moved (a superseding synchronous rewrite has taken over) so callers skip
-	 * their post-publish state updates.
-	 */
 	async #runFencedAtomicRewrite(epoch: number): Promise<boolean> {
 		if (this.#released) return false;
 		this.#atomicRewriteFenceEpoch = epoch;
@@ -923,12 +795,6 @@ export class SessionManager {
 			} while (this.#atomicRewriteDirty);
 			return true;
 		} finally {
-			// Only relinquish the fence if we still own it. A superseding
-			// synchronous rewrite (`flushSync` → `#rewriteSynchronously`) may
-			// have reset `#diskTail`, scheduled a fresh atomic task at the new
-			// epoch, and that task may have taken ownership of the fence while
-			// this stale rewrite was still awaiting storage. Clearing it here
-			// unconditionally would strand appends during the newer publish.
 			if (this.#atomicRewriteFenceEpoch === epoch) this.#atomicRewriteFenceEpoch = null;
 		}
 	}
@@ -942,29 +808,15 @@ export class SessionManager {
 			return;
 		}
 		if (this.#diskFailure) {
-			// The failed entry and any later entries remain in memory. A full
-			// replacement is the writability probe and restores all of them once
-			// transient storage pressure clears.
 			this.#fileIsCurrent = false;
 			this.#rewriteRequired = true;
 		}
 
-		// Lazy gate: a brand-new session is not written until it has an assistant
-		// message (or someone forced creation), so sessions that never produce
-		// output never create a file.
 		if (!this.#shouldHaveSessionFile()) {
 			this.#fileIsCurrent = false;
 			return;
 		}
 
-		// Atomic replacement / move window: do not open a fresh append writer that
-		// a Windows EPERM replace could detach from the current JSONL path.
-		// - moveTo: write a full body to the live relocation path (source pre-
-		//   rename, destination post-rename) so completed entries are durable
-		//   without recreating a vacated source.
-		// - in-place atomic fence: supersede the pending publish with a
-		//   synchronous full-body rewrite; bumping `#diskEpoch` abandons the
-		//   in-flight atomic via its `commitGuard`.
 		if (this.#sessionFileRelocating) {
 			this.#rewriteSynchronously();
 			return;
@@ -974,22 +826,12 @@ export class SessionManager {
 			this.#rewriteSynchronously();
 			return;
 		}
-		// Cold/divergent: not on disk yet, or in-memory entries diverged from the
-		// file → rewrite the whole file synchronously and keep going.
+
 		if (!this.#fileIsCurrent || this.#rewriteRequired) {
 			this.#rewriteSynchronously();
 			return;
 		}
 
-		// Hot path: write the entry directly on the writer, outside the async disk
-		// chain. Prefer appendSync so write failures latch `#diskFailure` before
-		// this call returns (not via a discarded rejected Promise after a later
-		// microtask). Callers stay non-throwing here — the core turn loop invokes
-		// appendMessage/appendCustomEntry without try/catch. A later entry retries
-		// all in-memory state through a full rewrite. File writers apply each line
-		// to the OS page cache before return.
-		// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
-		// opens a fresh append handle and the entry still lands.
 		try {
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
@@ -1024,10 +866,6 @@ export class SessionManager {
 			return;
 		}
 
-		// Title changes use their own asynchronous append path rather than
-		// #appendToSessionFile. During move, write the full body (including the
-		// title entry) to the live relocation path so a crash mid-move still
-		// keeps the title change; the trailing rewrite still updates header cwd.
 		if (this.#sessionFileRelocating) {
 			this.#rewriteSynchronously();
 			return;
@@ -1261,12 +1099,10 @@ export class SessionManager {
 			.trim();
 	}
 
-	/** Puts a binary blob into the blob store and returns the blob reference. */
 	async putBlob(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
 		return this.#blobs.put(data, options);
 	}
 
-	/** Synchronous variant of {@link putBlob} for rebuild-only render paths. */
 	putBlobSync(data: Buffer, options?: BlobPutOptions): BlobPutResult {
 		return this.#blobs.putSync(data, options);
 	}
@@ -1284,19 +1120,12 @@ export class SessionManager {
 			onDisk: this.#fileIsCurrent,
 			needsRewrite: this.#rewriteRequired,
 			draftOnlySessionCleanupArmed: this.#draftOnlySessionCleanupArmed,
-			// Snapshot header + entries by reference: switch/reload replaces the
-			// active header/array wholesale, so rollback needs no deep clone.
+
 			header: this.#header,
 			entries: [...this.#entries],
 		};
 	}
 
-	/**
-	 * Create an independent manager for the current logical session and branch.
-	 * The clone shares the storage backend but owns its entry index and writer, so
-	 * callers can finish session-owned work after this manager switches elsewhere.
-	 * Set `persist` false when the original session is intentionally being dropped.
-	 */
 	cloneCurrentSession(options?: { persist?: boolean }): SessionManager {
 		const persist = options?.persist ?? this.#persist;
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
@@ -1336,7 +1165,6 @@ export class SessionManager {
 		if (this.#sessionFile) this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 	}
 
-	/** Switch to a different session file (resume / branch). */
 	async setSessionFile(sessionFile: string): Promise<void> {
 		await this.#setSessionFile(sessionFile);
 	}
@@ -1353,8 +1181,6 @@ export class SessionManager {
 		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
 		const { entries: fileEntries, titleSlot } = loaded;
 		if (fileEntries.length === 0) {
-			// Explicit but empty/missing path (e.g. --session flag): start fresh but
-			// keep the requested path and materialize the header immediately.
 			this.#resetToNewSession(undefined, resolvedSessionFile);
 			this.#forceFileCreation = true;
 			await this.#rewriteAtomically();
@@ -1364,15 +1190,9 @@ export class SessionManager {
 
 		const migrated = migrateToCurrentVersion(fileEntries);
 		await resolveBlobRefsInEntries(fileEntries, this.#blobs);
-		// loadEntriesFromFile guarantees entries[0] is a valid session header.
+
 		const header = fileEntries[0] as SessionHeader;
 
-		// Adopt the loaded session's working directory. Sessions live in a dir
-		// keyed by their cwd, so resuming a session from another project must
-		// re-point cwd/sessionDir at that project — unless that project directory
-		// no longer exists on disk, in which case adopting it (and the process
-		// chdir interactive mode then performs) would fail with ENOENT. Keep the
-		// current cwd so the resumed session stays where the user already is.
 		const headerCwd = header.cwd ? path.resolve(header.cwd) : undefined;
 		if (headerCwd && headerCwd !== path.resolve(this.#cwd) && (await directoryExists(headerCwd))) {
 			this.#cwd = headerCwd;
@@ -1393,13 +1213,11 @@ export class SessionManager {
 		if (this.sanitizeLoadedOpenAIResponsesReplayMetadata()) this.#rewriteRequired = true;
 	}
 
-	/** Start a new session. Drains and closes any existing writer first. */
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
 		await this.#drainAndCloseWriter();
 		return this.#resetToNewSession(options);
 	}
 
-	/** Delete a session file and its artifact directory. ENOENT is treated as success. */
 	async dropSession(sessionPath: string): Promise<void> {
 		await this.#drainAndCloseWriter();
 		try {
@@ -1409,10 +1227,6 @@ export class SessionManager {
 		}
 	}
 
-	/**
-	 * Fork the current session into a new file with the same entries.
-	 * @returns the old and new session file paths, or undefined when not persisting.
-	 */
 	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
 		if (!this.#persist || !this.#sessionFile) return undefined;
 
@@ -1452,10 +1266,6 @@ export class SessionManager {
 		return { oldSessionFile, newSessionFile: this.#sessionFile };
 	}
 
-	/**
-	 * Move the session to a new working directory: relocate the session file and
-	 * artifacts on disk, update internal references, and rewrite the header cwd.
-	 */
 	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
 		const resolvedCwd = path.resolve(newCwd);
 		const resolvedTargetDir = targetSessionDir ? path.resolve(targetSessionDir) : undefined;
@@ -1474,11 +1284,7 @@ export class SessionManager {
 				: computeDefaultSessionDir(resolvedCwd, this.#storage));
 
 		let sessionFileExisted = false;
-		// Track source+dest for concurrent completed appends during relocation
-		// (see `#sessionFileRelocating`). Existence of either path decides the
-		// live write target — not a `#diskEpoch` bump, which would cancel any
-		// disk task already queued at the current epoch (e.g. a header-only
-		// `ensureOnDisk()` materializing rewrite) before the drain below runs it.
+
 		if (this.#persist && this.#sessionFile) {
 			const source = this.#sessionFile;
 			const dest = path.join(nextSessionDir, path.basename(source));
@@ -1555,24 +1361,20 @@ export class SessionManager {
 				this.#sessionFile = newSessionFile;
 				this.#artifactManager = null;
 				this.#artifactManagerSessionFile = null;
-				// Path is repointed; hot-path appends may use `#sessionFile` again.
+
 				this.#sessionFileRelocating = null;
 			}
 
 			this.#cwd = resolvedCwd;
 			this.#sessionDir = nextSessionDir;
 			this.#header.cwd = resolvedCwd;
-			// Re-filter additional roots: the new cwd may have been an additional root,
-			// or it may now contain/subsume one. Re-normalize to keep the invariant
-			// that cwd is never also listed as an additional directory.
+
 			if (this.#additionalDirectories.length > 0) {
 				this.#additionalDirectories = this.#additionalDirectories.filter(d => d !== resolvedCwd);
 				this.#header.additionalDirectories =
 					this.#additionalDirectories.length > 0 ? this.#additionalDirectories : undefined;
 			}
 
-			// Rewrite at the new location when the file already existed (update cwd) or
-			// there is in-memory output worth materializing; otherwise stay lazy.
 			const hasAssistant = this.#historyContainsAssistantMessage();
 			if (this.#persist && this.#sessionFile && (sessionFileExisted || hasAssistant)) {
 				this.#forceFileCreation = true;
@@ -1585,10 +1387,6 @@ export class SessionManager {
 		}
 	}
 
-	/**
-	 * Force the session onto disk even with no assistant message yet (ACP
-	 * session/new must create a discoverable file immediately).
-	 */
 	async ensureOnDisk(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 		this.#forceFileCreation = true;
@@ -1596,7 +1394,6 @@ export class SessionManager {
 		await this.#rewriteAtomically();
 	}
 
-	/** Persist this session's transcript as a newly identified PROTO session. */
 	async persistCopy(
 		options?: { sessionDir?: string; suppressBreadcrumb?: boolean },
 		storage: SessionStorage = new FileSessionStorage(),
@@ -1620,14 +1417,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/**
-	 * Stage a synchronous group of entry appends and publish the resulting full
-	 * journal with one atomic replace. A failed publish removes only the staged
-	 * entries, preserves/reparents entries appended concurrently, restores the
-	 * prior durable file view, and clears the failed writer latch for retry.
-	 *
-	 * The callback MUST be synchronous.
-	 */
 	appendEntriesAtomically<T>(append: () => T): Promise<T> {
 		return this.#withAtomicPersistenceLock(() => this.#appendEntriesAtomicallyLocked(append));
 	}
@@ -1690,11 +1479,6 @@ export class SessionManager {
 		}
 	}
 
-	/**
-	 * Replace an uncertain append tail with the authoritative in-memory journal.
-	 * Callers must only use this for monotonic recovery where every retained
-	 * entry remains intended (for example, an explicit terminal tombstone).
-	 */
 	recoverPersistenceFromCurrentState(): Promise<void> {
 		return this.#withAtomicPersistenceLock(async () => {
 			if (!this.#persist || !this.#sessionFile) return;
@@ -1706,24 +1490,16 @@ export class SessionManager {
 		});
 	}
 
-	/** Flush pending writes. Call before switching sessions or on shutdown. */
 	async flush(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 		await this.#scheduleDiskWork(async () => {
 			if (this.#writer?.isOpen()) await this.#writer.flush();
 		});
-		// Drain any fire-and-forget backing writes (e.g. `writeTextSync` queued
-		// on IndexedSessionStorage during `flushSync`) so callers relying on
-		// flush() see the write durably visible to readers.
+
 		await this.#storage.drain();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
-	/**
-	 * Synchronously makes the current append-only session durable. Avoid rewriting
-	 * an already-current file: large restored sessions can contain GiB of compacted
-	 * history, and Ctrl+C must not rebuild the whole JSONL string just to flush.
-	 */
 	flushSync(): void {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) throw new Error("Cannot synchronously flush during an atomic session batch.");
@@ -1738,11 +1514,6 @@ export class SessionManager {
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
-	/**
-	 * Drop only session files that this manager saw materialized for a draft and
-	 * that still contain no durable conversation or extension state. Explicit
-	 * ensureOnDisk() records (ACP session/new, handoff) stay resumable.
-	 */
 	async #dropIfEmptyAndNoDraft(): Promise<void> {
 		if (!this.#draftOnlySessionCleanupArmed) return;
 		const sessionFile = this.#sessionFile;
@@ -1770,7 +1541,6 @@ export class SessionManager {
 		}
 	}
 
-	/** Flush, then close the append writer. */
 	async close(): Promise<void> {
 		if (!this.#persist) return;
 		await this.#scheduleDiskWork(async () => {
@@ -1780,49 +1550,17 @@ export class SessionManager {
 				this.#fileIsCurrent = true;
 		});
 		await this.#dropIfEmptyAndNoDraft();
-		// Wait for any queued backing writes (IndexedSessionStorage per-path
-		// tail) to become durable so a graceful shutdown does not exit while
-		// a fire-and-forget publish is still on the wire.
+
 		await this.#storage.drain();
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
-	/**
-	 * Raise the terminal write barrier ahead of the final {@link close}. Once
-	 * sealed:
-	 * - every later append, title change, and rewrite is a dropped no-op —
-	 *   including work an event handler tries to enqueue while dispose is
-	 *   awaiting `close()` on the disk tail;
-	 * - the disk epoch is bumped, so queued-but-unexecuted tail work is
-	 *   superseded and an ALREADY-RUNNING fenced/repair rewrite (awaiting the
-	 *   tail, drain, writer close, or the atomic stage) fails its commit guard
-	 *   at the rename fence instead of publishing over a revived file.
-	 * The final `close()` itself is scheduled after the bump and still runs;
-	 * pre-seal hot-path appends are already in the page cache. Idempotent;
-	 * terminal.
-	 */
 	seal(): void {
 		if (this.#released) return;
 		this.#released = true;
 		this.#diskEpoch++;
 	}
 
-	/**
-	 * Terminal release: drop the in-memory transcript and complete the
-	 * {@link seal}. The entry journal and its index mirror the agent's message
-	 * array (tool results, file contents, base64 frame images); on a disposed
-	 * session — e.g. a parked subagent still referenced by the lifecycle
-	 * adoption record — they would otherwise stay pinned for the process
-	 * lifetime.
-	 *
-	 * Closes the append writer; with the seal up, nothing can reopen it. A
-	 * revival may reopen the same JSONL through a NEW manager the moment
-	 * dispose returns; a late event handler resuming on THIS manager must
-	 * never race that writer — and a post-release rewrite would persist the
-	 * now-empty entry list, truncating the transcript. Reads after this point
-	 * reopen from disk (revival, `history://`). Only call from session
-	 * dispose, after the final `close()`; idempotent.
-	 */
 	releaseRetainedEntries(): void {
 		this.seal();
 		this.#entries = [];
@@ -1834,29 +1572,16 @@ export class SessionManager {
 		return this.#cwd;
 	}
 
-	/** Additional workspace directories beyond cwd (multi-root), absolute and normalized. */
 	getAdditionalDirectories(): string[] {
 		return [...this.#additionalDirectories];
 	}
 
-	/**
-	 * Persist a workspace-directory change to the session header. Respects the
-	 * lazy-persistence gate: a session with no durable output yet keeps the
-	 * change in memory (the header lands with the first real write), so seeding
-	 * roots at launch never materializes an empty resumable session file.
-	 */
 	async #persistWorkspaceDirectoriesChange(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile || !this.#shouldHaveSessionFile()) return;
 		this.#rewriteRequired = true;
 		await this.#rewriteAtomically();
 	}
 
-	/**
-	 * Add a workspace directory. Normalizes (relative to cwd), dedupes, rejects
-	 * the cwd itself, persists to the session header, and triggers an atomic
-	 * rewrite so the change survives a crash. Returns the resolved absolute
-	 * path or `null` when the directory was already present (no-op).
-	 */
 	async addWorkspaceDirectory(directory: string): Promise<string | null> {
 		const resolved = normalizeWorkspaceDirectory(directory, this.#cwd);
 		if (resolved === path.resolve(this.#cwd)) {
@@ -1869,11 +1594,6 @@ export class SessionManager {
 		return resolved;
 	}
 
-	/**
-	 * Remove a workspace directory by absolute or cwd-relative path. Persists
-	 * the trimmed header. Returns the resolved path that was removed, or
-	 * `null` when the directory was not an additional root (no-op).
-	 */
 	async removeWorkspaceDirectory(directory: string): Promise<string | null> {
 		const resolved = normalizeWorkspaceDirectory(directory, this.#cwd);
 		const idx = this.#additionalDirectories.findIndex(p => path.resolve(p) === resolved);
@@ -1888,7 +1608,6 @@ export class SessionManager {
 		return resolved;
 	}
 
-	/** Seed additional directories from settings or a passed list. Also called on resumed sessions with --add-dir; persists the updated header when the session file is already durable. No-op when the normalized list is unchanged (avoids rewriting large session files on every startup). */
 	async setAdditionalDirectories(directories: string[]): Promise<void> {
 		const workspace = normalizeSessionWorkspace({ cwd: this.#cwd, directories });
 		const next = additionalWorkspaceDirectories(workspace);
@@ -1911,10 +1630,6 @@ export class SessionManager {
 		return this.#index.usageSnapshot();
 	}
 
-	/**
-	 * Open a new per-turn budget window: snapshot the cumulative output baseline,
-	 * reset the eval-subagent counter, and set the (optional) ceiling.
-	 */
 	beginTurnBudget(total: number | null, hard: boolean): void {
 		this.#turnBudgetTotal = total;
 		this.#turnBudgetHard = hard;
@@ -1943,17 +1658,6 @@ export class SessionManager {
 		return this.#sessionFile;
 	}
 
-	/**
-	 * Whether the current session has actually been materialized to durable
-	 * storage (the JSONL exists on disk / in the active storage backend).
-	 *
-	 * Session persistence is lazy: the file is only written once the history
-	 * contains an assistant message (or an explicit {@link ensureOnDisk}
-	 * caller forces it). Until then {@link getSessionFile} returns an allocated
-	 * path that leads nowhere, so a `--resume <id>` hint built from it would
-	 * always fail. Consumers that advertise a resume command must gate on this
-	 * (issue #8860).
-	 */
 	isSessionOnDisk(): boolean {
 		return !!this.#sessionFile && this.#storage.existsSync(this.#sessionFile);
 	}
@@ -1979,7 +1683,6 @@ export class SessionManager {
 		const manager = this.#artifactManagerForSession();
 		if (manager) return manager.save(content, toolType);
 
-		// Non-persistent session: keep an in-memory copy so spill truncation works.
 		this.#inMemoryArtifacts ??= new Map();
 		const id = String(this.#inMemoryArtifactCounter++);
 		this.#inMemoryArtifacts.set(id, content);
@@ -2008,7 +1711,7 @@ export class SessionManager {
 			sessionFile !== undefined &&
 			!this.#storage.existsSync(sessionFile) &&
 			this.#entries.every(isDraftOnlyMetadataEntry);
-		// Force the header onto disk so resume can find the file this draft attaches to.
+
 		await this.ensureOnDisk();
 		if (draftWillMaterializeMetadataOnlyFile) {
 			await this.#writeDraftOnlySessionMarker();
@@ -2040,7 +1743,6 @@ export class SessionManager {
 		return draft;
 	}
 
-	/** The source that set the session name: "user" (manual/RPC) or "auto" (generated title). */
 	get titleSource(): SessionTitleSource | undefined {
 		return this.#titleSource;
 	}
@@ -2056,7 +1758,6 @@ export class SessionManager {
 		};
 	}
 
-	/** Subscribe to persistence failures so hosts can surface lost-durability state. */
 	onPersistenceError(cb: (error: Error) => void): () => void {
 		this.#persistenceErrorCallbacks.add(cb);
 		return () => {
@@ -2064,11 +1765,6 @@ export class SessionManager {
 		};
 	}
 
-	/**
-	 * Set the session display name.
-	 * @param source "user" for explicit renames; "auto" for generated titles.
-	 *   Auto titles are ignored once the user has set a name.
-	 */
 	async setSessionName(name: string, source: SessionTitleSource = "auto", trigger?: string): Promise<boolean> {
 		if (this.#released) return false;
 		if (this.#titleSource === "user" && source === "auto") return false;
@@ -2097,8 +1793,7 @@ export class SessionManager {
 		this.#index.insert(entry);
 		this.#notifyEntryAppended(entry);
 		await this.#persistTitleChangeEntry(entry, { title, source, updatedAt: timestamp });
-		// Keep the recent-sessions title index current so welcome-screen lookups
-		// never have to content-scan this session's file.
+
 		if (this.#persist && this.#storage instanceof FileSessionStorage) {
 			recordSessionTitle(this.#sessionId, title);
 		}
@@ -2107,19 +1802,10 @@ export class SessionManager {
 		return true;
 	}
 
-	/**
-	 * Append a foreign (host-authored) entry verbatim, preserving its
-	 * `id`/`parentId`. Used by session importers to mirror foreign transcripts.
-	 */
 	ingestReplicatedEntry(entry: SessionEntry): void {
 		this.#recordEntry(entry);
 	}
 
-	/**
-	 * Append a message as a child of the current leaf, then advance the leaf.
-	 * CompactionSummaryMessage / BranchSummaryMessage are rejected here — they are
-	 * top-level entries via appendCompaction()/branchWithSummary().
-	 */
 	appendMessage(
 		message:
 			| Message
@@ -2134,10 +1820,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Append to a non-active branch without changing the current leaf.
-	 * Used by work that retains ownership of a branch across tree navigation.
-	 */
 	appendMessageToBranch(
 		message:
 			| Message
@@ -2162,7 +1844,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
 	appendThinkingLevelChange(thinkingLevel?: string, configured?: string): string {
 		const entry: ThinkingLevelChangeEntry = {
 			type: "thinking_level_change",
@@ -2186,12 +1867,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Append a model change as a child of the current leaf, then advance the leaf.
-	 * @param model Model in "provider/modelId" format
-	 * @param role Optional role (default: "default")
-	 * @param resolvedModelIsFallback Whether this transition selected a retry-fallback model
-	 */
 	appendModelChange(model: string, role?: string, resolvedModelIsFallback = false): string {
 		const entry: ModelChangeEntry = {
 			type: "model_change",
@@ -2256,12 +1931,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Append the durable conversation boundary recorded by `/clear`. The
-	 * collapsed live transcript and the model-context rebuild start after the
-	 * latest one, while the full history stays on disk (the plain
-	 * `transcript:true` export walks it unchanged).
-	 */
 	appendResetBoundary(): string {
 		const entry: ResetBoundaryEntry = { type: "reset_boundary", ...this.#freshEntryFields() };
 		this.#recordEntry(entry);
@@ -2274,23 +1943,11 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Rewrite the session file after in-place entry updates (e.g. pruning old tool
-	 * outputs). Use sparingly.
-	 */
 	async rewriteEntries(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 		await this.#rewriteAtomically();
 	}
 
-	/**
-	 * Append a custom message entry (for extensions) that participates in LLM context.
-	 * @param customType Hook identifier for filtering on reload
-	 * @param content Message content (string or TextContent/ImageContent array)
-	 * @param display Whether to show in TUI (true = styled display, false = hidden)
-	 * @param details Optional extension-specific metadata (not sent to LLM)
-	 * @param attribution Who initiated this message for billing/attribution semantics
-	 */
 	appendCustomMessageEntry<T = unknown>(
 		customType: string | undefined,
 		content: string | (TextContent | ImageContent)[] | undefined,
@@ -2304,7 +1961,7 @@ export class SessionManager {
 			customType: normalized.customType,
 			content: normalized.content,
 			display: normalized.display,
-			// Drop AgentSession-internal transient fields before disk persistence.
+
 			details: stripInternalDetailsFields(normalized.details),
 			attribution: normalized.attribution,
 			...this.#freshEntryFields(),
@@ -2313,7 +1970,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Append a TTSR injection entry recording which rules were injected. */
 	appendTtsrInjection(ruleNames: string[]): string {
 		const entry: TtsrInjectionEntry = {
 			type: "ttsr_injection",
@@ -2324,7 +1980,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** All unique TTSR rule names injected on the current branch (root → leaf). */
 	getInjectedTtsrRules(): string[] {
 		const names = new Set<string>();
 		for (const entry of this.getBranch()) {
@@ -2334,7 +1989,6 @@ export class SessionManager {
 		return [...names];
 	}
 
-	/** Append a credential pin recording which OAuth account served `provider`. */
 	appendCredentialPin(provider: string, hash: string): string {
 		const entry: CredentialPinEntry = {
 			type: "credential_pin",
@@ -2346,16 +2000,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Latest credential pin per provider on the current branch (root → leaf),
-	 * with the effective last-use time of the pinned account.
-	 *
-	 * Pins are appended only when the serving account *changes*, so a long
-	 * session on one account carries a single old pin entry. Any assistant turn
-	 * for the same provider after that pin was necessarily served by the pinned
-	 * account, so its timestamp advances `lastUsedAt` — a resume seconds after
-	 * the last turn seeds a warm sticky instead of a stale one.
-	 */
 	getCredentialPins(): Map<string, { hash: string; lastUsedAt: number }> {
 		const pins = new Map<string, { hash: string; lastUsedAt: number }>();
 		for (const entry of this.getBranch()) {
@@ -2377,10 +2021,6 @@ export class SessionManager {
 		return this.#index.leafEntry();
 	}
 
-	/**
-	 * The most recent model role on the current branch, or undefined when no
-	 * model change has been recorded.
-	 */
 	getLastModelChangeRole(): string | undefined {
 		const branch = this.getBranch();
 		for (let index = branch.length - 1; index >= 0; index--) {
@@ -2394,7 +2034,6 @@ export class SessionManager {
 		return this.#index.get(id);
 	}
 
-	/** All direct children of an entry. */
 	getChildren(parentId: string): SessionEntry[] {
 		return this.#index.childrenOf(parentId);
 	}
@@ -2403,9 +2042,6 @@ export class SessionManager {
 		return this.#index.labelFor(id);
 	}
 
-	/**
-	 * Set or clear a label on an entry. Pass undefined/empty to clear.
-	 */
 	appendLabelChange(targetId: string, label: string | undefined): string {
 		if (!this.#index.has(targetId)) throw new Error(`Entry ${targetId} not found`);
 
@@ -2414,23 +2050,14 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Walk from an entry to root, returning entries in path order. Includes all
-	 * entry types; use buildSessionContext() for the resolved LLM messages.
-	 */
 	getBranch(fromId?: string): SessionEntry[] {
 		return this.#index.pathTo(fromId ?? this.#index.leafId());
 	}
 
-	/**
-	 * Build the session context (LLM messages), or — with `{ transcript: true }` —
-	 * the full-history display transcript, from the current leaf path.
-	 */
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {
 		return buildSessionContext(this.#entries, this.#index.leafId(), this.#index.entriesById(), options);
 	}
 
-	/** Strip stale OpenAI Responses assistant replay metadata from loaded entries. */
 	sanitizeLoadedOpenAIResponsesReplayMetadata(): boolean {
 		let changed = false;
 		for (const entry of this.#entries) {
@@ -2450,43 +2077,23 @@ export class SessionManager {
 		return this.#header;
 	}
 
-	/** All session entries (excludes header). Returns a shallow copy. */
 	getEntries(): SessionEntry[] {
 		return [...this.#entries];
 	}
 
-	/**
-	 * The session as a tree. A well-formed session has exactly one root; orphaned
-	 * entries (broken parent chain) are returned as roots too.
-	 */
 	getTree(): SessionTreeNode[] {
 		return this.#index.tree(this.#entries);
 	}
 
-	/**
-	 * Move the leaf to an earlier entry so the next append forms a new branch.
-	 * Existing entries are never modified or deleted.
-	 */
 	branch(branchFromId: string): void {
 		if (!this.#index.has(branchFromId)) throw new Error(`Entry ${branchFromId} not found`);
 		this.#setLeaf(branchFromId);
 	}
 
-	/** Reset the leaf to null so the next append creates a new root entry. */
 	resetLeaf(): void {
 		this.#setLeaf(null);
 	}
 
-	/**
-	 * Durably move the active branch past a discarded entry.
-	 *
-	 * The loader reconstructs the active branch from the last physical journal
-	 * entry, so changing the in-memory leaf alone is lost on reload. Known
-	 * metadata children are chained onto the discarded entry's parent before the
-	 * entry is removed. If any child may carry content, the subtree is preserved
-	 * off-branch instead. Both paths append a metadata-only branch marker and
-	 * rewrite the journal, making the selected path durable.
-	 */
 	async discardEntryDurably(entryId: string): Promise<void> {
 		const entry = this.#index.get(entryId);
 		if (!entry) return;
@@ -2508,7 +2115,6 @@ export class SessionManager {
 		await this.rewriteEntries();
 	}
 
-	/** Like branch(), but also records a branch_summary of the abandoned path. */
 	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromExtension?: boolean): string {
 		if (branchFromId !== null && !this.#index.has(branchFromId)) throw new Error(`Entry ${branchFromId} not found`);
 
@@ -2527,16 +2133,11 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Create a new session file containing only the path from root to `leafId`.
-	 * Returns the new file path, or undefined when not persisting.
-	 */
 	createBranchedSession(leafId: string): string | undefined {
 		const sourceSessionFile = this.#sessionFile;
 		const branchPath = this.getBranch(leafId);
 		if (branchPath.length === 0) throw new Error(`Entry ${leafId} not found`);
 
-		// Drop label entries from the path; recreate them fresh from the resolved map.
 		const entriesToKeep = branchPath.filter(entry => entry.type !== "label");
 		const keptIds = new Set(entriesToKeep.map(entry => entry.id));
 		const labelsToCarry: Array<{ targetId: string; label: string }> = [];
@@ -2599,7 +2200,6 @@ export class SessionManager {
 		return newSessionFile;
 	}
 
-	/** Resolve the canonical default session directory for a cwd. */
 	static getDefaultSessionDir(
 		cwd: string,
 		agentDir?: string,
@@ -2608,11 +2208,6 @@ export class SessionManager {
 		return computeDefaultSessionDir(cwd, storage, getSessionsDir(agentDir));
 	}
 
-	/**
-	 * Create a new session.
-	 * @param cwd Working directory (stored in the session header)
-	 * @param sessionDir Optional session directory; defaults to the cwd-derived dir.
-	 */
 	static create(cwd: string, sessionDir?: string, storage: SessionStorage = new FileSessionStorage()): SessionManager {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
@@ -2620,12 +2215,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/**
-	 * Create a fresh empty session file in the default session directory for
-	 * `cwd`, writing only the session header. The returned path can be passed to
-	 * `setSessionFile` / `AgentSession.switchSession` when a caller explicitly
-	 * needs a brand-new persisted session at a cwd-derived path.
-	 */
 	static createEmptySessionFile(cwd: string, storage: SessionStorage = new FileSessionStorage()): string {
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const id = mintSessionId();
@@ -2642,15 +2231,6 @@ export class SessionManager {
 		return file;
 	}
 
-	/**
-	 * Fork a session into the current project directory: copy history from another
-	 * session file while creating a fresh session file in this sessionDir.
-	 *
-	 * `options.sessionFile` pins the new session's file path (default: an
-	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). Artifacts are copied
-	 * recursively by default; nested agents that deliberately share their parent's
-	 * artifact root may disable this with `copyArtifacts: false`.
-	 */
 	static async forkFrom(
 		sourcePath: string,
 		cwd: string,
@@ -2695,11 +2275,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/**
-	 * Open a specific session file.
-	 * @param sessionDir Optional dir for /new or /branch; defaults to the file's parent.
-	 * @param options.initialCwd Cwd to use when the file is empty or missing.
-	 */
 	static async open(
 		filePath: string,
 		sessionDir?: string,
@@ -2708,11 +2283,7 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const loaded = await loadSessionFile(filePath, storage);
 		const header = loaded.entries.find(entry => entry.type === "session") as SessionHeader | undefined;
-		// Resume into the session's recorded cwd only when that directory still
-		// exists. A deleted project dir would make the constructor's #cwd — and the
-		// `setProjectDir` chdir interactive mode runs next — point at (and fail on)
-		// a missing path, so fall back to the launch cwd and anchor /new and /branch
-		// there too, keeping the resumed session where the user already is.
+
 		const recordedCwd = header?.cwd;
 		const recordedCwdUsable = !!recordedCwd && (await directoryExists(recordedCwd));
 		const cwd = recordedCwdUsable ? recordedCwd : (options?.initialCwd ?? getProjectDir());
@@ -2727,14 +2298,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/**
-	 * Lock-free peek for cold subagent revival: returns the recorded working
-	 * directory (session header) and the latest `session_init` contract (system
-	 * prompt / tools / output schema) WITHOUT taking the single-writer lock that
-	 * {@link open} acquires — the caller re-opens for the actual revive. Returns
-	 * null when the file can't be read; `init` is null for files written before
-	 * `session_init` was recorded (no faithful contract to rebuild from).
-	 */
 	static async peekSessionInit(
 		filePath: string,
 		storage: SessionStorage = new FileSessionStorage(),
@@ -2798,12 +2361,11 @@ export class SessionManager {
 		} catch {
 			return null;
 		}
-		// A missing, empty, or invalid file has no usable session.
+
 		if (!header) return null;
 		return { cwd: header.cwd ?? getProjectDir(), init };
 	}
 
-	/** Continue the most recent session, or create a new one if none exists. */
 	static async continueRecent(
 		cwd: string,
 		sessionDir?: string,
@@ -2815,30 +2377,17 @@ export class SessionManager {
 		let chosenSession: string | null | undefined;
 
 		if (breadcrumb) {
-			// A fresh `/new` boundary whose JSONL was never materialized (lazy
-			// new-session persistence, then a process exit before any assistant
-			// output). Honor the boundary: start fresh rather than falling back to
-			// findMostRecentSession(), which would resurrect the pre-`/new`
-			// transcript. A materialized (or genuinely stale/deleted) crumb reports
-			// exists=false only when fresh, so this never masks a real stale crumb.
 			if (breadcrumb.fresh && !breadcrumb.exists) {
 				const manager = new SessionManager(cwd, dir, true, storage);
 				manager.#resetToNewSession();
 				return manager;
 			}
 
-			// Recover stale crumbs: a subagent open (pre-fix) may have pointed this
-			// terminal's breadcrumb at an artifact child; resume the parent instead.
 			breadcrumb.sessionFile = resolveBreadcrumbToInteractiveRoot(breadcrumb.sessionFile);
 			const breadcrumbCwd = path.resolve(breadcrumb.cwd);
 			if (breadcrumbCwd === resolvedCwd) {
 				chosenSession = breadcrumb.sessionFile;
 			} else {
-				// The terminal's last session started in a different cwd. If that cwd is
-				// gone (worktree move/rename) and this location has no sessions of its
-				// own, re-root the moved session here instead of starting fresh. When an
-				// explicit sessionDir is reused across the move, the stale breadcrumb file
-				// may be the newest entry there; prefer a genuine current-cwd session.
 				let newestInTargetDir = await findMostRecentSession(dir, storage);
 				const breadcrumbFile = path.resolve(breadcrumb.sessionFile);
 				const breadcrumbCwdMissing = !fs.existsSync(breadcrumbCwd);
@@ -2863,9 +2412,7 @@ export class SessionManager {
 					(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
 				if (looksLikeMovedProject) {
 					logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
-					// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
-					// session: open() now falls back to the launch cwd for a missing
-					// recorded cwd, which would no-op moveTo when it equals `cwd`.
+
 					const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage, {
 						initialCwd: breadcrumbCwd,
 					});
@@ -2885,7 +2432,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/** Create an in-memory session (no file persistence). */
 	static inMemory(
 		cwd: string = getProjectDir(),
 		storage: SessionStorage = new MemorySessionStorage(),
@@ -2895,10 +2441,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/**
-	 * List sessions for a project directory.
-	 * @param sessionDir Optional dir; defaults to the cwd-derived dir.
-	 */
 	static async list(
 		cwd: string,
 		sessionDir?: string,
@@ -2915,10 +2457,6 @@ export class SessionManager {
 	}
 }
 
-/**
- * If the current session was created by `/move` and contains no real
- * user/assistant messages, delete it so empty move sessions don't accumulate.
- */
 export async function cleanupEmptyMoveSession(
 	sessionManager: SessionManager,
 	movedFromEmptySessionFile: string | undefined,

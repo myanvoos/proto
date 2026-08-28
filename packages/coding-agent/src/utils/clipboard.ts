@@ -9,21 +9,6 @@ import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text
 
 type SpawnCaptureOptions = { input?: string; timeoutMs?: number };
 
-/**
- * Run a subprocess and capture its stdout without blocking the event loop.
- *
- * `readTextFromClipboard`, `readMacFileUrlsFromClipboard`, and the Termux copy
- * path all shell out to CLI clipboard tools. The synchronous `execSync` API
- * parks the render loop until the child exits or the timeout fires, so a hung
- * clipboard daemon freezes the TUI for the full 2000ms budget (#4235). This
- * helper mirrors the previous semantics — capture stdout, throw on non-zero
- * exit or timeout, forward optional stdin — but yields to the event loop while
- * the child runs.
- *
- * @throws Error when the child fails to spawn, is killed by the timeout, or
- *   exits with a non-zero status. Callers rely on this to use platform
- *   fallbacks or report an empty clipboard.
- */
 async function spawnCapture(cmd: string[], options: SpawnCaptureOptions & { encoding: "bytes" }): Promise<Uint8Array>;
 async function spawnCapture(cmd: string[], options?: SpawnCaptureOptions): Promise<string>;
 async function spawnCapture(
@@ -62,15 +47,6 @@ function hasDisplay(): boolean {
 	return process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 
-/**
- * Read file paths from the macOS pasteboard's `public.file-url` representation.
- *
- * Used to reach the Finder `Cmd+C` pasteboard (which exposes only file URLs,
- * no plain text or raw image bytes) so an image-file clipboard can be attached
- * via {@link handleImagePathPaste} instead of falling through to "Clipboard is
- * empty". Returns an empty array on non-darwin platforms, when AppleScript is
- * unavailable, or when the pasteboard holds no file URLs.
- */
 export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 	if (process.platform !== "darwin") return [];
 	try {
@@ -85,20 +61,11 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 	}
 }
 
-/**
- * Copy text to the system clipboard.
- *
- * Emits OSC 52 first when running in a real terminal (works over SSH/mosh),
- * then attempts native clipboard copy as best-effort for local sessions.
- * On Termux, tries `termux-clipboard-set` before native.
- *
- * @param text - UTF-8 text to place on the clipboard.
- */
 export async function copyToClipboard(text: string): Promise<void> {
 	if (process.stdout.isTTY) {
 		const onError = (err: unknown) => {
 			process.stdout.off("error", onError);
-			// Prevent unhandled 'error' from crashing the process when stdout is a closed pipe.
+
 			if ((err as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE") {
 				return;
 			}
@@ -109,8 +76,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 			process.stdout.on("error", onError);
 			process.stdout.write(osc52, err => {
 				process.stdout.off("error", onError);
-				// If stdout is closed (e.g. piped to a process that exits early),
-				// ignore EPIPE and proceed with native clipboard best-effort.
+
 				if ((err as NodeJS.ErrnoException | null | undefined)?.code === "EPIPE") {
 					return;
 				}
@@ -118,26 +84,20 @@ export async function copyToClipboard(text: string): Promise<void> {
 		} catch (err) {
 			process.stdout.off("error", onError);
 			if ((err as NodeJS.ErrnoException | null | undefined)?.code !== "EPIPE") {
-				// Ignore all write failures (OSC 52 is best-effort).
 			}
 		}
 	}
 
-	// Also try native tools (best effort for local sessions)
 	try {
 		if (process.env.TERMUX_VERSION) {
 			try {
 				await spawnCapture(["termux-clipboard-set"], { input: text, timeoutMs: 5000 });
 				return;
-			} catch {
-				// Fall through to native
-			}
+			} catch {}
 		}
 
 		await nativeCopyToClipboard(text);
-	} catch {
-		// Ignore — clipboard copy is best-effort
-	}
+	} catch {}
 }
 
 async function readTextFromX11Clipboard(): Promise<string> {
@@ -148,14 +108,6 @@ async function readTextFromX11Clipboard(): Promise<string> {
 	}
 }
 
-/**
- * Read an image from the system clipboard.
- *
- * Returns null on Termux (no image clipboard support) or when no display
- * server is available (headless/SSH without forwarding).
- *
- * @returns A supported image payload or null when no image is available.
- */
 export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 	if (process.env.TERMUX_VERSION) {
 		return null;
@@ -169,9 +121,7 @@ export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 				const data = await spawnCapture(["wl-paste", "--type", mimeType], { encoding: "bytes" });
 				if (data.byteLength > 0) return { data, mimeType };
 			}
-		} catch {
-			// Fall through when wl-clipboard is absent or no advertised image payload can be read.
-		}
+		} catch {}
 	}
 
 	if (!hasDisplay()) {
@@ -181,19 +131,11 @@ export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 	try {
 		return (await nativeReadImageFromClipboard()) ?? null;
 	} catch (error) {
-		// Some selection owners make the native image read throw instead of
-		// reporting "no image" — e.g. an xclip-written text-only selection
-		// (arboard: "Unknown error ... incorrect type received from clipboard").
-		// Treat a failed image read as "no image" so the caller's smart-paste
-		// text fallback still delivers the clipboard content.
 		logger.warn("clipboard: failed to read clipboard image", { error: String(error) });
 		return null;
 	}
 }
 
-/**
- * Read plain text from the system clipboard.
- */
 export async function readTextFromClipboard(): Promise<string> {
 	try {
 		const p = process.platform;

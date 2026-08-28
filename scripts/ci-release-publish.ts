@@ -1,35 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Publish workspace packages.
- *
- * The default mode publishes public JS packages and the `@oh-my-pi/pi-natives`
- * core package. Generated native leaf packages are published separately with
- * `--native-leaf <tag>` from the release_binary matrix after that matrix entry
- * downloads the matching `.node` artifacts.
- *
- * For each public TypeScript package we:
- *   1. Emit `.d.ts` declarations into `dist/types/` so consumers get
- *      stable types regardless of their tsconfig `lib`.
- *   2. Rewrite `package.json` in place — every `types`/`exports[*].types`
- *      that points at `./src/*.ts(x)` is repointed to `./dist/types/*.d.ts`,
- *      `dist/types` is added to `files`,
- *      and packages with a `publishBin` override get their `bin` swapped to
- *      the prepack bundle (coding-agent: `src/cli.ts` → `dist/cli.js`).
- *      Packages flagged `publishJs` (omptype) additionally emit transpiled
- *      per-module JS into `dist/js/` and get their runtime entries (`main`,
- *      `exports[*]` import paths) repointed there, with a `bun` condition
- *      keeping TS-source resolution for Bun consumers — so the published
- *      package runs on plain Node. The on-repo manifest keeps pointing at
- *      source so local dev and source installs (`bun link`,
- *      `install.sh --source`) work without a build.
- *   3. Pack with `bun pm pack` (resolves the `catalog:`/`workspace:`
- *      protocols npm cannot, and runs each package's `prepack` lifecycle),
- *      then publish the resolved tarball with `npm publish` — see
- *      `packAndPublish` for why npm and not `bun publish`.
- *
- * Intended for CI. Mutates `package.json` in place — if you run this
- * locally, expect a dirty working tree and `git restore` after.
- */
 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -45,23 +14,15 @@ import { fixEmitExtensions } from "./fix-emit-extensions.ts";
 export interface PublishPackage {
 	dir: string;
 	kind: "typescript" | "native";
-	/** Extra build steps before manifest rewrite (e.g. esbuild bundles). */
+
 	preBuild?: readonly (readonly string[])[];
-	/** Extra entries to splice into `files`. */
+
 	extraFiles?: readonly string[];
-	/** Extra tsgo invocations beyond `tsconfig.publish.json`. */
+
 	extraTypeConfigs?: readonly string[];
-	/**
-	 * Also emit transpiled JS to `dist/js` (via `tsconfig.publish.js.json`)
-	 * and repoint the published runtime entries there so the package runs on
-	 * plain Node. Requires the package to be dependency-free of Bun APIs.
-	 */
+
 	publishJs?: boolean;
-	/**
-	 * `bin` map for the published manifest. The on-repo manifest points `bin`
-	 * at TS source so source installs (`bun link`, `install.sh --source`) work
-	 * without a build; publish swaps in the `prepack` bundle.
-	 */
+
 	publishBin?: Readonly<Record<string, string>>;
 }
 
@@ -84,7 +45,6 @@ const isDryRun = process.argv.includes("--dry-run");
 const MIT_LICENSE = "LICENSE";
 const THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.txt";
 
-/** Selects the legal payload contract for a publishable first-party package. */
 export function legalPayloadFiles(license: string | undefined): string[] {
 	switch (license) {
 		case "MIT":
@@ -94,11 +54,6 @@ export function legalPayloadFiles(license: string | undefined): string[] {
 	}
 }
 
-/**
- * Materialize the legal payload beside a package manifest before packing.
- * Package-local license/notice files win; missing files fall back to the
- * repository payload so generated and source packages follow one contract.
- */
 export async function stageLegalPayloads(
 	pkgDir: string,
 	license: string | undefined,
@@ -163,8 +118,6 @@ function rewriteExports(exports: JsonValue, publishJs: boolean): JsonValue {
 	for (const key in src) {
 		const val = src[key];
 		if (publishJs && typeof val === "string" && val.startsWith("./src/")) {
-			// String-form subpath (e.g. `"./*.js": "./src/*.ts"`): declarations
-			// for TS, TS source for Bun, transpiled JS for everything else.
 			out[key] = { types: rewriteSrcToTypes(val), bun: val, default: rewriteSrcToJs(val) };
 			continue;
 		}
@@ -177,8 +130,6 @@ function rewriteExports(exports: JsonValue, publishJs: boolean): JsonValue {
 		) {
 			const srcTypes = (val as JsonObject).types as string;
 			if (publishJs) {
-				// Condition order matters: `types` is TS-only, `bun` must win
-				// over `default` for Bun consumers.
 				out[key] = { types: rewriteSrcToTypes(srcTypes), bun: srcTypes, default: rewriteSrcToJs(srcTypes) };
 			} else {
 				const next: JsonObject = { ...(val as JsonObject) };
@@ -192,7 +143,6 @@ function rewriteExports(exports: JsonValue, publishJs: boolean): JsonValue {
 	return out;
 }
 
-/** Compute (and optionally write) the published manifest for a package. */
 export async function rewriteManifest(pkg: PublishPackage, write: boolean): Promise<PackageManifest> {
 	const manifestPath = path.join(repoRoot, pkg.dir, "package.json");
 	const manifest = (await Bun.file(manifestPath).json()) as PackageManifest;
@@ -233,9 +183,7 @@ async function preparePackage(pkg: PublishPackage): Promise<PackageManifest> {
 	}
 	const sourceManifest = (await Bun.file(path.join(pkgDir, "package.json")).json()) as PackageManifest;
 	await stageLegalPayloads(pkgDir, sourceManifest.license, !isDryRun);
-	// Both emits run under `moduleResolution: "Bundler"`, so relative
-	// specifiers land extensionless — unresolvable for a `nodenext` consumer
-	// (types) and for Node ESM at runtime (js). Rewrite them to explicit `.js`.
+
 	await fixEmitExtensions(path.join(pkgDir, "dist/types"), ".d.ts");
 	if (pkg.publishJs) {
 		await fixEmitExtensions(path.join(pkgDir, "dist/js"), ".js");
@@ -251,7 +199,6 @@ function buildNativeOptionalDependencies(version: string): JsonObject {
 	return optionalDependencies;
 }
 
-/** Prepares the native core manifest and legal payloads for publication. */
 export async function prepareNativeCorePackage(pkgDir: string, write: boolean): Promise<PackageManifest> {
 	const manifestPath = path.join(pkgDir, "package.json");
 	const manifest = (await Bun.file(manifestPath).json()) as PackageManifest;
@@ -277,30 +224,12 @@ export async function prepareNativeCorePackage(pkgDir: string, write: boolean): 
 	return manifest;
 }
 
-/**
- * Pack with `bun pm pack`, then publish the resolved tarball with `npm publish`.
- *
- * `bun pm pack` builds the tarball because it resolves the `catalog:` and
- * `workspace:` protocols (npm would ship them verbatim, producing
- * uninstallable manifests) and runs the `prepack` lifecycle, baking generated
- * sources (e.g. coding-agent's docs index) into the tarball.
- *
- * The tarball is handed to `npm publish` — not `bun publish` — because only the
- * npm CLI performs the OIDC trusted-publishing token exchange; `bun publish`
- * has no OIDC support (oven-sh/bun#22423). In CI with `id-token: write` granted
- * and `NODE_AUTH_TOKEN` set, npm tries OIDC per package and silently falls back
- * to the configured token when the package has no matching trusted publisher —
- * which also covers a package's first-ever publish. npm auto-enables provenance
- * only on the OIDC path, so we never pass `--provenance` (it would hard-fail the
- * token fallback).
- */
 export interface PackedTarball {
 	name: string;
 	version: string;
 	path: string;
 }
 
-/** Read the package identity npm will publish from the packed archive. */
 export async function inspectPackedTarball(tarballPath: string): Promise<PackedTarball> {
 	const extracted = await $`tar -xOzf ${tarballPath} package/package.json`.quiet().nothrow();
 	if (extracted.exitCode !== 0) {
@@ -330,8 +259,7 @@ async function packAndPublish(dir: string, name: string): Promise<void> {
 		const tarball = (await fs.readdir(packDir)).find(entry => entry.endsWith(".tgz"));
 		if (!tarball) throw new Error(`bun pm pack produced no tarball for ${name} (${path.relative(repoRoot, dir)})`);
 		const packedTarball = await inspectPackedTarball(path.join(packDir, tarball));
-		// Preflight the exact packed version so reruns skip deterministically.
-		// Fail open on lookup errors; only a confirmed published version may skip publishing.
+
 		const preflight = await $`npm view ${`${packedTarball.name}@${packedTarball.version}`} version`.quiet().nothrow();
 		if (preflight.exitCode === 0 && preflight.stdout.toString().trim()) {
 			console.log(`Skipping ${packedTarball.name} (version already published)`);
@@ -341,7 +269,6 @@ async function packAndPublish(dir: string, name: string): Promise<void> {
 		const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
 		if (output) console.log(output);
 		if (result.exitCode !== 0) {
-			// A concurrent publisher may win after the preflight.
 			if (isVersionAlreadyPublished(output)) {
 				console.log(`Skipping ${packedTarball.name} (version already published)`);
 				return;
@@ -353,10 +280,6 @@ async function packAndPublish(dir: string, name: string): Promise<void> {
 	}
 }
 
-/**
- * npm's existing-version machine codes across supported CLI generations, plus
- * npm 11's registry-precheck prose when it emits no machine code.
- */
 export function isVersionAlreadyPublished(output: string): boolean {
 	return (
 		/npm (?:error|err!) code (E409|EPUBLISHCONFLICT)\b/i.test(output) ||

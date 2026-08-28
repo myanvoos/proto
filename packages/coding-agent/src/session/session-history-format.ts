@@ -1,11 +1,3 @@
-/**
- * Concise markdown transcript serializer for `history://` URLs.
- *
- * This emits a
- * compressed transcript: full user/assistant/developer text, tool call +
- * result pairs collapsed to single lines, thinking elided, custom messages
- * as one-liners. No system prompt, no tool catalog, no config sections.
- */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
@@ -20,43 +12,24 @@ import type {
 } from "./messages";
 
 interface HistoryFormatOptions {
-	/** Optional H1 prepended to the transcript. */
 	title?: string;
-	/** Render assistant thinking blocks (default: elided). */
+
 	includeThinking?: boolean;
-	/** Render tool intent comment before tool call lines. */
+
 	includeToolIntent?: boolean;
-	/** Render watched-session roles as inline `**agent**:` / `**user**:` labels (collapsing consecutive same-role messages) instead of `## ` headings, so a primary transcript embedded inside an advisor turn stays visually distinct. */
+
 	watchedRoles?: boolean;
-	/**
-	 * Append the full unified diff (from a tool result's `details.diff`) below
-	 * edit/apply_patch tool lines, instead of just the path. The advisor sets
-	 * this so it sees what changed without re-reading the file.
-	 */
+
 	expandEditDiffs?: boolean;
-	/**
-	 * Chunked rendering support: a caller formatting one logical transcript in
-	 * several calls (the advisor's chunked delta render) passes a result index
-	 * built over the WHOLE delta plus one shared consumed-id set, so a toolCall
-	 * finds its toolResult across chunk boundaries and the result is never
-	 * re-rendered as an orphan in a later chunk.
-	 */
+
 	toolResultIndex?: ReadonlyMap<string, ToolResultMessage>;
 	consumedToolCallIds?: Set<string>;
-	/**
-	 * Chunked rendering state: a mutable holder for the watched-role label
-	 * (`**user**:` / `**agent**:`) that ended the previous chunk. Lets a caller
-	 * formatting one logical transcript across several calls (advisor
-	 * multi-message split) keep consecutive same-role collapsing byte-identical
-	 * to the single-block render: pass one object across all chunk calls.
-	 */
+
 	watchedRoleState?: { lastLabel: string | undefined };
 }
 
-/** Max length of the primary-arg summary inside `→ tool(...)` lines. */
 const PRIMARY_ARG_MAX = 120;
 
-/** Per-tool preference order for the most informative scalar argument. */
 const PRIMARY_ARG_KEYS = [
 	"path",
 	"file_path",
@@ -75,7 +48,6 @@ const PRIMARY_ARG_KEYS = [
 	"id",
 ] as const;
 
-/** Collapse whitespace runs and truncate to `max` chars with an ellipsis. */
 function oneLine(text: string, max = PRIMARY_ARG_MAX): string {
 	const flat = text.replace(/\s+/g, " ").trim();
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -85,7 +57,6 @@ export function formatExecutionSourcePreview(source: string): string {
 	return oneLine(source);
 }
 
-/** Join the text blocks of a string-or-blocks content field. Images become `[image]`. */
 function contentToText(content: string | readonly (TextContent | ImageContent)[]): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
@@ -109,10 +80,9 @@ function primaryArgValue(value: unknown): string {
 	return "";
 }
 
-/** Pick the most informative scalar argument of a tool call. */
 function formatToolCallPrimaryArg(name: string, args: Record<string, unknown> | undefined): string {
 	if (!args || typeof args !== "object") return "";
-	// Advisor note is the most informative summary; preserve severity too.
+
 	if (name === "advise") {
 		const note = typeof args.note === "string" ? args.note : "";
 		const severity = typeof args.severity === "string" ? args.severity : "";
@@ -136,7 +106,7 @@ function formatToolCallPrimaryArg(name: string, args: Record<string, unknown> | 
 		const summary = primaryArgValue(value);
 		if (summary) return oneLine(summary);
 	}
-	// Fallback: first non-intent string arg, then a compact JSON of the args.
+
 	const rest: Record<string, unknown> = {};
 	let restCount = 0;
 	for (const key in args) {
@@ -163,18 +133,12 @@ export function formatToolResultErrorPreview(content: string | readonly (TextCon
 	return oneLine(contentToText(content).split("\n", 1)[0] ?? "");
 }
 
-/**
- * Wrap a diff body in a backtick fence sized to outlast the longest backtick
- * run inside it, so a diff that touches markdown (triple backticks) can't break
- * out of the fence. Info string `diff` for syntax highlighting.
- */
 function fenceDiff(diff: string): string {
 	const longest = diff.match(/`+/g)?.reduce((m, run) => Math.max(m, run.length), 0) ?? 0;
 	const fence = "`".repeat(Math.max(3, longest + 1));
 	return `${fence}diff\n${diff}\n${fence}`;
 }
 
-/** One line per tool call: `→ read(src/foo.ts:50-80) ⇒ ok · 31 lines`. */
 function toolCallLine(
 	name: string,
 	args: Record<string, unknown> | undefined,
@@ -210,10 +174,6 @@ function toolCallLine(
 	return base;
 }
 
-/** One line for a user-initiated `!`/`$` execution. Always attributed to the
- *  user: these roles never carry agent-run commands (the model's bash goes
- *  through `toolCall`), so the `user-` prefix makes provenance explicit for the
- *  advisor and history readers regardless of render mode. */
 function executionLine(
 	kind: "bash" | "python",
 	source: string,
@@ -229,12 +189,10 @@ function executionLine(
 	return `→ user-${kind}! ${sourcePreview} ⇒ ${status} · ${lines} ${lines === 1 ? "line" : "lines"}`;
 }
 
-/** Hidden non-primary custom messages whose content is needed to understand visible transcript entries. */
 const CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES: Record<string, true> = {
 	"image-attachment-description": true,
 };
 
-/** One-liner for custom/hook messages: `[irc] A → B: body…`. */
 function customOneLiner(msg: CustomMessage | HookMessage): string {
 	const details = (msg.details ?? {}) as Record<string, unknown>;
 	const str = (key: string): string => (typeof details[key] === "string" ? (details[key] as string) : "");
@@ -258,12 +216,6 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 	}
 }
 
-/**
- * Format a session's message array as a concise markdown transcript.
- *
- * `messages` is the session's in-memory message array (or the read-only
- * equivalent loaded from a session file).
- */
 export function formatSessionHistoryMarkdown(messages: unknown[], opts?: HistoryFormatOptions): string {
 	const typed = messages as AgentMessage[];
 	const lines: string[] = [];
@@ -271,9 +223,6 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 		lines.push(`# ${opts.title}`, "");
 	}
 
-	// Index tool results by call id so each toolCall collapses to one line.
-	// Chunked callers supply a whole-delta index + shared consumed set so
-	// call/result pairs resolve across chunk boundaries.
 	let resultsByCallId = opts?.toolResultIndex;
 	if (!resultsByCallId) {
 		const local = new Map<string, ToolResultMessage>();
@@ -285,17 +234,9 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 		resultsByCallId = local;
 	}
 	const consumed = opts?.consumedToolCallIds ?? new Set<string>();
-	// In watched mode, consecutive same-role messages collapse under one label
-	// (the watched agent emits one assistant message per tool call, so otherwise
-	// every call repeats `**agent**:`). Cleared whenever a
-	// non-role-labeled line is emitted so the next turn re-labels.
-	// Chunked callers seed the previous chunk's trailing label so collapsing
-	// stays byte-identical to the single-block render.
+
 	let lastWatchedLabel: string | undefined = opts?.watchedRoleState?.lastLabel;
-	// Emit a watched-mode role label, collapsing consecutive same-role turns
-	// under one label (matching the user/assistant paths). Used for the
-	// user-attributed `!`/`$` execution lines so the advisor never reads them
-	// as agent actions.
+
 	const pushWatchedRole = (label: string, body: string): void => {
 		if (lastWatchedLabel === label) {
 			lines.push(body, "");
@@ -339,7 +280,6 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
 						body.push(`_thinking:_ ${block.thinking}`);
 					}
-					// redactedThinking elided entirely (no readable text)
 				}
 				if (body.length === 0) break;
 				if (opts?.watchedRoles) {
@@ -356,7 +296,6 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 				break;
 			}
 			case "toolResult": {
-				// Normally consumed by its toolCall; orphans (e.g. truncated history) get their own line.
 				if (consumed.has(msg.toolCallId)) break;
 				lines.push(toolCallLine(msg.toolName, undefined, msg, opts?.includeToolIntent, opts?.expandEditDiffs), "");
 				lastWatchedLabel = undefined;

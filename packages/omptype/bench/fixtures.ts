@@ -1,4 +1,3 @@
-/** Benchmark fixtures modeled on real proto tool-parameter schemas. */
 import type { Def } from "./ir";
 
 export interface Fixture {
@@ -6,7 +5,7 @@ export interface Fixture {
 	def: Def;
 	valid: unknown[];
 	invalid: unknown[];
-	/** The schema must produce output without mutating input. */
+
 	expect?: { input: unknown; output: unknown }[];
 }
 
@@ -127,7 +126,6 @@ export const FIXTURES: Fixture[] = [
 	},
 ];
 
-/** Generate unique fixed-shape schemas plus matching validation probes. */
 export function generateUniqueDefs(count: number): { def: Def; valid: unknown; invalid: unknown }[] {
 	const out: { def: Def; valid: unknown; invalid: unknown }[] = [];
 	for (let i = 0; i < count; i++) {

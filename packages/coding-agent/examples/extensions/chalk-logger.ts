@@ -1,12 +1,7 @@
-/**
- * Example extension that uses a 3rd party dependency (chalk).
- * Tests that jiti can resolve npm modules correctly.
- */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 
 export default function (pi: ExtensionAPI) {
-	// Log with colors using chalk
 	console.log(`${chalk.green("✓")} ${chalk.bold("chalk-logger extension loaded")}`);
 
 	pi.on("agent_start", async () => {

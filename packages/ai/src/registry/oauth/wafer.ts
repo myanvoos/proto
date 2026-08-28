@@ -1,10 +1,3 @@
-/**
- * Wafer Serverless login flow.
- *
- * Wafer (https://wafer.ai) exposes a pay-as-you-go OpenAI-compatible SKU at
- * `https://pass.wafer.ai/v1`. Keys use the `wfr_…` prefix and are validated
- * against `/v1/models`, which is cheap (no token spend).
- */
 import { createApiKeyLogin } from "../api-key-login";
 
 const WAFER_AUTH_URL = "https://app.wafer.ai/usage";

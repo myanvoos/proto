@@ -1,6 +1,6 @@
-//! `comm` builtin: compare two sorted files line by line.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	cmp::Ordering,
@@ -241,7 +241,7 @@ fn open_file<'a>(
 	Ok(LineReader::new(Box::new(BufReader::new(File::open(resolved)?)), ending))
 }
 
-/// Parsed `comm` invocation.
+
 pub(crate) struct Comm {
 	matches: ArgMatches,
 }
@@ -276,8 +276,8 @@ impl Utility for Comm {
 			files_identical(&path1, &path2).unwrap_or(false)
 		};
 		let ending = LineEnding::from_zero_flag(self.matches.get_flag(options::ZERO_TERMINATED));
-		// Taken before the `LineReader`s below hold `&mut host.stdin`; a
-		// method borrow of `host` would otherwise conflict with them.
+
+
 		let mut stdout = host.stdout_writer();
 		let opened: Result<_, (&OsStr, io::Error)> = if name1 == "-" {
 			open_file(name2, &path2, None, ending)
@@ -351,7 +351,7 @@ fn app() -> Command {
 		.arg(Arg::new(options::NO_CHECK_ORDER).long(options::NO_CHECK_ORDER).help("do not check that input is correctly sorted").action(ArgAction::SetTrue).conflicts_with(options::CHECK_ORDER))
 }
 
-/// Creates the `comm` builtin registration.
+
 pub(crate) fn comm_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Comm, SE>()
 }

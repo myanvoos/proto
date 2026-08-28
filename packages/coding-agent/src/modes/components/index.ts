@@ -1,5 +1,3 @@
-// UI Components barrel export
-
 export * from "./advisor-config";
 export * from "./assistant-message";
 export * from "./bash-execution";

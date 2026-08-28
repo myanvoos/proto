@@ -1,9 +1,3 @@
-/**
- * SSH JSON Provider
- *
- * Discovers SSH hosts from managed proto config paths and legacy root ssh.json files.
- * Priority: 5 (low, project/user config discovery)
- */
 import * as path from "node:path";
 import { getSSHConfigPath, tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";

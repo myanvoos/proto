@@ -11,21 +11,6 @@ import {
 } from "@oh-my-pi/pi-utils";
 import packageJson from "../../package.json" with { type: "json" };
 
-/**
- * Child-side scaffolding shared by the ONNX inference worker bodies
- * (`tiny/worker`). These are the helpers
- * that run inside the spawned subprocess: error serialization, structured log
- * and progress reporting over the worker's typed transport, side-runtime
- * install (sharp stubbing + module-resolver patch), once-per-process runtime
- * memoization, and the Transformers.js runtime loader. The parent/client-side
- * complement lives in `worker-client.ts`.
- *
- * Each worker keeps its own strongly-typed transport / model-key / progress
- * event; the structural {@link WorkerLogTransport} / {@link WorkerProgressTransport}
- * interfaces below are the minimal shapes these helpers need, and every worker's
- * concrete transport satisfies them.
- */
-
 const TRANSFORMERS_PACKAGE = "@huggingface/transformers";
 const COMPILED_TRANSFORMERS_VERSION = process.env.PI_TINY_TRANSFORMERS_VERSION;
 const ONNX_RUNTIME_NODE_PACKAGE = "onnxruntime-node";
@@ -39,8 +24,6 @@ const LINUX_X64_ONNX_RUNTIME_CUDA_PROVIDER_DIR = path.join("bin", "napi-v6", "li
 
 const sourceRequire = createRequire(import.meta.url);
 
-// ── Error serialization ─────────────────────────────────────────────
-
 export function errorText(error: unknown): string {
 	return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
@@ -49,11 +32,8 @@ export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-// ── Structured logging ──────────────────────────────────────────────
-
 type WorkerLogLevel = "debug" | "warn" | "error";
 
-/** Minimal transport surface a worker exposes for forwarding log lines. */
 interface WorkerLogTransport {
 	send(message: { type: "log"; level: WorkerLogLevel; msg: string; meta?: Record<string, unknown> }): void;
 }
@@ -67,13 +47,6 @@ export function sendLog(
 	transport.send({ type: "log", level, msg, meta });
 }
 
-// ── Progress reporting ──────────────────────────────────────────────
-
-/**
- * Generic worker progress event. Each worker's protocol declares an identical
- * shape with its own `modelKey` type; this is the parameterized version the
- * shared helpers emit, structurally assignable to each protocol's event.
- */
 interface WorkerProgressEvent<K> {
 	modelKey: K;
 	status: "initiate" | "download" | "progress" | "progress_total" | "done" | "ready" | "error";
@@ -87,12 +60,10 @@ interface WorkerProgressEvent<K> {
 	model?: string;
 }
 
-/** Minimal transport surface a worker exposes for emitting progress events. */
 interface WorkerProgressTransport<K> {
 	send(message: { type: "progress"; id: string; event: WorkerProgressEvent<K> }): void;
 }
 
-/** Map a Transformers.js {@link ProgressInfo} onto the worker progress event. */
 function toProgressEvent<K>(modelKey: K, info: ProgressInfo): WorkerProgressEvent<K> {
 	if (info.status === "ready") {
 		return { modelKey, status: info.status, task: info.task, model: info.model };
@@ -131,13 +102,6 @@ export function sendProgress<K>(
 	transport.send({ type: "progress", id, event: toProgressEvent(modelKey, info) });
 }
 
-// ── Model cache ─────────────────────────────────────────────────────
-
-/**
- * If a model is already warming/warm in `cache`, replay a `ready` progress
- * event for this request once it resolves and return the cached promise so the
- * caller can short-circuit; otherwise return `undefined`.
- */
 export function replayCachedReady<K, M>(
 	cache: Map<K, Promise<M>>,
 	modelKey: K,
@@ -156,14 +120,6 @@ export function replayCachedReady<K, M>(
 	return cached;
 }
 
-// ── Side-runtime install scaffolding ────────────────────────────────
-
-/**
- * Stub `sharp` (the speech/text pipelines are not image codecs, so the native
- * image dependency is dead weight) and patch the module resolver so a side
- * runtime's bare requires resolve against its own `node_modules`. Returns the
- * runtime's `node_modules` directory.
- */
 async function installSharpStubResolver(runtimeDir: string): Promise<string> {
 	const nodeModules = path.join(runtimeDir, "node_modules");
 	const sharpStub = path.join(runtimeDir, "proto-sharp-stub.cjs");
@@ -227,10 +183,6 @@ async function installOnnxRuntimeCudaProviders(packageDir: string, runtimeDir: s
 	}
 }
 
-/**
- * Repairs the compiled Transformers side runtime when CUDA was requested and
- * Bun skipped `onnxruntime-node`'s NuGet sidecar install.
- */
 export async function ensureOnnxRuntimeCudaProviders(
 	runtimeDir: string,
 	device = process.env.PI_TINY_DEVICE,
@@ -253,18 +205,12 @@ export async function ensureOnnxRuntimeCudaProviders(
 	);
 }
 
-/**
- * Prepare a freshly-installed compiled runtime for loading and return the
- * absolute entrypoint of `packageName` to `require`.
- */
 async function prepareCompiledRuntime(runtimeDir: string, packageName: string): Promise<string> {
 	const nodeModules = await installSharpStubResolver(runtimeDir);
 	const entry = resolveRuntimeModule(nodeModules, packageName);
 	if (!entry) throw new Error(`Unable to resolve ${packageName} in compiled runtime at ${nodeModules}`);
 	return entry;
 }
-
-// ── Transformers version resolution ─────────────────────────────────
 
 function resolveTransformersVersionSpec(): string {
 	const manifest = packageJson as {
@@ -282,21 +228,11 @@ function resolveTransformersVersionSpec(): string {
 
 let cachedTransformersVersionSpec: string | undefined;
 
-/**
- * Lazily resolve (and memoize) the transformers version spec. In the `catalog:`
- * case {@link resolveTransformersVersionSpec} `require`s the installed
- * `@huggingface/transformers/package.json`, so it is only ever touched on the
- * compiled-binary runtime-install path — loading a worker (startup ping,
- * online path) never triggers the transformers resolve/install dance.
- */
 export function getTransformersVersionSpec(): string {
 	cachedTransformersVersionSpec ??= resolveTransformersVersionSpec();
 	return cachedTransformersVersionSpec;
 }
 
-// ── Transformers runtime loader ─────────────────────────────────────
-
-/** The subset of the Transformers.js module surface {@link configureTransformers} touches. */
 interface ConfigurableTransformers {
 	env: { cacheDir?: string; allowLocalModels?: boolean; logLevel?: unknown };
 	LogLevel: { ERROR: unknown };
@@ -371,9 +307,7 @@ function resolveOnnxRuntimePackageDir(metadata: TransformersRuntimeMetadata): st
 	if (entry) {
 		try {
 			return path.dirname(createRequire(entry).resolve(`${ONNX_RUNTIME_NODE_PACKAGE}/package.json`));
-		} catch {
-			// Fall through to the side-runtime resolver below.
-		}
+		} catch {}
 	}
 	const nodeModules = metadata.__ompRuntimeNodeModules;
 	if (!nodeModules) return null;
@@ -417,11 +351,6 @@ function configureTransformers<T extends ConfigurableTransformers>(transformers:
 	return transformers;
 }
 
-/**
- * Memoize an async runtime load so it runs at most once per process, clearing
- * the cache on failure so a later call can retry. Each worker holds one
- * instance per runtime it loads.
- */
 export class MemoizedRuntime<T> {
 	#promise: Promise<T> | null = null;
 
@@ -436,12 +365,6 @@ export class MemoizedRuntime<T> {
 	}
 }
 
-/**
- * Load the `@huggingface/transformers` runtime into `holder` (memoized): from
- * the ambient install when running from source, or from a version-keyed side
- * runtime (resolved lazily at `runtimeDir()`) when running as a compiled binary.
- * The result is cast to the caller's concrete runtime type `T`.
- */
 export function loadTransformersRuntime<T extends ConfigurableTransformers, K>(
 	holder: MemoizedRuntime<T>,
 	transport: WorkerProgressTransport<K>,
@@ -478,9 +401,6 @@ export function loadTransformersRuntime<T extends ConfigurableTransformers, K>(
 		try {
 			await ensureOnnxRuntimeCudaProviders(installedDir);
 		} catch (repairError) {
-			// Deferred failure: keep loading Transformers so `loadPipelineWithDeviceFallback`
-			// still gets its CUDA→CPU retry. The error is surfaced through the CUDA
-			// diagnostics attached to the runtime metadata.
 			cudaRepairError = errorMessage(repairError);
 		}
 		const entry = await prepareCompiledRuntime(installedDir, TRANSFORMERS_PACKAGE);

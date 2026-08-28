@@ -1,19 +1,9 @@
-/**
- * Transient multi-line status board for standalone CLI commands.
- *
- * Repaints a caller-rendered block of lines in place at ~12.5fps while
- * permanent output logged through {@link LiveBoard.log} scrolls above it.
- * Non-TTY outputs disable rendering entirely and `log` degrades to plain
- * writes, so callers keep one code path for both modes.
- */
 import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 
 const RENDER_INTERVAL_MS = 80;
 
-/** Braille spinner advanced once per repaint tick. */
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/** Output contract for the live board (satisfied by `process.stdout`). */
 export interface LiveBoardOutput {
 	isTTY?: boolean;
 	columns?: number;
@@ -21,22 +11,16 @@ export interface LiveBoardOutput {
 	write(text: string): boolean;
 }
 
-/** Live repaint handle returned by {@link createLiveBoard}. */
 interface LiveBoard {
 	readonly interactive: boolean;
-	/** Print a permanent line above the board; plain write when non-interactive. */
+
 	log(text: string): void;
-	/** Repaint immediately after a state change instead of waiting for the next tick. */
+
 	repaint(): void;
-	/** Clear the board, stop the timer, and restore the cursor. */
+
 	close(): void;
 }
 
-/**
- * Create a live board whose content comes from `render(spinner, width)` on
- * every tick. An empty render result paints nothing and releases the cursor,
- * so an idle board never interferes with other terminal UI (e.g. pickers).
- */
 export function createLiveBoard(
 	render: (spinner: string, width: number) => string[],
 	output: LiveBoardOutput = process.stdout,
@@ -58,10 +42,6 @@ export function createLiveBoard(
 	};
 
 	const paint = (lines: string[]): void => {
-		// Erase each line explicitly and cap it to the terminal width so the
-		// `\x1b[<n>A` cursor-up always matches the logical line count, even in
-		// raw-mode terminals without ONLCR where wrapped rows would otherwise
-		// staircase into scrollback.
 		if (lines.length === 0 && lineCount === 0) return;
 		const { width } = dimensions();
 		let out = lineCount > 0 ? `\x1b[${lineCount}A` : "";

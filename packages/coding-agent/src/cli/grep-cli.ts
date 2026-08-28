@@ -1,8 +1,3 @@
-/**
- * Grep CLI command handlers.
- *
- * Handles `proto grep` subcommand for testing grep tool on Windows.
- */
 import * as path from "node:path";
 import { GrepOutputMode, grep } from "@oh-my-pi/pi-natives";
 import chalk from "@oh-my-pi/pi-utils/chalk";

@@ -1,6 +1,6 @@
-# systemctl status / show output.
-# Keep the unit header, Loaded:, Active:, Main PID:, and resource lines;
-# drop the journal tail (syslog-style timestamped lines) that blows up output.
+
+
+
 
 [filters.systemctl]
 description = "Compact systemctl status output"

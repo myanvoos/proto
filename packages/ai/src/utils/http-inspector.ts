@@ -23,12 +23,6 @@ export type CapturedHttpErrorResponse = {
 
 const SENSITIVE_HEADERS = ["authorization", "x-api-key", "api-key", "cookie", "set-cookie", "proxy-authorization"];
 
-/**
- * Build the JSON persisted for a rejected request. Request fields stay at the
- * top level (so existing dump parsers still read `body`); the provider's error
- * is added under `errorResponse` so a failed request is diagnosable from the
- * dump file rather than the request alone.
- */
 export function buildHttp400DumpPayload(
 	dump: RawHttpRequestDump,
 	error: unknown,
@@ -40,12 +34,6 @@ export function buildHttp400DumpPayload(
 	};
 }
 
-/** HTTP statuses whose rejected request we persist for post-hoc diagnosis: the
- *  request-content rejections that wedge a session. 400 (bad request) and 413
- *  (payload too large — an oversized image payload that 413s and empties the
- *  turn). Auth (401/403), not-found (404), rate limits and 5xx are excluded:
- *  429/5xx are retried, so persisting them here would write one dump per
- *  attempt. */
 export function shouldDumpRejectedRequest(error: unknown): boolean {
 	const status = AIError.status(error);
 	return status === 400 || status === 413;
@@ -56,7 +44,6 @@ export async function appendRawHttpRequestDumpFor400(
 	error: unknown,
 	dump: RawHttpRequestDump | undefined,
 ): Promise<string> {
-	// Never persist dumps under the test runner: providers exercise the 400 path
 	if (!dump || isBunTestRuntime() || !shouldDumpRejectedRequest(error)) {
 		return message;
 	}
@@ -91,18 +78,6 @@ export async function finalizeErrorMessage(
 	return appendRawHttpRequestDumpFor400(message, error, rawRequestDump);
 }
 
-/**
- * Rewrite error message for GitHub Copilot request failures.
- * Must run AFTER finalizeErrorMessage since it replaces the message entirely.
- *
- * 400 `model_not_supported` = Copilot fleet skew. A model that `/models`
- *        advertises can flap between 200 and 400 because only part of
- *        Copilot's fleet has it in the integrator allowlist. After the
- *        in-request retry exhausts, surface guidance rather than the raw error.
- * 401 = token invalid/expired → credential removal is safe, prompt re-login.
- * 403 = token valid but access denied (plan, model policy, org restriction) →
- *       do NOT reuse the auth-failed string (which triggers credential removal).
- */
 export function rewriteCopilotError(errorMessage: string, error: unknown, provider: string): string {
 	if (provider !== "github-copilot") return errorMessage;
 	const status = AIError.status(error);
@@ -149,8 +124,7 @@ function formatCapturedHttpError(captured: CapturedHttpErrorResponse | undefined
 	if (!payload) return bodyText;
 
 	const errorPayload = getObjectProperty(payload, "error") ?? payload;
-	// {"error": "string"} — the error value is a plain string, not a nested object.
-	// Fall back to it when the structured fields ("message", etc.) are absent.
+
 	const stringError = errorPayload === payload ? getStringProperty(payload, "error") : undefined;
 	const message =
 		getStringProperty(errorPayload, "message") ?? getStringProperty(payload, "message") ?? stringError ?? bodyText;

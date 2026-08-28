@@ -1,6 +1,6 @@
-//! `stat` builtin: display file or file-system status.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use brush_core::{ShellExtensions, builtins::Registration};
 
@@ -39,7 +39,7 @@ fn app() -> clap::Command {
 		.override_usage(host::format_usage("stat [OPTION]... FILE..."))
 }
 
-/// Creates the `stat` builtin registration.
+
 pub(crate) fn stat_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Stat, SE>()
 }
@@ -174,10 +174,10 @@ for details about the options it supports.";
 		minor: bool,
 	}
 
-	/// checks if the string is within the specified bound,
-	/// if it gets out of bound, error out by printing sub-string from index
-	/// `beg` to`end`, where `beg` & `end` is the beginning and end index of
-	/// sub-string, respectively
+
+
+
+
 	fn check_bound(slice: &str, bound: usize, beg: usize, end: usize) -> Result<(), StatError> {
 		if end >= bound {
 			return Err(StatError::InvalidDirective {
@@ -192,15 +192,15 @@ for details about the options it supports.";
 		Space,
 	}
 
-	/// pads the string with zeroes or spaces and prints it
-	///
-	/// # Example
-	/// ```ignore
-	/// uu_stat::pad_and_print(out, "1", false, 5, Padding::Zero) == "00001";
-	/// ```
-	/// currently only supports '0' & ' ' as the padding character
-	/// because the format specification of print! does not support general
-	/// fill characters.
+
+
+
+
+
+
+
+
+
 	fn pad_and_print(out: &mut dyn Write, result: &str, left: bool, width: usize, padding: Padding) {
 		let _ = match (left, padding) {
 			(false, Padding::Zero) => write!(out, "{result:0>width$}"),
@@ -210,11 +210,11 @@ for details about the options it supports.";
 		};
 	}
 
-	/// Pads and prints raw bytes (Unix-specific) or falls back to string
-	/// printing
-	///
-	/// On Unix systems, this preserves non-UTF8 data by printing raw bytes
-	/// On other platforms, falls back to lossy string conversion
+
+
+
+
+
 	#[cfg(unix)]
 	fn pad_and_print_bytes<W: Write>(
 		mut writer: W,
@@ -248,9 +248,9 @@ for details about the options it supports.";
 		Ok(())
 	}
 
-	/// write padding based on a writer W and n size
-	/// writer is genric to be any buffer like: `std::io::stdout`
-	/// n is the calculated padding size
+
+
+
 	#[cfg(unix)]
 	fn write_padding<W: Write>(writer: &mut W, n: usize) -> Result<(), std::io::Error> {
 		for _ in 0..n {
@@ -289,7 +289,7 @@ for details about the options it supports.";
 				"locale" => Ok(Self::Locale),
 				"shell" => Ok(Self::Shell),
 				"shell-escape-always" => Ok(Self::ShellEscapeAlways),
-				// The others aren't exposed to the user
+
 				_ => Err(StatError::InvalidQuotingStyle { style: s.to_string() }),
 			}
 		}
@@ -317,10 +317,10 @@ for details about the options it supports.";
 	}
 
 	impl ScanUtil for str {
-		/// Scans for a number at the beginning of the string
-		/// Returns the parsed number and the character count
-		/// Since we only deal with ASCII characters (+, -, 0-9), character count
-		/// equals byte count
+
+
+
+
 		fn scan_num<F>(&self) -> Option<(F, usize)>
 		where
 			F: std::str::FromStr,
@@ -411,19 +411,19 @@ for details about the options it supports.";
 		default_dev_tokens: Vec<Token>,
 	}
 
-	/// Prints a formatted output based on the provided output type, flags,
-	/// width, and precision.
-	///
-	/// # Arguments
-	///
-	/// * `output` - A reference to the [`OutputType`] enum containing the value
-	///   to be printed.
-	/// * `flags` - A Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed output.
-	/// * `precision` - How many digits of precision, if any.
-	///
-	/// This function delegates the printing process to more specialized
-	/// functions depending on the output type.
+
+
+
+
+
+
+
+
+
+
+
+
+
 	fn print_it(
 		out: &mut dyn Write,
 		output: &OutputType,
@@ -431,41 +431,41 @@ for details about the options it supports.";
 		width: usize,
 		precision: Precision,
 	) {
-		// If the precision is given as just '.', the precision is taken to be zero.
-		// A negative precision is taken as if the precision were omitted.
-		// This gives the minimum number of digits to appear for d, i, o, u, x, and X
-		// conversions, the maximum number of characters to be printed from a string
-		// for s and S conversions.
 
-		// #
-		// The value should be converted to an "alternate form".
-		// For o conversions, the first character of the output string  is made  zero
-		// (by  prefixing  a 0 if it was not zero already). For x and X conversions, a
-		// nonzero result has the string "0x" (or "0X" for X conversions) prepended to
-		// it.
 
-		// 0
-		// The value should be zero padded.
-		// For d, i, o, u, x, X, a, A, e, E, f, F, g, and G conversions, the converted
-		// value is padded on the left with zeros rather than blanks. If the 0 and -
-		// flags both appear, the 0 flag is ignored. If a precision  is  given with a
-		// numeric conversion (d, i, o, u, x, and X), the 0 flag is ignored. For other
-		// conversions, the behavior is undefined.
 
-		// -
-		// The converted value is to be left adjusted on the field boundary.  (The
-		// default is right justification.) The  converted  value  is padded on the
-		// right with blanks, rather than on the left with blanks or zeros.
-		// A - overrides a 0 if both are given.
 
-		// ' ' (a space)
-		// A blank should be left before a positive number (or empty string) produced by
-		// a signed conversion.
 
-		// +
-		// A sign (+ or -) should always be placed before a number produced by a signed
-		// conversion. By default, a sign  is  used only for negative numbers.
-		// A + overrides a space if both are used.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 		let padding_char = determine_padding_char(flags);
 
 		match output {
@@ -490,17 +490,17 @@ for details about the options it supports.";
 		}
 	}
 
-	/// Determines the padding character based on the provided flags and
-	/// precision.
-	///
-	/// # Arguments
-	///
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	///
-	/// # Returns
-	///
-	/// * Padding - An instance of the Padding enum representing the padding
-	///   character.
+
+
+
+
+
+
+
+
+
+
+
 	fn determine_padding_char(flags: Flags) -> Padding {
 		if flags.zero && !flags.left {
 			Padding::Zero
@@ -509,14 +509,14 @@ for details about the options it supports.";
 		}
 	}
 
-	/// Prints a string value based on the provided flags, width, and precision.
-	///
-	/// # Arguments
-	///
-	/// * `s` - The string to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed string.
-	/// * `precision` - How many digits of precision, if any.
+
+
+
+
+
+
+
+
 	fn print_str(out: &mut dyn Write, s: &str, flags: Flags, width: usize, precision: Precision) {
 		let s = match precision {
 			Precision::Number(p) if p < s.len() => &s[..p],
@@ -525,16 +525,16 @@ for details about the options it supports.";
 		pad_and_print(out, s, flags.left, width, Padding::Space);
 	}
 
-	/// Prints a `OsString` value based on the provided flags, width, and
-	/// precision. It converts the value to bytes and prints them; if that
-	/// fails, it prints the lossy string version.
-	///
-	/// # Arguments
-	///
-	/// * `s` - The `OsString` to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed string.
-	/// * `precision` - How many digits of precision, if any.
+
+
+
+
+
+
+
+
+
+
 	fn print_os_str(
 		out: &mut dyn Write,
 		s: &OsString,
@@ -542,9 +542,9 @@ for details about the options it supports.";
 		width: usize,
 		precision: Precision,
 	) {
-		// (upstream behavior); the `OsStr` output type is only produced by the
-		// `%m` mount-point directive, which is Unix-only. Elsewhere fall back to
-		// a lossy string so the code compiles and behaves sensibly.
+
+
+
 		#[cfg(unix)]
 		{
 			use std::os::unix::ffi::OsStrExt;
@@ -554,8 +554,8 @@ for details about the options it supports.";
 			if pad_and_print_bytes(&mut *out, bytes, flags.left, width, precision)
 				.is_err()
 			{
-				// if an error occurred while trying to print bytes fall back to normal lossy
-				// string so it can be printed
+
+
 				let fallback_string = s.to_string_lossy();
 				print_str(out, &fallback_string, flags, width, precision);
 			}
@@ -582,7 +582,7 @@ for details about the options it supports.";
 
 	fn get_quoted_file_name(
 		display_name: &str,
-		// directory for the `readlink` syscall; `display_name` stays as typed.
+
 		resolved: &Path,
 		file_type: FileType,
 		from_user: bool,
@@ -628,29 +628,29 @@ for details about the options it supports.";
 			},
 			Token::Directive { flag, width, precision, format } => {
 				let output = match format {
-					// free blocks available to non-superuser
+
 					'a' => OutputType::Unsigned(meta.avail_blocks()),
-					// total data blocks in file system
+
 					'b' => OutputType::Unsigned(meta.total_blocks()),
-					// total file nodes in file system
+
 					'c' => OutputType::Unsigned(meta.total_file_nodes()),
-					// free file nodes in file system
+
 					'd' => OutputType::Unsigned(meta.free_file_nodes()),
-					// free blocks in file system
+
 					'f' => OutputType::Unsigned(meta.free_blocks()),
-					// file system ID in hex
+
 					'i' => OutputType::UnsignedHex(meta.fsid()),
-					// maximum length of filenames
+
 					'l' => OutputType::Unsigned(meta.namelen()),
-					// file name
+
 					'n' => OutputType::Str(display_name.to_string()),
-					// block size (for faster transfers)
+
 					's' => OutputType::Unsigned(meta.io_size()),
-					// fundamental block size (for block counts)
+
 					'S' => OutputType::Integer(meta.block_size()),
-					// file system type in hex
+
 					't' => OutputType::UnsignedHex(meta.fs_type() as u64),
-					// file system type in human readable form
+
 					'T' => OutputType::Str(pretty_fstype(meta.fs_type()).into()),
 					_ => OutputType::Unknown,
 				};
@@ -660,17 +660,17 @@ for details about the options it supports.";
 		}
 	}
 
-	/// Prints an integer value based on the provided flags, width, and
-	/// precision.
-	///
-	/// # Arguments
-	///
-	/// * `num` - The integer value to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed integer.
-	/// * `precision` - How many digits of precision, if any.
-	/// * `padding_char` - The padding character as determined by
-	///   `determine_padding_char`.
+
+
+
+
+
+
+
+
+
+
+
 	fn print_integer(
 		out: &mut dyn Write,
 		num: i64,
@@ -700,10 +700,10 @@ for details about the options it supports.";
 		pad_and_print(out, &extended, flags.left, width, padding_char);
 	}
 
-	/// Formats an epoch timestamp with GNU `stat`'s truncation rules: no
-	/// precision prints whole seconds (so `stat -c %Y` survives shell
-	/// arithmetic), a bare `.` prints all nine fractional digits, and an
-	/// explicit precision truncates or zero-pads the fraction.
+
+
+
+
 	fn timestamp_string(sec: i64, nsec: u32, precision: Precision) -> String {
 		match precision {
 			Precision::NotSpecified | Precision::Number(0) => sec.to_string(),
@@ -736,17 +736,17 @@ for details about the options it supports.";
 		pad_and_print(out, &extended, flags.left, width, padding_char);
 	}
 
-	/// Prints an unsigned integer value based on the provided flags, width, and
-	/// precision.
-	///
-	/// # Arguments
-	///
-	/// * `num` - The unsigned integer value to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed unsigned integer.
-	/// * `precision` - How many digits of precision, if any.
-	/// * `padding_char` - The padding character as determined by
-	///   `determine_padding_char`.
+
+
+
+
+
+
+
+
+
+
+
 	fn print_unsigned(
 		out: &mut dyn Write,
 		num: u64,
@@ -769,18 +769,18 @@ for details about the options it supports.";
 		pad_and_print(out, &s, flags.left, width, padding_char);
 	}
 
-	/// Prints an unsigned octal integer value based on the provided flags,
-	/// width, and precision.
-	///
-	/// # Arguments
-	///
-	/// * `num` - The unsigned octal integer value to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed unsigned octal
-	///   integer.
-	/// * `precision` - How many digits of precision, if any.
-	/// * `padding_char` - The padding character as determined by
-	///   `determine_padding_char`.
+
+
+
+
+
+
+
+
+
+
+
+
 	fn print_unsigned_oct(
 		out: &mut dyn Write,
 		num: u32,
@@ -798,18 +798,18 @@ for details about the options it supports.";
 		pad_and_print(out, &s, flags.left, width, padding_char);
 	}
 
-	/// Prints an unsigned hexadecimal integer value based on the provided flags,
-	/// width, and precision.
-	///
-	/// # Arguments
-	///
-	/// * `num` - The unsigned hexadecimal integer value to be printed.
-	/// * `flags` - A reference to the Flags struct containing formatting flags.
-	/// * `width` - The width of the field for the printed unsigned hexadecimal
-	///   integer.
-	/// * `precision` - How many digits of precision, if any.
-	/// * `padding_char` - The padding character as determined by
-	///   `determine_padding_char`.
+
+
+
+
+
+
+
+
+
+
+
+
 	fn print_unsigned_hex(
 		out: &mut dyn Write,
 		num: u64,
@@ -839,9 +839,9 @@ for details about the options it supports.";
 					'0' => flag.zero = true,
 					'-' => flag.left = true,
 					' ' => flag.space = true,
-					// This is not documented but the behavior seems to be
-					// the same as a space. For example `stat -c "%I5s" f`
-					// prints "    0".
+
+
+
 					'I' => flag.space = true,
 					'+' => flag.sign = true,
 					'\'' => flag.group = true,
@@ -851,10 +851,10 @@ for details about the options it supports.";
 			}
 		}
 
-		/// Converts a character index to a byte index in a UTF-8 string
-		/// This is necessary because Rust strings are UTF-8 encoded, so character
-		/// positions don't always align with byte positions for multi-byte
-		/// characters
+
+
+
+
 		fn char_index_to_byte_index(format_str: &str, char_index: usize) -> usize {
 			format_str
 				.char_indices()
@@ -891,7 +891,7 @@ for details about the options it supports.";
 				width = field_width;
 				j += offset;
 
-				// Reject directives like `%<NUMBER>` by checking if width has been parsed.
+
 				if j >= bound || chars[j] == '%' {
 					let invalid_directive: String = chars[old..=j.min(bound - 1)].iter().collect();
 					return Err(StatError::InvalidDirective {
@@ -920,7 +920,7 @@ for details about the options it supports.";
 
 			*i = j;
 
-			// Check for multi-character specifiers (e.g., `%Hd`, `%Lr`)
+
 			if *i + 1 < bound
 				&& let Some(&next_char) = chars.get(*i + 1)
 				&& (chars[*i] == 'H' || chars[*i] == 'L')
@@ -944,22 +944,22 @@ for details about the options it supports.";
 		) -> Token {
 			*i += 1;
 			if *i >= bound {
-				// write; message literalized from locales/en-US.ftl.
+
 				let _ = writeln!(err, "stat: warning: backslash at end of format");
 				return Token::Char('\\');
 			}
 			match chars[*i] {
-				'a' => Token::Byte(0x07),   // BEL
-				'b' => Token::Byte(0x08),   // Backspace
-				'f' => Token::Byte(0x0c),   // Form feed
-				'n' => Token::Byte(0x0a),   // Line feed
-				'r' => Token::Byte(0x0d),   // Carriage return
-				't' => Token::Byte(0x09),   // Horizontal tab
-				'\\' => Token::Byte(b'\\'), // Backslash
-				'\'' => Token::Byte(b'\''), // Single quote
-				'"' => Token::Byte(b'"'),   // Double quote
+				'a' => Token::Byte(0x07),
+				'b' => Token::Byte(0x08),
+				'f' => Token::Byte(0x0c),
+				'n' => Token::Byte(0x0a),
+				'r' => Token::Byte(0x0d),
+				't' => Token::Byte(0x09),
+				'\\' => Token::Byte(b'\\'),
+				'\'' => Token::Byte(b'\''),
+				'"' => Token::Byte(b'"'),
 				'0'..='7' => {
-					// Parse octal escape sequence (up to 3 digits)
+
 					let mut value = 0u8;
 					let mut count = 0;
 					while *i < bound && count < 3 {
@@ -971,19 +971,19 @@ for details about the options it supports.";
 							break;
 						}
 					}
-					*i -= 1; // Adjust index to account for the outer loop increment
+					*i -= 1;
 					Token::Byte(value)
 				},
 				'x' => {
-					// Parse hexadecimal escape sequence (\xNN format)
-					// Uses UTF-8 safe byte indexing to handle multi-byte characters properly
+
+
 					if *i + 1 < bound {
 						let byte_index = Self::char_index_to_byte_index(format_str, *i + 1);
 						if let Some((c, offset)) = format_str[byte_index..].scan_char(16) {
 							*i += offset;
 							Token::Byte(c as u8)
 						} else {
-							// context-stderr write.
+
 							let _ = writeln!(
 								err,
 								"stat: warning: unrecognized escape '\\x'"
@@ -991,7 +991,7 @@ for details about the options it supports.";
 							Token::Byte(b'x')
 						}
 					} else {
-						// context-stderr write.
+
 						let _ = writeln!(
 							err,
 							"stat: warning: incomplete hex escape '\\x'"
@@ -1000,7 +1000,7 @@ for details about the options it supports.";
 					}
 				},
 				other => {
-					// write.
+
 					let _ = writeln!(
 						err,
 						"stat: warning: unrecognized escape '\\{other}'"
@@ -1050,7 +1050,7 @@ for details about the options it supports.";
 				.map(|mi| mi.mount_dir.clone())
 				.collect::<Vec<_>>();
 
-			// Reverse sort. The longer comes first.
+
 			mount_list.sort();
 			mount_list.reverse();
 
@@ -1095,8 +1095,8 @@ for details about the options it supports.";
 					&mut host.stderr,
 				)?;
 
-			// mount points aren't displayed when showing filesystem information, or
-			// whenever the format string does not request the mount point.
+
+
 			let mount_list_needed = !show_fs
 				&& default_tokens
 					.iter()
@@ -1115,8 +1115,8 @@ for details about the options it supports.";
 			})
 		}
 
-		/// The `strftime` format for human-readable time directives; BSD `-t`
-		/// overrides the GNU default.
+
+
 		fn time_fmt(&self) -> &str {
 			self.time_format.as_deref().unwrap_or(PRETTY_DATETIME_FORMAT)
 		}
@@ -1135,8 +1135,8 @@ for details about the options it supports.";
 				match Self::populate_mount_list() {
 					Ok(list) => Some(list),
 					Err(e) => {
-						// Show warning like GNU does when mount information cannot be read
-						// context-stderr write.
+
+
 						let _ = writeln!(
 							&mut host.stderr,
 							"stat: warning: cannot read table of mounted file systems: {e}"
@@ -1173,10 +1173,10 @@ for details about the options it supports.";
 			t: &Token,
 			meta: &Metadata,
 			display_name: &str,
-			// directory for the `%m`/`%N` syscalls (upstream passed the raw
-			// operand); display output keeps `display_name` as typed. The
-			// SELinux `follow_symbolic_links` parameter is dropped along with
-			// SELinux support.
+
+
+
+
 			resolved: &Path,
 			file_type: FileType,
 			from_user: bool,
@@ -1190,101 +1190,101 @@ for details about the options it supports.";
 
 				Token::Directive { flag, width, precision, format } => {
 					let output = match format {
-						// access rights in octal
+
 						'a' => OutputType::UnsignedOct(0o7777 & meta.mode()),
-						// access rights in human readable form
+
 						'A' => OutputType::Str(display_permissions(meta, true)),
-						// number of blocks allocated (see %B)
+
 						'b' => OutputType::Unsigned(meta.blocks()),
 
-						// the size in bytes of each block reported by %b
-						// FIXME: blocksize differs on various platform
-						// See coreutils/gnulib/lib/stat-size.h ST_NBLOCKSIZE //
+
+
+
 						'B' => OutputType::Unsigned(512),
-						// SELinux security context string
-						// upstream's non-SELinux fallback string.
+
+
 						'C' => OutputType::Str("unsupported for this operating system".to_string()),
-						// device number in decimal
+
 						'd' if flag.major => OutputType::Unsigned(major(meta.dev() as _) as u64),
 						'd' if flag.minor => OutputType::Unsigned(minor(meta.dev() as _) as u64),
 						'd' => OutputType::Unsigned(meta.dev()),
-						// device number in hex
+
 						'D' => OutputType::UnsignedHex(meta.dev()),
-						// raw mode in hex
+
 						'f' => OutputType::UnsignedHex(meta.mode() as u64),
-						// file type
+
 						'F' => OutputType::Str(pretty_filetype(meta.mode() as mode_t, meta.len())),
-						// group ID of owner
+
 						'g' => OutputType::Unsigned(meta.gid() as u64),
-						// group name of owner
+
 						'G' => {
 							let group_name =
 								entries::gid2grp(meta.gid()).unwrap_or_else(|_| "UNKNOWN".to_owned());
 							OutputType::Str(group_name)
 						},
-						// number of hard links
+
 						'h' => OutputType::Unsigned(meta.nlink()),
-						// inode number
+
 						'i' => OutputType::Unsigned(meta.ino()),
-						// mount point
+
 						'm' => match self.find_mount_point(resolved, host) {
 							Some(s) => OutputType::OsStr(s),
 							None => OutputType::Str(String::new()),
 						},
-						// file name
+
 						'n' => OutputType::Str(display_name.to_string()),
-						// quoted file name with dereference if symbolic link
+
 						'N' => {
 							let file_name =
 								get_quoted_file_name(display_name, resolved, file_type, from_user, host)?;
 							OutputType::Str(file_name)
 						},
-						// optimal I/O transfer size hint
+
 						'o' => OutputType::Unsigned(meta.blksize()),
-						// total size, in bytes
+
 						's' => OutputType::Integer(meta.len() as i64),
-						// major device type in hex, for character/block device special
-						// files
+
+
 						't' => OutputType::UnsignedHex(major(meta.rdev() as _) as u64),
-						// minor device type in hex, for character/block device special
-						// files
+
+
 						'T' => OutputType::UnsignedHex(minor(meta.rdev() as _) as u64),
-						// user ID of owner
+
 						'u' => OutputType::Unsigned(meta.uid() as u64),
-						// user name of owner
+
 						'U' => {
 							let user_name =
 								entries::uid2usr(meta.uid()).unwrap_or_else(|_| "UNKNOWN".to_owned());
 							OutputType::Str(user_name)
 						},
 
-						// time of file birth, human-readable; - if unknown
+
 						'w' => OutputType::Str(pretty_time(meta, MetadataTimeField::Birth, self.time_fmt())),
-						// time of file birth, seconds since Epoch; 0 if unknown
+
 						'W' => {
 							let (sec, nsec) = metadata_get_time(meta, MetadataTimeField::Birth)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last access, human-readable
+
 						'x' => OutputType::Str(pretty_time(meta, MetadataTimeField::Access, self.time_fmt())),
-						// time of last access, seconds since Epoch
+
 						'X' => {
 							let (sec, nsec) = metadata_get_time(meta, MetadataTimeField::Access)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last data modification, human-readable
+
 						'y' => OutputType::Str(pretty_time(meta, MetadataTimeField::Modification, self.time_fmt())),
-						// time of last data modification, seconds since Epoch
+
 						'Y' => {
 							let (sec, nsec) = metadata_get_time(meta, MetadataTimeField::Modification)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last status change, human-readable
+
 						'z' => OutputType::Str(pretty_time(meta, MetadataTimeField::Change, self.time_fmt())),
-						// time of last status change, seconds since Epoch
+
 						'Z' => {
 							let (sec, nsec) = metadata_get_time(meta, MetadataTimeField::Change)
 								.map_or((0, 0), system_time_to_sec);
@@ -1307,7 +1307,7 @@ for details about the options it supports.";
 			let display_name = file.to_string_lossy();
 			let file = if display_name == "-" {
 				if self.show_fs {
-					// write.
+
 					let _ =
 						writeln!(&mut host.stderr, "stat: {}", StatError::StdinFilesystemMode);
 					return 1;
@@ -1320,21 +1320,21 @@ for details about the options it supports.";
 			} else {
 				OsString::from(file)
 			};
-			// directory for every syscall below; `display_name` keeps the
-			// operand as typed for `%n` and error messages.
+
+
 			let resolved = host.resolve(&file);
 			if self.show_fs {
 				match statfs(resolved.as_os_str()) {
 					Ok(meta) => {
 						let tokens = &self.default_tokens;
 
-						// Usage
+
 						for t in tokens {
 							process_token_filesystem(&mut host.stdout, t, &meta, &display_name);
 						}
 					},
 					Err(error) => {
-						// context-stderr write.
+
 						let _ = writeln!(
 							&mut host.stderr,
 							"stat: {}",
@@ -1379,7 +1379,7 @@ for details about the options it supports.";
 						}
 					},
 					Err(e) => {
-						// context-stderr write.
+
 						let _ = writeln!(&mut host.stderr, "stat: {}", StatError::CannotStat {
 							file:  display_name.quote().to_string(),
 							error: e.to_string(),
@@ -1392,8 +1392,8 @@ for details about the options it supports.";
 		}
 
 		fn default_format(show_fs: bool, terse: bool, show_dev_type: bool) -> String {
-			// SELinux related format is *ignored*
-			// locales/en-US.ftl.
+
+
 
 			if show_fs {
 				if terse {
@@ -1422,22 +1422,22 @@ for details about the options it supports.";
 		}
 	}
 
-	///
-	/// BSD stat's `-f` takes a format string (`stat -f "%Sm %N" file`), while
-	/// GNU's `-f` is `--file-system`; parsed as GNU, a BSD invocation prints
-	/// filesystem info for each real operand and errors on the format operand.
-	/// An invocation is treated as BSD when a `-f` cluster (optionally with the
-	/// BSD boolean flags `L`/`n`/`q`/`F`/`s`/`x`) carries a format value
-	/// containing `%` — GNU filesystem mode would have to target a file
-	/// literally named like a format string, which never happens in practice —
-	/// or when a cluster of BSD boolean flags contains the BSD-only output
-	/// styles `-s` (shell assignments) or `-x` (Linux-like verbose). Detected
-	/// invocations are rewritten to the GNU equivalent (`-c`/`--printf` plus a
-	/// translated format, or hidden style/timefmt options) before clap parsing.
-	///
-	/// Returns `None` when the invocation is not BSD-shaped, `Some(Err(_))`
-	/// when it is BSD-shaped but uses an option or directive with no GNU
-	/// counterpart.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	fn rewrite_bsd_invocation(argv: &[OsString]) -> Option<Result<Vec<OsString>, String>> {
 		let toks: Vec<Cow<'_, str>> = argv.iter().map(|a| a.to_string_lossy()).collect();
 		let mut detected = false;
@@ -1451,8 +1451,8 @@ for details about the options it supports.";
 			if cluster.is_empty() || cluster.starts_with('-') {
 				continue;
 			}
-			// `-s` / `-x` are BSD-only output styles: a cluster of BSD boolean
-			// flags containing one marks the invocation (GNU stat has neither).
+
+
 			if cluster
 				.chars()
 				.all(|c| matches!(c, 'L' | 'n' | 'q' | 'F' | 's' | 'x'))
@@ -1487,17 +1487,17 @@ for details about the options it supports.";
 		Some(bsd_to_gnu_argv(argv, &toks))
 	}
 
-	/// Output style selected by a BSD invocation.
+
 	enum BsdStyle {
-		/// `-f <fmt>`: caller-supplied BSD format string.
+
 		Custom(String),
-		/// `-s`: eval-able `st_dev=… st_ino=…` shell assignments.
+
 		Shell,
-		/// `-x`: Linux-like verbose block.
+
 		Verbose,
 	}
 
-	/// Parses a detected BSD invocation and produces the equivalent GNU argv.
+
 	fn bsd_to_gnu_argv(argv: &[OsString], toks: &[Cow<'_, str>]) -> Result<Vec<OsString>, String> {
 		let mut follow = false;
 		let mut no_newline = false;
@@ -1513,7 +1513,7 @@ for details about the options it supports.";
 			}
 			let cluster: Vec<char> = match toks[i].strip_prefix('-') {
 				Some(c) if !c.is_empty() && !c.starts_with('-') => c.chars().collect(),
-				// Operands keep the original (possibly non-UTF8) bytes.
+
 				_ => {
 					files.push(argv[i].clone());
 					i += 1;
@@ -1526,15 +1526,15 @@ for details about the options it supports.";
 				match cluster[k] {
 					'L' => follow = true,
 					'n' => no_newline = true,
-					// `-q` (suppress error messages) and `-F` (ls -F type
-					// decorations) have no GNU counterpart worth emulating.
+
+
 					'q' | 'F' => {},
-					// Output styles; like BSD, the last one seen wins.
+
 					's' => style = Some(BsdStyle::Shell),
 					'x' => style = Some(BsdStyle::Verbose),
 					c @ ('f' | 't') => {
-						// The rest of the cluster is the attached value,
-						// otherwise the next token is.
+
+
 						let value: String = if k + 1 < cluster.len() {
 							cluster[k + 1..].iter().collect()
 						} else {
@@ -1568,9 +1568,9 @@ for details about the options it supports.";
 			out.push("-L".into());
 		}
 		match style {
-			// `-s` renders directly from the metadata (the full octal
-			// `st_mode` and `st_flags` have no GNU format directive); its
-			// timestamps are epoch integers regardless of `-t`, as on BSD.
+
+
+
 			Some(BsdStyle::Shell) => out.push("--bsd-shell".into()),
 			Some(BsdStyle::Verbose) => {
 				out.push("--bsd-timefmt".into());
@@ -1584,9 +1584,9 @@ for details about the options it supports.";
 					out.push("--bsd-timefmt".into());
 					out.push(timefmt.into());
 				}
-				// `--printf` suppresses the mandatory trailing newline (BSD
-				// `-n`); the translator escapes literal backslashes so text
-				// survives printf mode.
+
+
+
 				out.push(if no_newline { "--printf".into() } else { "-c".into() });
 				out.push(translated.into());
 			},
@@ -1597,11 +1597,11 @@ for details about the options it supports.";
 		Ok(out)
 	}
 
-	/// Translates a BSD stat format string into the GNU format language used by
-	/// this implementation. Directives with no GNU counterpart (`%f` user
-	/// flags, `%v` inode generation, `%Y` symlink target, ...) are rejected.
-	/// With `printf_mode` set, literal backslashes are escaped so the result
-	/// survives `--printf` escape processing unchanged.
+
+
+
+
+
 	fn translate_bsd_format(fmt: &str, printf_mode: bool) -> Result<String, String> {
 		let chars: Vec<char> = fmt.chars().collect();
 		let mut out = String::with_capacity(fmt.len() + 8);
@@ -1627,8 +1627,8 @@ for details about the options it supports.";
 				i += 1;
 				continue;
 			}
-			// Flags, width, and precision use the same syntax in both format
-			// languages; copy them through verbatim.
+
+
 			let mut spec = String::new();
 			while i < chars.len() && matches!(chars[i], '#' | '+' | '-' | '0' | ' ') {
 				spec.push(chars[i]);
@@ -1646,10 +1646,10 @@ for details about the options it supports.";
 					i += 1;
 				}
 			}
-			// BSD grammar: %[flags][width][.prec][fmt][sub]datum, with
-			// fmt ∈ {D,O,U,X,F,S} (output representation) and sub ∈ {H,M,L}
-			// (datum sub-field). Only `S` ("string form") changes the GNU
-			// mapping; the numeric representations keep GNU's defaults.
+
+
+
+
 			let mut string_form = false;
 			if i < chars.len() && matches!(chars[i], 'D' | 'O' | 'U' | 'X' | 'F' | 'S') {
 				string_form = chars[i] == 'S';
@@ -1665,8 +1665,8 @@ for details about the options it supports.";
 			};
 			i += 1;
 			let gnu: &str = match datum {
-				// Times: mtime / atime / ctime / birth; `S` selects the
-				// human-readable form, otherwise seconds since Epoch.
+
+
 				'm' => {
 					if string_form {
 						"y"
@@ -1695,11 +1695,11 @@ for details about the options it supports.";
 						"W"
 					}
 				},
-				// File name as typed.
+
 				'N' => "n",
-				// Size in bytes.
+
 				'z' => "s",
-				// Owner / group: numeric, or (`S`) by name.
+
 				'u' => {
 					if string_form {
 						"U"
@@ -1714,10 +1714,10 @@ for details about the options it supports.";
 						"g"
 					}
 				},
-				// Permissions: octal bits, or (`S`) the human-readable form.
+
 				'p' if string_form => "A",
 				'p' if matches!(sub, None | Some('L')) => "a",
-				// Inode, hard links, device, rdev, blocks, block size.
+
 				'i' => "i",
 				'l' => "h",
 				'd' => match sub {
@@ -1734,9 +1734,9 @@ for details about the options it supports.";
 				},
 				'b' => "b",
 				'k' => "o",
-				// File type, human readable (`%HT` / `%T`).
+
 				'T' => "F",
-				// `%n` and `%t` are literal newline / tab in BSD formats.
+
 				'n' => {
 					out.push('\n');
 					continue;
@@ -1759,7 +1759,7 @@ for details about the options it supports.";
 		format!("unsupported BSD format directive '{directive}'")
 	}
 
-	/// GNU-language rendering of BSD `stat -x` ("Linux-like" verbose output).
+
 	const BSD_VERBOSE_FORMAT: &str = concat!(
 		"  File: \"%n\"\n",
 		"  Size: %-11s  FileType: %F\n",
@@ -1771,11 +1771,11 @@ for details about the options it supports.";
 		" Birth: %w",
 	);
 
-	/// BSD `stat -x` renders timestamps `ctime(3)`-style.
+
 	const BSD_VERBOSE_TIMEFMT: &str = "%a %b %e %H:%M:%S %Y";
 
-	/// BSD `stat -s`: one eval-able line of `st_*=value` shell assignments per
-	/// file, rendered directly from the metadata.
+
+
 	fn bsd_shell_exec(matches: &ArgMatches, host: &mut Host) -> i32 {
 		let files: Vec<OsString> = matches
 			.get_many::<OsString>(options::FILES)
@@ -1858,11 +1858,11 @@ for details about the options it supports.";
 		)
 	}
 
-	/// GNU `-f`/`--file-system` whose first operand names no file but looks
-	/// like a BSD format string (contains `%` or whitespace): rather than
-	/// failing on a nonexistent operand, re-interpret the invocation as BSD
-	/// `stat -f <fmt> <file>...`. Existing-path operands always keep GNU
-	/// filesystem mode.
+
+
+
+
+
 	fn bsd_filesystem_fallback(matches: &ArgMatches, host: &Host) -> Option<Vec<OsString>> {
 		if !matches.get_flag(options::FILE_SYSTEM)
 			|| matches.contains_id(options::FORMAT)
@@ -1871,8 +1871,8 @@ for details about the options it supports.";
 			return None;
 		}
 		let files: Vec<&OsString> = matches.get_many::<OsString>(options::FILES)?.collect();
-		// A format plus at least one operand; a lone missing path stays a GNU
-		// error.
+
+
 		if files.len() < 2 {
 			return None;
 		}
@@ -1896,7 +1896,7 @@ for details about the options it supports.";
 		Some(argv)
 	}
 
-	/// Builds a [`Stater`] from parsed matches and runs it.
+
 	fn run_stater(matches: &ArgMatches, host: &mut Host) -> i32 {
 		match Stater::new(matches, host) {
 			Ok(stater) => stater.exec(host),
@@ -1908,7 +1908,7 @@ for details about the options it supports.";
 	}
 
 
-	/// Parsed `stat` invocation.
+
 	pub(crate) struct Stat {
 		matches: ArgMatches,
 	}
@@ -1932,8 +1932,8 @@ for details about the options it supports.";
 			if let Some(argv) = bsd_filesystem_fallback(&self.matches, host) {
 				return match app().try_get_matches_from(argv) {
 					Ok(matches) => run_stater(&matches, host),
-					// The rebuilt argv is a plain `-c FORMAT -- FILE...`; a
-					// parse failure here is unreachable in practice.
+
+
 					Err(err) => {
 						let _ = write!(host.stderr, "{err}");
 						1
@@ -2032,28 +2032,28 @@ for details about the options it supports.";
 	}
 
 
-	/// file-status path is Unix-only (`std::os::unix`); this reimplements the
-	/// GNU directives on top of `std::fs::Metadata`, direct
-	/// `GetFileInformationByHandle` queries (inode / link count / device),
-	/// and the Win32 volume APIs for `--file-system` mode.
+
+
+
+
 	#[cfg(windows)]
 	mod win {
 		use std::{
 			ffi::OsStr, fs::Metadata, os::windows::fs::MetadataExt, path::Path, time::SystemTime,
 		};
 
-		/// `FILE_ATTRIBUTE_READONLY`.
+
 		const READONLY: u32 = 0x0000_0001;
 
-		// POSIX `st_mode` type bits, synthesized for `%f`/`%F`/`%A`/`%a`.
+
 		const S_IFDIR: u32 = 0o040000;
 		const S_IFREG: u32 = 0o100000;
 		const S_IFLNK: u32 = 0o120000;
 
-		/// Which timestamp a directive refers to. Windows exposes creation,
-		/// access, and write times; it has no POSIX "status change" time, so
-		/// `%z`/`%Z` reuse the write time (last data modification), matching
-		/// how ports such as Cygwin's `stat` behave.
+
+
+
+
 		#[derive(Clone, Copy)]
 		pub enum TimeField {
 			Access,
@@ -2062,8 +2062,8 @@ for details about the options it supports.";
 			Birth,
 		}
 
-		/// Resolve a [`TimeField`] to the corresponding [`SystemTime`], or
-		/// `None` when the platform cannot supply it.
+
+
 		pub fn md_time(md: &Metadata, field: TimeField) -> Option<SystemTime> {
 			match field {
 				TimeField::Access => md.accessed().ok(),
@@ -2072,9 +2072,9 @@ for details about the options it supports.";
 			}
 		}
 
-		/// Synthesize a POSIX-style `st_mode` from Windows attributes: the file
-		/// type bits plus a best-effort permission mask (read-only files/dirs
-		/// drop their write bits; directories and symlinks are traversable).
+
+
+
 		pub fn synth_mode(md: &Metadata) -> u32 {
 			let readonly = md.file_attributes() & READONLY != 0;
 			let ft = md.file_type();
@@ -2087,8 +2087,8 @@ for details about the options it supports.";
 			}
 		}
 
-		/// Human-readable file type for `%F`, mirroring uucore's
-		/// `pretty_filetype` for the types reachable on Windows.
+
+
 		pub fn file_type_str(mode: u32, size: u64) -> String {
 			match mode & 0o170000 {
 				S_IFDIR => "directory",
@@ -2099,8 +2099,8 @@ for details about the options it supports.";
 			.to_string()
 		}
 
-		/// `ls -l`-style permission string for `%A` derived from the synthetic
-		/// mode (e.g. `drwxr-xr-x`).
+
+
 		pub fn perms_string(mode: u32) -> String {
 			let mut s = String::with_capacity(10);
 			s.push(match mode & 0o170000 {
@@ -2117,11 +2117,11 @@ for details about the options it supports.";
 			s
 		}
 
-		/// On-disk allocated size in bytes for `%b`, honoring sparse and
-		/// compressed files via `GetCompressedFileSizeW`. `Metadata::len()` is
-		/// the logical size, which overstates allocation for sparse files, so
-		/// the compressed/allocated size is queried directly. Falls back to
-		/// `logical` when the query fails.
+
+
+
+
+
 		pub fn allocated_size(path: &Path, logical: u64) -> u64 {
 			use std::os::windows::ffi::OsStrExt;
 
@@ -2135,10 +2135,10 @@ for details about the options it supports.";
 				.chain(std::iter::once(0))
 				.collect();
 			let mut high: u32 = 0;
-			// SAFETY: `wide` is NUL-terminated and `high` is a valid `&mut u32`.
+
 			let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
-			// A low dword of INVALID_FILE_SIZE is ambiguous (a real 4 GiB-1 low
-			// word or an error); MSDN says to disambiguate via GetLastError.
+
+
 			if low == INVALID_FILE_SIZE
 				&& std::io::Error::last_os_error().raw_os_error().unwrap_or(0) != 0
 			{
@@ -2147,19 +2147,19 @@ for details about the options it supports.";
 			(u64::from(high) << 32) | u64::from(low)
 		}
 
-		/// Per-file identity numbers for `%d`/`%D`/`%h`/`%i`: volume serial,
-		/// hard-link count, and NTFS file index.
+
+
 		pub struct HandleInfo {
 			pub volume_serial: u64,
 			pub links:         u64,
 			pub file_index:    u64,
 		}
 
-		/// Query [`HandleInfo`] via `GetFileInformationByHandle`, the stable
-		/// replacement for std's unstable `windows_by_handle` metadata
-		/// extensions. `follow_links` mirrors how the caller's metadata was
-		/// obtained, so a `--no-dereference` stat reports the link itself.
-		/// Returns `None` when the file cannot be opened or queried.
+
+
+
+
+
 		pub fn handle_info(path: &Path, follow_links: bool) -> Option<HandleInfo> {
 			use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
@@ -2168,8 +2168,8 @@ for details about the options it supports.";
 				FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
 			};
 
-			// `FILE_FLAG_BACKUP_SEMANTICS` is required to open directories;
-			// `access_mode(0)` asks for metadata access only.
+
+
 			let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
 			if !follow_links {
 				flags |= FILE_FLAG_OPEN_REPARSE_POINT;
@@ -2179,8 +2179,8 @@ for details about the options it supports.";
 				.custom_flags(flags)
 				.open(path)
 				.ok()?;
-			// SAFETY: zeroed BY_HANDLE_FILE_INFORMATION is a valid out
-			// buffer, and the handle stays open across the call.
+
+
 			let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
 			if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
 				return None;
@@ -2193,7 +2193,7 @@ for details about the options it supports.";
 			})
 		}
 
-		/// File-system status collected for `stat --file-system` on Windows.
+
 		pub struct StatFs {
 			pub fs_type:      String,
 			pub serial:       u64,
@@ -2203,9 +2203,9 @@ for details about the options it supports.";
 			pub free_blocks:  u64,
 		}
 
-		/// Query volume information for the file's containing volume via Win32.
-		/// Returns a human-readable error string on failure (mapped to the GNU
-		/// "cannot read file system information" message by the caller).
+
+
+
 		pub fn statfs(path: &Path) -> Result<StatFs, String> {
 			use std::os::windows::ffi::OsStrExt;
 
@@ -2223,10 +2223,10 @@ for details about the options it supports.";
 			}
 
 			let file_wide = wide(path.as_os_str());
-			// Resolve the mount root (e.g. `C:\`) that owns the path.
+
 			let mut root = [0u16; 260];
-			// SAFETY: `file_wide` is NUL-terminated and `root` is a valid
-			// mutable buffer whose capacity is passed as `root.len()`.
+
+
 			if unsafe { GetVolumePathNameW(file_wide.as_ptr(), root.as_mut_ptr(), root.len() as u32) }
 				== 0
 			{
@@ -2237,9 +2237,9 @@ for details about the options it supports.";
 			let mut serial: u32 = 0;
 			let mut max_component: u32 = 0;
 			let mut flags: u32 = 0;
-			// SAFETY: `root` is a NUL-terminated path; the serial/flag out
-			// params are valid `&mut u32`; `fs_name` is a valid buffer sized by
-			// `fs_name.len()`; the volume-name buffer is null with size 0.
+
+
+
 			if unsafe {
 				GetVolumeInformationW(
 					root.as_ptr(),
@@ -2260,8 +2260,8 @@ for details about the options it supports.";
 			let mut bytes_per_sector: u32 = 0;
 			let mut free_clusters: u32 = 0;
 			let mut total_clusters: u32 = 0;
-			// SAFETY: `root` is a NUL-terminated path and every out param is a
-			// valid `&mut u32`.
+
+
 			if unsafe {
 				GetDiskFreeSpaceW(
 					root.as_ptr(),
@@ -2287,7 +2287,7 @@ for details about the options it supports.";
 		}
 	}
 
-	/// `std::fs::Metadata` timestamp through the shared datetime format.
+
 	#[cfg(windows)]
 	fn pretty_time(meta: &Metadata, field: win::TimeField, fmt: &str) -> String {
 		if let Some(time) = win::md_time(meta, field) {
@@ -2320,27 +2320,27 @@ for details about the options it supports.";
 			},
 			Token::Directive { flag, width, precision, format } => {
 				let output = match format {
-					// free blocks available to non-superuser
+
 					'a' => OutputType::Unsigned(meta.free_blocks),
-					// total data blocks in file system
+
 					'b' => OutputType::Unsigned(meta.total_blocks),
-					// total / free file nodes (not tracked on Windows)
+
 					'c' | 'd' => OutputType::Unsigned(0),
-					// free blocks in file system
+
 					'f' => OutputType::Unsigned(meta.free_blocks),
-					// file system ID in hex (volume serial number)
+
 					'i' => OutputType::UnsignedHex(meta.serial),
-					// maximum length of filenames
+
 					'l' => OutputType::Unsigned(meta.name_len),
-					// file name
+
 					'n' => OutputType::Str(display_name.to_string()),
-					// block size (for faster transfers)
+
 					's' => OutputType::Unsigned(meta.cluster_size),
-					// fundamental block size (for block counts)
+
 					'S' => OutputType::Integer(meta.cluster_size as i64),
-					// file system type in hex (no numeric magic on Windows)
+
 					't' => OutputType::UnsignedHex(0),
-					// file system type in human readable form
+
 					'T' => OutputType::Str(meta.fs_type.clone()),
 					_ => OutputType::Unknown,
 				};
@@ -2376,48 +2376,48 @@ for details about the options it supports.";
 				},
 				Token::Directive { flag, width, precision, format } => {
 					let mode = win::synth_mode(meta);
-					// `%d`/`%D`/`%h`/`%i` need a fresh handle query; skip it for
-					// every other directive.
+
+
 					let ids = matches!(format, 'd' | 'D' | 'h' | 'i')
 						.then(|| win::handle_info(resolved, !meta.file_type().is_symlink()))
 						.flatten();
 					let output = match format {
-						// access rights in octal
+
 						'a' => OutputType::UnsignedOct(0o7777 & mode),
-						// access rights in human readable form
+
 						'A' => OutputType::Str(win::perms_string(mode)),
-						// number of blocks allocated (512-byte units, see %B)
+
 						'b' => {
 							OutputType::Unsigned(win::allocated_size(resolved, meta.len()).div_ceil(512))
 						},
-						// the size in bytes of each block reported by %b
+
 						'B' => OutputType::Unsigned(512),
-						// SELinux security context string (unsupported)
+
 						'C' => OutputType::Str("unsupported for this operating system".to_string()),
-						// device number: Windows volume serial number
+
 						'd' if flag.major || flag.minor => OutputType::Unsigned(0),
 						'd' => OutputType::Unsigned(ids.as_ref().map_or(0, |ids| ids.volume_serial)),
-						// device number in hex
+
 						'D' => {
 							OutputType::UnsignedHex(ids.as_ref().map_or(0, |ids| ids.volume_serial))
 						},
-						// raw mode in hex
+
 						'f' => OutputType::UnsignedHex(u64::from(mode)),
-						// file type
+
 						'F' => OutputType::Str(win::file_type_str(mode, meta.len())),
-						// group ID of owner (not modeled on Windows)
+
 						'g' => OutputType::Unsigned(0),
-						// group name of owner
+
 						'G' => OutputType::Str("UNKNOWN".to_string()),
-						// number of hard links
+
 						'h' => OutputType::Unsigned(ids.as_ref().map_or(1, |ids| ids.links)),
-						// inode number (NTFS file index)
+
 						'i' => OutputType::Unsigned(ids.as_ref().map_or(0, |ids| ids.file_index)),
-						// mount point (not resolved on Windows)
+
 						'm' => OutputType::Str(String::new()),
-						// file name
+
 						'n' => OutputType::Str(display_name.to_string()),
-						// quoted file name with dereference if symbolic link
+
 						'N' => OutputType::Str(get_quoted_file_name(
 							display_name,
 							resolved,
@@ -2425,49 +2425,49 @@ for details about the options it supports.";
 							from_user,
 							host,
 						)?),
-						// optimal I/O transfer size hint
+
 						'o' => OutputType::Unsigned(4096),
-						// total size, in bytes
+
 						's' => OutputType::Integer(meta.len() as i64),
-						// device type (no special files on Windows)
+
 						't' | 'T' => OutputType::UnsignedHex(0),
-						// user ID of owner (not modeled on Windows)
+
 						'u' => OutputType::Unsigned(0),
-						// user name of owner
+
 						'U' => OutputType::Str("UNKNOWN".to_string()),
-						// time of file birth, human-readable; - if unknown
+
 						'w' => OutputType::Str(pretty_time(meta, win::TimeField::Birth, self.time_fmt())),
-						// time of file birth, seconds since Epoch; 0 if unknown
+
 						'W' => {
 							let (sec, nsec) = win::md_time(meta, win::TimeField::Birth)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last access, human-readable
+
 						'x' => OutputType::Str(pretty_time(meta, win::TimeField::Access, self.time_fmt())),
-						// time of last access, seconds since Epoch
+
 						'X' => {
 							let (sec, nsec) = win::md_time(meta, win::TimeField::Access)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last data modification, human-readable
+
 						'y' => OutputType::Str(pretty_time(meta, win::TimeField::Modification, self.time_fmt())),
-						// time of last data modification, seconds since Epoch
+
 						'Y' => {
 							let (sec, nsec) = win::md_time(meta, win::TimeField::Modification)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// time of last status change, human-readable (write time)
+
 						'z' => OutputType::Str(pretty_time(meta, win::TimeField::Change, self.time_fmt())),
-						// time of last status change, seconds since Epoch
+
 						'Z' => {
 							let (sec, nsec) = win::md_time(meta, win::TimeField::Change)
 								.map_or((0, 0), system_time_to_sec);
 							OutputType::Timestamp { sec, nsec }
 						},
-						// rdev (no device special files on Windows)
+
 						'R' => OutputType::UnsignedHex(0),
 						'r' => OutputType::Unsigned(0),
 						_ => OutputType::Unknown,
@@ -2480,8 +2480,8 @@ for details about the options it supports.";
 
 		fn do_stat(&self, file: &OsStr, host: &mut Host) -> i32 {
 			let display_name = file.to_string_lossy();
-			// directory; `display_name` keeps the operand as typed for `%n`
-			// and error messages.
+
+
 			let resolved = host.resolve(file);
 			if self.show_fs {
 				let result = fs::metadata(&resolved)
@@ -2514,8 +2514,8 @@ for details about the options it supports.";
 				match result {
 					Ok(meta) => {
 						let file_type = meta.file_type();
-						// Windows has no character/block special files, so the
-						// device-type default format is never selected.
+
+
 						for t in &self.default_tokens {
 							if let Err(code) = self.process_token_files(
 								t,

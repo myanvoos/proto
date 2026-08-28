@@ -1,19 +1,10 @@
 #!/usr/bin/env bun
-// Strip macOS malloc-stack-logging vars in the parent entrypoint, before any
-// subprocess/worker spawn. libmalloc reads MallocStackLogging /
-// MallocStackLoggingNoCompact during malloc bootstrap (pre-main) in every child
-// and warns when they're present but set to "off"; a child cannot suppress its
-// own warning, so the only fix is to keep them out of the inherited env here.
-// (They must be unset, not set — presence is the trigger.)
+
 try {
 	delete process.env.MallocStackLogging;
 	delete process.env.MallocStackLoggingNoCompact;
 } catch {}
 
-/**
- * CLI entry point — registers all commands explicitly and delegates to the
- * lightweight CLI runner from pi-utils.
- */
 import { parentPort } from "node:worker_threads";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
 import {
@@ -48,27 +39,13 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 
 setProcessName(BINARY_NAME);
 
-// `Bun.build`-API compiled Windows executables report `import.meta.main ===
-// false`: the standalone loader keys the entry module with native backslashes
-// (`B:\~BUN\root\cli.js`) but registers the main path with forward slashes
-// (`B:/~BUN/root/cli.js`), so Bun's internal match fails. `bun build --compile`
-// CLI builds are unaffected. A compiled binary's entry module is by definition
-// the process entry, so the define-folded PI_COMPILED marker stands in.
 const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
 
 function formatLicenseOutput(): string {
 	return `PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`;
 }
 
-// Worker-host entry declaration (Worker threads and worker subprocesses
-// re-enter `Bun.main` with a hidden argv selector instead of loading separate
-// worker entrypoints) happens inside `runCli` after profile bootstrap:
-// `@oh-my-pi/pi-utils/env` eagerly loads `.env` from the agent directory at
-// import time, so it must not be imported before `setProfile` runs.
-
 async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
-	// Root help historically loads the selected profile's environment. The
-	// lazily loaded help module imports it statically after profile bootstrap.
 	const [{ renderRootHelp }, { getExtraHelpText }] = await Promise.all([
 		import("@oh-my-pi/pi-utils/cli"),
 		import("./cli/help-extra"),
@@ -89,11 +66,7 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		await runTinyWorker();
 		return true;
 	}
-	// Bun flushes messages the parent posted before spawn once this entry's
-	// top-level evaluation completes. Install a buffering inbox synchronously
-	// before binding the selected worker's real handler so the parent's
-	// synchronous `init` survives. The dynamically imported tab/eval modules
-	// consume the same inbox after their module evaluation begins.
+
 	if (arg === TAB_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./tools/browser/tab-worker-entry");
@@ -110,11 +83,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	if (arg === JS_EVAL_PROCESS_ARG) {
-		// The bootstrap-safe interceptor seam is linked statically so this selector
-		// cannot load profile-scoped environment state after dispatch has begun.
-		// The JS evaluator forwards user-controlled payloads (tool-call args,
-		// display outputs); a non-serializable one must fail that cell, not
-		// SIGKILL the kernel and erase the eval session's state.
 		await runIpcSubprocessWorker<JsWorkerInbound, JsWorkerOutbound>(
 			transport => startJsEvalProcess(transport, interceptUnhandledRejections),
 			{ rethrowConnectedSendErrors: true },
@@ -122,7 +90,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	if (arg === DAEMON_BROKER_WORKER_ARG) {
-		// Worker selectors must dispatch before the normal command graph loads.
 		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
 		await startDaemonBrokerFromEnvironment();
 		return true;
@@ -140,16 +107,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	return false;
 }
 
-/**
- * Boot a subprocess-isolated transformers.js worker over the parent's IPC
- * channel and block until the parent disconnects. The tiny-model worker runs
- * `onnxruntime-node` (loaded transitively by
- * `@huggingface/transformers`) in a child address space because its NAPI
- * finalizer segfaults Bun on shutdown (issue #1606); the parent `SIGKILL`s the
- * child so that finalizer never runs in either process. This wires `process`
- * IPC to the worker's typed transport, keeps the event loop alive while the
- * worker is idle, and hard-kills the process on parent `disconnect`.
- */
 async function runIpcSubprocessWorker<In, Out>(
 	start: (transport: {
 		send(message: Out): void;
@@ -157,23 +114,12 @@ async function runIpcSubprocessWorker<In, Out>(
 		onMessage(handler: (message: In) => void): () => void;
 	}) => void,
 	options?: {
-		/**
-		 * Rethrow send failures while the IPC channel is still connected instead
-		 * of shutting down. A connected-channel failure means this particular
-		 * message could not be serialized (e.g. a JS eval cell passed a function
-		 * into tool args, a DataCloneError under advanced serialization) — the
-		 * caller must see that error, exactly as Worker `postMessage` would
-		 * deliver it, rather than losing the whole worker and its state.
-		 * Channel-gone failures still shut down.
-		 */
 		rethrowConnectedSendErrors?: boolean;
 	},
 ): Promise<void> {
 	const { promise: shuttingDown, resolve: shutdown } = Promise.withResolvers<void>();
 	type IpcSend = (this: NodeJS.Process, message: unknown, callback?: (error: Error | null) => void) => boolean;
-	// `process.send` only exists when spawned with an IPC channel; the parent
-	// always spawns us that way. If it's missing, the parent vanished and
-	// there's no one to talk to.
+
 	const ipcSend = (): IpcSend | undefined => (process as NodeJS.Process & { send?: IpcSend }).send;
 	const send = (message: Out): void => {
 		const sender = ipcSend();
@@ -215,9 +161,7 @@ async function runIpcSubprocessWorker<In, Out>(
 		},
 	});
 	const keepalive = setInterval(() => {}, 2 ** 30);
-	// Parent went away (crashed, SIGKILL, etc.) — commit suicide so we don't
-	// linger as an orphan. SIGKILL via `process.kill` keeps us symmetrical with
-	// the parent's hard-kill on shutdown: skip every JS/native finalizer.
+
 	process.on("disconnect", () => shutdown());
 	try {
 		await shuttingDown;
@@ -227,20 +171,11 @@ async function runIpcSubprocessWorker<In, Out>(
 	process.kill(process.pid, "SIGKILL");
 }
 
-/**
- * Hidden subcommand that boots the tiny-model worker inside this process over
- * the parent's IPC channel. The agent's main process spawns the same binary
- * with this flag so `onnxruntime-node` (loaded transitively by
- * `@huggingface/transformers`) lives in a child address space. The parent
- * `SIGKILL`s the child on shutdown so the NAPI finalizer never runs in either
- * process — that finalizer segfaults Bun on Windows (issue #1606).
- */
 async function runTinyWorker(): Promise<void> {
 	const { startTinyTitleWorker } = await import("./tiny/worker");
 	await runIpcSubprocessWorker(startTinyTitleWorker);
 }
 
-/** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
 	let resolvedArgv = argv;
 	try {
@@ -249,14 +184,6 @@ export async function runCli(argv: string[]): Promise<void> {
 		if (extracted.profile !== undefined) {
 			setProfile(extracted.profile);
 		} else {
-			// No explicit --profile: activate any PROTO_PROFILE/PI_PROFILE inherited
-			// from the environment. Module-load resolution deliberately swallows an
-			// invalid value to avoid an uncaught throw before this try/catch is in
-			// scope (see `readProfileFromEnvSafe` in dirs.ts), and callers may set
-			// PROTO_PROFILE after importing this module (profile aliases/tests). Surfacing
-			// validation here turns `PROTO_PROFILE=.. proto --version` into a clean error;
-			// calling setProfile keeps every later path helper on the env-selected
-			// profile instead of the default agent directory.
 			setProfile(resolveProfileEnv(process.env.PROTO_PROFILE, process.env.PI_PROFILE));
 		}
 		if (extracted.aliasName !== undefined) {
@@ -283,11 +210,6 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Worker-thread entry dispatch must run before the first `await`: the
-	// buffering onmessage handlers for dynamically imported workers are
-	// installed in the synchronous prefix of `runWorkerEntrypoint`, and Bun
-	// flushes parked initial messages as soon as the entry module's top-level
-	// evaluation finishes.
 	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
@@ -297,24 +219,8 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Declare this module as the worker-host entry now that the active profile
-	// is resolved. The worker-host module is side-effect-free; importing
-	// `@oh-my-pi/pi-utils/env` here would snapshot the wrong agent `.env`.
-	// Gated on `isProcessEntry`: only the real CLI process entry is a valid
-	// worker host. Worker-thread re-entry already returned above at the
-	// `__omp_worker_` dispatch, and importers (`runCli` in profile-CLI tests,
-	// SDK embedding) have `import.meta.main === false` — declaring there would
-	// poison `workerHostEntry()` for the whole test process, forcing eval and
-	// browser workers onto the same-realm inline fallback.
 	if (isProcessEntry) declareWorkerHostEntry();
 
-	// `PI_PROXY` must reach the bare global `fetch` before any provider call:
-	// OAuth refresh/login and usage probes never pass through
-	// `wrapFetchForProxy`, so without this they bypass the proxy and fail
-	// wherever the provider blocks the caller's region. Dynamically imported
-	// like every other dependency in this entry module: a static `pi-ai` import
-	// would load the provider graph before profile bootstrap and on paths
-	// (`--version`, worker selectors) that never touch the network.
 	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
 	installGlobalProxyFetch();
 
@@ -329,9 +235,6 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.stdout.isTTY === true &&
 		(resolvedArgv.length === 0 || (resolvedArgv.length === 1 && resolvedArgv[0] === "--no-session"))
 	) {
-		// Intentional exception to the static-import convention: this latency boundary
-		// keeps the TUI graph out of worker, subcommand, help, and version launches.
-		// Loading it statically would erase the measured cold-start improvement.
 		const { beginStartupComposer, stopPendingStartupComposer } = await import("./modes/startup-composer");
 		beginStartupComposer({ version: VERSION });
 		stopStartupComposer = stopPendingStartupComposer;
@@ -342,8 +245,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			import("@oh-my-pi/pi-utils/cli"),
 			import("./cli-commands"),
 		]);
-		// --help and --version are handled by run() directly; --license returned above.
-		// Everything else that isn't a known subcommand routes to "launch".
+
 		const resolved = resolveCliArgv(resolvedArgv);
 		if ("error" in resolved) {
 			process.stderr.write(`error: ${resolved.error}\n`);
@@ -356,14 +258,6 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 }
 
-// Floating call instead of top-level await: TLA forces `--bytecode` (CJS
-// lowering) builds to fail, and the entrypoint needs nothing after this.
-// The catch mirrors what an unhandled TLA rejection produced: error dump to
-// stderr, exit code 1. Success paths resolve without touching the exit code.
-// Guarded so importing `runCli` (profile CLI tests, SDK embedding) does not
-// launch the agent as a side effect. Worker threads re-enter this module as
-// their entry with `import.meta.main === false`, so the worker-host dispatch
-// is admitted via `!Bun.isMainThread`.
 if (isProcessEntry || !Bun.isMainThread) {
 	runCli(process.argv.slice(2)).catch((err: unknown) => {
 		process.stderr.write(`${Bun.inspect(err, { colors: process.stderr.isTTY === true })}\n`);

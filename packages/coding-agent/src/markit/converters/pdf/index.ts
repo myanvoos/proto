@@ -4,7 +4,6 @@ import type { ConversionResult, Converter, StreamInfo } from "../../types";
 const EXTENSIONS = [".pdf"];
 const MIMETYPES = ["application/pdf", "application/x-pdf"];
 
-/** Converts PDF buffers to Markdown through the native `pdf-inspector` bridge. */
 export class PdfConverter implements Converter {
 	name = "pdf";
 

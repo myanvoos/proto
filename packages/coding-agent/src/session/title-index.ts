@@ -1,17 +1,3 @@
-/**
- * Session-title index: a `session_titles` table in history.db mapping session
- * id → display title, written whenever a title is created or renamed
- * ({@link SessionManager.setSessionName}) and backfilled by the recent-session
- * fallback scan. Lets the welcome "Recent sessions" list resolve names from a
- * stat + lookup instead of content-scanning every session file in the project
- * directory (multi-hundred-ms on dirs with thousands of sessions).
- *
- * Holds its own lazily-opened connection instead of {@link HistoryStorage}'s
- * path-pinned singleton: the db path is re-resolved on every call so
- * `setAgentDir`/profile switches (and test isolation) transparently reopen
- * against the right file. Never versions the db — `PRAGMA user_version` is
- * owned by HistoryStorage's rebuild pass, which drops only its own tables.
- */
 import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -33,7 +19,7 @@ interface TitleIndexHandle {
 }
 
 let handle: TitleIndexHandle | undefined;
-/** Db path whose open failed; skip retries (and log spam) until the path changes. */
+
 let failedPath: string | undefined;
 
 function closeHandle(): void {
@@ -54,7 +40,7 @@ function openTitleIndex(): TitleIndexHandle | undefined {
 	try {
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 		const db = new Database(dbPath);
-		// Install the busy handler BEFORE any lock-taking statement (see #2421).
+
 		db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 		db.run(`PRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;\n${TITLE_TABLE_DDL}`);
 		handle = {
@@ -78,10 +64,6 @@ ON CONFLICT(session_id) DO UPDATE SET
 	}
 }
 
-/**
- * Record (or replace) the indexed title for a session id. Best-effort: index
- * failures must never break a rename, so errors are logged and swallowed.
- */
 export function recordSessionTitle(sessionId: string, title: string): void {
 	const index = openTitleIndex();
 	if (!index) return;
@@ -92,7 +74,6 @@ export function recordSessionTitle(sessionId: string, title: string): void {
 	}
 }
 
-/** Indexed title for a session id, or undefined when unindexed/unavailable. */
 export function lookupSessionTitle(sessionId: string): string | undefined {
 	const index = openTitleIndex();
 	if (!index) return undefined;
@@ -105,7 +86,6 @@ export function lookupSessionTitle(sessionId: string): string | undefined {
 	}
 }
 
-/** @internal Close the cached connection so the next call re-resolves the db path — test-only. */
 export function resetSessionTitleIndexForTests(): void {
 	closeHandle();
 	failedPath = undefined;

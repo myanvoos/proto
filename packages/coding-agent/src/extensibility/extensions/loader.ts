@@ -1,6 +1,3 @@
-/**
- * Extension loader - loads TypeScript extension modules using native Bun import.
- */
 import type * as fs1 from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -25,7 +22,7 @@ import { loadCapability } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
-// Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
+
 import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
@@ -65,10 +62,6 @@ export class ExtensionRuntimeNotInitializedError extends Error {
 	}
 }
 
-/**
- * Extension runtime with throwing stubs for action methods.
- * These are replaced with real implementations during initialization.
- */
 export class ExtensionRuntime implements IExtensionRuntime {
 	flagValues = new Map<string, boolean | string>();
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }> = [];
@@ -143,11 +136,6 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	}
 }
 
-/**
- * ExtensionAPI implementation for an extension.
- * Registration methods write to the extension object.
- * Action methods delegate to the shared runtime.
- */
 class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	readonly logger = logger;
 	readonly arktype = type;
@@ -316,9 +304,6 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	}
 }
 
-/**
- * Create an Extension object with empty collections.
- */
 function createExtension(extensionPath: string, resolvedPath: string): Extension {
 	return {
 		path: extensionPath,
@@ -336,11 +321,6 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 	};
 }
 
-/**
- * Runs an extension factory with provider registration rollback on failure.
- * Restores the complete registration queue when the factory throws because an
- * extension may unregister entries queued by an earlier extension.
- */
 async function runExtensionFactory(
 	factory: ExtensionFactory,
 	api: ExtensionAPI,
@@ -409,9 +389,6 @@ async function bindExtension(
 	}
 }
 
-/**
- * Create an Extension from an inline factory function.
- */
 export async function loadExtensionFromFactory(
 	factory: ExtensionFactory,
 	cwd: string,
@@ -425,14 +402,6 @@ export async function loadExtensionFromFactory(
 	return extension;
 }
 
-/**
- * Load extensions from paths.
- *
- * Module import (the dominant cold-start cost — file I/O plus module
- * evaluation) runs concurrently across extensions; factory binding then runs
- * sequentially in the original path order, so registration semantics
- * (last-wins collisions, shared runtime flag defaults) stay deterministic.
- */
 export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
@@ -489,9 +458,6 @@ function isExtensionFile(name: string): boolean {
 	return name.endsWith(".ts") || name.endsWith(".js");
 }
 
-/**
- * Resolve extension entry points from a directory.
- */
 async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 	const packageJsonPath = path.join(dir, "package.json");
 	const manifest = await readExtensionManifest(packageJsonPath);
@@ -519,7 +485,6 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 		return [indexTs];
 	} catch (err) {
 		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM")) {
-			// Ignore
 		} else {
 			throw err;
 		}
@@ -529,7 +494,6 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 		return [indexJs];
 	} catch (err) {
 		if (isEnoent(err) || isEacces(err) || hasFsCode(err, "EPERM")) {
-			// Ignore
 		} else {
 			throw err;
 		}
@@ -538,26 +502,14 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 	return null;
 }
 
-/**
- * Discover extensions in a directory.
- *
- * Discovery rules:
- * 1. Direct files: `extensions/*.ts` or `*.js` → load
- * 2. Subdirectory with index: `extensions/<ext>/index.ts` or `index.js` → load
- * 3. Subdirectory with package.json: `extensions/<ext>/package.json` with "proto"/"pi" field → load declared paths
- *
- * No recursion beyond one level. Complex packages must use package.json manifest.
- */
 async function discoverExtensionsInDir(dir: string): Promise<string[]> {
 	const discovered: string[] = [];
 
-	// First check if this directory itself has explicit extension entries (package.json or index)
 	const rootEntries = await resolveExtensionEntries(dir);
 	if (rootEntries) {
 		return rootEntries;
 	}
 
-	// Otherwise, discover extensions from directory contents
 	let entries: fs1.Dirent[];
 	try {
 		entries = await fs.readdir(dir, { withFileTypes: true });
@@ -605,23 +557,9 @@ async function discoverHooksInPackageRoot(root: string): Promise<string[]> {
 	return hooks;
 }
 
-/**
- * Discover absolute paths of extensions to load, without importing or
- * binding factories. Hot path on session startup — the scan walks native
- * `.proto`/`.pi` extension capabilities, JS/TS hook factories, the
- * installed-plugin tree, and any configured paths.
- *
- * Subagents reuse the parent's collected paths via the SDK's
- * `preloadedExtensionPaths` option, then call {@link loadExtensions} themselves
- * so each session rebuilds Extension instances bound to its OWN
- * `ExtensionAPI` (cwd, eventBus, runtime). Forwarding the parent's
- * `LoadExtensionsResult` directly would reuse handlers/tools/commands that
- * closed over the parent's `cwd` and event bus.
- */
 interface DiscoverExtensionPathOptions {
-	/** Include ambient native extensions, hooks, and installed plugins. */
 	ambient?: boolean;
-	/** Include ambient hook factories. Disable for read-only catalog commands. */
+
 	includeAmbientHooks?: boolean;
 }
 
@@ -655,12 +593,6 @@ export async function discoverExtensionPaths(
 
 	const ambient = options.ambient !== false;
 	if (ambient) {
-		// 1. Discover extension modules via capability API (native .proto/.pi only).
-		// Scope the load to the native provider — the extension-module capability
-		// also has claude/codex/gemini/opencode providers, and their items were
-		// discarded here anyway (see #4198). The provider filter skips the walk
-		// entirely instead of running four foreign directory scans and dropping
-		// the results.
 		const discovered = await loadCapability<ExtensionModule>(extensionModuleCapability.id, {
 			...loadOptions,
 			providers: ["native"],
@@ -670,10 +602,6 @@ export async function discoverExtensionPaths(
 		}
 	}
 
-	// 2. Discover JS/TS hook factories and bind them through the extension
-	// runner, which owns the current runtime event bus. Non-ambient discovery
-	// scans only this invocation's configured package roots; it must not consult
-	// settings, installed packages, or process-global CLI injection state.
 	if (ambient) {
 		if (options.includeAmbientHooks !== false) {
 			const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
@@ -689,12 +617,10 @@ export async function discoverExtensionPaths(
 		}
 	}
 
-	// 3. Discover extension entry points from installed plugins.
 	if (ambient) {
 		addPaths(await getAllPluginExtensionPaths(cwd));
 	}
 
-	// 4. Explicitly configured paths
 	for (const configuredPath of configuredPaths) {
 		const resolved = resolvePath(configuredPath, cwd);
 
@@ -725,11 +651,6 @@ export async function discoverExtensionPaths(
 	return allPaths;
 }
 
-/**
- * Discover and load extensions from standard locations. Composed of
- * {@link discoverExtensionPaths} (FS scan) + {@link loadExtensions}
- * (per-session binding).
- */
 export async function discoverAndLoadExtensions(
 	configuredPaths: string[],
 	cwd: string,

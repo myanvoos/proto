@@ -1,7 +1,3 @@
-/**
- * `proto auth-broker` — manage the proto credential vault.
- */
-
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
 import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 import {
@@ -21,7 +17,7 @@ export default class AuthBroker extends Command {
 			required: false,
 			options: [...AUTH_BROKER_ACTIONS],
 		}),
-		// Second positional: provider id (login/logout) or filesystem path (import).
+
 		source: Args.string({
 			description: "OAuth provider id (login/logout) or path (import)",
 			required: false,
@@ -84,8 +80,7 @@ export default class AuthBroker extends Command {
 				bind: flags.bind,
 				regenerate: flags.regenerate,
 				via: flags.via,
-				// `login`/`logout` reuse the legacy `provider` slot; `import` keeps `source` separate
-				// so `provider` flag (used as an override) is unambiguous.
+
 				provider: action === "import" ? flags.provider : (args.source ?? flags.provider),
 				source: args.source,
 				includeDisabled: flags["include-disabled"],

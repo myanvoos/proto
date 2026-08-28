@@ -10,11 +10,6 @@ function formatParenValue(value: unknown): string {
 	return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-/**
- * Demote stripped JSON Schema keywords into a node's `description` so the model
- * still receives the constraint as natural-language context after the wire
- * schema drops it.
- */
 export function spillToDescription(
 	node: JsonObject,
 	entries: ReadonlyArray<readonly [string, unknown]>,

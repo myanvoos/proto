@@ -213,7 +213,6 @@ function makeLinkTarget(recordPath: string, targetBytes: Uint8Array, maxPathByte
 		: { path: normalized, resolveTarget: true };
 }
 
-/** Parse an already-materialized CPIO stream for direct and RPM-composed readers. */
 export function readCpioEntriesFromBuffer(bytes: Uint8Array, options: FormatReadOptions): ArchiveIndexEntry[] {
 	assertInMemorySize(bytes.byteLength, options.limits);
 	const records: ParsedRecord[] = [];
@@ -365,7 +364,6 @@ export function readCpioEntriesFromBuffer(bytes: Uint8Array, options: FormatRead
 	return [...entriesByPath.values()];
 }
 
-/** Read and index a CPIO archive, materializing its inherently sequential stream once. */
 export const readCpio: FormatReader = async (source, options) => {
 	try {
 		assertInMemorySize(source.size, options.limits);
@@ -376,7 +374,6 @@ export const readCpio: FormatReader = async (source, options) => {
 	}
 };
 
-/** Detect newc, CRC, odc, or either-endian old binary CPIO headers. */
 export function sniffCpio(bytes: Uint8Array): boolean {
 	try {
 		const header = parseHeader(bytes, 0);

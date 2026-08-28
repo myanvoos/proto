@@ -22,10 +22,8 @@ import { rawKeyHint } from "./keybinding-hints";
 import { OverlayPanel } from "./overlay-box";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
-/** Visible result rows; also the jump distance for PageUp/PageDown. */
 const MAX_VISIBLE = 10;
 
-/** Split a query the same way `HistoryStorage` tokenizes it, so highlights align with matches. */
 function queryTokens(query: string): string[] {
 	return query
 		.toLowerCase()
@@ -33,7 +31,6 @@ function queryTokens(query: string): string[] {
 		.filter(tok => tok.length > 0);
 }
 
-/** Wrap every case-insensitive occurrence of any token in `text` with the accent color. */
 function highlightTokens(text: string, tokens: string[]): string {
 	if (tokens.length === 0) return text;
 
@@ -52,7 +49,7 @@ function highlightTokens(text: string, tokens: string[]): string {
 	let out = "";
 	let pos = 0;
 	for (const [start, end] of ranges) {
-		if (end <= pos) continue; // fully covered by a previous (merged) range
+		if (end <= pos) continue;
 		const from = Math.max(start, pos);
 		if (from > pos) out += text.slice(pos, from);
 		out += theme.fg("accent", text.slice(from, end));
@@ -62,7 +59,6 @@ function highlightTokens(text: string, tokens: string[]): string {
 	return out;
 }
 
-/** Compact "time since" label (e.g. `now`, `5m`, `2h`, `3d`, `2w`, `6mo`, `1y`) from epoch seconds. */
 function relativeTime(epochSeconds: number): string {
 	const seconds = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
 	if (seconds < 60) return "now";
@@ -93,9 +89,7 @@ class HistoryResultsList implements Component {
 		this.#selectedIndex = selectedIndex;
 	}
 
-	invalidate(): void {
-		// No cached state to invalidate currently
-	}
+	invalidate(): void {}
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
@@ -131,7 +125,6 @@ class HistoryResultsList implements Component {
 			let line = cursor + (isSelected ? theme.bold(highlighted) : highlighted);
 
 			if (showTime) {
-				// Pad the prompt region so the timestamp sits flush right with a one-cell gap.
 				line = `${truncateToWidth(line, rowWidth - timeWidth - 1, Ellipsis.Unicode, true)} ${theme.fg("dim", timeStr)}`;
 			}
 

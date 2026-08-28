@@ -1,27 +1,3 @@
-//! jsdiff-compatible diff primitives.
-//!
-//! # Overview
-//! Line, line-array, and word diffs plus a unified-patch hunk builder, all
-//! producing byte-identical output to the `diff` npm package (jsdiff v9) under
-//! its default options. The Myers O(ND) core is a faithful port of jsdiff's
-//! `base.ts`, including its greedy tie-breaking and the edit-graph edge pruning
-//! (`minDiagonalToConsider` / `maxDiagonalToConsider`), so change coalescing
-//! matches jsdiff run-for-run rather than merely being "a" minimal diff.
-//!
-//! Everything operates on UTF-16 code units end to end — [`Utf16String`] at
-//! the N-API boundary, `&[u16]` internally — which is the exact value space of
-//! JS strings. Ill-formed input (unpaired surrogates) is legal content that
-//! diffs code-unit-for-code-unit like jsdiff, so callers never need a JS
-//! fallback, and no UTF-8 conversion happens in either direction.
-//!
-//! # Example
-//! ```ignore
-//! // JS: native.diffLines("a\nb\n", "a\nc\n")
-//! //   -> [{ value: "a\n", count: 1, added: false, removed: false },
-//! //       { value: "b\n", count: 1, added: false, removed: true },
-//! //       { value: "c\n", count: 1, added: true, removed: false }]
-//! ```
-
 use std::{collections::HashMap, rc::Rc};
 
 use napi::{JsString, bindgen_prelude::*};
@@ -29,54 +5,41 @@ use napi_derive::napi;
 
 use crate::js;
 
-/// UTF-16 code unit for `\n`.
 const LF: u16 = 0x000a;
 
-/// One jsdiff change object: a run of added, removed, or common tokens.
 #[napi(object)]
 pub struct DiffChange {
-	/// Joined token text for this run (lines keep their `\n` terminators).
-	pub value:   Utf16String,
-	/// Number of tokens in this run.
-	pub count:   u32,
-	/// True when this run exists only in the new text.
-	pub added:   bool,
-	/// True when this run exists only in the old text.
+	pub value: Utf16String,
+
+	pub count: u32,
+
+	pub added: bool,
+
 	pub removed: bool,
 }
 
-/// A change run without its token text, for callers that only need counts.
 #[napi(object)]
 pub struct DiffRun {
-	/// Number of tokens in this run.
-	pub count:   u32,
-	/// True when this run exists only in the new text.
-	pub added:   bool,
-	/// True when this run exists only in the old text.
+	pub count: u32,
+
+	pub added: bool,
+
 	pub removed: bool,
 }
 
-/// One hunk of a unified diff, matching jsdiff `structuredPatch` hunks.
 #[napi(object)]
 pub struct PatchHunk {
-	/// 1-based first line of the hunk in the old text.
 	pub old_start: u32,
-	/// Number of old-text lines covered by the hunk.
+
 	pub old_lines: u32,
-	/// 1-based first line of the hunk in the new text.
+
 	pub new_start: u32,
-	/// Number of new-text lines covered by the hunk.
+
 	pub new_lines: u32,
-	/// Hunk body: `+`/`-`/` `-prefixed lines without trailing newlines, plus
-	/// `\ No newline at end of file` markers where applicable.
-	pub lines:     Vec<Utf16String>,
+
+	pub lines: Vec<Utf16String>,
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Myers core (port of jsdiff base.ts, default options)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// A run of tokens sharing one edit classification, in forward order.
 #[derive(Clone, Copy)]
 struct Run {
 	count:   usize,
@@ -84,9 +47,6 @@ struct Run {
 	removed: bool,
 }
 
-/// Reverse-linked component list node, shared between diagonal paths exactly
-/// like jsdiff's `previousComponent` chains (structural sharing keeps the
-/// D-path frontier O(D) instead of O(D^2)).
 struct Component {
 	count:   usize,
 	added:   bool,
@@ -94,15 +54,11 @@ struct Component {
 	prev:    Option<Rc<Self>>,
 }
 
-/// Frontier state for one diagonal: furthest old-position reached plus the
-/// component chain that got there.
 struct PathState {
 	old_pos: isize,
 	last:    Option<Rc<Component>>,
 }
 
-/// Extend `path` along its diagonal while tokens match, recording the common
-/// run. Returns the new-token position (mirrors jsdiff `extractCommon`).
 fn extract_common(path: &mut PathState, new: &[u32], old: &[u32], diagonal: isize) -> isize {
 	let new_len = new.len() as isize;
 	let old_len = old.len() as isize;
@@ -129,9 +85,6 @@ fn extract_common(path: &mut PathState, new: &[u32], old: &[u32], diagonal: isiz
 	new_pos
 }
 
-/// Branch from `path` with one added or removed token (mirrors jsdiff
-/// `addToPath`, which merges into the previous component when the edit kind
-/// repeats).
 fn add_to_path(path: &PathState, added: bool, removed: bool, old_pos_inc: isize) -> PathState {
 	match &path.last {
 		Some(last) if last.added == added && last.removed == removed => PathState {
@@ -150,7 +103,6 @@ fn add_to_path(path: &PathState, added: bool, removed: bool, old_pos_inc: isize)
 	}
 }
 
-/// Convert the winning component chain into forward-ordered runs.
 fn build_runs(last: Option<Rc<Component>>) -> Vec<Run> {
 	let mut runs = Vec::new();
 	let mut cursor = last.as_deref();
@@ -166,9 +118,6 @@ fn build_runs(last: Option<Rc<Component>>) -> Vec<Run> {
 	runs
 }
 
-/// Myers O(ND) diff over interned token ids, replicating jsdiff's default
-/// (non-`oneChangePerToken`, no timeout / `maxEditLength`) execution path so
-/// the resulting run structure is identical.
 fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 	let old_len = old.len() as isize;
 	let new_len = new.len() as isize;
@@ -177,7 +126,6 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 	let mut best: Vec<Option<PathState>> = Vec::new();
 	best.resize_with((2 * max_edit + 3) as usize, || None);
 
-	// Seed edit length 0: the content may start with common tokens.
 	let mut seed = PathState { old_pos: -1, last: None };
 	let seed_new_pos = extract_common(&mut seed, new, old, 0);
 	if seed.old_pos + 1 >= old_len && seed_new_pos + 1 >= new_len {
@@ -207,8 +155,6 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 				continue;
 			}
 
-			// Branch from the prior path whose old-text position is furthest
-			// along, preferring the insertion path on ties (jsdiff order).
 			let mut base_path = if !can_remove
 				|| (can_add
 					&& remove_path.as_ref().is_some_and(|path| {
@@ -250,8 +196,6 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 	unreachable!("Myers diff terminates within oldLen + newLen edits")
 }
 
-/// Intern each token as a dense id under exact code-unit equality, so the
-/// Myers core compares `u32`s instead of re-hashing slices per probe.
 fn intern_exact<'a>(old_tokens: &[&'a [u16]], new_tokens: &[&'a [u16]]) -> (Vec<u32>, Vec<u32>) {
 	fn assign<'a>(ids: &mut HashMap<&'a [u16], u32>, token: &'a [u16]) -> u32 {
 		let next = ids.len() as u32;
@@ -270,9 +214,6 @@ fn intern_exact<'a>(old_tokens: &[&'a [u16]], new_tokens: &[&'a [u16]]) -> (Vec<
 	(old_ids, new_ids)
 }
 
-/// Map runs back to change objects, joining token slices with `join`.
-/// Common runs take their text from the new tokens, matching jsdiff
-/// `buildValues` with `useLongestToken == false`.
 fn build_changes(
 	runs: &[Run],
 	old_tokens: &[&[u16]],
@@ -306,13 +247,6 @@ fn build_changes(
 		.collect()
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Line diff
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// jsdiff line tokenization under default options: each token is a line
-/// including its `\n` (or `\r\n`) terminator; a final line without a newline
-/// is kept as-is; a lone `\r` never terminates a line.
 fn line_tokens(text: &[u16]) -> Vec<&[u16]> {
 	text.split_inclusive(|&unit| unit == LF).collect()
 }
@@ -322,7 +256,6 @@ fn diff_line_tokens(old_tokens: &[&[u16]], new_tokens: &[&[u16]]) -> Vec<Run> {
 	myers_diff(&old_ids, &new_ids)
 }
 
-/// Concatenate token slices (jsdiff line `join`).
 fn concat_tokens(tokens: &[&[u16]]) -> Vec<u16> {
 	let mut out = Vec::with_capacity(tokens.iter().map(|token| token.len()).sum());
 	for token in tokens {
@@ -331,9 +264,6 @@ fn concat_tokens(tokens: &[&[u16]]) -> Vec<u16> {
 	out
 }
 
-/// Line diff with jsdiff `diffLines(oldText, newText)` semantics (default
-/// options). Change values keep line terminators, and common runs are joined
-/// from the new text.
 #[napi]
 pub fn diff_lines(old_text: JsString, new_text: JsString) -> Result<Vec<DiffChange>> {
 	let old_text = js::utf16(old_text)?;
@@ -348,12 +278,6 @@ fn diff_lines_impl(old_text: &[u16], new_text: &[u16]) -> Vec<DiffChange> {
 	build_changes(&runs, &old_tokens, &new_tokens, concat_tokens)
 }
 
-/// Diff `oldText.split("\n")` against `newText.split("\n")` with jsdiff
-/// `diffArrays` semantics (exact code-unit equality, empty lines preserved),
-/// returning only run lengths.
-///
-/// Callers that map line numbers — like hashline recovery — need the counts,
-/// not another copy of the text.
 #[napi]
 pub fn diff_line_runs(old_text: JsString, new_text: JsString) -> Result<Vec<DiffRun>> {
 	let old_text = js::utf16(old_text)?;
@@ -371,11 +295,6 @@ fn diff_line_runs_impl(old_text: &[u16], new_text: &[u16]) -> Vec<DiffRun> {
 		.collect()
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Structured patch (port of jsdiff patch/create.ts hunk builder)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Prepend a `+`/`-`/` ` marker to a line's code units.
 fn prefixed_line(prefix: u8, line: &[u16]) -> Vec<u16> {
 	let mut out = Vec::with_capacity(1 + line.len());
 	out.push(u16::from(prefix));
@@ -383,14 +302,10 @@ fn prefixed_line(prefix: u8, line: &[u16]) -> Vec<u16> {
 	out
 }
 
-/// `\ No newline at end of file`, as UTF-16 code units.
 fn no_newline_marker() -> Vec<u16> {
 	"\\ No newline at end of file".encode_utf16().collect()
 }
 
-/// Unified-diff hunks with jsdiff
-/// `structuredPatch(_, _, oldText, newText, _, _, { context }).hunks`
-/// semantics. `context` defaults to 4 like jsdiff.
 #[napi]
 pub fn structured_patch_hunks(
 	old_text: JsString,
@@ -412,8 +327,6 @@ fn structured_patch_hunks_impl(
 	let new_tokens = line_tokens(new_text);
 	let runs = diff_line_tokens(&old_tokens, &new_tokens);
 
-	// Change list with per-change line slices; the trailing sentinel mirrors
-	// jsdiff's pushed empty change that flushes the final hunk.
 	struct ChangeLines<'a> {
 		added:   bool,
 		removed: bool,
@@ -439,8 +352,6 @@ fn structured_patch_hunks_impl(
 	}
 	list.push(ChangeLines { added: false, removed: false, lines: &[] });
 
-	// Hunk skeleton before the trailing-newline post-pass; lines stay `Vec<u16>`
-	// so the pass below can pop terminators in place.
 	struct RawHunk {
 		old_start: usize,
 		old_lines: usize,
@@ -457,8 +368,6 @@ fn structured_patch_hunks_impl(
 	for i in 0..list.len() {
 		let current = &list[i];
 		if current.added || current.removed {
-			// Open a hunk seeded with trailing context from the previous
-			// common run.
 			if old_range_start == 0 {
 				old_range_start = old_line;
 				new_range_start = new_line;
@@ -485,12 +394,10 @@ fn structured_patch_hunks_impl(
 		} else {
 			if old_range_start != 0 {
 				if current.lines.len() <= context * 2 && i + 2 < list.len() {
-					// Common run small enough to join adjacent hunks.
 					for line in current.lines {
 						cur_range.push(prefixed_line(b' ', line));
 					}
 				} else {
-					// Close the hunk with leading context.
 					let context_size = current.lines.len().min(context);
 					for line in &current.lines[..context_size] {
 						cur_range.push(prefixed_line(b' ', line));
@@ -511,7 +418,6 @@ fn structured_patch_hunks_impl(
 		}
 	}
 
-	// Strip trailing newlines and add "no newline at EOF" markers.
 	for hunk in &mut hunks {
 		let mut i = 0;
 		while i < hunk.lines.len() {
@@ -536,19 +442,12 @@ fn structured_patch_hunks_impl(
 		.collect()
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Word diff (port of jsdiff word.ts, default options)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// jsdiff's `extendedWordChars` class: Latin-script word characters. Takes a
-/// code point so astral input classifies like a JS regex with the `u` flag —
-/// never a word character (every member is BMP).
 const fn is_word_char(cp: u32) -> bool {
 	matches!(cp,
-		0x30..=0x39 // 0-9
-		| 0x41..=0x5A // A-Z
-		| 0x5F // _
-		| 0x61..=0x7A // a-z
+		0x30..=0x39
+		| 0x41..=0x5A
+		| 0x5F
+		| 0x61..=0x7A
 		| 0xAD
 		| 0xC0..=0xD6
 		| 0xD8..=0xF6
@@ -558,9 +457,6 @@ const fn is_word_char(cp: u32) -> bool {
 		| 0x1E00..=0x1EFF)
 }
 
-/// JavaScript's `\s` / `String.prototype.trim` whitespace set (`WhiteSpace` +
-/// `LineTerminator` productions). Every member is a single UTF-16 code unit,
-/// so unit-level scans here match jsdiff's code-unit-level scans exactly.
 const fn is_js_whitespace(cp: u32) -> bool {
 	matches!(
 		cp,
@@ -601,9 +497,6 @@ fn js_trim(s: &[u16]) -> &[u16] {
 	trim_trailing_ws(trim_leading_ws(s))
 }
 
-/// Iterator over `(start, code_point, unit_len)` that pairs surrogates and
-/// passes unpaired surrogates through as their own code points, exactly like
-/// JS regex scanning under the `u` flag.
 struct CodePoints<'a> {
 	text: &'a [u16],
 	pos:  usize,
@@ -632,8 +525,6 @@ const fn code_points(text: &[u16]) -> CodePoints<'_> {
 	CodePoints { text, pos: 0 }
 }
 
-/// Raw regex-equivalent scan: word runs, whitespace runs, or single other
-/// code points (jsdiff `tokenizeIncludingWhitespace` with the `u` flag).
 fn word_parts(text: &[u16]) -> Vec<&[u16]> {
 	let mut parts = Vec::new();
 	let mut iter = code_points(text).peekable();
@@ -665,8 +556,6 @@ fn word_parts(text: &[u16]) -> Vec<&[u16]> {
 	parts
 }
 
-/// jsdiff `WordDiff.tokenize`: stitch whitespace runs onto adjacent word or
-/// punctuation parts, duplicating interior whitespace into both neighbors.
 fn word_tokens(text: &[u16]) -> Vec<Vec<u16>> {
 	let parts = word_parts(text);
 	let mut tokens: Vec<Vec<u16>> = Vec::with_capacity(parts.len());
@@ -702,8 +591,6 @@ fn word_tokens(text: &[u16]) -> Vec<Vec<u16>> {
 	tokens
 }
 
-/// jsdiff `WordDiff.join`: concatenate, stripping leading whitespace from
-/// every token after the first.
 fn word_join(tokens: &[&[u16]]) -> Vec<u16> {
 	let mut out = Vec::new();
 	for (i, token) in tokens.iter().enumerate() {
@@ -763,8 +650,6 @@ fn replace_suffix(s: &[u16], old_suffix: &[u16], new_suffix: &[u16]) -> Vec<u16>
 	out
 }
 
-/// jsdiff `maximumOverlap`: the longest prefix of `b` that is also a suffix
-/// of `a`, via the KMP failure function over code units.
 fn maximum_overlap<'a>(a: &[u16], b: &'a [u16]) -> &'a [u16] {
 	let start_a = a.len().saturating_sub(b.len());
 	let end_b = b.len().min(a.len());
@@ -798,8 +683,6 @@ fn maximum_overlap<'a>(a: &[u16], b: &'a [u16]) -> &'a [u16] {
 	&b[..k]
 }
 
-/// jsdiff `dedupeWhitespaceInChangeObjects` (no segmenter): trim whitespace
-/// that the tokenizer duplicated across a keep/delete/insert boundary.
 fn dedupe_whitespace(
 	changes: &mut [DiffChange],
 	start_keep: Option<usize>,
@@ -872,7 +755,6 @@ fn dedupe_whitespace(
 	}
 }
 
-/// jsdiff `WordDiff.postProcess` under default options.
 fn word_post_process(changes: &mut [DiffChange]) {
 	let mut last_keep: Option<usize> = None;
 	let mut insertion: Option<usize> = None;
@@ -896,11 +778,6 @@ fn word_post_process(changes: &mut [DiffChange]) {
 	}
 }
 
-/// Word diff with jsdiff `diffWords(oldText, newText)` semantics (default
-/// options).
-///
-/// Tokens carry surrounding whitespace, equality ignores it, and the
-/// post-pass dedupes whitespace across change boundaries.
 #[napi]
 pub fn diff_words(old_text: JsString, new_text: JsString) -> Result<Vec<DiffChange>> {
 	let old_text = js::utf16(old_text)?;
@@ -913,7 +790,7 @@ fn diff_words_impl(old_text: &[u16], new_text: &[u16]) -> Vec<DiffChange> {
 	let new_tokens = word_tokens(new_text);
 	let old_refs: Vec<&[u16]> = old_tokens.iter().map(Vec::as_slice).collect();
 	let new_refs: Vec<&[u16]> = new_tokens.iter().map(Vec::as_slice).collect();
-	// Equality is whitespace-insensitive: intern by trimmed text.
+
 	let old_keys: Vec<&[u16]> = old_refs.iter().map(|token| js_trim(token)).collect();
 	let new_keys: Vec<&[u16]> = new_refs.iter().map(|token| js_trim(token)).collect();
 	let (old_ids, new_ids) = intern_exact(&old_keys, &new_keys);

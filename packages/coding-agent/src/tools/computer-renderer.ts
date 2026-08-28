@@ -84,7 +84,6 @@ function renderComputerCell(
 		theme,
 	);
 
-	// Old persisted calls used {window, actions}; keep their replay deliberately plain.
 	if (code === undefined) return new Text(header, 0, 0);
 
 	return framedBlock(theme, width => {
@@ -128,7 +127,6 @@ function renderComputerCell(
 	});
 }
 
-/** Renders computer scripts, run state, screenshots, and failures in the TUI. */
 export const computerToolRenderer = {
 	mergeCallAndResult: true,
 	renderCall(args: ComputerRenderArgs, options: RenderResultOptions, theme: Theme): Component {

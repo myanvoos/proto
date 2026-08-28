@@ -305,19 +305,11 @@ export function resolveObsidianBinary(): string | null {
 	return cachedObsidianBinary;
 }
 
-/**
- * Whether the `vault://` protocol is enabled in the active settings profile.
- *
- * Reads `vault.enabled` from the global settings singleton. Falls back to the
- * schema default when settings are not yet initialized (e.g. during isolated
- * unit tests that exercise the handler before the host calls `Settings.init`).
- */
 export function isVaultEnabled(): boolean {
 	if (!isSettingsInitialized()) return getDefault("vault.enabled");
 	try {
 		return settings.get("vault.enabled");
 	} catch {
-		// Defensive: if the settings proxy throws (e.g. shutdown race), fall back to default.
 		return getDefault("vault.enabled");
 	}
 }

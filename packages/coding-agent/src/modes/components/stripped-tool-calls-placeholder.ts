@@ -1,11 +1,6 @@
 import { Text } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
 
-/**
- * Dim transcript marker for tool calls stripped from the resolved branch
- * (failed/retried turns, results on sibling branches). It is tool activity,
- * so it hides and reappears with the `display.hideToolActivity` toggle.
- */
 export class StrippedToolCallsPlaceholder extends Text {
 	#toolActivityVisible: boolean;
 

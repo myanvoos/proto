@@ -1,4 +1,4 @@
-//! Terminal input utilities
+
 
 use std::{collections::HashMap, sync::LazyLock};
 
@@ -21,7 +21,7 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 	let mut map: HashMap<Vec<u8>, interfaces::Key> = HashMap::new();
 
 	if let Ok(ti) = terminfo::Database::from_env() {
-		// Iterate over key capabilities and populate the map
+
 		let key_capabilities = [
 			key!(ti, interfaces::Key::F(1), cap::KeyF1<'_>),
 			key!(ti, interfaces::Key::F(2), cap::KeyF2<'_>),
@@ -46,8 +46,8 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 			key!(ti, interfaces::Key::PageUp, cap::KeyPPage<'_>),
 			key!(ti, interfaces::Key::PageDown, cap::KeyNPage<'_>),
 			key!(ti, interfaces::Key::BackTab, cap::BackTab<'_>),
-			// It's not clear if these belong here, because they're not
-			// strictly "key" capabilities.
+
+
 			key!(ti, interfaces::Key::Up, cap::CursorUp<'_>),
 			key!(ti, interfaces::Key::Down, cap::CursorDown<'_>),
 			key!(ti, interfaces::Key::Left, cap::CursorLeft<'_>),
@@ -67,12 +67,12 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 pub(crate) static TERMINFO_KEY_MAP: LazyLock<HashMap<Vec<u8>, interfaces::Key>> =
 	LazyLock::new(build_terminfo_key_map);
 
-/// Translates a key code (byte sequence) into a `Key` enum value. Returns
-/// `None` if the key code is not recognized.
-///
-/// # Arguments
-///
-/// * `key_code`: The byte sequence representing the key code.
+
+
+
+
+
+
 pub fn try_get_key_from_key_code(key_code: &[u8]) -> Option<interfaces::Key> {
 	if let Some(key) = TERMINFO_KEY_MAP.get(key_code) {
 		Some(key.clone())

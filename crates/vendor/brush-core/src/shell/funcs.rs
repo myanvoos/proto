@@ -1,4 +1,4 @@
-//! Function support for shells.
+
 
 use std::io::Write;
 
@@ -8,35 +8,35 @@ use crate::{
 };
 
 impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
-	/// Returns the function definition environment for this shell.
+
 	pub const fn funcs(&self) -> &functions::FunctionEnv {
 		&self.funcs
 	}
 
-	/// Returns a mutable reference to the function definition environment for
-	/// this shell.
+
+
 	pub const fn funcs_mut(&mut self) -> &mut functions::FunctionEnv {
 		&mut self.funcs
 	}
 
-	/// Tries to undefine a function in the shell's environment. Returns whether
-	/// or not a definition was removed.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function to undefine.
+
+
+
+
+
+
 	pub fn undefine_func(&mut self, name: &str) -> bool {
 		self.funcs.remove(name).is_some()
 	}
 
-	/// Defines a function in the shell's environment. If a function already
-	/// exists with the given name, it is replaced with the new definition.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function to define.
-	/// * `definition` - The function's definition.
-	/// * `source_info` - Source information for the function definition.
+
+
+
+
+
+
+
+
 	pub fn define_func(
 		&mut self,
 		name: impl Into<String>,
@@ -47,23 +47,23 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		self.funcs.update(name.into(), reg);
 	}
 
-	/// Tries to return a mutable reference to the registration for a named
-	/// function. Returns `None` if no such function was found.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function to lookup
+
+
+
+
+
+
 	pub fn func_mut(&mut self, name: &str) -> Option<&mut functions::Registration> {
 		self.funcs.get_mut(name)
 	}
 
-	/// Tries to define a function in the shell's environment using the given
-	/// string as its body.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function
-	/// * `body_text` - The body of the function, expected to start with "()".
+
+
+
+
+
+
+
 	pub fn define_func_from_str(
 		&mut self,
 		name: impl Into<String>,
@@ -84,14 +84,14 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Invokes a function defined in this shell, returning the resulting exit
-	/// status.
-	///
-	/// # Arguments
-	///
-	/// * `name` - The name of the function to invoke.
-	/// * `args` - The arguments to pass to the function.
-	/// * `params` - Execution parameters to use for the invocation.
+
+
+
+
+
+
+
+
 	pub async fn invoke_function<N: AsRef<str>, I: IntoIterator<Item = A>, A: AsRef<str>>(
 		&mut self,
 		name: N,
@@ -129,7 +129,7 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 				));
 				let formatted = job.to_string();
 
-				// N.B. We use the '\r' to overwrite any ^Z output.
+
 				writeln!(params.stderr(self), "\r{formatted}")?;
 
 				Ok(result.exit_code.into())

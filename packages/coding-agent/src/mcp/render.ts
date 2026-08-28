@@ -1,9 +1,3 @@
-/**
- * TUI rendering for MCP tools.
- *
- * Provides structured display of MCP tool calls and results,
- * showing args and output in JSON tree format similar to structured tools.
- */
 import { type Component, Markdown } from "@oh-my-pi/pi-tui";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -23,9 +17,6 @@ import { formatExpandHint, truncateToWidth } from "../tools/render-utils";
 import { renderStatusLine, WidthAwareText } from "../tui";
 import type { MCPToolDetails } from "./tool-bridge";
 
-/**
- * Render MCP tool call.
- */
 export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label: string): Component {
 	return new WidthAwareText(
 		contentWidth => {
@@ -33,8 +24,6 @@ export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label
 			lines.push(renderStatusLine({ icon: "pending", title: label }, theme));
 
 			if (args && typeof args === "object" && Object.keys(args).length > 0) {
-				// Inline preview budgeted against the render width, leaving room for
-				// the ` └─ ` connector prefix instead of a fixed cap.
 				const inlineBudget = Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2);
 				const preview = formatArgsInline(args, inlineBudget);
 				if (preview) {
@@ -49,7 +38,6 @@ export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label
 	);
 }
 
-/** Render an MCP status/args prefix followed by Markdown-aware text output. */
 function renderMarkdownMCPResult(
 	result: { details?: MCPToolDetails; isError?: boolean },
 	trimmedOutput: string,
@@ -104,9 +92,6 @@ function renderMarkdownMCPResult(
 	};
 }
 
-/**
- * Render MCP tool result.
- */
 export function renderMCPResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: MCPToolDetails; isError?: boolean },
 	options: RenderResultOptions,
@@ -125,9 +110,7 @@ export function renderMCPResult(
 		try {
 			parsedOutput = JSON.parse(trimmedOutput);
 			isJsonOutput = true;
-		} catch {
-			// Non-JSON text beginning with a bracket is still eligible for Markdown.
-		}
+		} catch {}
 	}
 	if (trimmedOutput && settings.get("mcp.renderMarkdownResults") && !isJsonOutput) {
 		return renderMarkdownMCPResult(result, trimmedOutput, truncationWarning, options, theme, args);
@@ -145,7 +128,6 @@ export function renderMCPResult(
 				),
 			);
 
-			// Args section (when expanded)
 			if (expanded && args && typeof args === "object" && Object.keys(args).length > 0) {
 				lines.push(`${theme.fg("dim", "Args")}`);
 				const maxDepth = JSON_TREE_MAX_DEPTH_EXPANDED;
@@ -157,19 +139,14 @@ export function renderMCPResult(
 				if (tree.truncated) {
 					lines.push(theme.fg("dim", "…"));
 				}
-				lines.push(""); // Blank line before output
+				lines.push("");
 			}
-
-			// Output section. The body and spill metadata are normalized before
-			// component selection so the opt-in Markdown path can use its own renderer.
 
 			if (!trimmedOutput) {
 				lines.push(theme.fg("dim", "(no output)"));
 				return lines.join("\n");
 			}
 
-			// Preserve the existing structured JSON renderer regardless of the
-			// Markdown preference; JSON trees remain more useful than styled source.
 			if (isJsonOutput) {
 				const maxDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 				const maxLines = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
@@ -188,7 +165,6 @@ export function renderMCPResult(
 				}
 			}
 
-			// Raw text output
 			const outputLines = trimmedOutput.split("\n");
 			const maxOutputLines = expanded ? 12 : 4;
 			const displayLines = outputLines.slice(0, maxOutputLines);
@@ -201,7 +177,6 @@ export function renderMCPResult(
 				const remaining = outputLines.length - maxOutputLines;
 				lines.push(`${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`);
 			} else if (!expanded) {
-				// Show expand hint when collapsed even if all lines shown (lines may be truncated)
 				lines.push(formatExpandHint(theme, expanded, true));
 			}
 

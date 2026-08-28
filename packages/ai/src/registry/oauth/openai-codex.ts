@@ -1,7 +1,3 @@
-/**
- * OpenAI Codex (ChatGPT OAuth) flow — browser and device-code flows.
- */
-
 import { OPENAI_HEADER_VALUES } from "@oh-my-pi/pi-catalog/wire/codex";
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
@@ -25,7 +21,7 @@ const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback";
 const DEVICE_AUTH_URL = "https://auth.openai.com/codex/device";
 const DEVICE_POLL_INTERVAL_MS = 5_000;
 const DEVICE_POLL_SAFETY_MARGIN_MS = 3_000;
-/** Upper bound on device-code polling to avoid infinite loops on server errors. */
+
 const DEVICE_MAX_POLLS = 120;
 
 type JwtPayload = {
@@ -51,12 +47,6 @@ export function decodeJwt<T = Record<string, unknown>>(token: string): T | null 
 	}
 }
 
-/**
- * Identity slice decoded from the token claims. The ChatGPT workspace
- * (`chatgpt_account_id`) is the subscription pool the token draws limits
- * from — one account email can hold several (e.g. a personal Pro plan plus a
- * Team seat). `chatgpt_plan_type` may only be present on the `id_token`.
- */
 function getTokenProfile(
 	accessToken: string,
 	idToken?: string,
@@ -93,7 +83,6 @@ function describeTokenEndpointValue(value: unknown): string | undefined {
 	return code ?? message ?? JSON.stringify(value);
 }
 
-/** Formats OpenAI Codex OAuth token endpoint errors for login and refresh failures. */
 export function formatOpenAICodexTokenEndpointError(status: number, bodyText: string): string {
 	const trimmed = bodyText.trim();
 	if (trimmed.length === 0) return `${status}`;
@@ -110,7 +99,7 @@ export function formatOpenAICodexTokenEndpointError(status: number, bodyText: st
 		return `${status} ${trimmed}`;
 	}
 }
-/** Builds the Codex browser OAuth URL used by browser login; exported for auth regression tests. */
+
 export function createOpenAICodexAuthorizationUrl(args: {
 	state: string;
 	redirectUri: string;
@@ -143,10 +132,7 @@ class OpenAICodexOAuthFlow extends OAuthCallbackFlow {
 		super(ctrl, {
 			preferredPort: CALLBACK_PORT,
 			callbackPath: CALLBACK_PATH,
-			// Enforce the fixed port: OpenAI only allows http://localhost:1455/auth/callback.
-			// Without this, a busy port 1455 falls back to a random port, and the token
-			// exchange would fail with 403 because the redirect_uri no longer matches the
-			// registered allowlist entry.
+
 			redirectUri: `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`,
 		} satisfies OAuthCallbackFlowOptions);
 		this.#pkce = pkce;
@@ -223,11 +209,7 @@ async function exchangeCodeForToken(
 	};
 }
 
-/**
- * Login with OpenAI Codex OAuth
- */
 export type OpenAICodexLoginOptions = OAuthController & {
-	/** Optional originator value for OpenAI Codex OAuth. Default matches PROTO Codex request headers. */
 	originator?: string;
 };
 
@@ -239,12 +221,6 @@ export async function loginOpenAICodex(options: OpenAICodexLoginOptions): Promis
 	return flow.login();
 }
 
-/**
- * Login with OpenAI Codex using the device-code (headless) flow.
- *
- * Avoids a local callback server entirely — useful when port 1455 is unavailable
- * or when the browser callback flow fails with 403 (e.g. network/proxy issues).
- */
 export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAuthCredentials> {
 	ctrl.onProgress?.("Initiating device authorization…");
 
@@ -304,7 +280,6 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 			signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
 		});
 
-		// 403/404 = authorization pending, keep polling
 		if (pollResponse.status === 403 || pollResponse.status === 404) {
 			continue;
 		}
@@ -336,9 +311,6 @@ export async function loginOpenAICodexDevice(ctrl: OAuthController): Promise<OAu
 	});
 }
 
-/**
- * Refresh OpenAI Codex OAuth token
- */
 export async function refreshOpenAICodexToken(refreshToken: string): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
@@ -371,9 +343,6 @@ export async function refreshOpenAICodexToken(refreshToken: string): Promise<OAu
 
 	const { accountId, email } = getTokenProfile(tokenData.access_token);
 
-	// Deliberately no org fields on the result: the workspace a credential is
-	// scoped to is fixed at login. Callers merge refresh results over the
-	// stored credential, so omitting org here preserves it verbatim.
 	return {
 		access: tokenData.access_token,
 		refresh: tokenData.refresh_token || refreshToken,

@@ -1,7 +1,3 @@
-/**
- * Antigravity OAuth flow (Gemini 3, Claude, GPT-OSS via Google Cloud)
- * Uses different OAuth credentials than google-gemini-cli for access to additional models.
- */
 import { type } from "@oh-my-pi/omptype";
 import { getAntigravityUserAgent } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import * as AIError from "../../error";
@@ -35,7 +31,6 @@ const ONBOARD_TIMEOUT_MS = 30_000;
 const ONBOARD_POLL_INTERVAL_MS = 1_000;
 const PROVIDER = "google-antigravity";
 
-/** Cloud Code Assist metadata sent by native Antigravity control-plane requests. */
 export const ANTIGRAVITY_LOAD_CODE_ASSIST_METADATA = Object.freeze({
 	ideType: "ANTIGRAVITY",
 });
@@ -315,7 +310,6 @@ async function discoverProject(
 	}
 }
 
-/** Authenticate an Antigravity account and resolve its Cloud Code Assist project. */
 export async function loginAntigravity(ctrl: OAuthController): Promise<OAuthCredentials> {
 	return runGoogleOAuthLogin(ctrl, {
 		provider: "google-antigravity",
@@ -330,9 +324,6 @@ export async function loginAntigravity(ctrl: OAuthController): Promise<OAuthCred
 	});
 }
 
-/**
- * Refresh Antigravity token
- */
 export async function refreshAntigravityToken(refreshToken: string, projectId: string): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",

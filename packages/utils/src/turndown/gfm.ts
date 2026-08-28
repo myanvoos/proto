@@ -47,7 +47,6 @@ function renderTable(service: TurndownServiceLike, table: TurndownNode): string 
 	return `\n\n${rendered.join("\n")}\n\n`;
 }
 
-/** Install GitHub fenced code blocks selected by `highlight-source-*` wrappers. */
 export const highlightedCodeBlock: TurndownPlugin = service => {
 	service.addRule("highlightedCodeBlock", {
 		filter(node) {
@@ -61,7 +60,6 @@ export const highlightedCodeBlock: TurndownPlugin = service => {
 	});
 };
 
-/** Install GFM strikethrough conversion. */
 export const strikethrough: TurndownPlugin = service => {
 	service.addRule("strikethrough", {
 		filter: ["del", "s", "strike"],
@@ -71,7 +69,6 @@ export const strikethrough: TurndownPlugin = service => {
 	});
 };
 
-/** Install GFM task-list checkbox conversion. */
 export const taskListItems: TurndownPlugin = service => {
 	service.addRule("taskListItems", {
 		filter(node) {
@@ -87,7 +84,6 @@ export const taskListItems: TurndownPlugin = service => {
 	});
 };
 
-/** Install GFM table conversion for tables with a heading row. */
 export const tables: TurndownPlugin = service => {
 	service.addRule("table", {
 		filter: isHeadingTable,
@@ -97,7 +93,6 @@ export const tables: TurndownPlugin = service => {
 	});
 };
 
-/** Install every GFM rule used by the coding agent. */
 export const gfm: TurndownPlugin = service => {
 	highlightedCodeBlock(service);
 	strikethrough(service);

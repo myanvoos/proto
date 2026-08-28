@@ -1,7 +1,7 @@
-// Pack Kimi K2/K3 base vocab (native tiktoken format) into UTOK1 + zstd.
-// Usage: bun tools/pack-kimi.ts
-// Input: tools/cache/kimi.tiktoken.model — lines of "<base64 token> <rank>".
-// Specials live at 163584+ and are absent from the file.
+
+
+
+
 
 const EXPECTED = 163_584;
 
@@ -18,10 +18,10 @@ for (const line of lines) {
 	if (tokens[rank] !== undefined) throw new Error(`duplicate rank ${rank}`);
 	tokens[rank] = Uint8Array.from(atob(line.slice(0, sp)), (c) => c.charCodeAt(0));
 }
-// Contiguity: every rank 0..EXPECTED-1 present exactly once.
+
 for (let r = 0; r < EXPECTED; r++) if (tokens[r] === undefined) throw new Error(`missing rank ${r}`);
 
-// UTOK1: magic 'UTOK1\n', u32le count, per entry varint(len)+bytes.
+
 const parts: Uint8Array[] = [];
 parts.push(new TextEncoder().encode("UTOK1\n"));
 const cnt = new Uint8Array(4);

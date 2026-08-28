@@ -1,20 +1,3 @@
-/**
- * Protocol handler for agent:// URLs.
- *
- * Resolves agent output IDs against the artifacts directories of every active
- * session. Parents and subagents share outputs via this registry: a subagent
- * can read its parent's output IDs because both sessions are registered in
- * the shared context.
- *
- * URL forms:
- * - agent://<id> - Full output content
- * - agent://<id>/<child> - Nested subagent output (hierarchy separator; the
- *   registry allocates a subagent's own children as dot-qualified ids, so
- *   `agent://Parent/Child` resolves `Parent.Child.md`)
- * - agent://<id>/<path> - JSON extraction via path form (fallback when no
- *   nested output matches the path)
- * - agent://<id>?q=<query> - JSON extraction via query form
- */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
@@ -22,12 +5,6 @@ import { applyQuery, pathToQuery } from "./json-query";
 import { artifactsDirsFromRegistry } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
-/**
- * Handler for agent:// URLs.
- *
- * Resolves output IDs like "reviewer_0" to their artifact files,
- * with optional JSON extraction.
- */
 export class AgentProtocolHandler implements ProtocolHandler {
 	readonly scheme = "agent";
 	readonly immutable = true;
@@ -52,11 +29,6 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			throw new Error("No session - agent outputs unavailable");
 		}
 
-		// A subagent allocates its own children as dot-qualified ids
-		// (`Parent.Child`), so the slash path form is first tried as a hierarchy
-		// separator: `agent://Parent/Child` resolves `Parent.Child.md`. Only when
-		// no such nested output exists does the path fall back to jq-style JSON
-		// extraction on `<outputId>.md`. Query form (`?q=`) is always extraction.
 		const pathSegments = hasPathExtraction ? urlPath.split("/").filter(Boolean) : [];
 		const decodedSegments = pathSegments.map(segment => {
 			try {
@@ -85,8 +57,6 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		let content = rawContent;
 		let contentType: InternalResource["contentType"] = "text/markdown";
 
-		// Extraction applies only when the URL did NOT resolve to a nested output
-		// (a slash that named a real child is a hierarchy hop, not a jq path).
 		const extract = hasQueryExtraction || (hasPathExtraction && scan.matchedId !== nestedId);
 		if (extract) {
 			let jsonValue: unknown;
@@ -122,19 +92,10 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		};
 	}
 
-	/**
-	 * Scan every registered artifacts dir for the first `<id>.md` among
-	 * `candidateIds` (tried in order, so a hierarchy match wins over the base
-	 * id). Returns the resolved path and the id it matched, plus the set of
-	 * available ids gathered from the scanned dirs for the not-found message.
-	 */
 	async #findOutput(
 		dirs: string[],
 		candidateIds: string[],
 	): Promise<{ foundPath?: string; matchedId?: string; anyDirExists: boolean; availableIds: Set<string> }> {
-		// Build a full id→path map across every registered dir before picking, so
-		// candidate priority is global: a nested id in a deeper dir must win over
-		// the base id even when the base id's dir is scanned first.
 		const byId = new Map<string, string>();
 		let anyDirExists = false;
 		for (const dir of dirs) {

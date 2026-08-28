@@ -1,4 +1,4 @@
-//! The `kill` builtin, moved from `pi-shell`.
+
 
 use std::io::Write;
 
@@ -12,24 +12,24 @@ use crate::proc_snapshot::HostProcesses;
 #[cfg(not(unix))]
 use crate::proc_snapshot::{ProcInfo, ProcessStatus};
 
-/// Signal a job or process.
+
 #[derive(Parser)]
 pub(crate) struct KillCommand {
-	/// Name of the signal to send.
+
 	#[arg(short = 's', value_name = "SIG_NAME")]
 	signal_name:      Option<String>,
-	/// Number of the signal to send.
+
 	#[arg(short = 'n', value_name = "SIG_NUM")]
 	signal_number:    Option<usize>,
-	/// List known signal names.
+
 	#[arg(short = 'l', short_alias = 'L')]
 	list_signals:     bool,
-	// Interpretation of these depends on whether -l is present.
+
 	#[arg(allow_hyphen_values = true)]
 	args:             Vec<String>,
-	/// Process/job operands given after the `--` end-of-options marker. clap
-	/// consumes `--` before `execute`, so these are captured separately and are
-	/// always operands — never signal specifications (preserves negative PIDs).
+
+
+
 	#[arg(last = true, allow_hyphen_values = true)]
 	post_marker_args: Vec<String>,
 }
@@ -94,9 +94,9 @@ impl builtins::Command for KillCommand {
 			None => default_signal,
 		};
 
-		// Interpret the pre-`--` args as an optional leading `-sigspec`, followed
-		// by PID/jobspec operands. Once a signal or operand has been seen, later
-		// hyphen-led arguments remain operands so negative process-group IDs survive.
+
+
+
 		let mut operands: Vec<&String> = Vec::new();
 		let mut options_done = self.signal_name.is_some() || self.signal_number.is_some();
 		let mut consumed_marker = false;
@@ -130,16 +130,16 @@ impl builtins::Command for KillCommand {
 			return Ok(ExecutionExitCode::InvalidUsage.into());
 		}
 
-		// One process-table walk for the whole invocation, and only when a signal
-		// will actually be delivered: `-l` and the signal-0 probe touch nothing.
-		// Every guard below reads this same resolved chain.
+
+
+
 		let host = signal.sends_signal().then(HostProcesses::resolve);
 		let blocks = |target: i32| host.as_ref().is_some_and(|host| blocks_target(host, target));
 
-		// `kill -0` asks only whether a target exists. Unix answers per target with
-		// one syscall; elsewhere there is no such call, so the table is walked once
-		// here and every target is answered from that snapshot rather than from a
-		// fresh walk apiece.
+
+
+
+
 		#[cfg(not(unix))]
 		let running: Vec<i32> = if signal.sends_signal() {
 			Vec::new()
@@ -152,7 +152,7 @@ impl builtins::Command for KillCommand {
 		};
 		#[cfg(unix)]
 		let exists = |target: i32| {
-			// SAFETY: signal 0 only checks target existence and permission.
+
 			unsafe { libc::kill(target, 0) == 0 }
 		};
 		#[cfg(not(unix))]
@@ -174,7 +174,7 @@ impl builtins::Command for KillCommand {
 					let mut targets: Vec<i32> = job
 						.process_ids()
 						.filter_map(|pid| {
-							// SAFETY: getpgid reads process-group metadata for a managed child.
+
 							let pgid = unsafe { libc::getpgid(pid) };
 							(pgid > 0).then_some(-pgid)
 						})
@@ -349,17 +349,17 @@ impl builtins::Command for KillCommand {
 	}
 }
 
-/// Splits attached short-option values before clap sees the argv: `-sKILL`
-/// and `-s9` become `-s <spec>`, `-n9` becomes `-n 9`, and `-l9`/`-L137`
-/// become `-l <spec>` (bash splits `-s<name>` the same way; the digit forms
-/// are the /bin/kill spellings). A token whose whole body already names a
-/// signal (`-sigkill`, `-SIGKILL`, `-9`) is left intact, matching BSD kill
-/// and the manual sigspec pre-parse in `execute`. Rewriting stops at `--` or
-/// the first operand, so negative-PID operands survive untouched.
+
+
+
+
+
+
+
 fn rewrite_attached_short_options(args: impl IntoIterator<Item = String>) -> Vec<String> {
 	let mut out: Vec<String> = Vec::new();
 	let mut args = args.into_iter();
-	// The first element is the command name itself.
+
 	out.extend(args.next());
 	let mut skip_value = false;
 	for arg in &mut args {
@@ -393,8 +393,8 @@ fn rewrite_attached_short_options(args: impl IntoIterator<Item = String>) -> Vec
 	out
 }
 
-/// Splits one attached-value option token, or `None` for anything that must
-/// pass through untouched (whole sigspecs, operands, malformed tokens).
+
+
 fn split_attached(arg: &str) -> Option<(String, String)> {
 	let rest = arg.get(2..).filter(|rest| !rest.is_empty())?;
 	let split = match arg.get(..2)? {
@@ -406,15 +406,15 @@ fn split_attached(arg: &str) -> Option<(String, String)> {
 	split.then(|| (arg[..2].to_string(), rest.to_string()))
 }
 
-/// Whether signalling `target` would reach the shell or one of its ancestors.
-///
-/// `target` follows `kill(2)`: a positive value is a pid, `0` is the caller's own
-/// process group, `-1` is every process the caller may signal, and any other
-/// negative value is the process group `-target`. The caller's own group needs no
-/// special case — it is in `host.pgids` by construction.
-///
-/// Takes the already-resolved chain rather than resolving one, so a loop over
-/// operands walks the process table once, not once per operand.
+
+
+
+
+
+
+
+
+
 fn blocks_target(host: &HostProcesses, target: i32) -> bool {
 	if target == -1 || target == 0 {
 		return true;
@@ -451,8 +451,8 @@ fn print_kill_signals<'a>(
 	Ok(result)
 }
 
-/// How `kill -l <operand>` renders one operand: numbers become names and
-/// names become numbers.
+
+
 enum PrintedSignal {
 	Name(&'static str),
 	Number(i32),
@@ -460,9 +460,9 @@ enum PrintedSignal {
 
 fn printed_signal(value: &str) -> std::result::Result<PrintedSignal, brush_core::Error> {
 	if let Ok(number) = value.parse::<i32>() {
-		// bash also maps the exit status of a signal-killed process back to
-		// its signal: `kill -l 137` prints `KILL` (137 = 128 + 9), while an
-		// unmappable value like 128 or 265 keeps its own diagnostic.
+
+
+
 		let signal = TrapSignal::try_from(number).or_else(|err| {
 			if number > 128 {
 				TrapSignal::try_from(number - 128).map_err(|_| err)
@@ -483,8 +483,8 @@ fn printed_signal(value: &str) -> std::result::Result<PrintedSignal, brush_core:
 
 
 
-/// A `kill` signal argument: a real signal, or the "does this process
-/// exist?" probe that signal 0 requests.
+
+
 #[derive(Clone, Copy)]
 enum KillSignal {
 	Probe,
@@ -510,9 +510,9 @@ impl KillSignal {
 }
 
 
-/// Resolves a signal name or number to its number.
-///
-/// Shared with `pkill`, which accepts the same `-SIGNAL` spellings.
+
+
+
 #[allow(
 	dead_code,
 	reason = "shared with optional process-match builtins that may be feature-disabled"

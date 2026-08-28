@@ -1,5 +1,5 @@
-# rsync -v / -av output. Long file lists collapse to head+tail; the trailing
-# summary block (sent/received/speedup/total size) stays in the tail.
+
+
 
 [filters.rsync]
 description = "Compact rsync transfer logs"

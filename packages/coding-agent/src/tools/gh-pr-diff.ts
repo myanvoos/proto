@@ -9,30 +9,20 @@ import { ToolError } from "./tool-errors";
 const PR_DIFF_FILES_PAGE_SIZE = 100;
 const PR_DIFF_FILES_MAX = 3000;
 
-// ────────────────────────────────────────────────────────────────────────────
-// PR diff fetcher
-//
-// Used by the `pr://<n>/diff[/…]` internal-URL family. Stores the verbatim
-// `gh pr diff` text plus a parsed file index so the listing, full-diff, and
-// per-file slice variants all share one cache row.
-// ────────────────────────────────────────────────────────────────────────────
-
 export interface PrDiffFile {
-	/** Display path. Prefers the post-image (`b/<path>`) when present. */
 	path: string;
 	additions: number;
 	deletions: number;
 	changeType: "modified" | "added" | "deleted" | "renamed" | "binary";
-	/** Pre-image path for renames/deletes; same as `path` otherwise. */
+
 	oldPath?: string;
-	/** Byte offset of the section's `diff --git` line in the unified diff. */
+
 	startOffset: number;
-	/** Byte offset of the next section (or end-of-text). */
+
 	endOffset: number;
 }
 
 export interface PrDiffPayload {
-	/** Full unified diff text as returned by `gh pr diff --color never`. */
 	unified: string;
 	files: PrDiffFile[];
 }
@@ -45,25 +35,19 @@ export interface PrDiffLookupOptions {
 	settings?: Settings;
 	cacheAuthKey?: string | null;
 }
-/**
- * Split `gh pr diff` output on `^diff --git ` boundaries and parse per-file
- * metadata. The unified diff is preserved verbatim so callers can slice it by
- * byte offsets without re-running gh.
- */
+
 export function parsePrUnifiedDiff(text: string): PrDiffPayload {
 	const files: PrDiffFile[] = [];
 	if (text.length === 0) {
 		return { unified: text, files };
 	}
 
-	// Walk match positions manually so we capture each section's byte range.
 	const sectionStarts: number[] = [];
 	const re = /^diff --git /gm;
 	let m: RegExpExecArray | null = re.exec(text);
 	while (m !== null) {
 		sectionStarts.push(m.index);
-		// Avoid zero-length match infinite loop (regex has fixed prefix, but
-		// be explicit).
+
 		if (re.lastIndex === m.index) re.lastIndex += 1;
 		m = re.exec(text);
 	}
@@ -263,11 +247,6 @@ function parsePrDiffSection(section: string, startOffset: number, endOffset: num
 	return file;
 }
 
-/**
- * A single entry from `GET /repos/{owner}/{repo}/pulls/{n}/files`. `patch` is
- * absent for binary files and for individual file diffs GitHub deems too large
- * to render.
- */
 interface GhPrFileApi {
 	filename?: string;
 	previous_filename?: string;
@@ -281,11 +260,6 @@ interface GhPrApi {
 	changed_files?: number;
 }
 
-/**
- * GitHub rejects the aggregate PR diff endpoint with HTTP 406 once the diff
- * exceeds 20,000 lines. Detect that specific failure so the caller can fall
- * back to the per-file endpoint instead of aborting the whole review.
- */
 function isPrDiffTooLargeError(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
 	return (
@@ -326,14 +300,6 @@ function formatSyntheticDiffPath(prefix: "a/" | "b/", path: string): string {
 	return `"${escaped}"`;
 }
 
-/**
- * Reconstruct a `diff --git` section from a single files-API entry. The API's
- * `patch` field carries only the hunk body, so the `diff --git`/`---`/`+++`
- * headers are synthesized to match `gh pr diff` output — this keeps
- * {@link parsePrUnifiedDiff} and the review parser producing identical section
- * boundaries and byte offsets. Files whose `patch` is omitted (binary or
- * too-large) stay visible with an explicit marker rather than being dropped.
- */
 function buildSyntheticDiffSection(file: GhPrFileApi): string | undefined {
 	const newPath = file.filename;
 	if (!newPath) return undefined;
@@ -361,12 +327,6 @@ function buildSyntheticDiffSection(file: GhPrFileApi): string | undefined {
 	return lines.join("\n");
 }
 
-/**
- * Fallback PR diff retrieval via the paginated per-file endpoint, used when the
- * aggregate `gh pr diff` is rejected for exceeding GitHub's 20,000-line limit.
- * The per-file patches are not subject to that aggregate cap, so even very
- * large PRs can be reassembled into a synthetic unified diff.
- */
 async function fetchPrDiffViaFilesApi(
 	cwd: string,
 	repo: string,
@@ -412,8 +372,7 @@ async function fetchPrDiffViaFilesApi(
 		}
 		page += 1;
 	}
-	// Trailing newline mirrors `gh pr diff` so downstream parsers splitting on
-	// `^diff --git ` see identical boundaries.
+
 	return sections.length > 0 ? `${sections.join("\n")}\n` : "";
 }
 
@@ -438,18 +397,10 @@ async function fetchPrDiffFresh(
 		text = await fetchPrDiffViaFilesApi(cwd, repo, number, signal);
 	}
 	const payload = parsePrUnifiedDiff(text);
-	// `rendered` already carries the verbatim diff; blank the payload copy so
-	// the cache row stores a potentially huge diff once instead of twice.
-	// `getOrFetchPrDiff` rehydrates `unified` from `rendered`.
+
 	return { rendered: text, sourceUrl: undefined, payload: { unified: "", files: payload.files } };
 }
 
-/**
- * Cache-aware PR diff fetcher. Stores the full unified diff plus a parsed
- * file index in a single `pr-diff` cache row so the listing, full-diff, and
- * per-file slice variants of `pr://<n>/diff` share one `gh pr diff`
- * invocation.
- */
 export async function getOrFetchPrDiff(options: PrDiffLookupOptions): Promise<ViewLookupResult<PrDiffPayload>> {
 	const authKey = options.cacheAuthKey === undefined ? (resolveGithubCacheAuthKey() ?? null) : options.cacheAuthKey;
 	const doFetch = () => fetchPrDiffFresh(options.cwd, options.repo, options.number, options.signal);
@@ -465,7 +416,7 @@ export async function getOrFetchPrDiff(options: PrDiffLookupOptions): Promise<Vi
 	return {
 		rendered: lookup.rendered,
 		sourceUrl: lookup.sourceUrl,
-		// Rehydrate the unified text from `rendered` (stored once per row).
+
 		payload: { unified: lookup.rendered, files: lookup.payload.files },
 		status: lookup.status,
 		fetchedAt: lookup.fetchedAt,

@@ -10,19 +10,10 @@ import {
 	wrapTextWithAnsi,
 } from "../utils";
 
-/**
- * Text component - displays multi-line text with word wrapping.
- *
- * Foreground colors may be supplied lazily via {@link setStyleFn} instead of
- * baked into `text`: the styler runs at render time, so a caller that
- * invalidates the component on a theme change (see the coding-agent's
- * `onThemeChange` handler) re-resolves the color against the now-active theme
- * rather than replaying the palette active when the component was constructed.
- */
 export class Text implements Component {
 	#text: string;
-	#paddingX: number; // Left/right padding
-	#paddingY: number; // Top/bottom padding
+	#paddingX: number;
+	#paddingY: number;
 	#customBgFn?: (text: string) => string;
 	#styleFn?: (text: string) => string;
 	#widthEpochRevision = 0;
@@ -37,7 +28,6 @@ export class Text implements Component {
 		return this;
 	}
 
-	// Cache for rendered output
 	#cachedText?: string;
 	#cachedWidth?: number;
 	#cachedWidthEpoch?: number;
@@ -80,12 +70,6 @@ export class Text implements Component {
 		this.#widthEpochRevision++;
 	}
 
-	/**
-	 * Supply a foreground styler applied to the text at render time (e.g. a
-	 * theme color resolver). Unlike baking the color into `text`, the styler
-	 * re-runs on every render, so invalidating the component after a theme
-	 * change re-resolves the color against the active theme.
-	 */
 	setStyleFn(styleFn?: (text: string) => string): this {
 		this.#styleFn = styleFn;
 		this.#cachedText = undefined;
@@ -104,7 +88,6 @@ export class Text implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		// Check cache
 		if (
 			this.#cachedLines &&
 			this.#cachedText === this.#text &&
@@ -114,7 +97,6 @@ export class Text implements Component {
 			return this.#cachedLines;
 		}
 
-		// Don't render anything if there's no actual text
 		if (!this.#text || this.#text.trim() === "") {
 			const result: string[] = [];
 			this.#cachedText = this.#text;
@@ -124,32 +106,25 @@ export class Text implements Component {
 			return result;
 		}
 
-		// Replace tabs with 3 spaces
 		const normalizedText = replaceTabs(this.#styleFn ? this.#styleFn(this.#text) : this.#text);
 
-		// Calculate content width (subtract left/right margins)
 		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
 		const contentWidth = Math.max(1, width - paddingX * 2);
-		// Wrap text (this preserves ANSI codes but does NOT pad)
+
 		const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
 
-		// Add margins and background to each line
 		const leftMargin = padding(paddingX);
 		const rightMargin = padding(paddingX);
 		const contentLines: string[] = [];
-		// Exact visible widths of `result` rows, published only when rows are
-		// `content + spaces` (customBgFn output width is not knowable here).
+
 		const resultWidths: number[] | undefined = this.#customBgFn ? undefined : [];
 
 		for (const line of wrappedLines) {
-			// Add margins
 			const lineWithMargins = leftMargin + line + rightMargin;
 
-			// Apply background if specified (this also pads to full width)
 			if (this.#customBgFn) {
 				contentLines.push(applyBackgroundToLine(lineWithMargins, width, this.#customBgFn));
 			} else {
-				// No background - just pad to width with spaces
 				const visibleLen = visibleWidth(lineWithMargins);
 				const paddingNeeded = Math.max(0, width - visibleLen);
 				contentLines.push(lineWithMargins + padding(paddingNeeded));
@@ -157,7 +132,6 @@ export class Text implements Component {
 			}
 		}
 
-		// Add top/bottom padding (empty lines)
 		const emptyLine = padding(width);
 		const emptyLines: string[] = [];
 		for (let i = 0; i < this.#paddingY; i++) {
@@ -167,12 +141,10 @@ export class Text implements Component {
 
 		const result = [...emptyLines, ...contentLines, ...emptyLines];
 		if (resultWidths !== undefined) {
-			// Pad rows are exactly `width` cells wide.
 			const emptyWidths = new Array<number>(emptyLines.length).fill(width);
 			publishLineWidths(result, [...emptyWidths, ...resultWidths, ...emptyWidths]);
 		}
 
-		// Update cache
 		this.#cachedText = this.#text;
 		this.#cachedWidth = width;
 		this.#cachedWidthEpoch = getWidthConfigEpoch();

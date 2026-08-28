@@ -1,9 +1,3 @@
-/**
- * Status Line Hook
- *
- * Demonstrates ctx.ui.setStatus() for displaying persistent status text in the footer.
- * Shows turn progress with themed colors.
- */
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: HookAPI) {

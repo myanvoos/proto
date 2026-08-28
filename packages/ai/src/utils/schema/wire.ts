@@ -1,22 +1,8 @@
-/**
- * Compute the wire (JSON Schema) representation of a tool's parameters.
- *
- * Tools may author parameters as ArkType schemas or legacy TypeBox / plain JSON
- * Schema documents. Both are normalized at the boundary so providers and
- * validators see the same JSON Schema dialect.
- */
-
 import type { Type } from "@oh-my-pi/omptype";
 import type { Tool, TSchema } from "../../types";
 import { upgradeJsonSchemaTo202012 } from "./draft";
 import { stamp } from "./stamps";
 
-/**
- * True when `value` is a live ArkType schema instance.
- *
- * ArkType schemas are callable functions carrying `toJsonSchema`/`assert`
- * methods, while raw JSON Schema is a plain object.
- */
 export function isArkSchema(value: unknown): value is Type {
 	return (
 		typeof value === "function" &&
@@ -107,7 +93,6 @@ function arkJsonAstToWire(value: unknown): unknown {
 	return {};
 }
 
-/** Symbol-stamped caches keyed by schema object identity. */
 const kJsonWireSchema = Symbol("pi.schema.json.wire");
 const kArkWireSchema = Symbol("pi.schema.ark.wire");
 const kStrippedSchema = Symbol("pi.schema.descriptions.stripped");
@@ -217,11 +202,6 @@ function isExclusiveRequiredBranch(branch: unknown): boolean {
 	return true;
 }
 
-/**
- * Return an xAI-compatible copy of an object-root schema whose union consists
- * only of typeless required-key fragments. Other providers must retain the
- * union because it is a real model-facing constraint.
- */
 export function flattenExclusiveRequiredRootUnion(schema: Record<string, unknown>): Record<string, unknown> {
 	const unionKey = Array.isArray(schema.anyOf) ? "anyOf" : Array.isArray(schema.oneOf) ? "oneOf" : undefined;
 	if (!unionKey) return schema;
@@ -235,7 +215,6 @@ export function flattenExclusiveRequiredRootUnion(schema: Record<string, unknown
 	return flattened;
 }
 
-/** Keys whose values are a single JSON Schema (not an array or map). */
 const SCHEMA_VALUE_KEYS = [
 	"additionalProperties",
 	"unevaluatedProperties",
@@ -249,10 +228,8 @@ const SCHEMA_VALUE_KEYS = [
 	"not",
 ] as const;
 
-/** Keys whose values are a map of `{ key: Schema }` entries. */
 const SCHEMA_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions"] as const;
 
-/** Keys whose values are an array of schemas. */
 const SCHEMA_ARRAY_KEYS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
 
 function normalizeArkPropertyComments(node: unknown): void {
@@ -300,17 +277,11 @@ function normalizeArkPropertyComments(node: unknown): void {
 	}
 }
 
-/** True when `val` is a plain empty object `{}`. */
 function isEmptyObject(val: unknown): val is Record<string, never> {
 	if (val === null || typeof val !== "object" || Array.isArray(val)) return false;
 	return Object.keys(val).length === 0;
 }
 
-/**
- * The single JSON Schema scalar `type` that describes every member of a
- * homogeneous primitive enum, or `undefined` when the members are mixed,
- * non-scalar (`null`/object/array), or the list is empty.
- */
 function homogeneousEnumScalarType(values: readonly unknown[]): string | undefined {
 	if (values.length === 0) return undefined;
 	let inferred: string | undefined;
@@ -327,52 +298,21 @@ function homogeneousEnumScalarType(values: readonly unknown[]): string | undefin
 				scalar = "number";
 				break;
 			default:
-				return undefined; // null / object / array — not a single scalar type
+				return undefined;
 		}
 		if (inferred === undefined) inferred = scalar;
-		else if (inferred !== scalar) return undefined; // mixed primitives
+		else if (inferred !== scalar) return undefined;
 	}
 	return inferred;
 }
 
-/**
- * ArkType emits string-literal unions (and raw JSON-Schema tools can declare
- * enums) as a bare `{ enum: [...] }` with no `type`. That is valid JSON Schema
- * and accepted by OpenAI/Anthropic, but Gemini/Vertex — including the
- * OpenAI-compatible gateways fronting it — reject a function-declaration enum
- * that omits `type` ("schema didn't specify the schema type field"). Complete
- * the node by inferring the scalar `type` when every member shares one.
- */
 function inferBareEnumScalarType(obj: Record<string, unknown>): void {
 	if ("type" in obj || !Array.isArray(obj.enum)) return;
 	const inferred = homogeneousEnumScalarType(obj.enum);
 	if (inferred !== undefined) obj.type = inferred;
 }
 
-/**
- * ArkType serializes a *described* literal union — `type.enumerated(...).describe(d)`
- * or a `"a" | "b"` union carrying a description — as an `anyOf` of
- * `{ const, description }` branches that repeat the description on every branch
- * *and* the union root. The meta is distributed across the union's constituents
- * at the type level (each `unit` node inherits it), so the duplication is baked
- * in before serialization rather than added by this pipeline.
- *
- * Collapse such a homogeneous all-`const` union into one typed
- * `{ type, enum, description }` node: a shorter wire and a single description in
- * the place providers expect it. The collapse is conservative — applied only
- * when it is lossless:
- *   - every branch is a bare `{ const }` (optionally `{ const, description }`),
- *   - all branch values share one scalar JSON type (so `enum` gets a `type`,
- *     which Gemini/Vertex require),
- *   - branch descriptions are either all absent or all identical,
- * so a union whose branches carry *distinct* per-variant descriptions is left
- * untouched (a flat `enum` has nowhere to keep them). The union root's own
- * description wins when present; otherwise the shared branch description is kept.
- */
 function collapseConstUnionAnyOf(obj: Record<string, unknown>): void {
-	// `hasSchemaDefiningSibling` already rejects a sibling `enum`/`const`/etc.; it
-	// does not list `type`, so guard it here — collapsing would overwrite a
-	// wrapper `type` constraint paired with the `anyOf`.
 	if (hasSchemaDefiningSibling(obj) || "type" in obj) return;
 	const variants = obj.anyOf;
 	if (!Array.isArray(variants) || variants.length < 2) return;
@@ -383,20 +323,18 @@ function collapseConstUnionAnyOf(obj: Record<string, unknown>): void {
 	for (const variant of variants) {
 		if (!isSchemaRecord(variant) || !Object.hasOwn(variant, "const")) return;
 		for (const key in variant) {
-			if (key !== "const" && key !== "description") return; // extra constraints — not a bare const
+			if (key !== "const" && key !== "description") return;
 		}
 		const desc = variant.description;
 		if (typeof desc === "string") {
 			if (describedCount === 0) branchDescription = desc;
-			else if (desc !== branchDescription) return; // distinct per-variant descriptions — preserve them
+			else if (desc !== branchDescription) return;
 			describedCount++;
 		}
 		values.push(variant.const);
 	}
-	if (describedCount !== 0 && describedCount !== variants.length) return; // mixed described/undescribed
-	// A shared branch description that disagrees with the union root's own
-	// description would be silently dropped by the collapse — keep the anyOf so
-	// neither annotation is lost. (Equal descriptions, the ArkType case, collapse.)
+	if (describedCount !== 0 && describedCount !== variants.length) return;
+
 	if (
 		describedCount === variants.length &&
 		typeof obj.description === "string" &&
@@ -406,7 +344,7 @@ function collapseConstUnionAnyOf(obj: Record<string, unknown>): void {
 	}
 
 	const scalarType = homogeneousEnumScalarType(values);
-	if (scalarType === undefined) return; // mixed / non-scalar (incl. null) — leave as anyOf
+	if (scalarType === undefined) return;
 
 	delete obj.anyOf;
 	obj.type = scalarType;
@@ -429,14 +367,6 @@ function walk(node: unknown): void {
 	for (const k in obj) walk(obj[k]);
 }
 
-/**
- * Normalize `{}` (an unconstrained schema) to boolean `true` in every
- * schema-valued position. JSON Schema draft 2020-12 §4.3.1 defines them as
- * semantically equivalent. Grammar-constrained samplers often treat the object
- * form as "generate an empty object" rather than "any JSON value".
- *
- * Mutates in place and applies to every tool wire schema.
- */
 export function normalizeEmptySchemas(node: unknown): void {
 	if (Array.isArray(node)) {
 		for (const child of node) normalizeEmptySchemas(child);
@@ -468,14 +398,6 @@ export function normalizeEmptySchemas(node: unknown): void {
 	for (const k in obj) normalizeEmptySchemas(obj[k]);
 }
 
-/**
- * Recursively set `additionalProperties: false` on declared object nodes so the
- * model-facing wire is closed. Only nodes that declare `properties` and carry
- * neither `additionalProperties` nor `patternProperties` are closed.
- *
- * Traverses only schema-valued positions via the shared traversal-key constants
- * so it never descends into `default`/`examples`/`enum`/`const` instance data.
- */
 function closeDeclaredObjects(node: unknown): void {
 	if (Array.isArray(node)) {
 		for (const child of node) closeDeclaredObjects(child);
@@ -509,35 +431,10 @@ function closeDeclaredObjects(node: unknown): void {
 	}
 }
 
-/** A subschema admitting any JSON value: `{}` or boolean `true` (draft 2020-12 §4.3.1). */
 function isUnconstrainedSchema(val: unknown): boolean {
 	return val === true || isEmptyObject(val);
 }
 
-/**
- * ArkType-only: prune the unconstrained branch ArkType emits for a `T | undefined`
- * value-union (e.g. `{ id: "string | undefined" }`).
- *
- * `undefined` has no JSON Schema form, so `arkToWireSchema`'s `fallback` degrades the
- * `undefined` arm to the unconstrained empty schema, producing
- * `{ anyOf: [{ type: "string" }, {}] }`. That bare `{}`/`true` combiner branch makes
- * the property match any value; strict providers (OpenAI/Codex) reject it ("Invalid
- * schema for function ..."), and `enforceStrictSchema` waves the non-object `true`
- * branch straight through, so the break only surfaces server-side. This drops the
- * unconstrained branch(es) from every ArkType-emitted `anyOf`/`oneOf` and inlines the
- * lone remaining concrete branch (keeping sibling keywords like `description`).
- *
- * `required` is deliberately left untouched: ArkType validates a `T | undefined` key
- * as required-present (an absent key is rejected at runtime), so the wire must keep the
- * key required to stay consistent with runtime validation — demoting it to optional
- * would let the model omit the key (or, under strict-mode nullable wrapping, send
- * `null`) and then fail ArkType validation.
- *
- * Scoped to `arkToWireSchema` and run before `normalizeEmptySchemas` so the
- * provider-agnostic `{}`→`true` pass (issue #1179) still preserves intentional open
- * unions in Zod / raw-JSON tools. Traverses only schema-valued positions so it never
- * descends into `default`/`examples`/`enum`/`const` instance data.
- */
 function pruneArkUndefinedUnionBranches(node: unknown): void {
 	if (Array.isArray(node)) {
 		for (const child of node) pruneArkUndefinedUnionBranches(child);
@@ -579,9 +476,6 @@ function pruneArkUndefinedUnionBranches(node: unknown): void {
 	}
 }
 
-/**
- * Convert an ArkType schema into the JSON Schema shape providers consume.
- */
 export function arkToWireSchema(schema: Type): Record<string, unknown> {
 	return stamp(schema, kArkWireSchema, s => {
 		const raw = s.toJsonSchema({ target: "draft-2020-12", fallback: ctx => ctx.base }) as Record<string, unknown>;
@@ -593,11 +487,6 @@ export function arkToWireSchema(schema: Type): Record<string, unknown> {
 	});
 }
 
-/**
- * Resolve a tool's parameters to a JSON Schema object suitable for sending
- * over the wire. ArkType schemas are converted and cached; legacy TypeBox /
- * raw JSON Schema parameters are upgraded to draft 2020-12 and cached.
- */
 export function toolWireSchema(tool: Tool): Record<string, unknown> {
 	const params: TSchema = tool.parameters;
 	if (isArkSchema(params)) return arkToWireSchema(params);
@@ -608,12 +497,6 @@ export function toolWireSchema(tool: Tool): Record<string, unknown> {
 	});
 }
 
-/**
- * Schema-valued keywords whose value is a single subschema (or an array of
- * subschemas — the recursion dispatches on array-ness, so tuple forms like
- * draft-07 `items: []` are handled too). Covers the draft 2020-12 surface plus
- * the legacy `additionalItems` that may survive an incomplete upgrade.
- */
 const STRIP_SCHEMA_VALUE_KEYS = [
 	"additionalProperties",
 	"unevaluatedProperties",
@@ -633,16 +516,8 @@ const STRIP_SCHEMA_VALUE_KEYS = [
 	"prefixItems",
 ] as const;
 
-/** Keywords whose value is a `{ name: Schema }` map — names are NOT annotations. */
 const STRIP_SCHEMA_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"] as const;
 
-/**
- * Recursively strip human-readable `description` annotations from a JSON Schema,
- * descending only through schema-valued keywords so a property literally named
- * `"description"` inside a `properties`/`$defs` map keeps its schema (only its own
- * annotation is dropped), and data-bearing keywords (`default`/`const`/`examples`)
- * are never traversed. Mutates `node` in place — callers pass a clone.
- */
 function stripSchemaDescriptionsInPlace(node: unknown): void {
 	if (Array.isArray(node)) {
 		for (const child of node) stripSchemaDescriptionsInPlace(child);
@@ -661,13 +536,6 @@ function stripSchemaDescriptionsInPlace(node: unknown): void {
 	}
 }
 
-/**
- * Return a deep clone of `schema` with every `description` annotation removed.
- * The result is memoized on the input via a non-enumerable symbol (`stamp`) so
- * repeated provider requests reuse the same stripped object; the input is never
- * mutated, so the stamped `toolWireSchema` cache stays intact for
- * system-prompt/UI rendering.
- */
 export function stripSchemaDescriptions(schema: Record<string, unknown>): Record<string, unknown> {
 	return stamp(schema, kStrippedSchema, source => {
 		const clone = structuredClone(source);
@@ -676,14 +544,6 @@ export function stripSchemaDescriptions(schema: Record<string, unknown>): Record
 	});
 }
 
-/**
- * Strip a tool's human-readable text from its provider-bound spec: empties the
- * top-level `description` and removes nested schema `description` annotations.
- * Used when the full tool catalog is rendered into the system prompt instead, so
- * the descriptions ride the wire once (in the prompt) rather than duplicated on
- * every tool definition. Parameters are resolved to wire JSON Schema and cloned,
- * leaving the original tool objects and the stamped schema cache untouched.
- */
 export function stripToolDescriptions(tools: readonly Tool[]): Tool[] {
 	return tools.map(tool => ({
 		...tool,

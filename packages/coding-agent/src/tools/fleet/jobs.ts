@@ -1,9 +1,3 @@
-/**
- * Fleet jobs half — lifecycle control for async background jobs (bash scripts,
- * subagents) owned by the calling agent: wait/cancel/snapshot plus the
- * running-agents roster for activity with no job entry.
- */
-
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
@@ -36,12 +30,6 @@ const WAIT_DURATION_MS: Record<string, number> = {
 	"5m": 5 * 60_000,
 };
 
-/**
- * A wait snapshot where every watched job is still running and nothing was
- * cancelled — pure "still waiting" noise once a newer wait exists. The TUI
- * keeps such a block un-finalized (displaceable) so a follow-up `fleet` call
- * replaces it instead of stacking another waiting frame in the transcript.
- */
 export function isWaitingPollDetails(details: unknown): boolean {
 	const d = details as CoordinationDetails | undefined;
 	if (!d || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
@@ -49,7 +37,6 @@ export function isWaitingPollDetails(details: unknown): boolean {
 	return d.jobs.every(job => job?.status === "running");
 }
 
-/** Poll window for a job-watching wait: `async.pollWaitDuration` fixed value or smart ladder. */
 export function resolvePollWindow(
 	session: ToolSession,
 	manager: AsyncJobManager,
@@ -63,11 +50,6 @@ export function resolvePollWindow(
 	return { waitMs, smart };
 }
 
-/**
- * Resolve a list of job ids to job records visible to the calling agent.
- * Drops missing ids and ids owned by other agents, so cross-agent inspection
- * via the fleet is impossible.
- */
 export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: string | undefined): AsyncJob[] {
 	const out: AsyncJob[] = [];
 	for (const id of ids) {
@@ -79,28 +61,11 @@ export function visibleJobs(manager: AsyncJobManager, ids: string[], ownerId: st
 	return out;
 }
 
-/**
- * Running subagents from the registry that are not covered by one of the
- * caller's running jobs. Agents woken via fleet messaging (idle wake / park
- * revival) and spawns owned by another agent run with no AsyncJobManager
- * entry, yet the UI's agent badge counts them — a snapshot must account for
- * that activity instead of implying the system is quiet. Existence is
- * already public via the peer roster, so listing ids here leaks nothing new;
- * job *control* stays owner-scoped.
- *
- * Reporting deliberately uses the claimed `status`, not the session-corroborated
- * `registry.isRunning` used by the wait-sustaining gates: a ref that claims
- * `running` with no live turn is exactly the stale entry an operator must see
- * here to cancel it (#8634). Hiding it would match the badge count to nothing
- * and remove the only discovery path for the id.
- */
 function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
 	const registry = session.agentRegistry;
 	if (!registry) return [];
 	const selfId = session.getAgentId?.() ?? undefined;
-	// Cover = the caller's RUNNING jobs only. A settled job still sitting in
-	// delivery retention must not hide its agent if that agent was re-woken
-	// (e.g. via a fleet message) and is running again without a job.
+
 	const covered = new Set<string>();
 	const manager = session.asyncJobManager;
 	if (manager) {
@@ -125,7 +90,6 @@ function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[]
 	return out;
 }
 
-/** Model-facing lines for the running-agents section shared by `jobs` and empty-wait results. */
 function describeAgents(agents: AgentActivitySnapshot[]): string[] {
 	const lines = [`## Running Agents (${agents.length}) — not job-backed\n`];
 	for (const agent of agents) {
@@ -201,7 +165,6 @@ export function buildJobResult(
 	cancelOutcomes: CancelOutcome[],
 	agents: AgentActivitySnapshot[] = [],
 ): AgentToolResult<CoordinationDetails> {
-	// Deduplicate by id (cancelled jobs may also appear in the watched set).
 	const seen = new Set<string>();
 	const uniqueJobs = jobs.filter(j => {
 		if (seen.has(j.id)) return false;
@@ -250,8 +213,6 @@ export function buildJobResult(
 		lines.push(...describeAgents(agents));
 	}
 
-	// A tool result must never be empty text — the model cannot tell "no
-	// jobs" from a malfunction (reported exactly that way in QA).
 	if (lines.length === 0) {
 		lines.push("No background jobs.");
 	}
@@ -265,19 +226,12 @@ export function buildJobResult(
 	return {
 		content: [{ type: "text", text: lines.join("\n").trimEnd() }],
 		details,
-		// A wait where everything is still running carries no new information
-		// once a later wait exists — same predicate the TUI uses to displace
-		// stale waiting frames.
+
 		...(isWaitingPollDetails(details) ? { useless: true } : {}),
 	};
 }
 
-/** `wait` with explicit ids that matched nothing visible: correct the caller, surface live agents. */
 export function noMatchingJobsResult(session: ToolSession, ids: string[]): AgentToolResult<CoordinationDetails> {
-	// Zero pollable jobs is not necessarily "nothing running": agents woken
-	// via fleet messages or owned by another agent run with no job entry.
-	// Report them so the snapshot matches the UI's running-agent count
-	// (worker job ids are agent ids, so a stale id often names one).
 	const agents = runningAgentsOutsideJobs(session);
 	const lines: string[] = [`No matching jobs found for IDs: ${ids.join(", ")}`];
 	const registry = session.agentRegistry;
@@ -296,14 +250,11 @@ export function noMatchingJobsResult(session: ToolSession, ids: string[]): Agent
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
 		details: { op: "wait", jobs: [], ...(agents.length ? { agents } : {}) },
-		// Nothing found is noise once consumed — the follow-up call has already
-		// corrected course. Running agents are real state the model may act on,
-		// so keep those results.
+
 		...(agents.length === 0 ? { useless: true } : {}),
 	};
 }
 
-/** Bare `wait` with no running jobs and nobody who could message: nothing to block on. */
 export function nothingToWaitForResult(session: ToolSession): AgentToolResult<CoordinationDetails> {
 	const agents = runningAgentsOutsideJobs(session);
 	const lines: string[] = ["No running background jobs to wait for."];
@@ -317,7 +268,6 @@ export function nothingToWaitForResult(session: ToolSession): AgentToolResult<Co
 	};
 }
 
-/** `cancel`: kill the named jobs; returns immediately with outcomes + snapshots. */
 export async function executeCancel(
 	session: ToolSession,
 	manager: AsyncJobManager,
@@ -329,17 +279,10 @@ export async function executeCancel(
 	for (const id of ids) {
 		const existing = manager.getJob(id);
 		if (!existing || (ownerId && existing.ownerId !== ownerId)) {
-			// No job by this id (or it belongs to another agent): a budget-aborted
-			// keep-alive subagent lives on as a jobless registration long after its
-			// job row is reaped, so let cancel reach the agent registration too.
 			cancelOutcomes.push(await cancelAgentRegistration(session, ownerId, id));
 			continue;
 		}
 		if (existing.status !== "running") {
-			// The job row settled but may still be inside the retention window.
-			// The agent registration behind it (job id == agent id for task
-			// spawns) can outlive the row as an idle/parked zombie — try the
-			// registration kill before reporting the row as already done.
 			const regOutcome = await cancelAgentRegistration(session, ownerId, id);
 			cancelOutcomes.push(
 				regOutcome.status === "cancelled"
@@ -362,15 +305,6 @@ export async function executeCancel(
 	return buildJobResult(session, manager, "cancel", visibleJobs(manager, ids, ownerId), cancelOutcomes);
 }
 
-/**
- * Kill a non-job-backed agent registration named by `id`: abort any in-flight
- * turn, then release it from the lifecycle (dispose session + unregister). This
- * is the only kill path for a keep-alive subagent that was budget-aborted, went
- * `idle`/`parked`, and outlived its job row — otherwise it is unstoppable short
- * of a broker restart (issue #6315). Scoped to the caller's own descendants so
- * cross-agent kills stay impossible; a bare test/SDK caller (no owner id) may
- * target any sub. Never touches Main, the caller, or advisor transcripts.
- */
 async function cancelAgentRegistration(
 	session: ToolSession,
 	ownerId: string | undefined,
@@ -408,7 +342,6 @@ async function cancelAgentRegistration(
 	return { id, status: "cancelled", message: `Cancelled agent ${id} (killed session, dropped registration).` };
 }
 
-/** `jobs`: read-only snapshot of every job plus the jobless running-agent roster. */
 export function executeJobsSnapshot(
 	session: ToolSession,
 	manager: AsyncJobManager,
@@ -418,17 +351,12 @@ export function executeJobsSnapshot(
 	return buildJobResult(session, manager, "jobs", jobs, [], runningAgentsOutsideJobs(session));
 }
 
-// =============================================================================
-// TUI Renderer (jobs half)
-// =============================================================================
-
 interface JobRenderArgs {
 	poll?: string[];
 	cancel?: string[];
 	list?: boolean;
 }
 
-/** Fleet args → legacy job-renderer arg shape, preserving the exact frame titles. */
 function toJobRenderArgs(args: FleetRenderArgs | undefined): JobRenderArgs | undefined {
 	if (!args) return undefined;
 	switch (args.op) {
@@ -478,24 +406,12 @@ function statusToColor(status: JobSnapshot["status"]): ToolUIColor {
 	}
 }
 
-/**
- * Worker job results are delivered in the model-facing `<worker-result>` envelope
- * (prompts/tools/worker-summary.md) so the parent agent can parse status and the
- * `agent://` pointer. The wrapper markup is noise to a human — preview the
- * inner <output>/<preview> body instead.
- */
 function stripTaskResultEnvelope(text: string): string {
 	if (!text.startsWith("<worker-result")) return text;
 	const body = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text)?.[2];
 	return body?.trim() || text;
 }
 
-/**
- * Pretty-printed JSON output wastes the collapsed one-line preview on a lone
- * "{" — flatten structured-looking bodies onto a single line. Slice first:
- * downstream truncation keeps at most a few hundred columns, so collapsing
- * whitespace across a multi-KB body would be pure waste.
- */
 function flattenStructuredPreview(text: string): string {
 	const first = text[0];
 	if (first !== "{" && first !== "[") return text;
@@ -517,13 +433,11 @@ function describeTarget(args: JobRenderArgs | undefined): string {
 	return parts.join(", ");
 }
 
-/** Pending-call frame for job ops (wait/cancel/jobs). */
 export function jobsRenderCall(args: FleetRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 	const text = renderStatusLine({ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || "Job" }, uiTheme);
 	return new Text(text, 0, 0);
 }
 
-/** Result frame for job snapshots (wait/cancel/jobs and the agents roster). */
 export function jobsRenderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
 	options: RenderResultOptions,
@@ -542,9 +456,6 @@ export function jobsRenderResult(
 
 	const isPollCall = args ? !args.list && (!args.cancel || args.cancel.length === 0 || args.poll !== undefined) : true;
 
-	// Agent-carrying results (jobs snapshot / empty-wait roster) are real
-	// snapshots, not displaceable waiting frames — only agentless waits
-	// collapse their still-running rows once sealed.
 	if (!options.isPartial && isPollCall && agents.length === 0) {
 		jobs = jobs.filter(job => job.status !== "running");
 		if (jobs.length === 0) {
@@ -555,8 +466,6 @@ export function jobsRenderResult(
 	const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
 	for (const job of jobs) counts[job.status]++;
 
-	// The title already carries the running count, so meta lists only the
-	// settled categories — "waiting on 19 of 19 · 19 running" read awkward.
 	const meta: string[] = [];
 	if (counts.completed > 0) meta.push(uiTheme.fg("success", `${counts.completed} done`));
 	if (counts.failed > 0) meta.push(uiTheme.fg("error", `${counts.failed} failed`));
@@ -587,7 +496,6 @@ export function jobsRenderResult(
 		uiTheme,
 	);
 
-	// Sort: running first (so user sees what's still pending), then failed, then completed/cancelled.
 	const statusOrder: Record<JobSnapshot["status"], number> = {
 		running: 0,
 		failed: 1,
@@ -605,12 +513,7 @@ export function jobsRenderResult(
 		render(width: number): readonly string[] {
 			const expanded = options.expanded;
 			const spinnerFrame = options.spinnerFrame ?? 0;
-			// Running-job labels shimmer while the wait block is live; the band
-			// phase is Date.now()-sampled at render time, so serving cached bytes
-			// would pin it to the ~12.5fps spinner-glyph cadence instead of the
-			// 30fps redraw. Bypass the cache while any row animates, and key on
-			// the animation state so a sealed block never hits stale shimmered
-			// bytes (spinnerFrame falls back to 0 on both sides of the seal).
+
 			const shimmerActive = counts.running > 0 && options.spinnerFrame !== undefined && shimmerEnabled();
 			const key = new Hasher().bool(expanded).u32(width).u32(spinnerFrame).bool(shimmerActive).digest();
 			if (!shimmerActive && cached?.key === key) return cached.lines;
@@ -629,8 +532,7 @@ export function jobsRenderResult(
 							job.status === "running" ? options.spinnerFrame : undefined,
 						);
 						const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
-						// Worker jobs label themselves with their agent id, which is also
-						// the job id — drop the id column instead of stuttering it twice.
+
 						const idPart = job.label.trim() === job.id ? "" : ` ${uiTheme.fg("muted", job.id)}`;
 						const rawLabelLines = (job.label || "(no label)").split(/\r?\n/);
 						const maxLabelLines = expanded ? LABEL_LINES_EXPANDED : LABEL_LINES_COLLAPSED;
@@ -656,10 +558,7 @@ export function jobsRenderResult(
 										),
 									)}`
 								: "";
-						// Running rows in a live block shimmer their label; once the block
-						// stops animating (sealed, or a settled snapshot — spinnerFrame
-						// cleared) they render static so scrollback never keeps a mid-sweep
-						// shimmer band.
+
 						const live = job.status === "running" && options.spinnerFrame !== undefined;
 						const headRaw = visibleLabelLines[0] ?? "";
 						const headLabel = live
@@ -691,8 +590,6 @@ export function jobsRenderResult(
 				uiTheme,
 			);
 
-			// Agents run outside job control; render them as their own tree so
-			// they never skew the job counts or the "waiting on N jobs" title.
 			const agentLines =
 				agents.length === 0
 					? []

@@ -2,9 +2,8 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { RpcChunkFrame } from "./rpc-types";
 
-/** Maximum UTF-8 size of one newline-delimited RPC frame, including the newline. */
 export const MAX_RPC_FRAME_BYTES = 1024 * 1024;
-/** Maximum UTF-8 size of one logical frame reassembled by protocol v2. */
+
 export const MAX_RPC_REASSEMBLED_BYTES = 64 * 1024 * 1024;
 
 const RPC_CHUNK_PAYLOAD_BYTES = 256 * 1024;
@@ -84,12 +83,6 @@ function encodedMessageSnapshot(encoded: string): { message: unknown } | undefin
 		: undefined;
 }
 
-/**
- * Emit protocol v2 chunk frames for one pre-serialized logical frame, one physical
- * JSONL line at a time so callers can write with backpressure instead of holding the
- * whole ~4/3-sized base64 transport in memory. The reassembly ceiling is enforced on
- * `Buffer.byteLength` BEFORE any full-payload allocation.
- */
 function* encodeChunkedRpcFrames(frame: object, json: string, chunkId: string): Generator<string> {
 	const byteLength = Buffer.byteLength(json, "utf8");
 	if (byteLength > MAX_RPC_REASSEMBLED_BYTES) {
@@ -132,7 +125,6 @@ function decodeBase64(data: unknown): Buffer {
 	return bytes;
 }
 
-/** Reassemble protocol v2 chunk frames after each JSONL line has been parsed. */
 export class RpcFrameDecoder {
 	#pending?: PendingRpcChunks;
 
@@ -262,12 +254,10 @@ function encodeRpcFrameFromJson(
 	return `${JSON.stringify(overflowFrame(compacted))}\n`;
 }
 
-/** Serialize a complete JSONL frame while enforcing the transport byte ceiling. */
 export function encodeRpcFrame(frame: object, streamedMessageCount = 0, streamedMessages?: readonly unknown[]): string {
 	return encodeRpcFrameFromJson(frame, JSON.stringify(frame), streamedMessageCount, streamedMessages);
 }
 
-/** Stateful encoder that tracks which messages a client has already received. */
 export class RpcFrameEncoder {
 	#streamedMessages: unknown[] = [];
 	#protocolVersion: RpcProtocolVersion = 1;
@@ -278,12 +268,6 @@ export class RpcFrameEncoder {
 		this.#protocolVersion = version;
 	}
 
-	/**
-	 * Encode one logical frame into physical JSONL lines. Encoder bookkeeping runs
-	 * eagerly; only chunk emission is lazy, so a chunked result can be streamed to
-	 * stdout with backpressure without holding the whole transport in memory. The
-	 * returned iterable MUST be fully consumed exactly once.
-	 */
 	encodeFrames(frame: object): Iterable<string> {
 		if (isRecord(frame) && frame.type === "agent_start") this.#streamedMessages = [];
 		const json = JSON.stringify(frame);
@@ -291,7 +275,7 @@ export class RpcFrameEncoder {
 		let singleFrame: string | undefined;
 		if (this.#protocolVersion === 2 && serializedFrameBytes(json) > MAX_RPC_FRAME_BYTES) {
 			const compacted = compactTerminalFrame(frame, this.#streamedMessages.length, this.#streamedMessages);
-			// Reuse the original serialization when compaction was a no-op.
+
 			const compactedJson = compacted === frame ? json : JSON.stringify(compacted);
 			if (serializedFrameBytes(compactedJson) > MAX_RPC_FRAME_BYTES) {
 				frames = encodeChunkedRpcFrames(compacted, compactedJson, `rpc-${++this.#chunkCounter}`);

@@ -15,25 +15,21 @@ import {
 } from "./json-tree";
 import { formatExpandHint, replaceTabs, truncateToWidth } from "./render-utils";
 
-/** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
 interface DefaultToolRenderInput {
-	/** Human-readable tool label. */
 	label: string;
-	/** Tool arguments, shown inline when collapsed and as a tree when expanded. */
+
 	args: unknown;
-	/** Settled or streaming result; omitted while only the call is available. */
+
 	result?: {
 		output: string;
 		isError?: boolean;
-		/** Synthetic placeholder for a call skipped mid-batch to service steering/peer
-		 * input — the tool never ran, so it renders neutral (info) rather than as an error. */
+
 		skipped?: boolean;
 	};
-	/** Current expansion and lifecycle state. */
+
 	options: RenderResultOptions;
 }
 
-/** Format one generic tool call/result card at the available content width. */
 export function formatDefaultToolExecution(
 	input: DefaultToolRenderInput,
 	contentWidth: number,
@@ -115,9 +111,7 @@ export function formatDefaultToolExecution(
 				}
 				return lines.join("\n");
 			}
-		} catch {
-			// Non-JSON output that starts with a bracket is rendered as plain text.
-		}
+		} catch {}
 	}
 
 	const outputLines = textContent.split("\n");

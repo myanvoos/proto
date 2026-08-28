@@ -1,8 +1,3 @@
-/**
- * Hello Tool - Minimal custom tool example
- *
- * Demonstrates using ExtensionAPI's logger and injected schema builder.
- */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
@@ -19,7 +14,6 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _onUpdate, _ctx, _signal) {
 			const { name } = params;
 
-			// Use logger for debugging
 			pi.logger.debug("Hello tool executed", { name });
 
 			return {

@@ -10,7 +10,7 @@ import { theme } from "../../theme/theme";
 import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 const MAX_VISIBLE_MODELS = 10;
-/** ModelBrowser chrome: search row + blank above the list, blank + two detail rows below. */
+
 const BROWSER_FRAME_ROWS = 5;
 
 class ModelSceneController implements SetupSceneController {
@@ -123,7 +123,6 @@ class ModelSceneController implements SetupSceneController {
 	}
 }
 
-/** Setup step that assigns one available model to the persisted default role. */
 export const modelSetupScene: SetupScene = {
 	id: "model",
 	title: "Choose your default model",

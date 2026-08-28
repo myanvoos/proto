@@ -1,6 +1,6 @@
-//! `realpath` builtin: print resolved absolute or relative paths.
-//!
-//! Ported from uutils coreutils 0.8.0.
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -33,7 +33,7 @@ const OPT_RELATIVE_TO: &str = "relative-to";
 const OPT_RELATIVE_BASE: &str = "relative-base";
 const ARG_FILES: &str = "files";
 
-/// Custom parser that validates `OsString` is not empty.
+
 #[derive(Clone, Debug)]
 struct NonEmptyOsStringParser;
 
@@ -66,7 +66,7 @@ impl ValueParserFactory for NonEmptyOsStringParser {
 	}
 }
 
-/// Parsed `realpath` invocation.
+
 pub(crate) struct Realpath {
 	matches: ArgMatches,
 }
@@ -95,12 +95,12 @@ fn realpath_main(matches: &ArgMatches, host: &mut Host) -> i32 {
 	let can_mode = if matches.get_flag(OPT_CANONICALIZE_MISSING) {
 		MissingHandling::Missing
 	} else if matches.get_flag(OPT_CANONICALIZE_EXISTING) {
-		// -e: all components must exist. Despite the name,
-		// MissingHandling::Existing requires all components to exist.
+
+
 		MissingHandling::Existing
 	} else {
-		// Default behavior (same as -E): all but the last component must exist.
-		// MissingHandling::Normal allows the final component to not exist.
+
+
 		MissingHandling::Normal
 	};
 	let resolve_mode = if strip {
@@ -239,9 +239,9 @@ fn app() -> Command {
 
 type PathIoError = (PathBuf, io::Error);
 
-/// Prepare `--relative-to` and `--relative-base` options, converting them to
-/// absolute paths. If `--relative-to` is not a descendant of `--relative-base`,
-/// both values are discarded.
+
+
+
 fn prepare_relative_options(
 	matches: &ArgMatches,
 	host: &Host,
@@ -264,7 +264,7 @@ fn prepare_relative_options(
 	Ok((relative_to, relative_base))
 }
 
-/// Prepare one `relative-*` option.
+
 fn canonicalize_relative_option(
 	relative: Option<PathBuf>,
 	host: &Host,
@@ -279,7 +279,7 @@ fn canonicalize_relative_option(
 	}
 }
 
-/// Make a `relative-to` or `relative-base` path value absolute.
+
 fn canonicalize_relative(
 	path: &Path,
 	can_mode: MissingHandling,
@@ -287,15 +287,15 @@ fn canonicalize_relative(
 ) -> io::Result<PathBuf> {
 	let absolute = canonicalize(path, can_mode, resolve)?;
 	if can_mode == MissingHandling::Existing && !absolute.is_dir() {
-		absolute.read_dir()?; // Raise a not-a-directory error.
+		absolute.read_dir()?;
 	}
 	Ok(absolute)
 }
 
-/// Resolve a path to an absolute form and print it.
-///
-/// If `relative_to` and/or `relative_base` is given, the path is printed in a
-/// relative form according to [`process_relative`].
+
+
+
+
 fn resolve_path(
 	path: &Path,
 	line_ending: LineEnding,
@@ -314,11 +314,11 @@ fn resolve_path(
 	host.stdout.flush()
 }
 
-/// Conditionally converts an absolute path to a relative form.
-///
-/// With only `relative_to`, the result is relative to it. With only
-/// `relative_base`, descendants are relative to it. With both, descendants of
-/// `relative_base` are relative to `relative_to`; other paths remain absolute.
+
+
+
+
+
 fn process_relative(
 	path: PathBuf,
 	relative_base: Option<&Path>,
@@ -345,7 +345,7 @@ fn io_error_message(error: &io::Error) -> String {
 	message
 }
 
-/// Creates the `realpath` builtin registration.
+
 pub(crate) fn realpath_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Realpath, SE>()
 }

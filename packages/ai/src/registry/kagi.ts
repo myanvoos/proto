@@ -4,12 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://kagi.com/settings/api";
 
-/**
- * Login to Kagi.
- *
- * Opens browser to API settings and prompts user to paste their API key.
- * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
- */
 export const loginKagi = createApiKeyLogin({
 	providerLabel: "Kagi",
 	authUrl: AUTH_URL,

@@ -5,20 +5,18 @@ import type { LspServerInfo, RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
 
 const CACHE_VERSION = 1;
-/** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
+
 export interface ComposerThemePreferences {
 	readonly colorBlindMode?: boolean;
 	readonly darkTheme?: string;
 	readonly lightTheme?: string;
 }
 
-/** Last authoritative model labels shown in the welcome component. */
 interface ComposerWelcomeCache {
 	readonly modelName: string;
 	readonly providerName: string;
 }
 
-/** Speculative composer state read before the settings/session graph is available. */
 interface ComposerStartupCache {
 	readonly preferences?: ComposerPreferences;
 	readonly theme?: ComposerThemePreferences;
@@ -187,7 +185,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	};
 }
 
-/** Read all speculative composer caches synchronously before the first terminal paint. */
 export function readComposerStartupCache(cwd: string): ComposerStartupCache {
 	const dir = projectCacheDir(cwd);
 	const ui = readUiState(path.join(dir, "ui.json"));
@@ -200,7 +197,6 @@ export function readComposerStartupCache(cwd: string): ComposerStartupCache {
 	};
 }
 
-/** Persist resolved theme and composer settings for the next prepaint. */
 export async function writeComposerUiCache(
 	cwd: string,
 	preferences: ComposerPreferences,
@@ -212,7 +208,6 @@ export async function writeComposerUiCache(
 	);
 }
 
-/** Persist authoritative model/provider labels for the next welcome prepaint. */
 export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWelcomeCache): Promise<void> {
 	await Bun.write(
 		path.join(projectCacheDir(cwd), "welcome.json"),
@@ -220,7 +215,6 @@ export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWe
 	);
 }
 
-/** Persist the latest recent-session rows as a compact JSONL speculation cache. */
 export async function writeComposerRecentSessionsCache(cwd: string, sessions: readonly RecentSession[]): Promise<void> {
 	const content = sessions
 		.slice(0, 4)
@@ -229,7 +223,6 @@ export async function writeComposerRecentSessionsCache(cwd: string, sessions: re
 	await Bun.write(path.join(projectCacheDir(cwd), "recent-sessions.jsonl"), content ? `${content}\n` : "");
 }
 
-/** Persist the latest detected project LSP rows for the next prepaint. */
 export async function writeComposerLspCache(cwd: string, servers: readonly LspServerInfo[]): Promise<void> {
 	await Bun.write(
 		path.join(projectCacheDir(cwd), "lsp-servers.json"),

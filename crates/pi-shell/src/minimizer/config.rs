@@ -1,10 +1,3 @@
-//! Configuration for the shell output minimizer.
-//!
-//! [`MinimizerOptions`] is the N-API surface exposed through `ShellOptions`
-//! and `ShellExecuteOptions`. [`MinimizerConfig`] is the internal resolved
-//! view after merging field-level values with an optional TOML settings
-//! file.
-
 use std::{
 	collections::{HashMap, HashSet},
 	fs,
@@ -18,14 +11,11 @@ use crate::minimizer::pipeline::{self, PipelineRegistry, SUPPORTED_SCHEMA_VERSIO
 
 const DEFAULT_MAX_CAPTURE_BYTES: u32 = 4 * 1024 * 1024;
 
-/// Source-outline aggressiveness for `cat <source-file>` minimization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutlineLevel {
-	/// Current behavior: only outline when input is large enough to warrant it.
 	#[default]
 	Default,
-	/// Strip function/method bodies regardless of size for supported source
-	/// languages (`ts`, `tsx`, `js`, `jsx`, `py`, `rs`, `go`).
+
 	Aggressive,
 }
 
@@ -39,56 +29,37 @@ impl OutlineLevel {
 	}
 }
 
-/// N-API opt-in handle for the minimizer.
 #[derive(Debug, Clone, Default)]
 pub struct MinimizerOptions {
-	/// Master switch. Absent / false = disabled.
-	pub enabled:              Option<bool>,
-	/// Optional path to a TOML settings file whose values override
-	/// field-level defaults. `~` is expanded.
-	pub settings_path:        Option<String>,
-	/// Optional xxHash64 digest (hex) of the settings file contents. When
-	/// supplied, the engine refuses to honor a settings file whose hash does
-	/// not match — a lightweight trust gate for agent-controllable paths.
-	pub settings_hash:        Option<String>,
-	/// Opt-in allowlist of program names (e.g. `"git"`). When empty or
-	/// absent, all built-in filters are active.
-	pub only:                 Option<Vec<String>>,
-	/// Program names explicitly excluded from minimization.
-	pub except:               Option<Vec<String>>,
-	/// Maximum captured bytes per command before the engine falls back to
-	/// the raw, un-minimized output. Default 4 MiB.
-	pub max_capture_bytes:    Option<u32>,
-	/// Source-outline level for `cat <source-file>` minimization. Accepts
-	/// `"default"` (current behavior) or `"aggressive"` (strip function bodies).
+	pub enabled: Option<bool>,
+
+	pub settings_path: Option<String>,
+
+	pub settings_hash: Option<String>,
+
+	pub only: Option<Vec<String>>,
+
+	pub except: Option<Vec<String>>,
+
+	pub max_capture_bytes: Option<u32>,
+
 	pub source_outline_level: Option<String>,
-	/// Kill-switch to fall back to the pre-PR (legacy) filter behavior for
-	/// grep / find / pytest. When `Some(true)`, filters that opted into the
-	/// always-shrink Tier 1 / Tier 2 behavior skip the new code path and
-	/// return the legacy passthrough. When `None`, defers to the
-	/// `PROTO_MINIMIZER_LEGACY_FILTERS` environment variable (truthy = "1",
-	/// "true", or "yes", case-insensitive); default `false`.
-	pub legacy_filters:       Option<bool>,
+
+	pub legacy_filters: Option<bool>,
 }
 
-/// Resolved minimizer configuration used by the engine.
 #[derive(Debug, Clone)]
 pub struct MinimizerConfig {
-	pub enabled:               bool,
-	pub only:                  HashSet<String>,
-	pub except:                HashSet<String>,
-	pub max_capture_bytes:     u32,
-	pub per_command:           HashMap<String, toml::Value>,
-	/// Compiled user-defined pipelines parsed from `settings_path`. Searched
-	/// before the built-in pipelines so user filters win.
-	pub user_pipelines:        Option<Arc<PipelineRegistry>>,
-	/// Aggressiveness for source-outline body stripping in `compact_cat_output`.
-	pub source_outline_level:  OutlineLevel,
-	/// Resolved kill-switch: when true, opted-in filters (Tier 1 grep/find,
-	/// Tier 2 pytest) return the pre-PR legacy behavior. Resolved at
-	/// `from_options()` time from caller-supplied
-	/// `MinimizerOptions.legacy_filters` or the `PROTO_MINIMIZER_LEGACY_FILTERS`
-	/// env var; default `false`.
+	pub enabled:           bool,
+	pub only:              HashSet<String>,
+	pub except:            HashSet<String>,
+	pub max_capture_bytes: u32,
+	pub per_command:       HashMap<String, toml::Value>,
+
+	pub user_pipelines: Option<Arc<PipelineRegistry>>,
+
+	pub source_outline_level: OutlineLevel,
+
 	pub legacy_filters_active: bool,
 }
 
@@ -108,8 +79,6 @@ impl Default for MinimizerConfig {
 }
 
 impl MinimizerConfig {
-	/// Build a resolved configuration from `MinimizerOptions`, optionally
-	/// merging in a TOML settings file.
 	#[must_use]
 	pub fn from_options(opts: &MinimizerOptions) -> Self {
 		let mut cfg = Self::default();
@@ -185,7 +154,6 @@ impl MinimizerConfig {
 		cfg
 	}
 
-	/// Whether the engine should attempt to minimize output for `program`.
 	#[must_use]
 	pub fn is_program_enabled(&self, program: &str) -> bool {
 		if !self.enabled {
@@ -201,13 +169,11 @@ impl MinimizerConfig {
 		true
 	}
 
-	/// Fetch a per-command TOML table, if any.
 	#[must_use]
 	pub fn per_command(&self, program: &str) -> Option<&toml::Value> {
 		self.per_command.get(&program.to_lowercase())
 	}
 
-	/// Whether opted-in filters should fall back to pre-PR legacy behavior.
 	#[must_use]
 	pub const fn legacy_filters_active(&self) -> bool {
 		self.legacy_filters_active
@@ -267,13 +233,6 @@ impl SettingsFile {
 	}
 }
 
-/// Resolve the effective `legacy_filters_active` flag from the caller option
-/// and the raw `PROTO_MINIMIZER_LEGACY_FILTERS` env value.
-///
-/// Pure so it can be unit-tested without mutating the process-global
-/// environment (the test harness runs tests in one process in parallel). An
-/// explicit option always wins; otherwise a truthy env value enables the
-/// legacy path.
 fn resolve_legacy_filters(option: Option<bool>, env_value: Option<&str>) -> bool {
 	match option {
 		Some(v) => v,

@@ -1,12 +1,12 @@
-//! Parsing for shell instances.
+
 
 use std::io::Read;
 
 use crate::{Shell, extensions, trace_categories};
 
 impl<SE: extensions::ShellExtensions> Shell<SE> {
-	/// Parses the given reader as a shell program, returning the resulting
-	/// Abstract Syntax Tree for the program.
+
+
 	pub fn parse<R: Read>(
 		&self,
 		reader: R,
@@ -17,12 +17,12 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 		parser.parse_program()
 	}
 
-	/// Parses the given string as a shell program, returning the resulting
-	/// Abstract Syntax Tree for the program.
-	///
-	/// # Arguments
-	///
-	/// * `s` - The string to parse as a program.
+
+
+
+
+
+
 	pub fn parse_string<S: Into<String>>(
 		&self,
 		s: S,
@@ -30,9 +30,9 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 		parse_string_impl(s.into(), self.parser_options())
 	}
 
-	/// Returns the options that should be used for parsing shell programs;
-	/// reflects the current configuration state of the shell and may change
-	/// over time.
+
+
+
 	pub const fn parser_options(&self) -> brush_parser::ParserOptions {
 		brush_parser::ParserOptions {
 			enable_extended_globbing: self.options.extended_globbing,

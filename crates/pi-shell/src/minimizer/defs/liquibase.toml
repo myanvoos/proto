@@ -1,8 +1,8 @@
-# Liquibase update / rollback / status / --version output. Strip the ASCII-art
-# banner (hash border + body rows), the INFO/FINE log chatter, and the startup
-# environment dump (Java Home / Libraries / jar list) from --version. The
-# Liquibase Version line is the one meaningful line of --version output, so it
-# is deliberately kept.
+
+
+
+
+
 
 [filters.liquibase]
 description = "Compact liquibase output"

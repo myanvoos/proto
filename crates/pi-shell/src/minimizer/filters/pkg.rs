@@ -1,5 +1,3 @@
-//! Package manager output filters.
-
 use std::{collections::HashSet, fmt::Write as _};
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -55,11 +53,6 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 
 	let cleaned = primitives::strip_ansi(input);
 
-	// Success no-op short-circuits, moved here from defs/poetry-install.toml and
-	// defs/uv-sync.toml so they fire regardless of overlay ordering. Each is
-	// scoped per (program, subcommand) so unrelated package managers are
-	// untouched. A non-empty message means ensure_success_visible leaves it as-is
-	// (no bare 'OK' rewrite).
 	if exit_code == 0
 		&& let Some(message) = success_up_to_date_short_circuit(ctx, &cleaned)
 	{
@@ -97,13 +90,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-/// Per-(program, subcommand) success no-op detection. Returns the one-line
-/// summary to emit when the raw output says nothing changed, replacing the
-/// `match_output` overlays that previously lived in defs/poetry-install.toml
-/// and defs/uv-sync.toml. Callers must gate on `exit_code` == 0.
 fn success_up_to_date_short_circuit(ctx: &MinimizerCtx<'_>, cleaned: &str) -> Option<&'static str> {
-	// poetry install/lock/update no-op: 'No dependencies to install or update'
-	// (poetry 1.x) or 'No changes.' (poetry 2.x). Scoped to program=poetry.
 	if ctx.program == "poetry"
 		&& matches!(ctx.subcommand, Some("install" | "lock" | "update"))
 		&& cleaned.lines().any(|line| {
@@ -112,16 +99,7 @@ fn success_up_to_date_short_circuit(ctx: &MinimizerCtx<'_>, cleaned: &str) -> Op
 		}) {
 		return Some("ok (up to date)");
 	}
-	// uv sync/add/remove no-op: 'Audited N packages in Xms' with no installs.
-	// Scoped to those subcommands so npm/brew/composer 'Audited' is unaffected.
-	// Only collapse when the run is a CLEAN no-op: uv co-prints actionable
-	// diagnostics (e.g. 'warning: VIRTUAL_ENV=… does not match the project
-	// environment path …') alongside the Audited line on exit 0, and eagerly
-	// collapsing to 'ok (up to date)' would destroy them. On HEAD the global
-	// is_noise_line stripped the Audited line but the surviving warning kept the
-	// output non-empty, so it was reported; preserve that by short-circuiting only
-	// when no warning/error line co-occurs. (poetry's branch above deliberately
-	// collapses warnings too — its deleted overlay did the same, so it stays.)
+
 	if ctx.program == "uv"
 		&& matches!(ctx.subcommand, Some("sync" | "add" | "remove"))
 		&& !uv_has_actionable_diagnostic(cleaned)
@@ -134,12 +112,6 @@ fn success_up_to_date_short_circuit(ctx: &MinimizerCtx<'_>, cleaned: &str) -> Op
 	None
 }
 
-/// True when any line carries an actionable diagnostic ('warning'/'error'/
-/// 'failed') that must survive a uv no-op short-circuit. Kept deliberately
-/// narrow: the no-op summary lines themselves ('Resolved …', 'Audited …') carry
-/// none of these tokens, so a clean no-op still collapses to 'ok (up to date)'.
-/// Do NOT reuse `is_error_or_summary` here — it also matches 'audited'/'found'/
-/// 'success'/'complete', which would suppress the short-circuit on every no-op.
 fn uv_has_actionable_diagnostic(cleaned: &str) -> bool {
 	cleaned.lines().any(|line| {
 		let lower = line.to_ascii_lowercase();
@@ -150,11 +122,7 @@ fn uv_has_actionable_diagnostic(cleaned: &str) -> bool {
 fn strip_package_noise(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
 	let mut previous_blank = false;
-	// snip keeps exactly one JS install-summary line ('added N packages…',
-	// 'up to date', pnpm 'Done in Xs'/'Packages: +N', yarn 'Done in Xs'): the
-	// count confirms lockfile/node_modules state. Keep the first such line and
-	// treat later duplicates as noise. This check precedes is_noise_line so the
-	// 'audited N packages' strip cannot eat the combined 'added…audited' summary.
+
 	let mut kept_install_summary = false;
 	for line in input.lines() {
 		let trimmed = line.trim();
@@ -201,10 +169,7 @@ fn is_package_tree_command(ctx: &MinimizerCtx<'_>) -> bool {
 				|| matches!(ctx.subcommand, Some("pip"))
 					&& command_contains_any(ctx.command, &["list", "ls", "tree"])
 		},
-		// Default tabular `pip list` / `pip list --outdated` are inventory dumps
-		// like `uv pip list`; give them the same tree/list compaction. `--json`
-		// already passes through earlier in filter(), so only text output lands.
-		// `pip3` is not normalized to `pip`, so claim both spellings.
+
 		"pip" | "pip3" => matches!(ctx.subcommand, Some("list")),
 		"poetry" => {
 			matches!(ctx.subcommand, Some("tree"))
@@ -372,24 +337,18 @@ fn push_unique_row(rows: &mut Vec<String>, seen: &mut HashSet<String>, row: Stri
 fn is_noise_line(ctx: &MinimizerCtx<'_>, line: &str, exit_code: i32) -> bool {
 	let lower = line.to_ascii_lowercase();
 
-	// Strip: "found 0 vulnerabilities" (non-actionable success noise)
 	if lower.contains("found 0 vulnerabilities") {
 		return true;
 	}
-	// Strip: npm funding nags ("N packages are looking for funding" / "run `npm
-	// fund` for details"). snip drops both; removing 'funding' from
-	// is_audit_or_security_summary keeps real audit findings protected.
+
 	if lower.contains("looking for funding") || lower.contains("npm fund") {
 		return true;
 	}
-	// Strip: "audited X packages" timing summaries (non-actionable). This global
-	// rule still governs npm/brew/composer. uv sync/add/remove never reach here
-	// for an 'Audited' no-op — success_up_to_date_short_circuit() in filter()
-	// consumes that line into 'ok (up to date)' on the raw output first.
+
 	if lower.contains("audited") && lower.contains("package") {
 		return true;
 	}
-	// Keep: vulnerability mentions (actionable — real findings)
+
 	if lower.contains("vulnerab") {
 		return false;
 	}
@@ -462,9 +421,6 @@ fn is_js_program(program: &str) -> bool {
 	matches!(program, "npm" | "pnpm" | "yarn" | "bun")
 }
 
-/// JS package-manager success-summary lines worth keeping exactly once. snip
-/// retains these so the count confirms `lockfile/node_modules` state. Callers
-/// must gate on `is_js_program` first.
 fn is_js_install_summary(lower: &str) -> bool {
 	lower.starts_with("added ") && lower.contains("package")
 		|| lower.starts_with("removed ") && lower.contains("package")
@@ -476,7 +432,6 @@ fn is_js_install_summary(lower: &str) -> bool {
 		|| lower.starts_with("dependencies:")
 }
 
-/// Classic yarn step markers: `[N/4] Resolving|Fetching|Linking|Building …`.
 fn is_yarn_step_marker(line: &str) -> bool {
 	let Some(rest) = line.strip_prefix('[') else {
 		return false;
@@ -509,12 +464,7 @@ fn is_js_package_noise(program: &str, line: &str, lower: &str) -> bool {
 		|| lower.starts_with("npm notice")
 		|| lower.starts_with("npm http fetch")
 		|| lower.starts_with("pnpm: progress")
-		// pnpm progress bars are runs of plus signs; anchor on 3+ so a bare '+'
-		// diff line (a real change) still passes through.
 		|| line.starts_with("+++")
-		// yarn classic step markers and berry's structural YN0000 info lines
-		// (box-drawing, section headers). Actionable codes (YN0002 peer warnings,
-		// YN0060 incompatibilities) carry other YNxxxx codes and are kept.
 		|| is_yarn_step_marker(line)
 		|| lower.contains("yn0000")
 		|| lower.starts_with("packages:")
@@ -539,20 +489,11 @@ fn is_python_package_noise(ctx: &MinimizerCtx<'_>, _line: &str, lower: &str) -> 
 		|| lower.starts_with("resolving dependencies")
 		|| lower.starts_with("writing lock file")
 		|| lower.starts_with("package operations:")
-		// pip prints an upgrade nag as '[notice] A new release of pip is
-		// available' plus a '[notice] To update, run: …' follow-up — non-actionable
-		// for the wrapped command. Scoped to pip/uv/poetry by the gate above.
 		|| lower.starts_with("[notice]")
 		|| program == "uv" && is_uv_progress_noise(lower, uv_keeps_install_summary(ctx))
 		|| program == "poetry" && is_poetry_bullet_progress(lower)
 }
 
-/// poetry prefixes per-package progress with a `- ` or `• ` bullet, e.g.
-/// `  - Downloading requests-2.31.0…` / `  • Installing certifi (2023.11.17)`,
-/// plus virtualenv-setup chatter. These are the `strip_lines` that previously
-/// lived in defs/poetry-install.toml; the bullet prefix means the bare
-/// `downloading `/`installing ` checks above never reached them. `lower` is the
-/// already-trimmed, lowercased line.
 fn is_poetry_bullet_progress(lower: &str) -> bool {
 	let bullet = lower
 		.strip_prefix("- ")
@@ -565,9 +506,6 @@ fn is_poetry_bullet_progress(lower: &str) -> bool {
 	lower.starts_with("creating virtualenv") || lower.starts_with("using virtualenv")
 }
 
-/// uv sync/add/remove keep the one-line 'Installed/Uninstalled N packages in
-/// Xms' summary alongside the +/- delta rows (the count is the install signal).
-/// uv lock/tree and every other subcommand still strip those rows as progress.
 fn uv_keeps_install_summary(ctx: &MinimizerCtx<'_>) -> bool {
 	ctx.program == "uv" && matches!(ctx.subcommand, Some("sync" | "add" | "remove"))
 }
@@ -591,10 +529,6 @@ fn is_ruby_php_brew_noise(program: &str, _line: &str, lower: &str) -> bool {
 		return false;
 	}
 	if program == "bundle" {
-		// Keep 'Bundle complete! … N gems now installed' / 'Bundle updated!' — the
-		// one-line gem-count signal (replaces the defs/bundle-install.toml
-		// short-circuit). Strip the 'Use `bundle info [gemname]`…' follow-up hint.
-		// Using/Fetching/Installing rows are still per-gem progress noise.
 		if lower.starts_with("bundle complete") || lower.starts_with("bundle updated") {
 			return false;
 		}
@@ -605,8 +539,6 @@ fn is_ruby_php_brew_noise(program: &str, _line: &str, lower: &str) -> bool {
 	lower.starts_with("fetching ")
 		|| lower.starts_with("installing ") && !lower.contains("error")
 		|| lower.starts_with("using ")
-		// brew/composer never emit 'Bundle complete'; this strip is preserved for
-		// them but bundle now keeps the line (handled above).
 		|| lower.starts_with("bundle complete")
 		|| lower.starts_with("==> downloading")
 		|| lower.starts_with("==> pouring")
@@ -620,9 +552,7 @@ fn contains_audit_or_security_summary(input: &str) -> bool {
 
 fn is_audit_or_security_summary(line: &str) -> bool {
 	let lower = line.to_ascii_lowercase();
-	// 'funding' deliberately excluded: funding nags are stripped as noise and
-	// must NOT bypass head_tail_cap. Real audit findings ('audit'/'vulnerab'/
-	// 'security') still trip the bypass.
+
 	lower.contains("audit")
 		|| lower.contains("audited")
 		|| lower.contains("vulnerab")

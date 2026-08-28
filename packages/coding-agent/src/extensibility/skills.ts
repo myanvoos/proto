@@ -21,18 +21,11 @@ export interface Skill {
 	filePath: string;
 	baseDir: string;
 	source: string;
-	/**
-	 * When `true`, the skill is loaded and reachable via `skill://<name>` and
-	 * (when enabled) `/skill:<name>`, but is excluded from the rendered system
-	 * prompt's `<skills>` listing.
-	 */
+
 	hide?: boolean;
-	/**
-	 * Filesystem-resolved plugin root for Agent Plugin skills (spec §4.1):
-	 * every `skill://` resource access must realpath-resolve within it.
-	 */
+
 	containRoot?: string;
-	/** Source metadata for display */
+
 	_source?: SourceMeta;
 }
 
@@ -48,33 +41,18 @@ export interface LoadSkillsResult {
 
 let activeSkills: readonly Skill[] = [];
 
-/**
- * Process-global snapshot of skills the active session loaded.
- * Read by internal URL protocol handlers (skill://).
- */
 export function getActiveSkills(): readonly Skill[] {
 	return activeSkills;
 }
 
-/** Replace the active skill snapshot. Called once per top-level session. */
 export function setActiveSkills(value: readonly Skill[]): void {
 	activeSkills = value;
 }
 
-/** Reset the active skill snapshot. Test-only. */
 export function resetActiveSkillsForTests(): void {
 	activeSkills = [];
 }
 
-/**
- * Whether `name` is already claimed by an active authored (non-managed) skill.
- *
- * Managed (auto-learn) skills resolve dead-last in discovery, so an authored
- * skill of the same name always wins (see `loadSkills`) and a managed skill
- * written under an authored name is silently dropped — it never surfaces.
- * `manage_skill` create consults this to refuse the write up front instead of
- * reporting a false "Created" for a skill that can never appear.
- */
 export function isNameClaimedByAuthoredSkill(name: string): boolean {
 	return getActiveSkills().some(
 		skill => skill.name === name && skill._source?.provider !== MANAGED_SKILLS_PROVIDER_ID,
@@ -82,9 +60,8 @@ export function isNameClaimedByAuthoredSkill(name: string): boolean {
 }
 
 interface LoadSkillsFromDirOptions {
-	/** Directory to scan for skills */
 	dir: string;
-	/** Source identifier for these skills */
+
 	source: string;
 }
 
@@ -118,14 +95,9 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 }
 
 interface LoadSkillsOptions extends SkillsSettings {
-	/** Working directory for project-local skills. Default: getProjectDir() */
 	cwd?: string;
 }
 
-/**
- * Load skills from all configured locations.
- * Returns skills and any validation warnings.
- */
 export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadSkillsResult> {
 	const {
 		cwd = getProjectDir(),
@@ -143,26 +115,16 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		disabledExtensions = [],
 	} = options;
 
-	// Early return if skills are disabled
 	if (!enabled) {
 		return { skills: [], warnings: [] };
 	}
-	// Fall-through gate for third-party CLI providers (claude-plugins, opencode,
-	// gemini, github, ...) that share user intent with the named third-party
-	// source toggles but don't have a dedicated control of their own. Only the
-	// third-party toggles count here: the PROTO-native providers (`agents`,
-	// `native`) get explicit branches in `isSourceEnabled` below, so folding
-	// them into the fallback would re-enable unrelated third-party CLIs whenever
-	// the user kept the default `.agent[s]/skills` toggles on while turning off
-	// Codex/Claude/Pi (issue #2401 / PR #2405 review).
+
 	const anyThirdPartySkillToggleEnabled =
 		enableCodexUser || enableClaudeUser || enableClaudeProject || enablePiUser || enablePiProject;
 
 	function isSourceEnabled(source: SourceMeta): boolean {
 		const { provider, level } = source;
-		// Managed skills (auto-learn) are PROTO-native and discovered unconditionally
-		// — third-party CLI toggles must never silently hide them (cf. #2401). The
-		// master `enabled` flag above still gates them.
+
 		if (provider === MANAGED_SKILLS_PROVIDER_ID) return true;
 		if (provider === "codex" && level === "user") return enableCodexUser;
 		if (provider === "claude" && level === "user") return enableClaudeUser;
@@ -174,20 +136,17 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		return anyThirdPartySkillToggleEnabled;
 	}
 
-	// Use capability API to load all skills
 	const result = await loadCapability<CapabilitySkill>(skillCapability.id, { cwd, disabledExtensions });
 
 	const skillMap = new Map<string, Skill>();
 	const realPathSet = new Set<string>();
 	const collisionWarnings: SkillWarning[] = [];
 
-	// Check if skill name matches any of the include patterns
 	function matchesIncludePatterns(name: string): boolean {
 		if (includeSkills.length === 0) return true;
 		return includeSkills.some(pattern => new Bun.Glob(pattern).match(name));
 	}
 
-	// Check if skill name matches any of the ignore patterns
 	function matchesIgnorePatterns(name: string): boolean {
 		if (ignoredSkills.length === 0) return false;
 		return ignoredSkills.some(pattern => new Bun.Glob(pattern).match(name));
@@ -196,9 +155,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	const disabledSkillNames = new Set(
 		(disabledExtensions ?? []).filter(id => id.startsWith("skill:")).map(id => id.slice(6)),
 	);
-	// Select authored skills from the pre-dedup superset. `loadCapability`
-	// dedupes before source toggles, so a disabled high-priority provider must
-	// not hide an enabled lower-priority provider with the same skill name.
+
 	const seenAuthoredSkillNames = new Set<string>();
 	const filteredSkills = result.all.filter(capSkill => {
 		if (capSkill._source.provider === MANAGED_SKILLS_PROVIDER_ID) return false;
@@ -211,7 +168,6 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		return true;
 	});
 
-	// Batch resolve all real paths in parallel
 	const realPaths = await Promise.all(
 		filteredSkills.map(async capSkill => {
 			try {
@@ -222,12 +178,10 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		}),
 	);
 
-	// Process skills with resolved paths
 	for (let i = 0; i < filteredSkills.length; i++) {
 		const capSkill = filteredSkills[i];
 		const resolvedPath = realPaths[i];
 
-		// Skip silently if we've already loaded this exact file (via symlink)
 		if (realPathSet.has(resolvedPath)) {
 			continue;
 		}
@@ -310,11 +264,6 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 
 		const existing = skillMap.get(skill.name);
 		if (existing) {
-			// A skill name claimed by a DEFAULT-path provider (e.g.
-			// ~/.claude/skills/<name>) yields to the explicitly configured
-			// skills.customDirectories entry — the user's custom dir is the
-			// higher-priority source (issue #7190). Only same-source custom
-			// duplicates keep first-wins.
 			const isCustomExisting = existing.source.startsWith("custom:");
 			if (!isCustomExisting) {
 				skillMap.set(skill.name, skill);
@@ -331,13 +280,6 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		}
 	}
 
-	// Managed (auto-learn) skills resolve dead-last with first-wins. Source from
-	// result.all (pre-dedup): capability-level dedup runs BEFORE isSourceEnabled,
-	// so a managed skill can be shadowed by a higher-priority authored skill that
-	// is itself disabled here — managed must stay visible regardless of toggles.
-	// Validate the on-disk name (a hand-placed managed file could carry an unsafe
-	// frontmatter name) and re-sanitize the description on read. Descriptions and
-	// names both render unescaped into the system prompt.
 	const managedCandidates = result.all.filter(
 		capSkill =>
 			capSkill._source.provider === MANAGED_SKILLS_PROVIDER_ID &&
@@ -346,9 +288,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			!matchesIgnorePatterns(capSkill.name) &&
 			matchesIncludePatterns(capSkill.name),
 	);
-	// Names claimed by any ENABLED authored skill (from the pre-dedup superset).
-	// Managed defers to these even when capability dedup hid an enabled authored
-	// skill behind a disabled higher-priority one, so managed never masks it.
+
 	const enabledAuthoredNames = new Set(
 		result.all
 			.filter(
@@ -369,12 +309,8 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		const capSkill = managedCandidates[i];
 		const resolvedPath = managedRealPaths[i];
 		if (realPathSet.has(resolvedPath)) continue;
-		if (enabledAuthoredNames.has(capSkill.name)) continue; // an enabled authored skill owns this name
-		// Already claimed — e.g. by a custom-directory skill. LOAD-BEARING: custom
-		// dirs never enter `result.all`, so they are absent from `enabledAuthoredNames`
-		// above; this map check is the ONLY veto that lets a custom-dir authored skill
-		// win over a same-named managed one. The custom-dir loop (which populates
-		// skillMap, ~30 lines up) MUST run before this block — do not reorder.
+		if (enabledAuthoredNames.has(capSkill.name)) continue;
+
 		if (skillMap.has(capSkill.name)) continue;
 		const rawDescription =
 			typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "";
@@ -392,7 +328,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	}
 
 	const skills = Array.from(skillMap.values());
-	// Deterministic ordering for prompt stability (case-insensitive, then exact name, then path).
+
 	skills.sort((a, b) => compareSkillOrder(a.name, a.filePath, b.name, b.filePath));
 	return {
 		skills,
@@ -409,37 +345,14 @@ export function getSkillSlashCommandName(skill: Pick<Skill, "name">): string {
 	return `skill:${skill.name}`;
 }
 
-/**
- * Parsed `/skill:<name>` invocation: either at the start of the draft (the
- * traditional slash-command position) or as a `/skill:<name>` token embedded
- * mid-prompt. For the mid-prompt form the surrounding prose is threaded
- * through as `args` so the skill sees the full user request.
- */
 interface ParsedSkillInvocation {
-	/** Bare skill name without the leading `skill:` prefix. */
 	name: string;
-	/** User-supplied arguments (everything outside the `/skill:<name>` token). */
+
 	args: string;
 }
 
 const MID_PROMPT_SKILL_RE = /(^|\s)\/skill:([^\s/]+)(\s|$)/;
 
-/**
- * Detect a `/skill:<name>` invocation in a user draft.
- *
- * Returns `undefined` when the text contains no skill token. Otherwise:
- *   - Leading form (`/skill:foo bar baz`): name=`foo`, args=`bar baz`.
- *   - Mid-prompt form (`fix the bug /skill:foo focus on auth`): name=`foo`,
- *     args=`fix the bug focus on auth` — the surrounding prose collapsed
- *     into a single args string.
- *
- * Mid-prompt detection is disabled when the draft itself starts with a
- * different slash command (e.g. `/compact /skill:foo`) or a local-execution
- * sigil — `!cmd` / `!!cmd` for the bash tool and `$ cmd` / `$$ cmd` for the
- * python tool. Those handlers run after the skill-command dispatcher and
- * their bodies routinely contain `/skill:<name>` references that are not
- * meant as skill invocations.
- */
 export function parseSkillInvocation(text: string): ParsedSkillInvocation | undefined {
 	const trimmedStart = text.trimStart();
 	if (trimmedStart.startsWith("/skill:")) {
@@ -469,21 +382,14 @@ export function parseSkillInvocation(text: string): ParsedSkillInvocation | unde
 	return { name, args };
 }
 
-/**
- * Whether the (already left-trimmed) draft begins with a TUI local-execution
- * sigil that downstream branches will consume verbatim — `!`/`!!` for the bash
- * tool and `$`/`$$` followed by ASCII whitespace for the python tool. Mirrors
- * `pythonCommandPrefixLength` in `modes/controllers/input-controller` so the
- * two checks agree without forcing a circular import.
- */
 function startsWithLocalExecutionPrefix(trimmedStart: string): boolean {
 	if (trimmedStart.startsWith("!")) return true;
-	if (trimmedStart.charCodeAt(0) !== 36 /* $ */) return false;
-	if (trimmedStart.charCodeAt(1) === 123 /* { */) return false;
-	const sigilLength = trimmedStart.charCodeAt(1) === 36 /* $ */ ? 2 : 1;
+	if (trimmedStart.charCodeAt(0) !== 36) return false;
+	if (trimmedStart.charCodeAt(1) === 123) return false;
+	const sigilLength = trimmedStart.charCodeAt(1) === 36 ? 2 : 1;
 	const next = trimmedStart.charCodeAt(sigilLength);
 	if (Number.isNaN(next)) return true;
-	return next === 32 /* space */ || next === 9 /* tab */ || next === 10 /* LF */ || next === 13 /* CR */;
+	return next === 32 || next === 9 || next === 10 || next === 13;
 }
 
 type SkillInvocationKind = "user" | "autoload";
@@ -498,8 +404,6 @@ export async function buildSkillPromptMessage(
 	const trimmedArgs = args.trim();
 	let message: string;
 	if (invocation === "user") {
-		// User-invoked skills announce themselves and expose their skill directory
-		// so the model resolves the skill's own relative paths (scripts/, templates/).
 		message = prompt
 			.render(userInvocationTemplate, {
 				name: skill.name,
@@ -509,8 +413,6 @@ export async function buildSkillPromptMessage(
 			})
 			.trim();
 	} else {
-		// Autoload skills are hidden, non-user context — they MUST NOT claim the
-		// user invoked them; this keeps the minimal provenance-only format.
 		message = prompt
 			.render(autoloadTemplate, {
 				body,

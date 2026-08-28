@@ -1,20 +1,3 @@
-//! Backend-agnostic change capture.
-//!
-//! Two code paths, both producing a [`Diff`] = list of [`FileChange`]:
-//!
-//! - **Git mode.** When `merged/.git` exists we shell `git diff --no-color
-//!   HEAD` plus `git ls-files --others --exclude-standard` (for untracked),
-//!   split the output on `diff --git` headers, and emit one [`FileChange`] per
-//!   file. Binary entries surface as `diff: None`.
-//! - **Plain mode.** No `.git`; we walk both trees in parallel, short-circuit
-//!   on `(size, mtime-truncated-to-seconds)` equality, and emit a unified diff
-//!   for each surviving pair via `similar`. NUL within the first 8 KiB
-//!   classifies the file as binary → `diff: None`.
-//!
-//! Per the PAL contract: for binary files we don't materialize the bytes
-//! in the patch — callers that want them read directly from `merged`
-//! (for `Added`/`Modified`) or `lower` (for `Removed`).
-
 use std::{
 	collections::BTreeMap,
 	fs::Metadata,
@@ -26,7 +9,6 @@ use tokio::process::Command;
 
 use crate::{IsoError, IsoResult, command_failed};
 
-/// Captured changes between a `lower` baseline and a `merged` view.
 #[derive(Debug, Clone, Default)]
 pub struct Diff {
 	pub files: Vec<FileChange>,
@@ -38,11 +20,6 @@ impl Diff {
 	}
 }
 
-/// One entry in a [`Diff`].
-///
-/// `path` is relative to `merged`. `diff = None` means the file is binary
-/// or otherwise text-unrepresentable — copy the contents from the merged
-/// tree if you need them (or skip if you only care about text).
 #[derive(Debug, Clone)]
 pub struct FileChange {
 	pub path: PathBuf,
@@ -57,7 +34,6 @@ pub enum ChangeKind {
 	Removed,
 }
 
-/// Default backend diff: git when available, mtime-skipped walk otherwise.
 pub async fn default_diff(lower: &Path, merged: &Path) -> IsoResult<Diff> {
 	if is_git_tree(merged).await {
 		git_diff(merged).await
@@ -72,12 +48,7 @@ async fn is_git_tree(merged: &Path) -> bool {
 		.is_ok()
 }
 
-// ─── git mode ───────────────────────────────────────────────────────────────
-
 async fn git_diff(merged: &Path) -> IsoResult<Diff> {
-	// `--no-color`: keep ANSI out of patch text.
-	// No `--binary`: we *want* git's `Binary files … differ` placeholder
-	// so we can map it to `diff: None`.
 	let tracked =
 		git_run(merged, &["-c", "core.quotepath=off", "diff", "--no-color", "HEAD"]).await?;
 
@@ -123,7 +94,6 @@ const fn git_null_path() -> &'static str {
 	"/dev/null"
 }
 
-/// Format a failed `git` invocation, rendering a signal death as `exit ?`.
 fn git_failure(args: &[&str], output: &std::process::Output) -> IsoError {
 	command_failed(
 		format_args!("git {}", args.join(" ")),
@@ -143,8 +113,6 @@ async fn git_run(cwd: &Path, args: &[&str]) -> IsoResult<Vec<u8>> {
 	Ok(output.stdout)
 }
 
-/// `git diff --no-index` returns exit code 1 when files differ — that's
-/// not an error for us, treat it as success with the produced patch.
 async fn git_run_allow_exit1(cwd: &Path, args: &[&str]) -> IsoResult<Vec<u8>> {
 	let output = git_spawn(cwd, args).await?;
 	if output.status.success() || output.status.code() == Some(1) {
@@ -166,11 +134,6 @@ async fn git_spawn(cwd: &Path, args: &[&str]) -> IsoResult<std::process::Output>
 	})
 }
 
-/// Split a `git diff` blob into per-file [`FileChange`] entries. Each
-/// entry covers exactly one `diff --git a/<path> b/<path>` block. Binary
-/// blocks are emitted with `diff: None`; the rest carry their original
-/// unified-diff slice unchanged so `git apply` produces byte-identical
-/// results downstream.
 fn parse_git_diff(blob: &[u8]) -> Vec<FileChange> {
 	let Ok(text) = std::str::from_utf8(blob) else {
 		return Vec::new();
@@ -226,8 +189,6 @@ fn parse_git_diff(blob: &[u8]) -> Vec<FileChange> {
 	out
 }
 
-// ─── plain mode ─────────────────────────────────────────────────────────────
-
 async fn walk_diff(lower: &Path, merged: &Path) -> IsoResult<Diff> {
 	let lower = lower.to_path_buf();
 	let merged = merged.to_path_buf();
@@ -274,10 +235,6 @@ fn metas_equal(a: &Metadata, b: &Metadata) -> bool {
 }
 
 fn systime_eq(a: SystemTime, b: SystemTime) -> bool {
-	// Filesystems carry mtime at different resolutions (HFS+ seconds, APFS
-	// nanos, FAT 2 seconds). Compare at second granularity so a metadata-
-	// preserving copy that flushed through a coarse layer doesn't look
-	// modified.
 	let to_secs = |t: SystemTime| {
 		t.duration_since(SystemTime::UNIX_EPOCH)
 			.map_or(0, |d| d.as_secs())
@@ -319,10 +276,6 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Metadata>) -> IsoRe
 	Ok(())
 }
 
-/// Build a [`FileChange`] for an entry observed by [`walk_diff_blocking`].
-///
-/// `op == Modified` requires `peer_root = Some(lower)` so we can read the
-/// counterpart; `Added`/`Removed` only need the side we already know about.
 fn plain_change(
 	side: &Path,
 	rel: &Path,

@@ -1,11 +1,3 @@
-//! Reusable platform directory traversal primitives.
-//!
-//! # Overview
-//! `pi-walker` owns the native directory-read fast path that higher-level tools
-//! use for globbing, grep candidate discovery, AST scans, and shell builtins.
-//! The crate exposes plain Rust types, visitor interfaces, cache policy, and a
-//! caller-supplied heartbeat so consumers do not inherit N-API dependencies.
-
 mod cache;
 
 #[cfg(not(unix))]
@@ -38,54 +30,42 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 const HEARTBEAT_INTERVAL: usize = 128;
 
-/// Filesystem entry kind reported by the walker.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FileType {
-	/// Regular file.
 	File,
-	/// Directory.
+
 	Dir,
-	/// Symbolic link.
+
 	Symlink,
 }
 
-/// Amount of metadata to collect while reading directories.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WalkDetail {
-	/// Collect only the entry name and file kind.
 	Minimal,
-	/// Also collect mtime and byte size for regular files.
+
 	Full,
 }
 
-/// Traversal order for entries within each directory.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WalkOrder {
-	/// Visit entries in the order returned by the platform API.
 	Unordered,
-	/// Sort entries by filename before visiting them.
+
 	Path,
 }
 
-/// How directory-open errors are handled during traversal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectoryErrorMode {
-	/// Preserve the native glob fast-path contract: silently skip common race or
-	/// permission failures and fail on other directory errors.
 	SkipSkippable,
-	/// Deliver directory errors to [`EntryVisitor::visit_directory_error`] so
-	/// GNU-style consumers can report them and continue.
+
 	Visit,
 }
 
-/// Symbolic-link traversal policy.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FollowLinks {
-	/// Never follow symbolic links.
 	Never,
-	/// Follow root operands when they are symbolic links, but not descendants.
+
 	Roots,
-	/// Follow symbolic links at every depth.
+
 	Always,
 }
 
@@ -105,56 +85,40 @@ impl FollowLinks {
 	}
 }
 
-/// Shared cache use policy for high-level walk requests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CachePolicy {
-	/// Collect without using or updating the shared scan cache.
 	Disabled,
-	/// Use the shared scan cache for owned-entry collection.
+
 	Enabled,
 }
 
-/// Empty cached-result revalidation policy for [`WalkRequest::collect`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EmptyRecheck {
-	/// Never re-scan an empty cached result.
 	Never,
-	/// Re-scan empty cached results at or above the configured
-	/// [`empty_recheck_ms`] threshold.
+
 	Configured,
-	/// Re-scan empty cached results at or above this cache age.
+
 	AfterMillis(u64),
 }
 
-/// Size metadata policy for high-level requests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SizeHintPolicy {
-	/// Preserve the request's [`WalkDetail`] setting.
 	FromDetail,
-	/// Request minimal metadata even on platforms with cheap size hints.
+
 	Never,
-	/// Request full metadata only when the platform exposes cheap file sizes.
+
 	WhenCheap,
-	/// Request full metadata for every yielded entry.
+
 	Always,
 }
 
-/// Directory visit order for high-level requests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum VisitOrder {
-	/// Yield a directory before its children.
 	PreOrder,
-	/// Yield a directory after its children when supported by the backend.
+
 	ContentsFirst,
 }
 
-/// Concrete compiled glob filter for normalized walk-relative paths.
-///
-/// Patterns are expected to already use the walker's normalized `/` separator
-/// form. Each pattern is compiled with [`GlobBuilder::literal_separator`] so
-/// wildcard matches never cross path separators. Equality and hashing use only
-/// the normalized pattern list, not the compiled matcher internals, which keeps
-/// [`WalkFilter`] suitable for static cacheable traversal policy.
 #[derive(Clone)]
 pub struct CompiledWalkGlob {
 	patterns: Arc<[String]>,
@@ -162,7 +126,6 @@ pub struct CompiledWalkGlob {
 }
 
 impl CompiledWalkGlob {
-	/// Compile normalized glob patterns for walk-relative paths.
 	pub fn new<P, I>(patterns: I) -> Result<Self, globset::Error>
 	where
 		P: Into<String>,
@@ -179,12 +142,10 @@ impl CompiledWalkGlob {
 		Ok(Self { patterns: normalized_patterns.into(), matcher: Arc::new(builder.build()?) })
 	}
 
-	/// Return whether `relative` matches any compiled pattern.
 	pub fn is_match(&self, relative: &str) -> bool {
 		self.matcher.is_match(relative)
 	}
 
-	/// Return the normalized patterns backing this compiled filter.
 	pub fn patterns(&self) -> &[String] {
 		&self.patterns
 	}
@@ -212,7 +173,6 @@ impl Hash for CompiledWalkGlob {
 	}
 }
 
-/// High-level entry filter applied by collection and streaming APIs.
 #[derive(Clone)]
 pub struct WalkFilter {
 	kind: WalkFilterKind,
@@ -268,7 +228,6 @@ impl Hash for WalkFilter {
 }
 
 impl WalkFilter {
-	/// Return a filter that accepts files and directories.
 	pub const fn all() -> Self {
 		Self {
 			kind: WalkFilterKind::All,
@@ -279,7 +238,6 @@ impl WalkFilter {
 		}
 	}
 
-	/// Return a filter that emits only regular files.
 	pub const fn files_only() -> Self {
 		Self {
 			kind: WalkFilterKind::Files,
@@ -290,20 +248,17 @@ impl WalkFilter {
 		}
 	}
 
-	/// Limit emitted regular files to `max_file_size` bytes.
 	pub const fn max_file_size(mut self, max_file_size: u64) -> Self {
 		self.max_file_size = Some(max_file_size);
 		self
 	}
 
-	/// Skip `node_modules` entries unless the caller's query mentioned them.
 	pub const fn node_modules_unless_mentioned(mut self, mentions_node_modules: bool) -> Self {
 		self.skip_node_modules_unless_seen = true;
 		self.mentions_node_modules = mentions_node_modules;
 		self
 	}
 
-	/// Accept only entries whose normalized relative path matches `glob`.
 	pub fn glob(mut self, glob: CompiledWalkGlob) -> Self {
 		self.glob = Some(glob);
 		self
@@ -373,22 +328,18 @@ impl WalkFilter {
 	}
 }
 
-/// Traversal decision returned by [`WalkPredicate`] and closure streaming APIs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WalkDecision {
-	/// Emit this entry and continue traversal.
 	Include,
-	/// Do not emit this entry, but continue traversal.
+
 	Skip,
-	/// Do not emit this directory and do not descend into it.
+
 	SkipDescend,
-	/// Stop traversal immediately.
+
 	Stop,
 }
 
-/// Predicate hook for dynamic walk consumers.
 pub trait WalkPredicate {
-	/// Decide how the high-level walker should handle `entry`.
 	fn decide(&mut self, entry: &EntryMeta<'_>) -> WalkDecision;
 }
 
@@ -410,26 +361,23 @@ impl WalkPredicate for IncludeAllPredicate {
 	}
 }
 
-/// Borrowed metadata view shared by owned and streaming entries.
 pub struct EntryMeta<'a> {
-	/// Traversal root used to resolve relative paths.
-	pub root:          &'a Path,
-	/// Absolute filesystem path.
+	pub root: &'a Path,
+
 	pub absolute_path: Cow<'a, Path>,
-	/// Relative path from the root, using `/` separators.
+
 	pub relative_path: &'a str,
-	/// Filesystem entry kind.
-	pub file_type:     FileType,
-	/// Modification time in milliseconds since the Unix epoch, when requested.
-	pub mtime:         Option<f64>,
-	/// File size in bytes for regular files, when requested.
-	pub size:          Option<f64>,
-	/// Depth below the traversal root. Root depth is 0.
-	pub depth:         usize,
+
+	pub file_type: FileType,
+
+	pub mtime: Option<f64>,
+
+	pub size: Option<f64>,
+
+	pub depth: usize,
 }
 
 impl<'a> EntryMeta<'a> {
-	/// Build metadata for a borrowed streaming entry.
 	pub const fn from_entry(root: &'a Path, entry: &Entry<'a>) -> Self {
 		Self {
 			root,
@@ -443,17 +391,15 @@ impl<'a> EntryMeta<'a> {
 	}
 }
 
-/// Owned regular-file candidate returned by high-level file collection.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileCandidate {
-	/// Absolute filesystem path to the regular file.
-	pub path:     PathBuf,
-	/// Relative path from the walk root, using `/` separators.
+	pub path: PathBuf,
+
 	pub relative: String,
-	/// Modification time in milliseconds since the Unix epoch, when requested.
-	pub mtime:    Option<f64>,
-	/// File size in bytes, when requested.
-	pub size:     Option<f64>,
+
+	pub mtime: Option<f64>,
+
+	pub size: Option<f64>,
 }
 
 impl FileCandidate {
@@ -467,84 +413,69 @@ impl FileCandidate {
 	}
 }
 
-/// Backend path used by a high-level collection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WalkBackend {
-	/// The request returned entries from a fresh backend scan.
 	Fresh,
-	/// The request returned entries from the shared cache.
+
 	Cached,
 }
 
-/// Ranking applied to high-level collected entries after filtering.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WalkRank {
-	/// Sort by normalized relative path in ascending byte order.
 	PathAsc,
-	/// Sort by modification time descending, then normalized relative path
-	/// ascending.
-	///
-	/// Entries without modification times sort after entries with modification
-	/// times. [`WalkRequest::collect_ranked_with_heartbeat`] requests full
-	/// metadata for this rank so fresh scans can populate the mtime field.
+
 	MtimeDescPathAsc,
 }
 
-/// Summary statistics for a high-level collection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WalkStats {
-	/// Age of the cache entry in milliseconds; zero means freshly scanned.
-	pub cache_age_ms:     u64,
-	/// Entries before high-level filtering.
-	pub scanned_entries:  usize,
-	/// Entries removed by high-level filtering.
+	pub cache_age_ms: u64,
+
+	pub scanned_entries: usize,
+
 	pub filtered_entries: usize,
-	/// Entries removed by the high-level limit.
-	pub limited_entries:  usize,
+
+	pub limited_entries: usize,
 }
 
-/// Owned entries and metadata returned by [`WalkRequest::collect`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct WalkOutcome {
-	/// Entries after high-level filtering and limits.
 	pub entries: Vec<CollectedEntry>,
-	/// Collection backend classification.
+
 	pub backend: WalkBackend,
-	/// Collection statistics.
-	pub stats:   WalkStats,
+
+	pub stats: WalkStats,
 }
 
-/// Options shared by native traversal consumers.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WalkOptions {
-	/// Include dot-prefixed entries.
-	pub include_hidden:    bool,
-	/// Honor `.ignore`, `.gitignore`, repository excludes, and global gitignore.
-	pub use_gitignore:     bool,
-	/// Prune `.git` directories during traversal.
-	pub skip_git:          bool,
-	/// Prune `node_modules` directories during traversal.
+	pub include_hidden: bool,
+
+	pub use_gitignore: bool,
+
+	pub skip_git: bool,
+
 	pub skip_node_modules: bool,
-	/// Symbolic-link traversal policy.
-	pub follow_links:      FollowLinks,
-	/// Metadata detail requested for each yielded entry.
-	pub detail:            WalkDetail,
-	/// Per-directory visit order.
-	pub order:             WalkOrder,
-	/// Yield the traversal root as a depth-0 entry before its children.
-	pub emit_root:         bool,
-	/// Minimum depth yielded to the visitor. Root depth is 0.
-	pub min_depth:         usize,
-	/// Maximum depth traversed and yielded. Root depth is 0.
-	pub max_depth:         usize,
-	/// Yield directory entries after their children.
-	pub contents_first:    bool,
-	/// Directory-open error handling policy.
-	pub directory_errors:  DirectoryErrorMode,
-	/// Stay on the root filesystem when supported by the platform.
-	pub same_file_system:  bool,
-	/// Use the shared scan cache when collecting owned entries.
-	pub cache:             bool,
+
+	pub follow_links: FollowLinks,
+
+	pub detail: WalkDetail,
+
+	pub order: WalkOrder,
+
+	pub emit_root: bool,
+
+	pub min_depth: usize,
+
+	pub max_depth: usize,
+
+	pub contents_first: bool,
+
+	pub directory_errors: DirectoryErrorMode,
+
+	pub same_file_system: bool,
+
+	pub cache: bool,
 }
 
 impl Default for WalkOptions {
@@ -568,7 +499,6 @@ impl Default for WalkOptions {
 	}
 }
 
-/// High-level traversal request that owns a root and wraps [`WalkOptions`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WalkRequest {
 	root:             PathBuf,
@@ -582,12 +512,10 @@ pub struct WalkRequest {
 }
 
 impl WalkRequest {
-	/// Create a request rooted at `root` with default [`WalkOptions`].
 	pub fn new(root: impl Into<PathBuf>) -> Self {
 		Self::from_options(root, WalkOptions::default())
 	}
 
-	/// Create a request from existing low-level options.
 	pub fn from_options(root: impl Into<PathBuf>, options: WalkOptions) -> Self {
 		let cache_policy = if options.cache {
 			CachePolicy::Enabled
@@ -611,84 +539,70 @@ impl WalkRequest {
 		}
 	}
 
-	/// Return the traversal root.
 	pub fn root(&self) -> &Path {
 		&self.root
 	}
 
-	/// Return low-level options after applying high-level policies.
 	pub const fn options(&self) -> WalkOptions {
 		self.effective_options()
 	}
 
-	/// Include or exclude dot-prefixed entries.
 	pub const fn hidden(mut self, include_hidden: bool) -> Self {
 		self.options.include_hidden = include_hidden;
 		self
 	}
 
-	/// Enable or disable `.ignore`/gitignore matching.
 	pub const fn gitignore(mut self, use_gitignore: bool) -> Self {
 		self.options.use_gitignore = use_gitignore;
 		self
 	}
 
-	/// Enable or disable pruning `.git` directories.
 	pub const fn skip_git(mut self, skip_git: bool) -> Self {
 		self.options.skip_git = skip_git;
 		self
 	}
 
-	/// Enable or disable pruning `node_modules` directories during traversal.
 	pub const fn skip_node_modules(mut self, skip_node_modules: bool) -> Self {
 		self.options.skip_node_modules = skip_node_modules;
 		self
 	}
 
-	/// Set symbolic-link traversal policy.
 	pub const fn follow_links(mut self, follow_links: FollowLinks) -> Self {
 		self.options.follow_links = follow_links;
 		self
 	}
 
-	/// Set metadata detail collected for entries.
 	pub const fn detail(mut self, detail: WalkDetail) -> Self {
 		self.options.detail = detail;
 		self
 	}
 
-	/// Set per-directory entry order.
 	pub const fn order(mut self, order: WalkOrder) -> Self {
 		self.options.order = order;
 		self
 	}
 
-	/// Enable or disable emitting the root entry.
 	pub const fn emit_root(mut self, emit_root: bool) -> Self {
 		self.options.emit_root = emit_root;
 		self
 	}
 
-	/// Set minimum and maximum traversal depth.
 	pub const fn depth(mut self, min_depth: usize, max_depth: usize) -> Self {
 		self.options.min_depth = min_depth;
 		self.options.max_depth = max_depth;
 		self
 	}
 
-	/// Set directory-open error handling.
 	pub const fn directory_errors(mut self, directory_errors: DirectoryErrorMode) -> Self {
 		self.options.directory_errors = directory_errors;
 		self
 	}
 
-	/// Enable or disable staying on the root filesystem.
 	pub const fn same_file_system(mut self, same_file_system: bool) -> Self {
 		self.options.same_file_system = same_file_system;
 		self
 	}
 
-	/// Enable or disable the shared scan cache for owned collection.
 	pub const fn cache(mut self, cache: bool) -> Self {
 		self.cache_policy = if cache {
 			CachePolicy::Enabled
@@ -699,44 +613,36 @@ impl WalkRequest {
 		self
 	}
 
-	/// Set the static high-level filter.
 	pub fn filter(mut self, filter: WalkFilter) -> Self {
 		self.filter = filter;
 		self
 	}
 
-	/// Limit the number of emitted entries after filtering.
 	pub const fn limit(mut self, limit: usize) -> Self {
 		self.limit = Some(limit);
 		self
 	}
 
-	/// Set empty cached-result revalidation policy.
 	pub const fn empty_recheck(mut self, empty_recheck: EmptyRecheck) -> Self {
 		self.empty_recheck = empty_recheck;
 		self
 	}
 
-	/// Set high-level directory visit order.
 	pub const fn visit_order(mut self, visit_order: VisitOrder) -> Self {
 		self.visit_order = visit_order;
 		self.options.contents_first = matches!(visit_order, VisitOrder::ContentsFirst);
 		self
 	}
 
-	/// Set size metadata policy.
 	pub const fn size_hints(mut self, size_hint_policy: SizeHintPolicy) -> Self {
 		self.size_hint_policy = size_hint_policy;
 		self
 	}
 
-	/// Collect owned entries, then apply high-level filters, limits, and
-	/// empty-cache rechecks.
 	pub fn collect(&self) -> std::result::Result<WalkOutcome, WalkError<String>> {
 		self.collect_with_heartbeat(|| Ok::<(), Infallible>(()))
 	}
 
-	/// Collect owned entries with a caller-supplied heartbeat.
 	pub fn collect_with_heartbeat<E, H>(
 		&self,
 		heartbeat: H,
@@ -748,12 +654,6 @@ impl WalkRequest {
 		self.collect_with_rank_and_limit(None, self.limit, heartbeat)
 	}
 
-	/// Collect owned entries with a caller-supplied heartbeat, apply high-level
-	/// filters, rank, then truncate to `limit`.
-	///
-	/// Ranking happens after all high-level filters and before truncation so
-	/// top-N callers observe the best matching entries, not the first traversed
-	/// entries.
 	pub fn collect_ranked_with_heartbeat<E, H>(
 		&self,
 		rank: WalkRank,
@@ -767,8 +667,6 @@ impl WalkRequest {
 		self.collect_with_rank_and_limit(Some(rank), Some(limit), heartbeat)
 	}
 
-	/// Collect regular files accepted by this request with a caller-supplied
-	/// heartbeat.
 	pub fn collect_files_with_heartbeat<E, H>(
 		&self,
 		heartbeat: H,
@@ -785,8 +683,6 @@ impl WalkRequest {
 			.collect())
 	}
 
-	/// Collect directories accepted by this request with a caller-supplied
-	/// heartbeat.
 	pub fn collect_dirs_with_heartbeat<E, H>(
 		&self,
 		heartbeat: H,
@@ -803,15 +699,12 @@ impl WalkRequest {
 			.collect())
 	}
 
-	/// Collect regular-file candidates accepted by this request.
 	pub fn collect_file_candidates(
 		&self,
 	) -> std::result::Result<Vec<FileCandidate>, WalkError<String>> {
 		self.collect_file_candidates_with_heartbeat(|| Ok::<(), Infallible>(()))
 	}
 
-	/// Collect regular-file candidates accepted by this request with a
-	/// caller-supplied heartbeat.
 	pub fn collect_file_candidates_with_heartbeat<E, H>(
 		&self,
 		heartbeat: H,
@@ -825,8 +718,6 @@ impl WalkRequest {
 			.0)
 	}
 
-	/// Stream entries through `visitor` after applying high-level filters and
-	/// limits.
 	pub fn stream<V>(&self, visitor: &mut V) -> std::result::Result<WalkStatus, WalkError<V::Error>>
 	where
 		V: EntryVisitor,
@@ -834,7 +725,6 @@ impl WalkRequest {
 		self.stream_with_heartbeat(visitor, || Ok::<(), V::Error>(()))
 	}
 
-	/// Stream entries through `visitor` with a caller-supplied heartbeat.
 	pub fn stream_with_heartbeat<V, H>(
 		&self,
 		visitor: &mut V,
@@ -847,19 +737,6 @@ impl WalkRequest {
 		self.stream_with_predicate_and_heartbeat(visitor, IncludeAllPredicate, heartbeat)
 	}
 
-	/// Stream accepted entries through closures with a caller-supplied
-	/// heartbeat.
-	///
-	/// `heartbeat` is invoked by the same traversal machinery used by
-	/// [`WalkRequest::stream_with_heartbeat`]. `visit` receives each accepted
-	/// [`EntryMeta`] and returns a [`WalkDecision`]: [`WalkDecision::Include`] and
-	/// [`WalkDecision::Skip`] continue, [`WalkDecision::SkipDescend`] skips
-	/// descendants of the current directory, and [`WalkDecision::Stop`] stops
-	/// the walk. `directory_error` receives [`DirectoryError`] values when the
-	/// request's [`WalkOptions::directory_errors`] is
-	/// [`DirectoryErrorMode::Visit`] and returns the same traversal decision,
-	/// letting GNU-style consumers report an error and continue or stop without
-	/// implementing [`EntryVisitor`].
 	pub fn for_each_entry_with_heartbeat<E, H, V, D>(
 		&self,
 		heartbeat: H,
@@ -875,7 +752,6 @@ impl WalkRequest {
 		self.stream_with_heartbeat(&mut visitor, heartbeat)
 	}
 
-	/// Stream entries through `visitor` with an additional dynamic predicate.
 	pub fn stream_with_predicate<V, P>(
 		&self,
 		visitor: &mut V,
@@ -888,8 +764,6 @@ impl WalkRequest {
 		self.stream_with_predicate_and_heartbeat(visitor, predicate, || Ok::<(), V::Error>(()))
 	}
 
-	/// Stream entries through `visitor` with a dynamic predicate and
-	/// caller-supplied heartbeat.
 	pub fn stream_with_predicate_and_heartbeat<V, P, H>(
 		&self,
 		visitor: &mut V,
@@ -913,8 +787,6 @@ impl WalkRequest {
 		walk_entries(&self.root, options, &mut adapter, &mut heartbeat)
 	}
 
-	/// Run `operation` for each accepted regular file with a caller-supplied
-	/// heartbeat.
 	pub fn for_each_file_with_heartbeat<E, HE, H>(
 		&self,
 		operation: impl Fn(&Path) -> std::result::Result<(), E> + Send + Sync,
@@ -928,8 +800,6 @@ impl WalkRequest {
 		self.for_each_file_candidate_with_heartbeat(|candidate| operation(&candidate.path), heartbeat)
 	}
 
-	/// Run `operation` for each accepted regular-file candidate with a
-	/// caller-supplied heartbeat.
 	pub fn for_each_file_candidate_with_heartbeat<E, HE, H>(
 		&self,
 		operation: impl Fn(&FileCandidate) -> std::result::Result<(), E> + Send + Sync,
@@ -947,19 +817,6 @@ impl WalkRequest {
 		Ok(stats)
 	}
 
-	/// Visit accepted regular-file candidates using an unordered parallel walk.
-	///
-	/// This is a files-only API for consumers that own their output ordering.
-	/// Candidates may be delivered in any order. [`WalkOptions::order`],
-	/// [`WalkRequest::visit_order`], [`WalkOptions::emit_root`], and
-	/// [`WalkRequest::limit`] are ignored. Directory-open errors are skipped
-	/// with grep-style semantics instead of being delivered to visitors.
-	///
-	/// [`ParallelWalkControl::Stop`] sets a shared stop flag; workers check that
-	/// flag before reading each directory and while processing directory
-	/// entries, then the method returns [`WalkStatus::Stopped`] after in-flight
-	/// work winds down. If a sink or heartbeat returns an error, the first
-	/// error wins and is returned as [`WalkError::Interrupted`].
 	pub fn for_each_file_candidate_parallel<E>(
 		&self,
 		sink: impl Fn(&FileCandidate) -> std::result::Result<ParallelWalkControl, E> + Send + Sync,
@@ -1106,7 +963,6 @@ impl WalkRequest {
 	}
 }
 
-/// Execute work for regular-file candidates using the centralized walker pool.
 pub fn execute_candidates<E>(
 	candidates: &[FileCandidate],
 	operation: impl Fn(&FileCandidate) -> std::result::Result<(), E> + Send + Sync,
@@ -1117,7 +973,6 @@ where
 	parallel_for_each(candidates, operation)
 }
 
-/// Execute work for regular-file candidates with per-worker state.
 pub fn execute_candidates_init<S, E>(
 	candidates: &[FileCandidate],
 	init: impl Fn() -> S + Send + Sync,
@@ -1575,50 +1430,41 @@ fn walk_parallel_dir<'scope, E, S, H>(
 	recycle_parallel_scratch(scratch);
 }
 
-/// Visitor decision for streaming traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WalkControl {
-	/// Continue traversing remaining entries.
 	Continue,
-	/// Skip descending into this directory entry.
+
 	SkipDescend,
-	/// Stop traversal immediately.
+
 	Quit,
 }
 
-/// Status returned by native traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WalkStatus {
-	/// Traversal visited every reachable entry.
 	Complete,
-	/// The visitor stopped traversal early.
+
 	Stopped,
 }
 
-/// Control returned by unordered parallel file-candidate sinks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParallelWalkControl {
-	/// Continue walking and delivering candidates.
 	Continue,
-	/// Stop all workers as promptly as possible.
+
 	Stop,
 }
 
-/// Owned entry returned by [`collect_entries`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct CollectedEntry {
-	/// Relative path from the root, using `/` separators.
-	pub path:      String,
-	/// Filesystem entry kind.
+	pub path: String,
+
 	pub file_type: FileType,
-	/// Modification time in milliseconds since the Unix epoch, when requested.
-	pub mtime:     Option<f64>,
-	/// File size in bytes for regular files, when requested.
-	pub size:      Option<f64>,
+
+	pub mtime: Option<f64>,
+
+	pub size: Option<f64>,
 }
 
 impl CollectedEntry {
-	/// Return this entry's absolute path under `root`.
 	pub fn absolute_path(&self, root: &Path) -> PathBuf {
 		if self.path.is_empty() {
 			root.to_path_buf()
@@ -1627,7 +1473,6 @@ impl CollectedEntry {
 		}
 	}
 
-	/// Return this entry's depth below the traversal root.
 	pub fn depth(&self) -> usize {
 		if self.path.is_empty() {
 			0
@@ -1640,21 +1485,15 @@ impl CollectedEntry {
 		}
 	}
 
-	/// Return whether this entry is a regular file.
 	pub const fn is_file(&self) -> bool {
 		matches!(self.file_type, FileType::File)
 	}
 
-	/// Return whether this entry is a directory.
 	pub const fn is_dir(&self) -> bool {
 		matches!(self.file_type, FileType::Dir)
 	}
 }
 
-/// Return whether `parent` is a walk-relative ancestor of `child`.
-///
-/// Both paths use the walker's normalized `/` separator. The root-relative
-/// empty path is an ancestor of every non-root entry.
 pub fn is_relative_ancestor(parent: &str, child: &str) -> bool {
 	if parent == child {
 		return false;
@@ -1667,8 +1506,6 @@ pub fn is_relative_ancestor(parent: &str, child: &str) -> bool {
 		.is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-/// Compare normalized walk-relative paths in depth-first,
-/// contents-before-parent order.
 pub fn compare_depth_first_paths(left: &str, right: &str) -> Ordering {
 	if left == right {
 		return Ordering::Equal;
@@ -1682,14 +1519,10 @@ pub fn compare_depth_first_paths(left: &str, right: &str) -> Ordering {
 	left.cmp(right)
 }
 
-/// Sort collected entries in depth-first, contents-before-parent path order.
 pub fn sort_collected_depth_first(entries: &mut [CollectedEntry]) {
 	entries.sort_unstable_by(|left, right| compare_depth_first_paths(&left.path, &right.path));
 }
 
-/// Return the root device id used by same-filesystem traversal filters.
-///
-/// Non-Unix platforms return `None`, making same-filesystem filtering a no-op.
 #[cfg(unix)]
 pub fn root_device_id(path: &Path, follow_links: FollowLinks) -> Option<u64> {
 	use std::os::unix::fs::MetadataExt;
@@ -1699,19 +1532,11 @@ pub fn root_device_id(path: &Path, follow_links: FollowLinks) -> Option<u64> {
 		.map(|metadata| metadata.dev())
 }
 
-/// Return the root device id used by same-filesystem traversal filters.
-///
-/// Non-Unix platforms return `None`, making same-filesystem filtering a no-op.
 #[cfg(not(unix))]
 pub fn root_device_id(_path: &Path, _follow_links: FollowLinks) -> Option<u64> {
 	None
 }
 
-/// Return whether `path` is on the root filesystem represented by
-/// `root_device`.
-///
-/// When `root_device` is `None`, this returns true. On non-Unix platforms this
-/// is always true, matching the existing no-op same-filesystem behavior there.
 #[cfg(unix)]
 pub fn is_path_on_root_file_system(
 	path: &Path,
@@ -1728,11 +1553,6 @@ pub fn is_path_on_root_file_system(
 		.is_ok_and(|metadata| metadata.dev() == root_device)
 }
 
-/// Return whether `path` is on the root filesystem represented by
-/// `root_device`.
-///
-/// When `root_device` is `None`, this returns true. On non-Unix platforms this
-/// is always true, matching the existing no-op same-filesystem behavior there.
 #[cfg(not(unix))]
 pub fn is_path_on_root_file_system(
 	_path: &Path,
@@ -1783,51 +1603,42 @@ fn metadata_for_follow_policy(path: &Path, follow: bool) -> io::Result<std::fs::
 	}
 }
 
-/// Owned entries returned by [`collect_entries`] plus cache metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CollectedEntries {
-	/// Entries collected with the requested traversal contract.
-	pub entries:      Vec<CollectedEntry>,
-	/// Age of the cache entry in milliseconds; zero means freshly scanned.
+	pub entries: Vec<CollectedEntry>,
+
 	pub cache_age_ms: u64,
 }
 
-/// Borrowed entry passed to [`EntryVisitor`].
 pub struct Entry<'a> {
-	/// Absolute filesystem path for this entry.
-	pub path:      &'a Path,
-	/// Relative path from the root, using `/` separators.
-	pub relative:  &'a str,
-	/// Basename as returned by the platform directory API.
-	pub name:      &'a OsStr,
-	/// Filesystem entry kind.
+	pub path: &'a Path,
+
+	pub relative: &'a str,
+
+	pub name: &'a OsStr,
+
 	pub file_type: FileType,
-	/// Modification time in milliseconds since the Unix epoch, when requested.
-	pub mtime:     Option<f64>,
-	/// File size in bytes for regular files, when requested.
-	pub size:      Option<f64>,
-	/// Depth below the traversal root. Direct children have depth 1.
-	pub depth:     usize,
+
+	pub mtime: Option<f64>,
+
+	pub size: Option<f64>,
+
+	pub depth: usize,
 }
 
-/// Directory-open error delivered to visitors when configured by
-/// [`WalkOptions::directory_errors`].
 pub struct DirectoryError<'a> {
-	/// Directory path that could not be read.
-	pub path:  &'a Path,
-	/// Underlying platform I/O error.
+	pub path: &'a Path,
+
 	pub error: &'a io::Error,
 }
 
-/// Pre-descend decision made before a directory's children are traversed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreDescendDecision {
-	/// Whether this entry should be emitted in the requested visit order.
-	pub emit:    bool,
-	/// Whether this directory's descendants should be traversed.
+	pub emit: bool,
+
 	pub descend: bool,
-	/// Whether traversal should stop immediately.
-	pub stop:    bool,
+
+	pub stop: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1871,15 +1682,11 @@ fn directory_identity(path: &Path) -> io::Result<DirectoryIdentity> {
 	}
 }
 
-/// Consumer hook invoked for every accepted entry.
 pub trait EntryVisitor {
-	/// Error type used by visitor and heartbeat callbacks.
 	type Error;
 
-	/// Visit one filesystem entry and choose how traversal continues.
 	fn visit(&mut self, entry: Entry<'_>) -> std::result::Result<WalkControl, Self::Error>;
 
-	/// Handle a directory-open error and choose whether traversal continues.
 	fn visit_directory_error(
 		&mut self,
 		_error: DirectoryError<'_>,
@@ -1887,7 +1694,6 @@ pub trait EntryVisitor {
 		Ok(WalkControl::Continue)
 	}
 
-	/// Optional hook for making pre-descend traversal decisions.
 	fn decide_pre_descend(
 		&mut self,
 		_meta: &EntryMeta<'_>,
@@ -1895,7 +1701,6 @@ pub trait EntryVisitor {
 		Ok(PreDescendDecision { emit: true, descend: true, stop: false })
 	}
 
-	/// Visit an entry whose filter/predicate decisions have already been made.
 	fn visit_pre_decided(
 		&mut self,
 		entry: Entry<'_>,
@@ -2043,16 +1848,13 @@ const fn walk_decision_to_control(decision: WalkDecision) -> WalkControl {
 	}
 }
 
-/// Error returned by native traversal.
 #[derive(Debug)]
 pub enum WalkError<E> {
-	/// A caller-supplied heartbeat or visitor returned an error.
 	Interrupted(E),
-	/// A platform directory API returned malformed data or an unskippable error.
+
 	InvalidData {
-		/// Directory whose scan failed.
-		path:    PathBuf,
-		/// Human-readable failure detail.
+		path: PathBuf,
+
 		message: String,
 	},
 }
@@ -2294,9 +2096,6 @@ fn is_missing_metadata_error(err: &io::Error) -> bool {
 	matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
 }
 
-/// Scans entries using the shared cache when [`WalkOptions::cache`] is true.
-///
-/// The native scanner implements every [`WalkOptions`] traversal contract.
 pub fn collect_entries<E, H>(
 	root: &Path,
 	options: WalkOptions,
@@ -2329,8 +2128,6 @@ where
 	Ok(CollectedEntries { entries: collector.entries, cache_age_ms: 0 })
 }
 
-/// Streams entries using the native scanner for every [`WalkOptions`]
-/// traversal contract.
 pub fn walk_entries<V, H>(
 	root: &Path,
 	options: WalkOptions,
@@ -2394,7 +2191,6 @@ impl<H> WalkContext<'_, H> {
 			return Ok(WalkStatus::Complete);
 		};
 
-		// Seed the ancestor stack only when descendant symlink traversal can loop.
 		if self.options.follow_links == FollowLinks::Always
 			&& let Ok(id) = directory_identity(root)
 		{
@@ -2858,8 +2654,7 @@ fn collect_directory_entries<E>(
 	result?;
 	Ok(ignore_entries)
 }
-/// Return whether [`WalkDetail::Full`] provides file sizes without per-entry
-/// metadata syscalls on this platform.
+
 pub const fn supports_cheap_size_hints() -> bool {
 	platform::CHEAP_SIZE_HINTS
 }
@@ -2928,11 +2723,6 @@ fn ignore_line_covers_root(
 		})
 }
 
-/// Load an ignore source, removing ancestor rules that cover an explicit walk
-/// root.
-///
-/// Unrelated parent rules remain active, while ignore files discovered at or
-/// below the root are loaded without filtering.
 fn load_gitignore(
 	matcher_root: &Path,
 	file: &Path,
@@ -3272,11 +3062,6 @@ mod platform {
 		FileType, RawDirEntry, ReadDirControl, ReadDirError, WalkDetail, WalkError, mtime_millis,
 	};
 
-	/// `getattrlistbulk` can return data length in the same batch, but
-	/// requesting full-detail attributes (size + mtime) measurably slows the
-	/// bulk scan (~+50% walk time on APFS), which outweighs saving one fstat
-	/// per opened file. Benchmarked via `perf_walk_collect_full_detail` vs
-	/// minimal detail.
 	pub const CHEAP_SIZE_HINTS: bool = false;
 
 	const BUFFER_SIZE: usize = 256 * 1024;
@@ -3288,7 +3073,6 @@ mod platform {
 
 	impl Drop for FdGuard {
 		fn drop(&mut self) {
-			// SAFETY: `FdGuard` owns this file descriptor and closes it exactly once.
 			unsafe { libc::close(self.0) };
 		}
 	}
@@ -3321,8 +3105,6 @@ mod platform {
 			buffer.resize(BUFFER_SIZE, 0);
 		}
 		loop {
-			// SAFETY: `fd` is an open directory descriptor, `attrs` points to a valid
-			// attrlist for the duration of the call, and `buffer` is writable.
 			let count = unsafe {
 				libc::getattrlistbulk(
 					fd.0,
@@ -3432,8 +3214,7 @@ mod platform {
 	fn open_dir(path: &Path) -> io::Result<FdGuard> {
 		let path = CString::new(path.as_os_str().as_bytes())
 			.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
-		// SAFETY: `path` is a NUL-terminated C string; flags open the directory for
-		// metadata traversal only and do not transfer ownership of the string.
+
 		let fd =
 			unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
 		if fd < 0 {
@@ -3484,8 +3265,7 @@ mod platform {
 		}
 		let ptr = record[*cursor..end].as_ptr();
 		*cursor = end;
-		// SAFETY: Bounds were checked above; `getattrlistbulk` records are byte
-		// packed, so unaligned reads are required and do not outlive `record`.
+
 		Ok(unsafe { std::ptr::read_unaligned(ptr.cast::<T>()) })
 	}
 
@@ -3589,7 +3369,6 @@ mod platform {
 
 	impl Drop for FdGuard {
 		fn drop(&mut self) {
-			// SAFETY: `FdGuard` owns this file descriptor and closes it exactly once.
 			unsafe { libc::close(self.0) };
 		}
 	}
@@ -3614,7 +3393,6 @@ mod platform {
 			buffer.resize(BUFFER_SIZE, 0);
 		}
 		loop {
-			// SAFETY: `fd` is an open directory descriptor and `buffer` is writable.
 			let read = unsafe {
 				libc::syscall(
 					libc::SYS_getdents64,
@@ -3686,8 +3464,7 @@ mod platform {
 	fn open_dir(path: &Path) -> io::Result<FdGuard> {
 		let path = CString::new(path.as_os_str().as_bytes())
 			.map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
-		// SAFETY: `path` is a NUL-terminated C string; flags request a directory
-		// descriptor used only with getdents/statx and do not retain the pointer.
+
 		let fd =
 			unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
 		if fd < 0 {
@@ -3718,16 +3495,13 @@ mod platform {
 		name: &CString,
 		detail: WalkDetail,
 	) -> io::Result<Option<EntryStat>> {
-		// SAFETY: `Statx` is a plain-old-data buffer whose all-zero value is a
-		// valid initialization before the kernel fills it.
 		let mut statx = unsafe { zeroed::<Statx>() };
 		let mask = if detail == WalkDetail::Full {
 			STATX_BASIC_STATS
 		} else {
 			STATX_TYPE
 		};
-		// SAFETY: `name` is NUL-terminated, `statx` is writable, and `dirfd` is an
-		// open directory descriptor for an AT_* relative metadata query.
+
 		let rc = unsafe {
 			libc::syscall(
 				libc::SYS_statx,
@@ -3765,10 +3539,8 @@ mod platform {
 		name: &CString,
 		detail: WalkDetail,
 	) -> io::Result<Option<EntryStat>> {
-		// SAFETY: `libc::stat` is a POD buffer filled by fstatat.
 		let mut stat = unsafe { zeroed::<libc::stat>() };
-		// SAFETY: `name` is NUL-terminated, `stat` is writable, and `dirfd` is an
-		// open directory descriptor for an AT_* relative metadata query.
+
 		let rc = unsafe {
 			libc::fstatat(
 				dirfd,
@@ -3878,7 +3650,7 @@ mod platform {
 				None
 			};
 			let Some(custom_file_type) = custom_file_type else {
-				continue; // skip unsupported special files
+				continue;
 			};
 
 			let mut mtime = None;

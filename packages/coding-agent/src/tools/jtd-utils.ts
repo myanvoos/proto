@@ -1,12 +1,3 @@
-/**
- * JSON Type Definition (JTD) utility types and guards.
- *
- * Shared type definitions and type guard functions for JTD schema validation.
- *
- * @see https://jsontypedef.com/
- * @see https://datatracker.ietf.org/doc/html/rfc8927
- */
-
 export type JTDPrimitive =
 	| "boolean"
 	| "string"
@@ -53,8 +44,6 @@ interface JTDRef {
 interface JTDEmpty {}
 
 type JTDSchema = JTDType | JTDEnum | JTDElements | JTDValues | JTDProperties | JTDDiscriminator | JTDRef | JTDEmpty;
-
-// Type guards
 
 export function isJTDType(schema: unknown): schema is JTDType {
 	return typeof schema === "object" && schema !== null && "type" in schema;

@@ -1,32 +1,25 @@
-/** Behavior-compatible reimplementation of header-generator's used surface. */
-
-/** A browser family supported by the curated header profiles. */
 export type BrowserName = "chrome" | "firefox" | "safari";
 
-/** A desktop operating system supported by the curated header profiles. */
 export type OperatingSystem = "windows" | "macos" | "linux";
 
-/** Constructor and per-call constraints for header generation. */
 export interface HeaderGeneratorOptions {
-	/** Browser families eligible for a draw. */
 	browsers: BrowserName[];
-	/** Browser selection query; the supported `last 3 versions` query uses the curated versions. */
+
 	browserListQuery: string;
-	/** Desktop operating systems eligible for a draw. */
+
 	operatingSystems: OperatingSystem[];
-	/** Device classes eligible for a draw. */
+
 	devices: "desktop"[];
-	/** Ordered locales for the Accept-Language value. */
+
 	locales: string[];
-	/** HTTP protocol generation mode. */
+
 	httpVersion: "1" | "2";
-	/** Whether impossible constraints throw instead of relaxing to a coherent profile. */
+
 	strict: boolean;
-	/** Random source returning a value in the range from zero (inclusive) to one (exclusive). */
+
 	rng: () => number;
 }
 
-/** A generated HTTP request header map. */
 export type Headers = Record<string, string>;
 
 type ResolvedOptions = Omit<HeaderGeneratorOptions, "rng">;
@@ -113,12 +106,10 @@ function makeProfile(options: ResolvedOptions, rng: () => number): BrowserProfil
 	};
 }
 
-/** Generates coherent modern desktop browser navigation headers. */
 export class HeaderGenerator {
 	#options: ResolvedOptions;
 	#rng: () => number;
 
-	/** Creates a generator with reusable constraints and an optionally injectable RNG. */
 	constructor(options: Partial<HeaderGeneratorOptions> = {}) {
 		this.#rng = options.rng ?? Math.random;
 		this.#options = { ...DEFAULT_OPTIONS, ...options };
@@ -130,7 +121,6 @@ export class HeaderGenerator {
 		}
 	}
 
-	/** Generates one header set, applying per-call constraints and request overrides. */
 	getHeaders(options: Partial<HeaderGeneratorOptions> = {}, overrides: Headers = {}): Headers {
 		const resolved = { ...this.#options, ...options };
 		const rng = options.rng ?? this.#rng;

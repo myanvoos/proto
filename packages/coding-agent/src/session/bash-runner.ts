@@ -9,13 +9,11 @@ import { clampTimeout } from "../tools/tool-timeouts";
 import type { BashExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
-/** Destination that owns a bash result after a session or branch transition. */
 type BashAppendDestination =
 	| { kind: "current"; manager: SessionManager }
 	| { kind: "detached"; manager: SessionManager }
 	| { kind: "branch"; manager: SessionManager; parentId: string | null };
 
-/** Reference-counted session target captured when a bash execution starts. */
 interface BashSessionTarget {
 	sessionId: string;
 	refs: number;
@@ -28,7 +26,6 @@ interface PendingBashMessage {
 	message: BashExecutionMessage;
 }
 
-/** Ownership snapshot spanning a session or branch transition. */
 interface BashSessionTransition {
 	oldTarget: BashSessionTarget;
 	newTarget: BashSessionTarget;
@@ -40,7 +37,6 @@ interface BashSessionTransition {
 	resolveNew: (destination: BashAppendDestination) => void;
 }
 
-/** Capabilities the bash runner borrows from its owning session. */
 export interface BashRunnerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -49,7 +45,6 @@ export interface BashRunnerHost {
 	isStreaming(): boolean;
 }
 
-/** Owns bash execution and preserves result ownership across transcript transitions. */
 export class BashRunner {
 	readonly #host: BashRunnerHost;
 	#abortControllers = new Set<AbortController>();
@@ -65,7 +60,6 @@ export class BashRunner {
 		};
 	}
 
-	/** Executes a bash command while retaining the session and branch that owned its start. */
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
@@ -115,7 +109,6 @@ export class BashRunner {
 		}
 	}
 
-	/** Records a bash result supplied outside executeBash in the current ownership scope. */
 	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
 		const target = this.#captureSessionTarget();
 		const message = this.#createMessage(command, result, options);
@@ -136,22 +129,18 @@ export class BashRunner {
 		});
 	}
 
-	/** Cancels every running bash command. */
 	abort(): void {
 		for (const abortController of this.#abortControllers) abortController.abort();
 	}
 
-	/** Whether a bash command is currently running. */
 	get isRunning(): boolean {
 		return this.#abortControllers.size > 0;
 	}
 
-	/** Whether bash results are waiting for a safe persistence boundary. */
 	get hasPendingMessages(): boolean {
 		return this.#pendingMessages.length > 0;
 	}
 
-	/** Flushes deferred bash results without changing their captured ownership. */
 	async flushPending(): Promise<void> {
 		if (this.#pendingMessages.length === 0) return;
 		const pending = this.#pendingMessages;
@@ -159,7 +148,6 @@ export class BashRunner {
 		for (const { target, message } of pending) await this.#appendOwnedMessage(target, message);
 	}
 
-	/** Runs a leaf rewrite while retaining in-flight bash on its originating branch. */
 	withBranchTransition<T>(mutate: () => T): T {
 		const transition = this.beginSessionTransition();
 		let transitioned = false;
@@ -173,7 +161,6 @@ export class BashRunner {
 		}
 	}
 
-	/** Snapshots the owner of in-flight bash before a session or branch transition. */
 	beginSessionTransition(options?: { persistDetached?: boolean }): BashSessionTransition {
 		const oldTarget = this.#sessionTarget;
 		let detachedManager: SessionManager | undefined;
@@ -202,13 +189,11 @@ export class BashRunner {
 		};
 	}
 
-	/** Adopts a transition's new target as the live bash owner. */
 	markSessionTransition(transition: BashSessionTransition): void {
 		transition.newTarget.sessionId = this.#host.sessionManager.getSessionId();
 		this.#sessionTarget = transition.newTarget;
 	}
 
-	/** Resolves destinations opened by beginSessionTransition. */
 	finishSessionTransition(transition: BashSessionTransition, success: boolean): void {
 		const manager = this.#host.sessionManager;
 		const currentDestination: BashAppendDestination = { kind: "current", manager };

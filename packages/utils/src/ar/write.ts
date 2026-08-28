@@ -14,15 +14,10 @@ const WRITABLE_FORMATS: Record<WritableArchiveFormat, true> = {
 	asar: true,
 };
 
-/** Whether `format` can be serialized by {@link writeArchive} (rest are read-only). */
 export function isWritableArchiveFormat(format: ArchiveFormat): format is WritableArchiveFormat {
 	return format in WRITABLE_FORMATS;
 }
 
-/**
- * Serialize `entries` into an archive of `format` in memory. String members
- * are encoded as UTF-8; member names are normalized to forward slashes.
- */
 export async function encodeArchive(
 	format: WritableArchiveFormat,
 	entries: Iterable<readonly [string, ArchiveMemberContent]>,
@@ -45,7 +40,6 @@ export async function encodeArchive(
 	}
 }
 
-/** {@link encodeArchive}, written to `destPath` (parent directories auto-created). */
 export async function writeArchive(
 	destPath: string,
 	format: WritableArchiveFormat,

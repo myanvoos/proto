@@ -343,266 +343,157 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 	}
 }
 
-// Types
 export interface CreateAgentSessionOptions {
-	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
-	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
+
 	additionalDirectories?: string[];
-	/** Global config directory. Default: ~/.proto/agent */
+
 	agentDir?: string;
-	/** Spawns to allow. Default: "*" */
+
 	spawns?: string;
 
-	/** Auth storage for credentials. Default: discoverAuthStorage(agentDir) */
 	authStorage?: AuthStorage;
-	/** Model registry. Default: discoverModels(authStorage, agentDir) */
+
 	modelRegistry?: ModelRegistry;
-	/**
-	 * Request credential resolver. Defaults to the model registry's normal
-	 * session-affine resolver. Security scans use this narrow seam to keep one
-	 * durable OAuth row pinned for the operation without changing ordinary
-	 * provider routing.
-	 */
+
 	getApiKey?: AgentOptions["getApiKey"];
 
-	/** Model to use. Default: from settings, else first available */
 	model?: Model;
-	/** Raw model pattern(s) (e.g. from --model CLI flag) to resolve after extensions load.
-	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
+
 	modelPattern?: string | string[];
-	/** Authenticated fallback selector for deferred subagent model patterns. */
+
 	modelPatternAuthFallback?: string;
-	/** Role name used to install retry fallbacks after deferred subagent patterns resolve. */
+
 	modelPatternFallbackRole?: string;
-	/** Validated default retry chain to install when a deferred singleton pattern resolves. */
+
 	modelPatternDefaultFallbackChain?: string[];
-	/** Thinking selector. Default: from settings, else unset */
+
 	thinkingLevel?: ThinkingLevel;
-	/** Hard ceiling on the session's thinking effort (for example, a worker's `orchestrator.maxEffort`-capped hint); retry fallback re-clamps to it. */
+
 	thinkingLevelCeiling?: Effort;
-	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
+
 	openAIServiceTier?: ServiceTier | null;
-	/** Models available for cycling (Ctrl+P in interactive mode) */
+
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
-	/** Prewalk from the starting model to a fast/cheap target at the first edit/write once the todo list exists. */
+
 	prewalk?: Prewalk;
 
-	/** Provider-facing system prompt override. Replaces the fully rendered default blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
-	/** Already-loaded custom prompt text rendered through the bundled custom system prompt template. */
+
 	customSystemPrompt?: string;
-	/** Already-loaded text appended through the bundled system prompt templates. */
+
 	appendSystemPrompt?: string;
-	/**
-	 * Already-loaded title-generation system prompt override (typically
-	 * {@link discoverTitleSystemPromptFile} → {@link resolvePromptInput}). When
-	 * set, every automatic session-title generation path on this session — the
-	 * first-input title and the replan-driven refresh — uses this prompt
-	 * instead of the bundled default. Refresh on cwd change via
-	 * {@link AgentSession.setTitleSystemPrompt}.
-	 */
+
 	titleSystemPrompt?: string;
-	/** Optional provider-facing session identifier for prompt caches and sticky auth selection.
-	 * Keeps persisted session files isolated while reusing provider-side caches. */
+
 	providerSessionId?: string;
-	/** Optional provider-facing prompt cache key, distinct from request lineage. */
+
 	providerPromptCacheKey?: string;
-	/** Whether `providerPromptCacheKey` is caller-pinned or inherited from a full fork. */
+
 	providerPromptCacheKeySource?: "explicit" | "fork";
-	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
+
 	deadline?: number;
 
-	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
-	/** Inline extensions (merged with discovery). */
+
 	extensions?: ExtensionFactory[];
-	/** Additional extension paths to load (merged with discovery). */
+
 	additionalExtensionPaths?: string[];
-	/** Disable extension discovery (explicit paths still load). */
+
 	disableExtensionDiscovery?: boolean;
-	/**
-	 * Pre-loaded extensions (skips file discovery and the per-session factory
-	 * call). Used by the CLI when extensions are loaded early to parse custom
-	 * flags — the same process owns the returned instances, so reusing them is
-	 * safe.
-	 *
-	 * NEVER pass this across session boundaries (e.g. parent → subagent).
-	 * `Extension` instances close over a parent-bound `ExtensionAPI` (cwd,
-	 * eventBus, runtime), and reusing them would route tools/handlers/commands
-	 * back through the parent. For subagents, forward
-	 * {@link preloadedExtensionPaths} instead.
-	 *
-	 * @internal
-	 */
+
 	preloadedExtensions?: LoadExtensionsResult;
-	/**
-	 * Pre-discovered extension source paths. When provided, the filesystem-scan
-	 * inside `discoverExtensionPaths()` is skipped — the session still calls
-	 * `loadExtensions()` itself so each `Extension` is bound to THIS session's
-	 * `ExtensionAPI` (cwd, eventBus, runtime).
-	 *
-	 * This is the safe pass-through for parent → subagent forwarding.
-	 */
+
 	preloadedExtensionPaths?: string[];
-	/**
-	 * Pre-discovered custom-tool source paths from `.proto/tools/`, `.claude/tools/`,
-	 * plugins, etc. When provided, the filesystem-scan inside
-	 * `discoverCustomToolPaths()` is skipped — subagents inherit the parent's
-	 * scan result and call `loadCustomTools()` themselves so each session binds
-	 * tools to its OWN `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
-	 *
-	 * Forwarding the loaded `LoadedCustomTool[]` instances directly would reuse
-	 * the parent's session-bound API and route tool execution back through the
-	 * parent — wrong for isolated tasks and for pending-action routing.
-	 */
+
 	preloadedCustomToolPaths?: ToolPathWithSource[];
 
-	/** Shared event bus for tool/extension communication. Default: creates new bus. */
 	eventBus?: EventBus;
 
-	/** Skills. Default: discovered from multiple locations */
 	skills?: Skill[];
-	/** Rules. Default: discovered from multiple locations */
+
 	rules?: Rule[];
-	/** Context files (AGENTS.md content). Default: discovered walking up from cwd */
+
 	contextFiles?: Array<{ path: string; content: string }>;
-	/** Pre-built workspace tree (skips re-scanning; passed by parents to subagents). */
+
 	workspaceTree?: WorkspaceTree;
-	/** Prompt templates. Default: discovered from cwd/.proto/prompts/ + agentDir/prompts/ */
+
 	promptTemplates?: PromptTemplate[];
-	/** File-based slash commands. Default: discovered from commands/ directories */
+
 	slashCommands?: FileSlashCommand[];
 
-	/**
-	 * Enable MCP capabilities. `false` skips MCP discovery and ignores
-	 * `mcpManager`, preventing process-global or inherited MCP access. Default:
-	 * true.
-	 */
 	enableMCP?: boolean;
-	/** Existing MCP manager to reuse when MCP is enabled (skips discovery, propagates to toolSession). */
+
 	mcpManager?: MCPManager;
 
-	/** Enable LSP integration (tool, formatting, diagnostics, warmup). Default: true */
 	enableLsp?: boolean;
-	/** Restrict LSP to navigation and diagnostics even when enabled. Defaults to true for restricted sessions. */
+
 	lspReadOnly?: boolean;
-	/** Whether this invocation may expose IRC. `false` removes it even for subagents. */
+
 	enableIrc?: boolean;
-	/** Skip subprocess-kernel availability checks and prelude warmup */
+
 	skipPythonPreflight?: boolean;
-	/** Tool names explicitly requested (enables disabled-by-default tools) */
+
 	toolNames?: string[];
-	/** Limit the session to explicitly supplied tool names, without discovered extras. */
+
 	restrictToolNames?: boolean;
-	/**
-	 * Permit only caller-supplied SDK custom tools inside a restricted session.
-	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
-	 * and ambient custom tools remain disabled. Default: false.
-	 */
+
 	allowRestrictedCustomTools?: boolean;
 
-	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
-	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
+
 	outputSchemaMode?: StructuredSubagentSchemaMode;
-	/** Whether to include the yield tool by default */
+
 	requireYieldTool?: boolean;
-	/** Worker recursion depth (for subagent sessions). Default: 0 */
+
 	taskDepth?: number;
-	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
+
 	agentId?: string;
-	/** Display name for the agent in IRC. Default: "main" or "sub". */
+
 	agentDisplayName?: string;
-	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
+
 	agentRegistry?: AgentRegistry;
-	/**
-	 * Registry generation authorized for this creation. `null` requires the id
-	 * to be absent; an AgentRef allows a parked revival to reuse only that ref.
-	 * Undefined preserves legacy unconditional registration for external SDK callers.
-	 * @internal
-	 */
+
 	expectedAgentRef?: AgentRef | null;
-	/** Parent task ID prefix for nested artifact naming (e.g., "Extensions") */
+
 	parentTaskPrefix?: string;
-	/**
-	 * Registry id of the spawning agent, recorded as this subagent's parent in
-	 * the agent registry. Distinct from `parentTaskPrefix`, which is this agent's
-	 * own artifact/output-id prefix (the executor passes the child's own id
-	 * there, so it must never double as the parent link). Undefined for the
-	 * top-level "Main" session, which has no parent.
-	 */
+
 	parentAgentId?: string;
-	/** Inherited eval executor session id for subagents sharing parent eval state. */
+
 	parentEvalSessionId?: string;
 
-	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
 
-	/** Override local:// protocol options for subagent local:// sharing. Default: uses the session's own artifacts dir and session ID. */
 	localProtocolOptions?: LocalProtocolOptions;
 
-	/** Settings instance. Default: Settings.init({ cwd, agentDir }) */
 	settings?: Settings;
-	/**
-	 * Legacy alias for `settings`. Older Pi extensions pass SettingsManager.create(...)
-	 * through this field; accept it so their SDK calls keep the configured settings.
-	 */
+
 	settingsManager?: Settings | Promise<Settings>;
 
-	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
-	/**
-	 * A human can answer synchronous prompts even without a terminal UI (e.g. an
-	 * ACP client rendering elicitation forms). Enables `ask` without enabling
-	 * TUI-only session behavior such as eager LSP warmup. Default: `hasUI`.
-	 */
+
 	interactivePrompts?: boolean;
-	/**
-	 * Defer `confirm` reserve-policy fallback until AgentSession prompt-time UI is configured.
-	 * ACP uses this while capabilities are negotiated without enabling UI-only tools.
-	 */
+
 	deferUsageReserveConfirmation?: boolean;
 
-	/**
-	 * Opt-in OpenTelemetry instrumentation forwarded to the underlying Agent.
-	 * Passing `{}` enables the loop's GenAI-semantic-convention spans. See
-	 * {@link AgentTelemetryConfig} for the full surface (hooks, content capture,
-	 * cost estimator, agent identity).
-	 *
-	 * Safe to enable without an OTEL SDK registered in the host: the
-	 * `@opentelemetry/api` package returns a no-op tracer in that case.
-	 */
 	telemetry?: AgentTelemetryConfig;
 
-	/**
-	 * Fired once, when the agent loop hands its first request to the provider
-	 * transport (i.e. the `streamFn` wrapper is first invoked). Used to measure
-	 * subagent launch latency — the boundary between "session built" and "model
-	 * call dispatched". This is the loop's dispatch point, slightly before the
-	 * actual provider HTTP call (per-request prep, identical across all
-	 * requests, follows it), which is the right granularity for launch timing.
-	 */
 	onFirstChatDispatch?: () => void;
-
-	/** Whether to auto-approve all tool calls (--auto-approve CLI flag). Default: false */
 }
 
-/** Result from createAgentSession */
 export interface CreateAgentSessionResult {
-	/** The created session */
 	session: AgentSession;
-	/** Extensions result (loaded extensions + runtime) */
+
 	extensionsResult: LoadExtensionsResult;
-	/** Update tool UI context (interactive mode) */
+
 	setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
-	/** MCP manager for server lifecycle management (undefined if MCP disabled) */
+
 	mcpManager?: MCPManager;
-	/** Warning if session was restored with a different model than saved */
+
 	modelFallbackMessage?: string;
-	/** LSP servers detected for startup; warmup may continue in the background */
+
 	lspServers?: LspStartupServerInfo[];
-	/** Shared event bus for tool/extension communication */
+
 	eventBus: EventBus;
 }
 
@@ -622,8 +513,6 @@ export function resolveDialect(
 	return format;
 }
 
-// Re-exports
-
 export type { PromptTemplate } from "./config/prompt-templates";
 export { Settings, type SkillsSettings } from "./config/settings";
 export type { CustomCommand, CustomCommandFactory } from "./extensibility/custom-commands/types";
@@ -632,17 +521,13 @@ export type * from "./extensibility/extensions";
 export type { Skill } from "./extensibility/skills";
 export type { FileSlashCommand } from "./extensibility/slash-commands";
 export type { MCPManager, MCPServerConfig, MCPServerConnection, MCPToolsLoadResult } from "./mcp";
-// Agent registry: pass a private instance per `createAgentSession` when
-// embedding several concurrent top-level sessions in one process (the default
-// global registry admits only one "Main" per process generation).
+
 export { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 export type { Tool } from "./tools";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
 export {
-	// Individual tool classes (for custom usage)
 	BashTool,
-	// Tool classes and factories
 	BUILTIN_TOOLS,
 	createTools,
 	EditTool,
@@ -654,44 +539,16 @@ export {
 	WriteTool,
 };
 
-// Helper Functions
-
-// Discovery Functions
-
-/**
- * Create an AuthStorage instance.
- *
- * Default: local SQLite store at `<agentDir>/agent.db`.
- *
- * Broker mode: when `PROTO_AUTH_BROKER_URL` is set, credentials are pulled from
- * a remote auth-broker over the wire. Refresh tokens never leave the broker;
- * the client receives access tokens with `refresh = "__remote__"` and calls
- * back into the broker through the {@link AuthStorageOptions.refreshOAuthCredential}
- * override to re-mint access tokens when needed.
- *
- * Delegates to {@link ./session/auth-broker-config} so the TUI and the catalog
- * generator share the same credential-discovery logic.
- */
 export async function discoverAuthStorage(agentDir: string = getAgentDir()): Promise<AuthStorage> {
 	return discoverAuthStorageFromConfig(agentDir);
 }
 
-/**
- * Discover extensions from cwd.
- */
 export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsResult> {
 	const resolvedCwd = cwd ?? getProjectDir();
 
 	return discoverAndLoadExtensions([], resolvedCwd);
 }
 
-/**
- * Path-only counterpart of {@link loadSessionExtensions}: the FS-heavy scan
- * without the per-session module load. Subagents reuse the parent's path list
- * (cached on {@link ToolSession.extensionPaths}) and rebuild Extension
- * instances themselves so each session's `ExtensionAPI` (cwd, eventBus,
- * runtime) is its own.
- */
 export async function discoverSessionExtensionPaths(
 	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths">,
 	cwd: string,
@@ -708,15 +565,6 @@ export async function discoverSessionExtensionPaths(
 	});
 }
 
-/**
- * Load the discovered/configured extensions for a session — everything {@link
- * createAgentSession} would load except the inline factory extensions it appends
- * itself. Extracted so the CLI can resolve extension-registered flags (and thus
- * classify `@file` arguments extension-aware) *before* a session — and its
- * terminal breadcrumb — is created, then hand the result back through
- * {@link CreateAgentSessionOptions.preloadedExtensions} so the work is not
- * repeated. Keep this the single source of the discovery branch logic.
- */
 export async function loadSessionExtensions(
 	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths">,
 	cwd: string,
@@ -731,17 +579,6 @@ export async function loadSessionExtensions(
 	return result;
 }
 
-/**
- * Load discovered/configured extensions and register their providers into
- * `modelRegistry`, then discover the dynamic provider catalogs. One-shot CLIs
- * (`proto bench`, dry-balance) build a bare {@link ModelRegistry} that only knows
- * built-in catalog providers; without this, providers contributed by an
- * extension (e.g. a custom OpenAI-compatible provider under
- * `~/.proto/agent/extensions/`) never reach model resolution. Mirrors the
- * session / `proto models` path: drain the queued provider registrations, then
- * `refreshRuntimeProviders` so dynamically-discovered models exist before
- * selectors are resolved.
- */
 export async function loadCliExtensionProviders(
 	modelRegistry: ModelRegistry,
 	settings: Settings,
@@ -762,9 +599,6 @@ export async function loadCliExtensionProviders(
 	await modelRegistry.refreshRuntimeProviders();
 }
 
-/**
- * Discover skills from cwd and agentDir.
- */
 export async function discoverSkills(
 	cwd?: string,
 	_agentDir?: string,
@@ -776,10 +610,6 @@ export async function discoverSkills(
 	});
 }
 
-/**
- * Discover context files (AGENTS.md) walking up from cwd.
- * Returns files sorted by depth (farther from cwd first, so closer files appear last/more prominent).
- */
 export async function discoverContextFiles(
 	cwd?: string,
 	_agentDir?: string,
@@ -791,9 +621,6 @@ export async function discoverContextFiles(
 	});
 }
 
-/**
- * Discover prompt templates from cwd and agentDir.
- */
 export async function discoverPromptTemplates(cwd?: string, agentDir?: string): Promise<PromptTemplate[]> {
 	return await loadPromptTemplatesInternal({
 		cwd: cwd ?? getProjectDir(),
@@ -801,16 +628,10 @@ export async function discoverPromptTemplates(cwd?: string, agentDir?: string): 
 	});
 }
 
-/**
- * Discover file-based slash commands from commands/ directories.
- */
 export async function discoverSlashCommands(cwd?: string): Promise<FileSlashCommand[]> {
 	return loadSlashCommandsInternal({ cwd: cwd ?? getProjectDir() });
 }
 
-/**
- * Discover custom commands (TypeScript slash commands) from cwd and agentDir.
- */
 export async function discoverCustomTSCommands(cwd?: string, agentDir?: string): Promise<CustomCommandsLoadResult> {
 	const resolvedCwd = cwd ?? getProjectDir();
 	const resolvedAgentDir = agentDir ?? getAgentDir();
@@ -821,18 +642,10 @@ export async function discoverCustomTSCommands(cwd?: string, agentDir?: string):
 	});
 }
 
-/**
- * Discover MCP servers from .mcp.json files.
- * Returns the manager and loaded tools.
- */
 export async function discoverMCPServers(cwd?: string): Promise<MCPToolsLoadResult> {
 	const resolvedCwd = cwd ?? getProjectDir();
 	return discoverAndLoadMCPTools(resolvedCwd);
 }
-
-// API Key Helpers
-
-// System Prompt
 
 export interface BuildSystemPromptOptions {
 	tools?: Tool[];
@@ -845,12 +658,6 @@ export interface BuildSystemPromptOptions {
 	includeWorkspaceTree?: boolean;
 }
 
-/**
- * Build the default provider-facing system prompt blocks.
- *
- * The returned `systemPrompt` preserves the stable harness prompt and dynamic project context
- * as separate entries so providers can cache prompt prefixes without concatenating blocks.
- */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	const toolNames = options.tools?.map(tool => tool.name);
 	const toolMap = options.tools ? new Map(options.tools.map(tool => [tool.name, tool])) : undefined;
@@ -873,8 +680,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	});
 }
 
-// Internal Helpers
-
 function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 	return {
 		sessionManager: ctx.sessionManager,
@@ -888,8 +693,6 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 }
 
 function isCustomTool(tool: CustomTool | ToolDefinition): tool is CustomTool {
-	// To distinguish, we mark converted tools with a hidden symbol property.
-	// If the tool doesn't have this marker, it's a CustomTool that needs conversion.
 	return !(tool as any).__isToolDefinition;
 }
 
@@ -898,7 +701,7 @@ function isLegacyBuiltinToolDefinition(tool: CustomTool | ToolDefinition): boole
 }
 
 const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
-/** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
+
 const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
 
 let sshCleanupRegistered = false;
@@ -938,8 +741,7 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		defaultInactive: tool.hidden === true,
 		loadMode: defaultLoadModeForToolName(tool.name, tool.loadMode),
 		deferrable: tool.deferrable,
-		// Preserved through RegisteredToolAdapter so MCP-backed tools' explicit
-		// `strict: false` (#4336/#4340) survives the custom-tool → definition bridge.
+
 		strict: tool.strict,
 		mcpServerName: tool.mcpServerName,
 		mcpToolName: tool.mcpToolName,
@@ -954,7 +756,7 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 						{ expanded: options.expanded, isPartial: options.isPartial, spinnerFrame: options.spinnerFrame },
 						theme,
 					);
-					// Return empty component if undefined to match Component type requirement
+
 					return component ?? ({ render: () => [] } as unknown as Component);
 				}
 			: undefined,
@@ -1054,12 +856,6 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 	};
 }
 
-// Factory
-
-/**
- * Build LoadedCustomCommand entries for all MCP prompts across connected servers.
- * These are re-created whenever prompts change (setOnPromptsChanged callback).
- */
 function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 	const commands: LoadedCustomCommand[] = [];
 	for (const serverName of manager.getConnectedServers()) {
@@ -1105,7 +901,6 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 	return commands;
 }
 
-/** Dependencies used to construct an isolated auto-learn capture agent. */
 interface AutoLearnCaptureRunnerOptions {
 	sourceAgent: Agent;
 	captureTools: AgentTool[];
@@ -1115,7 +910,6 @@ interface AutoLearnCaptureRunnerOptions {
 	createSessionId?: () => string;
 }
 
-/** Build a private capture runner over a detached message snapshot and provider session. */
 export function createAutoLearnCaptureRunner(
 	options: AutoLearnCaptureRunnerOptions,
 ): (content: string, signal?: AbortSignal) => Promise<void> {
@@ -1186,37 +980,7 @@ export function createAutoLearnCaptureRunner(
 		}
 	};
 }
-/**
- * Create an AgentSession with the specified options.
- *
- * @example
- * ```typescript
- * // Minimal - uses defaults
- * const { session } = await createAgentSession();
- *
- * // With explicit model
- * import { getModel } from '@oh-my-pi/pi-ai';
- * const { session } = await createAgentSession({
- *   model: getModel('anthropic', 'claude-opus-4-5'),
- *   thinkingLevel: 'high',
- * });
- *
- * // Continue previous session
- * const { session, modelFallbackMessage } = await createAgentSession({
- *   continueSession: true,
- * });
- *
- * // Full control
- * const { session } = await createAgentSession({
- *   model: myModel,
- *   getApiKey: async () => Bun.env.MY_KEY,
- *   systemPrompt: ['You are helpful.'],
- *   tools: codingTools({ cwd: getProjectDir() }),
- *   skills: [],
- *   sessionManager: SessionManager.inMemory(),
- * });
- * ```
- */
+
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const rootMode = options.disableExtensionDiscovery ? "explicit-only" : "merge";
 	return await withOmpExtensionRootScope(options.additionalExtensionPaths ?? [], rootMode, () =>
@@ -1237,9 +1001,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		logger.time("settings", Settings.init, { cwd, agentDir }));
 	logger.time("initializeWithSettings", initializeWithSettings, settings);
 
-	// Pin authStorage to modelRegistry.authStorage: ModelRegistry.getApiKey() routes refresh
-	// failures through that instance, so any divergent storage handed to the bridge / mcpManager
-	// / session would silently miss credential_disabled events.
 	const modelRegistry =
 		options.modelRegistry ??
 		new ModelRegistry(
@@ -1250,8 +1011,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				cacheDbPath: getModelDbPath(agentDir),
 			},
 		);
-	// Track whether we internally created the authStorage so we can close it
-	// if construction fails before the session takes ownership.
+
 	const ownsAuthStorage = !options.authStorage && !options.modelRegistry;
 	const authStorage = modelRegistry.authStorage;
 	if (options.authStorage && options.authStorage !== authStorage) {
@@ -1259,15 +1019,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
 		);
 	}
-	// Subscribe before any getApiKey() call so startup model probes can't fire a
-	// credential_disabled event past us. An embedder's constructor handler makes the
-	// listener set non-empty from construction, which defeats AuthStorage's no-listener
-	// buffer — so we can't rely on it to catch startup events for the extension runner.
+
 	const startupCredentialDisabledEvents: CredentialDisabledEvent[] = [];
 	let credentialDisabledTarget: ExtensionRunner | undefined;
 	const unsubscribeCredentialDisabled: (() => void) | undefined = authStorage.onCredentialDisabled(event => {
 		if (credentialDisabledTarget) {
-			// Discard return: any handler error is routed through runner.onError listeners.
 			void credentialDisabledTarget.emitCredentialDisabled(event);
 		} else {
 			startupCredentialDisabledEvents.push(event);
@@ -1277,10 +1033,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	if (!options.modelRegistry) {
 		modelRegistry.refreshInBackground();
 	}
-	// Kick off workspace tree discovery early. The native workspace scan returns
-	// both the rendered-tree input and the AGENTS.md directory-context index, so
-	// startup does not perform a second recursive filesystem search. Subagents
-	// inherit the parent's resolved values via options.
+
 	const STARTUP_SCAN_DEADLINE_MS = 5000;
 	const includeWorkspaceTree = settings.get("includeWorkspaceTree") ?? false;
 	const workspaceTreePromise: Promise<WorkspaceTree> = options.workspaceTree
@@ -1290,9 +1043,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: Promise.resolve({ rootPath: cwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] });
 	workspaceTreePromise.catch(() => {});
 
-	// Independent discoveries that depend only on cwd/agentDir — kicked off in parallel and awaited
-	// at their respective consumer sites. Their work can overlap with model resolution, secret loading,
-	// session-context build, tool creation, MCP discovery, and extension discovery.
 	const contextFilesPromise = options.contextFiles
 		? Promise.resolve(options.contextFiles)
 		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir);
@@ -1330,7 +1080,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: undefined;
 	discoveredSkillsPromise?.catch(() => {});
 
-	// Initialize provider preferences from settings
 	applyProviderGlobalsFromSettings(settings);
 
 	const sessionManager =
@@ -1342,7 +1091,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		? options.additionalDirectories
 		: settings.get("workspace.additionalDirectories");
 	if (configuredDirs.length > 0) {
-		// Merge with any roots restored from the session header (resume/fork), not replace.
 		const existing = sessionManager.getAdditionalDirectories();
 		const merged = [...new Set([...existing, ...configuredDirs])];
 		await sessionManager.setAdditionalDirectories(merged);
@@ -1367,27 +1115,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: providerPromptCacheKey !== undefined
 				? "fork"
 				: undefined;
-	// Startup model *selection* only needs to know whether auth is configured for
-	// a candidate's provider — never the resolved key bytes. Use the synchronous,
-	// side-effect-free probe (`hasConfiguredAuth`): it refreshes no OAuth tokens,
-	// executes no `!command` keys, and issues no auth-broker requests. Resolving the
-	// real key here (`getApiKey`) blocks resume on those network paths — a slow or
-	// unreachable OAuth/broker endpoint stalls startup for the full ~10s refresh
-	// timeout per candidate (observed as a hang in `restoreSessionModel`). The real
-	// key is resolved lazily per request via ModelRegistry.resolver.
+
 	const hasModelAuth = (candidate: Model): boolean => modelRegistry.hasConfiguredAuth(candidate);
 
-	// Load and create secret obfuscator early so resumed session state and prompt warnings
-	// reflect actual loaded secrets, not just the setting toggle.
 	const obfuscator: SecretObfuscator | undefined = settings.get("secrets.enabled")
 		? await buildSecretObfuscator(cwd, agentDir, options.agentDir)
 		: undefined;
 	const secretsEnabled = obfuscator?.hasSecrets() === true;
 
-	// An abnormal process exit after a non-terminal message tail is durable
-	// evidence that the old process can no longer finish that turn. Preserve the
-	// partial transcript and append one terminal aborted assistant record before
-	// rebuilding runtime context. The helper is idempotent once that record exists.
 	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
 	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
 	if (interruptedTurnAbort) {
@@ -1420,11 +1155,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 	let initialRetryFallback: InitialRetryFallbackState | undefined;
-	// Identify session model strings to restore in fallback order. We do an
-	// initial pass here so model-dependent setup (thinking-level resolution,
-	// host preconnect) can use the restored model; extension-registered
-	// providers aren't visible yet, so we retry the preferred candidates once
-	// extensions register below.
+
 	const sessionModelStrings =
 		!hasExplicitModel && hasExistingSession
 			? getRestorableSessionModels(existingSession.models, sessionManager.getLastModelChangeRole())
@@ -1460,25 +1191,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		});
 	}
 
-	// If still no model, try settings default.
-	// Skip settings fallback when an explicit model was requested.
 	if (!hasExplicitModel && !model && defaultRoleSpec.model) {
 		const settingsDefaultModel = defaultRoleSpec.model;
 		logger.time("resolveSettingsDefaultModel", () => {
-			// defaultRoleSpec.model already comes from modelRegistry.getAvailable(),
-			// so re-validating auth here just repeats the expensive lookup path.
 			model = settingsDefaultModel;
 		});
 	}
 
 	const taskDepth = options.taskDepth ?? 0;
 
-	// Resolves the session/agent thinking level using the same precedence we
-	// apply at startup: explicit option → persisted session entry → restored
-	// model selector suffix → default role's explicit selector → selected
-	// model's defaultLevel → global settings default. Run again after extension
-	// role reclaim so the final model's own defaults aren't masked by an earlier
-	// fallback model's.
 	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ThinkingLevel | undefined => {
 		let level = options.thinkingLevel;
 		if (level === undefined && hasExistingSession && hasThinkingEntry) {
@@ -1501,7 +1222,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		return level;
 	};
 
-	// Resolve the initial thinking level for the startup model.
 	let thinkingLevel = pickInitialThinkingLevel(model);
 	let effectiveThinkingLevel: ThinkingLevel | undefined = thinkingLevel;
 	if (model) {
@@ -1509,12 +1229,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 			resolveThinkingLevelForModel(resolvedModel, effectiveThinkingLevel),
 		);
-		// Fire-and-forget TLS+H2 handshake to the model's host so it overlaps
-		// with the rest of session setup (extension/skill load, tool registry,
-		// system prompt build). Without this, the first `fetch(...)` pays the
-		// full handshake serially — 100–300 ms transcontinental for
-		// api.anthropic.com from a residential IP. Every mode benefits
-		// (interactive, print, rpc, acp).
+
 		preconnectModelHost(model.baseUrl);
 	}
 
@@ -1529,7 +1244,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		skillWarnings = discovered.warnings;
 	}
 
-	// Discover rules and bucket them in one pass to avoid repeated scans over large rule sets.
 	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
 		"discoverTtsrRules",
 		async () => {
@@ -1551,11 +1265,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		},
 	);
 
-	// Resolve contextFiles up-front (it's needed before tool creation). The
-	// workspace tree scan is slow on large repos and we MUST NOT block startup on
-	// it. On timeout we forward `undefined` to ToolSession; buildSystemPromptInternal
-	// will re-race the same promise through its own withDeadline path. Background
-	// work continues so caches still warm.
 	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
 		let timedOut = false;
 		const result = await Promise.race([
@@ -1592,17 +1301,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const enableLsp = options.enableLsp ?? !restrictToolNames;
 	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
-	// Only the first top-level session in a process owns an AsyncJobManager.
-	// Subagents inherit the parent's manager via `AsyncJobManager.instance()`
-	// (set below), and any additional top-level session spun up in-process
-	// (e.g. the agent-creation architect in `agents-hub.ts`) must share
-	// the live singleton — otherwise its dispose path would clobber the
-	// owning session's manager and break the worker/bash async paths
-	// (issue #1923). The `instance()` guard means later sessions also skip
-	// constructing an orphaned manager that nothing would ever route to.
-	// Delivery is owner-routed: every AgentSession registers its own sink
-	// (see session/async-job-delivery.ts), so the manager takes no default
-	// onJobComplete here.
+
 	const asyncJobManager =
 		!options.parentTaskPrefix && !AsyncJobManager.instance()
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
@@ -1616,16 +1315,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
 	const agentKind = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const);
 	let registeredAgentRef: AgentRef | undefined;
-	/**
-	 * Forget the agent ref on teardown — unless it is a retained terminal ref.
-	 * Parking disposes the session but keeps the ref addressable (history://,
-	 * revive); a hard kill leaves it as a terminal `aborted` tombstone. Both are
-	 * detached (session === null) by the time dispose runs, per the AgentRef
-	 * invariant, so preserving them never keeps a disposed session reachable — an
-	 * aborted ref that still holds a live session is a bug and is unregistered
-	 * rather than handed to ensureLive. Only process teardown / a plain release
-	 * unregisters.
-	 */
+
 	const unregisterUnlessParked = (): void => {
 		const ref = registeredAgentRef;
 		if (!ref || agentRegistry.get(resolvedAgentId) !== ref) return;
@@ -1642,9 +1332,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (model) return formatModelString(model);
 			return undefined;
 		};
-		// Per-path mutation counter shared across edit/write tools. Late-diagnostics
-		// entries capture it at fetch time and are dropped at injection if a newer
-		// mutation (any tool) bumped it in the meantime.
+
 		const fileMutationVersions = new Map<string, number>();
 		const disposeCallbacks = new Set<() => void>();
 		const activeToolNames = new Set<string>();
@@ -1708,10 +1396,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
 			getCodeModeDirectToolNames: () => session?.getCodeModeDirectToolNames(),
 			agentRegistry,
-			// The global lifecycle releases through AgentRegistry.global(); wiring it
-			// onto a caller-supplied registry would report a cancel while releasing an
-			// unrelated global ref. With no lifecycle, hub cancel falls back to
-			// dispose + unregister on the session's own registry.
+
 			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
 			getSessionSpawns: () => options.spawns ?? "*",
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
@@ -1776,28 +1461,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			authStorage,
 			modelRegistry,
 			getTelemetry: () => agent?.telemetry,
-			// Subagents inherit the singleton (the parent's manager) so their bash/task
-			// completions still flow into the spawning conversation's yieldQueue.
-			// Secondary in-process top-level sessions (no parentTaskPrefix, no
-			// constructed manager because the singleton was already installed) leave
-			// this undefined so tools and session job snapshots refuse async work
-			// instead of silently routing into the owning session (issue #1923).
+
 			asyncJobManager: scopedAsyncJobManager,
 		};
 
-		// Wire process-wide internal URL singletons owned by their real classes.
-		// Top-level sessions install the active snapshots; subagents inherit them.
-		// Artifact and agent-output URLs resolve via `AgentRegistry.global()` —
-		// the protocol handlers walk each ref's `sessionManager.getArtifactsDir()`,
-		// which collapses to the parent's dir for subagents (they adopt the
-		// parent's ArtifactManager) so one lookup hits everything.
 		const getArtifactsDir = () => sessionManager.getArtifactsDir();
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
-			// Include TTSR rules so `rule://<name>` can resolve them too. They are
-			// registered with the manager and bucketed out before rulebook/always,
-			// so without this a TTSR-only rule (e.g. a triggered builtin) is not
-			// addressable and `rule://` reports "Available: none".
+
 			setActiveRules([...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()]);
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
@@ -1815,18 +1486,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			options.parentTaskPrefix ? { parentPrefix: options.parentTaskPrefix } : undefined,
 		);
 
-		// Top-level agents are always orchestrators, including when a caller
-		// supplies an explicit ordinary-tool list. Restricted children retain
-		// their exact host grant.
 		const effectiveToolNames =
 			!restrictToolNames && agentKind === "main" && options.toolNames
 				? [...new Set([...options.toolNames, ...ORCHESTRATE_TOOL_NAMES])]
 				: options.toolNames;
 
-		// Create built-in tools (already wrapped with meta notice formatting)
 		await logger.time("createAllTools", createTools, toolSession, effectiveToolNames);
 
-		// Restricted sessions cannot inherit or discover MCP capabilities.
 		const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
 		let mcpManager: MCPManager | undefined = enableMCP ? options.mcpManager : undefined;
 		toolSession.mcpManager = mcpManager;
@@ -1844,9 +1510,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const mcpDiscoverOptions = {
 			onStatus: onMCPStatus,
 			enableProjectConfig: settings.get("mcp.enableProjectConfig") ?? true,
-			// Always filter Exa - we have native integration
+
 			filterExa: true,
-			// Filter browser MCP servers when builtin browser tool is active
+
 			filterBrowser: settings.get("browser.enabled") ?? false,
 		};
 		if (enableMCP && !mcpManager) {
@@ -1867,16 +1533,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							const mcpResult = await logger.time("discoverAndLoadMCPTools", () =>
 								deferredMCPManager.discoverAndConnect(mcpDiscoverOptions),
 							);
-							// The session can be torn down while servers are still connecting.
-							// Don't resurrect tools on a disposed session, and don't leak the
-							// transports/subprocesses the connect just spawned.
+
 							if (liveSession.isDisposed) {
 								await deferredMCPManager.disconnectAll();
 								return;
 							}
 							applyMCPEnvironment(mcpResult);
 							logMCPLoadErrors(mcpResult.errors);
-							// Connected MCP tools are enabled and mounted under xd:// devices.
+
 							await liveSession.refreshMCPTools(mcpResult.tools);
 						} catch (error) {
 							logger.error("MCP tool load failed", {
@@ -1900,33 +1564,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 				applyMCPEnvironment(mcpResult);
 
-				// Log MCP errors
 				for (const { path, error } of mcpResult.errors) {
 					logger.error("MCP tool load failed", { path, error });
 				}
 
-				// MCP tools are LoadedCustomTool, extract the tool property while
-				// retaining their origins for initial registry ownership.
 				const loadedMcpTools = mcpResult.tools.map(loaded => loaded.tool);
 				customTools.push(...loadedMcpTools);
 				initialMcpManagerTools.push(...loadedMcpTools);
 			}
 		}
-		// Only top-level sessions own the global MCPManager. Subagents already
-		// receive the parent's manager via `options.mcpManager`, and reassigning
-		// the singleton to the same value is a no-op — keep the gate explicit
-		// to mirror the AsyncJobManager ownership rule.
+
 		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
 
 		const builtInToolNames = [...toolRegistry.keys()];
 		let customToolPaths: ToolPathWithSource[] = [];
 		const inlineExtensions: ExtensionFactory[] = [];
 		if (!restrictToolNames) {
-			// Add image tools when generation is enabled and either no explicit tool
-			// whitelist was given or it names `generate_image`. Unlike built-in tools
-			// (filtered in `createTools`), custom tools are force-activated via
-			// `alwaysInclude` below, so an explicit `--no-tools`/whitelist must be
-			// honored here or image-gen would leak past every filter (issue #5305).
 			const imageGenRequested = !options.toolNames || options.toolNames.includes("generate_image");
 			if (settings.get("generate_image.enabled") && imageGenRequested) {
 				const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
@@ -1935,18 +1588,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 
-			// Add web search tools
 			if (options.toolNames?.includes("web_search")) {
 				customTools.push(...getSearchTools());
 			}
 
-			// Discover custom tools from `.proto/tools/`, `.claude/tools/`, plugins, etc.
-			// Subagents reuse the parent's scan via `preloadedCustomToolPaths` to skip
-			// the FS walk, but ALWAYS re-call `loadCustomTools` here so factories bind
-			// to THIS session's `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
-			// Forwarding the parent's `LoadedCustomTool[]` directly would route tool
-			// execution back through the parent — wrong for isolated tasks and for
-			// pending-action queueing.
 			customToolPaths =
 				options.preloadedCustomToolPaths ??
 				(await logger.time("discoverCustomToolPaths", () => discoverCustomToolPaths([], cwd)));
@@ -1965,27 +1610,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				inlineExtensions.push(createCustomToolsExtension(customTools));
 			}
 		}
-		// Forward the path list (NOT the loaded tools) to subagents so they
-		// re-bind under their own `CustomToolAPI` while skipping the FS scan.
+
 		toolSession.customToolPaths = customToolPaths;
 
-		// Load extensions. Three paths:
-		//   1. `preloadedExtensions` (CLI): caller already loaded — reuse the
-		//      Extension instances. Shallow-clone `extensions` so the inline
-		//      push below cannot mutate the caller's array. `runtime` is shared
-		//      so flag values set pre-creation flow into the live session.
-		//   2. `preloadedExtensionPaths` (subagent): caller resolved paths;
-		//      skip the FS scan but always re-call `loadExtensions` here so
-		//      each `Extension` binds to THIS session's `ExtensionAPI`
-		//      (cwd, eventBus, runtime).
-		//   3. No preload: run the full session discovery.
-		// `disableExtensionDiscovery` is honored implicitly: a caller that set
-		// the flag and pre-resolved the result already reflects that choice.
 		let extensionPaths: string[];
 		let extensionsResult: LoadExtensionsResult;
 		if (restrictToolNames) {
-			// Allocate a session runtime without evaluating caller-provided extension
-			// instances, paths, or factories.
 			extensionPaths = [];
 			extensionsResult = await loadExtensions([], cwd, eventBus);
 		} else if (options.preloadedExtensions) {
@@ -1993,8 +1623,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...options.preloadedExtensions,
 				extensions: [...options.preloadedExtensions.extensions],
 			};
-			// Capture paths for downstream forwarding; filter inline-factory
-			// entries (`<inline-N>`) — those are per-session, not source paths.
+
 			extensionPaths = extensionsResult.extensions
 				.map(ext => ext.resolvedPath)
 				.filter(p => !p.startsWith("<inline"));
@@ -2013,11 +1642,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				logger.error("Failed to load extension", { path, error });
 			}
 		}
-		// Forward the source-path list (NOT the loaded instances) so subagents
-		// rebuild their own session-scoped extensions.
+
 		toolSession.extensionPaths = extensionPaths;
 
-		// Load inline extensions from factories
 		if (inlineExtensions.length > 0) {
 			for (let i = 0; i < inlineExtensions.length; i++) {
 				const factory = inlineExtensions[i];
@@ -2032,9 +1659,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Process provider registrations queued during extension loading.
-		// This must happen before the runner is created so that models registered by
-		// extensions are available for model selection on session resume / fallback.
 		if (!restrictToolNames) {
 			const activeExtensionSources = extensionsResult.extensions.map(extension => extension.path);
 			modelRegistry.syncExtensionSources(activeExtensionSources);
@@ -2048,30 +1672,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 			extensionsResult.runtime.pendingProviderRegistrations = [];
 		}
-		// Hydrate cached runtime (extension) provider catalogs before model
-		// resolution. Dynamic-only providers have no synchronous registration side
-		// effect, so a cold --model/provider resume must see the same fresh SQLite
-		// cache that `proto models find` uses before the online refresh continues in
-		// the background.
+
 		await modelRegistry.refreshRuntimeProviders("offline");
-		// Continue runtime discovery in the background (cache-aware) so startup is
-		// only blocked on local cache reads, not provider network fetches. Stash
-		// the promise so the deferred `--model` retry below can await it instead
-		// of starting a second concurrent discovery pass (the unfiltered
-		// `refresh()` also covers runtime model managers).
+
 		const runtimeDiscoveryPromise = modelRegistry.refreshRuntimeProviders().catch(error => {
 			logger.warn("runtime provider discovery failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		});
 
-		// Retry session-model candidates now that extension providers are
-		// registered. The initial restore runs before extensions load, so a role
-		// model supplied by an extension would have either fallen back to the
-		// saved default (`restoredSessionModelIndex > 0`) or failed entirely
-		// (`restoredSessionModelIndex === -1`, with the settings default or
-		// downstream fallback filling `model`). Reclaim it here so resume
-		// honors the last active role in either case.
 		const sessionRetryLimit = restoredSessionModelIndex >= 0 ? restoredSessionModelIndex : sessionModelStrings.length;
 		if (!hasExplicitModel && sessionRetryLimit > 0) {
 			for (let i = 0; i < sessionRetryLimit; i++) {
@@ -2087,9 +1696,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					modelFallbackMessage = undefined;
 					restoredSessionModelIndex = i;
 					restoredSessionThinkingLevel = parsedModel.thinkingLevel;
-					// Recompute thinking-level from scratch against the reclaimed
-					// model: any value derived from the earlier fallback model's
-					// `thinking.defaultLevel` must not become sticky.
+
 					thinkingLevel = pickInitialThinkingLevel(restoredModel);
 					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 						resolveThinkingLevelForModel(restoredModel, effectiveThinkingLevel),
@@ -2099,23 +1706,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 		}
-		// Resolve deferred --model/subagent patterns now that extension models are
-		// registered. Use the same CLI resolver as the immediate path so bare role
-		// names, exact model names, and provider selectors keep one precedence rule.
+
 		if (!model && deferredModelPatterns.length > 0) {
-			// Deferred `--model` patterns almost always failed at the immediate
-			// path (main.ts:881) precisely because discovery-backed providers
-			// hadn't populated yet. Await the in-flight runtime discovery
-			// already kicked off above (stash + reuse avoids a second concurrent
-			// `#refreshRuntimeDiscoveries` pass for the same runtime model
-			// managers; it resolves instantly when no runtime managers are
-			// registered). `refreshRuntimeProviders()` only covers runtime model
-			// managers, not config-discovery providers (e.g. user-configured
-			// ollama); fall back to a full cache-aware refresh only when the
-			// runtime pass didn't surface a match AND config-discovery providers
-			// exist to fetch from. By then runtime managers short-circuit on the
-			// fresh cache written by the awaited pass, closing the double-fetch
-			// window.
 			await logger.time("resolveModelDiscoveryDeferredRetry", () => runtimeDiscoveryPromise);
 			const matchPreferences = getModelMatchPreferences(settings);
 			const runtimeResolved = deferredModelPatterns.some(pattern =>
@@ -2128,12 +1720,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						settings,
 						preferences: matchPreferences,
 					});
-					// Only a concretely resolved model counts as a runtime match. A role
-					// alias that expanded to `configuredPatterns` but resolved no model
-					// (its discoverable provider hasn't been fetched yet) must NOT
-					// short-circuit the fallback refresh below — otherwise `@role`
-					// selectors pointing at discovery-backed models never trigger the
-					// fetch and fail with `Model "@role" not found`.
+
 					return Boolean(resolved.model);
 				}),
 			);
@@ -2293,9 +1880,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				let selectedModel = primary.model;
 				let selectedThinkingLevel = primary.thinkingLevel;
 				let selectedExplicitThinkingLevel = primary.explicitThinkingLevel;
-				// A chain entry without its own `:level` suffix inherits the
-				// unavailable primary's configured thinking level, matching
-				// runtime fallback-chain semantics.
+
 				if (retryFallback && !selectedExplicitThinkingLevel && retryFallback.originalThinkingLevel !== undefined) {
 					selectedThinkingLevel = retryFallback.originalThinkingLevel;
 					selectedExplicitThinkingLevel = true;
@@ -2391,25 +1976,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Fall back to first available model with a valid API key, honoring the
-		// path-scoped `enabledModels` allow-list when configured. Skip when the
-		// user explicitly requested a model via --model that wasn't found.
 		if (!model && deferredModelPatterns.length === 0) {
-			// Retry the configured default role against the current catalog,
-			// setting `model` (+ thinking level) when it resolves. Extension
-			// factories register providers AFTER the early `defaultRoleSpec`
-			// resolution, and configured discovery providers may still be
-			// mid-discovery, so a role pointing at such a model (an openai-compat
-			// plugin's `posthog/claude-opus-4-8`, a models.yml `openai-models-list`
-			// endpoint) returned `undefined` there. Without this retry the
-			// `pickDefaultAvailableModel` fallback below happily replaces the
-			// user's configured default with a bundled provider's default whenever
-			// a stray `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is in the environment.
-			// (issues #3569, #6162)
 			const tryResolveDefaultRole = async (): Promise<boolean> => {
 				if (hasExplicitModel) return false;
-				// Re-resolve the allowed set: extension factories and discovery
-				// refreshes above may have registered models not visible earlier.
+
 				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
 				const reResolvedRoleSpec = resolveModelRoleValue(settings.getModelRole("default"), fallbackCandidates, {
 					settings,
@@ -2420,9 +1990,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const resolvedDefaultModel = reResolvedRoleSpec.model;
 				model = resolvedDefaultModel;
 				modelFallbackMessage = undefined;
-				// Recompute the thinking level against the now-real model.
-				// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
-				// so the role's explicit selector (e.g. `:max`) now applies.
+
 				thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
 				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
 					resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
@@ -2437,19 +2005,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
 				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
 
-				// Cold-cache discovery race (issues #6114, #6162): a discovery
-				// provider (models.yml `openai-models-list`, LM Studio/Ollama/
-				// llama.cpp, or an openai-compat proxy) ships no static models, so
-				// the static+cached catalog resolved nothing above. Background
-				// discovery in main.ts fires only AFTER createAgentSession returns,
-				// so on a cache-cold boot the configured default stays unresolved
-				// and `pick` silently degrades to an unrelated authed provider's
-				// default (#6162) or "No models available" (#6114) — even though
-				// `proto models` (which awaits discovery) lists the model. Await one
-				// cache-aware discovery pass and retry when a default role is
-				// configured (must win over `pick`) or nothing resolved at all.
-				// The common path — role already resolved, or a `pick` with no
-				// configured default — never pays for it.
 				const defaultRoleConfigured = Boolean(settings.getModelRole("default"));
 				if (
 					!hasExplicitModel &&
@@ -2498,9 +2053,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// A first-turn user tail has no assistant metadata to copy. Once startup
-		// has selected its final model, use that model to terminate the
-		// interrupted turn before the live agent consumes the restored context.
 		if (model) {
 			const selectedModelAbort = createInterruptedTurnAbortMessage(existingBranch, {
 				api: model.api,
@@ -2516,7 +2068,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Restricted sessions do not discover or evaluate custom command modules.
 		const customCommandsResult: CustomCommandsLoadResult =
 			options.disableExtensionDiscovery || restrictToolNames
 				? { commands: [], errors: [] }
@@ -2527,7 +2078,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// The runner is created unconditionally so every registry tool is uniformly wrapped.
 		const extensionRunner: ExtensionRunner = new ExtensionRunner(
 			extensionsResult.extensions,
 			extensionsResult.runtime,
@@ -2541,7 +2091,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		credentialDisabledTarget = extensionRunner;
 		for (const event of startupCredentialDisabledEvents.splice(0)) {
-			// Discard return: any handler error is routed through runner.onError listeners.
 			void extensionRunner.emitCredentialDisabled(event);
 		}
 
@@ -2564,14 +2113,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setActiveToolNames(snapshot);
 			toolContextStore.setToolNames(snapshot);
 		};
-		// Native built-in implementations backing same-tool `ctx.invokeTool`, so a tool that
-		// re-registers a built-in (e.g. wrapping `write`) can delegate to the original — reaching
-		// the unwrapped native execute directly, without dispatching back through
-		// `ExtensionToolWrapper` (no duplicate extension events, no recursion).
-		// Seeded from the xdev registry when present (it retains discoverable
-		// built-ins like `browser` that xdev partitioning removes from the active tool array), else
-		// from the built-in registry; captured before the ExtensionToolWrapper pass so the natives
-		// stay unwrapped. The extension runner exposes it to re-registered tools via createContext.
+
 		const nativeToolsByName = new Map<string, Tool>(toolSession.xdev?.tools ?? undefined);
 
 		const registeredTools = restrictToolNames ? [] : extensionRunner.getAllRegisteredTools();
@@ -2588,10 +2130,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return { definition, extensionPath: "<sdk>" };
 			}),
 		];
-		// `wrapToolWithMetaNotice` runs the centralized large-output → artifact spill.
-		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
-		// and startup (non-deferred) MCP tools all funnel through here, so apply
-		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
+
 		const wrappedExtensionTools: Tool[] = deduplicateMCPToolsByName(
 			wrapRegisteredTools(allCustomTools, extensionRunner).map(wrapToolWithMetaNotice),
 		);
@@ -2606,11 +2145,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (matchesManagerOrigin) initialMcpManagerToolNames.add(tool.name);
 		}
 
-		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
 		const builtInRegistryToolNames = toolSession.xdev?.builtInNames ?? new Set(toolRegistry.keys());
-		// Capture the native built-in implementations before extension re-registration replaces registry
-		// entries and before the ExtensionToolWrapper pass below, so `ctx.invokeTool` reaches the
-		// unwrapped native execute instead of dispatching through the wrapper a second time.
+
 		for (const [name, tool] of toolRegistry) {
 			nativeToolsByName.set(name, tool);
 		}
@@ -2627,9 +2163,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolRegistry.set(tool.name, tool);
 			builtInRegistryToolNames.delete(tool.name);
 		}
-		// Expose the native built-ins to same-tool `ctx.invokeTool` on re-registered tools. Set after
-		// the override loop so the map holds the natives, not the extension replacements. The context
-		// factory is the loop's own tool context, so a delegated native call sees ordinary session state.
+
 		extensionRunner.setNativeToolResolver(name => {
 			const tool = nativeToolsByName.get(name);
 			return tool ? { tool, makeContext: () => toolContextStore.getContext() } : undefined;
@@ -2643,44 +2177,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Wrap every tool with `ExtensionToolWrapper` so every call site — including bridge-constructed
-		// instances and delegated `ctx.invokeTool` dispatches — flows through the uniform interception
-		// seam: extension `tool_call`/`tool_result` events (which can block or modify) plus file-mutation
-		// session bookkeeping, regardless of whether any user extensions are loaded.
 		for (const tool of toolRegistry.values()) {
 			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
 		}
-		// Hashline `edit` stays in the registry so Cursor can call it as MCP.
-		// Native StrReplace arrives as `editToolCall` and materializes through
-		// exec `readArgs`/`writeArgs`; `pi_edit` still needs a `replace`-mode
-		// instance because `PiEditExecArgs` carries `old_string`/`new_string`,
-		// which is exactly `replace`'s schema and nothing else's. The registry
-		// instance follows the session's configured mode, so the bridge builds
-		// its own and serves it through `getEditReplaceTool` — not `getTool`,
-		// which doubles as the agent loop's fallback for unadvertised calls.
-		//
-		// The grant is captured here, independently of the session's provider:
-		// a session that starts on another provider can switch to Cursor later,
-		// and the roster is built once, at session creation.
+
 		const editWasGranted = toolRegistry.has("edit");
-		// Built on first use rather than eagerly: a session that never reaches
-		// Cursor never constructs it.
+
 		let cursorBridgeEditTool: AgentTool | undefined;
 		const getCursorBridgeEditTool = (): AgentTool | undefined => {
-			// Only when the session actually granted `edit`. `createTools` omits
-			// it entirely for a restricted tool set, and the bridge answers native
-			// frames that arrive regardless of the advertised catalog — so
-			// building one unconditionally would hand a read-only agent a
-			// mutating tool it was denied (the issue #5680 escalation).
 			if (!editWasGranted) return undefined;
 			cursorBridgeEditTool ??= createBridgeEditTool(toolSession, extensionRunner);
 			return cursorBridgeEditTool;
 		};
-		// Whether this session granted a file-writing tool. Same capture-early
-		// reasoning, plus `write` may be auto-registered further down as an xdev
-		// transport. The exec bridge answers native `delete` and
-		// resource-download frames that mutate files without running a registry
-		// tool, so it needs the grant as the session actually made it.
+
 		const cursorCanMutateFiles = editWasGranted || toolRegistry.has("write");
 
 		let writeRegistration: Promise<boolean> | undefined;
@@ -2700,34 +2209,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return writeRegistration;
 		};
 
-		// Existing staged/device paths need write registered before active-set assembly.
-		// Deferred MCP also registers it now, but refresh activates it only after a server connects.
-		// xd:// mounts never register write: xdev state only exists when the session
-		// already granted a write tool (see createTools), so mounting rides that grant.
 		const hasDeferrableTools = Array.from(toolRegistry.values()).some(tool => tool.deferrable === true);
 		if (!restrictToolNames && (hasDeferrableTools || deferMCPDiscoveryForUI)) {
 			await ensureWriteRegistered();
 		}
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
-		// Cursor and the agent loop may call a mounted device by its top-level
-		// name. Resolve that name from the canonical map and apply the same
-		// execution-only ACP decorator used by `write xd://<tool>`; docs and
-		// renderer lookup continue to use the undecorated canonical instance.
+
 		const resolveDeviceTool = (name: string): AgentTool | undefined => {
 			const state = toolSession.xdev;
 			if (!state) return undefined;
 			return resolveMountedXdevExecutable(state, name);
 		};
-		// Cursor's resource frames ask what THIS client's servers advertise; only
-		// live connections have any. Built once: the advisor bridges answer from
-		// the same connections the primary does.
+
 		const cursorMcpResources: CursorMcpResourceAdapter | undefined = mcpManager && {
 			serverNames: () => mcpManager.getConnectedServers(),
 			getServerResources: async name => {
-				// The manager registers a server's tools before its background
-				// resource load finishes, so a frame arriving in that window
-				// would read an empty cache and report "advertises nothing".
 				await mcpManager.ensureServerResources(name);
 				return mcpManager.getServerResources(name);
 			},
@@ -2735,19 +2232,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		};
 		const cursorExecHandlers = new CursorExecHandlers({
 			cwd,
-			// The session's cwd moves (`/cd`, resume, branch restore) while this
-			// bridge is built once at startup. Path-confining frames — the native
-			// `delete` and a `download_path` resource read — resolve against
-			// whichever of the two they are given, so without the live resolver the
-			// primary would write into the workspace the session has left while
-			// reporting success for the path the server asked about. The advisor
-			// bridge already passes one.
+
 			getCwd: () => sessionManager.getCwd(),
 			tools: toolRegistry,
 			getExecutableTool: resolveDeviceTool,
-			// `pi_edit` needs the `replace`-mode instance specifically, and the
-			// registry may still hold the session's own `edit` (any mode) when
-			// this session did not start on Cursor.
+
 			getEditReplaceTool: getCursorBridgeEditTool,
 			getToolContext: () => toolContextStore.getContext(),
 			mcpResources: cursorMcpResources,
@@ -2755,16 +2244,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
-			// The native `delete` and resource-download frames mutate files
-			// without running a registry tool, so this grant is the only thing
-			// standing between a restricted session and a workspace write.
+
 			allowDirectFileMutation: cursorCanMutateFiles,
 		});
 
-		// Resolve the inline-descriptors setting against the session-start model.
-		// `auto` enforces the per-model policy (inline for Gemini, off otherwise);
-		// like the rest of the prune machinery this is fixed for the session, so a
-		// mid-session model switch keeps the start-time decision.
 		const inlineToolDescriptors = shouldInlineToolDescriptors(settings.get("inlineToolDescriptors"), model?.id);
 		const intentField = $flag("PI_INTENT_TRACING", settings.get("tools.intentTracing")) ? INTENT_FIELD : undefined;
 		const includeWorkspaceTree = settings.get("includeWorkspaceTree") ?? false;
@@ -2784,19 +2267,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.contextFiles = contextFiles;
 				session.setAdvisorContextPrompt(formatAdvisorContextPrompt(contextFiles));
 			}
-			// Build combined append prompt: auto-learn guidance + mounted MCP route
-			// guidance + optional MCP server instructions. For UI sessions MCP
-			// discovery is deferred, so the initial registry and
-			// `getServerInstructions()` are empty until the background connect
-			// completes; the rebuild that `refreshMCPTools` triggers post-discovery
-			// then picks up the mounted routes and any connected-server instructions.
+
 			const serverInstructions = mcpManager?.getServerInstructions();
-			// Drive guidance off the auto-learn BUILTIN that createTools actually built
-			// (provenance, not just an active name): `builtInToolNames` excludes a
-			// custom/extension tool that merely shares the name, and reflects the
-			// session-start build — so a subagent that filtered it out, a mid-session
-			// enable that never built it, or a same-named custom tool while auto-learn
-			// is off all get no guidance.
+
 			const autoLearnInstructions = restrictToolNames
 				? undefined
 				: buildAutoLearnInstructions({ manageSkill: builtInToolNames.includes("manage_skill") });
@@ -2831,8 +2304,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-			// Owned/in-band tool dialects (non-native) require the full functions-
-			// namespace catalog; native tool calling lets the compact name list suffice.
+
 			const nativeTools = resolveDialect(settings.get("tools.format"), agent?.state.model ?? model) === undefined;
 			const promptTools = projectSystemPromptToolMetadata(
 				tools,
@@ -2894,11 +2366,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
 		const explicitlyRequestedToolNames = effectiveToolNames ? normalizeToolNames(effectiveToolNames) : undefined;
-		// When `requireYieldTool` is set, the subagent's prompts and idle-reminders demand a
-		// `yield` call to terminate. The tool registry already includes `yield` (see
-		// `createTools`), but an explicit `toolNames` list would otherwise drop it from the
-		// active set — leaving the model unable to satisfy the contract. Mirror the same
-		// invariant `parseAgentFields` enforces on frontmatter `tools`.
+
 		if (
 			options.requireYieldTool === true &&
 			explicitlyRequestedToolNames &&
@@ -2906,13 +2374,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		) {
 			explicitlyRequestedToolNames.push("yield");
 		}
-		// Auto-learn builtins are force-included into the registry by `createTools`
-		// for enabled top-level sessions (tools/index.ts), but — like `yield` above —
-		// an explicit `toolNames` list would otherwise drop them from the ACTIVE set,
-		// leaving the nudge/guidance pointing at tools the model cannot call. Activate
-		// exactly the builtins createTools built (`builtInToolNames` — provenance, so a
-		// same-named custom/extension tool is never force-activated when auto-learn is
-		// off) to keep guidance, controller, and the active set consistent.
+
 		if (!restrictToolNames && explicitlyRequestedToolNames) {
 			for (const name of ["manage_skill", "learn"]) {
 				if (builtInToolNames.includes(name) && !explicitlyRequestedToolNames.includes(name)) {
@@ -2920,12 +2382,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 		}
-		// Checkpoint and rewind are a pair: `createTools` auto-includes the sister
-		// tool in the registry, but an explicit `toolNames` list would otherwise
-		// drop it from the ACTIVE set — leaving the agent able to checkpoint but
-		// unable to rewind (or vice versa). Mirror the pairing here. Unlike the
-		// manage_skill/learn mirror above, this is a safety pairing — it applies
-		// to restricted sessions too.
+
 		if (explicitlyRequestedToolNames) {
 			if (builtInToolNames.includes("checkpoint") && !explicitlyRequestedToolNames.includes("rewind")) {
 				explicitlyRequestedToolNames.push("rewind");
@@ -2956,8 +2413,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: requestedActiveToolNames.filter(name => !defaultInactiveToolNames.has(name));
 		let initialToolNames = [...initialRequestedActiveToolNames];
 
-		// Custom tools and extension-registered tools are always included
-		// unless the effective registry winner is hidden / defaultInactive. Restricted callers own the list.
 		const alwaysInclude: string[] = restrictToolNames
 			? []
 			: [...sdkCustomTools.map(t => t.name), ...registeredTools.map(t => t.definition.name)].filter(
@@ -2969,10 +2424,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Pre-register in the global agent registry BEFORE building the system prompt,
-		// so that subagents launched in the same parallel batch can see each other in
-		// their initial `# IRC Peers` block (rendered inside `rebuildSystemPrompt`).
-		// The session reference is attached after construction below.
 		const registrationInput = {
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
@@ -2987,13 +2438,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				? agentRegistry.register(registrationInput)
 				: agentRegistry.registerIfAvailable(registrationInput, options.expectedAgentRef);
 		if (!registeredAgentRef && options.expectedAgentRef === null) {
-			// A fresh spawn collided with an existing id. If that id is held by a
-			// provably-dead parked corpse — no live session, no reviver — reclaim it
-			// so this new generation can take the id instead of failing forever at
-			// construction. Without this, one such corpse (isolated-run park,
-			// interrupted construction) poisons the id for the whole process (#8490).
-			// The reclaim is gated by the lifecycle owner and only touches the
-			// registry it manages; the corpse's transcript stays at history://.
 			const stale = agentRegistry.get(resolvedAgentId);
 			const lifecycle = AgentLifecycleManager.global();
 			if (stale && lifecycle.manages(agentRegistry) && (await lifecycle.reclaimDeadCorpse(resolvedAgentId, stale))) {
@@ -3003,15 +2447,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		if (!registeredAgentRef) {
 			throw new Error(`Agent "${resolvedAgentId}" is already owned by another session generation.`);
 		}
-		// A reused parked ref remains parked until the new AgentSession is fully
-		// constructed and attached. Startup failure therefore leaves it revivable.
+
 		hasRegistered = options.expectedAgentRef === undefined || options.expectedAgentRef === null;
 
-		// Partition the initial enabled set for the xd:// transport. Tool instances
-		// remain in the canonical map; only presentation names move between layers.
-		// Mounting requires both transport halves in the granted set (`read xd://`
-		// discovers, `write xd://<tool>` executes); a session without either keeps
-		// every tool top-level instead of auto-granting the missing transport.
 		if (toolSession.xdev) {
 			const topLevelToolNames: string[] = [];
 			const mountedNames: string[] = [];
@@ -3041,12 +2479,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const slashCommands = await slashCommandsPromise;
 
-		// Keep image blocks off the wire when they'd be rejected: either the user
-		// disabled images (`images.blockImages`) or the active model has no vision
-		// support. The latter covers switching from a vision model to a text-only
-		// one mid-session — historical image blocks would otherwise be replayed to
-		// a provider that 400s on them (#5400). Read both dynamically so a `/model`
-		// switch or setting change takes effect on the next turn.
 		const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 			const converted = convertToLlm(messages);
 			if (settings.get("images.blockImages")) {
@@ -3062,8 +2494,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return converted;
 		};
 
-		// Final convertToLlm: live provider replay drops API-level refusal errors,
-		// then applies secret obfuscation to the remaining outbound context.
 		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
 			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages));
 			if (!obfuscator?.hasSecrets()) return converted;
@@ -3074,13 +2504,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
 		};
-		// Per-request provider-context transforms. Obfuscate FIRST so secrets are
-		// redacted from plain text. Clamp to the provider budget before normalizing
-		// decoder-incompatible images so dropped historical images never pay a
-		// transcode cost.
-		// URL-mirrored images: providers that fetch image URLs get a broker URL
-		// instead of inline base64. Decoration runs LAST among image transforms so
-		// the served bytes are exactly the bytes that would have shipped inline.
+
 		const blobBroker = createImageUrlServiceFromSettings(settings, sessionManager.getCwd(), model =>
 			modelRegistry.getApiKey(model, providerSessionId),
 		);
@@ -3090,9 +2514,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformed = clampProviderContextImages(transformed, transformModel);
 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
-			// Keep per-request volatility out of the system prompt: the date/cwd
-			// reminder rides on the first user turn so open-weight providers keep
-			// their tool-schema prefix cache (#7404).
+
 			return withDateCwdReminder(
 				transformed,
 				formatLocalCalendarDate(),
@@ -3132,16 +2554,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			initialServiceTierByFamily.openai = options.openAIServiceTier;
 		}
 
-		// One-shot launch-latency marker: fired the first time the loop dispatches
-		// a chat request to the provider transport. See onFirstChatDispatch.
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
-		// Shared, settings-aware stream wrapper used by the main agent, advisor,
-		// and side-channel requests (`/btw`, IRC auto-replies, handoff).
-		// Keeps OpenRouter sticky-routing variants, antigravity endpoint routing,
-		// in-flight caps, and the loop guard consistent across every provider call
-		// the session drives. Wrapped in a per-provider concurrency limiter so
-		// each LLM HTTP request — not the whole subagent lifecycle — holds the
-		// slot, preventing the nested-spawn deadlock from issue #3749.
+
 		const settingsAwareStreamFn = wrapStreamFnWithBlobUrlFallback(
 			wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
 			blobBroker,
@@ -3169,10 +2583,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				tools: initialTools,
 			},
 			cwd,
-			// Live cwd: `/move` updates SessionManager (and process cwd) without
-			// reconstructing the Agent, so a static cwd would strand GitLab Duo Agent
-			// namespace/project discovery on the original repo's git remote. Re-read it
-			// per turn from the SessionManager.
+
 			cwdResolver: () => sessionManager.getCwd(),
 			convertToLlm: convertToLlmFinal,
 			onPayload,
@@ -3241,7 +2652,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		cursorEventEmitter = event => agent.emitExternalEvent(event);
 
-		// Restore messages if session has existing data
 		if (hasExistingSession) {
 			agent.replaceMessages(existingSession.messages);
 			if (options.openAIServiceTier !== undefined) {
@@ -3250,7 +2660,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				);
 			}
 		} else {
-			// Save initial model, thinking level, and service tier for new sessions so they can be restored on resume.
 			if (model) {
 				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
 			}
@@ -3262,13 +2671,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Full toolset for the advisor, built unconditionally so it can be toggled at
-		// runtime. Bound to a DISTINCT ToolSession (its own `-advisor` session id +
-		// agent id) so the advisor's tool state — snapshot, seen-lines, conflict, and
-		// summary caches, all keyed on session identity — stays isolated from the
-		// primary, while edit/bash/write stay fully functional: the advisor is a full
-		// agent and its config's `tools` selects which of these it actually gets
-		// (defaulting to read/grep/glob).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
 			get cwd() {
@@ -3284,11 +2686,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
 			getAgentId: () => "advisor",
-			// The primary's availability signals are wrong for advisors: their tool
-			// slate is filtered separately at runtime (default read/grep/glob, no
-			// write transport), so xd:// devices are unreachable and read must never
-			// advertise inspect_image — images are inlined, and the provider
-			// boundary handles text-only advisor models.
+
 			xdev: undefined,
 			isToolActive: name => name !== "inspect_image" && toolSession.isToolActive?.(name) === true,
 		};
@@ -3297,10 +2695,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession));
 		}
 		const built = await Promise.all(advisorToolBuilds);
-		// Wrapped like every registry tool: the Cursor advisor bridge executes these instances
-		// directly for native frames, and `ExtensionToolWrapper` is what keeps them on the same
-		// extension-event and file-mutation plumbing as registry dispatches. Meta-notice
-		// first, matching the registry's wrap order.
+
 		const advisorTools: Tool[] = built
 			.filter((tool): tool is Tool => tool != null)
 			.map(tool => new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner) as Tool);
@@ -3310,15 +2705,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorWatchdogPrompts.push(formatActiveRepoWatchdogPrompt(initialActiveRepoContext));
 		}
 		const advisorWatchdogPrompt = advisorWatchdogPrompts.length > 0 ? advisorWatchdogPrompts.join("\n\n") : undefined;
-		// Hand the advisor the same project context files (AGENTS.md, etc.) the
-		// primary agent gets in its system prompt, so the read-only reviewer judges
-		// against the user's standing project rules instead of advising blind.
+
 		const advisorContextPrompt = formatAdvisorContextPrompt(contextFiles);
-		// Owned only when this session created the manager; subagents receive a
-		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
+
 		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
-		// A resumed session already has advisor turns on disk; without this its
-		// status-line cost total would restart at zero for the rest of the session.
+
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionManager.getSessionFile());
 		session = new AgentSession({
 			codeModeState,
@@ -3337,10 +2728,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,
-			// Defined only for top-level sessions (creation is gated above).
-			// AgentSession uses this to decide whether it may dispose the global
-			// AsyncJobManager on teardown; subagents inherit the parent's and
-			// **MUST NOT** tear it down.
+
 			ownedAsyncJobManager: asyncJobManager,
 			asyncJobManager: scopedAsyncJobManager,
 			scopedModels: options.scopedModels,
@@ -3401,15 +2789,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
-			// Same `replace`-mode requirement as the primary bridge; the advisor
-			// path gates it on the advisor's own `edit` grant.
+
 			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner),
-			// The advisor's bridge tools are wrapped like registry tools, but the wrapper only
-			// forwards an execute-time context when handed one — this supplies the same store
-			// the primary bridge uses.
+
 			advisorGetToolContext: () => toolContextStore.getContext(),
-			// Same live connections the primary bridge reads; an advisor's
-			// resource frame would otherwise report every server as empty.
+
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
@@ -3434,10 +2818,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				await OrchestratorRuntime.global().rehydrate(orchestratorParent());
 			});
 		}
-		// Extension factories normally register tools before session construction,
-		// but Pi-compatible extensions may discover them asynchronously from a
-		// session_start handler. Install those late registrations into the live
-		// registry and serialize activation so no update can overwrite a sibling.
+
 		const scheduledToolRegistrations = new WeakMap<RegisteredTool, Promise<void>>();
 		const scheduleToolRegistration = (registered: RegisteredTool, signal?: AbortSignal): Promise<void> => {
 			const scheduled = scheduledToolRegistrations.get(registered);
@@ -3448,8 +2829,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (!wrapped) return Promise.resolve();
 			const name = registered.definition.name;
 			const liveTool = new ExtensionToolWrapper(wrapToolWithMetaNotice(wrapped), extensionRunner);
-			// Capture ordinary extension precedence while the listener observes this exact registration.
-			// A later same-name registration may replace the extension map before serialized activation runs.
+
 			const isEffectiveRegistrant = extensionRunner.getRegisteredTool(name) === registered;
 			const activation = session.runToolRegistryMutation(async () => {
 				activationSignal.throwIfAborted();
@@ -3457,11 +2837,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const previousExtensionMcpTool = session.getExtensionMCPTool(name);
 				const wasMcpManagerTool = session.hasMCPManagerTool(name);
 				if (existingTool) {
-					// RPC host tools and SDK custom tools retain their startup precedence when an
-					// extension registers the same name later.
 					if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name)) return;
-					// Put the replacement first so same-origin MCP re-registration keeps it. Distinct MCP origins still
-					// use the stable winner; ordinary tool collisions retain the extension runner's last-wins precedence.
+
 					const competingTools = deduplicateMCPToolsByName([liveTool, existingTool]);
 					if (competingTools.length === 1) {
 						if (competingTools[0] !== liveTool) return;
@@ -3492,8 +2869,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						);
 						return;
 					}
-					// Re-registration refreshes the implementation, but it must not reverse an
-					// explicit setActiveTools() decision that disabled the previous definition.
+
 					if (existingTool && !alreadyEnabled) return;
 					const shouldMount =
 						!explicitlyRequested &&
@@ -3534,8 +2910,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const unsubscribeToolRegistrations = extensionRunner.onToolRegistered(scheduleToolRegistration);
 			disposeCallbacks.add(unsubscribeToolRegistrations);
 
-			// Close the construction race: a background registration can land after
-			// the initial snapshot but before the live listener above is attached.
 			for (const registered of extensionRunner.getAllRegisteredTools()) {
 				if (!initialRegisteredTools.has(registered)) {
 					await scheduleToolRegistration(registered);
@@ -3550,9 +2924,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			isStale: entry => entry.isStale(),
 		});
 
-		// Attach the live session to the pre-registered ref so peers can route IRC
-		// messages here. Refresh sessionFile in case it was unavailable at pre-register
-		// time. The dispose wrapper below unregisters on teardown (unless parked).
 		if (
 			!registeredAgentRef ||
 			!agentRegistry.attachSession(
@@ -3578,12 +2949,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				getActiveModelString,
 			});
 		}
-		// MCP notification bridge cleanup — assigned when the bridge is wired below,
-		// invoked from the dispose wrapper AND registered as a postmortem so both
-		// explicit-dispose (SDK embedders that reuse the process across sessions) and
-		// process-exit paths tear the listener down. Nulled after use so the closure
-		// graph (`extensionRunner`, `session`) can be GC'd instead of retained by the
-		// process-global postmortem list.
+
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
 
@@ -3591,12 +2957,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
 				try {
-					// Reject new session work (eval starts) the moment disposal
-					// begins — the lifecycle await below opens an async gap before
-					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
 					if (agentKind === "main") {
-						// Top-level teardown owns persistent workers and the global lifecycle.
 						const orchestrator = OrchestratorRuntime.global();
 						const parentSession = {
 							getAgentId: () => resolvedAgentId,
@@ -3618,8 +2980,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					unregisterMcpPostmortem?.();
 					for (const callback of disposeCallbacks) callback();
 					disposeCallbacks.clear();
-					// Drop refs so the process-global postmortem list doesn't retain
-					// the bridge closure past explicit dispose.
+
 					unsubscribeMcpNotifications = undefined;
 					unregisterMcpPostmortem = undefined;
 				}
@@ -3627,7 +2988,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		if (model?.api === "openai-codex-responses") {
-			// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
 			const codexModel = model as Model<"openai-codex-responses">;
 			const codexTransport = getOpenAICodexTransportDetails(codexModel, {
 				sessionId: providerSessionId,
@@ -3639,9 +2999,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				void (async () => {
 					try {
 						const codexPrewarmApiKey = options.getApiKey
-							? // `getApiKey` returns a value-or-promise union; unwrap the promise,
-								// then resolve the result if it is itself an ApiKeyResolver.
-								await resolveApiKeyOnce(await options.getApiKey(codexModel))
+							? await resolveApiKeyOnce(await options.getApiKey(codexModel))
 							: await modelRegistry.getApiKey(codexModel, providerSessionId);
 						if (!codexPrewarmApiKey) return;
 						await logger.time("prewarmOpenAICodexResponses", prewarmOpenAICodexResponses, codexModel, {
@@ -3662,19 +3020,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Broker-shared language servers: one server per project, multiplexed
-		// across proto instances by the LSP mux daemon. Session-level because the
-		// flag lives in module state consulted on every client cold-start.
 		setSharedLspEnabled(enableLsp && settings.get("lsp.shared"));
 
-		// Start LSP warmup in the background so startup does not block on language server initialization.
-		// With `lsp.lazy` (the default) the warmup is skipped: recognized servers are still discovered and
-		// surfaced in the UI as "available", but cold-start on first use — the lsp tool or an edit/write
-		// touching a matching file type — through `getOrCreateClient`.
-		// Print/script invocations (`hasUI=false`) skip it regardless: they don't render the warmup status
-		// indicator AND typically finish before LSP servers would have stabilized — warming them just spends
-		// CPU parsing big `initialize` responses concurrently with the LLM stream consumer, jittering
-		// perceived latency.
 		let lspServers: CreateAgentSessionResult["lspServers"];
 		if (enableLsp && options.hasUI && settings.get("lsp.lazy")) {
 			lspServers = discoverStartupLspServers(cwd, "available");
@@ -3769,20 +3116,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 		});
 
-		// Auto-learn can immediately trigger a private capture after the first real
-		// stop. When a memory backend is selected, install that backend's
-		// per-session state first so the capture turn's `learn` tool observes the
-		// same initialized state as normal memory tools. Other sessions keep memory
-		// startup in the background to preserve the existing startup profile.
-		//
-		// Gated on `autolearn.enabled` to match the tools: `createTools` builds the
-		// `manage_skill` registry ONCE at session start and no settings change
-		// rebuilds it, so installing the controller while disabled would let a
-		// mid-session enable fire a nudge pointing at a tool the session never built.
-		// Activation is therefore a session-start decision for BOTH the controller
-		// and the tool; the fire-time re-check in `#onAgentEnd` still handles a
-		// mid-session DISABLE. The subscription lives for the session's lifetime; the
-		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames && settings.get("autolearn.enabled") && taskDepth === 0) {
 			new AutoLearnController({
 				session,
@@ -3791,15 +3124,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		}
 
-		// MCP manager wiring has two ownership models:
-		//   * Single-slot callbacks (tools/prompts/resources changed) — exactly one
-		//     owner per manager. When reusing a parent's manager (subagent path,
-		//     see task/executor.ts), the parent already owns these slots so we
-		//     MUST NOT overwrite them. Guarded by `!options.mcpManager`.
-		//   * Notification listener — multi-listener by design. Every session with
-		//     an MCP manager (fresh OR reused) needs its own bridge to its own
-		//     `extensionRunner` so extensions loaded in that session receive frames.
-		//     Guarded only by `mcpManager` (see the second `if` below).
 		if (mcpManager && !options.mcpManager) {
 			mcpManager.setOnToolsChanged(async tools => {
 				try {
@@ -3810,7 +3134,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					});
 				}
 			});
-			// Wire prompt refresh → rebuild MCP prompt slash commands
+
 			mcpManager.setOnPromptsChanged(serverName => {
 				const promptCommands = buildMCPPromptCommands(mcpManager);
 				session.setMCPPromptCommands(promptCommands);
@@ -3833,7 +3157,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					key,
 					setTimeout(() => {
 						notificationDebounceTimers.delete(key);
-						// Re-check: user may have disabled notifications during the debounce window
+
 						if (!settings.get("mcp.notifications")) return;
 						session.yieldQueue.enqueue<McpNotificationEntry>("mcp-notification", { serverName, uri });
 					}, debounceMs),
@@ -3842,23 +3166,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		if (mcpManager) {
-			// Bridge server-initiated notifications to this session's extension
-			// handlers. Multi-listener registration: fresh-manager and reused-manager
-			// sessions both install their own listener here, so a subagent's
-			// extensions get frames even though the parent owns the single-slot
-			// tool/prompt/resource callbacks above. MCPManager fires known
-			// list/update refreshes internally, then invokes all registered
-			// listeners with (server, method, params) for every frame (including
-			// server-custom methods). Two-layer buffering protects the startup
-			// race: MCPManager buffers frames received before the first
-			// `addNotificationListener` subscriber (drains here); ExtensionRunner
-			// buffers frames received before `initialize()` and drains them on
-			// init. Both drop-oldest under pressure at cap 100.
 			unsubscribeMcpNotifications = mcpManager.addNotificationListener((server, method, params) => {
 				void extensionRunner.emitMcpNotification({ server, method, params });
 			});
-			// postmortem.register returns a cancel function; capture it so explicit
-			// session.dispose can remove this from the global list (see finally above).
+
 			unregisterMcpPostmortem = postmortem.register("mcp-notification-listener-cleanup", () =>
 				unsubscribeMcpNotifications?.(),
 			);
@@ -3866,13 +3177,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		startDeferredMCPDiscovery?.(session);
 
-		// Route the initial tool surface through the Code Mode-aware path when the
-		// session starts directly on a Codex Code Mode model (`codeMode` `on`, or
-		// `auto` matching the model's `code_mode_only` flag): the Agent above was
-		// handed the unrestricted `initialTools`, so without this the first and all
-		// subsequent turns would expose the full direct tool surface and omit
-		// `tool_namespaces_info` until an unrelated model/setting/tool-selection
-		// change reconciled.
 		try {
 			await session.initializeCodeMode();
 		} catch (error) {
@@ -3889,9 +3193,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			eventBus,
 		};
 	} catch (error) {
-		// Release the subscription if the throw happened after install but before the
-		// dispose-wrap took ownership. Idempotent with dispose() — Set.delete is a no-op
-		// for already-removed listeners.
 		unsubscribeCredentialDisabled?.();
 		try {
 			if (hasSession) {
@@ -3921,19 +3222,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	}
 }
 
-/**
- * Best-effort preconnect to the model's API host. Bun's `fetch.preconnect`
- * primes DNS + TCP + TLS + H2 so the first real request reuses the warm
- * connection. Errors are swallowed: preconnect is an optimization, never a
- * hard dependency.
- */
 function preconnectModelHost(baseUrl: string | undefined): void {
 	if (!baseUrl) return;
 	const preconnect = (globalThis.fetch as typeof fetch & { preconnect?: (url: string) => void }).preconnect;
 	if (typeof preconnect !== "function") return;
 	try {
 		preconnect(baseUrl);
-	} catch {
-		// Best effort.
-	}
+	} catch {}
 }

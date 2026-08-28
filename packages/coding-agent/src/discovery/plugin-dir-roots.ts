@@ -1,6 +1,5 @@
 import * as path from "node:path";
 
-/** Synthetic plugin root for a --plugin-dir path. Shape-compatible with ClaudePluginRoot. */
 interface PluginDirRoot {
 	id: string;
 	marketplace: string;
@@ -10,11 +9,6 @@ interface PluginDirRoot {
 	scope: "user" | "project";
 }
 
-/**
- * Build a synthetic plugin root from a --plugin-dir resolved path.
- * @param resolvedPath Absolute path to the plugin directory
- * @param manifestName Plugin name from manifest; falls back to directory basename
- */
 export function buildPluginDirRoot(resolvedPath: string, manifestName?: string): PluginDirRoot {
 	const pluginName = manifestName || path.basename(resolvedPath);
 	return {

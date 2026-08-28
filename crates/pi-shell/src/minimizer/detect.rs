@@ -1,24 +1,15 @@
-//! Best-effort command detection for minimizer dispatch.
-
-/// Parsed command identity used for filter dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandIdentity {
 	pub program:    String,
 	pub subcommand: Option<String>,
 }
 
-/// Extract the executable and the relevant subcommand from a shell command.
-///
-/// The detector intentionally handles the common interactive subset instead
-/// of emulating a full shell parser. Ambiguous commands return `None` and are
-/// left streaming unchanged.
 #[must_use]
 pub fn detect(command: &str) -> Option<CommandIdentity> {
 	let tokens = tokenize(command);
 	detect_tokens(&tokens)
 }
 
-/// Extract command identity from an already-expanded argv vector.
 #[must_use]
 pub fn detect_tokens(tokens: &[String]) -> Option<CommandIdentity> {
 	let tokens = strip_launch_prefix(tokens)?;
@@ -29,9 +20,6 @@ pub fn detect_tokens(tokens: &[String]) -> Option<CommandIdentity> {
 		.next()
 		.is_some_and(|n| n.eq_ignore_ascii_case("docker-compose"));
 	let subcommand = if is_docker_compose {
-		// docker-compose v1 flags that consume a value; skip them so the
-		// real action (up/down/ps/logs/etc.) is found, matching docker compose
-		// routing in docker.rs.
 		first_non_global_arg(
 			rest,
 			&[
@@ -125,10 +113,7 @@ fn normalize_program(program: &str) -> Option<String> {
 		return None;
 	}
 	let lowered = name.to_lowercase();
-	// Exact-match allowlist for Windows launcher scripts whose `.bat`/`.cmd`
-	// twin should dispatch identically to the bare wrapper. Kept explicit on
-	// purpose: a generic `.bat`/`.cmd` strip would over-match unrelated scripts
-	// (e.g. `foo.bat`, `deploy.cmd`).
+
 	Some(match lowered.as_str() {
 		"gradlew.bat" => "gradlew".to_string(),
 		"mvnw.cmd" => "mvnw".to_string(),
@@ -347,9 +332,7 @@ fn detect_subcommand(program: &str, args: &[String]) -> Option<String> {
 			&["--paginate", "--slurp", "--verbose"],
 			&[],
 		),
-		// glab's clap-level globals are `-R`/`--repo` and `-g`/`--group`
-		// (donor rtk/src/cmds/git/glab_cmd.rs + README); both take a value, so
-		// skip them and their argument to reach the real subcommand.
+
 		"glab" => first_non_global_arg(args, &["-R", "--repo", "-g", "--group"], &[], &[]),
 		"gt" => first_non_global_arg(
 			args,
@@ -388,10 +371,6 @@ fn detect_subcommand(program: &str, args: &[String]) -> Option<String> {
 			&["--yes", "--no", "--no-install", "--quiet", "--silent", "--verbose"],
 			&[],
 		)
-		// Strip npm version qualifier from package specs (jest@latest → jest,
-		// @scope/pkg@1.0 → @scope/pkg). The idx > 0 guard preserves the leading
-		// `@` on scoped packages. This keeps version-pinned invocations routed to
-		// the same filter as their unpinned equivalents.
 		.map(|s| match s.rfind('@') {
 			Some(idx) if idx > 0 => s[..idx].to_string(),
 			_ => s,

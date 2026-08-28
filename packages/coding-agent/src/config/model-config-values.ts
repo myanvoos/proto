@@ -2,11 +2,7 @@ import { execSync } from "node:child_process";
 import { $envExact } from "@oh-my-pi/pi-utils";
 
 const commandValueCache = new Map<string, string>();
-// Failed `!command` resolutions (non-zero exit, empty stdout) are negative-cached
-// with a TTL instead of forever: a transient failure (locked password manager,
-// network hiccup) must not disable the key until process restart, but re-running
-// the command on every resolution would restore the execSync storm this cache
-// exists to prevent. One probe per TTL window bounds both.
+
 const COMMAND_FAILURE_RETRY_MS = 30_000;
 const commandFailureRetryAt = new Map<string, number>();
 
@@ -47,11 +43,7 @@ export interface CommandApiKeyResolution {
 	configured: boolean;
 	value?: string;
 }
-/**
- * Resolve a models.yml/models.yaml secret/config value to an actual value.
- * `!cmd` runs a shell command and returns trimmed stdout, otherwise env vars are
- * checked first and the input falls back to a literal value.
- */
+
 export function resolveConfigValue(valueConfig: string, options?: ResolveConfigValueOptions): string | undefined {
 	if (valueConfig.startsWith("!")) return resolveCommandConfig(valueConfig.slice(1).trim(), options);
 	const envValue = $envExact(valueConfig);

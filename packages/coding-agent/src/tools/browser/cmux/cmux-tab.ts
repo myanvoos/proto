@@ -273,11 +273,6 @@ const activeCmuxRuns = new Map<string, ActiveCmuxRun>();
 const recentCmuxRunFiles = new Set<string>();
 
 function consumeCmuxRunRejection(reason: unknown): boolean {
-	// cmux runs guest JS in the shared main-process realm (MCP and other
-	// subsystems live here too), so — like the eval inline fallback — only a
-	// guest-file stack frame can safely attribute a rejection. A stackless or
-	// non-run-stack reason is indistinguishable from a subsystem failure and
-	// keeps the default fatal path; worker isolation is the long-term fix.
 	const stack = reason instanceof Error && typeof reason.stack === "string" ? reason.stack : undefined;
 	if (!stack) return false;
 
@@ -513,11 +508,6 @@ export class CmuxTab {
 		fn: string | ((...args: TArgs) => TResult | Promise<TResult>),
 		...args: TArgs
 	): Promise<TResult> {
-		// A script that throws inside the daemon comes back as a bare
-		// `js_error: A JavaScript exception occurred` with no message or stack.
-		// Catch page-side instead so the exception is diagnosable, and turn the
-		// daemon's other blind spot — Promise return values it cannot
-		// serialize — into an actionable error instead of "unsupported type".
 		const script = serializeEvalWithEnvelope(fn as string | ((...args: unknown[]) => unknown), args);
 		const result = (await this.#request("browser.eval", { script })) as CmuxEvalResult;
 		return unwrapEvalEnvelope<TResult>(result.value, "tab.evaluate()");
@@ -551,12 +541,7 @@ export class CmuxTab {
 
 	async screenshot(opts: ScreenshotOptions = {}): Promise<string> {
 		const context = this.#requireRunContext("tab.screenshot()");
-		// The cmux daemon's `browser.screenshot` captures the surface viewport
-		// only — it has no element-clip or full-page mode, and Bun.Image cannot
-		// crop locally. Degrade transparently instead of silently mislabeling
-		// the capture: scroll the element into view, then TELL the model the
-		// image is the full viewport (reports showed selector captures being
-		// consumed as element crops).
+
 		const captureNotes: string[] = [];
 		if (opts.selector) {
 			await this.scrollIntoView(opts.selector);
@@ -648,11 +633,7 @@ export class CmuxTab {
 	async waitForNavigation(opts?: { waitUntil?: WaitUntil; timeout?: number }): Promise<null> {
 		const timeoutMs = opts?.timeout ?? this.#runContext?.timeoutMs ?? 30_000;
 		const signal = this.#runContext?.signal;
-		// Cmux has no native "next navigation" wait — snapshot the current URL via a fresh
-		// `browser.url.get` (never the possibly-stale `#lastUrl`), then poll for a change
-		// from it (mirroring headless `page.waitForNavigation` intent) and optionally settle
-		// on the requested load state. Start it BEFORE the click/submit that navigates; after
-		// a completed nav it times out like puppeteer does.
+
 		const baseline = (await this.#request(
 			"browser.url.get",
 			{},
@@ -807,8 +788,7 @@ export class CmuxTab {
 			const callable = (0, eval)("(" + source + ")");
 			return callable(element, ...args);
 		})()`;
-		// Envelope so a stale selector or a throwing callback reports its actual
-		// error instead of the daemon's generic js_error (see tab.evaluate()).
+
 		const result = (await this.#request("browser.eval", {
 			script: serializeEvalWithEnvelope(script, []),
 		})) as CmuxEvalResult;
@@ -1387,10 +1367,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 	tab.setRunContext({ session: opts.snapshot, output, screenshots, signal, timeoutMs: opts.timeoutMs });
 
 	const { promise: cancelRejection, reject } = Promise.withResolvers<never>();
-	// If the synchronous setup below throws (same-realm ownership conflict)
-	// while `signal` is already aborted, `Promise.race` never attaches a
-	// handler to this promise; keep its armed rejection from surfacing as an
-	// unhandled rejection — the postmortem-fatal path this run guards against.
+
 	cancelRejection.catch(() => {});
 	const rejectionOwner = {};
 	const { promise: floatingFailure, reject: rejectFloatingFailure } = Promise.withResolvers<never>();
@@ -1430,9 +1407,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 
 	try {
 		const runtime = tab.ensureRuntime(opts.snapshot);
-		// setCwd is non-exclusive; setRunScope/run still assert same-realm ownership.
-		// Keep both inside try so a concurrent in-process eval/browser run surfaces as
-		// a rejected promise the supervisor can report, never an unhandled rejection.
+
 		runtime.setCwd(opts.snapshot.cwd);
 		const runTab = bindRunFacade(tab, signal, rejectionOwner, recordFloatingFailure);
 		runtime.setRunScope({
@@ -1476,8 +1451,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 				return callSessionTool(name, args, { session: opts.session, signal });
 			},
 		};
-		// Like the inline worker fallback, cmux runs user JS in-process: awaited cmux/tool calls
-		// observe this abort signal, but a synchronous infinite loop cannot be interrupted here.
+
 		let returnValue: unknown;
 		let runError: unknown;
 		let runFailed = false;
@@ -1497,7 +1471,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 			runError = error;
 		}
 		runAc.abort(runEndedError);
-		// Let rejection callbacks run while this run can still own guest-created promises.
+
 		await Bun.sleep(0);
 		if (hasFloatingFailure && !runFailed) await floatingFailure;
 		if (runFailed) {

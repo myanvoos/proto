@@ -2,7 +2,6 @@ import { Container, Text } from "@oh-my-pi/pi-tui";
 import { formatDiagnostics } from "../../tools/render-utils";
 import { getLanguageFromPath, theme } from "../theme/theme";
 
-/** One file's worth of late LSP diagnostics, as carried on the transcript message. */
 export interface LateDiagnosticsFile {
 	path?: string;
 	summary?: string;
@@ -10,11 +9,6 @@ export interface LateDiagnosticsFile {
 	messages?: string[];
 }
 
-/**
- * Renders late LSP diagnostics (arrived after edit/write returned) in the
- * transcript, reusing the same tree renderer the edit/write tools use so the
- * styling stays consistent. Supports the global tool-output expand toggle.
- */
 export class LateDiagnosticsMessageComponent extends Container {
 	#expanded = false;
 	#toolActivityVisible = true;

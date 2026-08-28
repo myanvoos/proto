@@ -1,5 +1,3 @@
-// Plugin system exports
-
 export * from "./git-url";
 export * from "./loader";
 export * from "./manager";

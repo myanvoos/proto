@@ -1,4 +1,4 @@
-//! Signal processing utilities
+
 
 pub(crate) use nix::sys::signal::Signal;
 
@@ -10,11 +10,11 @@ pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error
 	Ok(())
 }
 
-/// Sends a signal to a specific process.
-///
-/// # Arguments
-/// * `pid` - The process ID to send the signal to
-/// * `signal` - The signal to send (must be a real signal, not a trap signal)
+
+
+
+
+
 pub fn kill_process(
 	pid: sys::process::ProcessId,
 	signal: traps::TrapSignal,
@@ -60,12 +60,12 @@ pub(crate) fn mask_sigttou() -> Result<(), error::Error> {
 		nix::sys::signal::SigSet::empty(),
 	);
 
-	// SAFETY:
-	// Setting the signal action should be safe here. The unsafe concerns
-	// for calling `sigaction` are primarily around ensuring that any provided
-	// signal handler functions are only performing operations that are
-	// safe to do in a signal handler context. Here we are not providing
-	// a custom handler, just asking the OS to ignore the signal.
+
+
+
+
+
+
 	unsafe { nix::sys::signal::sigaction(nix::sys::signal::Signal::SIGTTOU, &ignore) }?;
 
 	Ok(())
@@ -97,25 +97,25 @@ fn waitid_all(
 	nix::sys::wait::waitid(nix::sys::wait::Id::All, flags)
 }
 
-//
-// N.B. These functions were mostly copied from nix::sys::wait (https://github.com/nix-rust/nix, MIT license)
-// to enable use of the `waitid` call on macOS. Ideally nix would expose it on
-// macOS and we would remove this code.
-//
+
+
+
+
+
 
 #[cfg(target_os = "macos")]
 fn waitid_all(
 	flags: nix::sys::wait::WaitPidFlag,
 ) -> Result<nix::sys::wait::WaitStatus, nix::errno::Errno> {
-	// SAFETY:
-	// Code copied from nix::sys::wait implementation of waitid for other platforms.
-	// The siginfo structure is valid when filled with zeroes. Memory is zeroed
-	// rather than uninitialized, as not all platforms initialize the memory in
-	// the StillAlive case.
+
+
+
+
+
 	let mut siginfo: nix::libc::siginfo_t = unsafe { std::mem::zeroed() };
 
-	// SAFETY:
-	// Code copied from nix::sys::wait implementation of waitid for other platforms.
+
+
 	nix::errno::Errno::result(unsafe {
 		nix::libc::waitid(nix::libc::P_ALL, 0, &raw mut siginfo, flags.bits())
 	})?;
@@ -127,8 +127,8 @@ fn waitid_all(
 fn siginfo_to_wait_status(
 	siginfo: nix::libc::siginfo_t,
 ) -> Result<nix::sys::wait::WaitStatus, nix::errno::Errno> {
-	// SAFETY:
-	// Code copied from nix::sys::wait implementation of waitid for other platforms.
+
+
 	let si_pid = unsafe { siginfo.si_pid() };
 	if si_pid == 0 {
 		return Ok(nix::sys::wait::WaitStatus::StillAlive);
@@ -136,8 +136,8 @@ fn siginfo_to_wait_status(
 
 	let pid = nix::unistd::Pid::from_raw(si_pid);
 
-	// SAFETY:
-	// Code copied from nix::sys::wait implementation of waitid for other platforms.
+
+
 	let si_status = unsafe { siginfo.si_status() };
 
 	let status = match siginfo.si_code {

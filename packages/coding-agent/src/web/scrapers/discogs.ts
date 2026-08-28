@@ -1,17 +1,10 @@
-/**
- * Discogs URL handler for music releases and masters
- *
- * Uses the Discogs API to extract structured metadata about releases.
- * API docs: https://www.discogs.com/developers
- */
-
 import { tryParseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
 import { buildResult, loadPage } from "./types";
 
 interface DiscogsArtist {
 	name: string;
-	anv?: string; // artist name variation
+	anv?: string;
 	role?: string;
 	join?: string;
 }
@@ -26,7 +19,7 @@ interface DiscogsTrack {
 
 interface DiscogsLabel {
 	name: string;
-	catno?: string; // catalog number
+	catno?: string;
 }
 
 interface DiscogsFormat {
@@ -71,9 +64,6 @@ interface DiscogsMaster {
 	lowest_price?: number;
 }
 
-/**
- * Format artist names, handling name variations
- */
 function formatArtists(artists: DiscogsArtist[] | undefined): string {
 	if (!artists?.length) return "Unknown Artist";
 	return artists
@@ -87,9 +77,6 @@ function formatArtists(artists: DiscogsArtist[] | undefined): string {
 		.trim();
 }
 
-/**
- * Format a single track
- */
 function formatTrack(track: DiscogsTrack): string {
 	let line = track.position ? `${track.position}. ` : "- ";
 	line += track.title;
@@ -100,9 +87,6 @@ function formatTrack(track: DiscogsTrack): string {
 	return line;
 }
 
-/**
- * Format credits/extraartists grouped by role
- */
 function formatCredits(extraartists: DiscogsArtist[] | undefined): string {
 	if (!extraartists?.length) return "";
 
@@ -120,9 +104,6 @@ function formatCredits(extraartists: DiscogsArtist[] | undefined): string {
 	return lines.join("\n");
 }
 
-/**
- * Format formats (e.g., "2×LP, Album, Reissue")
- */
 function formatFormats(formats: DiscogsFormat[] | undefined): string {
 	if (!formats?.length) return "";
 
@@ -137,9 +118,6 @@ function formatFormats(formats: DiscogsFormat[] | undefined): string {
 		.join(" + ");
 }
 
-/**
- * Format labels with catalog numbers
- */
 function formatLabels(labels: DiscogsLabel[] | undefined): string {
 	if (!labels?.length) return "";
 	return labels
@@ -150,17 +128,12 @@ function formatLabels(labels: DiscogsLabel[] | undefined): string {
 		.join(", ");
 }
 
-/**
- * Build markdown for a release
- */
 function buildReleaseMarkdown(release: DiscogsRelease): string {
 	const sections: string[] = [];
 
-	// Title with artist
 	const artist = formatArtists(release.artists);
 	sections.push(`# ${artist} - ${release.title}\n`);
 
-	// Metadata
 	const meta: string[] = [];
 	if (release.year) meta.push(`**Year**: ${release.year}`);
 	if (release.country) meta.push(`**Country**: ${release.country}`);
@@ -180,21 +153,18 @@ function buildReleaseMarkdown(release: DiscogsRelease): string {
 
 	if (meta.length) sections.push(`${meta.join("\n")}\n`);
 
-	// Tracklist
 	if (release.tracklist?.length) {
 		sections.push("## Tracklist\n");
 		const tracks = release.tracklist.map(formatTrack);
 		sections.push(`${tracks.join("\n")}\n`);
 	}
 
-	// Credits
 	const credits = formatCredits(release.extraartists);
 	if (credits) {
 		sections.push("## Credits\n");
 		sections.push(`${credits}\n`);
 	}
 
-	// Notes
 	if (release.notes) {
 		sections.push("## Notes\n");
 		sections.push(`${release.notes}\n`);
@@ -203,18 +173,13 @@ function buildReleaseMarkdown(release: DiscogsRelease): string {
 	return sections.join("\n");
 }
 
-/**
- * Build markdown for a master release
- */
 function buildMasterMarkdown(master: DiscogsMaster): string {
 	const sections: string[] = [];
 
-	// Title with artist
 	const artist = formatArtists(master.artists);
 	sections.push(`# ${artist} - ${master.title}\n`);
 	sections.push("*Master Release*\n");
 
-	// Metadata
 	const meta: string[] = [];
 	if (master.year) meta.push(`**Year**: ${master.year}`);
 	if (master.genres?.length) meta.push(`**Genre**: ${master.genres.join(", ")}`);
@@ -233,14 +198,12 @@ function buildMasterMarkdown(master: DiscogsMaster): string {
 
 	if (meta.length) sections.push(`${meta.join("\n")}\n`);
 
-	// Tracklist
 	if (master.tracklist?.length) {
 		sections.push("## Tracklist\n");
 		const tracks = master.tracklist.map(formatTrack);
 		sections.push(`${tracks.join("\n")}\n`);
 	}
 
-	// Notes
 	if (master.notes) {
 		sections.push("## Notes\n");
 		sections.push(`${master.notes}\n`);
@@ -258,9 +221,6 @@ export const handleDiscogs: SpecialHandler = async (
 		const parsed = new URL(url);
 		if (!parsed.hostname.includes("discogs.com")) return null;
 
-		// Match release or master URLs
-		// Patterns: /release/{id}, /master/{id}
-		// Also handles: /release/{id}-Artist-Title, /master/{id}-Artist-Title
 		const releaseMatch = parsed.pathname.match(/\/release\/(\d+)/);
 		const masterMatch = parsed.pathname.match(/\/master\/(\d+)/);
 

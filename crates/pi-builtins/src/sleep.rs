@@ -1,4 +1,4 @@
-//! The `sleep` builtin, moved from `pi-shell`.
+
 
 use std::{future::Future, io::Write, time::Duration};
 
@@ -8,12 +8,12 @@ use tokio::time;
 
 use crate::host::parse_duration;
 
-/// Pause execution for the sum of the requested durations.
+
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 pub(crate) struct SleepCommand {
-	// GNU reports `sleep -1` as an invalid time interval (exit 1), not as an
-	// unknown option; let hyphenated operands through to `parse_duration`.
+
+
 	#[arg(required = true, allow_hyphen_values = true)]
 	durations: Vec<String>,
 }
@@ -36,7 +36,7 @@ impl builtins::Command for SleepCommand {
 					let _ = writeln!(context.stderr(), "sleep: invalid time interval '{duration}'");
 					return Ok(ExecutionResult::new(1));
 				};
-				// `infinity` parses as `Duration::MAX`; keep the sum saturating.
+
 				total = total.saturating_add(parsed);
 			}
 			let sleep = time::sleep(total);

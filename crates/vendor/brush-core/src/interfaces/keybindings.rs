@@ -3,14 +3,14 @@ use std::{
 	fmt::{self, Display, Formatter},
 };
 
-/// Represents an action that can be taken in response to a key sequence.
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum KeyAction {
-	/// Execute a shell command.
+
 	ShellCommand(String),
-	/// Execute an input "function".
+
 	DoInputFunction(InputFunction),
-	/// Execute a sequence of actions (in order).
+
 	Sequence(Vec<Self>),
 }
 
@@ -33,8 +33,8 @@ impl Display for KeyAction {
 	}
 }
 
-/// Defines all input functions. Based on standard `readline` functions,
-/// augmented with some `brush`-specific extensions.
+
+
 #[derive(
 	Clone,
 	Debug,
@@ -232,12 +232,12 @@ pub enum InputFunction {
 	YankPop,
 }
 
-/// Represents a sequence of keys.
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum KeySequence {
-	/// Strokes that make up the sequence.
+
 	Strokes(Vec<KeyStroke>),
-	/// Raw bytes that were used to generate this sequence.
+
 	Bytes(Vec<Vec<u8>>),
 }
 
@@ -256,7 +256,7 @@ impl Display for KeySequence {
 					} else if *byte == b'\x1b' {
 						write!(f, r"\e")?;
 					} else if *byte >= 0x01 && *byte <= 0x1a {
-						// Control characters: display as \C-<letter>
+
 						let letter = (b'a' + (*byte - 1)) as char;
 						write!(f, r"\C-{letter}")?;
 					} else {
@@ -271,22 +271,22 @@ impl Display for KeySequence {
 }
 
 impl From<KeyStroke> for KeySequence {
-	/// Creates a new key sequence with a single stroke.
+
 	fn from(value: KeyStroke) -> Self {
 		Self::Strokes(vec![value])
 	}
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-/// Represents a single key press.
+
 pub struct KeyStroke {
-	/// Alt key was pressed.
+
 	pub alt:     bool,
-	/// Control key was pressed.
+
 	pub control: bool,
-	/// Shift key was pressed.
+
 	pub shift:   bool,
-	/// Primary key pressed.
+
 	pub key:     Key,
 }
 
@@ -299,56 +299,56 @@ impl Display for KeyStroke {
 			write!(f, "\\C-")?;
 		}
 		if self.shift {
-			// TODO(input): Figure out what to do here or if the key encodes the
-			// shift in it.
+
+
 		}
 		self.key.fmt(f)
 	}
 }
 
 impl From<Key> for KeyStroke {
-	/// Creates a new key stroke with a single key.
+
 	fn from(value: Key) -> Self {
 		Self { alt: false, control: false, shift: false, key: value }
 	}
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-/// Represents a single key.
+
 pub enum Key {
-	/// A simple character key.
+
 	Character(char),
-	/// Backspace key.
+
 	Backspace,
-	/// Enter key.
+
 	Enter,
-	/// Left arrow key.
+
 	Left,
-	/// Right arrow key.
+
 	Right,
-	/// Up arrow key.
+
 	Up,
-	/// Down arrow key.
+
 	Down,
-	/// Home key.
+
 	Home,
-	/// End key.
+
 	End,
-	/// Page up key.
+
 	PageUp,
-	/// Page down key.
+
 	PageDown,
-	/// Tab key.
+
 	Tab,
-	/// Shift + Tab key.
+
 	BackTab,
-	/// Delete key.
+
 	Delete,
-	/// Insert key.
+
 	Insert,
-	/// F key.
+
 	F(u8),
-	/// Escape key.
+
 	Escape,
 }
 
@@ -379,37 +379,37 @@ impl Display for Key {
 	}
 }
 
-/// Encapsulates the shell's interaction with key bindings for input.
+
 pub trait KeyBindings: Send {
-	/// Retrieves current bindings.
+
 	fn get_current(&self) -> HashMap<KeySequence, KeyAction>;
 
-	/// Tries to find a binding for an untranslated byte sequence.
+
 	fn get_untranslated(&self, bytes: &[u8]) -> Option<&KeyAction>;
 
-	/// Sets or updates a binding.
-	///
-	/// # Arguments
-	///
-	/// * `seq` - The key sequence to bind.
-	/// * `action` - The action to bind to the sequence.
+
+
+
+
+
+
 	fn bind(&mut self, seq: KeySequence, action: KeyAction) -> Result<(), std::io::Error>;
 
-	/// Unbinds a key sequence. Returns true if a binding was removed.
-	///
-	/// # Arguments
-	///
-	/// * `seq` - The key sequence to unbind.
+
+
+
+
+
 	fn try_unbind(&mut self, seq: KeySequence) -> bool;
 
-	/// Defines a macro that remaps a key sequence to another key sequence.
-	///
-	/// # Arguments
-	///
-	/// * `seq` - The key sequence to bind the macro to.
-	/// * `target` - The sequence that makes up the macro.
+
+
+
+
+
+
 	fn define_macro(&mut self, seq: KeySequence, target: KeySequence) -> Result<(), std::io::Error>;
 
-	/// Retrieves all defined macros.
+
 	fn get_macros(&self) -> HashMap<KeySequence, KeySequence>;
 }

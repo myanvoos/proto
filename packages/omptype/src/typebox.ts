@@ -46,22 +46,11 @@ export type TypeBoxSafeParseResult<T> =
 	| { success: false; error: TypeBoxValidationFailure };
 
 interface LegacyTypeBoxCompat<T> {
-	/** TypeBox compatibility validator used by legacy extension loaders. */
 	__validator(data: unknown): T | TypeBoxValidationFailure;
-	/** Zod-style compatibility parser used by legacy extensions. */
+
 	safeParse(input: unknown): TypeBoxSafeParseResult<T>;
 }
 
-/**
- * Erased schema surface accepted anywhere this facade takes a schema, native
- * omptype schemas included (those carry no legacy compat members).
- *
- * Members use method syntax so parameter positions stay bivariant: the typed
- * {@link TTyped} form is invariant in its static type (its `in`/`out`
- * validators are), so a concrete `TString` is not assignable to
- * `TTyped<unknown>`. Erasing here is what keeps `TString`, `TObject<…>` and
- * friends assignable to a plain schema annotation.
- */
 export interface AnySchema extends EmbeddableSchema {
 	(data: unknown): unknown;
 	readonly infer: unknown;
@@ -69,18 +58,12 @@ export interface AnySchema extends EmbeddableSchema {
 	toJsonSchema(options?: ToJsonSchemaOptions): Record<string, unknown>;
 }
 
-/**
- * Every schema this facade returns: the TypeBox `TSchema` analog. Erased like
- * {@link AnySchema}, plus the legacy compat members builder results carry.
- */
 export interface TSchema extends AnySchema {
-	/** TypeBox compatibility validator used by legacy extension loaders. */
 	__validator(data: unknown): unknown;
-	/** Zod-style compatibility parser used by legacy extensions. */
+
 	safeParse(input: unknown): TypeBoxSafeParseResult<unknown>;
 }
 
-/** Schema carrying a statically known type; every `TXxx` alias resolves here. */
 export type TTyped<T> = OmpType<T> & LegacyTypeBoxCompat<T>;
 export type Static<T extends AnySchema> = T["infer"];
 export type TAny = TTyped<unknown>;
@@ -271,8 +254,7 @@ function tNumber(opts?: NumberOpts, integer = false): TNumber {
 		upper = { value: opts.exclusiveMaximum, exclusive: true };
 	}
 	const keyword = integer ? "number.integer" : "number";
-	// The `LO <= TYPE <= HI` range spelling requires both bounds; a min-only
-	// bound must use the postfix `TYPE >= LO` form (see parseBounded in ir.ts).
+
 	let src: string;
 	if (lower && upper) {
 		src = `${lower.value} ${lower.exclusive ? "<" : "<="} ${keyword} ${upper.exclusive ? "<" : "<="} ${upper.value}`;
@@ -416,9 +398,7 @@ function tObject<const P extends Record<string, AnySchema>>(properties: P, opts?
 	for (const key in properties) {
 		const schema = properties[key];
 		const inner = asRuntime<unknown>(schema)[OPTIONAL_INNER];
-		// A defaulted `Type.Optional(...)` maps to a plain defaulted key:
-		// omptype (like ArkType) rejects `key?` with a default, and a default
-		// already makes the key omittable on input.
+
 		const optionalKey = inner !== undefined && !asRuntime<unknown>(inner).hasDefault;
 		def[optionalKey ? `${key}?` : key] = inner ?? schema;
 		props[key] = schema;
@@ -507,8 +487,6 @@ function tComposite<const E extends readonly TObject<Record<string, AnySchema>>[
 }
 
 function tUnsafe<T = unknown>(_jsonSchema: Record<string, unknown> = {}): TUnsafe<T> {
-	// Raw JSON Schema is accepted for source compatibility but is not retained or validated:
-	// omptype cannot honestly implement that contract without importing a second validator.
 	return withLegacyCompat(type.unknown as OmpType<T>);
 }
 

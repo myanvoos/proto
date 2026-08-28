@@ -19,15 +19,12 @@ export interface SlashCommandInfo {
 
 export type { BuiltinSlashCommand, SubcommandDef } from "../slash-commands/types";
 
-/**
- * Represents a custom slash command loaded from a file
- */
 export interface FileSlashCommand {
 	name: string;
 	description: string;
 	content: string;
-	source: string; // e.g., "via Claude Code (User)"
-	/** Source metadata for display */
+	source: string;
+
 	_source?: { providerName: string; level: "user" | "project" | "native" };
 }
 
@@ -38,7 +35,6 @@ function parseCommandTemplate(
 	const { frontmatter, body } = parseFrontmatter(content, options);
 	const frontmatterDesc = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
 
-	// Get description from frontmatter or first non-empty line
 	let description = frontmatterDesc;
 	if (!description) {
 		const firstLine = body.split("\n").find(line => line.trim());
@@ -52,14 +48,9 @@ function parseCommandTemplate(
 }
 
 interface LoadSlashCommandsOptions {
-	/** Working directory for project-local commands. Default: getProjectDir() */
 	cwd?: string;
 }
 
-/**
- * Load all custom slash commands using the capability API.
- * Loads from all registered providers (builtin, user, project).
- */
 export async function loadSlashCommands(options: LoadSlashCommandsOptions = {}): Promise<FileSlashCommand[]> {
 	const result = await loadCapability<SlashCommand>(slashCommandCapability.id, { cwd: options.cwd });
 
@@ -69,7 +60,6 @@ export async function loadSlashCommands(options: LoadSlashCommandsOptions = {}):
 			level: cmd.level === "native" ? "fatal" : "warn",
 		});
 
-		// Format source label: "via ProviderName Level"
 		const capitalizedLevel = cmd.level.charAt(0).toUpperCase() + cmd.level.slice(1);
 		const sourceStr = `via ${cmd._source.providerName} ${capitalizedLevel}`;
 
@@ -85,10 +75,6 @@ export async function loadSlashCommands(options: LoadSlashCommandsOptions = {}):
 	return fileCommands;
 }
 
-/**
- * Expand a slash command if it matches a file-based command.
- * Returns the expanded content or the original text if not a slash command.
- */
 export function expandSlashCommand(text: string, fileCommands: FileSlashCommand[]): string {
 	if (!text.startsWith("/")) return text;
 

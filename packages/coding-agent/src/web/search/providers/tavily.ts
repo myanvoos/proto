@@ -1,9 +1,3 @@
-/**
- * Tavily Web Search Provider
- *
- * Uses Tavily's agent-focused search API to return structured results with an
- * optional synthesized answer.
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -21,13 +15,13 @@ export interface TavilySearchParams {
 	query: string;
 	num_results?: number;
 	recency?: "day" | "week" | "month" | "year";
-	/** `site:` hosts mapped to Tavily's `include_domains`. */
+
 	include_domains?: string[];
-	/** `-site:` hosts mapped to Tavily's `exclude_domains`. */
+
 	exclude_domains?: string[];
-	/** `after:` inclusive lower bound, ISO `YYYY-MM-DD`, mapped to `start_date`. */
+
 	start_date?: string;
-	/** `before:` upper bound, ISO `YYYY-MM-DD`, mapped to `end_date`. */
+
 	end_date?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -62,7 +56,6 @@ function getErrorMessage(value: unknown): string | null {
 	return null;
 }
 
-/** Find Tavily API key through AuthStorage's unified refresh pipeline. */
 export async function findApiKey(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -71,14 +64,9 @@ export async function findApiKey(
 	return (await authStorage.getApiKey("tavily", sessionId, { signal })) ?? null;
 }
 
-/** Exported for testing. Builds the Tavily request body from unified params. */
 export function buildRequestBody(params: TavilySearchParams): Record<string, unknown> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-	// Tavily's `topic` (general/news/finance) and `time_range` are orthogonal
-	// dimensions in the upstream API. Recency is a temporal filter only; it must
-	// not narrow the index to news-only, which would break technical queries
-	// (release notes, docs, GitHub) whenever a user sets --recency. Always use
-	// the default "general" topic and only send `time_range` when recency is set.
+
 	const body: Record<string, unknown> = {
 		query: params.query,
 		search_depth: "basic",
@@ -98,8 +86,7 @@ export function buildRequestBody(params: TavilySearchParams): Record<string, unk
 	if (params.end_date) {
 		body.end_date = params.end_date;
 	}
-	// Explicit before:/after: bounds take precedence over the relative recency
-	// window; sending both would over-restrict.
+
 	if (params.recency && !params.start_date && !params.end_date) {
 		body.time_range = params.recency;
 	}
@@ -127,9 +114,7 @@ async function callTavilySearch(apiKey: string, params: TavilySearchParams): Pro
 		} else {
 			try {
 				message = getErrorMessage(JSON.parse(errorText)) ?? message;
-			} catch {
-				// Keep raw text fallback.
-			}
+			} catch {}
 		}
 		throw new SearchProviderError("tavily", `Tavily API error (${response.status}): ${message}`, response.status);
 	}
@@ -173,7 +158,6 @@ function hasRenderableResponse(response: SearchResponse): boolean {
 	return response.sources.length > 0;
 }
 
-/** Bare hosts from `site:` values (path parts are enforced by the central lenient filter). */
 function siteHosts(sites: readonly string[]): string[] {
 	const hosts = new Set<string>();
 	for (const site of sites) {
@@ -183,7 +167,6 @@ function siteHosts(sites: readonly string[]): string[] {
 	return [...hosts];
 }
 
-/** Execute Tavily web search. */
 export async function searchTavily(params: SearchParams): Promise<SearchResponse> {
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const tavilyParams: TavilySearchParams = {
@@ -195,7 +178,6 @@ export async function searchTavily(params: SearchParams): Promise<SearchResponse
 		fetch: params.fetch,
 	};
 	if (parsed.hasDirectives) {
-		// Tavily prefers clean natural text; re-emit only phrases and -exclusions.
 		tavilyParams.query = formatQuery(parsed, { phrases: true, negation: true });
 		const include = siteHosts(parsed.sites);
 		const exclude = siteHosts(parsed.excludedSites);
@@ -223,14 +205,12 @@ export async function searchTavily(params: SearchParams): Promise<SearchResponse
 		return response;
 	}
 
-	// Time filters commonly zero out results; retry once without them.
 	return toSearchResponse(
 		await callWithAuth({ ...tavilyParams, recency: undefined, start_date: undefined, end_date: undefined }),
 		numResults,
 	);
 }
 
-/** Search provider for Tavily web search. */
 export class TavilyProvider extends SearchProvider {
 	readonly id = "tavily";
 	readonly label = "Tavily";

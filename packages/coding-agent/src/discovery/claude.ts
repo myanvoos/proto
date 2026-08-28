@@ -1,9 +1,3 @@
-/**
- * Claude Code Provider
- *
- * Loads configuration from .claude directories.
- * Priority: 80 (tool-specific, below builtin but above shared standards)
- */
 import * as path from "node:path";
 import { hasFsCode, tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
@@ -35,15 +29,11 @@ const DISPLAY_NAME = "Claude Code";
 const PRIORITY = 80;
 const CONFIG_DIR = ".claude";
 
-/** Get the active user-level Claude Code directory. */
 function getUserClaude(ctx: LoadContext): string {
 	const { configDir } = resolveClaudePaths(ctx.home);
 	return configDir;
 }
 
-/**
- * Get project-level .claude path (cwd only).
- */
 function getProjectClaude(ctx: LoadContext): string {
 	return path.join(ctx.cwd, CONFIG_DIR);
 }
@@ -51,10 +41,6 @@ function getProjectClaude(ctx: LoadContext): string {
 function isMissingDirectoryError(error: unknown): boolean {
 	return hasFsCode(error, "ENOENT") || hasFsCode(error, "ENOTDIR");
 }
-
-// =============================================================================
-// MCP Servers
-// =============================================================================
 
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const items: MCPServer[] = [];
@@ -102,8 +88,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		});
 	};
 
-	// Load project entries before user entries so a project `enabled: false`
-	// claims its dedupe key before a same-named user server can survive (#7654).
 	const projectOffset = userPaths.length;
 	for (let i = 0; i < projectPaths.length; i++) {
 		const servers = parseMcpServers(contents[projectOffset + i], projectPaths[i].path, projectPaths[i].level);
@@ -123,10 +107,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Context Files (CLAUDE.md)
-// =============================================================================
 
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
@@ -162,16 +142,9 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 	return { items, warnings };
 }
 
-// =============================================================================
-// Skills
-// =============================================================================
-
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const userSkillsDir = path.join(getUserClaude(ctx), "skills");
 
-	// Walk up from cwd finding .claude/skills/ in ancestors. Skip $HOME:
-	// that path is already scanned as the Claude user source below, and scanning
-	// it again as project would bypass enableClaudeUser when project skills stay enabled.
 	const projectScans: Promise<LoadResult<Skill>>[] = [];
 	let current = ctx.cwd;
 	while (true) {
@@ -186,7 +159,7 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		}
 		if (current === (ctx.repoRoot ?? ctx.home)) break;
 		const parent = path.dirname(current);
-		if (parent === current) break; // filesystem root
+		if (parent === current) break;
 		current = parent;
 	}
 
@@ -216,10 +189,6 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Extension Modules
-// =============================================================================
 
 async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<ExtensionModule>> {
 	const items: ExtensionModule[] = [];
@@ -255,15 +224,6 @@ async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<Extens
 	return { items, warnings };
 }
 
-// =============================================================================
-// Slash Commands
-// =============================================================================
-
-/**
- * Read the Claude command-loading toggles from settings.
- * Falls back to true (current behavior) when settings are not initialized,
- * e.g. inside discovery unit tests that run without Settings.init().
- */
 function readClaudeCommandToggles(): { enableUser: boolean; enableProject: boolean } {
 	try {
 		return {
@@ -345,10 +305,6 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 	return { items, warnings };
 }
 
-// =============================================================================
-// Hooks
-// =============================================================================
-
 async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 	const items: Hook[] = [];
 	const warnings: string[] = [];
@@ -393,10 +349,6 @@ async function loadHooks(ctx: LoadContext): Promise<LoadResult<Hook>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Custom Tools
-// =============================================================================
 
 async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	const items: CustomTool[] = [];
@@ -445,10 +397,6 @@ async function loadTools(ctx: LoadContext): Promise<LoadResult<CustomTool>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// System Prompts
-// =============================================================================
-
 async function loadSystemPrompts(ctx: LoadContext): Promise<LoadResult<SystemPrompt>> {
 	const items: SystemPrompt[] = [];
 	const warnings: string[] = [];
@@ -468,10 +416,6 @@ async function loadSystemPrompts(ctx: LoadContext): Promise<LoadResult<SystemPro
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Settings
-// =============================================================================
 
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const items: Settings[] = [];
@@ -514,10 +458,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 
 	return { items, warnings };
 }
-
-// =============================================================================
-// Provider Registration
-// =============================================================================
 
 registerProvider<MCPServer>(mcpCapability.id, {
 	id: PROVIDER_ID,

@@ -86,28 +86,22 @@ export class CommandController {
 			this.ctx.presentCommandOutput([new Spacer(1), new Text("Advisor is disabled.", 1, 0)]);
 			return;
 		}
-		// Fetch live quota data (cached 5 min by the auth-gateway) so we can show
-		// real usage windows/reset timers per advisor provider. Non-fatal when absent.
+
 		const usageProvider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 		let usageReports: UsageReport[] | null = null;
 		if (usageProvider.fetchUsageReports) {
 			try {
 				usageReports = await usageProvider.fetchUsageReports();
-			} catch {
-				// Network/auth failure is non-fatal — just skip the quota line.
-			}
+			} catch {}
 		}
-		// Resolve the active OAuth identity for each advisor's provider so quota
-		// filtering matches the credential actually in use (not sibling accounts).
+
 		const resolveActiveAdvisorAccount = (provider: string, sessionId?: string): OAuthAccountIdentity | undefined =>
 			this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
 				provider,
 				sessionId ?? this.ctx.session.sessionId,
 			);
 		const nowMs = Date.now();
-		// Roster view: show every configured advisor with its status, even when
-		// none are live (all paused/no-model). The old code returned a generic
-		// message that hid the per-advisor state the user needs to act on.
+
 		if (stats.advisors.length > 1 || (stats.configured && !stats.active)) {
 			let info = `${theme.bold("Advisor Status")} (${stats.advisors.length} advisors)\n`;
 			for (const a of stats.advisors) {
@@ -152,7 +146,7 @@ export class CommandController {
 			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 			return;
 		}
-		// Single active advisor — detailed view.
+
 		const model = stats.model;
 		let info = `${theme.bold("Advisor Status")}\n\n`;
 		if (stats.advisors.length === 1) {
@@ -345,9 +339,7 @@ export class CommandController {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before resetting the context.");
 			return;
 		}
-		// Drop the rendered transcript so the UI matches the now-empty model
-		// context (mirrors #runNewSessionFlow's teardown, minus the new session —
-		// the session id, title, and transcript file all survive).
+
 		this.ctx.clearTransientSessionUi();
 		this.ctx.resetTranscript();
 		this.ctx.statusLine.invalidate();
@@ -392,15 +384,6 @@ export class CommandController {
 		]);
 	}
 
-	/**
-	 * `/move` — relocate the current session to a different directory.
-	 *
-	 * With no `targetPath` (TUI only), opens an autocomplete overlay so the user
-	 * can pick or type a directory. With a `targetPath`, resolves it directly.
-	 * If the target directory does not exist, the user is asked whether to create
-	 * it. The active session file and artifacts are moved into the target
-	 * directory's session bucket so `/resume` from that directory can find it.
-	 */
 	async handleMoveCommand(targetPath?: string): Promise<void> {
 		if (this.ctx.session.isStreaming) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before moving.");
@@ -409,13 +392,12 @@ export class CommandController {
 
 		let input: string | undefined = targetPath?.trim() || undefined;
 
-		// No argument in TUI mode: open the path autocomplete overlay.
 		if (!input) {
 			const result = await this.ctx.showHookCustom<MoveOverlayResult | undefined>(
 				(_tui, _theme, _keybindings, done) => new MoveOverlay(this.ctx.sessionManager.getCwd(), done),
 				{ overlay: true },
 			);
-			if (!result) return; // cancelled
+			if (!result) return;
 			input = result.directory;
 		}
 
@@ -428,7 +410,6 @@ export class CommandController {
 		const cwd = this.ctx.sessionManager.getCwd();
 		const resolvedPath = resolveToCwd(unquoted, cwd);
 
-		// If the directory doesn't exist, offer to create it.
 		let isDirectory: boolean;
 		try {
 			isDirectory = (await fs.stat(resolvedPath)).isDirectory();
@@ -665,8 +646,7 @@ export class CommandController {
 				customInstructionsOrOptions && typeof customInstructionsOrOptions === "object"
 					? customInstructionsOrOptions
 					: undefined;
-			// The slash path passes `mode` positionally; the extension path carries
-			// it inside the options object. Either source wins over no mode.
+
 			const effectiveMode = mode ?? baseOptions?.mode;
 			const options =
 				baseOptions || effectiveMode
@@ -679,10 +659,7 @@ export class CommandController {
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 
 			this.ctx.statusLine.invalidate();
-			// Same as the auto-compaction rebuild: a collapsed transcript is an
-			// intentional replacement, so drop the stale pre-compaction scrollback
-			// instead of repainting the shrunken frame below it. With collapse
-			// disabled the full history stays inline and scrollback is kept.
+
 			if (this.ctx.settings.get("display.collapseCompacted")) {
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 			} else {
@@ -701,10 +678,7 @@ export class CommandController {
 			compactingLoader.stop();
 			this.ctx.statusContainer.disposeChildren();
 		}
-		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)
-		// before queued user input is dispatched, so any turn queued during
-		// compaction executes on the post-compaction model rather than the model
-		// compaction itself ran on.
+
 		if (beforeFlush) await beforeFlush(outcome);
 		await this.ctx.flushCompactionQueue({ willRetry: false });
 		return outcome;
@@ -761,7 +735,6 @@ function formatWindowSuffix(label: string, windowLabel: string, uiTheme: typeof 
 	return uiTheme.fg("dim", `(${windowLabel})`);
 }
 
-/** ` (org)` suffix when the report is org-attributed — two subscriptions can share one email. */
 function orgSuffix(report: UsageReport): string {
 	const orgName = report.metadata?.orgName;
 	const orgId = report.metadata?.orgId;
@@ -798,8 +771,7 @@ function formatUnlimitedReportLabel(report: UsageReport, index: number): string 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
 	const resetsAt = limit.window?.resetsAt;
 	if (resetsAt === undefined) return undefined;
-	// Codex returns the prior window's reset_at until a new request opens a fresh window —
-	// rendering a negative delta is meaningless, so drop the suffix in that case.
+
 	if (resetsAt <= nowMs) return undefined;
 	return formatDuration(resetsAt - nowMs);
 }
@@ -827,7 +799,6 @@ function formatAccountHeaderRow(
 	const gap = maxSuffixWidth > 0 ? 1 : 0;
 	const prefixBudget = columnWidth - maxSuffixWidth - gap;
 
-	// If suffix can't share the cell with at least `x…`, fall back to whole-label truncation.
 	if (prefixBudget < 2) {
 		return parts.map(p => {
 			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
@@ -903,13 +874,11 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 
 	if (limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount)) return "";
 
-	// Count unique accounts from limit scopes — not limits.length.
 	const uniqueAccountIds = new Set(
 		limits.map(limit => limit.scope.accountId).filter((id): id is string => typeof id === "string" && id.length > 0),
 	);
 	if (uniqueAccountIds.size > 0) return `${uniqueAccountIds.size} ${uniqueAccountIds.size === 1 ? "acct" : "accts"}`;
-	// No account IDs available — keep the pre-existing fallback so providers
-	// that don't populate scope.accountId still show a summary.
+
 	return `${limits.length} accts`;
 }
 
@@ -921,8 +890,7 @@ function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
 				window?.resetsAt !== undefined && Number.isFinite(window.resetsAt) && window.resetsAt > nowMs,
 		);
 	if (windows.length === 0) return null;
-	// Use the shared verb when every contributing window agrees (e.g. all "tick");
-	// mixed or absent labels fall back to the generic "resets".
+
 	const labels = new Set(windows.map(window => window.resetLabel ?? "resets"));
 	const verb = labels.size === 1 ? [...labels][0]! : "resets";
 	const offsets = windows.map(window => window.resetsAt! - nowMs);
@@ -933,13 +901,7 @@ function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
 	}
 	return `${verb} in ${formatDuration(minReset)}`;
 }
-/**
- * Compact one-line quota summary for a single advisor's provider.
- * Returns `null` when the provider has no usage data.
- * When `activeAccount` is provided, only limits matching that credential
- * are shown (mirrors `renderUsageReports`'s account-stickiness filtering).
- * Example output: `Quota: 7d window · 67% used · resets in 3.2d`
- */
+
 export function formatCompactQuota(
 	provider: string,
 	reports: UsageReport[],
@@ -948,15 +910,10 @@ export function formatCompactQuota(
 ): string | null {
 	const providerReports = reports.filter(r => r.provider === provider);
 	if (providerReports.length === 0) return null;
-	// Group limits by window id so we show BOTH the 5-hour and 7-day windows
-	// (or any other distinct windows the provider exposes). Within each window,
-	// pick the highest used fraction across accounts — that's the most pressing.
+
 	const byWindow = new Map<string, { limit: UsageLimit; fraction: number }>();
 	for (const report of providerReports) {
 		for (const limit of report.limits) {
-			// Skip limits that belong to a different credential than the one
-			// the advisor is actually using, so we don't alarm the user with
-			// an exhausted account that isn't theirs.
 			if (activeAccount && !limitMatchesActiveAccount(report, limit, activeAccount)) continue;
 			const fraction = resolveUsedFraction(limit);
 			if (fraction === undefined) continue;
@@ -966,15 +923,13 @@ export function formatCompactQuota(
 		}
 	}
 	if (byWindow.size === 0) return null;
-	// Sort windows by urgency (highest fraction first) so the most pressing
-	// quota is always the first thing the user sees.
+
 	const entries = [...byWindow.values()].sort((a, b) => b.fraction - a.fraction);
 	const lines: string[] = [];
 	for (const { limit, fraction } of entries) {
 		const pct = Math.round(fraction * 100);
 		const windowLabel = limit.window?.label ?? limit.scope.windowId ?? "—";
-		// Include the limit label (account/tier) when it carries identity beyond
-		// the window name, so the user can tell which credential's quota is shown.
+
 		const identity = limit.label.trim();
 		const header = identity && identity !== windowLabel ? `${windowLabel} (${identity})` : windowLabel;
 		const parts = [`${header}: ${pct}% used`];
@@ -1026,10 +981,6 @@ function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: numb
 	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
 }
 
-/**
- * Pick a per-account column width so the columns and trailing amount fit in `available`.
- * Falls back to the minimum when the terminal is too narrow rather than wrapping.
- */
 function resolveColumnWidth(count: number, available: number, trailing: number): number {
 	if (count <= 0) return BAR_WIDTH_MAX;
 	const indent = 2;
@@ -1108,8 +1059,6 @@ export function renderUsageReports(
 			}
 		}
 
-		// Provider-wide disclaimers (e.g. "PROTO-observed spend only") render once
-		// above the per-account sections instead of duplicating onto every limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
 		if (providerNotes.length > 0) {
 			lines.push(
@@ -1159,21 +1108,13 @@ export function renderUsageReports(
 			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
 		}
 
-		// Order account columns ONCE per provider (worst-first), then apply that
-		// same order to every window group. Sorting each group independently by
-		// its own used fraction (issue #6067) desynchronized the columns: an
-		// account exhausted on its 5h window but light on the weekly window would
-		// land in different column positions on each row, so the positional
-		// `account N` labels denoted different credentials per row and an
-		// exhausted limit appeared under a sibling that still had quota.
 		const accountRank = new Map<UsageReport, number>();
 		providerReports.forEach((report, position) => {
 			const worst = report.limits.reduce((max, limit) => {
 				const fraction = resolveUsedFraction(limit) ?? -1;
 				return fraction > max ? fraction : max;
 			}, -1);
-			// Encode worst-first primary key with the stable position as tiebreak
-			// so accounts tied on pressure keep their discovery order.
+
 			accountRank.set(report, -worst * 1000 + position);
 		});
 
@@ -1230,7 +1171,6 @@ export function renderUsageReports(
 			}
 		}
 
-		// Render accounts with no rate limits (e.g. business/enterprise plans).
 		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
 		for (const report of unlimitedReports) {
 			const label = formatUnlimitedReportLabel(report, 0);
@@ -1240,7 +1180,6 @@ export function renderUsageReports(
 				`${uiTheme.fg("success", uiTheme.status.success)} ${label}${tierSuffix} ${uiTheme.fg("dim", "-- no limits")}`,
 			);
 		}
-		// No per-provider footer; global header shows last check.
 	}
 
 	return lines.join("\n");

@@ -22,12 +22,7 @@ interface AcpEventMapperOptions {
 	getMessageProgress?: (message: unknown) => MessageProgress | undefined;
 	getToolArgs?: (toolCallId: string) => unknown;
 	resolveImageData?: (data: string, mimeType: string | undefined) => string;
-	/**
-	 * Session cwd. Tool call locations sent to ACP clients must be absolute
-	 * (the editor host needs them to open or focus files). When provided,
-	 * the mapper resolves raw `path`/`file`/etc. args against this cwd
-	 * before emitting `ToolCallLocation` entries.
-	 */
+
 	cwd?: string;
 }
 
@@ -129,11 +124,6 @@ interface TextMessageLike {
 
 const ACP_TEXT_LIMIT = 4_000;
 
-/**
- * Device name when the call is an `xd://` device dispatch riding the
- * read/write transport (`write xd://<tool>` executes the mounted tool,
- * `read xd://` is discovery). Returns `undefined` for plain file paths.
- */
 function xdevDispatchDevice(toolName: string, args: unknown): string | undefined {
 	if (toolName !== "write" && toolName !== "read") return undefined;
 	const path = extractStringProperty<PathContainer>(args, "path");
@@ -141,7 +131,6 @@ function xdevDispatchDevice(toolName: string, args: unknown): string | undefined
 	return parseXdUrl(path)?.name ?? undefined;
 }
 
-/** Whether a Fleet call carries peer-to-peer coordination rather than process control. */
 function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 	let hubArgs = args;
 	if (toolName !== "fleet") {
@@ -165,9 +154,6 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 		case "send":
 			return typeof Reflect.get(hubArgs, "to") === "string";
 		case "wait":
-			// A bare wait or an `ids` wait settles on background-job delivery,
-			// whose snapshot IS the job result (fleet.md) — keep those visible.
-			// Only a peer-scoped wait (`from`, no jobs) is internal messaging.
 			return typeof Reflect.get(hubArgs, "from") === "string" && Reflect.get(hubArgs, "ids") === undefined;
 		default:
 			return false;
@@ -175,10 +161,6 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 }
 
 function mapToolKind(toolName: string, args?: unknown): ToolKind {
-	// An xd:// device write executes the mounted tool — "edit" would make ACP
-	// clients render it as a file modification to a nonexistent path (and
-	// auto-approve it under edit-tier policies). Reads stay "read": listing
-	// devices or fetching docs is discovery.
 	if (toolName === "write" && xdevDispatchDevice(toolName, args)) return "execute";
 	switch (toolName) {
 		case "read":
@@ -343,8 +325,7 @@ function mapAssistantMessageUpdate(
 		case "error":
 			sessionUpdate = "agent_message_chunk";
 			text = event.assistantMessageEvent.error.errorMessage ?? "Unknown error";
-			// The surfaced error is the message's visible text: keeps the
-			// message_end / agent_end fallbacks from emitting again.
+
 			if (text.length > 0 && progress) {
 				progress.textEmitted = true;
 			}
@@ -610,8 +591,6 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 		extractStringProperty<PatternContainer>(args, "pattern") ??
 		extractStringProperty<QueryContainer>(args, "query");
 	if (subject) {
-		// Internal URLs (xd://github, skill://react, …) name their target fully;
-		// prefixing the transport tool reads as a file write to a fake path.
 		if (INTERNAL_URL_SUBJECT.test(subject)) return subject;
 		return `${toolName}: ${subject}`;
 	}
@@ -619,12 +598,6 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 	return toolName;
 }
 
-/**
- * Resolve a single raw path against cwd for an ACP location. When `cwd` is
- * omitted we pass the value through unchanged (callers without session
- * context, e.g. some legacy entry points and tests); the ACP-side caller
- * always supplies cwd so notifications carry absolute paths.
- */
 function toAcpLocationPath(value: string, cwd?: string): string {
 	if (!cwd) return value;
 	try {
@@ -634,11 +607,6 @@ function toAcpLocationPath(value: string, cwd?: string): string {
 	}
 }
 
-/**
- * Scheme-qualified subjects (`xd://`, `skill://`, `agent://`, `https://`, …)
- * are not local files: resolving them against cwd fabricates paths like
- * `/repo/xd:/github` and makes editors focus nonexistent files.
- */
 const INTERNAL_URL_SUBJECT = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 function extractToolLocations(args: unknown, cwd?: string): ToolCallLocation[] {
@@ -659,7 +627,6 @@ function extractToolLocations(args: unknown, cwd?: string): ToolCallLocation[] {
 	return locations;
 }
 
-/** Pull locations from a tool result's details (e.g. EditToolDetails.perFileResults[].path). */
 function extractToolLocationsFromResult(result: unknown, cwd?: string): ToolCallLocation[] {
 	if (typeof result !== "object" || result === null) return [];
 	const details = (result as { details?: unknown }).details;
@@ -682,7 +649,6 @@ function extractToolLocationsFromResult(result: unknown, cwd?: string): ToolCall
 	return locations;
 }
 
-/** Emit a `diff` ToolCallContent for each per-file edit result that carries oldText/newText. */
 function extractDiffToolCallContent(result: unknown): ToolCallContent[] {
 	if (typeof result !== "object" || result === null) return [];
 	const details = (result as { details?: unknown }).details;

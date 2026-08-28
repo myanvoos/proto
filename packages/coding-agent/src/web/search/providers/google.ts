@@ -162,7 +162,6 @@ async function callGoogleHtml(params: SearchParams, numResults: number): Promise
 	return page.html;
 }
 
-/** Execute a Google web search with fetch-first loading and a headless-browser fallback. */
 async function searchGoogle(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const html = await callGoogleHtml(params, numResults);
@@ -180,7 +179,6 @@ async function searchGoogle(params: SearchParams): Promise<SearchResponse> {
 	return { provider: "google", sources };
 }
 
-/** Fetch-first Google Search provider with a headless-browser fallback; no API key is required. */
 export class GoogleProvider extends SearchProvider {
 	readonly id = "google";
 	readonly label = "Google";

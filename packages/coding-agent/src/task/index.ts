@@ -1,11 +1,3 @@
-/**
- * Shared subagent delegation surface.
- *
- * Public delegation is owned by `orchestrate_spawn` and its companion tools;
- * this module keeps
- * the shared helpers: agent discovery publishing, result formatting, and the
- * type re-exports used by RPC/observer consumers.
- */
 import path from "node:path";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../prompts/tools/worker-summary.md" with { type: "text" };
@@ -14,7 +6,6 @@ import { formatBytes, formatDuration } from "../tools/render-utils";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
 import type { AgentDefinition, SingleResult } from "./types";
 
-// Re-export types and utilities
 export { discoverCommands, expandCommand, getCommand } from "./commands";
 export { discoverAgents, getAgent } from "./discovery";
 export { AgentOutputManager } from "./output-manager";
@@ -33,18 +24,12 @@ export {
 	WORKER_SUBAGENT_PROGRESS_CHANNEL,
 } from "./types";
 
-/**
- * Preview text for a child result. Falls back to "(no output)" — annotated
- * with the request count when the child actually did work, so the parent can
- * tell a no-op child from one that burned requests before being cancelled.
- */
 export function formatResultOutputFallback(result: Pick<SingleResult, "output" | "stderr" | "requests">): string {
 	const base = result.output.trim() || result.stderr.trim();
 	if (base) return base;
 	return result.requests > 0 ? `(no output) after ${result.requests} req` : "(no output)";
 }
 
-/** Build the settled-spawn summary text (status line + preview + metadata). */
 export function renderSpawnSummary(args: {
 	result: SingleResult;
 	agentName: string;
@@ -71,8 +56,7 @@ export function renderSpawnSummary(args: {
 		preview = lastNewline >= 0 ? slice.slice(0, lastNewline) : slice;
 		truncated = true;
 	}
-	// A stopped-but-adopted agent (soft-budget stop) stays messageable; tell
-	// the parent so it can resume via fleet instead of redoing the work.
+
 	const refStatus = AgentRegistry.global().get(result.id)?.status;
 	const resumable = result.aborted && (refStatus === "idle" || refStatus === "parked");
 	return prompt.render(taskSummaryTemplate, {
@@ -94,15 +78,6 @@ export function renderSpawnSummary(args: {
 	});
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Discovery publishing
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Process-level create-time discovery memo and published reload snapshots,
- * keyed by resolved cwd. Explicit plugin reloads replace the matching snapshot
- * so already-created tools advertise the latest definitions.
- */
 const discoveryMemo = new Map<string, Promise<DiscoveryResult>>();
 const discoverySnapshots = new Map<string, AgentDefinition[]>();
 let discoveryMemoFn: typeof discoverAgents | undefined;
@@ -126,7 +101,6 @@ function discoverAgentsForCreate(cwd: string): Promise<DiscoveryResult> {
 	return pending;
 }
 
-/** Rescan one cwd and publish its definitions to existing and future spawn surfaces. */
 export async function refreshAgentDiscovery(cwd: string): Promise<void> {
 	const key = path.resolve(cwd);
 	discoveryMemo.delete(key);

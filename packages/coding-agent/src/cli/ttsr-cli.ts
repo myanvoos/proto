@@ -1,15 +1,3 @@
-/**
- * TTSR CLI command handlers.
- *
- * `proto ttsr test` — feed a snippet (inline text, `--file`, or stdin) through the
- * real TTSR matching pipeline (`TtsrManager.checkSnapshot` for regex conditions,
- * `checkAstSnapshot` for ast-grep conditions) and report which rules would
- * trigger. The match context (`--source`, `--tool`, `--path`) is honored so
- * glob/AST/scope-scoped rules evaluate the same way they do in a live session.
- *
- * `proto ttsr list` — show every TTSR-registered rule the current project/user
- * config would load, with its conditions, scope, and source.
- */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AstMatchStrictness, astMatch, FileType, type GlobMatch, glob } from "@oh-my-pi/pi-natives";
@@ -38,32 +26,30 @@ interface TtsrMatchContext {
 }
 
 export interface TtsrTestArgs {
-	/** Inline snippet text. */
 	snippet?: string;
-	/** Snippet file path, or `-` for stdin. */
+
 	file?: string;
-	/** Path to a rule markdown file to test in isolation (skips project loading). */
+
 	rule?: string;
-	/** TTSR match source; when omitted, inferred from --file (tool for source files, text otherwise). */
+
 	source?: TtsrMatchSource;
-	/** Tool name when `source === "tool"` (e.g. "edit", "write"). */
+
 	tool?: string;
-	/** Candidate file path used for scope/glob matching and AST language inference. */
+
 	filePath?: string;
-	/** Show every evaluated rule, not just triggered ones. */
+
 	verbose?: boolean;
 }
 
 export interface TtsrScanArgs {
-	/** Directory to glob and scan files in. */
 	directory?: string;
-	/** Path to a rule markdown file to test in isolation (skips project loading). */
+
 	rule?: string;
-	/** Respect gitignore files while discovering scan candidates. Defaults to true. */
+
 	gitignore?: boolean;
-	/** Maximum file size to scan in bytes; 0 disables the limit. */
+
 	maxBytes?: number;
-	/** Show details. */
+
 	verbose?: boolean;
 }
 
@@ -78,9 +64,9 @@ interface RuleMatchDetail {
 	name: string;
 	path: string;
 	sourceProvider?: string;
-	/** Conditions that matched the snippet. */
+
 	matched: { regex: string[]; ast: string[] };
-	/** All conditions defined on the rule (for verbose display). */
+
 	defined: { regex: string[]; ast: string[] };
 	skippedAst?: string;
 }
@@ -94,16 +80,12 @@ interface TestReport {
 	evaluated: number;
 	triggered: RuleMatchDetail[];
 	notTriggered: RuleMatchDetail[];
-	/**
-	 * Set when a file path was supplied but the match source was inferred as
-	 * `text` (extension absent from {@link SOURCE_FILE_EXT}), so callers can
-	 * surface why a source file was evaluated against a prose context.
-	 */
+
 	inferenceNote?: string;
 }
 
 const STDIN_MARKER = "-";
-/** Extensions treated as source files for default tool-context inference. */
+
 const SOURCE_FILE_EXT =
 	/^\.(ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|swift|c|cc|cpp|h|hpp|rb|php|lua|css|scss|html|json|ya?ml|toml|md|mdc|cs|razor|cshtml|fs|fsx|vb|sh|bash|sql|zig|dart|scala|ex|exs|proto|tf)$/i;
 
@@ -180,9 +162,7 @@ async function regexMatches(rule: Rule, snippet: string): Promise<string[]> {
 	for (const pattern of rule.condition ?? []) {
 		try {
 			if (compileRuleCondition(pattern).test(snippet)) out.push(pattern);
-		} catch {
-			// Invalid regex — skip; the manager already warned at registration.
-		}
+		} catch {}
 	}
 	return out;
 }
@@ -199,18 +179,11 @@ async function astMatches(rule: Rule, snippet: string, lang: string): Promise<st
 				limit: 1,
 			});
 			if (result.totalMatches > 0) out.push(pattern);
-		} catch {
-			// Treat as no match (manager logs at runtime).
-		}
+		} catch {}
 	}
 	return out;
 }
 
-/**
- * Run the snippet through the manager's real match paths and collect, for each
- * triggered rule, which of its conditions fired. Returns triggered + the full
- * evaluated set (so callers can render not-triggered entries too).
- */
 async function evaluate(
 	manager: TtsrManager,
 	rules: readonly Rule[],
@@ -340,17 +313,11 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 
 	const snippet = await readSnippet(args);
 
-	// Infer match context: when the user points --file at a source file and
-	// doesn't pick a source, default to tool/edit with that path so tool-scoped
-	// rules (the common case, e.g. tool:edit(*.ts)) match like they would live.
 	const filePath = args.filePath ?? (args.file && args.file !== STDIN_MARKER ? path.resolve(args.file) : undefined);
 	const source: TtsrMatchSource =
 		args.source ?? (filePath && SOURCE_FILE_EXT.test(path.extname(filePath)) ? "tool" : "text");
 	const tool = args.tool ?? (source === "tool" ? "edit" : undefined);
 
-	// A supplied source file whose extension is unknown falls through to the
-	// text (prose) context, where tool-scoped rules can never match. Surface
-	// that so a false negative reads as a context mismatch, not a bad regex.
 	const inferenceNote =
 		!args.source && filePath && source === "text"
 			? `inferred --source text from '${path.extname(filePath) || filePath}' (not in the source-file extension set); pass --source tool --tool edit to evaluate tool-scoped rules`
@@ -428,9 +395,7 @@ function renderTestReport(report: TestReport, verbose: boolean, isolated: boolea
 function renderRuleDetail(detail: RuleMatchDetail, hit: boolean): void {
 	const mark = hit ? chalk.green("✓") : chalk.red("✗");
 	const condParts: string[] = [];
-	// For triggered rules, show which conditions fired. For not-triggered
-	// rules (verbose), show the rule's full condition set so users can see
-	// what would match.
+
 	const regex = hit ? detail.matched.regex : detail.defined.regex;
 	const ast = hit ? detail.matched.ast : detail.defined.ast;
 	if (regex.length > 0) {
@@ -588,9 +553,7 @@ function compileScanRulePlans(rules: Rule[]): ScanRulePlan[] {
 		for (const pattern of rule.condition ?? []) {
 			try {
 				regexConditions.push({ pattern, regex: compileRuleCondition(pattern) });
-			} catch {
-				// Same behavior as TtsrManager: invalid regex conditions are unusable.
-			}
+			} catch {}
 		}
 		const astConditions = (rule.astCondition ?? [])
 			.map(pattern => pattern.trim())

@@ -147,7 +147,6 @@ function signedUInt32(value: number): number {
 	return value > 0x7fffffff ? value - 0x100000000 : value;
 }
 
-/** Stateful Microsoft LZX decoder used by CAB folders, retaining trees and window history between 32 KiB frames. */
 export class LzxDecoder {
 	readonly #window: Uint8Array;
 	readonly #positionBase: Uint32Array;
@@ -186,7 +185,6 @@ export class LzxDecoder {
 		}
 	}
 
-	/** Decode one CAB CFDATA LZX frame while preserving the folder's dictionary and Huffman state. */
 	decompressFrame(bytes: Uint8Array, outputSize: number): Uint8Array {
 		if (!Number.isInteger(outputSize) || outputSize < 0 || outputSize > FRAME_SIZE) {
 			throw new ArchiveError(`Invalid CAB archive: LZX frame size ${outputSize} exceeds 32768 bytes`);

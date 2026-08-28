@@ -8,15 +8,10 @@ const RENDER_BACKPRESSURE_MULTIPLIER = 9;
 
 type ColorFn = (str: string) => string;
 
-/**
- * Styles Loader message fragments without changing their visible text or width.
- * Set `animated` for colorizers whose ANSI output changes over time.
- */
 export type LoaderMessageColorFn = ColorFn & {
 	readonly animated?: true;
 };
 
-/** Animates a spinner and colorized message while asynchronous work is pending. */
 export class Loader extends Text {
 	#frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 	#currentFrame = 0;
@@ -44,9 +39,6 @@ export class Loader extends Text {
 		this.start();
 	}
 
-	/** Swap the frame cycle mid-flight (e.g. switching spinners by turn phase).
-	 * Layout representatives are recomputed so same-width frames keep swapping
-	 * glyphs without rewrapping the line. */
 	setSpinnerFrames(frames: string[]) {
 		if (frames.length === 0 || frames === this.#frames) {
 			return;
@@ -89,9 +81,7 @@ export class Loader extends Text {
 		}
 
 		const frame = this.#frames[this.#currentFrame];
-		// The wrapped text carries one stable representative per frame width.
-		// Same-width frames swap only the visible glyph here; crossing widths
-		// rewraps against the representative selected by #syncText.
+
 		const sentinel = this.#layoutFrame;
 		const lines = [""];
 		const layout = this.#layout ?? [];
@@ -126,7 +116,6 @@ export class Loader extends Text {
 		}
 	}
 
-	/** Lifecycle teardown: stop the animation timer. Idempotent. */
 	dispose() {
 		this.stop();
 	}
@@ -159,14 +148,13 @@ export class Loader extends Text {
 			const frameCostMs = performance.now() - startedAt;
 			if (this.#intervalId !== timer) return;
 			const cadenceDelayMs = Math.max(0, intervalMs - frameCostMs);
-			// Idle for nine times the paint cost to keep animation at or below
-			// 10% CPU, even when a slow ConPTY write exceeds the normal cadence.
+
 			const backpressureDelayMs = frameCostMs * RENDER_BACKPRESSURE_MULTIPLIER;
 			this.#scheduleTick(intervalMs, Math.max(cadenceDelayMs, backpressureDelayMs));
 		}, delayMs);
 		this.#intervalId = timer;
 	}
-	/** Re-wrap the underlying Text only when its message or frame width changes. */
+
 	#syncText(): boolean {
 		const layoutFrame = this.#layoutFrames[this.#currentFrame];
 		this.#layoutFrame = layoutFrame;
@@ -177,10 +165,7 @@ export class Loader extends Text {
 		if (!this.#ui) {
 			return;
 		}
-		// Direct write: a loader tick changes only this component, so the TUI can
-		// update the already-positioned rows without driving the full
-		// compose/prepare/diff pipeline. Lightweight test stubs may not carry the
-		// newer API; keep their legacy component-scoped path working.
+
 		if (typeof this.#ui.requestDirectWrite === "function") {
 			this.#ui.requestDirectWrite(this);
 		} else {

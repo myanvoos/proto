@@ -9,8 +9,6 @@ import type { ChangelogGenerationResult } from "../../commit/types";
 import { toReasoningEffort } from "../../thinking";
 import { extractTextContent, extractToolCall, parseJsonPayload } from "../utils";
 
-// Build the changelog entry schema with arktype
-// Each category maps to an optional array of strings
 const changelogEntriesSchema = type({
 	"Breaking Changes?": "string[]",
 	"Added?": "string[]",

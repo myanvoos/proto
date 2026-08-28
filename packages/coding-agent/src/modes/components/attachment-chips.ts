@@ -17,31 +17,18 @@ import { cachedImageDimensions, setCachedImageDimensions } from "../image-refere
 import { theme } from "../theme/theme";
 import type { ComposerChipDescriptor, CustomEditor, TextAttachment } from "./custom-editor";
 
-/** Chip card geometry (mirrors omp2): a 12x4 content area inside a 1-cell rounded border. */
 const INNER_COLS = 12;
 const INNER_ROWS = 4;
 const CARD_COLS = INNER_COLS + 2;
 const CARD_GAP = 2;
 const RESET_FG = "\x1b[39m";
-/** Symbol-keyed PNG conversion cache on the draft image (same pattern as the dimension
- *  probe cache): Kitty's `f=100` transmit accepts only PNG, so non-PNG attachments
- *  (pastes are usually re-encoded JPEG/WebP) convert before transmit — the same pipeline
- *  the transcript uses. `null` = conversion in flight or failed. */
+
 const kImagePng = Symbol("proto.imagePng");
 
 interface ImageContentWithPng extends ImageContent {
 	[kImagePng]?: ImageContent | null;
 }
 
-/**
- * The composer attachment band: one rounded card per staged attachment, rendered directly above
- * the prompt box. Image cards show a live thumbnail (Kitty Unicode placeholders — the only
- * protocol whose output is plain text cells and therefore composable inside a border row) with
- * the pixel dimensions as the bottom caption; text-paste cards show the leading snippet with a
- * `+N lines` / `N chars` caption. The top caption is the same `<icon> #N` token that sits in
- * the editor buffer, in the same identity color. Cards that no longer fit the terminal width
- * are omitted rather than wrapped. Renders to nothing while no attachment is staged.
- */
 export class AttachmentChipsBand implements Component {
 	constructor(
 		private readonly editor: CustomEditor,
@@ -85,7 +72,6 @@ export class AttachmentChipsBand implements Component {
 		];
 	}
 
-	/** Horizontal border with an optional centered, bold caption padded by one space per side. */
 	#borderRow(sgr: string, caption: string, edge: "top" | "bottom"): string {
 		const left = theme.symbol(edge === "top" ? "boxRound.topLeft" : "boxRound.bottomLeft");
 		const right = theme.symbol(edge === "top" ? "boxRound.topRight" : "boxRound.bottomRight");
@@ -98,8 +84,6 @@ export class AttachmentChipsBand implements Component {
 		return `${sgr}${left}${horizontal.repeat(leftFill)} \x1b[1m${cut}\x1b[22m ${horizontal.repeat(rightFill)}${right}${RESET_FG}`;
 	}
 
-	/** Pixel dimensions for the caption/thumbnail fit, probed once from the header bytes and
-	 *  cached on the image object (`null` = undecodable header, never re-probed). */
 	#imageDims(image: ImageContent): { width: number; height: number } | null {
 		let dims = cachedImageDimensions(image);
 		if (dims === undefined) {
@@ -110,9 +94,6 @@ export class AttachmentChipsBand implements Component {
 		return dims;
 	}
 
-	/** 12x4 thumbnail as Kitty Unicode-placeholder cell rows, centered; any other protocol (or a
-	 *  budget-suppressed image) falls back to a centered icon — direct placements, SIXEL, and
-	 *  iTerm2 output cursor-addressed sequences that cannot be composed into a border row. */
 	#imageInterior(image: ImageContent, dims: { width: number; height: number } | null): string[] {
 		if (dims && TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders) {
 			const display = this.#kittyDisplayImage(image);
@@ -121,8 +102,7 @@ export class AttachmentChipsBand implements Component {
 				const imageId = budget.acquireId(
 					`chip:${display.mimeType}:${display.data.length}:${display.data.slice(0, 32)}`,
 				);
-				// observe() keeps chip thumbnails inside the shared live-graphics budget so a
-				// paste-heavy session cannot pile up placements the way unbudgeted images would.
+
 				if (!budget.observe(imageId)) {
 					const result = renderImage(
 						display.data,
@@ -145,9 +125,6 @@ export class AttachmentChipsBand implements Component {
 		return [" ".repeat(INNER_COLS), iconRow, " ".repeat(INNER_COLS), " ".repeat(INNER_COLS)];
 	}
 
-	/** PNG form of `image` for the Kitty transmit; non-PNG sources convert asynchronously.
-	 *  Returns undefined while the conversion is pending (or after it failed), letting the
-	 *  caller fall back to the icon; a finished conversion triggers a repaint. */
 	#kittyDisplayImage(image: ImageContent): ImageContent | undefined {
 		if (image.mimeType === "image/png") return image;
 		const cached = (image as ImageContentWithPng)[kImagePng];
@@ -162,7 +139,6 @@ export class AttachmentChipsBand implements Component {
 		return undefined;
 	}
 
-	/** Center a placeholder cell grid (≤ 12 columns, ≤ 4 rows) inside the content area. */
 	#centerGrid(lines: string[]): string[] {
 		const rows: string[] = [];
 		const topPad = Math.floor((INNER_ROWS - lines.length) / 2);
@@ -178,7 +154,6 @@ export class AttachmentChipsBand implements Component {
 		return rows;
 	}
 
-	/** Leading 4 rows x 12 cols of the pasted text, muted. */
 	#textInterior(entry: TextAttachment): string[] {
 		const lines = entry.content.split("\n");
 		const rows: string[] = [];

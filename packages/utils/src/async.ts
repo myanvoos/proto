@@ -1,8 +1,3 @@
-/**
- * Wrap a promise with a timeout and optional abort signal.
- * Rejects with the given message if the timeout fires first.
- * Cleans up all listeners on settlement.
- */
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string, signal?: AbortSignal): Promise<T> {
 	if (signal?.aborted) {
 		const reason = signal.reason instanceof Error ? signal.reason : new Error("Aborted");
@@ -49,20 +44,12 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string,
 	return wrapped;
 }
 
-/**
- * Coalesces rapid-fire writes into one deferred batch. `push` queues a value
- * and returns a promise for the batch flush; the first push of a batch arms a
- * timer (`delayMs`, or a microtask at 0), and every push before it fires joins
- * the same batch and shares the same promise. Used to keep hot paths off
- * synchronous storage (prompt history, model perf).
- */
 export class AsyncDrain<T> {
 	#queue?: T[];
 	#promise = Promise.resolve();
 
 	constructor(readonly delayMs: number = 0) {}
 
-	/** Queue `value`; `hnd` receives the whole batch when the window closes. */
 	push(value: T, hnd: (values: T[]) => Promise<void> | void): Promise<void> {
 		let queue = this.#queue;
 		if (!queue) {

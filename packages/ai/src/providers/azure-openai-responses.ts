@@ -55,7 +55,6 @@ function resolveDeploymentName(model: Model<"azure-openai-responses">, options?:
 	return mappedDeployment ?? model.id;
 }
 
-// Azure OpenAI Responses-specific options
 export interface AzureOpenAIResponsesOptions extends StreamOptions {
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
@@ -76,9 +75,6 @@ type AzureOpenAIResponsesSamplingParams = ResponseCreateParamsStreaming & {
 	repetition_penalty?: number;
 };
 
-/**
- * Generate function for Azure OpenAI Responses API
- */
 export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"> = (
 	model: Model<"azure-openai-responses">,
 	context: Context,
@@ -91,7 +87,6 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 	}
 	const stream = new AssistantMessageEventStream();
 
-	// Start async processing
 	(async () => {
 		const startTime = performance.now();
 		let firstTokenTime: number | undefined;
@@ -178,9 +173,7 @@ export const streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses"
 						body: params,
 						signal: requestSignal,
 						fetch: options?.fetch,
-						// Transient 408/429/5xx get Retry-After-aware transport retries;
-						// the first-event watchdog aborts `requestSignal`, so retries
-						// cannot extend the caller's deadline.
+
 						onSseEvent: rawSseObserver,
 					});
 					openaiStream = handle.events;
@@ -313,15 +306,6 @@ function modelForAzureEndpoint(
 	return { ...model, supportsComputerUse: false };
 }
 
-/**
- * Replicates the `AzureOpenAI` SDK client's request shape for `/responses`:
- * a string api key becomes a single `api-key` header (azure.mjs `authHeaders`;
- * never `Authorization: Bearer`), `api-version` rides as a query parameter
- * (azure.mjs constructor `defaultQuery`), and `/responses` is not a
- * deployment-scoped path, so no `/deployments/{model}` URL rewriting applies.
- * Custom model/options headers may override the auth header, matching the SDK's
- * `buildHeaders` precedence.
- */
 function buildAzureResponsesRequest(
 	model: Model<"azure-openai-responses">,
 	apiKey: string,
@@ -376,8 +360,7 @@ function buildParams(
 		input: messages,
 		stream: true,
 		prompt_cache_key: getOpenAIPromptCacheKey(options),
-		// Encrypted reasoning replay (applyResponsesReasoningParams) requires
-		// stateless responses, matching the openai provider.
+
 		store: false,
 	};
 
@@ -392,8 +375,6 @@ function buildParams(
 					serializedTools.push({ type: "computer" });
 					continue;
 				}
-				// Fall through: unsupported models get the computer tool as a
-				// plain function tool so function-calling models can drive it.
 			} else if (tool.native !== undefined) continue;
 			serializedTools.push({
 				type: "function",

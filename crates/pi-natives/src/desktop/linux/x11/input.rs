@@ -1151,8 +1151,7 @@ impl UInputDevice {
 
 	fn emit(&mut self, type_: u16, code: u16, value: i32) -> CoreResult<()> {
 		let event = InputEvent { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, type_, code, value };
-		// SAFETY: InputEvent is a C-compatible plain-data kernel ABI struct and the
-		// slice is bounded to its exact size.
+
 		let bytes = unsafe {
 			std::slice::from_raw_parts(
 				(&event as *const InputEvent).cast::<u8>(),
@@ -1209,8 +1208,6 @@ const BTN_LEFT: u16 = 272;
 const BTN_RIGHT: u16 = 273;
 const BTN_MIDDLE: u16 = 274;
 
-// `libc::Ioctl` is `c_ulong` on glibc but `c_int` on musl; the wrapping cast
-// mirrors how C truncates request codes on 32-bit-int ABIs.
 const fn ioc(dir: u64, type_: u64, nr: u64, size: u64) -> libc::Ioctl {
 	((dir << 30) | (type_ << 8) | nr | (size << 16)) as libc::Ioctl
 }
@@ -1234,8 +1231,6 @@ const fn ui_dev_setup() -> libc::Ioctl {
 }
 
 fn ioctl_int(fd: libc::c_int, request: libc::Ioctl, value: u16) -> CoreResult<()> {
-	// SAFETY: fd is an open uinput descriptor and this request takes an integer
-	// argument by value.
 	let result = unsafe { libc::ioctl(fd, request, libc::c_ulong::from(value)) };
 	if result < 0 {
 		Err(DesktopError::input_failed(format!(
@@ -1247,8 +1242,6 @@ fn ioctl_int(fd: libc::c_int, request: libc::Ioctl, value: u16) -> CoreResult<()
 	}
 }
 fn ioctl_none(fd: libc::c_int, request: libc::Ioctl) -> CoreResult<()> {
-	// SAFETY: fd is an open uinput descriptor and this request takes no third
-	// argument.
 	let result = unsafe { libc::ioctl(fd, request) };
 	if result < 0 {
 		Err(DesktopError::input_failed(format!(
@@ -1260,7 +1253,6 @@ fn ioctl_none(fd: libc::c_int, request: libc::Ioctl) -> CoreResult<()> {
 	}
 }
 fn ioctl_ptr(fd: libc::c_int, request: libc::Ioctl, setup: &UInputSetup) -> CoreResult<()> {
-	// SAFETY: setup points to a valid UInputSetup for the duration of the ioctl.
 	let result = unsafe { libc::ioctl(fd, request, setup as *const UInputSetup) };
 	if result < 0 {
 		Err(DesktopError::input_failed(format!(

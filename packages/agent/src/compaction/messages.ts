@@ -22,19 +22,18 @@ export interface CustomMessage<T = unknown> {
 	content: string | (TextContent | ImageContent)[];
 	display: boolean;
 	details?: T;
-	/** Who initiated this message for billing/attribution semantics. */
+
 	attribution?: MessageAttribution;
 	timestamp: number;
 }
 
-/** Legacy hook message type (pre-extensions). Kept for session migration. */
 export interface HookMessage<T = unknown> {
 	role: "hookMessage";
 	customType: string;
 	content: string | (TextContent | ImageContent)[];
 	display: boolean;
 	details?: T;
-	/** Who initiated this message for billing/attribution semantics. */
+
 	attribution?: MessageAttribution;
 	timestamp: number;
 }
@@ -51,12 +50,12 @@ export interface CompactionSummaryMessage {
 	summary: string;
 	shortSummary?: string;
 	tokensBefore: number;
-	/** Estimated context tokens after the rewrite (display metadata). */
+
 	tokensAfter?: number;
-	/** Harness compaction method that produced this summary (display metadata). */
+
 	method?: string;
 	providerPayload?: ProviderPayload;
-	/** Post-pass dead-end warning attached to this compaction (progress guard). */
+
 	warning?: string;
 	timestamp: number;
 }
@@ -89,13 +88,7 @@ export function renderBranchSummaryContext(summary: string): string {
 export function renderCompactionSummaryContext(summary: string): string {
 	return prompt.render(COMPACTION_SUMMARY_TEMPLATE, { summary });
 }
-/**
- * Wrap a handoff document for injection into the successor context. Unlike the
- * generic compaction wrapper, this names the mechanism and pins authorship —
- * the document was written by a prior instance in its own voice, so without
- * this framing the successor misreads first-person "Next Steps" as fresh user
- * instructions (or tries to write the handoff again).
- */
+
 export function renderHandoffSummaryContext(summary: string): string {
 	return prompt.render(HANDOFF_SUMMARY_TEMPLATE, { summary });
 }
@@ -109,14 +102,13 @@ export function createBranchSummaryMessage(summary: string, fromId: string, time
 	};
 }
 
-/** Optional metadata for {@link createCompactionSummaryMessage}. */
 export interface CompactionSummaryMessageOptions {
 	shortSummary?: string;
 	providerPayload?: ProviderPayload;
 	warning?: string;
-	/** Harness compaction method that produced this summary (e.g. "remote", "soft", "handoff"). */
+
 	method?: string;
-	/** Estimated context tokens after the rewrite, for display alongside `tokensBefore`. */
+
 	tokensAfter?: number;
 }
 
@@ -168,15 +160,6 @@ function isCoreCompactionMessage(message: AgentMessage): message is AgentMessage
 	);
 }
 
-/**
- * Transform a single core-domain agent message to its LLM form; `undefined`
- * drops it from the provider request.
- *
- * Single source of truth for the core roles (user/developer/assistant/
- * toolResult) and the compaction messages owned by this package. Embedders
- * with their own app messages (e.g. the coding agent) handle their custom
- * roles and delegate every core role here instead of duplicating the conversion.
- */
 export function convertMessageToLlm(message: AgentMessage): Message | undefined {
 	if (isCoreCompactionMessage(message)) {
 		switch (message.role) {
@@ -242,13 +225,6 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 	}
 }
 
-/**
- * Default compaction-domain transformer.
- *
- * Embedders with their own app messages should pass a richer transformer through
- * `SummaryOptions.convertToLlm`; this default intentionally preserves only the
- * core LLM roles and the compaction messages owned by this package.
- */
 export function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 	return messages.map(convertMessageToLlm).filter(message => message !== undefined);
 }

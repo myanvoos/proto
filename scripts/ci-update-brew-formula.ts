@@ -1,13 +1,4 @@
 #!/usr/bin/env bun
-//
-// Render the Homebrew formula for `proto` from a published GitHub release and write
-// it to a tap checkout. The release publishes per-platform bare binaries
-// (proto-<platform>-<arch>); this reads their sha256 digests straight from the
-// release metadata so the formula never drifts from the shipped assets.
-//
-// Usage:
-//   bun scripts/ci-update-brew-formula.ts <tag> --out <path/to/Formula/proto.rb>
-//   bun scripts/ci-update-brew-formula.ts v15.10.3        # prints to stdout
 
 import { $ } from "bun";
 
@@ -52,19 +43,7 @@ function sha256For(assets: readonly ReleaseAsset[], name: string): string {
 	return asset.digest.slice("sha256:".length);
 }
 
-// `${...}` is JS interpolation; the literal `#{version}` / `#{bin}` below are
-// Ruby interpolations Homebrew resolves when it evaluates the formula.
 export function renderFormula(version: string, sums: Record<string, string>): string {
-	// Each `url` carries `using: :nounzip` because the release assets are bare
-	// Mach-O/ELF executables, not archives. Without it Homebrew's default
-	// CurlDownloadStrategy routes through UnpackStrategy::Uncompressed#extract_nestedly,
-	// which nests the file outside the staging CWD; `Dir["proto-*"].first` then
-	// returns `nil` and `bin.install nil => "proto"` raises.
-	//
-	// `with_env(HOME: buildpath)` redirects the CLI's `os.homedir()` lookup to
-	// the writable staging dir so `generate_completions_from_executable` does
-	// not touch the real `/Users/<user>/.proto` (denied by Homebrew's sandbox
-	// profile, which would otherwise fail the popen).
 	return `class Proto < Formula
   desc "${DESC}"
   homepage "${HOMEPAGE}"

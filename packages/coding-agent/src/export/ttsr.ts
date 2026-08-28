@@ -1,10 +1,3 @@
-/**
- * Time Traveling Stream Rules (TTSR) Manager
- *
- * Manages rules that get injected mid-stream when their condition pattern matches
- * the agent's output. When a match occurs, the stream is aborted, the rule is
- * injected as a system reminder, and the request is retried.
- */
 import * as path from "node:path";
 import { AstMatchStrictness, astMatch } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -13,14 +6,13 @@ import type { TtsrSettings } from "../config/settings";
 
 export type TtsrMatchSource = "text" | "thinking" | "tool";
 
-/** Context about the stream content currently being checked against TTSR rules. */
 export interface TtsrMatchContext {
 	source: TtsrMatchSource;
-	/** Tool name for tool argument deltas, e.g. "edit" or "write". */
+
 	toolName?: string;
-	/** Candidate file paths associated with the current stream chunk. */
+
 	filePaths?: string[];
-	/** Stable key to isolate buffering (for example a tool call ID). */
+
 	streamKey?: string;
 }
 
@@ -40,15 +32,13 @@ interface TtsrScope {
 interface TtsrEntry {
 	rule: Rule;
 	conditions: RegExp[];
-	/** ast-grep pattern strings; matched only against edit/write tool snapshots. */
+
 	astConditions: string[];
 	scope: TtsrScope;
 	globalPathGlobs?: Bun.Glob[];
 }
 
-/** Tracks when a rule was last injected (for repeat gating). */
 interface InjectionRecord {
-	/** Message count (turn index) when the rule was last injected. */
 	lastInjectedAt: number;
 }
 
@@ -74,7 +64,7 @@ export class TtsrManager {
 	readonly #rules = new Map<string, TtsrEntry>();
 	readonly #injectionRecords = new Map<string, InjectionRecord>();
 	readonly #buffers = new Map<string, string>();
-	/** Last snapshot evaluated for AST conditions, keyed by stream key, to dedupe matcher runs. */
+
 	readonly #lastAstSnapshots = new Map<string, string>();
 	#messageCount = 0;
 	#canMatchText = false;
@@ -84,7 +74,6 @@ export class TtsrManager {
 		this.#settings = { ...DEFAULT_SETTINGS, ...settings };
 	}
 
-	/** Check if a rule can be triggered based on repeat settings. */
 	#canTrigger(ruleName: string): boolean {
 		const record = this.#injectionRecords.get(ruleName);
 		if (!record) {
@@ -300,7 +289,6 @@ export class TtsrManager {
 		return false;
 	}
 
-	/** Add a TTSR rule to be monitored. */
 	addRule(rule: Rule): boolean {
 		if (!this.#settings.enabled) {
 			return false;
@@ -345,12 +333,6 @@ export class TtsrManager {
 		return true;
 	}
 
-	/**
-	 * Add a stream chunk to its scoped buffer and return matching rules.
-	 *
-	 * Buffers are isolated by source/tool key so matches don't bleed across
-	 * assistant prose, thinking text, and unrelated tool argument streams.
-	 */
 	checkDelta(delta: string, context: TtsrMatchContext): Rule[] {
 		if (context.source === "text" && !this.#canMatchText) {
 			return [];
@@ -364,21 +346,12 @@ export class TtsrManager {
 		return this.#matchBuffer(nextBuffer, context);
 	}
 
-	/**
-	 * Replace the scoped buffer with a tool-provided normalized snapshot and
-	 * return matching rules.
-	 *
-	 * Used for tools exposing `matcherDigest`: the digest is recomputed from the
-	 * full (partial) arguments on every delta, so it replaces the buffer instead
-	 * of being appended to it.
-	 */
 	checkSnapshot(snapshot: string, context: TtsrMatchContext): Rule[] {
 		const bufferKey = this.#bufferKey(context);
 		this.#buffers.set(bufferKey, snapshot);
 		return this.#matchBuffer(snapshot, context);
 	}
 
-	/** Derive an ast-grep language alias from candidate paths (bare extension, e.g. "ts"), if any. */
 	#deriveLang(filePaths: string[] | undefined): string | undefined {
 		for (const filePath of filePaths ?? []) {
 			const ext = path.extname(this.#normalizePath(filePath));
@@ -389,15 +362,6 @@ export class TtsrManager {
 		return undefined;
 	}
 
-	/**
-	 * Evaluate ast-grep `astCondition` rules against a reconstructed tool snapshot.
-	 *
-	 * Only edit/write tool streams reach here (AST conditions need a language, which
-	 * we infer from the file extension on the tool's path argument). The snapshot is
-	 * matched in memory by the native engine (`astMatch`), so this is async and
-	 * intentionally throttled: identical consecutive snapshots (the common case when
-	 * only non-source arguments change between deltas) are skipped.
-	 */
 	async checkAstSnapshot(snapshot: string, context: TtsrMatchContext): Promise<Rule[]> {
 		if (!this.#settings.enabled || context.source !== "tool") {
 			return [];
@@ -426,7 +390,6 @@ export class TtsrManager {
 			return [];
 		}
 
-		// Throttle: skip re-running the matcher when the source content is unchanged.
 		const bufferKey = this.#bufferKey(context);
 		if (this.#lastAstSnapshots.get(bufferKey) === snapshot) {
 			return [];
@@ -468,7 +431,6 @@ export class TtsrManager {
 		}
 	}
 
-	/** True when any registered rule carries ast-grep conditions. */
 	hasAstRules(): boolean {
 		if (!this.#settings.enabled) {
 			return false;
@@ -513,12 +475,10 @@ export class TtsrManager {
 		return matches;
 	}
 
-	/** Mark rules as injected (won't trigger again until conditions allow). */
 	markInjected(rulesToMark: Rule[]): void {
 		this.markInjectedByNames(rulesToMark.map(rule => rule.name));
 	}
 
-	/** Mark rule names as injected (won't trigger again until conditions allow). */
 	markInjectedByNames(ruleNames: string[]): void {
 		for (const rawName of ruleNames) {
 			const ruleName = rawName.trim();
@@ -539,12 +499,10 @@ export class TtsrManager {
 		}
 	}
 
-	/** Get names of all injected rules (for persistence). */
 	getInjectedRuleNames(): string[] {
 		return Array.from(this.#injectionRecords.keys());
 	}
 
-	/** Restore injected state from a list of rule names. */
 	restoreInjected(ruleNames: string[]): void {
 		for (const name of ruleNames) {
 			this.#injectionRecords.set(name, { lastInjectedAt: 0 });
@@ -554,13 +512,11 @@ export class TtsrManager {
 		}
 	}
 
-	/** Reset stream buffers (called on new turn). */
 	resetBuffer(): void {
 		this.#buffers.clear();
 		this.#lastAstSnapshots.clear();
 	}
 
-	/** Check if any TTSR rules are registered. */
 	hasRules(): boolean {
 		if (!this.#settings.enabled) {
 			return false;
@@ -568,22 +524,18 @@ export class TtsrManager {
 		return this.#rules.size > 0;
 	}
 
-	/** All rules currently registered for TTSR monitoring, in registration order. */
 	getRules(): Rule[] {
 		return Array.from(this.#rules.values(), entry => entry.rule);
 	}
 
-	/** Increment message counter (call after each turn). */
 	incrementMessageCount(): void {
 		this.#messageCount++;
 	}
 
-	/** Get current message count. */
 	getMessageCount(): number {
 		return this.#messageCount;
 	}
 
-	/** Get settings. */
 	getSettings(): Required<TtsrSettings> {
 		return this.#settings;
 	}

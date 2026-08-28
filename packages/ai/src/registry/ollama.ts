@@ -4,11 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const OLLAMA_DOCS_URL = "https://github.com/ollama/ollama/blob/main/docs/api.md";
 
-/**
- * Login to Ollama.
- *
- * Returns a trimmed API key/token string. Empty string means local no-auth mode.
- */
 export async function loginOllama(options: OAuthController): Promise<string> {
 	if (options.signal?.aborted) {
 		throw new AIError.LoginCancelledError();

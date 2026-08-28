@@ -1,24 +1,8 @@
-/**
- * Trajectory view-model: reconstructs the session's model-visible history as a
- * flat, inspectable ledger of steps grouped into turns.
- *
- * Mirrors the DeepSeek-harness trajectory principle — "model-visible means
- * logged": every entry type that reached the model context (or shaped it)
- * surfaces as a step with source, timing, and content, so the same structure
- * feeds the interactive `/trajectory` view, the OpenTelemetry span export,
- * and the prime-rl episode export.
- *
- * Pure module: no TUI, no I/O, no session-manager dependency — callers hand in
- * entries they already hold (the interactive TUI must NOT reopen the session
- * JSONL while the live SessionManager owns the writer lock).
- */
 import type { AssistantMessage, Message, TextContent, ThinkingContent, ToolCall, Usage } from "@oh-my-pi/pi-ai";
 import type { SessionEntry, SessionHeader } from "../session-entries";
 
-/** Coarse provenance of a step, rendered as the ledger badge and used for filters. */
 export type TrajectorySource = "user" | "assistant" | "tool" | "compaction" | "system" | "meta";
 
-/** Aggregated token/cost rollup across a turn or a whole trajectory. */
 export interface TrajectoryUsageTotals {
 	requests: number;
 	input: number;
@@ -44,54 +28,48 @@ export function emptyTrajectoryUsageTotals(): TrajectoryUsageTotals {
 }
 
 export interface TrajectoryStep {
-	/** 1-based position in the flat ledger. */
 	index: number;
 	entryId: string;
 	source: TrajectorySource;
-	/** Fine-grained shape: text | steer | injected | chat | tool_call | tool_result | compaction | model_change | … */
+
 	kind: string;
-	/** Provider stop reason verbatim (chat steps). */
+
 	stopReason?: string;
-	/** Provider error message when the chat ended in an error (chat steps). */
+
 	errorText?: string;
-	/** Visible assistant text without thinking/tool annotations (chat steps). */
+
 	text?: string;
-	/** Short row label, e.g. the tool name or role. */
+
 	title: string;
-	/** Secondary label, e.g. provider/model for a chat step. */
+
 	detail?: string;
-	/** Epoch milliseconds; 0 when the entry carried no usable timestamp. */
+
 	timestampMs: number;
-	/** Wall-clock duration in ms (chat request duration / paired tool execution). */
+
 	durationMs?: number;
-	/** Time to first token in ms (chat steps). */
+
 	ttftMs?: number;
-	/** Provider-reported usage (chat steps). */
+
 	usage?: Usage;
 	isError: boolean;
-	/** Present on tool_call steps; pairs call ↔ result. */
+
 	toolCallId?: string;
-	/** Result payload once the matching toolResult arrived (tool_call steps). */
+
 	resultText?: string;
-	/** Single-line sanitized preview for the ledger. */
+
 	preview: string;
-	/** Full text content for the inspector. */
+
 	content: string;
-	/** Turn this step belongs to; 0 = before the first real user turn. */
+
 	turn: number;
 }
 
-/**
- * Ledger end of a step: tool calls close when their paired result lands
- * (timestampMs + durationMs), everything else closes at its own timestamp.
- */
 function stepEndMs(step: TrajectoryStep): number {
 	if (step.kind === "tool_call" && step.durationMs !== undefined) return step.timestampMs + step.durationMs;
 	return step.timestampMs;
 }
 
 export interface TrajectoryTurn {
-	/** 1-based turn number. */
 	index: number;
 	startMs: number;
 	endMs: number;
@@ -104,12 +82,12 @@ export interface Trajectory {
 	header: Pick<SessionHeader, "id" | "title" | "cwd"> | null;
 	steps: TrajectoryStep[];
 	turns: TrajectoryTurn[];
-	/** Turn count (steps with turn === 0 sit outside any turn). */
+
 	turnCount: number;
 	totals: TrajectoryUsageTotals;
 	startMs: number;
 	endMs: number;
-	/** True when any assistant/tool step ended in an error. */
+
 	hasErrors: boolean;
 }
 
@@ -118,7 +96,6 @@ function entryTimestampMs(entry: SessionEntry): number {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Collapse a message/content-array payload to plain text (text + thinking blocks). */
 export function contentToText(content: Message["content"]): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
@@ -148,7 +125,6 @@ function toolCallsOf(message: AssistantMessage): ToolCall[] {
 	return message.content.filter((block): block is ToolCall => block.type === "toolCall");
 }
 
-/** First non-empty line of a text blob, trimmed for ledger display. Exported domain concept shared by the view and exporters. */
 export function firstLine(text: string): string {
 	return (text.split("\n").find(candidate => candidate.trim().length > 0) ?? "").trim();
 }
@@ -176,19 +152,12 @@ function pushStep(state: BuildState, step: Omit<TrajectoryStep, "index" | "turn"
 	state.steps.push({ ...step, index, turn: state.currentTurn });
 }
 
-/**
- * Reconstruct the trajectory ledger from session entries.
- *
- * Turn boundaries: a real user message (not synthetic, not steering). All
- * following assistant/tool activity belongs to the open turn; pre-turn
- * material (session_init, early meta) lands on turn 0 ("Preamble").
- */
 export function buildTrajectory(
 	entries: readonly SessionEntry[],
 	header: Pick<SessionHeader, "id" | "title" | "cwd"> | null = null,
 ): Trajectory {
 	const state: BuildState = { steps: [], currentTurn: 0, hasErrors: false };
-	/** toolCallId → index of the emitted tool_call step awaiting its result. Dynamic pairing state, not a static table. */
+
 	const pendingToolCalls = new Map<string, number>();
 
 	for (const entry of entries) {
@@ -332,9 +301,6 @@ export function buildTrajectory(
 				});
 				break;
 			default:
-				// thinking_level_change, service_tier_change, label, title_change,
-				// ttsr_injection, credential_pin, custom: shaping metadata, not
-				// model-visible content — intentionally absent from the ledger.
 				break;
 		}
 	}

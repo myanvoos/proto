@@ -1,4 +1,3 @@
-/** User-facing thinking levels, ordered least to most intensive. */
 export const enum Effort {
 	Minimal = "minimal",
 	Low = "low",

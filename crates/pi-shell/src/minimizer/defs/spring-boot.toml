@@ -1,5 +1,5 @@
-# Spring Boot application startup output (via `spring-boot:run` or standalone).
-# Command name is keyed off 'spring-boot'.
+
+
 
 [filters.spring-boot]
 description = "Compact Spring Boot startup output"

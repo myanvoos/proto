@@ -1,17 +1,3 @@
-/**
- * Application Default Credentials (ADC) resolution for Vertex AI.
- *
- * Replaces `google-auth-library` with a direct WebCrypto + REST implementation.
- * Sources, in priority order:
- *   1. `GOOGLE_APPLICATION_CREDENTIALS` env → file with `type: "service_account"` (RS256 JWT exchange)
- *     or `type: "authorized_user"` (refresh-token exchange).
- *   2. `~/.config/gcloud/application_default_credentials.json` (user ADC, same authorized_user flow).
- *   3. GCE / Cloud Run metadata server (`metadata.google.internal`).
- *
- * Tokens are cached per source key and refreshed `GOOGLE_VERTEX_REFRESH_SKEW_MS` before expiry
- * (default 60s). Concurrent callers waiting on a refresh share the same in-flight promise.
- */
-
 import { Buffer } from "node:buffer";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -269,32 +255,18 @@ async function resolveAccessTokenUncached(
 	);
 }
 
-/**
- * Bound for the detached (signal-free) shared token resolution: a hung OAuth
- * exchange or metadata fetch must not pin the inflight slot forever — every
- * later call would await the stuck promise until process restart.
- */
 const SHARED_TOKEN_RESOLVE_TIMEOUT_MS = 30_000;
 
-/**
- * Returns a Bearer access token suitable for the `Authorization` header on Vertex AI calls.
- * The token is cached in module scope and refreshed `GOOGLE_VERTEX_REFRESH_SKEW_MS` ms before it expires.
- */
 export async function getVertexAccessToken(options?: { signal?: AbortSignal; fetch?: FetchImpl }): Promise<string> {
-	// An explicit access token (e.g. `gcloud auth print-access-token`) bypasses the cache so a
-	// refreshed env token takes effect immediately. `CLOUDSDK_AUTH_ACCESS_TOKEN` is gcloud's own
-	// override var; `GOOGLE_CLOUD_ACCESS_TOKEN` is the proto-facing alias.
 	const explicitToken = Bun.env.GOOGLE_CLOUD_ACCESS_TOKEN || Bun.env.CLOUDSDK_AUTH_ACCESS_TOKEN;
 	if (explicitToken) return explicitToken;
 	const fetchImpl = options?.fetch ?? globalThis.fetch.bind(globalThis);
 	const skew = getRefreshSkewMs();
 	const now = Date.now();
 
-	// Best-effort cache key probe: we don't know the source until we resolve, but cached entries
-	// are keyed by their resolved source. Try every cached source first.
 	for (const [source, cached] of tokenCache) {
 		if (cached.expiresAtMs - skew > now) return cached.token;
-		// expired entry — drop and re-resolve
+
 		tokenCache.delete(source);
 	}
 
@@ -302,9 +274,6 @@ export async function getVertexAccessToken(options?: { signal?: AbortSignal; fet
 	const existing = inflight.get(cacheKey);
 	if (existing) return raceWithSignal(existing, options?.signal);
 
-	// Deliberately resolve without any caller's signal: the in-flight promise is shared
-	// by every concurrent caller, so aborting one request must not fail the whole batch.
-	// Each caller races its own signal against the shared promise instead.
 	const promise = (async () => {
 		try {
 			const { source, token } = await resolveAccessTokenUncached(
@@ -323,7 +292,6 @@ export async function getVertexAccessToken(options?: { signal?: AbortSignal; fet
 	return raceWithSignal(promise, options?.signal);
 }
 
-/** Test seam: clears every cached token. */
 export function __resetVertexTokenCache(): void {
 	tokenCache.clear();
 	inflight.clear();

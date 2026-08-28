@@ -1,6 +1,3 @@
-/**
- * Extension runner - executes extensions and manages their lifecycle.
- */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	AgentMessage,
@@ -73,7 +70,6 @@ import type {
 	UserPythonEventResult,
 } from "./types";
 
-/** Combined result from all before_agent_start handlers */
 interface BeforeAgentStartCombinedResult {
 	messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
 	systemPrompt?: string[];
@@ -96,15 +92,6 @@ function normalizeHandlerTimeout(timeoutMs: number): number {
 	return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : EXTENSION_HANDLER_TIMEOUT_MS;
 }
 
-/**
- * Dedicated cap for `session_shutdown` handlers. The generic 30s budget is
- * appropriate for events extensions can observe (e.g. `session_start`,
- * `before_provider_request`), but `session_shutdown` is fire-and-forget
- * teardown — extensions receive no result and the user has already asked to
- * leave. A hung handler (e.g. an extension waiting on a stuck IPC pipe to a
- * companion app) MUST NOT hold Ctrl+C / `/exit` hostage for the full window.
- * See issue #2600.
- */
 export const SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS = 2_000;
 let sessionShutdownHandlerTimeoutMs = SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS;
 
@@ -112,8 +99,6 @@ export function testSetSessionShutdownHandlerTimeoutMs(timeoutMs: number): void 
 	sessionShutdownHandlerTimeoutMs = timeoutMs;
 }
 
-/** Per-event handler budget. Defaults to the generic cap; `session_shutdown`
- *  uses its own short cap so teardown stays prompt. */
 function handlerTimeoutForEvent(eventType: string): number {
 	return eventType === "session_shutdown" ? sessionShutdownHandlerTimeoutMs : extensionHandlerTimeoutMs;
 }
@@ -205,12 +190,6 @@ function createHandlerUIContext(
 	});
 }
 
-/**
- * Scope `ctx` to a single handler run without spreading it: `{ ...ctx }` would
- * snapshot live accessors (notably the `model` getter), so a handler calling
- * `pi.setModel()` and then reading `ctx.model` would see a stale model.
- * Prototype delegation keeps every getter live while overriding `ui`.
- */
 function createHandlerContext(
 	ctx: ExtensionContext,
 	handlerSignal: AbortSignal,
@@ -225,18 +204,6 @@ function createHandlerContext(
 	return scoped;
 }
 
-/**
- * Race `work` against a `timeoutMs` budget and optional cancellation signal,
- * clearing the timer and abort listener as soon as one branch settles.
- *
- * We deliberately avoid `Bun.sleep(timeoutMs).then(...)` here: that leaves an
- * uncancellable timer registered with the event loop, so every successful
- * handler race leaks a timer that keeps the process alive until the deadline
- * fires — up to the default 30s cap, which stalls non-interactive CLI exit
- * after any subscribed `tool_call`/`tool_result` handler runs (issue #3948
- * review, `chatgpt-codex-connector[bot]`). `setTimeout` returns a handle we
- * can `clearTimeout` on the winning branch.
- */
 async function raceHandlerWithTimeout<T>(
 	work: (handlerSignal: AbortSignal, timeoutBudget: HandlerTimeoutBudget) => Promise<T> | T,
 	timeoutMs: number,
@@ -316,18 +283,8 @@ async function raceHandlerWithTimeout<T>(
 
 const MAX_PENDING_CREDENTIAL_DISABLED = 32;
 
-/**
- * Buffer cap for `mcp_notification` events received before {@link ExtensionRunner.initialize}
- * has run. Sized to match the manager-side buffer in `MCPManager.NOTIFICATION_BUFFER_CAP` so
- * the two layers can't drop different amounts of the same burst — the pipe drains, or it
- * spills, but it does so consistently at both ends. Drop-oldest under pressure.
- */
 const MAX_PENDING_MCP_NOTIFICATIONS = 100;
 
-/**
- * Events handled by the generic emit() method.
- * Events with dedicated emitXxx() methods are excluded for stronger type safety.
- */
 type RunnerEmitEvent = Exclude<
 	ExtensionEvent,
 	| ToolCallEvent
@@ -366,22 +323,12 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 						? SessionStopEventResult | undefined
 						: undefined;
 
-// Session-lifecycle handler types live once in session-handler-types (imported
-// above for local use); re-exported here to keep this module's public API stable.
 export type { BranchHandler, NavigateTreeHandler, NewSessionHandler };
 
 export type SwitchSessionHandler = (sessionPath: string) => Promise<{ cancelled: boolean }>;
 
 type ShutdownHandler = () => void;
 
-/**
- * Emit `session_shutdown`, dispose file-write-fallback registrations, and clear
- * timers owned by an extension runner.
- *
- * Returns whether any shutdown handlers were present. Fallback disposal and timer
- * cleanup run even when a handler fails so extension background work — and a
- * fallback bound to this session's context — cannot outlive its host.
- */
 export async function emitSessionShutdownEvent(extensionRunner: ExtensionRunner | undefined): Promise<boolean> {
 	if (!extensionRunner) return false;
 	try {
@@ -454,70 +401,19 @@ export class ExtensionRunner {
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
 	#toolRegistrationBarrier: Promise<void> | undefined;
 	#initialized = false;
-	/**
-	 * Buffer for `credential_disabled` events received via {@link emitCredentialDisabled}
-	 * before {@link initialize} has run. Drained through {@link emit} once initialize sets
-	 * up the runtime context, so extension handlers see a populated UI/runtime context
-	 * rather than the constructor's no-op default. Bounded at
-	 * {@link MAX_PENDING_CREDENTIAL_DISABLED}; oldest entries are dropped under pressure.
-	 */
+
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
 
-	/**
-	 * Buffer for `mcp_notification` events received via {@link emitMcpNotification} before
-	 * {@link initialize} has run. Two-layer race: `MCPManager` also buffers frames until
-	 * its first `addNotificationListener` subscriber attaches, but the sdk.ts bridge is
-	 * registered inside `createAgentSession` — BEFORE the mode controller calls
-	 * `ExtensionRunner.initialize()`. Without this second buffer, the manager's drain
-	 * arrives at the bridge → the bridge calls `emitMcpNotification` → the runner drops
-	 * the frame because `#initialized === false`, and the frame evaporates a second time.
-	 * Bounded at {@link MAX_PENDING_MCP_NOTIFICATIONS}; oldest entries are dropped under
-	 * pressure. Drained in {@link initialize} once the runtime/UI context is wired.
-	 */
 	#pendingMcpNotifications: Array<Omit<McpNotificationEvent, "type">> = [];
 
-	/**
-	 * Timers scheduled by extensions through the sanctioned `ctx.setInterval` /
-	 * `ctx.setTimeout` helpers. Callbacks run with the same isolation as handler
-	 * dispatch — a throw is logged and routed through {@link onError} instead of
-	 * escaping to the process `uncaughtException` handler and tearing down the
-	 * whole session (issue #5664). Handles are `unref`'d and every outstanding
-	 * timer is cleared on session teardown via {@link clearManagedTimers}.
-	 */
 	#managedTimers = new ManagedTimers((event, error, stack) =>
 		this.emitError({ extensionPath: "<timer>", event, error, stack }),
 	);
-	/**
-	 * Disposers for the trampolines installed via {@link addFileWriteFallback} and
-	 * {@link addFileDeleteFallback} — one per extension per seam it registered for.
-	 * Installed during {@link initialize} (after the UI/runtime context is live, so
-	 * the bound handler sees a working `ctx.ui`) and drained by
-	 * {@link disposeFileFallbacks} on session shutdown so a handler from a
-	 * torn-down session can never fire for a later one sharing the same process.
-	 *
-	 * Each trampoline re-reads its extension's handler list at call time rather than
-	 * closing over a snapshot, matching how `ext.handlers` is re-read on every emit,
-	 * so an extension that already had a handler for that seam at `initialize` picks
-	 * up later additions to it. A seam the extension registered NOTHING for gets no
-	 * trampoline at all, which keeps the registry empty for a host with no fallbacks;
-	 * the cost is that a first registration for that seam after `initialize` never
-	 * takes effect, which is why the API documents load-time registration.
-	 */
+
 	#fileFallbackDisposers: Array<() => void> = [];
-	/**
-	 * Dedup markers for `tool_call` emission, keyed `${toolCallId}:${toolName}`.
-	 * The agent loop emits `tool_call` at arg-prep time (before scheduling and
-	 * `tool_execution_start`) via the session's `beforeToolCall` wiring; the
-	 * marker tells `ExtensionToolWrapper.execute` not to emit a second event for
-	 * the same dispatch. Keyed by call id + tool name because a nested xd://
-	 * device dispatch reuses the model's toolCallId under a different tool name
-	 * and must still emit its own event. Bounded: markers for calls whose
-	 * execute path never runs (policy deny, validation failure) would otherwise
-	 * accumulate for the session's lifetime.
-	 */
+
 	#emittedToolCalls = new Set<string>();
 
-	/** Records that the loop already emitted `tool_call` for this dispatch. */
 	markToolCallEmitted(toolCallId: string, toolName: string): void {
 		if (this.#emittedToolCalls.size >= 512) {
 			const oldest = this.#emittedToolCalls.values().next().value;
@@ -526,39 +422,22 @@ export class ExtensionRunner {
 		this.#emittedToolCalls.add(`${toolCallId}:${toolName}`);
 	}
 
-	/** Consumes a {@link markToolCallEmitted} marker; true when the loop already emitted. */
 	consumeToolCallEmitted(toolCallId: string, toolName: string): boolean {
 		return this.#emittedToolCalls.delete(`${toolCallId}:${toolName}`);
 	}
 
-	/**
-	 * Resolves a tool NAME to its native built-in implementation (the pre-extension-override,
-	 * unwrapped tool) plus a factory for the `AgentToolContext` that native tool expects, or
-	 * undefined when no native built-in of that name exists. Set by the SDK; backs same-tool
-	 * `invokeTool`. The context factory is the same one the agent loop uses for tool execution, so a
-	 * delegated native call sees the ordinary session tool context (ui, cwd, snapshot state, etc.).
-	 */
 	#nativeToolResolver?: (name: string) => { tool: AgentTool; makeContext: () => AgentToolContext } | undefined;
 
-	/** Wires the native-tool resolver used by {@link invokeNativeTool}. */
 	setNativeToolResolver(
 		resolve: (name: string) => { tool: AgentTool; makeContext: () => AgentToolContext } | undefined,
 	): void {
 		this.#nativeToolResolver = resolve;
 	}
 
-	/** Whether a native built-in of `name` is available to delegate to. */
 	hasNativeTool(name: string): boolean {
 		return this.#nativeToolResolver?.(name) !== undefined;
 	}
 
-	/**
-	 * Run the native built-in of `name` with `params` and return its result — the delegation target
-	 * of a same-tool `ctx.invokeTool`. Calls the unwrapped native `execute` directly with the loop's
-	 * ordinary tool context (same tool, so no fresh wrapper is entered). `depth` guards a wrapper
-	 * that recurses into itself; it is per call chain (threaded from the caller), not
-	 * session-global, so concurrent independent delegations do not interfere.
-	 */
 	async invokeNativeTool<TDetails = unknown>(
 		name: string,
 		params: Record<string, unknown>,
@@ -566,12 +445,7 @@ export class ExtensionRunner {
 			signal?: AbortSignal;
 			onUpdate?: AgentToolUpdateCallback<TDetails>;
 			depth?: number;
-			/**
-			 * The caller tool's own context. Reused for the native call so metadata the native tool
-			 * reads — `toolCall` (write/edit LSP batch flushing) and provider metadata /
-			 * `providerSafetyApproved` (computer) — is preserved. Falls back to a fresh session tool
-			 * context only when the caller had none.
-			 */
+
 			callerContext?: AgentToolContext;
 		},
 	): Promise<AgentToolResult<TDetails>> {
@@ -594,7 +468,7 @@ export class ExtensionRunner {
 	constructor(
 		private readonly extensions: Extension[],
 		private readonly runtime: ExtensionRuntime,
-		/** Ignored: `cwd` is always read live via the `cwd` getter below, not cached here. */
+
 		_initialCwd: string,
 		private readonly sessionManager: SessionManager,
 		private readonly modelRegistry: ModelRegistry,
@@ -606,32 +480,10 @@ export class ExtensionRunner {
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
 	}
 
-	/**
-	 * Live session directory, not a session-start snapshot: `/move`
-	 * (`SessionManager.moveTo()`) relocates the owning session by updating
-	 * `sessionManager`'s own `#cwd`, not a process-global. Reading it here
-	 * via the getter — instead of caching the constructor-time value in a
-	 * field — keeps every `ExtensionContext` built below in sync with this
-	 * session's actual, current directory. Deliberately `sessionManager.getCwd()`
-	 * rather than `getProjectDir()`: the latter is a single process-wide value
-	 * that only the interactive TUI's `/move` handler happens to also update
-	 * (`InteractiveModeContext#applyCwdChange`) — an SDK/ACP host running
-	 * several concurrent sessions each with their own `cwd` (see
-	 * `CreateAgentSessionOptions.cwd`) must never have one session's move
-	 * leak into another's `ctx.cwd` by reading a shared global.
-	 */
 	get cwd(): string {
 		return this.sessionManager.getCwd();
 	}
 
-	/**
-	 * Stable id of the session this runner serves. Read through `sessionManager`
-	 * for the same reason as {@link cwd}: it is this session's own, never a
-	 * process-global, so a subagent runner reports itself and not its parent.
-	 *
-	 * Used to attribute a denied file write or delete to the session that issued
-	 * it, since the fallback registry those handlers live in is process-wide.
-	 */
 	get sessionId(): string {
 		return this.sessionManager.getSessionId();
 	}
@@ -643,7 +495,6 @@ export class ExtensionRunner {
 		uiContext?: ExtensionUIContext,
 		mode: ExtensionMode = "print",
 	): void {
-		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
@@ -669,7 +520,6 @@ export class ExtensionRunner {
 			this.modelRegistry.unregisterProvider(name);
 		};
 
-		// Context actions (required)
 		this.#getModel = contextActions.getModel;
 		this.#isIdleFn = contextActions.isIdle;
 		this.#abortFn = contextActions.abort;
@@ -677,7 +527,6 @@ export class ExtensionRunner {
 		this.#shutdownHandler = contextActions.shutdown;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 
-		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
 			this.#waitForIdleFn = commandContextActions.waitForIdle;
 			this.#newSessionHandler = commandContextActions.newSession;
@@ -693,37 +542,10 @@ export class ExtensionRunner {
 		this.#mode = mode;
 		this.#initialized = true;
 
-		// Re-initialize (e.g. a mode switch rewiring UI/runtime actions) must not
-		// accumulate duplicate global registrations — drop the prior generation before
-		// installing this one's trampolines.
 		this.disposeFileFallbacks();
 		for (const ext of this.extensions) {
-			// Nothing registered by this extension means no trampoline, so a host with
-			// no fallback-registering extension leaves the seam genuinely empty and
-			// `hasFileWriteFallback()`/`hasFileDeleteFallback()` false — the invariant
-			// the whole feature rests on. Each seam is checked separately, so an
-			// extension that only brokers writes never appears in the delete registry.
 			if (ext.fileWriteFallbackHandlers.length === 0 && ext.fileDeleteFallbackHandlers.length === 0) continue;
-			// One trampoline per extension per seam, not per handler: the list is walked
-			// at mutation time so a handler this extension adds later still takes effect,
-			// and `createContext()` takes no extension argument, so within one invocation
-			// a single context is all any of this extension's handlers would have
-			// received anyway.
-			//
-			// The context is built PER INVOCATION rather than captured here, matching
-			// every other dispatch site. `createContext()` materializes `cwd` and
-			// `hasUI` as values, so a trampoline holding one context for the life of the
-			// session would keep handing handlers the workspace this runner initialized
-			// in — wrong the moment `SessionManager.moveTo()` relocates the session
-			// (`/move`), and a handler that scopes or prompts against `ctx.cwd` would
-			// then allow the old workspace and deny the new one. A denied mutation is a
-			// rare path, so the extra object costs nothing that matters.
-			//
-			// Isolation is per HANDLER, not per extension. The registry only sees one
-			// trampoline per extension, so a throw escaping this loop would advance the
-			// registry to the NEXT extension and skip every later handler this one
-			// registered — breaking both the documented "a throwing handler is skipped"
-			// contract and registration order for a backup-handler setup.
+
 			if (ext.fileWriteFallbackHandlers.length > 0) {
 				this.#fileFallbackDisposers.push(
 					addFileWriteFallback(async req => {
@@ -762,10 +584,6 @@ export class ExtensionRunner {
 			}
 		}
 
-		// Drain events buffered by emitCredentialDisabled() before initialize ran. The
-		// spread adds the `type` discriminator — `event` is the pi-ai shape (no `type`).
-		// Deferred by one microtask so callers that register an onError listener
-		// synchronously after initialize() see handler errors routed through it.
 		const pending = this.#pendingCredentialDisabled.splice(0);
 		queueMicrotask(() => {
 			for (const event of pending) {
@@ -778,10 +596,6 @@ export class ExtensionRunner {
 			}
 		});
 
-		// Drain events buffered by emitMcpNotification() before initialize ran, using the
-		// same deferred-microtask ordering as the credential-disabled drain above so any
-		// onError listener registered synchronously after initialize() still catches
-		// handler errors during flush.
 		const pendingMcp = this.#pendingMcpNotifications.splice(0);
 		queueMicrotask(() => {
 			for (const event of pendingMcp) {
@@ -796,20 +610,6 @@ export class ExtensionRunner {
 		});
 	}
 
-	/**
-	 * Forward a `credential_disabled` event from `AuthStorage` to extension handlers.
-	 *
-	 * If {@link initialize} has not yet run, the event is buffered and replayed once
-	 * initialize wires the runtime/UI context. This matters because mode controllers
-	 * (interactive, RPC, ACP, print, subagent) call `initialize()` AFTER `createAgentSession`
-	 * returns, but `AuthStorage` can fire `credential_disabled` during startup model probes
-	 * inside `createAgentSession()`. Without deferral, extension handlers would observe
-	 * `hasUI=false`, an unset model, and no-op runtime actions on exactly the headline
-	 * "OAuth invalid_grant during startup" path the event was designed to surface.
-	 *
-	 * Always returns; never throws. Errors from handlers are routed through
-	 * {@link onError} via {@link emit}'s normal isolation.
-	 */
 	async emitCredentialDisabled(event: CredentialDisabledEvent): Promise<void> {
 		if (!this.#initialized) {
 			if (this.#pendingCredentialDisabled.length >= MAX_PENDING_CREDENTIAL_DISABLED) {
@@ -821,21 +621,6 @@ export class ExtensionRunner {
 		await this.emit({ type: "credential_disabled", ...event });
 	}
 
-	/**
-	 * Forward an MCP server notification to extension handlers.
-	 *
-	 * If {@link initialize} has not yet run, the notification is buffered and replayed
-	 * once initialize wires the runtime/UI context. Matches the credential-disabled
-	 * deferral above: the sdk.ts bridge registers `MCPManager.addNotificationListener`
-	 * inside `createAgentSession` — BEFORE the mode controller calls `initialize()` on
-	 * this runner — so notification frames drained by the manager (either fresh
-	 * arrivals or replay from its own startup buffer) can reach us pre-init. Without
-	 * this buffer they would evaporate for a second time here.
-	 *
-	 * Bounded at {@link MAX_PENDING_MCP_NOTIFICATIONS}; oldest entries drop under
-	 * pressure. Never throws; per-handler errors are routed through {@link onError}
-	 * via {@link emit}'s normal isolation.
-	 */
 	async emitMcpNotification(event: Omit<McpNotificationEvent, "type">): Promise<void> {
 		if (!this.#initialized) {
 			if (this.#pendingMcpNotifications.length >= MAX_PENDING_MCP_NOTIFICATIONS) {
@@ -847,7 +632,6 @@ export class ExtensionRunner {
 		await this.emit({ type: "mcp_notification", ...event });
 	}
 
-	/** Emits a session stop pass that can be cancelled with the active settle signal. */
 	async emitSessionStop(event: Omit<SessionStopEvent, "type">): Promise<SessionStopEventResult | undefined> {
 		if (event.signal.aborted) return undefined;
 		return await this.emit({ type: "session_stop", ...event });
@@ -864,7 +648,6 @@ export class ExtensionRunner {
 		return this.extensions.map(e => e.path);
 	}
 
-	/** Get all registered tools from all extensions. */
 	getAllRegisteredTools(): RegisteredTool[] {
 		const tools: RegisteredTool[] = [];
 		for (const ext of this.extensions) {
@@ -875,7 +658,6 @@ export class ExtensionRunner {
 		return tools;
 	}
 
-	/** Get the effective registered tool for a name using normal last-extension-wins precedence. */
 	getRegisteredTool(name: string): RegisteredTool | undefined {
 		for (let index = this.extensions.length - 1; index >= 0; index -= 1) {
 			const tool = this.extensions[index]?.tools.get(name);
@@ -884,11 +666,6 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	/**
-	 * Observe tools registered after extension factories have loaded. Listener
-	 * promises are drained before the lifecycle handler that registered them
-	 * completes, keeping the model tool snapshot and system prompt coherent.
-	 */
 	onToolRegistered(listener: (tool: RegisteredTool, signal?: AbortSignal) => void | Promise<void>): () => void {
 		const subscriptions: Array<{ extension: Extension; listener: ToolRegistrationListener }> = [];
 		for (const extension of this.extensions) {
@@ -957,12 +734,6 @@ export class ExtensionRunner {
 		if (firstFailure) throw firstFailure.reason;
 	}
 
-	/**
-	 * Aggregate the registered CLI flags across a set of extensions (last write
-	 * wins on name collision). Static so callers that need the flag set before a
-	 * runner exists — e.g. the CLI resolving `@file`/flag args before session
-	 * creation — share this exact logic instead of duplicating it.
-	 */
 	static aggregateFlags(extensions: readonly Extension[]): Map<string, ExtensionFlag> {
 		const allFlags = new Map<string, ExtensionFlag>();
 		for (const ext of extensions) {
@@ -996,7 +767,7 @@ export class ExtensionRunner {
 		"ctrl+t": true,
 		"ctrl+g": true,
 		"alt+m": true,
-		// Default chord for `app.message.followUp` (Windows Terminal can't deliver Ctrl+Enter; #1903).
+
 		"ctrl+q": true,
 		"shift+tab": true,
 		"shift+ctrl+p": true,
@@ -1103,17 +874,6 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	/**
-	 * Creates an extension context, optionally scoped to a provider request model.
-	 *
-	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
-	 * names an existing native built-in, the context carries an `invokeTool` that runs it (see
-	 * {@link invokeNativeTool}). The rest inherits the wrapper's own call so a bare
-	 * `ctx.invokeTool(params)` behaves like the outer call — `context` preserves `toolCall`/provider
-	 * metadata, `signal`/`onUpdate` default to the wrapper's own channels so aborting the outer tool
-	 * call stops the native one and native progress still streams, and `depth` bounds recursion per
-	 * call chain. Explicit options passed to `invokeTool` override the inherited `signal`/`onUpdate`.
-	 */
 	createContext(
 		model?: Model,
 		delegation?: {
@@ -1153,8 +913,6 @@ export class ExtensionRunner {
 				delegation !== undefined && this.hasNativeTool(delegation.toolName)
 					? (params, options) =>
 							this.invokeNativeTool(delegation.toolName, params, {
-								// Inherit the wrapper's own channels so a bare `ctx.invokeTool(params)` aborts
-								// and streams with the outer call. Explicit options win.
 								signal: options?.signal ?? delegation.signal,
 								onUpdate: options?.onUpdate ?? delegation.onUpdate,
 								depth: (delegation.depth ?? 0) + 1,
@@ -1164,29 +922,14 @@ export class ExtensionRunner {
 		};
 	}
 
-	/**
-	 * Request a graceful shutdown. Called by extension tools and event handlers.
-	 */
 	shutdown(): void {
 		this.#shutdownHandler();
 	}
 
-	/**
-	 * Clear every timer scheduled through `ctx.setInterval` / `ctx.setTimeout`.
-	 * Called during session teardown so extension background work does not
-	 * outlive the session (a self-scheduling interval would otherwise keep
-	 * firing against a disposed session).
-	 */
 	clearManagedTimers(): void {
 		this.#managedTimers.clearAll();
 	}
 
-	/**
-	 * Remove every file write and delete fallback this runner installed into the
-	 * process-wide registries. Called on session shutdown (and before reinstalling
-	 * on a re-{@link initialize}) so a handler bound to a torn-down session's
-	 * context can never fire for another session sharing this process.
-	 */
 	disposeFileFallbacks(): void {
 		for (const dispose of this.#fileFallbackDisposers.splice(0)) dispose();
 	}
@@ -1225,10 +968,6 @@ export class ExtensionRunner {
 		onFailure?: (kind: "timeout" | "error", message: string) => TResult,
 		outerSignal?: AbortSignal,
 	): Promise<TResult | undefined> {
-		// `session_stop` carries its own signal on the event; `tool_call` receives
-		// the outer dispatch signal (loop request or wrapper execute) so an abort
-		// while a handler awaits a human dialog cancels the dialog and settles the
-		// gate without executing the underlying tool. Compose whichever apply.
 		const sessionStopSignal =
 			event.type === "session_stop" && "signal" in event && event.signal instanceof AbortSignal
 				? event.signal
@@ -1302,10 +1041,6 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		// Defer the per-event context allocation (and the Promise.race/Bun.sleep
-		// timeout machinery) to the first matching handler. Streaming sessions emit
-		// message_update / tool_execution_* per delta with usually no extension
-		// subscribed; building `ctx` for a zero-handler event is pure waste.
 		let ctx: ExtensionContext | undefined;
 		let result: SessionBeforeEventResult | SessionCompactingResult | SessionStopEventResult | undefined;
 
@@ -1407,21 +1142,6 @@ export class ExtensionRunner {
 		};
 	}
 
-	/**
-	 * Emit a `tool_call` event to every subscribed extension before the tool executes.
-	 *
-	 * Each handler is bounded by `extensionHandlers.toolCallTimeoutMs` (default
-	 * 30s). This matches the timeout policy already applied to `emitToolResult` and every
-	 * other handler routed through `#runHandlerWithTimeout`; without it a single
-	 * hung extension (unresolved `await`, network call with no timeout) would
-	 * park `ExtensionToolWrapper.execute` indefinitely and freeze tool
-	 * dispatch — see issue #3948.
-	 *
-	 * On-timeout policy: **fail-closed** (return `{ block: true }`). This is
-	 * symmetric with the existing error path below and safer for a
-	 * pre-execution gate — an unresponsive extension MUST NOT be treated as
-	 * silent consent to run the tool.
-	 */
 	async emitToolCall(event: ToolCallEvent, signal?: AbortSignal): Promise<ToolCallEventResult | undefined> {
 		const ctx = this.createContext();
 		const timeoutMs = normalizeHandlerTimeout(
@@ -1543,7 +1263,6 @@ export class ExtensionRunner {
 		return { skillPaths, promptPaths, themePaths };
 	}
 
-	/** Emit input event. Transforms chain, "handled" short-circuits. */
 	async emitInput(
 		text: string,
 		images: ImageContent[] | undefined,
@@ -1573,7 +1292,6 @@ export class ExtensionRunner {
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 		const ctx = this.createContext();
 
-		// Check if any extensions actually have context handlers before cloning
 		let hasContextHandlers = false;
 		for (const ext of this.extensions) {
 			if (ext.handlers.get("context")?.length) {
@@ -1587,9 +1305,6 @@ export class ExtensionRunner {
 		try {
 			currentMessages = structuredClone(messages);
 		} catch {
-			// Messages may contain non-cloneable objects (e.g. in ToolResultMessage.details
-			// or ProviderPayload). Fall back to a shallow array clone — extensions should
-			// return new message arrays rather than mutating in place.
 			currentMessages = [...messages];
 		}
 
@@ -1616,7 +1331,6 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	/** Runs request payload hooks with the model used for that provider request. */
 	async emitBeforeProviderRequest(payload: unknown, model?: Model): Promise<BeforeProviderRequestEventResult> {
 		const ctx = this.createContext(model);
 		let currentPayload = payload;
@@ -1646,7 +1360,6 @@ export class ExtensionRunner {
 		return currentPayload;
 	}
 
-	/** Runs response hooks with the model that produced that provider response. */
 	async emitAfterProviderResponse(response: ProviderResponseMetadata, model?: Model): Promise<void> {
 		const ctx = this.createContext(model);
 

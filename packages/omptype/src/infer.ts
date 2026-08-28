@@ -1,18 +1,9 @@
-/** Type-level input and output inference for definitions accepted by omptype. */
-
 type Whitespace = " " | "\n" | "\r" | "\t";
 
 type TrimLeft<s extends string> = s extends `${Whitespace}${infer rest}` ? TrimLeft<rest> : s;
 type TrimRight<s extends string> = s extends `${infer rest}${Whitespace}` ? TrimRight<rest> : s;
 type Trim<s extends string> = TrimLeft<TrimRight<s>>;
 
-/**
- * Flat keyword lookup. An indexed access is one instantiation level, unlike a
- * nested conditional chain — this sits under every string-DSL property, so its
- * depth is multiplied by every layer of object nesting above it.
- * `never` is intentionally absent: the parser rejects it and the fallback in
- * `InferMember` treats a missing entry as "not a primitive".
- */
 type ArkAny = ReturnType<typeof JSON.parse>;
 
 interface PrimitiveMap {
@@ -37,7 +28,7 @@ interface PrimitiveMap {
 	Key: PropertyKey;
 	Date: Date;
 	Array: unknown[];
-	// biome-ignore lint/complexity/noBannedTypes: built-in Function keyword
+
 	Function: Function;
 	RegExp: RegExp;
 	File: File;
@@ -75,7 +66,6 @@ type InferUtility<s extends string> = s extends `Record<${string},${infer value}
 							? Merge<InferString<left>, InferString<right>>
 							: never;
 
-/** Output types of morph (`.parse`) keywords; `never` when `s` is not one. */
 type InferParse<s extends string> = s extends
 	| "string.numeric.parse"
 	| "string.integer.parse"
@@ -98,12 +88,6 @@ type InferParse<s extends string> = s extends
 								? bigint
 								: never;
 
-/**
- * Member inference as a flat false-branch chain: TypeScript tail-evaluates
- * chained conditionals in the false position, so this stays at constant
- * instantiation depth where the previous `extends infer` ladder nested every
- * fallback inside a true branch and accumulated depth per step.
- */
 type InferMember<member extends string> = Trim<member> extends infer s extends string ? InferMemberTrimmed<s> : unknown;
 
 type InferMemberTrimmed<s extends string> = s extends `(${infer inner})`
@@ -140,12 +124,10 @@ type InferMemberFallback<s extends string> = s extends `string.${string}`
 				? number
 				: unknown;
 
-/** Split unions without distributing over the accumulated members. */
 type InferUnion<s extends string, result = never> = s extends `${infer head}|${infer tail}`
 	? InferUnion<tail, result | InferMember<head>>
 	: result | InferMember<s>;
 
-/** Input side of one union member: morph keywords accept their source type. */
 type InferMemberIn<member extends string> =
 	Trim<member> extends infer s extends string
 		? s extends `${string}.parse` | `parse.${string}`
@@ -153,7 +135,6 @@ type InferMemberIn<member extends string> =
 			: InferMemberTrimmed<s>
 		: unknown;
 
-/** Split unions on the input side without distributing over accumulated members. */
 type InferUnionIn<s extends string, result = never> = s extends `${infer head}|${infer tail}`
 	? InferUnionIn<tail, result | InferMemberIn<head>>
 	: result | InferMemberIn<s>;
@@ -169,7 +150,6 @@ type WithoutInlineDefault<s extends string> =
 
 type InferStringOutput<s extends string> = InferUnion<s>;
 
-/** String-DSL output inference. */
 export type InferString<s extends string> =
 	WithoutInlineDefault<Trim<s>> extends infer trimmed extends string
 		? trimmed extends `${infer base}?`
@@ -179,7 +159,6 @@ export type InferString<s extends string> =
 				: InferStringOutput<trimmed>
 		: unknown;
 
-/** String-DSL input inference, preserving the source side of morph keywords. */
 export type InferStringIn<s extends string> =
 	WithoutInlineDefault<Trim<s>> extends infer trimmed extends string
 		? trimmed extends `${infer base}?`
@@ -245,17 +224,6 @@ type InputOptional<def extends object> = {
 			: never]?: InferDefIn<UnwrapProperty<def[key]>>;
 };
 
-/**
- * CYCLE SAFETY: when a fluent generic method is called on a schema whose def
- * embeds other schemas, TypeScript instantiates `InferDef<def>` while `def`
- * is still generic. `"..." extends keyof def` resolves TRUE under permissive
- * instantiation (`keyof any` contains every literal), so spread/index members
- * cannot be deferred by wrapper conditionals — a bare `InferDef<def["..."]>`
- * member re-enters this expansion and instantiates without bound (TS2589).
- * Interface members only instantiate when resolved, so routing the recursive
- * reference through `DefBox` keeps generic instantiation shallow: it stops at
- * a type reference plus an indexed access instead of expanding `InferDef`.
- */
 interface DefBox<def> {
 	readonly out: InferDef<def>;
 	readonly in: InferDefIn<def>;
@@ -282,7 +250,6 @@ type InferObjectIn<def extends object> = "[string]" extends keyof def
 		: Simplify<InputRequired<def> & InputOptional<def> & InputSpread<def>> & InputIndex<def>
 	: Simplify<InputRequired<def> & InputOptional<def> & InputSpread<def>>;
 
-/** Object-literal inference used by fluent composition overloads. */
 export type InferObjectDef<def extends object> = InferObject<def>;
 
 type InferLiteralDef<def> = def extends { readonly infer: infer output }
@@ -333,10 +300,8 @@ type LiteralOptionalIn<def extends object> = {
 			: never]?: InferLiteralDefIn<UnwrapProperty<def[key]>>;
 };
 
-/** Object-literal inference that unwraps embedded schema values one level deep. */
 export type InferObjectLiteral<def extends object> = Simplify<LiteralRequired<def> & LiteralOptional<def>>;
 
-/** Input-side object-literal inference (embedded schemas contribute `inferIn`). */
 export type InferObjectLiteralIn<def extends object> = Simplify<LiteralRequiredIn<def> & LiteralOptionalIn<def>>;
 
 type InstanceOf<ctor> = ctor extends abstract new (...args: never[]) => infer instance ? instance : never;
@@ -365,17 +330,8 @@ type InferTupleInput<defs extends readonly unknown[], result extends unknown[] =
 				: InferTupleInput<rest, [...result, InferDefIn<head>]>
 			: result;
 
-/**
- * True only for `any` (`1 & any` is `any`; `0 extends any` holds). During
- * relation checking TypeScript instantiates these aliases permissively with
- * every type parameter replaced by `any`, and under `any` the object branch
- * recurses forever (`any["..."]` is `any` again). Cutting `any` off up front
- * makes permissive instantiation terminate immediately, mirroring ArkType's
- * `anyOrNever` guards.
- */
 type IsAny<def> = 0 extends 1 & def ? true : false;
 
-/** Infer the validated output type produced by a definition. */
 export type InferDef<def = unknown> =
 	IsAny<def> extends true
 		? unknown
@@ -409,7 +365,6 @@ export type InferDef<def = unknown> =
 																? InferObject<def>
 																: unknown;
 
-/** Infer values accepted before defaults and morphs are applied. */
 export type InferDefIn<def = unknown> =
 	IsAny<def> extends true
 		? unknown

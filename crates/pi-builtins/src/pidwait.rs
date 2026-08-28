@@ -1,11 +1,11 @@
-//! `pidwait` process-waiting builtin, moved from `pi-shell`.
+
 
 use brush_core::builtins;
 use clap::Parser;
 
 use crate::proc_match;
 
-/// Waits for processes selected by process attributes or a name pattern.
+
 #[derive(Parser)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
 pub(crate) struct PidwaitCommand {

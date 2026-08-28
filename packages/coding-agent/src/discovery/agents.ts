@@ -1,10 +1,3 @@
-/**
- * Agent Dirs (.agent/.agents) Provider
- *
- * Loads skills, rules, prompts, commands, context files, and system prompts
- * from .agent/ and .agents/ directories at both user (~/) and project levels.
- * Project-level discovery walks up from cwd to repoRoot.
- */
 import * as path from "node:path";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
@@ -28,21 +21,10 @@ const DISPLAY_NAME = "Agent Dirs (.agent/.agents)";
 const PRIORITY = 70;
 const AGENT_DIR_CANDIDATES = [".agent", ".agents"] as const;
 
-/** User-level paths: ~/.agent[s]/<segments>. */
 export function getUserPathCandidates(ctx: LoadContext, ...segments: string[]): string[] {
 	return AGENT_DIR_CANDIDATES.map(baseDir => path.join(ctx.home, baseDir, ...segments));
 }
 
-/**
- * Project-level paths: walk up from cwd to repoRoot, returning `.agent/<segments>`
- * and `.agents/<segments>` at each ancestor.
- *
- * The user home directory is skipped: `~/.agent[s]/` is by definition
- * user-level config and is already enumerated by {@link getUserPathCandidates}.
- * Without this guard, any cwd under `$HOME` (with no closer git repoRoot) would
- * walk up to home and yield duplicate project+user entries for the same
- * directory — see https://proto.sh
- */
 export function getProjectPathCandidates(ctx: LoadContext, ...segments: string[]): string[] {
 	const paths: string[] = [];
 	let current = ctx.cwd;
@@ -60,7 +42,6 @@ export function getProjectPathCandidates(ctx: LoadContext, ...segments: string[]
 	return paths;
 }
 
-// Skills
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	const projectScans = getProjectPathCandidates(ctx, "skills").map(dir =>
 		scanSkillsFromDir(ctx, { dir, providerId: PROVIDER_ID, level: "project" }),
@@ -85,7 +66,6 @@ registerProvider<Skill>(skillCapability.id, {
 	load: loadSkills,
 });
 
-// Rules
 async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 	const load = (dir: string, level: "user" | "project") =>
 		loadFilesFromDir<Rule>(ctx, dir, PROVIDER_ID, level, {
@@ -113,7 +93,6 @@ registerProvider<Rule>(ruleCapability.id, {
 	load: loadRules,
 });
 
-// Prompts
 async function loadPrompts(ctx: LoadContext): Promise<LoadResult<Prompt>> {
 	const load = (dir: string, level: "user" | "project") =>
 		loadFilesFromDir<Prompt>(ctx, dir, PROVIDER_ID, level, {
@@ -145,7 +124,6 @@ registerProvider<Prompt>(promptCapability.id, {
 	load: loadPrompts,
 });
 
-// Slash Commands
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const load = (dir: string, level: "user" | "project") =>
 		loadFilesFromDir<SlashCommand>(ctx, dir, PROVIDER_ID, level, {
@@ -178,12 +156,11 @@ registerProvider<SlashCommand>(slashCommandCapability.id, {
 	load: loadSlashCommands,
 });
 
-// Context Files (AGENTS.md)
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const load = async (filePath: string, level: "user" | "project"): Promise<ContextFile | null> => {
 		const content = await readFile(filePath);
 		if (!content) return null;
-		// filePath is <ancestor>/.agent(s)/AGENTS.md — go up past the config dir to the ancestor
+
 		const ancestorDir = path.dirname(path.dirname(filePath));
 		const depth = level === "project" ? calculateDepth(ctx.cwd, ancestorDir, path.sep) : undefined;
 		return { path: filePath, content, level, depth, _source: createSourceMeta(PROVIDER_ID, filePath, level) };
@@ -205,7 +182,6 @@ registerProvider<ContextFile>(contextFileCapability.id, {
 	load: loadContextFiles,
 });
 
-// System Prompt (SYSTEM.md)
 async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemPrompt>> {
 	const load = async (filePath: string, level: "user" | "project"): Promise<SystemPrompt | null> => {
 		const content = await readFile(filePath);

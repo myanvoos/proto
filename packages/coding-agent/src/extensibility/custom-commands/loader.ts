@@ -1,9 +1,3 @@
-/**
- * Custom command loader - loads TypeScript command modules using native Bun import.
- *
- * Dependencies (the arktype validation and pi-coding-agent) are injected via the
- * CustomCommandAPI to avoid import resolution issues with custom commands loaded from user directories.
- */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -12,7 +6,7 @@ import { getAgentDir, getProjectDir, isEnoent, logger } from "@oh-my-pi/pi-utils
 import { getConfigDirs } from "../../config";
 
 import { execCommand } from "../../exec/exec";
-// Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
+
 import * as PiCodingAgent from "../../index";
 import { ReviewCommand } from "./bundled/review";
 import type {
@@ -26,9 +20,6 @@ import type {
 
 const arktype = Object.assign(Function.prototype.bind.call(type, undefined) as typeof type, type, { type });
 
-/**
- * Load a single command module using native Bun import.
- */
 async function loadCommandModule(
 	commandPath: string,
 	_cwd: string,
@@ -45,7 +36,6 @@ async function loadCommandModule(
 		const result = await factory(sharedApi);
 		const commands = Array.isArray(result) ? result : [result];
 
-		// Validate commands
 		for (const cmd of commands) {
 			if (!cmd.name || typeof cmd.name !== "string") {
 				return { commands: null, error: "Command must have a name" };
@@ -66,21 +56,15 @@ async function loadCommandModule(
 }
 
 interface DiscoverCustomCommandsOptions {
-	/** Current working directory. Default: getProjectDir() */
 	cwd?: string;
-	/** Agent config directory. Default: from getAgentDir() */
+
 	agentDir?: string;
 }
 
 interface DiscoverCustomCommandsResult {
-	/** Paths to command modules */
 	paths: Array<{ path: string; source: CustomCommandSource }>;
 }
 
-/**
- * Discover custom command modules (TypeScript slash commands).
- * Markdown slash commands are handled by core/slash-commands.ts.
- */
 export async function discoverCustomCommands(
 	options: DiscoverCustomCommandsOptions = {},
 ): Promise<DiscoverCustomCommandsResult> {
@@ -140,15 +124,11 @@ export async function discoverCustomCommands(
 }
 
 interface LoadCustomCommandsOptions {
-	/** Current working directory. Default: getProjectDir() */
 	cwd?: string;
-	/** Agent config directory. Default: from getAgentDir() */
+
 	agentDir?: string;
 }
 
-/**
- * Load bundled commands (shipped with pi-coding-agent).
- */
 function loadBundledCommands(sharedApi: CustomCommandAPI): LoadedCustomCommand[] {
 	const bundled: LoadedCustomCommand[] = [];
 
@@ -162,9 +142,6 @@ function loadBundledCommands(sharedApi: CustomCommandAPI): LoadedCustomCommand[]
 	return bundled;
 }
 
-/**
- * Discover and load custom commands from standard locations.
- */
 export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}): Promise<CustomCommandsLoadResult> {
 	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getAgentDir();
@@ -175,7 +152,6 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 	const errors: Array<{ path: string; error: string }> = [];
 	const seenNames = new Set<string>();
 
-	// Shared API object - all commands get the same instance
 	const sharedApi: CustomCommandAPI = {
 		cwd,
 		exec: (command: string, args: string[], execOptions) =>
@@ -185,13 +161,11 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 		pi: PiCodingAgent,
 	};
 
-	// 1. Load bundled commands first (lowest priority - can be overridden)
 	for (const loaded of loadBundledCommands(sharedApi)) {
 		seenNames.add(loaded.command.name);
 		commands.push(loaded);
 	}
 
-	// 2. Load user/project commands (can override bundled)
 	for (const { path: commandPath, source } of paths) {
 		const { commands: loadedCommands, error } = await loadCommandModule(commandPath, cwd, sharedApi);
 
@@ -202,16 +176,13 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 
 		if (loadedCommands) {
 			for (const command of loadedCommands) {
-				// Allow overriding bundled commands, but not user/project conflicts
 				const existingIdx = commands.findIndex(c => c.command.name === command.name);
 				if (existingIdx !== -1) {
 					const existing = commands[existingIdx];
 					if (existing.source === "bundled") {
-						// Override bundled command
 						commands.splice(existingIdx, 1);
 						seenNames.delete(command.name);
 					} else {
-						// Conflict between user/project commands
 						errors.push({
 							path: commandPath,
 							error: `Command name "${command.name}" conflicts with existing command`,

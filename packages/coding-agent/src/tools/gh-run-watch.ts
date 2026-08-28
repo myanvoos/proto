@@ -182,10 +182,6 @@ function isFailedJob(job: GhRunJobSnapshot): boolean {
 
 const GH_RATE_LIMIT_ERROR_PATTERN = /rate limit|HTTP 429|abuse detection/i;
 
-/**
- * Rate-limit / secondary-limit gh failures are transient; the run_watch poll
- * loops back off and retry them instead of discarding the whole watch.
- */
 function isRateLimitedGhError(err: unknown): boolean {
 	return err instanceof ToolError && GH_RATE_LIMIT_ERROR_PATTERN.test(err.message);
 }
@@ -587,11 +583,6 @@ async function fetchRunsForCommit(
 	signal?: AbortSignal,
 	completedRunJobsCache?: Map<number, GhRunJobSnapshot[]>,
 ): Promise<GhRunSnapshot[]> {
-	// Filter only by `head_sha`. The SHA uniquely identifies the commit, so
-	// adding the GitHub `branch=` filter would wrongly exclude workflow runs
-	// whose `head_branch` is not the local checkout — e.g. tag-push triggered
-	// release workflows (`head_branch=v1.2.3`) or PR-triggered runs
-	// (`head_branch=<pr head>`). See coding-agent issue tracker for details.
 	const response = await git.github.json<GhActionsRunListResponse>(
 		cwd,
 		[
@@ -612,12 +603,6 @@ async function fetchRunsForCommit(
 		(response.workflow_runs ?? [])
 			.filter((run): run is GhActionsRunApi & { id: number } => typeof run.id === "number")
 			.map(async run => {
-				// Completed runs' job lists are stable until a re-run flips
-				// `status` off "completed"; reuse them across watch polls so a
-				// long watch does not refetch every finished run's jobs. A run
-				// observed non-completed evicts its entry — when the re-run
-				// completes, `status` flips back to "completed" and a stale
-				// entry would serve the FIRST attempt's jobs and logs forever.
 				const completed = run.status === "completed";
 				if (!completed) completedRunJobsCache?.delete(run.id);
 				let jobs = completed ? completedRunJobsCache?.get(run.id) : undefined;
@@ -659,8 +644,6 @@ export async function fetchRunJobs(
 		const pageJobs = rawPage.map(job => normalizeRunJob(job)).filter((job): job is GhRunJobSnapshot => job !== null);
 		jobs.push(...pageJobs);
 
-		// Compare the raw page length: normalizeRunJob drops malformed items,
-		// and a post-filter short page must not end pagination early.
 		if (rawPage.length < RUN_JOBS_PAGE_SIZE) {
 			break;
 		}
@@ -743,10 +726,7 @@ export async function executeRunWatch(
 	const graceSeconds = RUN_WATCH_GRACE_DEFAULT;
 	const tail = resolveTailLimit(params.tail);
 	const watchStartMs = Date.now();
-	// Fast polls for the first minute for snappy feedback, then back off:
-	// every commit-watch poll is one runs-list call plus one jobs call per
-	// non-completed run, and long builds must not burn the shared
-	// authenticated REST quota.
+
 	const currentIntervalSeconds = () =>
 		Date.now() - watchStartMs < RUN_WATCH_FAST_WINDOW_MS ? RUN_WATCH_INTERVAL_DEFAULT : RUN_WATCH_INTERVAL_SLOW;
 	let consecutivePollFailures = 0;
@@ -754,8 +734,7 @@ export async function executeRunWatch(
 		if (signal?.aborted) throw err;
 		consecutivePollFailures += 1;
 		if (!isRateLimitedGhError(err) || consecutivePollFailures > RUN_WATCH_MAX_POLL_FAILURES) throw err;
-		// Rate-limited: back off with the slow interval and retry instead of
-		// discarding the whole watch (and its accumulated context).
+
 		await scheduler.wait(RUN_WATCH_INTERVAL_SLOW * 1000, { signal });
 	};
 	if (runReference.runId !== undefined) {
@@ -806,18 +785,13 @@ export async function executeRunWatch(
 					try {
 						const refetched = await fetchRunSnapshot(session.cwd, repo, runId, signal);
 						const refetchedFailed = refetched.jobs.filter(isFailedJob);
-						// An auto-retry can reset job conclusions between
-						// detection and refetch; keep the originally-detected
-						// failure list (and its snapshot) when the refetch no
-						// longer shows any failures so the watch never ends
-						// with a failure result and zero logs.
+
 						if (refetchedFailed.length > 0) {
 							run = refetched;
 							failedJobs = refetchedFailed;
 						}
 					} catch (err) {
 						if (signal?.aborted) throw err;
-						// Refetch failure: report from the original snapshot.
 					}
 				}
 
@@ -862,13 +836,6 @@ export async function executeRunWatch(
 		branch = branchInput;
 		headSha = await resolveGitHubBranchHead(session.cwd, repo, branch, signal);
 	} else {
-		// No branch/run selector — derive the commit from the current checkout,
-		// but only when cwd actually points at `repo`. Otherwise we'd watch an
-		// unrelated commit SHA against the explicit repo and silently stream a
-		// confident wrong-repo status (issue #1949). GitHub `owner/repo` slugs
-		// are case-insensitive — `gh repo view` returns the canonical casing
-		// while callers may pass any casing — so the equality check normalizes
-		// both sides before deciding the cwd is a different repo (PR #1951).
 		const cwdRepo = await tryResolveCurrentRepoFresh(session.cwd, signal);
 		if (!githubRepoSlugEquals(cwdRepo, repo)) {
 			throw new ToolError(
@@ -927,16 +894,13 @@ export async function executeRunWatch(
 				try {
 					const refetched = await fetchRunsForCommit(session.cwd, repo, headSha, signal, completedRunJobsCache);
 					const refetchedPairs = refetched.flatMap(run => run.jobs.filter(isFailedJob).map(job => ({ run, job })));
-					// Keep the originally-detected failure list when an
-					// auto-retry reset the conclusions during the grace window
-					// (see the run-id branch above).
+
 					if (refetchedPairs.length > 0) {
 						runs = refetched;
 						failedPairs = refetchedPairs;
 					}
 				} catch (err) {
 					if (signal?.aborted) throw err;
-					// Refetch failure: report from the original snapshots.
 				}
 			}
 
@@ -993,9 +957,6 @@ export async function executeRunWatch(
 
 		settledSuccessSignature = undefined;
 		if (!everSawRuns && Date.now() - watchStartMs >= RUN_WATCH_NO_RUNS_GIVE_UP_MS) {
-			// A repo with no Actions configured (or Actions disabled) never
-			// produces a run for this commit; give up with a clear message
-			// instead of polling forever.
 			const elapsedSec = Math.round((Date.now() - watchStartMs) / 1000);
 			return buildTextResult(
 				`No workflow runs found for ${repo}@${formatShortSha(headSha) ?? headSha} after ${elapsedSec}s (${pollCount} polls). The commit may not trigger any GitHub Actions workflows, or Actions may be disabled for this repository. Pass \`run\` to watch a specific run.`,

@@ -55,9 +55,6 @@ function getInstallCount(analytics?: { install?: { "30d"?: Record<string, number
 	return counts.reduce((sum, n) => sum + n, 0);
 }
 
-/**
- * Handle Homebrew formulae and cask URLs via API
- */
 export const handleBrew: SpecialHandler = async (
 	url: string,
 	timeout: number,

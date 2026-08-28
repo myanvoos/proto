@@ -17,9 +17,6 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
 const ANTIGRAVITY_DISCOVERY_DENYLIST = new Set(["chat_20706", "chat_23310", "gemini-2.5-pro"]);
 
-/**
- * Raw model metadata returned by Antigravity's `fetchAvailableModels` endpoint.
- */
 export interface AntigravityDiscoveryApiModel {
 	displayName?: string;
 	supportsImages?: boolean;
@@ -35,23 +32,14 @@ export interface AntigravityDiscoveryApiModel {
 	supportsVideo?: boolean;
 }
 
-/**
- * Grouping metadata used by Antigravity to surface recommended model ids.
- */
 export interface AntigravityDiscoveryAgentModelGroup {
 	modelIds?: string[];
 }
 
-/**
- * Sort/group metadata used by Antigravity to surface recommended model ids.
- */
 export interface AntigravityDiscoveryAgentModelSort {
 	groups?: AntigravityDiscoveryAgentModelGroup[];
 }
 
-/**
- * Response payload returned by Antigravity's `fetchAvailableModels` endpoint.
- */
 export interface AntigravityDiscoveryApiResponse {
 	models?: Record<string, AntigravityDiscoveryApiModel>;
 	agentModelSorts?: AntigravityDiscoveryAgentModelSort[];
@@ -128,36 +116,23 @@ const AntigravityDiscoveryApiResponseSchema = type({
 		return result;
 	}),
 });
-/**
- * Options for fetching Antigravity discovery models.
- */
+
 export interface FetchAntigravityDiscoveryModelsOptions {
-	/** OAuth access token used as `Authorization: Bearer <token>`. */
 	token: string;
-	/** Optional endpoint override. Defaults to Antigravity fallback endpoints. */
+
 	endpoint?: string;
-	/** Deprecated and ignored for antigravity discovery parity. */
+
 	project?: string;
-	/** Optional user agent override. */
+
 	userAgent?: string;
-	/** Optional abort signal for request cancellation. */
+
 	signal?: AbortSignal;
-	/** Optional fetch implementation override for tests. */
+
 	fetcher?: typeof fetch;
-	/**
-	 * Hand collapse table to apply to the discovered list. Defaults to the
-	 * Antigravity (budget-transport) table; `googleGeminiCli` passes the
-	 * level-transport table so cloudcode-pa keeps `thinkingLevel`.
-	 */
+
 	collapseTable?: VariantCollapseTable;
 }
 
-/**
- * Fetches discoverable Antigravity models and normalizes them into canonical model entries.
- *
- * Returns `null` on network/payload/auth failures.
- * Returns `[]` only when the endpoint responds successfully with no usable models.
- */
 export async function fetchAntigravityDiscoveryModels(
 	options: FetchAntigravityDiscoveryModelsOptions,
 ): Promise<ModelSpec<"google-gemini-cli">[] | null> {
@@ -233,9 +208,6 @@ export async function fetchAntigravityDiscoveryModels(
 			});
 		}
 
-		// Collapse effort-tier variants at the source so runtime discovery,
-		// the gemini-cli re-provision, and the catalog generator all see
-		// logical ids only.
 		const collapsed = collapseEffortVariants(models, options.collapseTable ?? ANTIGRAVITY_VARIANT_COLLAPSE_TABLE);
 		collapsed.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 		return collapsed;

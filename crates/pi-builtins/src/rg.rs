@@ -1,13 +1,13 @@
-//! `rg` builtin: ripgrep-compatible search, with ripgrep defaults — recursive
-//! directory search, ignore/hidden filtering, and binary-file suppression.
-//!
-//! Shares the PCRE2 JIT probe with the `grep` builtin (`crate::grep`); the two
-//! commands otherwise have separate argument models and output formats, which is
-//! why they are separate modules rather than one with a mode flag.
 
-//! `rg` implemented as an in-process shell builtin on top of the ripgrep
-//! libraries, with ripgrep defaults: recursive directory search, ignore/hidden
-//! filtering, and binary-file suppression.
+
+
+
+
+
+
+
+
+
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -26,7 +26,7 @@ use grep_searcher::{
 	BinaryDetection, Encoding, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
 use crate::host::{Host, StreamWriter, Utility};
-// Conventional shell status for a process terminated by SIGPIPE.
+
 const SIGPIPE_EXIT_CODE: i32 = 141;
 
 use ignore::{
@@ -45,23 +45,23 @@ use ignore::{
 	args_override_self = true
 )]
 pub(crate) struct Rg {
-	/// A pattern to search for. May be repeated.
+
 	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
 	patterns: Vec<String>,
 
-	/// Read patterns from a file, one pattern per line.
+
 	#[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
 	pattern_files: Vec<OsString>,
 
-	/// Search supported compressed files through external decompressors.
+
 	#[arg(short = 'z', long = "search-zip", overrides_with = "no_search_zip")]
 	search_zip: bool,
 
-	/// Disable compressed-file searching.
+
 	#[arg(long = "no-search-zip", overrides_with = "search_zip")]
 	no_search_zip: bool,
 
-	/// Select the regular expression engine.
+
 	#[arg(
 		long = "engine",
 		value_name = "ENGINE",
@@ -69,7 +69,7 @@ pub(crate) struct Rg {
 	)]
 	engine: Option<RegexEngine>,
 
-	/// Use the PCRE2 regular expression engine.
+
 	#[arg(
 		short = 'P',
 		long = "pcre2",
@@ -77,412 +77,412 @@ pub(crate) struct Rg {
 	)]
 	pcre2: bool,
 
-	/// Restore the default regular expression engine.
+
 	#[arg(long = "no-pcre2", overrides_with_all = ["engine", "pcre2"])]
 	no_pcre2: bool,
 
-	/// Decode input using ENCODING before searching.
+
 	#[arg(short = 'E', long = "encoding", value_name = "ENCODING", overrides_with = "no_encoding")]
 	encoding: Option<String>,
 
-	/// Restore automatic BOM-based encoding detection.
+
 	#[arg(long = "no-encoding", overrides_with = "encoding")]
 	no_encoding: bool,
 
-	/// Treat CRLF as a single line terminator.
+
 	#[arg(long = "crlf", overrides_with = "no_crlf")]
 	crlf: bool,
 
-	/// Restore LF line terminators.
+
 	#[arg(long = "no-crlf", overrides_with = "crlf")]
 	no_crlf: bool,
 
-	/// Disable Unicode regex mode.
+
 	#[arg(long = "no-unicode", overrides_with = "unicode")]
 	no_unicode: bool,
 
-	/// Enable Unicode regex mode.
+
 	#[arg(long = "unicode", overrides_with = "no_unicode", hide = true)]
 	unicode: bool,
 
-	/// Treat patterns as literals instead of regular expressions.
+
 	#[arg(short = 'F', long = "fixed-strings")]
 	fixed_strings: bool,
 
-	/// Re-enable regex parsing after --fixed-strings.
+
 	#[arg(long = "no-fixed-strings")]
 	no_fixed_strings: bool,
 
-	/// Search case-insensitively.
+
 	#[arg(short = 'i', long = "ignore-case", overrides_with_all = ["case_sensitive", "smart_case"])]
 	ignore_case: bool,
 
-	/// Search case-sensitively.
+
 	#[arg(short = 's', long = "case-sensitive", overrides_with_all = ["ignore_case", "smart_case"])]
 	case_sensitive: bool,
 
-	/// Search case-insensitively when the pattern is all lowercase.
+
 	#[arg(short = 'S', long = "smart-case", overrides_with_all = ["ignore_case", "case_sensitive"])]
 	smart_case: bool,
 
-	/// Invert matching.
+
 	#[arg(short = 'v', long = "invert-match")]
 	invert_match: bool,
 
-	/// Match only whole words.
+
 	#[arg(short = 'w', long = "word-regexp")]
 	word_regexp: bool,
 
-	/// Match only whole lines.
+
 	#[arg(short = 'x', long = "line-regexp")]
 	line_regexp: bool,
 
-	/// Limit matching lines per searched file.
+
 	#[arg(short = 'm', long = "max-count", value_name = "NUM")]
 	max_count: Option<u64>,
 
-	/// Enable multiline search.
+
 	#[arg(short = 'U', long = "multiline")]
 	multiline: bool,
 
-	/// Make . match line terminators in multiline mode.
+
 	#[arg(long = "multiline-dotall")]
 	multiline_dotall: bool,
 
-	/// Search binary files as text.
+
 	#[arg(short = 'a', long = "text")]
 	text: bool,
 
-	/// Search binary files.
+
 	#[arg(long = "binary")]
 	binary: bool,
 
-	/// Reduce smart filtering. Repeating includes hidden and binary files.
+
 	#[arg(short = 'u', long = "unrestricted", action = ArgAction::Count)]
 	unrestricted: u8,
 
-	/// Follow symbolic links.
+
 	#[arg(short = 'L', long = "follow", overrides_with = "no_follow")]
 	follow: bool,
 
-	/// Do not follow symbolic links.
+
 	#[arg(long = "no-follow", overrides_with = "follow")]
 	no_follow: bool,
 
-	/// Apply -g/--glob patterns case insensitively.
+
 	#[arg(long = "glob-case-insensitive", overrides_with = "no_glob_case_insensitive")]
 	glob_case_insensitive: bool,
 
-	/// Restore case-sensitive -g/--glob matching.
+
 	#[arg(long = "no-glob-case-insensitive", overrides_with = "glob_case_insensitive", hide = true)]
 	no_glob_case_insensitive: bool,
 
-	/// Include or exclude paths with a gitignore-style glob.
+
 	#[arg(short = 'g', long = "glob", value_name = "GLOB")]
 	globs: Vec<String>,
 
-	/// Case-insensitive include/exclude glob.
+
 	#[arg(long = "iglob", value_name = "GLOB")]
 	iglobs: Vec<String>,
 
-	/// Search hidden files and directories.
+
 	#[arg(short = '.', long = "hidden")]
 	hidden: bool,
 
-	/// Do not search hidden files and directories.
+
 	#[arg(long = "no-hidden")]
 	no_hidden: bool,
 
-	/// Ignore .gitignore, .ignore and .rgignore files.
+
 	#[arg(long = "no-ignore")]
 	no_ignore: bool,
 
-	/// Respect ignore files.
+
 	#[arg(long = "ignore")]
 	ignore: bool,
 
-	/// Apply additional gitignore-formatted rules from PATH.
+
 	#[arg(long = "ignore-file", value_name = "PATH")]
 	ignore_files: Vec<OsString>,
 
-	/// Ignore .ignore and .rgignore files.
+
 	#[arg(long = "no-ignore-dot")]
 	no_ignore_dot: bool,
 
-	/// Respect .ignore and .rgignore files.
+
 	#[arg(long = "ignore-dot")]
 	ignore_dot: bool,
 
-	/// Ignore repository exclude files.
+
 	#[arg(long = "no-ignore-exclude")]
 	no_ignore_exclude: bool,
 
-	/// Respect repository exclude files.
+
 	#[arg(long = "ignore-exclude")]
 	ignore_exclude: bool,
 
-	/// Ignore global gitignore files.
+
 	#[arg(long = "no-ignore-global")]
 	no_ignore_global: bool,
 
-	/// Respect global gitignore files.
+
 	#[arg(long = "ignore-global")]
 	ignore_global: bool,
 
-	/// Ignore parent ignore files.
+
 	#[arg(long = "no-ignore-parent")]
 	no_ignore_parent: bool,
 
-	/// Respect parent ignore files.
+
 	#[arg(long = "ignore-parent")]
 	ignore_parent: bool,
 
-	/// Ignore VCS ignore files.
+
 	#[arg(long = "no-ignore-vcs")]
 	no_ignore_vcs: bool,
 
-	/// Respect VCS ignore files.
+
 	#[arg(long = "ignore-vcs")]
 	ignore_vcs: bool,
 
-	/// Respect VCS ignores even outside a repository.
+
 	#[arg(long = "no-require-git")]
 	no_require_git: bool,
 
-	/// Require a repository for VCS ignore files.
+
 	#[arg(long = "require-git")]
 	require_git: bool,
 
-	/// Do not cross filesystem boundaries while traversing a root.
+
 	#[arg(long = "one-file-system", overrides_with = "no_one_file_system")]
 	one_file_system: bool,
 
-	/// Permit traversal across filesystem boundaries.
+
 	#[arg(long = "no-one-file-system", overrides_with = "one_file_system", hide = true)]
 	no_one_file_system: bool,
 
-	/// Limit directory traversal depth.
+
 	#[arg(short = 'd', long = "max-depth", alias = "maxdepth", value_name = "NUM")]
 	max_depth: Option<usize>,
 
-	/// Ignore files larger than this size.
+
 	#[arg(long = "max-filesize", value_name = "NUM")]
 	max_filesize: Option<String>,
 
-	/// Search only files matching a type.
+
 	#[arg(short = 't', long = "type", value_name = "TYPE")]
 	types: Vec<String>,
 
-	/// Do not search files matching a type.
+
 	#[arg(short = 'T', long = "type-not", value_name = "TYPE")]
 	type_nots: Vec<String>,
 
-	/// Add a file type glob.
+
 	#[arg(long = "type-add", value_name = "TYPESPEC")]
 	type_adds: Vec<String>,
 
-	/// Clear a file type definition.
+
 	#[arg(long = "type-clear", value_name = "TYPE")]
 	type_clears: Vec<String>,
 
-	/// Show NUM lines after each match.
+
 	#[arg(short = 'A', long = "after-context", value_name = "NUM")]
 	after_context: Option<usize>,
 
-	/// Show NUM lines before each match.
+
 	#[arg(short = 'B', long = "before-context", value_name = "NUM")]
 	before_context: Option<usize>,
 
-	/// Show NUM lines before and after each match.
+
 	#[arg(short = 'C', long = "context", value_name = "NUM")]
 	context: Option<usize>,
 
-	/// Show line numbers.
+
 	#[arg(short = 'n', long = "line-number", overrides_with = "no_line_number")]
 	line_number: bool,
 
-	/// Suppress line numbers.
+
 	#[arg(short = 'N', long = "no-line-number", overrides_with = "line_number")]
 	no_line_number: bool,
 
-	/// Show column numbers.
+
 	#[arg(long = "column", overrides_with = "no_column")]
 	column: bool,
 
-	/// Do not show column numbers.
+
 	#[arg(long = "no-column", overrides_with = "column")]
 	no_column: bool,
 
-	/// Show the zero-based byte offset for each result.
+
 	#[arg(short = 'b', long = "byte-offset", overrides_with = "no_byte_offset")]
 	byte_offset: bool,
 
-	/// Suppress byte offsets.
+
 	#[arg(long = "no-byte-offset", overrides_with = "byte_offset", hide = true)]
 	no_byte_offset: bool,
 
-	/// Print file paths with matches.
+
 	#[arg(short = 'H', long = "with-filename")]
 	with_filename: bool,
 
-	/// Suppress file paths with matches.
+
 	#[arg(short = 'I', long = "no-filename")]
 	no_filename: bool,
 
-	/// Print only files containing matches.
+
 	#[arg(short = 'l', long = "files-with-matches")]
 	files_with_matches: bool,
 
-	/// Print only files containing no matches.
+
 	#[arg(long = "files-without-match")]
 	files_without_match: bool,
 
-	/// Print matching-line counts per file.
+
 	#[arg(short = 'c', long = "count")]
 	count: bool,
 
-	/// Print individual match counts per file.
+
 	#[arg(long = "count-matches")]
 	count_matches: bool,
 
-	/// Print only matching spans.
+
 	#[arg(short = 'o', long = "only-matching")]
 	only_matching: bool,
 
-	/// Replace each printed match with REPLACEMENT.
+
 	#[arg(short = 'r', long = "replace", value_name = "REPLACEMENT")]
 	replacement: Option<OsString>,
 
-	/// Emit ripgrep-compatible JSON Lines messages.
+
 	#[arg(long = "json", overrides_with = "no_json")]
 	json: bool,
 
-	/// Disable JSON Lines output.
+
 	#[arg(long = "no-json", overrides_with = "json", hide = true)]
 	no_json: bool,
 
-	/// Suppress normal output and exit on the first match.
+
 	#[arg(short = 'q', long = "quiet")]
 	quiet: bool,
 
-	/// Print every match in vimgrep format.
+
 	#[arg(long = "vimgrep")]
 	vimgrep: bool,
 
-	/// Print path names followed by NUL.
+
 	#[arg(short = '0', long = "null")]
 	null: bool,
 
-	/// Use NUL as a line terminator.
+
 	#[arg(long = "null-data")]
 	null_data: bool,
 
-	/// Flush output after every result record.
+
 	#[arg(long = "line-buffered", overrides_with = "no_line_buffered")]
 	line_buffered: bool,
 
-	/// Restore block-buffered output.
+
 	#[arg(long = "no-line-buffered", overrides_with = "line_buffered", hide = true)]
 	no_line_buffered: bool,
 
-	/// Print files that would be searched.
+
 	#[arg(long = "files")]
 	files: bool,
 
-	/// Print all supported file types.
+
 	#[arg(long = "type-list")]
 	type_list: bool,
 
-	/// Suppress file-open/read diagnostics.
+
 	#[arg(long = "no-messages")]
 	no_messages: bool,
 
-	/// Re-enable diagnostics.
+
 	#[arg(long = "messages")]
 	messages: bool,
 
-	/// Sort paths before searching.
+
 	#[arg(long = "sort", value_name = "SORTBY")]
 	sort: Option<String>,
 
-	/// Sort paths descending before searching.
+
 	#[arg(long = "sortr", value_name = "SORTBY")]
 	sortr: Option<String>,
 
-	/// Deprecated alias for --sort=path.
+
 	#[arg(long = "sort-files")]
 	sort_files: bool,
 
-	/// Disable --sort-files.
+
 	#[arg(long = "no-sort-files")]
 	no_sort_files: bool,
 
-	/// Print both matching and non-matching lines.
+
 	#[arg(long = "passthru", alias = "passthrough")]
 	passthru: bool,
 
-	/// Trim leading ASCII whitespace from printed lines.
+
 	#[arg(long = "trim")]
 	trim: bool,
 
-	/// Disable --trim.
+
 	#[arg(long = "no-trim")]
 	no_trim: bool,
 
-	/// Omit matching lines longer than this many bytes.
+
 	#[arg(short = 'M', long = "max-columns", value_name = "NUM")]
 	max_columns: Option<usize>,
 
-	/// Preview lines omitted by --max-columns.
+
 	#[arg(long = "max-columns-preview")]
 	max_columns_preview: bool,
 
-	/// Disable --max-columns-preview.
+
 	#[arg(long = "no-max-columns-preview")]
 	no_max_columns_preview: bool,
 
-	/// Disable colors (accepted for CLI compatibility; output is plain text).
+
 	#[arg(long = "color", value_name = "WHEN")]
 	_color: Option<String>,
 
-	/// Color style (accepted for CLI compatibility; output is plain text).
+
 	#[arg(long = "colors", value_name = "COLOR_SPEC")]
 	_colors: Vec<String>,
 
-	/// Heading mode (accepted; non-TTY builtin output remains grep-like).
+
 	#[arg(long = "heading")]
 	_heading: bool,
 
-	/// Disable heading mode.
+
 	#[arg(long = "no-heading")]
 	_no_heading: bool,
 
-	/// Pretty output alias (accepted; colors/headings are not emitted).
+
 	#[arg(short = 'p', long = "pretty")]
 	_pretty: bool,
 
-	/// Output aggregate stats (accepted; not emitted by this builtin).
+
 	#[arg(long = "stats")]
 	_stats: bool,
 
-	/// Disable aggregate stats.
+
 	#[arg(long = "no-stats")]
 	_no_stats: bool,
 
-	/// Never read configuration files (accepted; this builtin never reads any).
+
 	#[arg(long = "no-config")]
 	_no_config: bool,
 
-	/// Number of search threads (accepted; this builtin searches in-process,
-	/// serially).
+
+
 	#[arg(short = 'j', long = "threads", value_name = "NUM")]
 	_threads: Option<usize>,
 
-	/// Print SEPARATOR instead of '/' in printed file paths.
+
 	#[arg(long = "path-separator", value_name = "SEPARATOR")]
 	path_separator: Option<String>,
 
-	/// Arguments: PATTERN followed by PATHs unless -e/-f/--files is used.
+
 	#[arg(value_name = "ARGS")]
 	args: Vec<OsString>,
 }
@@ -817,8 +817,8 @@ fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
 	&bytes[start..]
 }
 
-/// Writes a display path, substituting `separator` for `/` when requested via
-/// `--path-separator`.
+
+
 fn write_display_bytes<W: Write>(out: &mut W, bytes: &[u8], separator: Option<u8>) -> io::Result<()> {
 	let Some(separator) = separator else {
 		return out.write_all(bytes);
@@ -843,9 +843,9 @@ fn parse_path_separator(spec: Option<&str>) -> Result<Option<u8>, String> {
 	}
 }
 
-/// Line numbers follow real ripgrep's piped behavior: off unless requested
-/// (`-n`), or implied by `--column`/`--vimgrep`. Real rg enables them by
-/// default only on a tty; the builtin's output is always consumed piped.
+
+
+
 fn effective_line_number(cli: &Rg) -> bool {
 	if cli.no_line_number {
 		return false;
@@ -1042,8 +1042,8 @@ fn search_options(cli: &Rg) -> SearchOptions {
 		max_columns: cli.max_columns,
 		max_columns_preview: cli.max_columns_preview && !cli.no_max_columns_preview,
 		null_paths: cli.null,
-		// Validated --path-separator and the line-number default are applied in
-		// run() once paths are known.
+
+
 		path_separator: None,
 		no_messages: cli.no_messages && !cli.messages,
 		replacement: cli
@@ -1504,8 +1504,8 @@ fn search_dir<M: Matcher, W: Write>(
 			Some(Ok(SearchOutcome { any_match: any_match.get(), had_error: had_error.get() }))
 		},
 		Err(pi_walker::WalkError::Interrupted(_)) if host.is_cancelled() => {
-			// Harness cancellation; the shell wrapper overrides the exit code
-			// and stay-silent on stderr — no spurious "interrupted" diagnostic.
+
+
 			had_error.set(true);
 			Some(Ok(SearchOutcome { any_match: any_match.get(), had_error: true }))
 		},
@@ -1935,7 +1935,7 @@ use brush_core::{ShellExtensions, builtins::Registration};
 
 use crate::host::util;
 
-/// Creates the ripgrep-compatible `rg` builtin registration.
+
 pub(crate) fn rg_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Rg, SE>()
 }

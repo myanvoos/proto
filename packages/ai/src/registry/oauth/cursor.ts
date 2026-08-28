@@ -167,9 +167,7 @@ function getTokenExpiry(token: string): number {
 		if (decoded && typeof decoded === "object" && "exp" in decoded && typeof decoded.exp === "number") {
 			return decoded.exp * 1000 - 5 * 60 * 1000;
 		}
-	} catch {
-		// Ignore parsing errors
-	}
+	} catch {}
 	return Date.now() + 3600 * 1000;
 }
 

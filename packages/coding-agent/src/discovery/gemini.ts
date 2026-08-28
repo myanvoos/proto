@@ -1,20 +1,3 @@
-/**
- * Gemini CLI Provider
- *
- * Loads configuration from Gemini CLI's config directories.
- * Priority: 60 (tool-specific provider)
- *
- * Sources:
- * - User: ~/.gemini
- * - Project: .gemini/ (cwd only)
- *
- * Capabilities:
- * - mcps: From settings.json with mcpServers key
- * - context-files: GEMINI.md files
- * - system-prompt: system.md files for custom system prompt
- * - extensions: From extensions/STAR/gemini-extension.json manifests (STAR = wildcard)
- * - settings: From settings.json
- */
 import * as path from "node:path";
 import { tryParseJson } from "@oh-my-pi/pi-utils";
 import { registerProvider } from "../capability";
@@ -40,17 +23,10 @@ const PROVIDER_ID = "gemini";
 const DISPLAY_NAME = "Gemini CLI";
 const PRIORITY = 60;
 
-// =============================================================================
-// MCP Servers
-// =============================================================================
-
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const items: MCPServer[] = [];
 	const warnings: string[] = [];
 
-	// Load project entries before user entries so a project `enabled: false`
-	// claims its dedupe key before a same-named user server can survive (#7654).
-	// Project-level: .gemini/settings.json → mcpServers
 	const projectPath = getProjectPath(ctx, "gemini", "settings.json");
 	if (projectPath) {
 		const result = await loadMCPFromSettings(ctx, projectPath, "project");
@@ -58,7 +34,6 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 		if (result.warnings) warnings.push(...result.warnings);
 	}
 
-	// User-level: ~/.gemini/settings.json → mcpServers
 	const userPath = getUserPath(ctx, "gemini", "settings.json");
 	if (userPath) {
 		const result = await loadMCPFromSettings(ctx, userPath, "user");
@@ -121,15 +96,10 @@ async function loadMCPFromSettings(
 	return { items, warnings };
 }
 
-// =============================================================================
-// Context Files
-// =============================================================================
-
 async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];
 
-	// User-level: ~/.gemini/GEMINI.md
 	const userGeminiMd = getUserPath(ctx, "gemini", "GEMINI.md");
 	if (userGeminiMd) {
 		const content = await readFile(userGeminiMd);
@@ -143,7 +113,6 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 		}
 	}
 
-	// Project-level: .gemini/GEMINI.md
 	const projectGeminiMd = getProjectPath(ctx, "gemini", "GEMINI.md");
 	if (projectGeminiMd) {
 		const content = await readFile(projectGeminiMd);
@@ -164,15 +133,10 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 	return { items, warnings };
 }
 
-// =============================================================================
-// Extensions
-// =============================================================================
-
 async function loadExtensions(ctx: LoadContext): Promise<LoadResult<Extension>> {
 	const items: Extension[] = [];
 	const warnings: string[] = [];
 
-	// User-level: ~/.gemini/extensions/*/gemini-extension.json
 	const userExtPath = getUserPath(ctx, "gemini", "extensions");
 	if (userExtPath) {
 		const result = await loadExtensionsFromDir(userExtPath, "user");
@@ -180,7 +144,6 @@ async function loadExtensions(ctx: LoadContext): Promise<LoadResult<Extension>> 
 		if (result.warnings) warnings.push(...result.warnings);
 	}
 
-	// Project-level: .gemini/extensions/*/gemini-extension.json
 	const projectExtPath = getProjectPath(ctx, "gemini", "extensions");
 	if (projectExtPath) {
 		const result = await loadExtensionsFromDir(projectExtPath, "project");
@@ -228,10 +191,6 @@ async function loadExtensionsFromDir(extensionsDir: string, level: "user" | "pro
 	return { items, warnings };
 }
 
-// =============================================================================
-// Extension Modules
-// =============================================================================
-
 async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<ExtensionModule>> {
 	const userExtensionsDir = getUserPath(ctx, "gemini", "extensions");
 	const projectExtensionsDir = getProjectPath(ctx, "gemini", "extensions");
@@ -246,15 +205,10 @@ async function loadExtensionModules(ctx: LoadContext): Promise<LoadResult<Extens
 	return { items, warnings: [] };
 }
 
-// =============================================================================
-// Settings
-// =============================================================================
-
 async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	const items: Settings[] = [];
 	const warnings: string[] = [];
 
-	// User-level: ~/.gemini/settings.json
 	const userPath = getUserPath(ctx, "gemini", "settings.json");
 	if (userPath) {
 		const content = await readFile(userPath);
@@ -273,7 +227,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 		}
 	}
 
-	// Project-level: .gemini/settings.json
 	const projectPath = getProjectPath(ctx, "gemini", "settings.json");
 	if (projectPath) {
 		const content = await readFile(projectPath);
@@ -295,10 +248,6 @@ async function loadSettings(ctx: LoadContext): Promise<LoadResult<Settings>> {
 	return { items, warnings };
 }
 
-// =============================================================================
-// Provider Registration
-// =============================================================================
-
 registerProvider(mcpCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,
@@ -315,14 +264,9 @@ registerProvider(contextFileCapability.id, {
 	load: loadContextFiles,
 });
 
-// =============================================================================
-// System Prompt
-// =============================================================================
-
 async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemPrompt>> {
 	const items: SystemPrompt[] = [];
 
-	// User-level: ~/.gemini/system.md
 	const userSystemMd = getUserPath(ctx, "gemini", "system.md");
 	if (userSystemMd) {
 		const content = await readFile(userSystemMd);
@@ -336,7 +280,6 @@ async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemProm
 		}
 	}
 
-	// Project-level: .gemini/system.md
 	const projectSystemMd = getProjectPath(ctx, "gemini", "system.md");
 	if (projectSystemMd) {
 		const content = await readFile(projectSystemMd);

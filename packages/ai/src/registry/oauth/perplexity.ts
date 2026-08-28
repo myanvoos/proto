@@ -1,16 +1,3 @@
-/**
- * Perplexity login and token refresh.
- *
- * Login paths (in priority order):
- * 1. macOS native app: reads JWT from NSUserDefaults (`defaults read ai.perplexity.mac authToken`)
- * 2. HTTP email OTP: `GET /api/auth/csrf` → `POST /api/auth/signin-email` → `POST /api/auth/signin-otp`
- *
- * No browser or manual cookie paste required.
- * Refresh: Socket.IO `refreshJWT` RPC over authenticated WebSocket connection.
- *
- * Protocol: Engine.IO v4 + Socket.IO v4 over WebSocket (bypasses Cloudflare managed challenge).
- * Architecture reverse-engineered from Perplexity macOS app (ai.perplexity.mac).
- */
 import * as os from "node:os";
 import { $env } from "@oh-my-pi/pi-utils";
 import { $, Cookie, CookieMap } from "bun";
@@ -40,17 +27,7 @@ function rememberCookies(cookies: CookieMap, response: Response): void {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// JWT helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extract expiry from a JWT. Perplexity tokens generally lack an `exp` claim
- * (their sessions are server-side and effectively non-expiring from the client's
- * point of view), so we return a far-future sentinel when no `exp` is present.
- * When `exp` IS present, subtract a 5-minute safety margin.
- */
-const NEVER_EXPIRES = 8.64e15; // max safe Date value
+const NEVER_EXPIRES = 8.64e15;
 function getJwtExpiry(token: string): number {
 	try {
 		const parts = token.split(".");
@@ -60,13 +37,10 @@ function getJwtExpiry(token: string): number {
 		if (typeof decoded?.exp === "number" && Number.isFinite(decoded.exp)) {
 			return decoded.exp * 1000 - 5 * 60_000;
 		}
-	} catch {
-		// Ignore decode errors
-	}
+	} catch {}
 	return NEVER_EXPIRES;
 }
 
-/** Build OAuthCredentials from a Perplexity JWT string. */
 function jwtToCredentials(jwt: string, email?: string): OAuthCredentials {
 	return {
 		access: jwt,
@@ -76,14 +50,6 @@ function jwtToCredentials(jwt: string, email?: string): OAuthCredentials {
 	};
 }
 
-// ---------------------------------------------------------------------------
-// Desktop app extraction
-// ---------------------------------------------------------------------------
-
-/**
- * Read the Perplexity JWT from the native macOS Catalyst app's UserDefaults.
- * Tokens are stored in NSUserDefaults (not Keychain), readable by any same-UID process.
- */
 async function extractFromNativeApp(): Promise<string | null> {
 	if (os.platform() !== "darwin") return null;
 
@@ -98,13 +64,6 @@ async function extractFromNativeApp(): Promise<string | null> {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Socket.IO email OTP login
-// ---------------------------------------------------------------------------
-
-/**
- * Send email OTP and exchange it for a Perplexity JWT via HTTP endpoints.
- */
 async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> {
 	if (!ctrl.onPrompt) {
 		throw new AIError.OnPromptRequiredError("Perplexity");
@@ -228,23 +187,11 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
 	return jwtToCredentials(token, trimmedEmail);
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Login to Perplexity.
- *
- * Tries auto-extraction from the desktop app, then runs HTTP email OTP login.
- *
- * No browser/manual token paste fallback is used.
- */
 export async function loginPerplexity(ctrl: OAuthController): Promise<OAuthCredentials> {
 	if (!ctrl.onPrompt) {
 		throw new AIError.OnPromptRequiredError("Perplexity");
 	}
 
-	// Path 1: Native macOS app JWT (skip if PI_AUTH_NO_BORROW=1)
 	if (!$env.PI_AUTH_NO_BORROW) {
 		ctrl.onProgress?.("Checking for Perplexity desktop app...");
 		const nativeJwt = await extractFromNativeApp();
@@ -254,6 +201,5 @@ export async function loginPerplexity(ctrl: OAuthController): Promise<OAuthCrede
 		}
 	}
 
-	// Path 2: HTTP email OTP
 	return httpEmailLogin(ctrl);
 }

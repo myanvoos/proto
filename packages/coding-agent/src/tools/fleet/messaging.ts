@@ -1,14 +1,3 @@
-/**
- * Fleet messaging half — agent-to-agent messaging over the process-global IrcBus.
- *
- * `send` is fire-and-forget: the bus routes the message to the recipient
- * (waking idle agents with a real turn, reviving parked ones via the
- * lifecycle manager, injecting a non-interrupting aside into busy ones) and
- * returns delivery receipts immediately. Replies are real turns by the
- * recipient, observed with `wait` (or the `await: true` send sugar). `inbox`
- * drains pending messages; `list` shows every addressable peer.
- */
-
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
@@ -32,10 +21,6 @@ import { type CoordinationDetails, type FleetRenderArgs, fleetErrorResult } from
 
 const DEFAULT_IRC_TIMEOUT_MS = 120_000;
 
-/**
- * Messaging is always available to the top-level orchestrator. Workers keep
- * it while their depth permits the shared subagent collaboration surface.
- */
 export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
 	return true;
 }
@@ -46,20 +31,17 @@ function formatIncoming(msg: IrcMessage): string {
 }
 
 export function normalizeIrcTimeoutMs(value: number): number {
-	if (value === 0) return 0; // 0 = timeout disabled
-	// Negative or non-finite settings are misconfigurations — fall back to the
-	// default instead of producing an instant 1 ms timeout.
+	if (value === 0) return 0;
+
 	if (!Number.isFinite(value) || value < 0) return DEFAULT_IRC_TIMEOUT_MS;
 	return Math.max(1, Math.trunc(value));
 }
 
-/** Effective message-wait timeout: explicit param wins, then `irc.timeoutMs`. */
 function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number {
 	if (explicit !== undefined) return normalizeIrcTimeoutMs(explicit);
 	return normalizeIrcTimeoutMs(settings.get("irc.timeoutMs"));
 }
 
-/** Session-buffered inbox drain used before parking a bus waiter. */
 export function drainPendingInbox(registry: AgentRegistry, senderId: string, from?: string): IrcMessage | undefined {
 	const session = registry.get(senderId)?.session;
 	return typeof session?.drainPendingIrcInboxMessages === "function"
@@ -67,7 +49,6 @@ export function drainPendingInbox(registry: AgentRegistry, senderId: string, fro
 		: undefined;
 }
 
-/** `wait` result carrying a consumed message. */
 export function messageResult(senderId: string, waited: IrcMessage): AgentToolResult<CoordinationDetails> {
 	return {
 		content: [{ type: "text", text: formatIncoming(waited) }],
@@ -75,10 +56,6 @@ export function messageResult(senderId: string, waited: IrcMessage): AgentToolRe
 	};
 }
 
-/**
- * List every addressable peer, restoring parked refs from disk when a resumed
- * session has no in-memory roster.
- */
 export async function executeList(
 	registry: AgentRegistry,
 	senderId: string,
@@ -193,21 +170,14 @@ export async function executeSend(
 	}
 
 	try {
-		// Broadcasts fan out to live peers only (running | idle); reviving every
-		// parked agent on a broadcast would be a stampede. Direct sends go
-		// through the bus unfiltered so parked recipients are revived.
 		const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
-		// A broadcast that also reaches the main agent delivers the body to it
-		// directly (its own incoming card); relaying the sibling legs to the
-		// main UI would then show the same body once per other recipient.
+
 		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 		const receipts = await Promise.all(
 			targets.map(target =>
 				bus.send(
 					{ from: senderId, to: target, body: message, replyTo: params.replyTo },
-					// Awaited sends mark the sender as blocked on an answer so a
-					// busy recipient that cannot reach a step boundary (async
-					// disabled) auto-replies instead of stranding the sender.
+
 					{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined },
 				),
 			),
@@ -235,10 +205,6 @@ export async function executeSend(
 			if (delivered.length > 0) {
 				const reply = await waiting;
 				if (reply.error) {
-					// The send already succeeded; if the wait was interrupted by our
-					// caller signal (steering / messaging), preserve the delivery receipt
-					// so the agent loop keeps this tool as "sent" instead of marking it
-					// skipped, which would prompt a duplicate resend on the next turn.
 					if (signal?.aborted) {
 						lines.push(
 							`Send delivered but the reply wait was interrupted before ${to} answered. ` +
@@ -283,7 +249,6 @@ export async function executeSend(
 	}
 }
 
-/** Pure message wait: no jobs in play, block on the bus with peer liveness. */
 export async function executeMessageWait(
 	deps: { registry: AgentRegistry; senderId: string; settings: Settings },
 	params: { from?: string; timeoutMs?: number },
@@ -301,7 +266,7 @@ export async function executeMessageWait(
 			return {
 				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
 				details: { op: "wait", from: senderId, waited: null },
-				// A clean wait timeout carries no information once consumed.
+
 				useless: true,
 			};
 		}
@@ -328,7 +293,7 @@ export function executeInbox(
 		return {
 			content: [{ type: "text", text: "Inbox empty." }],
 			details: { op: "inbox", from: senderId, inbox: [] },
-			// An empty inbox drain carries no information once consumed.
+
 			useless: true,
 		};
 	}
@@ -339,10 +304,6 @@ export function executeInbox(
 		details: { op: "inbox", from: senderId, inbox: messages },
 	};
 }
-
-// =============================================================================
-// TUI Renderer (messaging half)
-// =============================================================================
 
 const BODY_LINES_COLLAPSED = 2;
 const BODY_LINES_EXPANDED = 12;
@@ -367,7 +328,6 @@ function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
 	}
 }
 
-/** Glyph + status word, matching the agent roster status conventions. */
 function peerStatusBadge(status: string, theme: Theme): string {
 	switch (status) {
 		case "running":
@@ -390,10 +350,6 @@ function textContent(result: { content: Array<{ type: string; text?: string }> }
 	return result.content.find(part => part.type === "text")?.text?.trim() ?? "";
 }
 
-/**
- * Quote-bordered message body preview. `tone` separates outbound text (dim)
- * from received text (toolOutput); a trailing dim counter marks elided lines.
- */
 function bodyLines(
 	body: string,
 	expanded: boolean,
@@ -415,7 +371,6 @@ function bodyLines(
 	return lines;
 }
 
-/** Header title carrying the op direction: `IRC ➤ peer` out, `IRC ⟵ peer` in. */
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
@@ -455,13 +410,6 @@ function renderErrorResult(
 	];
 }
 
-/**
- * Display-only transcript card for live IRC traffic: `irc:incoming` DMs
- * delivered to this session, `irc:autoreply` side-channel replies sent on
- * this session's behalf, and `irc:relay` observations of agent↔agent
- * traffic. Shares the tool renderer's glyph + quote-border conventions so
- * cards and fleet messaging output look identical in the transcript.
- */
 export function createIrcMessageCard(
 	card: {
 		kind: "incoming" | "autoreply" | "relay";
@@ -511,7 +459,6 @@ function renderSendResult(
 	const to = details.to ?? args?.to?.trim() ?? "?";
 	const title = `IRC ${theme.nav.selected} ${to}`;
 
-	// Pre-delivery failures (validation) and empty broadcasts carry no receipts.
 	if (receipts.length === 0) {
 		const text = textContent(result) || (result.isError ? "Send failed." : "Nothing to deliver.");
 		return [
@@ -699,7 +646,6 @@ function buildResultLines(
 	}
 }
 
-/** Pending-call frame for messaging ops (send/wait-from/inbox/list). */
 export function messagingRenderCall(args: FleetRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 	const lines = [
 		renderStatusLine({ icon: "pending", title: callTitle(args, uiTheme), meta: callMeta(args) }, uiTheme),
@@ -710,7 +656,6 @@ export function messagingRenderCall(args: FleetRenderArgs, _options: RenderResul
 	return new Text(lines.join("\n"), 0, 0);
 }
 
-/** Result frame for messaging ops and message-carrying `wait` results. */
 export function messagingRenderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
 	options: RenderResultOptions,

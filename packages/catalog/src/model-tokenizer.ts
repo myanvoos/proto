@@ -10,7 +10,6 @@ const KIMI_K2_ALIASES: Record<string, true> = {
 	"kimi-for-coding-highspeed": true,
 };
 
-// Resolution is pure and catalog ids recur across providers and aliases.
 const MAX_TOKENIZER_CACHE_ENTRIES = 2_048;
 const modelTokenizerCache = new Map<string, ModelTokenizer | null>();
 
@@ -53,12 +52,6 @@ function glmTokenizer(modelId: string): ModelTokenizer | undefined {
 	return glm && semverGte(glm.version, "5") ? "glm5" : undefined;
 }
 
-/**
- * Resolve the exact locally embedded tokenizer for a canonical model id.
- *
- * This is catalog policy, not a runtime caller heuristic: [`buildModel`](./build.ts)
- * materializes the result as `Model.tokenizer`; consumers read that property.
- */
 export function resolveModelTokenizer(modelId: string): ModelTokenizer | undefined {
 	const cached = modelTokenizerCache.get(modelId);
 	if (cached !== undefined) return cached ?? undefined;

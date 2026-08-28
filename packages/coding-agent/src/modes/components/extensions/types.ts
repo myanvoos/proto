@@ -1,11 +1,5 @@
-/**
- * Types for the Extension Control Center dashboard.
- */
 import type { SourceMeta } from "../../../capability/types";
 
-/**
- * Extension kinds matching capability types.
- */
 export type ExtensionKind =
 	| "extension-module"
 	| "skill"
@@ -18,136 +12,98 @@ export type ExtensionKind =
 	| "hook"
 	| "slash-command";
 
-/**
- * Extension state (active, disabled, or shadowed).
- */
 export type ExtensionState = "active" | "disabled" | "shadowed";
 
-/**
- * Reason why an extension is disabled.
- */
 type DisabledReason = "provider-disabled" | "item-disabled" | "shadowed";
 
-/**
- * Unified extension representation for the dashboard.
- * Normalizes all capability types into a common shape.
- */
 export interface Extension {
-	/** Unique ID: `${kind}:${name}` */
 	id: string;
-	/** Extension kind */
+
 	kind: ExtensionKind;
-	/** Extension name */
+
 	name: string;
-	/** Display name (may differ from name) */
+
 	displayName: string;
-	/** Description if available */
+
 	description?: string;
-	/** Trigger pattern (slash command, glob, regex) */
+
 	trigger?: string;
-	/** Absolute path to source file */
+
 	path: string;
-	/** Source metadata */
+
 	source: {
 		provider: string;
 		providerName: string;
 		level: "user" | "project" | "native";
 	};
-	/** Current state */
+
 	state: ExtensionState;
-	/** Reason for disabled state */
+
 	disabledReason?: DisabledReason;
-	/** If shadowed, what shadows it */
+
 	shadowedBy?: string;
-	/** Raw item data for inspector */
+
 	raw: unknown;
 }
 
-/**
- * Tree node types for sidebar hierarchy.
- */
 type TreeNodeType = "provider" | "kind" | "item";
 
-/**
- * Sidebar tree node.
- */
 export interface TreeNode {
-	/** Unique ID */
 	id: string;
-	/** Display label */
+
 	label: string;
-	/** Node type (provider can be toggled, kind groups items) */
+
 	type: TreeNodeType;
-	/** Whether this node/provider is enabled */
+
 	enabled: boolean;
-	/** Whether collapsed */
+
 	collapsed: boolean;
-	/** Child nodes */
+
 	children: TreeNode[];
-	/** Extension count (for display) */
+
 	count?: number;
 }
 
-/**
- * Flattened tree item for navigation.
- */
 export interface FlatTreeItem {
 	node: TreeNode;
 	depth: number;
 	index: number;
 }
 
-/**
- * Provider tab representation.
- */
 export interface ProviderTab {
-	/** Provider ID (or "all" for the ALL tab) */
 	id: string;
-	/** Display label */
+
 	label: string;
-	/** Whether provider is enabled (always true for "all") */
+
 	enabled: boolean;
-	/** Extension count for this provider */
+
 	count: number;
 }
 
-/**
- * Tabbed dashboard state.
- */
 export interface DashboardState {
-	/** Provider tabs */
 	tabs: ProviderTab[];
-	/** Active tab index */
+
 	activeTabIndex: number;
 
-	/** All extensions (unfiltered) */
 	extensions: Extension[];
-	/** Extensions filtered by active tab */
+
 	tabFiltered: Extension[];
-	/** Extensions filtered by search (applied after tab filter) */
+
 	searchFiltered: Extension[];
-	/** Current search query */
+
 	searchQuery: string;
 
-	/** Selected index in main list */
 	listIndex: number;
-	/** Scroll offset for main list */
+
 	scrollOffset: number;
 
-	/** Currently selected extension for inspector */
 	selected: Extension | null;
 }
 
-/**
- * Create extension ID from kind and name.
- */
 export function makeExtensionId(kind: ExtensionKind, name: string): string {
 	return `${kind}:${name}`;
 }
 
-/**
- * Map SourceMeta to extension source shape.
- */
 export function sourceFromMeta(meta: SourceMeta): Extension["source"] {
 	return {
 		provider: meta.provider,

@@ -1,22 +1,3 @@
-/**
- * Bounded retries for an empty assistant completion.
- *
- * Some providers — and especially flaky OpenAI-/Anthropic-compatible gateways —
- * intermittently return a benign terminal stop carrying no content and no usage
- * (e.g. a single OpenAI `delta: {}` + `finish_reason: "stop"` chunk). Delivered
- * as-is the agent loop has nothing to act on and silently halts mid-task, so the
- * request must be retried instead of surfaced.
- *
- * This wraps a single-attempt provider stream and re-invokes it (a fresh request
- * with its own message state) when an attempt produces no meaningful content.
- * Only a stream that streamed nothing meaningful is retried: the moment any
- * text/thinking/tool delta is forwarded the attempt is committed, so live
- * streaming (including thinking) is never delayed, retried, or duplicated.
- *
- * Mirrors the Gemini empty-response policy in `google-shared` (which keeps its
- * own integrated loop) and is shared by the OpenAI-completions and
- * Anthropic-messages providers.
- */
 import { scheduler } from "node:timers/promises";
 import type { AssistantMessage, AssistantMessageEvent, Context } from "../types";
 import { AssistantMessageEventStream } from "./event-stream";
@@ -26,11 +7,6 @@ export const EMPTY_COMPLETION_BASE_DELAY_MS = 500;
 
 const NON_WHITESPACE_RE = /\S/;
 
-/**
- * Whether a completed assistant message carries content worth delivering: an
- * image, tool call, or any non-whitespace text. An empty/whitespace-only message
- * — or one that only ever produced thinking — is the "empty response" failure.
- */
 export function hasVisibleAssistantContent(message: AssistantMessage): boolean {
 	for (const block of message.content) {
 		if (block.type === "image") return true;
@@ -40,7 +16,6 @@ export function hasVisibleAssistantContent(message: AssistantMessage): boolean {
 	return false;
 }
 
-/** A streamed event that delivers content worth committing the attempt for. */
 function isMeaningfulCompletionEvent(event: AssistantMessageEvent): boolean {
 	switch (event.type) {
 		case "text_delta":
@@ -66,11 +41,6 @@ interface EmptyCompletionRetryOptions {
 	acceptEmptyResponse?: boolean;
 }
 
-/**
- * Wrap a single-attempt provider stream with bounded empty-completion retries.
- * `attempt` MUST create a fresh request (and its own output message) on each
- * call so a retry never inherits stale metadata from an empty attempt.
- */
 export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOptions>(
 	model: M,
 	context: Context,
@@ -95,8 +65,7 @@ export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOption
 						terminal = event;
 						break;
 					}
-					// Buffer pre-content events (start/*_start) so an empty attempt can
-					// be discarded; commit the moment real content streams.
+
 					if (!committed && !isMeaningfulCompletionEvent(event)) {
 						buffered.push(event);
 						continue;
@@ -112,10 +81,6 @@ export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOption
 				return;
 			}
 
-			// Retry only a genuinely degenerate completion: a normal stop that
-			// produced no visible content and reported no generated content tokens.
-			// Some providers count the terminal EOS as one output token, so a
-			// one-token invisible stop is still the same empty-completion failure.
 			const message = terminal?.type === "done" ? terminal.message : undefined;
 			const isRetryableEmpty =
 				options?.acceptEmptyResponse !== true &&
@@ -133,8 +98,6 @@ export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOption
 					if (options?.providerRetryWait) await options.providerRetryWait(delayMs, signal);
 					else await scheduler.wait(delayMs, { signal });
 				} catch (waitError) {
-					// Aborted during backoff: deliver the empty result rather than hang.
-					// Any other wait failure is a real error and must surface.
 					flush();
 					if (signal?.aborted) {
 						if (terminal) outer.push(terminal);
@@ -143,7 +106,7 @@ export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOption
 					}
 					return;
 				}
-				// Discard the buffered `start` from this empty attempt and retry.
+
 				continue;
 			}
 

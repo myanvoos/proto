@@ -1,8 +1,3 @@
-//! Vendored and extended language definitions for ast-grep integration.
-//!
-//! Originally derived from `ast-grep-language` v0.39.9, stripped of
-//! serde/ignore machinery, and extended with additional languages.
-
 mod parsers;
 
 use std::{borrow::Cow, collections::HashMap, fmt, path::Path, sync::LazyLock};
@@ -15,8 +10,6 @@ use ast_grep_core::{
 };
 use phf::phf_map;
 
-/// Implements a stub language (no expando / `pre_process_pattern` needed).
-/// Use when the language grammar accepts `$VAR` as valid identifiers.
 macro_rules! impl_lang {
 	($lang:ident, $func:ident) => {
 		#[derive(Clone, Copy, Debug)]
@@ -64,8 +57,6 @@ fn pre_process_pattern(expando: char, query: &str) -> Cow<'_, str> {
 	Cow::Owned(ret.into_iter().collect())
 }
 
-/// Implements a language with `expando_char` / `pre_process_pattern`.
-/// Use when the language does NOT accept `$` as a valid identifier character.
 macro_rules! impl_lang_expando {
 	($lang:ident, $func:ident, $char:expr) => {
 		#[derive(Clone, Copy, Debug)]
@@ -102,8 +93,6 @@ macro_rules! impl_lang_expando {
 	};
 }
 
-// ── Customized languages with expando_char ──────────────────────────────
-
 impl_lang_expando!(C, language_c, '𐀀');
 impl_lang_expando!(Cpp, language_cpp, '𐀀');
 impl_lang_expando!(CSharp, language_c_sharp, 'µ');
@@ -132,7 +121,6 @@ impl_lang_expando!(Rust, language_rust, 'µ');
 impl_lang_expando!(Sql, language_sql, 'µ');
 impl_lang_expando!(Swift, language_swift, 'µ');
 
-// New expando languages
 impl_lang_expando!(Make, language_make, 'µ');
 impl_lang_expando!(ObjC, language_objc, '𐀀');
 impl_lang_expando!(Starlark, language_starlark, 'µ');
@@ -141,8 +129,6 @@ impl_lang_expando!(Julia, language_julia, 'µ');
 impl_lang_expando!(Verilog, language_verilog, 'µ');
 impl_lang_expando!(Zig, language_zig, 'µ');
 impl_lang_expando!(Tlaplus, language_tlaplus, 'µ');
-
-// ── Stub languages ($ accepted in grammar) ──────────────────────────────
 
 impl_lang!(Astro, language_astro);
 impl_lang!(Bash, language_bash);
@@ -159,7 +145,6 @@ impl_lang!(TypeScript, language_typescript);
 impl_lang!(Vue, language_vue);
 impl_lang!(Yaml, language_yaml);
 
-// New stub languages
 impl_lang!(Markdown, language_markdown);
 impl_lang!(Toml, language_toml);
 impl_lang!(Diff, language_diff);
@@ -167,8 +152,6 @@ impl_lang!(Xml, language_xml);
 impl_lang!(Regex, language_regex);
 impl_lang!(Dart, language_dart);
 impl_lang!(EmacsLisp, language_elisp);
-
-// ── Html (custom implementation with injection support) ──────────────────
 
 #[derive(Clone, Copy, Debug)]
 pub struct Html;
@@ -263,9 +246,6 @@ fn node_to_range<D: Doc>(node: &Node<D>) -> TSRange {
 	TSRange { start_byte: r.start, end_byte: r.end, start_point: sp, end_point: ep }
 }
 
-// ── SupportLang enum ────────────────────────────────────────────────────
-
-/// All supported languages for ast-grep structural search/replace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SupportLang {
 	Astro,
@@ -345,8 +325,6 @@ impl SupportLang {
 		]
 	}
 
-	/// The canonical lowercase name used as a stable key in alias maps,
-	/// file-type inference results, and error messages.
 	pub const fn canonical_name(self) -> &'static str {
 		match self {
 			Self::Astro => "astro",
@@ -428,8 +406,6 @@ impl fmt::Display for SupportLang {
 		write!(f, "{self:?}")
 	}
 }
-
-// ── Dispatch macro ──────────────────────────────────────────────────────
 
 macro_rules! execute_lang_method {
 	($me:expr, $method:ident, $($pname:tt),*) => {
@@ -543,8 +519,6 @@ impl LanguageExt for SupportLang {
 	}
 }
 
-// ── File extension mapping ──────────────────────────────────────────────
-
 const fn extensions(lang: SupportLang) -> &'static [&'static str] {
 	use SupportLang::*;
 	match lang {
@@ -610,7 +584,6 @@ const fn extensions(lang: SupportLang) -> &'static [&'static str] {
 	}
 }
 
-/// Guess language from file extension.
 fn from_extension(path: &Path) -> Option<SupportLang> {
 	let name = path.file_name()?.to_str()?;
 	if name == "Makefile" || name == "makefile" || name == "GNUmakefile" {
@@ -635,9 +608,6 @@ fn from_extension(path: &Path) -> Option<SupportLang> {
 		return Some(SupportLang::EmacsLisp);
 	}
 
-	// Extensionless shell rc/profile files. `Path::extension` returns `None`
-	// for both bare (`zshrc`) and dotfile (`.zshrc`) forms, so they would
-	// otherwise resolve to no language and disable block-aware ops on them.
 	let stem = name.strip_prefix('.').unwrap_or(name);
 	if matches!(
 		stem,

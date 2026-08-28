@@ -477,7 +477,6 @@ function incompatible(destination: BlobDestinationId, reason: string): never {
 	throw new DestinationUnavailableError(destination, reason);
 }
 
-/** Create a viable ShareX legacy HTTP uploader, or `null` for another destination family. */
 export function createLegacyUploader(
 	destination: BlobDestinationId,
 	config: DestinationRuntimeConfig,

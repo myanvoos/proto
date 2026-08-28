@@ -1,72 +1,52 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
 
-/** A fenced code block extracted from assistant markdown. */
 export interface CodeBlock {
-	/** Info string after the opening fence (language id), trimmed. */
 	lang: string;
-	/** Block body with the trailing newline stripped. */
+
 	code: string;
 }
 
-/** A blockquote block: a maximal run of `>`-prefixed lines from markdown. */
 interface QuoteBlock {
-	/** Block body with each line's `>` marker (and one optional space) removed. */
 	text: string;
 }
 
-/** A drillable block within an assistant message, in document order. */
 export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } & QuoteBlock);
 
-/** A runnable command found in the transcript. */
 interface LastCommand {
 	kind: "bash" | "eval";
 	code: string;
-	/** Highlight language: "bash" for bash, or the resolved eval language ("python"/"javascript"/"ruby"/"julia"). */
+
 	language: string;
 }
 
-/**
- * A node in the `/copy` picker tree. Leaves carry `content` (placed on the
- * clipboard) plus `copyMessage` (the status shown afterwards); groups carry
- * `children` to drill into.
- */
 export interface CopyTarget {
-	/** Stable id (e.g. "msg:1", "msg:1:code:0", "msg:1:quote:0", "msg:1:all", "cmd:1"). */
 	id: string;
 	label: string;
-	/** Dim annotation: line/block counts, language, or tool name. */
+
 	hint?: string;
-	/** Full text rendered in the preview pane. */
+
 	preview: string;
-	/** Highlight language for code/command previews (undefined = plain/markdown). */
+
 	language?: string;
-	/** Leaf: text copied to the clipboard. */
+
 	content?: string;
-	/** Leaf: status message shown after copying. */
+
 	copyMessage?: string;
-	/** Group: nested targets to drill into. */
+
 	children?: CopyTarget[];
 }
 
-/** Minimal session surface needed to assemble copy targets (eases testing). */
 export interface CopySource {
 	readonly messages: readonly AgentMessage[];
 }
 
-/** Cap on how many recent assistant messages the picker lists. */
 const MAX_MESSAGES = 50;
 
 const OPEN_FENCE_RE = /^```([^\n]*)$/;
 const CLOSE_FENCE_RE = /^```/;
 const QUOTE_LINE_RE = /^>(.*)$/;
 
-/**
- * Split assistant markdown into drillable blocks — fenced code and `>`-quoted
- * runs — in document order. Fences mask their bodies, so a `>` line inside a
- * code block is never mistaken for a quote. An unclosed fence is treated as
- * ordinary text, matching the fenced-block grammar.
- */
 function extractBlocks(text: string): MessageBlock[] {
 	const blocks: MessageBlock[] = [];
 	const lines = text.split("\n");
@@ -99,7 +79,6 @@ function extractBlocks(text: string): MessageBlock[] {
 
 		const quoted = QUOTE_LINE_RE.exec(line);
 		if (quoted) {
-			// Strip the `>` marker plus one optional following space.
 			quote ??= [];
 			quote.push(quoted[1].startsWith(" ") ? quoted[1].slice(1) : quoted[1]);
 		} else {
@@ -110,14 +89,12 @@ function extractBlocks(text: string): MessageBlock[] {
 	return blocks;
 }
 
-/** Extract fenced code blocks from assistant markdown, in document order. */
 export function extractCodeBlocks(text: string): CodeBlock[] {
 	return extractBlocks(text)
 		.filter((b): b is { kind: "code" } & CodeBlock => b.kind === "code")
 		.map(b => ({ lang: b.lang, code: b.code }));
 }
 
-/** Walk the transcript backwards for the most recent fenced assistant code block. */
 export function extractLastCodeBlock(messages: readonly AgentMessage[]): CodeBlock | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -129,7 +106,6 @@ export function extractLastCodeBlock(messages: readonly AgentMessage[]): CodeBlo
 	return undefined;
 }
 
-/** Extract `>`-quoted blocks from assistant markdown, in document order. */
 export function extractQuoteBlocks(text: string): QuoteBlock[] {
 	return extractBlocks(text)
 		.filter((b): b is { kind: "quote" } & QuoteBlock => b.kind === "quote")
@@ -175,7 +151,6 @@ function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	return undefined;
 }
 
-/** Walk the transcript backwards for the most recent bash command or eval code. */
 export function extractLastCommand(messages: readonly AgentMessage[]): LastCommand | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -189,7 +164,6 @@ export function extractLastCommand(messages: readonly AgentMessage[]): LastComma
 	return undefined;
 }
 
-/** Concatenated visible text of an assistant message, or undefined when empty. */
 function assistantText(msg: AgentMessage): string | undefined {
 	if (msg.role !== "assistant") return undefined;
 	let text = "";
@@ -209,7 +183,6 @@ function blockHint(block: CodeBlock): string {
 	return block.lang ? `${block.lang} · ${lines}` : lines;
 }
 
-/** First non-empty line, whitespace-collapsed, used as a message label. */
 function firstLine(text: string): string {
 	for (const line of text.split("\n")) {
 		const trimmed = line.trim();
@@ -218,7 +191,6 @@ function firstLine(text: string): string {
 	return text.trim().replace(/\s+/g, " ");
 }
 
-/** "<n> lines · <c> code · <q> quote" — omitting block kinds that are absent. */
 function blockSummaryHint(text: string, codeCount: number, quoteCount: number): string {
 	const parts = [pluralLines(text)];
 	if (codeCount > 0) parts.push(`${codeCount} code`);
@@ -226,9 +198,6 @@ function blockSummaryHint(text: string, codeCount: number, quoteCount: number): 
 	return parts.join(" · ");
 }
 
-/** Build the target node for one assistant message: a leaf when it has no
- * drillable blocks, otherwise a group exposing the full message plus each
- * fenced code block and `>`-quoted block (de-prefixed) as a child target. */
 function messageTarget(text: string, rank: number): CopyTarget {
 	const id = `msg:${rank}`;
 	const label = firstLine(text);
@@ -239,8 +208,6 @@ function messageTarget(text: string, rank: number): CopyTarget {
 		return { id, label, hint: pluralLines(text), preview: text, content: text, copyMessage: messageCopy };
 	}
 
-	// The message node itself copies the full message; each block is a child
-	// copy target you can drill into, kept in document order.
 	const children: CopyTarget[] = [];
 	const codeBlocks: CodeBlock[] = [];
 	const quoteBlocks: QuoteBlock[] = [];
@@ -315,11 +282,6 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 	};
 }
 
-/**
- * Assemble the unified `/copy` target tree: recent assistant messages
- * (most recent first, each drillable into its code blocks), runnable command
- * targets interleaved after the assistant message that issued them.
- */
 export function buildCopyTargets(source: CopySource): CopyTarget[] {
 	const targets: CopyTarget[] = [];
 	const pendingCommands: LastCommand[] = [];

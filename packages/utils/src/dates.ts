@@ -1,5 +1,3 @@
-/** Behavior-compatible reimplementation of date-fns's used surface. */
-
 const MONTHS = [
 	"January",
 	"February",
@@ -95,7 +93,6 @@ function asDate(value: Date | number): Date {
 	return date;
 }
 
-/** Format a date with the supported date-fns v4 tokens and quoted literals. */
 export function format(value: Date | number, pattern: string): string {
 	const date = asDate(value);
 	let result = "";
@@ -183,7 +180,6 @@ function distanceWords(earlier: Date, later: Date): string {
 	return `almost ${plural(years + 1, "year")}`;
 }
 
-/** Describe the distance from a date to now using date-fns's English thresholds. */
 export function formatDistanceToNow(value: Date | number, options: { addSuffix?: boolean } = {}): string {
 	const date = asDate(value);
 	const now = new Date(Date.now());

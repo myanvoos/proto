@@ -9,21 +9,10 @@ import { SearchProvider } from "./base";
 import { browserFetch } from "./browser-page";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
-/**
- * DuckDuckGo's no-JS HTML search frontend. POST `q=…` to receive a static
- * results page we can parse without a real browser. The Instant Answer API
- * (`api.duckduckgo.com`) was tried first but it only returns content for
- * Wikipedia/Wolfram-Alpha-style topics — empty for the vast majority of
- * agent queries (see #3799).
- */
 const DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 
-/**
- * Recency → DDG `df` form param. DDG accepts single letters for the time
- * filter; queries without a `df` value return the unfiltered default.
- */
 const RECENCY_TO_DDG_DF: Record<NonNullable<SearchParams["recency"]>, string> = {
 	day: "d",
 	week: "w",
@@ -35,15 +24,10 @@ interface ParsedResult {
 	title: string;
 	url: string;
 	snippet?: string;
-	/** ISO timestamp lifted from the result row, when DDG emits one. */
+
 	publishedDate?: string;
 }
 
-/**
- * Decode an HTML-encoded fragment lifted from DDG markup. Strips inline tags
- * (the results page wraps query terms in `<b>`), unescapes the small set of
- * named entities DDG emits, and normalises whitespace.
- */
 function decodeHtmlText(value: string): string {
 	return value
 		.replace(/<[^>]*>/g, " ")
@@ -59,14 +43,6 @@ function decodeHtmlText(value: string): string {
 		.trim();
 }
 
-/**
- * Resolve a DDG result href back to the underlying target URL.
- *
- * DDG routes outbound clicks through `//duckduckgo.com/l/?uddg=<encoded>` so
- * it can record analytics; we want the unwrapped URL. Handles three shapes
- * the page mixes in practice: redirect wrappers, protocol-relative links,
- * and (rarely) absolute URLs on sponsored or instant answer rows.
- */
 function unwrapResultUrl(href: string): string | undefined {
 	if (!href) return undefined;
 	const decoded = href.replace(/&amp;/gi, "&");
@@ -83,13 +59,6 @@ function unwrapResultUrl(href: string): string | undefined {
 	return undefined;
 }
 
-/**
- * Lift a result row's publication timestamp from DDG markup. Recent DDG HTML
- * renders it as a bare `<span>&nbsp; &nbsp; 2026-07-30T20:19:00.0000000</span>`
- * inside `result__extras__url`. Restrict the scan to that container so a
- * date-shaped value in a `<span class="result__snippet">` is not attributed
- * as publication metadata.
- */
 function extractPublishedDate(block: string): string | undefined {
 	const extrasUrl = /<div\b[^>]*\bclass="[^"]*\bresult__extras__url\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(block)?.[1];
 	if (!extrasUrl) return undefined;
@@ -100,15 +69,6 @@ function extractPublishedDate(block: string): string | undefined {
 	return undefined;
 }
 
-/**
- * Walk the HTML page and pull out result blocks in document order.
- *
- * DDG renders each result inside a `<div class="result …">` container with
- * `<a class="result__a" …>` for the title link and an optional sibling
- * `<a class="result__snippet">` (or `<div class="result__snippet">` in some
- * variants) for the preview text. Sponsored placements, missing snippets,
- * and the trailing pagination row are tolerated.
- */
 function parseHtmlResults(html: string): ParsedResult[] {
 	const results: ParsedResult[] = [];
 	const blockRe =
@@ -134,12 +94,7 @@ function parseHtmlResults(html: string): ParsedResult[] {
 	}
 	return results;
 }
-/**
- * Extract the hidden fields from DDG's next-page form.
- *
- * Attribute order varies across responses, so each input tag is parsed
- * independently instead of matching one fixed HTML layout.
- */
+
 function parseContinuationForm(html: string): URLSearchParams | undefined {
 	for (const formMatch of html.matchAll(/<form\b[^>]*>([\s\S]*?)<\/form>/gi)) {
 		const form = new URLSearchParams();
@@ -154,21 +109,10 @@ function parseContinuationForm(html: string): URLSearchParams | undefined {
 	return undefined;
 }
 
-/**
- * `true` when the page DDG returned is the bot-challenge modal instead of
- * real results. DDG mixes status codes (200 vs 202) on these so the body
- * check is the reliable signal.
- */
 function isAnomalyResponse(html: string): boolean {
 	return html.includes("anomaly-modal") || html.includes("anomaly.js");
 }
 
-/**
- * Query syntax the DDG HTML frontend parses: quotes, `-`, OR, site:,
- * filetype:, intitle:, inurl:, intext:. Date bounds (`before:`/`after:`) are
- * deliberately off — DDG does not parse them, so they are stripped from the
- * query and enforced by the pipeline's lenient post-filter instead.
- */
 const DDG_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -180,12 +124,6 @@ const DDG_QUERY_SYNTAX: QuerySyntax = {
 	filetype: true,
 };
 
-/**
- * DuckDuckGo's documented `kl` values.
- *
- * The codes resemble `region-language` locales but contain provider-specific
- * identifiers (`jp-jp`, `tw-tzh`, `uk-en`) that cannot be derived mechanically.
- */
 const DDG_KL_CODES = new Set([
 	"xa-ar",
 	"xa-en",
@@ -257,7 +195,6 @@ const DDG_KL_CODES = new Set([
 	"wt-wt",
 ]);
 
-/** BCP 47 locales whose DDG code does not follow a simple component swap. */
 const DDG_LOCALE_ALIASES: Record<string, string> = {
 	"ca-es": "ct-ca",
 	"en-gb": "uk-en",
@@ -269,14 +206,6 @@ const DDG_LOCALE_ALIASES: Record<string, string> = {
 	"zh-tw": "tw-tzh",
 };
 
-/**
- * Map a parsed `lang:` locale onto DuckDuckGo's documented `kl` values.
- *
- * Shared queries use `language-region` order while DDG generally uses
- * `region-language`. Provider-specific exceptions resolve through
- * {@link DDG_LOCALE_ALIASES}; all other values must survive the documented
- * allowlist after swapping or the caller keeps its default region.
- */
 export function localeToKl(lang: string | undefined): string | undefined {
 	if (!lang) return undefined;
 	const locale = lang.toLowerCase().replaceAll("_", "-");
@@ -296,7 +225,7 @@ function createDuckDuckGoForm(params: SearchParams): URLSearchParams {
 	});
 	const df = params.recency ? RECENCY_TO_DDG_DF[params.recency] : undefined;
 	if (df) form.set("df", df);
-	// Add b: "" parameter as specified in the browser fetch template to match real browser form submission
+
 	form.set("b", "");
 	return form;
 }
@@ -332,7 +261,6 @@ async function callDuckDuckGoHtml(params: SearchParams, form: URLSearchParams, s
 	return body;
 }
 
-/** Execute a DuckDuckGo web search via the no-JS HTML frontend. */
 export async function searchDuckDuckGo(params: SearchParams): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const signal = withHardTimeout(params.signal, params.timeoutMs);
@@ -363,7 +291,6 @@ export async function searchDuckDuckGo(params: SearchParams): Promise<SearchResp
 	return { provider: "duckduckgo", sources };
 }
 
-/** Search provider for DuckDuckGo (no API key required). */
 export class DuckDuckGoProvider extends SearchProvider {
 	readonly id = "duckduckgo";
 	readonly label = "DuckDuckGo";

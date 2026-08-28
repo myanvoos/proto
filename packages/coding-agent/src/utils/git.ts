@@ -13,15 +13,11 @@ import type { FileDiff, FileHunks, NumstatEntry } from "../commit/types";
 import { REJECT_PROMPT_COMMAND } from "../exec/non-interactive-env";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 
-// ════════════════════════════════════════════════════════════════════════════
-// Types
-// ════════════════════════════════════════════════════════════════════════════
-
 export interface GitCommandResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
-	/** True when stdout or stderr hit {@link GIT_COMMAND_OUTPUT_LIMIT_BYTES} and the captured text is incomplete. */
+
 	truncated: boolean;
 }
 
@@ -123,7 +119,7 @@ interface RestoreOptions {
 
 interface FetchOptions {
 	readonly signal?: AbortSignal;
-	/** Deadline for the network transfer. Defaults to {@link GIT_NETWORK_TIMEOUT_MS}. */
+
 	readonly timeoutMs?: number;
 }
 
@@ -131,7 +127,7 @@ interface CloneOptions {
 	readonly ref?: string;
 	readonly sha?: string;
 	readonly signal?: AbortSignal;
-	/** Deadline for the network transfer. Defaults to {@link GIT_NETWORK_TIMEOUT_MS}. */
+
 	readonly timeoutMs?: number;
 }
 
@@ -160,10 +156,6 @@ export interface GitWorktreeEntry {
 	path: string;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Error
-// ════════════════════════════════════════════════════════════════════════════
-
 export class GitCommandError extends Error {
 	readonly args: readonly string[];
 	readonly result: GitCommandResult;
@@ -176,14 +168,6 @@ export class GitCommandError extends Error {
 	}
 }
 
-/**
- * A git subprocess produced more output than {@link GIT_COMMAND_OUTPUT_LIMIT_BYTES}
- * and its captured stdout was truncated. Thrown only for callers that opt into
- * completeness via `diff({ requireComplete: true })`, where operating on a partial
- * diff would silently corrupt downstream parsing — e.g. the split-commit builder,
- * which would otherwise throw a misleading "No diff found" for files sorting after
- * a large binary blob whose base85 payload pushed the diff past the cap.
- */
 export class GitOutputTruncatedError extends Error {
 	readonly args: readonly string[];
 	readonly result: GitCommandResult;
@@ -198,10 +182,6 @@ export class GitOutputTruncatedError extends Error {
 		this.result = result;
 	}
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Core execution
-// ════════════════════════════════════════════════════════════════════════════
 
 const NO_OPTIONAL_LOCKS = "--no-optional-locks";
 const HEAD_REF_PREFIX = "ref:";
@@ -233,37 +213,18 @@ const GH_NON_INTERACTIVE_ENV = {
 	GH_PROMPT_DISABLED: "1",
 } satisfies Record<string, string | undefined>;
 
-/** Default deadline for git and gh subprocesses spawned by the coding agent. */
 export const GIT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
-/**
- * Default deadline for git subprocesses that perform network transfers
- * (`clone`/`fetch`). Large-repo transfers legitimately outlive
- * {@link GIT_COMMAND_TIMEOUT_MS}, so they get a wider deadline; local plumbing
- * commands keep the short one.
- */
+
 const GIT_NETWORK_TIMEOUT_MS = 30 * 60 * 1000;
-/** Maximum captured stdout or stderr bytes retained from git and gh subprocesses. */
+
 export const GIT_COMMAND_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
-/**
- * Deadline for synchronous git plumbing commands launched via
- * {@link gitSpawnSyncText}. These run on the render path (e.g. reftable HEAD
- * resolution), so the deadline is short: a command that has not exited by then
- * is killed and reported as {@link GIT_COMMAND_TIMEOUT_EXIT_CODE} so the caller
- * degrades instead of freezing the UI indefinitely.
- */
+
 const GIT_SPAWN_SYNC_TIMEOUT_MS = 5_000;
-/**
- * Stat-poll interval for {@link head.watch}. One `stat` per interval keeps an
- * always-on status line cheap while surfacing a branch switch within a second.
- */
+
 const HEAD_WATCH_INTERVAL_MS = 1000;
 
 const GIT_COMMAND_TIMEOUT_EXIT_CODE = 124;
-// Exit code returned when the `git` binary cannot be launched at all (spawn
-// ENOENT). Mirrors the POSIX "command not found" code so read-only callers that
-// degrade on any non-zero exit treat a missing git the same as a failed
-// invocation instead of letting the raw spawn ENOENT escape as an unhandled
-// rejection.
+
 const GIT_SPAWN_ENOENT_EXIT_CODE = 127;
 const GIT_OUTPUT_TRUNCATED_MARKER = "\n[git subprocess output truncated after 8 MiB]\n";
 const GIT_COMMAND_TERMINATE_GRACE_MS = 5_000;
@@ -373,9 +334,7 @@ async function readCappedText(
 async function cancelOutput(stream: ReadableStream<Uint8Array>): Promise<void> {
 	try {
 		await stream.cancel();
-	} catch {
-		// Best-effort cleanup after a timeout; the subprocess has already been signaled.
-	}
+	} catch {}
 }
 
 async function collectSubprocessResult(
@@ -463,17 +422,6 @@ function ensureAvailable(): void {
 	}
 }
 
-/**
- * Launch a `git` plumbing command synchronously and decode stdout. Returns the
- * exit code plus trimmed stdout; a missing `git` binary (spawn ENOENT) is
- * reported as {@link GIT_SPAWN_ENOENT_EXIT_CODE} so sync read-only callers
- * degrade to `null` instead of throwing an uncaught error during rendering.
- *
- * A deadline ({@link GIT_SPAWN_SYNC_TIMEOUT_MS}) is enforced so a pathological
- * git invocation (lock contention, NFS stall, …) cannot hang the render path
- * indefinitely: a child killed by the deadline is reported as
- * {@link GIT_COMMAND_TIMEOUT_EXIT_CODE} rather than a successful exit.
- */
 function gitSpawnSyncText(
 	cwd: string,
 	args: readonly string[],
@@ -488,8 +436,7 @@ function gitSpawnSyncText(
 			stderr: "pipe",
 			timeout: timeoutMs,
 		});
-		// Bun's timeout marker is authoritative even when process cleanup reports
-		// exit code zero, so render-path callers never trust partial output.
+
 		const exitCode = result.exitedDueToTimeout
 			? GIT_COMMAND_TIMEOUT_EXIT_CODE
 			: (result.exitCode ?? GIT_COMMAND_TIMEOUT_EXIT_CODE);
@@ -525,8 +472,6 @@ async function git(cwd: string, args: readonly string[], options: CommandOptions
 		});
 	} catch (err) {
 		if (isEnoent(err)) {
-			// A deleted/nonexistent cwd also surfaces as a spawn ENOENT; only blame
-			// the binary when the working directory actually exists.
 			const stderr = fs.existsSync(cwd) ? "git is not installed." : `working directory does not exist: ${cwd}`;
 			return { exitCode: GIT_SPAWN_ENOENT_EXIT_CODE, stdout: "", stderr, truncated: false };
 		}
@@ -592,15 +537,8 @@ async function tryText(
 	return result.stdout;
 }
 
-/** Options for {@link runUnchecked} — a subset of the internal command options. */
 type GitRunOptions = Pick<CommandOptions, "env" | "maxOutputBytes" | "signal" | "stdin" | "timeoutMs">;
 
-/**
- * Run a `git` command without checking the exit code, returning the raw
- * result (`exitCode`/`stdout`/`stderr`) so probing callers can branch on
- * failure instead of catching {@link GitCommandError}. A missing `git`
- * binary is reported as exit code 127 rather than thrown.
- */
 export async function runUnchecked(
 	cwd: string,
 	args: readonly string[],
@@ -609,29 +547,8 @@ export async function runUnchecked(
 	return await git(cwd, args, options);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: per-repo write serialization
-// ════════════════════════════════════════════════════════════════════════════
-
-// Git uses lock files (`.git/config.lock`, commit-graph chain locks,
-// `packed-refs.lock`, …) for many of its mutating operations. Each is created
-// O_EXCL with no waiter, so concurrent in-process git invocations against the
-// same repository fail immediately rather than block. Worktrees share the
-// primary repo's `.git` directory, so racing across worktrees has the same
-// failure mode. We give callers a single per-repo serialization point keyed by
-// the primary repo root: any block that mutates repo state should hold this
-// lock so unrelated callers cannot collide on git's internal locks.
 const repoWriteChain = new Map<string, Promise<unknown>>();
 
-/**
- * Serialize an async block that mutates a git repository against other
- * in-process callers operating on the same repository. The lock is keyed by
- * the primary repo root so worktrees of the same repo share a single queue.
- * Failures in one block do not poison the queue for the next caller.
- *
- * Not reentrant: do NOT nest acquisitions for the same repo. Helpers in this
- * module never auto-acquire — callers wrap the critical section themselves.
- */
 export async function withRepoLock<T>(cwd: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 	const key = (await repo.primaryRoot(cwd, signal)) ?? cwd;
 	const prior = repoWriteChain.get(key);
@@ -639,9 +556,7 @@ export async function withRepoLock<T>(cwd: string, fn: () => Promise<T>, signal?
 		if (prior) {
 			try {
 				await prior;
-			} catch {
-				// A prior caller failing must not block us from running.
-			}
+			} catch {}
 		}
 		throwIfAborted(signal);
 		return fn();
@@ -665,10 +580,6 @@ function trimScalar(text: string | undefined): string | undefined {
 	const trimmed = text?.trim();
 	return trimmed || undefined;
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Argument builders
-// ════════════════════════════════════════════════════════════════════════════
 
 function buildDiffArgs(options: DiffOptions): string[] {
 	const args = ["diff"];
@@ -705,10 +616,6 @@ async function writeTempPatch(content: string): Promise<string> {
 	return tempPath;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Repository resolution
-// ════════════════════════════════════════════════════════════════════════════
-
 type EntryType = "directory" | "file";
 
 function isPermissionError(err: unknown): boolean {
@@ -723,13 +630,6 @@ function shouldRetry(err: unknown, n: number) {
 	throw err;
 }
 
-/**
- * Bounded retry for synchronous I/O against `EINTR`. POSIX permits short syscalls
- * to be interrupted by signals; when that happens libc traditionally retries.
- * Node's sync wrappers surface the raw `EINTR` so we replicate the retry locally.
- * Path absence, path-type mismatches, descriptor exhaustion, and exhausted
- * `EINTR` retries return `null`. Other errors are rethrown.
- */
 const EINTR_MAX_RETRIES = 3;
 function retryOnEintrSync<T>(op: () => T): T | null {
 	for (let attempt = 0; attempt <= EINTR_MAX_RETRIES; attempt += 1) {
@@ -915,10 +815,6 @@ async function resolveRepository(startDir: string): Promise<GitRepository | null
 		current = parent;
 	}
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Ref resolution
-// ════════════════════════════════════════════════════════════════════════════
 
 function getRefLookupDirs(repository: GitRepository): string[] {
 	if (repository.gitDir === repository.commonDir) return [repository.gitDir];
@@ -1139,10 +1035,6 @@ async function readRef(repository: GitRepository, targetRef: string, signal?: Ab
 	return null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Head state parsing
-// ════════════════════════════════════════════════════════════════════════════
-
 function parseHeadStateSync(repository: GitRepository, headContent: string): GitHeadState {
 	const trimmed = headContent.trim();
 	if (!trimmed?.startsWith(HEAD_REF_PREFIX)) {
@@ -1209,10 +1101,6 @@ function parseWorktreeList(text: string): GitWorktreeEntry[] {
 			return entry;
 		});
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Internal: Hunk selection
-// ════════════════════════════════════════════════════════════════════════════
 
 function extractFileHeader(diffText: string): string {
 	const lines = diffText.split("\n");
@@ -1285,11 +1173,6 @@ function parseStatusPorcelain(text: string): GitStatusSummary {
 	return { staged, unstaged, untracked };
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: diff
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Run `git diff` with the given options. Returns raw diff text. */
 export const diff = Object.assign(
 	async function diff(cwd: string, options: DiffOptions = {}): Promise<string> {
 		const args = buildDiffArgs(options);
@@ -1303,18 +1186,17 @@ export const diff = Object.assign(
 		return result.stdout;
 	},
 	{
-		/** List changed file paths. */
 		async changedFiles(
 			cwd: string,
 			options: Pick<DiffOptions, "cached" | "files" | "signal"> = {},
 		): Promise<string[]> {
 			return splitLines(await diff(cwd, { ...options, nameOnly: true }));
 		},
-		/** Parsed per-file add/remove counts. */
+
 		async numstat(cwd: string, options: Pick<DiffOptions, "cached" | "signal"> = {}): Promise<NumstatEntry[]> {
 			return parseNumstat(await diff(cwd, { ...options, numstat: true }));
 		},
-		/** Parsed diff hunks for the given files. */
+
 		async hunks(
 			cwd: string,
 			files: readonly string[],
@@ -1324,7 +1206,7 @@ export const diff = Object.assign(
 				await diff(cwd, { cached: options.cached ?? true, files, signal: options.signal }),
 			);
 		},
-		/** Check whether a diff exists (uses `--quiet` for efficiency). */
+
 		async has(cwd: string, options: Pick<DiffOptions, "cached" | "files" | "signal"> = {}): Promise<boolean> {
 			const args = ["diff"];
 			if (options.cached) args.push("--cached");
@@ -1335,7 +1217,7 @@ export const diff = Object.assign(
 			if (result.exitCode === 1) return true;
 			throw new GitCommandError(args, result);
 		},
-		/** Diff between two tree-ish objects (`git diff-tree`). */
+
 		async tree(
 			cwd: string,
 			base: string,
@@ -1350,22 +1232,17 @@ export const diff = Object.assign(
 			}
 			return runText(cwd, args, { readOnly: true, signal: options.signal });
 		},
-		/** Parse raw diff text into per-file diffs. */
+
 		parseFiles(text: string): FileDiff[] {
 			return parseFileDiffs(text);
 		},
-		/** Parse raw diff text into per-file hunks. */
+
 		parseHunks(text: string): FileHunks[] {
 			return parseCommitDiffHunks(text);
 		},
 	},
 );
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: status
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Run `git status --porcelain`. Returns raw status text. */
 export const status = Object.assign(
 	async function status(cwd: string, options: StatusOptions = {}): Promise<string> {
 		const args = ["status"];
@@ -1376,29 +1253,22 @@ export const status = Object.assign(
 		return runText(cwd, args, { readOnly: true, signal: options.signal });
 	},
 	{
-		/** Parsed status counts (staged, unstaged, untracked). */
 		async summary(cwd: string, signal?: AbortSignal): Promise<GitStatusSummary | null> {
 			const result = await git(cwd, ["status", "--porcelain"], { readOnly: true, signal });
 			if (result.exitCode !== 0) return null;
 			return parseStatusPorcelain(result.stdout);
 		},
-		/** Parse porcelain status text into counts. */
+
 		parse: parseStatusPorcelain,
 	},
 );
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: stage
-// ════════════════════════════════════════════════════════════════════════════
-
 export const stage = {
-	/** Stage files. Empty array stages all (`git add -A`). */
 	async files(cwd: string, files: readonly string[] = [], signal?: AbortSignal): Promise<void> {
 		const args = files.length === 0 ? ["add", "-A"] : ["add", "--", ...files];
 		await runEffect(cwd, args, { signal });
 	},
 
-	/** Selectively stage hunks from the provided diff or the current working tree diff. */
 	async hunks(cwd: string, selections: HunkSelection[], options: StageHunksOptions = {}): Promise<void> {
 		if (selections.length === 0) return;
 		const rawDiff = options.rawDiff ?? (await diff(cwd, { cached: options.diffCached, signal: options.signal }));
@@ -1431,18 +1301,12 @@ export const stage = {
 		await patch.applyText(cwd, patchText, { cached: true, signal: options.signal });
 	},
 
-	/** Unstage files. Empty array unstages all (`git reset`). */
 	async reset(cwd: string, files: readonly string[] = [], signal?: AbortSignal): Promise<void> {
 		const args = files.length === 0 ? ["reset"] : ["reset", "--", ...files];
 		await runEffect(cwd, args, { signal });
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: commit, push, checkout
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Create a commit with the given message (passed via stdin). */
 export async function commit(cwd: string, message: string, options: CommitOptions = {}): Promise<GitCommandResult> {
 	const args = ["commit", "-F", "-"];
 	if (options.author) {
@@ -1454,13 +1318,7 @@ export async function commit(cwd: string, message: string, options: CommitOption
 	return runChecked(cwd, args, { signal: options.signal, stdin: message });
 }
 
-/** Push the current branch (branch-scoped: never follows tags). */
 export async function push(cwd: string, options: PushOptions = {}): Promise<void> {
-	// `--no-follow-tags` overrides a user's `push.followTags = true`, which
-	// would otherwise ride every reachable annotated tag along with the
-	// branch — rejected refs ("permission denied") on remotes the user
-	// cannot tag (e.g. PR-head forks), failing the call after the branch
-	// itself already updated. Tool pushes push exactly the named refspec.
 	const args = ["push", "--no-follow-tags"];
 	if (options.forceWithLease) args.push("--force-with-lease");
 	if (options.remote) args.push(options.remote);
@@ -1468,12 +1326,10 @@ export async function push(cwd: string, options: PushOptions = {}): Promise<void
 	await runEffect(cwd, args, { signal: options.signal });
 }
 
-/** Checkout a ref. */
 export async function checkout(cwd: string, ref: string, signal?: AbortSignal): Promise<void> {
 	await runEffect(cwd, ["checkout", ref], { signal });
 }
 
-/** Fetch a specific refspec from a remote. Network transfer: defaults to the {@link GIT_NETWORK_TIMEOUT_MS} deadline. */
 export async function fetch(
 	cwd: string,
 	remote: string,
@@ -1487,7 +1343,6 @@ export async function fetch(
 	});
 }
 
-/** Read a tree-ish into the index. */
 export async function readTree(
 	cwd: string,
 	treeish: string,
@@ -1496,48 +1351,12 @@ export async function readTree(
 	await runEffect(cwd, ["read-tree", treeish], options);
 }
 
-/** Write the current index as a tree and return its object id. */
 export async function writeTree(cwd: string, options: Pick<CommandOptions, "env" | "signal"> = {}): Promise<string> {
 	return (await runText(cwd, ["write-tree"], options)).trim();
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: worktree isolation
-// ════════════════════════════════════════════════════════════════════════════
+type DetachGitDirResult = "no-git" | "independent" | "detached";
 
-/** Outcome of {@link detachGitDir}. */
-type DetachGitDirResult =
-	/** `worktreeRoot` had no `.git`; nothing to detach. */
-	| "no-git"
-	/** `.git` already resolves to an independent object DB — left untouched. */
-	| "independent"
-	/** Detached into a standalone repo borrowing `sourceCommonDir`'s objects. */
-	| "detached";
-
-/**
- * Sever a copied/mounted working tree from the git metadata it shares with a
- * source checkout, turning it into a standalone repository that borrows the
- * source object database through `objects/info/alternates`.
- *
- * Isolation backends (reflink/apfs/btrfs/rcopy…) materialise `merged` by
- * copying `worktreeRoot` byte-for-byte. When `worktreeRoot` is a **linked git
- * worktree** its `.git` is a pointer file (`gitdir: …/worktrees/<name>`), so
- * the copy still resolves HEAD/index/refs through the source repo — a task's
- * `git checkout`/`commit` inside the isolation then mutates the *parent*
- * checkout. The rcopy `git worktree add` path leaks the other way: task
- * branches land in the shared ref namespace and stack on each other.
- *
- * After detaching, the working tree keeps its files verbatim while:
- * - HEAD, refs, and the index are frozen to the snapshot at call time;
- * - all commits/branches the task creates stay private to the isolation;
- * - objects resolve against `sourceCommonDir` via alternates, so history reads
- *   and later `git fetch <merged>` object transfer keep working;
- * - the source checkout's HEAD, branch, index, and working tree are untouched.
- *
- * A full-copy `.git` (non-worktree source) already owns its object DB and is
- * returned as `"independent"` without modification. `worktreeRoot` without a
- * `.git` yields `"no-git"`.
- */
 export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string): Promise<DetachGitDirResult> {
 	ensureAvailable();
 	const gitEntry = path.join(worktreeRoot, ".git");
@@ -1548,11 +1367,7 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		if (isEnoent(err)) return "no-git";
 		throw err;
 	}
-	// Canonicalize both sides before comparing: `rev-parse` resolves symlinks
-	// (macOS `/tmp` → `/private/tmp`) while callers derive `sourceCommonDir`
-	// lexically from the session cwd. A lexical mismatch here would silently
-	// classify a shared linked-worktree copy as "independent" and skip the
-	// detach entirely — leaving the parent-mutation leak in place.
+
 	const parentCommon = await fs.promises.realpath(sourceCommonDir).catch(() => path.resolve(sourceCommonDir));
 	const isoCommonRaw = (
 		await runText(worktreeRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
@@ -1560,14 +1375,9 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		})
 	).trim();
 	const isoCommon = await fs.promises.realpath(isoCommonRaw).catch(() => path.resolve(isoCommonRaw));
-	// A full-copy `.git` already resolves to its own object DB — leave it alone.
+
 	if (isoCommon !== parentCommon) return "independent";
 
-	// Snapshot the state the standalone repo must preserve. HEAD may be a branch
-	// ref (normal checkout), detached, or unborn (a fresh/orphan branch with no
-	// commits — a linked worktree still shares the parent ref namespace, so it
-	// must be severed too). Refs are frozen so `baseSha..branch` ranges and
-	// history reads keep resolving after the source moves on.
 	const headSha = (await tryText(worktreeRoot, ["rev-parse", "HEAD"], { readOnly: true }))?.trim() ?? "";
 	const headRef = (await tryText(worktreeRoot, ["symbolic-ref", "-q", "HEAD"], { readOnly: true }))?.trim() ?? "";
 	const refDump = headSha
@@ -1582,13 +1392,6 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 	const userName = await config.get(worktreeRoot, "user.name");
 	const userEmail = await config.get(worktreeRoot, "user.email");
 
-	// Preserve the index verbatim rather than round-tripping through
-	// write-tree/read-tree: the raw index carries skip-worktree bits (sparse
-	// checkout), assume-unchanged flags, and exact stage entries. A rebuilt
-	// index drops skip-worktree, so files intentionally absent from a sparse
-	// working tree would read as deletions and delta capture would apply those
-	// deletions back to the parent. Sparse config + patterns are carried too so
-	// later git operations in the isolation keep honouring the sparse view.
 	const indexPath = (
 		await runText(worktreeRoot, ["rev-parse", "--path-format=absolute", "--git-path", "index"], {
 			readOnly: true,
@@ -1603,14 +1406,9 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		})
 	).trim();
 	const sparsePatterns = await readOptionalText(sparsePatternPath);
-	// Status parity with the source: an explicit core.filemode (e.g. false on
-	// mounts ignoring the executable bit) must carry over, or the re-inited
-	// repo's platform default makes clean files read as mode-changed and delta
-	// capture would apply bogus chmod diffs back to the parent.
+
 	const fileMode = await config.get(worktreeRoot, "core.fileMode");
-	// A split index references sharedindex.* files beside the source index;
-	// restoring the raw index without them makes every git read fail. Carry the
-	// shared files (and the config) alongside the verbatim index bytes.
+
 	const splitIndex = await config.get(worktreeRoot, "core.splitIndex");
 	const sharedIndexFiles: Array<{ name: string; bytes: Uint8Array }> = [];
 	if (indexBytes) {
@@ -1625,19 +1423,9 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 			if (bytes) sharedIndexFiles.push({ name, bytes });
 		}
 	}
-	// A shallow source deliberately lacks parents beyond its `shallow` boundary
-	// file; without it, history traversal over the borrowed objects treats the
-	// boundary commit's missing parent as corruption.
+
 	const shallowBoundary = await readOptionalText(path.join(parentCommon, "shallow"));
 
-	// A pointer `.git` file whose worktree-admin dir back-references this exact
-	// tree is the rcopy `git worktree add` registration. Remove that admin entry
-	// so the source repo's worktree list stops tracking the isolation. A pointer
-	// referencing the *source's* admin (a copied linked-worktree `.git`) is not
-	// ours to delete — only the local pointer file is discarded. Compare via
-	// realpath: git canonicalizes the back-reference (e.g. macOS `/var` →
-	// `/private/var`), so a lexical path comparison would miss the match and
-	// leave a stale registration in the source repo's worktree list.
 	let ownWorktreeAdmin: string | undefined;
 	if (entryStat.isFile()) {
 		const pointer = parseGitDirPointer((await readOptionalText(gitEntry)) ?? "");
@@ -1657,9 +1445,6 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 	await fs.promises.rm(gitEntry, { recursive: true, force: true });
 	if (ownWorktreeAdmin) await fs.promises.rm(ownWorktreeAdmin, { recursive: true, force: true });
 
-	// Preserve the checked-out branch name so an unborn HEAD (fresh/orphan
-	// branch with no commits) keeps its symbolic ref after `init` rather than
-	// snapping to the init default; born HEADs get the ref rewritten below anyway.
 	const initArgs = ["init", "--object-format", objectFormat, "-q"];
 	const initialBranch = headRef.startsWith(LOCAL_BRANCH_PREFIX) ? headRef.slice(LOCAL_BRANCH_PREFIX.length) : "";
 	if (initialBranch) initArgs.push("-b", initialBranch);
@@ -1677,10 +1462,6 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 	}
 	await Bun.write(path.join(objectsInfo, "alternates"), `${alternates.join("\n")}\n`);
 
-	// Freeze refs when HEAD is born. Point HEAD at the raw SHA first so
-	// `update-ref` writes land even for the branch HEAD currently names, then
-	// restore the symbolic HEAD. An unborn HEAD has no refs to freeze; `init -b`
-	// above already set the symbolic HEAD to the unborn branch.
 	if (headSha) {
 		await Bun.write(path.join(gitEntry, "HEAD"), `${headSha}\n`);
 		if (refDump) {
@@ -1696,21 +1477,16 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		}
 		if (headRef) await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
 	} else if (headRef && !initialBranch) {
-		// Unborn detached HEAD (no branch, no commit) — restore the raw ref target.
 		await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
 	}
 
-	// Carry the source identity so isolated commits have an author.
 	if (userName) await config.set(worktreeRoot, "user.name", userName);
 	if (userEmail) await config.set(worktreeRoot, "user.email", userEmail);
 	if (fileMode !== undefined) await config.set(worktreeRoot, "core.fileMode", fileMode);
 	if (splitIndex !== undefined) await config.set(worktreeRoot, "core.splitIndex", splitIndex);
-	// Preserve the shallow boundary so history traversal over the borrowed
-	// object DB stops at the boundary instead of failing on missing parents.
+
 	if (shallowBoundary !== null) await Bun.write(path.join(gitEntry, "shallow"), shallowBoundary);
 
-	// Restore sparse-checkout state before the index so skip-worktree entries
-	// keep resolving against the carried patterns.
 	if (sparseCheckout) await config.set(worktreeRoot, "core.sparseCheckout", sparseCheckout);
 	if (sparseCone) await config.set(worktreeRoot, "core.sparseCheckoutCone", sparseCone);
 	if (sparsePatterns !== null) {
@@ -1719,10 +1495,6 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		await Bun.write(path.join(infoDir, "sparse-checkout"), sparsePatterns);
 	}
 
-	// Restore the index verbatim (skip-worktree, assume-unchanged, exact stage
-	// entries) so the working tree's dirty set — including sparse-excluded files
-	// — matches the source. Fall back to rebuilding from HEAD only when the
-	// source had no index (a bare-ish/never-staged checkout).
 	if (indexBytes) {
 		for (const shared of sharedIndexFiles) {
 			await Bun.write(path.join(gitEntry, shared.name), shared.bytes);
@@ -1734,11 +1506,6 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 	return "detached";
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: show
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Run `git show` on a revision. */
 export const show = Object.assign(
 	async function show(
 		cwd: string,
@@ -1751,14 +1518,12 @@ export const show = Object.assign(
 		});
 	},
 	{
-		/** Get the path prefix of the current directory relative to the repo root. */
 		async prefix(cwd: string, signal?: AbortSignal): Promise<string> {
 			return (await runText(cwd, ["rev-parse", "--show-prefix"], { readOnly: true, signal })).trim();
 		},
 	},
 );
 
-/** Read commit message and author metadata for replay/rewrite flows. */
 export async function commitDetails(cwd: string, revision: string, signal?: AbortSignal): Promise<CommitDetails> {
 	const raw = await runText(cwd, ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", revision], {
 		readOnly: true,
@@ -1771,16 +1536,11 @@ export async function commitDetails(cwd: string, revision: string, signal?: Abor
 	};
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: log
-// ════════════════════════════════════════════════════════════════════════════
-
 export const log = {
-	/** Recent commit subjects (one-line each). */
 	async subjects(cwd: string, count: number, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(await runText(cwd, ["log", `-n${count}`, "--pretty=format:%s"], { readOnly: true, signal }));
 	},
-	/** Recent commits as `<short-sha> <subject>` onelines. */
+
 	async onelines(cwd: string, count: number, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(
 			await runText(cwd, ["log", `-${count}`, "--oneline", "--no-decorate"], { readOnly: true, signal }),
@@ -1789,11 +1549,10 @@ export const log = {
 };
 
 export const revList = {
-	/** Commits in `base..head`, oldest first. */
 	async range(cwd: string, base: string, head: string, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(await runText(cwd, ["rev-list", "--reverse", `${base}..${head}`], { readOnly: true, signal }));
 	},
-	/** Commits reachable from `ref` that touched `file`, newest first, capped at `limit`. */
+
 	async touching(cwd: string, ref: string, file: string, limit: number, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(
 			await runText(cwd, ["rev-list", `--max-count=${limit}`, ref, "--", file], { readOnly: true, signal }),
@@ -1801,12 +1560,7 @@ export const revList = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: branch
-// ════════════════════════════════════════════════════════════════════════════
-
 export const branch = {
-	/** Current branch name, or null if detached/unavailable. */
 	async current(cwd: string, signal?: AbortSignal): Promise<string | null> {
 		const headState = await resolveHead(cwd);
 		if (headState?.kind === "ref") return headState.branchName ?? headState.ref;
@@ -1815,7 +1569,6 @@ export const branch = {
 		return result.stdout.trim() || null;
 	},
 
-	/** Default branch name (from remote HEAD refs). */
 	async default(cwd: string, signal?: AbortSignal): Promise<string | null> {
 		const repository = await resolveRepository(cwd);
 		if (repository) {
@@ -1834,22 +1587,18 @@ export const branch = {
 		return null;
 	},
 
-	/** Create a new branch at the given start point. */
 	async create(cwd: string, name: string, startPoint = "HEAD", signal?: AbortSignal): Promise<void> {
 		await runEffect(cwd, ["branch", name, startPoint], { signal });
 	},
 
-	/** Force-move a branch to a new start point. */
 	async force(cwd: string, name: string, startPoint: string, signal?: AbortSignal): Promise<void> {
 		await runEffect(cwd, ["branch", "--force", name, startPoint], { signal });
 	},
 
-	/** Delete a branch. Throws on failure. */
 	async delete(cwd: string, name: string, options: { force?: boolean; signal?: AbortSignal } = {}): Promise<void> {
 		await runEffect(cwd, ["branch", options.force === false ? "-d" : "-D", name], { signal: options.signal });
 	},
 
-	/** Delete a branch. Returns false on failure instead of throwing. */
 	async tryDelete(
 		cwd: string,
 		name: string,
@@ -1861,12 +1610,10 @@ export const branch = {
 		return result.exitCode === 0;
 	},
 
-	/** Create and checkout a new branch. */
 	async checkoutNew(cwd: string, name: string, signal?: AbortSignal): Promise<void> {
 		await runEffect(cwd, ["checkout", "-b", name], { signal });
 	},
 
-	/** List branches. Pass `{ all: true }` to include remotes. */
 	async list(cwd: string, options: { all?: boolean; signal?: AbortSignal } = {}): Promise<string[]> {
 		const args = ["branch"];
 		if (options.all) args.push("-a");
@@ -1875,28 +1622,15 @@ export const branch = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: remote
-// ════════════════════════════════════════════════════════════════════════════
-
 export const remote = {
-	/** List remote names. */
 	async list(cwd: string, signal?: AbortSignal): Promise<string[]> {
 		return splitLines(await runText(cwd, ["remote"], { readOnly: true, signal }));
 	},
 
-	/** Get the URL for a remote. */
 	async url(cwd: string, name: string, signal?: AbortSignal): Promise<string | undefined> {
 		return trimScalar(await tryText(cwd, ["remote", "get-url", name], { readOnly: true, signal }));
 	},
 
-	/**
-	 * Add a remote pointing at `url`. Idempotent: if a remote named `name`
-	 * already exists with the same URL (e.g. an in-process race or a leftover
-	 * remote from a previous run), this is treated as success. Throws when the
-	 * remote exists with a different URL — that's a real conflict the caller
-	 * needs to resolve, not paper over.
-	 */
 	async add(cwd: string, name: string, url: string, signal?: AbortSignal): Promise<void> {
 		const result = await git(cwd, ["remote", "add", name, url], { signal });
 		if (result.exitCode === 0) return;
@@ -1909,12 +1643,7 @@ export const remote = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: ref
-// ════════════════════════════════════════════════════════════════════════════
-
 export const ref = {
-	/** Check if a ref exists. */
 	async exists(cwd: string, refName: string, signal?: AbortSignal): Promise<boolean> {
 		if (refName === "HEAD") return (await head.sha(cwd, signal)) !== null;
 		const repository = await resolveRepository(cwd);
@@ -1923,7 +1652,6 @@ export const ref = {
 		return result.exitCode === 0;
 	},
 
-	/** Resolve a ref to its commit SHA. */
 	async resolve(cwd: string, refName: string, signal?: AbortSignal): Promise<string | null> {
 		if (refName === "HEAD") return head.sha(cwd, signal);
 		const repository = await resolveRepository(cwd);
@@ -1933,7 +1661,6 @@ export const ref = {
 		return result.stdout.trim() || null;
 	},
 
-	/** Tags pointing at a ref. */
 	async tags(cwd: string, refName = "HEAD", signal?: AbortSignal): Promise<string[]> {
 		return splitLines(
 			await runText(
@@ -1952,10 +1679,6 @@ export const ref = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: config
-// ════════════════════════════════════════════════════════════════════════════
-
 export const config = {
 	async get(cwd: string, key: string, signal?: AbortSignal): Promise<string | undefined> {
 		return trimScalar(await tryText(cwd, ["config", "--get", key], { readOnly: true, signal }));
@@ -1973,10 +1696,6 @@ export const config = {
 		return config.set(cwd, `branch.${branchName}.${key}`, value, signal);
 	},
 };
-
-// ════════════════════════════════════════════════════════════════════════════
-// API: worktree
-// ════════════════════════════════════════════════════════════════════════════
 
 export const worktree = {
 	async add(
@@ -2023,17 +1742,11 @@ export const worktree = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: patch
-// ════════════════════════════════════════════════════════════════════════════
-
 export const patch = {
-	/** Apply a patch file. */
 	async apply(cwd: string, patchPath: string, options: PatchOptions = {}): Promise<void> {
 		await runEffect(cwd, buildApplyArgs(patchPath, options), { env: options.env, signal: options.signal });
 	},
 
-	/** Apply a patch from a string (writes to a temp file). */
 	async applyText(cwd: string, patchText: string, options: PatchOptions = {}): Promise<void> {
 		if (!patchText.trim()) return;
 		const tempPath = await writeTempPatch(patchText);
@@ -2044,7 +1757,6 @@ export const patch = {
 		}
 	},
 
-	/** Check if a patch file can be applied cleanly. */
 	async canApply(cwd: string, patchPath: string, options: Omit<PatchOptions, "check"> = {}): Promise<boolean> {
 		const result = await git(cwd, buildApplyArgs(patchPath, { ...options, check: true }), {
 			env: options.env,
@@ -2054,7 +1766,6 @@ export const patch = {
 		return result.exitCode === 0;
 	},
 
-	/** Check if a patch string can be applied cleanly. */
 	async canApplyText(cwd: string, patchText: string, options: Omit<PatchOptions, "check"> = {}): Promise<boolean> {
 		if (!patchText.trim()) return true;
 		const tempPath = await writeTempPatch(patchText);
@@ -2065,23 +1776,10 @@ export const patch = {
 		}
 	},
 
-	/**
-	 * Join patch parts into a single patch string.
-	 *
-	 * Each part is terminated with a single `\n` if it lacks one, then parts are
-	 * concatenated verbatim — matching git's native multi-file diff layout. Parts
-	 * are NOT separated by an extra blank line and trailing newlines are NOT
-	 * stripped: a `GIT binary patch` block ends in a blank line that
-	 * `git apply --binary` requires, and stripping it corrupts the patch (#8899).
-	 */
 	join(parts: string[]): string {
 		return parts.map(part => (part.endsWith("\n") ? part : `${part}\n`)).join("");
 	},
 };
-
-// ════════════════════════════════════════════════════════════════════════════
-// API: cherryPick
-// ════════════════════════════════════════════════════════════════════════════
 
 export const cherryPick = Object.assign(
 	async function cherryPick(cwd: string, revision: string, signal?: AbortSignal): Promise<void> {
@@ -2091,35 +1789,18 @@ export const cherryPick = Object.assign(
 		async abort(cwd: string, signal?: AbortSignal): Promise<void> {
 			await runEffect(cwd, ["cherry-pick", "--abort"], { signal });
 		},
-		/**
-		 * Skip the current commit of an in-progress cherry-pick sequence and
-		 * continue with the rest of the range. Use after {@link isEmptyError}
-		 * reports the current attempt collapsed to a no-op — the alternative,
-		 * `--abort`, throws away every remaining commit in the range.
-		 */
+
 		async skip(cwd: string, signal?: AbortSignal): Promise<void> {
 			await runEffect(cwd, ["cherry-pick", "--skip"], { signal });
 		},
-		/**
-		 * True when a cherry-pick failure was caused by the current commit
-		 * being empty against HEAD — either redundant with an already-applied
-		 * change, or auto-resolved to HEAD by a 3-way merge. Callers should
-		 * `--skip` in this case to advance the sequencer rather than aborting
-		 * the whole range: an empty commit is not a merge conflict, and any
-		 * later commits in the range still deserve to land.
-		 */
+
 		isEmptyError(err: unknown): boolean {
 			return err instanceof GitCommandError && /the previous cherry-pick is now empty/i.test(err.result.stderr);
 		},
 	},
 );
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: stash
-// ════════════════════════════════════════════════════════════════════════════
-
 export const stash = {
-	/** Stash working tree + index changes. Returns true when git created a new stash entry. */
 	async push(cwd: string, message?: string): Promise<boolean> {
 		ensureAvailable();
 		const previousStash = await ref.resolve(cwd, "refs/stash");
@@ -2129,43 +1810,23 @@ export const stash = {
 		const nextStash = await ref.resolve(cwd, "refs/stash");
 		return nextStash !== null && nextStash !== previousStash;
 	},
-	/** Pop the most recent stash entry, optionally restoring its staged state. */
+
 	async pop(cwd: string, options?: { index?: boolean }): Promise<void> {
 		const args = ["stash", "pop"];
 		if (options?.index) args.push("--index");
 		await runEffect(cwd, args);
 	},
-	/**
-	 * Return the working-tree patch that `stash@{0}` would apply, in a form
-	 * that `git apply --check` can consume. Empty string when no stash entry
-	 * exists or the stash contains no diffable working-tree changes.
-	 */
+
 	async showPatch(cwd: string): Promise<string> {
 		return (await tryText(cwd, ["stash", "show", "-p", "--binary", "stash@{0}"], { readOnly: true })) ?? "";
 	},
-	/** Return untracked paths stored in the top stash entry. */
+
 	async untrackedFiles(cwd: string): Promise<string[]> {
 		const output = await tryText(cwd, ["ls-tree", "-r", "-z", "--name-only", "stash@{0}^3"], { readOnly: true });
 		return output?.split("\0").filter(Boolean) ?? [];
 	},
-	/**
-	 * Attempt to restore the top stash entry. On success returns `true` and
-	 * git drops the stash entry. On conflict returns `false`, leaves the stash
-	 * entry preserved for manual resolution, and guarantees the failed restore
-	 * leaves no unmerged index entries or partially-restored untracked files.
-	 *
-	 * The historical raw `pop` catches the failure in a `finally` block and
-	 * only logs — it leaves `.git/index` with stage 1/2/3 unmerged entries
-	 * that survive indefinitely, corrupting every subsequent overlay-isolated
-	 * task that reads through this repo's `.git/`. See issue #4175.
-	 */
+
 	async tryPop(cwd: string, options?: { index?: boolean }): Promise<boolean> {
-		// Preflight: `git stash pop` internally does a 3-way merge, so a plain
-		// `git apply --check` is too strict — it rejects hunks whose context
-		// drifted from HEAD even when 3-way merge would resolve them cleanly.
-		// Match pop's semantics with `--3way --check`, which succeeds iff the
-		// patch either applies directly or merges without conflict against
-		// the patch's `index abc..def` base blobs.
 		const workingPatch = await stash.showPatch(cwd);
 		if (workingPatch.trim() && !(await patch.canApplyText(cwd, workingPatch, { threeWay: true }))) {
 			return false;
@@ -2175,44 +1836,24 @@ export const stash = {
 			await stash.pop(cwd, options);
 			return true;
 		} catch {
-			// Preflight can still miss mode-only or delete/modify conflicts. If
-			// the pop left unmerged entries, wipe them: HEAD holds the merged
-			// state so `reset --hard HEAD` restores a clean index and working
-			// tree without losing the cherry-picked commits. A failed pop can
-			// still restore unrelated untracked files before exiting while
-			// preserving the stash entry, so clean only the untracked paths
-			// recorded in that stash. The user's WIP remains recoverable via
-			// `git stash pop`.
 			try {
 				await reset(cwd, { hard: true });
-			} catch {
-				/* best-effort cleanup — do not mask the primary conflict */
-			}
+			} catch {}
 			if (restoredUntracked.length > 0) {
 				try {
 					await clean(cwd, { includeIgnored: true, literalPathspecs: true, paths: restoredUntracked });
-				} catch {
-					/* best-effort cleanup — do not mask the primary conflict */
-				}
+				} catch {}
 			}
 			return false;
 		}
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: clone, restore, clean
-// ════════════════════════════════════════════════════════════════════════════
-
 export async function clone(url: string, targetDir: string, options: CloneOptions = {}): Promise<void> {
 	ensureAvailable();
 	const absoluteTarget = path.resolve(targetDir);
 	await fs.promises.mkdir(path.dirname(absoluteTarget), { recursive: true });
 
-	// `git clone --depth 1 --single-branch` only fetches the tip of the target
-	// branch, so any subsequent `git checkout <sha>` for a non-tip commit fails
-	// with "reference is not a tree". When the caller pinned a specific SHA we
-	// fall back to a full clone so the object is guaranteed to be present.
 	const shallow = !options.sha;
 	const args = ["clone"];
 	if (shallow) args.push("--depth", "1");
@@ -2248,11 +1889,6 @@ export async function restore(cwd: string, options: RestoreOptions = {}): Promis
 	await runEffect(cwd, args, { signal: options.signal });
 }
 
-/**
- * Run `git reset` with options. Default is a soft reset (no flag); pass `hard: true` for a destructive reset.
- *
- * NOTE: stage.reset() handles the per-file unstaging case. This helper exists for tree-wide resets.
- */
 export async function reset(
 	cwd: string,
 	options: { hard?: boolean; mixed?: boolean; soft?: boolean; target?: string; signal?: AbortSignal } = {},
@@ -2283,12 +1919,7 @@ export async function clean(
 	await runEffect(cwd, args, { signal: options.signal });
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: ls
-// ════════════════════════════════════════════════════════════════════════════
-
 export const ls = {
-	/** List files tracked or untracked by git. */
 	async files(
 		cwd: string,
 		options: { others?: boolean; excludeStandard?: boolean; signal?: AbortSignal } = {},
@@ -2299,12 +1930,10 @@ export const ls = {
 		return splitLines(await runText(cwd, args, { readOnly: true, signal: options.signal }));
 	},
 
-	/** List untracked files (excludes ignored). */
 	async untracked(cwd: string, signal?: AbortSignal): Promise<string[]> {
 		return ls.files(cwd, { others: true, excludeStandard: true, signal });
 	},
 
-	/** List paths present in a ref, optionally filtered to specific paths. */
 	async tree(cwd: string, ref: string, files: readonly string[] = [], signal?: AbortSignal): Promise<string[]> {
 		const args = ["ls-tree", "--name-only", "-r", "-z", ref];
 		if (files.length > 0) args.push("--", ...files);
@@ -2312,7 +1941,6 @@ export const ls = {
 		return raw.split("\0").filter(entry => entry.length > 0);
 	},
 
-	/** List submodule paths (recursive). */
 	async submodules(cwd: string, signal?: AbortSignal): Promise<string[]> {
 		const output = await git(cwd, ["submodule", "--quiet", "foreach", "--recursive", "echo $sm_path"], {
 			readOnly: true,
@@ -2322,12 +1950,7 @@ export const ls = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: head
-// ════════════════════════════════════════════════════════════════════════════
-
 export const head = {
-	/** Full HEAD state (branch, commit, repo info). */
 	async resolve(cwd: string, signal?: AbortSignal): Promise<GitHeadState | null> {
 		const repository = await resolveRepository(cwd);
 		if (!repository) return null;
@@ -2339,7 +1962,6 @@ export const head = {
 		return parseHeadState(repository, content);
 	},
 
-	/** Full HEAD state (synchronous). */
 	resolveSync(cwd: string): GitHeadState | null {
 		const repository = resolveRepositorySync(cwd);
 		if (!repository) return null;
@@ -2351,7 +1973,6 @@ export const head = {
 		return parseHeadStateSync(repository, content);
 	},
 
-	/** Current HEAD commit SHA. */
 	async sha(cwd: string, signal?: AbortSignal): Promise<string | null> {
 		const headState = await head.resolve(cwd, signal);
 		if (headState?.commit) return headState.commit;
@@ -2360,26 +1981,12 @@ export const head = {
 		return result.stdout.trim() || null;
 	},
 
-	/** Abbreviated HEAD commit SHA. */
 	async short(cwd: string, length = 7, signal?: AbortSignal): Promise<string | null> {
 		const result = await git(cwd, ["rev-parse", `--short=${length}`, "HEAD"], { readOnly: true, signal });
 		if (result.exitCode !== 0) return null;
 		return result.stdout.trim() || null;
 	},
 
-	/**
-	 * Watch the repository's HEAD for branch moves. Returns a disposer.
-	 *
-	 * Deliberately stat-polls via `fs.watchFile` instead of `fs.watch`: git
-	 * swaps HEAD with `HEAD.lock` + atomic rename, which unlinks the HEAD inode
-	 * — and Bun's inotify-backed `fs.watch` permanently stops delivering events
-	 * after observing a rename in the watched directory (oven-sh/bun#24875), so
-	 * an event watcher fires once and then freezes on Linux (issue #8412 was
-	 * the same freeze for file-inode watches on every platform). A path-based
-	 * stat poll re-resolves the path each interval and survives inode swaps
-	 * everywhere. Reftable repos keep ref state in `<gitDir>/reftable` (their
-	 * HEAD file is a static stub), so the poll targets that directory instead.
-	 */
 	watch(repository: GitRepository, onChange: () => void): () => void {
 		const target = isReftableRepoSync(repository) ? path.join(repository.gitDir, "reftable") : repository.headPath;
 		const listener = (curr: fs.Stats, prev: fs.Stats) => {
@@ -2390,12 +1997,7 @@ export const head = {
 	},
 };
 
-// ════════════════════════════════════════════════════════════════════════════
-// API: repo
-// ════════════════════════════════════════════════════════════════════════════
-
 export const repo = {
-	/** Resolve the repository root (may be a worktree root). */
 	async root(cwd: string, signal?: AbortSignal): Promise<string | null> {
 		const repository = await resolveRepository(cwd);
 		if (repository) return repository.repoRoot;
@@ -2404,7 +2006,6 @@ export const repo = {
 		return result.stdout.trim() || null;
 	},
 
-	/** Resolve the primary checkout root, or the shared common dir for bare-repo worktrees. */
 	async primaryRoot(cwd: string, signal?: AbortSignal): Promise<string | null> {
 		const repository = await resolveRepository(cwd);
 		if (repository) return primaryRootFromRepository(repository);
@@ -2418,61 +2019,38 @@ export const repo = {
 		return repoRoot;
 	},
 
-	/**
-	 * Sync sibling of {@link primaryRoot}. Resolves only via on-disk `.git`/
-	 * `commondir` walking — no subprocess fallback — so it stays usable from
-	 * paths where async I/O is impractical (e.g. `computeBankScope`). Returns
-	 * `null` when `cwd` is outside a repository. Bare-repo worktrees resolve to
-	 * the shared common dir (`foo.git`) because they have no primary checkout.
-	 */
 	primaryRootSync(cwd: string): string | null {
 		const repository = resolveRepositorySync(cwd);
 		if (!repository) return null;
 		return primaryRootFromRepositorySync(repository);
 	},
 
-	/**
-	 * Linked-worktree metadata for `cwd`, or `null` when `cwd` is the primary
-	 * checkout (or outside a repository). `root` is the worktree's own checkout
-	 * root; `primaryRoot` is the shared main checkout that names the project.
-	 * Resolves purely via on-disk `.git`/`commondir` walking — no subprocess —
-	 * so the status line may call it on every render.
-	 */
 	linkedWorktreeSync(cwd: string): { root: string; primaryRoot: string } | null {
 		const repository = resolveRepositorySync(cwd);
 		if (!repository || !isLinkedWorktree(repository)) return null;
 		return { root: repository.repoRoot, primaryRoot: primaryRootFromRepositorySync(repository) };
 	},
 
-	/** Full GitRepository metadata (sync). */
 	resolveSync(cwd: string): GitRepository | null {
 		return resolveRepositorySync(cwd);
 	},
 
-	/** Full GitRepository metadata. */
 	resolve(cwd: string): Promise<GitRepository | null> {
 		return resolveRepository(cwd);
 	},
 
-	/** Check if the repository uses the reftable reference storage format (sync). */
 	isReftableSync(repository: GitRepository): boolean {
 		return isReftableRepoSync(repository);
 	},
 
-	/** Check if the repository uses the reftable reference storage format. */
 	isReftable(repository: GitRepository): Promise<boolean> {
 		return isReftableRepo(repository);
 	},
 };
 
-// Helper used during head resolution — defined here to reference `head` namespace.
 async function resolveHead(cwd: string, signal?: AbortSignal): Promise<GitHeadState | null> {
 	return head.resolve(cwd, signal);
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// API: github (GitHub CLI)
-// ════════════════════════════════════════════════════════════════════════════
 
 interface GhCommandResult {
 	exitCode: number;
@@ -2503,12 +2081,10 @@ function formatGhFailure(args: readonly string[], stdout: string, stderr: string
 }
 
 export const github = {
-	/** Check if `gh` CLI is installed. */
 	available(): boolean {
 		return Boolean($which("gh"));
 	},
 
-	/** Run a raw `gh` CLI command. Does not throw on non-zero exit. */
 	async run(cwd: string, args: string[], signal?: AbortSignal, options?: GhCommandOptions): Promise<GhCommandResult> {
 		throwIfAborted(signal);
 		if (!$which("gh")) {
@@ -2537,7 +2113,6 @@ export const github = {
 		}
 	},
 
-	/** Run `gh` and parse stdout as JSON. Throws on non-zero exit or invalid JSON. */
 	async json<T>(cwd: string, args: string[], signal?: AbortSignal, options?: GhCommandOptions): Promise<T> {
 		const result = await github.run(cwd, args, signal, options);
 		if (result.exitCode !== 0) {
@@ -2553,7 +2128,6 @@ export const github = {
 		}
 	},
 
-	/** Run `gh` and return stdout as text. Throws on non-zero exit. */
 	async text(cwd: string, args: string[], signal?: AbortSignal, options?: GhCommandOptions): Promise<string> {
 		const result = await github.run(cwd, args, signal, options);
 		if (result.exitCode !== 0) {

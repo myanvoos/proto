@@ -1,22 +1,5 @@
 const DIGITS = /^\d+$/;
 
-/**
- * Compare two version strings.
- *
- * Canonical comparator that supersedes the historical in-repo copies
- * (update-cli, hackage scraper, release scripts):
- * - inputs are trimmed and at most one leading `v`/`V` is stripped
- * - dot-separated segments are compared numerically, missing trailing
- *   segments count as 0, so `1.2` === `1.2.0` and any segment count works
- * - a SemVer-2.0 prerelease suffix sorts before the plain release
- *   (`1.0.0-beta` < `1.0.0`); prerelease identifiers follow SemVer order
- *   (numeric < alphanumeric, numeric compared by value, alphanumeric
- *   compared lexically, longer sets of equal fields win)
- * - SemVer build metadata begins at the first `+` and does not participate
- *   in precedence; it is stripped before core/prerelease parsing
- * - malformed numeric segments compare as 0 (`1.2.x` === `1.2.0`)
- * - never throws; returns only -1 | 0 | 1
- */
 export function compareVersions(a: string, b: string): number {
 	const pa = parseVersion(a);
 	const pb = parseVersion(b);
@@ -47,11 +30,9 @@ function parseVersion(version: string): ParsedVersion {
 	};
 }
 
-/** Compare dot-separated numeric segments; missing/malformed segments count as 0. */
 function compareNumericParts(a: string[], b: string[]): number {
 	const length = Math.max(a.length, b.length);
 	for (let i = 0; i < length; i++) {
-		// Missing or malformed segments compare as 0.
 		const sa = a[i];
 		const sb = b[i];
 		const result = compareDigits(
@@ -63,7 +44,6 @@ function compareNumericParts(a: string[], b: string[]): number {
 	return 0;
 }
 
-/** Exact integer comparison of digit strings, avoiding float overflow. */
 function compareDigits(a: string, b: string): number {
 	const na = a.replace(/^0+/, "") || "0";
 	const nb = b.replace(/^0+/, "") || "0";
@@ -73,7 +53,6 @@ function compareDigits(a: string, b: string): number {
 	return 0;
 }
 
-/** SemVer-2.0 prerelease ordering; null means a plain release, which wins. */
 function comparePrerelease(a: string[] | null, b: string[] | null): number {
 	if (a === null || b === null) {
 		return a === b ? 0 : a === null ? 1 : -1;

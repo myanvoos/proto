@@ -35,24 +35,14 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	// Single-file dialog surface (`editorContainer` + focus) is shared by the
-	// selector / input / editor modals, so only one may be presented at a time;
-	// the rest queue. See `#presentDialog`.
+
 	#dialogActive = false;
 	#dialogQueue: Array<() => void> = [];
-	/**
-	 * Built once in `initHooksAndCustomTools()`. Reused directly by `/tree`
-	 * `ask` re-answer (issue #5642) to drive a standalone `AskTool.execute()`
-	 * call with the same picker/dialog primitives a live tool call would get.
-	 */
+
 	#toolUIContext: ExtensionUIContext | undefined;
 	constructor(private ctx: InteractiveModeContext) {}
 
-	/**
-	 * Initialize the hook system with TUI-based UI context.
-	 */
 	async initHooksAndCustomTools(): Promise<void> {
-		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
 			select: (title, options, dialogOptions) => this.showHookSelector(title, options, dialogOptions),
@@ -87,7 +77,7 @@ export class ExtensionUiController {
 				if (typeof themeArg === "string") {
 					return await setTheme(themeArg, true);
 				}
-				// Theme object passed directly - not supported in current implementation
+
 				return Promise.resolve({ success: false, error: "Direct theme object not supported" });
 			},
 			setFooter: () => {},
@@ -112,7 +102,7 @@ export class ExtensionUiController {
 
 		const extensionRunner = this.ctx.session.extensionRunner;
 		if (!extensionRunner) {
-			return; // No hooks loaded
+			return;
 		}
 
 		const actions: ExtensionActions = {
@@ -158,9 +148,6 @@ export class ExtensionUiController {
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
-				// Defer the actual teardown to the main loop, which calls
-				// `checkShutdownRequested()` at idle boundaries so any queued
-				// steering / follow-up messages drain first (see issue #1020).
 				this.ctx.shutdownRequested = true;
 			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -179,7 +166,6 @@ export class ExtensionUiController {
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 
-				// Create new session
 				this.clearExtensionTerminalInputListeners();
 				this.clearHookWidgets();
 				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
@@ -188,12 +174,10 @@ export class ExtensionUiController {
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
-				// Call setup callback if provided
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
 				}
 
-				// Reset and update status line
 				this.ctx.statusLine.invalidate();
 				this.ctx.statusLine.resetActiveTime();
 				this.ctx.clearTransientSessionUi();
@@ -214,7 +198,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
@@ -228,7 +211,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
@@ -254,24 +236,15 @@ export class ExtensionUiController {
 
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext, "tui");
 
-		// Subscribe to extension errors
 		extensionRunner.onError((error: ExtensionError) => {
 			this.showExtensionError(error.extensionPath, error.error);
 		});
 
-		// Emit session_start event
 		await extensionRunner.emit({
 			type: "session_start",
 		});
 	}
 
-	/**
-	 * The `ExtensionUIContext` built in `initHooksAndCustomTools()` — the same
-	 * picker/dialog primitives passed as `context.ui` for every live tool
-	 * call. `/tree` `ask` re-answer (issue #5642) reuses this to drive a
-	 * standalone `AskTool.execute()` call outside a normal agent turn.
-	 * `undefined` before hooks have initialized.
-	 */
 	getToolUIContext(): ExtensionUIContext | undefined {
 		return this.#toolUIContext;
 	}
@@ -391,9 +364,6 @@ export class ExtensionUiController {
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			shutdown: () => {
-				// Defer the actual teardown to the main loop, which calls
-				// `checkShutdownRequested()` at idle boundaries so any queued
-				// steering / follow-up messages drain first (see issue #1020).
 				this.ctx.shutdownRequested = true;
 			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -412,7 +382,6 @@ export class ExtensionUiController {
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 
-				// Create new session
 				this.clearExtensionTerminalInputListeners();
 				this.clearHookWidgets();
 				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
@@ -420,12 +389,10 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Call setup callback if provided
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
 				}
 
-				// Clear UI state
 				this.ctx.clearTransientSessionUi();
 				this.ctx.resetTranscript();
 
@@ -444,7 +411,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
@@ -458,7 +424,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
@@ -484,9 +449,6 @@ export class ExtensionUiController {
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext, "tui");
 	}
 
-	/**
-	 * Emit session event to all extension tools.
-	 */
 	async emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,
@@ -513,17 +475,11 @@ export class ExtensionUiController {
 		}
 	}
 
-	/**
-	 * Show a tool error in the chat.
-	 */
 	showToolError(toolName: string, error: string): void {
 		const errorText = new Text(`Tool "${toolName}" error: ${error}`, 1, 0).setStyleFn(t => theme.fg("error", t));
 		this.ctx.present(errorText);
 	}
 
-	/**
-	 * Set hook status text in the footer.
-	 */
 	setHookStatus(key: string, text: string | undefined): void {
 		this.ctx.statusLine.setHookStatus(key, text);
 		this.ctx.ui.requestRender();
@@ -545,8 +501,7 @@ export class ExtensionUiController {
 							isBlocked: () => draftEditor.getText().length > 0,
 							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
 							hint: "Finish or clear the current prompt to answer",
-							// Show the draft's insertion cursor while it owns input; drop it
-							// once the draft clears and the ask controls take over.
+
 							syncPresentation: () => {
 								draftEditor.focused = draftEditor.getText().length > 0;
 							},
@@ -557,10 +512,7 @@ export class ExtensionUiController {
 				if (closed || !askDialog) return;
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
-				// Keep the draft editor mounted beneath the restored ask, matching the
-				// initial presentation: the guard re-blocks whenever the draft is
-				// non-empty (e.g. a failed submit restored its text while a nested
-				// prompt was open), and routed input must land on a visible surface.
+
 				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
 				this.ctx.ui.requestRender();
@@ -627,9 +579,6 @@ export class ExtensionUiController {
 		});
 	}
 
-	/**
-	 * Show a selector for hooks.
-	 */
 	showHookSelector(
 		title: string,
 		options: ExtensionUISelectItem[],
@@ -680,9 +629,7 @@ export class ExtensionUiController {
 			return () => this.hideHookSelector();
 		});
 	}
-	/**
-	 * Hide the hook selector.
-	 */
+
 	hideHookSelector(): void {
 		this.ctx.hookSelector?.dispose();
 		this.ctx.editorContainer.clear();
@@ -692,17 +639,11 @@ export class ExtensionUiController {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Show a confirmation dialog for hooks.
-	 */
 	async showHookConfirm(title: string, message: string, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean> {
 		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], dialogOptions);
 		return result === "Yes";
 	}
 
-	/**
-	 * Show a text input for hooks.
-	 */
 	showHookInput(
 		title: string,
 		placeholder?: string,
@@ -728,9 +669,6 @@ export class ExtensionUiController {
 		});
 	}
 
-	/**
-	 * Hide the hook input.
-	 */
 	hideHookInput(): void {
 		this.ctx.hookInput?.dispose();
 		this.ctx.editorContainer.clear();
@@ -740,9 +678,6 @@ export class ExtensionUiController {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Show a multi-line editor for hooks (with Ctrl+G support).
-	 */
 	showHookEditor(
 		title: string,
 		prefill?: string,
@@ -766,9 +701,6 @@ export class ExtensionUiController {
 		});
 	}
 
-	/**
-	 * Hide the hook editor.
-	 */
 	hideHookEditor(): void {
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(this.ctx.editor);
@@ -777,9 +709,6 @@ export class ExtensionUiController {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Show a notification for hooks.
-	 */
 	showHookNotify(message: string, type?: "info" | "warning" | "error"): void {
 		if (type === "error") {
 			this.ctx.showError(message);
@@ -790,9 +719,6 @@ export class ExtensionUiController {
 		}
 	}
 
-	/**
-	 * Show a custom component with keyboard focus.
-	 */
 	async showHookCustom<T>(
 		factory: (
 			tui: TUI,
@@ -875,9 +801,6 @@ export class ExtensionUiController {
 		return promise;
 	}
 
-	/**
-	 * Show an extension error in the UI.
-	 */
 	addExtensionTerminalInputListener(handler: TerminalInputHandler): () => void {
 		const unsubscribe = this.ctx.ui.addInputListener(handler);
 		this.#extensionTerminalInputUnsubscribers.add(unsubscribe);
@@ -934,30 +857,11 @@ export class ExtensionUiController {
 	};
 
 	#applyCustomMessageDisplay(wasStreaming: boolean, shouldDisplay: boolean | undefined): void {
-		// For non-streaming cases with display=true, update UI
-		// (streaming cases update via message_end event).
-		// Gate on initialChatRendered (#1955): an extension's session_start
-		// sendMessage({display:true}) runs before renderInitialMessages, which would
-		// re-render from session entries AND re-append via preserveExistingChat,
-		// duplicating the message. After the initial render the rebuild must run.
 		if (!wasStreaming && shouldDisplay && this.ctx.initialChatRendered) {
 			this.ctx.rebuildChatFromMessages();
 		}
 	}
 
-	/**
-	 * Present a modal dialog on the shared editor surface, serializing against any
-	 * dialog already open. `present` builds the component, swaps it into
-	 * `editorContainer`, steals focus, and returns a `hide` closure; it is invoked
-	 * with a single `settle` callback that the component fires on submit/cancel.
-	 *
-	 * Because selector / input / editor all clear `editorContainer` and re-focus,
-	 * showing a second one while the first is open would orphan the first — its
-	 * promise would hang until the caller's signal aborts. So at most one dialog is
-	 * presented at a time and the rest queue (FIFO). `settle` (or an abort) hides
-	 * the current dialog and hands the surface to the next queued request. A request
-	 * whose signal aborts before its turn resolves `undefined` and is never shown.
-	 */
 	#presentDialog<T = string>(
 		signal: AbortSignal | undefined,
 		present: (settle: (value: T | undefined) => void) => () => void,
@@ -985,7 +889,6 @@ export class ExtensionUiController {
 
 		const startPresentation = (): void => {
 			if (settled) {
-				// Aborted before its turn arrived — never present, hand off the surface.
 				this.#advanceDialogQueue();
 				return;
 			}

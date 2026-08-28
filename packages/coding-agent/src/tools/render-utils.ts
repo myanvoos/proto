@@ -1,10 +1,3 @@
-/**
- * Shared utilities and constants for tool renderers.
- *
- * Provides consistent formatting, truncation, and display patterns across all
- * tool renderers to ensure a unified TUI experience.
- */
-
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolCallContext } from "@oh-my-pi/pi-agent-core";
@@ -22,11 +15,6 @@ import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 
-// =============================================================================
-// Standardized Display Constants
-// =============================================================================
-
-/** Resolve inline image dimension caps from settings and viewport. */
 export function resolveImageOptions(): { maxWidthCells: number; maxHeightCells?: number } {
 	const activeSettings = isSettingsInitialized() ? settings : undefined;
 	const maxWidthCells = activeSettings?.get("tui.maxInlineImageColumns") ?? getDefault("tui.maxInlineImageColumns");
@@ -38,97 +26,67 @@ export function resolveImageOptions(): { maxWidthCells: number; maxHeightCells?:
 	const viewportFraction = viewportRows ? Math.floor(viewportRows * 0.6) : 0;
 	let maxHeightCells: number | undefined;
 	if (rowSetting === 0) {
-		// No explicit cap — use viewport fraction as safety bound
 		maxHeightCells = viewportFraction || undefined;
 	} else if (viewportFraction > 0) {
 		maxHeightCells = Math.min(rowSetting, viewportFraction);
 	} else {
-		// Viewport size unknown (transitional state) — honor explicit setting
 		maxHeightCells = rowSetting;
 	}
 	return { maxWidthCells, maxHeightCells };
 }
 
-/** Preview limits for collapsed/expanded views */
 export const PREVIEW_LIMITS = {
-	/** Lines shown in collapsed view */
 	COLLAPSED_LINES: 3,
-	/** Lines shown in expanded view */
+
 	EXPANDED_LINES: 12,
-	/** Items (files, results) shown in collapsed view */
+
 	COLLAPSED_ITEMS: 8,
-	/** Output preview lines in collapsed view */
+
 	OUTPUT_COLLAPSED: 3,
-	/** Output preview lines in expanded view */
+
 	OUTPUT_EXPANDED: 10,
-	/** Computer script lines shown in collapsed view */
+
 	COMPUTER_CODE_COLLAPSED: 10,
-	/** Max hunks shown when collapsed (edit tool) */
+
 	DIFF_COLLAPSED_HUNKS: 8,
-	/** Max diff lines shown when collapsed (edit tool) */
+
 	DIFF_COLLAPSED_LINES: 40,
 } as const;
 
-/** Default number of terminal output rows shown before expansion. */
 export const DEFAULT_TERMINAL_PREVIEW_LINES = 10;
 
-/** Truncation lengths for different content types */
 export const TRUNCATE_LENGTHS = {
-	/** Short titles, labels */
 	TITLE: 60,
-	/** Medium-length content (messages, previews) */
+
 	CONTENT: 80,
-	/** Longer content (code, explanations) */
+
 	LONG: 100,
-	/** Full line content */
+
 	LINE: 110,
-	/** Very short (task previews, badges) */
+
 	SHORT: 40,
-	/** Idle recap status line (~40-word LLM reply) */
+
 	RECAP: 280,
 } as const;
 
-/** Keybinding action that toggles tool-output expansion. */
 const EXPAND_ACTION = "app.tools.expand";
-/** Fallback key when no binding is resolvable (e.g. outside an interactive session). */
+
 const DEFAULT_EXPAND_KEY: KeyId = "ctrl+o";
 
-/** Human-readable key currently bound to tool-output expansion, e.g. `Ctrl+O`. */
 export function expandKeyHint(): string {
 	const keys = getKeybindings().getKeys(EXPAND_ACTION);
 	return formatKeyHints(keys.length > 0 ? keys : [DEFAULT_EXPAND_KEY]);
 }
 
-// =============================================================================
-// Text Truncation Utilities
-// =============================================================================
-
-/**
- * Get first N lines of text as preview, with each line truncated.
- */
 export function getPreviewLines(text: string, maxLines: number, maxLineLen: number, ellipsis?: Ellipsis): string[] {
 	const lines = text.split("\n").filter(l => l.trim());
 	return lines.slice(0, maxLines).map(l => truncateToWidth(l.trim(), maxLineLen, ellipsis));
 }
 
-/**
- * Collapse a possibly multi-line string into a single line, then truncate it to
- * `maxWidth` display cells. {@link truncateToWidth} alone caps width but
- * newlines are zero-width, so multi-line content (markdown briefs, tool args,
- * provider errors) would otherwise spill a single status row across several
- * visual lines. Whitespace runs collapse to one space, so tabs are handled too.
- */
 export function previewLine(text: string, maxWidth: number, ellipsis?: Ellipsis): string {
 	return truncateToWidth(text.replace(/\s+/g, " ").trim(), maxWidth, ellipsis);
 }
 
-// =============================================================================
-// URL Utilities
-// =============================================================================
-
-/**
- * Extract domain from URL, stripping www. prefix.
- */
 export function getDomain(url: string): string {
 	try {
 		const u = new URL(url);
@@ -138,20 +96,8 @@ export function getDomain(url: string): string {
 	}
 }
 
-// =============================================================================
-// Formatting Utilities
-// =============================================================================
-
 export { formatAge, formatBytes, formatCount, formatDuration, pluralize } from "@oh-my-pi/pi-utils";
 
-// =============================================================================
-// Theme Helper Utilities
-// =============================================================================
-
-/**
- * Get the appropriate status icon with color for a given state.
- * Standardizes status icon usage across all renderers.
- */
 export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFrame?: number): string {
 	switch (status) {
 		case "success":
@@ -177,10 +123,6 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 	}
 }
 
-/**
- * Format the expand hint with proper theming.
- * Returns empty string if already expanded or there is nothing more to show.
- */
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
 	if (expanded) return "";
 	if (hasMore === false) return "";
@@ -188,55 +130,28 @@ export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boo
 	return theme.fg("dim", `${chevron} ${expandKeyHint()} expand`);
 }
 
-/**
- * Format a badge like [done] or [failed] with brackets and color.
- */
 export function formatBadge(label: string, color: ToolUIColor, theme: Theme): string {
 	const left = theme.format.bracketLeft;
 	const right = theme.format.bracketRight;
 	return theme.fg(color, `${left}${label}${right}`);
 }
 
-/**
- * Build a "more items" suffix line for truncated lists.
- * Uses consistent wording pattern.
- */
 export function formatMoreItems(remaining: number, itemType: string): string {
 	const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
 	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
 }
 
-/**
- * Collapsed command/code previews render a tail window sized from the live
- * viewport: terminal rows minus a reserve for the rest of the block (frame,
- * Output section, stats line) and the editor/status area below the
- * transcript. This keeps a volatile streaming block from growing past the
- * viewport and stranding its top, while letting tall terminals show more.
- */
 const PREVIEW_WINDOW_RESERVED_ROWS = 20;
-/** Floor so tiny or unknown viewports still show a useful window. */
+
 const PREVIEW_WINDOW_MIN_LINES = 6;
-/** Assumed viewport when rows are unknown (non-TTY, tests). */
+
 const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
 
-/** Tail-window height for collapsed command/code previews. */
 export function previewWindowRows(): number {
 	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
 	return Math.max(PREVIEW_WINDOW_MIN_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS);
 }
 
-/**
- * Cap a pre-rendered command preview to a viewport-sized tail window: the end
- * of the command stays visible (it is the live edge while args stream) behind
- * an "… N earlier lines" marker on top. The same window applies while
- * streaming and after completion so the block never jumps; only `expanded`
- * (ctrl+o) uncaps it.
- *
- * `prefix` (raw, e.g. a dim tree gutter) is prepended to the marker line so
- * nested previews stay aligned. `expandHint: false` drops the "ctrl+o: Expand"
- * suffix for callers that cap even inside the expanded view (task recent
- * output), where the hint would point the wrong way.
- */
 export function capPreviewLines(
 	lines: string[],
 	theme: Theme,
@@ -265,13 +180,6 @@ export function formatErrorMessage(message: string | undefined, theme: Theme): s
 	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${sanitizeErrorText(message)}`)}`;
 }
 
-/**
- * Error message rendered as a subordinate detail line beneath a status header
- * that already carries the error icon (e.g. `Write: <path>`). The header's
- * icon already signals failure, so this omits the redundant error symbol and
- * "Error:" prefix that `formatErrorMessage` adds for standalone single-line
- * errors, indenting two columns to sit under the header title instead.
- */
 export function formatErrorDetail(message: string | undefined, theme: Theme): string {
 	return `  ${theme.fg("error", sanitizeErrorText(message))}`;
 }
@@ -279,10 +187,6 @@ export function formatErrorDetail(message: string | undefined, theme: Theme): st
 export function formatEmptyMessage(message: string, theme: Theme): string {
 	return `${theme.styledSymbol("status.warning", "warning")} ${theme.fg("muted", message)}`;
 }
-
-// =============================================================================
-// Code Frame Formatting
-// =============================================================================
 
 export type CodeFrameMarker = "" | " " | "*" | "+" | "-" | ">";
 
@@ -298,10 +202,6 @@ export function formatCodeFrameLine(
 	return `${gutterText.padStart(lineNumberWidth + 1, " ")}│${content}`;
 }
 
-// =============================================================================
-// Tool UI Helpers
-// =============================================================================
-
 export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";
 export type ToolUIColor = "success" | "error" | "warning" | "accent" | "muted";
 
@@ -313,10 +213,6 @@ export function formatTitle(label: string, theme: Theme, options?: ToolUITitleOp
 	const content = options?.bold === false ? label : theme.bold(label);
 	return theme.fg("toolTitle", content);
 }
-
-// =============================================================================
-// Diagnostic Formatting
-// =============================================================================
 
 interface ParsedDiagnostic {
 	filePath: string;
@@ -404,11 +300,9 @@ export function formatDiagnostics(
 
 	const files = Array.from(byFile.entries());
 
-	// Count total diagnostics for "... X more" calculation
 	const totalParsedDiags = files.reduce((sum, [, diags]) => sum + diags.length, 0);
 	const totalDiags = totalParsedDiags + unparsed.length;
 
-	// Helper to check if this is the very last item in the tree
 	const isTreeEnd = (fileIdx: number, diagIdx: number | null, unparsedIdx: number | null): boolean => {
 		const willShowMore = totalDiags > diagsShown + 1;
 		if (willShowMore) return false;
@@ -421,13 +315,13 @@ export function formatDiagnostics(
 			const isLastFile = fileIdx === files.length - 1;
 			return isLastDiagInFile && isLastFile && unparsed.length === 0;
 		}
-		// File node - never the tree end if it has diagnostics
+
 		return false;
 	};
 
 	for (let fi = 0; fi < files.length && diagsShown < maxDiags; fi++) {
 		const [filePath, diagnostics] = files[fi];
-		// File is "last" only if no more files AND no unparsed AND we'll show all diags AND no "... X more"
+
 		const remainingDiagsInFile = diagnostics.length;
 		const remainingDiagsAfter = files.slice(fi + 1).reduce((sum, [, d]) => sum + d.length, 0) + unparsed.length;
 		const willShowAllRemaining = diagsShown + remainingDiagsInFile + remainingDiagsAfter <= maxDiags;
@@ -440,10 +334,10 @@ export function formatDiagnostics(
 		for (let di = 0; di < diagnostics.length && diagsShown < maxDiags; di++) {
 			const d = diagnostics[di];
 			const isLastDiagInFile = di === diagnostics.length - 1;
-			// This is the last visible diag in file if it's actually last OR we're about to hit the limit
+
 			const atDisplayLimit = diagsShown + 1 >= maxDiags;
 			const isLastVisibleInFile = isLastDiagInFile || atDisplayLimit;
-			// Check if this is the last visible item in the entire tree
+
 			const isVeryLast = isTreeEnd(fi, di, null);
 			const diagBranch = isLastFileNode
 				? isLastVisibleInFile || isVeryLast
@@ -487,10 +381,6 @@ export function formatDiagnostics(
 
 	return output;
 }
-
-// =============================================================================
-// Diff Utilities
-// =============================================================================
 
 export interface DiffStats {
 	added: number;
@@ -562,11 +452,6 @@ export function truncateDiffByHunk(
 	options?: { fromTail?: boolean },
 ): { text: string; hiddenHunks: number; hiddenLines: number } {
 	if (options?.fromTail) {
-		// Streaming previews want to track the tail of the diff as new hunks
-		// arrive. Reversing the line buffer reuses the head-mode logic without
-		// duplicating the segment-budget bookkeeping: hunk runs survive
-		// reversal (a continuous `+`/`-` block stays contiguous) and so do the
-		// per-line `+`/`-` markers, so getDiffStats yields identical counts.
 		const reversed = (diffText ?? "").split("\n").reverse().join("\n");
 		const result = truncateDiffByHunk(reversed, maxHunks, maxLines);
 		return {
@@ -700,10 +585,6 @@ export function truncateDiffByHunk(
 	};
 }
 
-// =============================================================================
-// Path Utilities
-// =============================================================================
-
 export function shortenPath(filePath: unknown, homeDir?: string): string {
 	if (typeof filePath !== "string") {
 		return "";
@@ -711,8 +592,7 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	const home = homeDir ?? os.homedir();
 	if (home && filePath.startsWith(home)) {
 		const suffix = filePath.slice(home.length);
-		// Windows-authored paths use `\` separators; normalize them so the
-		// shortened form is always forward-slash display output.
+
 		if (suffix === "" || suffix.startsWith("/") || suffix.startsWith("\\")) {
 			return `~${suffix.replaceAll("\\", "/")}`;
 		}
@@ -790,12 +670,6 @@ export function formatParseErrors(errors: string[], total?: number): string[] {
 	return [header, ...capped.map(err => `- ${err}`)];
 }
 
-/**
- * Cap an upstream parse-error list to {@link PARSE_ERRORS_LIMIT} unique entries,
- * preserving the original deduplicated total. Use this at the source so tool
- * details never carry thousands of per-file parse errors into traces or
- * renderers.
- */
 export function capParseErrors(
 	errors: string[] | undefined,
 	limit: number = PARSE_ERRORS_LIMIT,
@@ -804,15 +678,6 @@ export function capParseErrors(
 	return { errors: deduped.slice(0, limit), total: deduped.length };
 }
 
-// =============================================================================
-// Renderer helpers shared by search / find / ast tools
-// =============================================================================
-
-/**
- * Standard width+expand keyed render cache used by every search-style tool
- * renderer. `compute` re-runs only when the cache key changes; the returned
- * Component is the canonical `{ render, invalidate }` pair.
- */
 export function createCachedComponent(
 	getExpanded: () => boolean,
 	compute: (width: number, expanded: boolean) => string[],
@@ -838,17 +703,6 @@ export function createCachedComponent(
 	};
 }
 
-/**
- * Single-slot memo for an expensive rendered string (syntax highlighting, diff
- * coloring) keyed by the exact inputs that shape the bytes: theme instance,
- * expanded state, a caller-chosen salt (path/language), and the source content.
- * Field-wise comparison instead of a concatenated key string: a cache hit costs
- * one string value-compare (engines short-circuit on length) and a miss never
- * allocates a key. Comparing the {@link Theme} by reference is sound because
- * theme switches replace the instance wholesale (`setTheme`/`previewTheme`/
- * `setSymbolPreset` in modes/theme/theme.ts) — themes are never mutated in
- * place.
- */
 export interface RenderedStringCache {
 	theme: Theme | null;
 	expanded: boolean;
@@ -861,7 +715,6 @@ export function createRenderedStringCache(): RenderedStringCache {
 	return { theme: null, expanded: false, salt: "", content: "", value: "" };
 }
 
-/** Drop the memo so the next lookup re-renders (e.g. the render function identity changed). */
 export function invalidateRenderedStringCache(cache: RenderedStringCache): void {
 	cache.theme = null;
 }
@@ -893,10 +746,6 @@ export function cachedRenderedString(
 	}
 	return value;
 }
-
-// =============================================================================
-// LSP Batching
-// =============================================================================
 
 const LSP_BATCH_TOOLS = new Set(["edit", "write"]);
 

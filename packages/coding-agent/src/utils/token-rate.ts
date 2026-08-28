@@ -1,6 +1,3 @@
-/**
- * Token-throughput calculator for protocol status output.
- */
 const MIN_DURATION_MS = 100;
 
 type AssistantUsage = {

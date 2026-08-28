@@ -19,10 +19,8 @@ import { classifyProviderHttpError, toSearchSources, withHardTimeout } from "./u
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 40;
 
-/** Query-string caps for Parallel: natural-language objective, no field operators. */
 const PARALLEL_QUERY_SYNTAX = { phrases: true, negation: true, or: true } as const;
 
-/** Parallel `source_policy` (beta Search API): bare-host allow/deny lists + freshness floor. */
 interface ParallelSourcePolicy {
 	include_domains?: string[];
 	exclude_domains?: string[];
@@ -36,7 +34,6 @@ const RECENCY_DAYS: Record<NonNullable<SearchParams["recency"]>, number> = {
 	year: 365,
 };
 
-/** Site values may carry paths (`github.com/anthropics`); Parallel takes bare hosts. */
 function toHosts(sites: readonly string[]): string[] {
 	const hosts = new Set<string>();
 	for (const site of sites) {
@@ -46,13 +43,6 @@ function toHosts(sites: readonly string[]): string[] {
 	return [...hosts];
 }
 
-/**
- * Map parsed `site:`/`-site:`/`after:` directives and the relative recency
- * option onto Parallel's `source_policy`. An explicit `after:` bound wins.
- * Per Parallel docs, `exclude_domains` is ignored when `include_domains` is
- * set, so exclusions are only sent without an allow list (the central lenient
- * filter enforces them regardless).
- */
 function toSourcePolicy(parsed: StructuredQuery, recency?: SearchParams["recency"]): ParallelSourcePolicy | undefined {
 	const policy: ParallelSourcePolicy = {};
 	const include = toHosts(parsed.sites);
@@ -85,10 +75,6 @@ async function searchWithAuthStorage(
 		);
 	}
 
-	// Drive the (already-present) credential through the central force-refresh /
-	// sibling-rotate retry policy. The `ParallelApiError` thrown below carries a
-	// `statusCode`, which `withAuth`'s default classifier reads to detect a
-	// retryable 401 / usage-limit.
 	const keyOrResolver: ApiKey = authStorage.resolver("parallel", { sessionId });
 	return withAuth(
 		keyOrResolver,
@@ -139,7 +125,7 @@ export async function searchParallel(
 ): Promise<SearchResponse> {
 	const numResults = clampNumResults(params.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
-	// Directives are removed only where Parallel has a native equivalent.
+
 	const query = parsed.hasDirectives ? formatQuery(parsed, PARALLEL_QUERY_SYNTAX) : params.query;
 	const sourcePolicy = toSourcePolicy(parsed, params.recency);
 

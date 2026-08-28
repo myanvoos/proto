@@ -216,7 +216,6 @@ function* htmlTokens(html: string): Generator<string> {
 	}
 }
 
-/** Parse an HTML fragment into the small DOM subset needed by Turndown. */
 export function parseHtmlFragment(html: string): TurndownNode {
 	const root = new HtmlFragment();
 	const stack: HtmlNode[] = [root];
@@ -249,7 +248,6 @@ export function parseHtmlFragment(html: string): TurndownNode {
 	return root;
 }
 
-/** Serialize a standards-shaped or internal HTML node. */
 export function serializeNode(node: TurndownNode): string {
 	if (typeof node.outerHTML === "string") return node.outerHTML;
 	if (node.nodeType === 3) return node.textContent ?? "";

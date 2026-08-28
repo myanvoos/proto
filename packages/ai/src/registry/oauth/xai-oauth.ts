@@ -1,12 +1,3 @@
-// Device authorization and token refresh adapted from NousResearch/hermes-agent (MIT).
-
-/**
- * xAI Grok OAuth device authorization flow.
- *
- * Requests an RFC 8628 device code, opens xAI's verification page, and polls
- * the discovered token endpoint until the user approves the login.
- */
-
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import { type OAuthDeviceCodePollResult, pollOAuthDeviceCodeFlow } from "./device-code";
@@ -22,8 +13,6 @@ const XAI_CLI_BILLING_BASE_URL = "https://cli-chat-proxy.grok.com";
 const XAI_CLI_BILLING_PATH = "/v1/billing";
 const XAI_CLI_BILLING_FORMAT = "credits";
 
-// Mirrors the 5-min skew used by anthropic.ts:160 — keeps every provider on the
-// same conservative client-side expiry window.
 const ACCESS_TOKEN_CLIENT_SKEW_MS = 5 * 60 * 1000;
 
 const DISCOVERY_TIMEOUT_MS = 15_000;
@@ -45,21 +34,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-/**
- * Validate an xAI OIDC endpoint against its scheme and host.
- *
- * The discovery response is long-lived and its token endpoint receives every
- * future refresh token. Rejecting non-HTTPS or non-`x.ai` / `*.x.ai` hosts
- * pins that endpoint to the xAI auth origin.
- *
- * @throws Error with message `Invalid xAI <field>: <url>` when the URL fails
- *         either scheme or host validation.
- */
 function isXaiAuthHostname(host: string): boolean {
 	return host === "x.ai" || host.endsWith(".x.ai");
 }
 
-/** SuperGrok CLI billing proxy host (`cli-chat-proxy.grok.com`), not the OIDC issuer. */
 function isXaiBillingHostname(host: string): boolean {
 	return host === "grok.com" || host.endsWith(".grok.com");
 }
@@ -81,10 +59,6 @@ export function validateXAIEndpoint(url: string, field: string): string {
 	return url;
 }
 
-/**
- * Pin SuperGrok billing URLs to HTTPS `grok.com` / `*.grok.com`.
- * The CLI billing proxy is intentionally not on `*.x.ai`.
- */
 export function validateXAIBillingEndpoint(url: string, field: string = "billing_url"): string {
 	let parsed: URL;
 	try {
@@ -102,7 +76,6 @@ export function validateXAIBillingEndpoint(url: string, field: string = "billing
 	return url;
 }
 
-/** Fetch xAI's OIDC discovery document and validate the token endpoint. */
 async function xaiOAuthDiscovery(
 	timeoutMs: number = DISCOVERY_TIMEOUT_MS,
 	fetchOverride?: FetchImpl,
@@ -159,7 +132,6 @@ async function xaiOAuthDiscovery(
 	return { token_endpoint: tokenEndpoint };
 }
 
-/** Decode an xAI access-token JWT payload without verifying its signature. */
 export function parseXAIAccessTokenPayload(jwt: string): Record<string, unknown> | null {
 	try {
 		if (typeof jwt !== "string" || !jwt.includes(".")) return null;
@@ -175,13 +147,6 @@ export function parseXAIAccessTokenPayload(jwt: string): Record<string, unknown>
 	}
 }
 
-/**
- * Check whether a JWT access token is at or past its `exp` claim (with an
- * optional refresh-skew margin).
- *
- * Returns `false` for malformed input because this is a refresh-trigger check,
- * not token validation.
- */
 export function isXAIAccessTokenExpiring(jwt: string, skewSeconds: number = 0): boolean {
 	const payload = parseXAIAccessTokenPayload(jwt);
 	if (!payload) return false;
@@ -192,7 +157,6 @@ export function isXAIAccessTokenExpiring(jwt: string, skewSeconds: number = 0): 
 	return exp <= now + skew;
 }
 
-/** Extract the stable xAI subject UUID from an access token. */
 export function extractXAIAccessTokenSubject(jwt: string): string | undefined {
 	const sub = parseXAIAccessTokenPayload(jwt)?.sub;
 	return typeof sub === "string" && sub.trim() ? sub.trim() : undefined;
@@ -204,7 +168,6 @@ export interface XAIOAuthIdentity {
 	name?: string;
 }
 
-/** Fetch optional OIDC userinfo for a valid xAI access token. */
 export async function fetchXAIOAuthIdentity(
 	accessToken: string,
 	fetchOverride?: FetchImpl,
@@ -257,18 +220,12 @@ async function withXAIOAuthIdentity(
 	};
 }
 
-/** Build the SuperGrok CLI billing URL. Pass `""` to omit `format` (unified monthly payload). */
 export function buildXAICliBillingUrl(format: string = XAI_CLI_BILLING_FORMAT): string {
 	const url = new URL(XAI_CLI_BILLING_PATH, XAI_CLI_BILLING_BASE_URL);
 	if (format) url.searchParams.set("format", format);
 	return validateXAIBillingEndpoint(url.toString());
 }
 
-/**
- * Headers for SuperGrok CLI billing (`cli-chat-proxy.grok.com`).
- * Official Grok CLI also sends `X-XAI-Token-Auth: xai-grok-cli` on this host;
- * include it so billing stays on the same product gate as chat inference.
- */
 export function getXAICliBillingHeaders(options: { accessToken: string }): Record<string, string> {
 	return {
 		Authorization: `Bearer ${options.accessToken}`,
@@ -388,9 +345,7 @@ async function requestXAIDeviceAuthorization(
 		let detail = "";
 		try {
 			detail = (await response.text()).trim();
-		} catch {
-			// Ignore body-read failures; the status code is the diagnostic.
-		}
+		} catch {}
 		throw new AIError.OAuthError(`xAI device-code request failed: ${response.status}${detail ? ` ${detail}` : ""}`, {
 			kind: "device-auth",
 			provider: "xai",
@@ -480,7 +435,6 @@ async function pollXAIDeviceToken(
 	});
 }
 
-/** Log in to xAI Grok with the RFC 8628 device authorization grant. */
 export async function loginXAIOAuth(ctrl: OAuthController): Promise<OAuthCredentials> {
 	const fetchImpl = ctrl.fetch ?? fetch;
 	const discovery = await xaiOAuthDiscovery(DISCOVERY_TIMEOUT_MS, fetchImpl, ctrl.signal);
@@ -500,12 +454,6 @@ export async function loginXAIOAuth(ctrl: OAuthController): Promise<OAuthCredent
 	return withXAIOAuthIdentity(credentials, fetchImpl, ctrl.signal);
 }
 
-/**
- * Refresh an xAI OAuth access token using a stored refresh_token.
- *
- * Re-runs OIDC discovery and re-validates the token endpoint before sending
- * the stored refresh token. Caller cancellation aborts every network request.
- */
 export async function refreshXAIOAuthToken(
 	refreshToken: string,
 	fetchOverride?: FetchImpl,
@@ -542,9 +490,7 @@ export async function refreshXAIOAuthToken(
 		let detail = "";
 		try {
 			detail = (await response.text()).trim();
-		} catch {
-			// Ignore body-read failures; the status code is the diagnostic.
-		}
+		} catch {}
 		throw new AIError.OAuthError(`xAI token refresh failed: ${response.status}${detail ? ` ${detail}` : ""}`, {
 			kind: "token-refresh",
 			provider: "xai",

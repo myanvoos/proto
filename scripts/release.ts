@@ -1,13 +1,5 @@
 #!/usr/bin/env bun
-/**
- * Release script for pi-mono
- *
- * Usage:
- *   bun scripts/release.ts <version|major|minor|patch>   Full release (preflight, version, changelog, commit, push, watch)
- *   bun scripts/release.ts watch                         Watch CI for current commit
- *
- * Example: bun scripts/release.ts minor
- */
+
 import { $, Glob } from "bun";
 import { compareVersions } from "../packages/utils/src/version.ts";
 import { runChangelogFixer } from "./fix-changelogs";
@@ -16,20 +8,7 @@ import { generateNixBunDeps, resolveNixBunDepsGenerator } from "./gen-nix-bun";
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
 const packageJsonGlob = new Glob("packages/*/package.json");
 const cargoTomlGlob = new Glob("crates/*/Cargo.toml");
-/**
- * Strict explicit-version guard: three numeric dot-segments with an optional
- * leading `v` and NO prerelease suffix. Prereleases are rejected because the
- * downstream publish (`scripts/ci-release-publish.ts`) runs `npm publish` with
- * no `--tag`, which would promote a prerelease to the npm `latest` dist-tag —
- * hitting every unqualified install and the `/latest` endpoint `proto update`
- * reads. Bump keywords (major/minor/patch) are handled separately and must not
- * be routed through this check.
- *
- * Returns the normalized bare version (leading `v` stripped) when accepted, or
- * `null` when rejected. Callers must use the returned value for all writes so
- * no downstream manifest (package.json, Cargo.toml, tag) ever sees a `v`
- * prefix — Cargo rejects `version = "v17.2.8"`.
- */
+
 export function validateExplicitVersion(version: string): string | null {
 	const match = /^v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/.exec(version);
 	return match ? match[1] : null;
@@ -38,10 +17,6 @@ export function validateExplicitVersion(version: string): string | null {
 function git(args: readonly string[]) {
 	return $`git -c core.fsmonitor=false -c core.untrackedCache=false -c fetch.pruneTags=false ${args}`;
 }
-
-// =============================================================================
-// Shared functions
-// =============================================================================
 
 async function watchCI(): Promise<boolean> {
 	const commitSha = (await git(["rev-parse", "HEAD"]).text()).trim();
@@ -58,7 +33,6 @@ async function watchCI(): Promise<boolean> {
 			continue;
 		}
 
-		// Check job-level status for in-progress runs (fail fast on first job failure)
 		const failedJobs: Array<{ workflow: string; job: string; jobId: number; conclusion: string }> = [];
 		const inProgressRuns = runs.filter(r => r.status === "in_progress" || r.status === "queued");
 
@@ -78,16 +52,14 @@ async function watchCI(): Promise<boolean> {
 						});
 					}
 				}
-			} catch {
-				// Ignore parse errors
-			}
+			} catch {}
 		}
 
 		if (failedJobs.length > 0) {
 			console.error("\nCI job failed:");
 			for (const f of failedJobs) {
 				console.error(`  - ${f.workflow} / ${f.job} (job ${f.jobId}): ${f.conclusion}`);
-				// Tail the failed job's log
+
 				const log = await $`gh run view --job ${f.jobId} --log-failed`.quiet().nothrow().text();
 				if (log.trim()) {
 					const lines = log.trimEnd().split("\n");
@@ -98,7 +70,6 @@ async function watchCI(): Promise<boolean> {
 			return false;
 		}
 
-		// Check workflow-level status
 		const pending = runs.filter(r => r.status !== "completed");
 		const failed = runs.filter(r => r.status === "completed" && r.conclusion !== "success");
 		const passed = runs.filter(r => r.status === "completed" && r.conclusion === "success");
@@ -109,7 +80,7 @@ async function watchCI(): Promise<boolean> {
 			console.error("\nCI failed:");
 			for (const r of failed) {
 				console.error(`  - ${r.name}: ${r.conclusion}`);
-				// Fetch failed jobs and tail their logs
+
 				const jobsOutput = await $`gh run view ${r.databaseId} --json jobs`.quiet().nothrow().text();
 				try {
 					const { jobs } = JSON.parse(jobsOutput) as {
@@ -125,9 +96,7 @@ async function watchCI(): Promise<boolean> {
 							}
 						}
 					}
-				} catch {
-					// Ignore parse errors
-				}
+				} catch {}
 			}
 			return false;
 		}
@@ -149,7 +118,6 @@ function hasUnreleasedContent(content: string): boolean {
 }
 
 function removeEmptyVersionEntries(content: string): string {
-	// Remove version entries that have no content (just whitespace until next ## [ or EOF)
 	return content.replace(/## \[\d+\.\d+\.\d+\] - \d{4}-\d{2}-\d{2}\s*\n(?=## \[|\s*$)/g, "");
 }
 
@@ -164,23 +132,17 @@ async function updateChangelogsForRelease(version: string): Promise<void> {
 			continue;
 		}
 
-		// Only create version entry if [Unreleased] has content
 		if (hasUnreleasedContent(content)) {
 			content = content.replace("## [Unreleased]", `## [${version}] - ${date}`);
 			content = content.replace(/^(# Changelog\n\n)/, `$1## [Unreleased]\n\n`);
 		}
 
-		// Clean up any existing empty version entries
 		content = removeEmptyVersionEntries(content);
 
 		await Bun.write(changelog, content);
 		console.log(`  Updated ${changelog}`);
 	}
 }
-
-// =============================================================================
-// Subcommands
-// =============================================================================
 
 async function cmdWatch(): Promise<void> {
 	console.log("\n=== Watching CI ===\n");
@@ -208,11 +170,7 @@ function bumpVersion(current: string, bump: "major" | "minor" | "patch"): string
 
 async function cmdRelease(versionOrBump: string): Promise<void> {
 	console.log("\n=== Release Script ===\n");
-	// Validate explicit versions before any compare: the shared compareVersions
-	// never throws, so without this guard garbage like "999.bad" would be
-	// accepted and written into every package.json / Cargo.toml / tag. The
-	// validator also normalizes a leading `v` to the bare version so every
-	// downstream write (manifests, Cargo.toml, tag) uses `17.2.8`, not `v17.2.8`.
+
 	if (versionOrBump !== "major" && versionOrBump !== "minor" && versionOrBump !== "patch") {
 		const normalized = validateExplicitVersion(versionOrBump);
 		if (normalized === null) {
@@ -224,7 +182,6 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 		versionOrBump = normalized;
 	}
 
-	// 1. Pre-flight checks
 	console.log("Pre-flight checks...");
 
 	const branch = await git(["branch", "--show-current"]).text();
@@ -258,11 +215,9 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log(`  Version ${version} > ${latestTag}\n`);
 
-	// 2. Update package versions
 	console.log(`Updating package versions to ${version}…`);
 	const pkgJsonPaths = await Array.fromAsync(packageJsonGlob.scan("."));
 
-	// Filter out private packages
 	const publicPkgPaths: string[] = [];
 	for (const pkgPath of pkgJsonPaths) {
 		const pkgJson = await Bun.file(pkgPath).json();
@@ -275,7 +230,6 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 
 	await $`sd '"version": "[^"]+"' ${`"version": "${version}"`} ${publicPkgPaths}`;
 
-	// Verify
 	console.log("  Verifying versions:");
 	for (const pkgPath of publicPkgPaths) {
 		const pkgJson = await Bun.file(pkgPath).json();
@@ -283,25 +237,21 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log();
 
-	// Update @oh-my-pi/* catalog entries in root package.json
 	console.log("Updating root catalog versions...");
 	let rootPkgRaw = await Bun.file("package.json").text();
 	rootPkgRaw = rootPkgRaw.replace(/("@oh-my-pi\/[^"]+":\s*)"[^"]+"/g, `$1"${version}"`);
 	await Bun.write("package.json", rootPkgRaw);
 	console.log("  Updated root catalog @oh-my-pi/* entries");
 
-	// 3. Update Rust workspace version
 	console.log(`Updating Rust workspace version to ${version}…`);
 	await $`sd '^version = "[^"]+"' ${`version = "${version}"`} Cargo.toml`;
 
-	// Verify
 	const cargoToml = await Bun.file("Cargo.toml").text();
 	const versionMatch = cargoToml.match(/^\[workspace\.package\][\s\S]*?^version = "([^"]+)"/m);
 	if (versionMatch) {
 		console.log(`  workspace: ${versionMatch[1]}`);
 	}
 
-	// List crates using workspace version
 	for await (const cargoPath of cargoTomlGlob.scan(".")) {
 		const content = await Bun.file(cargoPath).text();
 		if (content.includes("version.workspace = true")) {
@@ -313,14 +263,6 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log();
 
-	// 3b. Rename the pi-natives version sentinel so any `.node` left on disk from
-	// a previous release physically cannot expose the symbol the new `index.js`
-	// expects. The JS loader derives `VERSION_SENTINEL_EXPORT` from `package.json`
-	// at runtime, so the only thing that has to move on the Rust side is the
-	// `js_name = "__piNativesV…"` literal. `gen-enums.ts` regenerates the matching
-	// entries in `packages/natives/native/{index.d.ts,index.js}` on the next napi
-	// build, but bump them here too so the committed surface tracks the version
-	// without waiting for a local rebuild on the release host.
 	console.log(`Bumping pi-natives version sentinel to v${version}…`);
 	const sentinelJsId = version.replace(/[^A-Za-z0-9]/g, "_");
 	const sentinelName = `__piNativesV${sentinelJsId}`;
@@ -340,7 +282,6 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log(`  sentinel: ${sentinelName}\n`);
 
-	// 4. Regenerate lockfiles
 	console.log("Regenerating lockfiles...");
 	await $`rm -f bun.lock`;
 	await $`bun install`;
@@ -348,11 +289,8 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	await generateNixBunDeps(nixBunDepsGenerator);
 	console.log();
 
-	// 5. Update changelogs
 	console.log("Updating CHANGELOGs...");
-	// Omit `since` so the fixer resolves its own baseline: the `clog` tag (last
-	// authoritative rewrite) when newer than `latestTag`, else `latestTag`. This
-	// keeps a release run from re-promoting bullets a prior `--recover` restored.
+
 	const fixResult = await runChangelogFixer({});
 	for (const fixed of fixResult.changedFiles) {
 		console.log(
@@ -364,37 +302,15 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	await updateChangelogsForRelease(version);
 	console.log();
 
-	// 6. Run checks
 	console.log("Running checks...");
 	await $`bun run check`;
 	console.log();
 
-	// 7. Commit
 	console.log("Committing...");
 	await git(["add", "."]);
 	await git(["commit", "-m", `chore: bump version to ${version}`]);
 	console.log();
 
-	// 8. Tag, then push branch + tag atomically — pushing the tag by object id.
-	//
-	// This repo is in the global `[maintenance] repo = …` list, so a scheduled
-	// `git maintenance run` fetches origin with `fetch.pruneTags=true` (set
-	// globally) and deletes any local tag not yet on the remote — i.e. the
-	// brand-new release tag. The `-c fetch.pruneTags=false` on our git wrapper
-	// only governs our own git calls, not the concurrent maintenance process, so
-	// a local tag ref may vanish before or while the push resolves it.
-	//
-	// A bare push refspec (`refs/tags/v…` with no `:dst`) re-resolves the tag on
-	// disk during refspec matching (git's remote.c:match_explicit); if the prune
-	// lands in that window git dies with
-	// "refs/tags/v… cannot be resolved to branch", and if it lands before the
-	// push it dies with "src refspec … does not match any". We sidestep both by
-	// pushing the HEAD commit object id straight into the remote tag ref
-	// (`<sha>:refs/tags/v…`): the push has no dependency on a local tag, and the
-	// commit is reachable from main so maintenance cannot prune it. The local
-	// tag we still create is only for `git describe`; losing it is harmless. The
-	// default Git LFS pre-push hook uploads the branch's LFS objects as part of
-	// this same atomic push — no separate `git lfs push` is needed.
 	console.log("Tagging and pushing to remote...");
 	const tagRef = `v${version}`;
 	const sha = (await git(["rev-parse", "HEAD"]).text()).trim();
@@ -402,17 +318,12 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	await git(["push", "--atomic", "origin", "refs/heads/main:refs/heads/main", `${sha}:refs/tags/${tagRef}`]);
 	console.log();
 
-	// 9. Watch CI
 	console.log("Watching CI...");
 	const success = await watchCI();
 
 	if (success) {
 		console.log(`=== Released v${version} ===`);
 	} else {
-		// CI's `concurrency` block (.github/workflows/ci.yml) recognizes a
-		// release run by its `chore: bump version to vX.Y.Z` subject (#2564),
-		// so retries that keep that subject also get the per-sha, never-cancel
-		// group. Reword the body, not the subject.
 		console.log("\nTo retry after fixing (repeat until CI passes):");
 		console.log(`  git commit -m "chore: bump version to ${version}" -m "<what was fixed>"`);
 		console.log(`  git tag -f v${version}`);
@@ -423,10 +334,6 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 		process.exit(1);
 	}
 }
-
-// =============================================================================
-// Main
-// =============================================================================
 
 if (import.meta.main) {
 	const arg = process.argv[2];

@@ -1,5 +1,5 @@
 const QUEUE_PREFIXES: readonly string[] = ["->", "=>"];
-/** Prefix matcher shared by queue-list parsing and editor highlighting. */
+
 export const QUEUE_LIST_MARKER_RE = /^([\t ]*)(\d+|[A-Za-z]+)([.)])(?=[\t ]|$)/;
 const CANONICAL_ROMAN_RE = /^(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/i;
 
@@ -17,7 +17,6 @@ interface EnumeratedList {
 	items: EnumeratedItem[];
 }
 
-/** Extract the message body from the `->` / `=>` yield-queue shorthand. */
 export function parseQueueShorthand(text: string): string | undefined {
 	const prefix = QUEUE_PREFIXES.find(candidate => text.startsWith(candidate));
 	return prefix ? text.slice(prefix.length).trim() : undefined;
@@ -110,12 +109,10 @@ function parseEnumeratedList(text: string): EnumeratedList | undefined {
 	return { source, lines, items };
 }
 
-/** Whether text currently forms a sequential queue list, including an unfinished trailing item. */
 export function isQueuedMessageList(text: string): boolean {
 	return parseEnumeratedList(text) !== undefined;
 }
 
-/** Split a sequential numeric, Roman-numeral, or alphabetic list into queue entries. */
 export function splitQueuedMessages(text: string): string[] {
 	const list = parseEnumeratedList(text);
 	if (!list) {

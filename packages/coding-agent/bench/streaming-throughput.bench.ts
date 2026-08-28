@@ -1,26 +1,3 @@
-/**
- * Streaming-reveal per-tick compute benchmark.
- *
- * Mirrors `StreamingRevealController`'s per-tick work: re-count the visible
- * units of the target (memoized `BlockUnitCounter.count`) and rebuild the
- * display message (`buildDisplayMessage`), which slices each text block to the
- * revealed prefix. One `BlockUnitCounter` is created per episode and shared by
- * `countOf` + `sliceOf`, exactly as the controller holds one `#unitCounter` per
- * streaming episode.
- *
- * The Markdown render is intentionally excluded: every controller tick passes
- * `{ transient: true }` to `updateContent`, which disables the L2 cache and code
- * highlighting, so the dominant per-tick cost is the slice of the growing prefix
- * (re-segmented from offset 0 by the baseline `sliceGraphemes`). This isolates
- * exactly that path.
- *
- * Metric (lower is better): total wall-clock to fully reveal one representative
- * large assistant message through the controller's `nextStep` progression,
- * averaged over episodes. `reveal_ms_per_step` is the same work divided by the
- * number of reveal ticks.
- *
- * Run: bun run packages/coding-agent/bench/streaming-throughput.bench.ts
- */
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { BlockUnitCounter, buildDisplayMessage, nextStep } from "../src/modes/controllers/streaming-reveal";
 
@@ -29,9 +6,6 @@ const PROSE_ONLY = true;
 const WARMUP_EPISODES = 6;
 const MEASURE_EPISODES = 40;
 
-/** Prose + code + accented text + multibyte grapheme clusters (ZWJ families,
- *  flag sequences, skin-tone modifiers, CJK), representative of LLM output that
- *  makes Intl.Segmenter do real per-cluster work. */
 const CHUNK = `Here is an overview of the rendering pipeline changes.
 
 The streaming reveal controller now advances the revealed prefix each tick. Consider the helper:
@@ -73,8 +47,6 @@ function makeMessage(textBlocks: string[]): AssistantMessage {
 	};
 }
 
-/** Total visible graphemes of the target's text blocks via the counter (mirrors
- *  the controller's `#visibleUnits` for text-only blocks). */
 function textUnits(target: AssistantMessage, counter: BlockUnitCounter): number {
 	let total = 0;
 	for (let i = 0; i < target.content.length; i++) {
@@ -84,9 +56,6 @@ function textUnits(target: AssistantMessage, counter: BlockUnitCounter): number 
 	return total;
 }
 
-/** Drive one full reveal episode: a fresh counter shared by countOf + sliceOf,
- *  an initial render at revealed = 0 (mirrors `begin`), then the `nextStep`
- *  catch-up loop (mirrors `#tick`). Returns the number of reveal ticks. */
 function revealEpisode(target: AssistantMessage): number {
 	const counter = new BlockUnitCounter();
 	const countOf = (index: number, text: string): number => counter.count(index, text);
@@ -104,7 +73,6 @@ function revealEpisode(target: AssistantMessage): number {
 	return ticks;
 }
 
-// Two text blocks of differing lengths exercise multi-block counter indexing.
 const target = makeMessage([CHUNK.repeat(16), CHUNK.repeat(12)]);
 const sizingCounter = new BlockUnitCounter();
 const graphemes = textUnits(target, sizingCounter);

@@ -1,5 +1,3 @@
-//! Go toolchain output filters.
-
 use std::fmt::Write as _;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -53,9 +51,6 @@ fn is_go_tool_golangci_lint(ctx: &MinimizerCtx<'_>) -> bool {
 }
 
 fn filter_go_test(input: &str, exit_code: i32) -> String {
-	// On success, no per-test/per-package detail carries signal: re-derive rtk's
-	// aggregation against DEFAULT text (and opportunistic JSON), counting package
-	// and test markers into a single summary line instead of echoing every PASS/ok.
 	if exit_code == 0 {
 		return aggregate_go_test_success(input);
 	}
@@ -98,10 +93,7 @@ fn filter_go_test(input: &str, exit_code: i32) -> String {
 	primitives::head_tail_lines(&primitives::dedup_consecutive_lines(&out), 140, 80)
 }
 
-/// Success-path aggregation: count package and test markers (re-derived for
-/// DEFAULT text, with opportunistic JSON rendering) and emit one summary line.
 fn aggregate_go_test_success(input: &str) -> String {
-	// Benchmark output is signal — don't collapse it into a count.
 	if input
 		.lines()
 		.any(|l| l.trim_start().starts_with("Benchmark"))
@@ -119,10 +111,6 @@ fn aggregate_go_test_success(input: &str) -> String {
 			continue;
 		}
 
-		// Opportunistic JSON: render to the same text shape, then count.
-		// Also check for JSON-wrapped benchmark output — those lines start with
-		// "{" so the raw-line guard above misses them.  Bail to head_tail
-		// early so benchmark results are never collapsed into a package count.
 		if trimmed.starts_with('{')
 			&& let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
 			&& let Some(output) = value.get("Output").and_then(|v| v.as_str())
@@ -396,12 +384,7 @@ fn is_go_noise(line: &str) -> bool {
 
 fn is_golangci_noise(line: &str) -> bool {
 	let lower = line.to_ascii_lowercase();
-	// Strip runner-log info/warn chatter (snip strips `^level=` wholesale), but
-	// DELIBERATELY KEEP `level=error` — those lines carry config/typecheck failures
-	// that would otherwise vanish silently.
-	// `level=error` carries config/typecheck failures (incl. the canonical
-	// `level=error msg="[linters_context]…"` typecheck headline) — never strip it,
-	// even when it routes through the linters_context component.
+
 	if lower.starts_with("level=error") {
 		return false;
 	}

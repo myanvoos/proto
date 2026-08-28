@@ -3,9 +3,6 @@ import { getSelectListTheme } from "../../modes/theme/theme";
 import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
-/**
- * Component that renders a show images selector with borders
- */
 export class ShowImagesSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 
@@ -17,10 +14,8 @@ export class ShowImagesSelectorComponent extends OverlayPanel {
 			{ value: "no", label: "No", description: "Show text placeholder instead" },
 		];
 
-		// Create selector
 		this.#selectList = new SelectList(items, 5, getSelectListTheme());
 
-		// Preselect current value
 		this.#selectList.setSelectedIndex(currentValue ? 0 : 1);
 
 		this.#selectList.onSelect = item => {

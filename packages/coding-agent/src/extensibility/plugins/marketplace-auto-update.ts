@@ -18,7 +18,6 @@ export function scheduleMarketplaceAutoUpdate(options: MarketplaceAutoUpdateOpti
 
 async function runMarketplaceAutoUpdate(options: MarketplaceAutoUpdateOptions): Promise<void> {
 	try {
-		// Startup perf: marketplace manager pulls scraper/fetch/cache code; keep it out of the initial TUI graph.
 		const {
 			MarketplaceManager,
 			getInstalledPluginsRegistryPath,
@@ -43,7 +42,5 @@ async function runMarketplaceAutoUpdate(options: MarketplaceAutoUpdateOptions): 
 		} else {
 			logger.debug(`${updates.length} marketplace plugin update(s) available — /marketplace upgrade`);
 		}
-	} catch {
-		// Silently ignore — network failure, corrupt data, offline.
-	}
+	} catch {}
 }

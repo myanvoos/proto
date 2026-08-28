@@ -6,7 +6,6 @@ import { acquireBrowser, holdBrowser, releaseBrowser } from "../../../tools/brow
 import { buildBrowserNavigationHeaders } from "./browser-headers";
 import { SEARCH_HARD_TIMEOUT_MS } from "./utils";
 
-/** HTML plus the response status and final URL after redirects or browser navigation. */
 export interface LoadedHtmlPage {
 	html: string;
 	status: number;
@@ -22,7 +21,6 @@ interface BrowserFallbackOptions {
 	retryDelayMs?: number;
 }
 
-/** Controls a browser-profiled fetch and its optional headless-browser fallback. */
 interface BrowserFetchOptions {
 	fetch?: FetchImpl;
 	signal: AbortSignal;
@@ -34,11 +32,6 @@ interface BrowserFetchOptions {
 	browser?: BrowserFallbackOptions;
 }
 
-/**
- * Upper bound on `page.close()` during teardown. A dead CDP session leaves
- * puppeteer's close pending forever; `.catch()` only covers rejection, not a
- * hang, so cleanup needs its own deadline (issue #8865).
- */
 const PAGE_CLOSE_TIMEOUT_MS = 5_000;
 
 async function fetchHtmlPage(url: string, options: BrowserFetchOptions, fetchImpl: FetchImpl): Promise<LoadedHtmlPage> {
@@ -81,12 +74,7 @@ async function browseHtmlPage(
 	try {
 		const activePage = await untilAborted(signal, () => handle.browser.newPage());
 		page = activePage;
-		// Viewport and stealth setup talk to the same CDP session as the
-		// navigations below but were previously awaited raw. When the shared
-		// daemon or the page's target dies mid-setup, those puppeteer calls
-		// never settle and the provider promise hangs past
-		// SEARCH_HARD_TIMEOUT_MS — the abort signal had no listener at these
-		// await points (issue #8865).
+
 		await untilAborted(signal, () => applyViewport(activePage));
 		await untilAborted(signal, () => applyStealthPatches(handle.browser, activePage, handle.stealth));
 		if (homeUrl) {
@@ -115,9 +103,6 @@ async function browseHtmlPage(
 		}
 		throw new Error("Browser fallback exhausted without a response");
 	} finally {
-		// Teardown must complete even when the caller's signal already fired
-		// (navigating away from a dead session leaves `close()` pending), so
-		// bound it with a fresh deadline instead of reusing `signal`.
 		if (page) {
 			await untilAborted(AbortSignal.timeout(PAGE_CLOSE_TIMEOUT_MS), () => page!.close()).catch(() => undefined);
 		}
@@ -125,7 +110,6 @@ async function browseHtmlPage(
 	}
 }
 
-/** Fetch with a fresh browser profile, escalating rejected production responses to the stealth browser. */
 export async function browserFetch(url: string, options: BrowserFetchOptions): Promise<LoadedHtmlPage> {
 	const fetchImpl = options.fetch ?? fetch;
 	let page: LoadedHtmlPage;

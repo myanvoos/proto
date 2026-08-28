@@ -1,33 +1,26 @@
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createHostVirtualModulePlugin } from "./host-virtual-module";
 
-/** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
 export const COMPILED_EXTERNAL_DEPENDENCIES: readonly string[] = Object.freeze(["fastembed", "onnxruntime-node"]);
 
-/** Inputs shared by local and release coding-agent binary builds. */
 export interface CodingAgentCompileOptions {
-	/** Absolute repository root used for package resolution. */
 	readonly repoRoot: string;
-	/** Absolute CLI entrypoint. */
+
 	readonly entrypoint: string;
-	/** Absolute standalone executable output path. */
+
 	readonly outfile: string;
-	/** Concrete Transformers.js version baked into the tiny-model worker. */
+
 	readonly transformersVersion: string;
-	/** Optional cross-compilation runtime target. */
+
 	readonly target?: Bun.Build.CompileTarget;
-	/** Optional unmodified Bun executable used as the standalone runtime template. */
+
 	readonly executablePath?: string;
-	/** Match release builds that minify identifiers while retaining names. */
+
 	readonly minifyIdentifiers?: boolean;
-	/** Disable Bun's built-in Darwin signing before the caller re-signs. */
+
 	readonly skipBuiltinCodesign?: boolean;
 }
 
-/**
- * Compile the coding-agent executable with its host module registry supplied
- * by an in-memory build plugin rather than generated files.
- */
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
 	if (options.skipBuiltinCodesign) {

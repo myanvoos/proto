@@ -1,4 +1,3 @@
-/** Compact title-model input for a user-invoked `/skill:<name>` prompt. */
 export function skillPromptTitleInput(input: { name?: string; args?: string; queueChipText?: string }): string {
 	const chip = input.queueChipText?.trim();
 	if (chip) return chip;
@@ -9,7 +8,6 @@ export function skillPromptTitleInput(input: { name?: string; args?: string; que
 	return args ?? "";
 }
 
-/** Title text for a persisted skill-prompt custom message. Never the expanded SKILL.md body. */
 export function titleTextFromSkillPrompt(message: {
 	role: string;
 	customType?: string;

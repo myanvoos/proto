@@ -1,18 +1,8 @@
-/**
- * Tree-walking validator used for a schema's first few calls and as the
- * targeted fallback for recursive or predicate-only JIT subtrees.
- *
- * Semantics must stay in lockstep with `compile.ts`:
- * - success returns the output value; the input is returned as-is unless the
- *   schema morphs (defaults, `"+": "delete"`, embedded stepped schemas), in
- *   which case a fresh object/array is produced and the input is untouched
- * - failure returns an `OmpErrors` with a single fast-fail entry
- */
 import { MISSING, OmpErrors } from "./errors";
 import { expectedOf, hasAlias, hasMorph, type IR } from "./ir";
 
 const own = Object.prototype.hasOwnProperty;
-/** Return an independent runtime value for a prevalidated static default. */
+
 export function materializeDefault(payload: unknown): unknown {
 	if (payload === null || typeof payload !== "object") return payload;
 	if (payload instanceof Date) return new Date(payload);
@@ -21,16 +11,10 @@ export function materializeDefault(payload: unknown): unknown {
 let activeVisits: WeakMap<object, Set<IR>> | undefined;
 let activeChecks: WeakMap<object, Set<IR>> | undefined;
 
-/**
- * Validate `value` against `ir`; returns output value or `OmpErrors`.
- * `path` seeds the traversal location so nested step callbacks observe
- * absolute ctx.path values when a compiled parent delegates a subtree;
- * resulting error paths are then already absolute.
- */
 export function walk(ir: IR, value: unknown, path: PropertyKey[] = []): unknown {
 	const previousVisits = activeVisits;
 	const previousChecks = activeChecks;
-	// Created lazily by visit/checks only when a recursive-alias node is reached.
+
 	activeVisits = undefined;
 	activeChecks = undefined;
 	try {
@@ -46,10 +30,7 @@ function fail(path: PropertyKey[], expected: string, data: unknown): OmpErrors {
 	return new OmpErrors(storedPath, expected, data);
 }
 
-/** Pure predicate used for union-member scanning (no morphs, no errors). */
 function checks(ir: IR, v: unknown): boolean {
-	// Cycle guards are only needed when the subtree can revisit nodes through
-	// recursive aliases; plain schemas skip the WeakMap bookkeeping entirely.
 	if (typeof v !== "object" || v === null || !hasAlias(ir)) return checkNode(ir, v);
 	activeChecks ??= new WeakMap();
 	const visits = activeChecks;
@@ -214,7 +195,6 @@ function visit(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 	}
 }
 
-/** Run the node visitor, then apply node-local error configuration. */
 function visitFinish(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 	const out = visitNode(ir, v, path);
 	if (!(out instanceof OmpErrors) || ir.cfg === undefined) return out;
@@ -266,7 +246,6 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 			return out;
 		}
 		case "union": {
-			// fast path: any pure member matching returns the input unchanged
 			for (const m of ir.members) {
 				if (m.k !== "sub" && checks(m, v)) {
 					if (hasMorph(m)) break;
@@ -549,9 +528,7 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 							expected += " (serialized to the same value)";
 						}
 					}
-				} catch {
-					// Cyclic values still get a useful reference-identity expectation.
-				}
+				} catch {}
 				return fail(path, expected, v);
 			}
 			return fail(path, expectedOf(ir), v);
@@ -566,7 +543,6 @@ function prefixAll(errs: OmpErrors, path: PropertyKey[]): OmpErrors {
 	return errs;
 }
 
-/** True when a union failure can be replaced with a more specific nested error. */
 export function canRefineUnionFailure(member: IR): boolean {
 	const base = unwrapBase(member);
 	if (base.k === "array" || base.k === "object") return true;
@@ -574,13 +550,6 @@ export function canRefineUnionFailure(member: IR): boolean {
 	return base.k === "number" && (base.int === true || base.min !== undefined || base.max !== undefined);
 }
 
-/**
- * Detailed failure for a union: descend into the member the value was clearly
- * aimed at — unique runtime-kind match, else an object member whose literal
- * discriminant property (e.g. `type: "'computer_call'"`) equals the value's —
- * for a precise nested error (paths, narrow messages) instead of the coarse
- * "A or B" expectation.
- */
 export function unionFail(ir: IR & { k: "union" }, v: unknown, path: PropertyKey[], expected?: string): OmpErrors {
 	let best: IR | undefined;
 	for (const member of ir.members) {
@@ -747,7 +716,6 @@ function discriminateFailure(members: IR[], value: unknown, path: PropertyKey[])
 	return undefined;
 }
 
-/** True when a value's runtime shape could only be aimed at this member. */
 function kindMatches(base: IR, v: unknown): boolean {
 	switch (base.k) {
 		case "array":

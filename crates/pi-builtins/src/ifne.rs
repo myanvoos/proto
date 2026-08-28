@@ -1,10 +1,10 @@
-//! moreutils-inspired `ifne` builtin: run a command iff stdin is non-empty
-//! (`-n` inverts the condition).
-//!
-//! This is one of the selected moreutils tools kept in-process so its standard
-//! streams, working directory, environment, and cancellation come from the
-//! invoking shell. The command is executed directly, without shell
-//! interpretation.
+
+
+
+
+
+
+
 
 use std::{
 	ffi::OsString,
@@ -21,7 +21,7 @@ use crate::host::{Host, Utility, matches_parser, util};
 const USAGE: &str = "usage: ifne [-n] command [args...]";
 const CHUNK: usize = 64 * 1024;
 
-/// Parsed `ifne` invocation.
+
 pub(crate) struct Ifne {
 	matches: ArgMatches,
 }
@@ -44,8 +44,8 @@ impl Utility for Ifne {
 			return 1;
 		}
 
-		// Probe stdin: one byte decides which mode acts. Check cancellation both
-		// before the potentially blocking read and after cancellation-induced EOF.
+
+
 		let mut first = [0u8; 1];
 		let got = loop {
 			if host.is_cancelled() {
@@ -71,10 +71,10 @@ impl Utility for Ifne {
 
 		if empty != invert {
 			if empty {
-				// Default mode, empty stdin: do nothing.
+
 				return 0;
 			}
-			// -n mode, non-empty stdin: pass stdin through, don't run the command.
+
 			let cancel = host.cancel_flag();
 			return match copy_cancellable(
 				&mut host.stdin,
@@ -95,7 +95,7 @@ impl Utility for Ifne {
 	}
 }
 
-/// The `ifne` argument model.
+
 fn app() -> ClapCommand {
 	ClapCommand::new(Ifne::NAME)
 		.disable_version_flag(true)
@@ -116,7 +116,7 @@ fn app() -> ClapCommand {
 		)
 }
 
-/// Spawns the child and pumps stdin into it while draining its stdout/stderr.
+
 fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i32 {
 	let mut child = match Command::new(&command[0])
 		.args(&command[1..])
@@ -140,9 +140,9 @@ fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i
 	let mut child_stderr = child.stderr.take().expect("piped stderr");
 	let cancel = host.cancel_flag();
 
-	// Drain both child output streams while pumping its input, so no pipe can
-	// fill and deadlock the others. The buffers are forwarded to the host after
-	// the child exits; its in-process streams must never be inherited directly.
+
+
+
 	let (out_buf, err_buf, pump) = std::thread::scope(|scope| {
 		let out = scope.spawn(move || {
 			let mut buf = Vec::new();
@@ -154,8 +154,8 @@ fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i
 			let _ = child_stderr.read_to_end(&mut buf);
 			buf
 		});
-		// Ignore BrokenPipe: the child may exit before consuming its stdin
-		// (for example, `ifne head -1`).
+
+
 		let pump = match copy_cancellable(&mut host.stdin, &mut child_stdin, first, &cancel) {
 			Err(CopyError::Io(err)) if err.kind() != ErrorKind::BrokenPipe => {
 				Err(CopyError::Io(err))
@@ -163,7 +163,7 @@ fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i
 			Err(CopyError::Cancelled) => Err(CopyError::Cancelled),
 			_ => Ok(()),
 		};
-		drop(child_stdin); // EOF so the child terminates.
+		drop(child_stdin);
 		if matches!(pump, Err(CopyError::Cancelled)) {
 			let _ = child.kill();
 		}
@@ -197,7 +197,7 @@ enum CopyError {
 	Io(io::Error),
 }
 
-/// Copies `first` (when present) then all of `src` into `dst` in chunks.
+
 fn copy_cancellable(
 	src: &mut impl Read,
 	dst: &mut impl Write,
@@ -222,7 +222,7 @@ fn copy_cancellable(
 }
 
 
-/// Maps a child exit status to its code, or `128 + signal` on Unix.
+
 fn exit_code(status: std::process::ExitStatus) -> i32 {
 	if let Some(code) = status.code() {
 		return code;
@@ -237,7 +237,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 	1
 }
 
-/// Creates the `ifne` builtin registration.
+
 pub(crate) fn ifne_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ifne, SE>()
 }

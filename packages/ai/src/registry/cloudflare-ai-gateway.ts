@@ -4,12 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://developers.cloudflare.com/ai-gateway/configuration/authentication/";
 
-/**
- * Login to Cloudflare AI Gateway.
- *
- * Opens browser to Cloudflare AI Gateway authentication docs and prompts for a gateway token/API key.
- * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
- */
 export const loginCloudflareAiGateway = createApiKeyLogin({
 	providerLabel: "Cloudflare AI Gateway",
 	authUrl: AUTH_URL,

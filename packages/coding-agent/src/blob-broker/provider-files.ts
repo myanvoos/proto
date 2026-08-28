@@ -15,10 +15,8 @@ import { createAnthropicFileClient } from "./provider-files-anthropic";
 import { createGeminiProviderFileClient } from "./provider-files-gemini";
 import { createOpenAIFileClient } from "./provider-files-openai";
 
-/** Resolve the current account credential for a model without retaining it. */
 export type ProviderFileCredentialResolver = (model: Model) => Promise<string | undefined>;
 
-/** Select a provider-native file client for a model and resolved credential. */
 export type ProviderFileClientFactory = (model: Model, credential: string) => ProviderFileClient | null;
 
 const DEFAULT_CLIENT_FACTORIES: readonly ProviderFileClientFactory[] = [
@@ -52,13 +50,6 @@ function decodeImage(block: ImageContent): Uint8Array | undefined {
 	}
 }
 
-/**
- * Account-scoped provider-file orchestration for outbound contexts.
- *
- * Session messages are never mutated: references are attached only to the
- * structural copy handed to a provider request, while inline data remains the
- * required source of truth for later URL and base64 recovery.
- */
 export class ProviderFileManager {
 	readonly #cache: ProviderFileCache;
 	readonly #resolveCredential: ProviderFileCredentialResolver;
@@ -137,7 +128,6 @@ export class ProviderFileManager {
 			: decorateContextProviderFiles(context, block => referenceByBlock.get(block));
 	}
 
-	/** Remove cached handles carried by a provider-rejected request. */
 	async invalidateContext(context: Context, model: Model): Promise<void> {
 		const blocks = imageBlocks(context).filter(block => block.providerFile !== undefined && block.data.length > 0);
 		if (blocks.length === 0) return;

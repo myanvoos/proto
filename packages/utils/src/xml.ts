@@ -1,6 +1,3 @@
-/** Behavior-compatible reimplementation of fast-xml-parser's used surface. */
-
-/** Context supplied to an array-selection callback. */
 export type XMLArraySelector = (
 	tagName: string,
 	jPath: string,
@@ -8,23 +5,21 @@ export type XMLArraySelector = (
 	isAttribute: boolean | null,
 ) => boolean;
 
-/** Options supported by {@link XMLParser}. */
 export interface XMLParserOptions {
-	/** Omits attributes when true (default). */
 	ignoreAttributes?: boolean;
-	/** Prefix applied to attribute property names. */
+
 	attributeNamePrefix?: string;
-	/** Property used for text alongside children or attributes. */
+
 	textNodeName?: string;
-	/** Trims ordinary text and attribute values. */
+
 	trimValues?: boolean;
-	/** Coerces numeric and boolean element text. */
+
 	parseTagValue?: boolean;
-	/** Coerces numeric and boolean attribute values. */
+
 	parseAttributeValue?: boolean;
-	/** Controls entity processing and its expansion ceiling. */
+
 	processEntities?: boolean | { maxTotalExpansions?: number };
-	/** Selects element or attribute properties that must always be arrays. */
+
 	isArray?: XMLArraySelector;
 }
 
@@ -50,7 +45,6 @@ interface ParserSettings {
 	isArray?: XMLArraySelector;
 }
 
-/** Parses XML into the object shape used by the document converters. */
 export class XMLParser {
 	readonly #settings: ParserSettings;
 
@@ -71,7 +65,6 @@ export class XMLParser {
 		};
 	}
 
-	/** Parses one XML document. */
 	parse(xml: string): unknown {
 		return new XmlReader(xml, this.#settings).parseDocument();
 	}

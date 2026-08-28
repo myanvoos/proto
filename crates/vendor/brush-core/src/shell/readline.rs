@@ -1,14 +1,14 @@
-//! Readline edit buffer support for shell instances.
+
 
 use crate::{error, extensions, variables::ShellVariable};
 
 impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
-	/// Updates the shell state to reflect the given edit buffer contents.
-	///
-	/// # Arguments
-	///
-	/// * `contents` - The contents of the edit buffer.
-	/// * `cursor` - The cursor position in the edit buffer.
+
+
+
+
+
+
 	pub fn set_edit_buffer(&mut self, contents: String, cursor: usize) -> Result<(), error::Error> {
 		self
 			.env
@@ -21,8 +21,8 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-	/// Returns the contents of the shell's edit buffer, if any. The buffer
-	/// state is cleared from the shell.
+
+
 	pub fn pop_edit_buffer(&mut self) -> Result<Option<(String, usize)>, error::Error> {
 		let line = self
 			.env

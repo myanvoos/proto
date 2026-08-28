@@ -1,12 +1,3 @@
-/**
- * Subprocess-backed Python runner.
- *
- * Speaks NDJSON with `runner.py` over stdin/stdout. One subprocess per kernel
- * instance; sessions reuse a single subprocess across executions. Cancellation
- * is `kill("SIGINT")` which raises a real `KeyboardInterrupt` inside user
- * code. Shutdown writes `{"type":"exit"}` and escalates to SIGTERM/SIGKILL on
- * timeout.
- */
 import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -38,26 +29,17 @@ const TRACE_IPC = $flag("PI_PYTHON_IPC_TRACE");
 
 const SHUTDOWN_GRACE_MS = 1_000;
 const STARTUP_TIMEOUT_MS = 10_000;
-// How long to wait after SIGINT for the runner to emit `done`. If the cell is
-// stuck in code that ignores Python signals (e.g. a C extension holding the
-// GIL), we escalate to a full subprocess shutdown so the host queue unblocks
-// instead of hanging the session forever. The grace window is intentionally
-// generous: a clean interrupt is far preferable to losing the persistent
-// kernel's state, so we only kill as a last-resort recovery path.
+
 const INTERRUPT_ESCALATION_MS = 5_000;
 
 interface PythonKernelAvailability {
 	ok: boolean;
 	pythonPath?: string;
 	reason?: string;
-	/** The probed-working runtime, when one was found. */
+
 	runtime?: PythonRuntime;
 }
 
-// Cache successful probes per resolved cwd + explicit interpreter: every cell
-// otherwise pays one (or two — backend.isAvailable + ensureKernelAvailable)
-// interpreter spawns even when the kernel is already hot. Failures are not
-// cached so installing a Python mid-session is picked up on the next attempt.
 const availabilityCache = new Map<string, Promise<PythonKernelAvailability>>();
 
 export async function checkPythonKernelAvailability(
@@ -92,10 +74,7 @@ async function probePythonKernelAvailability(cwd: string, interpreter?: string):
 		if (runtimes.length === 0) {
 			return { ok: false, reason: "Python executable not found on PATH" };
 		}
-		// Probe each candidate in priority order and use the first that actually
-		// runs. A managed env left behind by a removed `uv` install can exist on
-		// disk yet fail to execute; falling through to the next candidate lets a
-		// working system Python take over instead of failing the whole session.
+
 		const failures: string[] = [];
 		for (const runtime of runtimes) {
 			try {

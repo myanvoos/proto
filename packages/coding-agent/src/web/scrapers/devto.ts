@@ -20,9 +20,6 @@ interface DevToArticle {
 	body_html?: string;
 }
 
-/**
- * Handle dev.to URLs via API
- */
 export const handleDevTo: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -35,10 +32,8 @@ export const handleDevTo: SpecialHandler = async (
 		const fetchedAt = new Date().toISOString();
 		const notes: string[] = [];
 
-		// Parse URL patterns
 		const pathParts = parsed.pathname.split("/").filter(Boolean);
 
-		// Tag page: /t/{tag}
 		if (pathParts[0] === "t" && pathParts.length >= 2) {
 			const tag = pathParts[1];
 			const apiUrl = `https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&per_page=20`;
@@ -71,7 +66,6 @@ export const handleDevTo: SpecialHandler = async (
 			return buildResult(md, { url, method: "devto", fetchedAt, notes });
 		}
 
-		// User profile: /{username} (only if single path segment)
 		if (pathParts.length === 1) {
 			const username = pathParts[0];
 			const apiUrl = `https://dev.to/api/articles?username=${encodeURIComponent(username)}&per_page=20`;
@@ -103,7 +97,6 @@ export const handleDevTo: SpecialHandler = async (
 			return buildResult(md, { url, method: "devto", fetchedAt, notes });
 		}
 
-		// Article: /{username}/{slug}
 		if (pathParts.length >= 2) {
 			const username = pathParts[0];
 			const slug = pathParts[1];
@@ -129,7 +122,6 @@ export const handleDevTo: SpecialHandler = async (
 			if (tags.length > 0) md += `**Tags:** ${tags.map(t => `#${t}`).join(", ")}\n`;
 			md += `\n---\n\n`;
 
-			// Prefer body_markdown over body_html
 			if (article.body_markdown) {
 				md += article.body_markdown;
 			} else if (article.body_html) {

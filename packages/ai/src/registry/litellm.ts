@@ -4,12 +4,6 @@ import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://docs.litellm.ai/docs/proxy/deploy";
 
-/**
- * Login to LiteLLM.
- *
- * Opens browser to LiteLLM setup docs, prompts user to paste their API key.
- * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
- */
 export const loginLiteLLM = createApiKeyLogin({
 	providerLabel: "LiteLLM",
 	authUrl: AUTH_URL,

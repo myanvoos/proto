@@ -1,4 +1,4 @@
-//! Path searching utilities.
+
 
 use std::{
 	collections::VecDeque,
@@ -7,7 +7,7 @@ use std::{
 
 use crate::{sys, sys::fs::PathExt};
 
-/// Encapsulates the result of a path search.
+
 pub struct ExecutablePathSearch<PI, N> {
 	paths:    VecDeque<PI>,
 	filename: N,
@@ -23,11 +23,11 @@ where
 	fn next(&mut self) -> Option<Self::Item> {
 		while let Some(path) = self.paths.pop_front() {
 			let path = PathBuf::from(path.as_ref()).join(self.filename.as_ref());
-			// Skip directories outright, then ask the platform to resolve
-			// the path to an actual executable file (which, on Windows, may
-			// involve appending a PATHEXT extension). The helper takes
-			// ownership so Unix — where no resolution is needed — can return
-			// the path unchanged without allocating.
+
+
+
+
+
 			if path.is_dir() {
 				continue;
 			}
@@ -53,7 +53,7 @@ where
 	type Item = PathBuf;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		// If we already found some items and queued them, then yield one now.
+
 		if let Some(item) = self.queued_items.pop_front() {
 			return Some(item);
 		}
@@ -94,12 +94,12 @@ where
 	}
 }
 
-/// Search for the given executable name in the provided paths.
-///
-/// # Arguments
-///
-/// * `paths` - An iterator over the paths to search.
-/// * `filename` - The name of the executable file to search for.
+
+
+
+
+
+
 pub fn search_for_executable<P, PI, N>(paths: P, filename: N) -> ExecutablePathSearch<PI, N>
 where
 	P: Iterator<Item = PI>,

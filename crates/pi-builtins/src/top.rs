@@ -1,4 +1,4 @@
-//! `top` builtin, moved from `pi-shell`.
+
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -26,7 +26,7 @@ enum TopSortKey {
 	Time,
 }
 
-/// Column keys accepted by macOS-style `-stats` (comma-separated).
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum TopStat {
 	Pid,
@@ -52,7 +52,7 @@ enum TopStat {
 	Command,
 }
 
-/// Column order used when `-stats` is not given.
+
 const DEFAULT_TOP_STATS: &[TopStat] = &[
 	TopStat::Pid,
 	TopStat::User,
@@ -84,7 +84,7 @@ impl TopStat {
 		}
 	}
 
-	/// Right-align width; 0 renders as-is (used for the free-form command).
+
 	fn width(self) -> usize {
 		match self {
 			Self::Pid => 7,
@@ -100,49 +100,49 @@ impl TopStat {
 	}
 }
 
-/// Display processes.
+
 #[derive(Parser)]
 #[command(name = "top", version, about = "Display processes", disable_help_flag = false)]
 pub(crate) struct TopCommand {
-	/// Write plain-text snapshots suitable for pipes and files.
+
 	#[arg(short = 'b', long)]
 	batch: bool,
 
-	/// Number of snapshots to produce.
+
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'l', long = "samples", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
 
-	/// Number of snapshots to produce.
+
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'n', long = "iterations", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
 
-	/// Seconds between snapshots.
+
 	#[cfg(target_os = "macos")]
 	#[arg(short = 's', long = "delay", default_value_t = 1.0)]
 	delay: f64,
 
-	/// Seconds between snapshots.
+
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'd', long = "delay", default_value_t = 3.0)]
 	delay: f64,
 
-	/// Maximum number of process rows per snapshot.
+
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'n', long = "rows")]
 	rows: Option<usize>,
 
-	/// Maximum number of process rows per snapshot.
+
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'r', long = "rows")]
 	rows: Option<usize>,
 
-	/// Only show these process IDs (may be repeated or comma-separated).
+
 	#[arg(short = 'p', long = "pid", value_delimiter = ',')]
 	pids: Vec<i32>,
 
-	/// Only show processes with this numeric real or effective user ID.
+
 	#[arg(short = 'u', long = "user")]
 	user: Option<u32>,
 
@@ -151,11 +151,11 @@ pub(crate) struct TopCommand {
 	#[cfg_attr(not(target_os = "macos"), arg(default_value_t = TopSortKey::Cpu))]
 	sort: TopSortKey,
 
-	/// Show the complete command line instead of the executable name.
+
 	#[arg(short = 'c', long = "full-command")]
 	full_command: bool,
 
-	/// Columns to display, in order (comma-separated, macOS `-stats` style).
+
 	#[arg(long = "stats", value_enum, value_delimiter = ',', ignore_case = true)]
 	stats: Vec<TopStat>,
 }
@@ -174,7 +174,7 @@ struct TopProcessRow {
 	command:       String,
 }
 
-/// Long option names `top` accepts with a macOS-style single dash.
+
 const TOP_LONG_OPTIONS: &[&str] = &[
 	"batch",
 	"samples",
@@ -190,8 +190,8 @@ const TOP_LONG_OPTIONS: &[&str] = &[
 	"version",
 ];
 
-/// Rewrites macOS-style single-dash long options (`-pid`, `-stats pid,cpu`)
-/// into clap-style `--` options; everything else passes through untouched.
+
+
 fn normalize_top_flag(arg: String) -> String {
 	if let Some(rest) = arg.strip_prefix('-')
 		&& !rest.starts_with('-')

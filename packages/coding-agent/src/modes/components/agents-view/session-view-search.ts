@@ -1,20 +1,14 @@
-/**
- * Search query language for the agents view, ported from prime-agent's
- * session-view-search.ts: `re:` regex mode, quoted phrases, and fuzzy tokens
- * scored with the TUI's fuzzy matcher.
- */
-
 export interface ParsedSearchQuery {
 	mode: "tokens" | "regex";
 	tokens: { kind: "fuzzy" | "phrase"; value: string }[];
 	regex: RegExp | null;
-	/** If set, parsing failed and the query should be treated as non-matching. */
+
 	error?: string;
 }
 
 interface MatchResult {
 	matches: boolean;
-	/** Lower is better; only meaningful when matches === true */
+
 	score: number;
 }
 
@@ -28,7 +22,6 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 		return { mode: "tokens", tokens: [], regex: null };
 	}
 
-	// Regex mode: re:<pattern>
 	if (trimmed.startsWith("re:")) {
 		const pattern = trimmed.slice(3).trim();
 		if (!pattern) {
@@ -42,8 +35,6 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 		}
 	}
 
-	// Token mode with quote support.
-	// Example: foo "node cve" bar
 	const tokens: { kind: "fuzzy" | "phrase"; value: string }[] = [];
 	let buf = "";
 	let inQuote = false;
@@ -81,7 +72,6 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 		hadUnclosedQuote = true;
 	}
 
-	// If quotes were unbalanced, fall back to plain whitespace tokenization.
 	if (hadUnclosedQuote) {
 		return {
 			mode: "tokens",
@@ -99,20 +89,8 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 	return { mode: "tokens", tokens, regex: null };
 }
 
-/**
- * Strict fuzzy ceiling for accepting a token, ported from prime-agent's
- * session-view-search (STRICT_FUZZY_MAX_TOKEN_SCORE).
- */
 const STRICT_FUZZY_MAX_TOKEN_SCORE = 25;
 
-/**
- * Fuzzy scorer ported verbatim from prime-agent's pi-tui `fuzzyMatch`
- * (in-order subsequence, word-boundary/consecutive/exact bonuses,
- * alphanumeric-swap fallback). The scoring scale is what
- * {@link STRICT_FUZZY_MAX_TOKEN_SCORE} is calibrated against; the shared
- * @oh-my-pi/pi-tui matcher uses a different word-local scale and cannot be
- * substituted without changing which sessions match.
- */
 function primeFuzzyMatch(query: string, text: string): MatchResult {
 	const queryLower = query.toLowerCase();
 	const textLower = text.toLowerCase();
@@ -192,7 +170,6 @@ function primeFuzzyMatch(query: string, text: string): MatchResult {
 	return { matches: true, score: swappedMatch.score + 5 };
 }
 
-/** Match a precomputed search corpus using the query language. */
 export function matchSearchText(text: string, parsed: ParsedSearchQuery): MatchResult {
 	if (parsed.mode === "regex") {
 		if (!parsed.regex) {

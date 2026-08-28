@@ -1,22 +1,5 @@
 #!/usr/bin/env bun
-/**
- * Merge a local PR branch with the repo's merge-commit schema:
- *
- *   Merge PR #<number>: <conventional PR subject> (@<author>)
- *
- * PR number and author are resolved via `gh`. The subject is taken from the
- * first (oldest) conventional-compliant commit in `HEAD..<branch>`; if none
- * exists the command fails rather than emit a noncompliant message.
- *
- * Usage:
- *   bun scripts/merge-pr.ts <branch>              # resolve PR from branch head
- *   bun scripts/merge-pr.ts <branch> --pr 6386    # explicit PR number
- *   bun scripts/merge-pr.ts <branch> --dry-run    # print message, don't merge
- *
- * Handy alias:
- *   git config alias.mpr '!bun scripts/merge-pr.ts'
- *   git mpr feature-branch
- */
+
 import { $ } from "bun";
 
 interface PrMeta {
@@ -52,7 +35,6 @@ function parseArgs(argv: string[]) {
 	return { branch, pr, dryRun };
 }
 
-/** Pull a PR number out of branch names like `pr/6386`, `pr-6386`, `6386-fix-foo`. */
 function prNumberFromBranchName(branch: string): number | undefined {
 	const m = branch.match(/(?:^|[/_-])pr[/_-]?(\d+)(?:$|[/_-])/i) ?? branch.match(/^(\d+)[/_-]/);
 	return m ? Number(m[1]) : undefined;
@@ -74,7 +56,7 @@ async function resolvePr(branch: string, explicit: number | undefined): Promise<
 		if (!meta) fail(`gh could not find PR #${explicit}`);
 		return meta;
 	}
-	// gh resolves a branch name when it is a PR head ref.
+
 	const byBranch = await ghPrView(branch);
 	if (byBranch) return byBranch;
 	const inferred = prNumberFromBranchName(branch);
@@ -87,11 +69,6 @@ async function resolvePr(branch: string, explicit: number | undefined): Promise<
 
 const CONVENTIONAL_PREFIX = /^[a-z]+(\([^)]+\))?!?: (.+)$/;
 
-/**
- * Full mechanically checkable AGENTS.md subject policy: conventional
- * `type(scope)!:` prefix, ≤72 chars total, description starting lowercase,
- * no trailing period. (Past tense is not machine-checkable.)
- */
 export function isCompliantSubject(subject: string): boolean {
 	const m = CONVENTIONAL_PREFIX.exec(subject);
 	if (!m) return false;
@@ -102,8 +79,6 @@ export function isCompliantSubject(subject: string): boolean {
 if (import.meta.main) {
 	const { branch, pr, dryRun } = parseArgs(process.argv.slice(2));
 
-	// Prefer the local ref; fall back to the remote-tracking ref when the branch
-	// was never checked out locally.
 	let mergeRef = branch;
 	const refCheck = await $`git rev-parse --verify --quiet ${branch}`.quiet().nothrow();
 	if (refCheck.exitCode !== 0) {
@@ -115,8 +90,6 @@ if (import.meta.main) {
 
 	const meta = await resolvePr(branch, pr);
 
-	// Subject comes from the first (oldest) fully compliant commit being
-	// merged; if none complies, refuse to merge.
 	const log = await $`git log --reverse --format=%s HEAD..${mergeRef}`.quiet().nothrow();
 	if (log.exitCode !== 0) fail(`git log HEAD..${mergeRef} failed`);
 	const subjects = log

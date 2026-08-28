@@ -1,97 +1,37 @@
-/**
- * GPT-5 Harmony-header leakage detection and recovery.
- *
- * Background and policy: see `docs/ERRATA-GPT5-HARMONY.md`. This module
- * implements §3 of that document: detection by signal fusion, plus a
- * truncate-and-resume primitive for the `edit` tool when its input is in
- * hashline DSL form. Other tools and surfaces fall through to
- * abort-and-retry handled by the agent loop.
- */
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { AssistantMessage, Model, ToolCall } from "../types";
 
-// Single source of truth for the marker pattern. `M` in the errata.
-// Use a fresh non-global instance for `.test()` to avoid lastIndex pitfalls.
 const MARKER_RE = /\bto=functions\.[A-Za-z_]\w*/g;
 const HARMONY_RE = /<\|(start|end|channel|message|call|return)\|>/g;
 
-// Reserved Harmony control-token spellings. Escaping these to their inert
-// backslash form lets untrusted data (user text, tool results) reach
-// harmony-server models (gpt-5.x) without the provider's prompt validator
-// rejecting the whole request (invalid_prompt / "Request blocked"). `constrain`
-// is escaped too — it is a real control token even though it is not a leak
-// signal on its own.
 const HARMONY_CONTROL_TOKEN_ESCAPE_RE = /<\|(start|end|message|channel|constrain|return|call)\|>/g;
 
-/**
- * Escape reserved Harmony control tokens in arbitrary text so it can be
- * transported as data to a harmony-dialect model. Returns the input unchanged
- * when it carries no reserved spelling.
- *
- * Callers MUST gate on a harmony target and escape only the transport copy —
- * the persisted transcript keeps the byte-for-byte original.
- */
 export function escapeHarmonyControlTokens(text: string): string {
 	return text.replace(HARMONY_CONTROL_TOKEN_ESCAPE_RE, "<\\|$1\\|>");
 }
 
-/**
- * Escape reserved Harmony control tokens inside a JSON document string (e.g.
- * `function_call.arguments`). Doubles the backslash so the document remains
- * valid JSON whose *decoded* strings carry the inert `<\|token\|>` spelling.
- * `<|` cannot occur outside a string literal in valid JSON, so the blanket
- * replace never corrupts structure; malformed documents are escaped
- * best-effort.
- */
 export function escapeHarmonyControlTokensInJson(text: string): string {
 	return text.replace(HARMONY_CONTROL_TOKEN_ESCAPE_RE, "<\\\\|$1\\\\|>");
 }
 
-/**
- * Whether requests to `model` are served by a Harmony-dialect backend
- * (gpt-5.x / gpt-oss), which rejects reserved control-token spellings appearing
- * as data in the request. Resolves the wire model id (`requestModelId ?? id`)
- * so deployment/catalog aliases — e.g. an Azure alias whose `requestModelId` is
- * `gpt-5.4` — are detected even when the local id is opaque.
- */
 export function isHarmonyDialectModel(model: Model): boolean {
 	return preferredDialect(model.requestModelId ?? model.id) === "harmony";
 }
 
-// Channel-word adjacency (`C`): channel/role name appearing immediately before the marker.
 const CHANNEL_WORD_RE = /\b(?:analysis|commentary|assistant|user|system|developer|tool)\s+to=functions\./;
 
-// Glitch-token adjacency (`G`). The Japgolly literal is escaped so this regex
-// source itself does not trip detection if the file is scanned (e.g. when
-// editing this module via the same agent that detects).
 const GLITCH_RE = /\b(?:changedFiles|RTLU|Jsii(?:_commentary)?|\x4aapgolly)\b/;
 
-// Body-channel cascade (`B`): marker followed by ` code` then another marker
-// within 200 chars. Single regex; no manual slicing needed.
 const BODY_CASCADE_RE = /to=functions\.\w+\s+code\b[\s\S]{0,200}?to=functions\./;
 
-// Fake-result framing (`R`): marker followed within 80 chars by Cell N: framing.
 const FAKE_RESULT_RE = /to=functions\.\w+[\s\S]{0,80}?code_output\s*\nCell\s+\d+:/;
 
 const FENCE_RE = /^\s*(?:```+|~~~+)/;
 
-// Non-Latin scripts seen in the corpus: CJK + ext, Cyrillic, Thai, Georgian,
-// Armenian, Kannada, Telugu, Devanagari, Arabic, Malayalam.
 const SCRIPT_CLASS =
 	"\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u0400-\u04FF\u0E00-\u0E7F\u10A0-\u10FF\u0530-\u058F\u0C80-\u0CFF\u0C00-\u0C7F\u0900-\u097F\u0600-\u06FF\u0D00-\u0D7F";
 const SCRIPT_RUN_RE = new RegExp(`[${SCRIPT_CLASS}]{2,}`, "u");
 
-// Recovery registry. Each entry's parser must recognize the configured
-// sentinel (per-tool, see eval/parse.ts and hashline/executor.ts) and surface
-// a warning to the model so it knows to re-issue any remaining work.
-// `accepts` gates on input shape: tools whose contaminated input doesn't
-// match the parser's expected DSL fall through to abort-and-retry.
-//
-// • `edit`: hashline DSL input begins with `@<path>`. Apply_patch envelopes
-//   (`*** Begin Patch …`) and JSON-schema variants are not recoverable —
-//   their parsers don't recognize `*** Abort`.
-// • `eval`: any string is a parseable cell sequence (the parser is lenient
-//   and falls back to implicit-cell mode on bare strings).
 interface RecoveryConfig {
 	sentinel: string;
 	accepts: (input: string) => boolean;
@@ -147,12 +87,6 @@ export interface HarmonyRecoveredToolCall {
 	removed: string;
 }
 
-/**
- * Whether to run leak detection on responses from this model. We default-on
- * for every openai-codex model rather than enumerating ids, so a future
- * gpt-5.6 (or whatever) doesn't silently bypass the mitigation. Detection
- * itself is cheap; the cost of missing a leak on a new model is not.
- */
 export function isHarmonyLeakMitigationTarget(model: Model): boolean {
 	return model.provider === "openai-codex";
 }
@@ -166,28 +100,6 @@ export function signalListLabel(signals: readonly HarmonySignal[]): string {
 	return seen.join(",") || "none";
 }
 
-/**
- * Detect harmony-protocol leakage in `text`. Returns undefined if clean.
- *
- * Trip rule: `H` alone, or `M` paired with at least one co-signal
- * (`C`/`G`/`S`/`B`/`R`/`T`). Bare `M` does not trip — this document, its
- * tests, and bug reports legitimately carry the marker.
- *
- * The `tool_arg` surface is held to a stricter rule. A tool argument is
- * arbitrary file/data content that can legitimately carry the marker, a
- * channel word, harmony control tokens, or a non-Latin script run (editing
- * these very fixtures does exactly that). The only robust leak signal there
- * is content trailing the structurally-valid parse, so a `tool_arg` detection
- * additionally requires the `T` co-signal. Absent a `parsedEnd` boundary `T`
- * is never set, so `tool_arg` scanning stays inert and a legitimate codex tool
- * call is never hard-aborted. `assistant_text`/`assistant_thinking` keep the
- * base rule.
- *
- * `parsedEnd`, when supplied, marks the byte at which a structurally valid
- * tool-argument parse ends; markers at or past it set the `T` co-signal.
- * `contentIndex`/`toolName`/`toolCallId` flow through to the returned
- * detection for downstream auditing.
- */
 export function detectHarmonyLeak(
 	text: string,
 	surface: HarmonySurface,
@@ -224,18 +136,13 @@ export function detectHarmonyLeak(
 		if (FAKE_RESULT_RE.test(forward)) classes.push("R");
 		if (options.parsedEnd !== undefined && start >= options.parsedEnd) classes.push("T");
 
-		// `M` alone never trips: legitimate documentation/tests carry it.
 		if (classes.length > 1) {
 			signals.push(makeSignal(classes, start, end, match[0]));
 		}
 	}
 
 	if (signals.length === 0) return undefined;
-	// Tool arguments are data: they can legitimately embed the marker, a channel
-	// word, harmony control tokens, or a non-Latin script run. Only a marker
-	// trailing the structurally-valid parse (`T`) is a reliable leak signal, so
-	// refuse to trip a `tool_arg` detection without it. Without a `parsedEnd`
-	// boundary `T` is never set and the surface stays inert.
+
 	if (surface === "tool_arg" && !signals.some(s => s.classes.includes("T"))) return undefined;
 	signals.sort((a, b) => a.start - b.start || a.end - b.end);
 	return {
@@ -247,16 +154,6 @@ export function detectHarmonyLeak(
 	};
 }
 
-/**
- * Scan an assistant message's content blocks; return the first detection.
- *
- * `toolArgParseEnd`, when supplied, resolves the byte offset at which a tool
- * call's structurally-valid argument parse ends (the `T` co-signal in
- * {@link detectHarmonyLeak}). Callers that can parse a tool's argument DSL pass
- * it to enable `tool_arg` leak detection; omitting it keeps that surface inert
- * — the safe default the agent loop relies on, since it cannot bound a streamed
- * tool DSL and must never hard-abort a legitimate tool call.
- */
 export function detectHarmonyLeakInAssistantMessage(
 	message: AssistantMessage,
 	toolArgParseEnd?: (toolCall: ToolCall) => number | undefined,
@@ -285,18 +182,6 @@ export function detectHarmonyLeakInAssistantMessage(
 	return undefined;
 }
 
-/**
- * Truncate a contaminated tool call at the start of the contaminated line and
- * append the tool's recovery sentinel. Returns a recovered AssistantMessage
- * (containing only the cleaned tool call), a synthetic continuation user
- * message asking the model to re-issue the rest, and the removed substring
- * for auditing. Returns undefined when the tool is not recovery-eligible or
- * the truncation would leave nothing meaningful to dispatch.
- *
- * `providerPayload` is dropped from the recovered message: for Codex the
- * encrypted reasoning blob is opaque/signed and we cannot validate that it is
- * uncontaminated. The model re-reasons on the next turn.
- */
 export function recoverHarmonyToolCall(
 	message: AssistantMessage,
 	detection: HarmonyDetection,
@@ -325,7 +210,7 @@ export function recoverHarmonyToolCall(
 	const cleanMessage: AssistantMessage = {
 		...message,
 		content: [cleanToolCall],
-		// Drop encrypted reasoning blob: opaque, possibly carries the leak forward.
+
 		providerPayload: undefined,
 		stopReason: "toolUse",
 		errorMessage: undefined,
@@ -333,12 +218,6 @@ export function recoverHarmonyToolCall(
 	return { message: cleanMessage, removed: truncated.removed };
 }
 
-/**
- * Return the contaminated substring from `message` for audit purposes when
- * recovery is not applicable (abort path). Walks from the first detected
- * signal to end-of-content within the relevant block. Returns "" if the
- * detection cannot be resolved against the message.
- */
 export function extractHarmonyRemoved(message: AssistantMessage, detection: HarmonyDetection): string {
 	if (detection.contentIndex === undefined) return "";
 	const block = message.content[detection.contentIndex];
@@ -375,8 +254,6 @@ export function createHarmonyAuditEvent(params: {
 	};
 }
 
-// ─── internals ──────────────────────────────────────────────────────────────
-
 function makeSignal(classes: HarmonySignalClass[], start: number, end: number, text: string): HarmonySignal {
 	if (classes[0] === "H") return { classes: ["H"], start, end, text };
 	const sorted: HarmonySignalClass[] = [];
@@ -386,11 +263,6 @@ function makeSignal(classes: HarmonySignalClass[], start: number, end: number, t
 	return { classes: sorted, start, end, text };
 }
 
-/**
- * Precompute fenced-code-block ranges once per text. Each range is a
- * [start, end) span of bytes inside any ```/~~~ fence. O(n) once instead of
- * O(n) per detected match.
- */
 function computeFenceRanges(text: string): Array<[number, number]> {
 	const ranges: Array<[number, number]> = [];
 	let inFence = false;
@@ -436,14 +308,6 @@ function hasScriptMismatchNear(text: string, start: number, end: number): boolea
 	return ascii / surrounding.length >= 0.85;
 }
 
-/**
- * Tool-call argument text used for detection scanning. For tools whose args
- * include a free-form `input` string we scan that directly so reported byte
- * offsets line up with the original. For everything else we fall back to a
- * JSON-stringified blob so detection still fires; that path's offsets are
- * NOT meaningful for slicing the original args, but the recovery path gates
- * on `block.arguments.input` being a string and only ever slices that.
- */
 function getToolArgumentText(toolCall: ToolCall): string | undefined {
 	if (typeof toolCall.arguments?.input === "string") return toolCall.arguments.input;
 	try {
@@ -459,7 +323,7 @@ function truncateAtLineAndAppendSentinel(
 	sentinel: string,
 ): { clean: string; removed: string } | undefined {
 	const lineStart = offset <= 0 ? 0 : input.lastIndexOf("\n", offset - 1) + 1;
-	if (lineStart === 0) return undefined; // would cut everything
+	if (lineStart === 0) return undefined;
 	const head = input.slice(0, lineStart).replace(/\s+$/, "");
 	if (head.length === 0) return undefined;
 	return {
@@ -476,12 +340,6 @@ const PREVIEW_KEEP_RE = new RegExp(`[${SCRIPT_CLASS}\\s】【”“…」「、�
 const PREVIEW_TOKEN_RE =
 	/^(?:to=functions\.[A-Za-z_]\w*|analysis|commentary|assistant|user|system|developer|tool|changedFiles|RTLU|Jsii(?:_commentary)?|\x4aapgolly)/;
 
-/**
- * Privacy-safe preview for the audit log: keeps marker/channel/glitch tokens,
- * non-Latin script chars, and CJK punctuation; replaces everything else
- * (potential source/secrets) with `·`. Sufficient to grow the glitch-token
- * denylist from logs without exposing source content. Capped at 64 chars.
- */
 function redactedJunkPreview(text: string): string {
 	const source = text.slice(0, 64);
 	let out = "";

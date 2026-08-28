@@ -10,26 +10,8 @@ import { tinyModelClient } from "../tiny/title-client";
 
 const CLASSIFIER_SYSTEM_PROMPT = prompt.render(unexpectedStopClassifierPrompt);
 
-/**
- * The answer is a single word. OpenAI-compatible endpoints reject values below
- * 16, so 16 is the smallest portable budget for this classifier.
- */
 const ANSWER_MAX_TOKENS = 16;
-/**
- * Online classifier budget. Sized against two independent constraints:
- *   - Backends that ignore `disableReasoning` still emit a thinking preamble
- *     (e.g. Qwen3 via llama.cpp catalogued `reasoning: false` but still thinking;
- *     Anthropic via LiteLLM/Vertex, whose `openai-completions` route downgrades a
- *     disabled request to the lowest reasoning effort instead of turning thinking
- *     off). The yes/no keyword must have room to land after that preamble
- *     (issue #4355).
- *   - Anthropic-dialect proxies reject `max_tokens <= thinking.budget_tokens`. The
- *     pinned lowest effort maps to at least Anthropic's 1024-token minimum budget,
- *     so the cap MUST comfortably exceed 1024 or the request 400s with
- *     `max_tokens must be greater than thinking.budget_tokens` (issue #8610).
- * `maxTokens` is a hard cap — non-thinking completions still return in a single
- * word.
- */
+
 const ONLINE_REASONING_SAFE_MAX_TOKENS = 4096;
 
 interface ClassifyUnexpectedStopDeps {
@@ -48,12 +30,7 @@ export function isUnexpectedStopCandidate(message: AssistantMessage): boolean {
 		if (content.type === "text" && /\S/.test(content.text)) {
 			hasContent = true;
 		}
-		// A signed thinking-only stop is still a candidate: reasoning models can
-		// trap the intended response (or a truncated fragment) in a thinking block
-		// with no text. #isEmptyAssistantStop treats a non-whitespace signature as
-		// terminal (not empty), so such stops bypass the empty-stop path entirely.
-		// Match that predicate here — unsigned thinking-only stops stay with the
-		// empty-stop retry path (and its cap) rather than being re-handled here.
+
 		if (content.type === "thinking" && /\S/.test(content.thinking) && /\S/.test(content.thinkingSignature ?? "")) {
 			hasContent = true;
 		}

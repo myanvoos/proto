@@ -1,18 +1,3 @@
-/**
- * `proto auth-broker` command handlers.
- *
- * Sub-verbs:
- *   - `serve [--bind=…]` — boots the broker against the local SQLite store.
- *   - `token` / `token --regenerate` — manages the bearer token file.
- *   - `login <provider> [--via=user@host]` — logs into a provider locally, or
- *     via SSH tunnel into a remote broker host.
- *   - `import <file|dir>` — imports CLIProxyAPI-style JSON credentials into
- *     the local SQLite store (typical use: `import ~/.cliproxy/auth`).
- *   - `migrate --from-local [--include-env] [--include-oauth] [--dry-run]` —
- *     uploads local SQLite + env API keys to the broker, skipping anything
- *     the broker already has.
- *   - `status` — health-pings the configured remote broker.
- */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -54,15 +39,15 @@ export interface AuthBrokerCommandArgs {
 		via?: string;
 		provider?: string;
 		dryRun?: boolean;
-		/** `login`/`logout`: provider id. `import`: filesystem path. */
+
 		source?: string;
-		/** `import`: keep credentials whose JSON had `disabled: true`. */
+
 		includeDisabled?: boolean;
-		/** `migrate`: also upload local OAuth (default: api_key only, since OAuth is via cliproxy import). */
+
 		includeOauth?: boolean;
-		/** `migrate`: also capture env-var API keys for providers not yet on broker. */
+
 		includeEnv?: boolean;
-		/** `migrate`: required `--from-local` source. Reserved for future sources. */
+
 		fromLocal?: boolean;
 	};
 }
@@ -78,7 +63,6 @@ const ACTIONS: readonly AuthBrokerAction[] = [
 	"list",
 ];
 
-/** Callback ports baked from the per-provider OAuth flow modules. */
 const CALLBACK_PORTS: Record<string, number> = Object.fromEntries(
 	PROVIDER_REGISTRY.flatMap(provider =>
 		provider.callbackPort != null ? [[provider.id, provider.callbackPort] as [string, number]] : [],
@@ -106,9 +90,7 @@ async function writeToken(token: string): Promise<void> {
 	await Bun.write(file, token);
 	try {
 		await fs.chmod(file, 0o600);
-	} catch {
-		// Best-effort (e.g. Windows).
-	}
+	} catch {}
 }
 
 function generateToken(): string {
@@ -123,18 +105,6 @@ async function ensureToken(): Promise<string> {
 	return token;
 }
 
-/**
- * OAuth refresh handler for `proto auth-broker serve`'s {@link AuthStorage}.
- *
- * The vault holds provider OAuth rows AND PROTO-managed `mcp_oauth:*` rows.
- * Provider rows refresh through the per-provider registry. MCP rows are
- * self-describing — the embedded token endpoint and client credentials are the
- * only refresh material — so they refresh with a generic `refresh_token` grant.
- * The serve process never loads the MCP manager, so this is the only place that
- * teaches the broker to refresh MCP tokens; without it
- * `POST /v1/credential/:id/refresh` fails with "Unknown OAuth provider" and the
- * background refresher lets MCP access tokens expire (issue #8933).
- */
 export function refreshBrokerOAuthCredential(
 	provider: string,
 	credential: OAuthCredential,
@@ -146,15 +116,11 @@ export function refreshBrokerOAuthCredential(
 			signal,
 		});
 	}
-	// Non-MCP rows: same per-provider path AuthStorage would take by default
-	// (the serve process registers no custom OAuth providers).
+
 	return refreshOAuthToken(provider as OAuthProvider, credential);
 }
 
 async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
-	// The broker is a long-running headless service: route structured logs to
-	// stdout so a process supervisor (pm2, journald, k8s) captures them, and
-	// skip the rotating ~/.proto/logs/ file the TUI default would have used.
 	setLoggerTransports({ console: true, file: false });
 
 	const bind = flags.bind ?? DEFAULT_AUTH_BROKER_BIND;
@@ -189,7 +155,6 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	process.once("SIGINT", () => void shutdown("SIGINT"));
 	process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
-	// Block forever; lifecycle is signal-driven.
 	await new Promise<never>(() => {});
 }
 
@@ -239,35 +204,19 @@ async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 }
 
 async function runLocalLogin(provider: OAuthProvider): Promise<void> {
-	// Drive the per-provider OAuth dance in-process. Persists into the same
-	// SQLite store the broker uses.
 	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 	const ask = (msg: string) => promptLine(rl, `${msg} `);
 	const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
 	const storage = new AuthStorage(store);
 	await storage.reload();
 	try {
-		// Only paste-code providers (fixed non-loopback redirect, e.g. GitLab Duo
-		// Agent's vscode:// URI) get the manual paste fallback. An explicit
-		// `onManualCodeInput` is honored for ANY provider (the storage escape hatch),
-		// so for loopback providers we must not pass it: it would make
-		// `OAuthCallbackFlow` race a readline prompt against the HTTP callback and, if
-		// the callback wins, leave that prompt outstanding (dirty/blocked terminal).
-		// `AuthStorage.login` independently refuses to synthesize the default prompt
-		// for non-paste-code providers, so this is defense-in-depth on the same gate.
 		const usesManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider);
 		await storage.login(provider, {
 			onAuth({ url, launchUrl, instructions }) {
 				process.stdout.write("\nOpen this URL in your browser:\n");
-				// Full URL first so the CLI works from any machine, including SSH
-				// sessions where a `launchUrl` (loopback `/launch` on the PROTO
-				// host) would resolve against the caller's browser and fail.
-				// Headless capture is unaffected: it reads the first URL line.
+
 				process.stdout.write(`${url}\n`);
 				if (launchUrl && launchUrl !== url) {
-					// Local shortcut for the machine running PROTO. Terminals or
-					// screen-scrapers narrower than the full URL still get an
-					// unbroken copy target here.
 					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
 				}
 				if (instructions) process.stdout.write(`${instructions}\n`);
@@ -294,10 +243,6 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 	}
 }
 
-/**
- * Interactive `readline` prompt that cleanly tears down on Ctrl-C / Escape so
- * cancelling a half-finished login flow doesn't leave the terminal in raw mode.
- */
 function promptLine(rl: readline.Interface, question: string): Promise<string> {
 	const { promise, resolve, reject } = Promise.withResolvers<string>();
 	const input = process.stdin as NodeJS.ReadStream;
@@ -455,13 +400,6 @@ async function runList(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	}
 }
 
-// ─── CLIProxyAPI import ─────────────────────────────────────────────────
-
-/**
- * Maps the `type` field of a CLIProxyAPI credential JSON to the proto provider id.
- * The filename also encodes the type (e.g. `claude-foo@bar.json`), but the
- * in-file `type` is authoritative — we only fall back to filename if absent.
- */
 const CLIPROXY_TYPE_TO_PROVIDER: Record<string, string> = {
 	claude: "anthropic",
 	codex: "openai-codex",
@@ -496,7 +434,7 @@ function resolveCliProxyProvider(json: CliProxyCredentialJson, filename: string,
 	if (overrideId && overrideId.length > 0) return overrideId;
 	const typeField = json.type?.trim().toLowerCase();
 	if (typeField && CLIPROXY_TYPE_TO_PROVIDER[typeField]) return CLIPROXY_TYPE_TO_PROVIDER[typeField];
-	// Fall back to filename prefix: `<type>-<email>.json`
+
 	const base = path.basename(filename, ".json").toLowerCase();
 	for (const prefix in CLIPROXY_TYPE_TO_PROVIDER) {
 		const providerId = CLIPROXY_TYPE_TO_PROVIDER[prefix];
@@ -507,7 +445,7 @@ function resolveCliProxyProvider(json: CliProxyCredentialJson, filename: string,
 
 function parseCliProxyExpiry(raw: string | undefined): number | null {
 	if (!raw) return null;
-	// CLIProxyAPI writes RFC3339-ish dates. `Date.parse` handles both `Z` and offsets.
+
 	const ms = Date.parse(raw);
 	if (!Number.isFinite(ms)) return null;
 	return ms;
@@ -677,8 +615,6 @@ async function runImport(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	}
 }
 
-// ─── Migrate: local SQLite + env → broker ──────────────────────────────
-
 interface MigratePlanEntry {
 	source: "local-sqlite" | "env";
 	provider: string;
@@ -699,17 +635,6 @@ function credentialIdentity(provider: string, credential: AuthCredential): strin
 	return credential.orgId ? `${base} (${credential.orgName ?? credential.orgId})` : base;
 }
 
-/**
- * Build the set of "identities already on the broker" so re-runs are idempotent.
- * For OAuth, identity = email|accountId|projectId, each org-qualified when the
- * row carries an organization (one Anthropic email can hold a Team seat AND a
- * personal Max plan — those must migrate as two rows). A row with NO base
- * identity but an orgId (login recovered neither email nor account) is marked
- * by the org alone, so re-running migrate does not re-upload a stale refresh
- * token over the broker's newer one. For api_key, we collapse to a single
- * marker per provider (broker has no concept of "multiple api keys per
- * provider with different identities"; upsert would coalesce them).
- */
 function indexBrokerSnapshot(snapshot: {
 	credentials: Array<{
 		provider: string;
@@ -775,16 +700,11 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 	const plan: MigratePlanEntry[] = [];
 	const skipped: MigrateSkip[] = [];
 
-	// 1. Local SQLite rows.
 	const localDbPath = getAgentDbPath();
 	const localStore = await SqliteAuthCredentialStore.open(localDbPath);
 	const plannedApiKeyProviders = new Set<string>();
 	try {
 		for (const row of localStore.listAuthCredentials()) {
-			// Skip placeholder sentinels that pi-ai treats as "authenticated via
-			// out-of-band mechanism" (Bedrock/Vertex `<authenticated>`). They
-			// aren't real keys and uploading them would store garbage on the
-			// broker. Mirrors the env-var path's guard below.
 			if (row.credential.type === "api_key" && row.credential.key === "<authenticated>") {
 				skipped.push({
 					source: "local-sqlite",
@@ -829,12 +749,11 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 		localStore.close();
 	}
 
-	// 2. Env-var API keys (opt-in).
 	if (flags.includeEnv === true) {
 		for (const provider of listProvidersWithEnvKey()) {
 			const envValue = getEnvApiKey(provider);
 			if (!envValue) continue;
-			if (envValue === "<authenticated>") continue; // Bedrock/Vertex sentinels — not literal keys.
+			if (envValue === "<authenticated>") continue;
 			const credential: AuthCredential = { type: "api_key", key: envValue };
 			if (brokerAlreadyHas(existing, provider, credential)) {
 				skipped.push({
@@ -845,7 +764,7 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 				});
 				continue;
 			}
-			// Also skip if local SQLite already produced an entry for this provider in this batch.
+
 			if (plan.some(p => p.provider === provider && p.credential.type === "api_key")) {
 				skipped.push({
 					source: "env",
@@ -962,7 +881,6 @@ export async function runAuthBrokerCommand(cmd: AuthBrokerCommandArgs): Promise<
 			await runList(cmd.flags);
 			return;
 		default: {
-			// Exhaustive check.
 			const _exhaustive: never = cmd.action;
 			throw new Error(`Unknown auth-broker action: ${String(_exhaustive)}`);
 		}
@@ -971,5 +889,4 @@ export async function runAuthBrokerCommand(cmd: AuthBrokerCommandArgs): Promise<
 
 export { ACTIONS as AUTH_BROKER_ACTIONS };
 
-// Touch `$` so Bun's tree-shaker keeps the shell helper imported (used by future verbs).
 void $;

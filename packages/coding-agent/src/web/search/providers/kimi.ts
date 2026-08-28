@@ -1,12 +1,3 @@
-/**
- * Kimi Web Search Provider
- *
- * Uses the Kimi Code search API to retrieve web results. This is the Kimi Code
- * membership service, distinct from the Moonshot Open Platform — it requires a
- * Kimi Code Console credential (`proto /login kimi-code` or an explicit
- * `MOONSHOT_SEARCH_API_KEY` / `KIMI_SEARCH_API_KEY`), not `MOONSHOT_API_KEY`.
- * Endpoint: POST https://api.kimi.com/coding/v1/search
- */
 import { type ApiKey, type AuthStorage, type FetchImpl, withAuth } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 
@@ -26,7 +17,6 @@ const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 const DEFAULT_TIMEOUT_SECONDS = 30;
 
-/** Kimi Code search is Bing-flavored: re-emit the operators Bing parses; dates/lang stay with the central filter. */
 const KIMI_QUERY_SYNTAX: QuerySyntax = {
 	phrases: true,
 	negation: true,
@@ -73,19 +63,6 @@ function resolveBaseUrl(): string {
 	return asTrimmed($env.MOONSHOT_SEARCH_BASE_URL) ?? asTrimmed($env.KIMI_SEARCH_BASE_URL) ?? KIMI_SEARCH_URL;
 }
 
-/**
- * Resolve the Kimi Code search credential. Highest precedence is the explicit
- * search-key env override; otherwise an AuthStorage-backed resolver for a
- * stored `kimi-code` credential (from `proto /login kimi-code`), so a stale token
- * triggers the central force-refresh / sibling-rotate retry. Returns
- * `undefined` when neither is configured.
- *
- * The endpoint (`https://api.kimi.com/coding/v1/search`) is the Kimi Code
- * membership service, which has a different credential system from the Moonshot
- * Open Platform (`https://api.moonshot.ai`). A stored `moonshot` credential
- * (or `MOONSHOT_API_KEY`) is NOT accepted here — it 401s against Kimi Code
- * (issue #5762).
- */
 async function resolveKey(
 	authStorage: AuthStorage,
 	sessionId: string | undefined,
@@ -143,7 +120,6 @@ async function callKimiSearch(
 	return { response: data, requestId };
 }
 
-/** Execute Kimi web search. */
 export async function searchKimi(params: KimiSearchParams): Promise<SearchResponse> {
 	const keyOrResolver = await resolveKey(params.authStorage, params.sessionId, params.signal);
 	if (!keyOrResolver) {
@@ -191,7 +167,6 @@ export async function searchKimi(params: KimiSearchParams): Promise<SearchRespon
 	};
 }
 
-/** Search provider for Kimi web search. */
 export class KimiProvider extends SearchProvider {
 	readonly id = "kimi";
 	readonly label = "Kimi";

@@ -18,7 +18,6 @@ export const COMPOSER_PLACEHOLDER = "ask anything · / for commands";
 
 const DOUBLE_INTERRUPT_MS = 500;
 
-/** Live settings that affect the composer before and after session adoption. */
 export interface ComposerPreferences {
 	readonly quiet: boolean;
 	readonly showHardwareCursor: boolean;
@@ -32,7 +31,6 @@ export interface ComposerPreferences {
 	readonly spellingAutocorrect: boolean;
 }
 
-/** Settings-schema-compatible defaults used when constructing a dependency-free composer. */
 export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	quiet: false,
 	showHardwareCursor: true,
@@ -46,7 +44,6 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	spellingAutocorrect: false,
 };
 
-/** Welcome data that can be supplied initially or patched as startup resolves it. */
 export interface ComposerWelcomeUpdate {
 	readonly version?: string;
 	readonly modelName?: string;
@@ -55,10 +52,9 @@ export interface ComposerWelcomeUpdate {
 	readonly lspServers?: readonly LspServerInfo[];
 }
 
-/** Optional dependencies and initial state for a standalone composer. */
 interface ComposerOptions {
 	readonly terminal?: Terminal;
-	/** Extra TUI construction options (render scheduler injection for tests and `proto render`). */
+
 	readonly tuiOptions?: TUIOptions;
 	readonly preferences?: Partial<ComposerPreferences>;
 	readonly welcome?: ComposerWelcomeUpdate;
@@ -66,19 +62,12 @@ interface ComposerOptions {
 	readonly now?: () => number;
 }
 
-/** Controls the first terminal paint for a composer that does not already own the terminal. */
 interface ComposerStartOptions {
 	readonly clearScrollback?: boolean;
-	/**
-	 * Paint without owning stdin: the tty keeps cooked-mode echo/editing so
-	 * typing stays visible while startup module loading blocks the event loop.
-	 * {@link Composer.enableInput} later switches to raw input and replays the
-	 * kernel-buffered keystrokes into the editor.
-	 */
+
 	readonly deferInput?: boolean;
 }
 
-/** Mount slot for the session-aware status component below the editor. */
 class StatusHost implements Component {
 	#component: Component | undefined;
 
@@ -109,13 +98,8 @@ class CardPadRow implements Component {
 
 	invalidate(): void {}
 }
-/**
- * Canonical interactive composer, usable before session/settings exist and updatable in place.
- * It owns the terminal, welcome header, and editor; InteractiveMode later supplies authoritative
- * data and mounts the session-aware runtime children without replacing the visible header.
- */
+
 export class Composer {
-	/** Terminal renderer shared with InteractiveMode after adoption. */
 	readonly ui: TUI;
 	#editor: CustomEditor;
 	readonly #header = new Container();
@@ -174,7 +158,7 @@ export class Composer {
 			autocomplete: this.#preferences.spellingAutocomplete,
 			autocorrect: this.#preferences.spellingAutocorrect,
 		});
-		// Emergency controls stay active until InteractiveMode installs configured bindings.
+
 		this.editor.setActionKeys("app.clear", ["ctrl+c"]);
 		this.editor.setActionKeys("app.exit", ["ctrl+d"]);
 		this.editor.onClear = () => this.#handleInterrupt();
@@ -195,34 +179,29 @@ export class Composer {
 		this.ui.setFocus(this.editor);
 	}
 
-	/** Live editor whose draft survives startup and session adoption. */
 	get editor(): CustomEditor {
 		return this.#editor;
 	}
 
-	/** The welcome component currently mounted in the header, if quiet mode is off. */
 	get welcome(): WelcomeComponent | undefined {
 		return this.#welcome;
 	}
 
-	/** Whether this composer already owns the terminal render/input loop. */
 	get started(): boolean {
 		return this.#started && !this.#stopped;
 	}
 
-	/** Start terminal ownership. */
 	start(options: ComposerStartOptions = {}): void {
 		if (this.#started || this.#stopped) return;
 		this.#started = true;
 		this.ui.start({ clearScrollback: options.clearScrollback === true, deferInput: options.deferInput === true });
 	}
-	/** Take raw-input ownership after a deferred-input start. Idempotent. */
+
 	enableInput(): void {
 		if (this.#stopped) return;
 		this.ui.enableInput();
 	}
 
-	/** Apply settings changes without replacing the editor or welcome component. */
 	setPreferences(update: Partial<ComposerPreferences>): void {
 		if (this.#stopped) return;
 		const wasQuiet = this.#preferences.quiet;
@@ -250,7 +229,6 @@ export class Composer {
 		this.ui.requestRender();
 	}
 
-	/** Patch welcome data in place as model, session, and project discovery complete. */
 	updateWelcome(update: ComposerWelcomeUpdate): void {
 		if (this.#stopped) return;
 		this.#applyWelcomeUpdate(update);
@@ -267,7 +245,6 @@ export class Composer {
 		this.ui.requestRender();
 	}
 
-	/** Replace optional header content around the stable welcome scene. */
 	setHeaderExtras(before: readonly Component[], after: readonly Component[]): void {
 		if (this.#stopped) return;
 		this.#headerBefore = before;
@@ -276,7 +253,6 @@ export class Composer {
 		this.ui.requestRender();
 	}
 
-	/** Update the canonical editor reference after InteractiveMode remounts a custom editor. */
 	setEditor(editor: CustomEditor): void {
 		this.#editor = editor;
 		this.#editorSlot.clear();
@@ -291,12 +267,10 @@ export class Composer {
 		this.#composerHairline.suppressed = suppressed;
 	}
 
-	/** Mount the session-aware status component into the slot below the editor. */
 	setStatusComponent(component: Component): void {
 		this.#statusHost.setComponent(component);
 	}
 
-	/** Mount or replace session-aware root children while preserving the header and status hosts. */
 	setRuntimeChildren(children: readonly Component[], below: readonly Component[] = []): void {
 		if (this.#stopped) return;
 		const chrome = [
@@ -328,7 +302,6 @@ export class Composer {
 		this.ui.requestRender();
 	}
 
-	/** Transfer terminal ownership to InteractiveMode without stopping the composer. */
 	transfer(): void {
 		if (!this.#started || this.#stopped || this.#transferred) {
 			throw new Error("Composer is not available for transfer");
@@ -353,17 +326,12 @@ export class Composer {
 			}
 		}
 		const slack = Math.max(0, rows - content);
-		// Conversation content always pins to the bottom edge (all slack goes
-		// above the header) so the transcript tail, HUD rows, and working loader
-		// sit flush against the composer. The welcome-screen 40/60 split only
-		// applies to the empty state; the banner scrolls off naturally once the
-		// conversation overflows.
+
 		const top = conversationChildCount > 0 ? slack : this.#welcome !== undefined ? Math.floor((slack * 2) / 5) : 0;
 		if (top !== currentTop) this.#topFill.setLines(top);
 		if (slack - top !== currentBottom) this.#bottomFill.setLines(slack - top);
 	}
 
-	/** Stop a composer that has not transferred terminal ownership. */
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
 		this.#stopped = true;
@@ -410,7 +378,6 @@ export class Composer {
 	}
 
 	#requestExit(code: number): void {
-		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
 		this.#stopped = true;
 		if (this.#started) this.ui.stop();

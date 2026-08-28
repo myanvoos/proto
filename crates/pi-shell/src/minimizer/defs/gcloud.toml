@@ -1,6 +1,6 @@
-# gcloud CLI output.
-# Google Cloud SDK prints a nagging "Updates are available" block on most
-# invocations; strip it along with a few other SDK-level notices.
+
+
+
 
 [filters.gcloud]
 description = "Compact gcloud CLI output with update notices stripped"
