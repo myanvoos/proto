@@ -300,13 +300,9 @@ impl BpeEncoding {
 			}
 			return self.scan(bytes, f);
 		}
-		// Non-UTF-8 flavors: owned UTF-8 needed only when NFC actually has
-		// work to do, or while the test-only regex oracle is active.
-		#[cfg(test)]
-		let regex_splitter = self.splitter.is_regex();
-		#[cfg(not(test))]
-		let regex_splitter = false;
-		if (self.nfc && !nfc_quick(units)) || regex_splitter {
+		// Non-UTF-8 flavors: owned UTF-8 is needed only when NFC actually
+		// has work to do.
+		if self.nfc && !nfc_quick(units) {
 			let s = decode_lossy(units);
 			let s = match pretoken::nfc(&s) {
 				Cow::Owned(o) if self.nfc => o,

@@ -56,8 +56,7 @@ pub mod pty;
 pub mod shell;
 pub mod summary;
 pub mod task;
-#[cfg(test)]
-pub(crate) mod testing;
+
 pub mod text;
 pub mod tokens;
 pub mod tty_writer;

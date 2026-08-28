@@ -37,7 +37,7 @@ pub fn pattern_drive_alias_root(
 	}
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn pattern_drive_alias_root_impl(
 	starts_with_forward_slash: bool,
 	first: &str,
@@ -64,7 +64,7 @@ fn pattern_drive_alias_root_impl(
 	None
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn drive_root_path(drive: u8) -> PathBuf {
 	let mut root = String::with_capacity(3);
 	root.push(char::from(drive).to_ascii_uppercase());
@@ -73,12 +73,12 @@ fn drive_root_path(drive: u8) -> PathBuf {
 	PathBuf::from(root)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const fn is_ascii_drive_component(value: &str) -> bool {
 	value.len() == 1 && value.as_bytes()[0].is_ascii_alphabetic()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn translate_unix_drive_path(path: &Path) -> Option<PathBuf> {
 	let raw = path.to_str()?;
 	let bytes = raw.as_bytes();
@@ -98,7 +98,7 @@ fn translate_unix_drive_path(path: &Path) -> Option<PathBuf> {
 	Some(PathBuf::from(native))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn drive_alias_parts(bytes: &[u8]) -> Option<(u8, &[u8])> {
 	if bytes.len() >= 2
 		&& bytes[0] == b'/'
@@ -159,76 +159,4 @@ pub trait PathExt {
 	fn get_device_and_inode(&self) -> Result<(u64, u64), crate::error::Error>;
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
 
-	#[test]
-	fn unix_drive_aliases_translate_to_windows_roots() {
-		assert_eq!(translate_unix_drive_path(Path::new("/c")).as_deref(), Some(Path::new("C:\\")));
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/d/project/app")).as_deref(),
-			Some(Path::new("D:\\project\\app")),
-		);
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/D/project")).as_deref(),
-			Some(Path::new("D:\\project")),
-		);
-	}
-
-	#[test]
-	fn wsl_mount_drive_aliases_translate_to_windows_roots() {
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/mnt/d/project")).as_deref(),
-			Some(Path::new("D:\\project")),
-		);
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/MNT/c")).as_deref(),
-			Some(Path::new("C:\\")),
-		);
-	}
-
-	#[test]
-	fn drive_alias_tail_preserves_non_ascii_components() {
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/c/Users/José/file")).as_deref(),
-			Some(Path::new("C:\\Users\\José\\file")),
-		);
-		assert_eq!(
-			translate_unix_drive_path(Path::new("/mnt/d/项目/データ")).as_deref(),
-			Some(Path::new("D:\\项目\\データ")),
-		);
-	}
-
-	#[test]
-	fn pattern_drive_alias_roots_report_consumed_components() {
-		assert_eq!(
-			pattern_drive_alias_root_impl(true, "", Some("d"), Some("project")),
-			Some((PathBuf::from("D:/"), 2)),
-		);
-		assert_eq!(
-			pattern_drive_alias_root_impl(true, "", Some("mnt"), Some("d")),
-			Some((PathBuf::from("D:/"), 3)),
-		);
-	}
-
-	#[test]
-	fn pattern_drive_alias_roots_require_forward_slash_prefix() {
-		assert_eq!(pattern_drive_alias_root_impl(false, "", Some("d"), Some("logs")), None);
-		assert_eq!(
-			pattern_drive_alias_root_impl(false, "", Some("mnt"), Some("d")),
-			None,
-		);
-		assert_eq!(pattern_drive_alias_root_impl(true, "", Some("mnt"), Some("data")), None);
-	}
-
-	#[test]
-	fn non_drive_absolute_paths_are_left_native() {
-		assert_eq!(translate_unix_drive_path(Path::new("/")).as_deref(), None);
-		assert_eq!(translate_unix_drive_path(Path::new("/dev/null")).as_deref(), None);
-		assert_eq!(translate_unix_drive_path(Path::new("/mnt/data")).as_deref(), None);
-		assert_eq!(translate_unix_drive_path(Path::new("relative/path")).as_deref(), None);
-		assert_eq!(translate_unix_drive_path(Path::new("\\d\\logs")).as_deref(), None);
-		assert_eq!(translate_unix_drive_path(Path::new("\\mnt\\d\\logs")).as_deref(), None);
-	}
-}

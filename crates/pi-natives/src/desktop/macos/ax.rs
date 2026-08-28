@@ -475,17 +475,12 @@ fn retained_element(pointer: *const AXUIElement) -> CoreResult<CFRetained<AXUIEl
 	Ok(unsafe { CFRetained::from_raw(pointer) })
 }
 
-// The test-only handle variant makes this fallible under `cfg(test)`; keep one
-// call contract.
-#[cfg_attr(
-	not(test),
-	allow(clippy::unnecessary_wraps, reason = "the test-only handle variant is fallible")
-)]
+// Single-arm match kept: the handle-access call contract stays uniform
+// across backends.
+#[allow(clippy::unnecessary_wraps, reason = "uniform handle-access call contract")]
 fn mac_handle(handle: &AxHandle) -> CoreResult<&AXUIElement> {
 	match handle {
 		AxHandle::Mac(element) => Ok(element),
-		#[cfg(test)]
-		AxHandle::Test(_) => Err(DesktopError::ax_failed("non-macOS AX handle passed to MacAx")),
 	}
 }
 

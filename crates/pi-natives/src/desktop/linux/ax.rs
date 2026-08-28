@@ -28,8 +28,6 @@ impl AtSpiAx {
 	const fn object(h: &AxHandle) -> &ObjectRefOwned {
 		match h {
 			AxHandle::AtSpi(object) => object,
-			#[cfg(test)]
-			_ => panic!("AT-SPI backend received a non-AT-SPI handle"),
 		}
 	}
 

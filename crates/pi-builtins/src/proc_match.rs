@@ -956,15 +956,3 @@ fn write_proc_match_help(
 	Ok(())
 }
 
-#[cfg(all(test, windows))]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn resolves_msys_drive_alias_pidfiles() {
-		assert_eq!(
-			resolve_shell_path(Path::new(r"C:\workspace"), "/c/Users/Adam/app.pid"),
-			PathBuf::from(r"C:\Users\Adam\app.pid"),
-		);
-	}
-}

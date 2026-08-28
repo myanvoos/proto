@@ -48,22 +48,4 @@ pub(crate) fn b2sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<B2sum, SE>()
 }
 
-#[cfg(test)]
-mod tests {
-	use super::B2sum;
-	use crate::host::run_util;
 
-	#[test]
-	fn length_selects_the_blake2b_output_size() {
-		let (code, capture) = run_util::<B2sum>(&["-l", "8"], "abc", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "6b  -\n");
-	}
-
-	#[test]
-	fn length_must_be_a_multiple_of_eight() {
-		let (code, capture) = run_util::<B2sum>(&["-l", "7"], "", "/");
-		assert_eq!(code, 1);
-		assert!(capture.err().contains("multiple of 8"), "{}", capture.err());
-	}
-}

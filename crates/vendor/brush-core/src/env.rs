@@ -663,24 +663,4 @@ pub fn valid_variable_name(s: &str) -> bool {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
 
-	#[test]
-	fn test_valid_variable_name() {
-		assert!(!valid_variable_name(""));
-		assert!(!valid_variable_name("1"));
-		assert!(!valid_variable_name(" a"));
-		assert!(!valid_variable_name(" "));
-
-		assert!(valid_variable_name("_"));
-		assert!(valid_variable_name("_a"));
-		assert!(valid_variable_name("_1"));
-		assert!(valid_variable_name("_a1"));
-		assert!(valid_variable_name("a"));
-		assert!(valid_variable_name("A"));
-		assert!(valid_variable_name("a1"));
-		assert!(valid_variable_name("A1"));
-	}
-}

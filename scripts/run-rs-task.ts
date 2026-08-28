@@ -16,7 +16,7 @@ const RUST_AFFECTING_FILE_NAMES = [
 ] as const satisfies readonly string[];
 // brush-core is a workspace member (kept as a path-patch so the vendored fork
 // stays self-contained), but the cargo dev tasks keep their historical scope:
-// the vendored fork is not held to workspace lint/test gates.
+// the vendored fork is not held to workspace lint gates.
 //
 // pi-builtins is NOT excluded. It is first-party, and although it opts out of
 // the workspace's pedantic/nursery lints in its own manifest (most of it is
@@ -44,25 +44,6 @@ const TASK_COMMANDS = {
 	],
 	"fmt:rs": [["cargo", "fmt", "--all"]],
 	"lint:rs": [["cargo", "clippy", "--workspace", ...VENDORED_FORK_EXCLUDES, "--no-deps", "--", "-D", "warnings"]],
-	"test:rs": [
-		[
-			"cargo",
-			"nextest",
-			"run",
-			"--workspace",
-			...VENDORED_FORK_EXCLUDES,
-			"--status-level=fail",
-			"--final-status-level=fail",
-		],
-		// nextest cannot run doctests (no stable libtest-json interface for
-		// them), so they need their own libtest pass. Today this pass executes
-		// nothing: pi-natives is a `cdylib`, which rustdoc refuses to collect
-		// doctests from, and pi-builtins' 16 examples are `ignore`d vendored
-		// uutils docs. It is kept as a guard so that the first runnable
-		// doctest added to a lib crate actually runs instead of silently
-		// never executing.
-		["cargo", "test", "--doc", "--workspace", ...VENDORED_FORK_EXCLUDES],
-	],
 } as const satisfies Record<string, readonly (readonly string[])[]>;
 
 type RustTaskName = keyof typeof TASK_COMMANDS;

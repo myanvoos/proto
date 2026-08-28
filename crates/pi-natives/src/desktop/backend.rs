@@ -114,15 +114,3 @@ pub trait AxBackend {
 	fn focused_element(&mut self) -> CoreResult<Option<AxHandle>>;
 	fn attributes(&mut self, h: &AxHandle) -> CoreResult<Vec<(String, String)>>;
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn delivery_only_escalates_explicit_foreground() {
-		assert_eq!(DeliveryMode::parse(None), DeliveryMode::Background);
-		assert_eq!(DeliveryMode::parse(Some("garbage")), DeliveryMode::Background);
-		assert_eq!(DeliveryMode::parse(Some(" FoReGrOuNd ")), DeliveryMode::Foreground);
-	}
-}

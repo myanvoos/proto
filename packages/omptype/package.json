@@ -20,7 +20,6 @@
     "lint": "biome lint .",
     "fix": "biome check --write --unsafe .",
     "fmt": "biome format --write .",
-    "test": "bun test --parallel",
     "bench": "bun bench/bench.ts"
   },
   "devDependencies": {

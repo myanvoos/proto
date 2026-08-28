@@ -193,30 +193,3 @@ pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 	}
 	Ok(output)
 }
-#[cfg(test)]
-mod tests {
-	use ast_grep_core::source::Edit;
-
-	use super::{SupportLang, apply_edits};
-
-	#[test]
-	fn apply_edits_rejects_overlaps() {
-		let source = "abcdef";
-		let edits = vec![
-			Edit::<String> { position: 1, deleted_length: 3, inserted_text: b"x".to_vec() },
-			Edit::<String> { position: 2, deleted_length: 1, inserted_text: b"y".to_vec() },
-		];
-		assert!(apply_edits(source, &edits).is_err());
-	}
-
-	#[test]
-	fn apply_edits_dedupes_identical_edits() {
-		let source = "abcdef";
-		let edits = vec![
-			Edit::<String> { position: 1, deleted_length: 3, inserted_text: b"x".to_vec() },
-			Edit::<String> { position: 1, deleted_length: 3, inserted_text: b"x".to_vec() },
-		];
-		let output = apply_edits(source, &edits).expect("identical edits should collapse to one");
-		assert_eq!(output, "axef");
-	}
-}

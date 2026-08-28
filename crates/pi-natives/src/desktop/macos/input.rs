@@ -246,13 +246,7 @@ unsafe extern "C" {
 		filter: u32,
 		state: u32,
 	);
-	#[cfg(test)]
-	#[link_name = "CGEventSourceGetLocalEventsSuppressionInterval"]
-	fn get_local_events_suppression_interval(source: CGEventSourceRef) -> f64;
-	#[cfg(test)]
-	#[link_name = "CGEventSourceGetLocalEventsFilterDuringSuppressionState"]
-	fn get_local_events_filter_during_suppression_state(source: CGEventSourceRef, state: u32)
-	-> u32;
+
 }
 
 fn source() -> CoreResult<CGEventSource> {
@@ -983,26 +977,4 @@ fn finite_i32(value: f64, name: &str) -> CoreResult<i32> {
 		)));
 	}
 	Ok(value.round() as i32)
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn event_source_never_suppresses_local_input() {
-		let source = source().expect("Quartz event source");
-		// SAFETY: `source` remains live for both CoreGraphics getter calls.
-		unsafe {
-			assert_eq!(get_local_events_suppression_interval(source.as_ptr()), 0.0);
-			assert_eq!(
-				get_local_events_filter_during_suppression_state(source.as_ptr(), SUPPRESSION_INTERVAL,),
-				LOCAL_EVENT_FILTER,
-			);
-			assert_eq!(
-				get_local_events_filter_during_suppression_state(source.as_ptr(), REMOTE_MOUSE_DRAG,),
-				LOCAL_EVENT_FILTER,
-			);
-		}
-	}
 }

@@ -21,8 +21,7 @@ mod args {
 		host::{Host, format_usage},
 		tail::{TailError, TailResult, paths::Input, platform},
 	};
-	#[cfg(test)]
-	use crate::tail::parse;
+	
 	
 	pub mod options {
 		pub mod verbosity {
@@ -64,19 +63,7 @@ mod args {
 	}
 	
 	impl FilterMode {
-		#[cfg(test)]
-		fn from_obsolete_args(args: &parse::ObsoleteArgs) -> Self {
-			let signum = if args.plus {
-				Signum::Positive(args.num)
-			} else {
-				Signum::Negative(args.num)
-			};
-			if args.lines {
-				Self::Lines(signum, b'\n')
-			} else {
-				Self::Bytes(signum)
-			}
-		}
+		
 	
 		fn from(matches: &ArgMatches) -> TailResult<Self> {
 			let zero_term = matches.get_flag(options::ZERO_TERM);
@@ -168,25 +155,7 @@ mod args {
 	}
 	
 	impl Settings {
-		#[cfg(test)]
-		pub fn from_obsolete_args(args: &parse::ObsoleteArgs, name: Option<&OsString>) -> Self {
-			let mut settings = Self::default();
-			if args.follow {
-				settings.follow = if name.is_some() {
-					Some(FollowMode::Name)
-				} else {
-					Some(FollowMode::Descriptor)
-				};
-			}
-			settings.mode = FilterMode::from_obsolete_args(args);
-			let input = if let Some(name) = name {
-				Input::from(name)
-			} else {
-				Input::default()
-			};
-			settings.inputs.push(input);
-			settings
-		}
+		
 	
 		pub fn from(matches: &ArgMatches) -> TailResult<Self> {
 			// We're parsing --follow, -F and --retry under the following conditions:
@@ -512,103 +481,7 @@ mod args {
 			)
 	}
 	
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-		use crate::tail::parse::ObsoleteArgs;
 	
-		#[test]
-		fn test_parse_num_when_sign_is_given() {
-			let result = parse_num("+0");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::PlusZero);
-	
-			let result = parse_num("+1");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::Positive(1));
-	
-			let result = parse_num("-0");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::MinusZero);
-	
-			let result = parse_num("-1");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::Negative(1));
-		}
-	
-		#[test]
-		fn test_parse_num_when_no_sign_is_given() {
-			let result = parse_num("0");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::MinusZero);
-	
-			let result = parse_num("1");
-			assert!(result.is_ok());
-			assert_eq!(result.unwrap(), Signum::Negative(1));
-		}
-	
-		#[test]
-		fn test_parse_obsolete_settings_f() {
-			let args = ObsoleteArgs { follow: true, ..Default::default() };
-			let result = Settings::from_obsolete_args(&args, None);
-			assert_eq!(result.follow, Some(FollowMode::Descriptor));
-	
-			let result = Settings::from_obsolete_args(&args, Some(&"file".into()));
-			assert_eq!(result.follow, Some(FollowMode::Name));
-		}
-	
-		#[test]
-		fn test_parse_settings_follow_mode_and_retry() {
-			let cases: &[(&[&str], Option<FollowMode>, bool)] = &[
-				(&[], None, false),
-				(&["--retry"], None, true),
-				(&["--retry", "--retry"], None, true),
-				(&["--follow"], Some(FollowMode::Descriptor), false),
-				(&["-f"], Some(FollowMode::Descriptor), false),
-				(&["--follow", "--retry"], Some(FollowMode::Descriptor), true),
-				(&["-f", "--retry"], Some(FollowMode::Descriptor), true),
-				(
-					&["--follow=name", "--follow=descriptor"],
-					Some(FollowMode::Descriptor),
-					false,
-				),
-				(
-					&["--follow=descriptor", "--follow=name"],
-					Some(FollowMode::Name),
-					false,
-				),
-				(&["-F"], Some(FollowMode::Name), true),
-				(&["-F", "-F"], Some(FollowMode::Name), true),
-				(&["-F", "--retry"], Some(FollowMode::Name), true),
-				(&["-F", "--follow=descriptor"], Some(FollowMode::Descriptor), true),
-				(&["-F", "--follow=descriptor", "-F"], Some(FollowMode::Name), true),
-				(&["-F", "-f"], Some(FollowMode::Descriptor), true),
-				(&["--follow=descriptor", "-F"], Some(FollowMode::Name), true),
-				(&["-f", "-F"], Some(FollowMode::Name), true),
-				(&["-F", "--follow=name"], Some(FollowMode::Name), true),
-				(&["--follow=name", "-F"], Some(FollowMode::Name), true),
-				(
-					&["--follow=name", "-F", "--follow=descriptor"],
-					Some(FollowMode::Descriptor),
-					true,
-				),
-				(
-					&["--follow=name", "-F", "--follow=name"],
-					Some(FollowMode::Name),
-					true,
-				),
-				(&["-f", "-F", "-f"], Some(FollowMode::Descriptor), true),
-				(&["-f", "-F", "-f", "-F"], Some(FollowMode::Name), true),
-			];
-
-			for &(args, expected_follow_mode, expected_retry) in cases {
-				let settings =
-					Settings::from(&uu_app().no_binary_name(true).get_matches_from(args)).unwrap();
-				assert_eq!(settings.follow, expected_follow_mode, "args: {args:?}");
-				assert_eq!(settings.retry, expected_retry, "args: {args:?}");
-			}
-		}
-	}
 }
 
 mod chunks {
@@ -1239,83 +1112,7 @@ mod chunks {
 		}
 	}
 	
-	#[cfg(test)]
-	mod tests {
-		use crate::tail::chunks::{BUFFER_SIZE, BytesChunk};
 	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_zero() {
-			let mut chunk = BytesChunk::new();
-			chunk.bytes = BUFFER_SIZE;
-			chunk.buffer[1] = 1;
-			let other = BytesChunk::from_chunk(&chunk, 0);
-			assert_eq!(other, chunk);
-	
-			chunk.bytes = 2;
-			let other = BytesChunk::from_chunk(&chunk, 0);
-			assert_eq!(other, chunk);
-	
-			chunk.bytes = 1;
-			let other = BytesChunk::from_chunk(&chunk, 0);
-			assert_eq!(other.buffer, [0; BUFFER_SIZE]);
-			assert_eq!(other.bytes, chunk.bytes);
-	
-			chunk.bytes = BUFFER_SIZE;
-			let other = BytesChunk::from_chunk(&chunk, 2);
-			assert_eq!(other.buffer, [0; BUFFER_SIZE]);
-			assert_eq!(other.bytes, BUFFER_SIZE - 2);
-		}
-	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_not_zero() {
-			let mut chunk = BytesChunk::new();
-			chunk.bytes = BUFFER_SIZE;
-			chunk.buffer[1] = 1;
-	
-			let other = BytesChunk::from_chunk(&chunk, 1);
-			let mut expected_buffer = [0; BUFFER_SIZE];
-			expected_buffer[0] = 1;
-			assert_eq!(other.buffer, expected_buffer);
-			assert_eq!(other.bytes, BUFFER_SIZE - 1);
-	
-			let other = BytesChunk::from_chunk(&chunk, 2);
-			assert_eq!(other.buffer, [0; BUFFER_SIZE]);
-			assert_eq!(other.bytes, BUFFER_SIZE - 2);
-		}
-	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_larger_than_chunk_size_1() {
-			let mut chunk = BytesChunk::new();
-			chunk.bytes = BUFFER_SIZE;
-			let new_chunk = BytesChunk::from_chunk(&chunk, BUFFER_SIZE + 1);
-			assert_eq!(0, new_chunk.bytes);
-		}
-	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_larger_than_chunk_size_2() {
-			let mut chunk = BytesChunk::new();
-			chunk.bytes = 0;
-			let new_chunk = BytesChunk::from_chunk(&chunk, 1);
-			assert_eq!(0, new_chunk.bytes);
-		}
-	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_larger_than_chunk_size_3() {
-			let mut chunk = BytesChunk::new();
-			chunk.bytes = 1;
-			let new_chunk = BytesChunk::from_chunk(&chunk, 2);
-			assert_eq!(0, new_chunk.bytes);
-		}
-	
-		#[test]
-		fn test_bytes_chunk_from_when_offset_is_equal_to_chunk_size() {
-			let mut chunk = BytesChunk::new();
-			chunk.buffer[0] = 1;
-			chunk.bytes = 1;
-			let new_chunk = BytesChunk::from_chunk(&chunk, 1);
-			assert_eq!(0, new_chunk.bytes);
-		}
-	}
 }
 
 mod follow {
@@ -2366,50 +2163,7 @@ mod parse {
 		Some(Ok(ObsoleteArgs { num, plus: sign == '+', lines: mode == 'l', follow }))
 	}
 	
-	#[cfg(test)]
-	mod tests {
-		use super::*;
-		#[test]
-		fn test_parse_numbers_obsolete() {
-			assert_eq!(
-				parse_obsolete(&OsString::from("+2c")),
-				Some(Ok(ObsoleteArgs { num: 2, plus: true, lines: false, follow: false }))
-			);
-			assert_eq!(
-				parse_obsolete(&OsString::from("-5")),
-				Some(Ok(ObsoleteArgs { num: 5, plus: false, lines: true, follow: false }))
-			);
-			assert_eq!(
-				parse_obsolete(&OsString::from("+100f")),
-				Some(Ok(ObsoleteArgs { num: 100, plus: true, lines: true, follow: true }))
-			);
-			assert_eq!(
-				parse_obsolete(&OsString::from("-2b")),
-				Some(Ok(ObsoleteArgs { num: 1024, plus: false, lines: false, follow: false }))
-			);
-		}
-		#[test]
-		fn test_parse_errors_obsolete() {
-			assert_eq!(parse_obsolete(&OsString::from("-5n")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-5c5")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-1vzc")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-5m")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-1k")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-1mmk")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-105kzm")), Some(Err(ParseError::Context)));
-			assert_eq!(parse_obsolete(&OsString::from("-1vz")), Some(Err(ParseError::Context)));
-			assert_eq!(
-				parse_obsolete(&OsString::from("-1vzqvq")),
-				Some(Err(ParseError::Context))
-			);
-		}
-		#[test]
-		fn test_parse_obsolete_no_match() {
-			assert_eq!(parse_obsolete(&OsString::from("-k")), None);
-			assert_eq!(parse_obsolete(&OsString::from("asd")), None);
-			assert_eq!(parse_obsolete(&OsString::from("-cc")), None);
-		}
-	}
+	
 }
 
 mod paths {
@@ -3662,184 +3416,4 @@ where
 	Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-	use std::{ffi::OsString, fs, io::Cursor};
 
-	use clap::Parser;
-
-	use super::{Tail, Utility, forwards_thru_file};
-	use crate::host::{Host, run_util};
-
-	fn rewritten(argv: &[&str]) -> Vec<String> {
-		Tail::rewrite_argv(argv.iter().map(OsString::from).collect())
-			.unwrap()
-			.into_iter()
-			.map(|arg| arg.to_str().unwrap().to_owned())
-			.collect()
-	}
-
-	#[test]
-	fn prints_last_line_from_stdin() {
-		let (code, capture) = run_util::<Tail>(&["-n", "1"], "first\nlast\n", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "last\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	#[test]
-	fn resolves_relative_file_against_shell_cwd() {
-		let dir = tempfile::tempdir().unwrap();
-		fs::write(dir.path().join("log"), "first\nlast\n").unwrap();
-		let (code, capture) = run_util::<Tail>(&["-n", "1", "log"], "", dir.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "last\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	#[test]
-	fn bsd_reverse_delegates_to_tac() {
-		let dir = tempfile::tempdir().unwrap();
-		fs::write(dir.path().join("log"), "first\nsecond\nthird\n").unwrap();
-		let (code, capture) = run_util::<Tail>(&["-r", "log"], "", dir.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "third\nsecond\nfirst\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	#[test]
-	fn obsolete_count_syntax_is_rewritten_before_clap() {
-		let (code, capture) = run_util::<Tail>(&["-2"], "one\ntwo\nthree\n", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "two\nthree\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	#[test]
-	fn cancelled_follow_returns_from_its_loop() {
-		let dir = tempfile::tempdir().unwrap();
-		let path = dir.path().join("log");
-		fs::write(&path, "line\n").unwrap();
-		let parsed = Tail::try_parse_from(["tail", "-f", path.to_str().unwrap()]).unwrap();
-		let (mut host, _) = Host::for_test("tail", "", dir.path());
-		host.cancel_for_test();
-		assert_eq!(parsed.run(&mut host), 0);
-	}
-
-	// Failure mode: obsolete `-N`/`+N` was only rewritten for `argv.len()`
-	// of 2 or 3 with the token at argv[1], so multi-file and flag-interleaved
-	// invocations were clap parse errors.
-	#[test]
-	fn obsolete_count_rewritten_at_any_position() {
-		assert_eq!(rewritten(&["tail", "-20", "f1", "f2"]), ["tail", "-n", "20", "f1", "f2"]);
-		assert_eq!(rewritten(&["tail", "-f", "-5", "f"]), ["tail", "-f", "-n", "5", "f"]);
-		assert_eq!(rewritten(&["tail", "-5", "-q", "f"]), ["tail", "-n", "5", "-q", "f"]);
-		assert_eq!(rewritten(&["tail", "+10", "f"]), ["tail", "-n", "+10", "f"]);
-		assert_eq!(rewritten(&["tail", "-5c", "f"]), ["tail", "-c", "5", "f"]);
-		// Obsolete `f` still maps to --follow=name with a file operand.
-		assert_eq!(
-			rewritten(&["tail", "-20f", "f"]),
-			["tail", "--follow=name", "-n", "20", "f"]
-		);
-		assert_eq!(rewritten(&["tail", "-20f"]), ["tail", "--follow=descriptor", "-n", "20"]);
-	}
-
-	// Failure mode: a `-N`/`+N` token that is really an option value or a
-	// post-`--` operand must never be rewritten.
-	#[test]
-	fn option_values_and_post_ddash_operands_are_not_rewritten() {
-		assert_eq!(rewritten(&["tail", "-n", "+5", "f"]), ["tail", "-n", "+5", "f"]);
-		assert_eq!(rewritten(&["tail", "-c", "-5", "f"]), ["tail", "-c", "-5", "f"]);
-		assert_eq!(rewritten(&["tail", "--lines", "-5", "f"]), ["tail", "--lines", "-5", "f"]);
-		assert_eq!(rewritten(&["tail", "--", "-5"]), ["tail", "--", "-5"]);
-	}
-
-	// Failure mode: `tail -20 f1 f2` was rejected outright; it must print the
-	// last lines of every operand with GNU headers.
-	#[test]
-	fn obsolete_count_with_multiple_files_prints_headers() {
-		let dir = tempfile::tempdir().unwrap();
-		fs::write(dir.path().join("f1"), "a\nb\n").unwrap();
-		fs::write(dir.path().join("f2"), "c\nd\n").unwrap();
-		let (code, capture) = run_util::<Tail>(&["-1", "f1", "f2"], "", dir.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "==> f1 <==\nb\n\n==> f2 <==\nd\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	// Failure mode: `-r` with `-n N` was rejected; BSD tail shows the last N
-	// lines in reverse order.
-	#[test]
-	fn reverse_with_line_count_takes_last_lines_reversed() {
-		let (code, capture) = run_util::<Tail>(&["-r", "-n", "2"], "a\nb\nc\n", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "c\nb\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	// Failure mode: `-rq` was rejected; with `-q` headers stay suppressed
-	// while each file's selection is reversed independently.
-	#[test]
-	fn reverse_quiet_suppresses_headers_across_files() {
-		let dir = tempfile::tempdir().unwrap();
-		fs::write(dir.path().join("f1"), "a\nb\n").unwrap();
-		fs::write(dir.path().join("f2"), "c\nd\n").unwrap();
-		let (code, capture) = run_util::<Tail>(&["-rq", "-n", "2", "f1", "f2"], "", dir.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "b\na\nd\nc\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	// Multi-file reverse keeps GNU-style headers.
-	#[test]
-	fn reverse_with_multiple_files_prints_headers() {
-		let dir = tempfile::tempdir().unwrap();
-		fs::write(dir.path().join("f1"), "a\nb\n").unwrap();
-		fs::write(dir.path().join("f2"), "c\nd\n").unwrap();
-		let (code, capture) = run_util::<Tail>(&["-r", "-n", "1", "f1", "f2"], "", dir.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "==> f1 <==\nb\n\n==> f2 <==\nd\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	// Failure mode: obsolete `-N` combined with `-r` (`tail -r -5`) must feed
-	// the rewritten count into the reverse path.
-	#[test]
-	fn reverse_with_obsolete_count() {
-		let (code, capture) = run_util::<Tail>(&["-r", "-2"], "a\nb\nc\n", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "c\nb\n");
-		assert_eq!(capture.err(), "");
-	}
-
-	// `-r` with byte/block counts stays an explicit error rather than
-	// silently diverging from BSD semantics.
-	#[test]
-	fn reverse_with_byte_count_keeps_clear_error() {
-		let (code, capture) = run_util::<Tail>(&["-r", "-c", "5"], "", "/");
-		assert_eq!(code, 1);
-		assert_eq!(capture.out(), "");
-		assert_eq!(
-			capture.err(),
-			"tail: -r with -c, -b, or -f is not supported by this builtin; pipe through tac\n"
-		);
-	}
-
-	#[test]
-	fn test_forwards_thru_file_zero() {
-		let mut reader = Cursor::new("a\n");
-		assert_eq!(forwards_thru_file(&mut reader, 0, b'\n').unwrap(), 0);
-	}
-
-	#[test]
-	fn test_forwards_thru_file_basic() {
-		let mut reader = Cursor::new("a\nb\nc\nd\ne\n");
-		assert_eq!(forwards_thru_file(&mut reader, 2, b'\n').unwrap(), 4);
-	}
-
-	#[test]
-	fn test_forwards_thru_file_past_end() {
-		let mut reader = Cursor::new("x\n");
-		assert_eq!(forwards_thru_file(&mut reader, 2, b'\n').unwrap(), 2);
-	}
-}

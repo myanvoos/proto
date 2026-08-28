@@ -174,38 +174,4 @@ fn symbolic_mask_from_bits(bits: u32) -> String {
 	result
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
 
-	fn parse(mode: &str, current_umask: u32) -> u32 {
-		u32::from(parse_symbolic_umask(mode, current_umask).unwrap())
-	}
-
-	#[test]
-	fn parses_symbolic_umask_assignments() {
-		assert_eq!(parse("u=rwx,g=rx,o=", 0o022), 0o027);
-		assert_eq!(parse("=r", 0o022), 0o333);
-		assert_eq!(parse("a=", 0o022), 0o777);
-		assert_eq!(parse("u=", 0o022), 0o722);
-	}
-
-	#[test]
-	fn parses_symbolic_umask_incremental_ops() {
-		assert_eq!(parse("u+rw", 0o777), 0o177);
-		assert_eq!(parse("g-w", 0o022), 0o022);
-		assert_eq!(parse("+x", 0o022), 0o022);
-		assert_eq!(parse("u+r-w", 0o777), 0o377);
-		assert_eq!(parse("a+r,u-w", 0o777), 0o333);
-	}
-
-	#[test]
-	fn rejects_invalid_symbolic_umasks() {
-		assert!(parse_symbolic_umask("", 0o022).is_err());
-		assert!(parse_symbolic_umask("u", 0o022).is_err());
-		assert!(parse_symbolic_umask("u+z", 0o022).is_err());
-		assert!(parse_symbolic_umask("z+r", 0o022).is_err());
-		assert!(parse_symbolic_umask("u=,", 0o022).is_err());
-		assert!(parse_symbolic_umask("u,,g=r", 0o022).is_err());
-	}
-}

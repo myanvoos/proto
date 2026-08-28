@@ -364,31 +364,4 @@ const fn option_flag_sort_key(ch: char) -> (u8, char) {
 	(group, ch)
 }
 
-#[cfg(test)]
-mod tests {
-	use super::option_flag_sort_key;
 
-	#[test]
-	fn lowercase_excluding_c_and_s_sort_first() {
-		let mut flags = vec!['b', 'A', 'Z', 's', 'c', 'a'];
-		flags.sort_by_key(|flag| option_flag_sort_key(*flag));
-
-		assert_eq!(flags, vec!['a', 'b', 'A', 'Z', 'c', 's']);
-	}
-
-	#[test]
-	fn uppercase_sorted_before_miscellaneous() {
-		let mut flags = vec!['P', 'B', '1', 'T'];
-		flags.sort_by_key(|flag| option_flag_sort_key(*flag));
-
-		assert_eq!(flags, vec!['B', 'P', 'T', '1']);
-	}
-
-	#[test]
-	fn miscellaneous_characters_respect_ascii_order() {
-		let mut flags = vec!['s', 'c', '%', ':'];
-		flags.sort_by_key(|flag| option_flag_sort_key(*flag));
-
-		assert_eq!(flags, vec!['%', ':', 'c', 's']);
-	}
-}

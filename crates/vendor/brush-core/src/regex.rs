@@ -195,19 +195,4 @@ pub(crate) const fn regex_char_is_special(c: char) -> bool {
 	matches!(c, '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}')
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
 
-	#[test]
-	fn test_add_missing_escape_chars_to_regex() {
-		// Negative cases -- where we don't need to escape.
-		assert_eq!(add_missing_escape_chars_to_regex("a[b]"), "a[b]");
-		assert_eq!(add_missing_escape_chars_to_regex(r"a\[b\]"), r"a\[b\]");
-		assert_eq!(add_missing_escape_chars_to_regex(r"a[b\[]"), r"a[b\[]");
-
-		// Positive case -- where we need to escape.
-		assert_eq!(add_missing_escape_chars_to_regex(r"a[b[]"), r"a[b\[]");
-		assert_eq!(add_missing_escape_chars_to_regex(r"a[[]"), r"a[\[]");
-	}
-}

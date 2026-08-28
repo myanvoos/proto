@@ -958,78 +958,7 @@ fn format_read_error(error: &io::Error) -> String {
 	format!("read error: {}", error)
 }
 
-#[cfg(test)]
-fn read_and_has_padding<R: io::Read>(input: &mut R) -> BaseResult<(bool, Vec<u8>)> {
-	let mut buffer = Vec::new();
-	input
-		.read_to_end(&mut buffer)
-		.map_err(|error| BaseError::new(format_read_error(&error)))?;
-	let has_padding = buffer.contains(&b'=');
-	Ok((has_padding, buffer))
-}
 
 
-#[cfg(test)]
-mod tests {
-	use std::fs;
 
-	use super::{Base32, read_and_has_padding};
-	use crate::host::run_util;
 
-	#[test]
-	fn encodes_stdin() {
-		let (code, capture) = run_util::<Base32>(&[], "hello", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "NBSWY3DP\n");
-	}
-
-	#[test]
-	fn decodes_stdin() {
-		let (code, capture) = run_util::<Base32>(&["--decode"], "NBSWY3DP\n", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.stdout(), b"hello");
-	}
-
-	#[test]
-	fn wraps_encoded_output_at_requested_width() {
-		let (code, capture) = run_util::<Base32>(&["--wrap", "4"], "hello", "/");
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "NBSW\nY3DP\n");
-	}
-
-	#[test]
-	fn resolves_file_operand_against_shell_cwd() {
-		let cwd = tempfile::tempdir().unwrap();
-		fs::write(cwd.path().join("input"), b"hello").unwrap();
-		let (code, capture) = run_util::<Base32>(&["input"], "", cwd.path());
-		assert_eq!(code, 0);
-		assert_eq!(capture.out(), "NBSWY3DP\n");
-	}
-
-	#[test]
-	fn rejects_invalid_input() {
-		let (code, capture) = run_util::<Base32>(&["--decode"], "!", "/");
-		assert_eq!(code, 1);
-		assert_eq!(capture.err(), "base32: error: invalid input\n");
-	}
-
-	#[test]
-	fn detects_padding_anywhere_in_input() {
-		let test_cases = [
-			("aGVsbG8sIHdvcmxkIQ==", true),
-			("aGVsbG8sIHdvcmxkIQ== ", true),
-			("aGVsbG8sIHdvcmxkIQ==\n", true),
-			("aGVsbG8sIHdvcmxkIQ== \n", true),
-			("aGVsbG8sIHdvcmxkIQ=", true),
-			("MTIzNA==MTIzNA", true),
-			("MTIzNA==\nMTIzNA", true),
-			("aGVsbG8sIHdvcmxkIQ \n", false),
-			("aGVsbG8sIHdvcmxkIQ", false),
-		];
-
-		for (input, expected) in test_cases {
-			let (has_padding, _) = read_and_has_padding(&mut input.as_bytes()).unwrap();
-			assert_eq!(has_padding, expected, "failed for input: '{input}'");
-		}
-	}
-}

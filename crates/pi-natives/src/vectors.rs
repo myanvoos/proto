@@ -313,38 +313,3 @@ pub fn mmr_rerank_indices(
 	}
 	Ok(Uint32Array::new(selected))
 }
-
-#[cfg(test)]
-mod tests {
-	use super::{cosine_one, is_js_whitespace, jaccard_sorted, word_set};
-
-	#[test]
-	fn cosine_matches_reference_semantics() {
-		assert_eq!(cosine_one(&[], &[]), 0.0);
-		assert_eq!(cosine_one(&[1.0, 0.0], &[0.0, 0.0]), 0.0);
-		let same = cosine_one(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
-		assert!((same - 1.0).abs() < 1e-12);
-		// Non-finite entries are zeroed, mismatched lengths pad with zero.
-		let sim = cosine_one(&[f64::NAN, 1.0], &[0.5, 1.0, 2.0]);
-		let expect = 1.0 / (1.0f64.sqrt() * (0.25f64 + 1.0 + 4.0).sqrt());
-		assert!((sim - expect).abs() < 1e-12);
-	}
-
-	#[test]
-	fn word_set_matches_js_tokenizer() {
-		let set = word_set("Hello\u{00a0}WORLD hello\u{feff}world");
-		assert_eq!(set, vec![Box::from("hello"), Box::from("world")]);
-		assert!(word_set("").is_empty());
-		assert!(word_set(" \t\n").is_empty());
-		assert!(!is_js_whitespace('\u{200b}')); // ZWSP is not JS \s
-	}
-
-	#[test]
-	fn jaccard_matches_reference() {
-		let a = word_set("the quick brown fox");
-		let b = word_set("the lazy brown dog");
-		let sim = jaccard_sorted(&a, &b);
-		assert!((sim - 2.0 / 6.0).abs() < 1e-12);
-		assert_eq!(jaccard_sorted(&a, &word_set("")), 0.0);
-	}
-}

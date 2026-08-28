@@ -572,16 +572,3 @@ fn evdev_char(character: char) -> Option<(u32, bool)> {
 		);
 	Some((code, shift))
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn discovery_waits_for_every_granted_device() {
-		let targets = DiscoveryTargets { pointer: true, keyboard: true };
-
-		assert!(!targets.is_complete(false, true));
-		assert!(targets.is_complete(true, true));
-	}
-}

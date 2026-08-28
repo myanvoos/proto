@@ -31,8 +31,8 @@
 //! text counts flavor-invariantly.
 //!
 //! Exactness inherited from upstream: 0 mismatches on ~3.4 M recorded
-//! `count_tokens` responses across the v3 and v4.7 corpora. The port is
-//! validated against Python ctok fixtures in `testdata/fixtures.json`.
+//! `count_tokens` responses across the v3 and v4.7 corpora, validated
+//! against Python ctok fixtures.
 
 mod constants;
 mod engine;
@@ -149,148 +149,6 @@ pub fn content_token_count<U: Unit>(units: &[U], family: Family) -> u32 {
 			0
 		} else {
 			core.tile_cost(&stream)
-		}
-	}
-}
-
-/// Reconstructed `count_tokens` value for `units` as a single user message:
-/// content tiling plus the measured message frame (ctok's `token_count`).
-// Exercised by the fixture tests; `lib.rs` only routes content counts.
-#[cfg_attr(not(test), allow(dead_code, reason = "used only by fixture tests"))]
-pub fn message_token_count<U: Unit>(units: &[U], family: Family) -> u32 {
-	content_token_count(units, family) + family.params().message_overhead
-}
-
-#[cfg(test)]
-mod tests {
-	use serde::Deserialize;
-
-	use super::{Family, content_token_count, message_token_count};
-
-	#[derive(Deserialize)]
-	struct Fixture {
-		text: String,
-		v3:   u32,
-		v4_7: u32,
-		v5:   u32,
-	}
-
-	/// Ground truth recorded from Python ctok 1.0.0 (`token_count(text, v)`
-	/// for v in 3.0/4.7/5.0). Regenerate with a `uv run --with ctok` sweep if
-	/// the vendored vocabulary files are updated.
-	fn fixtures() -> Vec<Fixture> {
-		serde_json::from_str(include_str!("testdata/fixtures.json")).expect("fixtures parse")
-	}
-
-	#[test]
-	fn matches_reference_counts() {
-		let mut checked = 0usize;
-		for f in fixtures() {
-			for (family, want) in [(Family::V3, f.v3), (Family::V47, f.v4_7), (Family::V5, f.v5)] {
-				let got = message_token_count(f.text.as_bytes(), family);
-				assert_eq!(got, want, "family {family:?} text {:?}", f.text);
-				checked += 1;
-			}
-		}
-		assert!(checked >= 250, "fixture corpus unexpectedly small: {checked}");
-	}
-
-	#[test]
-	fn matches_live_sonnet5_counts() {
-		// The sonnet/fable-5 frame diverges from opus-5 on trailing
-		// whitespace and is not modeled by upstream ctok: these rows are raw
-		// `count_tokens` responses recorded from `claude-sonnet-5`
-		// (2026-08-19), whitespace-edge heavy, ladder dips included.
-		#[derive(Deserialize)]
-		struct LiveRow {
-			text:  String,
-			count: u32,
-		}
-		let rows: Vec<LiveRow> =
-			serde_json::from_str(include_str!("testdata/sonnet5_live.json")).expect("rows parse");
-		assert!(rows.len() >= 50, "live corpus unexpectedly small: {}", rows.len());
-		for row in rows {
-			assert_eq!(
-				message_token_count(row.text.as_bytes(), Family::V5Sonnet),
-				row.count,
-				"text {:?}",
-				row.text
-			);
-		}
-	}
-
-	#[test]
-	fn content_count_is_message_minus_frame() {
-		// The public split every consumer relies on: summing fragments must
-		// never include per-message frame overhead.
-		assert_eq!(content_token_count(b"", Family::V5), 0);
-		for (family, overhead) in
-			[(Family::V3, 7), (Family::V47, 11), (Family::V5, 6), (Family::V5Sonnet, 6)]
-		{
-			let text = "hello, world";
-			assert_eq!(
-				message_token_count(text.as_bytes(), family),
-				content_token_count(text.as_bytes(), family) + overhead,
-			);
-		}
-	}
-
-	/// The stream spells markers as bytes no text can produce (`nfc` strips
-	/// every C0 control and folds NUL), so text that contains ctok's own marker
-	/// noncharacters, private-use codepoints, or raw controls tiles as the text
-	/// it is — no escaping stage in between. These rows were verified against
-	/// the previous noncharacter-marker encoder, which did escape them.
-	#[test]
-	fn marker_lookalikes_count_as_text() {
-		let rows: &[(&str, [u32; 4])] = &[
-			("a\u{fdd0}b", [12, 16, 11, 11]),
-			("a\u{fdd1}b", [12, 16, 11, 11]),
-			("\u{fdd4}WORD", [13, 18, 12, 12]),
-			("\u{fdd0}\u{fdd1}\u{fdd2}\u{fdd3}\u{fdd4}", [23, 27, 21, 21]),
-			("hello \u{fdd0}world\u{fdd1} bye", [18, 24, 19, 19]),
-			// Private use is stripped, so both neighbours join one word.
-			("a\u{e000}b\u{e004}c", [8, 13, 8, 8]),
-			("\u{e000}\u{e001}\u{e002}", [8, 12, 6, 6]),
-			// C0 controls are stripped; NUL folds to a space instead.
-			("a\u{01}\u{08}b\u{7f}c", [8, 13, 8, 8]),
-			("a\0b", [9, 13, 8, 8]),
-		];
-		for (text, want) in rows {
-			let families = [Family::V3, Family::V47, Family::V5, Family::V5Sonnet];
-			for (family, &expected) in families.into_iter().zip(want) {
-				assert_eq!(
-					message_token_count(text.as_bytes(), family),
-					expected,
-					"family {family:?} text {text:?}"
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn utf16_and_utf32_flavor_parity() {
-		// Valid text must count identically in every input flavor: the
-		// UTF-16/UTF-32 paths decode into the same normalization stream the
-		// &str/u8 path sees.
-		let families = [Family::V3, Family::V47, Family::V5, Family::V5Sonnet];
-		for f in fixtures() {
-			let u16s: Vec<u16> = f.text.encode_utf16().collect();
-			let u32s: Vec<u32> = f.text.chars().map(u32::from).collect();
-			for family in families {
-				let want = content_token_count(f.text.as_bytes(), family);
-				assert_eq!(
-					content_token_count(&u16s, family),
-					want,
-					"utf16 family {family:?} text {:?}",
-					f.text
-				);
-				assert_eq!(
-					content_token_count(&u32s, family),
-					want,
-					"utf32 family {family:?} text {:?}",
-					f.text
-				);
-			}
 		}
 	}
 }

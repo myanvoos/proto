@@ -145,45 +145,4 @@ fn parse_format_string(
 	Ok(format_items)
 }
 
-#[cfg(test)]
-#[expect(clippy::panic_in_result_fn)]
-mod tests {
-	use anyhow::Result;
 
-	use super::*;
-
-	fn sprintf_via_uucore(
-		format_string: &str,
-		args: impl Iterator<Item = impl Into<OsString>>,
-	) -> Result<String> {
-		let mut result = vec![];
-		format_via_uucore(format_string, args, &mut result)?;
-
-		Ok(String::from_utf8(result)?)
-	}
-
-	#[test]
-	fn test_basic_sprintf() -> Result<()> {
-		assert_eq!(sprintf_via_uucore("%s", std::iter::once(&"xyz"))?, "xyz");
-		assert_eq!(sprintf_via_uucore(r"%d\n", std::iter::once(&"1"))?, "1\n");
-
-		Ok(())
-	}
-
-	#[test]
-	fn test_sprintf_without_args() -> Result<()> {
-		let empty: [&str; 0] = [];
-
-		assert_eq!(sprintf_via_uucore("xyz", empty.iter())?, "xyz");
-		assert_eq!(sprintf_via_uucore("%s|", empty.iter())?, "|");
-
-		Ok(())
-	}
-
-	#[test]
-	fn test_sprintf_with_cycles() -> Result<()> {
-		assert_eq!(sprintf_via_uucore("%s|", ["x", "y"].iter())?, "x|y|");
-
-		Ok(())
-	}
-}

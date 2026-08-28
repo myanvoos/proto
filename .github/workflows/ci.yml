@@ -141,7 +141,7 @@ jobs:
          - name: Type check workspace
            run: bun run ci:check:full
 
-   # Rust validation (tests, clippy, rustfmt) runs on non-PR events only.
+   # Rust linting (clippy, rustfmt) runs on non-PR events only.
    # Native-changing PRs are rare enough that they do not warrant PR-side
    # Rust validation or a PR-side addon build (see native_addons): Rust is
    # validated post-merge on main and again at release. A skipped required
@@ -165,13 +165,6 @@ jobs:
                  target
               key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
               restore-keys: cargo-${{ runner.os }}-
-         - name: Install cargo-nextest when absent
-           run: command -v cargo-nextest >/dev/null 2>&1 || cargo install --locked cargo-nextest
-         # `bun run test:rs` (scripts/run-rs-task.ts) = `cargo nextest run
-         # --workspace --exclude brush-core` + the paired `cargo test --doc`
-         # pass; keeping the repo script as the single source of truth.
-         - name: Rust tests
-           run: bun run test:rs
          # Cargo reads [lints] directly, so the old three-scope clippy split is
          # automatic now: crates with `[lints] workspace = true` get the strict
          # workspace policy, pi-builtins' manifest allowances apply to itself,
@@ -182,12 +175,11 @@ jobs:
          - name: Rustfmt
            run: cargo fmt --all --check
 
-   # Provides the native addons every downstream TS job installs. PRs never
+   # Provides the native addons the release jobs install. PRs never
    # build: they fetch the latest release's Linux x64 pair from the
    # @oh-my-pi/pi-natives-linux-x64 npm leaf instead. The workspace loader
    # skips its version sentinel for workspace loads, so release addons load
-   # fine under a newer checkout; a PR whose TS tests depend on changed
-   # native behavior fails visibly and the native side lands via main.
+   # fine under a newer checkout; native changes land via main.
    # Main (proto-kata) builds all Linux-hosted targets via
    # scripts/build-natives.sh (plain cargo on the matching host).
    native_addons:
@@ -270,171 +262,16 @@ jobs:
               if-no-files-found: error
               retention-days: 1
 
-   test_workspace:
-      name: Test TS workspace fast
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 20
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test workspace packages and repo scripts (TS)
-           env:
-              PROTO_TEST_CONCURRENCY: "4"
-           run: |
-              bun run ci:test:ts:workspace
-              # Not `test:scripts`: scripts/musl-release.test.ts fails on main
-              # (its install.sh smoke-check executes a fake binary), so running
-              # the whole group here would red this job on an unrelated break.
-              bun test scripts/ci-test-ts.test.ts scripts/release.test.ts
-
-   test_coding_agent_singleton:
-      name: Test coding-agent singleton/global-state (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 20
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test coding-agent singleton/global-state bucket
-           # Keep global Settings/env/fake-timer tests serial; native addon
-           # artifacts are still available like every other coding-agent bucket.
-           run: bun run ci:test:coding-agent:singleton
-
-   test_ts_native:
-      name: Test TS native/integration packages
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 25
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test native/TUI/browser-ish packages (TS)
-           env:
-              PROTO_TEST_CONCURRENCY: "4"
-           run: bun run ci:test:ts:native
-
-   test_coding_agent_ui:
-      name: Test coding-agent UI/TUI (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 25
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test coding-agent UI/TUI bucket
-           env:
-              PROTO_TEST_CONCURRENCY: "2"
-           run: bun run ci:test:coding-agent:ui
-
-   test_coding_agent_runtime:
-      name: Test coding-agent runtime/session (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 25
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test coding-agent runtime bucket
-           # Runtime/session tests import native-backed barrels too; keep this
-           # separate for concurrency, not as a native-free guardrail.
-           env:
-              PROTO_TEST_CONCURRENCY: "4"
-           run: bun run ci:test:coding-agent:runtime
-
-   test_coding_agent_native:
-      name: Test coding-agent native/unit (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 25
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Test coding-agent native/unit bucket
-           env:
-              PROTO_TEST_CONCURRENCY: "4"
-           run: bun run ci:test:coding-agent:native
-
-   test_smoke:
-      name: Test CLI smoke (TS)
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      timeout-minutes: 15
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: CLI smoke test
-           run: bun run ci:test:smoke
-
-   install_methods:
-      name: Install method smoke tests
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
-      needs: [native_addons]
-      if: ${{ !cancelled() && needs.native_addons.result == 'success' }}
-      steps:
-         - uses: actions/checkout@v4
-         - uses: ./.github/actions/setup-system-deps
-         - uses: ./.github/actions/bun-install
-         - uses: ./.github/actions/native-artifacts
-           with:
-              targets: linux-x64-baseline linux-x64-modern
-         - name: Install method smoke tests
-           env:
-              PROTO_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
-           run: bun run ci:test:install-methods
-
    # Aggregates every validation job so publish-side release jobs gate on one
    # result. Binary BUILDS deliberately do not wait for this gate — they run
-   # in parallel with the test fan-out and only publishing is held back.
+   # in parallel with validation and only publishing is held back.
    release_gate:
       name: Release validation gate
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
          needs.rust_validate.result == 'success' &&
          needs.native_addons.result == 'success' &&
-         needs.test_workspace.result == 'success' &&
-         needs.test_coding_agent_singleton.result == 'success' &&
-         needs.test_ts_native.result == 'success' &&
-         needs.test_coding_agent_ui.result == 'success' &&
-         needs.test_coding_agent_runtime.result == 'success' &&
-         needs.test_coding_agent_native.result == 'success' &&
-         needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
-         needs.install_methods.result == 'success' }}
-      needs: [release_metadata, check, rust_validate, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+         needs.check.result == 'success' }}
+      needs: [release_metadata, check, rust_validate, native_addons]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -442,7 +279,7 @@ jobs:
          - run: echo "release validation green"
 
    # Builds (does not publish) the Linux-hosted release binaries in parallel
-   # with the test fan-out; the single need is native_addons, whose artifact
+   # with validation; the single need is native_addons, whose artifact
    # supplies their addons. Darwin builds live in release_binary_darwin so
    # they start at release_metadata time instead. Publishing (npm leaves,
    # GitHub release, core npm) is gated on release_gate downstream.

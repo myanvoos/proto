@@ -25,10 +25,6 @@ bun gen-ctok-vocab.ts   # fetch upstream, emit raw bins into cache/
 bun pack-ctok.ts        # zstd -19 into ../data/
 ```
 
-If the upstream pin moves, also regenerate
-`../src/utok/claude/testdata/fixtures.json` against the same ctok release
-(see the fixture doc in `../src/utok/claude/mod.rs`).
-
 The other `*.bin.zst` files here are the UTOK1 BPE rank tables packed by
 the per-family scripts in `../tools/` (container format and per-family
 split specs: `families.json` in this directory).
