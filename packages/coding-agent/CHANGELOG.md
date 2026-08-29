@@ -27,6 +27,7 @@
 ### Added
 
 - Top-level agents are now always Orchestrators with persistent worker control through `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, and `orchestrate_list`.
+- kernel: content-guarded edit helpers in the Python prelude — `edit` (create-only or expect-guarded write), `block_range` (tree-sitter block extent), and `edit_block` (guarded block replacement).
 
 ### Added
 - Config discovery now includes the legacy pi directories: project `.pi/` and user `~/.pi/agent/` are scanned (after `.proto`) for commands, hooks, extensions, skills, agents, prompts, LSP configs, and themes.

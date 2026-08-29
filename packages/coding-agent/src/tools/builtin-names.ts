@@ -4,6 +4,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"edit",
 	"ask",
 	"eval",
+	"kernel",
 	"github",
 	"lsp",
 	"inspect_image",

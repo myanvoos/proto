@@ -189,6 +189,7 @@ import {
 	BUILTIN_TOOLS,
 	createTools,
 	type DeferredDiagnosticsEntry,
+	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
 	discoverStartupLspServers,
 	EditTool,
@@ -2192,27 +2193,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const cursorCanMutateFiles = editWasGranted || toolRegistry.has("write");
 
-		let writeRegistration: Promise<boolean> | undefined;
 		const ensureWriteRegistered = (): Promise<boolean> => {
-			if (toolRegistry.has("write")) return Promise.resolve(builtInRegistryToolNames.has("write"));
-			writeRegistration ??= (async () => {
-				const writeTool = await logger.time("createTools:write:session", BUILTIN_TOOLS.write, toolSession);
-				if (!writeTool || toolRegistry.has("write")) return builtInRegistryToolNames.has("write");
-				const nativeWrite = wrapToolWithMetaNotice(writeTool);
-				toolRegistry.set(writeTool.name, new ExtensionToolWrapper(nativeWrite, extensionRunner) as Tool);
-				builtInRegistryToolNames.add(writeTool.name);
-				nativeToolsByName.set(writeTool.name, nativeWrite);
-				return true;
-			})().finally(() => {
-				writeRegistration = undefined;
-			});
-			return writeRegistration;
+			if ("write" in DISABLED_TOOL_NAMES) return Promise.resolve(false);
+			return Promise.resolve(toolRegistry.has("write") && builtInRegistryToolNames.has("write"));
 		};
-
-		const hasDeferrableTools = Array.from(toolRegistry.values()).some(tool => tool.deferrable === true);
-		if (!restrictToolNames && (hasDeferrableTools || deferMCPDiscoveryForUI)) {
-			await ensureWriteRegistered();
-		}
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 

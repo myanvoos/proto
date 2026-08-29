@@ -7,6 +7,7 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	edit: true,
 	computer: true,
 	eval: true,
+	kernel: true,
 	orchestrate_spawn: true,
 	orchestrate_send: true,
 	orchestrate_wait: true,

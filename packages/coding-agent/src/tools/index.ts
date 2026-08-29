@@ -6,7 +6,6 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import { EditTool } from "../edit";
 import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { checkRubyKernelAvailability } from "../eval/rb/kernel";
@@ -44,6 +43,7 @@ import { resolveEvalBackends } from "./eval-backends";
 import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
 import { InspectImageTool } from "./inspect-image";
+import { KernelTool } from "./kernel";
 import { ManageSkillTool } from "./manage-skill";
 import {
 	OrchestrateKillTool,
@@ -56,7 +56,6 @@ import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
-import { WriteTool } from "./write";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
@@ -80,6 +79,7 @@ export * from "./fleet";
 export * from "./gh";
 export * from "./image-gen";
 export * from "./inspect-image";
+export * from "./kernel";
 export * from "./manage-skill";
 export * from "./orchestrate";
 export * from "./read";
@@ -309,12 +309,13 @@ export interface ToolSession {
 
 type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
-export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
-	read: s => new ReadTool(s),
+export const DISABLED_TOOL_NAMES: Record<string, true> = { read: true, edit: true, write: true };
+
+export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "write">, ToolFactory> = {
 	bash: s => new BashTool(s),
-	edit: s => new EditTool(s),
 	ask: AskTool.createIf,
 	eval: s => new EvalTool(s),
+	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
@@ -330,7 +331,6 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	fleet: s => new FleetTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
-	write: s => new WriteTool(s),
 	manage_skill: ManageSkillTool.createIf,
 };
 
@@ -431,6 +431,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
+		if (name in DISABLED_TOOL_NAMES) return false;
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();
@@ -490,7 +491,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
 
-	const activeToolNames = new Set(baseEntries.map(([name]) => name));
+	const activeToolNames = new Set([...baseEntries.map(([name]) => name), "read"]);
 	if (session.setActiveToolNames) {
 		session.setActiveToolNames(activeToolNames);
 	} else {
@@ -508,6 +509,12 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	session.toolRegistry = toolRegistry;
 	const builtInNames = new Set(tools.map(tool => tool.name));
 	for (const tool of tools) toolRegistry.set(tool.name, tool);
+	const readTool = await logger.time("createTools:read-bridge", (s: ToolSession) => new ReadTool(s), session);
+	if (readTool) {
+		const wrappedRead = wrapToolWithMetaNotice(readTool);
+		toolRegistry.set(wrappedRead.name, wrappedRead);
+		builtInNames.add(wrappedRead.name);
+	}
 
 	const xdevEnabled =
 		!restrictToolNames && session.settings.get("tools.xdev") && tools.some(tool => tool.name === "write");
@@ -529,29 +536,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		tools = kept;
 	}
 
-	const xdevMounted = (session.xdev?.mountedNames.size ?? 0) > 0;
-	if (
-		!restrictToolNames &&
-		tools.some(tool => tool.deferrable === true) &&
-		!tools.some(tool => tool.name === "write")
-	) {
-		const writeTool = await logger.time("createTools:write", BUILTIN_TOOLS.write, session);
-		if (writeTool) {
-			const wrapped = wrapToolWithMetaNotice(writeTool);
-			tools.push(wrapped);
-			toolRegistry.set(wrapped.name, wrapped);
-			builtInNames.add(wrapped.name);
-		}
-	}
-	if (!restrictToolNames && xdevMounted && !tools.some(tool => tool.name === "read")) {
-		const readTool = await logger.time("createTools:read", BUILTIN_TOOLS.read, session);
-		if (readTool) {
-			const wrapped = wrapToolWithMetaNotice(readTool);
-			tools.push(wrapped);
-			toolRegistry.set(wrapped.name, wrapped);
-			builtInNames.add(wrapped.name);
-		}
-	}
 	if (xdevEnabled) {
 		const finalActiveNames = new Set(tools.map(tool => tool.name));
 		if (session.setActiveToolNames) session.setActiveToolNames(finalActiveNames);

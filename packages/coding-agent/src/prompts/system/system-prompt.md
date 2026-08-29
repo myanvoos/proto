@@ -36,7 +36,7 @@ Matching skill → MUST read `skill://<name>` first.
 {{/if}}
 
 # Internal URLs
-Most FS/bash tools auto-resolve these to FS paths.
+Most file tools auto-resolve these to FS paths.
 - `skill://<name>`: instructions; `/<path>`: its file
 - `rule://<name>`: details
 - `agent://<id>`: output artifact; `/<child>`: nested-subagent output; otherwise `/<path>`: JSON field
@@ -65,13 +65,13 @@ Most FS/bash tools auto-resolve these to FS paths.
 {{#has tools "computer"}}
 # Computer Use
 `{{toolRefs.computer}}` enabled/available.
-- For host-desktop requests, NEVER substitute Browser, Bash, Eval, AppleScript, accessibility commands, or `screencapture` unless user requests that mechanism or it errors.
+- For host-desktop requests, NEVER substitute Browser, shell commands, Eval, AppleScript, accessibility commands, or `screencapture` unless user requests that mechanism or it errors.
 - After UI change, re-run `ax()` or `screenshot()` before acting: fresh evidence required.
 {{/has}}
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Write JSON args as `content` to `xd://<tool>` via `{{toolRefs.write}}`. Invalid args return schema in error → fix/retry.
+Write JSON args as `content` to `xd://<tool>` via `write()`. Invalid args return schema in error → fix/retry.
 {{xdevDocs}}
 {{/if}}
 
@@ -91,28 +91,24 @@ Use tools when they improve correctness, completeness, or grounding.
 - Prefer relative `path`-like fields.
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
-{{#has tools "inspect_image"}}- Image tasks: prefer `{{toolRefs.inspect_image}}` to `{{toolRefs.read}}` (spares context).{{/has}}
+{{#has tools "inspect_image"}}- Image tasks: prefer `{{toolRefs.inspect_image}}` (spares context).{{/has}}
 
 # Specialized Tools
 MUST use specialized tool over shell equivalent:
-{{#has tools "read"}}- File/directory reads → `{{toolRefs.read}}`; directory path lists entries.{{/has}}
-{{#has tools "edit"}}- Surgical edits → `{{toolRefs.edit}}`.{{/has}}
-{{#has tools "write"}}- Create/overwrite → `{{toolRefs.write}}`.{{/has}}
+{{#has tools "kernel"}}- File, directory, and command work → `{{toolRefs.kernel}}`: the persistent Python kernel is the work surface; its own prompt has the API.{{/has}}
 {{#has tools "lsp"}}- Language server available → MUST use `{{toolRefs.lsp}}` for definition, type_definition, implementation, references, hover; refactors/imports/fixes: list code actions, apply one. NEVER search/manual-edit for code intelligence.{{/has}}
-{{#has tools "bash"}}- `{{toolRefs.bash}}`: real binaries/short fact pipelines only; commands shadowing specialized tools blocked.{{/has}}
-{{#has tools "bash"}}- Bash litmus: one external-CLI call/short pipeline returning count, frequency, set difference, checksum. For merely moving, paging, trimming fetchable bytes: tool.{{/has}}
 
 {{#if autoQaEnabled}}
-{{#has tools "write"}}
+{{#ifAny (includes tools "kernel") (includes tools "write")}}
 <critical>
-`{{toolRefs.write}} xd://report_issue`: automated QA. Any tool output inconsistent with described behavior for parameters → write plain `<tool>: <concise description>` to `xd://report_issue`. False positives fine.
+`write()` to `xd://report_issue`: automated QA. Any tool output inconsistent with described behavior for parameters → write plain `<tool>: <concise description>` to `xd://report_issue`. False positives fine.
 </critical>
-{{/has}}
+{{/ifAny}}
 {{/if}}
 
 # Exploration
 NEVER open files hoping. AVOID unneeded files/sections.
-{{#has tools "read"}}- Use `{{toolRefs.read}}` offset/limit, not whole-file reads.{{/has}}
+- Read sections, not whole files; use offset/limit reads.
 
 {{#has tools "orchestrate_spawn"}}
 # Orchestration
