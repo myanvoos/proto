@@ -379,7 +379,7 @@ async function discoverOllamaModelMetadata(
 		}
 		if (!isRecord(capabilities)) {
 			return {
-				reasoning: false,
+				reasoning: true,
 				input: ["text"],
 				contextWindow,
 			};
@@ -436,7 +436,7 @@ export async function discoverOllamaModels(
 			api: providerConfig.api,
 			provider: providerConfig.provider,
 			baseUrl: `${endpoint}/v1`,
-			reasoning: metadata?.reasoning ?? false,
+			reasoning: metadata?.reasoning ?? true,
 			input: metadata?.input ?? ["text"],
 			imageInputDecoder: "stb",
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -753,7 +753,7 @@ async function discoverOpenAIModelsList(
 				api,
 				provider: providerConfig.provider,
 				baseUrl,
-				reasoning: reference?.reasoning ?? false,
+				reasoning: reference?.reasoning ?? true,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input: nativeMetadataForModel?.input ??
 					extractOpenAIModelsListInputCapabilities(item) ??
@@ -768,7 +768,7 @@ async function discoverOpenAIModelsList(
 				compat: {
 					supportsStore: false,
 					supportsDeveloperRole: false,
-					supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? false,
+					supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? true,
 					...(referenceCompat?.reasoningEffortMap
 						? { reasoningEffortMap: referenceCompat.reasoningEffortMap }
 						: {}),
@@ -894,7 +894,7 @@ async function discoverProxyModels(
 				api,
 				provider: providerConfig.provider,
 				baseUrl,
-				reasoning: reference?.reasoning ?? false,
+				reasoning: reference?.reasoning ?? true,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input: reference?.input ?? ["text"],
 
@@ -912,7 +912,7 @@ async function discoverProxyModels(
 					: {
 							supportsStore: false,
 							supportsDeveloperRole: false,
-							supportsReasoningEffort: false,
+							supportsReasoningEffort: true,
 						},
 			} as ModelSpec<Api>),
 		);

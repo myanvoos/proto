@@ -4,8 +4,8 @@ import { adaptDesktopSession } from "./desktop-adapter.js";
 
 
 const nativeBindings = loadNative();
-
-
+// --- generated native exports (do not edit) ---
+// classes
 export const DesktopSession = adaptDesktopSession(nativeBindings.DesktopSession);
 export const FileLock = nativeBindings.FileLock;
 export const HighlightStream = nativeBindings.HighlightStream;
@@ -16,7 +16,7 @@ export const PtySession = nativeBindings.PtySession;
 export const Shell = nativeBindings.Shell;
 export const TtyWriter = nativeBindings.TtyWriter;
 
-
+// functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
 export const __piNativesV18_0_0 = nativeBindings.__piNativesV18_0_0;
 export const astEdit = nativeBindings.astEdit;
@@ -77,7 +77,7 @@ export const vectorIndexTopK = nativeBindings.vectorIndexTopK;
 export const visibleWidth = nativeBindings.visibleWidth;
 export const wrapTextWithAnsi = nativeBindings.wrapTextWithAnsi;
 
-
+// string/numeric enums (napi-rs string_enum produces TS-only const enum)
 export const AstMatchStrictness = {
 	Cst: "cst",
 	Smart: "smart",
@@ -139,4 +139,5 @@ export const ProcessStatus = {
 	Running: "running",
 	Exited: "exited",
 };
+// --- end generated native exports ---
 

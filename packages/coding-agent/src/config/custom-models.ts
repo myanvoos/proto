@@ -119,7 +119,7 @@ export function finalizeCustomModel(model: CustomModelOverlay, options: CustomMo
 		api: resolvedModel.api,
 		provider: resolvedModel.provider,
 		baseUrl: resolvedModel.baseUrl,
-		reasoning: resolvedModel.reasoning ?? reference?.reasoning ?? (options.useDefaults ? false : undefined),
+		reasoning: resolvedModel.reasoning ?? reference?.reasoning ?? true,
 		thinking: inheritReferenceThinking(resolvedModel.thinking, reference, resolvedModel.provider),
 		input: input as ("text" | "image")[],
 		imageInputDecoder: resolvedModel.imageInputDecoder,

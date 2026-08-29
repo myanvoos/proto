@@ -358,7 +358,7 @@ async function fetchOllamaNativeModels(
 				api: "openai-responses",
 				provider: "ollama",
 				baseUrl,
-				reasoning: metadata.reasoning ?? false,
+				reasoning: metadata.reasoning ?? true,
 				thinking: metadata.thinking,
 				input: metadata.input ?? ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -3037,7 +3037,8 @@ export function lmStudioModelManagerOptions(
 				apiKey,
 				mapModel: (entry, defaults) => {
 					const reference = references.get(defaults.id);
-					return mapWithBundledReference(entry, defaults, reference);
+					const model = mapWithBundledReference(entry, defaults, reference);
+					return { ...model, reasoning: model.reasoning || reference === undefined };
 				},
 				fetch: config?.fetch,
 			});
@@ -4274,7 +4275,7 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 				: supportsVision === false
 					? ["text"]
 					: (reference?.input ?? ["text"]),
-		reasoning: typeof supportsReasoning === "boolean" ? supportsReasoning : (reference?.reasoning ?? false),
+		reasoning: typeof supportsReasoning === "boolean" ? supportsReasoning : (reference?.reasoning ?? true),
 		thinking: reference?.thinking,
 		cost: getLiteLLMCost(entry) ?? reference?.cost ?? UNKNOWN_PROXY_COST,
 		...(supportsTools !== undefined ? { supportsTools } : {}),
@@ -4515,15 +4516,12 @@ export function vllmModelManagerOptions(config?: VllmModelManagerConfig): ModelM
 				baseUrl,
 				apiKey,
 				mapModel: (entry, defaults) => {
-					const model = mapWithBundledReference(entry, defaults, references.get(defaults.id));
+					const reference = references.get(defaults.id);
+					const model = mapWithBundledReference(entry, defaults, reference);
 					return {
 						...model,
 						contextWindow: toPositiveNumber(entry.max_model_len, model.contextWindow),
-
-						reasoning:
-							model.reasoning ||
-							isQwen38PlusTemplateEffortModelId(model.id) ||
-							isGlm53ReasoningEffortModelId(model.id),
+						reasoning: model.reasoning || reference === undefined,
 					};
 				},
 				fetch: config?.fetch,

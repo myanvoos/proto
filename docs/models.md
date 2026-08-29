@@ -85,6 +85,8 @@ providers:
             controller: mlx
 ```
 
+Custom models default to reasoning-capable with the full standard effort list (`minimal` through `xhigh`, API-dependent); set `reasoning: false` to opt out for non-reasoning backends.
+
 ### Allowed provider/model `api` values
 
 - `openai-completions`
@@ -252,6 +254,8 @@ When `litellm` is active (for example through `LITELLM_API_KEY` or stored auth),
 Runtime discovery probes LiteLLM management metadata in order: `GET /model_group/info`, `GET /v2/model/info`, `GET /model/info`, and `GET /v1/model/info`. The configured key must be authorized to read at least one of these routes; on deployments that restrict management endpoints, grant the route through LiteLLM's `allowed_routes` access controls or use a master/admin key for discovery.
 
 If every metadata route is unavailable, discovery falls back to the OpenAI-compatible `GET /models` list. A forbidden or failed metadata request is logged once with its endpoint and status; `404` is treated as an absent route. Rich metadata maps per-model context, capability, and upstream-provider fields. OpenAI-backed models use LiteLLM's Responses route so reasoning summaries remain available; mixed-provider groups stay on Chat Completions. Bare fallback ids use the known OpenAI model families for routing and bundled reference metadata when available. Models absent from the bundled catalog can therefore have unknown context and pricing after fallback.
+
+Discovered models default to reasoning-capable when neither the endpoint nor the bundled catalog reports a capability; explicit `supports_reasoning`/`thinking` capability data always wins. Set `reasoning: false` in `modelOverrides` to opt out per model.
 
 ### Explicit provider discovery
 

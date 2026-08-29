@@ -3,7 +3,7 @@ import { renameSync } from "node:fs";
 import { getModelDbPath, isEnoent, isSqliteCorruptionError, logger } from "@oh-my-pi/pi-utils";
 import type { Api, Model, ModelSpec } from "./types";
 
-const CACHE_SCHEMA_VERSION = 12;
+const CACHE_SCHEMA_VERSION = 13;
 const HEADER_RESTORE_VERSION = 1;
 
 interface CacheRow {
