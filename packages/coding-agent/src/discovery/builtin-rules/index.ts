@@ -6,6 +6,7 @@ import goJoinHostport from "./go-join-hostport.md" with { type: "text" };
 import goNewExpr from "./go-new-expr.md" with { type: "text" };
 import goRandV2 from "./go-rand-v2.md" with { type: "text" };
 import goRangeInt from "./go-range-int.md" with { type: "text" };
+import pyKernelReuse from "./py-kernel-reuse.md" with { type: "text" };
 import rsBoxLeak from "./rs-box-leak.md" with { type: "text" };
 import rsFuturePrelude from "./rs-future-prelude.md" with { type: "text" };
 import rsLazylock from "./rs-lazylock.md" with { type: "text" };
@@ -40,6 +41,7 @@ export const BUILTIN_RULE_SOURCES: readonly BuiltinRuleSource[] = [
 	{ name: "go-new-expr", content: goNewExpr },
 	{ name: "go-rand-v2", content: goRandV2 },
 	{ name: "go-range-int", content: goRangeInt },
+	{ name: "py-kernel-reuse", content: pyKernelReuse },
 	{ name: "rs-box-leak", content: rsBoxLeak },
 	{ name: "rs-future-prelude", content: rsFuturePrelude },
 	{ name: "rs-lazylock", content: rsLazylock },

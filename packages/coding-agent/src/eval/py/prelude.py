@@ -222,6 +222,48 @@ if "__proto_prelude_loaded__" not in globals():
         p.write_text(new_content, encoding="utf-8")
         _emit_status("edit", path=str(p), chars=len(new_content), action="replace-block")
         return p
+    def replace(
+        path: str | Path, old: str, new: str, *, count: int | None = 1, expect: str | None = None
+    ) -> Path:
+        """Count-checked replacement: replace ``old`` with ``new`` in a file.
+
+        Refuses unless the file currently equals ``expect`` (when given) and
+        contains exactly ``count`` occurrences of ``old``; ``count=None``
+        replaces every occurrence. Returns the path.
+        """
+        p = _resolve_proto_path(path)
+        if not p.exists():
+            raise RuntimeError(f"stale guard: {p} does not exist")
+        content = p.read_text(encoding="utf-8")
+        if expect is not None and content != expect:
+            raise RuntimeError(
+                f"stale guard: {p} changed since grounding (current {len(content)} chars, expected {len(expect)})"
+            )
+        occurrences = content.count(old)
+        if occurrences == 0:
+            raise RuntimeError(f"replace: {old[:60]!r} not found in {p}")
+        if count is not None and occurrences != count:
+            raise RuntimeError(
+                f"replace: expected {count} occurrence(s) of {old[:60]!r} in {p}, found {occurrences}"
+            )
+        result = content.replace(old, new) if count is None else content.replace(old, new, count)
+        p.write_text(result, encoding="utf-8")
+        _emit_status("edit", path=str(p), chars=len(result), action="replace")
+        return p
+
+    def symbols(path: str | Path) -> str:
+        """Structural outline of a code file: declarations with bodies elided."""
+        p = _resolve_proto_path(path)
+        result = _bridge_call("__ast__", {"op": "symbols", "path": str(p), "code": p.read_text(encoding="utf-8")})
+        segments = result.get("segments") if isinstance(result, dict) else None
+        if not segments:
+            return f"<no symbols parsed for {p}>"
+        lines = []
+        for seg in segments:
+            text = (seg.get("text") or "").strip()
+            label = text if text else f"<{seg.get('kind', 'segment')}>"
+            lines.append(f"{seg.get('startLine')}-{seg.get('endLine')}: {label}")
+        return "\n".join(lines)
 
     def output(
         *ids: str,
@@ -782,6 +824,7 @@ if "__proto_prelude_loaded__" not in globals():
         def poll(self):
             return self._proc.returncode if self._proc is not None else None
 
+        @property
         def output(self):
             return self._buffer.text()
 

@@ -89,6 +89,13 @@ export class KernelTool implements AgentTool<typeof kernelSchema> {
 		this.#eval = new EvalTool(session);
 	}
 
+	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
+		if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+		const code = (args as Record<string, unknown>).code;
+		if (typeof code !== "string" || code.length === 0) return undefined;
+		return [{ path: "cell.py", digest: code }];
+	}
+
 	static createIf(session: ToolSession): KernelTool | null {
 		return resolveEvalBackends(session).python ? new KernelTool(session) : null;
 	}

@@ -190,6 +190,8 @@ class _RunnerState:
         # processes inheriting stdout). With overlapping requests the most
         # recently started one wins — strictly better than dropping the bytes.
         self.capture_rid: str | None = None
+        self.defs: dict[str, int] = {}
+        self.prelude_names: set[str] | None = None
 
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -1034,6 +1036,10 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # ---------------------------------------------------------------------------
 
 
+def __proto_defs_view() -> dict[str, int]:
+    return dict(_STATE.defs)
+
+
 def _install_builtins(ns: dict) -> None:
     ns["display"] = __proto_display
     ns["__proto_display"] = __proto_display
@@ -1041,6 +1047,7 @@ def _install_builtins(ns: dict) -> None:
     ns["__proto_magic_cell"] = __proto_magic_cell
     ns["__proto_shell"] = __proto_shell
     ns["__proto_current_run_id__"] = lambda: _CURRENT_RID.get()
+    ns["defs"] = __proto_defs_view
 
 
 _install_builtins(_STATE.user_ns)
@@ -1234,6 +1241,36 @@ def _start_parent_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _cell_def_names(source: str) -> list[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+    return names
+
+
+def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
+    if _STATE.prelude_names is None and _STATE.user_ns.get("__proto_prelude_loaded__"):
+        _STATE.prelude_names = set(_STATE.user_ns)
+        _STATE.defs.clear()
+        return
+    for name in _cell_def_names(source):
+        previous = _STATE.defs.get(name)
+        _STATE.defs[name] = execution_count
+        if _STATE.prelude_names is not None and previous is None and name in _STATE.prelude_names:
+            _emit(
+                {
+                    "type": "stderr",
+                    "id": rid,
+                    "data": f"<kernel> warning: {name!r} shadows a prelude primitive; later cells see your version, not the prelude's\n",
+                }
+            )
+
+
 async def _handle_request_async(req: dict) -> None:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
@@ -1297,6 +1334,7 @@ async def _handle_request_async(req: dict) -> None:
             except Exception:
                 pass
 
+        _track_cell_defs(req.get("code", ""), rid, execution_count)
         _flush_stream_proxies(rid)
         _emit(
             {

@@ -1,8 +1,10 @@
-import { blockRangeAt } from "@oh-my-pi/pi-natives";
+import { blockRangeAt, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { ToolSession } from "../tools";
 import type { JsStatusEvent } from "./js/shared/types";
 
 export const EVAL_AST_BRIDGE_NAME = "__ast__";
+
+export type EvalAstSymbols = SummaryResult;
 
 export interface EvalAstBlockRange {
 	start: number;
@@ -15,11 +17,22 @@ export interface EvalAstBridgeOptions {
 	emitStatus?: (event: JsStatusEvent) => void;
 }
 
-export function runEvalAst(args: unknown, _options: EvalAstBridgeOptions): EvalAstBlockRange | null {
+export function runEvalAst(args: unknown, _options: EvalAstBridgeOptions): EvalAstBlockRange | SummaryResult | null {
 	if (!args || typeof args !== "object" || Array.isArray(args)) {
 		throw new Error("ast bridge expects an object payload");
 	}
 	const record = args as Record<string, unknown>;
+	if (record.op === "symbols") {
+		const symbolsCode = record.code;
+		const symbolsPath = record.path;
+		if (typeof symbolsCode !== "string") {
+			throw new Error("symbols expects { code: string } and optional path: string");
+		}
+		return summarizeCode({
+			code: symbolsCode,
+			...(typeof symbolsPath === "string" && symbolsPath.length > 0 ? { path: symbolsPath } : {}),
+		});
+	}
 	if (record.op !== "block_range") {
 		throw new Error(`unknown ast bridge op: ${String(record.op)}`);
 	}
