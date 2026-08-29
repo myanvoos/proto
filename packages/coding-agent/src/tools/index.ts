@@ -31,6 +31,7 @@ import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspec
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
+import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -309,14 +310,11 @@ export const DISABLED_TOOL_NAMES: Record<string, true> = {
 	read: true,
 	edit: true,
 	write: true,
-	bash: true,
 	eval: true,
 };
 
-export const BUILTIN_TOOLS: Record<
-	Exclude<BuiltinToolName, "read" | "edit" | "write" | "bash" | "eval">,
-	ToolFactory
-> = {
+export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "write" | "eval">, ToolFactory> = {
+	bash: s => new BashTool(s),
 	ask: AskTool.createIf,
 	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
@@ -404,6 +402,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
 		if (name in DISABLED_TOOL_NAMES) return false;
+		if (name === "bash") return (session.taskDepth ?? 0) === 0 && session.settings.get("bash.enabled");
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();

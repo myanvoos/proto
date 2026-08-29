@@ -4,6 +4,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
@@ -24,9 +25,12 @@ import {
 	formatDuration,
 	formatStatusIcon,
 	formatTitle,
+	getDiffStats,
+	PREVIEW_LIMITS,
 	previewWindowRows,
 	replaceTabs,
 	shortenPath,
+	truncateDiffByHunk,
 	truncateToWidth,
 	wrapBrackets,
 } from "./render-utils";
@@ -209,6 +213,40 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 	return lines;
 }
 
+function formatDiffStatsSuffix(diff: string, theme: Theme): string {
+	const { added, removed } = getDiffStats(diff);
+	if (added === 0 && removed === 0) return "";
+	const stats = [
+		added > 0 ? theme.fg("toolDiffAdded", `+${added}`) : undefined,
+		removed > 0 ? theme.fg("toolDiffRemoved", `-${removed}`) : undefined,
+	].filter(value => value !== undefined);
+	return ` ${theme.fg("dim", theme.format.bracketLeft)}${stats.join(theme.fg("dim", "/"))}${theme.fg("dim", theme.format.bracketRight)}`;
+}
+
+function hasEventDiff(event: EvalStatusEvent): boolean {
+	return (event.op === "write" || event.op === "edit") && typeof event.diff === "string" && event.diff.length > 0;
+}
+
+function renderEventDiff(event: EvalStatusEvent, theme: Theme, expanded: boolean): string[] {
+	const diff = typeof event.diff === "string" ? event.diff : "";
+	if (!diff) return [];
+	const filePath = typeof event.path === "string" ? event.path : undefined;
+	const { text, hiddenHunks, hiddenLines } = expanded
+		? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
+		: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+	const lines = renderDiffColored(text, { filePath }).split("\n");
+	if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
+		const parts: string[] = [];
+		if (hiddenHunks > 0) parts.push(`${hiddenHunks} more hunk${hiddenHunks === 1 ? "" : "s"}`);
+		if (hiddenLines > 0) parts.push(`${hiddenLines} more lines`);
+		lines.push(theme.fg("dim", `… ${parts.join(", ")} (ctrl+o to expand)`));
+	}
+	if (event.diffTruncated === true) {
+		lines.push(theme.fg("dim", "… diff truncated"));
+	}
+	return lines;
+}
+
 function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	const { op, ...data } = event;
 
@@ -253,8 +291,13 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			if (data.path) parts.push(`from ${shortenPath(String(data.path))}`);
 			break;
 		case "write":
-			parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
-			if (data.path) parts.push(`to ${shortenPath(String(data.path))}`);
+		case "edit":
+			if (typeof data.diff === "string" && data.diff.length > 0) {
+				if (data.path) parts.push(shortenPath(String(data.path)));
+			} else {
+				parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
+				if (data.path) parts.push(`to ${shortenPath(String(data.path))}`);
+			}
 			break;
 		case "cat":
 			parts.push(`${data.files} file${(data.files as number) !== 1 ? "s" : ""}`);
@@ -324,7 +367,8 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	}
 
 	const desc = parts.length > 0 ? parts.join(" · ") : "";
-	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
+	const statsSuffix = hasEventDiff(event) ? formatDiffStatsSuffix(event.diff as string, theme) : "";
+	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}${statsSuffix}`;
 }
 
 function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string[] {
@@ -402,16 +446,25 @@ function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: b
 	for (let i = 0; i < visible.length; i++) {
 		const isLast = i === visible.length - 1;
 		const branch = isLast ? theme.tree.last : theme.tree.branch;
+		const event = visible[i];
+
+		if (hasEventDiff(event)) {
+			lines.push(`${theme.fg("dim", branch)} ${formatStatusEvent(event, theme)}`);
+			for (const diffLine of renderEventDiff(event, theme, expanded)) {
+				lines.push(`   ${diffLine}`);
+			}
+			continue;
+		}
 
 		if (expanded) {
-			const eventLines = formatStatusEventExpanded(visible[i], theme);
+			const eventLines = formatStatusEventExpanded(event, theme);
 			lines.push(`${theme.fg("dim", branch)} ${eventLines[0]}`);
 			const continueBranch = isLast ? "   " : `${theme.tree.vertical}  `;
 			for (let j = 1; j < eventLines.length; j++) {
 				lines.push(`${theme.fg("dim", continueBranch)}${eventLines[j]}`);
 			}
 		} else {
-			lines.push(`${theme.fg("dim", branch)} ${formatStatusEvent(visible[i], theme)}`);
+			lines.push(`${theme.fg("dim", branch)} ${formatStatusEvent(event, theme)}`);
 		}
 	}
 

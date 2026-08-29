@@ -39,6 +39,105 @@ if "__proto_prelude_loaded__" not in globals():
         """Emit structured status event for TUI rendering."""
         _proto_display({"application/x-proto-status": {"op": op, **data}}, raw=True)
 
+    _MAX_DIFF_CHARS = 32000
+    _MAX_DIFF_INPUT_BYTES = 262144
+    _MAX_DIFF_INPUT_LINES = 20000
+
+    def _numbered_diff(before: str, after: str, context: int = 2) -> list[str]:
+        """Numbered hunk rows ('-12|old', '+12|new', ' 13|ctx') in the edit tool's canonical diff format."""
+        import difflib
+
+        old_lines = before.split("\n")
+        new_lines = after.split("\n")
+        if old_lines and old_lines[-1] == "":
+            old_lines.pop()
+        if new_lines and new_lines[-1] == "":
+            new_lines.pop()
+        opcodes = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False).get_opcodes()
+        rows: list[str] = []
+        old_no = 1
+        new_no = 1
+        last_was_change = False
+        for index, (tag, i1, i2, j1, j2) in enumerate(opcodes):
+            if tag != "equal":
+                if tag in ("replace", "delete"):
+                    for line in old_lines[i1:i2]:
+                        rows.append(f"-{old_no}|{line}")
+                        old_no += 1
+                if tag in ("replace", "insert"):
+                    for line in new_lines[j1:j2]:
+                        rows.append(f"+{new_no}|{line}")
+                        new_no += 1
+                last_was_change = True
+                continue
+            raw = old_lines[i1:i2]
+            next_is_change = index < len(opcodes) - 1 and opcodes[index + 1][0] != "equal"
+            if not last_was_change and not next_is_change:
+                old_no += len(raw)
+                new_no += len(raw)
+                continue
+            if last_was_change and next_is_change:
+                if len(raw) > context * 2:
+                    leading = raw[:context]
+                    trailing = raw[len(raw) - context :] if context else []
+                    middle = len(raw) - context * 2
+                else:
+                    leading, trailing, middle = raw, [], 0
+            elif next_is_change:
+                leading = []
+                trailing = raw[len(raw) - context :] if context else []
+                middle = max(0, len(raw) - context)
+            else:
+                leading = raw[:context] if context else []
+                trailing = []
+                middle = max(0, len(raw) - context)
+            for line in leading:
+                rows.append(f" {old_no}|{line}")
+                old_no += 1
+                new_no += 1
+            old_no += middle
+            new_no += middle
+            for line in trailing:
+                rows.append(f" {old_no}|{line}")
+                old_no += 1
+                new_no += 1
+            last_was_change = False
+        return rows
+
+    def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool] | None:
+        """Diff rows capped for status events; None when inputs are too large to diff cheaply."""
+        if len(before) > _MAX_DIFF_INPUT_BYTES or len(after) > _MAX_DIFF_INPUT_BYTES:
+            return None
+        if before.count("\n") > _MAX_DIFF_INPUT_LINES or after.count("\n") > _MAX_DIFF_INPUT_LINES:
+            return None
+        rows = _numbered_diff(before, after)
+        total = sum(len(row) + 1 for row in rows)
+        if total <= _MAX_DIFF_CHARS:
+            return rows, False
+        kept: list[str] = []
+        used = 0
+        for row in rows:
+            if used + len(row) + 1 > _MAX_DIFF_CHARS:
+                break
+            kept.append(row)
+            used += len(row) + 1
+        return kept, True
+
+    def _emit_file_status(op: str, path, *, before: str | None, after: str, action: str | None = None) -> None:
+        """Emit a file-op status event, attaching a capped hunk diff when content changed."""
+        data: dict = {"path": str(path), "chars": len(after)}
+        if action is not None:
+            data["action"] = action
+        if before is not None and before != after:
+            limited = _capped_numbered_diff(before, after)
+            if limited is not None:
+                rows, truncated = limited
+                if rows:
+                    data["diff"] = "\n".join(rows)
+                    if truncated:
+                        data["diffTruncated"] = True
+        _emit_status(op, **data)
+
     def env(key: str | None = None, value: str | None = None):
         """Get/set environment variables."""
         if key is None:
@@ -133,8 +232,14 @@ if "__proto_prelude_loaded__" not in globals():
         """Write file contents (create parents)."""
         p = _resolve_proto_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        before = ""
+        try:
+            if p.is_file():
+                before = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError):
+            before = None
         p.write_text(content, encoding="utf-8")
-        _emit_status("write", path=str(p), chars=len(content))
+        _emit_file_status("write", p, before=before, after=content)
         return p
 
     def edit(
@@ -172,7 +277,7 @@ if "__proto_prelude_loaded__" not in globals():
             raise TypeError(f"edit() body must be str, got {type(result).__name__}")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(result, encoding="utf-8")
-        _emit_status("edit", path=str(p), chars=len(result), action=action)
+        _emit_file_status("edit", p, before=content, after=result, action=action)
         return p
 
     def _block_range_on(path_str: str, code: str, line: int):
@@ -220,7 +325,7 @@ if "__proto_prelude_loaded__" not in globals():
         )
         new_content = "".join(lines[: start - 1]) + replacement + "".join(lines[end:])
         p.write_text(new_content, encoding="utf-8")
-        _emit_status("edit", path=str(p), chars=len(new_content), action="replace-block")
+        _emit_file_status("edit", p, before=current, after=new_content, action="replace-block")
         return p
     def replace(
         path: str | Path, old: str, new: str, *, count: int | None = 1, expect: str | None = None
@@ -248,7 +353,7 @@ if "__proto_prelude_loaded__" not in globals():
             )
         result = content.replace(old, new) if count is None else content.replace(old, new, count)
         p.write_text(result, encoding="utf-8")
-        _emit_status("edit", path=str(p), chars=len(result), action="replace")
+        _emit_file_status("edit", p, before=content, after=result, action="replace")
         return p
 
     def symbols(path: str | Path) -> str:
