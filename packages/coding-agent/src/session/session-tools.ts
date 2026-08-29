@@ -15,6 +15,7 @@ import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
+import { DISABLED_TOOL_NAMES } from "../tools";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
@@ -296,7 +297,12 @@ export class SessionTools {
 	}
 
 	getToolForEvalBridge(name: string): AgentTool | undefined {
-		if (!this.getEnabledToolNames().includes(name)) return undefined;
+		if (
+			!this.getEnabledToolNames().includes(name) &&
+			!(name in DISABLED_TOOL_NAMES && this.#toolRegistry.has(name))
+		) {
+			return undefined;
+		}
 		return this.#toolRegistry.get(name);
 	}
 

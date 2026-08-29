@@ -2348,7 +2348,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			};
 		};
 
-		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
+		const toolNamesFromRegistry = Array.from(toolRegistry.keys()).filter(name => !(name in DISABLED_TOOL_NAMES));
 		const explicitlyRequestedToolNames = effectiveToolNames ? normalizeToolNames(effectiveToolNames) : undefined;
 
 		if (

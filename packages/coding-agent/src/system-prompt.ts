@@ -804,7 +804,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				}),
 			);
 
-	const hasRead = toolNames.includes("read");
+	const hasRead = toolNames.includes("read") || toolNames.includes("kernel");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [

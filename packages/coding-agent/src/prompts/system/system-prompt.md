@@ -65,7 +65,7 @@ Most file tools auto-resolve these to FS paths.
 {{#has tools "computer"}}
 # Computer Use
 `{{toolRefs.computer}}` enabled/available.
-- For host-desktop requests, NEVER substitute Browser, shell commands, Eval, AppleScript, accessibility commands, or `screencapture` unless user requests that mechanism or it errors.
+- For host-desktop requests, NEVER substitute Browser, shell commands, AppleScript, accessibility commands, or `screencapture` unless user requests that mechanism or it errors.
 - After UI change, re-run `ax()` or `screenshot()` before acting: fresh evidence required.
 {{/has}}
 

@@ -6,9 +6,7 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
-import { checkRubyKernelAvailability } from "../eval/rb/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
@@ -33,12 +31,10 @@ import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspec
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
-import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
-import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
 import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
@@ -309,12 +305,19 @@ export interface ToolSession {
 
 type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
-export const DISABLED_TOOL_NAMES: Record<string, true> = { read: true, edit: true, write: true };
+export const DISABLED_TOOL_NAMES: Record<string, true> = {
+	read: true,
+	edit: true,
+	write: true,
+	bash: true,
+	eval: true,
+};
 
-export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "write">, ToolFactory> = {
-	bash: s => new BashTool(s),
+export const BUILTIN_TOOLS: Record<
+	Exclude<BuiltinToolName, "read" | "edit" | "write" | "bash" | "eval">,
+	ToolFactory
+> = {
 	ask: AskTool.createIf,
-	eval: s => new EvalTool(s),
 	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
 	lsp: LspTool.createIf,
@@ -360,55 +363,24 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 	const backends = resolveEvalBackends(session);
 	const allowPython = backends.python;
-	const allowJs = backends.js;
-	const allowRuby = backends.ruby;
-	const allowJulia = backends.julia;
 	const skipEvalPreflight = session.skipPythonPreflight === true;
 
 	let pythonAvailable = true;
-	let rubyAvailable = true;
-	let juliaAvailable = true;
-	const evalRequested = requestedTools === undefined || requestedTools.includes("eval");
-	if (!skipEvalPreflight && !allowJs && evalRequested) {
-		if (allowPython) {
-			const availability = await logger.time(
-				"createTools:pythonCheck",
-				checkPythonKernelAvailability,
-				session.cwd,
-				session.settings.get("python.interpreter")?.trim() || undefined,
-			);
-			pythonAvailable = availability.ok;
-			if (!availability.ok) {
-				logger.warn("Python kernel unavailable and JS backend disabled", { reason: availability.reason });
-			}
-		}
-		if (allowRuby) {
-			const availability = await checkRubyKernelAvailability(
-				session.cwd,
-				session.settings.get("ruby.interpreter")?.trim() || undefined,
-			);
-			rubyAvailable = availability.ok;
-			if (!availability.ok) {
-				logger.warn("Ruby kernel unavailable and JS backend disabled", { reason: availability.reason });
-			}
-		}
-		if (allowJulia) {
-			const availability = await checkJuliaKernelAvailability(
-				session.cwd,
-				session.settings.get("julia.interpreter")?.trim() || undefined,
-			);
-			juliaAvailable = availability.ok;
-			if (!availability.ok) {
-				logger.warn("Julia kernel unavailable and JS backend disabled", { reason: availability.reason });
-			}
+	const kernelRequested = requestedTools === undefined || requestedTools.includes("kernel");
+	if (!skipEvalPreflight && allowPython && kernelRequested) {
+		const availability = await logger.time(
+			"createTools:pythonCheck",
+			checkPythonKernelAvailability,
+			session.cwd,
+			session.settings.get("python.interpreter")?.trim() || undefined,
+		);
+		pythonAvailable = availability.ok;
+		if (!availability.ok) {
+			logger.warn("Python kernel unavailable", { reason: availability.reason });
 		}
 	}
 
 	const effectivePythonAllowed = allowPython && pythonAvailable;
-	const effectiveRubyAllowed = allowRuby && rubyAvailable;
-	const effectiveJuliaAllowed = allowJulia && juliaAvailable;
-
-	const allowEval = effectivePythonAllowed || allowJs || effectiveRubyAllowed || effectiveJuliaAllowed;
 
 	if (requestedTools && session.settings.get("checkpoint.enabled")) {
 		if (requestedTools.includes("checkpoint") && !requestedTools.includes("rewind")) {
@@ -438,8 +410,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
-		if (name === "bash") return session.settings.get("bash.enabled");
-		if (name === "eval") return allowEval;
+		if (name === "kernel") return effectivePythonAllowed;
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
