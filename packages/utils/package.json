@@ -2,7 +2,7 @@
   "type": "module",
   "name": "@oh-my-pi/pi-utils",
   "version": "18.0.0",
-  "description": "Shared utilities for pi packages",
+  "description": "Shared utilities for proto packages",
   "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "license": "MIT",

@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>A coding agent with the IDE wired in.</strong>
+  <strong>An experimental agent harness with the IDE wired in.</strong>
   <strong><a href="https://proto.sh">proto.sh</a></strong>
 </p>
 
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
+  An experimental agent harness forked from <a href="https://github.com/can1357/oh-my-pi">OMP</a> (oh-my-pi)
 </p>
 
 The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
@@ -82,9 +82,9 @@ Edits that land on the first attempt. Reads that summarize files instead of dump
 
 [Read the full post ↗](https://blog.can.ac/2026/02/12/the-harness-problem/)
 
-## The Pi _you love_, with **batteries included**.
+## The OMP _you love_, with **batteries included**.
 
-Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), proto adds everything you're missing.
+Forked from [OMP](https://github.com/can1357/oh-my-pi), proto adds everything you're missing.
 
 ### 01 · Code execution w/ tool-calling
 
@@ -494,7 +494,7 @@ Full reference: [proto.sh/docs/sdk](https://proto.sh/docs/sdk).
 
 Pick it up at **[proto.sh](https://proto.sh)**.
 
-proto is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT. Shape it from config, hook it from outside, or read the source when you need to.
+proto is an experimental agent harness forked from [OMP](https://github.com/can1357/oh-my-pi): sessions, subagents, slash commands, extensions — all TypeScript, all MIT. Shape it from config, hook it from outside, or read the source when you need to.
 
 ### Primitives
 
@@ -510,7 +510,7 @@ Ask proto to write the piece you're missing, then `/reload-plugins`. Keep it loc
 
 ## Philosophy
 
-proto is a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), extended with a batteries-included coding workflow.
+proto is an experimental agent harness forked from [OMP](https://github.com/can1357/oh-my-pi), extended with a batteries-included coding workflow.
 
 Key ideas:
 
