@@ -56,6 +56,7 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource } from "../../session/foreign-session-store";
 import type { SessionEntry } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
+import { readSessionLiveState } from "../../session/session-liveness";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
 import { buildSessionTrajectory } from "../../session/trajectory/session-source";
@@ -1552,6 +1553,16 @@ export class SelectorController {
 				return false;
 			}
 		}
+		if (switchingToDifferentSession && !detachedSessionHolder.has(sessionPath)) {
+			const live = readSessionLiveState(sessionPath);
+			if (live.fresh && live.pid !== process.pid) {
+				this.ctx.showError(
+					`Session is open in another proto process (pid ${live.pid}) — close it there before resuming here.`,
+				);
+				return false;
+			}
+		}
+
 		const canPark =
 			switchingToDifferentSession &&
 			wasStreaming &&

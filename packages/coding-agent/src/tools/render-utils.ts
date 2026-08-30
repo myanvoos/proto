@@ -3,8 +3,9 @@ import * as path from "node:path";
 import type { ToolCallContext } from "@oh-my-pi/pi-agent-core";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { getKeybindings, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { pluralize } from "@oh-my-pi/pi-utils";
+import { getKeybindings, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { SGR_FG_RESET } from "@oh-my-pi/pi-tui/ansi";
+import { formatMoreLines, pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
@@ -200,6 +201,50 @@ export function formatCodeFrameLine(
 	const lineNumberText = String(lineNumber).trim();
 	const gutterText = markerText && lineNumberText ? `${markerText}${lineNumberText}` : lineNumberText || markerText;
 	return `${gutterText.padStart(lineNumberWidth + 1, " ")}│${content}`;
+}
+
+/**
+ * Wraps a rendered code-frame/diff line (e.g. ` 42│content`) to `width`, keeping every
+ * continuation row aligned under the content column: continuation rows repeat the gutter
+ * as spaces plus the separator, so wrapped words never land under the line numbers.
+ * Lines without a recognizable gutter fall back to plain ANSI-aware wrapping.
+ */
+export function wrapCodeFrameLine(line: string, width: number): string[] {
+	if (width <= 0) return [line];
+	if (line.length === 0) return [""];
+
+	const startAnsi = line.match(/^((?:\x1b\[[0-9;]*m)*)/)?.[1] ?? "";
+	const bodyWithReset = line.slice(startAnsi.length);
+	const body = bodyWithReset.endsWith(SGR_FG_RESET) ? bodyWithReset.slice(0, -SGR_FG_RESET.length) : bodyWithReset;
+
+	const diffMatch = /^(\s*[+-]?\s*\d*)([|│])(.*)$/s.exec(body);
+
+	if (!diffMatch || diffMatch[1].length === 0 || (diffMatch[2] === "|" && !/^[+\-\s]\s*\d+$/.test(diffMatch[1]))) {
+		return wrapTextWithAnsi(line, width);
+	}
+
+	const [, gutter, separator, content] = diffMatch;
+	const prefix = `${gutter}${separator}`;
+	const prefixWidth = visibleWidth(prefix);
+	const contentWidth = Math.max(1, width - prefixWidth);
+	const continuationPrefix = `${" ".repeat(Math.max(0, prefixWidth - 1))}${separator}`;
+	const wrappedContent = wrapTextWithAnsi(content ?? "", contentWidth);
+
+	return wrappedContent.map(
+		(segment, index) => `${startAnsi}${index === 0 ? prefix : continuationPrefix}${segment}\x1b[27m\x1b[39m`,
+	);
+}
+
+/**
+ * Hint shown under a collapsed diff, e.g. `… (2 more hunks, 15 more lines) ▸ ctrl+o expand`.
+ * Shared by the edit tool and kernel file-op events so both truncate with the same wording.
+ */
+export function formatDiffTruncationHint(hiddenHunks: number, hiddenLines: number, theme: Theme): string | undefined {
+	const remainder: string[] = [];
+	if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more ${pluralize("hunk", hiddenHunks)}`);
+	if (hiddenLines > 0) remainder.push(formatMoreLines(hiddenLines));
+	if (remainder.length === 0) return undefined;
+	return theme.fg("toolOutput", `… (${remainder.join(", ")}) ${formatExpandHint(theme)}`);
 }
 
 export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";

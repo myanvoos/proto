@@ -3,11 +3,11 @@
 ## [Unreleased]
 
 ### Breaking Changes
+
 - Merged `/btw` and `/tan` into a single `/side` command: `/side <question>` asks an ephemeral side question answered in the floating panel (formerly `/btw`), and `/side --agent <work>` dispatches a full background agent on tangential work (formerly `/tan`); `/btw` and `/tan` no longer exist.
 - Removed the legacy Pi specifier shim for extensions and plugins: old third-party package names (`@badlogic/pi-*` and other pre-rename scopes) are no longer aliased, while current `@oh-my-pi/*` imports continue to resolve to the running host's modules; extensions must import current package names.
 - Dropped Windows support: no Windows binary, npm artifact, or installer is published anymore (`install.ps1` removed), and Windows-only code paths are gone — TUI console/codepage and ConPTY input handling, Windows spawn/console-probe options, `ProjFS`/`block-clone` isolation backends, PowerShell profile detection for `proto profile`, and Windows case-insensitive path/env special-casing. Linux and macOS behavior is unchanged; SSH sessions to Windows hosts keep working.
 - Removed the built-in long-term memory system: the `off`/`local`/Hindsight/Mnemopi backends (`memory.backend`), the `retain`, `recall`, `reflect`, `memory_edit`, and `learn` tools, the `memory://` internal URL scheme and `/memory` slash command, all `mnemopi.*`/`hindsight.*`/`memory.*`/`memories.*` settings, the extension-API `memory` runtime context, and the `@oh-my-pi/pi-mnemopi` dependency. Data previously written under the agent memories directory is simply no longer read.
-
 - Removed the snapcompact compaction method, the `snapcompact.*` inline-imaging settings (`snapcompact.systemPrompt`, `snapcompact.toolResults`, `snapcompact.shape`), and the `/compact snapcompact` mode. Configured method orders containing `snapcompact` fall back to the remaining methods; existing session entries that carry snapcompact frame archives render as their text summary only.
 - Removed plan mode entirely: the `/plan` and `/plan-review` commands, the `plan.enabled`/`plan.defaultOnStartup` settings, the `--plan`/`--plan-yolo` CLI flags, the `PI_PLAN_MODEL` environment variable, the `plan` model role, the Alt+Shift+P toggle, plan-file guards in edit/write tools, the ACP plan approval surface, and the `xd://propose` resolution device. Existing sessions containing plan mode entries still load; old configs with a `plan_mode` status-line segment keep migrating to `mode`.
 - Removed `/guided-goal` as a separate command: `/goal <objective>` now starts the guided interview by default, while `/goal set <objective>` keeps setting an objective directly. `/goal show|pause|resume|drop|budget` are unchanged.
@@ -21,20 +21,16 @@
 - Removed the bundled `/init` workflow command; custom command files in project/user command directories still work.
 - Removed per-session accent colors: the `statusLine.sessionAccent` setting, the session-name-derived hue for the spinner, editor border, and status-line segments, and the theme `sessionAccent` color token. These now render in the theme's single consistent `accent`/`borderAccent` colors.
 
-
 ### Added
+
+- `/trajectory export` now preserves agent reasoning blocks: OTLP chat spans expose the reasoning under `pi.gen_ai.response.reasoning`, and `pi.gen_ai.response.text` now contains only the assistant's text (reasoning and tool-call markers are no longer spliced into it).
 - Renamed the `inspect_image` tool to `inspect_media`: it now accepts audio and video files in addition to images, detected by file content (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF audio, MP4/WEBM/MOV/MPEG video), and sends them to models that advertise the matching input modality; `inspect_image.*` settings migrate to `inspect_media.*` (`inspect_media.mode`, `inspect_media.timeoutMs`).
 - Kernel/eval tool calls accept `files: [{path, content}]`, written to disk before execution with write-event diffs — a quoting-safe channel for creating files whose content contains code.
 - Kernel cells snapshot working-directory file state (mtime/size walk; gitignored paths and heavy dirs pruned) before and after execution and emit `write`/`delete` status events with numbered diffs for every file the cell changed — regardless of mechanism (raw `open`, `shutil`, subprocess, helpers) and independent of git. Git index blobs serve only as an optional diff baseline for previously-untouched tracked files; helper-emitted events dedupe by content hash.
 - Kernel code cells render a Python AST preview in the TUI (collapsed view; raw code on expand), with `#@`/`#@?` session annotations surfaced as margin callouts.
 - Removed the `composer.shape` setting and every composer layout option; the editor always renders the default borderless prompt, and extensions can no longer register composer shapes.
-
-### Added
-
 - Top-level agents are now always Orchestrators with persistent worker control through `orchestrate_spawn`, `orchestrate_send`, `orchestrate_wait`, `orchestrate_kill`, and `orchestrate_list`.
 - kernel: content-guarded edit helpers in the Python prelude — `edit` (create-only or expect-guarded write), `block_range` (tree-sitter block extent), and `edit_block` (guarded block replacement).
-
-### Added
 - Config discovery now includes the legacy pi directories: project `.pi/` and user `~/.pi/agent/` are scanned (after `.proto`) for commands, hooks, extensions, skills, agents, prompts, LSP configs, and themes.
 - Plan review can save a plan to a chosen path and start a new session.
 - Optional edit parse-regression capture appends the before/after content, model, variant, and arguments to `~/.proto/agent/edit-blackbox.jsonl` when `edit.blackbox.enabled` is enabled.
@@ -43,6 +39,7 @@
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 
 ### Changed
+
 - The bash tool is model-facing again for the main agent (`bash.enabled` still gates it); the kernel remains the default work surface and subagents stay kernel-first.
 - Trimmed ~75 tokens of duplication from the system prompt: the clean-cutover and yield-before-delivery rules are each stated once, with terser `history://` discovery and Orchestration wording.
 - Completed the proto rebrand across user-facing surfaces: desktop/terminal notification titles, OAuth dynamic-registration client name, OTLP service name, Exa source tag, ACP agent name, and cloud-upload mail bodies now identify as proto; PR-checkout now stores branch metadata under `branch.<name>.protoPr*` git-config keys instead of `ompPr*`; binary updates and mise/homebrew installs target the renamed repository.
@@ -76,6 +73,19 @@
 
 ### Fixed
 
+- Sessions streaming in another process now show as running in the global agents view (spinner, `running` label) instead of `interrupted`/`pending` with a dim checkmark; sessions merely open elsewhere show as `in use`.
+- Resuming, renaming, or deleting a session that is currently open in another proto process is blocked with the owning pid instead of double-opening the transcript.
+- Persisted subagents that are actively streaming in another process are no longer registered as revivable parked agents; reviving or re-spawning over such a transcript no longer corrupts it or fails with "already owned by another session generation".
+- The agent fleet roster is scoped to the current session's artifacts tree, so agents belonging to other sessions no longer leak into the roster after opening the global agents view.
+- `fleet wait`/IRC `wait` no longer abort while the watched peer is alive between turns (tool execution, queued follow-up): only parked, aborted, or removed peers count as gone, and the running-agents snapshot no longer labels actively running agents "stale registration" mid-run.
+- Agents view header counts now match the visible sections (running subagents nested under a parked parent count where they render), relative ages keep advancing while data is unchanged, and a data-apply error no longer freezes the view on stale data.
+- Opening the global agents view no longer reads every session file on the machine end-to-end; seeding skips sessions without an artifacts directory.
+- Fixed kernel `files: [{path, content}]` writes vanishing from the finished cell: their `write` events (with diff) were only kept in the streaming preview and dropped by the post-cell status-event rebuild; they now stay in the final cell and top-level status events and carry a `sha` like other file-op events.
+- Kernel file-op diffs now render like the edit tool's: wrapped rows keep their continuation under the gutter instead of dropping back to column 0, non-last events keep the `│` tree rail beside their diff rows, and the collapsed truncation hint uses the same `… (N more hunks, M more lines) ▸ ctrl+o expand` wording.
+- Expanded kernel cells show every status event instead of hiding earlier ones behind `… N earlier`; collapsed cells share the edit tool's single-file diff budget across all shown file events, so a cell touching several files stays as compact as one edit call.
+- Kernel status events render under their own `Status` section label; previously they were listed under `Output` when the cell printed nothing.
+- Fixed kernel cells showing the same file change twice: prelude `replace`/`edit`/`write` events now carry absolute paths, and the post-cell filesystem walk dedupes against them instead of emitting a duplicate `write` event with a second diff.
+- Kernel cell file diffs are no longer suppressed for large files: the per-file size/line caps are gone, so oversized edits show their hunks (only output rows are truncated, flagged as such), and binary files report byte size.
 - Fixed kernel cell fs-walker `write`/`delete` diff events being dropped from the final tool result: they were captured after the backend returned and then discarded by the post-cell status-event rebuild, so raw filesystem writes (pathlib, `open`, `shutil`) showed no diff chunks — only prelude helper ops did.
 - Fixed session switching corrupting transcripts: a background-parked session no longer shares its transcript with the newly resumed session, so each turn's output lands only in its own session file.
 - Re-entering a background-thinking session now resumes its live turn seamlessly instead of interrupting it and cold-reloading the transcript.
@@ -85,7 +95,6 @@
 - The agents view now restores its last search query, selection, and scope across open/close in one process.
 - The double-←/double-→ session gestures no longer fire while a full-screen surface (model hub, selectors, transcript viewers) holds keyboard focus; arrow taps inside those surfaces stay with them instead of yanking the agents view on top.
 - An empty session no longer reports phantom subagents: persisted transcripts parked under the generic Main owner are never treated as children of the attached session, so `/agents` and double-→ stay honest no-ops instead of mounting a scoped browser full of unrelated sessions.
-
 - Lowered the setup-wizard version marker back to 1 now that the scenes that required version 2 are gone, so users who already walked the current wizard are not re-prompted.
 - Fixed the working spinner and transcript floating above the prompt box at the start of a session: conversation content now pins to the composer edge (the welcome screen's centered layout still applies until the first message).
 - Fixed double-Esc (session tree / branch selector) appearing dead on long sessions: opening it no longer replays the entire transcript through the terminal (which blocked for tens of seconds on PTY backpressure and cleared native scrollback), only the viewport repaints.
@@ -143,17 +152,16 @@
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
 
 ### Removed
+
+- Removed the prime-rl export format from `/trajectory export`: the command now writes OTLP JSON only (`/trajectory export [<path>]`), the `--reward` flag is gone, and `trajectoryToPrimeRlEpisode`/`trajectoriesToPrimeRlJsonl` no longer exist.
 - Removed the `bash()` and `read()` helpers from the kernel/eval prelude in every language; cells read files with native APIs (`open`/`Path.read_text()`, `Bun.file`, `File.read`) and run shell commands through the `bash` tool.
 - Removed the opt-in security workflow: the `/security` slash command and its handler, the `security_scan` tool and `security_publish` publication tool, the `src/security` module (coordinator, store, cloud client, importers, SARIF/provenance/remediation), the read-only `security://` internal-URL protocol handler, the bundled `security-reviewer` agent, and the `security.enabled` setting. The scheme is no longer reserved against RPC host URI registration.
 - Removed the inert `--yolo` and `--auto-approve` CLI flags; passing them now fails with an unknown-flag error instead of being silently ignored.
 - Removed the unused `review` tool and its `parseFindingDetails` helper; no user-facing or extension surface depended on them.
 - Removed the internal TUI `file-list` module (`renderFileList`), which had no remaining callers.
-
 - Removed the big TUI hero animations: the animated welcome intro (gradient/shine sweep on the startup logo), the full-screen animated startup/setup splash (water/starfield scene and the `startup.showSplash` setting), and the Codex reset fireworks overlay (and its `tui.codexResetFireworks` setting). Startup now renders the static gradient logo and the setup wizard opens directly on the first scene; the setup outro is a static frame. Small indicators (spinners, thinking pulse, editor shimmer) are unchanged.
 - Removed /share, `proto share`, /export, and `--export` along with their HTML template/tool-view bundle, custom-share hook, `share.*` settings, and the `export_html` RPC method.
-
 - Removed `/dump` and its clipboard/sidecar plumbing (`formatSessionAsText`, `dumpLlmRequestToTmpDir`); `/advisor dump` remains.
-
 - Removed `/advisor dump [raw]` and the now-unused verbose session-dump formatter (`session-dump-format`).
 - Removed the `auto` thinking level and its per-prompt difficulty classifier: `defaultThinkingLevel` no longer accepts `"auto"`, the `providers.autoThinkingModel`/`providers.autoThinkingMaxEffort` settings, the `--thinking auto` CLI value, the `:auto` model-selector suffix, and the `/thinking auto` cycle stop are gone. Configure a concrete level (`off`, `minimal`..`max`) instead; persisted configs that still say `auto` fall back to `high`.
 - Removed the shutdown exit banner: the sunset field art and its "the sun sets on this session" caption no longer print on quit.

@@ -1,53 +1,5 @@
-Edit files: `apply_patch` shell command.
+Edit files via `apply_patch` shell command: stripped-down file-oriented diff.
 
-`apply_patch`: stripped-down, file-oriented diff; easy to parse, safe to apply.
-
-Envelope:
-```
-*** Begin Patch
-[ one or more file sections ]
-*** End Patch
-```
-Contains file operations. Each MUST have an action header:
-
-`*** Add File: <path>`: create file; every following line `+` (initial contents).
-
-`*** Delete File: <path>`: remove existing file; nothing follows.
-
-`*** Update File: <path>`: patch existing file in place; optional immediate `*** Move to: <new path>` renames it; then one or more `@@` hunks (optional hunk header). Hunk lines start with space, `-`, or `+`.
-
-Context: default 3 code lines immediately before and after each change. Changes within 3 lines: do NOT duplicate first change's context-after lines as second change's context-before lines. If 3 lines do not uniquely identify code in the file, use `@@` with its class/function; if one `@@` plus 3 context lines still cannot uniquely identify repeated code in a class/function, use multiple `@@` lines to reach it:
-```
-@@ class BaseClass
-[3 lines of pre-context]
-- [old_code]
-+ [new_code]
-[3 lines of post-context]
-```
-```
-@@ class BaseClass
-@@ 	 def method():
-[3 lines of pre-context]
-- [old_code]
-+ [new_code]
-[3 lines of post-context]
-```
-
-Grammar:
-```
-Patch := Begin { FileOp } End
-Begin := "*** Begin Patch" NEWLINE
-End := "*** End Patch" NEWLINE
-FileOp := AddFile | DeleteFile | UpdateFile
-AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
-DeleteFile := "*** Delete File: " path NEWLINE
-UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
-MoveTo := "*** Move to: " newPath NEWLINE
-Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
-HunkLine := (" " | "-" | "+") text NEWLINE
-```
-
-Full patches may combine operations:
 ```
 *** Begin Patch
 *** Add File: hello.txt
@@ -61,4 +13,8 @@ Full patches may combine operations:
 *** End Patch
 ```
 
-MUST use Add/Delete/Update header; new-file lines MUST start `+`; file references relative, NEVER absolute.
+Headers: `*** Add File: <path>` (every following line `+`), `*** Delete File: <path>`, `*** Update File: <path>` (+ optional `*** Move to:`, then `@@` hunks of ` `/`-`/`+` lines; optional `*** End of File`).
+
+Context: 3 lines around each change; don't duplicate context between nearby changes. Ambiguous target → `@@` anchors (class/function), stacked if needed.
+
+MUST use headers; new-file lines `+`; paths relative, NEVER absolute.

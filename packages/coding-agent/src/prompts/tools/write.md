@@ -1,14 +1,8 @@
-Creates or overwrites file at specified path.
+Creates or overwrites a file. Use for new files the task requires, or full replacement when editing would be more complex.
 
-<conditions>
-- Creating new files explicitly required by task
-- Replacing entire file contents when editing would be more complex
-- Supports `.zip` (and ZIP-based `.jar`/`.war`/`.ear`/`.apk`), `.tar`, `.tar.gz`/`.tgz`, `.tar.zst`, and `.asar` archive entries via `archive.ext:path/inside/archive`; other archive formats (`.rar`, `.7z`, `.iso`, …) are read-only
-- Supports SQLite row operations via `db.sqlite:table` (insert), `db.sqlite:table:key` (update with JSON content, delete with empty content)
-</conditions>
+Also: archive entries `archive.ext:path/inside/archive` (`.zip` + `.jar`/`.war`/`.ear`/`.apk`, `.tar` + `.gz`/`.zst`, `.asar`; others read-only). SQLite rows: `db.sqlite:table` insert, `db.sqlite:table:key` update (JSON content) / delete (empty content).
 
 <critical>
-- You SHOULD use Edit tool for modifying existing files
-- You NEVER create documentation files (*.md, README) unless explicitly requested
-- You NEVER use emojis unless requested
+- SHOULD use Edit for modifying existing files.
+- NEVER create documentation files (*.md, README) or use emojis unless requested.
 </critical>

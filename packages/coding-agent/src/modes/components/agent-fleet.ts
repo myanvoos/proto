@@ -31,6 +31,7 @@ import {
 	aggregateMetrics,
 	progressMetrics,
 	projectAgentTree,
+	refBelongsToSessionTree,
 	STATUS_ORDER,
 } from "./agent-fleet-projection";
 import {
@@ -171,6 +172,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#isBuiltInTool: ((name: string) => boolean) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
 	#cwd: string;
+	#sessionFile: string | null | undefined;
 	#hideThinkingBlock: (() => boolean) | undefined;
 	#proseOnlyThinking: (() => boolean) | undefined;
 	#expandKeys: KeyId[];
@@ -201,6 +203,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
 		this.#cwd = deps.cwd ?? getProjectDir();
+		this.#sessionFile = deps.sessionFile;
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
 		this.#proseOnlyThinking = deps.proseOnlyThinking;
 		this.#expandKeys = deps.expandKeys ?? ["ctrl+o"];
@@ -350,7 +353,9 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.id;
-		const refs = this.#registry.list().filter(ref => ref.id !== MAIN_AGENT_ID);
+		const refs = this.#registry
+			.list()
+			.filter(ref => ref.id !== MAIN_AGENT_ID && refBelongsToSessionTree(ref, this.#sessionFile));
 		this.#observedById = new Map();
 		for (const session of this.#observers.getSessions()) this.#observedById.set(session.id, session);
 		const rowOrder = this.#rowOrder;

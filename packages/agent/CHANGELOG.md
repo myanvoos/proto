@@ -27,6 +27,7 @@
 
 ### Added
 
+- Added `PiGenAIAttr.ResponseReasoning` (`pi.gen_ai.response.reasoning`) for exporting assistant reasoning as a dedicated span attribute.
 - Added `Tokenizer.checkTokenBudget(text, budget)` to efficiently verify if text fits within a token limit using fast byte-bound checks before falling back to full tokenization.
 - Added provider-anchored transcript token estimation (`findTranscriptUsageAnchor`, `isTranscriptUsageAnchor`, `estimateTranscriptTokens`) to calculate transcript token counts incrementally from the latest reported assistant turn usage.
 - Added `remotePreserveReusable()` to check whether a previous remote compaction payload remains reusable with the active model.

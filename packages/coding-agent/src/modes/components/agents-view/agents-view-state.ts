@@ -135,8 +135,14 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 		.join(" ");
 }
 
-function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref">): AgentsViewSection {
-	if (!record.ref) return "inactive";
+function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref" | "session">): AgentsViewSection {
+	if (!record.ref) {
+		// No ref means the session is owned by another process (or history only). When its
+		// live marker reports active streaming, it is running — never mind what the last
+		// flushed transcript entry implies.
+		if (record.session?.liveStreaming) return "running";
+		return "inactive";
+	}
 	switch (record.ref.status) {
 		case "running":
 			return "running";
@@ -374,7 +380,7 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	return a.identity.localeCompare(b.identity);
 }
 
-function formatRowDetails(row: AgentsViewRow): string {
+export function formatRowDetails(row: AgentsViewRow): string {
 	const age = formatRelativeAge(getLastActivity(row.record));
 	if (row.section !== "inactive") return age;
 	const count = row.record?.session?.messageCount;
@@ -427,6 +433,8 @@ function getStatusLabel(record: AgentsViewRecord): string {
 				return "aborted";
 		}
 	}
+	if (record.session?.liveStreaming) return "running";
+	if (record.session?.liveOpen) return "in use";
 	switch (record.session?.status) {
 		case "complete":
 			return "completed";
@@ -461,15 +469,17 @@ export function resolveAgentsViewSelectionIndex(
 }
 
 export function countAgentsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
-	return {
-		running: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "running")
-			.length,
-		idle: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "idle").length,
-		current: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "current")
-			.length,
-		inactive: rows.filter(row => (row.kind === "agent" || row.kind === "subagent") && row.section === "inactive")
-			.length,
-	};
+	const counts: Record<AgentsViewSection, number> = { running: 0, idle: 0, current: 0, inactive: 0 };
+	// Mirror getDisplayRowsForSection: children render under the section their nearest
+	// depth-0 ancestor was filed under, so counts must count the same way or the header
+	// disagrees with the visible sections.
+	let displaySection: AgentsViewSection | undefined;
+	for (const row of rows) {
+		if (row.depth === 0) displaySection = row.section;
+		const section = displaySection ?? row.section;
+		if (row.kind === "agent" || row.kind === "subagent") counts[section]++;
+	}
+	return counts;
 }
 
 export function sectionTitle(section: AgentsViewSection): string {

@@ -6,6 +6,7 @@ import { resolveExplicitModelRole } from "../config/model-resolver";
 import { persistedOrchestratorWorkerIds } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
+import { readSessionLiveState } from "../session/session-liveness";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { loadBundledAgents } from "../task/agents";
 import { isReadOnlyAgent } from "../task/read-only-policy";
@@ -333,9 +334,19 @@ export async function registerPersistedSubagents(
 	if (!sessionFile?.endsWith(".jsonl")) return;
 	const shouldContinue = options.shouldContinue ?? (() => true);
 	if (!shouldContinue()) return;
+	const root = sessionFile.slice(0, -6);
+	// Fast path: without an artifacts directory there is nothing to register, and the
+	// orchestrator-id scan would needlessly stream the whole transcript.
+	let rootEntries: fs.Dirent[];
+	try {
+		rootEntries = await fs.promises.readdir(root, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	if (rootEntries.length === 0) return;
+	if (!shouldContinue()) return;
 	const orchestratorOwnedIds = await readPersistedOrchestratorWorkerIds(sessionFile, shouldContinue);
 	if (!shouldContinue()) return;
-	const root = sessionFile.slice(0, -6);
 	const transcripts: PersistedTranscript[] = [];
 	await registerPersistedSubagentsFromDir(
 		registry,
@@ -436,33 +447,40 @@ async function registerPersistedSubagentsFromDir(
 		}
 		if (!shouldContinue()) return;
 		if (!registry.get(id)) {
-			const metadata = await readPersistedAgentMetadata(sessionFile);
-			if (!shouldContinue()) return;
+			// A fresh live marker means an active session (this or another process) owns the
+			// transcript right now. Registering it as parked would mislabel a running agent
+			// and invite a concurrent revival, so skip registration — but still recurse, so
+			// nested transcripts of a live agent are not lost. Once the session closes, its
+			// marker is removed and the next scan registers the transcript normally.
+			if (!readSessionLiveState(sessionFile).fresh) {
+				const metadata = await readPersistedAgentMetadata(sessionFile);
+				if (!shouldContinue()) return;
 
-			const unclaimed = !registry.get(id);
+				const unclaimed = !registry.get(id);
 
-			if (unclaimed && metadata.incomplete && !tombstoned) continue;
-			if (unclaimed) {
-				registry.register({
-					id,
-					displayName: id,
-					kind: "sub",
-					parentId: parentId ?? MAIN_AGENT_ID,
-					session: null,
-					sessionFile,
-					activity: metadata.activity,
-					createdAt: metadata.createdAt,
-					lastActivity: metadata.lastActivity,
-					history: metadata.history,
-					status: tombstoned ? "aborted" : "parked",
-				});
-				const ref = registry.get(id);
-				transcripts.push({
-					id,
-					sessionFile,
-					createdAt: ref?.createdAt,
-					lastActivity: ref?.lastActivity,
-				});
+				if (unclaimed && metadata.incomplete && !tombstoned) continue;
+				if (unclaimed) {
+					registry.register({
+						id,
+						displayName: id,
+						kind: "sub",
+						parentId: parentId ?? MAIN_AGENT_ID,
+						session: null,
+						sessionFile,
+						activity: metadata.activity,
+						createdAt: metadata.createdAt,
+						lastActivity: metadata.lastActivity,
+						history: metadata.history,
+						status: tombstoned ? "aborted" : "parked",
+					});
+					const ref = registry.get(id);
+					transcripts.push({
+						id,
+						sessionFile,
+						createdAt: ref?.createdAt,
+						lastActivity: ref?.lastActivity,
+					});
+				}
 			}
 		}
 		await registerPersistedSubagentsFromDir(

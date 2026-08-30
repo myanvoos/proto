@@ -40,6 +40,8 @@ export interface TrajectoryStep {
 
 	text?: string;
 
+	thinking?: string;
+
 	title: string;
 
 	detail?: string;
@@ -340,6 +342,7 @@ function emitAssistant(
 		usage: message.usage,
 		isError,
 		text,
+		thinking: thinking || undefined,
 		stopReason: message.stopReason,
 		errorText: message.errorMessage,
 		preview: firstLine(text) || firstLine(calls.map(call => call.name).join(", ")),

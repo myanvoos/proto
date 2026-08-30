@@ -36,6 +36,7 @@ import inspect
 import io
 import json
 import locale
+import math
 import os
 import re
 import runpy
@@ -46,7 +47,9 @@ import subprocess
 import sys
 import threading
 import time
+import tokenize
 import traceback
+import types
 from pathlib import Path
 from typing import Any, Callable
 
@@ -81,12 +84,35 @@ def _json_default(o: Any) -> Any:
         return f"<unrepr {type(o).__name__}>"
 
 
+def _json_finite(value: Any) -> Any:
+    """Replace non-finite floats (NaN/inf) with their repr so the frame stays strict JSON.
+
+    Python's encoder emits bare ``NaN``/``Infinity`` tokens by default; the
+    host parses frames with ``JSON.parse`` which rejects them, silently
+    dropping the whole frame (a ``display`` of a dict holding one NaN would
+    vanish without a trace).
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else repr(value)
+    if isinstance(value, dict):
+        return {k: _json_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(v) for v in value]
+    return value
+
+
+def _dump_frame(frame: dict) -> str:
+    try:
+        return json.dumps(frame, ensure_ascii=False, allow_nan=False, default=_json_default)
+    except ValueError:
+        return json.dumps(_json_finite(frame), ensure_ascii=False, allow_nan=False, default=_json_default)
+
+
 def _emit(frame: dict) -> None:
     """Serialize a frame and write it to the host as a single NDJSON line."""
-    line = json.dumps(frame, ensure_ascii=False, default=_json_default)
+    line = _dump_frame(frame) + "\n"
     with _OUT_LOCK:
         _RAW_STDOUT.write(line)
-        _RAW_STDOUT.write("\n")
         _RAW_STDOUT.flush()
 
 
@@ -192,6 +218,15 @@ class _RunnerState:
         self.capture_rid: str | None = None
         self.defs: dict[str, int] = {}
         self.prelude_names: set[str] | None = None
+        # Prelude helpers live in their own module namespace so user
+        # rebindings (``json = ...``, ``output = ...``) cannot break them;
+        # only the public API is exported into ``user_ns``.
+        self.prelude_ns: dict[str, Any] | None = None
+        self.prelude_exports: dict[str, Any] = {}
+        self.shadow_warned: set[str] = set()
+        # In-flight request tasks; SIGINT while parked in the event loop
+        # cancels these instead of unwinding the loop itself.
+        self.request_tasks: set[asyncio.Task] = set()
 
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -294,20 +329,32 @@ def transform_cell(source: str) -> str:
       (cell magic must be the first non-whitespace token of a top-level line and
       consumes the remainder of the cell)
 
-    Lines inside strings or comments are left alone — we operate on the raw
-    text before parsing, but the scanner only fires on the first token of each
-    physical line and never touches the body of triple-quoted strings because
-    those bodies are never first tokens themselves.
+    A bare ``%name`` / ``!cmd`` line is never valid Python, so a cell that
+    parses cleanly contains no magics and is returned untouched — this is what
+    keeps ``!``/``%`` lines inside triple-quoted strings (markdown badges,
+    ``%d`` templates, ``!important``) from being rewritten. Cells that do not
+    parse are scanned line by line, skipping physical lines that begin inside
+    a multi-line string literal.
     """
 
     if "%" not in source and "!" not in source:
         return source
+    try:
+        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
+        return source
+    except SyntaxError:
+        pass
 
+    protected = _string_body_lines(source)
     lines = source.splitlines()
     out: list[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
+        if (i + 1) in protected:
+            out.append(line)
+            i += 1
+            continue
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
 
@@ -366,6 +413,36 @@ def transform_cell(source: str) -> str:
         i += 1
 
     return "\n".join(out)
+
+
+def _string_body_lines(source: str) -> set[int]:
+    """1-based physical lines that *begin* inside a multi-line string literal.
+
+    Best effort: tokenizing stops at the first hard error (e.g. an
+    unterminated quote in a ``%%bash`` body); lines seen before that are
+    still protected.
+    """
+    protected: set[int] = set()
+    fstring_start = getattr(tokenize, "FSTRING_START", None)
+    fstring_end = getattr(tokenize, "FSTRING_END", None)
+    depth = 0
+    outer_start = 0
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.STRING:
+                if tok.end[0] > tok.start[0]:
+                    protected.update(range(tok.start[0] + 1, tok.end[0] + 1))
+            elif fstring_start is not None and tok.type == fstring_start:
+                if depth == 0:
+                    outer_start = tok.start[0]
+                depth += 1
+            elif fstring_end is not None and tok.type == fstring_end:
+                depth = max(0, depth - 1)
+                if depth == 0 and tok.end[0] > outer_start:
+                    protected.update(range(outer_start + 1, tok.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        pass
+    return protected
 
 
 def _split_magic_head(text: str) -> tuple[tuple[str, str], str]:
@@ -707,10 +784,10 @@ def _magic_whos(_args: str) -> list[tuple[str, str]]:
 @line_magic("reset")
 def _magic_reset(_args: str) -> None:
     _STATE.user_ns.clear()
-    _STATE.user_ns.update(
-        {"__name__": "__main__", "__doc__": None, "__builtins__": builtins}
-    )
+    _STATE.user_ns.update({"__name__": "__main__", "__doc__": None})
     _install_builtins(_STATE.user_ns)
+    _STATE.defs.clear()
+    _STATE.shadow_warned.clear()
     _emit_status("reset")
 
 
@@ -1040,14 +1117,68 @@ def __proto_defs_view() -> dict[str, int]:
     return dict(_STATE.defs)
 
 
+def _current_run_id() -> str | None:
+    return _CURRENT_RID.get()
+
+
+def _runner_exports() -> dict[str, Any]:
+    return {
+        "display": __proto_display,
+        "defs": __proto_defs_view,
+    }
+
+
 def _install_builtins(ns: dict) -> None:
-    ns["display"] = __proto_display
+    """(Re)install runner + prelude helpers into a user namespace.
+
+    Helpers are bound twice: as globals (visible to ``dir()``/``%who``) and
+    in a private copy of ``builtins`` that backs the namespace, so a cell
+    that rebinds ``output = ...`` can ``del output`` to get the helper back
+    instead of losing it for the life of the kernel.
+    """
     ns["__proto_display"] = __proto_display
     ns["__proto_magic"] = __proto_magic
     ns["__proto_magic_cell"] = __proto_magic_cell
     ns["__proto_shell"] = __proto_shell
-    ns["__proto_current_run_id__"] = lambda: _CURRENT_RID.get()
-    ns["defs"] = __proto_defs_view
+    ns["__proto_current_run_id__"] = _current_run_id
+    exports = {**_runner_exports(), **_STATE.prelude_exports}
+    ns.update(exports)
+    ns["__builtins__"] = {**vars(builtins), **exports}
+
+
+def _load_prelude(source: str) -> None:
+    """Execute the host prelude in an isolated module namespace and export its API.
+
+    Only ``__all__`` (or, failing that, public non-module names) is copied
+    into ``user_ns``; the helpers' own globals (``json``, ``os``, private
+    ``_bridge_call``…) stay out of reach of user rebindings.
+    """
+    ns: dict[str, Any] = {
+        "__name__": "__proto_prelude__",
+        "__builtins__": builtins,
+        "__proto_display": __proto_display,
+        "__proto_current_run_id__": _current_run_id,
+    }
+    exec(compile(source, "<prelude>", "exec"), ns)
+    declared = ns.get("__all__")
+    if isinstance(declared, (list, tuple)):
+        names = [n for n in declared if isinstance(n, str) and n in ns]
+    else:
+        names = [
+            n
+            for n, v in ns.items()
+            if not n.startswith("_") and not isinstance(v, types.ModuleType)
+        ]
+    _STATE.prelude_ns = ns
+    _STATE.prelude_exports = {n: ns[n] for n in names}
+    _install_builtins(_STATE.user_ns)
+    # Shadow warnings cover the helper API only: re-importing a convenience
+    # module (``import json``) or class (``Path``) is normal, not a mistake.
+    _STATE.prelude_names = set(_runner_exports()) | {
+        n for n, v in _STATE.prelude_exports.items() if not isinstance(v, (types.ModuleType, type))
+    }
+    _STATE.defs.clear()
+    _STATE.shadow_warned.clear()
 
 
 _install_builtins(_STATE.user_ns)
@@ -1098,6 +1229,12 @@ async def _run_compiled_async(code, ns: dict, *, want_value: bool) -> Any:
         return eval(code, ns)
     exec(code, ns)
     return None
+
+
+# Code objects that mark "user cell code is executing on the main thread";
+# consulted by the SIGINT handler to choose between raising KeyboardInterrupt
+# and cancelling the request task.
+_USER_EXEC_CODES: set[Any] = {_run_compiled_sync.__code__, _run_compiled_async.__code__}
 
 
 def _compile_source(source: str) -> tuple[Any, Any | None, bool]:
@@ -1157,9 +1294,51 @@ def _install_idle_sigint() -> None:
         pass
 
 
+def _user_code_on_stack(frame: Any) -> bool:
+    while frame is not None:
+        if frame.f_code in _USER_EXEC_CODES:
+            return True
+        frame = frame.f_back
+    return False
+
+
+def _exec_sigint_handler(_signum: int, frame: Any) -> None:
+    """Interrupt the running cell without taking the runner down with it.
+
+    Python-level signal handlers always run on the main thread. If user code
+    is on the stack (sync code, or a sync section of a coroutine) raising
+    ``KeyboardInterrupt`` unwinds it like a REPL would. If the main thread is
+    instead parked in the event loop — the cell is at a top-level ``await`` —
+    raising there would propagate out of ``selector.select`` and kill the
+    whole runner (all kernel state lost); cancel the request task instead so
+    the ``await`` raises ``CancelledError`` inside the cell.
+    """
+    if _user_code_on_stack(frame):
+        raise KeyboardInterrupt
+    cancelled = False
+    for task in list(_STATE.request_tasks):
+        if not task.done():
+            task.cancel()
+            cancelled = True
+    loop = _STATE.loop
+    if cancelled and loop is not None:
+        # This handler runs *inside* the interrupted selector poll, which is
+        # retried with its remaining timeout once we return. ``cancel()`` only
+        # queued the wake-up via ``call_soon``; write to the loop's self-pipe
+        # so the poll returns now instead of when the original timer fires.
+        try:
+            loop.call_soon_threadsafe(_noop)
+        except RuntimeError:
+            pass
+
+
+def _noop() -> None:
+    return None
+
+
 def _install_exec_sigint() -> None:
     try:
-        signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGINT, _exec_sigint_handler)
     except (OSError, ValueError):
         pass
 
@@ -1241,34 +1420,79 @@ def _start_parent_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cell_def_names(source: str) -> list[str]:
+def _cell_bound_names(source: str) -> tuple[list[str], list[str]]:
+    """Top-level names a cell defines: ``(def/class names, every bound name)``.
+
+    The second list also covers assignments, loop/with targets and imports —
+    ``output = tool.bash(...)`` shadows the ``output()`` helper just as
+    surely as ``def output`` does.
+    """
     try:
-        tree = ast.parse(source)
+        tree = compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
     except SyntaxError:
-        return []
-    names: list[str] = []
+        return [], []
+    defs: list[str] = []
+    bound: list[str] = []
+
+    def add_target(target: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            bound.append(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                add_target(elt)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.append(node.name)
-    return names
+            defs.append(node.name)
+            bound.append(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                add_target(target)
+        elif isinstance(node, ast.AnnAssign):
+            add_target(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            add_target(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    add_target(item.optional_vars)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound.append(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    bound.append(alias.asname or alias.name)
+    return defs, bound
 
 
 def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
     if _STATE.prelude_names is None and _STATE.user_ns.get("__proto_prelude_loaded__"):
+        # Legacy host that ran the prelude as a plain cell in user_ns.
         _STATE.prelude_names = set(_STATE.user_ns)
         _STATE.defs.clear()
         return
-    for name in _cell_def_names(source):
-        previous = _STATE.defs.get(name)
+    defs, bound = _cell_bound_names(source)
+    for name in defs:
         _STATE.defs[name] = execution_count
-        if _STATE.prelude_names is not None and previous is None and name in _STATE.prelude_names:
-            _emit(
-                {
-                    "type": "stderr",
-                    "id": rid,
-                    "data": f"<kernel> warning: {name!r} shadows a prelude primitive; later cells see your version, not the prelude's\n",
-                }
-            )
+    if _STATE.prelude_names is None:
+        return
+    for name in bound:
+        if name not in _STATE.prelude_names or name in _STATE.shadow_warned:
+            continue
+        _STATE.shadow_warned.add(name)
+        _emit(
+            {
+                "type": "stderr",
+                "id": rid,
+                "data": (
+                    f"<kernel> warning: {name!r} now shadows the kernel helper of the same name; "
+                    f"later cells see your value. `del {name}` restores the helper.\n"
+                ),
+            }
+        )
 
 
 async def _handle_request_async(req: dict) -> None:
@@ -1284,11 +1508,13 @@ async def _handle_request_async(req: dict) -> None:
 
     status: str = "ok"
     cancelled = False
+    is_prelude = bool(req.get("prelude"))
 
     try:
         try:
             _apply_request_runtime(req)
-            transformed = transform_cell(req.get("code", ""))
+            code = req.get("code", "")
+            transformed = code if is_prelude else transform_cell(code)
         except SyntaxError as exc:
             _emit_error(rid, exc)
             _emit(
@@ -1316,11 +1542,24 @@ async def _handle_request_async(req: dict) -> None:
 
         _begin_exec_sigint()
         try:
-            await _exec_source_async(transformed, _STATE.user_ns)
+            if is_prelude:
+                _load_prelude(transformed)
+            else:
+                await _exec_source_async(transformed, _STATE.user_ns)
         except KeyboardInterrupt:
             cancelled = True
             status = "error"
             _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
+        except asyncio.CancelledError:
+            # SIGINT arrived while the cell was parked at an await; the
+            # handler cancelled this task instead of unwinding the loop.
+            cancelled = True
+            status = "error"
+            _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
+            current = asyncio.current_task()
+            uncancel = getattr(current, "uncancel", None)
+            if callable(uncancel):
+                uncancel()
         except SystemExit as exc:
             status = "error"
             _emit_error(rid, exc)
@@ -1334,7 +1573,8 @@ async def _handle_request_async(req: dict) -> None:
             except Exception:
                 pass
 
-        _track_cell_defs(req.get("code", ""), rid, execution_count)
+        if not is_prelude:
+            _track_cell_defs(transformed, rid, execution_count)
         _flush_stream_proxies(rid)
         _emit(
             {
@@ -1429,7 +1669,7 @@ async def _main_async() -> None:
     )
     reader.start()
 
-    tasks: set[asyncio.Task] = set()
+    tasks = _STATE.request_tasks
 
     def _task_done(task: asyncio.Task) -> None:
         tasks.discard(task)

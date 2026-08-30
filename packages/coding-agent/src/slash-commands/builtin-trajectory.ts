@@ -1,7 +1,6 @@
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { trajectoryToOtlpJson } from "../session/trajectory/export-otel";
-import { type PrimeRlExportOptions, trajectoriesToPrimeRlJsonl } from "../session/trajectory/export-prime-rl";
 import type { Trajectory } from "../session/trajectory/model";
 import { buildSessionTrajectory, defaultExportPath } from "../session/trajectory/session-source";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
@@ -13,49 +12,25 @@ import type {
 	SlashCommandSpec,
 } from "./types";
 
-const USAGE_TEXT = "Usage: /trajectory [view] | stats | export <otel|prime-rl> [<path>] [--reward <score>]";
+const USAGE_TEXT = "Usage: /trajectory [view] | stats | export [<path>]";
 
 const BADGE_PAD = 10;
 
 interface ExportRequest {
-	kind: "otel" | "prime-rl";
 	path?: string;
-	reward?: number;
 	error?: string;
 }
 
 function parseExportArgs(rest: string): ExportRequest {
 	const tokens = rest.split(/\s+/).filter(Boolean);
-	const kind = tokens.shift()?.toLowerCase();
-	if (kind !== "otel" && kind !== "prime-rl") {
-		return { kind: "otel", error: "export kind must be `otel` or `prime-rl`" };
-	}
-	let reward: number | undefined;
-	const positional: string[] = [];
-	for (let i = 0; i < tokens.length; i++) {
-		if (tokens[i] === "--reward") {
-			const raw = tokens[i + 1];
-			const parsed = raw == null ? Number.NaN : Number(raw);
-			if (!Number.isFinite(parsed)) return { kind, error: "--reward requires a numeric score" };
-			reward = parsed;
-			i++;
-		} else {
-			positional.push(tokens[i]);
-		}
-	}
-	return { kind, path: positional[0], reward };
+	if (tokens.length > 1) return { error: "export takes at most one path" };
+	return { path: tokens[0] };
 }
 
 async function writeExport(trajectory: Trajectory, request: ExportRequest, cwd: string): Promise<string> {
-	const target = request.path ?? defaultExportPath(cwd, trajectory.header?.id ?? "session", request.kind);
-	const payload =
-		request.kind === "otel"
-			? trajectoryToOtlpJson(trajectory)
-			: trajectoriesToPrimeRlJsonl([trajectory], {
-					reward: request.reward,
-				} satisfies PrimeRlExportOptions);
-	await Bun.write(target, payload);
-	return `Wrote ${request.kind === "otel" ? "OTLP" : "prime-rl episode"} export (${trajectory.steps.length} steps) → ${target}`;
+	const target = request.path ?? defaultExportPath(cwd, trajectory.header?.id ?? "session");
+	await Bun.write(target, trajectoryToOtlpJson(trajectory));
+	return `Wrote OTLP export (${trajectory.steps.length} steps) → ${target}`;
 }
 
 function formatStats(trajectory: Trajectory): string {
@@ -118,8 +93,8 @@ const TRAJECTORY_SPEC: SlashCommandSpec = {
 		{ name: "stats", description: "Print trajectory summary and recent steps" },
 		{
 			name: "export",
-			description: "Export otel (OTLP JSON) or prime-rl (Episode JSONL)",
-			usage: "<otel|prime-rl> [<path>] [--reward <score>]",
+			description: "Export OTLP JSON",
+			usage: "[<path>]",
 		},
 	],
 	handle: handleText,

@@ -15,7 +15,9 @@ const kernelSchema = type({
 		"Python code to run in the persistent kernel, verbatim. Top-level `await` is available.",
 	),
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
-	"timeout?": type("number").describe("timeout for this call in seconds; 0 disables the cell timeout"),
+	"timeout?": type("number").describe(
+		"timeout for this call in seconds (default 30; time spent inside agent()/completion() does not count); 0 disables the cell timeout",
+	),
 	"reset?": type("boolean").describe("wipe the kernel before running"),
 	"files?": type({
 		path: type("string").describe("file path, absolute or relative to cwd"),

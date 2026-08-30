@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { AgentMetricsSummary, AgentRef, AgentStatus } from "../../registry/agent-registry";
 import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { ObservableSession } from "../session-observer-registry";
@@ -18,6 +19,23 @@ interface AgentTreeProjection {
 }
 
 export const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, idle: 1, parked: 2, aborted: 3 };
+
+/**
+ * True when the ref's transcript lives inside the artifacts tree of the given session —
+ * i.e. the fleet roster of that session owns it. Refs without a session file (in-memory
+ * workers) always belong; refs from other sessions never do.
+ */
+export function refBelongsToSessionTree(
+	ref: Pick<AgentRef, "sessionFile">,
+	sessionFile: string | null | undefined,
+): boolean {
+	if (!ref.sessionFile) return true;
+	if (!sessionFile) return false;
+	const base = path.resolve(sessionFile.slice(0, -".jsonl".length));
+	const refPath = path.resolve(ref.sessionFile);
+	const rel = path.relative(base, refPath);
+	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
 
 function finiteMetric(value: number | undefined): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;

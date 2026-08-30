@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { readSessionLiveState } from "./session-liveness";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { lookupSessionTitle, recordSessionTitle } from "./title-index";
@@ -26,6 +27,12 @@ export interface SessionInfo {
 	allMessagesText: string;
 
 	status?: SessionStatus;
+
+	/** True when a live-usage marker for this session was refreshed recently (any process). */
+	liveOpen?: boolean;
+
+	/** True when the session owning the marker is currently streaming. */
+	liveStreaming?: boolean;
 }
 
 interface ResolvedSessionMatch {
@@ -359,6 +366,14 @@ function getSessionListWorkerCount(fileCount: number): number {
 	);
 }
 
+function attachSessionLiveState(info: SessionInfo, storage: SessionStorage): SessionInfo {
+	if (!(storage instanceof FileSessionStorage)) return info;
+	const live = readSessionLiveState(info.path);
+	info.liveOpen = live.fresh;
+	info.liveStreaming = live.fresh && live.streaming;
+	return info;
+}
+
 async function scanSessionFile(
 	file: string,
 	storage: SessionStorage,
@@ -375,7 +390,8 @@ async function scanSessionFile(
 	const cacheKey = withStatus ? `s\0${file}` : `h\0${file}`;
 	const cached = cache.get(cacheKey);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-		return cached.info ? { ...cached.info } : undefined;
+		// Liveness is intentionally not cached: it changes without the session file changing.
+		return cached.info ? attachSessionLiveState({ ...cached.info }, storage) : undefined;
 	}
 	try {
 		const [content, suffix] = await storage.readTextSlices(
@@ -438,7 +454,7 @@ async function scanSessionFile(
 		};
 
 		cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: { ...info } });
-		return info;
+		return attachSessionLiveState(info, storage);
 	} catch {
 		return undefined;
 	}

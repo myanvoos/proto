@@ -1,57 +1,14 @@
 Patches files given diff hunks. Primary tool for existing-file edits.
 
-<instruction>
-**Hunk Headers:**
-- `@@` — bare header when context lines unique
-- `@@ $ANCHOR` — anchor copied verbatim from file (full line or unique substring)
-**Anchor Selection:**
-1. Prefer bare `@@` when context lines alone are unique; otherwise choose highly specific anchor copied from file:
-   - full function signature
-   - class declaration
-   - unique string literal/error message
-   - config key with uncommon name
-2. On "Found multiple matches": add context lines, use multiple hunks with separate anchors, or use longer anchor substring
-**Context Lines:**
-Use enough ` `-prefixed lines to make match unique (usually 2–8)
-When editing structured blocks (nested braces, tags, indented regions), include opening and closing lines so edit stays inside block
-</instruction>
+Input `{ path, edits: Entry[] }`; `path` applies to every entry. Entries: `{ op: "update", diff }` (hunks), `{ op: "create", diff }` (full content, no prefixes), `{ op: "delete" }`, `{ op: "update", rename, diff }`.
 
-<parameters>
-```ts
-// Input is { path: string, edits: Entry[] }. `path` is required and applies to every entry.
-type Entry =
-   // Diff is one or more hunks for the top-level path.
-   // - Each hunk begins with "@@" (anchor optional).
-   // - Each hunk body only has lines starting with ' ' | '+' | '-'.
-   // - Each hunk includes at least one change (+ or -).
-   | { op: "update", diff: string }
-   // Diff is full file content, no prefixes.
-   | { op: "create", diff: string }
-   // No diff for delete.
-   | { op: "delete" }
-   // New path for update+move from the top-level path.
-   | { op: "update", rename: string, diff: string }
-```
-</parameters>
-
-<output>
-Returns success/failure; on failure, error message indicates:
-- "Found multiple matches" — anchor/context not unique enough
-- "No match found" — context lines don't exist in file (wrong content or stale read)
-- Syntax errors in diff format
-</output>
+Diff: hunks start `@@` — bare when context lines alone are unique; else `@@ $ANCHOR` copied verbatim (function signature, class declaration, unique literal; stack anchors if still ambiguous). Body lines start `' '`/`'+'`/'-', ≥1 change per hunk; usually 2–8 context lines; structured blocks include opening+closing lines.
 
 <critical>
-- You MUST read the target file before editing
-- You MUST copy anchors and context lines verbatim (including whitespace)
-- You NEVER use anchors as comments (no line numbers, location labels, placeholders like `@@ @@`)
-- You NEVER place new lines outside the intended block
-- If edit fails or breaks structure, you MUST re-read the file and produce a new patch from current content — you NEVER retry the same diff
-- NEVER use edit to fix indentation, whitespace, or reformat code. Formatting is a single command run once at the end (`bun fmt`, `cargo fmt`, `prettier --write`, etc.) — not N individual edits. If you see inconsistent indentation after an edit, leave it; the formatter will fix all of it in one pass.
+- MUST read the target file first; copy anchors/context verbatim including whitespace.
+- NEVER use anchors as comments (no line numbers, labels, placeholders like `@@ @@`); NEVER place new lines outside the intended block.
+- Failed or structure-breaking edit → re-read file, new patch from current content; NEVER retry the same diff.
+- NEVER use edits to fix indentation/whitespace — one formatter run at the end (`bun fmt`, `cargo fmt`, …).
 </critical>
 
-<avoid>
-- Generic anchors: `import`, `export`, `describe`, `function`, `const`
-- Repeating same addition in multiple hunks (duplicate blocks)
-- Full-file overwrites for minor changes (acceptable for major restructures or short files)
-</avoid>
+Avoid: generic anchors (`import`, `export`, `describe`, `function`, `const`); same addition repeated across hunks; full-file overwrite for minor changes.

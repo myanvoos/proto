@@ -154,8 +154,8 @@ export class IrcBus {
 
 		const liveness = options?.liveness;
 		const livenessReason = filter.from
-			? `IRC wait aborted: agent "${filter.from}" is not running`
-			: "IRC wait aborted: no running peers remain";
+			? `IRC wait aborted: agent "${filter.from}" is no longer active`
+			: "IRC wait aborted: no active peers remain";
 
 		const settle = (
 			outcome: { kind: "message"; msg: IrcMessage } | { kind: "timeout" } | { kind: "abort"; error: Error },
@@ -205,9 +205,12 @@ export class IrcBus {
 
 		if (liveness) {
 			const { registry, senderId } = liveness;
-			const hasRunningSender = (from?: string): boolean =>
-				registry.listVisibleTo(senderId).some(ref => registry.isRunning(ref) && (!from || ref.id === from));
-			const check = filter.from ? () => hasRunningSender(filter.from) : () => hasRunningSender();
+			// A peer idles between turns (run ended, follow-up queued, next run starting);
+			// that is alive, not gone. Only parked/aborted/removed peers (the ones
+			// listVisibleTo already filters out) count as disappeared.
+			const hasActiveSender = (from?: string): boolean =>
+				registry.listVisibleTo(senderId).some(ref => !from || ref.id === from);
+			const check = filter.from ? () => hasActiveSender(filter.from) : () => hasActiveSender();
 			unsubscribeLiveness = registry.onChange(() => {
 				if (!check()) {
 					settle({ kind: "abort", error: new Error(livenessReason) });

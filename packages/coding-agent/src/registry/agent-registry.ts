@@ -161,7 +161,11 @@ export class AgentRegistry {
 		if (ref.status === "aborted") {
 			return status === "aborted" || this.#rejectStatusUpdate(id, status, "aborted-is-terminal");
 		}
-		if (ref.status === status) return true;
+		if (ref.status === status) {
+			// Same status still means "alive right now" — keep relative-age displays honest.
+			ref.lastActivity = Date.now();
+			return true;
+		}
 		ref.status = status;
 
 		if (status !== "running") ref.activity = undefined;
@@ -178,6 +182,7 @@ export class AgentRegistry {
 		ref.lastActivity = Date.now();
 		if (ref.activity === gist) return;
 		ref.activity = gist;
+		this.#emit({ type: "metadata_changed", ref });
 	}
 
 	attachSession(
@@ -222,11 +227,6 @@ export class AgentRegistry {
 		return this.list().filter(
 			ref => ref.id !== id && ref.kind !== "advisor" && (ref.status === "running" || ref.status === "idle"),
 		);
-	}
-
-	isRunning(ref: AgentRef): boolean {
-		if (ref.status !== "running") return false;
-		return ref.session?.isStreaming === true;
 	}
 
 	syncSessionStatus(id: string, session: AgentSession): () => void {

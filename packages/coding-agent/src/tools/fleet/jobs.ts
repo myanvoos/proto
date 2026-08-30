@@ -7,6 +7,7 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { readSessionLiveState } from "../../session/session-liveness";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
 import {
@@ -79,12 +80,15 @@ function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[]
 	for (const ref of registry.list()) {
 		if (ref.kind !== "sub" || ref.status !== "running") continue;
 		if (ref.id === selfId || covered.has(ref.id)) continue;
+		// "Live" means the transcript is held by an active session. isStreaming alone
+		// misfires: it is false during tool execution and between requests of one run.
+		const live = ref.session !== null || (ref.sessionFile ? readSessionLiveState(ref.sessionFile).fresh : false);
 		out.push({
 			id: ref.id,
 			...(ref.parentId ? { parentId: ref.parentId } : {}),
 			...(ref.activity ? { activity: ref.activity } : {}),
 			ageMs: Math.max(0, now - ref.createdAt),
-			live: registry.isRunning(ref),
+			live,
 		});
 	}
 	return out;

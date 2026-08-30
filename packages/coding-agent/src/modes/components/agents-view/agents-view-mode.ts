@@ -20,6 +20,7 @@ import { readAgentSpawnTask, registerPersistedSubagents } from "../../../registr
 import { detachedSessionHolder } from "../../../session/detached-session-holder";
 import { USER_INTERRUPT_LABEL } from "../../../session/messages";
 import { listSessions, readLastAssistantText, type SessionInfo } from "../../../session/session-listing";
+import { getSessionLivePath, readSessionLiveState } from "../../../session/session-liveness";
 import { SessionManager } from "../../../session/session-manager";
 import { FileSessionStorage } from "../../../session/session-storage";
 import { recordSessionTitle } from "../../../session/title-index";
@@ -47,6 +48,7 @@ import {
 	extractLastAssistantText,
 	filterAgentsViewRecords,
 	formatRelativeAge,
+	formatRowDetails,
 	getRecordModelLabel,
 	getRecordSessionFile,
 	getRecordTitle,
@@ -357,9 +359,15 @@ export class AgentsViewComponent implements Component {
 							`${session.path}:${session.modified.getTime()}:${session.messageCount}:${session.title ?? ""}`,
 					)
 					.join("|");
-			if (signature === this.#lastSignature && this.#records.length > 0) return;
-			this.#lastSignature = signature;
+			if (signature === this.#lastSignature && this.#records.length > 0) {
+				// Data unchanged, but relative ages must keep advancing — rerender anyway.
+				this.#deps.requestRender();
+				return;
+			}
 			this.#applyData(refs, sessions);
+			// Record the signature only after a successful apply, so a throw here is retried
+			// by the next poll instead of freezing the view on stale data forever.
+			this.#lastSignature = signature;
 			void this.#seedPersistedSubagents(sessions.map(session => session.path));
 			this.#deps.requestRender();
 		} finally {
@@ -413,7 +421,11 @@ export class AgentsViewComponent implements Component {
 		);
 		if (this.#deps.hideSubagents) {
 			rows = rows.filter(row => {
-				if (row.kind !== "agent" || (row.section !== "inactive" && row.section !== "current")) return false;
+				if (
+					row.kind !== "agent" ||
+					(row.section !== "running" && row.section !== "inactive" && row.section !== "current")
+				)
+					return false;
 				const record = row.record;
 				if (!record) return false;
 				if (record.ref?.kind === "advisor") return false;
@@ -862,6 +874,17 @@ export class AgentsViewComponent implements Component {
 			this.#deps.requestRender();
 			return false;
 		}
+		if (!isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
+			const live = readSessionLiveState(sessionPath);
+			if (live.fresh && live.pid !== process.pid) {
+				this.#setStatusMessage(
+					`Session is open in another proto process (pid ${live.pid}) — close it there before renaming`,
+					"warning",
+				);
+				this.#deps.requestRender();
+				return false;
+			}
+		}
 		try {
 			if (isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
 				await this.#deps.renameCurrentSession(name);
@@ -928,6 +951,15 @@ export class AgentsViewComponent implements Component {
 			await this.#deps.deleteCurrentSession();
 			return;
 		}
+		const live = readSessionLiveState(sessionPath);
+		if (live.fresh && live.pid !== process.pid) {
+			this.#setStatusMessage(
+				`Session is open in another proto process (pid ${live.pid}) — stop it there before deleting`,
+				"warning",
+			);
+			this.#deps.requestRender();
+			return;
+		}
 		try {
 			if (ref) {
 				if (ref.status === "running" && ref.session) {
@@ -941,6 +973,8 @@ export class AgentsViewComponent implements Component {
 			const storage = new FileSessionStorage();
 			await storage.deleteSessionWithArtifacts(sessionPath);
 			await fs.rm(getAgentTombstonePath(sessionPath), { force: true }).catch(() => undefined);
+			await fs.rm(getSessionLivePath(sessionPath), { force: true }).catch(() => undefined);
+			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
 			await this.refresh();
 			this.#setStatusMessage("Deleted", "muted");
 		} catch (error) {
@@ -1147,10 +1181,14 @@ export class AgentsViewComponent implements Component {
 		}
 
 		const wantedSections: AgentsViewSection[] = this.#deps.hideSubagents
-			? ["current", "inactive"]
+			? ["running", "current", "inactive"]
 			: ["running", "idle", "current", "inactive"];
 		const counts = countAgentsBySection(this.#rows);
-		const sections = wantedSections.filter(section => section !== "current" || counts.current > 0);
+		const sections = wantedSections.filter(section =>
+			this.#deps.hideSubagents
+				? section === "inactive" || counts[section] > 0
+				: section !== "current" || counts.current > 0,
+		);
 		const displayItems = buildDisplayItems(this.#rows, sections);
 		const selectedIdentity = this.#rows[this.#selectedIndex]?.identity;
 		const selectedIndex = displayItems.findIndex(
@@ -1206,9 +1244,8 @@ export class AgentsViewComponent implements Component {
 		const icon = settledChild ? theme.fg("dim", rawIcon) : this.#formatRowIcon(row.section, rawIcon);
 		const indent = "  ".repeat(row.depth);
 		const record = row.record;
-		const details = settledChild
-			? `${record?.session?.messageCount ?? 0} \u00b7 ${formatRelativeAge(record?.ref?.lastActivity ?? record?.session?.modified.getTime() ?? Date.now())}`
-			: row.details;
+		// Compute details per render: relative ages must advance without a data rebuild.
+		const details = formatRowDetails(row);
 		const detailsWidth = row.detailsWidth > 0 ? row.detailsWidth : 10;
 		const title = pendingDelete ? `${formatViewKey("ctrl+x")} again to remove` : this.#styleRowTitle(row);
 		const suffixes: string[] = [];

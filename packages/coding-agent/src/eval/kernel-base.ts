@@ -17,6 +17,8 @@ export interface KernelExecuteOptions {
 	silent?: boolean;
 	storeHistory?: boolean;
 	allowStdin?: boolean;
+
+	prelude?: boolean;
 }
 
 export interface KernelExecuteResult {
@@ -490,6 +492,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		signal: AbortSignal | undefined,
 		timeoutMs: number,
 		label: string,
+		extra?: Partial<TExecuteOptions>,
 	): Promise<void> {
 		const controller = new AbortController();
 		const cleanups: Array<() => void> = [];
@@ -510,6 +513,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		try {
 			throwIfAborted(controller.signal, label);
 			const result = await this.execute(code, {
+				...extra,
 				signal: controller.signal,
 				silent: true,
 				storeHistory: false,

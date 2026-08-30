@@ -1,5 +1,3 @@
-Accept newest draft as final output; end run.
+Accept the newest draft as final output; end run. Requires prior `rewrite`.
 
-`verdict`: why draft acceptable, what it bought, why every declared loss safe.
-
-Requires prior `rewrite`. Approve only if draft stands alone without source and every remaining loss defensible to reader; otherwise call `rewrite` again.
+`verdict`: why the draft is acceptable, what it bought, why every declared loss is safe. Approve only if the draft stands alone without the source; otherwise `rewrite` again.

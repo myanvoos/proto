@@ -9,8 +9,7 @@ export function buildSessionTrajectory(sessionManager: SessionManager): Trajecto
 	);
 }
 
-export function defaultExportPath(cwd: string, sessionId: string, kind: "otel" | "prime-rl"): string {
+export function defaultExportPath(cwd: string, sessionId: string): string {
 	const short = sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "session";
-	const filename = kind === "otel" ? `trajectory-${short}.otlp.json` : `trajectory-${short}.prime-rl.jsonl`;
-	return `${cwd}/.proto/exports/${filename}`;
+	return `${cwd}/.proto/exports/trajectory-${short}.otlp.json`;
 }

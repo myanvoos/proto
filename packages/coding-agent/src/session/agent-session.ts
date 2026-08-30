@@ -277,6 +277,7 @@ import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
 import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import { createSessionLiveHeartbeat, type SessionLiveHeartbeat } from "./session-liveness";
 import {
 	COMPACTION_CHECK_NONE,
 	createCodexCompactionContext as createMaintenanceCodexCompactionContext,
@@ -484,6 +485,7 @@ export class AgentSession {
 	#inheritedProviderPromptCacheKey: string | undefined;
 	#autolearnCaptureAbortController: AbortController | undefined;
 	#autolearnCaptureTask: Promise<void> | undefined;
+	#liveHeartbeat: SessionLiveHeartbeat | undefined;
 	#isDisposed = false;
 
 	#codexResetCoordinator: CodexAutoRedeemCoordinator;
@@ -753,6 +755,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		this.#liveHeartbeat = createSessionLiveHeartbeat(this.sessionManager.getSessionFile());
 		this.settings = config.settings;
 		this.#modelRegistry = config.modelRegistry;
 		this.#codexResetCoordinator = config.codexResetCoordinator ?? defaultCodexAutoRedeemCoordinator;
@@ -1524,6 +1527,7 @@ export class AgentSession {
 	}
 
 	#emitRunState(state: "running" | "idle"): void {
+		this.#liveHeartbeat?.setStreaming(state === "running");
 		for (const listener of this.#runStateListeners) {
 			try {
 				listener(state);
@@ -3066,6 +3070,8 @@ export class AgentSession {
 
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#liveHeartbeat?.dispose();
+		this.#liveHeartbeat = undefined;
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		this.#detachUsageBeforeQueueDequeue?.();
@@ -5912,6 +5918,20 @@ export class AgentSession {
 		await this.switchSession(sessionFile);
 	}
 
+	#syncLiveHeartbeat(): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!this.#liveHeartbeat) {
+			this.#liveHeartbeat = createSessionLiveHeartbeat(sessionFile);
+			return;
+		}
+		if (sessionFile) {
+			this.#liveHeartbeat.retarget(sessionFile);
+		} else {
+			this.#liveHeartbeat.dispose();
+			this.#liveHeartbeat = undefined;
+		}
+	}
+
 	async switchSession(sessionPath: string): Promise<boolean> {
 		const previousSessionFile = this.sessionManager.getSessionFile();
 		const switchingToDifferentSession = previousSessionFile
@@ -6102,6 +6122,7 @@ export class AgentSession {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
+			this.#syncLiveHeartbeat();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);

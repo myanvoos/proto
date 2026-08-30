@@ -1,5 +1,35 @@
 from __future__ import annotations
 
+# Public kernel API. The runner executes this file in a private module
+# namespace and exports exactly these names into the user namespace, so the
+# helpers' own globals (json, os, re, _bridge_call, ...) can't be clobbered
+# by user code.
+__all__ = [
+    "display",
+    "env",
+    "write",
+    "edit",
+    "block_range",
+    "edit_block",
+    "replace",
+    "symbols",
+    "output",
+    "tool",
+    "completion",
+    "agent",
+    "parallel",
+    "pipeline",
+    "log",
+    "phase",
+    "budget",
+    # stdlib conveniences cells have always seen without importing
+    "Path",
+    "os",
+    "json",
+    "re",
+    "math",
+]
+
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
@@ -40,8 +70,6 @@ if "__proto_prelude_loaded__" not in globals():
         _proto_display({"application/x-proto-status": {"op": op, **data}}, raw=True)
 
     _MAX_DIFF_CHARS = 32000
-    _MAX_DIFF_INPUT_BYTES = 262144
-    _MAX_DIFF_INPUT_LINES = 20000
 
     def _numbered_diff(before: str, after: str, context: int = 2) -> list[str]:
         """Numbered hunk rows ('-12|old', '+12|new', ' 13|ctx') in the edit tool's canonical diff format."""
@@ -104,12 +132,8 @@ if "__proto_prelude_loaded__" not in globals():
             last_was_change = False
         return rows
 
-    def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool] | None:
-        """Diff rows capped for status events; None when inputs are too large to diff cheaply."""
-        if len(before) > _MAX_DIFF_INPUT_BYTES or len(after) > _MAX_DIFF_INPUT_BYTES:
-            return None
-        if before.count("\n") > _MAX_DIFF_INPUT_LINES or after.count("\n") > _MAX_DIFF_INPUT_LINES:
-            return None
+    def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool]:
+        """Diff rows capped for status events; the cap trims output rows, never skips the diff."""
         rows = _numbered_diff(before, after)
         total = sum(len(row) + 1 for row in rows)
         if total <= _MAX_DIFF_CHARS:
@@ -133,15 +157,38 @@ if "__proto_prelude_loaded__" not in globals():
         if action is not None:
             data["action"] = action
         if before is not None and before != after:
-            limited = _capped_numbered_diff(before, after)
-            if limited is not None:
-                rows, truncated = limited
-                if rows:
-                    data["diff"] = "\n".join(rows)
-                    if truncated:
-                        data["diffTruncated"] = True
+            rows, truncated = _capped_numbered_diff(before, after)
+            if rows:
+                data["diff"] = "\n".join(rows)
+                if truncated:
+                    data["diffTruncated"] = True
         _emit_status(op, **data)
 
+    def _stale_guard(p, current: str, expect: str) -> RuntimeError:
+        """Explain *where* an `expect` guard failed, not just that it did.
+
+        A bare "changed since grounding" leaves the caller unable to tell a
+        real concurrent edit from a mis-transcribed `expect`.
+        """
+        if current.rstrip() == expect.rstrip():
+            detail = "only trailing whitespace differs"
+        else:
+            cur_lines = current.split("\n")
+            exp_lines = expect.split("\n")
+            detail = None
+            for i, (a, b) in enumerate(zip(cur_lines, exp_lines), 1):
+                if a != b:
+                    detail = f"first difference at line {i}: current {a[:80]!r}, expected {b[:80]!r}"
+                    break
+            if detail is None:
+                detail = (
+                    f"identical through line {min(len(cur_lines), len(exp_lines))}; "
+                    f"current has {len(cur_lines)} lines, expected {len(exp_lines)}"
+                )
+        return RuntimeError(
+            f"stale guard: {p} does not match expect= (current {len(current)} chars, "
+            f"expected {len(expect)}); {detail}. Re-read the file and retry."
+        )
 
     def env(key: str | None = None, value: str | None = None):
         """Get/set environment variables."""
@@ -166,12 +213,16 @@ if "__proto_prelude_loaded__" not in globals():
         `local://`, via PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it
         lands where `read local://…` resolves — not a literal `local:/`
         directory under the cwd (which `Path("local://x")` collapses to). Plain
-        paths pass through unchanged; any other `scheme://` is rejected."""
+        paths are made absolute against the kernel cwd so the status events
+        helpers emit can be matched against filesystem snapshots by the host
+        (relative paths there would defeat its already-reported dedupe and
+        duplicate every edit as a write event); any other `scheme://` is
+        rejected."""
         if not isinstance(path, str):
-            return Path(path)
+            return Path(os.path.abspath(path))
         match = _PROTO_INTERNAL_URL_RE.match(path)
         if not match:
-            return Path(path)
+            return Path(os.path.abspath(path))
         scheme = match.group(1).lower()
         try:
             roots = json.loads(os.environ.get("PI_EVAL_LOCAL_ROOTS") or "{}")
@@ -232,9 +283,7 @@ if "__proto_prelude_loaded__" not in globals():
                 raise RuntimeError(f"stale guard: {p} does not exist")
             content = p.read_text(encoding="utf-8")
             if content != expect:
-                raise RuntimeError(
-                    f"stale guard: {p} changed since grounding (current {len(content)} chars, expected {len(expect)})"
-                )
+                raise _stale_guard(p, content, expect)
             action = "update"
         result = transform(content) if transform is not None else new
         if not isinstance(result, str):
@@ -260,21 +309,21 @@ if "__proto_prelude_loaded__" not in globals():
         p = _resolve_proto_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
 
-    def edit_block(path: str | Path, line: int, body: str, *, expect: str) -> Path:
+    def edit_block(path: str | Path, line: int, body: str, expect: str) -> Path:
         """Replace the syntactic block containing `line` with `body`.
 
         Refuses unless `expect` equals current content byte-for-byte.
         """
         if not isinstance(body, str):
             raise TypeError(f"edit_block body must be str, got {type(body).__name__}")
+        if not isinstance(expect, str):
+            raise TypeError(f"edit_block expect must be the file's current content (str), got {type(expect).__name__}")
         p = _resolve_proto_path(path)
         if not p.exists():
             raise RuntimeError(f"stale guard: {p} does not exist")
         current = p.read_text(encoding="utf-8")
         if current != expect:
-            raise RuntimeError(
-                f"stale guard: {p} changed since grounding (current {len(current)} chars, expected {len(expect)})"
-            )
+            raise _stale_guard(p, current, expect)
         extent = _block_range_on(str(p), current, line)
         if extent is None:
             raise RuntimeError(f"no syntactic block contains line {line} in {p}")
@@ -291,8 +340,9 @@ if "__proto_prelude_loaded__" not in globals():
         p.write_text(new_content, encoding="utf-8")
         _emit_file_status("edit", p, before=current, after=new_content, action="replace-block")
         return p
+
     def replace(
-        path: str | Path, old: str, new: str, *, count: int | None = 1, expect: str | None = None
+        path: str | Path, old: str, new: str, count: int | None = 1, expect: str | None = None
     ) -> Path:
         """Count-checked replacement: replace ``old`` with ``new`` in a file.
 
@@ -300,14 +350,16 @@ if "__proto_prelude_loaded__" not in globals():
         contains exactly ``count`` occurrences of ``old``; ``count=None``
         replaces every occurrence. Returns the path.
         """
+        if not isinstance(old, str) or not old:
+            raise ValueError("replace: `old` must be a non-empty str")
+        if not isinstance(new, str):
+            raise TypeError(f"replace: `new` must be str, got {type(new).__name__}")
         p = _resolve_proto_path(path)
         if not p.exists():
             raise RuntimeError(f"stale guard: {p} does not exist")
         content = p.read_text(encoding="utf-8")
         if expect is not None and content != expect:
-            raise RuntimeError(
-                f"stale guard: {p} changed since grounding (current {len(content)} chars, expected {len(expect)})"
-            )
+            raise _stale_guard(p, content, expect)
         occurrences = content.count(old)
         if occurrences == 0:
             raise RuntimeError(f"replace: {old[:60]!r} not found in {p}")
@@ -770,7 +822,8 @@ if "__proto_prelude_loaded__" not in globals():
         workers = min(limit, len(items)) if limit > 0 else len(items)
         results = _AwaitableList(None for _ in items)
         errors = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = {}
             for i, item in enumerate(items):
                 ctx = contextvars.copy_context()
@@ -781,6 +834,15 @@ if "__proto_prelude_loaded__" not in globals():
                     results[i] = fut.result()
                 except BaseException as exc:
                     errors[i] = exc
+        except BaseException:
+            # Interrupted (cell timeout / abort) while waiting. A `with` block
+            # would join every worker first — threads blocked in a bridge call
+            # can't be interrupted, so the cell would hang past the host's
+            # escalation deadline and the whole kernel would be killed. Let
+            # the workers drain in the background instead.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
         if errors:
             raise errors[min(errors)]
         return results

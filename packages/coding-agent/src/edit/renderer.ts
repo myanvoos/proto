@@ -1,7 +1,6 @@
 import { HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_MOVE_KEYWORD, HL_REM_KEYWORD } from "@oh-my-pi/hashline";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { sliceWithWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { SGR_FG_RESET } from "@oh-my-pi/pi-tui/ansi";
 import { errorMessage, formatMoreLines, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { FileDiagnosticsResult } from "../lsp";
@@ -12,7 +11,7 @@ import {
 	cachedRenderedString,
 	createRenderedStringCache,
 	formatDiagnostics,
-	formatExpandHint,
+	formatDiffTruncationHint,
 	formatStatusIcon,
 	getDiffStats,
 	getLspBatchRequest,
@@ -24,6 +23,7 @@ import {
 	replaceTabs,
 	shortenPath,
 	truncateDiffByHunk,
+	wrapCodeFrameLine,
 } from "../tools/render-utils";
 import {
 	fileHyperlink,
@@ -587,40 +587,10 @@ function renderDiffSection(
 			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
 
 		let text = `\n${renderDiffFn(truncatedDiff, { filePath: rawPath })}`;
-		if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
-			const remainder: string[] = [];
-			if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more hunks`);
-			if (hiddenLines > 0) remainder.push(formatMoreLines(hiddenLines));
-			text += uiTheme.fg("toolOutput", `\n… (${remainder.join(", ")}) ${formatExpandHint(uiTheme)}`);
-		}
+		const hint = expanded ? undefined : formatDiffTruncationHint(hiddenHunks, hiddenLines, uiTheme);
+		if (hint) text += `\n${hint}`;
 		return text;
 	});
-}
-
-function wrapEditRendererLine(line: string, width: number): string[] {
-	if (width <= 0) return [line];
-	if (line.length === 0) return [""];
-
-	const startAnsi = line.match(/^((?:\x1b\[[0-9;]*m)*)/)?.[1] ?? "";
-	const bodyWithReset = line.slice(startAnsi.length);
-	const body = bodyWithReset.endsWith(SGR_FG_RESET) ? bodyWithReset.slice(0, -SGR_FG_RESET.length) : bodyWithReset;
-
-	const diffMatch = /^(\s*[+-]?\s*\d*)([|│])(.*)$/s.exec(body);
-
-	if (!diffMatch || diffMatch[1].length === 0 || (diffMatch[2] === "|" && !/^[+\-\s]\s*\d+$/.test(diffMatch[1]))) {
-		return wrapTextWithAnsi(line, width);
-	}
-
-	const [, gutter, separator, content] = diffMatch;
-	const prefix = `${gutter}${separator}`;
-	const prefixWidth = visibleWidth(prefix);
-	const contentWidth = Math.max(1, width - prefixWidth);
-	const continuationPrefix = `${" ".repeat(Math.max(0, prefixWidth - 1))}${separator}`;
-	const wrappedContent = wrapTextWithAnsi(content ?? "", contentWidth);
-
-	return wrappedContent.map(
-		(segment, index) => `${startAnsi}${index === 0 ? prefix : continuationPrefix}${segment}\x1b[27m\x1b[39m`,
-	);
 }
 
 export const editToolRenderer = {
@@ -814,7 +784,7 @@ function renderSingleFileResult(
 		}
 
 		const innerWidth = Math.max(1, width - 2);
-		const bodyLines = body.length > 0 ? body.split("\n").flatMap(line => wrapEditRendererLine(line, innerWidth)) : [];
+		const bodyLines = body.length > 0 ? body.split("\n").flatMap(line => wrapCodeFrameLine(line, innerWidth)) : [];
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 
 		return {

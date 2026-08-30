@@ -81,3 +81,143 @@ test("cell fs walker emits write events with diffs for raw filesystem writes", a
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+test("prelude file helpers report one absolute-path event without a walker duplicate", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-fs-diff-"));
+	try {
+		expect((await git.runUnchecked(dir, ["init"])).exitCode).toBe(0);
+		await Bun.write(path.join(dir, "tracked.txt"), "original line\n");
+		await git.runUnchecked(dir, ["add", "."]);
+		expect(
+			(
+				await git.runUnchecked(dir, [
+					"-c",
+					"user.email=test@example.com",
+					"-c",
+					"user.name=test",
+					"commit",
+					"-m",
+					"init",
+				])
+			).exitCode,
+		).toBe(0);
+
+		const tool = new EvalTool(stubSession(dir));
+		const result = await tool.execute("eval-fs-diff-test", {
+			language: "py",
+			code: ['replace("tracked.txt", "original line", "PRELUDE-REPLACED")', 'print("cell-done")'].join("\n"),
+			title: "prelude dedupe regression",
+			timeout: 60,
+		});
+
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		const fileEvents = (result.details?.cells?.[0]?.statusEvents ?? []).filter(
+			event => event.op === "write" || event.op === "edit",
+		);
+		const forTracked = fileEvents.filter(event => path.resolve(String(event.path)) === path.join(dir, "tracked.txt"));
+		expect(forTracked.length, "prelude replace is reported exactly once for the changed file").toBe(1);
+		expect(forTracked[0]?.op).toBe("edit");
+		expect(path.isAbsolute(String(forTracked[0]?.path)), "prelude event paths are absolute").toBe(true);
+		expect(String(forTracked[0]?.diff)).toContain("PRELUDE-REPLACED");
+
+		const topLevel = result.details?.statusEvents ?? [];
+		expect(
+			topLevel.filter(
+				event => (event.op === "write" || event.op === "edit") && String(event.path).endsWith("tracked.txt"),
+			).length,
+		).toBe(1);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+test("fs walker dedupes prelude edits above the diff cap and reports byte sizes for untext-able files", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-fs-diff-"));
+	try {
+		expect((await git.runUnchecked(dir, ["init"])).exitCode).toBe(0);
+		// Just over the byte size the old per-file cap skipped (256 KiB), but few
+		// lines so the uncapped diff stays cheap.
+		const filler = `${"x".repeat(80)}\n`.repeat(3400);
+		await Bun.write(path.join(dir, "big.txt"), `${filler}MARKER original\n`);
+		await git.runUnchecked(dir, ["add", "."]);
+		expect(
+			(
+				await git.runUnchecked(dir, [
+					"-c",
+					"user.email=test@example.com",
+					"-c",
+					"user.name=test",
+					"commit",
+					"-m",
+					"init",
+				])
+			).exitCode,
+		).toBe(0);
+
+		const tool = new EvalTool(stubSession(dir));
+		const result = await tool.execute("eval-fs-diff-test", {
+			language: "py",
+			code: [
+				'replace("big.txt", "MARKER original", "MARKER replaced")',
+				'Path("big-created.txt").write_text("\\n".join(["x" * 50] * 800) + "\\n")',
+				'print("cell-done")',
+			].join("\n"),
+			title: "oversized dedupe regression",
+			timeout: 60,
+		});
+
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		const fileEvents = (result.details?.cells?.[0]?.statusEvents ?? []).filter(
+			event => event.op === "write" || event.op === "edit",
+		);
+
+		// Prelude edit on an oversized tracked file: reported once (by the prelude,
+		// sha covers the whole file), never duplicated by the walker, and it
+		// carries a diff — file size gates no longer suppress diffing.
+		const bigEdit = fileEvents.filter(event => path.resolve(String(event.path)) === path.join(dir, "big.txt"));
+		expect(bigEdit.length, "oversized prelude edit is reported exactly once").toBe(1);
+		expect(bigEdit[0]?.op).toBe("edit");
+		expect(String(bigEdit[0]?.diff)).toContain("MARKER replaced");
+		expect(bigEdit[0]?.diffTruncated).toBeUndefined();
+
+		// Oversized file created by raw pathlib: walker diffs it, output-capped.
+		const created = fileEvents.filter(
+			event => path.resolve(String(event.path)) === path.join(dir, "big-created.txt"),
+		);
+		expect(created.length).toBe(1);
+		expect(created[0]?.op).toBe("write");
+		expect(created[0]?.chars).toBe(40800);
+		expect(String(created[0]?.diff)).toContain("xxxxx");
+		expect(created[0]?.diffTruncated).toBe(true);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+test("files materialized before the cell keep their write events in the final cell result", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-fs-diff-"));
+	try {
+		expect((await git.runUnchecked(dir, ["init"])).exitCode).toBe(0);
+		const tool = new EvalTool(stubSession(dir));
+		const result = await tool.execute("eval-fs-diff-test", {
+			language: "py",
+			code: 'print("cell-done")',
+			title: "files param regression",
+			timeout: 60,
+			files: [{ path: "generated.txt", content: "hello\nworld\n" }],
+		});
+
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		const cellEvents = (result.details?.cells?.[0]?.statusEvents ?? []).filter(event => event.op === "write");
+		const generated = cellEvents.filter(
+			event => path.resolve(String(event.path)) === path.join(dir, "generated.txt"),
+		);
+		expect(generated.length, "files[] write is reported exactly once in the final cell result").toBe(1);
+		expect(String(generated[0]?.diff)).toContain("hello");
+		expect(typeof generated[0]?.sha).toBe("string");
+
+		const topLevel = result.details?.statusEvents ?? [];
+		expect(
+			topLevel.filter(event => event.op === "write" && String(event.path).endsWith("generated.txt")).length,
+		).toBe(1);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});

@@ -1,9 +1,6 @@
 {{baseDescription}}
 
-Codex Code Mode is active: this tool is your primary work surface and the direct tool surface is restricted.
-Plan multiple operations into ONE cell whenever the next steps are known, calling session tools via `await tool.<name>(args)`;
-use `parallel([() => tool.read(…), () => tool.bash(…)])` for independent calls. Prefer `tool.*` calls over raw `Bun.file`/fs so operations flow through the session tool pipeline.
-Reserve separate cells for steps that must inspect earlier results.
+Code Mode active: this tool is your primary work surface; the direct tool surface is restricted. Batch known next steps into ONE cell via `await tool.<name>(args)` / `parallel([…])`; separate cells when a step must inspect an earlier result. Prefer `tool.*` over raw `Bun.file`/fs.
 
 exec tool declarations:
 ```ts

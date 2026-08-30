@@ -1,5 +1,5 @@
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Markdown, Text } from "@oh-my-pi/pi-tui";
+import { Markdown, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -23,6 +23,7 @@ import {
 import { formatStyledTruncationWarning, stripOutputNotice } from "./output-meta";
 import {
 	formatBadge,
+	formatDiffTruncationHint,
 	formatDuration,
 	formatStatusIcon,
 	formatTitle,
@@ -34,6 +35,7 @@ import {
 	truncateDiffByHunk,
 	truncateToWidth,
 	wrapBrackets,
+	wrapCodeFrameLine,
 } from "./render-utils";
 export const EVAL_DEFAULT_PREVIEW_LINES = 10;
 
@@ -228,20 +230,21 @@ function hasEventDiff(event: EvalStatusEvent): boolean {
 	return (event.op === "write" || event.op === "edit") && typeof event.diff === "string" && event.diff.length > 0;
 }
 
-function renderEventDiff(event: EvalStatusEvent, theme: Theme, expanded: boolean): string[] {
+function renderEventDiff(
+	event: EvalStatusEvent,
+	theme: Theme,
+	expanded: boolean,
+	budget: { hunks: number; lines: number },
+): string[] {
 	const diff = typeof event.diff === "string" ? event.diff : "";
 	if (!diff) return [];
 	const filePath = typeof event.path === "string" ? event.path : undefined;
 	const { text, hiddenHunks, hiddenLines } = expanded
 		? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
-		: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+		: truncateDiffByHunk(diff, budget.hunks, budget.lines);
 	const lines = renderDiffColored(text, { filePath }).split("\n");
-	if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
-		const parts: string[] = [];
-		if (hiddenHunks > 0) parts.push(`${hiddenHunks} more hunk${hiddenHunks === 1 ? "" : "s"}`);
-		if (hiddenLines > 0) parts.push(`${hiddenLines} more lines`);
-		lines.push(theme.fg("dim", `… ${parts.join(", ")} (ctrl+o to expand)`));
-	}
+	const hint = expanded ? undefined : formatDiffTruncationHint(hiddenHunks, hiddenLines, theme);
+	if (hint) lines.push(hint);
 	if (event.diffTruncated === true) {
 		lines.push(theme.fg("dim", "… diff truncated"));
 	}
@@ -444,39 +447,72 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 	return lines;
 }
 
-function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean): string[] {
+function widthAwareText(build: (width: number) => string[]): Component {
+	let cachedWidth: number | undefined;
+	let cachedLines: readonly string[] | undefined;
+	return {
+		render: (width: number): readonly string[] => {
+			if (cachedLines === undefined || cachedWidth !== width) {
+				cachedLines = build(width);
+				cachedWidth = width;
+			}
+			return cachedLines;
+		},
+		invalidate: () => {
+			cachedLines = undefined;
+			cachedWidth = undefined;
+		},
+	};
+}
+
+const STATUS_COLLAPSED_MAX_EVENTS = 3;
+const STATUS_DIFF_MIN_LINES = 6;
+const STATUS_TREE_INDENT = 3;
+
+// A collapsed cell shares the edit tool's single-file diff budget across every
+// file-op event it shows, so touching several files stays as compact as one
+// edit call instead of stacking a full preview per file.
+function collapsedDiffBudget(diffEventCount: number): { hunks: number; lines: number } {
+	const share = Math.max(1, diffEventCount);
+	return {
+		hunks: Math.max(1, Math.floor(PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS / share)),
+		lines: Math.max(STATUS_DIFF_MIN_LINES, Math.floor(PREVIEW_LIMITS.DIFF_COLLAPSED_LINES / share)),
+	};
+}
+
+function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): string[] {
 	if (events.length === 0) return [];
 
-	const max = expanded ? Math.max(10, previewWindowRows()) : 3;
-	const hidden = Math.max(0, events.length - max);
+	const hidden = expanded ? 0 : Math.max(0, events.length - STATUS_COLLAPSED_MAX_EVENTS);
 	const visible = hidden > 0 ? events.slice(hidden) : events;
+	const budget = collapsedDiffBudget(visible.filter(hasEventDiff).length);
+	const bodyWidth = Math.max(1, width - STATUS_TREE_INDENT);
 
 	const lines: string[] = [];
+	const pushText = (line: string): void => {
+		lines.push(...wrapTextWithAnsi(line, width));
+	};
 	if (hidden > 0) {
-		lines.push(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
+		pushText(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
 	}
 	for (let i = 0; i < visible.length; i++) {
-		const isLast = i === visible.length - 1;
-		const branch = isLast ? theme.tree.last : theme.tree.branch;
 		const event = visible[i];
-
-		if (hasEventDiff(event)) {
-			lines.push(`${theme.fg("dim", branch)} ${formatStatusEvent(event, theme)}`);
-			for (const diffLine of renderEventDiff(event, theme, expanded)) {
-				lines.push(`   ${diffLine}`);
+		const isLast = i === visible.length - 1;
+		const branch = theme.fg("dim", isLast ? theme.tree.last : theme.tree.branch);
+		const cont = isLast ? " ".repeat(STATUS_TREE_INDENT) : `${theme.fg("dim", theme.tree.vertical)}  `;
+		const withDiff = hasEventDiff(event);
+		const [head, ...rest] =
+			expanded && !withDiff ? formatStatusEventExpanded(event, theme) : [formatStatusEvent(event, theme)];
+		pushText(`${branch} ${head}`);
+		for (const line of rest) pushText(`${cont}${line}`);
+		if (!withDiff) continue;
+		// Wrap each diff row before adding the tree rail: wrapCodeFrameLine only
+		// recognizes a gutter at the start of the line, so prefixing first would
+		// drop every continuation row back to column 0.
+		for (const diffLine of renderEventDiff(event, theme, expanded, budget)) {
+			for (const row of wrapCodeFrameLine(diffLine, bodyWidth)) {
+				lines.push(`${cont}${row}`);
 			}
-			continue;
-		}
-
-		if (expanded) {
-			const eventLines = formatStatusEventExpanded(event, theme);
-			lines.push(`${theme.fg("dim", branch)} ${eventLines[0]}`);
-			const continueBranch = isLast ? "   " : `${theme.tree.vertical}  `;
-			for (let j = 1; j < eventLines.length; j++) {
-				lines.push(`${theme.fg("dim", continueBranch)}${eventLines[j]}`);
-			}
-		} else {
-			lines.push(`${theme.fg("dim", branch)} ${formatStatusEvent(event, theme)}`);
 		}
 	}
 
@@ -650,19 +686,18 @@ export const evalToolRenderer = {
 						const allEvents = cell.statusEvents ?? [];
 						const agentEvents = allEvents.filter(e => e.op === "agent");
 						const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
-						const statusLines = renderStatusEvents(otherEvents, uiTheme, expanded);
+						const statusLines = renderStatusEvents(
+							otherEvents,
+							uiTheme,
+							expanded,
+							outputBlockContentWidth(width),
+						);
 						const outputContent = formatCellOutputLines(cell, expanded, previewLines, uiTheme, width);
 						const outputLines = [...outputContent.lines];
 						if (!expanded && outputContent.hiddenCount > 0) {
 							outputLines.push(
 								uiTheme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`),
 							);
-						}
-						if (statusLines.length > 0) {
-							if (outputLines.length > 0) {
-								outputLines.push(uiTheme.fg("dim", "Status"));
-							}
-							outputLines.push(...statusLines);
 						}
 						const astLines = expanded ? undefined : astPreviewLines(code, language, uiTheme, width);
 						const cellLines = renderCodeCell(
@@ -678,6 +713,10 @@ export const evalToolRenderer = {
 								duration: cell.durationMs,
 								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
 								outputMaxLines: outputLines.length,
+								extraSections:
+									statusLines.length > 0
+										? [{ label: uiTheme.fg("toolTitle", "Status"), lines: statusLines }]
+										: undefined,
 
 								codeTail: true,
 								codeMaxLines: previewWindowRows(),
@@ -727,27 +766,26 @@ export const evalToolRenderer = {
 		const combinedOutput = [displayOutput, ...jsonLines].filter(Boolean).join("\n");
 
 		const statusEvents = details?.statusEvents ?? [];
-		const statusLines = renderStatusEvents(
-			statusEvents,
-			uiTheme,
-			options.renderContext?.expanded ?? options.expanded,
-		);
+		const hasStatusEvents = statusEvents.length > 0;
+		const expandedStatus = options.renderContext?.expanded ?? options.expanded;
 
-		if (!combinedOutput && statusLines.length === 0) {
+		if (!combinedOutput && !hasStatusEvents) {
 			const lines = [timeoutLine, noticeLine, asyncLine, warningLine].filter(Boolean) as string[];
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
-		if (!combinedOutput && statusLines.length > 0) {
-			const lines = [
-				uiTheme.fg("dim", "Status"),
-				...statusLines,
-				timeoutLine,
-				noticeLine,
-				asyncLine,
-				warningLine,
-			].filter(Boolean) as string[];
-			return new Text(lines.join("\n"), 0, 0);
+		if (!combinedOutput && hasStatusEvents) {
+			return widthAwareText(width => {
+				const lines = [
+					uiTheme.fg("dim", "Status"),
+					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width),
+					timeoutLine,
+					noticeLine,
+					asyncLine,
+					warningLine,
+				].filter(Boolean) as string[];
+				return lines;
+			});
 		}
 
 		if (options.renderContext?.expanded ?? options.expanded) {
@@ -755,15 +793,18 @@ export const evalToolRenderer = {
 				.split("\n")
 				.map(line => uiTheme.fg("toolOutput", line))
 				.join("\n");
-			const lines = [
-				styledOutput,
-				...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
-				timeoutLine,
-				noticeLine,
-				asyncLine,
-				warningLine,
-			].filter(Boolean) as string[];
-			return new Text(lines.join("\n"), 0, 0);
+			return widthAwareText(width => {
+				const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width);
+				const lines = [
+					styledOutput,
+					...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
+					timeoutLine,
+					noticeLine,
+					asyncLine,
+					warningLine,
+				].filter(Boolean) as string[];
+				return lines;
+			});
 		}
 
 		const styledOutput = combinedOutput
@@ -800,11 +841,10 @@ export const evalToolRenderer = {
 					outputLines.push(truncateToWidth(skippedLine, width));
 				}
 				outputLines.push(...cachedLines);
-				if (statusLines.length > 0) {
-					outputLines.push(truncateToWidth(uiTheme.fg("dim", "Status"), width));
-					for (const statusLine of statusLines) {
-						outputLines.push(truncateToWidth(statusLine, width));
-					}
+				if (hasStatusEvents) {
+					const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width);
+					outputLines.push(uiTheme.fg("dim", "Status"));
+					outputLines.push(...statusLines);
 				}
 				if (timeoutLine) {
 					outputLines.push(truncateToWidth(timeoutLine, width));

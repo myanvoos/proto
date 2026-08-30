@@ -185,8 +185,11 @@ export function trajectoryToOtlp(trajectory: Trajectory, options: OtelExportOpti
 				attributes.push({ key: GenAIAttr.ResponseTimeToFirstChunk, value: dbl(step.ttftMs) });
 			}
 			attributes.push(...usageAttributes(step));
-			if (captureContent && step.content) {
-				attributes.push({ key: PiGenAIAttr.ResponseText, value: str(step.content) });
+			if (captureContent && step.text) {
+				attributes.push({ key: PiGenAIAttr.ResponseText, value: str(step.text) });
+			}
+			if (captureContent && step.thinking) {
+				attributes.push({ key: PiGenAIAttr.ResponseReasoning, value: str(step.thinking) });
 			}
 
 			spans.push({

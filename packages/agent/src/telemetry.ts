@@ -99,6 +99,7 @@ export const enum PiGenAIAttr {
 	RequestAvailableTools = "pi.gen_ai.request.available_tools",
 	RequestMessages = "pi.gen_ai.request.messages",
 	ResponseText = "pi.gen_ai.response.text",
+	ResponseReasoning = "pi.gen_ai.response.reasoning",
 	ResponseToolCalls = "pi.gen_ai.response.tool_calls",
 	ResponseUpstreamProvider = "pi.gen_ai.response.upstream_provider",
 	UsageTotalTokens = "pi.gen_ai.usage.total_tokens",

@@ -8,11 +8,10 @@ import {
 	raceJobSettlement,
 	resolveAutoBackgroundWaitMs,
 } from "../async";
-import { generateDiffString } from "../edit/diff";
 import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
-import { CellFsTracker } from "../eval/cell-file-diff";
+import { CellFsTracker, capEventDiff, sha256Prefix } from "../eval/cell-file-diff";
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -96,7 +95,9 @@ const evalFileSchema = type({
 
 const evalCellCommonFields = {
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
-	"timeout?": type("number").describe("timeout for this eval call in seconds; 0 disables the cell timeout"),
+	"timeout?": type("number").describe(
+		"timeout for this eval call in seconds (default 30; time spent inside agent()/completion() does not count); 0 disables the cell timeout",
+	),
 	"reset?": type("boolean").describe("wipe this language's kernel before running. Other languages are untouched."),
 	"files?": evalFileSchema
 		.array()
@@ -280,27 +281,6 @@ function formatEvalInputLanguage(value: string): string {
 	if (value === "rb" || value === "ruby") return "ruby";
 	if (value === "jl" || value === "julia") return "julia";
 	return value;
-}
-
-const EVENT_DIFF_MAX_CHARS = 32000;
-
-function capEventDiff(
-	oldContent: string | undefined,
-	newContent: string,
-): { diff: string; diffTruncated?: true } | undefined {
-	if (oldContent === undefined) return undefined;
-	const rows = generateDiffString(oldContent, newContent, 2)
-		.diff.split("\n")
-		.filter(row => row.length > 0);
-	if (rows.length === 0) return undefined;
-	const kept: string[] = [];
-	let used = 0;
-	for (const row of rows) {
-		if (used + row.length + 1 > EVENT_DIFF_MAX_CHARS) break;
-		kept.push(row);
-		used += row.length + 1;
-	}
-	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
 }
 
 function looksBinary(text: string): boolean {
@@ -601,8 +581,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			}
 			await Bun.write(abs, file.content);
 			this.#fsTracker.noteWrite(abs, file.content);
-			const event: EvalStatusEvent = { op: "write", path: abs, chars: file.content.length };
-			const capped = capEventDiff(before, file.content);
+			const event: EvalStatusEvent = {
+				op: "write",
+				path: abs,
+				chars: file.content.length,
+				sha: sha256Prefix(new TextEncoder().encode(file.content)),
+			};
+			const capped = before === undefined ? undefined : capEventDiff(before, file.content);
 			if (capped) {
 				event.diff = capped.diff;
 				if (capped.diffTruncated) event.diffTruncated = true;
@@ -765,7 +750,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				cellResult.statusEvents = undefined;
 				cellResult.exitCode = undefined;
 				cellResult.durationMs = undefined;
+				// Collected separately: the final cell events are rebuilt from the
+				// backend's display outputs below, which never include these writes.
+				const materializedEvents: EvalStatusEvent[] = [];
 				await this.#materializeFiles(cell.files, session.cwd, event => {
+					materializedEvents.push(event);
+					upsertStatusEvent(statusEvents, event);
 					cellResult.statusEvents ??= [];
 					upsertStatusEvent(cellResult.statusEvents, event);
 					pushUpdate();
@@ -884,8 +874,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				for (const event of cellFsEvents) {
 					upsertStatusEvent(statusEvents, event);
 				}
-				const mergedCellEvents =
-					cellFsEvents.length > 0 ? [...cellStatusEvents, ...cellFsEvents] : cellStatusEvents;
+				const mergedCellEvents = [...materializedEvents, ...cellStatusEvents, ...cellFsEvents];
 				cellResult.statusEvents = mergedCellEvents.length > 0 ? mergedCellEvents : undefined;
 				cellResult.hasMarkdown = cellHasMarkdown || undefined;
 

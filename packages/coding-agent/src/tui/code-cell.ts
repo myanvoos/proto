@@ -32,6 +32,7 @@ interface CodeCellOptions {
 	codeLineNumbers?: Array<number | null>;
 	preRenderedCodeLines?: string[];
 	codeVariant?: string;
+	extraSections?: Array<{ label?: string; lines: readonly string[] }>;
 }
 
 function getState(status?: CodeCellOptions["status"]): State | undefined {
@@ -179,6 +180,9 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const sections: Array<{ label?: string; lines: string[] }> = [{ lines: codeLines }];
 	if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
+	}
+	for (const section of options.extraSections ?? []) {
+		if (section.lines.length > 0) sections.push({ label: section.label, lines: [...section.lines] });
 	}
 
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);

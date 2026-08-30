@@ -117,6 +117,7 @@ export class PythonKernel extends BaseKernel {
 					env: opts?.env,
 					silent: opts?.silent ?? false,
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),
+					...(opts?.prelude ? { prelude: true } : {}),
 				}),
 		});
 	}
@@ -169,7 +170,9 @@ export class PythonKernel extends BaseKernel {
 		try {
 			const initScript = buildInitScript(options.cwd, options.env);
 			await kernel.executeWithBudget(initScript, startup.signal, startupBudget, "Python kernel init");
-			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude");
+			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude", {
+				prelude: true,
+			});
 			return kernel;
 		} catch (err) {
 			await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }).catch(() => {});

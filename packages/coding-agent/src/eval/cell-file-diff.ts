@@ -7,12 +7,13 @@ import type { EvalStatusEvent } from "./types";
 
 const SHA_LENGTH = 16;
 const MAX_WALK_FILES = 20000;
-const MAX_PER_FILE_BYTES = 262144;
 const MAX_DIFF_CHARS = 32000;
 const MAX_EVENTS_PER_CELL = 50;
 const MAX_CACHE_ENTRIES = 512;
 const MAX_CACHE_CONTENT_BYTES = 16 * 1024 * 1024;
-const MAX_CAPTURE_CONTENT_BYTES = 1024 * 1024;
+// Total budget for caching pre-cell content of dirty files (baseline for
+// walker diffs); per-file diffing is uncapped, only this total is bounded.
+const MAX_CAPTURE_CONTENT_BYTES = 16 * 1024 * 1024;
 const PRUNED_DIRS = new Set([
 	".git",
 	".hg",
@@ -66,7 +67,7 @@ export interface FsSnapshot {
 	truncated: boolean;
 }
 
-function sha256Prefix(bytes: Uint8Array): string {
+export function sha256Prefix(bytes: Uint8Array): string {
 	const hasher = new Bun.CryptoHasher("sha256");
 	hasher.update(bytes);
 	return hasher.digest("hex").slice(0, SHA_LENGTH);
@@ -76,7 +77,7 @@ function looksBinaryText(text: string): boolean {
 	return text.slice(0, 8192).includes("\u0000");
 }
 
-function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
+export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
 	const rows = generateDiffString(before, after, 2)
 		.diff.split("\n")
 		.filter(row => row.length > 0);
@@ -91,13 +92,21 @@ function capEventDiff(before: string, after: string): { diff: string; diffTrunca
 	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
 }
 
-function alreadyReported(events: readonly EvalStatusEvent[] | undefined, absPath: string, afterSha: string): boolean {
+function alreadyReported(
+	events: readonly EvalStatusEvent[] | undefined,
+	absPath: string,
+	afterSha: string,
+	root: string,
+): boolean {
 	if (!events) return false;
 	return events.some(
 		event =>
 			(event.op === "write" || event.op === "edit") &&
 			typeof event.path === "string" &&
-			event.path === absPath &&
+			// Runtime status events may carry paths relative to the cell cwd; the
+			// walk produces absolute paths. Resolve before comparing so a change
+			// already reported by the runtime is not emitted a second time.
+			path.resolve(root, event.path) === absPath &&
 			typeof event.sha === "string" &&
 			event.sha === afterSha,
 	);
@@ -131,7 +140,7 @@ export class CellFsTracker {
 			.then(st => {
 				this.#remember(absPath, st.mtimeMs, st.size, {
 					sha: sha256Prefix(new TextEncoder().encode(content)),
-					content: st.size <= MAX_PER_FILE_BYTES ? content : undefined,
+					content,
 				});
 			})
 			.catch(() => {});
@@ -203,8 +212,8 @@ export class CellFsTracker {
 			for (const abs of dirtyPaths) {
 				if (budget <= 0) break;
 				const stat = walked.stats.get(abs);
-				if (!stat || stat.size > MAX_PER_FILE_BYTES || this.#content.has(abs)) continue;
-				const entry = await this.#readAfter(abs, stat);
+				if (!stat || this.#content.has(abs)) continue;
+				const entry = await this.#readAfter(abs);
 				if (entry.content !== undefined && entry.content.length <= budget) {
 					budget -= entry.content.length;
 					this.#remember(abs, stat.mtimeMs, stat.size, entry);
@@ -246,16 +255,15 @@ export class CellFsTracker {
 		return { root, stats, truncated };
 	}
 
-	async #readAfter(absPath: string, stat: StatEntry): Promise<ContentEntry & { binary?: boolean }> {
-		if (stat.size > MAX_PER_FILE_BYTES) {
-			const bytes = new Uint8Array(await Bun.file(absPath).slice(0, MAX_PER_FILE_BYTES).arrayBuffer());
-			return { sha: sha256Prefix(bytes) };
-		}
+	async #readAfter(absPath: string): Promise<ContentEntry> {
+		// Files of any size are read whole so the sha matches what runtime
+		// status events report for the same bytes; a partial hash would defeat
+		// the already-reported dedupe, and content is needed for the diff.
 		const bytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
 		const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 		const sha = sha256Prefix(bytes);
 		if (looksBinaryText(text)) {
-			return { sha, binary: true };
+			return { sha };
 		}
 		return { sha, content: text };
 	}
@@ -312,7 +320,8 @@ export class CellFsTracker {
 			const cachedBefore = this.#validCachedBefore(absPath, beforeStat);
 			if (deleted.includes(absPath)) {
 				this.#content.delete(absPath);
-				if (cachedBefore && alreadyReported(options.reportedEvents, absPath, cachedBefore.sha)) continue;
+				if (cachedBefore && alreadyReported(options.reportedEvents, absPath, cachedBefore.sha, before.root))
+					continue;
 				let beforeText = cachedBefore?.content;
 				if (
 					beforeText === undefined &&
@@ -341,12 +350,16 @@ export class CellFsTracker {
 				continue;
 			}
 			const afterStat = after.stats.get(absPath)!;
-			const afterEntry = await this.#readAfter(absPath, afterStat);
+			const afterEntry = await this.#readAfter(absPath);
 			this.#remember(absPath, afterStat.mtimeMs, afterStat.size, afterEntry);
-			if (cachedBefore?.sha === afterEntry.sha || alreadyReported(options.reportedEvents, absPath, afterEntry.sha)) {
+			if (
+				cachedBefore?.sha === afterEntry.sha ||
+				alreadyReported(options.reportedEvents, absPath, afterEntry.sha, before.root)
+			) {
 				continue;
 			}
-			if (afterEntry.binary) {
+			// Binary and oversized files have no text content to diff; report byte size.
+			if (afterEntry.content === undefined) {
 				onStatus({ op: "write", path: absPath, bytes: afterStat.size, sha: afterEntry.sha });
 				emitted += 1;
 				continue;
@@ -366,10 +379,10 @@ export class CellFsTracker {
 			const event: EvalStatusEvent = {
 				op: "write",
 				path: absPath,
-				chars: afterEntry.content?.length ?? 0,
+				chars: afterEntry.content.length,
 				sha: afterEntry.sha,
 			};
-			if (beforeText !== undefined && afterEntry.content !== undefined) {
+			if (beforeText !== undefined) {
 				const capped = capEventDiff(beforeText, afterEntry.content);
 				if (capped) {
 					event.diff = capped.diff;
