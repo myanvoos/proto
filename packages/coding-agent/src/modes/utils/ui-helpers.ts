@@ -8,7 +8,7 @@ import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
-import { createBackgroundTanDispatchBlock } from "../../modes/components/background-tan-message";
+import { createBackgroundSideDispatchBlock } from "../../modes/components/background-side-dispatch";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
 import {
@@ -40,7 +40,7 @@ import { theme } from "../../modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
-	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
+	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
@@ -203,8 +203,8 @@ export class UiHelpers {
 						);
 						break;
 					}
-					if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
-						this.ctx.chatContainer.addChild(createBackgroundTanDispatchBlock(message as CustomMessage<unknown>));
+					if (message.customType === BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE) {
+						this.ctx.chatContainer.addChild(createBackgroundSideDispatchBlock(message as CustomMessage<unknown>));
 						break;
 					}
 					const renderer = this.ctx.viewSession.extensionRunner?.getMessageRenderer(message.customType);

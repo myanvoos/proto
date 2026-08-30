@@ -1,12 +1,12 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
-import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text" };
+import sideQuestionPrompt from "../../prompts/system/side-question.md" with { type: "text" };
 import { copyToClipboard } from "../../utils/clipboard";
-import { BtwPanelComponent } from "../components/btw-panel";
+import { SideQuestionPanelComponent } from "../components/side-question-panel";
 import type { InteractiveModeContext } from "../types";
 
-interface BtwRequest {
-	component: BtwPanelComponent;
+interface SideQuestionRequest {
+	component: SideQuestionPanelComponent;
 	abortController: AbortController;
 	question: string;
 	leafId: string | null;
@@ -34,8 +34,8 @@ function assistantMessageWithReplyText(assistantMessage: AssistantMessage, reply
 	return { ...assistantMessage, content, providerPayload: undefined };
 }
 
-export class BtwController {
-	#activeRequest: BtwRequest | undefined;
+export class SideQuestionController {
+	#activeRequest: SideQuestionRequest | undefined;
 	#lastQuestion: string | undefined;
 	#lastReplyText: string | undefined;
 	#lastAssistantMessage: AssistantMessage | undefined;
@@ -78,7 +78,7 @@ export class BtwController {
 			this.#lastSessionId !== this.ctx.sessionManager.getSessionId() ||
 			this.#lastLeafId !== this.ctx.sessionManager.getLeafId()
 		) {
-			return "the session changed since /btw started";
+			return "the session changed since /side started";
 		}
 		if (this.ctx.session.isStreaming) return "a turn is still running";
 		return undefined;
@@ -95,7 +95,7 @@ export class BtwController {
 		this.#copyInFlight = true;
 		try {
 			await copyToClipboard(this.#lastCopyText);
-			this.ctx.showStatus("Copied /btw answer to clipboard");
+			this.ctx.showStatus("Copied /side answer to clipboard");
 			return true;
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -108,7 +108,7 @@ export class BtwController {
 	async handleBranch(): Promise<boolean> {
 		const unavailableReason = this.#branchUnavailableReason();
 		if (unavailableReason) {
-			this.ctx.showStatus(`/btw branch unavailable: ${unavailableReason}`, { dim: true });
+			this.ctx.showStatus(`/side branch unavailable: ${unavailableReason}`, { dim: true });
 			return false;
 		}
 		const request = this.#activeRequest;
@@ -121,7 +121,7 @@ export class BtwController {
 		this.#branchInFlight = true;
 		request.component.markBranching();
 		try {
-			await this.ctx.handleBtwBranch(question, assistantMessage, leafId, sessionId);
+			await this.ctx.handleSideQuestionBranch(question, assistantMessage, leafId, sessionId);
 			return true;
 		} finally {
 			this.#branchInFlight = false;
@@ -131,7 +131,7 @@ export class BtwController {
 
 	handleEscape(): boolean {
 		if (this.#branchInFlight) {
-			this.ctx.showStatus("/btw branch is in progress", { dim: true });
+			this.ctx.showStatus("/side branch is in progress", { dim: true });
 			return true;
 		}
 		if (!this.#activeRequest) return false;
@@ -146,20 +146,20 @@ export class BtwController {
 	async start(question: string): Promise<void> {
 		const trimmedQuestion = question.trim();
 		if (!trimmedQuestion) {
-			this.ctx.showStatus("Usage: /btw <question>");
+			this.ctx.showStatus("Usage: /side <question>");
 			return;
 		}
 
 		const model = this.ctx.session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /btw.");
+			this.ctx.showError("No active model available for /side.");
 			return;
 		}
 
 		this.#closeActiveRequest({ abort: true });
 
-		const request: BtwRequest = {
-			component: new BtwPanelComponent({
+		const request: SideQuestionRequest = {
+			component: new SideQuestionPanelComponent({
 				question: trimmedQuestion,
 				tui: this.ctx.ui,
 				canBranch: () => this.canBranch(),
@@ -169,16 +169,16 @@ export class BtwController {
 			leafId: this.ctx.sessionManager.getLeafId(),
 			sessionId: this.ctx.sessionManager.getSessionId(),
 		};
-		this.ctx.btwContainer.clear();
-		this.ctx.btwContainer.addChild(request.component);
+		this.ctx.sideQuestionContainer.clear();
+		this.ctx.sideQuestionContainer.addChild(request.component);
 		this.ctx.ui.requestRender();
 		this.#activeRequest = request;
 		void this.#runRequest(request);
 	}
 
-	async #runRequest(request: BtwRequest): Promise<void> {
+	async #runRequest(request: SideQuestionRequest): Promise<void> {
 		try {
-			const promptText = prompt.render(btwUserPrompt, { question: request.question });
+			const promptText = prompt.render(sideQuestionPrompt, { question: request.question });
 			const { replyText, assistantMessage } = await this.ctx.session.runEphemeralTurn({
 				promptText,
 				onTextDelta: delta => {
@@ -226,7 +226,7 @@ export class BtwController {
 			request.abortController.abort();
 		}
 		request.component.close();
-		this.ctx.btwContainer.clear();
+		this.ctx.sideQuestionContainer.clear();
 		this.ctx.ui.requestRender();
 	}
 
@@ -239,7 +239,7 @@ export class BtwController {
 		this.#lastSessionId = undefined;
 	}
 
-	#isActiveRequest(request: BtwRequest): boolean {
+	#isActiveRequest(request: SideQuestionRequest): boolean {
 		return this.#activeRequest === request;
 	}
 }

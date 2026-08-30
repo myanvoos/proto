@@ -3,7 +3,7 @@ Persistent Python kernel — do all work here. State (variables, imports, functi
 Work incrementally: imports → define → test → use, each its own call. Re-run setup ONLY after `reset` or kernel crash.
 Top-level `await` works; `asyncio.run(…)` raises error. Parallelize *within* a call with `parallel(thunks)`.
 
-Do file work from here with Python (`open`, `pathlib`) plus the `write`/`edit`/`replace` helpers; run shell commands through the `bash` tool. `tool.<name>` is for capabilities with no Python equivalent (browser, lsp, github, …).
+Do file work from here with Python plus the `write`/`edit`/`replace`/`edit_block` helpers; run shell commands through the `bash` tool. File edits MUST use the kernel helpers — never hand-rolled `pathlib`/`open` writes; reads are unrestricted. `tool.<name>` is for capabilities with no Python equivalent (browser, lsp, github, …).
 
 `files: [{path, content}]` writes files to disk before the code runs — the quoting-safe channel for file creation (content is a raw JSON string; no string-literal nesting, no heredocs). Prefer it over escaping tricks whenever the code itself must produce a file with code-like content.
 

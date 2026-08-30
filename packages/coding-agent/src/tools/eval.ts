@@ -774,6 +774,8 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				activeLiveCell = { result: cellResult, buf: new TailBuffer(DEFAULT_MAX_BYTES * 2) };
 				pushUpdate();
 
+				const cellStatusEvents: EvalStatusEvent[] = [];
+				const cellFsEvents: EvalStatusEvent[] = [];
 				const startTime = Date.now();
 				let result: ExecutorBackendResult;
 				try {
@@ -813,6 +815,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 								event => {
 									cellResult.statusEvents ??= [];
 									upsertStatusEvent(cellResult.statusEvents, event);
+									upsertStatusEvent(cellFsEvents, event);
 									pushUpdate();
 								},
 								{ reportedEvents: cellResult.statusEvents, signal: combinedSignal },
@@ -824,7 +827,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				}
 				const durationMs = Date.now() - startTime;
 
-				const cellStatusEvents: EvalStatusEvent[] = [];
 				const cellDisplayOutputs: EvalDisplayOutput[] = [];
 				const cellImageNotes: string[] = [];
 				let cellHasMarkdown = false;
@@ -879,7 +881,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				cellResult.output = cellOutput;
 				cellResult.exitCode = result.exitCode;
 				cellResult.durationMs = durationMs;
-				cellResult.statusEvents = cellStatusEvents.length > 0 ? cellStatusEvents : undefined;
+				for (const event of cellFsEvents) {
+					upsertStatusEvent(statusEvents, event);
+				}
+				const mergedCellEvents =
+					cellFsEvents.length > 0 ? [...cellStatusEvents, ...cellFsEvents] : cellStatusEvents;
+				cellResult.statusEvents = mergedCellEvents.length > 0 ? mergedCellEvents : undefined;
 				cellResult.hasMarkdown = cellHasMarkdown || undefined;
 
 				if (cellOutput) {

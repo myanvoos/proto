@@ -2,23 +2,23 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import backgroundTanDispatchPrompt from "../../prompts/system/background-tan-dispatch.md" with { type: "text" };
-import tanContextSwitchPrompt from "../../prompts/system/tan-context-switch.md" with { type: "text" };
+import backgroundSideDispatchPrompt from "../../prompts/system/background-side-dispatch.md" with { type: "text" };
+import sideAgentContextSwitchPrompt from "../../prompts/system/side-agent-context-switch.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
-import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
+import { BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
 import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { InteractiveModeContext } from "../types";
 
-const TAN_LABEL_PREVIEW_LENGTH = 80;
+const SIDE_WORK_PREVIEW_LENGTH = 80;
 
 function previewWork(work: string): string {
 	const singleLine = work.trim().replace(/\s+/g, " ");
-	if (singleLine.length <= TAN_LABEL_PREVIEW_LENGTH) return singleLine;
-	return `${singleLine.slice(0, TAN_LABEL_PREVIEW_LENGTH - 1)}…`;
+	if (singleLine.length <= SIDE_WORK_PREVIEW_LENGTH) return singleLine;
+	return `${singleLine.slice(0, SIDE_WORK_PREVIEW_LENGTH - 1)}…`;
 }
 
 function extractAssistantText(message: AssistantMessage | undefined): string {
@@ -37,13 +37,13 @@ async function removeCloneSession(cloneFile: string): Promise<void> {
 	]);
 }
 
-export class TanCommandController {
+export class SideAgentController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	async start(work: string): Promise<void> {
 		const trimmedWork = work.trim();
 		if (!trimmedWork) {
-			this.ctx.showStatus("Usage: /tan <work>");
+			this.ctx.showStatus("Usage: /side --agent <work>");
 			return;
 		}
 
@@ -51,19 +51,19 @@ export class TanCommandController {
 
 		const model = session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /tan.");
+			this.ctx.showError("No active model available for /side --agent.");
 			return;
 		}
 
 		const manager = session.asyncJobManager;
 		if (!manager) {
-			this.ctx.showError("Background jobs are disabled; enable async jobs to use /tan.");
+			this.ctx.showError("Background jobs are disabled; enable async jobs to use /side --agent.");
 			return;
 		}
 
 		const parentFile = this.ctx.sessionManager.getSessionFile();
 		if (!parentFile) {
-			this.ctx.showError("/tan requires a persisted session.");
+			this.ctx.showError("/side --agent requires a persisted session.");
 			return;
 		}
 
@@ -90,9 +90,9 @@ export class TanCommandController {
 		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
 		const enableLsp = this.ctx.settings.get("orchestrator.enableLsp") !== false;
 		const agentRegistry = AgentRegistry.global();
-		const cloneId = `Tan-${Snowflake.next()}`;
+		const cloneId = `Side-${Snowflake.next()}`;
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
-		const label = `/tan ${previewWork(trimmedWork)}`;
+		const label = `/side --agent ${previewWork(trimmedWork)}`;
 
 		await this.ctx.sessionManager.ensureOnDisk();
 		await this.ctx.sessionManager.flush();
@@ -120,7 +120,7 @@ export class TanCommandController {
 							thinkingLevel,
 							systemPrompt,
 							toolNames,
-							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
+							providerSessionId: `${parentSessionId}:side:${Snowflake.next()}`,
 							providerPromptCacheKey: parentPromptCacheKey,
 							modelRegistry,
 							authStorage: modelRegistry.authStorage,
@@ -130,7 +130,7 @@ export class TanCommandController {
 							customTools,
 							enableLsp,
 							agentId: cloneId,
-							agentDisplayName: "tan",
+							agentDisplayName: "side",
 							parentTaskPrefix: cloneId,
 							parentAgentId: ownerId,
 							agentRegistry,
@@ -153,7 +153,7 @@ export class TanCommandController {
 						const injectContextSwitch = () => {
 							clone?.agent.appendMessage({
 								role: "developer",
-								content: tanContextSwitchPrompt,
+								content: sideAgentContextSwitchPrompt,
 								attribution: "agent",
 								timestamp: Date.now(),
 							});
@@ -199,12 +199,12 @@ export class TanCommandController {
 			return;
 		}
 
-		const content = prompt.render(backgroundTanDispatchPrompt, { jobId, work: trimmedWork });
+		const content = prompt.render(backgroundSideDispatchPrompt, { jobId, work: trimmedWork });
 
 		const wasStreaming = session.isStreaming;
 		await session.sendCustomMessage(
 			{
-				customType: BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
+				customType: BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
 				content,
 				display: true,
 				attribution: "user",
@@ -213,6 +213,6 @@ export class TanCommandController {
 			{ triggerTurn: false, deliverAs: "nextTurn" },
 		);
 		if (!wasStreaming) this.ctx.rebuildChatFromMessages();
-		this.ctx.showStatus(`Dispatched background tan ${jobId}`);
+		this.ctx.showStatus(`Dispatched background agent ${jobId}`);
 	}
 }

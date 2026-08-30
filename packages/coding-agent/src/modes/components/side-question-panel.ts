@@ -3,15 +3,15 @@ import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import { OverlayPanel } from "./overlay-box";
 
-type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
+type SideQuestionPanelState = "running" | "complete" | "branching" | "aborted" | "error";
 
-interface BtwPanelComponentOptions {
+interface SideQuestionPanelOptions {
 	question: string;
 	tui: TUI;
 	canBranch?: () => boolean;
 }
 
-class BtwFooter implements Component {
+class SideQuestionFooter implements Component {
 	#getLine: () => string;
 	#line: string | undefined;
 	#text: Text | undefined;
@@ -30,17 +30,17 @@ class BtwFooter implements Component {
 	}
 }
 
-export class BtwPanelComponent extends OverlayPanel {
+export class SideQuestionPanelComponent extends OverlayPanel {
 	#tui: TUI;
 	#canBranch: (() => boolean) | undefined;
-	#state: BtwPanelState = "running";
+	#state: SideQuestionPanelState = "running";
 	#answer = "";
 	#errorMessage: string | undefined;
 	#visibleAnswer = "";
 	#closed = false;
 
-	constructor(options: BtwPanelComponentOptions) {
-		super(`/btw ${replaceTabs(options.question)}`);
+	constructor(options: SideQuestionPanelOptions) {
+		super(`/side ${replaceTabs(options.question)}`);
 		this.#tui = options.tui;
 		this.#canBranch = options.canBranch;
 		this.#rebuild();
@@ -110,7 +110,7 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.addChild(new Spacer(1));
 		this.addChild(this.#contentComponent());
 		this.addChild(new Spacer(1));
-		this.addChild(new BtwFooter(() => this.#footerLine()));
+		this.addChild(new SideQuestionFooter(() => this.#footerLine()));
 
 		this.#tui.requestComponentRender(this);
 	}
@@ -118,7 +118,7 @@ export class BtwPanelComponent extends OverlayPanel {
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", "Esc cancel /btw");
+				return theme.fg("muted", "Esc cancel /side");
 			case "complete": {
 				if (!this.isCopyable()) return theme.fg("muted", "Esc dismiss");
 				const actions = ["c copy"];

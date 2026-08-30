@@ -152,8 +152,8 @@ export class InputController {
 	#focusedLeftTapListenerInstalled = false;
 	#rightTapListenerInstalled = false;
 	#focusedPasteListenerInstalled = false;
-	#btwBranchListenerInstalled = false;
-	#btwCopyListenerInstalled = false;
+	#sideQuestionBranchListenerInstalled = false;
+	#sideQuestionCopyListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
 
 	getDraftText(): string {
@@ -244,25 +244,25 @@ export class InputController {
 				return undefined;
 			});
 		}
-		if (!this.#btwBranchListenerInstalled) {
-			this.#btwBranchListenerInstalled = true;
+		if (!this.#sideQuestionBranchListenerInstalled) {
+			this.#sideQuestionBranchListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (!matchesKey(data, "b")) return undefined;
-				if (!this.ctx.handlesBtwBranchKey()) return undefined;
+				if (!this.ctx.handlesSideQuestionBranchKey()) return undefined;
 				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
-				void this.ctx.handleBtwBranchKey();
+				void this.ctx.handleSideQuestionBranchKey();
 				return { consume: true };
 			});
 		}
-		if (!this.#btwCopyListenerInstalled) {
-			this.#btwCopyListenerInstalled = true;
+		if (!this.#sideQuestionCopyListenerInstalled) {
+			this.#sideQuestionCopyListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (!matchesKey(data, "c")) return undefined;
-				if (!this.ctx.canCopyBtw()) return undefined;
+				if (!this.ctx.canCopySideQuestion()) return undefined;
 				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
-				void this.ctx.handleBtwCopyKey();
+				void this.ctx.handleSideQuestionCopyKey();
 				return { consume: true };
 			});
 		}
@@ -296,7 +296,7 @@ export class InputController {
 				return;
 			}
 
-			if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
+			if (this.ctx.hasActiveSideQuestion() && this.ctx.handleSideQuestionEscape()) {
 				return;
 			}
 

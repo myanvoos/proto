@@ -6248,7 +6248,7 @@ export class AgentSession {
 		}
 	}
 
-	async branchFromBtw(
+	async branchFromSideQuestion(
 		question: string,
 		assistantMessage: AssistantMessage,
 		leafId: string,
@@ -6256,15 +6256,15 @@ export class AgentSession {
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
 		const previousSessionFile = this.sessionFile;
 		if (!this.sessionManager.getSessionFile()) {
-			throw new Error("Cannot branch /btw: session is not persisted");
+			throw new Error("Cannot branch /side: session is not persisted");
 		}
 
 		if (!leafId || this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-			throw new Error("Cannot branch /btw: session changed since /btw started");
+			throw new Error("Cannot branch /side: session changed since /side started");
 		}
 
 		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
-			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
+			throw new Error("Cannot branch /side while session maintenance or user work is still running");
 		}
 
 		if (this.#extensionRunner?.hasHandlers("session_before_branch")) {
@@ -6279,16 +6279,16 @@ export class AgentSession {
 		}
 
 		if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-			throw new Error("Cannot branch /btw: session changed since /btw started");
+			throw new Error("Cannot branch /side: session changed since /side started");
 		}
 
 		await withTimeout(
 			this.#cancelPostPromptTasks(),
 			POST_PROMPT_DRAIN_TIMEOUT_MS,
-			"Timed out draining post-prompt tasks before /btw branch",
+			"Timed out draining post-prompt tasks before /side branch",
 		);
 		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
-			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
+			throw new Error("Cannot branch /side while session maintenance or user work is still running");
 		}
 
 		this.#pendingNextTurnMessages = [];
@@ -6310,7 +6310,7 @@ export class AgentSession {
 			await this.#advisors.drainAndDetachRecorders();
 			try {
 				if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-					throw new Error("Cannot branch /btw: session changed since /btw started");
+					throw new Error("Cannot branch /side: session changed since /side started");
 				}
 				this.sessionManager.createBranchedSession(leafId);
 				this.#bash.markSessionTransition(bashTransition);

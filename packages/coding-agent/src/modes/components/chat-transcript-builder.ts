@@ -6,7 +6,7 @@ import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
-	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
+	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
@@ -27,7 +27,7 @@ import {
 } from "../utils/transcript-render-helpers";
 import { createAdvisorMessageCard } from "./advisor-message";
 import { AssistantMessageComponent } from "./assistant-message";
-import { createBackgroundTanDispatchBlock } from "./background-tan-message";
+import { createBackgroundSideDispatchBlock } from "./background-side-dispatch";
 import { BashExecutionComponent } from "./bash-execution";
 import { detectCacheInvalidation } from "./cache-invalidation-marker";
 import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent } from "./compaction-summary-message";
@@ -460,8 +460,8 @@ export class ChatTranscriptBuilder {
 			this.container.addChild(buildLaunchCompletionBlock(message));
 			return;
 		}
-		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
-			this.container.addChild(createBackgroundTanDispatchBlock(message as CustomMessage<unknown>));
+		if (message.customType === BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE) {
+			this.container.addChild(createBackgroundSideDispatchBlock(message as CustomMessage<unknown>));
 			return;
 		}
 		const component = new CustomMessageComponent(

@@ -1008,7 +1008,7 @@ LiteLLM is an open-source AI proxy and gateway that unifies access to multiple L
 - **Loopback stream-timeout floor (`packages/catalog/src/compat/openai.ts`)**: Even though LiteLLM is excluded from `isLocalOpenAICompatBackend`, loopback/RFC1918 URLs (`localhost`, `127.0.0.1`) still participate in `hasLocalLoopbackBaseUrl`, preserving the local stream-timeout floor to avoid premature prefill timeouts when fronting slow local backends.
 - **Anthropic & Bedrock tool compatibility (`packages/ai/src/providers/openai-completions.ts`)**:
   - When `context.tools` is `undefined` but conversation history contains tool calls, `params.tools` is set to `[]` for Anthropic-via-LiteLLM compatibility.
-  - When `context.tools` is explicitly empty (`[]`, e.g., `/btw` or background turns), `params.tools` and `tool_choice: "none"` are omitted so LiteLLM → Bedrock routes do not generate invalid, empty `toolConfig` blocks.
+  - When `context.tools` is explicitly empty (`[]`, e.g., `/side <question>` or background turns), `params.tools` and `tool_choice: "none"` are omitted so LiteLLM → Bedrock routes do not generate invalid, empty `toolConfig` blocks.
 - **Telemetry & gateway header detection (`packages/ai/src/telemetry.ts`, `packages/ai/src/auth-gateway/http.ts`)**: `detectGatewayFromHeaders` inspects `x-litellm-call-id` (falling back to `x-litellm-model-id` or `x-litellm-model-group`) to populate `pi.gen_ai.gateway.*` span attributes. Auth gateway HTTP endpoints expose `x-litellm-model-id`, `x-litellm-model-api-base`, `x-litellm-response-cost`, and `x-litellm-response-duration-ms`.
 
 ### Auth & usage

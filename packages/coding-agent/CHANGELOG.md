@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Breaking Changes
+- Merged `/btw` and `/tan` into a single `/side` command: `/side <question>` asks an ephemeral side question answered in the floating panel (formerly `/btw`), and `/side --agent <work>` dispatches a full background agent on tangential work (formerly `/tan`); `/btw` and `/tan` no longer exist.
 - Removed the legacy Pi specifier shim for extensions and plugins: old third-party package names (`@badlogic/pi-*` and other pre-rename scopes) are no longer aliased, while current `@oh-my-pi/*` imports continue to resolve to the running host's modules; extensions must import current package names.
 - Dropped Windows support: no Windows binary, npm artifact, or installer is published anymore (`install.ps1` removed), and Windows-only code paths are gone — TUI console/codepage and ConPTY input handling, Windows spawn/console-probe options, `ProjFS`/`block-clone` isolation backends, PowerShell profile detection for `proto profile`, and Windows case-insensitive path/env special-casing. Linux and macOS behavior is unchanged; SSH sessions to Windows hosts keep working.
 - Removed the built-in long-term memory system: the `off`/`local`/Hindsight/Mnemopi backends (`memory.backend`), the `retain`, `recall`, `reflect`, `memory_edit`, and `learn` tools, the `memory://` internal URL scheme and `/memory` slash command, all `mnemopi.*`/`hindsight.*`/`memory.*`/`memories.*` settings, the extension-API `memory` runtime context, and the `@oh-my-pi/pi-mnemopi` dependency. Data previously written under the agent memories directory is simply no longer read.
@@ -75,6 +76,7 @@
 
 ### Fixed
 
+- Fixed kernel cell fs-walker `write`/`delete` diff events being dropped from the final tool result: they were captured after the backend returned and then discarded by the post-cell status-event rebuild, so raw filesystem writes (pathlib, `open`, `shutil`) showed no diff chunks — only prelude helper ops did.
 - Fixed session switching corrupting transcripts: a background-parked session no longer shares its transcript with the newly resumed session, so each turn's output lands only in its own session file.
 - Re-entering a background-thinking session now resumes its live turn seamlessly instead of interrupting it and cold-reloading the transcript.
 - Switching sessions with "Keep Thinking In Background" disabled now honestly reports "Interrupted" instead of claiming the session was parked, and failed switches leave no stale background entry behind.

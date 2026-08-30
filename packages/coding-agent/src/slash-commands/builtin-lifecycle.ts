@@ -161,25 +161,23 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
-		name: "btw",
-		description: "Ask an ephemeral side question using the current session context",
-		inlineHint: "<question>",
+		name: "side",
+		description:
+			"Ask an ephemeral side question using the current session context, or delegate tangential work to a background agent via --agent",
+		inlineHint: "<question> | --agent <work>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
-			const question = command.text.slice(`/${command.name}`.length).trim();
+			const text = command.text.slice(`/${command.name}`.length).trim();
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleBtwCommand(question);
-		},
-	},
-	{
-		name: "tan",
-		description: "Run a full background agent on tangential work",
-		inlineHint: "<work>",
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const work = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleTanCommand(work);
+			if (!text) {
+				runtime.ctx.showStatus("Usage: /side <question> | /side --agent <work>");
+				return;
+			}
+			if (text === "--agent" || text.startsWith("--agent ")) {
+				await runtime.ctx.handleSideCommand("agent", text.slice("--agent".length).trim());
+				return;
+			}
+			await runtime.ctx.handleSideCommand("question", text);
 		},
 	},
 	{

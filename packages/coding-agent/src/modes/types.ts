@@ -88,6 +88,8 @@ export interface RenderSessionContextOptions {
 	preservedLiveToolCallIds?: ReadonlySet<string>;
 }
 
+export type SideCommandMode = "question" | "agent";
+
 export interface InteractiveModeContext {
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -95,7 +97,7 @@ export interface InteractiveModeContext {
 	statusContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
-	btwContainer: Container;
+	sideQuestionContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
@@ -351,16 +353,15 @@ export interface InteractiveModeContext {
 	handleImagePaste(): Promise<boolean>;
 
 	handleQueueCommand(message: string): Promise<void>;
-	handleBtwCommand(question: string): Promise<void>;
-	handleTanCommand(work: string): Promise<void>;
-	hasActiveBtw(): boolean;
-	handleBtwEscape(): boolean;
-	handleBtwBranchKey(): Promise<boolean>;
-	canBranchBtw(): boolean;
-	handlesBtwBranchKey(): boolean;
-	canCopyBtw(): boolean;
-	handleBtwCopyKey(): Promise<boolean>;
-	handleBtwBranch(
+	handleSideCommand(mode: SideCommandMode, text: string): Promise<void>;
+	hasActiveSideQuestion(): boolean;
+	handleSideQuestionEscape(): boolean;
+	handleSideQuestionBranchKey(): Promise<boolean>;
+	canBranchSideQuestion(): boolean;
+	handlesSideQuestionBranchKey(): boolean;
+	canCopySideQuestion(): boolean;
+	handleSideQuestionCopyKey(): Promise<boolean>;
+	handleSideQuestionBranch(
 		question: string,
 		assistantMessage: AssistantMessage,
 		leafId: string,

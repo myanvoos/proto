@@ -38,7 +38,8 @@ import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
-export const BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
+// Value is the persisted session-JSONL message type; do not change - older sessions render via this id.
+export const BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 
 export function logProviderTurnError(msg: AssistantMessage): void {
@@ -374,7 +375,7 @@ function stripDemotedThinkingForLlm(message: AssistantMessage): AssistantMessage
 	return demoted ? { ...message, content: demoted.strippedContent } : message;
 }
 
-export interface BackgroundTanDispatchDetails {
+export interface BackgroundSideDispatchDetails {
 	jobId: string;
 	work: string;
 

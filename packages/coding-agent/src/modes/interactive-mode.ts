@@ -114,7 +114,6 @@ import { TranscriptContainer } from "./components/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
 import { buildComposerShortcuts, COMPOSER_PLACEHOLDER, Composer, ComposerShortcutsBar } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
-import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
@@ -122,8 +121,9 @@ import { InputController } from "./controllers/input-controller";
 import { MCPCommandController } from "./controllers/mcp-command-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
+import { SideAgentController } from "./controllers/side-agent-controller";
+import { SideQuestionController } from "./controllers/side-question-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
-import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
 import {
@@ -163,6 +163,7 @@ import type {
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
 	RenderSessionContextOptions,
+	SideCommandMode,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -347,7 +348,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	statusContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
-	btwContainer: Container;
+	sideQuestionContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
@@ -471,8 +472,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
-	readonly #btwController: BtwController;
-	readonly #tanCommandController: TanCommandController;
+	readonly #sideQuestionController: SideQuestionController;
+	readonly #sideAgentController: SideAgentController;
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #eventController: EventController;
@@ -656,7 +657,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusContainer = new AnchoredLiveContainer();
 		this.todoContainer = new AnchoredLiveContainer();
 		this.subagentContainer = new AnchoredLiveContainer();
-		this.btwContainer = new AnchoredLiveContainer();
+		this.sideQuestionContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
@@ -727,8 +728,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 
 		this.#uiHelpers = new UiHelpers(this);
-		this.#btwController = new BtwController(this);
-		this.#tanCommandController = new TanCommandController(this);
+		this.#sideQuestionController = new SideQuestionController(this);
+		this.#sideAgentController = new SideAgentController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
@@ -874,7 +875,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.pendingMessagesContainer,
 				this.todoContainer,
 				this.subagentContainer,
-				this.btwContainer,
+				this.sideQuestionContainer,
 				this.errorBannerContainer,
 				this.modelCycleContainer,
 				this.deferredCommandContainer,
@@ -2525,7 +2526,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 
-		this.#btwController.dispose();
+		this.#sideQuestionController.dispose();
 		this.#focusController.dispose();
 
 		this.showStatus("Closing session…");
@@ -2931,7 +2932,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#prepareSessionSwitch(): void {
-		this.#btwController.dispose();
+		this.#sideQuestionController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.clearPinnedError();
 	}
@@ -2946,7 +2947,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleForkCommand(): Promise<void> {
-		this.#btwController.dispose();
+		this.#sideQuestionController.dispose();
 		await this.#commandController.handleForkCommand();
 	}
 
@@ -3058,7 +3059,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showError(`Failed to save pending settings: ${err instanceof Error ? err.message : String(err)}`);
 			return;
 		}
-		this.#btwController.dispose();
+		this.#sideQuestionController.dispose();
 		this.resetObserverRegistry();
 		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
 	}
@@ -3127,62 +3128,59 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#inputController.handleQueueCommand(message);
 	}
 
-	handleBtwCommand(question: string): Promise<void> {
-		return this.#btwController.start(question);
+	handleSideCommand(mode: SideCommandMode, text: string): Promise<void> {
+		if (mode === "agent") return this.#sideAgentController.start(text);
+		return this.#sideQuestionController.start(text);
 	}
 
-	handleTanCommand(work: string): Promise<void> {
-		return this.#tanCommandController.start(work);
+	hasActiveSideQuestion(): boolean {
+		return this.#sideQuestionController.hasActiveRequest();
 	}
 
-	hasActiveBtw(): boolean {
-		return this.#btwController.hasActiveRequest();
+	handleSideQuestionEscape(): boolean {
+		return this.#sideQuestionController.handleEscape();
 	}
 
-	handleBtwEscape(): boolean {
-		return this.#btwController.handleEscape();
+	canBranchSideQuestion(): boolean {
+		return this.#sideQuestionController.canBranch();
 	}
 
-	canBranchBtw(): boolean {
-		return this.#btwController.canBranch();
+	handlesSideQuestionBranchKey(): boolean {
+		return this.#sideQuestionController.handlesBranchKey();
 	}
 
-	handlesBtwBranchKey(): boolean {
-		return this.#btwController.handlesBranchKey();
+	handleSideQuestionBranchKey(): Promise<boolean> {
+		return this.#sideQuestionController.handleBranch();
 	}
 
-	handleBtwBranchKey(): Promise<boolean> {
-		return this.#btwController.handleBranch();
+	canCopySideQuestion(): boolean {
+		return this.#sideQuestionController.canCopy();
 	}
 
-	canCopyBtw(): boolean {
-		return this.#btwController.canCopy();
+	handleSideQuestionCopyKey(): Promise<boolean> {
+		return this.#sideQuestionController.handleCopy();
 	}
 
-	handleBtwCopyKey(): Promise<boolean> {
-		return this.#btwController.handleCopy();
-	}
-
-	async handleBtwBranch(
+	async handleSideQuestionBranch(
 		question: string,
 		assistantMessage: AssistantMessage,
 		leafId: string,
 		sessionId: string,
 	): Promise<void> {
 		try {
-			const result = await this.session.branchFromBtw(question, assistantMessage, leafId, sessionId);
+			const result = await this.session.branchFromSideQuestion(question, assistantMessage, leafId, sessionId);
 			if (result.cancelled) {
-				this.showStatus("/btw branch cancelled", { dim: true });
+				this.showStatus("/side branch cancelled", { dim: true });
 				return;
 			}
-			this.#btwController.dispose();
+			this.#sideQuestionController.dispose();
 			await this.renderInitialMessages({ clearTerminalHistory: true });
 			this.updateEditorBorderColor();
 			this.showStatus(
-				result.sessionFile ? `Branched /btw to ${path.basename(result.sessionFile)}` : "Branched /btw",
+				result.sessionFile ? `Branched /side to ${path.basename(result.sessionFile)}` : "Branched /side",
 			);
 		} catch (error) {
-			this.showError(`Cannot branch /btw: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(`Cannot branch /side: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
