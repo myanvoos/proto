@@ -43,6 +43,7 @@ import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { toolWireSchema } from "../utils/schema/wire";
 import { transformMessages } from "./transform-messages";
+import { mediaOmissionNote } from "./vision-guard";
 
 export const DEVIN_API_URL = "https://server.codeium.com";
 
@@ -545,6 +546,8 @@ function buildChatMessagePrompts(
 						promptText += part.text;
 					} else if (part.type === "image") {
 						images.push(create(ImageDataSchema, { base64Data: part.data, mimeType: part.mimeType }));
+					} else {
+						promptText += mediaOmissionNote(part.type);
 					}
 				}
 			}

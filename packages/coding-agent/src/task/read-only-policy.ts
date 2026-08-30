@@ -11,7 +11,7 @@ export const READ_ONLY_TOOL_NAMES: Record<string, true> = {
 	reflect: true,
 	retain: true,
 	memory_edit: true,
-	inspect_image: true,
+	inspect_media: true,
 	checkpoint: true,
 	rewind: true,
 };

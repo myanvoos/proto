@@ -36,7 +36,7 @@ Example across three calls:
 ```
 
 ```json
-{"language":"py","title":"load config","code":"data = json.loads(read('package.json'))\ndisplay(data)"}
+{"language":"py","title":"load config","code":"data = json.loads(Path('package.json').read_text())\ndisplay(data)"}
 ```
 
 ```json
@@ -126,12 +126,12 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 All enabled runtimes expose equivalent helpers where the language permits:
 
 - `display(value)`, `print(...)`
-- `read(path, offset?, limit?)`, `write(path, content)`, `env(...)`, `output(...)`
+- `write(path, content)`, `env(...)`, `output(...)`
 - `tool.<name>(args)` for a normal session tool call
 - `completion(...)`, `agent(...)`, `parallel(...)`, `pipeline(...)`
 - `log(message)`, `phase(title)`, `budget`
 
-JS filesystem/bridge helpers are asynchronous; Python, Ruby, and Julia helpers are synchronous. `read()` delegates non-`local://` schemes to the registered read tool, resolves `local://` through injected roots, and reads regular paths relative to cwd. `write()` accepts regular and `local://` paths but rejects other protocol URLs.
+JS filesystem/bridge helpers are asynchronous; Python, Ruby, and Julia helpers are synchronous. `write()` accepts regular and `local://` paths but rejects other protocol URLs.
 
 `display()` captures JSON-compatible structures, images, markdown, or text according to the backend. Ruby and Julia additionally auto-display eligible final expressions.
 

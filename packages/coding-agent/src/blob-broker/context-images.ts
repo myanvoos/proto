@@ -1,4 +1,4 @@
-import type { Context, ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
+import type { AudioContent, Context, ImageContent, Message, Model, TextContent, VideoContent } from "@oh-my-pi/pi-ai";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 
 const URL_CAPABLE_OPENAI_APIS: Record<string, true> = {
@@ -31,7 +31,7 @@ function mapContextImages(context: Context, mapBlock: (block: ImageContent) => I
 	const messages = context.messages.map(message => {
 		if (!isImageBearing(message) || !Array.isArray(message.content)) return message;
 		let contentChanged = false;
-		const content = message.content.map((block): TextContent | ImageContent => {
+		const content = message.content.map((block): TextContent | ImageContent | AudioContent | VideoContent => {
 			if (block.type !== "image") return block;
 			const next = mapBlock(block);
 			if (next !== block) contentChanged = true;
@@ -83,7 +83,7 @@ export async function inlineContextImages(
 			if (!isImageBearing(message) || !Array.isArray(message.content)) return message;
 			let contentChanged = false;
 			const content = await Promise.all(
-				message.content.map(async (block): Promise<TextContent | ImageContent> => {
+				message.content.map(async (block): Promise<TextContent | ImageContent | AudioContent | VideoContent> => {
 					if (block.type !== "image" || (!block.url && !block.providerFile)) return block;
 					contentChanged = true;
 					const { url: _url, providerFile: _providerFile, ...rest } = block;

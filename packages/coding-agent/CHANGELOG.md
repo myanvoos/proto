@@ -22,6 +22,10 @@
 
 
 ### Added
+- Renamed the `inspect_image` tool to `inspect_media`: it now accepts audio and video files in addition to images, detected by file content (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF audio, MP4/WEBM/MOV/MPEG video), and sends them to models that advertise the matching input modality; `inspect_image.*` settings migrate to `inspect_media.*` (`inspect_media.mode`, `inspect_media.timeoutMs`).
+- Kernel/eval tool calls accept `files: [{path, content}]`, written to disk before execution with write-event diffs — a quoting-safe channel for creating files whose content contains code.
+- Kernel cells snapshot working-directory file state (mtime/size walk; gitignored paths and heavy dirs pruned) before and after execution and emit `write`/`delete` status events with numbered diffs for every file the cell changed — regardless of mechanism (raw `open`, `shutil`, subprocess, helpers) and independent of git. Git index blobs serve only as an optional diff baseline for previously-untouched tracked files; helper-emitted events dedupe by content hash.
+- Kernel code cells render a Python AST preview in the TUI (collapsed view; raw code on expand), with `#@`/`#@?` session annotations surfaced as margin callouts.
 - Removed the `composer.shape` setting and every composer layout option; the editor always renders the default borderless prompt, and extensions can no longer register composer shapes.
 
 ### Added
@@ -137,6 +141,7 @@
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
 
 ### Removed
+- Removed the `bash()` and `read()` helpers from the kernel/eval prelude in every language; cells read files with native APIs (`open`/`Path.read_text()`, `Bun.file`, `File.read`) and run shell commands through the `bash` tool.
 - Removed the opt-in security workflow: the `/security` slash command and its handler, the `security_scan` tool and `security_publish` publication tool, the `src/security` module (coordinator, store, cloud client, importers, SARIF/provenance/remediation), the read-only `security://` internal-URL protocol handler, the bundled `security-reviewer` agent, and the `security.enabled` setting. The scheme is no longer reserved against RPC host URI registration.
 - Removed the inert `--yolo` and `--auto-approve` CLI flags; passing them now fails with an unknown-flag error instead of being silently ignored.
 - Removed the unused `review` tool and its `parseFindingDetails` helper; no user-facing or extension surface depended on them.

@@ -12,7 +12,7 @@ import { computerToolRenderer } from "./computer-renderer";
 import { evalToolRenderer } from "./eval-render";
 import { fleetToolRenderer } from "./fleet";
 import { githubToolRenderer } from "./gh-renderer";
-import { inspectImageToolRenderer } from "./inspect-image-renderer";
+import { inspectMediaToolRenderer } from "./inspect-media-renderer";
 import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
 import { readToolRenderer } from "./read";
 import { resolveRenderer } from "./resolve";
@@ -54,7 +54,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	edit: editToolRenderer as ToolRenderer,
 	apply_patch: editToolRenderer as ToolRenderer,
 	lsp: lspToolRenderer as ToolRenderer,
-	inspect_image: inspectImageToolRenderer as ToolRenderer,
+	inspect_media: inspectMediaToolRenderer as ToolRenderer,
 
 	get fleet(): ToolRenderer {
 		return fleetToolRenderer as ToolRenderer;

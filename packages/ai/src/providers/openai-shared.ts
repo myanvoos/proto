@@ -38,6 +38,7 @@ import * as AIError from "../error";
 import {
 	type Api,
 	type AssistantMessage,
+	type AudioContent,
 	type CacheRetention,
 	type ComputerAction,
 	type ComputerToolCallMetadata,
@@ -58,6 +59,7 @@ import {
 	type ToolCall,
 	type ToolResultMessage,
 	type Usage,
+	type VideoContent,
 } from "../types";
 
 export type { OpenAIPromptCacheOptions } from "../types";
@@ -115,7 +117,7 @@ import type {
 	ResponseStreamEvent,
 } from "./openai-responses-wire";
 import { transformMessages } from "./transform-messages";
-import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER, partitionVisionContent } from "./vision-guard";
+import { joinTextWithImagePlaceholder, joinTextWithOmissions, partitionUserMediaContent } from "./vision-guard";
 
 export const NO_AUTH_SENTINEL = "N/A";
 
@@ -1407,7 +1409,7 @@ function convertResponsesInputImage(image: ImageContent, supportsImageDetailOrig
 }
 
 export function convertResponsesInputContent(
-	content: string | Array<TextContent | ImageContent>,
+	content: string | Array<AudioContent | ImageContent | TextContent | VideoContent>,
 	supportsImages: boolean,
 	supportsImageDetailOriginal: boolean,
 	escapeControlTokens = false,
@@ -1423,7 +1425,11 @@ export function convertResponsesInputContent(
 		];
 	}
 
-	const { textBlocks, imageBlocks, omittedImages } = partitionVisionContent(content, supportsImages);
+	const { textBlocks, imageBlocks, omissions } = partitionUserMediaContent(content, {
+		image: supportsImages,
+		audio: false,
+		video: false,
+	});
 	const normalizedContent: ResponseInputContent[] = [];
 	for (const item of textBlocks) {
 		const raw = item.text.toWellFormed();
@@ -1437,10 +1443,10 @@ export function convertResponsesInputContent(
 	for (const item of imageBlocks) {
 		normalizedContent.push(convertResponsesInputImage(item, supportsImageDetailOriginal));
 	}
-	if (omittedImages) {
+	if (omissions.length > 0) {
 		normalizedContent.push({
 			type: "input_text",
-			text: NON_VISION_IMAGE_PLACEHOLDER,
+			text: joinTextWithOmissions("", omissions),
 		} satisfies ResponseInputText);
 	}
 	return normalizedContent.length > 0 ? normalizedContent : undefined;

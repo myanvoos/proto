@@ -27,7 +27,7 @@ import type { AgentOutputManager } from "../task/output-manager";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
-import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
+import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
@@ -39,7 +39,7 @@ import { ComputerTool } from "./computer";
 import { resolveEvalBackends } from "./eval-backends";
 import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
-import { InspectImageTool } from "./inspect-image";
+import { InspectMediaTool } from "./inspect-media";
 import { KernelTool } from "./kernel";
 import { ManageSkillTool } from "./manage-skill";
 import {
@@ -75,7 +75,7 @@ export * from "./file-write-fallback";
 export * from "./fleet";
 export * from "./gh";
 export * from "./image-gen";
-export * from "./inspect-image";
+export * from "./inspect-media";
 export * from "./kernel";
 export * from "./manage-skill";
 export * from "./orchestrate";
@@ -225,7 +225,7 @@ export interface ToolSession {
 
 	getActiveModel?: () => Model | undefined;
 
-	getInspectImageModeOverride?: () => InspectImageMode | undefined;
+	getInspectMediaModeOverride?: () => InspectMediaMode | undefined;
 
 	getServiceTierByFamily?: () => ServiceTierByFamily | undefined;
 
@@ -319,7 +319,7 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "w
 	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
 	lsp: LspTool.createIf,
-	inspect_image: s => new InspectImageTool(s),
+	inspect_media: s => new InspectMediaTool(s),
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
@@ -413,7 +413,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
-		if (name === "inspect_image") return isInspectImageToolActive(session);
+		if (name === "inspect_media") return isInspectMediaToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");

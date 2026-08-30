@@ -37,31 +37,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		return positionalOptions(name, [value, ...rest], keys, example);
 	};
 	const callHelper = (name, ...args) => globalThis.__proto_helpers__[name](...args);
-	const hasScheme = path => typeof path === "string" && /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(path);
-	const shouldDelegateRead = path => hasScheme(path) && !path.toLowerCase().startsWith("local://");
-	const withReadLineSelector = (path, options) => {
-		const offset = typeof options.offset === "number" ? options.offset : 1;
-		const limit = typeof options.limit === "number" ? options.limit : undefined;
-		if (offset <= 1 && limit === undefined) return path;
-		if (limit !== undefined && limit <= 0) return null;
-		const start = Math.max(1, offset);
-		if (limit === undefined) return `${path}:${start}-`;
-		return `${path}:${start}-${start + limit - 1}`;
-	};
-	const readToolText = async path => {
-		const res = await globalThis.__proto_call_tool__("read", { path });
-		return res && typeof res === "object" && "text" in res ? res.text : res;
-	};
-
-
-	const read = async (path, opts, ...rest) => {
-		const options = optionsArg("read", opts, rest, ["offset", "limit"], "{ offset, limit }");
-		if (shouldDelegateRead(path)) {
-			const toolPath = withReadLineSelector(path, options);
-			return toolPath === null ? "" : readToolText(toolPath);
-		}
-		return callHelper("read", path, options);
-	};
 	const write = async (path, data) => callHelper("writeFile", path, data);
 	const env = (key, value) => callHelper("env", key, value);
 
@@ -288,7 +263,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.phase = phase;
 	globalThis.budget = budget;
 	globalThis.__pool = __pool;
-	globalThis.read = read;
 	globalThis.write = write;
 	globalThis.env = env;
 }

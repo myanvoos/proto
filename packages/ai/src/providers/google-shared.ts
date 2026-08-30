@@ -7,6 +7,7 @@ import * as AIError from "../error";
 import type {
 	Api,
 	AssistantMessage,
+	AudioContent,
 	Context,
 	FetchImpl,
 	ImageContent,
@@ -18,6 +19,7 @@ import type {
 	ThinkingContent,
 	Tool,
 	ToolCall,
+	VideoContent,
 } from "../types";
 import { shouldSendServiceTier } from "../types";
 import { normalizeSystemPrompts } from "../utils";
@@ -36,7 +38,7 @@ import type {
 	ThinkingLevel,
 } from "./google-types";
 import { transformMessages } from "./transform-messages";
-import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import { mediaOmissionNote, mediaSupportForModel, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type {
 	Content,
@@ -56,6 +58,10 @@ function convertGoogleImagePart(image: ImageContent): Part {
 	return image.url
 		? { fileData: { fileUri: image.url, mimeType: image.mimeType } }
 		: { inlineData: { mimeType: image.mimeType, data: image.data } };
+}
+
+function convertGoogleMediaPart(item: ImageContent | AudioContent | VideoContent): Part {
+	return { inlineData: { mimeType: item.mimeType, data: item.data } };
 }
 
 export type GoogleThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
@@ -148,22 +154,27 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					parts: [{ text: msg.content.toWellFormed() }],
 				});
 			} else {
-				const supportsImages = model.input.includes("image");
+				const supports = mediaSupportForModel(model);
 				const parts: Part[] = [];
-				let omittedImages = false;
+				const omissions: string[] = [];
 				for (const item of msg.content) {
 					if (item.type === "text") {
 						const text = item.text.toWellFormed();
 						if (text.trim().length === 0) continue;
 						parts.push({ text });
-					} else if (supportsImages) {
-						parts.push(convertGoogleImagePart(item));
-					} else {
-						omittedImages = true;
+					} else if (item.type === "image") {
+						if (supports.image) parts.push(convertGoogleImagePart(item));
+						else omissions.push(mediaOmissionNote("image"));
+					} else if (item.type === "audio" || item.type === "video") {
+						if (item.type === "audio" ? supports.audio : supports.video) {
+							parts.push(convertGoogleMediaPart(item));
+						} else {
+							omissions.push(mediaOmissionNote(item.type));
+						}
 					}
 				}
-				if (omittedImages) {
-					parts.push({ text: NON_VISION_IMAGE_PLACEHOLDER });
+				for (const note of omissions) {
+					parts.push({ text: note });
 				}
 				if (parts.length === 0) continue;
 				contents.push({

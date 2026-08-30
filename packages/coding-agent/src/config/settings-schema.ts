@@ -3017,23 +3017,23 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"inspect_image.enabled": {
+	"inspect_media.enabled": {
 		type: "boolean",
 		default: false,
 	},
 
-	"inspect_image.mode": {
+	"inspect_media.mode": {
 		type: "enum",
 		values: ["auto", "on", "off"] as const,
 		default: "auto",
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
-			label: "Inspect Image",
+			label: "Inspect Media",
 			description:
-				"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
+				"Controls the inspect_media tool, which delegates image/audio/video understanding to a capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
 			options: [
-				{ value: "auto", label: "Auto (only for models without vision)" },
+				{ value: "auto", label: "Auto (only for models without native image input)" },
 				{ value: "on", label: "On" },
 				{ value: "off", label: "Off" },
 			],
@@ -3084,15 +3084,15 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"inspect_image.timeoutMs": {
+	"inspect_media.timeoutMs": {
 		type: "number",
 		default: 300_000,
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "Inspect Image Timeout",
+			label: "Inspect Media Timeout",
 			description:
-				"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
+				"Per-request timeout for the inspect_media model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "60000", label: "1 minute" },

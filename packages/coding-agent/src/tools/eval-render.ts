@@ -10,6 +10,7 @@ import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../tui";
 import { formatEvalCodeForDisplay } from "./eval-format";
+import { renderPythonAstLines } from "./eval-format/python-ast";
 import {
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
 	JSON_TREE_MAX_DEPTH_EXPANDED,
@@ -295,8 +296,19 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			if (typeof data.diff === "string" && data.diff.length > 0) {
 				if (data.path) parts.push(shortenPath(String(data.path)));
 			} else {
-				parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
+				const unit = data.chars === undefined && data.bytes !== undefined ? "bytes" : "chars";
+				parts.push(`${data.chars ?? data.bytes ?? 0} ${unit}`);
 				if (data.path) parts.push(`to ${shortenPath(String(data.path))}`);
+			}
+			break;
+		case "delete":
+			if (data.path) parts.push(shortenPath(String(data.path)));
+			break;
+		case "files":
+			if (typeof data.count === "number") {
+				parts.push(`${data.count} more file${data.count !== 1 ? "s" : ""} changed`);
+			} else {
+				parts.push("changed-file list truncated");
 			}
 			break;
 		case "cat":
@@ -506,6 +518,11 @@ function formatCellOutputLines(
 	return { lines: visualLines, hiddenCount: skippedCount };
 }
 
+function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
+	if (language !== "python") return undefined;
+	return renderPythonAstLines(code, theme, width) ?? undefined;
+}
+
 export const evalToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,
@@ -522,7 +539,7 @@ export const evalToolRenderer = {
 
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}:${Bun.hash(c.code)}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
@@ -530,6 +547,9 @@ export const evalToolRenderer = {
 				const lines: string[] = [];
 				for (let i = 0; i < cells.length; i++) {
 					const cell = cells[i];
+					const astLines = options.expanded
+						? undefined
+						: astPreviewLines(cell.code, cell.language, uiTheme, width);
 					const cellLines = renderCodeCell(
 						{
 							code: cell.code,
@@ -545,6 +565,8 @@ export const evalToolRenderer = {
 							codeTail: true,
 							codeMaxLines: previewWindowRows(),
 							expanded: options.expanded,
+							preRenderedCodeLines: astLines,
+							codeVariant: astLines ? "ast" : undefined,
 						},
 						uiTheme,
 					);
@@ -642,6 +664,7 @@ export const evalToolRenderer = {
 							}
 							outputLines.push(...statusLines);
 						}
+						const astLines = expanded ? undefined : astPreviewLines(code, language, uiTheme, width);
 						const cellLines = renderCodeCell(
 							{
 								code,
@@ -660,6 +683,8 @@ export const evalToolRenderer = {
 								codeMaxLines: previewWindowRows(),
 								expanded,
 								width,
+								preRenderedCodeLines: astLines,
+								codeVariant: astLines ? "ast" : undefined,
 							},
 							uiTheme,
 						);

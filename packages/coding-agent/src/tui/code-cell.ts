@@ -30,6 +30,8 @@ interface CodeCellOptions {
 	width: number;
 	codeStartLine?: number;
 	codeLineNumbers?: Array<number | null>;
+	preRenderedCodeLines?: string[];
+	codeVariant?: string;
 }
 
 function getState(status?: CodeCellOptions["status"]): State | undefined {
@@ -42,7 +44,7 @@ function getState(status?: CodeCellOptions["status"]): State | undefined {
 }
 
 function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; meta?: string } {
-	const { index, total, title, status, spinnerFrame, duration, language, showLanguage } = options;
+	const { index, total, title, status, spinnerFrame, duration, language, showLanguage, codeVariant } = options;
 	const parts: string[] = [];
 	if (showLanguage && language) {
 		const langIcon = theme.getLangIconStyled(language);
@@ -77,6 +79,9 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 	const headerTitle = parts.length > 0 ? parts.join(" ") : theme.fg("toolTitle", "Code");
 
 	const metaParts: string[] = [];
+	if (codeVariant) {
+		metaParts.push(theme.fg("dim", codeVariant));
+	}
 	if (duration !== undefined) {
 		metaParts.push(theme.fg("dim", `(${formatDuration(duration)})`));
 	}
@@ -107,14 +112,14 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const { title, meta } = formatHeader(options, theme);
 	const state = getState(options.status);
 
-	const normalizedCode = replaceTabs(code ?? "");
-	const rawCodeLines = sanitizeTerminalLines(normalizedCode);
+	const overrideLines = options.preRenderedCodeLines;
+	const rawCodeLines = overrideLines ?? sanitizeTerminalLines(replaceTabs(code ?? ""));
 	const maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
 	const hiddenCodeLines = rawCodeLines.length - maxCodeLines;
 	const tail = options.codeTail === true && !expanded && hiddenCodeLines > 0;
 	const startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
-	const visibleCode = rawCodeLines.slice(startIndex, startIndex + maxCodeLines).join("\n");
-	const codeLines = highlightCode(visibleCode, language);
+	const visibleSlice = rawCodeLines.slice(startIndex, startIndex + maxCodeLines);
+	const codeLines = overrideLines ? visibleSlice.slice() : highlightCode(visibleSlice.join("\n"), language);
 
 	let visibleLineNumbers: Array<number | null> | undefined;
 	let lineNumberWidth = 0;

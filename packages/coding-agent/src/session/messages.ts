@@ -10,11 +10,14 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type {
 	AssistantMessage,
+	AudioContent,
 	ImageContent,
 	Message,
 	MessageAttribution,
 	TextContent,
+	ToolResultMessage,
 	UserMessage,
+	VideoContent,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
@@ -568,7 +571,7 @@ function renderSteeringEnvelope(message: string): string {
 	return prompt.render(userInterjectionTemplate, { message });
 }
 
-function getArrayContentText(content: (TextContent | ImageContent)[]): string {
+function getArrayContentText(content: readonly (TextContent | ImageContent | AudioContent | VideoContent)[]): string {
 	let firstText: string | undefined;
 	let textParts: string[] | undefined;
 	for (const part of content) {
@@ -585,7 +588,9 @@ function getArrayContentText(content: (TextContent | ImageContent)[]): string {
 	return textParts === undefined ? (firstText ?? "") : textParts.join("\n");
 }
 
-function getArrayContentImages(content: (TextContent | ImageContent)[]): ImageContent[] {
+function getArrayContentImages(
+	content: readonly (TextContent | ImageContent | AudioContent | VideoContent)[],
+): ImageContent[] {
 	let images: ImageContent[] | undefined;
 	for (const part of content) {
 		if (part.type !== "image") continue;
@@ -625,13 +630,15 @@ export function wrapSteeringForModel(messages: AgentMessage[]): AgentMessage[] {
 }
 
 interface StripContentResult {
-	content: (TextContent | ImageContent)[];
+	content: (AudioContent | ImageContent | TextContent | VideoContent)[];
 	removed: number;
 }
 
-function stripImagesFromArrayContent(content: (TextContent | ImageContent)[]): StripContentResult {
+function stripImagesFromArrayContent(
+	content: (AudioContent | ImageContent | TextContent | VideoContent)[],
+): StripContentResult {
 	let removed = 0;
-	const kept: (TextContent | ImageContent)[] = [];
+	const kept: (AudioContent | ImageContent | TextContent | VideoContent)[] = [];
 	for (const part of content) {
 		if (part.type === "image") {
 			removed++;
@@ -673,7 +680,9 @@ function stripImagesFromMessageContent(message: AgentMessage): number {
 			let removed = 0;
 			const { content, removed: contentRemoved } = stripImagesFromArrayContent(message.content);
 			if (contentRemoved > 0) {
-				message.content = content;
+				// toolResult content is text/image only at the type level; the widened result
+				// cannot actually carry audio/video blocks here.
+				message.content = content as ToolResultMessage["content"];
 				removed += contentRemoved;
 			}
 			const details = message.details as { images?: unknown } | null | undefined;
@@ -717,7 +726,7 @@ export function replaceLlmImagesWithText(messages: Message[], placeholder: strin
 		if (msg.role !== "user" && msg.role !== "developer" && msg.role !== "toolResult") continue;
 		const content = msg.content;
 		if (!Array.isArray(content) || !content.some(part => part.type === "image")) continue;
-		const replaced: (TextContent | ImageContent)[] = [];
+		const replaced: (AudioContent | ImageContent | TextContent | VideoContent)[] = [];
 		for (const part of content) {
 			if (part.type !== "image") {
 				replaced.push(part);

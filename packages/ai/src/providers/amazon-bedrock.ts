@@ -37,6 +37,7 @@ import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-crede
 import { decodeEventStream } from "./aws-eventstream";
 import { signRequest } from "./aws-sigv4";
 import { transformMessages } from "./transform-messages";
+import { mediaOmissionNote } from "./vision-guard";
 
 const SIGNER_OWNED_HEADERS = new Set(["host", "x-amz-date", "x-amz-content-sha256", "x-amz-security-token"]);
 
@@ -710,6 +711,10 @@ function convertMessages(
 							}
 							case "image":
 								contentBlocks.push({ image: createImageBlock(c.mimeType, c.data) });
+								break;
+							case "audio":
+							case "video":
+								contentBlocks.push({ text: mediaOmissionNote(c.type) });
 								break;
 							default:
 								throw new AIError.ValidationError("Unknown user content type");

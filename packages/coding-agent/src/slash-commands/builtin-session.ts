@@ -367,7 +367,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "agents",
-		description: "Open the agents view (unified session + subagent browser)",
+		description: "Open the agents view",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showAgentsView("current");
 			runtime.ctx.editor.setText("");

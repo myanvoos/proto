@@ -1,4 +1,5 @@
 import type {
+	AudioContent,
 	Context,
 	DeveloperMessage,
 	ImageContent,
@@ -6,6 +7,7 @@ import type {
 	TextContent,
 	ToolResultMessage,
 	UserMessage,
+	VideoContent,
 } from "@oh-my-pi/pi-ai";
 
 const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
@@ -43,11 +45,11 @@ function countImages(context: Context): number {
 }
 
 function clampContent(
-	content: readonly (TextContent | ImageContent)[],
+	content: readonly (TextContent | ImageContent | AudioContent | VideoContent)[],
 	state: { remainingDrops: number },
-): (TextContent | ImageContent)[] | undefined {
+): (TextContent | ImageContent | AudioContent | VideoContent)[] | undefined {
 	let changed = false;
-	const clamped: (TextContent | ImageContent)[] = [];
+	const clamped: (TextContent | ImageContent | AudioContent | VideoContent)[] = [];
 	for (const part of content) {
 		if (part.type === "image" && state.remainingDrops > 0) {
 			state.remainingDrops--;
@@ -75,7 +77,12 @@ function clampToolResultMessage(message: ToolResultMessage, state: { remainingDr
 	if (state.remainingDrops <= 0) return message;
 	const content = clampContent(message.content, state);
 	if (!content) return message;
-	return { ...message, content: content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION] };
+	// toolResult content is text/image only at the type level; the widened result
+	// cannot actually carry audio/video blocks here.
+	return {
+		...message,
+		content: (content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION]) as ToolResultMessage["content"],
+	};
 }
 
 export function clampProviderContextImages(context: Context, model: Model): Context {

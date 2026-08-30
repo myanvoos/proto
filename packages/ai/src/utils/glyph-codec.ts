@@ -1,4 +1,13 @@
-import type { AssistantMessage, Context, CursorExecHandlers, ImageContent, Message, TextContent } from "../types";
+import type {
+	AssistantMessage,
+	AudioContent,
+	Context,
+	CursorExecHandlers,
+	ImageContent,
+	Message,
+	TextContent,
+	VideoContent,
+} from "../types";
 import { getStreamingPartialJson, setStreamingPartialJson } from "./block-symbols";
 import { AssistantMessageEventStream } from "./event-stream";
 import glyphNotice from "./glyph-notice.md" with { type: "text" };
@@ -183,11 +192,11 @@ function transformRecord(input: Record<string, unknown>, transform: GlyphTextTra
 	return output ?? input;
 }
 
-function transformTextBlocks(
-	content: Array<TextContent | ImageContent>,
+function transformTextBlocks<T extends AudioContent | ImageContent | TextContent | VideoContent>(
+	content: T[],
 	transform: GlyphTextTransform,
-): Array<TextContent | ImageContent> {
-	let output: Array<TextContent | ImageContent> | undefined;
+): T[] {
+	let output: T[] | undefined;
 	for (const [index, block] of content.entries()) {
 		let transformed = block;
 		if (block.type === "text") {

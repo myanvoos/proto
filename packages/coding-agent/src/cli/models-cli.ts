@@ -54,7 +54,7 @@ interface ModelJson {
 	reasoning: boolean;
 
 	thinking: readonly Effort[] | null;
-	input: ("text" | "image")[];
+	input: ("audio" | "image" | "text" | "video")[];
 	cost: Model<Api>["cost"];
 }
 

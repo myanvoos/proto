@@ -483,6 +483,18 @@ export interface ImageContent {
 	url?: string;
 }
 
+export interface AudioContent {
+	type: "audio";
+	data: string;
+	mimeType: string;
+}
+
+export interface VideoContent {
+	type: "video";
+	data: string;
+	mimeType: string;
+}
+
 export type ComputerAction =
 	| {
 			type: "click";
@@ -554,9 +566,11 @@ export interface OpenAIResponsesHistoryPayload {
 
 export type ProviderPayload = OpenAIResponsesHistoryPayload;
 
+export type UserContent = TextContent | ImageContent | AudioContent | VideoContent;
+
 export interface UserMessage {
 	role: "user";
-	content: string | (TextContent | ImageContent)[];
+	content: string | UserContent[];
 
 	synthetic?: boolean;
 
@@ -570,7 +584,7 @@ export interface UserMessage {
 
 export interface DeveloperMessage {
 	role: "developer";
-	content: string | (TextContent | ImageContent)[];
+	content: string | UserContent[];
 
 	attribution?: MessageAttribution;
 

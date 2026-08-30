@@ -4,6 +4,7 @@ import { getEnvApiKey } from "../stream";
 import type {
 	Api,
 	AssistantMessage,
+	AudioContent,
 	Context,
 	ImageContent,
 	Message,
@@ -13,6 +14,7 @@ import type {
 	TextContent,
 	Tool,
 	ToolChoice,
+	VideoContent,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { clearStreamingPartialJson, kStreamingPartialJson } from "../utils/block-symbols";
@@ -32,7 +34,7 @@ import {
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
 import { transformMessages } from "./transform-messages";
-import { joinTextWithImagePlaceholder, partitionVisionContent } from "./vision-guard";
+import { joinTextWithOmissions, partitionUserMediaContent } from "./vision-guard";
 
 export interface OllamaChatOptions extends StreamOptions {
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -173,7 +175,7 @@ function selectToolsForToolChoice(tools: Tool[] | undefined, toolChoice: ToolCho
 }
 
 function toPlainContent(
-	content: string | ReadonlyArray<TextContent | ImageContent>,
+	content: string | ReadonlyArray<AudioContent | ImageContent | TextContent | VideoContent>,
 	supportsImages: boolean,
 ): {
 	content: string;
@@ -182,10 +184,14 @@ function toPlainContent(
 	if (typeof content === "string") {
 		return { content };
 	}
-	const { textBlocks, imageBlocks, omittedImages } = partitionVisionContent(content, supportsImages);
+	const { textBlocks, imageBlocks, omissions } = partitionUserMediaContent(content, {
+		image: supportsImages,
+		audio: false,
+		video: false,
+	});
 	const text = textBlocks.map(block => block.text).join("\n");
 	return {
-		content: joinTextWithImagePlaceholder(text, omittedImages),
+		content: joinTextWithOmissions(text, omissions),
 		...(imageBlocks.length > 0 ? { images: imageBlocks.map(block => block.data) } : {}),
 	};
 }

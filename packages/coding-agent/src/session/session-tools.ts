@@ -22,7 +22,7 @@ import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { supportsExternalThinking } from "../tools/think";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
-import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
+import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
@@ -43,8 +43,8 @@ export interface SessionToolsHost {
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
 
-	getInspectImageModeOverride(): InspectImageMode | undefined;
-	setInspectImageModeOverride(mode: InspectImageMode | undefined): void;
+	getInspectMediaModeOverride(): InspectMediaMode | undefined;
+	setInspectMediaModeOverride(mode: InspectMediaMode | undefined): void;
 
 	setCodeModeNamespacesInfo?(info: unknown): void;
 }
@@ -55,7 +55,7 @@ interface SessionToolsOptions {
 
 	createThinkTool?: () => Promise<AgentTool | null>;
 
-	createInspectImageTool?: () => Promise<AgentTool | null>;
+	createInspectMediaTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	requiredToolNames?: ReadonlySet<string>;
@@ -157,7 +157,7 @@ export class SessionTools {
 	#toolRegistry: Map<string, AgentTool>;
 	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
-	#createInspectImageTool: SessionToolsOptions["createInspectImageTool"];
+	#createInspectMediaTool: SessionToolsOptions["createInspectMediaTool"];
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
@@ -201,7 +201,7 @@ export class SessionTools {
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#createComputerTool = options.createComputerTool;
 		this.#createThinkTool = options.createThinkTool;
-		this.#createInspectImageTool = options.createInspectImageTool;
+		this.#createInspectMediaTool = options.createInspectMediaTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
 		this.#mcpManagerToolNames = new Set(options.mcpManagerToolNames ?? []);
 		if (options.mcpManagerToolNames === undefined) {
@@ -468,7 +468,7 @@ export class SessionTools {
 			this.#logComputerState("Computer tool retained after model change", true);
 		}
 
-		await this.reconcileInspectImageAfterModelChange();
+		await this.reconcileInspectMediaAfterModelChange();
 	}
 
 	codeModeChangesBetween(previousModel: Model | undefined, nextModel: Model): boolean {
@@ -949,44 +949,44 @@ export class SessionTools {
 		});
 	}
 
-	inspectImageState(): { mode: InspectImageMode; active: boolean; model: string | undefined } {
+	inspectMediaState(): { mode: InspectMediaMode; active: boolean; model: string | undefined } {
 		const model = this.#host.model();
 		return {
-			mode: this.#host.getInspectImageModeOverride() ?? this.#host.settings.get("inspect_image.mode"),
-			active: this.getEnabledToolNames().includes("inspect_image"),
+			mode: this.#host.getInspectMediaModeOverride() ?? this.#host.settings.get("inspect_media.mode"),
+			active: this.getEnabledToolNames().includes("inspect_media"),
 			model: model ? formatModelString(model) : undefined,
 		};
 	}
 
-	reconcileInspectImageTool(): Promise<boolean> {
+	reconcileInspectMediaTool(): Promise<boolean> {
 		return this.runToolRegistryMutation(async () => {
-			const expected = isInspectImageToolActive({
+			const expected = isInspectMediaToolActive({
 				settings: this.#host.settings,
 				getActiveModel: () => this.#host.model(),
-				getInspectImageModeOverride: () => this.#host.getInspectImageModeOverride(),
+				getInspectMediaModeOverride: () => this.#host.getInspectMediaModeOverride(),
 			});
 
 			const syncReadDescription = (available: boolean): void => {
 				const readTool = this.#toolRegistry.get("read") as
-					| { syncInspectImageState?: (available?: boolean) => boolean }
+					| { syncInspectMediaState?: (available?: boolean) => boolean }
 					| undefined;
-				readTool?.syncInspectImageState?.(available);
+				readTool?.syncInspectMediaState?.(available);
 			};
 			const active = this.getEnabledToolNames();
-			const isActive = active.includes("inspect_image");
+			const isActive = active.includes("inspect_media");
 			if (expected === isActive) {
 				syncReadDescription(isActive);
 				return true;
 			}
 			if (!expected) {
 				syncReadDescription(false);
-				await this.#applyActiveToolsByName(active.filter(name => name !== "inspect_image"));
+				await this.#applyActiveToolsByName(active.filter(name => name !== "inspect_media"));
 				return true;
 			}
-			if (!this.#toolRegistry.has("inspect_image")) {
-				const tool = await this.#createInspectImageTool?.();
-				if (tool?.name !== "inspect_image") {
-					logger.warn("inspect_image tool could not be created", {
+			if (!this.#toolRegistry.has("inspect_media")) {
+				const tool = await this.#createInspectMediaTool?.();
+				if (tool?.name !== "inspect_media") {
+					logger.warn("inspect_media tool could not be created", {
 						model: this.#host.model()?.id,
 					});
 					syncReadDescription(false);
@@ -997,35 +997,35 @@ export class SessionTools {
 				this.#builtInToolNames.add(wrapped.name);
 			}
 			syncReadDescription(true);
-			await this.#applyActiveToolsByName([...active, "inspect_image"]);
+			await this.#applyActiveToolsByName([...active, "inspect_media"]);
 			return true;
 		});
 	}
 
-	reconcileInspectImageAfterModelChange(): Promise<void> {
+	reconcileInspectMediaAfterModelChange(): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
-			const before = this.getEnabledToolNames().includes("inspect_image");
-			const reconciled = await this.reconcileInspectImageTool();
-			const after = this.getEnabledToolNames().includes("inspect_image");
+			const before = this.getEnabledToolNames().includes("inspect_media");
+			const reconciled = await this.reconcileInspectMediaTool();
+			const after = this.getEnabledToolNames().includes("inspect_media");
 			if (!reconciled || before === after) return;
 			const model = this.#host.model();
 			const modelName = model ? formatModelString(model) : "the current model";
 			this.#host.emitNotice(
 				"info",
 				after
-					? `inspect_image is now available: ${modelName} has no native image input.`
-					: `inspect_image is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
+					? `inspect_media is now available: ${modelName} has no native image input.`
+					: `inspect_media is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
 				"vision",
 			);
 		});
 	}
 
-	setInspectImageMode(mode: InspectImageMode): Promise<boolean> {
+	setInspectMediaMode(mode: InspectMediaMode): Promise<boolean> {
 		return this.runToolRegistryMutation(async () => {
-			this.#host.setInspectImageModeOverride(mode === "auto" ? undefined : mode);
-			const applied = await this.reconcileInspectImageTool();
-			const { active, model } = this.inspectImageState();
-			logger.debug("inspect_image mode changed", { mode, active, model });
+			this.#host.setInspectMediaModeOverride(mode === "auto" ? undefined : mode);
+			const applied = await this.reconcileInspectMediaTool();
+			const { active, model } = this.inspectMediaState();
+			logger.debug("inspect_media mode changed", { mode, active, model });
 			return applied;
 		});
 	}

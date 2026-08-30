@@ -995,7 +995,7 @@ interface ProviderModelConfig {
 
 	thinking?: Model["thinking"];
 
-	input: ("text" | "image")[];
+	input: ("text" | "image" | "video")[];
 
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 

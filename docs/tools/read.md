@@ -204,7 +204,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 ### Images
 - Image detection is metadata-based (`readImageMetadata()`).
 - Max accepted image size is `20 MiB` (`MAX_IMAGE_INPUT_BYTES`, re-exported as `MAX_IMAGE_SIZE`). Larger files throw.
-- If the effective `inspect_image` state is active (mode `on`, or `auto` with an active model that lacks native image input), `read` returns metadata only (MIME, bytes, dimensions, channels, alpha) plus a suggestion to call `inspect_image`.
+- If the effective `inspect_media` state is active (mode `on`, or `auto` with an active model that lacks native image input), `read` returns metadata only (MIME, bytes, dimensions, channels, alpha) plus a suggestion to call `inspect_media`.
 - Otherwise it calls `loadImageInput()` and returns:
   - a text note from the image loader
   - an inline image block

@@ -1,36 +1,80 @@
 import { isDashscopeCompatibleModeUrl, modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { isDeepseekModelIdOrName, isQwenModelId } from "@oh-my-pi/pi-catalog/identity";
 
-import type { ImageContent, Model, TextContent } from "../types";
+import type { AudioContent, ImageContent, Model, TextContent, VideoContent } from "../types";
 
 export const NON_VISION_IMAGE_PLACEHOLDER = "[image omitted: model does not support vision]";
+export const NON_AUDIO_PLACEHOLDER = "[audio omitted: model does not support audio input]";
+export const NON_VIDEO_PLACEHOLDER = "[video omitted: model does not support video input]";
 
-export function partitionVisionContent(
-	content: ReadonlyArray<TextContent | ImageContent>,
-	supportsImages: boolean,
-): {
-	textBlocks: TextContent[];
-	imageBlocks: ImageContent[];
-	omittedImages: boolean;
-} {
-	const textBlocks = content.filter((block): block is TextContent => block.type === "text");
-	const imageBlocks = content.filter((block): block is ImageContent => block.type === "image");
+export function mediaOmissionNote(kind: "image" | "audio" | "video"): string {
+	if (kind === "audio") return NON_AUDIO_PLACEHOLDER;
+	if (kind === "video") return NON_VIDEO_PLACEHOLDER;
+	return NON_VISION_IMAGE_PLACEHOLDER;
+}
+
+export interface MediaSupport {
+	image: boolean;
+	audio: boolean;
+	video: boolean;
+}
+
+export function mediaSupportForModel(model: Pick<Model, "input">): MediaSupport {
 	return {
-		textBlocks,
-		imageBlocks: supportsImages ? imageBlocks : [],
-		omittedImages: !supportsImages && imageBlocks.length > 0,
+		image: model.input.includes("image"),
+		audio: model.input.includes("audio"),
+		video: model.input.includes("video"),
 	};
 }
 
-export function joinTextWithImagePlaceholder(text: string, omittedImages: boolean): string {
+export interface PartitionedMediaContent {
+	textBlocks: TextContent[];
+	imageBlocks: ImageContent[];
+	audioBlocks: AudioContent[];
+	videoBlocks: VideoContent[];
+	omissions: string[];
+}
+
+export function partitionUserMediaContent(
+	content: readonly (TextContent | ImageContent | AudioContent | VideoContent)[],
+	supports: MediaSupport,
+): PartitionedMediaContent {
+	const out: PartitionedMediaContent = {
+		textBlocks: [],
+		imageBlocks: [],
+		audioBlocks: [],
+		videoBlocks: [],
+		omissions: [],
+	};
+	for (const block of content) {
+		if (block.type === "text") {
+			out.textBlocks.push(block);
+		} else if (block.type === "image") {
+			if (supports.image) out.imageBlocks.push(block);
+			else out.omissions.push(NON_VISION_IMAGE_PLACEHOLDER);
+		} else if (block.type === "audio") {
+			if (supports.audio) out.audioBlocks.push(block);
+			else out.omissions.push(NON_AUDIO_PLACEHOLDER);
+		} else if (supports.video) {
+			out.videoBlocks.push(block);
+		} else {
+			out.omissions.push(NON_VIDEO_PLACEHOLDER);
+		}
+	}
+	return out;
+}
+
+export function joinTextWithOmissions(text: string, omissions: readonly string[]): string {
 	const parts: string[] = [];
 	if (text.length > 0) {
 		parts.push(text);
 	}
-	if (omittedImages) {
-		parts.push(NON_VISION_IMAGE_PLACEHOLDER);
-	}
+	parts.push(...omissions);
 	return parts.join("\n");
+}
+
+export function joinTextWithImagePlaceholder(text: string, omittedImages: boolean): string {
+	return joinTextWithOmissions(text, omittedImages ? [NON_VISION_IMAGE_PLACEHOLDER] : []);
 }
 
 export function isDashscopeCompatibleModeTextOnlyQwen(model: Model<"openai-completions">): boolean {

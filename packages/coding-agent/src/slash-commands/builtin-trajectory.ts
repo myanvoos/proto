@@ -111,7 +111,7 @@ async function handleText(command: ParsedSlashCommand, runtime: SlashCommandRunt
 
 const TRAJECTORY_SPEC: SlashCommandSpec = {
 	name: "trajectory",
-	description: "Inspect session trajectory; export OpenTelemetry / prime-rl",
+	description: "Inspect session trajectory",
 	allowArgs: true,
 	subcommands: [
 		{ name: "view", description: "Open the fullscreen trajectory ledger" },

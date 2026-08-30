@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- `Model.input` modality list now admits `audio` and `video` alongside `text` and `image`, so discovered models can advertise media input.
+
+### Added
 
 - Fixed `google-gemini-cli` model refresh returning only bundled models for Gemini Code Assist Standard accounts, whose credential is not authorized for the Antigravity `fetchAvailableModels` endpoint (HTTP 403). Discovery now falls back to the account's own `retrieveUserQuota` list on Cloud Code Assist, surfacing models such as `gemini-3.5-flash` (#9315).
 

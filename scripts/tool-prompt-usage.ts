@@ -18,7 +18,7 @@ const READ_ONLY_TOOL_NAMES: Record<string, true> = {
 	ast_grep: true,
 	checkpoint: true,
 	find: true,
-	inspect_image: true,
+	inspect_media: true,
 	irc: true,
 	job: true,
 	memory_edit: true,

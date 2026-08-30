@@ -1,16 +1,13 @@
 {{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}{{#if rb}} Ruby: sync, kwargs.{{/if}}{{#if jl}} Julia: sync, kwargs.{{/if}}
 ```
 display(value) → None        print(value, ...) → None
-{{#if py}}bash(command, timeout?=None, cwd?=None, env?=None) → BashResult
-    Run a shell command; `r = await bash(cmd)` then `r.output` — never `await bash(cmd).output` (awaits the attribute). Merged stdout+stderr, exit in `.exit_code`. `os.chdir`/`os.environ` persist between calls. Unawaited handles keep running; poll `.poll()`/`.output`, stop with `.kill()`.
-replace(path, old, new, count?=1, expect?=None) → Path
+{{#if py}}replace(path, old, new, count?=1, expect?=None) → Path
     Count-checked replacement; refuses unless the file holds exactly `count` occurrences of `old` (count=None: all).
 symbols(path) → str
     Structural outline of a code file: declarations with bodies elided (tree-sitter).
 defs() → dict
     Functions/classes defined in kernel cells, name → cell number. Reuse before redefining; re-defining shadows prelude primitives warns.
-{{/if}}read(path, offset?=1, limit?=None) → str
-write(path, content) → str
+{{/if}}write(path, content) → str
 {{#if py}}edit(path, expect?=None, new?=None, transform?=None) → Path
     Guarded write: `edit(path, new=…)` is create-only; `edit(path, expect, …)` writes only if current content equals `expect` byte-for-byte.
 block_range(path, line) → (start, end) | None

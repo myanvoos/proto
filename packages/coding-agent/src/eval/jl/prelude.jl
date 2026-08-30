@@ -93,38 +93,6 @@ end
 # File helpers
 # -------------------------------------------------------------------------
 
-function Base.read(path::AbstractString, offset::Integer=1, limit::Union{Integer, Nothing}=nothing)
-    resolved = __proto_resolve_path(string(path))
-    content = open(resolved, "r") do io
-        Base.read(io, String)
-    end
-    lines = split(content, '\n')
-    if offset > 1 || limit !== nothing
-        st = max(1, offset)
-        en = limit !== nothing ? min(length(lines), st + limit - 1) : length(lines)
-        if st <= length(lines)
-            content = join(lines[st:en], '\n')
-        else
-            content = ""
-        end
-    end
-    
-    preview = length(content) > 500 ? content[1:500] : content
-    Main.emit_frame(Dict(
-        "type" => "display",
-        "id" => Main.current_rid,
-        "bundle" => Dict(
-            "application/x-proto-status" => Dict(
-                "op" => "read",
-                "path" => resolved,
-                "chars" => length(content),
-                "preview" => preview
-            )
-        )
-    ))
-    return content
-end
-
 function Base.write(path::AbstractString, content::Any)
     resolved = __proto_resolve_path(string(path))
     mkpath(dirname(resolved))

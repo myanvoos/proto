@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type {
+	AssistantMessage,
+	AudioContent,
+	ImageContent,
+	TextContent,
+	ToolResultMessage,
+	VideoContent,
+} from "@oh-my-pi/pi-ai";
 import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import type {
 	BashExecutionMessage,
@@ -57,12 +64,15 @@ export function formatExecutionSourcePreview(source: string): string {
 	return oneLine(source);
 }
 
-function contentToText(content: string | readonly (TextContent | ImageContent)[]): string {
+function contentToText(
+	content: string | readonly (TextContent | ImageContent | AudioContent | VideoContent)[],
+): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
 	for (const block of content) {
 		if (block.type === "text") parts.push(block.text);
-		else parts.push("[image]");
+		else if (block.type === "image") parts.push("[image]");
+		else parts.push(`[${block.type}]`);
 	}
 	return parts.join("\n");
 }

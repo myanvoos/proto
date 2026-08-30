@@ -91,7 +91,7 @@ Use tools when they improve correctness, completeness, or grounding.
 - Prefer relative `path`-like fields.
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
-{{#has tools "inspect_image"}}- Image tasks: prefer `{{toolRefs.inspect_image}}` (spares context).{{/has}}
+{{#has tools "inspect_media"}}- Media tasks (image/audio/video): prefer `{{toolRefs.inspect_media}}` (spares context).{{/has}}
 
 # Specialized Tools
 MUST use specialized tool over shell equivalent:

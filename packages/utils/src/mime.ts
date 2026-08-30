@@ -150,3 +150,77 @@ export function readImageMetadata(
 ): Promise<ImageMetadata | null> {
 	return peekFile(filePath, maxBytes, parseImageMetadata);
 }
+
+export const SUPPORTED_AUDIO_MIME_TYPES = new Set([
+	"audio/mpeg",
+	"audio/wav",
+	"audio/ogg",
+	"audio/flac",
+	"audio/mp4",
+	"audio/aac",
+	"audio/aiff",
+]);
+
+export const SUPPORTED_VIDEO_MIME_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]);
+
+export type AudioMimeType =
+	| "audio/mpeg"
+	| "audio/wav"
+	| "audio/ogg"
+	| "audio/flac"
+	| "audio/mp4"
+	| "audio/aac"
+	| "audio/aiff";
+export type VideoMimeType = "video/mp4" | "video/webm" | "video/quicktime" | "video/mpeg";
+
+export type MediaMetadata = { kind: "audio"; mimeType: AudioMimeType } | { kind: "video"; mimeType: VideoMimeType };
+
+const EBML_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+const MPEG_PACK_HEADER = Buffer.from([0x00, 0x00, 0x01, 0xba]);
+const MPEG_SEQUENCE_HEADER = Buffer.from([0x00, 0x00, 0x01, 0xb3]);
+
+function parseMp4Metadata(header: Uint8Array): MediaMetadata | null {
+	if (header.length < 12) return null;
+	if (!magicEquals(header, 4, Buffer.from("ftyp"))) return null;
+	const brand = Buffer.from(header.subarray(8, 12)).toString("ascii");
+	if (brand.startsWith("M4A")) return { kind: "audio", mimeType: "audio/mp4" };
+	if (brand.startsWith("qt")) return { kind: "video", mimeType: "video/quicktime" };
+	return { kind: "video", mimeType: "video/mp4" };
+}
+
+function parseMediaHeader(header: Uint8Array): MediaMetadata | null {
+	if (magicEquals(header, 0, Buffer.from("ID3")) && header.length >= 10)
+		return { kind: "audio", mimeType: "audio/mpeg" };
+	if (magicEquals(header, 0, Buffer.from("fLaC"))) return { kind: "audio", mimeType: "audio/flac" };
+	if (magicEquals(header, 0, Buffer.from("OggS"))) return { kind: "audio", mimeType: "audio/ogg" };
+	if (header.length >= 12 && magicEquals(header, 0, WEBP_RIFF_MAGIC) && magicEquals(header, 8, Buffer.from("WAVE"))) {
+		return { kind: "audio", mimeType: "audio/wav" };
+	}
+	if (magicEquals(header, 0, Buffer.from("FORM")) && magicEquals(header, 8, Buffer.from("AIFF"))) {
+		return { kind: "audio", mimeType: "audio/aiff" };
+	}
+	const mp4 = parseMp4Metadata(header);
+	if (mp4) return mp4;
+	if (magicEquals(header, 0, EBML_MAGIC)) return { kind: "video", mimeType: "video/webm" };
+	if (magicEquals(header, 0, MPEG_PACK_HEADER) || magicEquals(header, 0, MPEG_SEQUENCE_HEADER)) {
+		return { kind: "video", mimeType: "video/mpeg" };
+	}
+	// MPEG/ADTS frame sync: 11 set bits. Layer bits (b1 & 0x06): 0b10 = Layer III (MP3), 0b00 = ADTS (AAC).
+	if (header.length >= 2 && header[0] === 0xff && (header[1]! & 0xe0) === 0xe0) {
+		const layerBits = header[1]! & 0x06;
+		if (layerBits === 0x02) return { kind: "audio", mimeType: "audio/mpeg" };
+		if (layerBits === 0x00 && header[1]! & 0x10) return { kind: "audio", mimeType: "audio/aac" };
+	}
+	return null;
+}
+
+export function parseMediaMetadata(header: Uint8Array): MediaMetadata | null {
+	return parseMediaHeader(header);
+}
+
+export function readMediaMetadata(
+	filePath: string,
+	maxBytes = DEFAULT_IMAGE_METADATA_HEADER_BYTES,
+): Promise<MediaMetadata | null> {
+	return peekFile(filePath, maxBytes, parseMediaMetadata);
+}

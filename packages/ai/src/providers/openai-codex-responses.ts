@@ -26,10 +26,12 @@ import { getEnvApiKey, isOfficialCodexApiUrl } from "../stream";
 import type {
 	Api,
 	AssistantMessage,
+	AudioContent,
 	CodexCompactionContext,
 	CodexCompactionRequestContext,
 	Context,
 	FetchImpl,
+	ImageContent,
 	Model,
 	ProviderSessionState,
 	RawSseEvent,
@@ -43,6 +45,7 @@ import type {
 	ToolChoice,
 	ToolResultMessage,
 	Usage,
+	VideoContent,
 } from "../types";
 import {
 	createOpenAIResponsesHistoryPayload,
@@ -4153,9 +4156,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 
 function normalizeInputMessageContent(
 	model: Model<"openai-codex-responses">,
-	content:
-		| string
-		| Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string; url?: string }>,
+	content: string | (AudioContent | ImageContent | TextContent | VideoContent)[],
 ): ResponseInputContent[] {
 	const escapeControlTokens = isHarmonyDialectModel(model);
 	if (typeof content === "string") {

@@ -5,20 +5,20 @@ import type { Theme } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine } from "../tui";
 import { formatErrorDetail, formatExpandHint, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
 
-interface InspectImageRenderArgs {
+interface InspectMediaRenderArgs {
 	path?: string;
 	question?: string;
 }
 
-interface InspectImageRendererDetails {
+interface InspectMediaRendererDetails {
 	model: string;
-	imagePath: string;
+	mediaPath: string;
 	mimeType: string;
 }
 
-interface InspectImageRendererResult {
+interface InspectMediaRendererResult {
 	content: Array<{ type: string; text?: string }>;
-	details?: InspectImageRendererDetails;
+	details?: InspectMediaRendererDetails;
 	isError?: boolean;
 }
 
@@ -31,8 +31,8 @@ function questionLine(question: string, uiTheme: Theme): string {
 	return `${uiTheme.fg("dim", "Question:")} ${uiTheme.fg("accent", truncateToWidth(replaceTabs(question), INSPECT_QUESTION_PREVIEW_WIDTH))}`;
 }
 
-export const inspectImageToolRenderer = {
-	renderCall(args: InspectImageRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
+export const inspectMediaToolRenderer = {
+	renderCall(args: InspectMediaRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = typeof args.path === "string" ? args.path : "";
 		const pathDisplay = rawPath ? shortenPath(rawPath) : "…";
 		const header = renderStatusLine({ icon: "pending", title: "Inspect", description: pathDisplay }, uiTheme);
@@ -44,20 +44,20 @@ export const inspectImageToolRenderer = {
 	},
 
 	renderResult(
-		result: InspectImageRendererResult,
+		result: InspectMediaRendererResult,
 		options: RenderResultOptions,
 		uiTheme: Theme,
-		args?: InspectImageRenderArgs,
+		args?: InspectMediaRenderArgs,
 	): Component {
 		const details = result.details;
 		const rawPath =
-			typeof details?.imagePath === "string" ? details.imagePath : typeof args?.path === "string" ? args.path : "";
-		const pathDisplay = rawPath ? shortenPath(rawPath) : "image";
+			typeof details?.mediaPath === "string" ? details.mediaPath : typeof args?.path === "string" ? args.path : "";
+		const pathDisplay = rawPath ? shortenPath(rawPath) : "media";
 		const success = !result.isError;
 		const header = renderStatusLine(
 			success
 				? {
-						iconOverride: uiTheme.styledSymbol("tool.inspectImage", "accent"),
+						iconOverride: uiTheme.styledSymbol("tool.inspectMedia", "accent"),
 						title: "Inspect",
 						description: pathDisplay,
 					}

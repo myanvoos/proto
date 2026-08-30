@@ -182,6 +182,18 @@ export interface ChatCompletionContentPartInputAudio {
 	prompt_cache_breakpoint?: { mode: "explicit" };
 }
 
+export interface ChatCompletionContentPartVideo {
+	video_url: ChatCompletionContentPartVideoUrl;
+
+	type: "video_url";
+
+	prompt_cache_breakpoint?: { mode: "explicit" };
+}
+
+export interface ChatCompletionContentPartVideoUrl {
+	url: string;
+}
+
 export interface ChatCompletionContentPartInputAudioInputAudio {
 	data: string;
 
@@ -216,6 +228,7 @@ export type ChatCompletionContentPart =
 	| ChatCompletionContentPartText
 	| ChatCompletionContentPartImage
 	| ChatCompletionContentPartInputAudio
+	| ChatCompletionContentPartVideo
 	| ChatCompletionContentPartFile;
 
 export interface ChatCompletionMessageFunctionToolCall {

@@ -90,19 +90,6 @@ unless defined?($__proto_prelude_loaded) && $__proto_prelude_loaded
   # File helpers
   # -------------------------------------------------------------------------
 
-  def read(path, offset = 1, limit = nil)
-    resolved = __proto_resolve_path(path)
-    data = File.read(resolved.to_s, encoding: Encoding::UTF_8)
-    if offset > 1 || !limit.nil?
-      lines = data.lines
-      start = [offset - 1, 0].max
-      finish = limit ? start + limit : lines.length
-      data = lines[start...finish].to_a.join
-    end
-    __proto_emit_status("read", "path" => resolved.to_s, "chars" => data.length, "preview" => __proto_scrub(data[0, 500].to_s))
-    data
-  end
-
   def write(path, content)
     resolved = __proto_resolve_path(path)
     require "fileutils"

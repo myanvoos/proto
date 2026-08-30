@@ -45,7 +45,7 @@ import {
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
 } from "../utils/image-loading";
-import { isInspectImageToolActive } from "../utils/inspect-image-mode";
+import { isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
@@ -542,7 +542,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 	readonly #autoResizeImages: boolean;
 	readonly #defaultLimit: number;
-	#inspectImageActive: boolean;
+	#inspectMediaActive: boolean;
 
 	constructor(private readonly session: ToolSession) {
 		this.#autoResizeImages = session.settings.get("images.autoResize");
@@ -550,7 +550,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			1,
 			Math.min(session.settings.get("read.defaultLimit") ?? DEFAULT_MAX_LINES, DEFAULT_MAX_LINES),
 		);
-		this.#inspectImageActive = this.#resolveInspectImageAvailability();
+		this.#inspectMediaActive = this.#resolveInspectMediaAvailability();
 		this.description = this.#renderDescription();
 	}
 
@@ -561,22 +561,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
 			IS_HL_MODE: displayMode.hashLines,
 			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
-			INSPECT_IMAGE_ENABLED: this.#inspectImageActive,
+			INSPECT_MEDIA_ENABLED: this.#inspectMediaActive,
 		});
 	}
 
-	#resolveInspectImageAvailability(): boolean {
-		const topLevel = this.session.isToolActive?.("inspect_image");
+	#resolveInspectMediaAvailability(): boolean {
+		const topLevel = this.session.isToolActive?.("inspect_media");
 		const xdev = this.session.xdev;
-		if (topLevel === undefined && xdev === undefined) return isInspectImageToolActive(this.session);
+		if (topLevel === undefined && xdev === undefined) return isInspectMediaToolActive(this.session);
 		if (topLevel === true) return true;
-		return xdev?.mountedNames.has("inspect_image") === true && isInspectImageToolActive(this.session);
+		return xdev?.mountedNames.has("inspect_media") === true && isInspectMediaToolActive(this.session);
 	}
 
-	syncInspectImageState(availableOverride?: boolean): boolean {
-		const active = availableOverride ?? this.#resolveInspectImageAvailability();
-		if (active !== this.#inspectImageActive) {
-			this.#inspectImageActive = active;
+	syncInspectMediaState(availableOverride?: boolean): boolean {
+		const active = availableOverride ?? this.#resolveInspectMediaAvailability();
+		if (active !== this.#inspectMediaActive) {
+			this.#inspectMediaActive = active;
 			this.description = this.#renderDescription();
 		}
 		return active;
@@ -672,7 +672,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number;
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
 		const { readPath, absolutePath, mimeType, imageMetadata, fileSize } = options;
-		if (this.syncInspectImageState()) {
+		if (this.syncInspectMediaState()) {
 			const outputMime = imageMetadata?.mimeType ?? mimeType;
 			const metadataLines = [
 				"Image metadata:",
@@ -688,7 +688,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						? "- Alpha: no"
 						: "- Alpha: unknown",
 				"",
-				`If you want to analyze the image, call inspect_image with path="${formatPathRelativeToCwd(
+				`If you want to analyze the image, call inspect_media with path="${formatPathRelativeToCwd(
 					absolutePath,
 					this.session.cwd,
 				)}" and a question describing what to inspect and the desired output format.`,

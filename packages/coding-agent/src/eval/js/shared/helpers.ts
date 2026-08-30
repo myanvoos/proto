@@ -3,11 +3,6 @@ import * as path from "node:path";
 import { ToolError } from "../../../tools/tool-errors";
 import type { JsStatusEvent } from "./types";
 
-export interface HelperOptions {
-	limit?: number;
-	offset?: number;
-}
-
 export interface HelperContext {
 	cwd(): string;
 	env: Map<string, string>;
@@ -17,7 +12,6 @@ export interface HelperContext {
 }
 
 export interface HelperBundle {
-	read(rawPath: string, options?: HelperOptions): Promise<string>;
 	writeFile(rawPath: string, data: unknown): Promise<string>;
 	env(key?: string, value?: string): string | Record<string, string> | undefined;
 }
@@ -26,25 +20,11 @@ const utf8Encoder = new TextEncoder();
 
 export function createHelpers(ctx: HelperContext): HelperBundle {
 	return {
-		read: async (rawPath, options = {}) => {
-			const { filePath, file, size } = await resolveRegularFile(ctx, rawPath);
-			let text = await file.text();
-			const offset = typeof options.offset === "number" ? options.offset : 1;
-			const limit = typeof options.limit === "number" ? options.limit : undefined;
-			if (offset > 1 || limit !== undefined) {
-				const lines = text.split(/\r?\n/);
-				const start = Math.max(0, offset - 1);
-				const end = limit !== undefined ? start + limit : lines.length;
-				text = lines.slice(start, end).join("\n");
-			}
-			ctx.emitStatus({ op: "read", path: filePath, bytes: size, chars: text.length });
-			return text;
-		},
 		writeFile: async (rawPath, data) => {
 			if (!isWriteData(data)) {
 				throw new ToolError("write() expects string, Blob, ArrayBuffer, or TypedArray data");
 			}
-			const filePath = resolveHelperPath(ctx, rawPath, "write");
+			const filePath = resolveHelperPath(ctx, rawPath);
 			if (typeof data === "string" || data instanceof Blob || data instanceof ArrayBuffer) {
 				await Bun.write(filePath, data);
 			} else {
@@ -87,13 +67,13 @@ function resolvePath(ctx: HelperContext, value: string): string {
 	return path.resolve(ctx.cwd(), value);
 }
 
-function resolveHelperPath(ctx: HelperContext, rawPath: string, op: "read" | "write"): string {
+function resolveHelperPath(ctx: HelperContext, rawPath: string): string {
 	const match = INTERNAL_URL_RE.exec(rawPath);
 	if (!match) return resolvePath(ctx, rawPath);
 	const scheme = match[1].toLowerCase();
 	const root = ctx.localRoots()[scheme];
 	if (!root) {
-		throw new ToolError(`Protocol paths are not supported by ${op}(): ${rawPath}`);
+		throw new ToolError(`Protocol paths are not supported by write(): ${rawPath}`);
 	}
 	return resolveUnderRoot(scheme, root, match[2], rawPath);
 }
@@ -119,19 +99,6 @@ function resolveUnderRoot(scheme: string, root: string, rawRelative: string, raw
 		throw new ToolError(`${scheme}:// path escapes its root: ${rawPath}`);
 	}
 	return resolved;
-}
-
-async function resolveRegularFile(
-	ctx: HelperContext,
-	rawPath: string,
-): Promise<{ filePath: string; file: Bun.BunFile; size: number }> {
-	const filePath = resolveHelperPath(ctx, rawPath, "read");
-	const file = Bun.file(filePath);
-	const stat = await file.stat();
-	if (stat.isDirectory()) {
-		throw new ToolError(`Directory paths are not supported by read(): ${filePath}`);
-	}
-	return { filePath, file, size: stat.size };
 }
 
 function getDataSize(data: string | Blob | ArrayBuffer | ArrayBufferView): number {

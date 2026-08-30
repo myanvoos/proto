@@ -1,21 +1,24 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, ToolExample } from "@oh-my-pi/pi-ai";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
 	raceJobSettlement,
 	resolveAutoBackgroundWaitMs,
 } from "../async";
+import { generateDiffString } from "../edit/diff";
 import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
+import { CellFsTracker } from "../eval/cell-file-diff";
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import "./kernel-prelude";
+import * as path from "node:path";
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
@@ -86,10 +89,20 @@ function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToke
 	return EVAL_LANGUAGE_ORDER.filter(lang => allowed[lang]);
 }
 
+const evalFileSchema = type({
+	path: type("string").describe("file path, absolute or relative to cwd"),
+	content: type("string").describe("full file contents, written verbatim as UTF-8 text"),
+});
+
 const evalCellCommonFields = {
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
 	"timeout?": type("number").describe("timeout for this eval call in seconds; 0 disables the cell timeout"),
 	"reset?": type("boolean").describe("wipe this language's kernel before running. Other languages are untouched."),
+	"files?": evalFileSchema
+		.array()
+		.describe(
+			"files written to disk before the code runs. The quoting-safe channel for file creation: content is a raw JSON string — no string-literal nesting, heredocs, or escaping gymnastics. Each write emits a write event with diff.",
+		),
 };
 
 const evalSchema = type({
@@ -179,12 +192,18 @@ interface ResolvedBackend {
 	notice?: string;
 }
 
+interface EvalFileSpec {
+	path: string;
+	content: string;
+}
+
 interface ResolvedEvalCell {
 	index: number;
 	title?: string;
 	code: string;
 	timeoutMs: number;
 	reset: boolean;
+	files?: EvalFileSpec[];
 	resolved: ResolvedBackend;
 }
 
@@ -263,6 +282,31 @@ function formatEvalInputLanguage(value: string): string {
 	return value;
 }
 
+const EVENT_DIFF_MAX_CHARS = 32000;
+
+function capEventDiff(
+	oldContent: string | undefined,
+	newContent: string,
+): { diff: string; diffTruncated?: true } | undefined {
+	if (oldContent === undefined) return undefined;
+	const rows = generateDiffString(oldContent, newContent, 2)
+		.diff.split("\n")
+		.filter(row => row.length > 0);
+	if (rows.length === 0) return undefined;
+	const kept: string[] = [];
+	let used = 0;
+	for (const row of rows) {
+		if (used + row.length + 1 > EVENT_DIFF_MAX_CHARS) break;
+		kept.push(row);
+		used += row.length + 1;
+	}
+	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
+}
+
+function looksBinary(text: string): boolean {
+	return text.slice(0, 8192).includes("\u0000");
+}
+
 export class EvalTool implements AgentTool<typeof evalSchema> {
 	readonly name = "eval";
 	get summary(): string {
@@ -322,7 +366,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			call: {
 				language: "py",
 				title: "load config",
-				code: "data = json.loads(read('package.json'))\ndisplay(data)",
+				code: "data = json.loads(Path('package.json').read_text())\ndisplay(data)",
 			},
 		},
 		{
@@ -346,7 +390,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			call: {
 				language: "rb",
 				title: "load config",
-				code: "pkg = JSON.parse(read(pkg_path))\ndisplay(pkg.keys.sort)",
+				code: "pkg = JSON.parse(File.read(pkg_path))\ndisplay(pkg.keys.sort)",
 			},
 		},
 	];
@@ -421,6 +465,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				code: params.code,
 				timeoutMs: (params.timeout ?? 30) * 1000,
 				reset: params.reset ?? false,
+				files: params.files,
 				resolved,
 			},
 		];
@@ -535,6 +580,35 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				? "Backgrounded early to handle an incoming message; the cell keeps running."
 				: undefined;
 		return this.#buildBackgroundStartResult(jobId, cells, languages, notice, latestText, latestDetails, steerNotice);
+	}
+
+	readonly #fsTracker = new CellFsTracker();
+
+	async #materializeFiles(
+		files: EvalFileSpec[] | undefined,
+		cwd: string,
+		onStatus: (event: EvalStatusEvent) => void,
+	): Promise<void> {
+		if (!files || files.length === 0) return;
+		for (const file of files) {
+			const abs = path.isAbsolute(file.path) ? file.path : path.join(cwd, file.path);
+			let before: string | undefined = "";
+			try {
+				const existing = await Bun.file(abs).text();
+				before = looksBinary(existing) ? undefined : existing;
+			} catch (err) {
+				if (!isEnoent(err)) before = undefined;
+			}
+			await Bun.write(abs, file.content);
+			this.#fsTracker.noteWrite(abs, file.content);
+			const event: EvalStatusEvent = { op: "write", path: abs, chars: file.content.length };
+			const capped = capEventDiff(before, file.content);
+			if (capped) {
+				event.diff = capped.diff;
+				if (capped.diffTruncated) event.diffTruncated = true;
+			}
+			onStatus(event);
+		}
 	}
 
 	#buildBackgroundStartResult(
@@ -691,6 +765,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				cellResult.statusEvents = undefined;
 				cellResult.exitCode = undefined;
 				cellResult.durationMs = undefined;
+				await this.#materializeFiles(cell.files, session.cwd, event => {
+					cellResult.statusEvents ??= [];
+					upsertStatusEvent(cellResult.statusEvents, event);
+					pushUpdate();
+				});
+				const fsBefore = await this.#fsTracker.capture(session.cwd, combinedSignal);
 				activeLiveCell = { result: cellResult, buf: new TailBuffer(DEFAULT_MAX_BYTES * 2) };
 				pushUpdate();
 
@@ -726,6 +806,21 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				} finally {
 					idle?.dispose();
 					activeLiveCell = undefined;
+					if (fsBefore) {
+						try {
+							await this.#fsTracker.emitDiffs(
+								fsBefore,
+								event => {
+									cellResult.statusEvents ??= [];
+									upsertStatusEvent(cellResult.statusEvents, event);
+									pushUpdate();
+								},
+								{ reportedEvents: cellResult.statusEvents, signal: combinedSignal },
+							);
+						} catch {
+							logger.debug("cell file-diff emission failed", { cellIndex: cell.index });
+						}
+					}
 				}
 				const durationMs = Date.now() - startTime;
 

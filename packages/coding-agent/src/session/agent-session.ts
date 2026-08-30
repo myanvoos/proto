@@ -166,7 +166,7 @@ import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
-import type { InspectImageMode } from "../utils/inspect-image-mode";
+import type { InspectMediaMode } from "../utils/inspect-media-mode";
 import { resumeCommand } from "../utils/resume-command";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
@@ -432,7 +432,7 @@ export class AgentSession {
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
 
-	#inspectImageModeOverride: InspectImageMode | undefined;
+	#inspectMediaModeOverride: InspectMediaMode | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
@@ -1039,16 +1039,16 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
-			getInspectImageModeOverride: () => this.#inspectImageModeOverride,
-			setInspectImageModeOverride: mode => {
-				this.#inspectImageModeOverride = mode;
+			getInspectMediaModeOverride: () => this.#inspectMediaModeOverride,
+			setInspectMediaModeOverride: mode => {
+				this.#inspectMediaModeOverride = mode;
 			},
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
 			createComputerTool: config.createComputerTool,
 			createThinkTool: config.createThinkTool,
-			createInspectImageTool: config.createInspectImageTool,
+			createInspectMediaTool: config.createInspectMediaTool,
 			builtInToolNames: config.builtInToolNames,
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
@@ -3592,20 +3592,20 @@ export class AgentSession {
 		return this.#tools.setThinkToolEnabled(enabled);
 	}
 
-	setInspectImageMode(mode: InspectImageMode): Promise<boolean> {
-		return this.#tools.setInspectImageMode(mode);
+	setInspectMediaMode(mode: InspectMediaMode): Promise<boolean> {
+		return this.#tools.setInspectMediaMode(mode);
 	}
 
-	inspectImageState(): { mode: InspectImageMode; active: boolean; model: string | undefined } {
-		return this.#tools.inspectImageState();
+	inspectMediaState(): { mode: InspectMediaMode; active: boolean; model: string | undefined } {
+		return this.#tools.inspectMediaState();
 	}
 
-	getInspectImageModeOverride(): InspectImageMode | undefined {
-		return this.#inspectImageModeOverride;
+	getInspectMediaModeOverride(): InspectMediaMode | undefined {
+		return this.#inspectMediaModeOverride;
 	}
 
-	applyInspectImageModeChange(): Promise<boolean> {
-		return this.#tools.reconcileInspectImageTool();
+	applyInspectMediaModeChange(): Promise<boolean> {
+		return this.#tools.reconcileInspectMediaTool();
 	}
 
 	refreshBaseSystemPrompt(): Promise<void> {
@@ -5583,9 +5583,9 @@ export class AgentSession {
 		}
 
 		try {
-			await this.#tools.reconcileInspectImageAfterModelChange();
+			await this.#tools.reconcileInspectMediaAfterModelChange();
 		} catch (error) {
-			logger.warn("inspect_image reconcile after model change failed", { error: String(error) });
+			logger.warn("inspect_media reconcile after model change failed", { error: String(error) });
 		}
 		try {
 			await this.#tools.reconcileThinkTool();

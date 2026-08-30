@@ -25,6 +25,7 @@ import type {
 	AnthropicServerToolContent,
 	Api,
 	AssistantMessage,
+	AudioContent,
 	CacheRetention,
 	Context,
 	FetchImpl,
@@ -45,6 +46,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 	Usage,
+	VideoContent,
 } from "../types";
 import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
@@ -99,7 +101,7 @@ import {
 } from "./github-copilot-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
-import { NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import { mediaOmissionNote, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type AnthropicHeaderOptions = {
 	apiKey: string;
@@ -780,30 +782,33 @@ async function resizeAnthropicManyImageBlock(block: ImageContent): Promise<Image
 	}
 }
 
-async function resizeAnthropicManyImageContent(
-	content: (TextContent | ImageContent)[],
+async function resizeAnthropicManyImageContent<T extends AudioContent | ImageContent | TextContent | VideoContent>(
+	content: T[],
 	state: { resized: number },
 	limit: ResizeLimiter,
-): Promise<(TextContent | ImageContent)[]> {
+): Promise<T[]> {
 	let changed = false;
 	const next = await Promise.all(
-		content.map(async block => {
+		content.map(async (block): Promise<T> => {
 			if (
 				block.type !== "image" ||
 				block.url ||
 				(block.providerFile?.provider === "anthropic" && block.providerFile.id)
 			)
 				return block;
-			let resized = anthropicManyImageResizeCache.get(block);
+			// block is narrowed to ImageContent here; T may be the wider media union, so the
+			// cache hit/miss result (always ImageContent) is the same block the caller passed in.
+			const imageBlock: ImageContent = block;
+			let resized = anthropicManyImageResizeCache.get(imageBlock);
 			if (resized === undefined) {
-				resized = await limit(() => resizeAnthropicManyImageBlock(block));
-				anthropicManyImageResizeCache.set(block, resized);
+				resized = await limit(() => resizeAnthropicManyImageBlock(imageBlock));
+				anthropicManyImageResizeCache.set(imageBlock, resized);
 			}
-			if (resized !== block) {
+			if (resized !== imageBlock) {
 				changed = true;
 				state.resized++;
 			}
-			return resized;
+			return resized as T;
 		}),
 	);
 	return changed ? next : content;
@@ -860,7 +865,7 @@ type AnthropicToolResultContent =
 	| Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }>;
 
 function convertContentBlocks(
-	content: (TextContent | ImageContent)[],
+	content: (AudioContent | ImageContent | TextContent | VideoContent)[],
 	supportsImages = true,
 ): AnthropicToolResultContent {
 	const blocks: Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }> = [];
@@ -873,6 +878,11 @@ function convertContentBlocks(
 			if (text.trim().length === 0) continue;
 			sawText = true;
 			blocks.push({ type: "text", text });
+			continue;
+		}
+
+		if (block.type === "audio" || block.type === "video") {
+			blocks.push({ type: "text", text: mediaOmissionNote(block.type) });
 			continue;
 		}
 

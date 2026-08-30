@@ -498,8 +498,8 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply xd:// prompt docs setting: ${err}`);
 				});
 				break;
-			case "inspect_image.mode":
-				void this.ctx.session.applyInspectImageModeChange().catch(err => {
+			case "inspect_media.mode":
+				void this.ctx.session.applyInspectMediaModeChange().catch(err => {
 					this.ctx.showError(`Failed to apply vision mode: ${err}`);
 				});
 				break;

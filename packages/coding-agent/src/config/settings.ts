@@ -28,7 +28,7 @@ import { AgentStorage } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
-import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
+import { INSPECT_MEDIA_MODES } from "../utils/inspect-media-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import {
 	type BashInterceptorRule,
@@ -1248,28 +1248,37 @@ export class Settings {
 			}
 		}
 
-		const inspectImageObj = isRecord(raw.inspect_image) ? (raw.inspect_image as Record<string, unknown>) : undefined;
-		const legacyEnabled =
-			typeof inspectImageObj?.enabled === "boolean"
-				? inspectImageObj.enabled
+		const legacyInspectImageObj = isRecord(raw.inspect_image)
+			? (raw.inspect_image as Record<string, unknown>)
+			: undefined;
+		const legacyInspectImageEnabled =
+			typeof legacyInspectImageObj?.enabled === "boolean"
+				? legacyInspectImageObj.enabled
 				: typeof raw["inspect_image.enabled"] === "boolean"
 					? (raw["inspect_image.enabled"] as boolean)
 					: undefined;
-		if (legacyEnabled !== undefined) {
-			if (!inspectImageObj) {
-				raw.inspect_image = {};
+		const legacyInspectImageFlatMode =
+			typeof raw["inspect_image.mode"] === "string" &&
+			(INSPECT_MEDIA_MODES as readonly string[]).includes(raw["inspect_image.mode"] as string)
+				? (raw["inspect_image.mode"] as string)
+				: undefined;
+		const legacyInspectImageNestedMode =
+			typeof legacyInspectImageObj?.mode === "string" &&
+			(INSPECT_MEDIA_MODES as readonly string[]).includes(legacyInspectImageObj.mode)
+				? legacyInspectImageObj.mode
+				: undefined;
+		const legacyInspectImageMode = legacyInspectImageFlatMode ?? legacyInspectImageNestedMode;
+		if (legacyInspectImageObj || legacyInspectImageEnabled !== undefined || legacyInspectImageMode !== undefined) {
+			if (!isRecord(raw.inspect_media)) {
+				raw.inspect_media = {};
 			}
-			const target = raw.inspect_image as Record<string, unknown>;
-			const flatMode = raw["inspect_image.mode"];
+			const target = raw.inspect_media as Record<string, unknown>;
 			if (target.mode === undefined) {
 				target.mode =
-					typeof flatMode === "string" && (INSPECT_IMAGE_MODES as readonly string[]).includes(flatMode)
-						? flatMode
-						: legacyEnabled
-							? "on"
-							: "off";
+					legacyInspectImageMode ??
+					(legacyInspectImageEnabled !== undefined ? (legacyInspectImageEnabled ? "on" : "off") : "auto");
 			}
-			delete target.enabled;
+			delete raw.inspect_image;
 			delete raw["inspect_image.enabled"];
 			delete raw["inspect_image.mode"];
 		}

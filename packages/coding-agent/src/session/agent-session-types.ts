@@ -116,7 +116,7 @@ export interface AgentSessionConfig {
 
 	createThinkTool?: () => Promise<AgentTool | null>;
 
-	createInspectImageTool?: () => Promise<AgentTool | null>;
+	createInspectMediaTool?: () => Promise<AgentTool | null>;
 
 	modelRegistry: ModelRegistry;
 

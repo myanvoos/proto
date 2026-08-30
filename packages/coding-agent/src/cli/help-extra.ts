@@ -71,7 +71,7 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   lsp           - Language server protocol (code intelligence)
   python        - Execute Python code (requires: ${BINARY_NAME} setup python)
   notebook      - Edit Jupyter notebooks
-  inspect_image - Analyze images with a vision model
+  inspect_media - Analyze images, audio, or video with a capable model
   browser       - Browser automation (Puppeteer)
   computer      - Native host desktop capture and input (disabled by default)
   task          - Launch sub-agents for parallel tasks

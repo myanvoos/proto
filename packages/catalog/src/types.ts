@@ -533,7 +533,7 @@ export interface Model<TApi extends Api = Api> {
 	reasoning: boolean;
 
 	tokenizer?: ModelTokenizer;
-	input: ("text" | "image")[];
+	input: ("text" | "image" | "audio" | "video")[];
 
 	imageInputDecoder?: "stb";
 

@@ -62,6 +62,8 @@ import type {
 	ChatCompletionChunk,
 	ChatCompletionContentPart,
 	ChatCompletionContentPartImage,
+	ChatCompletionContentPartInputAudio,
+	ChatCompletionContentPartVideo,
 	ChatCompletionContentPartText,
 	ChatCompletionMessageParam,
 	ChatCompletionTool,
@@ -113,7 +115,8 @@ import { transformMessages } from "./transform-messages";
 import {
 	isOpenAICompletionsVisionSupported,
 	joinTextWithImagePlaceholder,
-	NON_VISION_IMAGE_PLACEHOLDER,
+	mediaOmissionNote,
+	mediaSupportForModel,
 } from "./vision-guard";
 
 export { applyOpenRouterRoutingVariant } from "./openai-shared";
@@ -1606,6 +1609,19 @@ function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: C
 	}
 }
 
+function openAIAudioFormat(mimeType: string): "wav" | "mp3" | undefined {
+	const normalized = mimeType.toLowerCase().split(";")[0]?.trim();
+	if (
+		normalized === "audio/wav" ||
+		normalized === "audio/x-wav" ||
+		normalized === "audio/wave" ||
+		normalized === "audio/vnd.wave"
+	)
+		return "wav";
+	if (normalized === "audio/mpeg" || normalized === "audio/mp3") return "mp3";
+	return undefined;
+}
+
 export function convertMessages(
 	model: Model<"openai-completions">,
 	context: Context,
@@ -1718,9 +1734,9 @@ export function convertMessages(
 					content: text,
 				});
 			} else {
-				const supportsImages = isOpenAICompletionsVisionSupported(model);
+				const supports = mediaSupportForModel(model);
+				const supportsImages = supports.image && isOpenAICompletionsVisionSupported(model);
 				const content: ChatCompletionContentPart[] = [];
-				let omittedImages = false;
 				for (const item of msg.content) {
 					if (item.type === "text") {
 						const text = item.text.toWellFormed();
@@ -1729,24 +1745,48 @@ export function convertMessages(
 							type: "text",
 							text,
 						} satisfies ChatCompletionContentPartText);
-					} else if (supportsImages) {
-						content.push({
-							type: "image_url",
-							image_url: {
-								url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
+					} else if (item.type === "image") {
+						if (supportsImages) {
+							content.push({
+								type: "image_url",
+								image_url: {
+									url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
 
-								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
+									...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
+								},
+							} satisfies ChatCompletionContentPartImage);
+						} else {
+							content.push({
+								type: "text",
+								text: mediaOmissionNote("image"),
+							} satisfies ChatCompletionContentPartText);
+						}
+					} else if (item.type === "audio") {
+						const format = openAIAudioFormat(item.mimeType);
+						if (supports.audio && format) {
+							content.push({
+								type: "input_audio",
+								input_audio: { data: item.data, format },
+							} satisfies ChatCompletionContentPartInputAudio);
+						} else {
+							content.push({
+								type: "text",
+								text: mediaOmissionNote("audio"),
+							} satisfies ChatCompletionContentPartText);
+						}
+					} else if (supports.video) {
+						content.push({
+							type: "video_url",
+							video_url: {
+								url: `data:${item.mimeType};base64,${item.data}`,
 							},
-						} satisfies ChatCompletionContentPartImage);
+						} satisfies ChatCompletionContentPartVideo);
 					} else {
-						omittedImages = true;
+						content.push({
+							type: "text",
+							text: mediaOmissionNote("video"),
+						} satisfies ChatCompletionContentPartText);
 					}
-				}
-				if (omittedImages) {
-					content.push({
-						type: "text",
-						text: NON_VISION_IMAGE_PLACEHOLDER,
-					} satisfies ChatCompletionContentPartText);
 				}
 				if (content.length === 0) continue;
 				params.push({

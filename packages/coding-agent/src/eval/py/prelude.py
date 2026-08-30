@@ -3,7 +3,7 @@ from __future__ import annotations
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
-    import os, json, math, re
+    import os, json, math, re, hashlib
     from urllib.parse import unquote
 
     INTENT_FIELD = "i"
@@ -125,7 +125,11 @@ if "__proto_prelude_loaded__" not in globals():
 
     def _emit_file_status(op: str, path, *, before: str | None, after: str, action: str | None = None) -> None:
         """Emit a file-op status event, attaching a capped hunk diff when content changed."""
-        data: dict = {"path": str(path), "chars": len(after)}
+        data: dict = {
+            "path": str(path),
+            "chars": len(after),
+            "sha": hashlib.sha256(after.encode()).hexdigest()[:16],
+        }
         if action is not None:
             data["action"] = action
         if before is not None and before != after:
@@ -137,6 +141,7 @@ if "__proto_prelude_loaded__" not in globals():
                     if truncated:
                         data["diffTruncated"] = True
         _emit_status(op, **data)
+
 
     def env(key: str | None = None, value: str | None = None):
         """Get/set environment variables."""
@@ -153,27 +158,6 @@ if "__proto_prelude_loaded__" not in globals():
         return val
 
     _PROTO_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
-
-    def _should_delegate_read(path: str | Path) -> bool:
-        return (
-            isinstance(path, str)
-            and _PROTO_INTERNAL_URL_RE.match(path) is not None
-            and not path.lower().startswith("local://")
-        )
-
-    def _read_line_selector(offset: int, limit: int | None) -> str | None:
-        if offset <= 1 and limit is None:
-            return None
-        start = max(1, offset)
-        if limit is None:
-            return f"{start}-"
-        return f"{start}-{start + limit - 1}"
-
-    def _read_tool_text(path: str) -> str:
-        result = _bridge_call("read", {"path": path})
-        if isinstance(result, dict) and "text" in result:
-            return result["text"]
-        return result
 
     def _resolve_proto_path(path: str | Path) -> Path:
         """Map a helper path to a real filesystem Path.
@@ -207,26 +191,6 @@ if "__proto_prelude_loaded__" not in globals():
         if resolved != root_path and not resolved.startswith(root_path + os.sep):
             raise ValueError(f"{scheme}:// path escapes its root: {path}")
         return Path(resolved)
-
-    def read(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
-        """Read file or read-tool URI contents. offset/limit are 1-indexed lines."""
-        if _should_delegate_read(path):
-            if limit is not None and limit <= 0:
-                return ""
-            selector = _read_line_selector(offset, limit)
-            tool_path = path if selector is None else f"{path}:{selector}"
-            return _read_tool_text(tool_path)
-        p = _resolve_proto_path(path)
-        data = p.read_text(encoding="utf-8")
-        lines = data.splitlines(keepends=True)
-        if offset > 1 or limit is not None:
-            start = max(0, offset - 1)
-            end = start + limit if limit else len(lines)
-            lines = lines[start:end]
-            data = "".join(lines)
-        preview = data[:500]
-        _emit_status("read", path=str(p), chars=len(data), preview=preview)
-        return data
 
     def write(path: str | Path, content: str) -> Path:
         """Write file contents (create parents)."""
@@ -765,225 +729,6 @@ if "__proto_prelude_loaded__" not in globals():
             if src_key in details:
                 node[dst_key] = details[src_key]
         return node
-
-    import asyncio, collections, signal, threading, time
-
-    _BASH_HEAD_CAP = 512 * 1024
-    _BASH_TAIL_CAP = 3 * 512 * 1024
-
-    class _BashBuffer:
-        """Bounded command output: fixed-size head, rolling tail, drop marker between."""
-
-        __slots__ = ("_head", "_tail", "_tail_size", "_dropped", "_lock")
-
-        def __init__(self):
-            self._head = bytearray()
-            self._tail = collections.deque()
-            self._tail_size = 0
-            self._dropped = 0
-            self._lock = threading.Lock()
-
-        def write(self, chunk: bytes) -> None:
-            with self._lock:
-                if len(self._head) < _BASH_HEAD_CAP:
-                    take = _BASH_HEAD_CAP - len(self._head)
-                    self._head.extend(chunk[:take])
-                    chunk = chunk[take:]
-                if not chunk:
-                    return
-                self._tail.append(chunk)
-                self._tail_size += len(chunk)
-                while self._tail_size > _BASH_TAIL_CAP:
-                    excess = self._tail_size - _BASH_TAIL_CAP
-                    oldest = self._tail[0]
-                    if len(oldest) <= excess:
-                        self._tail.popleft()
-                        self._tail_size -= len(oldest)
-                        self._dropped += len(oldest)
-                    else:
-                        self._tail[0] = oldest[excess:]
-                        self._tail_size -= excess
-                        self._dropped += excess
-
-        def text(self) -> str:
-            with self._lock:
-                head = bytes(self._head)
-                tail = b"".join(self._tail)
-                dropped = self._dropped
-            if not dropped:
-                return (head + tail).decode("utf-8", errors="replace")
-            marker = f"\n... [{dropped} bytes dropped] ...\n"
-            return head.decode("utf-8", errors="replace") + marker + tail.decode("utf-8", errors="replace")
-
-    class BashResult:
-        """Finished bash() command: exit_code, merged output, duration in seconds."""
-
-        __slots__ = ("exit_code", "output", "duration")
-
-        def __init__(self, exit_code, output, duration):
-            self.exit_code = exit_code
-            self.output = output
-            self.duration = duration
-
-        def __repr__(self):
-            tail = self.output[-400:] if len(self.output) > 400 else self.output
-            return f"<bash exit={self.exit_code} {self.duration:.1f}s {tail!r}>"
-
-        def __str__(self):
-            return self.output
-
-    class _BashHandle:
-        """Live bash() command; await the handle for its BashResult.
-
-        ``await bash(cmd)`` (handle awaited before any other use) owns the
-        command: cancelling that await kills the process group. Reading
-        pid/poll/output/done first makes it a background handle; later awaits
-        only wait for completion.
-        """
-
-        def __init__(self, command, timeout=None, cwd=None, env=None):
-            self.command = command
-            self.pid = None
-            self._timeout = timeout
-            self._cwd = cwd
-            self._env = env
-            self._buffer = _BashBuffer()
-            self._proc = None
-            self._task = None
-            self._touched = False
-            self._dead = False
-            self._started = time.monotonic()
-            self._loop = asyncio.get_running_loop()
-            self._task = self._loop.create_task(self._run())
-        async def _run(self):
-            if self._dead:
-                return BashResult(None, self._buffer.text(), 0.0)
-            try:
-                shell = "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
-                self._proc = await asyncio.create_subprocess_shell(
-                    self.command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    executable=shell,
-                    cwd=self._cwd,
-                    env=self._env,
-                    start_new_session=True,
-                )
-                if self._dead:
-                    await self._kill()
-                    return BashResult(
-                        self._proc.returncode,
-                        self._buffer.text(),
-                        time.monotonic() - self._started,
-                    )
-                self.pid = self._proc.pid
-                stdout = self._proc.stdout
-                if stdout is not None:
-                    while True:
-                        chunk = await stdout.read(65536)
-                        if not chunk:
-                            break
-                        self._buffer.write(chunk)
-                await self._proc.wait()
-                return BashResult(
-                    self._proc.returncode,
-                    self._buffer.text(),
-                    time.monotonic() - self._started,
-                )
-            except asyncio.CancelledError:
-                await self._kill()
-                return BashResult(None, self._buffer.text(), time.monotonic() - self._started)
-
-        async def _kill(self):
-            self._dead = True
-            proc = self._proc
-            if proc is None or proc.returncode is not None:
-                return
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                return
-            try:
-                await asyncio.wait_for(proc.wait(), 2.0)
-                return
-            except asyncio.TimeoutError:
-                pass
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-
-        @property
-        def done(self):
-            return self._task.done()
-
-        def poll(self):
-            return self._proc.returncode if self._proc is not None else None
-
-        @property
-        def output(self):
-            return self._buffer.text()
-
-        def kill(self):
-            self._touched = True
-            self._loop.create_task(self._kill())
-
-        def __await__(self):
-            return self._wait().__await__()
-
-        async def _wait(self):
-            owned = not self._touched
-            self._touched = True
-            try:
-                if self._timeout is not None:
-                    remaining = self._timeout - (time.monotonic() - self._started)
-                    if remaining <= 0:
-                        self._dead = True
-                        await self._kill()
-                        raise TimeoutError(f"bash timed out after {self._timeout}s: {self.command!r}")
-                    try:
-                        return await asyncio.wait_for(asyncio.shield(self._task), remaining)
-                    except asyncio.TimeoutError:
-                        self._dead = True
-                        await self._kill()
-                        raise TimeoutError(
-                            f"bash timed out after {self._timeout}s: {self.command!r}"
-                        ) from None
-                return await self._task
-            except asyncio.CancelledError:
-                if owned and not self._dead:
-                    self._dead = True
-                    await self._kill()
-                raise
-
-        def __repr__(self):
-            state = "done" if self.done else "running"
-            return f"<bash handle {state} pid={self.pid} {self.command!r}>"
-
-    def bash(command, *, timeout=None, cwd=None, env=None):
-        """Run one shell command; await the handle for its BashResult.
-
-        Output merges stdout and stderr. The child runs in its own process
-        group in the kernel's current working directory with the kernel's
-        current environment, so ``os.chdir`` and ``os.environ`` changes persist
-        between calls. ``timeout`` (seconds) kills the process group on expiry.
-        A handle that is never awaited keeps running in the background.
-        """
-        try:
-            return _BashHandle(command, timeout=timeout, cwd=cwd, env=env)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "bash() needs the kernel event loop; use top-level await or asyncio.create_task"
-            ) from exc
 
     def _concurrency_limit():
         """Worker-pool ceiling from the host ``orchestrator.maxConcurrency`` setting.

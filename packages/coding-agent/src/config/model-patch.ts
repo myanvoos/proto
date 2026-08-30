@@ -138,7 +138,7 @@ export interface ModelPatch {
 	name?: string;
 	reasoning?: boolean;
 	thinking?: ThinkingConfig;
-	input?: ("text" | "image")[];
+	input?: ("text" | "image" | "video")[];
 	imageInputDecoder?: Model<Api>["imageInputDecoder"];
 	tokenizer?: Model<Api>["tokenizer"];
 	supportsTools?: boolean;

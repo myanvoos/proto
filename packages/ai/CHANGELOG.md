@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Added `AudioContent` and `VideoContent` user-message types, and `Model.input` now advertises `audio`/`video`: Google providers send them as inline data parts, OpenAI chat completions sends audio as `input_audio` (wav/mp3), and providers without support demote them to text omission notes instead of failing.
+
 ### Changed
 
 - Broker-backed startup no longer blocks on a broker round trip when the encrypted snapshot cache is fresh: the credential store starts from the cached snapshot and the background snapshot stream revalidates immediately (stale-while-revalidate). First launches and expired caches still fail fast with the actionable broker error.

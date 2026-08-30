@@ -10,7 +10,7 @@ import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
-import type { InspectImageMode } from "../utils/inspect-image-mode";
+import type { InspectMediaMode } from "../utils/inspect-media-mode";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
@@ -126,8 +126,8 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 }
 
 function formatVisionStatus(session: AgentSession): string {
-	const { mode, active, model } = session.inspectImageState();
-	const override = session.getInspectImageModeOverride();
+	const { mode, active, model } = session.inspectMediaState();
+	const override = session.getInspectMediaModeOverride();
 	const modelObj = session.model;
 	const capability = modelObj
 		? modelObj.input.includes("image")
@@ -135,17 +135,17 @@ function formatVisionStatus(session: AgentSession): string {
 			: "no native image input"
 		: "no active model";
 	return [
-		`inspect_image: ${active ? "active" : "inactive"}`,
+		`inspect_media: ${active ? "active" : "inactive"}`,
 		`mode: ${mode}${override ? " (session override)" : ""}`,
-		...(override ? [`configured: ${session.settings.get("inspect_image.mode")}`] : []),
+		...(override ? [`configured: ${session.settings.get("inspect_media.mode")}`] : []),
 		`model: ${model ?? "none"} (${capability})`,
 	].join(" · ");
 }
 
-async function applyVisionMode(session: AgentSession, mode: InspectImageMode): Promise<string> {
-	const applied = await session.setInspectImageMode(mode);
+async function applyVisionMode(session: AgentSession, mode: InspectMediaMode): Promise<string> {
+	const applied = await session.setInspectMediaMode(mode);
 	if (!applied) {
-		return "inspect_image is unavailable in this session.";
+		return "inspect_media is unavailable in this session.";
 	}
 	return `Vision mode: ${mode}. ${formatVisionStatus(session)}`;
 }
@@ -425,17 +425,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "vision",
-		description: "Control the inspect_image vision-delegation tool for this session",
+		description: "Control the inspect_media media-delegation tool for this session",
 		acpDescription: "Toggle vision delegation",
 		acpInputHint: "[on|off|auto|status]",
 		subcommands: [
-			{ name: "on", description: "Always expose inspect_image this session" },
-			{ name: "off", description: "Never expose inspect_image this session" },
-			{ name: "auto", description: "Follow inspect_image.mode (auto hides it for vision-capable models)" },
-			{ name: "status", description: "Show inspect_image status" },
+			{ name: "on", description: "Always expose inspect_media this session" },
+			{ name: "off", description: "Never expose inspect_media this session" },
+			{ name: "auto", description: "Follow inspect_media.mode (auto hides it for vision-capable models)" },
+			{ name: "status", description: "Show inspect_media status" },
 		],
 		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Vision: ${runtime.ctx.session.inspectImageState().mode}`,
+		getTuiAutocompleteDescription: runtime => `Vision: ${runtime.ctx.session.inspectMediaState().mode}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {

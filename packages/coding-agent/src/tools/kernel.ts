@@ -17,6 +17,14 @@ const kernelSchema = type({
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
 	"timeout?": type("number").describe("timeout for this call in seconds; 0 disables the cell timeout"),
 	"reset?": type("boolean").describe("wipe the kernel before running"),
+	"files?": type({
+		path: type("string").describe("file path, absolute or relative to cwd"),
+		content: type("string").describe("full file contents, written verbatim as UTF-8 text"),
+	})
+		.array()
+		.describe(
+			"files written to disk before the code runs. The quoting-safe channel for file creation: content is a raw JSON string — no string-literal nesting, heredocs, or escaping gymnastics. Each write emits a write event with diff.",
+		),
 });
 
 type KernelToolParams = typeof kernelSchema.infer;
@@ -67,14 +75,14 @@ export class KernelTool implements AgentTool<typeof kernelSchema> {
 			caption: "Second call — reuse, do NOT re-import",
 			call: {
 				title: "load config",
-				code: "data = json.loads(read('package.json'))\ndisplay(data)",
+				code: "data = json.loads(Path('package.json').read_text())\ndisplay(data)",
 			},
 		},
 		{
-			caption: "Third call — run project commands and reuse state",
+			caption: "Third call — reuse the loaded config",
 			call: {
 				title: "scan deps",
-				code: "result = await bash('bun pm ls --all')\ndisplay(sorted(data['dependencies']))",
+				code: "display(sorted(data['dependencies']))",
 			},
 		},
 	];
@@ -115,6 +123,7 @@ export class KernelTool implements AgentTool<typeof kernelSchema> {
 				title: params.title,
 				timeout: params.timeout,
 				reset: params.reset,
+				files: params.files,
 			},
 			signal,
 			onUpdate,

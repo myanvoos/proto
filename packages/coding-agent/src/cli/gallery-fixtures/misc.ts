@@ -106,8 +106,8 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	inspect_image: {
-		label: "Inspect Image",
+	inspect_media: {
+		label: "Inspect Media",
 		streamingArgs: {
 			path: "docs/assets/dashboard-mock.png",
 		},
@@ -130,7 +130,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				model: "claude-opus-4",
-				imagePath: "docs/assets/dashboard-mock.png",
+				mediaPath: "docs/assets/dashboard-mock.png",
 				mimeType: "image/png",
 			},
 		},
@@ -139,7 +139,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 			isError: true,
 			details: {
 				model: "claude-opus-4",
-				imagePath: "docs/assets/dashboard-mock.png",
+				mediaPath: "docs/assets/dashboard-mock.png",
 				mimeType: "image/png",
 			},
 		},
