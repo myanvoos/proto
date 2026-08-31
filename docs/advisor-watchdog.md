@@ -6,7 +6,9 @@ An advisor does not mutate primary session state directly. Its default investiga
 
 ## Implementation files
 
-- [`src/advisor/runtime.ts`](../packages/coding-agent/src/advisor/runtime.ts)
+- [`src/advisor/runtime.ts`](../packages/coding-agent/src/advisor/runtime.ts) (`ReviewerRuntime`, exported with an `AdvisorRuntime` alias)
+- [`src/advisor/delta-feed.ts`](../packages/coding-agent/src/advisor/delta-feed.ts) (`DeltaCursorFeed` — the advisor's `ReviewerFeed`)
+- [`src/session/reviewer-transport.ts`](../packages/coding-agent/src/session/reviewer-transport.ts) (shared reviewer transport; see [conductor.md](./conductor.md))
 - [`src/advisor/advise-tool.ts`](../packages/coding-agent/src/advisor/advise-tool.ts)
 - [`src/advisor/emission-guard.ts`](../packages/coding-agent/src/advisor/emission-guard.ts)
 - [`src/advisor/watchdog.ts`](../packages/coding-agent/src/advisor/watchdog.ts)

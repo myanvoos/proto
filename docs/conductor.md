@@ -23,6 +23,12 @@ mutating grants and reads the result.
 
 ## Tempo hierarchy
 
+The ratios in this table are **heuristic, for illustration only** — nothing in
+the implementation enforces them. Actual conductor cadence is event-driven with
+a minimum spacing (see [Cadence](#cadence-event-driven-epochs)); advisor cadence
+is backlog-driven. The table exists to fix intuitions about layer roles, not to
+specify scheduler constants.
+
 | Layer     | Cadence (invocations vs primary) | Model class          | Input diet                    | Authority                          |
 | --------- | -------------------------------- | -------------------- | ----------------------------- | ---------------------------------- |
 | Primary   | 1x — every turn                  | working model        | full session context          | executes                           |
@@ -219,7 +225,9 @@ advisor are each self-sufficient, degradation is structural:
 ## Verification: killing self-grading
 
 `goal({op:"complete"})` no longer completes. It transitions the goal to
-`"verifying"`, ends the turn, and wakes the conductor:
+`"verifying"`; the turn ends naturally (auto-continuation and the `goal` tool
+are gated off while verifying, and the budget freezes), and the conductor
+wakes:
 
 1. The conductor (or, cheaper, a one-shot verifier advisor it spawns on a
    mid-tier model) audits **current repo state**: reads files, runs the
@@ -235,7 +243,9 @@ advisor are each self-sufficient, degradation is structural:
 
 The verification gate is the only place the primary waits on the conductor:
 generous timeout (`conductor.gateTimeoutSeconds`, default 300), timeout →
-`escalate`, never silent acceptance.
+`escalate`, never silent acceptance. The manual escape hatch for a pended goal
+whose verdict source has died is `/goal resume` — `resumeGoal` forces the goal
+back to `active`, doubling as a user-driven reject.
 
 ## Token efficiency
 
