@@ -90,7 +90,7 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 	m.insert("help".into(), builtin::<help::HelpCommand, SE>());
 	#[cfg(feature = "builtin.jobs")]
 	m.insert("jobs".into(), builtin::<jobs::JobsCommand, SE>());
-	#[cfg(all(feature = "builtin.kill", any(unix, windows)))]
+	#[cfg(all(feature = "builtin.kill", unix))]
 	m.insert("kill".into(), builtin::<kill::KillCommand, SE>());
 	#[cfg(feature = "builtin.declare")]
 	m.insert("local".into(), decl_builtin::<declare::DeclareCommand, SE>());
@@ -129,7 +129,7 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		m.insert("mapfile".into(), builtin::<mapfile::MapFileCommand, SE>());
 		#[cfg(feature = "builtin.mapfile")]
 		m.insert("readarray".into(), builtin::<mapfile::MapFileCommand, SE>());
-		#[cfg(all(feature = "builtin.printf", any(unix, windows)))]
+		#[cfg(all(feature = "builtin.printf", unix))]
 		m.insert("printf".into(), builtin::<printf::PrintfCommand, SE>());
 		#[cfg(feature = "builtin.shopt")]
 		m.insert("shopt".into(), builtin::<shopt::ShoptCommand, SE>());

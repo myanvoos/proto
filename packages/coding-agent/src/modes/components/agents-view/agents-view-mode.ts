@@ -62,6 +62,7 @@ import {
 import { matchSearchText, type ParsedSearchQuery, parseSearchQuery } from "./session-view-search";
 
 const POLL_INTERVAL_MS = 1000;
+const CHILD_SESSIONS_REFRESH_MS = 5000;
 const DELETE_CONFIRM_DURATION_MS = 2000;
 const STATUS_MESSAGE_DURATION_MS = 4500;
 const ANIMATION_INTERVAL_MS = 120;
@@ -230,6 +231,10 @@ export class AgentsViewComponent implements Component {
 	#persistSeededPaths = new Set<string>();
 
 	#persistedChildSessions: SessionInfo[] = [];
+
+	#childSessionsFingerprint = "";
+
+	#lastChildSessionRefresh = 0;
 	#transcriptOverlay: OverlayHandle | undefined;
 	#transcriptViewer: AgentTranscriptViewer | undefined;
 
@@ -288,12 +293,17 @@ export class AgentsViewComponent implements Component {
 	}
 
 	async #seedPersistedSubagents(sessionPaths: readonly string[]): Promise<void> {
-		const pending = sessionPaths.filter(path => path.endsWith(".jsonl") && !this.#persistSeededPaths.has(path));
-		if (pending.length === 0) return;
+		const jsonlPaths = sessionPaths.filter(path => path.endsWith(".jsonl"));
+		const pending = jsonlPaths.filter(path => !this.#persistSeededPaths.has(path));
+		const refreshDue = Date.now() - this.#lastChildSessionRefresh >= CHILD_SESSIONS_REFRESH_MS;
+		if (pending.length === 0 && !refreshDue) return;
 		for (const sessionPath of pending) this.#persistSeededPaths.add(sessionPath);
+		if (refreshDue) this.#lastChildSessionRefresh = Date.now();
+		let changed = false;
 		try {
+			const listPaths = refreshDue ? jsonlPaths : pending;
 			const nested = await Promise.all(
-				pending.map(async sessionPath => {
+				listPaths.map(async sessionPath => {
 					const artifactsDir = sessionPath.slice(0, -".jsonl".length);
 					try {
 						return await listSessions(artifactsDir, new FileSessionStorage());
@@ -307,7 +317,15 @@ export class AgentsViewComponent implements Component {
 			for (const infos of nested) {
 				for (const info of infos) merged.set(info.path, info);
 			}
+			const fingerprint = [...merged.values()]
+				.map(
+					info =>
+						`${info.path}:${info.modified.getTime()}:${info.messageCount}:${info.liveStreaming === true}:${info.liveOpen === true}:${info.title ?? ""}`,
+				)
+				.join("|");
+			changed = fingerprint !== this.#childSessionsFingerprint;
 			this.#persistedChildSessions = [...merged.values()];
+			this.#childSessionsFingerprint = fingerprint;
 			await Promise.all(
 				pending.map(sessionPath =>
 					registerPersistedSubagents(this.#registry, sessionPath, {
@@ -318,8 +336,10 @@ export class AgentsViewComponent implements Component {
 				),
 			);
 		} finally {
-			this.#lastSignature = "";
-			await this.refresh();
+			if (changed) {
+				this.#lastSignature = "";
+				await this.refresh();
+			}
 		}
 	}
 
@@ -360,13 +380,10 @@ export class AgentsViewComponent implements Component {
 					)
 					.join("|");
 			if (signature === this.#lastSignature && this.#records.length > 0) {
-				// Data unchanged, but relative ages must keep advancing — rerender anyway.
 				this.#deps.requestRender();
 				return;
 			}
 			this.#applyData(refs, sessions);
-			// Record the signature only after a successful apply, so a throw here is retried
-			// by the next poll instead of freezing the view on stale data forever.
 			this.#lastSignature = signature;
 			void this.#seedPersistedSubagents(sessions.map(session => session.path));
 			this.#deps.requestRender();
@@ -1244,7 +1261,6 @@ export class AgentsViewComponent implements Component {
 		const icon = settledChild ? theme.fg("dim", rawIcon) : this.#formatRowIcon(row.section, rawIcon);
 		const indent = "  ".repeat(row.depth);
 		const record = row.record;
-		// Compute details per render: relative ages must advance without a data rebuild.
 		const details = formatRowDetails(row);
 		const detailsWidth = row.detailsWidth > 0 ? row.detailsWidth : 10;
 		const title = pendingDelete ? `${formatViewKey("ctrl+x")} again to remove` : this.#styleRowTitle(row);

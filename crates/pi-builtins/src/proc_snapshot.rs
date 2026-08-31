@@ -1,19 +1,7 @@
 
 
 
-
-
-
-
-
-
-
-
-
 #![allow(dead_code, reason = "consumed by the feature-gated process builtins")]
-
-
-
 
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,9 +11,6 @@ pub enum ProcessStatus {
 
 	Exited,
 }
-
-
-
 
 
 pub(crate) fn sanitize_process_command(command: String) -> String {
@@ -652,459 +637,12 @@ mod proc_snapshot {
 		args
 	}
 }
-#[cfg(target_os = "windows")]
-mod proc_snapshot {
-	use std::{collections::HashMap, ffi::c_void, mem::size_of, sync::Arc, time::Duration};
 
-	use super::ProcessStatus;
-
-	type Handle = *mut c_void;
-	const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-	const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
-	const PROCESS_TERMINATE: u32 = 0x0001;
-	const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-	const SYNCHRONIZE: u32 = 0x0010_0000;
-	const WAIT_TIMEOUT: u32 = 0x0000_0102;
-
-	#[repr(C)]
-	#[derive(Clone, Copy)]
-	struct ProcessEntry32W {
-		size:          u32,
-		usage:         u32,
-		pid:           u32,
-		default_heap:  usize,
-		module_id:     u32,
-		threads:       u32,
-		ppid:          u32,
-		base_priority: i32,
-		flags:         u32,
-		exe:           [u16; 260],
-	}
-
-	#[repr(C)]
-	#[derive(Clone, Copy, Default)]
-	struct FileTime {
-		low:  u32,
-		high: u32,
-	}
-
-	#[repr(C)]
-	struct UnicodeString {
-		length:         u16,
-		maximum_length: u16,
-		buffer:         *const u16,
-	}
-
-	#[repr(C)]
-	struct ProcessMemoryCounters {
-		cb: u32,
-		page_fault_count: u32,
-		peak_working_set_size: usize,
-		working_set_size: usize,
-		quota_peak_paged_pool_usage: usize,
-		quota_paged_pool_usage: usize,
-		quota_peak_non_paged_pool_usage: usize,
-		quota_non_paged_pool_usage: usize,
-		pagefile_usage: usize,
-		peak_pagefile_usage: usize,
-	}
-
-	#[link(name = "kernel32")]
-	unsafe extern "system" {
-		fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> Handle;
-		fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
-		fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
-		fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
-		fn CloseHandle(handle: Handle) -> i32;
-		fn TerminateProcess(handle: Handle, exit_code: u32) -> i32;
-		fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
-		fn GetProcessTimes(
-			handle: Handle,
-			creation: *mut FileTime,
-			exit: *mut FileTime,
-			kernel: *mut FileTime,
-			user: *mut FileTime,
-		) -> i32;
-		fn GetSystemTimeAsFileTime(time: *mut FileTime);
-		fn K32GetProcessMemoryInfo(
-			handle: Handle,
-			counters: *mut ProcessMemoryCounters,
-			size: u32,
-		) -> i32;
-	}
-
-	#[link(name = "ntdll")]
-	unsafe extern "system" {
-		fn NtQueryInformationProcess(
-			handle: Handle,
-			class: u32,
-			information: *mut c_void,
-			information_length: u32,
-			return_length: *mut u32,
-		) -> i32;
-	}
-
-	struct OwnedHandle(Handle);
-
-	unsafe impl Send for OwnedHandle {}
-	unsafe impl Sync for OwnedHandle {}
-	impl Drop for OwnedHandle {
-		fn drop(&mut self) {
-
-			unsafe {
-				CloseHandle(self.0);
-			}
-		}
-	}
-
-	#[derive(Clone)]
-	pub struct ProcInfo {
-		pid:           i32,
-		handle:        Arc<OwnedHandle>,
-		ppid:          i32,
-		threads:       u32,
-		base_priority: i32,
-		name:          String,
-		command_line:  String,
-		creation:      u64,
-	}
-
-	#[allow(
-		clippy::unnecessary_wraps,
-		reason = "Option returns match the cross-platform ProcInfo contract"
-	)]
-	impl ProcInfo {
-		pub fn all() -> Vec<Self> {
-			let mut handles = HashMap::new();
-			for entry in snapshot_entries() {
-				if let Some(identity) = open_process_identity(entry.pid) {
-					handles.insert(entry.pid, identity);
-				}
-			}
-
-			snapshot_entries()
-				.into_iter()
-				.filter_map(|entry| {
-					let (handle, creation) = handles.remove(&entry.pid)?;
-					Self::from_entry(&entry, handle, creation)
-				})
-				.collect()
-		}
-
-		fn from_entry(
-			entry: &ProcessEntry32W,
-			handle: Arc<OwnedHandle>,
-			creation: u64,
-		) -> Option<Self> {
-			let pid = i32::try_from(entry.pid).ok().filter(|pid| *pid > 0)?;
-
-
-			if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT {
-				return None;
-			}
-			let end = entry
-				.exe
-				.iter()
-				.position(|unit| *unit == 0)
-				.unwrap_or(entry.exe.len());
-			let name = String::from_utf16_lossy(&entry.exe[..end]);
-			let command_line = process_command_line(handle.0).unwrap_or_else(|| name.clone());
-			Some(Self {
-				pid,
-				handle,
-				ppid: i32::try_from(entry.ppid).unwrap_or(0),
-				threads: entry.threads,
-				base_priority: entry.base_priority,
-				name,
-				command_line,
-				creation,
-			})
-		}
-
-		pub fn pid(&self) -> i32 {
-			self.pid
-		}
-
-		pub fn ppid(&self) -> Option<i32> {
-			Some(self.ppid)
-		}
-
-		pub fn args(&self) -> Vec<String> {
-			vec![self.command_line.clone()]
-		}
-
-		pub fn group_id(&self) -> Option<i32> {
-			None
-		}
-
-		pub fn session_id(&self) -> Option<i32> {
-			None
-		}
-
-		pub fn real_user_id(&self) -> Option<u32> {
-			None
-		}
-
-		pub fn effective_user_id(&self) -> Option<u32> {
-			None
-		}
-
-		pub fn real_group_id(&self) -> Option<u32> {
-			None
-		}
-
-		pub fn terminal_id(&self) -> Option<u64> {
-			None
-		}
-
-		pub fn terminal_group_id(&self) -> Option<i32> {
-			None
-		}
-
-		pub fn effective_group_id(&self) -> Option<u32> {
-			None
-		}
-
-		pub fn priority(&self) -> Option<i32> {
-			None
-		}
-
-		pub fn flags(&self) -> Option<u64> {
-			None
-		}
-
-		pub fn minor_faults(&self) -> Option<u64> {
-			None
-		}
-
-		pub fn major_faults(&self) -> Option<u64> {
-			None
-		}
-
-		pub fn wchan(&self) -> Option<String> {
-			None
-		}
-
-		pub fn state(&self) -> char {
-			if self.status() == ProcessStatus::Running {
-				'R'
-			} else {
-				'?'
-			}
-		}
-
-		pub fn start_time(&self) -> u64 {
-			self.creation
-		}
-
-		pub fn age(&self) -> Option<Duration> {
-			let mut now = FileTime::default();
-
-			unsafe { GetSystemTimeAsFileTime(&raw mut now) };
-			Some(Duration::from_nanos(
-				filetime_ticks(now)
-					.saturating_sub(self.creation)
-					.saturating_mul(100),
-			))
-		}
-
-		pub fn match_name(&self) -> String {
-			self.name.clone()
-		}
-
-		pub fn command_name(&self) -> String {
-			self.name.clone()
-		}
-
-		pub fn status(&self) -> ProcessStatus {
-
-			if unsafe { WaitForSingleObject(self.handle.0, 0) } == WAIT_TIMEOUT {
-				ProcessStatus::Running
-			} else {
-				ProcessStatus::Exited
-			}
-		}
-
-		pub fn signal(&self, signal: i32, _queue: Option<i32>) -> bool {
-			if signal == 0 {
-				return self.status() == ProcessStatus::Running;
-			}
-
-			let handle = unsafe {
-				OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, 0, self.pid as u32)
-			};
-			if handle.is_null() {
-				return false;
-			}
-			let handle = OwnedHandle(handle);
-			if process_times(handle.0).map(|times| times.0) != Some(self.creation) {
-				return false;
-			}
-
-			unsafe { TerminateProcess(handle.0, 1) != 0 }
-		}
-
-		pub fn cpu_time(&self) -> Option<Duration> {
-			let (_, kernel, user) = process_times(self.handle.0)?;
-			Some(Duration::from_nanos(kernel.saturating_add(user).saturating_mul(100)))
-		}
-
-		pub fn resident_bytes(&self) -> Option<u64> {
-			Some(process_memory(self.handle.0)?.working_set_size as u64)
-		}
-
-		pub fn virtual_bytes(&self) -> Option<u64> {
-			None
-		}
-
-		pub fn thread_count(&self) -> Option<u32> {
-			Some(self.threads)
-		}
-
-		pub fn nice(&self) -> Option<i32> {
-			Some(self.base_priority)
-		}
-	}
-
-	fn snapshot_entries() -> Vec<ProcessEntry32W> {
-
-		let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-		if snapshot == INVALID_HANDLE_VALUE {
-			return Vec::new();
-		}
-		let snapshot = OwnedHandle(snapshot);
-
-		let mut entry = unsafe { std::mem::zeroed::<ProcessEntry32W>() };
-		entry.size = size_of::<ProcessEntry32W>() as u32;
-		let mut result = Vec::new();
-
-		let mut ok = unsafe { Process32FirstW(snapshot.0, &raw mut entry) };
-		while ok != 0 {
-			result.push(entry);
-
-			ok = unsafe { Process32NextW(snapshot.0, &raw mut entry) };
-		}
-		result
-	}
-
-	fn open_process_identity(pid: u32) -> Option<(Arc<OwnedHandle>, u64)> {
-		i32::try_from(pid).ok().filter(|pid| *pid > 0)?;
-
-		let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
-		if handle.is_null() {
-			return None;
-		}
-		let handle = Arc::new(OwnedHandle(handle));
-		let creation = process_times(handle.0)?.0;
-		Some((handle, creation))
-	}
-
-	fn process_command_line(handle: Handle) -> Option<String> {
-		const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
-		let mut bytes = 0u32;
-
-		unsafe {
-			NtQueryInformationProcess(
-				handle,
-				PROCESS_COMMAND_LINE_INFORMATION,
-				std::ptr::null_mut(),
-				0,
-				&raw mut bytes,
-			);
-		}
-		if bytes < size_of::<UnicodeString>() as u32 {
-			return None;
-		}
-		let words = (bytes as usize).div_ceil(size_of::<usize>());
-		let mut storage = vec![0usize; words];
-
-		let status = unsafe {
-			NtQueryInformationProcess(
-				handle,
-				PROCESS_COMMAND_LINE_INFORMATION,
-				storage.as_mut_ptr().cast(),
-				bytes,
-				&raw mut bytes,
-			)
-		};
-		if status < 0 {
-			return None;
-		}
-
-		let command = unsafe { &*storage.as_ptr().cast::<UnicodeString>() };
-		let length = usize::from(command.length);
-		if length == 0 || length % size_of::<u16>() != 0 {
-			return None;
-		}
-		let base = storage.as_ptr() as usize;
-		let end = base.checked_add(storage.len().checked_mul(size_of::<usize>())?)?;
-		let command_start = command.buffer as usize;
-		let command_end = command_start.checked_add(length)?;
-		if command_start < base || command_end > end {
-			return None;
-		}
-
-		let units = unsafe { std::slice::from_raw_parts(command.buffer, length / size_of::<u16>()) };
-		Some(String::from_utf16_lossy(units)).filter(|command| !command.is_empty())
-	}
-
-	fn filetime_ticks(time: FileTime) -> u64 {
-		(u64::from(time.high) << 32) | u64::from(time.low)
-	}
-
-	fn process_times(handle: Handle) -> Option<(u64, u64, u64)> {
-		let mut creation = FileTime::default();
-		let mut exit = FileTime::default();
-		let mut kernel = FileTime::default();
-		let mut user = FileTime::default();
-
-		let ok = unsafe {
-			GetProcessTimes(handle, &raw mut creation, &raw mut exit, &raw mut kernel, &raw mut user)
-		};
-		(ok != 0).then(|| (filetime_ticks(creation), filetime_ticks(kernel), filetime_ticks(user)))
-	}
-
-	fn process_memory(handle: Handle) -> Option<ProcessMemoryCounters> {
-
-		let mut counters = unsafe { std::mem::zeroed::<ProcessMemoryCounters>() };
-		counters.cb = size_of::<ProcessMemoryCounters>() as u32;
-
-		let ok = unsafe {
-			K32GetProcessMemoryInfo(
-				handle,
-				&raw mut counters,
-				size_of::<ProcessMemoryCounters>() as u32,
-			)
-		};
-		(ok != 0).then_some(counters)
-	}
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use proc_snapshot::ProcInfo;
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct HostProcesses {
 
 	pub pids:  smallvec::SmallVec<[i32; 16]>,
@@ -1113,11 +651,7 @@ pub(crate) struct HostProcesses {
 }
 
 
-
-
-
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy)]
 struct ChainNode {
 	ppid:  Option<i32>,
@@ -1127,15 +661,13 @@ struct ChainNode {
 	start: u64,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl HostProcesses {
 
 
 	pub fn resolve() -> Self {
 		Self::resolve_in(&ProcInfo::all())
 	}
-
-
 
 
 	pub fn resolve_in(all: &[ProcInfo]) -> Self {
@@ -1153,15 +685,6 @@ impl HostProcesses {
 				})
 		})
 	}
-
-
-
-
-
-
-
-
-
 
 
 	fn walk(self_pid: i32, lookup: impl Fn(i32) -> Option<ChainNode>) -> Self {

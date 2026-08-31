@@ -8,7 +8,7 @@ Native Rust functionality via N-API.
 - **SIXEL**: Terminal image encoding for SIXEL-capable terminals (decode, resize, encode in one pass)
 - **Audio**: Cross-platform low-latency microphone capture and gapless speaker playback
 - **WebRTC**: Native Opus media, SDP offer/answer negotiation, and data-channel events for live sessions
-- **File locking**: Process-owned cross-process locks with in-memory kernel names on Linux/Windows and `flock(2)` sidecars on other Unix platforms
+- **File locking**: Process-owned cross-process locks with in-memory kernel names on Linux and `flock(2)` sidecars on other Unix platforms
 - **PDF**: In-memory PDF-to-Markdown extraction with OCR-page classification via `pdf-inspector`
 
 General-purpose image processing (decode/resize/encode for files and buffers)

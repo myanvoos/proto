@@ -1,11 +1,8 @@
 
 
 
-
 #[cfg(any(unix, target_os = "redox"))]
 use std::os::unix::fs::symlink;
-#[cfg(windows)]
-use std::os::windows::fs::{symlink_dir, symlink_file};
 use std::{
 	borrow::Cow,
 	collections::HashSet,
@@ -224,10 +221,6 @@ fn uu_app() -> Command {
 		.arg(backup_control::arguments::backup_no_args())
 
 
-
-
-
-
 		.arg(
 			Arg::new(options::FORCE)
 				.short('f')
@@ -346,7 +339,6 @@ fn exec(host: &mut Host, files: &[PathBuf], settings: &Settings) -> LnResult<()>
 	}
 
 
-
 	if files.len() == 1 {
 		return Err(LnError::MissingDestination(files[0].clone()).into());
 	}
@@ -382,13 +374,6 @@ fn link_files_in_dir(
 				{
 					show_error(host, format_args!("Could not update {}: {e}", target_dir.quote()));
 				}
-				#[cfg(windows)]
-				if target_dir_fs.is_dir() {
-
-					if let Err(e) = fs::remove_dir(&target_dir_fs) {
-						show_error(host, format_args!("Could not update {}: {e}", target_dir.quote()));
-					}
-				}
 			};
 			match settings.overwrite {
 				OverwriteMode::NoClobber => {},
@@ -405,8 +390,6 @@ fn link_files_in_dir(
 		} else if let Some(name) = srcpath.as_os_str().to_str() {
 			match Path::new(name).file_name() {
 				Some(basename) => target_dir.join(basename),
-
-
 
 
 				None => target_dir.join(name),
@@ -460,7 +443,6 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 	} else {
 		src.into()
 	};
-
 
 
 	let src_fs = host.resolve(src);
@@ -587,18 +569,6 @@ fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(
 	symlink(src, dst)
 }
 
-#[cfg(windows)]
-fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(
-	host: &Host,
-	src: P1,
-	dst: P2,
-) -> std::io::Result<()> {
-	if host.resolve(src.as_ref()).is_dir() {
-		symlink_dir(src, dst)
-	} else {
-		symlink_file(src, dst)
-	}
-}
 
 #[cfg(target_os = "wasi")]
 fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(

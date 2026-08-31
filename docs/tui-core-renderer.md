@@ -24,8 +24,8 @@ which implements the commit-boundary seam described below.
 
 ## 1. The one thing to understand first
 
-> **The renderer cannot observe the terminal's scroll position** (ConPTY's
-> probe lies; POSIX has no API at all). The previous engine tried to _guess_
+> **The renderer cannot observe the terminal's scroll position** (some PTY
+> hosts lie about it; POSIX has no API at all). The previous engine tried to _guess_
 > when it was safe to rewrite native scrollback, and every policy choice over
 > that unobservable variable traded one failure family for another (yank ↔
 > flash ↔ corruption ↔ invisible-until-resize — see the git history of this

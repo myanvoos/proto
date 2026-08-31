@@ -1,7 +1,6 @@
 
 
 
-
 use std::io::Write;
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -10,12 +9,8 @@ use clap::{ArgMatches, Command};
 use crate::host::{Host, Utility, matches_parser, os_bytes, util};
 
 mod platform {
-	#[cfg(unix)]
 	pub use self::unix::get_username;
-	#[cfg(windows)]
-	pub use self::windows::get_username;
 
-	#[cfg(unix)]
 	mod unix {
 		use std::{ffi::OsString, io};
 
@@ -27,26 +22,6 @@ mod platform {
 		}
 	}
 
-	#[cfg(windows)]
-	mod windows {
-		use std::{ffi::OsString, io, os::windows::ffi::OsStringExt};
-
-		use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
-
-		pub fn get_username() -> io::Result<OsString> {
-
-
-
-			const BUF_LEN: u32 = 257;
-			let mut buffer = [0_u16; BUF_LEN as usize];
-			let mut len = BUF_LEN;
-
-			if unsafe { GetUserNameW(buffer.as_mut_ptr(), &raw mut len) } == 0 {
-				return Err(io::Error::last_os_error());
-			}
-			Ok(OsString::from_wide(&buffer[..len as usize - 1]))
-		}
-	}
 }
 
 

@@ -14,7 +14,6 @@ export interface SSHCommandArgs {
 		port?: string;
 		key?: string;
 		desc?: string;
-		compat?: boolean;
 		scope?: "project" | "user";
 	};
 }
@@ -70,7 +69,6 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	if (cmd.flags.port) hostConfig.port = Number.parseInt(cmd.flags.port, 10);
 	if (cmd.flags.key) hostConfig.keyPath = cmd.flags.key;
 	if (cmd.flags.desc) hostConfig.description = cmd.flags.desc;
-	if (cmd.flags.compat) hostConfig.compat = true;
 
 	const scope = cmd.flags.scope ?? "project";
 	const filePath = getSSHConfigPath(scope);

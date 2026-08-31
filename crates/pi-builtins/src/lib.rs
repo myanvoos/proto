@@ -58,7 +58,7 @@ mod history;
 mod jobs;
 
 
-#[cfg(all(feature = "builtin.kill", any(unix, windows)))]
+#[cfg(all(feature = "builtin.kill", unix))]
 mod kill;
 #[cfg(feature = "builtin.let")]
 mod let_;
@@ -66,7 +66,7 @@ mod let_;
 mod mapfile;
 #[cfg(feature = "builtin.popd")]
 mod popd;
-#[cfg(all(feature = "builtin.printf", any(unix, windows)))]
+#[cfg(all(feature = "builtin.printf", unix))]
 mod printf;
 #[cfg(feature = "builtin.pushd")]
 mod pushd;

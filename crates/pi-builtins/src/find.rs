@@ -1,23 +1,12 @@
 // Copyright 2017 Google Inc.
 
 
-
-
-
-
-
 pub mod matchers {
 	// Copyright 2017 Google Inc.
 
 
-
-
-
 	mod access {
 		// Copyright 2022 Tavian Barnes
-
-
-
 
 
 		use faccess::PathExt;
@@ -44,13 +33,6 @@ pub mod matchers {
 		}
 	}
 	mod delete {
-
-
-
-
-
-
-
 
 
 		use std::{
@@ -83,8 +65,6 @@ pub mod matchers {
 				let path_str = path.to_string_lossy();
 
 
-
-
 				if path_str == "." {
 					return true;
 				}
@@ -106,9 +86,6 @@ pub mod matchers {
 	}
 	mod empty {
 		// Copyright 2021 Collabora, Ltd.
-
-
-
 
 
 		use std::{fs::read_dir, io::Write};
@@ -342,10 +319,6 @@ pub mod matchers {
 			meta:    OnceCell<Result<Metadata, WalkError>>,
 
 
-
-
-
-
 			display: Option<PathBuf>,
 		}
 
@@ -361,16 +334,9 @@ pub mod matchers {
 			}
 
 
-
-
-
 			pub fn display_path(&self) -> &Path {
 				self.display.as_deref().unwrap_or_else(|| self.path())
 			}
-
-
-
-
 
 
 			pub fn set_display_root(&mut self, operand: &Path, resolved_root: &Path) {
@@ -409,8 +375,6 @@ pub mod matchers {
 			}
 
 
-
-
 			pub fn metadata(&self) -> Result<&Metadata, WalkError> {
 				let result = self.meta.get_or_init(|| self.get_metadata());
 				result.as_ref().map_err(|e| e.clone())
@@ -423,7 +387,6 @@ pub mod matchers {
 					.map(|m| m.file_type().into())
 					.unwrap_or(FileType::Unknown)
 			}
-
 
 
 			pub fn path_is_symlink(&self) -> bool {
@@ -440,9 +403,6 @@ pub mod matchers {
 	}
 	pub mod exec {
 		// Copyright 2017 Google Inc.
-
-
-
 
 
 		use std::{cell::RefCell, error::Error, ffi::OsString, io::Write, path::Path, process::Command};
@@ -577,8 +537,6 @@ pub mod matchers {
 			fn run_command(&self, command: &mut argmax::Command, matcher_io: &mut MatcherIO) {
 
 
-
-
 				let mut std_command = Command::new(command.get_program());
 				std_command.args(command.get_args());
 				if let Some(dir) = command.get_current_dir() {
@@ -677,8 +635,6 @@ pub mod matchers {
 	pub mod fs {
 
 
-
-
 		#[cfg(unix)]
 		use std::{cell::RefCell, io, io::Write, path::Path};
 
@@ -692,24 +648,12 @@ pub mod matchers {
 		}
 
 
-
-
-
-
-
-
-
-
-
-
 		#[cfg(unix)]
 		pub fn get_file_system_type(
 			path: &Path,
 			cache: &RefCell<Option<Cache>>,
 		) -> io::Result<String> {
 			use std::os::unix::fs::MetadataExt;
-
-
 
 
 			let dev_id = path.symlink_metadata()?.dev().to_string();
@@ -719,7 +663,6 @@ pub mod matchers {
 			{
 				return Ok(cache.fs_type.clone());
 			}
-
 
 
 			let fs_list = uucore::fsext::read_fs_list().map_err(|err| io::Error::other(err.to_string()))?;
@@ -733,9 +676,6 @@ pub mod matchers {
 
 			Ok(result)
 		}
-
-
-
 
 
 		pub struct FileSystemMatcher {
@@ -785,9 +725,6 @@ pub mod matchers {
 		// Copyright 2022 Tavian Barnes
 
 
-
-
-
 		use onig::{Regex, RegexOptions, Syntax};
 
 
@@ -809,36 +746,16 @@ pub mod matchers {
 		fn extract_bracket_expr(pattern: &str) -> Option<(String, &str)> {
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 			let mut expr = "[".to_string();
 
 			let mut chars = pattern.chars();
 			let mut next = chars.next();
 
 
-
-
-
-
 			if next == Some('!') {
 				expr.push('^');
 				next = chars.next();
 			}
-
-
-
-
 
 
 			if next == Some(']') {
@@ -851,15 +768,6 @@ pub mod matchers {
 
 				match ch {
 					'[' => {
-
-
-
-
-
-
-
-
-
 
 
 						next = chars.next();
@@ -875,10 +783,6 @@ pub mod matchers {
 						}
 					},
 					']' => {
-
-
-
-
 
 
 						break;
@@ -953,9 +857,6 @@ pub mod matchers {
 	mod group {
 
 
-
-
-
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
 
@@ -986,10 +887,6 @@ pub mod matchers {
 				Self { gid }
 			}
 
-			#[cfg(windows)]
-			pub fn from_group_name(_group: &str) -> Option<Self> {
-				None
-			}
 		}
 
 		impl Matcher for GroupMatcher {
@@ -1001,12 +898,6 @@ pub mod matchers {
 				}
 			}
 
-			#[cfg(windows)]
-			fn matches(&self, _file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
-
-
-				false
-			}
 		}
 
 		pub struct NoGroupMatcher {}
@@ -1035,17 +926,10 @@ pub mod matchers {
 				false
 			}
 
-			#[cfg(windows)]
-			fn matches(&self, _file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
-				false
-			}
 		}
 	}
 	mod lname {
 		// Copyright 2017 Google Inc.
-
-
-
 
 
 		use std::{io::Write, path::PathBuf};
@@ -1075,7 +959,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct LinkNameMatcher {
 			pattern: Pattern,
 		}
@@ -1101,20 +984,9 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
-
-
-
-
-
 		use std::{error::Error, path::Path};
 
 		use super::{Matcher, MatcherIO, WalkEntry};
-
-
-
 
 
 		pub struct AndMatcher {
@@ -1128,7 +1000,6 @@ pub mod matchers {
 		}
 
 		impl Matcher for AndMatcher {
-
 
 
 			fn matches(&self, dir_entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool {
@@ -1189,9 +1060,6 @@ pub mod matchers {
 		}
 
 
-
-
-
 		pub struct OrMatcher {
 			submatchers: Vec<Box<dyn Matcher>>,
 		}
@@ -1203,7 +1071,6 @@ pub mod matchers {
 		}
 
 		impl Matcher for OrMatcher {
-
 
 
 			fn matches(&self, dir_entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool {
@@ -1283,10 +1150,6 @@ pub mod matchers {
 				OrMatcher::new(submatchers).into_box()
 			}
 		}
-
-
-
-
 
 
 		pub struct ListMatcher {
@@ -1451,9 +1314,6 @@ pub mod matchers {
 	mod ls {
 
 
-
-
-
 		use std::{fs::File, io::Write};
 
 		use chrono::DateTime;
@@ -1531,32 +1391,6 @@ pub mod matchers {
 			format!("{}{}{}{}", file_type, user_perms, group_perms, other_perms)
 		}
 
-		#[cfg(windows)]
-		fn format_permissions(file_attributes: u32) -> String {
-			let mut attributes = Vec::new();
-
-
-			if file_attributes & 0x0001 != 0 {
-				attributes.push("read-only");
-			}
-			if file_attributes & 0x0002 != 0 {
-				attributes.push("hidden");
-			}
-			if file_attributes & 0x0004 != 0 {
-				attributes.push("system");
-			}
-			if file_attributes & 0x0020 != 0 {
-				attributes.push("archive");
-			}
-			if file_attributes & 0x0040 != 0 {
-				attributes.push("compressed");
-			}
-			if file_attributes & 0x0080 != 0 {
-				attributes.push("offline");
-			}
-
-			attributes.join(", ")
-		}
 
 		pub struct Ls {
 			output_file: Option<File>,
@@ -1645,74 +1479,6 @@ pub mod matchers {
 				}
 			}
 
-			#[cfg(windows)]
-			fn print(
-				&self,
-				file_info: &WalkEntry,
-				matcher_io: &mut MatcherIO,
-				mut out: impl Write,
-				print_error_message: bool,
-			) {
-				use std::os::windows::fs::MetadataExt;
-
-				let metadata = file_info.metadata().unwrap();
-
-				let inode_number = 0;
-				let number_of_blocks = {
-					let size = metadata.file_size();
-					let number_of_blocks = size / 1024;
-					let remainder = number_of_blocks % 4;
-
-					if remainder == 0 {
-						if number_of_blocks == 0 {
-							4
-						} else {
-							number_of_blocks
-						}
-					} else {
-						number_of_blocks + (4 - (remainder))
-					}
-				};
-				let permission = { format_permissions(metadata.file_attributes()) };
-				let hard_links = 0;
-				let user = 0;
-				let group = 0;
-				let size = metadata.file_size();
-				let last_modified = {
-					let system_time = metadata.modified().unwrap();
-					let now_utc: DateTime<chrono::Utc> = system_time.into();
-					now_utc.format("%b %e %H:%M")
-				};
-				let path = file_info.display_path().to_string_lossy();
-
-				match write!(
-					out,
-					" {:<4} {:>6} {:<10} {:>3} {:<8} {:<8} {:>8} {} {}\n",
-					inode_number,
-					number_of_blocks,
-					permission,
-					hard_links,
-					user,
-					group,
-					size,
-					last_modified,
-					path,
-				) {
-					Ok(_) => {},
-					Err(e) => {
-						if print_error_message {
-							writeln!(
-								&mut matcher_io.host().stderr,
-								"Error writing {:?} for {}",
-								file_info.display_path().to_string_lossy(),
-								e
-							)
-							.unwrap();
-							matcher_io.set_exit_code(1);
-						}
-					},
-				}
-			}
 		}
 
 		impl Matcher for Ls {
@@ -1734,11 +1500,7 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		use super::{Matcher, MatcherIO, WalkEntry, glob::Pattern};
-
 
 
 		pub struct NameMatcher {
@@ -1763,8 +1525,6 @@ pub mod matchers {
 					self.pattern.matches(&name)
 				}
 
-				#[cfg(windows)]
-				self.pattern.matches(&name)
 			}
 		}
 	}
@@ -1772,11 +1532,7 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		use super::{Matcher, MatcherIO, WalkEntry, glob::Pattern};
-
 
 
 		pub struct PathMatcher {
@@ -1799,13 +1555,6 @@ pub mod matchers {
 	}
 	mod perm {
 		// Copyright 2017 Google Inc.
-
-
-
-
-
-
-
 
 
 		use std::{error::Error, io::Write};
@@ -1933,9 +1682,6 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		use std::{fs::File, io::Write};
 
 
@@ -2009,9 +1755,6 @@ pub mod matchers {
 	}
 	mod printf {
 		// Copyright 2021 Collabora, Ltd.
-
-
-
 
 
 		#[cfg(unix)]
@@ -2235,7 +1978,6 @@ pub mod matchers {
 					c => {
 
 
-
 						let format = format!("%{c}");
 						match StrftimeItems::new(&format).next() {
 							None | Some(chrono::format::Item::Error) => {
@@ -2318,7 +2060,6 @@ pub mod matchers {
 					}
 
 
-
 					let component = match self.advance_one().unwrap() {
 						'\\' => self.parse_escape_sequence()?,
 						'%' => self.parse_format_specifier()?,
@@ -2374,11 +2115,6 @@ pub mod matchers {
 			let meta = || file_info.metadata();
 
 
-
-
-
-
-
 			let res: Cow<'entry, str> = match directive {
 				FormatDirective::AccessTime(tf) => tf.apply(meta()?.accessed()?)?,
 
@@ -2390,9 +2126,6 @@ pub mod matchers {
 					#[cfg(not(unix))]
 
 					let blocks = (meta()?.len() + STANDARD_BLOCK_SIZE - 1) / STANDARD_BLOCK_SIZE;
-
-
-
 
 
 					if *large_blocks {
@@ -2424,11 +2157,6 @@ pub mod matchers {
 				FormatDirective::Device => "0".into(),
 				#[cfg(unix)]
 				FormatDirective::Device => meta()?.dev().to_string().into(),
-
-
-
-
-
 
 
 				FormatDirective::Dirname => match file_info.display_path().parent() {
@@ -2567,7 +2295,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct Printf {
 			format:      FormatString,
 			output_file: Option<File>,
@@ -2636,9 +2363,6 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		use super::{Matcher, MatcherIO, WalkEntry};
 
 
@@ -2664,9 +2388,6 @@ pub mod matchers {
 		// Copyright 2017 Tavian Barnes
 
 
-
-
-
 		use super::{Matcher, MatcherIO, WalkEntry};
 
 
@@ -2681,9 +2402,6 @@ pub mod matchers {
 	}
 	mod regex {
 		// Copyright 2022 Collabora, Ltd.
-
-
-
 
 
 		use std::{error::Error, fmt, str::FromStr};
@@ -2788,8 +2506,6 @@ pub mod matchers {
 				let path = file_info.display_path().to_string_lossy();
 
 
-
-
 				self
 					.regex
 					.match_with_options(path.as_ref(), 0, SearchOptions::SEARCH_OPTION_WHOLE_STRING, None)
@@ -2798,9 +2514,6 @@ pub mod matchers {
 		}
 	}
 	mod samefile {
-
-
-
 
 
 		use std::{error::Error, path::Path};
@@ -2813,7 +2526,6 @@ pub mod matchers {
 		pub struct SameFileMatcher {
 			info: FileInformation,
 		}
-
 
 
 		fn get_file_info(path: &Path, follow: bool) -> Result<FileInformation, WalkError> {
@@ -2849,9 +2561,6 @@ pub mod matchers {
 	}
 	mod size {
 		// Copyright 2017 Google Inc.
-
-
-
 
 
 		use std::{error::Error, io::Write, str::FromStr};
@@ -2919,7 +2628,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct SizeMatcher {
 			value_to_match: ComparableValue,
 			unit:           Unit,
@@ -2957,9 +2665,6 @@ pub mod matchers {
 	#[cfg(unix)]
 	mod stat {
 		// Copyright 2022 Tavian Barnes
-
-
-
 
 
 		use std::os::unix::fs::MetadataExt;
@@ -3010,9 +2715,6 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
 		use std::{
@@ -3046,7 +2748,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct NewerMatcher {
 			given_modification_time: SystemTime,
 		}
@@ -3058,11 +2759,8 @@ pub mod matchers {
 			}
 
 
-
 			fn matches_impl(&self, file_info: &WalkEntry) -> Result<bool, Box<dyn Error>> {
 				let this_time = file_info.metadata()?.modified()?;
-
-
 
 
 				Ok(self
@@ -3089,11 +2787,6 @@ pub mod matchers {
 				}
 			}
 		}
-
-
-
-
-
 
 
 		#[derive(Clone, Copy, Debug)]
@@ -3126,8 +2819,6 @@ pub mod matchers {
 		}
 
 
-
-
 		pub struct NewerOptionMatcher {
 			x_option:       NewerOptionType,
 			reference_time: SystemTime,
@@ -3144,7 +2835,6 @@ pub mod matchers {
 
 			fn matches_impl(&self, file_info: &WalkEntry) -> Result<bool, Box<dyn Error>> {
 				let x_option_time = self.x_option.get_file_time(file_info.metadata()?)?;
-
 
 
 				Ok(self
@@ -3174,7 +2864,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct NewerTimeMatcher {
 			time:            i64,
 			newer_time_type: NewerOptionType,
@@ -3190,7 +2879,6 @@ pub mod matchers {
 				let timestamp = this_time
 					.duration_since(UNIX_EPOCH)
 					.unwrap_or_else(|e| e.duration());
-
 
 
 				Ok(self.time
@@ -3219,7 +2907,6 @@ pub mod matchers {
 				}
 			}
 		}
-
 
 
 		pub trait ChangeTime {
@@ -3268,7 +2955,6 @@ pub mod matchers {
 		}
 
 
-
 		pub struct FileTimeMatcher {
 			days:           ComparableValue,
 			file_time_type: FileTimeType,
@@ -3315,12 +3001,6 @@ pub mod matchers {
 					},
 				};
 				let age_in_seconds: i64 = age.as_secs() as i64 * if is_negative { -1 } else { 1 };
-
-
-
-
-
-
 
 
 				let negative_offset = if is_negative && !self.today_start {
@@ -3393,20 +3073,14 @@ pub mod matchers {
 		// Copyright 2017 Google Inc.
 
 
-
-
-
 		use std::error::Error;
 
 		use super::{FileType, Follow, Matcher, MatcherIO, WalkEntry};
 
 
-
 		pub struct TypeMatcher {
 			file_types: Vec<FileType>,
 		}
-
-
 
 
 		fn parse_one(type_string: &str) -> Result<Option<FileType>, Box<dyn Error>> {
@@ -3490,9 +3164,6 @@ pub mod matchers {
 	mod user {
 
 
-
-
-
 		#[cfg(unix)]
 		use std::os::unix::fs::MetadataExt;
 
@@ -3523,10 +3194,6 @@ pub mod matchers {
 				Self { uid }
 			}
 
-			#[cfg(windows)]
-			pub fn from_user_name(_user: &str) -> Option<Self> {
-				None
-			}
 		}
 
 		impl Matcher for UserMatcher {
@@ -3538,10 +3205,6 @@ pub mod matchers {
 				}
 			}
 
-			#[cfg(windows)]
-			fn matches(&self, _file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
-				false
-			}
 		}
 
 		pub struct NoUserMatcher {}
@@ -3570,10 +3233,6 @@ pub mod matchers {
 				false
 			}
 
-			#[cfg(windows)]
-			fn matches(&self, _file_info: &WalkEntry, _: &mut MatcherIO) -> bool {
-				false
-			}
 		}
 	}
 
@@ -3687,7 +3346,6 @@ pub mod matchers {
 	}
 
 
-
 	pub struct MatcherIO<'a> {
 		should_skip_dir: bool,
 		exit_code:       i32,
@@ -3739,9 +3397,6 @@ pub mod matchers {
 	}
 
 
-
-
-
 	pub trait Matcher: 'static {
 
 		fn into_box(self) -> Box<dyn Matcher>
@@ -3755,10 +3410,6 @@ pub mod matchers {
 		fn matches(&self, entry: &WalkEntry, matcher_io: &mut MatcherIO) -> bool;
 
 
-
-
-
-
 		fn has_side_effects(&self) -> bool {
 
 			false
@@ -3766,8 +3417,6 @@ pub mod matchers {
 
 
 		fn finished_dir(&self, _finished_directory: &Path, _matcher_io: &mut MatcherIO) {}
-
-
 
 
 		fn finished(&self, _matcher_io: &mut MatcherIO) {}
@@ -3820,7 +3469,6 @@ pub mod matchers {
 			}
 		}
 	}
-
 
 
 	pub fn build_top_level_matcher(
@@ -3902,17 +3550,6 @@ pub mod matchers {
 	}
 
 
-
-
-
-
-
-
-
-
-
-
-
 	fn parse_date_str_to_timestamps(date_str: &str) -> Option<i64> {
 		if let Some(epoch) = date_str.strip_prefix('@')
 			&& let Ok(seconds) = epoch.parse::<f64>()
@@ -3960,16 +3597,6 @@ pub mod matchers {
 	}
 
 
-
-
-
-
-
-
-
-
-
-
 	fn parse_str_to_newer_args(input: &str) -> Option<(String, String)> {
 		if input.is_empty() {
 			return None;
@@ -3998,14 +3625,10 @@ pub mod matchers {
 	}
 
 
-
 	fn get_or_create_file(path: &str, host: &Host) -> Result<File, Box<dyn Error>> {
 		let file = File::create(host.resolve(path))?;
 		Ok(file)
 	}
-
-
-
 
 
 	fn build_matcher_tree(
@@ -4018,9 +3641,6 @@ pub mod matchers {
 		let mut top_level_matcher = ListMatcherBuilder::new();
 
 		let mut regex_type = regex::RegexType::default();
-
-
-
 
 
 		let mut i = arg_index;
@@ -4049,8 +3669,6 @@ pub mod matchers {
 					if i >= args.len() - 2 {
 						return Err(From::from(format!("missing argument to {}", args[i])));
 					}
-
-
 
 
 					i += 1;
@@ -4392,14 +4010,6 @@ pub mod matchers {
 				"-follow" => {
 
 
-
-
-
-
-
-
-
-
 					config.follow = Follow::Always;
 					config.no_leaf_dirs = true;
 					Some(TrueMatcher.into_box())
@@ -4523,9 +4133,6 @@ pub mod matchers {
 	}
 
 
-
-
-
 	fn parse_files0_args(config: &mut Config, host: &mut Host) -> Result<(), Box<dyn Error>> {
 		let mode = config.files0_argument.as_ref().unwrap();
 		let mut buffer = Vec::new();
@@ -4605,7 +4212,6 @@ impl Default for Config {
 			today_start:       false,
 
 
-
 			no_leaf_dirs:      false,
 			follow:            Follow::Never,
 			new_paths:         None,
@@ -4613,7 +4219,6 @@ impl Default for Config {
 		}
 	}
 }
-
 
 
 pub trait Dependencies {
@@ -4651,7 +4256,6 @@ struct ParsedInfo {
 	paths:   Vec<String>,
 	config:  Config,
 }
-
 
 
 fn parse_args(args: &[&str], host: &mut Host) -> Result<ParsedInfo, Box<dyn Error>> {
@@ -4982,14 +4586,6 @@ Early alpha implementation. Currently the only expressions supported are
 fn print_version(host: &mut Host) {
 	let _ = writeln!(host.stdout, "find (Rust) 0.8.0");
 }
-
-
-
-
-
-
-
-
 
 
 fn rewrite_bsd_invocation(args: &[&str], host: &mut Host) -> Option<Vec<String>> {

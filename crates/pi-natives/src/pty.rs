@@ -271,14 +271,7 @@ fn run_pty_sync(
 		PtyCommand::Shell { command, shell } => {
 			let shell = shell.as_deref().unwrap_or("sh");
 			let mut cmd = CommandBuilder::new(shell);
-			let lower = shell.to_lowercase();
-			if lower.ends_with("cmd.exe") || lower.ends_with("cmd") {
-				cmd.arg("/c");
-			} else if lower.contains("powershell") || lower.contains("pwsh") {
-				cmd.arg("-Command");
-			} else {
-				cmd.arg("-lc");
-			}
+			cmd.arg("-lc");
 			cmd.arg(command);
 			cmd
 		},

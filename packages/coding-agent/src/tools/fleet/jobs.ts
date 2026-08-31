@@ -80,8 +80,6 @@ function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[]
 	for (const ref of registry.list()) {
 		if (ref.kind !== "sub" || ref.status !== "running") continue;
 		if (ref.id === selfId || covered.has(ref.id)) continue;
-		// "Live" means the transcript is held by an active session. isStreaming alone
-		// misfires: it is false during tool execution and between requests of one run.
 		const live = ref.session !== null || (ref.sessionFile ? readSessionLiveState(ref.sessionFile).fresh : false);
 		out.push({
 			id: ref.id,

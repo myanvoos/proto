@@ -205,7 +205,6 @@ function parseMediaHeader(header: Uint8Array): MediaMetadata | null {
 	if (magicEquals(header, 0, MPEG_PACK_HEADER) || magicEquals(header, 0, MPEG_SEQUENCE_HEADER)) {
 		return { kind: "video", mimeType: "video/mpeg" };
 	}
-	// MPEG/ADTS frame sync: 11 set bits. Layer bits (b1 & 0x06): 0b10 = Layer III (MP3), 0b00 = ADTS (AAC).
 	if (header.length >= 2 && header[0] === 0xff && (header[1]! & 0xe0) === 0xe0) {
 		const layerBits = header[1]! & 0x06;
 		if (layerBits === 0x02) return { kind: "audio", mimeType: "audio/mpeg" };

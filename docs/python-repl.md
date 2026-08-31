@@ -31,7 +31,7 @@ Current tool input:
 }
 ```
 
-The session-scoped wire schema advertises only enabled runtimes. The static implementation also supports `"js"`, `"rb"`, and `"jl"`; Python and JavaScript default on, while Ruby and Julia are opt-in. The tool is `concurrency = "exclusive"` for a session, so calls do not overlap. State persists across separate calls to the same language runtime.
+The session-scoped wire schema advertises only enabled runtimes; Python and JavaScript are both enabled by default. The tool is `concurrency = "exclusive"` for a session, so calls do not overlap. State persists across separate calls to the same language runtime.
 
 ## Kernel lifecycle
 
@@ -142,7 +142,7 @@ The runner additionally receives `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-
 
 ## Tool availability and mode selection
 
-The backend settings `eval.py` / `eval.js` default to `true`; `eval.rb` / `eval.jl` default to `false`. Optional boolean environment flags `PI_PY`, `PI_JS`, `PI_RB`, and `PI_JL` override their corresponding setting independently.
+The backend settings `eval.py` / `eval.js` default to `true`. Optional boolean environment flags `PI_PY` and `PI_JS` override their corresponding setting independently.
 
 The tool's session-scoped schema lists only enabled runtimes. If Python preflight fails while another runtime is enabled, `eval` remains available for that runtime and a `py` call reports a Python-backend availability error with enabled alternatives.
 
@@ -224,7 +224,7 @@ Output is streamed through `OutputSink` and may be persisted to artifact storage
 
 ## Relevant environment variables
 
-- `PI_PY` / `PI_JS` / `PI_RB` / `PI_JL` — per-backend exposure overrides
+- `PI_PY` / `PI_JS` — per-backend exposure overrides
 - `PI_PYTHON_SKIP_CHECK=1` — bypass Python preflight/warm checks
 - `PI_PYTHON_INTEGRATION=1` — enable gated integration tests that spawn a real Python
 - `PI_PYTHON_IPC_TRACE=1` — log NDJSON frames exchanged with the runner subprocess

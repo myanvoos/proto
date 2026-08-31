@@ -1,13 +1,11 @@
-{{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}{{#if rb}} Ruby: sync, kwargs.{{/if}}{{#if jl}} Julia: sync, kwargs.{{/if}}
+{{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}
 ```
 display(value) → None        print(value, ...) → None
-{{#if py}}replace(path, old, new, count?=1, expect?=None) → Path    refuses unless file holds exactly `count` occurrences of `old` (count=None: all)
+{{#if py}}edit(path, old, new, count?=1, expect?=None, span?=(start,end)) → Path    refuses unless file holds exactly `count` occurrences of `old` (count=None: all); `expect` pins whole file too; whole-file update = pass full content as `old`; `span`=(start,end) replaces that 0-based char range instead of matching `old` (old=None → blind replace; old given → stale guard on range; no count)
 symbols(path) → str    tree-sitter outline, bodies elided
 defs() → dict    kernel-defined names → cell number
-{{/if}}write(path, content) → str
-{{#if py}}edit(path, expect?=None, new?=None, transform?=None) → Path    no `expect` → create-only (refuses existing file); with `expect` → writes only if current content equals it byte-for-byte
-block_range(path, line) → (start, end) | None
-edit_block(path, line, body, expect) → Path    replaces syntactic block at `line`; byte-exact `expect` guard
+{{/if}}{{#if py}}write(path, content, overwrite?=False) → Path    refuses an existing file unless overwrite=True; updates go through edit{{/if}}{{#if js}}write(path, content) → str{{/if}}
+{{#if py}}block_range(path, line) → (start, end) | None
 {{/if}}env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]
 tool.<name>(args) → unknown    invoke any session tool; `args` = its parameter object

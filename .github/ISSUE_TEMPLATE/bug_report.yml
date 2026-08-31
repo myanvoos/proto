@@ -40,8 +40,6 @@ body:
       options:
         - macOS
         - Linux
-        - Windows (native)
-        - Windows (WSL)
     validations:
       required: true
 

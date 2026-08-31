@@ -23,26 +23,21 @@ import {
 import { formatStyledTruncationWarning, stripOutputNotice } from "./output-meta";
 import {
 	formatBadge,
-	formatDiffTruncationHint,
 	formatDuration,
 	formatStatusIcon,
 	formatTitle,
 	getDiffStats,
-	PREVIEW_LIMITS,
 	previewWindowRows,
 	replaceTabs,
 	shortenPath,
-	truncateDiffByHunk,
 	truncateToWidth,
 	wrapBrackets,
 	wrapCodeFrameLine,
 } from "./render-utils";
 export const EVAL_DEFAULT_PREVIEW_LINES = 10;
 
-function languageForHighlighter(language: EvalLanguage | undefined): "python" | "javascript" | "ruby" | "julia" {
+function languageForHighlighter(language: EvalLanguage | undefined): "python" | "javascript" {
 	if (language === "js") return "javascript";
-	if (language === "ruby") return "ruby";
-	if (language === "julia") return "julia";
 	return "python";
 }
 
@@ -75,8 +70,6 @@ interface EvalRenderCell {
 
 function normalizeRenderLanguage(value: string | undefined): EvalLanguage {
 	if (value === "js") return "js";
-	if (value === "rb" || value === "ruby") return "ruby";
-	if (value === "jl" || value === "julia") return "julia";
 	return "python";
 }
 
@@ -230,21 +223,11 @@ function hasEventDiff(event: EvalStatusEvent): boolean {
 	return (event.op === "write" || event.op === "edit") && typeof event.diff === "string" && event.diff.length > 0;
 }
 
-function renderEventDiff(
-	event: EvalStatusEvent,
-	theme: Theme,
-	expanded: boolean,
-	budget: { hunks: number; lines: number },
-): string[] {
+function renderEventDiff(event: EvalStatusEvent, theme: Theme): string[] {
 	const diff = typeof event.diff === "string" ? event.diff : "";
 	if (!diff) return [];
 	const filePath = typeof event.path === "string" ? event.path : undefined;
-	const { text, hiddenHunks, hiddenLines } = expanded
-		? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
-		: truncateDiffByHunk(diff, budget.hunks, budget.lines);
-	const lines = renderDiffColored(text, { filePath }).split("\n");
-	const hint = expanded ? undefined : formatDiffTruncationHint(hiddenHunks, hiddenLines, theme);
-	if (hint) lines.push(hint);
+	const lines = renderDiffColored(diff, { filePath }).split("\n");
 	if (event.diffTruncated === true) {
 		lines.push(theme.fg("dim", "… diff truncated"));
 	}
@@ -466,34 +449,30 @@ function widthAwareText(build: (width: number) => string[]): Component {
 }
 
 const STATUS_COLLAPSED_MAX_EVENTS = 3;
-const STATUS_DIFF_MIN_LINES = 6;
 const STATUS_TREE_INDENT = 3;
 
-// A collapsed cell shares the edit tool's single-file diff budget across every
-// file-op event it shows, so touching several files stays as compact as one
-// edit call instead of stacking a full preview per file.
-function collapsedDiffBudget(diffEventCount: number): { hunks: number; lines: number } {
-	const share = Math.max(1, diffEventCount);
-	return {
-		hunks: Math.max(1, Math.floor(PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS / share)),
-		lines: Math.max(STATUS_DIFF_MIN_LINES, Math.floor(PREVIEW_LIMITS.DIFF_COLLAPSED_LINES / share)),
-	};
+function isFileOpEvent(event: EvalStatusEvent): boolean {
+	return event.op === "write" || event.op === "edit" || event.op === "delete";
 }
 
 function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): string[] {
 	if (events.length === 0) return [];
 
-	const hidden = expanded ? 0 : Math.max(0, events.length - STATUS_COLLAPSED_MAX_EVENTS);
-	const visible = hidden > 0 ? events.slice(hidden) : events;
-	const budget = collapsedDiffBudget(visible.filter(hasEventDiff).length);
+	const nonFileOpIndexes: number[] = [];
+	for (let i = 0; i < events.length; i++) {
+		if (!isFileOpEvent(events[i])) nonFileOpIndexes.push(i);
+	}
+	const hiddenCount = expanded ? 0 : Math.max(0, nonFileOpIndexes.length - STATUS_COLLAPSED_MAX_EVENTS);
+	const hiddenIndexes = new Set(nonFileOpIndexes.slice(0, hiddenCount));
+	const visible = events.filter((_, i) => !hiddenIndexes.has(i));
 	const bodyWidth = Math.max(1, width - STATUS_TREE_INDENT);
 
 	const lines: string[] = [];
 	const pushText = (line: string): void => {
 		lines.push(...wrapTextWithAnsi(line, width));
 	};
-	if (hidden > 0) {
-		pushText(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
+	if (hiddenCount > 0) {
+		pushText(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hiddenCount} earlier`)}`);
 	}
 	for (let i = 0; i < visible.length; i++) {
 		const event = visible[i];
@@ -506,10 +485,7 @@ function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: b
 		pushText(`${branch} ${head}`);
 		for (const line of rest) pushText(`${cont}${line}`);
 		if (!withDiff) continue;
-		// Wrap each diff row before adding the tree rail: wrapCodeFrameLine only
-		// recognizes a gutter at the start of the line, so prefixing first would
-		// drop every continuation row back to column 0.
-		for (const diffLine of renderEventDiff(event, theme, expanded, budget)) {
+		for (const diffLine of renderEventDiff(event, theme)) {
 			for (const row of wrapCodeFrameLine(diffLine, bodyWidth)) {
 				lines.push(`${cont}${row}`);
 			}

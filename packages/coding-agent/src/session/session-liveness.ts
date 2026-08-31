@@ -2,10 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
 
-/** How often an open session refreshes its liveness marker. */
 export const SESSION_LIVE_HEARTBEAT_INTERVAL_MS = 5_000;
 
-/** A marker older than this is considered abandoned (crashed or exited process). */
 export const SESSION_LIVE_FRESH_WINDOW_MS = 15_000;
 
 export function getSessionLivePath(sessionFile: string): string {
@@ -13,11 +11,8 @@ export function getSessionLivePath(sessionFile: string): string {
 }
 
 export interface SessionLiveState {
-	/** True when the marker exists and was refreshed within the freshness window. */
 	fresh: boolean;
-	/** Last known streaming state of the owning session (false when unknown). */
 	streaming: boolean;
-	/** Process id that owns the marker, when parseable. */
 	pid: number | undefined;
 }
 
@@ -55,12 +50,10 @@ function writeLiveMarker(sessionFile: string, streaming: boolean): void {
 		try {
 			fs.rmSync(tmpPath, { force: true });
 		} catch {
-			// best effort cleanup
 		}
 	}
 }
 
-/** Synchronously refresh the marker's mtime without rewriting its content. */
 function touchLiveMarker(sessionFile: string): void {
 	const livePath = getSessionLivePath(sessionFile);
 	const now = new Date();
@@ -75,10 +68,6 @@ function touchLiveMarker(sessionFile: string): void {
 	}
 }
 
-/**
- * Reads the liveness state of a session file. A session counts as live when its
- * marker was refreshed recently by any process, including this one.
- */
 export function readSessionLiveState(sessionFile: string, now = Date.now()): SessionLiveState {
 	const livePath = getSessionLivePath(sessionFile);
 	let mtimeMs: number;
@@ -97,7 +86,6 @@ export function readSessionLiveState(sessionFile: string, now = Date.now()): Ses
 	return { fresh: true, streaming: marker?.streaming ?? false, pid: marker?.pid };
 }
 
-/** Heartbeat marking a session file as open by this process. */
 export class SessionLiveHeartbeat {
 	#sessionFile: string;
 	#timer: NodeJS.Timeout | undefined;
@@ -117,7 +105,6 @@ export class SessionLiveHeartbeat {
 		writeLiveMarker(this.#sessionFile, streaming);
 	}
 
-	/** Re-point the heartbeat after the underlying session file changed. */
 	retarget(sessionFile: string): void {
 		if (this.#stopped || path.resolve(sessionFile) === path.resolve(this.#sessionFile)) return;
 		this.removeMarker();

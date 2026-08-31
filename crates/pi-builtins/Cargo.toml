@@ -137,9 +137,6 @@ features = [
   "update-control",
 ]
 
-[target."cfg(any(unix, windows))".dependencies.tokio]
-version = "1.50.0"
-features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync"]
 
 [target.'cfg(target_family = "wasm")'.dependencies.tokio]
 version = "1.52.1"
@@ -149,24 +146,13 @@ features = ["io-util", "macros", "rt"]
 procfs = "0.18.0"
 
 [target."cfg(unix)".dependencies]
+tokio = { version = "1.50.0", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync"] }
 dns-lookup = "3.0.0"
 nix = { version = "0.31.2", features = ["fs", "poll", "process", "resource", "signal", "term", "user"] }
 notify = { version = "=8.2.0", features = ["macos_kqueue"] }
 rlimit = "0.11.0"
 rustix = { version = "1.1.4", features = ["fs", "process", "time"] }
 uucore = { version = "0.8.0", features = ["fsxattr", "safe-traversal"] }
-
-[target."cfg(windows)".dependencies]
-notify = "=8.2.0"
-rustix = { version = "1.1.4", features = ["fs", "process", "time"] }
-windows-sys = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_Networking_WinSock",
-  "Win32_Storage_FileSystem",
-  "Win32_System_IO",
-  "Win32_System_SystemInformation",
-  "Win32_System_WindowsProgramming",
-] }
 
 [dev-dependencies]
 anyhow = "1.0.102"

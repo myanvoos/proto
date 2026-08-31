@@ -120,7 +120,7 @@ const KEYBINDINGS = {
 		description: "Open external editor",
 	},
 	"app.message.followUp": {
-		defaultKeys: ["ctrl+q", "ctrl+enter"],
+		defaultKeys: "ctrl+enter",
 		description: "Send follow-up message",
 	},
 	"app.retry": {
@@ -457,11 +457,9 @@ function loadKeybindingsConfig(
 }
 
 const FOLLOW_UP_KEYBINDING: AppKeybinding = "app.message.followUp";
-const WINDOWS_FOLLOW_UP_FALLBACK_KEY: KeyId = "ctrl+q";
 const DEQUEUE_KEYBINDING: AppKeybinding = "app.message.dequeue";
 const MACOS_DEQUEUE_FALLBACK_KEY: KeyId = "shift+up";
 function getFallbackKey(keybinding: Keybinding): KeyId | undefined {
-	if (keybinding === FOLLOW_UP_KEYBINDING) return WINDOWS_FOLLOW_UP_FALLBACK_KEY;
 	if (keybinding === DEQUEUE_KEYBINDING) return MACOS_DEQUEUE_FALLBACK_KEY;
 	return undefined;
 }

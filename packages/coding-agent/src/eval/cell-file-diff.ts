@@ -11,8 +11,6 @@ const MAX_DIFF_CHARS = 32000;
 const MAX_EVENTS_PER_CELL = 50;
 const MAX_CACHE_ENTRIES = 512;
 const MAX_CACHE_CONTENT_BYTES = 16 * 1024 * 1024;
-// Total budget for caching pre-cell content of dirty files (baseline for
-// walker diffs); per-file diffing is uncapped, only this total is bounded.
 const MAX_CAPTURE_CONTENT_BYTES = 16 * 1024 * 1024;
 const PRUNED_DIRS = new Set([
 	".git",
@@ -103,9 +101,6 @@ function alreadyReported(
 		event =>
 			(event.op === "write" || event.op === "edit") &&
 			typeof event.path === "string" &&
-			// Runtime status events may carry paths relative to the cell cwd; the
-			// walk produces absolute paths. Resolve before comparing so a change
-			// already reported by the runtime is not emitted a second time.
 			path.resolve(root, event.path) === absPath &&
 			typeof event.sha === "string" &&
 			event.sha === afterSha,
@@ -256,9 +251,6 @@ export class CellFsTracker {
 	}
 
 	async #readAfter(absPath: string): Promise<ContentEntry> {
-		// Files of any size are read whole so the sha matches what runtime
-		// status events report for the same bytes; a partial hash would defeat
-		// the already-reported dedupe, and content is needed for the diff.
 		const bytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
 		const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 		const sha = sha256Prefix(bytes);
@@ -358,7 +350,6 @@ export class CellFsTracker {
 			) {
 				continue;
 			}
-			// Binary and oversized files have no text content to diff; report byte size.
 			if (afterEntry.content === undefined) {
 				onStatus({ op: "write", path: absPath, bytes: afterStat.size, sha: afterEntry.sha });
 				emitted += 1;

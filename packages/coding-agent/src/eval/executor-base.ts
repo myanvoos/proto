@@ -363,7 +363,6 @@ interface ExecuteWithKernelBaseParams<
 
 	errorLogLabel: string;
 
-	isJulia?: boolean;
 	cancelledErrorClass: CancelledErrorClass;
 	buildKernelEnvPatch: (options: TOptions) => TEnv;
 	formatKernelTimeoutAnnotation: (executionTimeoutMs: number | undefined, kernelKilled: boolean) => string;
@@ -382,7 +381,6 @@ export async function executeWithKernelBase<
 		options,
 		runIdPrefix,
 		errorLogLabel,
-		isJulia,
 		cancelledErrorClass,
 		buildKernelEnvPatch,
 		formatKernelTimeoutAnnotation,
@@ -408,7 +406,7 @@ export async function executeWithKernelBase<
 		if (output.type === "status") {
 			abortShield.handleStatus?.(output.event);
 			options?.onStatus?.(output.event);
-			if (!isJulia && isEvalTimeoutControlEvent(output.event)) return;
+			if (isEvalTimeoutControlEvent(output.event)) return;
 		}
 		displayOutputs.push(output);
 	};

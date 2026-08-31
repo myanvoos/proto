@@ -137,9 +137,6 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 
 function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref" | "session">): AgentsViewSection {
 	if (!record.ref) {
-		// No ref means the session is owned by another process (or history only). When its
-		// live marker reports active streaming, it is running — never mind what the last
-		// flushed transcript entry implies.
 		if (record.session?.liveStreaming) return "running";
 		return "inactive";
 	}
@@ -470,9 +467,6 @@ export function resolveAgentsViewSelectionIndex(
 
 export function countAgentsBySection(rows: readonly AgentsViewRow[]): Record<AgentsViewSection, number> {
 	const counts: Record<AgentsViewSection, number> = { running: 0, idle: 0, current: 0, inactive: 0 };
-	// Mirror getDisplayRowsForSection: children render under the section their nearest
-	// depth-0 ancestor was filed under, so counts must count the same way or the header
-	// disagrees with the visible sections.
 	let displaySection: AgentsViewSection | undefined;
 	for (const row of rows) {
 		if (row.depth === 0) displaySection = row.section;
@@ -529,12 +523,8 @@ export function buildAgentsViewRows(
 	const baseRows: MutableAgentsViewRow[] = records.map(record => {
 		const spawnTaskSource = getRecordSessionFile(record);
 		const spawnTask = spawnTaskSource ? spawnTasks.get(spawnTaskSource) : undefined;
-		const isChildOfScopeRoot = scopeRootAliases.size > 0 && parentKeys(record).some(key => scopeRootAliases.has(key));
-
-		const nestedByLineage = Boolean(record.ref && (record.ref.kind === "sub" || record.ref.parentId));
-		const nested = nestedByLineage && !isChildOfScopeRoot;
 		return {
-			kind: nested ? "subagent" : "agent",
+			kind: "agent" as const,
 			section: record.section,
 			record,
 			title: getRecordTitle(record),
@@ -554,18 +544,23 @@ export function buildAgentsViewRows(
 		for (const key of row.record?.identityAliases ?? []) rowsByKey.set(key, row);
 	}
 
+	const childOfScopeRoot = (record: AgentsViewRecord): boolean =>
+		scopeRootAliases.size > 0 && parentKeys(record).some(key => scopeRootAliases.has(key));
+
 	const childrenByParent = new Map<MutableAgentsViewRow, MutableAgentsViewRow[]>();
 	const nestedRows = new Set<MutableAgentsViewRow>();
 	for (const row of baseRows) {
-		if (row.kind !== "subagent" || !row.record) continue;
+		if (!row.record) continue;
+		// Children of the scope root render as roots — the scoped view flattens one level.
+		if (childOfScopeRoot(row.record)) continue;
+		const ref = row.record.ref;
+		const refNested = Boolean(ref && (ref.kind === "sub" || ref.parentId));
 		const parent = parentKeys(row.record)
 			.map(key => rowsByKey.get(key))
 			.find(Boolean);
-		if (!parent || parent === row) {
-			row.kind = "agent";
-			continue;
-		}
+		if (!parent || parent === row) continue;
 		nestedRows.add(row);
+		row.kind = "subagent";
 		row.parentIdentity = parent.identity;
 		if (row.section === "running") parent.runningSubagentCount += 1;
 		const siblings = childrenByParent.get(parent) ?? [];

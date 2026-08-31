@@ -7,11 +7,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 async function ensurePosixRemote(target: SSHConnectionTarget): Promise<"sh" | "bash" | "zsh"> {
 	await ensureConnection(target);
 	const info = await ensureHostInfo(target);
-	if (info.os === "windows") {
-		throw new Error(
-			`ssh://: ${target.name} is a Windows host; ssh:// supports POSIX remotes only (head/cat/mv) — use \`bash\` with a remote SSH command for Windows hosts`,
-		);
-	}
 	if (!info.transferShell) {
 		throw new Error(
 			`ssh://: ${target.name} has no verified POSIX shell for ssh:// read/write — none of sh/bash/zsh round-tripped a capability probe (use \`bash\` with a remote SSH command for this host)`,

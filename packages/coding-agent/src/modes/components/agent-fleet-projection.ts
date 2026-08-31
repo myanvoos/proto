@@ -20,11 +20,6 @@ interface AgentTreeProjection {
 
 export const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, idle: 1, parked: 2, aborted: 3 };
 
-/**
- * True when the ref's transcript lives inside the artifacts tree of the given session —
- * i.e. the fleet roster of that session owns it. Refs without a session file (in-memory
- * workers) always belong; refs from other sessions never do.
- */
 export function refBelongsToSessionTree(
 	ref: Pick<AgentRef, "sessionFile">,
 	sessionFile: string | null | undefined,

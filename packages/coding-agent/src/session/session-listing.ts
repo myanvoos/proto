@@ -28,10 +28,8 @@ export interface SessionInfo {
 
 	status?: SessionStatus;
 
-	/** True when a live-usage marker for this session was refreshed recently (any process). */
 	liveOpen?: boolean;
 
-	/** True when the session owning the marker is currently streaming. */
 	liveStreaming?: boolean;
 }
 
@@ -390,7 +388,6 @@ async function scanSessionFile(
 	const cacheKey = withStatus ? `s\0${file}` : `h\0${file}`;
 	const cached = cache.get(cacheKey);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-		// Liveness is intentionally not cached: it changes without the session file changing.
 		return cached.info ? attachSessionLiveState({ ...cached.info }, storage) : undefined;
 	}
 	try {

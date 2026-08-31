@@ -2,21 +2,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { BINARY_NAME, normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
 
-type ProfileAliasShell = "bash" | "zsh" | "fish" | "powershell" | "pwsh";
+type ProfileAliasShell = "bash" | "zsh" | "fish";
 
 function quoteForShell(pathValue: string): string {
 	return `'${pathValue.replace(/'/g, `'"'"'`)}'`;
-}
-
-function quoteForPowerShell(pathValue: string): string {
-	return `'${pathValue.replace(/'/g, `''`)}'`;
 }
 
 interface ProfileAliasCommand {
 	display: string;
 	posix: string;
 	fish: string;
-	powerShell: string;
 }
 
 interface ProfileAliasProcessOptions {
@@ -29,7 +24,6 @@ const DEFAULT_ALIAS_COMMAND: ProfileAliasCommand = {
 	display: BINARY_NAME,
 	posix: BINARY_NAME,
 	fish: BINARY_NAME,
-	powerShell: BINARY_NAME,
 };
 
 interface ProfileAliasInstallOptions {
@@ -93,41 +87,6 @@ const FISH_RESERVED_ALIAS_NAMES: ReadonlySet<string> = new Set([
 	"switch",
 	"while",
 ]);
-const POWERSHELL_RESERVED_ALIAS_NAMES: ReadonlySet<string> = new Set([
-	"begin",
-	"break",
-	"catch",
-	"class",
-	"continue",
-	"data",
-	"do",
-	"dynamicparam",
-	"else",
-	"elseif",
-	"end",
-	"enum",
-	"exit",
-	"filter",
-	"finally",
-	"for",
-	"foreach",
-	"from",
-	"function",
-	"if",
-	"in",
-	"param",
-	"process",
-	"return",
-	"switch",
-	"throw",
-	"trap",
-	"try",
-	"until",
-	"using",
-	"var",
-	"while",
-	"workflow",
-]);
 
 function isEnoentError(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT";
@@ -140,9 +99,6 @@ function getReservedAliasNames(shell: ProfileAliasShell): ReadonlySet<string> {
 			return POSIX_RESERVED_ALIAS_NAMES;
 		case "fish":
 			return FISH_RESERVED_ALIAS_NAMES;
-		case "powershell":
-		case "pwsh":
-			return POWERSHELL_RESERVED_ALIAS_NAMES;
 	}
 }
 
@@ -161,16 +117,11 @@ function validateAliasName(aliasName: string, shell: ProfileAliasShell): string 
 }
 
 function normalizeShellName(shellPath: string | undefined): ProfileAliasShell {
-	const shell = path
-		.basename(shellPath ?? "")
-		.toLowerCase()
-		.replace(/\.exe$/, "");
+	const shell = path.basename(shellPath ?? "").toLowerCase();
 	if (shell === "zsh") return "zsh";
 	if (shell === "bash") return "bash";
 	if (shell === "fish") return "fish";
-	if (shell === "pwsh") return "pwsh";
-	if (shell === "powershell") return "powershell";
-	throw new Error(`Unsupported shell${shell ? ` "${shell}"` : ""}. Supported shells: bash, zsh, fish, PowerShell.`);
+	throw new Error(`Unsupported shell${shell ? ` "${shell}"` : ""}. Supported shells: bash, zsh, fish.`);
 }
 
 export function resolveProfileAliasCommandFromProcess({
@@ -186,28 +137,12 @@ export function resolveProfileAliasCommandFromProcess({
 
 	const scriptPath = path.resolve(cwd, script);
 
-	const posixScriptPath = scriptPath.replace(/\\/g, "/");
-	const posixRuntime = runtime.replace(/\\/g, "/");
-	const posix = `${quoteForShell(posixRuntime)} ${quoteForShell(posixScriptPath)}`;
+	const posix = `${quoteForShell(runtime)} ${quoteForShell(scriptPath)}`;
 	return {
-		display: `${posixRuntime} ${posixScriptPath}`,
+		display: `${runtime} ${scriptPath}`,
 		posix,
 		fish: posix,
-		powerShell: `${quoteForPowerShell(runtime)} ${quoteForPowerShell(scriptPath)}`,
 	};
-}
-
-function toPosix(p: string): string {
-	return p.replace(/\\/g, "/");
-}
-
-function posixJoinUnc(...segments: string[]): string {
-	const joined = path.posix.join(...segments);
-
-	if (segments.some(s => s.startsWith("//") && !s.startsWith("///"))) {
-		return `/${joined}`;
-	}
-	return joined;
 }
 
 function resolveShellConfigPath(
@@ -216,20 +151,15 @@ function resolveShellConfigPath(
 	platform: NodeJS.Platform,
 	env: NodeJS.ProcessEnv,
 ): string {
-	const posixHome = toPosix(homeDir);
 	switch (shell) {
 		case "zsh":
-			return posixJoinUnc(env.ZDOTDIR ? toPosix(env.ZDOTDIR) : posixHome, ".zshrc");
+			return path.join(env.ZDOTDIR ?? homeDir, ".zshrc");
 		case "bash":
-			return platform === "darwin" ? posixJoinUnc(posixHome, ".bash_profile") : posixJoinUnc(posixHome, ".bashrc");
+			return platform === "darwin" ? path.join(homeDir, ".bash_profile") : path.join(homeDir, ".bashrc");
 		case "fish": {
-			const configHome = env.XDG_CONFIG_HOME ? toPosix(env.XDG_CONFIG_HOME) : posixJoinUnc(posixHome, ".config");
-			return posixJoinUnc(configHome, "fish", "conf.d", "proto-profiles.fish");
+			const configHome = env.XDG_CONFIG_HOME ?? path.join(homeDir, ".config");
+			return path.join(configHome, "fish", "conf.d", "proto-profiles.fish");
 		}
-		case "pwsh":
-			return posixJoinUnc(posixHome, ".config", "powershell", "Microsoft.PowerShell_profile.ps1");
-		case "powershell":
-			return path.join(homeDir, "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
 	}
 }
 
@@ -250,10 +180,6 @@ function renderAliasBlock(
 				`    command ${command.fish} --profile=${profile} $argv`,
 				"end",
 			].join("\n");
-			break;
-		case "powershell":
-		case "pwsh":
-			body = [`function ${aliasName} {`, `    & ${command.powerShell} --profile=${profile} @args`, "}"].join("\n");
 			break;
 		default:
 			body = [`${aliasName}() {`, `    command ${command.posix} --profile=${profile} "$@"`, "}"].join("\n");
@@ -327,11 +253,6 @@ export async function installProfileAlias(options: ProfileAliasInstallOptions): 
 		aliasName,
 		profile,
 		command,
-		reloadedWith:
-			shell === "fish"
-				? `source ${quoteForShell(configPath)}`
-				: shell === "powershell" || shell === "pwsh"
-					? `. ${quoteForPowerShell(configPath)}`
-					: `. ${quoteForShell(configPath)}`,
+		reloadedWith: shell === "fish" ? `source ${quoteForShell(configPath)}` : `. ${quoteForShell(configPath)}`,
 	};
 }

@@ -375,6 +375,7 @@ export async function executePython(code: string, options?: PythonExecutorOption
 		if (isCancellationError(err, PythonExecutionCancelledError) || executionOptions.signal?.aborted) {
 			return createCancelledPythonResult(
 				isTimedOutCancellation(err, PythonExecutionCancelledError, executionOptions.signal),
+				executionOptions.idleTimeoutMs,
 			);
 		}
 		throw err;

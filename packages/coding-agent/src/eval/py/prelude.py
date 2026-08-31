@@ -10,8 +10,6 @@ __all__ = [
     "write",
     "edit",
     "block_range",
-    "edit_block",
-    "replace",
     "symbols",
     "output",
     "tool",
@@ -164,30 +162,28 @@ if "__proto_prelude_loaded__" not in globals():
                     data["diffTruncated"] = True
         _emit_status(op, **data)
 
-    def _stale_guard(p, current: str, expect: str) -> RuntimeError:
-        """Explain *where* an `expect` guard failed, not just that it did.
+    def _first_divergence(current: str, expected: str) -> str:
+        """Describe where two contents first differ, for guard-failure messages.
 
         A bare "changed since grounding" leaves the caller unable to tell a
-        real concurrent edit from a mis-transcribed `expect`.
+        real concurrent edit from a mis-transcribed expectation.
         """
-        if current.rstrip() == expect.rstrip():
-            detail = "only trailing whitespace differs"
-        else:
-            cur_lines = current.split("\n")
-            exp_lines = expect.split("\n")
-            detail = None
-            for i, (a, b) in enumerate(zip(cur_lines, exp_lines), 1):
-                if a != b:
-                    detail = f"first difference at line {i}: current {a[:80]!r}, expected {b[:80]!r}"
-                    break
-            if detail is None:
-                detail = (
-                    f"identical through line {min(len(cur_lines), len(exp_lines))}; "
-                    f"current has {len(cur_lines)} lines, expected {len(exp_lines)}"
-                )
+        if current.rstrip() == expected.rstrip():
+            return "only trailing whitespace differs"
+        cur_lines = current.split("\n")
+        exp_lines = expected.split("\n")
+        for i, (a, b) in enumerate(zip(cur_lines, exp_lines), 1):
+            if a != b:
+                return f"first difference at line {i}: current {a[:80]!r}, expected {b[:80]!r}"
+        return (
+            f"identical through line {min(len(cur_lines), len(exp_lines))}; "
+            f"current has {len(cur_lines)} lines, expected {len(exp_lines)}"
+        )
+
+    def _stale_guard(p, current: str, expect: str) -> RuntimeError:
         return RuntimeError(
             f"stale guard: {p} does not match expect= (current {len(current)} chars, "
-            f"expected {len(expect)}); {detail}. Re-read the file and retry."
+            f"expected {len(expect)}); {_first_divergence(current, expect)}. Re-read the file and retry."
         )
 
     def env(key: str | None = None, value: str | None = None):
@@ -243,54 +239,27 @@ if "__proto_prelude_loaded__" not in globals():
             raise ValueError(f"{scheme}:// path escapes its root: {path}")
         return Path(resolved)
 
-    def write(path: str | Path, content: str) -> Path:
-        """Write file contents (create parents)."""
+    def write(path: str | Path, content: str, *, overwrite: bool = False) -> Path:
+        """Create a file with content (parents auto-created).
+
+        Refuses to overwrite an existing file unless overwrite=True; guarded
+        updates go through edit().
+        """
         p = _resolve_proto_path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        before = ""
-        try:
-            if p.is_file():
+        before: str | None = ""
+        if p.exists():
+            if not overwrite:
+                raise RuntimeError(
+                    f"write() refusing to overwrite existing {p}; pass overwrite=True to replace it wholesale, "
+                    "or use edit(path, old, new) for a guarded update"
+                )
+            try:
                 before = p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError, ValueError):
-            before = None
+            except (OSError, UnicodeDecodeError, ValueError):
+                before = None
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _emit_file_status("write", p, before=before, after=content)
-        return p
-
-    def edit(
-        path: str | Path, expect: str | None = None, new: str | None = None, transform=None
-    ) -> Path:
-        """Guarded file edit; refuses to write unless the guard holds.
-
-        edit(path, new=...)               create-only (fails if the file exists)
-        edit(path, expect, new=...)       write only if current content equals expect
-        edit(path, expect, transform=fn)  write fn(current) under the same guard
-        """
-        if new is None and transform is None:
-            raise ValueError("edit() requires new= or transform=")
-        if new is not None and transform is not None:
-            raise ValueError("edit() takes new= or transform=, not both")
-        p = _resolve_proto_path(path)
-        if expect is None:
-            if p.exists():
-                raise RuntimeError(
-                    f"edit() refusing to overwrite existing {p}; pass expect= for a guarded update or use write()"
-                )
-            content = ""
-            action = "create"
-        else:
-            if not p.exists():
-                raise RuntimeError(f"stale guard: {p} does not exist")
-            content = p.read_text(encoding="utf-8")
-            if content != expect:
-                raise _stale_guard(p, content, expect)
-            action = "update"
-        result = transform(content) if transform is not None else new
-        if not isinstance(result, str):
-            raise TypeError(f"edit() body must be str, got {type(result).__name__}")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(result, encoding="utf-8")
-        _emit_file_status("edit", p, before=content, after=result, action=action)
         return p
 
     def _block_range_on(path_str: str, code: str, line: int):
@@ -309,65 +278,70 @@ if "__proto_prelude_loaded__" not in globals():
         p = _resolve_proto_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
 
-    def edit_block(path: str | Path, line: int, body: str, expect: str) -> Path:
-        """Replace the syntactic block containing `line` with `body`.
-
-        Refuses unless `expect` equals current content byte-for-byte.
-        """
-        if not isinstance(body, str):
-            raise TypeError(f"edit_block body must be str, got {type(body).__name__}")
-        if not isinstance(expect, str):
-            raise TypeError(f"edit_block expect must be the file's current content (str), got {type(expect).__name__}")
-        p = _resolve_proto_path(path)
-        if not p.exists():
-            raise RuntimeError(f"stale guard: {p} does not exist")
-        current = p.read_text(encoding="utf-8")
-        if current != expect:
-            raise _stale_guard(p, current, expect)
-        extent = _block_range_on(str(p), current, line)
-        if extent is None:
-            raise RuntimeError(f"no syntactic block contains line {line} in {p}")
-        start, end = extent
-        lines = current.splitlines(keepends=True)
-        if not (1 <= start <= end <= len(lines)):
-            raise RuntimeError(f"block range {start}-{end} out of bounds for {len(lines)} lines")
-        replacement = (
-            ""
-            if body == ""
-            else "".join(part if part.endswith("\n") else part + "\n" for part in body.splitlines(keepends=True))
-        )
-        new_content = "".join(lines[: start - 1]) + replacement + "".join(lines[end:])
-        p.write_text(new_content, encoding="utf-8")
-        _emit_file_status("edit", p, before=current, after=new_content, action="replace-block")
-        return p
-
-    def replace(
-        path: str | Path, old: str, new: str, count: int | None = 1, expect: str | None = None
+    def edit(
+        path: str | Path,
+        old: str | None,
+        new: str,
+        count: int | None = 1,
+        expect: str | None = None,
+        span: tuple[int, int] | None = None,
     ) -> Path:
         """Count-checked replacement: replace ``old`` with ``new`` in a file.
 
         Refuses unless the file currently equals ``expect`` (when given) and
         contains exactly ``count`` occurrences of ``old``; ``count=None``
-        replaces every occurrence. Returns the path.
+        replaces every occurrence. ``span=(start, end)`` replaces that 0-based
+        character range instead of searching for ``old``: pass ``old=None``
+        for a blind range replace, or pass ``old`` too and it must match the
+        current range exactly (stale guard against drifted offsets). ``count``
+        applies to ``old`` matching only and is ignored with ``span``.
+        Returns the path.
         """
-        if not isinstance(old, str) or not old:
-            raise ValueError("replace: `old` must be a non-empty str")
         if not isinstance(new, str):
-            raise TypeError(f"replace: `new` must be str, got {type(new).__name__}")
+            raise TypeError(f"edit: `new` must be str, got {type(new).__name__}")
+        if span is not None:
+            if (
+                not isinstance(span, tuple)
+                or len(span) != 2
+                or not all(isinstance(bound, int) and not isinstance(bound, bool) for bound in span)
+            ):
+                raise ValueError("edit: `span` must be a (start, end) tuple of ints")
+        elif not isinstance(old, str) or not old:
+            raise ValueError("edit: `old` must be a non-empty str (or pass span=(start, end) with old=None)")
         p = _resolve_proto_path(path)
         if not p.exists():
             raise RuntimeError(f"stale guard: {p} does not exist")
         content = p.read_text(encoding="utf-8")
         if expect is not None and content != expect:
             raise _stale_guard(p, content, expect)
-        occurrences = content.count(old)
-        if occurrences == 0:
-            raise RuntimeError(f"replace: {old[:60]!r} not found in {p}")
-        if count is not None and occurrences != count:
-            raise RuntimeError(
-                f"replace: expected {count} occurrence(s) of {old[:60]!r} in {p}, found {occurrences}"
-            )
-        result = content.replace(old, new) if count is None else content.replace(old, new, count)
+        if span is not None:
+            span_start, span_end = span
+            if not 0 <= span_start <= span_end <= len(content):
+                raise RuntimeError(
+                    f"edit: span {(span_start, span_end)} out of bounds for {p} ({len(content)} chars). "
+                    "Re-read the file and retry."
+                )
+            if old is not None and content[span_start:span_end] != old:
+                raise RuntimeError(
+                    f"edit: stale span guard: {p}[{span_start}:{span_end}] does not match old= "
+                    f"({len(old)} chars given, {len(content[span_start:span_end])} current). "
+                    "Re-read the file and retry."
+                )
+            result = content[:span_start] + new + content[span_end:]
+        else:
+            assert old is not None
+            occurrences = content.count(old)
+            if occurrences == 0:
+                if "\n" in old:
+                    raise RuntimeError(
+                        f"edit: {old[:60]!r} not found in {p}; {_first_divergence(content, old)}. Re-read the file and retry."
+                    )
+                raise RuntimeError(f"edit: {old[:60]!r} not found in {p}")
+            if count is not None and occurrences != count:
+                raise RuntimeError(
+                    f"edit: expected {count} occurrence(s) of {old[:60]!r} in {p}, found {occurrences}"
+                )
+            result = content.replace(old, new) if count is None else content.replace(old, new, count)
         p.write_text(result, encoding="utf-8")
         _emit_file_status("edit", p, before=content, after=result, action="replace")
         return p
@@ -492,8 +466,6 @@ if "__proto_prelude_loaded__" not in globals():
                 }
 
             if format == "stripped":
-                import re
-
                 selected_content = re.sub(r"\x1b\[[0-9;]*m", "", selected_content)
 
             if format == "json":
@@ -545,7 +517,7 @@ if "__proto_prelude_loaded__" not in globals():
         _emit_status("output", count=len(combined_output), total_chars=total_chars)
         return combined_output
 
-    def _apply_query(data: any, query: str) -> any:
+    def _apply_query(data: object, query: str) -> object:
         """Apply jq-like query to data. Supports .key, [index], and chaining."""
         if not query:
             return data
@@ -714,7 +686,7 @@ if "__proto_prelude_loaded__" not in globals():
     def agent(
         prompt,
         *,
-        agent="worker",
+        agent=None,
         label=None,
         schema=None,
         schema_mode=None,

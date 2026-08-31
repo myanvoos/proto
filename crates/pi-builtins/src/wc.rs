@@ -1,7 +1,6 @@
 
 
 
-
 mod count_fast {
 	use std::io::{self, ErrorKind, Read};
 	#[cfg(unix)]
@@ -13,12 +12,6 @@ mod count_fast {
 
 	use super::WordCountable;
 	use super::{wc_simd_allowed, word_count::WordCount};
-	#[cfg(windows)]
-	use std::os::windows::fs::MetadataExt;
-	#[cfg(windows)]
-	const FILE_ATTRIBUTE_ARCHIVE: u32 = 32;
-	#[cfg(windows)]
-	const FILE_ATTRIBUTE_NORMAL: u32 = 128;
 
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	use std::os::fd::AsFd;
@@ -29,10 +22,6 @@ mod count_fast {
 	use uucore::pipes::{MAX_ROOTLESS_PIPE_SIZE, pipe, splice, splice_exact};
 
 	const BUF_SIZE: usize = 256 * 1024;
-
-
-
-
 
 
 	#[inline]
@@ -62,14 +51,6 @@ mod count_fast {
 
 		Ok(byte_count)
 	}
-
-
-
-
-
-
-
-
 
 
 	#[inline]
@@ -109,21 +90,6 @@ mod count_fast {
 			}
 		}
 
-		#[cfg(windows)]
-		{
-			if let Some(file) = handle.inner_file() {
-				if let Ok(metadata) = file.metadata() {
-					let attributes = metadata.file_attributes();
-
-					if (attributes & FILE_ATTRIBUTE_ARCHIVE) != 0
-						|| (attributes & FILE_ATTRIBUTE_NORMAL) != 0
-					{
-						return (metadata.file_size() as usize, None);
-					}
-				}
-			}
-		}
-
 
 		let mut buf = [0_u8; BUF_SIZE];
 		loop {
@@ -139,9 +105,6 @@ mod count_fast {
 	}
 
 
-
-
-
 	#[repr(align(32))]
 	struct AlignedBuffer {
 		data: [u8; BUF_SIZE],
@@ -152,13 +115,6 @@ mod count_fast {
 			Self { data: [0; BUF_SIZE] }
 		}
 	}
-
-
-
-
-
-
-
 
 
 	pub(crate) fn count_bytes_chars_and_lines_fast<
@@ -205,9 +161,6 @@ mod count_fast {
 mod countable {
 
 
-
-
-
 	use std::{
 		fs::File,
 		io::{BufRead, BufReader, Read},
@@ -222,8 +175,6 @@ mod countable {
 		fn buffered(self) -> Self::Buffered;
 		#[cfg(unix)]
 		fn inner_fd(&self) -> Option<BorrowedFd<'_>>;
-		#[cfg(windows)]
-		fn inner_file(&mut self) -> Option<&mut File>;
 	}
 
 	impl WordCountable for &mut Stdin {
@@ -238,10 +189,6 @@ mod countable {
 			self.file().try_borrow_as_fd().ok()
 		}
 
-		#[cfg(windows)]
-		fn inner_file(&mut self) -> Option<&mut File> {
-			None
-		}
 	}
 
 	impl WordCountable for File {
@@ -256,10 +203,6 @@ mod countable {
 			Some(self.as_fd())
 		}
 
-		#[cfg(windows)]
-		fn inner_file(&mut self) -> Option<&mut File> {
-			Some(self)
-		}
 	}
 }
 
@@ -269,13 +212,6 @@ mod utf8 {
 	use std::{cmp, str};
 
 	pub use read::{BufReadDecoder, BufReadDecoderError};
-
-
-
-
-
-
-
 
 
 	#[derive(Debug, Copy, Clone)]
@@ -305,8 +241,6 @@ mod utf8 {
 			self.buffer_len = 0;
 			&self.buffer[..len]
 		}
-
-
 
 
 		fn try_complete_offsets(&mut self, input: &[u8]) -> (usize, Option<Result<(), ()>>) {
@@ -349,26 +283,6 @@ mod utf8 {
 	// Permission is hereby granted, free of charge, to any
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	mod read {
 		use std::io::{self, BufRead};
 
@@ -387,8 +301,6 @@ mod utf8 {
 		pub enum BufReadDecoderError<'a> {
 
 
-
-
 			#[error("invalid byte sequence: {:02x?}", .0)]
 			InvalidByteSequence(&'a [u8]),
 
@@ -401,13 +313,6 @@ mod utf8 {
 			pub fn new(buf_read: B) -> Self {
 				Self { buf_read, bytes_consumed: 0, incomplete: Incomplete::empty() }
 			}
-
-
-
-
-
-
-
 
 
 			#[allow(clippy::cognitive_complexity)]
@@ -944,7 +849,6 @@ fn word_count_from_reader<T: WordCountable>(
 		},
 
 
-
 		(false, false, true, false, false) => {
 			count_bytes_chars_and_lines_fast::<_, false, false, true>(&mut reader)
 		},
@@ -1186,10 +1090,6 @@ enum CountResult {
 }
 
 
-
-
-
-
 fn word_count_from_input(input: &Input, settings: &Settings, host: &mut Host) -> CountResult {
 	let (total, maybe_err) = match input {
 		Input::Stdin(_) => word_count_from_reader(&mut host.stdin, settings),
@@ -1203,24 +1103,6 @@ fn word_count_from_input(input: &Input, settings: &Settings, host: &mut Host) ->
 		Some(error) => CountResult::Interrupted(total, error),
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 fn compute_number_width(inputs: &Inputs, settings: &Settings, host: &Host) -> usize {

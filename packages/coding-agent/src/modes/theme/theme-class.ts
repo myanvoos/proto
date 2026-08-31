@@ -47,7 +47,6 @@ const langMap: Record<string, SymbolKey> = {
 	sh: "lang.shell",
 	zsh: "lang.shell",
 	fish: "lang.shell",
-	powershell: "lang.shell",
 	just: "lang.shell",
 	shell: "lang.shell",
 	html: "lang.html",

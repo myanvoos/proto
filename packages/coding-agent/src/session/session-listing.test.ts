@@ -30,8 +30,6 @@ describe("session listing liveness flags", () => {
 
 		const heartbeat = createSessionLiveHeartbeat(file);
 		try {
-			// The session file's mtime/size never change, so these hits go through the scan
-			// cache: liveness must be recomputed per scan, not cached with the file data.
 			const open = await listSessions(dir, storage);
 			expect(open[0]?.liveOpen).toBe(true);
 			expect(open[0]?.liveStreaming).toBe(false);

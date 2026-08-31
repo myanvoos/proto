@@ -796,8 +796,6 @@ async function resizeAnthropicManyImageContent<T extends AudioContent | ImageCon
 				(block.providerFile?.provider === "anthropic" && block.providerFile.id)
 			)
 				return block;
-			// block is narrowed to ImageContent here; T may be the wider media union, so the
-			// cache hit/miss result (always ImageContent) is the same block the caller passed in.
 			const imageBlock: ImageContent = block;
 			let resized = anthropicManyImageResizeCache.get(imageBlock);
 			if (resized === undefined) {

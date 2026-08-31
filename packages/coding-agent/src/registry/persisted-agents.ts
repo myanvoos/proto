@@ -335,8 +335,6 @@ export async function registerPersistedSubagents(
 	const shouldContinue = options.shouldContinue ?? (() => true);
 	if (!shouldContinue()) return;
 	const root = sessionFile.slice(0, -6);
-	// Fast path: without an artifacts directory there is nothing to register, and the
-	// orchestrator-id scan would needlessly stream the whole transcript.
 	let rootEntries: fs.Dirent[];
 	try {
 		rootEntries = await fs.promises.readdir(root, { withFileTypes: true });
@@ -447,11 +445,6 @@ async function registerPersistedSubagentsFromDir(
 		}
 		if (!shouldContinue()) return;
 		if (!registry.get(id)) {
-			// A fresh live marker means an active session (this or another process) owns the
-			// transcript right now. Registering it as parked would mislabel a running agent
-			// and invite a concurrent revival, so skip registration — but still recurse, so
-			// nested transcripts of a live agent are not lost. Once the session closes, its
-			// marker is removed and the next scan registers the transcript normally.
 			if (!readSessionLiveState(sessionFile).fresh) {
 				const metadata = await readPersistedAgentMetadata(sessionFile);
 				if (!shouldContinue()) return;

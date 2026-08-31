@@ -1,50 +1,18 @@
 
 
 
-
 use brush_core::{ShellExtensions, builtins::Registration};
 
 use crate::host::util;
 
-#[cfg(not(any(unix, windows)))]
-use crate::host::{self, Host, Utility, matches_parser};
 
-#[cfg(any(unix, windows))]
 use imp::Stat;
-
-#[cfg(not(any(unix, windows)))]
-struct Stat {
-	matches: clap::ArgMatches,
-}
-
-#[cfg(not(any(unix, windows)))]
-matches_parser!(Stat, app);
-
-#[cfg(not(any(unix, windows)))]
-impl Utility for Stat {
-	const NAME: &'static str = "stat";
-
-	fn run(self, host: &mut Host) -> i32 {
-		let _ = self;
-		host.error("unsupported on this platform", 1);
-		1
-	}
-}
-
-#[cfg(not(any(unix, windows)))]
-fn app() -> clap::Command {
-	clap::Command::new(Stat::NAME)
-		.version("0.8.0")
-		.about("Display file or file system status.")
-		.override_usage(host::format_usage("stat [OPTION]... FILE..."))
-}
 
 
 pub(crate) fn stat_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Stat, SE>()
 }
 
-#[cfg(any(unix, windows))]
 mod imp {
 	#[cfg(unix)]
 	use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -59,8 +27,6 @@ mod imp {
 
 	use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser};
 	use thiserror::Error;
-	#[cfg(windows)]
-	use uucore::time::{FormatSystemTimeFallback, format_system_time, system_time_to_sec};
 	use uucore::display::Quotable;
 
 	use crate::host::{self, Host, Utility, matches_parser};
@@ -175,9 +141,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
 	fn check_bound(slice: &str, bound: usize, beg: usize, end: usize) -> Result<(), StatError> {
 		if end >= bound {
 			return Err(StatError::InvalidDirective {
@@ -193,14 +156,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
 	fn pad_and_print(out: &mut dyn Write, result: &str, left: bool, width: usize, padding: Padding) {
 		let _ = match (left, padding) {
 			(false, Padding::Zero) => write!(out, "{result:0>width$}"),
@@ -209,10 +164,6 @@ for details about the options it supports.";
 			(true, Padding::Space) => write!(out, "{result:<width$}"),
 		};
 	}
-
-
-
-
 
 
 	#[cfg(unix)]
@@ -247,8 +198,6 @@ for details about the options it supports.";
 
 		Ok(())
 	}
-
-
 
 
 	#[cfg(unix)]
@@ -317,8 +266,6 @@ for details about the options it supports.";
 	}
 
 	impl ScanUtil for str {
-
-
 
 
 		fn scan_num<F>(&self) -> Option<(F, usize)>
@@ -412,18 +359,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 	fn print_it(
 		out: &mut dyn Write,
 		output: &OutputType,
@@ -431,39 +366,6 @@ for details about the options it supports.";
 		width: usize,
 		precision: Precision,
 	) {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		let padding_char = determine_padding_char(flags);
@@ -491,16 +393,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
-
 	fn determine_padding_char(flags: Flags) -> Padding {
 		if flags.zero && !flags.left {
 			Padding::Zero
@@ -508,13 +400,6 @@ for details about the options it supports.";
 			Padding::Space
 		}
 	}
-
-
-
-
-
-
-
 
 
 	fn print_str(out: &mut dyn Write, s: &str, flags: Flags, width: usize, precision: Precision) {
@@ -526,15 +411,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
 	fn print_os_str(
 		out: &mut dyn Write,
 		s: &OsString,
@@ -542,7 +418,6 @@ for details about the options it supports.";
 		width: usize,
 		precision: Precision,
 	) {
-
 
 
 		#[cfg(unix)]
@@ -661,16 +536,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
-
 	fn print_integer(
 		out: &mut dyn Write,
 		num: i64,
@@ -699,9 +564,6 @@ for details about the options it supports.";
 		};
 		pad_and_print(out, &extended, flags.left, width, padding_char);
 	}
-
-
-
 
 
 	fn timestamp_string(sec: i64, nsec: u32, precision: Precision) -> String {
@@ -737,16 +599,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
-
 	fn print_unsigned(
 		out: &mut dyn Write,
 		num: u64,
@@ -770,17 +622,6 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-
-
-
-
-
-
-
 	fn print_unsigned_oct(
 		out: &mut dyn Write,
 		num: u32,
@@ -797,17 +638,6 @@ for details about the options it supports.";
 		};
 		pad_and_print(out, &s, flags.left, width, padding_char);
 	}
-
-
-
-
-
-
-
-
-
-
-
 
 
 	fn print_unsigned_hex(
@@ -841,7 +671,6 @@ for details about the options it supports.";
 					' ' => flag.space = true,
 
 
-
 					'I' => flag.space = true,
 					'+' => flag.sign = true,
 					'\'' => flag.group = true,
@@ -850,9 +679,6 @@ for details about the options it supports.";
 				*i += 1;
 			}
 		}
-
-
-
 
 
 		fn char_index_to_byte_index(format_str: &str, char_index: usize) -> usize {
@@ -1096,7 +922,6 @@ for details about the options it supports.";
 				)?;
 
 
-
 			let mount_list_needed = !show_fs
 				&& default_tokens
 					.iter()
@@ -1114,7 +939,6 @@ for details about the options it supports.";
 				default_dev_tokens,
 			})
 		}
-
 
 
 		fn time_fmt(&self) -> &str {
@@ -1175,8 +999,6 @@ for details about the options it supports.";
 			display_name: &str,
 
 
-
-
 			resolved: &Path,
 			file_type: FileType,
 			from_user: bool,
@@ -1196,8 +1018,6 @@ for details about the options it supports.";
 						'A' => OutputType::Str(display_permissions(meta, true)),
 
 						'b' => OutputType::Unsigned(meta.blocks()),
-
-
 
 
 						'B' => OutputType::Unsigned(512),
@@ -1394,7 +1214,6 @@ for details about the options it supports.";
 		fn default_format(show_fs: bool, terse: bool, show_dev_type: bool) -> String {
 
 
-
 			if show_fs {
 				if terse {
 					"%n %i %l %t %s %S %b %f %a %c %d\n".into()
@@ -1421,21 +1240,6 @@ for details about the options it supports.";
 			}
 		}
 	}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 	fn rewrite_bsd_invocation(argv: &[OsString]) -> Option<Result<Vec<OsString>, String>> {
@@ -1570,7 +1374,6 @@ for details about the options it supports.";
 		match style {
 
 
-
 			Some(BsdStyle::Shell) => out.push("--bsd-shell".into()),
 			Some(BsdStyle::Verbose) => {
 				out.push("--bsd-timefmt".into());
@@ -1586,7 +1389,6 @@ for details about the options it supports.";
 				}
 
 
-
 				out.push(if no_newline { "--printf".into() } else { "-c".into() });
 				out.push(translated.into());
 			},
@@ -1596,10 +1398,6 @@ for details about the options it supports.";
 		out.extend(files);
 		Ok(out)
 	}
-
-
-
-
 
 
 	fn translate_bsd_format(fmt: &str, printf_mode: bool) -> Result<String, String> {
@@ -1646,8 +1444,6 @@ for details about the options it supports.";
 					i += 1;
 				}
 			}
-
-
 
 
 			let mut string_form = false;
@@ -1775,7 +1571,6 @@ for details about the options it supports.";
 	const BSD_VERBOSE_TIMEFMT: &str = "%a %b %e %H:%M:%S %Y";
 
 
-
 	fn bsd_shell_exec(matches: &ArgMatches, host: &mut Host) -> i32 {
 		let files: Vec<OsString> = matches
 			.get_many::<OsString>(options::FILES)
@@ -1839,29 +1634,6 @@ for details about the options it supports.";
 		)
 	}
 
-	#[cfg(windows)]
-	fn bsd_shell_line(meta: &Metadata, resolved: &Path) -> String {
-		let ids = win::handle_info(resolved, !meta.file_type().is_symlink());
-		let (dev, ino, nlink) = ids.map_or((0, 0, 1), |i| (i.volume_serial, i.file_index, i.links));
-		let sec = |field| win::md_time(meta, field).map_or(0, |t| system_time_to_sec(t).0);
-		format!(
-			"st_dev={dev} st_ino={ino} st_mode=0{:o} st_nlink={nlink} st_uid=0 st_gid=0 st_rdev=0 \
-			 st_size={} st_atime={} st_mtime={} st_ctime={} st_birthtime={} st_blksize=4096 \
-			 st_blocks={} st_flags=0",
-			win::synth_mode(meta),
-			meta.len(),
-			sec(win::TimeField::Access),
-			sec(win::TimeField::Modification),
-			sec(win::TimeField::Change),
-			sec(win::TimeField::Birth),
-			win::allocated_size(resolved, meta.len()).div_ceil(512),
-		)
-	}
-
-
-
-
-
 
 	fn bsd_filesystem_fallback(matches: &ArgMatches, host: &Host) -> Option<Vec<OsString>> {
 		if !matches.get_flag(options::FILE_SYSTEM)
@@ -1906,7 +1678,6 @@ for details about the options it supports.";
 			},
 		}
 	}
-
 
 
 	pub(crate) struct Stat {
@@ -2032,515 +1803,5 @@ for details about the options it supports.";
 	}
 
 
-
-
-
-
-	#[cfg(windows)]
-	mod win {
-		use std::{
-			ffi::OsStr, fs::Metadata, os::windows::fs::MetadataExt, path::Path, time::SystemTime,
-		};
-
-
-		const READONLY: u32 = 0x0000_0001;
-
-
-		const S_IFDIR: u32 = 0o040000;
-		const S_IFREG: u32 = 0o100000;
-		const S_IFLNK: u32 = 0o120000;
-
-
-
-
-
-		#[derive(Clone, Copy)]
-		pub enum TimeField {
-			Access,
-			Modification,
-			Change,
-			Birth,
-		}
-
-
-
-		pub fn md_time(md: &Metadata, field: TimeField) -> Option<SystemTime> {
-			match field {
-				TimeField::Access => md.accessed().ok(),
-				TimeField::Modification | TimeField::Change => md.modified().ok(),
-				TimeField::Birth => md.created().ok(),
-			}
-		}
-
-
-
-
-		pub fn synth_mode(md: &Metadata) -> u32 {
-			let readonly = md.file_attributes() & READONLY != 0;
-			let ft = md.file_type();
-			if ft.is_symlink() {
-				S_IFLNK | 0o777
-			} else if ft.is_dir() {
-				S_IFDIR | if readonly { 0o555 } else { 0o755 }
-			} else {
-				S_IFREG | if readonly { 0o444 } else { 0o644 }
-			}
-		}
-
-
-
-		pub fn file_type_str(mode: u32, size: u64) -> String {
-			match mode & 0o170000 {
-				S_IFDIR => "directory",
-				S_IFLNK => "symbolic link",
-				_ if size == 0 => "regular empty file",
-				_ => "regular file",
-			}
-			.to_string()
-		}
-
-
-
-		pub fn perms_string(mode: u32) -> String {
-			let mut s = String::with_capacity(10);
-			s.push(match mode & 0o170000 {
-				S_IFDIR => 'd',
-				S_IFLNK => 'l',
-				_ => '-',
-			});
-			for shift in [6u32, 3, 0] {
-				let bits = (mode >> shift) & 0o7;
-				s.push(if bits & 0o4 != 0 { 'r' } else { '-' });
-				s.push(if bits & 0o2 != 0 { 'w' } else { '-' });
-				s.push(if bits & 0o1 != 0 { 'x' } else { '-' });
-			}
-			s
-		}
-
-
-
-
-
-
-		pub fn allocated_size(path: &Path, logical: u64) -> u64 {
-			use std::os::windows::ffi::OsStrExt;
-
-			use windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW;
-
-			const INVALID_FILE_SIZE: u32 = u32::MAX;
-
-			let wide: Vec<u16> = path
-				.as_os_str()
-				.encode_wide()
-				.chain(std::iter::once(0))
-				.collect();
-			let mut high: u32 = 0;
-
-			let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
-
-
-			if low == INVALID_FILE_SIZE
-				&& std::io::Error::last_os_error().raw_os_error().unwrap_or(0) != 0
-			{
-				return logical;
-			}
-			(u64::from(high) << 32) | u64::from(low)
-		}
-
-
-
-		pub struct HandleInfo {
-			pub volume_serial: u64,
-			pub links:         u64,
-			pub file_index:    u64,
-		}
-
-
-
-
-
-
-		pub fn handle_info(path: &Path, follow_links: bool) -> Option<HandleInfo> {
-			use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-
-			use windows_sys::Win32::Storage::FileSystem::{
-				BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-				FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
-			};
-
-
-
-			let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
-			if !follow_links {
-				flags |= FILE_FLAG_OPEN_REPARSE_POINT;
-			}
-			let file = std::fs::OpenOptions::new()
-				.access_mode(0)
-				.custom_flags(flags)
-				.open(path)
-				.ok()?;
-
-
-			let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-			if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-				return None;
-			}
-			Some(HandleInfo {
-				volume_serial: u64::from(info.dwVolumeSerialNumber),
-				links:         u64::from(info.nNumberOfLinks),
-				file_index:    (u64::from(info.nFileIndexHigh) << 32)
-					| u64::from(info.nFileIndexLow),
-			})
-		}
-
-
-		pub struct StatFs {
-			pub fs_type:      String,
-			pub serial:       u64,
-			pub name_len:     u64,
-			pub cluster_size: u64,
-			pub total_blocks: u64,
-			pub free_blocks:  u64,
-		}
-
-
-
-
-		pub fn statfs(path: &Path) -> Result<StatFs, String> {
-			use std::os::windows::ffi::OsStrExt;
-
-			use windows_sys::Win32::Storage::FileSystem::{
-				GetDiskFreeSpaceW, GetVolumeInformationW, GetVolumePathNameW,
-			};
-
-			fn wide(s: &OsStr) -> Vec<u16> {
-				s.encode_wide().chain(std::iter::once(0)).collect()
-			}
-
-			fn wide_to_string(buf: &[u16]) -> String {
-				let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-				String::from_utf16_lossy(&buf[..len])
-			}
-
-			let file_wide = wide(path.as_os_str());
-
-			let mut root = [0u16; 260];
-
-
-			if unsafe { GetVolumePathNameW(file_wide.as_ptr(), root.as_mut_ptr(), root.len() as u32) }
-				== 0
-			{
-				return Err(std::io::Error::last_os_error().to_string());
-			}
-
-			let mut fs_name = [0u16; 260];
-			let mut serial: u32 = 0;
-			let mut max_component: u32 = 0;
-			let mut flags: u32 = 0;
-
-
-
-			if unsafe {
-				GetVolumeInformationW(
-					root.as_ptr(),
-					std::ptr::null_mut(),
-					0,
-					&mut serial,
-					&mut max_component,
-					&mut flags,
-					fs_name.as_mut_ptr(),
-					fs_name.len() as u32,
-				)
-			} == 0
-			{
-				return Err(std::io::Error::last_os_error().to_string());
-			}
-
-			let mut sectors_per_cluster: u32 = 0;
-			let mut bytes_per_sector: u32 = 0;
-			let mut free_clusters: u32 = 0;
-			let mut total_clusters: u32 = 0;
-
-
-			if unsafe {
-				GetDiskFreeSpaceW(
-					root.as_ptr(),
-					&mut sectors_per_cluster,
-					&mut bytes_per_sector,
-					&mut free_clusters,
-					&mut total_clusters,
-				)
-			} == 0
-			{
-				return Err(std::io::Error::last_os_error().to_string());
-			}
-
-			let cluster_size = u64::from(sectors_per_cluster) * u64::from(bytes_per_sector);
-			Ok(StatFs {
-				fs_type: wide_to_string(&fs_name),
-				serial: u64::from(serial),
-				name_len: u64::from(max_component),
-				cluster_size,
-				total_blocks: u64::from(total_clusters),
-				free_blocks: u64::from(free_clusters),
-			})
-		}
-	}
-
-
-	#[cfg(windows)]
-	fn pretty_time(meta: &Metadata, field: win::TimeField, fmt: &str) -> String {
-		if let Some(time) = win::md_time(meta, field) {
-			let mut tmp = Vec::new();
-			if format_system_time(
-				&mut tmp,
-				time,
-				fmt,
-				FormatSystemTimeFallback::Float,
-			)
-			.is_ok()
-			{
-				return String::from_utf8(tmp).unwrap();
-			}
-		}
-		"-".to_string()
-	}
-
-	#[cfg(windows)]
-	fn process_token_filesystem(
-		out: &mut dyn Write,
-		t: &Token,
-		meta: &win::StatFs,
-		display_name: &str,
-	) {
-		match *t {
-			Token::Byte(byte) => write_raw_byte(out, byte),
-			Token::Char(c) => {
-				let _ = write!(out, "{c}");
-			},
-			Token::Directive { flag, width, precision, format } => {
-				let output = match format {
-
-					'a' => OutputType::Unsigned(meta.free_blocks),
-
-					'b' => OutputType::Unsigned(meta.total_blocks),
-
-					'c' | 'd' => OutputType::Unsigned(0),
-
-					'f' => OutputType::Unsigned(meta.free_blocks),
-
-					'i' => OutputType::UnsignedHex(meta.serial),
-
-					'l' => OutputType::Unsigned(meta.name_len),
-
-					'n' => OutputType::Str(display_name.to_string()),
-
-					's' => OutputType::Unsigned(meta.cluster_size),
-
-					'S' => OutputType::Integer(meta.cluster_size as i64),
-
-					't' => OutputType::UnsignedHex(0),
-
-					'T' => OutputType::Str(meta.fs_type.clone()),
-					_ => OutputType::Unknown,
-				};
-				print_it(out, &output, flag, width, precision);
-			},
-		}
-	}
-
-	#[cfg(windows)]
-	impl Stater {
-		fn exec(&self, host: &mut Host) -> i32 {
-			let mut ret = 0;
-			for f in &self.files {
-				ret |= self.do_stat(f, host);
-			}
-			ret
-		}
-
-		fn process_token_files(
-			&self,
-			t: &Token,
-			meta: &Metadata,
-			display_name: &str,
-			resolved: &Path,
-			file_type: FileType,
-			from_user: bool,
-			host: &mut Host,
-		) -> Result<(), i32> {
-			match *t {
-				Token::Byte(byte) => write_raw_byte(&mut host.stdout, byte),
-				Token::Char(c) => {
-					let _ = write!(host.stdout, "{c}");
-				},
-				Token::Directive { flag, width, precision, format } => {
-					let mode = win::synth_mode(meta);
-
-
-					let ids = matches!(format, 'd' | 'D' | 'h' | 'i')
-						.then(|| win::handle_info(resolved, !meta.file_type().is_symlink()))
-						.flatten();
-					let output = match format {
-
-						'a' => OutputType::UnsignedOct(0o7777 & mode),
-
-						'A' => OutputType::Str(win::perms_string(mode)),
-
-						'b' => {
-							OutputType::Unsigned(win::allocated_size(resolved, meta.len()).div_ceil(512))
-						},
-
-						'B' => OutputType::Unsigned(512),
-
-						'C' => OutputType::Str("unsupported for this operating system".to_string()),
-
-						'd' if flag.major || flag.minor => OutputType::Unsigned(0),
-						'd' => OutputType::Unsigned(ids.as_ref().map_or(0, |ids| ids.volume_serial)),
-
-						'D' => {
-							OutputType::UnsignedHex(ids.as_ref().map_or(0, |ids| ids.volume_serial))
-						},
-
-						'f' => OutputType::UnsignedHex(u64::from(mode)),
-
-						'F' => OutputType::Str(win::file_type_str(mode, meta.len())),
-
-						'g' => OutputType::Unsigned(0),
-
-						'G' => OutputType::Str("UNKNOWN".to_string()),
-
-						'h' => OutputType::Unsigned(ids.as_ref().map_or(1, |ids| ids.links)),
-
-						'i' => OutputType::Unsigned(ids.as_ref().map_or(0, |ids| ids.file_index)),
-
-						'm' => OutputType::Str(String::new()),
-
-						'n' => OutputType::Str(display_name.to_string()),
-
-						'N' => OutputType::Str(get_quoted_file_name(
-							display_name,
-							resolved,
-							file_type,
-							from_user,
-							host,
-						)?),
-
-						'o' => OutputType::Unsigned(4096),
-
-						's' => OutputType::Integer(meta.len() as i64),
-
-						't' | 'T' => OutputType::UnsignedHex(0),
-
-						'u' => OutputType::Unsigned(0),
-
-						'U' => OutputType::Str("UNKNOWN".to_string()),
-
-						'w' => OutputType::Str(pretty_time(meta, win::TimeField::Birth, self.time_fmt())),
-
-						'W' => {
-							let (sec, nsec) = win::md_time(meta, win::TimeField::Birth)
-								.map_or((0, 0), system_time_to_sec);
-							OutputType::Timestamp { sec, nsec }
-						},
-
-						'x' => OutputType::Str(pretty_time(meta, win::TimeField::Access, self.time_fmt())),
-
-						'X' => {
-							let (sec, nsec) = win::md_time(meta, win::TimeField::Access)
-								.map_or((0, 0), system_time_to_sec);
-							OutputType::Timestamp { sec, nsec }
-						},
-
-						'y' => OutputType::Str(pretty_time(meta, win::TimeField::Modification, self.time_fmt())),
-
-						'Y' => {
-							let (sec, nsec) = win::md_time(meta, win::TimeField::Modification)
-								.map_or((0, 0), system_time_to_sec);
-							OutputType::Timestamp { sec, nsec }
-						},
-
-						'z' => OutputType::Str(pretty_time(meta, win::TimeField::Change, self.time_fmt())),
-
-						'Z' => {
-							let (sec, nsec) = win::md_time(meta, win::TimeField::Change)
-								.map_or((0, 0), system_time_to_sec);
-							OutputType::Timestamp { sec, nsec }
-						},
-
-						'R' => OutputType::UnsignedHex(0),
-						'r' => OutputType::Unsigned(0),
-						_ => OutputType::Unknown,
-					};
-					print_it(&mut host.stdout, &output, flag, width, precision);
-				},
-			}
-			Ok(())
-		}
-
-		fn do_stat(&self, file: &OsStr, host: &mut Host) -> i32 {
-			let display_name = file.to_string_lossy();
-
-
-			let resolved = host.resolve(file);
-			if self.show_fs {
-				let result = fs::metadata(&resolved)
-					.map_err(|error| error.to_string())
-					.and_then(|_| win::statfs(&resolved));
-				match result {
-					Ok(meta) => {
-						for t in &self.default_tokens {
-							process_token_filesystem(&mut host.stdout, t, &meta, &display_name);
-						}
-					},
-					Err(error) => {
-						let _ = writeln!(
-							&mut host.stderr,
-							"stat: {}",
-							StatError::CannotReadFilesystemInfo {
-								file: display_name.quote().to_string(),
-								error,
-							}
-						);
-						return 1;
-					},
-				}
-			} else {
-				let result = if self.follow {
-					fs::metadata(&resolved)
-				} else {
-					fs::symlink_metadata(&resolved)
-				};
-				match result {
-					Ok(meta) => {
-						let file_type = meta.file_type();
-
-
-						for t in &self.default_tokens {
-							if let Err(code) = self.process_token_files(
-								t,
-								&meta,
-								&display_name,
-								&resolved,
-								file_type,
-								self.from_user,
-								host,
-							) {
-								return code;
-							}
-						}
-					},
-					Err(e) => {
-						let _ = writeln!(&mut host.stderr, "stat: {}", StatError::CannotStat {
-							file:  display_name.quote().to_string(),
-							error: e.to_string(),
-						});
-						return 1;
-					},
-				}
-			}
-			0
-		}
-	}
 }
 

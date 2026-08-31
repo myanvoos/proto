@@ -560,7 +560,7 @@ pub fn panic_scope_active() -> bool {
 	PANIC_SCOPE_DEPTH.with(|depth| depth.get() > 0)
 }
 
-static RAYON_GLOBAL_POOL_AVAILABLE: AtomicBool = AtomicBool::new(!cfg!(target_os = "windows"));
+static RAYON_GLOBAL_POOL_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 
 

@@ -1,8 +1,8 @@
 # eval
 
-> Execute one Python, JavaScript, Ruby, or Julia cell in a persistent language runtime. One tool call is one cell; state survives later calls.
+> Execute one Python or JavaScript cell in a persistent language runtime. One tool call is one cell; state survives later calls.
 
-> **Notice:** Do not shell out to `python -c`, `ruby -e`, `julia -e`, `bun -e`, or `node -e` through `bash` for ad-hoc code. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
+> **Notice:** Do not shell out to `python -c`, `bun -e`, or `node -e` through `bash` for ad-hoc code. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
 
 ## Source
 - Entry and dynamic schema: `packages/coding-agent/src/tools/eval.ts`
@@ -12,8 +12,6 @@
 - Host bridges: `packages/coding-agent/src/eval/agent-bridge.ts`, `completion-bridge.ts`, `concurrency-bridge.ts`, `budget-bridge.ts`
 - JavaScript: `packages/coding-agent/src/eval/js/`
 - Python: `packages/coding-agent/src/eval/py/`
-- Ruby: `packages/coding-agent/src/eval/rb/`
-- Julia: `packages/coding-agent/src/eval/jl/`
 - Output/truncation: `packages/coding-agent/src/session/streaming-output.ts`
 - Python internals: `docs/python-repl.md`
 
@@ -51,10 +49,8 @@ Example across three calls:
 | --- | --- | --- | --- | --- |
 | `py` | retained IPython-style Python kernel | `eval.py=true` | `PI_PY` | usable configured Python interpreter/kernel |
 | `js` | retained Bun worker VM | `eval.js=true` | `PI_JS` | bundled JS runtime |
-| `rb` | retained Ruby kernel | `eval.rb=false` | `PI_RB` | usable `ruby.interpreter` or discovered Ruby |
-| `jl` | retained Julia kernel | `eval.jl=false` | `PI_JL` | usable `julia.interpreter` or discovered Julia |
 
-Ruby and Julia are opt-in. When at least one runtime is enabled, disabled runtimes are removed from the session-scoped wire schema and model prompt. If **all four** are disabled, the current `parameters` fallback returns the full static union even though every execution is rejected by `resolveBackend(...)`; this contradicts the nearby source comment that disabled backends never reach the model. A requested unavailable runtime raises `ToolError`; the tool never substitutes another language.
+When at least one runtime is enabled, disabled runtimes are removed from the session-scoped wire schema and model prompt. If **both** are disabled, the current `parameters` fallback returns the full static union even though every execution is rejected by `resolveBackend(...)`; this contradicts the nearby source comment that disabled backends never reach the model. A requested unavailable runtime raises `ToolError`; the tool never substitutes another language.
 
 ## Outputs
 
@@ -81,7 +77,7 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 ## Execution flow
 
 1. `EvalTool` builds a session-specific schema from enabled languages. It is essential and `concurrency="exclusive"` within one agent session.
-2. `execute()` maps `py/js/rb/jl` to `python/js/ruby/julia`, resolves availability, and wraps the single input in the renderer-compatible internal cell list.
+2. `execute()` maps `py/js` to `python/js`, resolves availability, and wraps the single input in the renderer-compatible internal cell list.
 3. It obtains the retained executor id from `session.getEvalSessionId?.()` or `defaultEvalSessionId(session)`, allocates the output sink/artifact, and registers the run through `trackEvalExecution?.(...)`.
 4. The timeout defaults to 30 seconds. `0` creates no watchdog. Otherwise `IdleTimeout` is combined with tool and session abort signals.
 5. `agent()`, `parallel()`, and `completion()` emit pause/resume status operations: time spent in those host bridges does not consume the cell's runtime-work budget. Compute, output, status helpers, and ordinary `tool.*` calls do consume it.
@@ -107,20 +103,6 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 - Interactive stdin is rejected with `Kernel requested stdin; interactive input is not supported.`
 - Synchronous blocks use the default executor with copied ContextVars; Python bytecode still contends on the GIL.
 
-### Ruby (`rb`)
-
-- Retained kernels are keyed by `ruby:${sessionId}`, normalized cwd, and interpreter.
-- Cells evaluate in persistent `TOPLEVEL_BINDING`; locals, methods, and constants survive. A trailing value is displayed like IRB unless it is nil, an assignment, or a definition.
-- Rich display supports the PROTO MIME convention and IRuby-compatible MIME hooks, using the shared kernel display pipeline.
-- `reset` replaces the retained Ruby kernel.
-
-### Julia (`jl`)
-
-- Retained kernels are keyed by `julia:${sessionId}`, normalized cwd, and interpreter.
-- Cells evaluate in persistent `Main`; a value-bearing trailing expression is displayed unless suppressed by statement form.
-- Julia's display stack is bridged into the same MIME/status pipeline.
-- `reset` replaces the retained Julia kernel.
-
 ## Prelude helpers
 
 All enabled runtimes expose equivalent helpers where the language permits:
@@ -131,16 +113,16 @@ All enabled runtimes expose equivalent helpers where the language permits:
 - `completion(...)`, `agent(...)`, `parallel(...)`, `pipeline(...)`
 - `log(message)`, `phase(title)`, `budget`
 
-JS filesystem/bridge helpers are asynchronous; Python, Ruby, and Julia helpers are synchronous. `write()` accepts regular and `local://` paths but rejects other protocol URLs.
+JS filesystem/bridge helpers are asynchronous; Python helpers are synchronous. `write()` accepts regular and `local://` paths but rejects other protocol URLs.
 
-`display()` captures JSON-compatible structures, images, markdown, or text according to the backend. Ruby and Julia additionally auto-display eligible final expressions.
+`display()` captures JSON-compatible structures, images, markdown, or text according to the backend.
 
 ### `completion()`
 
 A stateless, tool-free one-shot model call:
 
 - JS: `await completion(prompt, { model?, system?, schema? })`
-- Python/Ruby/Julia: keyword form with `model`, `system`, and `schema`
+- Python: keyword form with `model`, `system`, and `schema`
 - `model`: `"smol"`, `"default"`, or `"slow"` tier; default is the active/default tier.
 - `schema`: JSON Schema for a synthetic `respond` tool; successful structured calls return parsed data.
 - Unresolved tier, missing credentials, error/abort stop, empty output, and invalid structured output raise into the cell.
@@ -150,7 +132,7 @@ A stateless, tool-free one-shot model call:
 Runs one subagent through `runStructuredSubagent(...)`:
 
 - JS supports the preferred `await agent(prompt, { agent?, label?, schema?, schemaMode?, isolated?, apply?, merge?, handle? })`; legacy positional slots are still implemented.
-- Python/Ruby/Julia use keyword arguments (`schema_mode` outside JS).
+- Python uses keyword arguments (`schema_mode`).
 - `agent` defaults from the current spawn policy; the selected agent's frontmatter model and settings always apply (there is no per-call model override — `model` is not accepted). `schema` overrides agent/session schemas; `schemaMode`/`schema_mode` chooses `permissive` or `strict`.
 - `isolated` requests isolation. `apply` controls whether captured changes are integrated; `merge=false` selects patch mode while the normal setting controls branch mode.
 - `handle=true` returns `{ text, output, handle, id, agent }`, optional parsed `data`, and isolation metadata instead of only output/data.
@@ -162,7 +144,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 ## Side effects and cancellation
 
 - Prelude helpers may read/write files and call arbitrary registered tools; JS exposes network-capable `fetch`.
-- Python, Ruby, and Julia use retained subprocess kernels speaking framed local IPC. JavaScript uses a worker VM.
+- Python uses a retained subprocess kernel speaking framed local IPC. JavaScript uses a worker VM.
 - Retained runtimes survive calls until reset, owner cleanup, or process exit.
 - Cancellation is destructive when needed: JS terminates its worker; managed kernels interrupt and may escalate to shutdown. A reset is likewise destructive to concurrent work sharing that backend session.
 - Eval-driven `agent()` may run tools and isolated workspaces, but its child is disposed rather than retained for hub follow-up.
@@ -181,7 +163,7 @@ Runs one subagent through `runStructuredSubagent(...)`:
 ## Notes
 
 - One call is one cell. Use separate calls to exploit persistence and rerun only the failed step.
-- State is isolated by language; resetting Python does not reset JS, Ruby, or Julia.
-- Current schema tokens are only `py`, `js`, `rb`, and `jl`; long language names are renderer formatting aliases, not wire values.
+- State is isolated by language; resetting Python does not reset JS.
+- Current schema tokens are only `py` and `js`; long language names are renderer formatting aliases, not wire values.
 - The former multi-cell `cells` payload, `*** Cell` parser, sniffing fallback, and constrained `eval.lark` grammar are removed.
 - Parent and ordinary workers may share an inherited eval executor id; children created by eval's own `agent()` explicitly do not.

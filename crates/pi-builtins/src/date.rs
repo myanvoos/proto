@@ -1,39 +1,11 @@
 
 
 
-
 use brush_core::{ShellExtensions, builtins::Registration};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
 mod format_modifiers {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 	use std::{fmt, sync::LazyLock};
@@ -73,18 +45,8 @@ mod format_modifiers {
 	}
 
 
-
-
-
-
-
 	static FORMAT_SPEC_REGEX: LazyLock<Regex> =
 		LazyLock::new(|| Regex::new(r"%([_0^#+-]*)(\d*)(:*[a-zA-Z])").unwrap());
-
-
-
-
-
 
 
 	pub fn format_with_modifiers_if_present(
@@ -108,17 +70,6 @@ mod format_modifiers {
 
 		Some(format_with_modifiers(date, format_string, config))
 	}
-
-
-
-
-
-
-
-
-
-
-
 
 
 	fn format_with_modifiers(
@@ -174,12 +125,9 @@ mod format_modifiers {
 	}
 
 
-
 	fn is_text_specifier(specifier: &str) -> bool {
 		matches!(specifier.chars().last(), Some('A' | 'a' | 'B' | 'b' | 'h' | 'Z' | 'p' | 'P'))
 	}
-
-
 
 
 	fn is_space_padded_specifier(specifier: &str) -> bool {
@@ -188,7 +136,6 @@ mod format_modifiers {
 			Some('A' | 'a' | 'B' | 'b' | 'h' | 'Z' | 'p' | 'P' | 'e' | 'k' | 'l')
 		)
 	}
-
 
 
 	fn get_default_width(specifier: &str) -> usize {
@@ -233,7 +180,6 @@ mod format_modifiers {
 	}
 
 
-
 	fn strip_default_padding(value: &str) -> String {
 		if value.starts_with('0') && value.len() >= 2 {
 			let stripped = value.trim_start_matches('0');
@@ -256,15 +202,6 @@ mod format_modifiers {
 	}
 
 
-
-
-
-
-
-
-
-
-
 	fn apply_modifiers(
 		value: &str,
 		flags: &str,
@@ -273,9 +210,6 @@ mod format_modifiers {
 		explicit_width: bool,
 	) -> Result<String, FormatError> {
 		let mut result = value.to_string();
-
-
-
 
 
 		let default_pad = if is_space_padded_specifier(specifier) {
@@ -346,14 +280,11 @@ mod format_modifiers {
 		}
 
 
-
-
 		let effective_width = if !explicit_width && (underscore_flag || pad_char != default_pad) {
 			get_default_width(specifier)
 		} else {
 			width
 		};
-
 
 
 		if effective_width > 0 && effective_width < result.len() {
@@ -370,10 +301,6 @@ mod format_modifiers {
 				result = strip_default_padding(&result);
 			}
 		}
-
-
-
-
 
 
 		if force_sign
@@ -413,7 +340,6 @@ mod format_modifiers {
 
 		Ok(result)
 	}
-
 
 
 	fn try_alloc_padded(
@@ -574,9 +500,6 @@ impl From<&str> for Rfc3339Format {
 }
 
 
-
-
-
 #[derive(PartialEq, Debug)]
 enum DayDelta {
 
@@ -586,23 +509,6 @@ enum DayDelta {
 
 	Next,
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 fn escape_invalid_bytes(bytes: &[u8]) -> String {
@@ -620,16 +526,6 @@ fn escape_invalid_bytes(bytes: &[u8]) -> String {
 		.collect::<Vec<u8>>();
 	String::from_utf8_lossy(&escaped).into_owned()
 }
-
-
-
-
-
-
-
-
-
-
 
 
 fn strip_parenthesized_comments(input: &str) -> Cow<'_, str> {
@@ -659,18 +555,6 @@ fn strip_parenthesized_comments(input: &str) -> Cow<'_, str> {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	if s.is_empty() || s.len() > 3 {
 		return None;
@@ -678,7 +562,6 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 
 	let mut chars = s.chars();
 	let letter = chars.next()?.to_ascii_lowercase();
-
 
 
 	if !letter.is_ascii_lowercase() || letter == 'j' {
@@ -711,16 +594,10 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	};
 
 
-
 	let hours_from_midnight = (0 - tz_offset + additional_hours).rem_euclid(24);
 
 	Some((hours_from_midnight, day_delta))
 }
-
-
-
-
-
 
 
 fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
@@ -822,16 +699,11 @@ enum BsdAdjustUnit {
 }
 
 
-
 #[derive(Clone, Copy)]
 enum BsdAdjustment {
 	Offset(i64, BsdAdjustUnit),
 	Set(i64, BsdAdjustUnit),
 }
-
-
-
-
 
 
 fn parse_bsd_adjustment(spec: &str) -> Option<BsdAdjustment> {
@@ -921,10 +793,6 @@ fn apply_bsd_adjustments(mut date: Zoned, adjustments: &[BsdAdjustment]) -> Resu
 }
 
 
-
-
-
-
 fn parse_bsd_strptime(format: &str, value: &str, now: &Zoned) -> Result<Zoned, String> {
 	let convert_error =
 		|error: jiff::Error| format!("failed conversion of '{value}' using format '{format}' ({error})");
@@ -956,7 +824,6 @@ fn parse_bsd_strptime(format: &str, value: &str, now: &Zoned) -> Result<Zoned, S
 		.to_zoned(now.time_zone().clone())
 		.map_err(convert_error)
 }
-
 
 
 pub(crate) struct Date {
@@ -1034,7 +901,6 @@ fn locale_default_format(locale: &str) -> Option<String> {
 	let locale = CString::new(locale).ok()?;
 
 
-
 	unsafe {
 		let locale_object =
 			libc::newlocale(libc::LC_TIME_MASK, locale.as_ptr(), std::ptr::null_mut());
@@ -1075,7 +941,6 @@ fn locale_default_format(_locale: &str) -> Option<String> {
 }
 
 
-
 #[allow(clippy::cognitive_complexity)]
 fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	let bsd_parse_only = matches.get_flag(OPT_BSD_PARSE_ONLY);
@@ -1090,12 +955,10 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 		.collect::<Result<_, _>>()?;
 
 
-
 	let mut operands: Vec<&String> = matches
 		.get_many::<String>(OPT_FORMAT)
 		.map(Iterator::collect)
 		.unwrap_or_default();
-
 
 
 	let strptime_format = if bsd_parse_only {
@@ -1129,8 +992,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 			_ => DateSource::File(file.into()),
 		}
 	} else if let Some(reference) = matches.get_one::<String>(OPT_REFERENCE) {
-
-
 
 
 		let digits = reference.strip_prefix('-').unwrap_or(reference);
@@ -1226,25 +1087,13 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 			let input = input.trim();
 
 
-
 			let is_empty_or_whitespace = input.is_empty();
-
-
 
 
 			let is_military_j = input.eq_ignore_ascii_case("j");
 
 
-
-
-
-
 			let military_tz_with_offset = parse_military_timezone_with_offset(input);
-
-
-
-
-
 
 
 			let is_pure_digits =
@@ -1277,12 +1126,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 					&mut debug_stderr,
 				)
 			} else if let Some((total_hours, day_delta)) = military_tz_with_offset {
-
-
-
-
-
-
 
 
 				let format_date_with_epoch_fallback = |date: Result<Zoned, _>| -> String {
@@ -1508,8 +1351,6 @@ fn uu_app() -> Command {
 				.value_parser(ShortcutValueParser::new([DATE, HOURS, MINUTES, SECONDS, NS]))
 
 
-
-
 				.num_args(0..=1)
 				.require_equals(true)
 				.default_missing_value(OPT_DATE)
@@ -1678,7 +1519,6 @@ Examples:
     TZ='America/Los_Angeles' date";
 
 
-
 fn format_date(
 	date: &Zoned,
 	format_string: &str,
@@ -1720,11 +1560,6 @@ fn make_format_string(settings: &Settings) -> &str {
 }
 
 
-
-
-
-
-
 static FIXED_OFFSET_ABBREVIATIONS: &[(&str, i32)] = &[
 	("UTC", 0),
 	("GMT", 0),
@@ -1757,8 +1592,6 @@ static FIXED_OFFSET_ABBREVIATIONS: &[(&str, i32)] = &[
 static TZ_ABBREV_CACHE: LazyLock<HashMap<String, String>> = LazyLock::new(build_tz_abbrev_map);
 
 
-
-
 fn build_tz_abbrev_map() -> HashMap<String, String> {
 	let mut map = HashMap::new();
 	let tzdb = TimeZoneDatabase::bundled();
@@ -1784,20 +1617,13 @@ fn build_tz_abbrev_map() -> HashMap<String, String> {
 }
 
 
-
 fn tz_abbrev_to_iana(abbrev: &str) -> Option<&str> {
 	TZ_ABBREV_CACHE.get(abbrev).map(String::as_str)
 }
 
 
-
-
-
-
-
 fn try_parse_with_abbreviation<S: AsRef<str>>(date_str: S, now: &Zoned) -> Option<Zoned> {
 	let s = date_str.as_ref();
-
 
 
 	if let Some(last_word) = s.split_whitespace().last() {
@@ -1833,9 +1659,6 @@ fn try_parse_with_abbreviation<S: AsRef<str>>(date_str: S, now: &Zoned) -> Optio
 }
 
 
-
-
-
 fn parse_dates_from_reader<'a, R: Read + 'a, W: Write + 'a>(
 	reader: R,
 	now: &'a Zoned,
@@ -1849,7 +1672,6 @@ fn parse_dates_from_reader<'a, R: Read + 'a, W: Write + 'a>(
 			.map(move |s| parse_date(s, now, dbg_opts, &mut error)),
 	)
 }
-
 
 
 fn parse_date<S: AsRef<str> + Clone>(
@@ -1907,8 +1729,6 @@ fn parse_date<S: AsRef<str> + Clone>(
 				let _ = writeln!(err, "date: input timezone: system default");
 
 
-
-
 				if dbg_opts.warn_midnight && !input_str.contains(':') && !input_str.contains('@') {
 
 					let time_str = strtime::format("%H:%M:%S", &result).unwrap_or_default();
@@ -1924,18 +1744,7 @@ fn parse_date<S: AsRef<str> + Clone>(
 }
 
 
-
-#[cfg(not(any(unix, windows)))]
-fn get_clock_resolution() -> Timestamp {
-	unimplemented!("getting clock resolution not implemented (unsupported target)");
-}
-
 #[cfg(all(unix, not(target_os = "redox")))]
-
-
-
-
-
 
 
 fn get_clock_resolution() -> Timestamp {
@@ -1973,19 +1782,8 @@ fn set_system_datetime(_date: Zoned) -> Result<(), DateError> {
 fn get_clock_resolution() -> Timestamp {
 
 
-
 	Timestamp::constant(0, 1)
 }
-
-#[cfg(windows)]
-fn get_clock_resolution() -> Timestamp {
-
-
-
-
-	Timestamp::constant(0, 100)
-}
-
 
 
 pub(crate) fn date_builtin<SE: ShellExtensions>() -> Registration<SE> {

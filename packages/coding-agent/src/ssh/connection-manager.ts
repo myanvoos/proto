@@ -9,11 +9,10 @@ export interface SSHConnectionTarget {
 	username?: string;
 	port?: number;
 	keyPath?: string;
-	compat?: boolean;
 }
 
-type SSHHostOs = "windows" | "linux" | "macos" | "unknown";
-export type SSHHostShell = "cmd" | "powershell" | "bash" | "zsh" | "sh" | "unknown";
+type SSHHostOs = "linux" | "macos" | "unknown";
+export type SSHHostShell = "bash" | "zsh" | "sh" | "unknown";
 type SshPlatform = typeof process.platform;
 
 interface SSHHostInfo {
@@ -22,8 +21,6 @@ interface SSHHostInfo {
 	shell: SSHHostShell;
 
 	transferShell?: "sh" | "bash" | "zsh";
-	compatShell?: "bash" | "sh";
-	compatEnabled: boolean;
 }
 
 const CONTROL_SOCKET_BASENAME = "%C.sock";
@@ -237,8 +234,6 @@ function parseOs(value: unknown): SSHHostOs | null {
 	if (typeof value !== "string") return null;
 	const normalized = value.trim().toLowerCase();
 	switch (normalized) {
-		case "windows":
-			return "windows";
 		case "linux":
 			return "linux";
 		case "macos":
@@ -257,17 +252,9 @@ function parseShell(value: unknown): SSHHostShell | null {
 	if (!normalized) return "unknown";
 	if (normalized.includes("bash")) return "bash";
 	if (normalized.includes("zsh")) return "zsh";
-	if (normalized.includes("pwsh") || normalized.includes("powershell")) return "powershell";
-	if (normalized.includes("cmd.exe") || normalized === "cmd") return "cmd";
-
 	const base = normalized.slice(normalized.lastIndexOf("/") + 1);
 	if (base === "sh" || base === "dash" || base === "ash" || base === "ksh" || base === "mksh") return "sh";
 	return "unknown";
-}
-
-function parseCompatShell(value: unknown): "bash" | "sh" | undefined {
-	if (value === "bash" || value === "sh") return value;
-	return undefined;
 }
 
 function parseTransferShell(value: unknown): SSHHostInfo["transferShell"] {
@@ -275,52 +262,25 @@ function parseTransferShell(value: unknown): SSHHostInfo["transferShell"] {
 	return undefined;
 }
 
-function applyCompatOverride(host: SSHConnectionTarget, info: SSHHostInfo): SSHHostInfo {
-	const compatShell =
-		info.compatShell ??
-		(info.os === "windows" && info.shell === "bash"
-			? "bash"
-			: info.os === "windows" && info.shell === "sh"
-				? "sh"
-				: undefined);
-	const compatEnabled = host.compat === false ? false : info.os === "windows" && compatShell !== undefined;
-	if (host.compat === true && !compatShell) {
-		logger.warn("SSH compat requested but no compatible shell detected", {
-			host: host.name,
-			shell: info.shell,
-		});
-	}
-	return { ...info, version: info.version ?? 0, compatShell, compatEnabled };
-}
-
 export function parseHostInfo(value: unknown): SSHHostInfo | null {
 	if (!value || typeof value !== "object") return null;
 	const record = value as Record<string, unknown>;
 	const os = parseOs(record.os) ?? "unknown";
 	const shell = parseShell(record.shell) ?? "unknown";
-	const compatShell = parseCompatShell(record.compatShell);
 	const transferShell = parseTransferShell(record.transferShell);
-	const compatEnabled = typeof record.compatEnabled === "boolean" ? record.compatEnabled : false;
 	const version = typeof record.version === "number" ? record.version : 0;
 	return {
 		version,
 		os,
 		shell,
 		transferShell,
-		compatShell,
-		compatEnabled,
 	};
 }
 
 function shouldRefreshHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): boolean {
 	if (info.version !== HOST_INFO_VERSION) return true;
 	if (info.os === "unknown") return true;
-	if (info.os !== "windows" && info.compatEnabled) return true;
-	if (info.os === "windows" && info.compatEnabled && !info.compatShell) return true;
-	if (info.os === "windows" && info.compatShell === "bash" && info.shell === "unknown") return true;
-	if (host.compat === true && info.os === "windows" && !info.compatShell) return true;
-
-	if (info.os !== "windows" && !info.transferShell) return true;
+	if (!info.transferShell) return true;
 	return false;
 }
 
@@ -330,9 +290,8 @@ async function loadHostInfoFromDisk(host: SSHConnectionTarget): Promise<SSHHostI
 		const raw = await fs.promises.readFile(path, "utf-8");
 		const parsed = parseHostInfo(JSON.parse(raw));
 		if (!parsed) return undefined;
-		const resolved = applyCompatOverride(host, parsed);
-		hostInfoCache.set(host.name, resolved);
-		return resolved;
+		hostInfoCache.set(host.name, parsed);
+		return parsed;
 	} catch (err) {
 		if (isEnoent(err)) return undefined;
 		logger.warn("Failed to load SSH host info", { host: host.name, error: String(err) });
@@ -397,9 +356,6 @@ export function osFromUname(value: string): SSHHostOs | undefined {
 	const uname = value.toLowerCase();
 	if (uname.includes("darwin")) return "macos";
 	if (uname.includes("linux") || uname.includes("gnu")) return "linux";
-	if (uname.includes("mingw") || uname.includes("msys") || uname.includes("cygwin") || uname.includes("windows")) {
-		return "windows";
-	}
 	return undefined;
 }
 
@@ -418,7 +374,7 @@ async function probeTransferShell(
 }
 
 async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
-	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "${HOST_PROBE_MARKER}%OS%|%COMSPEC%|"`;
+	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null`;
 	const result = await runSshCaptureSync(await buildRemoteCommand(host, command));
 	const payload = extractProbePayload(result.stdout, result.stderr);
 	if (payload === null) {
@@ -429,85 +385,36 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 			os: transferProbe.shell ? (osFromUname(transferProbe.uname) ?? "unknown") : "unknown",
 			shell: "unknown",
 			transferShell: transferProbe.shell,
-			compatShell: undefined,
-			compatEnabled: false,
 		};
 		hostInfoCache.set(host.name, fallback);
 		return fallback;
 	}
 
-	const [rawOs = "", rawShell = "", rawBash = ""] = payload.split("|");
-	const ostype = rawOs.trim();
-	const shellRaw = rawShell.trim();
-	const bashVersion = rawBash.trim();
-	const payloadLower = payload.toLowerCase();
-	const osLower = ostype.toLowerCase();
-	const shellLower = shellRaw.toLowerCase();
-	const unexpandedPosixVars =
-		payload.includes("$OSTYPE") || payload.includes("$SHELL") || payload.includes("$BASH_VERSION");
-	const windowsDetected =
-		osLower.includes("windows") ||
-		osLower.includes("msys") ||
-		osLower.includes("cygwin") ||
-		osLower.includes("mingw") ||
-		payloadLower.includes("windows_nt") ||
-		payloadLower.includes("comspec") ||
-		shellLower.includes("cmd") ||
-		shellLower.includes("powershell") ||
-		unexpandedPosixVars ||
-		payload.includes("%OS%");
+	const [rawOs = "", rawShell = ""] = payload.split("|");
+	const osLower = rawOs.trim().toLowerCase();
+	const shellLower = rawShell.trim().toLowerCase();
 
 	let os: SSHHostOs = "unknown";
-	if (windowsDetected) {
-		os = "windows";
-	} else if (osLower.includes("darwin")) {
+	if (osLower.includes("darwin")) {
 		os = "macos";
 	} else if (osLower.includes("linux") || osLower.includes("gnu")) {
 		os = "linux";
 	}
 
-	let shell = parseShell(shellLower) ?? "unknown";
-	if (shell === "unknown" && os === "windows" && !shellLower) {
-		shell = "cmd";
+	const shell = parseShell(shellLower) ?? "unknown";
+
+	const probe = await probeTransferShell(host);
+	const transferShell = probe.shell;
+	if (transferShell && os === "unknown") {
+		os = osFromUname(probe.uname) ?? os;
 	}
 
-	let transferShell: SSHHostInfo["transferShell"];
-	if (os !== "windows") {
-		const probe = await probeTransferShell(host);
-		transferShell = probe.shell;
-
-		if (transferShell && os === "unknown") {
-			os = osFromUname(probe.uname) ?? os;
-		}
-	}
-
-	const hasBash = !unexpandedPosixVars && (Boolean(bashVersion) || shell === "bash");
-	let compatShell: SSHHostInfo["compatShell"];
-	if (os === "windows" && host.compat !== false) {
-		const bashProbe = await runSshCaptureSync(await buildRemoteCommand(host, 'bash -lc "echo PI_BASH_OK"'));
-		if (bashProbe.exitCode === 0 && bashProbe.stdout.includes("PI_BASH_OK")) {
-			compatShell = "bash";
-		} else {
-			const shProbe = await runSshCaptureSync(await buildRemoteCommand(host, 'sh -lc "echo PI_SH_OK"'));
-			if (shProbe.exitCode === 0 && shProbe.stdout.includes("PI_SH_OK")) {
-				compatShell = "sh";
-			}
-		}
-	} else if (os === "windows" && hasBash) {
-		compatShell = "bash";
-	} else if (os === "windows" && shell === "sh") {
-		compatShell = "sh";
-	}
-	const compatEnabled = host.compat === false ? false : os === "windows" && compatShell !== undefined;
-
-	const info: SSHHostInfo = applyCompatOverride(host, {
+	const info: SSHHostInfo = {
 		version: HOST_INFO_VERSION,
 		os,
 		shell,
 		transferShell,
-		compatShell,
-		compatEnabled,
-	});
+	};
 
 	hostInfoCache.set(host.name, info);
 	await persistHostInfo(host, info);
@@ -522,11 +429,7 @@ export async function getHostInfo(hostName: string): Promise<SSHHostInfo | undef
 
 export async function ensureHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const cached = hostInfoCache.get(host.name);
-	if (cached) {
-		const resolved = applyCompatOverride(host, cached);
-		hostInfoCache.set(host.name, resolved);
-		if (!shouldRefreshHostInfo(host, resolved)) return resolved;
-	}
+	if (cached && !shouldRefreshHostInfo(host, cached)) return cached;
 	const fromDisk = await loadHostInfoFromDisk(host);
 	if (fromDisk && !shouldRefreshHostInfo(host, fromDisk)) return fromDisk;
 	await ensureConnection(host);

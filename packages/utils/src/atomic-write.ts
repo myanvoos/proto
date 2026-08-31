@@ -54,14 +54,6 @@ function reserveTempFileSync(
 	}
 }
 
-function isRenameClobberError(error: unknown): boolean {
-	return (
-		process.platform === "win32" &&
-		isFsError(error) &&
-		(error.code === "EPERM" || error.code === "EEXIST" || error.code === "EACCES")
-	);
-}
-
 async function resolveWriteTarget(filePath: string): Promise<{ target: string; viaSymlink: boolean }> {
 	let target = filePath;
 	let viaSymlink = false;
@@ -170,37 +162,7 @@ function assertReplaceableTargetSync(target: string): void {
 }
 
 async function renameTempOverTarget(tmpPath: string, target: string): Promise<void> {
-	try {
-		await fsp.rename(tmpPath, target);
-		return;
-	} catch (error) {
-		if (!isRenameClobberError(error)) throw error;
-	}
-
-	await assertReplaceableTarget(target);
-	const backupPath = nextTempPath(path.dirname(target), `${path.basename(target)}.previous`);
-	try {
-		await fsp.rename(target, backupPath);
-	} catch (error) {
-		if (!isEnoent(error)) throw error;
-
-		await fsp.rename(tmpPath, target);
-		return;
-	}
-	try {
-		await fsp.rename(tmpPath, target);
-	} catch (replacementError) {
-		try {
-			await fsp.rename(backupPath, target);
-		} catch (restoreError) {
-			throw new AggregateError(
-				[replacementError, restoreError],
-				`Failed to replace ${target}, then failed to restore its previous contents`,
-			);
-		}
-		throw replacementError;
-	}
-	await fsp.rm(backupPath, { force: true, recursive: true });
+	await fsp.rename(tmpPath, target);
 }
 
 const DIRECTORY_FSYNC_UNSUPPORTED: Readonly<Record<string, true>> = {
@@ -212,9 +174,7 @@ const DIRECTORY_FSYNC_UNSUPPORTED: Readonly<Record<string, true>> = {
 
 function isDirectoryFsyncUnsupported(error: unknown): boolean {
 	if (!isFsError(error) || error.code === undefined) return false;
-	if (DIRECTORY_FSYNC_UNSUPPORTED[error.code]) return true;
-
-	return process.platform === "win32" && (error.code === "EACCES" || error.code === "EPERM");
+	return DIRECTORY_FSYNC_UNSUPPORTED[error.code] === true;
 }
 
 async function fsyncDirEntry(dir: string): Promise<void> {
@@ -347,7 +307,7 @@ async function atomicWriteFileWithImpl(
 			const handle = await fsp.open(tmpPath, "r+");
 			let operationError: unknown;
 			try {
-				const finalMode = process.platform === "win32" ? mode : mode & ~process.umask();
+				const finalMode = mode & ~process.umask();
 				await handle.chmod(finalMode);
 				if (fsync && fsyncTempFile) await handle.sync();
 			} catch (error) {
@@ -406,44 +366,10 @@ export function atomicWriteFileSync(
 		assertReplaceableTargetSync(target);
 		fs.renameSync(tmpPath, target);
 	} catch (error) {
-		if (isRenameClobberError(error)) {
-			assertReplaceableTargetSync(target);
-			const backupPath = nextTempPath(dir, `${path.basename(target)}.previous`);
-			try {
-				fs.renameSync(target, backupPath);
-			} catch (backupError) {
-				if (!isEnoent(backupError)) throw withTargetInMessage(backupError, target, tmpPath);
-				fs.renameSync(tmpPath, target);
-				if (fsync) fsyncDirEntrySync(dir);
-				return;
-			}
-			try {
-				fs.renameSync(tmpPath, target);
-			} catch (renameError) {
-				try {
-					fs.renameSync(backupPath, target);
-				} catch (restoreError) {
-					throw new AggregateError(
-						[renameError, restoreError],
-						`Failed to replace ${target}, then failed to restore its previous contents`,
-					);
-				}
-				try {
-					removeTempSync(tmpPath);
-				} catch {}
-				throw withTargetInMessage(renameError, target, tmpPath);
-			}
-			try {
-				removeTempSync(backupPath);
-			} catch (cleanupError) {
-				throw withTargetInMessage(cleanupError, target, backupPath);
-			}
-		} else {
-			try {
-				removeTempSync(tmpPath);
-			} catch {}
-			throw withTargetInMessage(error, target, tmpPath);
-		}
+		try {
+			removeTempSync(tmpPath);
+		} catch {}
+		throw withTargetInMessage(error, target, tmpPath);
 	}
 
 	if (fsync) fsyncDirEntrySync(dir);

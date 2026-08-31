@@ -36,8 +36,11 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
+			splitting: true,
 			minify: {
-				identifiers: options.minifyIdentifiers ?? false,
+				identifiers: options.minifyIdentifiers ?? true,
+				whitespace: true,
+				syntax: true,
 				keepNames: true,
 			},
 			plugins: [await createHostVirtualModulePlugin()],

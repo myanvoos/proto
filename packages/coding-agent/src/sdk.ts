@@ -80,10 +80,8 @@ import { createImageUrlServiceFromSettings } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { initializeWithSettings } from "./discovery";
 import { withOmpExtensionRootScope } from "./discovery/proto-extension-roots";
-import { disposeAllJuliaKernelSessions, disposeJuliaKernelSessionsByOwner } from "./eval/jl/executor";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
-import { disposeAllRubyKernelSessions, disposeRubyKernelSessionsByOwner } from "./eval/rb/executor";
 import { defaultEvalSessionId } from "./eval/session-id";
 import {
 	type CustomCommandsLoadResult,
@@ -728,8 +726,6 @@ function registerEvalCleanup(): void {
 	if (evalCleanupRegistered) return;
 	evalCleanupRegistered = true;
 	postmortem.register("python-cleanup", disposeAllKernelSessions);
-	postmortem.register("ruby-cleanup", disposeAllRubyKernelSessions);
-	postmortem.register("julia-cleanup", disposeAllJuliaKernelSessions);
 }
 
 export function customToolToDefinition(tool: CustomTool): ToolDefinition {
@@ -1308,7 +1304,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
-	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+	const scopedAsyncJobManager = asyncJobManager ?? AsyncJobManager.instance();
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -3192,8 +3188,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 				await releaseComputerSessionsForOwner(evalKernelOwnerId);
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);
-				await disposeRubyKernelSessionsByOwner(evalKernelOwnerId);
-				await disposeJuliaKernelSessionsByOwner(evalKernelOwnerId);
 				await disposeVmContextsByOwner(evalKernelOwnerId);
 				if (ownsAuthStorage) authStorage.close();
 			}

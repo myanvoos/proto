@@ -38,17 +38,9 @@ function buildSpawnEnv(shell: string): Record<string, string> {
 	} as Record<string, string>;
 }
 
-export function getShellArgs(shell: string, env: Record<string, string | undefined> = $env): string[] {
+export function getShellArgs(env: Record<string, string | undefined> = $env): string[] {
 	const noLogin = env.PI_BASH_NO_LOGIN || env.CLAUDE_BASH_NO_LOGIN;
-	if (isPowerShell(shell)) {
-		return noLogin ? ["-NoLogo", "-NoProfile", "-Command"] : ["-NoLogo", "-Command"];
-	}
 	return noLogin ? ["-c"] : ["-l", "-c"];
-}
-
-export function isPowerShell(shell: string): boolean {
-	const basename = shell.replace(/\\/g, "/").split("/").pop()?.toLowerCase();
-	return basename === "pwsh";
 }
 
 function getShellPrefix(): string | undefined {
@@ -58,7 +50,7 @@ function getShellPrefix(): string | undefined {
 function buildConfig(shell: string): ShellConfig {
 	return {
 		shell,
-		args: getShellArgs(shell),
+		args: getShellArgs(),
 		env: buildSpawnEnv(shell),
 		prefix: getShellPrefix(),
 	};

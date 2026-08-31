@@ -1,7 +1,6 @@
 
 
 
-
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
@@ -63,12 +62,6 @@ fn read_yes(host: &mut Host) -> bool {
 mod platform {
 
 
-
-
-
-
-
-
 use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt, path::Path};
 
 use indicatif::ProgressBar;
@@ -101,8 +94,6 @@ fn prompt_file_with_stat(host: &mut Host, path: &Path, stat: &libc::stat, option
 	let writable = mode_writable(stat.st_mode as libc::mode_t);
 	let len = stat.st_size as u64;
 	let stdin_ok = options.__presume_input_tty.unwrap_or(false);
-
-
 
 
 	if options.interactive == InteractiveMode::Always {
@@ -243,10 +234,7 @@ fn handle_permission_denied(host: &mut Host,
 ) -> bool {
 
 
-
 	if let Err(_remove_err) = dir_fd.unlink_at(entry_name, true) {
-
-
 
 
 		show_permission_denied_error(host, entry_path);
@@ -284,7 +272,6 @@ pub fn remove_dir_with_special_cases(host: &mut Host, path: &Path, options: &Opt
 		Err(_) if !error_occurred && !is_readable(host, path) => {
 
 
-
 			show_permission_denied_error(host, path);
 			true
 		},
@@ -296,8 +283,6 @@ pub fn remove_dir_with_special_cases(host: &mut Host, path: &Path, options: &Opt
 		},
 		Err(e) if !error_occurred => show_removal_error(host, e, path),
 		Err(_) => {
-
-
 
 
 			error_occurred
@@ -317,7 +302,6 @@ pub fn safe_remove_dir_recursive(host: &mut Host,
 	if host.is_cancelled() {
 		return true;
 	}
-
 
 
 	let initial_mode = match fs::symlink_metadata(host.resolve(path)) {
@@ -364,11 +348,7 @@ pub fn safe_remove_dir_recursive(host: &mut Host,
 		}
 
 
-
-
 		if !is_dir_empty(host, path) {
-
-
 
 
 			if options.interactive == InteractiveMode::Always {
@@ -569,9 +549,6 @@ pub enum InteractiveMode {
 }
 
 
-
-
-
 impl From<&str> for InteractiveMode {
 	fn from(s: &str) -> Self {
 		match s {
@@ -584,24 +561,9 @@ impl From<&str> for InteractiveMode {
 }
 
 
-
-
-
-
-
-
-
 pub struct Options {
 
 	pub force:               bool,
-
-
-
-
-
-
-
-
 
 
 	pub interactive:         InteractiveMode,
@@ -865,12 +827,6 @@ pub fn uu_app() -> Command {
 		)
 
 
-
-
-
-
-
-
 		.arg(
 			Arg::new(PRESUME_INPUT_TTY)
 				.long("presume-input-tty")
@@ -890,7 +846,6 @@ pub fn uu_app() -> Command {
 pub(crate) fn rm_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Rm, SE>()
 }
-
 
 
 struct HostTerm(Mutex<OpenFile>);
@@ -964,17 +919,12 @@ fn create_progress_bar(host: &mut Host, files: &[&OsStr], recursive: bool) -> Op
 }
 
 
-
-
-
 fn count_files(host: &mut Host, paths: &[&OsStr], recursive: bool) -> u64 {
 	let mut total = 0;
 	for p in paths {
 		if host.is_cancelled() {
 			break;
 		}
-
-
 
 
 		if p.is_empty() {
@@ -1019,14 +969,6 @@ fn count_files_in_directory(host: &mut Host, p: &Path) -> u64 {
 }
 
 
-
-
-
-
-
-
-
-
 pub fn remove(host: &mut Host, files: &[&OsStr], options: &Options) -> bool {
 	let mut had_err = false;
 
@@ -1042,10 +984,6 @@ pub fn remove(host: &mut Host, files: &[&OsStr], options: &Options) -> bool {
 		let file = Path::new(filename);
 
 
-
-
-
-
 		if filename.is_empty() {
 			if !options.force {
 				show_error!(host, "{}", RmError::CannotRemoveNoSuchFile(filename.to_os_string()));
@@ -1053,8 +991,6 @@ pub fn remove(host: &mut Host, files: &[&OsStr], options: &Options) -> bool {
 			}
 			continue;
 		}
-
-
 
 
 		if uucore::fs::path_ends_with_terminator(file)
@@ -1087,8 +1023,6 @@ pub fn remove(host: &mut Host, files: &[&OsStr], options: &Options) -> bool {
 			Err(_e) => {
 
 
-
-
 				if options.force {
 					false
 				} else {
@@ -1109,9 +1043,6 @@ pub fn remove(host: &mut Host, files: &[&OsStr], options: &Options) -> bool {
 
 	had_err
 }
-
-
-
 
 
 fn is_dir_empty(host: &mut Host, path: &Path) -> bool {
@@ -1142,11 +1073,6 @@ fn is_writable_metadata(_metadata: &Metadata) -> bool {
 }
 
 
-
-
-
-
-
 fn remove_dir_recursive(host: &mut Host,
 	path: &Path,
 	options: &Options,
@@ -1157,23 +1083,16 @@ fn remove_dir_recursive(host: &mut Host,
 	}
 
 
-
-
-
-
-
 	let fs_path = host.resolve(path);
 	if !fs_path.is_dir() || fs_path.is_symlink() {
 		return remove_file(host, path, options, progress_bar);
 	}
 
 
-
 	if options.interactive == InteractiveMode::Always && !is_dir_empty(host, path) && !prompt_descend(host, path)
 	{
 		return false;
 	}
-
 
 
 	#[cfg(all(unix, not(target_os = "redox")))]
@@ -1230,7 +1149,6 @@ fn remove_dir_recursive(host: &mut Host,
 			Err(_) if !error && !is_readable(host, path) => {
 
 
-
 				show_permission_denied_error(host, path);
 				error = true;
 			},
@@ -1241,8 +1159,6 @@ fn remove_dir_recursive(host: &mut Host,
 			Err(_) => {
 
 
-
-
 			},
 			Ok(_) => verbose_removed_directory(host, path, options),
 		}
@@ -1250,7 +1166,6 @@ fn remove_dir_recursive(host: &mut Host,
 		error
 	}
 }
-
 
 
 fn is_root_path(host: &mut Host, path: &Path) -> bool {
@@ -1305,8 +1220,6 @@ fn handle_dir(host: &mut Host, path: &Path, options: &Options, progress_bar: Opt
 
 	had_err
 }
-
-
 
 
 fn remove_dir(host: &mut Host, path: &Path, options: &Options, progress_bar: Option<&ProgressBar>) -> bool {
@@ -1383,7 +1296,6 @@ fn prompt_dir(host: &mut Host, path: &Path, options: &Options) -> bool {
 	}
 
 
-
 	if let Ok(metadata) = fs::metadata(host.resolve(path)) {
 		handle_writable_directory(host, path, options, &metadata)
 	} else {
@@ -1430,8 +1342,6 @@ fn prompt_file_permission_readonly(host: &mut Host, path: &Path, options: &Optio
 }
 
 
-
-
 fn path_is_current_or_parent_directory(path: &Path) -> bool {
 	let path_str = os_bytes(path.as_os_str());
 	let dir_separator = MAIN_SEPARATOR as u8;
@@ -1447,8 +1357,6 @@ fn path_is_current_or_parent_directory(path: &Path) -> bool {
 	}
 	false
 }
-
-
 
 
 #[cfg(unix)]
@@ -1476,37 +1384,6 @@ fn handle_writable_directory(host: &mut Host, path: &Path, options: &Options, me
 }
 
 
-
-#[cfg(windows)]
-fn handle_writable_directory(host: &mut Host, path: &Path, options: &Options, metadata: &Metadata) -> bool {
-	use std::os::windows::prelude::MetadataExt;
-
-	use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
-	let not_user_writable = (metadata.file_attributes() & FILE_ATTRIBUTE_READONLY) != 0;
-	let stdin_ok = options.__presume_input_tty.unwrap_or(false);
-	match (stdin_ok, not_user_writable, options.interactive) {
-		(false, _, InteractiveMode::PromptProtected) => true,
-		(_, true, _) => prompt_yes!(host, "remove write-protected directory {}?", path.quote()),
-		(_, _, InteractiveMode::Always) => prompt_yes!(host, "remove directory {}?", path.quote()),
-		(..) => true,
-	}
-}
-
-
-
-
-#[cfg(not(windows))]
-#[cfg(not(unix))]
-fn handle_writable_directory(host: &mut Host, path: &Path, options: &Options, _metadata: &Metadata) -> bool {
-	if options.interactive == InteractiveMode::Always {
-		prompt_yes!(host, "remove directory {}?", path.quote())
-	} else {
-		true
-	}
-}
-
-
-
 fn clean_trailing_slashes(path: &Path) -> &Path {
 	let path_str = os_bytes(path.as_os_str());
 	let dir_separator = MAIN_SEPARATOR as u8;
@@ -1520,7 +1397,6 @@ fn clean_trailing_slashes(path: &Path) -> &Path {
 
 		if path_bytes[idx] == dir_separator {
 			for i in (1..path_bytes.len()).rev() {
-
 
 
 				if path_bytes[i - 1] != dir_separator {
@@ -1544,19 +1420,8 @@ fn prompt_descend(host: &mut Host, path: &Path) -> bool {
 	prompt_yes!(host, "descend into directory {}?", path.quote())
 }
 
-#[cfg(not(windows))]
 fn is_symlink_dir(_metadata: &Metadata) -> bool {
 	false
-}
-
-#[cfg(windows)]
-fn is_symlink_dir(metadata: &Metadata) -> bool {
-	use std::os::windows::prelude::MetadataExt;
-
-	use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
-
-	metadata.file_type().is_symlink()
-		&& ((metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY) != 0)
 }
 
 

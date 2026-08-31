@@ -1,4 +1,4 @@
-Symbol-aware code intelligence from language servers — navigation, refactors, diagnostics where text tools miss callsites (shadowing, re-exports, cross-file usages).
+Symbol-aware code intelligence from language servers.
 
 - Position ops: `file` + `line` + `symbol` (substring; `#N` = Nth match); `line` 1-indexed.
 - `rename` applies by default (`apply: false` previews); `rename_file` also rewrites imports/references. Project-aware lookups ERROR without `symbol` — no silent fallback.

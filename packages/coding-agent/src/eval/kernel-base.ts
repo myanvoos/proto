@@ -327,17 +327,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		const kernelKilledDefault = options?.kernelKilled ?? false;
 		for (const entry of pending) {
 			if (entry.settled) continue;
-			entry.settled = true;
+			entry.status = "error";
+			entry.cancelled = true;
+			entry.kernelKilled = entry.kernelKilled || kernelKilledDefault;
 			void entry.options?.onChunk?.(`[kernel] ${reason}\n`);
-			entry.resolve({
-				status: "error",
-				cancelled: true,
-				timedOut: entry.timedOut,
-				stdinRequested: entry.stdinRequested,
-				executionCount: entry.executionCount,
-				error: entry.error,
-				kernelKilled: entry.kernelKilled || kernelKilledDefault,
-			});
+			entry.finalize?.();
 		}
 	}
 

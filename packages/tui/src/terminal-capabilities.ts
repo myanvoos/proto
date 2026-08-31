@@ -191,16 +191,6 @@ function parseMajorMinorVersion(versionRaw?: string): { major: number; minor: nu
 	return { major, minor };
 }
 
-export function isWindowsTerminalPreviewSixelSupported(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	if (!env.WT_SESSION) return false;
-	if (env.TERM_PROGRAM && env.TERM_PROGRAM.toLowerCase() !== "windows_terminal") {
-		return false;
-	}
-	const version = parseMajorMinorVersion(env.TERM_PROGRAM_VERSION);
-	if (!version) return false;
-	return version.major > 1 || (version.major === 1 && version.minor >= 22);
-}
-
 export function synchronizedOutputUserOverride(env: NodeJS.ProcessEnv = Bun.env): boolean | null {
 	if (env.PI_NO_SYNC_OUTPUT || env.PI_TUI_SYNC_OUTPUT === "0") return false;
 	if (env.PI_FORCE_SYNC_OUTPUT === "1" || env.PI_TUI_SYNC_OUTPUT === "1") return true;
@@ -219,7 +209,6 @@ export function shouldEnableSynchronizedOutputByDefault(
 	if (override !== null) return override;
 
 	if (advertisesSynchronizedOutput(env.TERM_FEATURES)) return true;
-	if (env.WT_SESSION) return true;
 
 	if (isInsideTerminalMultiplexer(env)) {
 		return false;
@@ -293,18 +282,14 @@ function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null 
 	return null;
 }
 
-export function resolveWarpImageProtocol(
-	platform: NodeJS.Platform = process.platform,
-	env: NodeJS.ProcessEnv = Bun.env,
-): ImageProtocol | null {
-	const windowsHost = platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
-	return windowsHost ? null : ImageProtocol.Kitty;
+export function resolveWarpImageProtocol(): ImageProtocol {
+	return ImageProtocol.Kitty;
 }
 
-function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = Bun.env): TerminalInfo {
+function getWarpTerminalInfo(): TerminalInfo {
 	return new TerminalInfo(
 		"warp",
-		resolveWarpImageProtocol(platform, env),
+		resolveWarpImageProtocol(),
 		true,
 		false,
 		NotifyProtocol.Osc9,
@@ -420,12 +405,8 @@ export function setTerminalTextSizing(enabled: boolean): void {
 	TERMINAL.textSizing = enabled;
 }
 
-export function getTerminalInfo(
-	terminalId: TerminalId,
-	platform: NodeJS.Platform = process.platform,
-	env: NodeJS.ProcessEnv = Bun.env,
-): TerminalInfo {
-	return terminalId === "warp" ? getWarpTerminalInfo(platform, env) : KNOWN_TERMINALS[terminalId];
+export function getTerminalInfo(terminalId: TerminalId): TerminalInfo {
+	return terminalId === "warp" ? getWarpTerminalInfo() : KNOWN_TERMINALS[terminalId];
 }
 
 export interface CellDimensions {

@@ -1,15 +1,12 @@
 
 
 
-
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-#[cfg(windows)]
-use std::os::windows;
 use std::{
 	ffi::OsString,
 	fmt,
@@ -174,17 +171,8 @@ fn progress_manager(host: &Host, enabled: bool) -> Option<MultiProgress> {
 }
 
 
-
-
-
-
-
-
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Options {
-
-
 
 
 	pub overwrite: OverwriteMode,
@@ -199,9 +187,7 @@ pub struct Options {
 	pub update: UpdateMode,
 
 
-
 	pub target_dir: Option<OsString>,
-
 
 
 	pub no_target_dir: bool,
@@ -536,9 +522,6 @@ fn app() -> Command {
 fn determine_overwrite_mode(matches: &ArgMatches) -> OverwriteMode {
 
 
-
-
-
 	if matches.get_flag(OPT_NO_CLOBBER) {
 		OverwriteMode::NoClobber
 	} else if matches.get_flag(OPT_INTERACTIVE) {
@@ -663,7 +646,6 @@ fn assert_not_same_file(
 	let target_abs = host.resolve(target);
 
 
-
 	let canonicalized_source =
 		match canonicalize(&source_abs, MissingHandling::Normal, ResolveMode::Logical) {
 			Ok(source) if source.exists() => source,
@@ -672,10 +654,8 @@ fn assert_not_same_file(
 		};
 
 
-
 	let target_is_dir = target_is_dir && !opts.no_target_dir;
 	let canonicalized_target = if target_is_dir {
-
 
 
 		canonicalize(&target_abs, MissingHandling::Normal, ResolveMode::Logical)?
@@ -698,7 +678,6 @@ fn assert_not_same_file(
 		|| are_hardlinks_to_same_file(&source_abs, &target_abs)
 		|| are_hardlinks_or_one_way_symlink_to_same_file(&source_abs, &target_abs))
 		&& opts.backup == BackupMode::None;
-
 
 
 	let target_display = match source.file_name() {
@@ -746,8 +725,6 @@ fn handle_multiple_paths(host: &mut Host, paths: &[PathBuf], opts: &Options) -> 
 
 	move_files_into_dir(host, sources, target_dir, opts)
 }
-
-
 
 
 fn mv(host: &mut Host, files: &[OsString], opts: &Options) -> MvResult<()> {
@@ -839,7 +816,6 @@ fn move_files_into_dir(host: &mut Host, files: &[PathBuf], target_dir: &Path, op
 			);
 			continue;
 		}
-
 
 
 		if let Err(e) = assert_not_same_file(host, sourcepath, target_dir, true, options) {
@@ -1006,7 +982,6 @@ fn is_fifo(_filetype: fs::FileType) -> bool {
 }
 
 
-
 fn rename_with_fallback(
 	host: &mut Host,
 	from: &Path,
@@ -1022,16 +997,10 @@ fn rename_with_fallback(
 	let to_fs = host.resolve(to);
 
 	fs::rename(&from_fs, &to_fs).or_else(|err| {
-		#[cfg(windows)]
-		const EXDEV: i32 = windows_sys::Win32::Foundation::ERROR_NOT_SAME_DEVICE as _;
 		#[cfg(unix)]
 		const EXDEV: i32 = libc::EXDEV as _;
 		#[cfg(target_os = "wasi")]
 		const EXDEV: i32 = 18;
-
-
-
-
 
 
 		let should_fallback = matches!(err.raw_os_error(), Some(EXDEV))
@@ -1102,7 +1071,6 @@ fn rename_fifo_fallback(_host: &mut Host, _from: &Path, _to: &Path) -> io::Resul
 }
 
 
-
 #[cfg(unix)]
 fn rename_symlink_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Result<()> {
 
@@ -1116,24 +1084,6 @@ fn rename_symlink_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Resul
 	fs::remove_file(host.resolve(from))
 }
 
-#[cfg(windows)]
-fn rename_symlink_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Result<()> {
-	let path_symlink_points_to = fs::read_link(host.resolve(from))?;
-	let to_fs = host.resolve(to);
-	if path_symlink_points_to.exists() {
-		if path_symlink_points_to.is_dir() {
-			windows::fs::symlink_dir(&path_symlink_points_to, &to_fs)?;
-		} else {
-			windows::fs::symlink_file(&path_symlink_points_to, &to_fs)?;
-		}
-		fs::remove_file(host.resolve(from))
-	} else {
-		Err(io::Error::new(
-			io::ErrorKind::NotFound,
-			"can't determine symlink type, since it is dangling",
-		))
-	}
-}
 
 #[cfg(target_os = "wasi")]
 fn rename_symlink_fallback(host: &mut Host, _from: &Path, _to: &Path) -> io::Result<()> {
@@ -1151,15 +1101,10 @@ fn rename_dir_fallback(
 ) -> io::Result<()> {
 
 
-
 	let to_fs = host.resolve(to);
 	if to_fs.exists() {
 		fs::remove_dir_all(&to_fs)?;
 	}
-
-
-
-
 
 
 	let total_size = dir_get_size(host.resolve(from)).ok();
@@ -1262,7 +1207,6 @@ fn copy_dir_contents_recursive(
 			}
 		}
 	};
-
 
 
 	let entries = fs::read_dir(host.resolve(from_dir))?;
@@ -1403,7 +1347,6 @@ fn rename_file_fallback(
 	}
 
 
-
 	#[cfg(unix)]
 	{
 		if let (Some(tracker), Some(scanner)) = (hardlink_tracker, hardlink_scanner) {
@@ -1433,8 +1376,6 @@ fn rename_file_fallback(
 		.map_err(|err| io::Error::new(err.kind(), "Permission denied"))?;
 	Ok(())
 }
-
-
 
 
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
@@ -1499,8 +1440,6 @@ fn get_interactive_prompt(_host: &Host, to: &Path, _cached_mode: Option<u32>) ->
 }
 
 
-
-
 fn read_yes(host: &mut Host) -> bool {
 	use std::io::Read as _;
 	let stdin = &mut host.stdin;
@@ -1524,8 +1463,6 @@ fn read_yes(host: &mut Host) -> bool {
 }
 
 
-
-
 fn stdin_is_terminal(host: &Host) -> bool {
 	host.stdin.file().is_terminal()
 }
@@ -1545,54 +1482,7 @@ fn prompt_overwrite(host: &mut Host, to: &Path, cached_mode: Option<u32>) -> io:
 }
 
 
-
-#[cfg(windows)]
-fn can_delete_file(host: &Host, path: &Path) -> bool {
-	use std::{
-		os::windows::ffi::OsStrExt as _,
-		ptr::{null, null_mut},
-	};
-
-	use windows_sys::Win32::{
-		Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-		Storage::FileSystem::{
-			CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
-			FILE_SHARE_WRITE, OPEN_EXISTING,
-		},
-	};
-
-	let resolved = host.resolve(path);
-	let wide_path = resolved
-		.as_os_str()
-		.encode_wide()
-		.chain([0])
-		.collect::<Vec<u16>>();
-
-	let handle = unsafe {
-		CreateFileW(
-			wide_path.as_ptr(),
-			DELETE,
-			FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
-			null(),
-			OPEN_EXISTING,
-			FILE_ATTRIBUTE_NORMAL,
-			null_mut(),
-		)
-	};
-
-	if handle == INVALID_HANDLE_VALUE {
-		return false;
-	}
-
-	unsafe { CloseHandle(handle) };
-
-	true
-}
-
-#[cfg(not(windows))]
 fn can_delete_file(_host: &Host, _: &Path) -> bool {
-
-
 
 
 	false
@@ -1710,7 +1600,6 @@ mod hardlink {
 		}
 
 
-
 		pub fn check_hardlink(
 			&mut self,
 			host: &mut Host,
@@ -1774,7 +1663,6 @@ mod hardlink {
 		}
 
 
-
 		pub fn scan_files(&mut self, host: &mut Host, files: &[PathBuf], options: &HardlinkOptions) {
 			if self.scanned {
 				return;
@@ -1791,7 +1679,6 @@ mod hardlink {
 					let _ =
 						writeln!(host.stderr, "warning: failed to scan {}: {e}", file.quote());
 				}
-
 
 
 			}
@@ -1855,7 +1742,6 @@ mod hardlink {
 		}
 
 
-
 		#[cfg(unix)]
 		pub fn stats(&self) -> ScannerStats {
 			let total_groups = self.hardlink_groups.len();
@@ -1878,7 +1764,6 @@ mod hardlink {
 	pub fn create_hardlink_context() -> (HardlinkTracker, HardlinkGroupScanner) {
 		(HardlinkTracker::new(), HardlinkGroupScanner::new())
 	}
-
 
 
 	pub fn with_optional_hardlink_context<F, R>(

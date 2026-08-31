@@ -178,7 +178,6 @@ const LANG_ALIASES: &[(&[&str], &str)] = &[
 	(&["cs", "csharp"], "C#"),
 	(&["php"], "PHP"),
 	(&["sh", "bash", "zsh", "shell"], "Bash"),
-	(&["ps1", "powershell"], "PowerShell"),
 	(&["html", "htm", "astro", "vue", "svelte"], "HTML"),
 	(&["css"], "CSS"),
 	(&["scss"], "SCSS"),

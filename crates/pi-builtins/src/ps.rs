@@ -1275,10 +1275,6 @@ fn ps_total_memory_bytes() -> Option<u64> {
 	(status == 0 && size == std::mem::size_of::<u64>()).then_some(value)
 }
 
-#[cfg(target_os = "windows")]
-fn ps_total_memory_bytes() -> Option<u64> {
-	None
-}
 
 #[cfg(unix)]
 fn ps_user_name(uid: u32) -> Option<String> {
@@ -1401,6 +1397,5 @@ fn write_ps_help(mut output: impl Write) -> io::Result<()> {
 		 ax', 'ps aux', and 'ps axo pid,command' are supported."
 	)
 }
-
 
 

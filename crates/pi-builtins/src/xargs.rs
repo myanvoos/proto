@@ -1,7 +1,6 @@
 
 
 
-
 use std::{
 	collections::HashMap,
 	error::Error,
@@ -78,7 +77,6 @@ struct ExhaustedCommandSpace {
 }
 
 
-
 trait CommandSizeLimiter {
 	fn try_arg(
 		&mut self,
@@ -87,8 +85,6 @@ trait CommandSizeLimiter {
 	) -> Result<Argument, ExhaustedCommandSpace>;
 	fn dyn_clone(&self) -> Box<dyn CommandSizeLimiter>;
 }
-
-
 
 
 struct LimiterCursor<'collection> {
@@ -137,12 +133,6 @@ impl Clone for LimiterCollection {
 	}
 }
 
-#[cfg(windows)]
-fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
-	use std::os::windows::ffi::OsStrExt;
-
-	s.encode_wide().count() + 1
-}
 
 #[cfg(unix)]
 fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
@@ -162,12 +152,6 @@ impl MaxCharsCommandSizeLimiter {
 		Self { current_size: 0, max_chars }
 	}
 
-	#[cfg(windows)]
-	fn new_system(_env: &HashMap<OsString, OsString>) -> MaxCharsCommandSizeLimiter {
-
-		const MAX_CMDLINE: usize = 32767;
-		MaxCharsCommandSizeLimiter::new(MAX_CMDLINE)
-	}
 
 	#[cfg(unix)]
 	fn new_system(env: &HashMap<OsString, OsString>) -> Self {
@@ -260,8 +244,6 @@ impl CommandSizeLimiter for MaxLinesCommandSizeLimiter {
 	) -> Result<Argument, ExhaustedCommandSpace> {
 		if self.current_line <= self.max_lines {
 			let arg = cursor.try_next(arg)?;
-
-
 
 
 			if arg.kind == ArgumentKind::HardTerminated {
@@ -373,7 +355,6 @@ impl CommandBuilder<'_> {
 		};
 
 		let final_args: Vec<OsString> = if let Some(replace_str) = &self.options.replace {
-
 
 
 			let replacement = self.extra_args[0].to_string_lossy();
@@ -791,9 +772,6 @@ fn normalize_options<'a>(
 
 
 			(None | Some(1), None, Some(_)) => {
-
-
-
 
 
 				(Some(1), None, &options.replace)

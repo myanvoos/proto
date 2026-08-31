@@ -240,12 +240,6 @@ impl builtins::Command for TopCommand {
 				writeln!(context.stderr(), "top: row count must be greater than zero")?;
 				return Ok(ExecutionResult::new(1));
 			}
-			#[cfg(target_os = "windows")]
-			if user.is_some() {
-				writeln!(context.stderr(), "top: user filtering is unavailable on Windows")?;
-				return Ok(ExecutionResult::new(2));
-			}
-
 			let delay = Duration::from_secs_f64(delay);
 			let pid_filter: HashSet<i32> = pids.into_iter().collect();
 			let mut previous = HashMap::<i32, (u64, Duration)>::new();

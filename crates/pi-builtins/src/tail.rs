@@ -1,7 +1,6 @@
 
 
 
-
 mod args {
 
 	use std::{ffi::OsString, io::Write, time::Duration};
@@ -160,9 +159,6 @@ mod args {
 		pub fn from(matches: &ArgMatches) -> TailResult<Self> {
 
 
-
-
-
 			let follow_retry = matches.get_flag(options::FOLLOW_RETRY);
 
 
@@ -184,9 +180,7 @@ mod args {
 	            }
 
 
-
 	            (_, Some("name")) | (true, None) => Some(FollowMode::Name),
-
 
 
 	            (_, Some(_)) => Some(FollowMode::Descriptor),
@@ -262,7 +256,6 @@ mod args {
 		}
 
 
-
 		pub fn check_warnings(&self, stderr: &mut impl Write) {
 			if self.retry {
 				if self.follow.is_none() {
@@ -292,9 +285,6 @@ mod args {
 				}
 			}
 		}
-
-
-
 
 
 		pub fn verify(&self) -> VerificationResult {
@@ -333,10 +323,6 @@ mod args {
 		#[cfg(target_os = "linux")]
 		let polling_help = "Disable 'inotify' support and use polling instead";
 		#[cfg(all(unix, not(target_os = "linux")))]
-		let polling_help = "Disable 'kqueue' support and use polling instead";
-		#[cfg(target_os = "windows")]
-		let polling_help = "Disable 'ReadDirectoryChanges' support and use polling instead";
-		#[cfg(not(any(unix, target_os = "windows")))]
 		let polling_help = "Disable 'kqueue' support and use polling instead";
 
 		Command::new("tail")
@@ -487,17 +473,6 @@ mod args {
 mod chunks {
 
 
-
-
-
-
-
-
-
-
-
-
-
 	use std::{
 		collections::VecDeque,
 		fs::File,
@@ -505,20 +480,10 @@ mod chunks {
 	};
 
 
-
 	pub const BLOCK_SIZE: u64 = 1 << 16;
 
 
-
-
-
-
-
 	pub const BUFFER_SIZE: usize = 8192;
-
-
-
-
 
 
 	pub struct ReverseChunks<'a> {
@@ -559,14 +524,11 @@ mod chunks {
 			}
 
 
-
-
 			let block_size = if self.block_idx == self.max_blocks_to_read - 1 {
 				self.size % BLOCK_SIZE
 			} else {
 				BLOCK_SIZE
 			};
-
 
 
 			let mut buf = vec![0; BLOCK_SIZE as usize];
@@ -591,7 +553,6 @@ mod chunks {
 	}
 
 
-
 	type ChunkBuffer = [u8; BUFFER_SIZE];
 
 
@@ -602,11 +563,6 @@ mod chunks {
 		buffer: ChunkBuffer,
 
 
-
-
-
-
-
 		bytes: usize,
 	}
 
@@ -615,31 +571,6 @@ mod chunks {
 		pub fn new() -> Self {
 			Self { buffer: [0; BUFFER_SIZE], bytes: 0 }
 		}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		fn from_chunk(chunk: &Self, offset: usize) -> Self {
@@ -654,33 +585,9 @@ mod chunks {
 		}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 		pub fn get_buffer(&self) -> &[u8] {
 			&self.buffer[..self.bytes]
 		}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		pub fn get_buffer_with(&self, offset: usize) -> &[u8] {
@@ -690,10 +597,6 @@ mod chunks {
 		pub fn has_data(&self) -> bool {
 			self.bytes > 0
 		}
-
-
-
-
 
 
 		pub fn fill(&mut self, filehandle: &mut impl BufRead) -> io::Result<Option<usize>> {
@@ -708,12 +611,9 @@ mod chunks {
 	}
 
 
-
 	pub struct BytesChunkBuffer {
 
 		num_print: u64,
-
-
 
 
 		bytes:     u64,
@@ -724,55 +624,13 @@ mod chunks {
 	impl BytesChunkBuffer {
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 		pub fn new(num_print: u64) -> Self {
 			Self { bytes: 0, num_print, chunks: VecDeque::new() }
 		}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 		pub fn fill(&mut self, reader: &mut impl BufRead) -> io::Result<()> {
 			let mut chunk = Box::new(BytesChunk::new());
-
 
 
 			while chunk.fill(reader)?.is_some() {
@@ -796,9 +654,6 @@ mod chunks {
 			let chunk = self.chunks.pop_front().unwrap();
 
 
-
-
-
 			let offset = self.bytes.saturating_sub(self.num_print) as usize;
 			self
 				.chunks
@@ -820,14 +675,10 @@ mod chunks {
 	}
 
 
-
-
 	#[derive(Clone, Debug)]
 	pub struct LinesChunk {
 
 		chunk:     BytesChunk,
-
-
 
 
 		lines:     usize,
@@ -841,50 +692,9 @@ mod chunks {
 		}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 		fn count_lines(&self) -> usize {
 			memchr::memchr_iter(self.delimiter, self.get_buffer()).count()
 		}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		fn from_chunk(chunk: &Self, offset: usize) -> Self {
@@ -899,24 +709,9 @@ mod chunks {
 		}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 		pub fn has_data(&self) -> bool {
 			self.chunk.has_data()
 		}
-
-
 
 
 		pub fn get_buffer(&self) -> &[u8] {
@@ -924,23 +719,14 @@ mod chunks {
 		}
 
 
-
-
-
 		pub fn get_buffer_with(&self, offset: usize) -> &[u8] {
 			self.chunk.get_buffer_with(offset)
 		}
 
 
-
-
 		pub fn get_lines(&self) -> usize {
 			self.lines
 		}
-
-
-
-
 
 
 		pub fn fill(&mut self, filehandle: &mut impl BufRead) -> io::Result<Option<usize>> {
@@ -955,28 +741,6 @@ mod chunks {
 				},
 			}
 		}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		fn calculate_bytes_offset_from(&self, offset: usize) -> usize {
@@ -995,21 +759,9 @@ mod chunks {
 		}
 
 
-
-
-
-
-
-
 		pub fn write_lines(&self, writer: &mut impl Write, offset: usize) -> io::Result<()> {
 			self.write_bytes(writer, self.calculate_bytes_offset_from(offset))
 		}
-
-
-
-
-
-
 
 
 		pub fn write_bytes(&self, writer: &mut impl Write, offset: usize) -> io::Result<()> {
@@ -1019,14 +771,9 @@ mod chunks {
 	}
 
 
-
-
-
 	pub struct LinesChunkBuffer {
 
 		delimiter: u8,
-
-
 
 
 		lines:     u64,
@@ -1041,12 +788,6 @@ mod chunks {
 		pub fn new(delimiter: u8, num_print: u64) -> Self {
 			Self { delimiter, num_print, lines: 0, chunks: VecDeque::new() }
 		}
-
-
-
-
-
-
 
 
 		pub fn fill(&mut self, reader: &mut impl BufRead) -> io::Result<()> {
@@ -1079,7 +820,6 @@ mod chunks {
 			}
 
 
-
 			let chunk = loop {
 
 
@@ -1093,8 +833,6 @@ mod chunks {
 					break chunk;
 				}
 			};
-
-
 
 
 			let skip_lines = self.lines.saturating_sub(self.num_print) as usize;
@@ -1118,9 +856,6 @@ mod chunks {
 mod follow {
 
 
-
-
-
 	#[cfg(not(target_os = "wasi"))]
 	mod files {
 
@@ -1138,10 +873,6 @@ mod follow {
 			paths::{HeaderPrinter, PathExtTail},
 			text,
 		};
-
-
-
-
 
 
 		pub struct FileHandling {
@@ -1231,17 +962,12 @@ mod follow {
 			}
 
 
-
 			pub fn reset_reader(&mut self, path: &Path) {
 				self.get_mut(path).reader = None;
 			}
 
 
 			pub fn update_reader(&mut self, path: &Path) -> TailResult<()> {
-
-
-
-
 
 
 				self
@@ -1289,7 +1015,6 @@ mod follow {
 			}
 
 
-
 			pub fn needs_header(&self, path: &Path, verbose: bool) -> bool {
 				if verbose {
 					if let Some(ref last) = self.last {
@@ -1302,7 +1027,6 @@ mod follow {
 				}
 			}
 		}
-
 
 
 		pub struct PathData {
@@ -1386,18 +1110,10 @@ mod follow {
 			}
 
 
-
 			fn watch_with_parent(&mut self, path: &Path) -> TailResult<()> {
 				let mut path = path.to_owned();
 				#[cfg(target_os = "linux")]
 				if path.is_file() {
-
-
-
-
-
-
-
 
 
 					if let Some(parent) = path.parent() {
@@ -1413,7 +1129,6 @@ mod follow {
 				if path.is_relative() {
 					path = path.canonicalize()?;
 				}
-
 
 
 				self.watch(&path, RecursiveMode::NonRecursive)?;
@@ -1441,8 +1156,6 @@ mod follow {
 
 
 			pub follow: Option<FollowMode>,
-
-
 
 
 			pub use_polling: bool,
@@ -1549,28 +1262,9 @@ mod follow {
 				let (tx, rx) = channel();
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 				let watcher: Box<dyn Watcher>;
 				let watcher_config = notify::Config::default()
 					.with_poll_interval(settings.sleep_sec)
-
-
-
 
 
 					.with_compare_contents(true);
@@ -1582,10 +1276,6 @@ mod follow {
 					match RecommendedWatcher::new(tx, notify::Config::default()) {
 						Ok(w) => watcher = Box::new(w),
 						Err(e) if e.to_string().starts_with("Too many open files") => {
-
-
-
-
 
 
 							let _ = writeln!(
@@ -1677,7 +1367,6 @@ mod follow {
 		                    let pd = self.files.get(event_path);
 		                    if let Some(old_md) = &pd.metadata {
 		                        if is_tailable {
-
 
 
 		                            if !old_md.is_tailable() {
@@ -1802,32 +1491,9 @@ mod follow {
 		                } else if self.use_polling && event.kind == EventKind::Remove(RemoveKind::Any) {
 
 
-
-
-
-
-
-
-
-
 		                }
 		            }
 		            EventKind::Modify(ModifyKind::Name(RenameMode::Both))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		                if self.follow_descriptor() => {
@@ -1869,14 +1535,10 @@ mod follow {
 				let mut _read_some = false;
 
 
-
 				if settings.follow.is_some() && observer.pid != 0 && process.is_dead() {
 
 					break;
 				}
-
-
-
 
 
 				if observer.follow_name_retry() {
@@ -1903,7 +1565,6 @@ mod follow {
 						}
 					}
 				}
-
 
 
 				let rx_result = observer
@@ -1942,10 +1603,6 @@ mod follow {
 				match rx_result {
 					Ok(Ok(event)) => {
 						process_event(&mut observer, event, settings, &mut paths)?;
-
-
-
-
 
 
 						for _ in 0..100 {
@@ -1993,7 +1650,6 @@ mod follow {
 				if observer.use_polling && settings.follow.is_some() {
 
 
-
 					paths = observer.files.keys().cloned().collect::<Vec<_>>();
 				}
 
@@ -2003,15 +1659,6 @@ mod follow {
 				}
 
 				if timeout_counter == settings.max_unchanged_stats {
-
-
-
-
-
-
-
-
-
 
 
 				}
@@ -2024,7 +1671,6 @@ mod follow {
 
 	#[cfg(not(target_os = "wasi"))]
 	pub use watch::{Observer, follow};
-
 
 
 	#[cfg(target_os = "wasi")]
@@ -2083,9 +1729,6 @@ mod follow {
 }
 
 mod parse {
-
-
-
 
 
 	use std::ffi::OsString;
@@ -2252,8 +1895,6 @@ mod paths {
 				InputKind::File(_) | InputKind::Stdin => {
 
 
-
-
 					#[cfg(target_os = "macos")]
 					{
 						None
@@ -2354,19 +1995,6 @@ mod paths {
 			{
 				self.ino().eq(&other.ino())
 			}
-			#[cfg(windows)]
-			{
-
-
-
-
-
-
-
-
-
-				false
-			}
 		}
 	}
 
@@ -2404,9 +2032,6 @@ mod paths {
 mod platform {
 
 
-
-
-
 	#[cfg(unix)]
 	pub use self::unix::{
 		Pid,
@@ -2414,8 +2039,6 @@ mod platform {
 
 		supports_pid_checks,
 	};
-	#[cfg(windows)]
-	pub use self::windows::{Pid, ProcessChecker, supports_pid_checks};
 
 
 	#[cfg(target_os = "wasi")]
@@ -2428,10 +2051,6 @@ mod platform {
 
 	#[cfg(unix)]
 	mod unix {
-
-
-
-
 
 
 		use std::io::Error;
@@ -2466,79 +2085,11 @@ mod platform {
 		}
 
 
-
-
-
-
-
-
-
 	}
 
-	#[cfg(windows)]
-	mod windows {
-
-
-
-
-
-		use std::cell::Cell;
-
-		use windows_sys::{
-			Win32::{
-				Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0},
-				System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
-			},
-			core::BOOL,
-		};
-
-		pub type Pid = u32;
-
-		pub struct ProcessChecker {
-			dead:   Cell<bool>,
-			handle: HANDLE,
-		}
-
-		impl ProcessChecker {
-			pub fn new(process_id: Pid) -> Self {
-				#[allow(non_snake_case, reason = "matches the Windows API constant name")]
-				let FALSE: BOOL = 0;
-				let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, FALSE, process_id) };
-				Self { dead: Cell::new(h.is_null()), handle: h }
-			}
-
-			pub fn is_dead(&self) -> bool {
-				if !self.dead.get() {
-					self.dead.set(unsafe {
-						let status = WaitForSingleObject(self.handle, 0);
-						status == WAIT_OBJECT_0 || status == WAIT_FAILED
-					});
-				}
-
-				self.dead.get()
-			}
-		}
-
-		impl Drop for ProcessChecker {
-			fn drop(&mut self) {
-				unsafe {
-					CloseHandle(self.handle);
-				}
-			}
-		}
-
-		pub fn supports_pid_checks(_pid: Pid) -> bool {
-			true
-		}
-	}
 }
 
 mod text {
-
-
-
-
-
 
 
 	pub const DASH: &str = "-";
@@ -2550,10 +2101,6 @@ mod text {
 	pub const BACKEND: &str = "inotify";
 	#[cfg(all(unix, not(target_os = "linux")))]
 	pub const BACKEND: &str = "kqueue";
-	#[cfg(target_os = "windows")]
-	pub const BACKEND: &str = "ReadDirectoryChanges";
-	#[cfg(not(any(unix, target_os = "windows")))]
-	pub const BACKEND: &str = "polling";
 }
 
 use std::{
@@ -2629,8 +2176,6 @@ pub(crate) fn map_output_error(error: io::Error) -> TailError {
 }
 
 
-
-
 fn consumes_separate_value(token: &str) -> bool {
 	if let Some(long) = token.strip_prefix("--") {
 		if long.is_empty() || long.contains('=') {
@@ -2657,8 +2202,6 @@ fn consumes_separate_value(token: &str) -> bool {
 	}
 	false
 }
-
-
 
 
 fn rewrite_tail_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
@@ -2777,7 +2320,6 @@ pub(crate) fn tail_builtin<SE: ShellExtensions>() -> Registration<SE> {
 }
 
 
-
 fn run_reverse(matches: &ArgMatches, host: &mut Host) -> i32 {
 	if matches.contains_id(args::options::BYTES)
 		|| matches.get_flag(args::options::BLOCKS)
@@ -2798,7 +2340,6 @@ fn run_reverse(matches: &ArgMatches, host: &mut Host) -> i32 {
 			return error.code();
 		},
 	};
-
 
 
 	let all_lines = !matches.contains_id(args::options::LINES);
@@ -2884,8 +2425,6 @@ fn reverse_main(settings: &Settings, all_lines: bool, host: &mut Host) -> TailRe
 }
 
 
-
-
 fn write_reversed_lines(
 	data: &[u8],
 	signum: Signum,
@@ -2959,7 +2498,6 @@ fn uu_tail(settings: &Settings, host: &mut Host) -> TailResult<()> {
 	}
 
 
-
 	for input in &settings.inputs.clone() {
 		match input.kind() {
 			InputKind::Stdin => {
@@ -2976,13 +2514,6 @@ fn uu_tail(settings: &Settings, host: &mut Host) -> TailResult<()> {
 	observer.stdout.flush()?;
 
 	if settings.follow.is_some() {
-
-
-
-
-
-
-
 
 
 		follow::follow(observer, settings)?;
@@ -3095,15 +2626,6 @@ fn tail_file(
 }
 
 
-
-
-
-
-
-
-
-
-
 #[cfg(unix)]
 fn open_file(path: &Path, use_nonblock_for_fifo: bool) -> io::Result<File> {
 	use std::{
@@ -3152,52 +2674,6 @@ fn tail_stdin(
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn forwards_thru_file(
 	reader: &mut impl Read,
 	num_delimiters: u64,
@@ -3211,7 +2687,6 @@ fn forwards_thru_file(
 	let mut buf = [0; 32 * 1024];
 	let mut total = 0;
 	let mut count = 0;
-
 
 
 	loop {
@@ -3235,8 +2710,6 @@ fn forwards_thru_file(
 		}
 	}
 }
-
-
 
 
 fn backwards_thru_file(file: &mut File, num_delimiters: u64, delimiter: u8) {
@@ -3263,16 +2736,11 @@ fn backwards_thru_file(file: &mut File, num_delimiters: u64, delimiter: u8) {
 		}
 
 
-
-
-
 		for i in iter {
 			counter += 1;
 			if counter >= num_delimiters {
 
 				assert_eq!(counter, num_delimiters);
-
-
 
 
 				file.seek(SeekFrom::Current((i + 1) as i64)).unwrap();
@@ -3281,10 +2749,6 @@ fn backwards_thru_file(file: &mut File, num_delimiters: u64, delimiter: u8) {
 		}
 	}
 }
-
-
-
-
 
 
 fn bounded_tail(file: &mut File, settings: &Settings, writer: &mut impl Write) -> io::Result<()> {

@@ -2,9 +2,6 @@
 
 use std::{collections::VecDeque, fmt::Display, time::Duration};
 
-#[cfg(windows)]
-use std::os::windows::io::OwnedHandle;
-
 use futures::FutureExt;
 
 use crate::{ExecutionResult, error, processes, sys, trace_categories, traps};
@@ -94,9 +91,6 @@ impl JobTask {
 	}
 
 
-
-
-
 	fn poll(&mut self) -> Option<Result<ExecutionResult, error::Error>> {
 		match self {
 			Self::External(process) => {
@@ -116,11 +110,6 @@ impl JobManager {
 	pub fn new() -> Self {
 		Self::default()
 	}
-
-
-
-
-
 
 
 	#[allow(clippy::missing_panics_doc, reason = "push() guarantees the vector length is >= 1")]
@@ -174,10 +163,6 @@ impl JobManager {
 	}
 
 
-
-
-
-
 	pub fn resolve_job_spec(&mut self, job_spec: &str) -> Option<&mut Job> {
 		let remainder = job_spec.strip_prefix('%')?;
 
@@ -194,10 +179,6 @@ impl JobManager {
 			},
 		}
 	}
-
-
-
-
 
 
 	pub fn resolve_job_spec_selector(&self, job_spec: &str) -> Option<JobSelector> {
@@ -225,10 +206,6 @@ impl JobManager {
 	pub fn contains_process_id(&self, pid: i32) -> bool {
 		self.jobs.iter().any(|job| job.contains_process_id(pid))
 	}
-
-
-
-
 
 
 	pub fn resolve_process_id(&mut self, pid: i32) -> Option<&mut Job> {
@@ -418,11 +395,6 @@ impl Display for Job {
 impl Job {
 
 
-
-
-
-
-
 	pub(crate) fn new<I>(tasks: I, command_line: String, state: JobState) -> Self
 	where
 		I: IntoIterator<Item = JobTask>,
@@ -566,10 +538,6 @@ impl Job {
 	}
 
 
-
-
-
-
 	pub fn kill(&self, signal: traps::TrapSignal) -> Result<(), error::Error> {
 		if let Some(pid) = self.process_group_id() {
 			sys::signal::kill_process(pid, signal)
@@ -577,10 +545,6 @@ impl Job {
 			Err(error::ErrorKind::FailedToSendSignal.into())
 		}
 	}
-
-
-
-
 
 
 	pub fn abort_internal_tasks(&mut self) {
@@ -631,7 +595,6 @@ impl Job {
 	}
 
 
-
 	pub fn representative_pid(&self) -> Option<sys::process::ProcessId> {
 		for task in &self.tasks {
 			match task {
@@ -653,15 +616,4 @@ impl Job {
 	}
 
 
-	#[cfg(windows)]
-	pub fn duplicate_kill_handles(&self) -> Vec<OwnedHandle> {
-		self
-			.tasks
-			.iter()
-			.filter_map(|task| match task {
-				JobTask::External(process) => process.duplicate_kill_handle(),
-				JobTask::Internal(_) => None,
-			})
-			.collect()
-	}
 }

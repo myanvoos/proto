@@ -1,4 +1,4 @@
-Agent coordination: peer messaging, background-job control, supervised long-running processes. Main agent is `Main`; subagents inherit task ID. Discover peers: `op: "list"`. Address by exact roster ID — NEVER invent names.
+Agent coordination: peer messaging, background-job control, supervised long-running processes. Main agent is `Main`; subagents inherit task ID. Discover peers: `op: "list"`.
 
 Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` observing a settled job first consumes the delivery and suppresses duplicate `async-result`. Job rows are process-local, expire ~5 min after settlement; afterward use the agent ID with `send`, `agent://<id>`, or `history://<id>`.
 

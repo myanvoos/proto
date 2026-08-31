@@ -20,23 +20,11 @@ export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const PROFILE_ENV_KEYS = ["PROTO_PROFILE", "PI_PROFILE"] as const;
 
-const WINDOWS_RESERVED_BASENAME_RE = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/i;
-
 export function normalizeProfileName(profile: string | undefined): string | undefined {
 	const normalized = profile?.trim();
 	if (!normalized || normalized === "default") return undefined;
-	if (
-		normalized === "." ||
-		normalized === ".." ||
-		normalized.endsWith(".") ||
-		!PROFILE_NAME_RE.test(normalized) ||
-		WINDOWS_RESERVED_BASENAME_RE.test(normalized)
-	) {
-		throw new Error(
-			`Invalid PROTO profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}, ` +
-				`cannot be "." or "..", cannot end with ".", and cannot be a Windows reserved device name ` +
-				`(CON, PRN, AUX, NUL, COM0-9, LPT0-9, or any of those with an extension).`,
-		);
+	if (!PROFILE_NAME_RE.test(normalized)) {
+		throw new Error(`Invalid PROTO profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}.`);
 	}
 	return normalized;
 }

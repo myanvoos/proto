@@ -29,55 +29,6 @@ function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): 
 	return TERMINAL.id !== "base" && TERMINAL.id !== "trueColor";
 }
 
-const MAX_CONPTY_WRITE_CHUNK_BYTES = 16 * 1024;
-
-export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_WRITE_CHUNK_BYTES): string[] {
-	if (Buffer.byteLength(data, "utf8") <= maxChunkBytes) return [data];
-	const chunks: string[] = [];
-	const len = data.length;
-	let pos = 0;
-	while (pos < len) {
-		let bytes = 0;
-
-		let lastNewlineEnd = -1;
-		let i = pos;
-		while (i < len) {
-			const cu = data.charCodeAt(i);
-			let cuLen = 1;
-			let cuBytes: number;
-			if (cu < 0x80) {
-				cuBytes = 1;
-			} else if (cu < 0x800) {
-				cuBytes = 2;
-			} else if (cu >= 0xd800 && cu < 0xdc00) {
-				const next = i + 1 < len ? data.charCodeAt(i + 1) : 0;
-				if (next >= 0xdc00 && next < 0xe000) {
-					cuBytes = 4;
-					cuLen = 2;
-				} else {
-					cuBytes = 3;
-				}
-			} else {
-				cuBytes = 3;
-			}
-			if (bytes + cuBytes > maxChunkBytes && i > pos) {
-				const cut = lastNewlineEnd > pos ? lastNewlineEnd : i;
-				chunks.push(data.slice(pos, cut));
-				pos = cut;
-				break;
-			}
-			bytes += cuBytes;
-			i += cuLen;
-			if (cu === 0x0a) lastNewlineEnd = i;
-		}
-		if (i >= len) {
-			chunks.push(data.slice(pos));
-			pos = len;
-		}
-	}
-	return chunks;
-}
-
 const MAX_STDOUT_BACKLOG_BYTES = 64 * 1024 * 1024;
 
 export class OutputBacklogGuard {
@@ -247,10 +198,6 @@ export interface Terminal {
 	get appearance(): TerminalAppearance | undefined;
 
 	onPrivateModeReport?(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void;
-}
-
-export function isConPTYHosted(): boolean {
-	return process.platform === "linux" && (!!$env.WSL_DISTRO_NAME || !!$env.WSL_INTEROP);
 }
 
 type Da1SentinelOwner =
@@ -664,10 +611,7 @@ export class ProcessTerminal implements Terminal {
 				const reportedFlags = parseInt(match[1]!, 10);
 				this.#kittyProtocolActive = true;
 				setKittyProtocolActive(true);
-				if (isConPTYHosted()) {
-					this.#kittyEnableSeq = (reportedFlags & 2) !== 0 ? "\x1b[>3u" : "\x1b[>1u";
-					this.#safeWrite(this.#kittyEnableSeq);
-				} else if ((reportedFlags & 2) !== 0) {
+				if ((reportedFlags & 2) !== 0) {
 					this.#kittyEnableSeq = "\x1b[>7u";
 					this.#safeWrite(this.#kittyEnableSeq);
 				} else {
@@ -1144,16 +1088,7 @@ export class ProcessTerminal implements Terminal {
 		}
 		try {
 			const bytes = Buffer.byteLength(data, "utf8");
-			let accepted: boolean;
-			if (isConPTYHosted() && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES) {
-				accepted = true;
-				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
-					if (this.#dead) break;
-					accepted = process.stdout.write(chunk);
-				}
-			} else {
-				accepted = process.stdout.write(data);
-			}
+			const accepted = process.stdout.write(data);
 
 			if (this.#stdoutBacklog.record(accepted, bytes)) {
 				this.#markTerminalDisconnected("stdout backlog exceeded cap; PTY consumer stalled");

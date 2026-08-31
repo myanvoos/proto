@@ -165,12 +165,13 @@ export class PythonKernel extends BaseKernel {
 		kernel.setProcess(proc);
 
 		const startup = { signal: options.signal, deadlineMs: options.deadlineMs };
-		const startupBudget = Math.min(getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
+		const phaseBudget = (): number =>
+			Math.min(getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
 
 		try {
 			const initScript = buildInitScript(options.cwd, options.env);
-			await kernel.executeWithBudget(initScript, startup.signal, startupBudget, "Python kernel init");
-			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude", {
+			await kernel.executeWithBudget(initScript, startup.signal, phaseBudget(), "Python kernel init");
+			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, phaseBudget(), "Python kernel prelude", {
 				prelude: true,
 			});
 			return kernel;

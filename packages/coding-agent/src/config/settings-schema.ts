@@ -2852,28 +2852,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"eval.rb": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Ruby Eval Backend",
-			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
-		},
-	},
-
-	"eval.jl": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Julia Eval Backend",
-			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
-		},
-	},
-
 	"eval.autoBackground.enabled": {
 		type: "boolean",
 		default: false,
@@ -2912,29 +2890,6 @@ export const SETTINGS_SCHEMA = {
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
 		},
 	},
-	"ruby.interpreter": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Ruby Interpreter",
-			description:
-				"Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.",
-		},
-	},
-	"julia.interpreter": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Julia Interpreter",
-			description:
-				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
-		},
-	},
-
 	"todo.enabled": {
 		type: "boolean",
 		default: true,

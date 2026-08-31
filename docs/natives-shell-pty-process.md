@@ -135,11 +135,7 @@ Concurrency guard:
 ### Spawn/attach/write/read/terminate patterns
 
 - PTY opened via `portable_pty::native_pty_system().openpty(...)`.
-- On Windows, `openpty()` is run on a helper thread with a 5s startup timeout; timeout rejects with `PTY creation timed out (5s). ConPTY may be unavailable on this system.`
-- `start()` runs the command through the configured shell:
-  - `cmd.exe`/`cmd` gets `/c`,
-  - `powershell`/`pwsh` gets `-Command`,
-  - other shells get `-lc`.
+- `start()` runs the command through the configured shell with `-lc`.
 - `startArgv()` passes each argument directly to `portable_pty::CommandBuilder`.
 - Default size is `120x40`; dimensions are clamped (`cols 20..400`, `rows 5..200`) on start and resize.
 - `write()` sends raw bytes to PTY stdin.

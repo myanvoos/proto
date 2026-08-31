@@ -105,9 +105,6 @@ pub fn language_odin() -> TSLanguage {
 pub fn language_php() -> TSLanguage {
 	tree_sitter_php::LANGUAGE_PHP_ONLY.into()
 }
-pub fn language_powershell() -> TSLanguage {
-	tree_sitter_powershell::LANGUAGE.into()
-}
 pub fn language_proto() -> TSLanguage {
 	tree_sitter_proto::LANGUAGE.into()
 }

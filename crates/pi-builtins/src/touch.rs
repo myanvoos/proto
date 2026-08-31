@@ -1,7 +1,6 @@
 
 
 
-
 #[cfg(unix)]
 use std::fs::OpenOptions;
 #[cfg(unix)]
@@ -44,9 +43,6 @@ enum TouchError {
 	InvalidFiletime(FileTime),
 	#[error("failed to get attributes of {}: {}", .0.quote(), io_error(.1))]
 	ReferenceFileInaccessible(PathBuf, std::io::Error),
-	#[cfg(windows)]
-	#[error("GetFinalPathNameByHandleW failed with code {0}")]
-	WindowsStdoutPathError(String),
 	#[error("{0}")]
 	Message(String),
 }
@@ -70,18 +66,10 @@ fn io_context(error: std::io::Error, context: impl std::fmt::Display) -> TouchEr
 }
 
 
-
-
-
-
-
-
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Options {
 
 	no_create: bool,
-
 
 
 	no_deref: bool,
@@ -94,7 +82,6 @@ struct Options {
 
 
 	change_times: ChangeTimes,
-
 
 
 	strict: bool,
@@ -190,9 +177,6 @@ fn all_digits(s: &str) -> bool {
 }
 
 
-
-
-
 fn get_year(s: &str) -> u8 {
 	let bytes = s.as_bytes();
 	let n = bytes.len();
@@ -219,12 +203,9 @@ fn is_first_filename_timestamp(
 }
 
 
-
 fn is_timestamp(s: &str) -> bool {
 	all_digits(s) && (s.len() == 8 || (s.len() == 10 && (69..=99).contains(&get_year(s))))
 }
-
-
 
 
 fn shr2(s: &str) -> String {
@@ -428,22 +409,6 @@ fn uu_app() -> Command {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn touch(
 	files: &[InputFile],
 	opts: &Options,
@@ -506,14 +471,6 @@ fn touch(
 }
 
 
-
-
-
-
-
-
-
-
 fn touch_file(
 	path: &Path,
 	is_stdout: bool,
@@ -571,7 +528,6 @@ fn touch_file(
 		}
 
 
-
 		if opts.source == Source::Now && opts.date.is_none() {
 			return Ok(());
 		}
@@ -579,11 +535,6 @@ fn touch_file(
 
 	update_times(path, &resolved, is_stdout, opts, atime, mtime)
 }
-
-
-
-
-
 
 
 fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
@@ -608,10 +559,6 @@ fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
 		ChangeTimes::Both
 	}
 }
-
-
-
-
 
 
 fn update_times(
@@ -663,9 +610,6 @@ fn update_times(
 #[cfg(unix)]
 
 
-
-
-
 fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> std::io::Result<()> {
 	let file = OpenOptions::new()
 		.write(true)
@@ -686,9 +630,6 @@ fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> s
 
 	futimens(&file, &timestamps).map_err(|e| Error::from_raw_os_error(e.raw_os_error()))
 }
-
-
-
 
 
 fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
@@ -714,26 +655,12 @@ fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
 fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 	if let Ok(parsed) = strtime::parse(format::POSIX_LOCALE, s)
 		.and_then(|tm| tm.to_datetime())
 		.and_then(|dt| TimeZone::UTC.to_zoned(dt))
 	{
 		return Ok(timestamp_to_filetime(parsed.timestamp()));
 	}
-
-
 
 
 	for fmt in [
@@ -751,7 +678,6 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 	}
 
 
-
 	if let Ok(filetime) = strtime::parse(format::ISO_8601, s)
 		.and_then(|tm| tm.to_date())
 		.and_then(|date| {
@@ -763,7 +689,6 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 	{
 		return Ok(filetime);
 	}
-
 
 
 	if s.bytes().next() == Some(b'@')
@@ -780,24 +705,12 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 }
 
 
-
-
-
-
-
 fn prepend_century(s: &str) -> Result<String, TouchError> {
 	let first_two_digits = s[..2].parse::<u32>().map_err(|_| {
 		TouchError::Message(format!("invalid date ts format {}", s.quote()))
 	})?;
 	Ok(format!("{}{s}", if first_two_digits > 68 { 19 } else { 20 }))
 }
-
-
-
-
-
-
-
 
 
 fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
@@ -823,14 +736,9 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 		.map_err(|_| TouchError::Message(format!("invalid date ts format {}", ts.quote())))?;
 
 
-
-
-
 	if dt.second() == 59 && ts.ends_with(".60") {
 		dt += 1.second();
 	}
-
-
 
 
 	let local = time_zone
@@ -842,11 +750,6 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 }
 
 
-
-
-
-
-#[cfg_attr(not(windows), expect(clippy::unnecessary_wraps))]
 fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	#[cfg(all(unix, not(target_os = "android")))]
 	{
@@ -855,59 +758,6 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	#[cfg(target_os = "android")]
 	{
 		Ok(PathBuf::from("/proc/self/fd/1"))
-	}
-	#[cfg(windows)]
-	{
-		use std::os::windows::prelude::AsRawHandle;
-
-		use windows_sys::Win32::{
-			Foundation::{
-				ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_PATH_NOT_FOUND, GetLastError,
-				HANDLE, MAX_PATH,
-			},
-			Storage::FileSystem::{FILE_NAME_OPENED, GetFinalPathNameByHandleW},
-		};
-
-		let handle = std::io::stdout().lock().as_raw_handle() as HANDLE;
-		let mut file_path_buffer: [u16; MAX_PATH as usize] = [0; MAX_PATH as usize];
-
-
-
-
-
-
-
-
-
-		let ret = unsafe {
-			GetFinalPathNameByHandleW(
-				handle,
-				file_path_buffer.as_mut_ptr(),
-				file_path_buffer.len() as u32,
-				FILE_NAME_OPENED,
-			)
-		};
-
-
-
-		let buffer_size = match ret {
-			ERROR_PATH_NOT_FOUND | ERROR_NOT_ENOUGH_MEMORY | ERROR_INVALID_PARAMETER => {
-				return Err(TouchError::WindowsStdoutPathError(ret.to_string()));
-			},
-			0 => {
-				return Err(TouchError::WindowsStdoutPathError(format!(
-					"{}",
-
-					unsafe { GetLastError() }
-				)));
-			},
-			e => e as usize,
-		};
-
-
-		Ok(String::from_utf16(&file_path_buffer[0..buffer_size])
-			.map_err(|e| TouchError::WindowsStdoutPathError(e.to_string()))?
-			.into())
 	}
 	#[cfg(target_os = "wasi")]
 	{

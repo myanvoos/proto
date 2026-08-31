@@ -71,14 +71,10 @@ describe("agents view section counts", () => {
 			id: "child",
 			parentId: "parent",
 			status: "running",
-			// Subagent transcripts live inside the parent's artifacts directory
-			// (session path minus the .jsonl extension).
 			sessionFile: "/tmp/proto-view/sess/worker.jsonl",
 			lastActivity: 6000,
 		});
 		const records = reconcileAgentsViewRecords([parent, child], []);
-		// Expand the parent so the child row is actually rendered; collapsed children only
-		// appear as the summary row's "1 subagent running" text.
 		const rows = buildAgentsViewRows(
 			records,
 			new Set(["file:/tmp/proto-view/sess.jsonl"]),
@@ -91,8 +87,6 @@ describe("agents view section counts", () => {
 		expect(childRow?.depth).toBe(1);
 
 		const counts = countAgentsBySection(rows);
-		// The running child renders nested under its parked parent in the Idle section;
-		// counting it as running would make the header disagree with the visible sections.
 		expect(counts.running).toBe(0);
 		expect(counts.idle).toBe(2);
 	});
@@ -116,5 +110,81 @@ describe("agents view section counts", () => {
 		const records = reconcileAgentsViewRecords([], [fakeSession({ liveStreaming: true })]);
 		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
 		expect(countAgentsBySection(rows).running).toBe(1);
+	});
+});
+
+describe("agents view lineage nesting", () => {
+	const parentFile = "/tmp/proto-view/sess_main/alpha.jsonl";
+	const childFile = "/tmp/proto-view/sess_main/alpha/alpha.beta.jsonl";
+
+	function nestedSessionTree(): { parent: SessionInfo; child: SessionInfo } {
+		return {
+			parent: fakeSession({ path: parentFile, id: "alpha", firstMessage: "alpha task" }),
+			child: fakeSession({ path: childFile, id: "alpha.beta", firstMessage: "beta task" }),
+		};
+	}
+
+	test("a nested transcript without a registry ref nests under its parent session", () => {
+		const { parent, child } = nestedSessionTree();
+		const records = reconcileAgentsViewRecords([], [parent, child]);
+		const rows = buildAgentsViewRows(records, new Set([`file:${parentFile}`]), new Set(), new Map(), undefined);
+
+		const childRow = rows.find(row => row.identity === `file:${childFile}`);
+		expect(childRow?.kind).toBe("subagent");
+		expect(childRow?.depth).toBe(1);
+		expect(childRow?.parentIdentity).toBe(`file:${parentFile}`);
+
+		const parentRow = rows.find(row => row.identity === `file:${parentFile}`);
+		expect(parentRow?.kind).toBe("agent");
+		expect(parentRow?.hasChildren).toBe(true);
+	});
+
+	test("an unregistered nested transcript stays nested after its ref is dropped", () => {
+		const { parent, child } = nestedSessionTree();
+		const ref = fakeRef({
+			id: "alpha.beta",
+			parentId: "alpha",
+			status: "parked",
+			sessionFile: childFile,
+		});
+		const registered = reconcileAgentsViewRecords([ref], [parent, child]);
+		const expanded = new Set([`file:${parentFile}`]);
+		const rows = buildAgentsViewRows(registered, expanded, new Set(), new Map(), undefined);
+		expect(rows.find(row => row.identity === `file:${childFile}`)?.depth).toBe(1);
+
+		// keepAlive:false agents unregister on completion; the transcript must keep its
+		// place in the tree instead of jumping to the top level.
+		const unregistered = reconcileAgentsViewRecords([], [parent, child]);
+		const afterRows = buildAgentsViewRows(unregistered, expanded, new Set(), new Map(), undefined);
+		const childRow = afterRows.find(row => row.identity === `file:${childFile}`);
+		expect(childRow?.kind).toBe("subagent");
+		expect(childRow?.depth).toBe(1);
+	});
+
+	test("transcripts from unrelated sessions stay at the top level", () => {
+		const { parent, child } = nestedSessionTree();
+		const unrelated = fakeSession({ path: "/tmp/proto-view/sess_other.jsonl", id: "other" });
+		const records = reconcileAgentsViewRecords([], [parent, child, unrelated]);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
+		expect(rows.find(row => row.identity === "file:/tmp/proto-view/sess_other.jsonl")?.kind).toBe("agent");
+		expect(rows.find(row => row.identity === "file:/tmp/proto-view/sess_other.jsonl")?.depth).toBe(0);
+	});
+
+	test("a session-only child of the scope root stays flattened in the scoped view", () => {
+		const { parent, child } = nestedSessionTree();
+		const records = reconcileAgentsViewRecords([], [parent, child]);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), `file:${parentFile}`);
+		const childRow = rows.find(row => row.identity === `file:${childFile}`);
+		expect(childRow?.kind).toBe("agent");
+		expect(childRow?.depth).toBe(0);
+	});
+
+	test("a nested transcript whose parent record is absent stays at the top level", () => {
+		const { child } = nestedSessionTree();
+		const records = reconcileAgentsViewRecords([], [child]);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
+		const childRow = rows.find(row => row.identity === `file:${childFile}`);
+		expect(childRow?.kind).toBe("agent");
+		expect(childRow?.depth).toBe(0);
 	});
 });

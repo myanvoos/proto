@@ -162,7 +162,6 @@ export class AgentRegistry {
 			return status === "aborted" || this.#rejectStatusUpdate(id, status, "aborted-is-terminal");
 		}
 		if (ref.status === status) {
-			// Same status still means "alive right now" — keep relative-age displays honest.
 			ref.lastActivity = Date.now();
 			return true;
 		}

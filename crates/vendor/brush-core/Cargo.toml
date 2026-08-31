@@ -134,10 +134,10 @@ features = ["unstable"]
 [dev-dependencies.tempfile]
 version = "3.27.0"
 
-[target."cfg(any(unix, windows))".dependencies.hostname]
+[target."cfg(unix)".dependencies.hostname]
 version = "0.4.2"
 
-[target."cfg(any(unix, windows))".dependencies.tokio]
+[target."cfg(unix)".dependencies.tokio]
 version = "1.50.0"
 features = [
     "io-util",
@@ -184,24 +184,6 @@ version = "0.9.0"
 
 [target."cfg(unix)".dependencies.uzers]
 version = "0.12.2"
-
-[target."cfg(windows)".dependencies.check_elevation]
-version = "0.2.7"
-
-[target."cfg(windows)".dependencies.whoami]
-version = "2.1.1"
-
-[target."cfg(windows)".dependencies.windows-sys]
-version = "0.59"
-features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Console",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-]
 
 [target.wasm32-unknown-unknown.dependencies.getrandom]
 version = "0.4.2"

@@ -5,7 +5,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
+import { setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
@@ -847,11 +847,6 @@ export class TUI extends Container {
 
 	static readonly #GHOSTTY_INITIAL_IMAGE_DELAY_MS = 100;
 
-	static readonly #CONPTY_POST_FULL_PAINT_SETTLE_MS = 150;
-	static readonly #CONPTY_FRAME_TRUNCATE_THRESHOLD_BYTES = 512 * 1024;
-	static readonly #CONPTY_FRAME_RETAIN_BYTES = 64 * 1024;
-	#postFullPaintSettleUntilMs = 0;
-	#postFullPaintSettleTimer: RenderTimer | undefined;
 	#hardwareCursorRow = 0;
 	#hardwareCursorState: HardwareCursorState | null = null;
 	#hardwareCursorVisibilityKnown = false;
@@ -908,7 +903,6 @@ export class TUI extends Container {
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
 
-	#unboundedConptyPaintRequested = false;
 	#forceViewportRepaintOnNextRender = false;
 	#hasEverRendered = false;
 	#scrollbackRebuildEnabled =
@@ -1780,7 +1774,6 @@ export class TUI extends Container {
 			this.#resizeViewportSettleTimer = undefined;
 		}
 		this.#resizeViewportActive = false;
-		this.#clearPostFullPaintSettle();
 		this.#deferredForcedClearScrollback = false;
 
 		if (this.#previousFrameLength > 0) {
@@ -1805,7 +1798,6 @@ export class TUI extends Container {
 	resetDisplay(): void {
 		if (this.#stopped) return;
 
-		this.#unboundedConptyPaintRequested = true;
 		this.invalidate();
 
 		if (this.#multiplexerResizeTimer) {
@@ -1829,7 +1821,6 @@ export class TUI extends Container {
 				return;
 			}
 
-			this.#clearPostFullPaintSettle();
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
 			this.#renderScheduler.scheduleImmediate(() => {
@@ -1851,7 +1842,7 @@ export class TUI extends Container {
 	requestComponentRender(component: Component): void {
 		if (this.#stopped) return;
 
-		if (!this.#renderRequested && this.#postFullPaintSettleTimer === undefined) {
+		if (!this.#renderRequested) {
 			this.#pendingRenderComponentsOnly = true;
 		}
 		this.#componentRenderTargets.add(component);
@@ -1860,11 +1851,7 @@ export class TUI extends Container {
 
 	requestDirectWrite(component: Component): void {
 		if (this.#stopped) return;
-		if (
-			this.#renderRequested ||
-			this.#postFullPaintSettleTimer !== undefined ||
-			this.#postFullPaintSettleDelay() > 0
-		) {
+		if (this.#renderRequested) {
 			this.requestComponentRender(component);
 			return;
 		}
@@ -2005,33 +1992,12 @@ export class TUI extends Container {
 		this.#commit(this.#composedFrame, previousWindow, width, height, cursorControl);
 	}
 
-	#postFullPaintSettleDelay(): number {
-		const until = this.#postFullPaintSettleUntilMs;
-		if (until <= 0) return 0;
-		const remaining = until - this.#renderScheduler.now();
-		if (remaining > 0) return remaining;
-		this.#postFullPaintSettleUntilMs = 0;
-		return 0;
-	}
-
 	#requestOrdinaryRender(): void {
 		if (this.#multiplexerResizeTimer) {
 			this.#multiplexerResizeHasPendingRender = true;
 			return;
 		}
 
-		const settleDelayMs = this.#postFullPaintSettleDelay();
-		if (settleDelayMs > 0) {
-			if (this.#postFullPaintSettleTimer === undefined) {
-				this.#postFullPaintSettleTimer = this.#renderScheduler.scheduleRender(() => {
-					this.#postFullPaintSettleTimer = undefined;
-					this.#postFullPaintSettleUntilMs = 0;
-					if (this.#stopped) return;
-					this.#requestOrdinaryRender();
-				}, settleDelayMs);
-			}
-			return;
-		}
 		if (this.#renderRequested) return;
 		this.#renderRequested = true;
 		this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
@@ -2098,40 +2064,6 @@ export class TUI extends Container {
 			this.#deferredForcedClearScrollback = false;
 			this.requestRender(true, { clearScrollback: deferredClearScrollback });
 		}, TUI.#MULTIPLEXER_RESIZE_DEBOUNCE_MS);
-	}
-
-	#armPostFullPaintSettle(): void {
-		if (!isConPTYHosted()) return;
-		const until = this.#renderScheduler.now() + TUI.#CONPTY_POST_FULL_PAINT_SETTLE_MS;
-		if (until <= this.#postFullPaintSettleUntilMs) return;
-		this.#postFullPaintSettleUntilMs = until;
-		const hadPendingRender = this.#renderRequested || this.#renderTimer !== undefined;
-
-		this.#renderRequested = false;
-		if (this.#renderTimer) {
-			this.#renderTimer.cancel();
-			this.#renderTimer = undefined;
-		}
-		if (this.#postFullPaintSettleTimer) {
-			this.#postFullPaintSettleTimer.cancel();
-			this.#postFullPaintSettleTimer = undefined;
-		}
-		if (hadPendingRender) {
-			this.#postFullPaintSettleTimer = this.#renderScheduler.scheduleRender(() => {
-				this.#postFullPaintSettleTimer = undefined;
-				this.#postFullPaintSettleUntilMs = 0;
-				if (this.#stopped) return;
-				this.#requestOrdinaryRender();
-			}, TUI.#CONPTY_POST_FULL_PAINT_SETTLE_MS);
-		}
-	}
-
-	#clearPostFullPaintSettle(): void {
-		if (this.#postFullPaintSettleTimer) {
-			this.#postFullPaintSettleTimer.cancel();
-			this.#postFullPaintSettleTimer = undefined;
-		}
-		this.#postFullPaintSettleUntilMs = 0;
 	}
 
 	#maybeDeferGhosttyInitialImagePaint(): boolean {
@@ -2487,56 +2419,6 @@ export class TUI extends Container {
 			lines[row] = stripped;
 		}
 		return markers;
-	}
-
-	#truncateLargeConptyFrame(
-		lines: string[],
-		width: number,
-		height: number,
-		cursorPos: { row: number; col: number } | null,
-	): { lines: string[]; cursorPos: { row: number; col: number } | null } {
-		if (!isConPTYHosted()) return { lines, cursorPos };
-
-		let totalBytes = 0;
-		let exceedsThreshold = false;
-		for (const line of lines) {
-			totalBytes += Buffer.byteLength(line, "utf8") + 8;
-			if (totalBytes > TUI.#CONPTY_FRAME_TRUNCATE_THRESHOLD_BYTES) {
-				exceedsThreshold = true;
-				break;
-			}
-		}
-		if (!exceedsThreshold) return { lines, cursorPos };
-
-		let retainedBytes = 0;
-		let retainedStart = lines.length;
-		while (
-			retainedStart > 0 &&
-			(retainedBytes < TUI.#CONPTY_FRAME_RETAIN_BYTES || lines.length - retainedStart < height)
-		) {
-			retainedStart -= 1;
-			retainedBytes += Buffer.byteLength(lines[retainedStart] ?? "", "utf8") + 8;
-		}
-		if (retainedStart <= 0) return { lines, cursorPos };
-
-		const marker = truncateToWidth(
-			`[${retainedStart} older lines hidden to keep Windows console resume responsive]`,
-			width,
-			Ellipsis.Omit,
-		);
-		const truncated = new Array<string>(lines.length - retainedStart + 1);
-		truncated[0] = marker;
-		for (let i = retainedStart; i < lines.length; i++) {
-			truncated[i - retainedStart + 1] = lines[i] ?? "";
-		}
-
-		if (cursorPos === null || cursorPos.row < retainedStart) {
-			return { lines: truncated, cursorPos: null };
-		}
-		return {
-			lines: truncated,
-			cursorPos: { row: cursorPos.row - retainedStart + 1, col: cursorPos.col },
-		};
 	}
 
 	#imageLineSequence(line: string, screenRow: number, frameRow: number, committedTo: number): string {
@@ -2946,8 +2828,6 @@ export class TUI extends Container {
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
-		const unboundedConptyPaint = this.#unboundedConptyPaintRequested;
-		this.#unboundedConptyPaintRequested = false;
 		const intent: RenderIntent = fullPaint
 			? {
 					kind: "fullPaint",
@@ -2982,7 +2862,6 @@ export class TUI extends Container {
 				chunkTo,
 				windowTop,
 				cursorTrackingLineCount,
-				boundConptyPaint: !unboundedConptyPaint,
 				leadingSequence: deferredAltExit,
 
 				copyScreenToScrollback: !resizeScrollbackReplay,
@@ -2999,7 +2878,6 @@ export class TUI extends Container {
 			this.#widthEpochCommittedPrefix = undefined;
 			this.#resizeScrollbackReplayPending = false;
 			this.#publishCommittedRows();
-			if (!firstPaint && frameLength > height) this.#armPostFullPaintSettle();
 			return;
 		}
 		if (this.#widthEpochBaselineRows !== undefined) {
@@ -3598,7 +3476,6 @@ export class TUI extends Container {
 			windowTop: number;
 			cursorTrackingLineCount: number;
 
-			boundConptyPaint: boolean;
 			leadingSequence: string;
 			copyScreenToScrollback: boolean;
 		},
@@ -3615,21 +3492,7 @@ export class TUI extends Container {
 			}
 		}
 
-		let paintLines: string[] | null = null;
-		let paintLineCount = chunkTo + height;
-		if (options.boundConptyPaint && isConPTYHosted()) {
-			const merged = new Array<string>(chunkTo + height);
-			for (let i = 0; i < chunkTo; i++) merged[i] = frame[i] ?? "";
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				merged[chunkTo + screenRow] = window[screenRow] ?? "";
-			}
-			const paint = this.#truncateLargeConptyFrame(merged, width, height, paintCursorPos);
-			if (paint.lines !== merged) {
-				paintLines = paint.lines;
-				paintLineCount = paint.lines.length;
-				paintCursorPos = paint.cursorPos;
-			}
-		}
+		const paintLineCount = chunkTo + height;
 		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + options.leadingSequence + purgeSequence;
 		if (options.clearScrollback) {
 			buffer += "\x1b[H\x1b[3J";
@@ -3648,62 +3511,39 @@ export class TUI extends Container {
 		let fillSequence = "";
 		let visibleTexts: string[] | null = null;
 		if (this.#deccaraFillsEnabled() && visibleStart < paintLineCount) {
-			let visible = window;
-			if (paintLines !== null) {
-				visible = new Array<string>(paintLineCount - visibleStart);
-				for (let k = 0; k < visible.length; k++) visible[k] = paintLines[visibleStart + k] ?? "";
-			}
-			const plan = planDeccaraFills(visible, width);
+			const plan = planDeccaraFills(window, width);
 			visibleTexts = plan.texts;
 			fillSequence = plan.sequence;
 		}
-		if (paintLines === null) {
-			for (let i = 0; i < chunkTo; i++) {
-				if (i > 0) buffer += "\r\n";
-				const writeRow = Math.min(i, height - 1);
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							frame[i] ?? "",
-							width,
-							writeRow,
-							i,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(frame, i),
-						)
-					: this.#terminalLine(frame[i] ?? "", writeRow, i, chunkTo);
-			}
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				if (chunkTo + screenRow > 0) buffer += "\r\n";
-				const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
-				const writeRow = Math.min(chunkTo + screenRow, height - 1);
-				const frameRow = windowTop + screenRow;
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							line,
-							width,
-							writeRow,
-							frameRow,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(frame, frameRow),
-						)
-					: this.#terminalLine(line, writeRow, frameRow, chunkTo);
-			}
-		} else {
-			for (let i = 0; i < paintLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = visibleTexts && i >= visibleStart ? visibleTexts[i - visibleStart] : (paintLines[i] ?? "");
-				const writeRow = Math.min(i, height - 1);
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							line,
-							width,
-							writeRow,
-							-1,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(paintLines, i),
-						)
-					: this.#terminalLine(line, writeRow, -1, chunkTo);
-			}
+		for (let i = 0; i < chunkTo; i++) {
+			if (i > 0) buffer += "\r\n";
+			const writeRow = Math.min(i, height - 1);
+			buffer += options.clearScrollback
+				? this.#lineRewriteSequence(
+						frame[i] ?? "",
+						width,
+						writeRow,
+						i,
+						chunkTo,
+						this.#osc66SpacerGlyphWidth(frame, i),
+					)
+				: this.#terminalLine(frame[i] ?? "", writeRow, i, chunkTo);
+		}
+		for (let screenRow = 0; screenRow < height; screenRow++) {
+			if (chunkTo + screenRow > 0) buffer += "\r\n";
+			const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
+			const writeRow = Math.min(chunkTo + screenRow, height - 1);
+			const frameRow = windowTop + screenRow;
+			buffer += options.clearScrollback
+				? this.#lineRewriteSequence(
+						line,
+						width,
+						writeRow,
+						frameRow,
+						chunkTo,
+						this.#osc66SpacerGlyphWidth(frame, frameRow),
+					)
+				: this.#terminalLine(line, writeRow, frameRow, chunkTo);
 		}
 		buffer += fillSequence;
 

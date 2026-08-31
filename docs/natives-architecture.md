@@ -46,9 +46,8 @@ Current root capabilities include:
 - `linux-arm64`
 - `darwin-x64`
 - `darwin-arm64`
-- `win32-x64`
 
-x64 builds have `modern` (x86-64-v3/AVX2) and `baseline` (x86-64-v2) variants. `PI_NATIVE_VARIANT=modern|baseline` overrides automatic detection. Automatic detection reads `/proc/cpuinfo` on Linux, calls `sysctl` on macOS, or queries `System.Runtime.Intrinsics.X86.Avx2` in PowerShell on Windows. Its result is inherited by subsequent workers and child processes through the private `__PI_NATIVE_VARIANT_CACHE` environment entry. Non-x64 builds use an unsuffixed filename.
+x64 builds have `modern` (x86-64-v3/AVX2) and `baseline` (x86-64-v2) variants. `PI_NATIVE_VARIANT=modern|baseline` overrides automatic detection. Automatic detection reads `/proc/cpuinfo` on Linux and calls `sysctl` on macOS. Its result is inherited by subsequent workers and child processes through the private `__PI_NATIVE_VARIANT_CACHE` environment entry. Non-x64 builds use an unsuffixed filename.
 
 Filename fallback is:
 
@@ -72,7 +71,7 @@ After an addon loads successfully, the loader best-effort removes cache director
 
 Every install or compiled candidate must expose the version sentinel computed from `package.json#version`, such as `__piNativesV17_2_5`. Workspace loads skip this check. The loader does not validate a complete symbol list.
 
-After `require(...)` and sentinel validation, the loader calls `__ompInstallTokioRuntime()` when present. Rust deliberately avoids creating worker threads during `#[module_init]`, while the dynamic-loader lock is held. The post-load hook installs bounded Windows Tokio/Rayon pools; older addons without the hook use napi-rs defaults. Hook failure is best-effort and appears only in startup markers when enabled.
+After `require(...)` and sentinel validation, the loader calls `__ompInstallTokioRuntime()` when present. Rust deliberately avoids creating worker threads during `#[module_init]`, while the dynamic-loader lock is held. The post-load hook installs bounded Tokio/Rayon pools; older addons without the hook use napi-rs defaults. Hook failure is best-effort and appears only in startup markers when enabled.
 
 Set `PI_DEBUG_STARTUP` to emit synchronous `[startup]` markers to stderr around addon loading, extraction, and runtime installation.
 
@@ -90,7 +89,7 @@ Rust `#[napi]` functions, classes, objects, and enums generate the declaration s
 
 ## Ownership boundaries
 
-- **Package/scripts** own binary selection, CPU variants, optional leaf resolution, embedded extraction, Windows staging, declarations, and explicit ESM exports.
+- **Package/scripts** own binary selection, CPU variants, optional leaf resolution, embedded extraction, declarations, and explicit ESM exports.
 - **`pi-natives` and supporting crates** own algorithms, native resources, platform behavior, cancellation, and N-API conversion.
 - **Consumers** own higher-level tool policy, rendering, artifacts, and user-facing fallbacks not encoded in a primitive.
 
@@ -100,7 +99,7 @@ For the supporting-crate map, see [`native-crates.md`](./native-crates.md). For 
 
 1. A consumer imports the eager root or a lazy subpath.
 2. `loadNative()` computes mode, platform, variant, filenames, and ordered candidates.
-3. Embedded extraction or Windows staging may prepend a cache candidate.
+3. Embedded extraction may prepend a cache candidate.
 4. Candidates are required in order and install/compiled loads are sentinel-validated.
 5. The optional post-load runtime hook runs, then stale cache versions are cleaned up best-effort.
 6. The root binds generated named exports; lazy subpaths invoke selected bindings through wrappers.

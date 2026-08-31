@@ -81,6 +81,52 @@ test("cell fs walker emits write events with diffs for raw filesystem writes", a
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+test("kernel edit family guards: write refuses overwrite, edit guards by occurrence count and divergence", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-edit-family-"));
+	try {
+		const tool = new EvalTool(stubSession(dir));
+		const code = [
+			"def check(fn, *args, **kwargs):",
+			"    try:",
+			"        fn(*args, **kwargs)",
+			'        return "ok"',
+			"    except Exception as err:",
+			'        return type(err).__name__ + ": " + str(err)[:200]',
+			'write("guard.txt", "v1")',
+			'r1 = check(write, "guard.txt", "v2")',
+			'write("guard.txt", "v2", overwrite=True)',
+			'r2 = check(edit, "guard.txt")',
+			'edit("guard.txt", "v2", "v3")',
+			'r3 = check(edit, "guard.txt", "v3", "v4", 2)',
+			'write("multi.txt", "alpha\\nbeta\\n")',
+			'r4 = check(edit, "multi.txt", "alpha\\nGONE\\n", "x")',
+			'edit("multi.txt", "alpha\\nbeta\\n", "alpha\\ngamma\\n")',
+			'print("R1", r1)',
+			'print("R2", r2)',
+			'print("R3", r3)',
+			'print("R4", r4)',
+			'print("CONTENT", Path("multi.txt").read_text())',
+		].join("\n");
+		const result = await tool.execute("eval-fs-diff-test", {
+			language: "py",
+			code,
+			title: "edit family guards",
+			timeout: 60,
+		});
+
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		const out = String(result.details?.cells?.[0]?.output ?? "");
+		expect(out).toContain("R1 RuntimeError");
+		expect(out).toContain("R2 TypeError");
+		expect(out).toContain("R3 RuntimeError");
+		expect(out).toContain("expected 2 occurrence(s)");
+		expect(out).toContain("R4 RuntimeError");
+		expect(out).toContain("first difference at line 2: current 'beta', expected 'GONE'");
+		expect(out).toContain("CONTENT alpha\ngamma");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
 test("prelude file helpers report one absolute-path event without a walker duplicate", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-fs-diff-"));
 	try {
@@ -104,7 +150,7 @@ test("prelude file helpers report one absolute-path event without a walker dupli
 		const tool = new EvalTool(stubSession(dir));
 		const result = await tool.execute("eval-fs-diff-test", {
 			language: "py",
-			code: ['replace("tracked.txt", "original line", "PRELUDE-REPLACED")', 'print("cell-done")'].join("\n"),
+			code: ['edit("tracked.txt", "original line", "PRELUDE-REPLACED")', 'print("cell-done")'].join("\n"),
 			title: "prelude dedupe regression",
 			timeout: 60,
 		});
@@ -114,7 +160,7 @@ test("prelude file helpers report one absolute-path event without a walker dupli
 			event => event.op === "write" || event.op === "edit",
 		);
 		const forTracked = fileEvents.filter(event => path.resolve(String(event.path)) === path.join(dir, "tracked.txt"));
-		expect(forTracked.length, "prelude replace is reported exactly once for the changed file").toBe(1);
+		expect(forTracked.length, "prelude edit is reported exactly once for the changed file").toBe(1);
 		expect(forTracked[0]?.op).toBe("edit");
 		expect(path.isAbsolute(String(forTracked[0]?.path)), "prelude event paths are absolute").toBe(true);
 		expect(String(forTracked[0]?.diff)).toContain("PRELUDE-REPLACED");
@@ -133,8 +179,6 @@ test("fs walker dedupes prelude edits above the diff cap and reports byte sizes 
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-fs-diff-"));
 	try {
 		expect((await git.runUnchecked(dir, ["init"])).exitCode).toBe(0);
-		// Just over the byte size the old per-file cap skipped (256 KiB), but few
-		// lines so the uncapped diff stays cheap.
 		const filler = `${"x".repeat(80)}\n`.repeat(3400);
 		await Bun.write(path.join(dir, "big.txt"), `${filler}MARKER original\n`);
 		await git.runUnchecked(dir, ["add", "."]);
@@ -156,7 +200,7 @@ test("fs walker dedupes prelude edits above the diff cap and reports byte sizes 
 		const result = await tool.execute("eval-fs-diff-test", {
 			language: "py",
 			code: [
-				'replace("big.txt", "MARKER original", "MARKER replaced")',
+				'edit("big.txt", "MARKER original", "MARKER replaced")',
 				'Path("big-created.txt").write_text("\\n".join(["x" * 50] * 800) + "\\n")',
 				'print("cell-done")',
 			].join("\n"),
@@ -169,16 +213,12 @@ test("fs walker dedupes prelude edits above the diff cap and reports byte sizes 
 			event => event.op === "write" || event.op === "edit",
 		);
 
-		// Prelude edit on an oversized tracked file: reported once (by the prelude,
-		// sha covers the whole file), never duplicated by the walker, and it
-		// carries a diff — file size gates no longer suppress diffing.
 		const bigEdit = fileEvents.filter(event => path.resolve(String(event.path)) === path.join(dir, "big.txt"));
 		expect(bigEdit.length, "oversized prelude edit is reported exactly once").toBe(1);
 		expect(bigEdit[0]?.op).toBe("edit");
 		expect(String(bigEdit[0]?.diff)).toContain("MARKER replaced");
 		expect(bigEdit[0]?.diffTruncated).toBeUndefined();
 
-		// Oversized file created by raw pathlib: walker diffs it, output-capped.
 		const created = fileEvents.filter(
 			event => path.resolve(String(event.path)) === path.join(dir, "big-created.txt"),
 		);

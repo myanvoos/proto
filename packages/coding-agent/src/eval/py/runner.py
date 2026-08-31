@@ -41,7 +41,6 @@ import os
 import re
 import runpy
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -282,6 +281,268 @@ def _start_capture_drain() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cell pre-processing: verbatim embed blocks + tolerant repair ladder
+# ---------------------------------------------------------------------------
+
+_EMBED_OPEN_RE = re.compile(
+    r"#@embed\s+(?P<name>[A-Za-z_][A-Za-z_0-9]*)(?:\s+until=(?P<until>\S+))?\s*$"
+)
+_DEFAULT_EMBED_END = "#@end"
+
+_CURLY_DOUBLE_RE = re.compile("[\u201c\u201d]")
+_CURLY_SINGLE_RE = re.compile("[\u2018\u2019]")
+_NBSP_RE = re.compile("\u00a0")
+_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+
+_FENCE_LINE_RE = re.compile(r"```[A-Za-z0-9_+\-.#]*\s*")
+
+_INVALID_CHAR_HINTS = {
+    "\u201c": "curly double quote",
+    "\u201d": "curly double quote",
+    "\u2018": "curly single quote / apostrophe",
+    "\u2019": "curly single quote / apostrophe",
+    "\u2014": "em dash",
+    "\u2013": "en dash",
+    "\u00a0": "non-breaking space",
+    "\u2026": "ellipsis",
+}
+
+
+class PreparedCell:
+    """Pre-processed cell ready for compilation.
+
+    ``source`` is what will execute. ``notes`` disclose behavior the model
+    did not explicitly request (embed bindings, accepted repairs); ``hints``
+    carry diagnostics for a cell that will fail to compile regardless.
+    """
+
+    __slots__ = ("source", "notes", "hints")
+
+    def __init__(self, source: str, notes: list[str], hints: list[str]) -> None:
+        self.source = source
+        self.notes = notes
+        self.hints = hints
+
+
+def _compiles(source: str) -> bool:
+    try:
+        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
+    except (SyntaxError, ValueError):
+        return False
+    return True
+
+
+def _extract_embeds(source: str) -> tuple[str, list[str]]:
+    """Inline ``#@embed NAME ... #@end`` blocks as string-literal assignments.
+
+    Block content is taken verbatim: no quote, backslash, or ``%``/``!``
+    interpretation applies inside the block, so large text payloads (config
+    files, prompts, markup, code in other languages) ride in a cell without
+    nested-quote gymnastics. ``until=<token>`` on the opening line overrides
+    the ``#@end`` terminator for content that contains one.
+
+    A ``#@embed`` line that begins inside a multi-line string literal is
+    content, not a directive (best-effort via :func:`_string_body_lines`).
+    An unterminated directive is a SyntaxError naming the opening line.
+    """
+    lines = source.split("\n")
+    protected = _string_body_lines(source)
+    notes: list[str] = []
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        directive = None
+        if stripped.startswith("#@embed") and (i + 1) not in protected:
+            directive = _EMBED_OPEN_RE.match(stripped)
+        if directive is None:
+            out.append(line)
+            i += 1
+            continue
+        name = directive.group("name")
+        end_marker = directive.group("until") or _DEFAULT_EMBED_END
+        end_idx: int | None = None
+        for j in range(i + 1, len(lines)):
+            if lines[j].strip() == end_marker:
+                end_idx = j
+                break
+        if end_idx is None:
+            raise SyntaxError(
+                f"#@embed {name!r} (line {i + 1}) is never closed: "
+                f"expected a line reading {end_marker!r}",
+                ("<cell>", i + 1, 1, line),
+            )
+        content = "\n".join(lines[i + 1 : end_idx])
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f"{indent}{name} = {json.dumps(content, ensure_ascii=True)}")
+        notes.append(
+            f"#@embed {name}: bound {len(content)} chars "
+            f"({end_idx - i - 1} lines) verbatim"
+        )
+        i = end_idx + 1
+    return "\n".join(out), notes
+
+
+def _unicode_repairs(source: str) -> tuple[str, list[str]]:
+    """Replace typography homoglyphs that are never valid code.
+
+    Only applied when the cell fails to compile, and every substitution is
+    disclosed: string contents can legitimately hold these characters, so
+    the unmodified source always gets first refusal.
+    """
+    notes: list[str] = []
+    repaired = _ZERO_WIDTH_RE.sub("", source)
+    repaired = _NBSP_RE.sub(" ", repaired)
+    curly_double = len(_CURLY_DOUBLE_RE.findall(repaired))
+    curly_single = len(_CURLY_SINGLE_RE.findall(repaired))
+    if curly_double:
+        repaired = _CURLY_DOUBLE_RE.sub('"', repaired)
+        notes.append(f"normalized {curly_double} curly double quote(s) to ASCII")
+    if curly_single:
+        repaired = _CURLY_SINGLE_RE.sub("'", repaired)
+        notes.append(f"normalized {curly_single} curly single quote(s) to ASCII")
+    return repaired, notes
+
+
+def _strip_markdown_fences(source: str) -> str | None:
+    """Strip a wrapping ``` fence pair (```` ```python ... ``` ````) when the
+    whole cell is fenced. Returns ``None`` when the shape does not match;
+    the caller must recompile before trusting the result."""
+    lines = source.split("\n")
+    first = next((k for k, l in enumerate(lines) if l.strip()), None)
+    last = next((k for k in range(len(lines) - 1, -1, -1) if lines[k].strip()), None)
+    if first is None or last is None or last <= first:
+        return None
+    open_line = lines[first].strip()
+    if not _FENCE_LINE_RE.fullmatch(open_line):
+        return None
+    if lines[last].strip() != "```":
+        return None
+    inner = lines[first + 1 : last]
+    if not any(l.strip() for l in inner):
+        return None
+    return "\n".join(inner)
+
+
+def _quote_style_at(source: str, pos: tuple[int, ...] | None) -> str:
+    """Best-effort description of the string literal opened at ``pos``."""
+    if not pos or len(pos) < 2:
+        return "string literal"
+    row, col = pos[0], max(0, pos[1] - 1)
+    lines = source.split("\n")
+    if not (1 <= row <= len(lines)):
+        return "string literal"
+    m = re.search(r'([A-Za-z]{0,2})("""|\'\'\'|"|\')', lines[row - 1][col:])
+    if not m:
+        return "string literal"
+    prefix, quote = m.group(1), m.group(2)
+    return f"string literal {prefix}{quote}" if prefix else f"string literal {quote}"
+
+
+def _syntax_hints(source: str) -> list[str]:
+    """Diagnostics for a cell that failed every compile attempt.
+
+    The caret traceback still comes from the ordinary error path; hints add
+    the context that caret cannot show (where an unterminated string opened,
+    which character is a homoglyph, why a path literal exploded).
+    """
+    hints: list[str] = []
+    try:
+        for _ in tokenize.generate_tokens(io.StringIO(source).readline):
+            pass
+    except tokenize.TokenError as exc:
+        message = exc.args[0] if exc.args else ""
+        pos = exc.args[1] if len(exc.args) > 1 else None
+        if "multi-line string" in message and pos:
+            hints.append(
+                f"{_quote_style_at(source, pos)} opened at line {pos[0]} is never closed — "
+                "count the quote runs; text containing triple quotes is the usual cause "
+                "(a #@embed block avoids quoting entirely)"
+            )
+        elif pos:
+            hints.append(
+                f"string literal on line {pos[0]} is not closed before the end of the line"
+            )
+    except (SyntaxError, ValueError, IndentationError):
+        pass
+    try:
+        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
+    except SyntaxError as exc:
+        message = exc.msg or ""
+        lineno = exc.lineno or 0
+        if "invalid character" in message:
+            m = re.search(r"\(U\+([0-9A-Fa-f]+)\)", message)
+            glyph = ""
+            if m:
+                try:
+                    glyph = chr(int(m.group(1), 16))
+                except ValueError:
+                    glyph = ""
+            name = _INVALID_CHAR_HINTS.get(glyph, "non-ASCII character")
+            if glyph:
+                hints.append(
+                    f"line {lineno}: {name} ({glyph!r}) used as code — "
+                    "typography homoglyphs are not Python syntax"
+                )
+            else:
+                hints.append(f"line {lineno}: {message}")
+        elif "unicodeescape" in message:
+            hints.append(
+                f"line {lineno}: backslash escape in a normal string literal "
+                "— use a raw string r'...' or forward slashes"
+            )
+    if _strip_markdown_fences(source) is not None:
+        hints.append(
+            "cell is wrapped in ``` markdown fences — stripping them did not fix the parse"
+        )
+    return hints
+
+
+def prepare_cell(code: str) -> PreparedCell:
+    """Full pre-processing pipeline for a user cell.
+
+    Order matters: embed blocks are extracted first (their content is data,
+    immune to magic rewriting and repairs), then magics are translated, then
+    a repair ladder runs only if the result still fails to compile. Every
+    accepted repair is disclosed in ``notes``; ``hints`` are populated only
+    when no repair compiles.
+    """
+    source, embed_notes = _extract_embeds(code)
+    transformed = transform_cell(source)
+    if _compiles(transformed):
+        return PreparedCell(transformed, embed_notes, [])
+    fenced = _strip_markdown_fences(transformed)
+    cleaned, repair_notes = _unicode_repairs(transformed)
+    candidates: list[tuple[str, list[str]]] = []
+    if fenced is not None:
+        candidates.append((fenced, ["stripped wrapping markdown code fence"]))
+    if repair_notes:
+        candidates.append((cleaned, repair_notes))
+    if fenced is not None and repair_notes:
+        both = _strip_markdown_fences(cleaned)
+        if both is not None:
+            candidates.append(
+                (both, ["stripped wrapping markdown code fence", *repair_notes])
+            )
+    for candidate, applied in candidates:
+        if _compiles(candidate):
+            return PreparedCell(
+                candidate,
+                embed_notes + [f"executed repaired cell: {'; '.join(applied)}"],
+                [],
+            )
+    return PreparedCell(transformed, embed_notes, _syntax_hints(transformed))
+
+
+def _emit_cell_prep(rid: str, prepared: PreparedCell) -> None:
+    for note in prepared.notes:
+        _emit({"type": "stderr", "id": rid, "data": f"<kernel> note: {note}\n"})
+    for hint in prepared.hints:
+        _emit({"type": "stderr", "id": rid, "data": f"<kernel> hint: {hint}\n"})
+
+
+# ---------------------------------------------------------------------------
 # Magic source transformer
 # ---------------------------------------------------------------------------
 
@@ -507,7 +768,10 @@ def _process_output_encoding() -> str:
 
 
 def _process_output_decoder(encoding: str) -> codecs.IncrementalDecoder:
-    return codecs.getincrementaldecoder(encoding)(errors="strict")
+    # errors="replace": child output is not guaranteed to be valid text in the
+    # locale encoding (e.g. `cat` of a latin-1 file); a decode error here would
+    # crash the streaming thread and lose the rest of the output.
+    return codecs.getincrementaldecoder(encoding)(errors="replace")
 
 
 def _take_prefix_by_lines(text: str, max_lines: int) -> str:
@@ -819,37 +1083,9 @@ def _magic_run(args: str) -> None:
         _STATE.user_ns[name] = value
 
 
-def _resolve_bash() -> str:
-    if os.name != "nt":
-        return "/bin/bash"
-    # Prefer Git Bash over WSL's System32 bash.exe, which runs inside a
-    # separate Linux environment and does not share the Windows filesystem
-    # layout or PATH.
-    for env_var, suffix in (
-        ("ProgramFiles", r"Git\bin\bash.exe"),
-        ("ProgramFiles(x86)", r"Git\bin\bash.exe"),
-        ("LOCALAPPDATA", r"Programs\Git\bin\bash.exe"),
-    ):
-        root = os.environ.get(env_var)
-        if root:
-            candidate = os.path.join(root, suffix)
-            if os.path.isfile(candidate):
-                return candidate
-    found = shutil.which("bash")
-    if found and "system32" not in found.lower():
-        return found
-    # WSL's System32 bash.exe runs in a separate Linux environment, so
-    # silently falling back to it would execute the cell somewhere the user
-    # did not intend; fail loudly instead.
-    raise RuntimeError(
-        "%%bash requires a POSIX bash, but none was found. "
-        "Install Git for Windows or add a non-WSL bash to PATH."
-    )
-
-
 @cell_magic("bash")
 def _magic_cell_bash(args: str, body: str) -> int:
-    return _run_shell_body(body, shell_arg=_resolve_bash())
+    return _run_shell_body(body, shell_arg="/bin/bash")
 
 
 @cell_magic("capture")
@@ -1514,7 +1750,12 @@ async def _handle_request_async(req: dict) -> None:
         try:
             _apply_request_runtime(req)
             code = req.get("code", "")
-            transformed = code if is_prelude else transform_cell(code)
+            if is_prelude:
+                transformed = code
+            else:
+                prepared = prepare_cell(code)
+                transformed = prepared.source
+                _emit_cell_prep(rid, prepared)
         except SyntaxError as exc:
             _emit_error(rid, exc)
             _emit(
@@ -1573,9 +1814,13 @@ async def _handle_request_async(req: dict) -> None:
             except Exception:
                 pass
 
-        if not is_prelude:
-            _track_cell_defs(transformed, rid, execution_count)
-        _flush_stream_proxies(rid)
+        try:
+            if not is_prelude:
+                _track_cell_defs(transformed, rid, execution_count)
+            _flush_stream_proxies(rid)
+        except BaseException as exc:  # noqa: BLE001 - the host needs a done frame to settle the request
+            status = "error"
+            _emit_error(rid, exc)
         _emit(
             {
                 "type": "done",

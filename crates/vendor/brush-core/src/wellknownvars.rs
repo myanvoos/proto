@@ -386,7 +386,6 @@ pub(crate) fn init_well_known_vars(
 		"openbsd" => "openbsd",
 		"dragonfly" => "dragonfly",
 		"solaris" | "illumos" => "solaris",
-		"windows" => "windows",
 		_ => "unknown",
 	};
 	shell

@@ -203,12 +203,6 @@ export function formatCodeFrameLine(
 	return `${gutterText.padStart(lineNumberWidth + 1, " ")}│${content}`;
 }
 
-/**
- * Wraps a rendered code-frame/diff line (e.g. ` 42│content`) to `width`, keeping every
- * continuation row aligned under the content column: continuation rows repeat the gutter
- * as spaces plus the separator, so wrapped words never land under the line numbers.
- * Lines without a recognizable gutter fall back to plain ANSI-aware wrapping.
- */
 export function wrapCodeFrameLine(line: string, width: number): string[] {
 	if (width <= 0) return [line];
 	if (line.length === 0) return [""];
@@ -235,10 +229,6 @@ export function wrapCodeFrameLine(line: string, width: number): string[] {
 	);
 }
 
-/**
- * Hint shown under a collapsed diff, e.g. `… (2 more hunks, 15 more lines) ▸ ctrl+o expand`.
- * Shared by the edit tool and kernel file-op events so both truncate with the same wording.
- */
 export function formatDiffTruncationHint(hiddenHunks: number, hiddenLines: number, theme: Theme): string | undefined {
 	const remainder: string[] = [];
 	if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more ${pluralize("hunk", hiddenHunks)}`);

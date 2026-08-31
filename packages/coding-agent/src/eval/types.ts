@@ -1,4 +1,4 @@
-export type EvalLanguage = "python" | "js" | "ruby" | "julia";
+export type EvalLanguage = "python" | "js";
 
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { OutputMeta } from "../tools/output-meta";

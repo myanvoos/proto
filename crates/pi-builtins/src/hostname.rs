@@ -1,7 +1,6 @@
 
 
 
-
 #[cfg(not(any(target_os = "freebsd", target_os = "openbsd")))]
 use std::net::ToSocketAddrs;
 use std::{collections::hash_set::HashSet, ffi::OsString, io::Write};
@@ -19,32 +18,6 @@ static OPT_FQDN: &str = "fqdn";
 static OPT_SHORT: &str = "short";
 static OPT_HOST: &str = "host";
 
-#[cfg(windows)]
-mod wsa {
-	use std::io;
-
-	use windows_sys::Win32::Networking::WinSock::{WSACleanup, WSADATA, WSAStartup};
-
-	pub(super) struct WsaHandle(());
-
-	pub(super) fn start() -> io::Result<WsaHandle> {
-		let mut data = std::mem::MaybeUninit::<WSADATA>::uninit();
-		let err = unsafe { WSAStartup(0x0202, data.as_mut_ptr()) };
-		if err == 0 {
-			Ok(WsaHandle(()))
-		} else {
-			Err(io::Error::from_raw_os_error(err))
-		}
-	}
-
-	impl Drop for WsaHandle {
-		fn drop(&mut self) {
-
-			let _ = unsafe { WSACleanup() };
-		}
-	}
-}
-
 
 pub(crate) struct Hostname {
 	matches: ArgMatches,
@@ -56,14 +29,6 @@ impl Utility for Hostname {
 	const NAME: &'static str = "hostname";
 
 	fn run(self, host: &mut Host) -> i32 {
-		#[cfg(windows)]
-		let _handle = match wsa::start() {
-			Ok(handle) => handle,
-			Err(err) => {
-				host.error(format!("failed to start Winsock: {err}"), 1);
-				return 1;
-			},
-		};
 
 		if self.matches.get_one::<OsString>(OPT_HOST).is_some() {
 
@@ -144,7 +109,6 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 				.to_socket_addrs()
 				.map_err(|err| format!("failed to resolve socket addresses: {err}"))?;
 		}
-
 
 
 		#[cfg(any(target_os = "freebsd", target_os = "openbsd"))]

@@ -1,26 +1,13 @@
 
 
 
-
-
-
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 pub mod command {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::path::PathBuf;
@@ -59,7 +46,6 @@ pub struct ProcessingContext {
 	pub cwd:              PathBuf,
 
 
-
 	pub input_name:           String,
 
 	pub line_number:          usize,
@@ -73,7 +59,6 @@ pub struct ProcessingContext {
 	pub stop_processing:      bool,
 
 	pub saved_regex:          Option<Regex>,
-
 
 
 	pub input_action: Option<InputAction>,
@@ -164,14 +149,8 @@ impl ReplacementTemplate {
 	}
 
 
-
-
-
-
-
 	pub fn apply_captures(&self, command: &Command, caps: &Captures) -> SedResult<String> {
 		let mut result = String::new();
-
 
 
 		if self.max_group_number > caps.len() - 1 {
@@ -230,8 +209,6 @@ pub struct Substitution {
 	pub multiline:   bool,
 	pub write_file:  Option<Rc<RefCell<NamedWriter>>>,
 }
-
-
 
 
 const COMMON_UNICODE: usize = 2048;
@@ -349,12 +326,7 @@ pub struct InputAction {
 pub mod compiler {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::{cell::RefCell, mem, path::PathBuf, rc::Rc};
@@ -407,8 +379,6 @@ struct CommandSpec {
 }
 
 
-
-
 pub fn compile_with_stdin(
 	scripts: Vec<ScriptValue>,
 	context: &mut ProcessingContext,
@@ -436,8 +406,6 @@ fn compile_with_provider(
 	resolve_branch_targets(result.clone(), context)?;
 
 
-
-
 	if context.parsed_block_nesting > 0 {
 		return Err(SedError::new(1, "unmatched `{'"));
 	}
@@ -445,10 +413,6 @@ fn compile_with_provider(
 
 	Ok(result)
 }
-
-
-
-
 
 
 fn patch_block_endings(head: Option<Rc<RefCell<Command>>>) {
@@ -461,7 +425,6 @@ fn patch_block_endings(head: Option<Rc<RefCell<Command>>>) {
 			let cmd = rc_cmd.borrow_mut();
 
 			let own_next = cmd.next.clone();
-
 
 
 			let splice_target = own_next.clone().or(parent_next.clone());
@@ -533,7 +496,6 @@ fn populate_label_map(
 }
 
 
-
 fn populate_range_commands(mut cur: Option<Rc<RefCell<Command>>>, context: &mut ProcessingContext) {
 	while let Some(rc_cmd) = cur.take() {
 
@@ -552,7 +514,6 @@ fn populate_range_commands(mut cur: Option<Rc<RefCell<Command>>>, context: &mut 
 		cur.clone_from(&cmd.next);
 	}
 }
-
 
 
 fn resolve_branch_targets(
@@ -611,7 +572,6 @@ fn compile_sequence(
 
 	loop {
 		line.eat_spaces();
-
 
 
 		if !line.eol() && line.current() == '#' && lines.get_line_number() == 1 && line.get_pos() == 0
@@ -674,7 +634,6 @@ fn compile_sequence(
 fn is_address_char(c: char) -> bool {
 	matches!(c, '0'..='9' | '/' | '\\' | '$')
 }
-
 
 
 fn compile_address_range(
@@ -759,7 +718,6 @@ fn compile_address_range(
 	if is_line0 && n_addr == 1 {
 
 
-
 		if line.eol() || line.current() != 'r' {
 			return compilation_error(lines, line, ERR_ADDRESS_0_USAGE);
 		}
@@ -787,8 +745,6 @@ fn read_file_path(lines: &ScriptLineProvider, line: &mut ScriptCharProvider) -> 
 		Ok(PathBuf::from(path))
 	}
 }
-
-
 
 
 fn compile_address(
@@ -844,8 +800,6 @@ fn compile_address(
 }
 
 
-
-
 fn parse_number(
 	lines: &ScriptLineProvider,
 	line: &mut ScriptCharProvider,
@@ -895,11 +849,6 @@ fn parse_command_ending(
 }
 
 
-
-
-
-
-
 fn bre_to_ere(pattern: &str) -> String {
 	let mut result = String::with_capacity(pattern.len());
 	let mut chars = pattern.chars().peekable();
@@ -940,10 +889,6 @@ fn bre_to_ere(pattern: &str) -> String {
 				Some(v) if v.is_ascii_digit() => {
 
 
-
-
-
-
 					result.push_str(&format!(r"(?:\{v})"));
 					chars.next();
 				},
@@ -968,11 +913,6 @@ fn bre_to_ere(pattern: &str) -> String {
 				'^' if !at_beginning && previous != Some('[') => {
 
 
-
-
-
-
-
 					result.push('\\');
 					result.push(c);
 				},
@@ -990,8 +930,6 @@ fn bre_to_ere(pattern: &str) -> String {
 
 	result
 }
-
-
 
 
 fn compile_regex(
@@ -1394,7 +1332,6 @@ fn compile_negation_command(
 }
 
 
-
 fn compile_empty_command(
 	lines: &mut ScriptLineProvider,
 	line: &mut ScriptCharProvider,
@@ -1428,7 +1365,6 @@ fn compile_read_file_command(
 	cmd.data = CommandData::Path(path);
 	Ok(CommandHandling::Continue)
 }
-
 
 
 fn compile_write_file_command(
@@ -1503,12 +1439,9 @@ fn compile_label_command(
 }
 
 
-
-
 fn output_width() -> usize {
 	DEFAULT_OUTPUT_WIDTH
 }
-
 
 
 fn compile_number_command(
@@ -1541,10 +1474,6 @@ fn compile_number_command(
 }
 
 
-
-
-
-
 fn compile_text_command(
 	lines: &mut ScriptLineProvider,
 	line: &mut ScriptCharProvider,
@@ -1559,10 +1488,6 @@ fn compile_text_command(
 		compile_text_command_gnu(lines, line, cmd, context)
 	}
 }
-
-
-
-
 
 
 fn compile_text_command_gnu(
@@ -1635,8 +1560,6 @@ fn compile_text_command_gnu(
 }
 
 
-
-
 fn compile_text_command_posix(
 	lines: &mut ScriptLineProvider,
 	line: &mut ScriptCharProvider,
@@ -1681,7 +1604,6 @@ fn compile_text_command_posix(
 	cmd.data = CommandData::Text(Rc::from(text));
 	Ok(CommandHandling::Continue)
 }
-
 
 
 fn get_verified_cmd_spec(
@@ -1751,12 +1673,7 @@ fn get_cmd_spec(
 pub mod delimited_parser {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::char;
@@ -1774,12 +1691,6 @@ use crate::sed::{
 fn is_ascii_octal_digit(c: char) -> bool {
 	matches!(c, '0'..='7')
 }
-
-
-
-
-
-
 
 
 fn parse_numeric_escape(
@@ -1819,11 +1730,6 @@ fn parse_numeric_escape(
 }
 
 
-
-
-
-
-
 fn create_control_char(x: char) -> Option<char> {
 	if !x.is_ascii() {
 		return None;
@@ -1834,10 +1740,6 @@ fn create_control_char(x: char) -> Option<char> {
 	let transformed = (c as u8) ^ 0x40;
 	char::from_u32(u32::from(transformed))
 }
-
-
-
-
 
 
 pub fn parse_char_escape(line: &mut ScriptCharProvider) -> Option<char> {
@@ -1930,9 +1832,6 @@ pub fn parse_char_escape(line: &mut ScriptCharProvider) -> Option<char> {
 		_ => None,
 	}
 }
-
-
-
 
 
 fn parse_character_class(
@@ -2044,7 +1943,6 @@ fn parse_character_class(
 }
 
 
-
 fn scan_delimiter(lines: &ScriptLineProvider, line: &mut ScriptCharProvider) -> SedResult<char> {
 
 	if line.eol() {
@@ -2058,10 +1956,6 @@ fn scan_delimiter(lines: &ScriptLineProvider, line: &mut ScriptCharProvider) -> 
 	line.advance();
 	Ok(delimiter)
 }
-
-
-
-
 
 
 pub fn parse_regex(
@@ -2215,9 +2109,6 @@ fn validate_quantifier_structure(
 }
 
 
-
-
-
 fn parse_quantifier_bound(
 	lines: &ScriptLineProvider,
 	line: &mut ScriptCharProvider,
@@ -2230,13 +2121,11 @@ fn parse_quantifier_bound(
 }
 
 
-
 fn validate_quantifier_numbers(
 	lines: &ScriptLineProvider,
 	line: &mut ScriptCharProvider,
 ) -> SedResult<String> {
 	line.advance();
-
 
 
 	let mut m = String::new();
@@ -2276,7 +2165,6 @@ fn validate_quantifier_numbers(
 	}
 
 
-
 	let mut result = if m.is_empty() { "0".to_string() } else { m };
 	if has_comma {
 		result.push(',');
@@ -2285,8 +2173,6 @@ fn validate_quantifier_numbers(
 
 	Ok(result)
 }
-
-
 
 
 pub fn parse_transliteration(
@@ -2330,7 +2216,6 @@ pub fn parse_transliteration(
 
 }
 pub mod error_handling {
-
 
 
 // Copyright (c) 2025 Diomidis Spinellis
@@ -2502,18 +2387,7 @@ pub fn input_runtime_error<T>(
 pub mod fast_io {
 
 
-
-
-
-
-
-
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 #[cfg(not(unix))]
@@ -2531,10 +2405,6 @@ use memchr::memchr;
 #[cfg(unix)]
 use memmap2::Mmap;
 use crate::{host::Host, sed::error_handling::SedError};
-
-
-
-
 
 
 #[cfg(unix)]
@@ -2604,7 +2474,6 @@ impl ReadLineCursor {
 		let buf = BufReader::new(r);
 		Self { reader: Box::new(buf), buffer: String::new() }
 	}
-
 
 
 	fn get_line(&mut self) -> io::Result<Option<(String, bool)>> {
@@ -2679,9 +2548,6 @@ impl<'a> IOChunk<'a> {
 	}
 
 
-
-
-
 	pub fn set_to_string(&mut self, new_content: String, add_newline: bool) {
 		self.utf8_verified.set(true);
 		match &mut self.content {
@@ -2724,7 +2590,6 @@ impl<'a> IOChunk<'a> {
 	}
 
 
-
 	pub fn ensure_owned(&mut self) -> Result<(), SedError> {
 		match &self.content {
 			IOChunkContent::Owned { .. } => Ok(()),
@@ -2752,9 +2617,6 @@ impl<'a> IOChunk<'a> {
 		}
 	}
 }
-
-
-
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2809,10 +2671,6 @@ impl IOChunkContent<'_> {
 }
 
 
-
-
-
-
 pub enum LineReader<'a> {
 	#[cfg(unix)]
 	MmapInput {
@@ -2843,7 +2701,6 @@ impl<'a> LineReader<'a> {
 		}
 
 
-
 		let file = File::open(host.resolve(path))?;
 
 		#[cfg(unix)]
@@ -2866,10 +2723,6 @@ impl<'a> LineReader<'a> {
 			line_reader_read_input(file)
 		}
 	}
-
-
-
-
 
 
 	pub fn get_line(&mut self) -> io::Result<Option<IOChunk<'a>>> {
@@ -2914,12 +2767,8 @@ impl<'a> LineReader<'a> {
 }
 
 
-
-
 pub trait OutputWrite: Write {}
 impl<T: Write> OutputWrite for T {}
-
-
 
 
 #[cfg(unix)]
@@ -2928,12 +2777,6 @@ struct MmapOutput {
 	out_ptr: *const u8,
 	len:     usize,
 }
-
-
-
-
-
-
 
 
 pub struct OutputBuffer {
@@ -2948,9 +2791,6 @@ pub struct OutputBuffer {
 
 	pending_newline:   bool,
 }
-
-
-
 
 
 #[cfg(unix)]
@@ -3075,9 +2915,6 @@ impl OutputBuffer {
 				let new_len = full_span.len();
 
 
-
-
-
 				let (flush_action, reset) = if let Some(old_chunk) = self.mmap_chunk.as_mut() {
 
 					if unsafe { old_chunk.out_ptr.add(old_chunk.len) } == new_ptr {
@@ -3125,10 +2962,6 @@ impl OutputBuffer {
 		}
 		Ok(())
 	}
-
-
-
-
 
 
 	#[cfg(unix)]
@@ -3211,15 +3044,7 @@ impl OutputBuffer {
 pub mod fast_regex {
 
 
-
-
-
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::{error::Error, sync::LazyLock};
@@ -3237,20 +3062,8 @@ use crate::sed::error_handling::{SedError, SedResult};
 use crate::sed::fast_io::IOChunk;
 
 
-
-
-
-
-
-
 static NEEDS_FANCY_RE: LazyLock<RustRegex> =
 	LazyLock::new(|| regex::Regex::new(r"\\[1-9]").unwrap());
-
-
-
-
-
-
 
 
 static NEEDS_RE: LazyLock<RustRegex> = LazyLock::new(|| {
@@ -3414,7 +3227,6 @@ pub enum Regex {
 	Byte(ByteRegex),
 	Fancy(FancyRegex),
 }
-
 
 
 pub fn ensure_dotall(pattern: &str) -> String {
@@ -3614,7 +3426,6 @@ pub enum Captures<'t> {
 impl<'t> Captures<'t> {
 
 
-
 	pub fn get(&self, i: usize) -> SedResult<Option<Match<'t>>> {
 		match self {
 			Captures::Literal(m) => Ok(if i == 0 { Some(m.clone()) } else { None }),
@@ -3650,12 +3461,7 @@ impl<'t> Captures<'t> {
 pub mod in_place {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 #[cfg(unix)]
@@ -3694,7 +3500,6 @@ pub struct InPlace {
 impl InPlace {
 
 
-
 	pub fn new_with_stdout(context: ProcessingContext, stdout: OpenFile) -> Self {
 		let line_buffered = !is_regular_file(&stdout);
 		Self {
@@ -3709,10 +3514,6 @@ impl InPlace {
 	}
 
 
-
-
-
-
 	pub fn begin(&mut self, file_name: &Path) -> SedResult<&mut OutputBuffer> {
 		let resolved = if self.follow_symlinks {
 			fs::canonicalize(file_name)
@@ -3722,8 +3523,6 @@ impl InPlace {
 		};
 		self.begin_resolved(&resolved)
 	}
-
-
 
 
 	fn begin_resolved(&mut self, file_name: &Path) -> SedResult<&mut OutputBuffer> {
@@ -3747,8 +3546,6 @@ impl InPlace {
 		let dir = file_name.parent().unwrap_or_else(|| Path::new("."));
 		let temp_file = NamedTempFile::new_in(dir)
 			.map_err_context(|| format!("error creating temporary file in {}", dir.quote()))?;
-
-
 
 
 		#[cfg(unix)]
@@ -3791,16 +3588,12 @@ impl InPlace {
 			backup_name.push(suffix);
 			backup_path.set_file_name(backup_name);
 
-			#[cfg(windows)]
-
 			let _ = fs::remove_file(&backup_path);
 
 			fs::rename(&orig, &backup_path).map_err_context(|| {
 				format!("error backing up {} to {}", orig.quote(), backup_path.quote())
 			})?;
 		} else {
-			#[cfg(windows)]
-
 			if orig.exists() {
 				fs::remove_file(&orig).map_err_context(|| {
 					format!("error removing original input file {}", orig.quote())
@@ -3832,12 +3625,7 @@ impl InPlace {
 pub mod named_writer {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::{
@@ -3908,9 +3696,6 @@ impl NamedWriter {
 }
 
 
-
-
-
 pub fn flush_all() -> SedResult<()> {
 	FLUSH_LIST.with(|cell| {
 		for handle in cell.borrow_mut().drain(..) {
@@ -3922,8 +3707,6 @@ pub fn flush_all() -> SedResult<()> {
 }
 
 
-
-
 pub fn reset() {
 	FLUSH_LIST.with(|cell| cell.borrow_mut().clear());
 }
@@ -3931,12 +3714,7 @@ pub fn reset() {
 pub mod processor {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc};
@@ -3956,7 +3734,6 @@ use crate::sed::{
 	in_place::InPlace,
 	named_writer,
 };
-
 
 
 macro_rules! extract_variant {
@@ -3986,11 +3763,6 @@ fn match_address(
 		},
 
 		Address::Line(lineno) => Ok(context.line_number == *lineno),
-
-
-
-
-
 
 
 		Address::Last => Ok(reader.last_line()? && (context.last_file || context.separate)),
@@ -4102,7 +3874,6 @@ fn write_chunk(
 }
 
 
-
 fn re_or_saved_re<'a>(
 	regex: Option<&Regex>,
 	context: &'a mut ProcessingContext,
@@ -4127,26 +3898,9 @@ fn shell_command(cmd: &str, host: &Host) -> std::process::Command {
 	c.arg("-c").arg(cmd);
 
 
-
 	c.current_dir(host.cwd());
 	c.env_clear().envs(host.env());
 	c
-}
-
-#[cfg(windows)]
-fn shell_command(cmd: &str, host: &Host) -> std::process::Command {
-	let mut c = std::process::Command::new("cmd.exe");
-	c.arg("/C").arg(cmd);
-
-	c.current_dir(host.cwd());
-	c.env_clear().envs(host.env());
-	c
-}
-
-
-#[cfg(not(any(unix, windows)))]
-fn shell_command(_cmd: &str, _host: &Host) -> std::process::Command {
-	unimplemented!("the 'e' substitute flag requires a platform shell (/bin/sh or cmd.exe)");
 }
 
 
@@ -4167,8 +3921,6 @@ fn substitute(
 	let mut text: Option<&str> = None;
 
 	let regex = re_or_saved_re(sub.regex.as_ref(), context, &command.location)?;
-
-
 
 
 	let subst_result = match (sub.occurrence, sub.replacement.max_group_number) {
@@ -4238,7 +3990,6 @@ fn substitute(
 					}
 
 					last_end = m.end();
-
 
 
 					if count == sub.occurrence {
@@ -4434,7 +4185,6 @@ fn process_file(
 	'lines: while let Some(mut pattern) = reader.get_line()? {
 
 
-
 		if host.is_cancelled() {
 			break;
 		}
@@ -4557,8 +4307,6 @@ fn process_file(
 				},
 				'N' => {
 					flush_appends(output, context)?;
-
-
 
 
 					context.input_action = Some(InputAction {
@@ -4706,8 +4454,6 @@ pub fn process_all_files(
 ) -> SedResult<()> {
 
 
-
-
 	let mut in_place = InPlace::new_with_stdout(context.clone(), host.stdout_clone());
 	let last_file_index = files.len() - 1;
 
@@ -4757,12 +4503,7 @@ pub fn process_all_files(
 pub mod script_char_provider {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 #[derive(Debug)]
@@ -4821,12 +4562,7 @@ impl ScriptCharProvider {
 pub mod script_line_provider {
 
 
-
 // Copyright (c) 2025 Diomidis Spinellis
-
-
-
-
 
 
 use std::{
@@ -4849,7 +4585,6 @@ pub enum ScriptValue {
 }
 
 
-
 pub struct ScriptLineProvider {
 	sources: Vec<ScriptValue>,
 	state:   State,
@@ -4870,7 +4605,6 @@ enum State {
 }
 
 impl ScriptLineProvider {
-
 
 
 	pub fn with_stdin(sources: Vec<ScriptValue>, stdin: OpenFile, cwd: PathBuf) -> Self {
@@ -4953,7 +4687,6 @@ impl ScriptLineProvider {
 				} else {
 
 
-
 					let normalized = brush_core::sys::fs::normalize_shell_path(p);
 					let resolved = if normalized.is_absolute() {
 						normalized.into_owned()
@@ -4993,8 +4726,6 @@ impl fmt::Debug for State {
 }
 
 
-
-
 }
 
 use std::{collections::HashMap, ffi::OsString, io::Write, path::PathBuf};
@@ -5016,9 +4747,6 @@ const ABOUT: &str = "Stream editor for filtering and transforming text";
 const USAGE: &str = "sed [OPTION]... [script] [file]...";
 
 
-
-
-
 fn sed_main(matches: &ArgMatches, host: &mut Host) -> SedResult<()> {
 	let (scripts, files) = get_scripts_files(matches)?;
 	let mut context = build_context(matches, host.cwd());
@@ -5027,11 +4755,6 @@ fn sed_main(matches: &ArgMatches, host: &mut Host) -> SedResult<()> {
 	process_all_files(executable, files, &mut context, host)?;
 	Ok(())
 }
-
-
-
-
-
 
 
 fn normalize_args(argv: Vec<OsString>) -> Vec<OsString> {
@@ -5131,7 +4854,6 @@ fn uu_app() -> Command {
 				.num_args(0..=1)
 
 
-
 				.require_equals(true)
 				.default_missing_value(""),
 
@@ -5151,8 +4873,6 @@ fn uu_app() -> Command {
 }
 
 
-
-
 fn get_scripts_files(matches: &ArgMatches) -> SedResult<(Vec<ScriptValue>, Vec<PathBuf>)> {
 	let mut indexed_scripts: Vec<(usize, ScriptValue)> = Vec::new();
 	let mut files: Vec<PathBuf> = Vec::new();
@@ -5162,7 +4882,6 @@ fn get_scripts_files(matches: &ArgMatches) -> SedResult<(Vec<ScriptValue>, Vec<P
         matches.contains_id("expression") || matches.contains_id("script-file");
 
 	if script_through_options {
-
 
 
 		if let Some(val) = matches.get_one::<String>("script") {
@@ -5258,7 +4977,6 @@ fn build_context(matches: &ArgMatches, cwd: &std::path::Path) -> ProcessingConte
 		append_elements:      Vec::new(),
 	}
 }
-
 
 
 pub(crate) struct Sed {

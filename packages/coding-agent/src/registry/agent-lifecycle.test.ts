@@ -54,7 +54,6 @@ describe("reclaimDeadCorpse", () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
 		const ref = registerParked(registry, sessionFile);
-		// Marker exists but is long stale: the owning process died.
 		writeLiveMarker(sessionFile, true, 999_999);
 		const stale = Date.now() - 60_000;
 		fs.utimesSync(getSessionLivePath(sessionFile), new Date(stale), new Date(stale));

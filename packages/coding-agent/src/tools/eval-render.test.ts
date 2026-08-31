@@ -3,7 +3,6 @@ import { generateDiffString } from "../edit/diff";
 import type { EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import { initThemeSync, theme } from "../modes/theme/theme";
 import { evalToolRenderer } from "./eval-render";
-import { PREVIEW_LIMITS } from "./render-utils";
 
 initThemeSync();
 
@@ -82,13 +81,56 @@ test("expanded status shows every event instead of hiding earlier ones", () => {
 	expect(collapsed.some(line => line.includes("37 earlier"))).toBe(true);
 });
 
-test("collapsed status shares the diff budget across file events", () => {
+test("file event diffs render every hunk even in the collapsed transcript", () => {
 	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
 	const events = [1, 2, 3].map(n => diffEvent(FILE.replace("x.py", `f${n}.py`), big("old"), big("new")));
 	const lines = render(events, { expanded: false });
 	const diffRows = lines.filter(line => /[+-]\s*\d+│/.test(line));
-	expect(diffRows.length).toBeLessThanOrEqual(PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
-	expect(lines.filter(line => line.includes("more") && line.includes("expand")).length).toBe(3);
+	const expectedRows = events.reduce(
+		(sum, event) => sum + (event.diff ?? "").split("\n").filter(row => /^[+-]\d+\|/.test(row)).length,
+		0,
+	);
+	expect(diffRows.length, "every hunk row of every file event is rendered").toBe(expectedRows);
+	expect(lines.some(line => line.includes("earlier"))).toBe(false);
+	for (const n of [1, 2, 3]) {
+		expect(
+			lines.some(line => line.includes(`f${n}.py`)),
+			`f${n}.py rendered`,
+		).toBe(true);
+	}
+	expect(
+		lines.some(line => line.includes("expand")),
+		"no collapse hint for file-op diffs",
+	).toBe(false);
+});
+
+test("collapsed status keeps file events visible even when they fall outside the event window", () => {
+	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
+	const events: EvalStatusEvent[] = [];
+	for (let i = 0; i < 5; i++) {
+		events.push({ op: "log", message: `step ${i}` });
+		events.push(diffEvent(FILE.replace("x.py", `f${i}.py`), big("old"), big("new")));
+	}
+	const lines = render(events, { expanded: false });
+	for (let i = 0; i < 5; i++) {
+		expect(
+			lines.some(line => line.includes(`f${i}.py`)),
+			`f${i}.py rendered`,
+		).toBe(true);
+	}
+	expect(lines.some(line => line.includes("2 earlier"))).toBe(true);
+	for (const i of [2, 3, 4]) {
+		expect(
+			lines.some(line => line.includes(`step ${i}`)),
+			`step ${i} rendered`,
+		).toBe(true);
+	}
+	for (const i of [0, 1]) {
+		expect(
+			lines.some(line => line.includes(`step ${i}`)),
+			`step ${i} hidden`,
+		).toBe(false);
+	}
 });
 
 test("status events render under their own label even when the cell has no output", () => {

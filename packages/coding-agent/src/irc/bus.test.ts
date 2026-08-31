@@ -18,8 +18,6 @@ describe("IrcBus wait liveness", () => {
 	test("keeps waiting while the only peer is registered but not streaming (inter-turn gap)", async () => {
 		const registry = makeRegistryWithPeer("running");
 		const bus = new IrcBus(registry);
-		// A peer between runs has status running/idle but no active stream. The old check
-		// required session.isStreaming, so a waiter created in that gap aborted instantly.
 		const waited = await bus.wait("waiter", {}, 60, undefined, {
 			liveness: { registry, senderId: "waiter" },
 		});

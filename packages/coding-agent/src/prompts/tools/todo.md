@@ -11,8 +11,7 @@ Tasks: verbatim content strings, NEVER auto-generated IDs. After each state-chan
 
 Task content: 5–10 words, what not how, unique. Phase: short noun phrase; NEVER prefix `1.`/`A)`. Keep strings stable.
 
-- Batch todo calls with real work — NEVER a todo-only turn.
-- Blocked on user decision/external service → `block`; the active task blocked hands `in_progress` to the next `pending` task; blocker agent-actionable → `append` an unblocking task instead.
+Blocked on user decision/external service → `block`; the active task blocked hands `in_progress` to the next `pending` task; blocker agent-actionable → `append` an unblocking task instead.
 
 <critical>
 User gives a multi-step plan (phases, checklist, "N bugs/items/tasks"): MUST `init` every item as its own task; NEVER summarize into fewer, sample, drop items, or track the rest from memory.

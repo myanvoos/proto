@@ -77,8 +77,6 @@ function clampToolResultMessage(message: ToolResultMessage, state: { remainingDr
 	if (state.remainingDrops <= 0) return message;
 	const content = clampContent(message.content, state);
 	if (!content) return message;
-	// toolResult content is text/image only at the type level; the widened result
-	// cannot actually carry audio/video blocks here.
 	return {
 		...message,
 		content: (content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION]) as ToolResultMessage["content"],

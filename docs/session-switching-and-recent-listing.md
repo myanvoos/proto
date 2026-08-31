@@ -74,7 +74,7 @@ For `SessionInfo` list entries:
 6. Otherwise use a breadcrumb whose cwd matches current cwd; for a cwd mismatch use the newest current-bucket session.
 7. Without a usable breadcrumb, choose newest file by mtime; if none exists, create a new session.
 
-Terminal ID derivation prefers TTY path and falls back to env-based identifiers (`ZELLIJ_PANE_ID`, `TMUX_PANE`, `CMUX_SURFACE_ID`, `KITTY_WINDOW_ID`, `WEZTERM_PANE`, `TERM_SESSION_ID`, `WT_SESSION`).
+Terminal ID derivation prefers TTY path and falls back to env-based identifiers (`ZELLIJ_PANE_ID`, `TMUX_PANE`, `CMUX_SURFACE_ID`, `KITTY_WINDOW_ID`, `WEZTERM_PANE`, `TERM_SESSION_ID`).
 
 Breadcrumb writes are best-effort and non-fatal.
 

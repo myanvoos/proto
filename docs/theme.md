@@ -129,7 +129,6 @@ Var reference behavior:
 Color mode detection (`detectColorMode`):
 
 - `COLORTERM=truecolor|24bit` => truecolor
-- `WT_SESSION` => truecolor
 - `TERM` in `dumb`, `linux`, or empty => 256color
 - otherwise => truecolor
 

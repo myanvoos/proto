@@ -14,8 +14,6 @@ export interface SSHHost {
 
 	description?: string;
 
-	compat?: boolean;
-
 	_source: SourceMeta;
 }
 

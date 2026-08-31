@@ -34,7 +34,6 @@ describe("session liveness markers", () => {
 		} finally {
 			heartbeat?.dispose();
 		}
-		// Disposal removes the marker: a closed session is not live.
 		expect(readSessionLiveState(file).fresh).toBe(false);
 	});
 

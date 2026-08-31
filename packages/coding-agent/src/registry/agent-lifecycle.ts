@@ -130,10 +130,6 @@ export class AgentLifecycleManager {
 		const ref = this.#registry.get(id);
 		if (ref !== expected || ref.status !== "parked" || ref.session) return false;
 		if (this.#adopted.has(id) || this.#parks.has(id) || this.#revivals.has(id)) return false;
-		// A fresh live marker means the transcript is owned by an active session — either a
-		// spawn currently registering this exact id in another process, or a session we must
-		// not double-drive. Only genuinely abandoned corpses (no recent heartbeat) are safe
-		// to reclaim; a reclaim never deletes the transcript, so nothing is lost.
 		if (ref.sessionFile && readSessionLiveState(ref.sessionFile).fresh) return false;
 		return this.#registry.unregister(id, ref);
 	}

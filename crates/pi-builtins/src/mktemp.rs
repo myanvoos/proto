@@ -42,10 +42,7 @@ static OPT_T: &str = "t";
 
 static ARG_TEMPLATE: &str = "template";
 
-#[cfg(not(windows))]
 const TMPDIR_ENV_VAR: &str = "TMPDIR";
-#[cfg(windows)]
-const TMPDIR_ENV_VAR: &str = "TMP";
 
 const FALLBACK_TMPDIR: &str = "/tmp";
 
@@ -416,8 +413,7 @@ fn app() -> Command {
 			Arg::new(OPT_TMPDIR)
 				.long(OPT_TMPDIR)
 				.help(
-					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR ($TMP on \
-					 windows) if set, else /tmp. With this option, TEMPLATE must not be an absolute \
+					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR if set, else /tmp. With this option, TEMPLATE must not be an absolute \
 					 name; unlike with -t, TEMPLATE may contain slashes, but mktemp creates only the \
 					 final component",
 				)
@@ -432,8 +428,7 @@ fn app() -> Command {
 			Arg::new(OPT_T)
 				.short('t')
 				.help(
-					"Generate a template (using the supplied prefix and TMPDIR (TMP on windows) if \
-					 set) to create a filename template [deprecated]",
+					"Generate a template (using the supplied prefix and TMPDIR if set) to create a filename template [deprecated]",
 				)
 				.action(ArgAction::SetTrue),
 		)
@@ -478,7 +473,6 @@ fn make_temp_dir(
 ) -> Result<PathBuf, MkTempError> {
 	let mut builder = Builder::new();
 	builder.prefix(prefix).rand_bytes(rand).suffix(suffix);
-	#[cfg(not(windows))]
 	builder.permissions(fs::Permissions::from_mode(0o700));
 
 	match builder.tempdir_in(dir) {

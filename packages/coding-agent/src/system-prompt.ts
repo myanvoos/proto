@@ -5,6 +5,7 @@ import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
 import {
 	$env,
+	$which,
 	getAgentDir,
 	getGpuCachePath,
 	getProjectDir,
@@ -234,8 +235,6 @@ function getTerminalName(): string | undefined {
 		return termProgramVersion ? `${termProgram} ${termProgramVersion}` : termProgram;
 	}
 
-	if (Bun.env.WT_SESSION) return "Windows Terminal";
-
 	const term = firstNonEmpty(Bun.env.TERM, Bun.env.COLORTERM, Bun.env.TERMINAL_EMULATOR);
 	return term ?? undefined;
 }
@@ -287,6 +286,33 @@ async function getCpuModel(): Promise<string | undefined> {
 	}
 }
 
+const AUX_TOOL_PROBE_TIMEOUT_MS = 1000;
+
+async function getAuxToolVersion(name: string): Promise<string | undefined> {
+	const binary = $which(name);
+	if (!binary) return undefined;
+	try {
+		const proc = Bun.spawn([binary, "--version"], {
+			stdout: "pipe",
+			stderr: "ignore",
+			stdin: "ignore",
+			timeout: AUX_TOOL_PROBE_TIMEOUT_MS,
+		});
+		const stdout = await new Response(proc.stdout).text();
+		await proc.exited;
+		const version = stdout.split("\n")[0]?.trim().split(/\s+/)[1];
+		return version ? `${name} ${version}` : name;
+	} catch {
+		return name;
+	}
+}
+
+async function getAuxTools(): Promise<string | undefined> {
+	const probes = await Promise.all(["rg", "fd"].map(name => getAuxToolVersion(name)));
+	const found = probes.filter(tool => tool !== undefined);
+	return found.length > 0 ? found.join(", ") : undefined;
+}
+
 function getKernelIdentity(): string {
 	const version = os.version()?.trim();
 	if (version && version.toLowerCase() !== "unknown") return version;
@@ -296,6 +322,7 @@ function getKernelIdentity(): string {
 function getEnvironmentInfo(
 	cpuModel: string | undefined,
 	gpu: string | undefined,
+	auxTools: string | undefined,
 ): Array<{ label: string; value: string }> {
 	const entries: Array<{ label: string; value: string | undefined }> = [
 		{ label: "OS", value: `${os.platform()} ${os.release()}` },
@@ -304,6 +331,7 @@ function getEnvironmentInfo(
 		{ label: "Arch", value: os.arch() },
 		{ label: "CPU", value: cpuModel },
 		{ label: "GPU", value: gpu },
+		{ label: "Aux tools", value: auxTools },
 		{ label: "Terminal", value: getTerminalName() },
 	];
 	return entries.filter((e): e is { label: string; value: string } => !!e.value);
@@ -605,6 +633,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		activeRepoContext: null as ActiveRepoContext | null,
 		cpuModel: undefined as string | undefined,
 		gpu: undefined as string | undefined,
+		auxTools: undefined as string | undefined,
 	};
 
 	const { promise: deadline, resolve: fireDeadline } = Promise.withResolvers<"__timeout__">();
@@ -692,6 +721,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			: logger.time("resolveActiveRepoContext", () => resolveActiveRepoContext(resolvedCwd));
 	const cpuModelPromise = logger.time("getCpuModel", getCpuModel);
 	const gpuPromise = logger.time("getCachedGpu", getCachedGpu);
+	const auxToolsPromise = logger.time("getAuxTools", getAuxTools);
 
 	const bundledPersonality = personality === "none" ? "" : PERSONALITY_SPECS[personality].trim();
 	const personalityPromise: Promise<string> =
@@ -711,6 +741,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		activeRepoContext,
 		cpuModel,
 		gpu,
+		auxTools,
 		personalityBlock,
 	] = await Promise.all([
 		withDeadline(
@@ -736,6 +767,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("resolveActiveRepoContext", activeRepoContextPromise, prepDefaults.activeRepoContext),
 		withDeadline("getCpuModel", cpuModelPromise, prepDefaults.cpuModel),
 		withDeadline("getCachedGpu", gpuPromise, prepDefaults.gpu),
+		withDeadline("getAuxTools", auxToolsPromise, prepDefaults.auxTools),
 		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
 	]);
 	clearTimeout(deadlineTimer);
@@ -820,7 +852,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	];
 	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules(alwaysApplyRules, promptSources);
 
-	const environment = getEnvironmentInfo(cpuModel, gpu);
+	const environment = getEnvironmentInfo(cpuModel, gpu, auxTools);
 	const data = {
 		systemPromptCustomization: effectiveSystemPromptCustomization,
 		customPrompt: resolvedCustomPrompt,

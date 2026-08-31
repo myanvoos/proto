@@ -309,8 +309,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			const queued = IrcBus.global().take(messaging.senderId, from);
 			if (queued) return messageResult(messaging.senderId, queued);
 			if (!from) {
-				// Peers idle between turns (tool execution, queued follow-up) are alive; only
-				// parked/aborted/removed peers drop out of listVisibleTo.
 				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId).length > 0;
 				if (!hasActivePeer) return nothingToWaitForResult(this.session);
 			}

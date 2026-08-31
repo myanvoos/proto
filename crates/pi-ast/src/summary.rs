@@ -562,17 +562,6 @@ fn is_elidable_kind(language: SupportLang, kind: &str) -> bool {
 				| "array"
 				| "heredoc_body"
 		),
-		SupportLang::Powershell => matches!(
-			kind,
-			"script_block"
-				| "statement_block"
-				| "class_statement"
-				| "param_block"
-				| "hash_literal_expression"
-				| "array_expression"
-				| "expandable_here_string_literal"
-				| "verbatim_here_string_characters"
-		),
 		SupportLang::Haskell => matches!(
 			kind,
 			"imports"
@@ -716,7 +705,6 @@ fn is_groupable_kind(language: SupportLang, kind: &str) -> bool {
 
 		SupportLang::Kotlin
 		| SupportLang::Haskell
-		| SupportLang::Powershell
 		| SupportLang::Ruby
 		| SupportLang::Lua
 		| SupportLang::Elixir

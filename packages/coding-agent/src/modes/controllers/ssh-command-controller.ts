@@ -50,7 +50,7 @@ export class SSHCommandController {
 			"Manage SSH host configurations for remote command execution.",
 			"",
 			theme.fg("accent", "Commands:"),
-			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--scope project|user]",
 			"  /ssh list             List all configured SSH hosts",
 			"  /ssh remove <name> [--scope project|user]    Remove an SSH host (default: project)",
 			"  /ssh help             Show this help message",
@@ -65,7 +65,7 @@ export class SSHCommandController {
 		const rest = prefixMatch?.[1]?.trim() ?? "";
 		if (!rest) {
 			this.ctx.showError(
-				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--scope project|user]",
 			);
 			return;
 		}
@@ -73,7 +73,7 @@ export class SSHCommandController {
 		const tokens = parseCommandArgs(rest);
 		if (tokens.length === 0) {
 			this.ctx.showError(
-				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--scope project|user]",
 			);
 			return;
 		}
@@ -85,7 +85,6 @@ export class SSHCommandController {
 		let port: number | undefined;
 		let keyPath: string | undefined;
 		let description: string | undefined;
-		let compat = false;
 
 		let i = 0;
 		if (!tokens[0].startsWith("-")) {
@@ -150,11 +149,6 @@ export class SSHCommandController {
 				i += 2;
 				continue;
 			}
-			if (argToken === "--compat") {
-				compat = true;
-				i += 1;
-				continue;
-			}
 			if (argToken === "--scope") {
 				const r = readScopeFlag(tokens[i + 1]);
 				if (!r.ok) {
@@ -188,7 +182,6 @@ export class SSHCommandController {
 			if (port) hostConfig.port = port;
 			if (keyPath) hostConfig.keyPath = keyPath;
 			if (description) hostConfig.description = description;
-			if (compat) hostConfig.compat = true;
 
 			await addSSHHost(filePath, name, hostConfig);
 			resetCapabilities();
@@ -204,7 +197,6 @@ export class SSHCommandController {
 			if (port) lines.push(`  Port: ${port}`);
 			if (keyPath) lines.push(`  Key:  ${keyPath}`);
 			if (description) lines.push(`  Desc: ${description}`);
-			if (compat) lines.push(`  Compat: true`);
 			lines.push("");
 			lines.push(theme.fg("muted", `Run ${theme.fg("accent", "/ssh list")} to see all configured hosts.`));
 			lines.push("");

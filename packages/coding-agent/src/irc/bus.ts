@@ -205,9 +205,6 @@ export class IrcBus {
 
 		if (liveness) {
 			const { registry, senderId } = liveness;
-			// A peer idles between turns (run ended, follow-up queued, next run starting);
-			// that is alive, not gone. Only parked/aborted/removed peers (the ones
-			// listVisibleTo already filters out) count as disappeared.
 			const hasActiveSender = (from?: string): boolean =>
 				registry.listVisibleTo(senderId).some(ref => !from || ref.id === from);
 			const check = filter.from ? () => hasActiveSender(filter.from) : () => hasActiveSender();

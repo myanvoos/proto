@@ -38,7 +38,6 @@ import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
-// Value is the persisted session-JSONL message type; do not change - older sessions render via this id.
 export const BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 
@@ -681,8 +680,6 @@ function stripImagesFromMessageContent(message: AgentMessage): number {
 			let removed = 0;
 			const { content, removed: contentRemoved } = stripImagesFromArrayContent(message.content);
 			if (contentRemoved > 0) {
-				// toolResult content is text/image only at the type level; the widened result
-				// cannot actually carry audio/video blocks here.
 				message.content = content as ToolResultMessage["content"];
 				removed += contentRemoved;
 			}

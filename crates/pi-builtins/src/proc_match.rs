@@ -539,17 +539,6 @@ fn parse_proc_match_args(
 		index += 1;
 	}
 
-	#[cfg(target_os = "windows")]
-	if !options.groups.is_empty()
-		|| !options.sessions.is_empty()
-		|| !options.effective_users.is_empty()
-		|| !options.real_users.is_empty()
-		|| !options.real_groups.is_empty()
-		|| !options.terminals.is_empty()
-	{
-		return Err((2, "selected process metadata is unavailable on Windows".to_string()));
-	}
-
 	if options.explicit_pid && !options.pid_files.is_empty() {
 		return Err((2, "-F and -p cannot be combined".to_string()));
 	}
@@ -936,13 +925,10 @@ fn write_proc_match_help(
 		output,
 		"  -f full command  -x exact  -i ignore case  -v invert  -n newest  -o oldest"
 	)?;
-	#[cfg(not(target_os = "windows"))]
 	writeln!(
 		output,
 		"  -P ppid  -g pgrp  -s sid  -u euid  -U uid  -G gid  -t tty  -p pid  -F pidfile"
 	)?;
-	#[cfg(target_os = "windows")]
-	writeln!(output, "  -P ppid  -p pid  -F pidfile  -O seconds  -r states")?;
 	if mode == ProcMatchMode::Kill {
 		writeln!(output, "  -SIGNAL, --signal SIGNAL  choose signal (default TERM)")?;
 	}

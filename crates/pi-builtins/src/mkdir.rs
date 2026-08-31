@@ -1,7 +1,6 @@
 
 
 
-
 use std::{
 	ffi::OsString,
 	fmt,
@@ -12,7 +11,6 @@ use std::{
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, parser::ValuesRef};
 use uucore::{display::Quotable, fs};
-#[cfg(not(windows))]
 use uucore::mode;
 #[cfg(all(unix, target_os = "linux"))]
 use uucore::fsxattr;
@@ -36,12 +34,7 @@ struct Config {
 	verbose:   bool,
 }
 
-#[cfg(windows)]
-fn get_mode(_matches: &ArgMatches) -> Result<u32, String> {
-	Ok(DEFAULT_PERM)
-}
 
-#[cfg(not(windows))]
 fn get_mode(matches: &ArgMatches) -> Result<u32, String> {
 	if let Some(mode_arg) = matches.get_one::<String>(options::MODE) {
 		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, mode::get_umask())
@@ -160,7 +153,7 @@ fn app() -> Command {
 			Arg::new(options::MODE)
 				.short('m')
 				.long(options::MODE)
-				.help("set file mode (not implemented on windows)")
+				.help("set file mode")
 				.allow_hyphen_values(true)
 				.num_args(1),
 		)
@@ -240,7 +233,6 @@ fn chmod(fs_path: &Path, display_path: &Path, mode: u32) -> Result<(), MkdirErro
 }
 
 
-
 fn create_dir(
 	path: &Path,
 	is_parent: bool,
@@ -298,7 +290,6 @@ impl Drop for UmaskGuard {
 #[cfg(unix)]
 fn create_dir_with_mode(path: &Path, mode: u32) -> io::Result<()> {
 	use std::os::unix::fs::DirBuilderExt;
-
 
 
 	let _guard = UmaskGuard::set(rustix::fs::Mode::empty());

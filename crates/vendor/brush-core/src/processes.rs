@@ -3,9 +3,6 @@
 use futures::FutureExt;
 use std::io::Write;
 
-#[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-
 use tokio_util::sync::CancellationToken;
 
 use crate::{error, openfiles::OpenFile, sys};
@@ -15,7 +12,6 @@ struct CompletionMarker {
 	end_marker_prefix: String,
 	end_marker_suffix: String,
 }
-
 
 
 pub(crate) type WaitableChildProcess = std::pin::Pin<
@@ -34,8 +30,6 @@ pub struct ChildProcess {
 
 	pgid:        Option<sys::process::ProcessId>,
 
-	#[cfg(windows)]
-	kill_handle: Option<OwnedHandle>,
 	completion_marker: Option<CompletionMarker>,
 }
 
@@ -46,16 +40,11 @@ impl ChildProcess {
 		pid: Option<sys::process::ProcessId>,
 		pgid: Option<sys::process::ProcessId>,
 	) -> Self {
-		#[cfg(windows)]
-		let kill_handle = child.raw_handle().and_then(duplicate_handle);
-
 		Self {
 			exec_future: Box::pin(child.wait_with_output()),
 			pid,
 			pgid,
 			reaped: false,
-			#[cfg(windows)]
-			kill_handle,
 			completion_marker: None,
 		}
 	}
@@ -71,12 +60,6 @@ impl ChildProcess {
 	}
 
 
-	#[cfg(windows)]
-	pub fn duplicate_kill_handle(&self) -> Option<OwnedHandle> {
-		let handle = self.kill_handle.as_ref()?;
-		duplicate_handle(handle.as_raw_handle())
-	}
-
 	pub(crate) fn set_completion_marker(
 		&mut self,
 		output: OpenFile,
@@ -86,8 +69,6 @@ impl ChildProcess {
 		self.completion_marker =
 			Some(CompletionMarker { output, end_marker_prefix, end_marker_suffix });
 	}
-
-
 
 
 	pub async fn wait(
@@ -133,7 +114,6 @@ impl ChildProcess {
 				_ = sys::signal::await_ctrl_c() => {
 
 
-
 				},
 			}
 		}
@@ -153,18 +133,6 @@ impl ChildProcess {
 			);
 		}
 
-		#[cfg(windows)]
-		{
-			let terminated = self
-				.kill_handle
-				.as_ref()
-				.is_some_and(|handle| terminate_raw_handle(handle.as_raw_handle()));
-			if !terminated {
-				if let Some(pid) = self.pid {
-					let _ = terminate_process_id(pid);
-				}
-			}
-		}
 	}
 
 	fn write_completion_marker(&mut self, exit_code: i32) {
@@ -199,91 +167,6 @@ impl Drop for ChildProcess {
 	}
 }
 
-#[cfg(windows)]
-fn duplicate_handle(handle: RawHandle) -> Option<OwnedHandle> {
-	use windows_sys::Win32::{
-		Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle},
-		System::Threading::GetCurrentProcess,
-	};
-
-
-
-	let current = unsafe { GetCurrentProcess() };
-	let mut out_handle = std::ptr::null_mut();
-
-
-
-
-	let ok = unsafe {
-		DuplicateHandle(
-			current,
-			handle,
-			current,
-			&mut out_handle,
-			0,
-			0,
-			DUPLICATE_SAME_ACCESS,
-		)
-	};
-	if ok == 0 || out_handle.is_null() {
-		return None;
-	}
-
-
-
-	Some(unsafe { OwnedHandle::from_raw_handle(out_handle) })
-}
-
-#[cfg(windows)]
-fn terminate_raw_handle(handle: RawHandle) -> bool {
-	use windows_sys::Win32::System::Threading::TerminateProcess;
-
-
-
-	unsafe { TerminateProcess(handle, 1) != 0 }
-}
-
-
-#[cfg(windows)]
-#[must_use]
-pub fn process_handle_is_running(handle: &OwnedHandle) -> bool {
-	use windows_sys::Win32::{
-		Foundation::WAIT_TIMEOUT,
-		System::Threading::WaitForSingleObject,
-	};
-
-
-	unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) == WAIT_TIMEOUT }
-}
-
-
-#[cfg(windows)]
-#[must_use]
-pub fn terminate_process_handle(handle: &OwnedHandle) -> bool {
-	terminate_raw_handle(handle.as_raw_handle())
-}
-
-#[cfg(windows)]
-fn terminate_process_id(pid: sys::process::ProcessId) -> bool {
-	use windows_sys::Win32::Foundation::CloseHandle;
-	use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
-
-	let Ok(pid) = u32::try_from(pid) else {
-		return false;
-	};
-
-
-
-	let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-	if handle.is_null() {
-		return false;
-	}
-
-	let terminated = terminate_raw_handle(handle);
-
-	let _close_result = unsafe { CloseHandle(handle) };
-	terminated
-}
 
 fn completion_exit_code(status: &std::process::ExitStatus) -> i32 {
 	if let Some(code) = status.code() {

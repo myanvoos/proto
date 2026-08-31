@@ -112,7 +112,6 @@ impl_lang_expando!(Kotlin, language_kotlin, 'µ');
 impl_lang_expando!(Nix, language_nix, '_');
 impl_lang_expando!(Ocaml, language_ocaml, 'µ');
 impl_lang_expando!(Php, language_php, 'µ');
-impl_lang_expando!(Powershell, language_powershell, 'µ');
 impl_lang_expando!(Proto, language_proto, 'µ');
 impl_lang_expando!(Python, language_python, 'µ');
 impl_lang_expando!(R, language_r, 'µ');
@@ -283,7 +282,6 @@ pub enum SupportLang {
 	Ocaml,
 	Odin,
 	Php,
-	Powershell,
 	Proto,
 	Python,
 	R,
@@ -319,9 +317,9 @@ impl SupportLang {
 		&[
 			Astro, Bash, C, Cmake, Cpp, CSharp, Dart, Clojure, Css, Diff, Dockerfile, EmacsLisp,
 			Elixir, Erlang, Fortran, Go, Graphql, Haskell, Hcl, Html, Ini, Java, JavaScript, Json,
-			Just, Julia, Kotlin, Lua, Make, Markdown, Nix, ObjC, Ocaml, Odin, Php, Powershell, Proto,
-			Python, R, Regex, Ruby, Rust, Scala, Solidity, Sql, Starlark, Svelte, Swift, Toml,
-			Tlaplus, Tsx, TypeScript, Verilog, Vue, Xml, Yaml, Zig,
+			Just, Julia, Kotlin, Lua, Make, Markdown, Nix, ObjC, Ocaml, Odin, Php, Proto, Python, R,
+			Regex, Ruby, Rust, Scala, Solidity, Sql, Starlark, Svelte, Swift, Toml, Tlaplus, Tsx,
+			TypeScript, Verilog, Vue, Xml, Yaml, Zig,
 		]
 	}
 
@@ -362,7 +360,6 @@ impl SupportLang {
 			Self::Ocaml => "ocaml",
 			Self::Odin => "odin",
 			Self::Php => "php",
-			Self::Powershell => "powershell",
 			Self::Proto => "protobuf",
 			Self::Python => "python",
 			Self::R => "r",
@@ -446,7 +443,6 @@ macro_rules! execute_lang_method {
 			S::Ocaml => Ocaml.$method($($pname,)*),
 			S::Odin => Odin.$method($($pname,)*),
 			S::Php => Php.$method($($pname,)*),
-			S::Powershell => Powershell.$method($($pname,)*),
 			S::Proto => Proto.$method($($pname,)*),
 			S::Python => Python.$method($($pname,)*),
 			S::R => R.$method($($pname,)*),
@@ -559,7 +555,6 @@ const fn extensions(lang: SupportLang) -> &'static [&'static str] {
 		Ocaml => &["ml"],
 		Odin => &["odin"],
 		Php => &["php"],
-		Powershell => &["ps1", "psm1"],
 		Proto => &["proto"],
 		Python => &["py", "py3", "pyi", "bzl"],
 		R => &["r"],
@@ -738,9 +733,6 @@ static LANG_ALIASES: phf::Map<&'static str, SupportLang> = phf_map! {
 "ml"             => SupportLang::Ocaml,
 "odin"           => SupportLang::Odin,
 "php"            => SupportLang::Php,
-"powershell"     => SupportLang::Powershell,
-"ps1"            => SupportLang::Powershell,
-"psm1"           => SupportLang::Powershell,
 "protobuf"       => SupportLang::Proto,
 "proto"          => SupportLang::Proto,
 "python"         => SupportLang::Python,

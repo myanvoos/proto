@@ -17,7 +17,6 @@ interface SSHConfigFile {
 			host?: string;
 			username?: string;
 			port?: number | string;
-			compat?: boolean | string;
 			key?: string;
 			keyPath?: string;
 			description?: string;
@@ -30,15 +29,6 @@ function parsePort(value: number | string | undefined): number | undefined {
 	if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-function parseCompat(value: boolean | string | undefined): boolean | undefined {
-	if (value === undefined) return undefined;
-	if (typeof value === "boolean") return value;
-	const normalized = value.trim().toLowerCase();
-	if (normalized === "true" || normalized === "1" || normalized === "yes") return true;
-	if (normalized === "false" || normalized === "0" || normalized === "no") return false;
-	return undefined;
 }
 
 function normalizeHost(
@@ -58,11 +48,6 @@ function normalizeHost(
 		warnings.push(`Invalid port for SSH entry ${name}: ${String(raw.port)}`);
 	}
 
-	const compat = parseCompat(raw.compat);
-	if (raw.compat !== undefined && compat === undefined) {
-		warnings.push(`Invalid compat flag for SSH entry ${name}: ${String(raw.compat)}`);
-	}
-
 	const keyValue = raw.keyPath ?? raw.key;
 	const keyPath = keyValue ? expandTilde(keyValue, home) : undefined;
 
@@ -73,7 +58,6 @@ function normalizeHost(
 		port,
 		keyPath,
 		description: raw.description,
-		compat,
 		_source: source,
 	};
 }

@@ -1,7 +1,6 @@
 
 
 
-
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::{
@@ -78,8 +77,6 @@ enum RawIndicatorStyle {
 }
 
 
-
-
 pub(crate) struct StyleManager<'a> {
 
 	pub(crate) current_style:         Option<Style>,
@@ -124,7 +121,6 @@ impl<'a> StyleManager<'a> {
 		if let Some(path) = path {
 
 
-
 			match self.raw_indicator_style_for_path(path) {
 				Some(RawIndicatorStyle::Empty) => {
 
@@ -144,10 +140,6 @@ impl<'a> StyleManager<'a> {
 		if !applied_raw_code {
 			self.append_style_code_for_style(new_style, &mut style_code, &mut force_suffix_reset);
 		}
-
-
-
-
 
 
 		let clear_to_eol = if wrap { ANSI_CLEAR_EOL } else { "" };
@@ -210,8 +202,6 @@ impl<'a> StyleManager<'a> {
 		if let Some(new_style) = new_style {
 
 
-
-
 			if !self.is_current_style(new_style) {
 				style_code.push_str(self.reset(!self.initial_reset_is_done));
 				style_code.push_str(&self.get_style_code(new_style));
@@ -228,12 +218,7 @@ impl<'a> StyleManager<'a> {
 	}
 
 
-
-
 	pub(crate) fn reset(&mut self, force: bool) -> &'static str {
-
-
-
 
 
 		if self.current_style.is_some() || force {
@@ -591,12 +576,10 @@ pub(crate) fn color_name(
 	if let Some(target) = target_symlink {
 
 
-
 		return style_manager.apply_style_for_path(target, name, wrap);
 	}
 
 	if !path.must_dereference {
-
 
 
 		return style_manager.apply_style_for_path(path, name, wrap);
@@ -665,7 +648,6 @@ pub(crate) fn validate_ls_colors(ls_colors: &str) -> Result<(), LsColorsParseErr
 
 	Ok(())
 }
-
 
 
 fn parse_funky_string(
@@ -783,7 +765,6 @@ fn is_valid_ls_colors_prefix(label: [u8; 2]) -> bool {
 fn parse_indicator_codes(ls_colors: Option<&str>) -> (FxHashMap<Indicator, String>, bool) {
 	let mut indicator_codes = FxHashMap::default();
 	let mut ln_color_from_target = false;
-
 
 
 	if let Some(ls_colors) = ls_colors {
@@ -1027,12 +1008,6 @@ pub struct Config {
 }
 
 
-
-
-
-
-
-
 fn extract_format(
 	options: &clap::ArgMatches,
 	stdout_is_terminal: bool,
@@ -1066,10 +1041,6 @@ fn extract_format(
 }
 
 
-
-
-
-
 fn extract_files(options: &clap::ArgMatches) -> Files {
 	let get_last_index = |flag: &str| -> usize {
 		if options.value_source(flag) == Some(clap::parser::ValueSource::CommandLine) {
@@ -1094,10 +1065,6 @@ fn extract_files(options: &clap::ArgMatches) -> Files {
 		Files::All
 	}
 }
-
-
-
-
 
 
 fn extract_sort(options: &clap::ArgMatches) -> Sort {
@@ -1167,10 +1134,6 @@ fn extract_sort(options: &clap::ArgMatches) -> Sort {
 }
 
 
-
-
-
-
 fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 	if let Some(field) = options.get_one::<String>(options::TIME) {
 		field.as_str().into()
@@ -1182,7 +1145,6 @@ fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 		MetadataTimeField::Modification
 	}
 }
-
 
 
 fn is_color_compatible_term(host: &Host) -> bool {
@@ -1206,10 +1168,6 @@ fn is_color_compatible_term(host: &Host) -> bool {
 		_ => true,
 	}
 }
-
-
-
-
 
 
 fn extract_color(options: &clap::ArgMatches, host: &Host) -> bool {
@@ -1241,7 +1199,6 @@ fn extract_color(options: &clap::ArgMatches, host: &Host) -> bool {
 	};
 
 
-
 	if color_index > 0 {
 
 		color_enabled
@@ -1252,10 +1209,6 @@ fn extract_color(options: &clap::ArgMatches, host: &Host) -> bool {
 		color_enabled
 	}
 }
-
-
-
-
 
 
 fn extract_hyperlink(options: &clap::ArgMatches, stdout_is_terminal: bool) -> bool {
@@ -1271,18 +1224,6 @@ fn extract_hyperlink(options: &clap::ArgMatches, stdout_is_terminal: bool) -> bo
 		_ => unreachable!("should be handled by clap"),
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 struct QuotingStyleSpec {
@@ -1331,19 +1272,6 @@ fn match_quoting_style_name(
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn extract_quoting_style(
 	options: &clap::ArgMatches,
 	show_control: bool,
@@ -1381,7 +1309,6 @@ fn extract_quoting_style(
 		}
 
 
-
 		if host.stdout.is_terminal() {
 			(QuotingStyle::SHELL_ESCAPE.show_control(show_control), None)
 		} else {
@@ -1389,10 +1316,6 @@ fn extract_quoting_style(
 		}
 	}
 }
-
-
-
-
 
 
 fn extract_indicator_style(
@@ -1428,7 +1351,6 @@ fn extract_indicator_style(
 		IndicatorStyle::None
 	}
 }
-
 
 
 fn parse_width(width_match: Option<&String>, host: &Host, runtime: &LsRuntime) -> Result<u16, LsError> {
@@ -1520,20 +1442,6 @@ impl Config {
 		let stdout_is_terminal = host.stdout.is_terminal();
 		let (mut format, opt) = extract_format(options, stdout_is_terminal);
 		let files = extract_files(options);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 		if format != Format::Long {
@@ -1663,7 +1571,6 @@ impl Config {
 		let width = parse_width(options.get_one::<String>(options::WIDTH), host, &runtime)?;
 
 
-
 		let mut show_control = !options.get_flag(options::HIDE_CONTROL_CHARS);
 
 		let (mut quoting_style, mut locale_quoting) =
@@ -1717,12 +1624,6 @@ impl Config {
 				}
 			}
 		}
-
-
-
-
-
-
 
 
 		let zero_formats_opts = [
@@ -1913,8 +1814,6 @@ fn parse_time_style(
 			let field = if let Some(field) = field.strip_prefix("posix-") {
 
 
-
-
 				if host.var("LC_TIME") == Some("POSIX") || host.var("LC_ALL") == Some("POSIX")
 				{
 					return ok(LOCALE_FORMAT);
@@ -1961,34 +1860,6 @@ use std::{
 };
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use super::Config;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1996,7 +1867,6 @@ pub struct BytePosition {
 	pub start: usize,
 	pub end:   usize,
 }
-
 
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -2040,7 +1910,6 @@ pub fn calculate_subdired(dired: &mut DiredOutput, path_len: usize) {
 	let end = start + path_len;
 	dired.subdired_positions.push(BytePosition { start, end });
 }
-
 
 
 pub fn print_dired_output<W: Write>(
@@ -2097,8 +1966,6 @@ pub fn calculate_and_update_positions(
 }
 
 
-
-
 pub fn update_positions(dired: &mut DiredOutput, start: usize, end: usize, line_len: usize) {
 
 	let padding = dired.padding;
@@ -2111,7 +1978,6 @@ pub fn update_positions(dired: &mut DiredOutput, start: usize, end: usize, line_
 }
 
 
-
 }
 mod display {
 
@@ -2121,8 +1987,6 @@ use core::ops::RangeInclusive;
 use std::fmt::Display;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
 
 use std::{
 	borrow::Cow,
@@ -2239,15 +2103,6 @@ enum SizeOrDeviceId {
 }
 
 
-
-
-
-
-
-
-
-
-
 pub fn show_dir_name<W: Write>(
 	path_data: &PathData,
 	out: &mut W,
@@ -2346,10 +2201,6 @@ pub fn should_display(entry: &DirEntry, config: &Config) -> bool {
 	let file_name = entry.file_name();
 
 
-
-
-
-
 	let file_name = match file_name.to_str() {
 		Some(s) => Cow::Borrowed(s),
 		None => file_name.to_string_lossy(),
@@ -2398,8 +2249,6 @@ fn digits(num: u64) -> usize {
 }
 
 
-
-
 pub trait ExtendPad {
 	fn extend_pad_left(&mut self, string: &str, count: usize);
 	fn extend_pad_right(&mut self, string: &str, count: usize);
@@ -2422,7 +2271,6 @@ impl ExtendPad for Vec<u8> {
 }
 
 
-
 fn pad_left(string: &str, count: usize) -> String {
 	format!("{string:>count$}")
 }
@@ -2434,8 +2282,6 @@ pub fn display_items(
 	state: &mut ListState,
 	dired: &mut DiredOutput,
 ) -> std::io::Result<()> {
-
-
 
 
 	let quoted = items.iter().any(|item| {
@@ -2492,8 +2338,6 @@ pub fn display_items(
 			} else {
 				None
 			};
-
-
 
 
 			let cell = display_item_name(
@@ -2595,17 +2439,6 @@ fn display_grid<W: Write>(
 				.map(|n| {
 
 
-
-
-
-
-
-
-
-
-
-
-
 					buf.clear();
 					if quoted && !os_str_starts_with(&n, b"'") && !os_str_starts_with(&n, b"\"") {
 						buf.push(b' ');
@@ -2667,7 +2500,6 @@ fn display_additional_leading_info(
 }
 
 
-
 #[cfg(unix)]
 fn display_uname<'a>(
 	metadata: &Metadata,
@@ -2723,7 +2555,6 @@ fn display_date(
 	};
 
 
-
 	let fmt = match &config.time_format_older {
 		Some(time_format_older) if !recent_time_range.contains(&time) => time_format_older,
 		_ => &config.time_format_recent,
@@ -2775,26 +2606,6 @@ fn display_len_or_rdev(metadata: &Metadata, config: &Config) -> SizeOrDeviceId {
 pub fn display_size(size: u64, config: &Config) -> String {
 	human_readable(size, config.size_format)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 #[allow(clippy::cognitive_complexity)]
@@ -2868,8 +2679,6 @@ fn display_item_name(
 				name.push(" -> ");
 
 
-
-
 				if let Some(style_manager) = &mut style_manager {
 					let escaped_target = escape_name_with_locale(target_path.as_os_str(), config);
 
@@ -2941,7 +2750,6 @@ fn display_item_name(
 	}
 
 
-
 	if config.context
 		&& let Some(pad_count) = prefix_context
 	{
@@ -2960,33 +2768,6 @@ fn display_item_name(
 
 	DisplayItemName { displayed: name, dired_name_len }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 #[allow(clippy::write_literal)]
@@ -3051,7 +2832,6 @@ fn display_item_long(
 				.display_buf
 				.extend_pad_right(item.security_context(config), padding.context);
 		}
-
 
 
 		if config.long.author {
@@ -3192,7 +2972,6 @@ fn display_item_long(
 		}
 
 
-
 		if config.long.author {
 			state.display_buf.push(b' ');
 			state.display_buf.extend_pad_right("?", padding.uname);
@@ -3268,9 +3047,6 @@ fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
 	static HOSTNAME: LazyLock<OsString> = LazyLock::new(OsString::new);
 
 
-
-
-
 	let osc_8_head = OsStr::new("\x1b]8;;file://");
 	let osc_8_tail = OsStr::new("\x1b]8;;\x1b\\");
 	let esc_bl = OsStr::new("\x1b\\");
@@ -3287,10 +3063,7 @@ fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
 	ret.push(HOSTNAME.as_os_str());
 
 
-	#[cfg(not(target_os = "windows"))]
 	let unencoded = |c| matches!(c, '_' | '-' | '.' | '~' | '/');
-	#[cfg(target_os = "windows")]
-	let unencoded = |c| matches!(c, '_' | '-' | '.' | '~' | '/' | '\\' | ':');
 
 	for &b in absolute_path.as_os_str().as_encoded_bytes() {
 		if b.is_ascii_alphanumeric() || unencoded(b as char) {
@@ -3308,13 +3081,6 @@ fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
 }
 
 fn is_hidden(file_path: &DirEntry) -> bool {
-	#[cfg(windows)]
-	{
-		let metadata = file_path.metadata().unwrap();
-		let attr = metadata.file_attributes();
-		(attr & 0x2) > 0
-	}
-	#[cfg(not(windows))]
 	{
 		file_path.file_name().as_encoded_bytes().starts_with(b".")
 	}
@@ -3386,7 +3152,6 @@ fn calculate_padding_collection(
 			if config.context {
 				padding_collections.context = context_len.max(padding_collections.context);
 			}
-
 
 
 			{
@@ -3735,10 +3500,6 @@ pub fn uu_app() -> Command {
 				.value_name("WHEN")
 				.overrides_with(options::DIRED),
 		)
-
-
-
-
 
 
 		.arg(
@@ -4219,9 +3980,6 @@ pub fn uu_app() -> Command {
 		.arg(
 
 
-
-
-
 			Arg::new(options::indicator_style::CLASSIFY)
 				.short('F')
 				.long(options::indicator_style::CLASSIFY)
@@ -4335,16 +4093,11 @@ pub(crate) fn ls_builtin<SE: ShellExtensions>() -> Registration<SE> {
 }
 
 
-
-
 #[derive(Debug)]
 enum PathDataDisplayName<'a> {
 	SelfReferential,
 	Custom(Cow<'a, OsStr>),
 }
-
-
-
 
 
 struct PathData<'a> {
@@ -4408,7 +4161,6 @@ impl<'a> PathData<'a> {
 		};
 
 
-
 		let ft: OnceCell<Option<FileType>> = OnceCell::new();
 		let md: OnceCell<Option<Metadata>> = OnceCell::new();
 		let security_context: OnceCell<Box<str>> = OnceCell::new();
@@ -4455,8 +4207,6 @@ impl<'a> PathData<'a> {
 				match get_metadata_with_deref_opt(&self.fs_path, self.must_dereference) {
 					Err(err) => {
 						let errno = err.raw_os_error().unwrap_or(1i32);
-
-
 
 
 						if self.must_dereference
@@ -4547,9 +4297,6 @@ struct ListState<'a> {
 	style_manager:     Option<StyleManager<'a>>,
 
 
-
-
-
 	#[cfg(unix)]
 	uid_cache:         FxHashMap<u32, String>,
 	#[cfg(unix)]
@@ -4589,8 +4336,6 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 		gid_cache: (),
 
 
-
-
 		recent_time_range: (now - Duration::new(31_556_952 / 2, 0))..=now,
 		stack: Vec::new(),
 		listed_ancestors: FxHashSet::default(),
@@ -4604,11 +4349,6 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 
 	for loc in locs {
 		let path_data = PathData::new(loc.into(), None, None, config, true);
-
-
-
-
-
 
 
 		if path_data.metadata().is_none() {
@@ -4696,7 +4436,6 @@ pub fn list(locs: Vec<&Path>, config: &Config, stdout: OpenFile) -> std::io::Res
 			};
 
 			depth_first_list(dir_data, read_dir, config, &mut state, &mut dired, false)?;
-
 
 
 			let (cap, len) = (state.stack.capacity(), state.stack.len());
@@ -4830,7 +4569,6 @@ fn depth_first_list(
 			PathData::new(
 
 
-
 				{
 					let dotdot = path_data.path().join("..");
 					#[cfg(target_os = "wasi")]
@@ -4954,7 +4692,6 @@ fn write_total<W: Write>(
 fn get_block_size(md: &Metadata, config: &Config) -> u64 {
 
 
-
 	#[cfg(unix)]
 	{
 		use uucore::format::human::SizeFormat;
@@ -4980,14 +4717,9 @@ fn get_block_size(md: &Metadata, config: &Config) -> u64 {
 fn file_is_executable(md: &Metadata) -> bool {
 
 
-
-
-
 	#[allow(clippy::unnecessary_cast)]
 	return md.mode() & ((S_IXUSR | S_IXGRP | S_IXOTH) as u32) != 0;
 }
-
-
 
 
 fn get_security_context<'a>(
@@ -4998,14 +4730,10 @@ fn get_security_context<'a>(
 	static SUBSTITUTE_STRING: &str = "?";
 
 
-
-
-
 	if must_dereference
 		&& let Err(err) =
 			get_metadata_with_deref_opt(&config.runtime.resolve(path), must_dereference)
 	{
-
 
 
 		if config.context {

@@ -164,10 +164,6 @@ fn format_current_working_directory(
 		working_dir_str = filename.to_string_lossy().to_string();
 	}
 
-	if cfg!(windows) {
-		working_dir_str = working_dir_str.replace('\\', "/");
-	}
-
 	working_dir_str
 }
 

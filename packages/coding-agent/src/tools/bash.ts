@@ -317,10 +317,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
 			hasRead: isToolActive("read", true),
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
-			hasEval: isToolActive(
-				"eval",
-				evalBackends.python || evalBackends.js || evalBackends.ruby || evalBackends.julia,
-			),
+			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
 		});
 	}

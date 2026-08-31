@@ -56,8 +56,6 @@ describe("registerPersistedSubagents", () => {
 		writeLiveMarker(childFile, true, 999_999);
 		const registry = new AgentRegistry();
 		await registerPersistedSubagents(registry, parentFile);
-		// A live transcript is owned by an active session; registering it parked would
-		// invite a concurrent revival of a running agent.
 		expect(registry.get("worker")).toBeUndefined();
 	});
 

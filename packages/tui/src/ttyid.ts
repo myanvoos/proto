@@ -62,8 +62,5 @@ export function getTerminalId(): string | null {
 	const terminalSessionId = process.env.TERM_SESSION_ID;
 	if (terminalSessionId) return `apple-${terminalSessionId}`;
 
-	const wtSession = process.env.WT_SESSION;
-	if (wtSession) return `wt-${wtSession}`;
-
 	return null;
 }

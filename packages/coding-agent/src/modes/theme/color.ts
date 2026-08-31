@@ -2,8 +2,7 @@ import { detectTerminalId, getTerminalInfo } from "@oh-my-pi/pi-tui";
 import type { ColorMode, ColorValue } from "./schema";
 
 export function detectColorMode(env: NodeJS.ProcessEnv = Bun.env): ColorMode {
-	if (env.WT_SESSION) return "truecolor";
-	const terminal = getTerminalInfo(detectTerminalId(env), process.platform, env);
+	const terminal = getTerminalInfo(detectTerminalId(env));
 	return terminal.trueColor ? "truecolor" : "256color";
 }
 

@@ -4,20 +4,10 @@ import {
 	parseKey as parseKeyNative,
 	parseKittySequence as parseKittySequenceNative,
 } from "@oh-my-pi/pi-natives";
-import { isInsideTerminalMultiplexer } from "./terminal-capabilities";
-
-export function isWindowsTerminalSession(): boolean {
-	return (
-		Boolean(process.env.WT_SESSION) && !process.env.SSH_CONNECTION && !process.env.SSH_CLIENT && !process.env.SSH_TTY
-	);
-}
-
 export function matchesRawBackspace(data: string, expectedModifier: number): boolean {
 	if (data === "\x7f") return expectedModifier === 0;
 	if (data !== "\x08") return false;
-	const rawBackspaceIsCtrl =
-		process.env.PI_TUI_RAW_BACKSPACE_IS_CTRL === "1" ||
-		(isWindowsTerminalSession() && !isInsideTerminalMultiplexer(process.env));
+	const rawBackspaceIsCtrl = process.env.PI_TUI_RAW_BACKSPACE_IS_CTRL === "1";
 	return rawBackspaceIsCtrl ? expectedModifier === 4 : expectedModifier === 0;
 }
 
