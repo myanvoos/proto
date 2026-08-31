@@ -111,6 +111,101 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		},
 	},
 	{
+		name: "conduct",
+		description: "Toggle the conductor (independent verification of goal completion claims)",
+		acpDescription: "Toggle conductor",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Enable the conductor" },
+			{ name: "off", description: "Disable the conductor" },
+			{ name: "status", description: "Show conductor status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const stats = runtime.ctx.session.getConductorStats();
+			if (!stats.configured) return "Conductor: off";
+			if (!stats.model) return "Conductor: configured, no model";
+			return `Conductor: on (${stats.model.provider}/${stats.model.id})`;
+		},
+		handle: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			if (!verb || verb === "toggle") {
+				const active = runtime.session.toggleConductorEnabled();
+				const configured = runtime.session.isConductorEnabled();
+				if (active) {
+					await runtime.output("Conductor enabled.");
+				} else if (configured) {
+					await runtime.output("Conductor setting enabled, but no model is assigned to the 'conductor' role.");
+				} else {
+					await runtime.output("Conductor disabled.");
+				}
+				return commandConsumed();
+			}
+			if (verb === "on") {
+				const active = runtime.session.setConductorEnabled(true);
+				await runtime.output(
+					active
+						? "Conductor enabled."
+						: "Conductor setting enabled, but no model is assigned to the 'conductor' role.",
+				);
+				return commandConsumed();
+			}
+			if (verb === "off") {
+				runtime.session.setConductorEnabled(false);
+				await runtime.output("Conductor disabled.");
+				return commandConsumed();
+			}
+			if (verb === "status") {
+				await runtime.output(runtime.session.formatConductorStatus());
+				return commandConsumed();
+			}
+			return usage("Usage: /conduct [on|off|status]", runtime);
+		},
+		handleTui: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			if (!verb || verb === "toggle") {
+				const active = runtime.ctx.session.toggleConductorEnabled();
+				const configured = runtime.ctx.session.isConductorEnabled();
+				if (active) {
+					runtime.ctx.showStatus("Conductor enabled.");
+				} else if (configured) {
+					runtime.ctx.showStatus("Conductor setting enabled, but no model is assigned to the 'conductor' role.");
+				} else {
+					runtime.ctx.showStatus("Conductor disabled.");
+				}
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (verb === "on") {
+				const active = runtime.ctx.session.setConductorEnabled(true);
+				runtime.ctx.showStatus(
+					active
+						? "Conductor enabled."
+						: "Conductor setting enabled, but no model is assigned to the 'conductor' role.",
+				);
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (verb === "off") {
+				runtime.ctx.session.setConductorEnabled(false);
+				runtime.ctx.showStatus("Conductor disabled.");
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (verb === "status") {
+				// TUI-light: the same one-line status the non-TUI host prints; no configure overlay in this slice.
+				runtime.ctx.showStatus(runtime.ctx.session.formatConductorStatus());
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /conduct [on|off|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "browser",
 		description: "Toggle browser headless vs visible mode",
 		acpInputHint: "[headless|visible]",

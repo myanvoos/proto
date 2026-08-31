@@ -204,6 +204,9 @@ export interface AgentSessionConfig {
 
 	advisorConfigs?: AdvisorConfig[];
 
+	/** Deferred conductor tool-pool build; never invoked unless a verification turn needs it. */
+	conductorToolsFactory?: () => Promise<AgentTool[]>;
+
 	disconnectOwnedMcpManager?: () => Promise<void>;
 
 	titleSystemPrompt?: string;

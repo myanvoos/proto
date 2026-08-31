@@ -1259,6 +1259,21 @@ export function resolveAdvisorRoleSelection(
 	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
 }
 
+/**
+ * Deliberately does NOT fall back to the `advisor` role: the conductor is a frontier verifier, and an
+ * unset `modelRoles.conductor` must resolve to no model so the conductor reports `no_model` and stays inert.
+ */
+export function resolveConductorRoleSelection(
+	settings: Settings,
+	availableModels: Model<Api>[],
+): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
+	const resolved = resolveModelRoleValue(formatModelRoleAlias("conductor"), availableModels, {
+		settings,
+		matchPreferences: getModelMatchPreferences(settings),
+	});
+	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+}
+
 export async function resolveModelScope(
 	patterns: string[],
 	modelRegistry: Pick<ModelRegistry, "getAvailable">,

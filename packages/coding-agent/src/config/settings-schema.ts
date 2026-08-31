@@ -3468,6 +3468,44 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"conductor.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor",
+			description:
+				"Pend goal completion until an independent conductor (assigned to the 'conductor' role) audits the repo and rules on the claim, instead of letting the primary agent grade itself.",
+		},
+	},
+
+	"conductor.gateTimeoutSeconds": {
+		type: "number",
+		default: 300,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor Gate Timeout",
+			description:
+				"Seconds to wait for a verification verdict before escalating to the user. Never resolves to silent acceptance.",
+			condition: "conductorEnabled",
+		},
+	},
+
+	"conductor.maxRejections": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor Max Rejections",
+			description:
+				"Consecutive verification rejections before the conductor stops auto-verifying and escalates to the user.",
+			condition: "conductorEnabled",
+		},
+	},
+
 	"title.refreshOnReplan": {
 		type: "boolean",
 		default: true,

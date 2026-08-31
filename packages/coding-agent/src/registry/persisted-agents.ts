@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
+import { isConductorTranscriptName } from "../conductor/transcript";
 import { resolveExplicitModelRole } from "../config/model-resolver";
 import { persistedOrchestratorWorkerIds } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
@@ -397,13 +398,19 @@ async function registerPersistedSubagentsFromDir(
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
 		const sessionFile = path.join(dir, entry.name);
 
-		if (isAdvisorTranscriptName(entry.name)) {
+		const isConductor = isConductorTranscriptName(entry.name);
+		if (isAdvisorTranscriptName(entry.name) || isConductor) {
 			const owner = parentId ?? MAIN_AGENT_ID;
 
 			const slug =
-				entry.name === ADVISOR_TRANSCRIPT_FILENAME ? "" : entry.name.slice("__advisor.".length, -".jsonl".length);
-			const advisorId = slug ? `${owner}/advisor:${slug}` : `${owner}/advisor`;
-			const displayName = slug ? `advisor:${slug}` : "advisor";
+				isConductor || entry.name === ADVISOR_TRANSCRIPT_FILENAME
+					? ""
+					: entry.name.slice("__advisor.".length, -".jsonl".length);
+			// The conductor registers under the read-only `advisor` kind on purpose: every agent-facing surface
+			// already excludes that kind (fleet roster, broadcast targets, subagent peer prompt, `history://`,
+			// IRC send, revive/kill), so it is fail-closed here instead of by extending a dozen predicates.
+			const displayName = isConductor ? "conductor" : slug ? `advisor:${slug}` : "advisor";
+			const advisorId = `${owner}/${displayName}`;
 			const existing = registry.get(advisorId);
 
 			if (existing && existing.kind !== "advisor") continue;

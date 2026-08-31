@@ -80,6 +80,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	conductorEnabled: () => {
+		try {
+			return Settings.instance.get("conductor.enabled") === true;
+		} catch {
+			return false;
+		}
+	},
 	autolearnActive: () => {
 		try {
 			return Settings.instance.get("autolearn.enabled") === true;

@@ -12,6 +12,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
+import { CONDUCTOR_TRANSCRIPT_FILENAME } from "../../../conductor/transcript";
 import type { Keybinding, KeyId } from "../../../config/keybindings";
 import type { MessageRenderer } from "../../../extensibility/extensions/types";
 import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
@@ -447,6 +448,7 @@ export class AgentsViewComponent implements Component {
 				if (!record) return false;
 				if (record.ref?.kind === "advisor") return false;
 				if (record.session?.path.endsWith("__advisor.jsonl")) return false;
+				if (record.session?.path.endsWith(CONDUCTOR_TRANSCRIPT_FILENAME)) return false;
 				if (getRecordTitle(record) === "(no messages)") return false;
 				const session = record.session;
 				if (session && !session.title?.trim() && !session.firstMessage.trim()) return false;

@@ -2008,6 +2008,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#exitGoalMode({ reason: "dropped", silent: true });
 				return;
 			}
+			// A completion committed while the primary is idle (an out-of-band conductor accept) has no
+			// following `agent_end` to run the teardown, and `getUserInput()` only checks once on entry — so it
+			// would strand `mode: "exiting"` until the user's next submission. While streaming, the existing
+			// `agent_end` path still owns teardown, so the non-conducted path is untouched.
+			if (event.state?.mode === "exiting" && !this.session.isStreaming) {
+				await this.#exitGoalMode({ reason: "completed", silent: true });
+				return;
+			}
 			this.goalModeEnabled = event.state?.enabled === true;
 			this.goalModePaused = event.state?.enabled !== true && event.state?.goal?.status === "paused";
 			if (!event.state?.enabled) {

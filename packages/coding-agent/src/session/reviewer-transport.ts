@@ -43,6 +43,7 @@ import {
 	AdvisorTranscriptRecorder,
 	buildAdvisorQuarantineSourceText,
 	quarantineAdvisorUnsafeOutput,
+	type ReviewerGeneratedTextExtractor,
 	type ReviewerRuntime,
 } from "../advisor";
 import type { ModelRegistry } from "../config/model-registry";
@@ -159,6 +160,14 @@ export interface ReviewerTransportOptions {
 	adviseTool: AgentTool<any>;
 	toolNames: string[] | undefined;
 	toolPool: AgentTool[] | undefined;
+
+	/**
+	 * Which tool arguments count as reviewer-generated text for output-hazard quarantine. Omitted keeps
+	 * `quarantineAdvisorUnsafeOutput`'s own default (the `advise` note extractor), so the advisor path is unchanged.
+	 */
+	generatedTextExtractor?: ReviewerGeneratedTextExtractor;
+	/** Omitted keeps `quarantineAdvisorUnsafeOutput`'s own default prefix. */
+	quarantinePrefix?: string;
 	createEditTool?(): AgentTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	mcpResources?: CursorMcpResourceAdapter;
@@ -307,6 +316,8 @@ export class ReviewerTransport implements ReviewerInstance {
 					message,
 					availableAdvisorToolNames,
 					buildAdvisorQuarantineSourceText(this.#currentAdvisorInput, advisorAgent.state.messages),
+					options.generatedTextExtractor,
+					options.quarantinePrefix,
 				);
 			},
 			telemetry: advisorTelemetry,

@@ -80,6 +80,7 @@ import {
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
+import { type ConductorStats, SessionConductor } from "../conductor";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -437,6 +438,7 @@ export class AgentSession {
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
+	readonly #conductor: SessionConductor;
 	#goalTurnCounter = 0;
 	#clientBridge: ClientBridge | undefined;
 	#allowAcpAgentInitiatedTurns = false;
@@ -969,6 +971,7 @@ export class AgentSession {
 			this.#loopGuards.recordTurn(messages, context);
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
+			this.#conductor.onPrimaryTurnEnd(context?.willContinue);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -1160,6 +1163,7 @@ export class AgentSession {
 			},
 			emit: event => {
 				if (event.type === "goal_updated") {
+					this.#conductor.onGoalUpdated(event.goal);
 					return this.#emitSessionEvent({ type: "goal_updated", goal: event.goal, state: event.state });
 				}
 			},
@@ -1181,6 +1185,7 @@ export class AgentSession {
 					{ deliverAs: message.deliverAs },
 				);
 			},
+			completionAuthority: goal => this.#conductor.completionAuthority(goal),
 		});
 		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
 			this.#recordSessionExit(reason);
@@ -1252,6 +1257,24 @@ export class AgentSession {
 			initialCosts: config.initialAdvisorCosts,
 		});
 
+		this.#conductor = new SessionConductor(
+			{
+				...advisorsHost,
+				goalRuntime: () => this.#goalRuntime,
+				currentGoal: () => this.#goalModeState?.goal,
+			},
+			{
+				enabled: this.settings.get("conductor.enabled"),
+				toolsFactory: config.conductorToolsFactory,
+				createEditTool: config.advisorCreateEditTool,
+				getToolContext: config.advisorGetToolContext,
+				mcpResources: config.advisorMcpResources,
+				contextPrompt: config.advisorContextPrompt,
+				streamFn: config.advisorStreamFn,
+				transformProviderContext: config.transformProviderContext,
+			},
+		);
+
 		const maintenanceHost: SessionMaintenanceHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1288,7 +1311,10 @@ export class AgentSession {
 			closeCodexProviderSessionsForHistoryRewrite: () => this.#closeCodexProviderSessionsForHistoryRewrite(),
 			resetCodexProviderAfterCompaction: compaction => this.#resetCodexProviderAfterCompaction(compaction),
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
-			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
+			resetAdvisorRuntimes: (reason?: string) => {
+				this.#advisors.resetAllRuntimes(reason);
+				this.#conductor.resetAllRuntimes(reason);
+			},
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
@@ -1310,7 +1336,10 @@ export class AgentSession {
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
-		this.#unsubscribeModelRoles = onModelRolesChanged(() => this.#advisors.onModelRolesChanged());
+		this.#unsubscribeModelRoles = onModelRolesChanged(() => {
+			this.#advisors.onModelRolesChanged();
+			this.#conductor.onModelRolesChanged();
+		});
 
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
 		this.#unsubscribeCodeMode = onCodeModeChanged(() => {
@@ -3011,6 +3040,7 @@ export class AgentSession {
 		}
 
 		if (this.#advisors) this.#advisors.refreshProviderIdentity();
+		if (this.#conductor) this.#conductor.refreshProviderIdentity();
 	}
 
 	#notifySessionChangeCallbacks(): void {
@@ -3085,6 +3115,7 @@ export class AgentSession {
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
+		this.#conductor.stopRuntime();
 		this.#eval.beginDispose();
 	}
 
@@ -3186,6 +3217,7 @@ export class AgentSession {
 		}
 		await this.#drainAutolearnCapture();
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
+		const conductorRecorderClosed = this.#conductor.recorderClosed();
 		const results = await Promise.allSettled([
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
@@ -3194,6 +3226,7 @@ export class AgentSession {
 			shutdownTinyTitleClient(),
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
+			conductorRecorderClosed,
 		]);
 		for (const result of results) {
 			if (result.status === "rejected") {
@@ -3295,6 +3328,7 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 
 		this.#advisors.resetSessionState();
+		this.#conductor.resetSessionState();
 
 		this.sessionManager.appendResetBoundary();
 
@@ -5189,6 +5223,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
+			await this.#conductor.drainAndDetachRecorders();
 			try {
 				this.agent.reset();
 				await this.sessionManager.flush();
@@ -5199,6 +5234,7 @@ export class AgentSession {
 				this.#bash.markSessionTransition(bashTransition);
 
 				this.#advisors.clearCost();
+				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
@@ -5218,6 +5254,7 @@ export class AgentSession {
 
 			this.#todo.resetCycle();
 			this.#advisors.resetSessionState();
+			this.#conductor.resetSessionState();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
 			sessionReconciled = true;
@@ -5238,8 +5275,13 @@ export class AgentSession {
 		} finally {
 			if (!sessionReconciled) await this.#afterSessionSwitch();
 			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+				if (sessionTransitioned) {
+					this.#advisors.resetSessionState();
+					this.#conductor.resetSessionState();
+				} else {
+					this.#advisors.reattachRecorderFeeds();
+					this.#conductor.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -5274,6 +5316,7 @@ export class AgentSession {
 			advisorRecordersDetached = true;
 
 			await this.#advisors.drainAndDetachRecorders();
+			await this.#conductor.drainAndDetachRecorders();
 			const bashTransition = this.#bash.beginSessionTransition();
 
 			let forkResult: { oldSessionFile: string; newSessionFile: string } | undefined;
@@ -5300,6 +5343,7 @@ export class AgentSession {
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
 			this.#advisors.reattachRecorderFeeds();
+			this.#conductor.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
 			await this.#afterSessionSwitch();
 			sessionReconciled = true;
@@ -5315,7 +5359,10 @@ export class AgentSession {
 			return true;
 		} finally {
 			if (!sessionReconciled) await this.#afterSessionSwitch();
-			if (advisorRecordersDetached) this.#advisors.reattachRecorderFeeds();
+			if (advisorRecordersDetached) {
+				this.#advisors.reattachRecorderFeeds();
+				this.#conductor.reattachRecorderFeeds();
+			}
 		}
 	}
 
@@ -5542,6 +5589,7 @@ export class AgentSession {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
+		this.#conductor.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
@@ -5994,6 +6042,7 @@ export class AgentSession {
 		try {
 			if (switchingToDifferentSession) {
 				await this.#advisors.drainAndDetachRecorders();
+				await this.#conductor.drainAndDetachRecorders();
 			}
 			await this.sessionManager.setSessionFile(sessionPath);
 			this.#bash.markSessionTransition(bashTransition);
@@ -6020,6 +6069,7 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState({ preserveCost: true });
+			this.#conductor.resetSessionState({ preserveCost: true });
 			this.#todo.syncFromBranch();
 			if (switchingToDifferentSession) {
 				this.#closeAllProviderSessions("session switch");
@@ -6117,6 +6167,7 @@ export class AgentSession {
 
 			if (switchingToDifferentSession) {
 				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
+				this.#conductor.clearCost();
 			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
@@ -6157,7 +6208,9 @@ export class AgentSession {
 			}
 			this.#todo.syncFromBranch();
 			this.#advisors.resetAllRuntimes();
+			this.#conductor.resetAllRuntimes();
 			this.#advisors.reattachRecorderFeeds();
+			this.#conductor.reattachRecorderFeeds();
 			this.#reconnectToAgent();
 			try {
 				await this.#afterSessionSwitch();
@@ -6219,6 +6272,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
+			await this.#conductor.drainAndDetachRecorders();
 			try {
 				if (!selectedEntry.parentId) {
 					const title = this.sessionManager.getSessionName();
@@ -6230,6 +6284,7 @@ export class AgentSession {
 				}
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
+				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
@@ -6255,16 +6310,23 @@ export class AgentSession {
 			if (!skipConversationRestore) {
 				this.agent.replaceMessages(sessionContext.messages);
 				this.#advisors.resetSessionState();
+				this.#conductor.resetSessionState();
 				this.#closeCodexProviderSessionsForHistoryRewrite();
 			}
 
 			this.#advisors.reattachRecorderFeeds();
+			this.#conductor.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
 			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+				if (sessionTransitioned) {
+					this.#advisors.resetSessionState();
+					this.#conductor.resetSessionState();
+				} else {
+					this.#advisors.reattachRecorderFeeds();
+					this.#conductor.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -6329,6 +6391,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
+			await this.#conductor.drainAndDetachRecorders();
 			try {
 				if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
 					throw new Error("Cannot branch /side: session changed since /side started");
@@ -6336,6 +6399,7 @@ export class AgentSession {
 				this.sessionManager.createBranchedSession(leafId);
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
+				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
@@ -6365,14 +6429,20 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState();
+			this.#conductor.resetSessionState();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 			advisorRecordersDetached = false;
 
 			return { cancelled: false, sessionFile: this.sessionFile };
 		} finally {
 			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+				if (sessionTransitioned) {
+					this.#advisors.resetSessionState();
+					this.#conductor.resetSessionState();
+				} else {
+					this.#advisors.reattachRecorderFeeds();
+					this.#conductor.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -6589,6 +6659,7 @@ export class AgentSession {
 		this.agent.replaceMessages(displayContext.messages);
 		this.#rehydrateCheckpointRewindState();
 		this.#advisors.resetSessionState({ preserveCost: true });
+		this.#conductor.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
@@ -7108,6 +7179,30 @@ export class AgentSession {
 
 	getAdvisorAvailableToolNames(): string[] {
 		return this.#advisors.getAdvisorAvailableToolNames();
+	}
+
+	setConductorEnabled(enabled: boolean): boolean {
+		return this.#conductor.setEnabled(enabled);
+	}
+
+	toggleConductorEnabled(): boolean {
+		return this.#conductor.toggleEnabled();
+	}
+
+	isConductorEnabled(): boolean {
+		return this.#conductor.isEnabled();
+	}
+
+	getConductorStats(): ConductorStats {
+		return this.#conductor.getStats();
+	}
+
+	getConductorCost(): number {
+		return this.#conductor.getCost();
+	}
+
+	formatConductorStatus(): string {
+		return this.#conductor.formatStatus();
 	}
 
 	getAdvisorAgent(): Agent | undefined {

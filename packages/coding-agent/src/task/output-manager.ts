@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
+import { CONDUCTOR_TRANSCRIPT_STEM } from "../conductor/transcript";
 
 export class AgentOutputManager {
 	#initialized = false;
@@ -14,6 +15,7 @@ export class AgentOutputManager {
 		this.#parentPrefix = options?.parentPrefix;
 
 		this.#taken.add(ADVISOR_TRANSCRIPT_STEM);
+		this.#taken.add(CONDUCTOR_TRANSCRIPT_STEM);
 	}
 
 	async #ensureInitialized(): Promise<void> {
