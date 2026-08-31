@@ -1,6 +1,6 @@
 import type { UsageStatistics } from "../session/session-entries";
 
-export type GoalStatus = "active" | "paused" | "budget-limited" | "complete" | "dropped";
+export type GoalStatus = "active" | "paused" | "budget-limited" | "verifying" | "complete" | "dropped";
 
 export interface Goal {
 	id: string;

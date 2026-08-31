@@ -178,7 +178,12 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 			icon = theme.symbol("status.aborted");
 			color = "dim";
 			break;
+		case "active":
+		case "verifying":
+			// keeps the goal icon and mode accent; "verifying" is not running, so no spinner/near-budget warning
+			break;
 		default:
+			persistedStatus satisfies never;
 			break;
 	}
 

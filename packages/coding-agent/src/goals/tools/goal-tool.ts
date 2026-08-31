@@ -150,7 +150,11 @@ function goalBadgeColor(status: GoalStatus): ThemeColor {
 		case "paused":
 		case "dropped":
 			return "muted";
+		case "active":
+		case "verifying":
+			return "accent";
 		default:
+			status satisfies never;
 			return "accent";
 	}
 }

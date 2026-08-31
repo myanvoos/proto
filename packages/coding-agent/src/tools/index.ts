@@ -406,6 +406,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();
+			if (goalState?.goal.status === "verifying") return false;
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
