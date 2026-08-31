@@ -3506,6 +3506,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"conductor.approveContract": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor Contract Approval",
+			description:
+				"Show the contract the conductor drafts from `/conduct <rough ask>` and wait for approval before the goal is created. Off starts the stretch as soon as the contract is drafted.",
+			condition: "conductorEnabled",
+		},
+	},
+
 	"title.refreshOnReplan": {
 		type: "boolean",
 		default: true,

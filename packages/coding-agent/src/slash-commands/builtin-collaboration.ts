@@ -2,7 +2,7 @@ import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import { copyToClipboard } from "../utils/clipboard";
-import { refreshStatusLine } from "./builtin-modes";
+import { refreshStatusLine, runWithDetachedModeDraft } from "./builtin-modes";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
@@ -112,9 +112,11 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "conduct",
-		description: "Toggle the conductor (independent verification of goal completion claims)",
+		description:
+			"Commission an autonomous stretch (the conductor drafts the contract), or toggle independent verification of goal completion claims",
 		acpDescription: "Toggle conductor",
 		acpInputHint: "[on|off|status]",
+		inlineHint: "[rough ask]",
 		subcommands: [
 			{ name: "on", description: "Enable the conductor" },
 			{ name: "off", description: "Disable the conductor" },
@@ -159,7 +161,11 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				await runtime.output(runtime.session.formatConductorStatus());
 				return commandConsumed();
 			}
-			return usage("Usage: /conduct [on|off|status]", runtime);
+			// Commissioning needs the contract approval dialog, so it mirrors `/advisor configure`: TUI-only.
+			await runtime.output(
+				"/conduct <rough ask> commissions a contract interactively and is only available in the interactive TUI.",
+			);
+			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
 			const { verb } = parseSubcommand(command.args);
@@ -201,8 +207,11 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /conduct [on|off|status]");
-			runtime.ctx.editor.setText("");
+			// Anything else is the rough ask. Same draft handling as `/goal set`: the draft is detached for the
+			// duration and restored if commissioning throws, so a failed run leaves the typed line intact.
+			await runWithDetachedModeDraft(command, runtime, () =>
+				runtime.ctx.handleConductCommission(command.args, runtime.input),
+			);
 		},
 	},
 	{

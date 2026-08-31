@@ -19,7 +19,7 @@ export function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.ui.requestRender();
 }
 
-async function runWithDetachedModeDraft(
+export async function runWithDetachedModeDraft(
 	command: ParsedSlashCommand,
 	runtime: TuiSlashCommandRuntime,
 	run: () => Promise<boolean>,

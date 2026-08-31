@@ -80,7 +80,7 @@ import {
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
-import { type ConductorStats, SessionConductor } from "../conductor";
+import { type ConductorCommissionOutcome, type ConductorStats, SessionConductor } from "../conductor";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -7203,6 +7203,14 @@ export class AgentSession {
 
 	formatConductorStatus(): string {
 		return this.#conductor.formatStatus();
+	}
+
+	/**
+	 * Runs one commissioning turn and returns the drafted contract. Nothing is persisted here: the host decides
+	 * whether the proposal becomes a goal, and creates it through the same path `/goal set` uses.
+	 */
+	commissionConductorProgram(ask: string): Promise<ConductorCommissionOutcome> {
+		return this.#conductor.commission(ask);
 	}
 
 	getAdvisorAgent(): Agent | undefined {

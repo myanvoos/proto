@@ -16,6 +16,8 @@ import type { CursorMcpResourceAdapter } from "../cursor";
 import type { GoalRuntime } from "../goals/runtime";
 import { renderTrustedObjective } from "../goals/runtime";
 import type { Goal } from "../goals/state";
+import conductorCommissionPrompt from "../prompts/conductor/commission.md" with { type: "text" };
+import conductorCommissionSystemPrompt from "../prompts/conductor/commission-system.md" with { type: "text" };
 import conductorSystemPrompt from "../prompts/conductor/system.md" with { type: "text" };
 import conductorVerifyPrompt from "../prompts/conductor/verify.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
@@ -23,22 +25,38 @@ import type { CustomMessagePayload } from "../session/messages";
 import { type ReviewerIdentity, ReviewerTransport, type ReviewerTransportHost } from "../session/reviewer-transport";
 import { resolveThinkingLevelForModel } from "../thinking";
 import { type ConductorRuling, CueTool } from "./cue-tool";
+import { type ConductorProposal, ProgramTool } from "./program-tool";
 import { CONDUCTOR_TRANSCRIPT_FILENAME } from "./transcript";
 
 /**
- * Investigative grant. `bash` is included because this slice only ever runs verification turns, where the
- * objective's "## Verification" commands are the whitelist (prompt-enforced in v0). No mutating grants, ever.
+ * Investigative grant for a verification turn. `bash` is included because the objective's "## Verification"
+ * commands are the whitelist there (prompt-enforced in v0). No mutating grants, ever.
  */
 export const CONDUCTOR_TOOL_NAMES: readonly string[] = ["read", "grep", "glob", "bash"];
 
+/**
+ * Commissioning is strictly read-only: the contract has to be reproducible by the working agent and the auditor,
+ * so nothing the commissioner could only learn by executing may enter it.
+ */
+export const CONDUCTOR_COMMISSION_TOOL_NAMES: readonly string[] = ["read", "grep", "glob"];
+
 export type ConductorStatus = AdvisorRuntimeStatus | "off";
+
+/** Which turn the single transport slot is currently built for; the two are mutually exclusive by design. */
+type ConductorTurnMode = "verify" | "commission";
 
 /** Attempts per verification turn: the first try plus two retries on retriable failures. */
 const MAX_VERIFICATION_ATTEMPTS = 3;
 
+/** Commissioning gets the same bounded retry budget as verification. */
+const MAX_COMMISSIONING_ATTEMPTS = 3;
+
 const CONDUCTOR_QUARANTINE_PREFIX = "Conductor response quarantined";
 
-const extractCueGeneratedText: ReviewerGeneratedTextExtractor = call => {
+const extractConductorGeneratedText: ReviewerGeneratedTextExtractor = call => {
+	if (call.name === "program") {
+		return typeof call.arguments.objective === "string" ? [call.arguments.objective] : [];
+	}
 	if (call.name !== "cue") return [];
 	const parts: string[] = [];
 	if (typeof call.arguments.evidence === "string") parts.push(call.arguments.evidence);
@@ -86,9 +104,25 @@ export interface ConductorStats {
 	status: ConductorStatus;
 	model?: Model;
 	pendingGoalId?: string;
+	commissioning: boolean;
 	rejections: number;
 	escalated: boolean;
 	cost: number;
+}
+
+/**
+ * Result of one commissioning turn. Nothing is persisted by any of these outcomes — the contract only becomes a
+ * goal when the host creates it through the `/goal set` machinery, so every non-`proposed` outcome is inert.
+ */
+export type ConductorCommissionOutcome =
+	| { status: "proposed"; objective: string; tokenBudget?: number }
+	| { status: "busy"; reason: string }
+	| { status: "unavailable"; reason: string }
+	| { status: "timeout" }
+	| { status: "failed"; reason: string };
+
+function renderCommissionPrompt(ask: string): string {
+	return prompt.render(conductorCommissionPrompt, { ask });
 }
 
 function renderVerifyPrompt(goal: Goal): string {
@@ -111,8 +145,8 @@ function formatRejectionContent(evidence: string): string {
 }
 
 /**
- * Verification-only conductor (build-order step 3). Owns one {@link ReviewerTransport} on the `conductor` model
- * role, the `cue` tool, and the completion gate. Every path is inert unless `conductor.enabled` is on.
+ * Conductor runtime. Owns one {@link ReviewerTransport} on the `conductor` model role, the commissioning turn
+ * (`program`) and the completion gate (`cue`). Every path is inert unless `conductor.enabled` is on.
  */
 export class SessionConductor {
 	readonly #host: ConductorHost;
@@ -121,8 +155,10 @@ export class SessionConductor {
 	#enabled: boolean;
 	#status: ConductorStatus = "off";
 	#instance: ReviewerTransport | undefined;
+	#instanceMode: ConductorTurnMode | undefined;
 	#facade: { prompt(input: string): Promise<void>; reset(): void } | undefined;
 	#cueTool: CueTool | undefined;
+	#programTool: ProgramTool | undefined;
 	#toolsPromise: Promise<AgentTool[]> | undefined;
 	#buildPromise: Promise<ReviewerTransport | undefined> | undefined;
 
@@ -136,8 +172,10 @@ export class SessionConductor {
 	#gateTimer: NodeJS.Timeout | undefined;
 	#startWhenIdle = false;
 	#verificationInFlight = false;
+	#commissioningInFlight = false;
 	#escalated = false;
 	#ruling: ConductorRuling | undefined;
+	#proposal: ConductorProposal | undefined;
 
 	constructor(host: ConductorHost, options: SessionConductorOptions) {
 		this.#host = host;
@@ -212,10 +250,15 @@ export class SessionConductor {
 		this.#startVerification();
 	}
 
+	/** One clock for both bounded waits: the verification gate and the commissioning turn. */
+	#gateTimeoutMs(): number {
+		const seconds = this.#host.settings.get("conductor.gateTimeoutSeconds") as number;
+		return Number.isFinite(seconds) && seconds > 0 ? Math.trunc(seconds) * 1000 : 300_000;
+	}
+
 	#armGate(): void {
 		this.#clearGateTimer();
-		const seconds = this.#host.settings.get("conductor.gateTimeoutSeconds") as number;
-		const timeoutMs = Number.isFinite(seconds) && seconds > 0 ? Math.trunc(seconds) * 1000 : 300_000;
+		const timeoutMs = this.#gateTimeoutMs();
 		this.#gateTimer = setTimeout(() => {
 			this.#gateTimer = undefined;
 			this.#escalate("Verification gate timed out before a verdict was returned.");
@@ -253,6 +296,8 @@ export class SessionConductor {
 
 	#startVerification(): void {
 		if (!this.#startWhenIdle || this.#verificationInFlight || this.#escalated) return;
+		// The single transport slot is built for one turn kind at a time; a commissioning turn in flight owns it.
+		if (this.#commissioningInFlight) return;
 		if (this.#host.isDisposed()) return;
 		const goal = this.#host.currentGoal();
 		if (goal?.status !== "verifying" || goal.id !== this.#pendingGoalId) return;
@@ -266,7 +311,7 @@ export class SessionConductor {
 	}
 
 	async #runVerification(goal: Goal): Promise<void> {
-		const instance = await this.#ensureInstance();
+		const instance = await this.#ensureInstance("verify");
 		const facade = this.#facade;
 		const cueTool = this.#cueTool;
 		if (!instance || !facade || !cueTool) {
@@ -304,8 +349,120 @@ export class SessionConductor {
 		await this.#applyRuling(ruling);
 	}
 
+	// ---------------------------------------------------------------- commissioning turn
+
+	/**
+	 * Commissioning turn. Investigates the repo read-only and drafts the contract; the proposal is returned to the
+	 * host, never written anywhere, so a refusal, a timeout, or a user rejection strands nothing.
+	 */
+	async commission(ask: string): Promise<ConductorCommissionOutcome> {
+		const trimmed = ask.trim();
+		if (!trimmed) return { status: "failed", reason: "No rough ask was given." };
+		if (!this.#enabled) return { status: "unavailable", reason: "Conductor is disabled." };
+		if (this.#host.isDisposed()) return { status: "unavailable", reason: "The session is shutting down." };
+		if (this.#commissioningInFlight) {
+			return { status: "busy", reason: "A commissioning turn is already running." };
+		}
+		if (this.#pendingGoalId !== undefined || this.#verificationInFlight) {
+			return { status: "busy", reason: "A completion claim is pending verification." };
+		}
+		const goal = this.#host.currentGoal();
+		if (goal && goal.status !== "complete" && goal.status !== "dropped") {
+			return { status: "busy", reason: "This session already has a goal." };
+		}
+		if (this.#escalated) {
+			return { status: "unavailable", reason: "Conductor is halted — run /conduct on to rebuild it." };
+		}
+		if (!this.#resolveModelSelection()) {
+			return { status: "unavailable", reason: "No model is assigned to the 'conductor' role." };
+		}
+		if (this.#status === "error" || this.#status === "quota_exhausted") {
+			return { status: "unavailable", reason: `Conductor is ${this.#status.replace("_", " ")}.` };
+		}
+
+		this.#commissioningInFlight = true;
+		try {
+			return await this.#runCommissioning(trimmed);
+		} finally {
+			this.#commissioningInFlight = false;
+			this.#proposal = undefined;
+			// The slot is released for the next turn kind: verification needs the auditor persona, the `cue` tool, and
+			// the `bash` grant that commissioning deliberately does not hold. Gate state is untouched.
+			this.#disposeInstance();
+			// A verdict that pended while this turn ran (the user can still `/goal set` by hand mid-commission) was
+			// parked by `#startVerification`; start it now that the slot is free, still never mid-primary-turn.
+			if (!this.#host.agent.state.isStreaming) this.#startVerification();
+		}
+	}
+
+	async #runCommissioning(ask: string): Promise<ConductorCommissionOutcome> {
+		const instance = await this.#ensureInstance("commission");
+		const facade = this.#facade;
+		const programTool = this.#programTool;
+		if (!instance || !facade || !programTool) {
+			return { status: "unavailable", reason: "The conductor could not be started." };
+		}
+
+		const promptText = renderCommissionPrompt(ask);
+		// Commissioning has no pended goal to strand, so the timeout aborts the turn and reports instead of
+		// escalating; the user can re-run /conduct or fall back to /goal.
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			instance.agent.abort("conductor commissioning timed out");
+		}, this.#gateTimeoutMs());
+
+		try {
+			let proposal: ConductorProposal | undefined;
+			for (let attempt = 0; attempt < MAX_COMMISSIONING_ATTEMPTS; attempt++) {
+				if (this.#host.isDisposed()) return { status: "unavailable", reason: "The session is shutting down." };
+				this.#proposal = undefined;
+				programTool.beginTurn();
+				try {
+					await facade.prompt(promptText);
+				} catch (error) {
+					if (timedOut) return { status: "timeout" };
+					if (error instanceof AdvisorOutputQuarantinedError) {
+						logger.warn("conductor commissioning turn quarantined; discarding contract", {
+							err: String(error),
+						});
+						facade.reset();
+						continue;
+					}
+					if (await this.#handleTurnError(error, instance, "commissioning")) continue;
+					return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+				}
+				if (timedOut) return { status: "timeout" };
+				proposal = this.#proposal;
+				this.#proposal = undefined;
+				if (proposal) break;
+				logger.debug("conductor commissioning turn produced no contract; retrying");
+			}
+
+			if (!proposal) {
+				return { status: "failed", reason: "The conductor proposed no contract after repeated attempts." };
+			}
+			return proposal.tokenBudget === undefined
+				? { status: "proposed", objective: proposal.objective }
+				: { status: "proposed", objective: proposal.objective, tokenBudget: proposal.tokenBudget };
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	/** @returns true when the turn should be retried. */
-	async #handleTurnError(error: unknown, instance: ReviewerTransport): Promise<boolean> {
+	async #handleTurnError(
+		error: unknown,
+		instance: ReviewerTransport,
+		context: "verification" | "commissioning" = "verification",
+	): Promise<boolean> {
+		const commissioning = context === "commissioning";
+		const quotaNotice = commissioning
+			? "Conductor quota exhausted — no contract was drafted. Run /goal to set an objective manually."
+			: "Conductor quota exhausted — the pending completion cannot be verified. Run /goal resume to continue manually.";
+		const strandedNotice = commissioning
+			? "No contract was created — run /conduct <rough ask> again, or /goal to set an objective manually."
+			: "The goal stays pending verification — run /goal resume to continue manually.";
 		const controller = new AbortController();
 		let recovered = false;
 		try {
@@ -318,28 +475,28 @@ export class SessionConductor {
 		const errorId = AIError.classify(error, instance.agent.state.model.api);
 		if (AIError.is(errorId, AIError.Flag.UsageLimit)) {
 			this.#status = "quota_exhausted";
-			this.#host.emitNotice(
-				"warning",
-				"Conductor quota exhausted — the pending completion cannot be verified. Run /goal resume to continue manually.",
-				"conductor",
-			);
-			this.#clearGateTimer();
-			this.#startWhenIdle = false;
+			this.#host.emitNotice("warning", quotaNotice, "conductor");
+			if (!commissioning) {
+				this.#clearGateTimer();
+				this.#startWhenIdle = false;
+			}
 			return false;
 		}
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) {
-			this.#startWhenIdle = true;
+			if (!commissioning) this.#startWhenIdle = true;
 			return false;
 		}
 		this.#status = "error";
 		const message = error instanceof Error ? error.message : String(error);
 		this.#host.emitNotice(
 			"warning",
-			`Conductor unavailable for ${formatModelString(instance.agent.state.model)}: ${message}. The goal stays pending verification — run /goal resume to continue manually.`,
+			`Conductor unavailable for ${formatModelString(instance.agent.state.model)}: ${message}. ${strandedNotice}`,
 			"conductor",
 		);
-		this.#clearGateTimer();
-		this.#startWhenIdle = false;
+		if (!commissioning) {
+			this.#clearGateTimer();
+			this.#startWhenIdle = false;
+		}
 		return false;
 	}
 
@@ -411,15 +568,18 @@ export class SessionConductor {
 
 	// ---------------------------------------------------------------- construction
 
-	async #ensureInstance(): Promise<ReviewerTransport | undefined> {
+	async #ensureInstance(mode: ConductorTurnMode): Promise<ReviewerTransport | undefined> {
+		// Commissioning and verification need different personas, different tools, and different single-shot tools,
+		// and they are mutually exclusive in time, so one slot is rebuilt rather than two kept alive.
+		if (this.#instance && this.#instanceMode !== mode) this.#disposeInstance();
 		if (this.#instance) return this.#instance;
-		this.#buildPromise ??= this.#buildInstance().finally(() => {
+		this.#buildPromise ??= this.#buildInstance(mode).finally(() => {
 			this.#buildPromise = undefined;
 		});
 		return await this.#buildPromise;
 	}
 
-	async #buildInstance(): Promise<ReviewerTransport | undefined> {
+	async #buildInstance(mode: ConductorTurnMode): Promise<ReviewerTransport | undefined> {
 		if (!this.#enabled || this.#host.isDisposed()) return undefined;
 		const selection = this.#resolveModelSelection();
 		if (!selection) {
@@ -452,11 +612,25 @@ export class SessionConductor {
 			noticeLabel: "Conductor",
 		};
 
-		const cueTool = new CueTool(ruling => {
-			this.#ruling = ruling;
-		});
+		// Each turn kind gets its own single-shot channel; the other tool is never even constructed, so a
+		// commissioning turn cannot rule on a verdict and a verification turn cannot rewrite the contract.
+		const commissioning = mode === "commission";
+		let cueTool: CueTool | undefined;
+		let programTool: ProgramTool | undefined;
+		let adviseTool: AgentTool<any>;
+		if (commissioning) {
+			programTool = new ProgramTool(proposal => {
+				this.#proposal = proposal;
+			});
+			adviseTool = programTool;
+		} else {
+			cueTool = new CueTool(ruling => {
+				this.#ruling = ruling;
+			});
+			adviseTool = cueTool;
+		}
 
-		const systemPrompt = [conductorSystemPrompt];
+		const systemPrompt = [commissioning ? conductorCommissionSystemPrompt : conductorSystemPrompt];
 		if (this.#options.contextPrompt) systemPrompt.push(this.#options.contextPrompt);
 
 		let facade: { prompt(input: string): Promise<void>; reset(): void } | undefined;
@@ -464,17 +638,17 @@ export class SessionConductor {
 			identity,
 			model,
 			thinkingLevel,
-			signature: `conductor\u001f${formatModelString(model)}\u001f${thinkingLevel}`,
+			signature: `conductor-${mode}\u001f${formatModelString(model)}\u001f${thinkingLevel}`,
 			systemPrompt,
 
-			adviseTool: cueTool,
-			toolNames: [...CONDUCTOR_TOOL_NAMES],
+			adviseTool,
+			toolNames: [...(commissioning ? CONDUCTOR_COMMISSION_TOOL_NAMES : CONDUCTOR_TOOL_NAMES)],
 			toolPool,
 			createEditTool: this.#options.createEditTool,
 			getToolContext: this.#options.getToolContext,
 			mcpResources: this.#options.mcpResources,
 
-			generatedTextExtractor: extractCueGeneratedText,
+			generatedTextExtractor: extractConductorGeneratedText,
 			quarantinePrefix: CONDUCTOR_QUARANTINE_PREFIX,
 
 			// Its own map: the conductor's slug is "" like the legacy advisor's, so sharing the advisor map would
@@ -500,8 +674,10 @@ export class SessionConductor {
 		});
 
 		this.#instance = transport;
+		this.#instanceMode = mode;
 		this.#facade = facade;
 		this.#cueTool = cueTool;
+		this.#programTool = programTool;
 		this.#status = "running";
 		this.#attachRecorderFeed();
 		return transport;
@@ -522,13 +698,24 @@ export class SessionConductor {
 	// ---------------------------------------------------------------- lifecycle
 
 	stopRuntime(): void {
-		const instance = this.#instance;
 		this.#clearGate();
 		this.#verificationInFlight = false;
 		this.#ruling = undefined;
+		this.#proposal = undefined;
+		this.#disposeInstance();
+	}
+
+	/**
+	 * Drops the transport without touching gate state. Swapping the slot between turn kinds must never disarm a
+	 * verdict that is already pending — only {@link stopRuntime} owns the gate.
+	 */
+	#disposeInstance(): void {
+		const instance = this.#instance;
 		this.#instance = undefined;
+		this.#instanceMode = undefined;
 		this.#facade = undefined;
 		this.#cueTool = undefined;
+		this.#programTool = undefined;
 		if (!instance) return;
 		instance.agentUnsubscribe?.();
 		instance.agentUnsubscribe = undefined;
@@ -570,6 +757,7 @@ export class SessionConductor {
 		this.#rejectionCount = 0;
 		this.#escalated = false;
 		this.#ruling = undefined;
+		this.#proposal = undefined;
 		const instance = this.#instance;
 		if (!instance) return;
 		instance.resetForConversationBoundary();
@@ -667,6 +855,7 @@ export class SessionConductor {
 			status,
 			model: live?.agent.state.model ?? this.#resolveModelSelection()?.model,
 			pendingGoalId: this.#pendingGoalId,
+			commissioning: this.#commissioningInFlight,
 			rejections: this.#rejectionCount,
 			escalated: this.#escalated,
 			cost: this.#cost,
@@ -681,6 +870,7 @@ export class SessionConductor {
 		}
 		const parts = [`Conductor is enabled (${stats.model.provider}/${stats.model.id}).`];
 		if (stats.status !== "running") parts.push(`Status: ${stats.status.replace("_", " ")}.`);
+		if (stats.commissioning) parts.push("Commissioning: in progress.");
 		parts.push(stats.pendingGoalId ? "Verification: pending." : "Verification: idle.");
 		if (stats.rejections > 0) parts.push(`Rejections: ${stats.rejections}.`);
 		if (stats.escalated) parts.push("Escalated — /goal resume to continue manually.");

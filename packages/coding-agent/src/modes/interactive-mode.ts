@@ -2092,7 +2092,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session.goalRuntime.clearAccounting();
 	}
 
-	async #enterGoalMode(options: { objective?: string; resume?: boolean; silent?: boolean }): Promise<void> {
+	async #enterGoalMode(options: {
+		objective?: string;
+		tokenBudget?: number;
+		resume?: boolean;
+		silent?: boolean;
+	}): Promise<void> {
 		if (this.goalModeEnabled) {
 			return;
 		}
@@ -2102,7 +2107,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.goalModePaused = false;
 		const state = options.resume
 			? await this.session.goalRuntime.resumeGoal()
-			: await this.session.goalRuntime.createGoal({ objective: options.objective ?? "" });
+			: await this.session.goalRuntime.createGoal({
+					objective: options.objective ?? "",
+					tokenBudget: options.tokenBudget,
+				});
 		await this.session.setActiveToolsByName(goalTools);
 		this.session.setGoalModeState(state);
 		this.goalModeEnabled = true;
@@ -2385,8 +2393,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #startGoalFromObjective(
 		objective: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		tokenBudget?: number,
 	): Promise<boolean> {
-		await this.#enterGoalMode({ objective, silent: true });
+		await this.#enterGoalMode({ objective, tokenBudget, silent: true });
 		this.#resetGoalContinuationSuppression();
 		if (this.session.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
@@ -2445,6 +2454,77 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!objective) return false;
 		if (this.goalModeEnabled) return await this.#replaceGoalFromObjective(objective, input);
 		return await this.#startGoalFromObjective(objective, input);
+	}
+
+	/**
+	 * `/conduct <rough ask>`: one read-only commissioning turn, the user's decision, then the ordinary `/goal set`
+	 * path. Creation deliberately runs through {@link #startGoalFromObjective} rather than `goalRuntime.createGoal`,
+	 * so tool exposure, goal-mode context injection, the status line, continuation, and persistence are identical to
+	 * a hand-written goal. Every failure path leaves nothing behind — the contract is only ever in memory until then.
+	 */
+	async handleConductCommission(
+		ask: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+	): Promise<boolean> {
+		const trimmed = ask.trim();
+		if (!trimmed) return false;
+		if (!this.session.settings.get("goal.enabled")) {
+			this.showWarning("Goal mode is disabled. Enable it in settings (goal.enabled).");
+			return false;
+		}
+		if (!this.session.isConductorEnabled()) {
+			this.showWarning(
+				"Conductor is disabled. Run /conduct on to enable it, or /goal to set an objective yourself.",
+			);
+			return false;
+		}
+		if (this.goalModeEnabled) {
+			this.showStatus("Goal mode is already active. Use /goal to manage it, or /goal drop to start over.");
+			return false;
+		}
+		if (this.#getPausedGoalState()) {
+			this.showWarning("Resume the current goal first, or drop it before commissioning a new one.");
+			return false;
+		}
+
+		this.showStatus(`Commissioning a contract for: ${trimmed}`);
+		const outcome = await this.session.commissionConductorProgram(trimmed);
+		if (outcome.status === "timeout") {
+			this.showWarning("Commissioning timed out before a contract was drafted. No goal was created.");
+			return false;
+		}
+		if (outcome.status !== "proposed") {
+			this.showWarning(`Commissioning stopped: ${outcome.reason} Use /goal to set an objective yourself.`);
+			return false;
+		}
+
+		if (this.session.settings.get("conductor.approveContract")) {
+			// The selector renders only its first title line as the panel heading and the rest as short accent rows,
+			// so a five-section contract goes to the transcript first — the same way `/goal show` renders an
+			// objective — and the dialog carries only the decision.
+			this.showStatus(
+				[
+					"Conductor contract:",
+					"",
+					outcome.objective,
+					"",
+					outcome.tokenBudget === undefined
+						? "Token budget: none"
+						: `Token budget: ${outcome.tokenBudget.toLocaleString()}`,
+				].join("\n"),
+			);
+			// Same primitive `#confirmAndDropGoal` uses, with `#openGoalMenu`'s named choices instead of Yes/No.
+			// Escape cancels, and cancelling a contract is a rejection.
+			const choice = await this.showHookSelector(
+				"Start this conducted goal?\nApprove to enter goal mode with the contract above; reject to discard it.",
+				["Approve", "Reject"],
+			);
+			if (choice !== "Approve") {
+				this.showStatus("Contract rejected. No goal was created.");
+				return false;
+			}
+		}
+		return await this.#startGoalFromObjective(outcome.objective, input, outcome.tokenBudget);
 	}
 
 	static #AUTOQA_CONSENT_PROMPTS: ReadonlyArray<readonly [string, string]> = [
