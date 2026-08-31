@@ -11,7 +11,7 @@ import {
 	formatSessionHistoryMarkdown,
 	formatToolResultErrorPreview,
 } from "../session/session-history-format";
-import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
+import { DeltaCursorFeed, type RenderedFeedItem } from "./delta-feed";
 
 export interface AdvisorAgent {
 	prompt(input: string | AgentMessage[]): Promise<void>;
@@ -22,10 +22,8 @@ export interface AdvisorAgent {
 	readonly state: { messages: AgentMessage[]; error?: string };
 }
 
-export interface AdvisorRuntimeHost {
+export interface ReviewerRuntimeHost {
 	snapshotMessages(): AgentMessage[];
-
-	enqueueAdvice(note: string, severity?: "nit" | "concern" | "blocker"): void;
 
 	obfuscator?: SecretObfuscator;
 
@@ -48,6 +46,8 @@ export interface AdvisorRuntimeHost {
 	getModelIdentity?(): string;
 }
 
+export type { ReviewerRuntimeHost as AdvisorRuntimeHost };
+
 function isPermanentAdvisorError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return /invalid_request_error|model[_ ]not[_ ]found|is not supported when|does not exist/i.test(message);
@@ -55,12 +55,19 @@ function isPermanentAdvisorError(error: unknown): boolean {
 
 const ADVISOR_QUARANTINE_PREFIX = "Advisor response quarantined";
 
-export class AdvisorOutputQuarantinedError extends Error {
+export class ReviewerOutputQuarantinedError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "AdvisorOutputQuarantinedError";
 	}
 }
+
+export { ReviewerOutputQuarantinedError as AdvisorOutputQuarantinedError };
+
+export type ReviewerGeneratedTextExtractor = (call: { name: string; arguments: Record<string, unknown> }) => string[];
+
+const extractAdviseGeneratedText: ReviewerGeneratedTextExtractor = call =>
+	call.name === "advise" && typeof call.arguments.note === "string" ? [call.arguments.note] : [];
 
 interface AdvisorOutputHazard {
 	label: string;
@@ -84,6 +91,8 @@ export function quarantineAdvisorUnsafeOutput(
 	message: AssistantMessage,
 	availableToolNames: ReadonlySet<string>,
 	sourceText = "",
+	extractGeneratedText: ReviewerGeneratedTextExtractor = extractAdviseGeneratedText,
+	quarantinePrefix: string = ADVISOR_QUARANTINE_PREFIX,
 ): string | undefined {
 	const reasons: string[] = [];
 	const unavailableToolNames = new Set<string>();
@@ -96,8 +105,8 @@ export function quarantineAdvisorUnsafeOutput(
 		) {
 			unavailableToolNames.add(block.name);
 		}
-		if (block.type === "toolCall" && block.name === "advise" && typeof block.arguments.note === "string") {
-			generatedParts.push(block.arguments.note);
+		if (block.type === "toolCall") {
+			generatedParts.push(...extractGeneratedText(block));
 		}
 		if (block.type === "text") generatedParts.push(block.text);
 	}
@@ -131,7 +140,7 @@ export function quarantineAdvisorUnsafeOutput(
 
 	if (reasons.length === 0) return undefined;
 
-	const messageText = `${ADVISOR_QUARANTINE_PREFIX}: ${reasons.join("; ")}`;
+	const messageText = `${quarantinePrefix}: ${reasons.join("; ")}`;
 	message.content = [{ type: "text", text: messageText }];
 	message.stopReason = "error";
 	message.stopDetails = undefined;
@@ -157,13 +166,9 @@ const MAX_COALESCE_ROUNDS = 3;
 
 const MAX_QUARANTINE_RETRIES = 2;
 
-interface PendingDelta {
-	text: string;
-	rawMessages: AgentMessage[];
-	renderRevision: number;
+interface PendingDelta extends RenderedFeedItem {
 	turns: number;
 
-	wip: boolean;
 	overflowRecovery?: boolean;
 }
 
@@ -173,48 +178,9 @@ interface CatchupWaiter {
 	timer?: NodeJS.Timeout;
 }
 
-interface DeliveredMessage {
-	message: AgentMessage;
-	fingerprint: bigint | undefined;
-}
+export class ReviewerRuntime {
+	readonly #feed: DeltaCursorFeed;
 
-function fingerprintMessage(message: AgentMessage): bigint | undefined {
-	try {
-		const m = message as unknown as Record<string, unknown>;
-		const payload = JSON.stringify({
-			r: m.role ?? null,
-			c: m.content ?? null,
-			toolCallId: m.toolCallId ?? null,
-			toolName: m.toolName ?? null,
-			err: m.isError ?? null,
-			ct: m.customType ?? null,
-			disp: m.display ?? null,
-			cancel: m.cancelled ?? null,
-			exit: m.exitCode ?? null,
-			out: m.output ?? null,
-			det: m.details ?? null,
-			xfc: m.excludeFromContext ?? null,
-			cmd: m.command ?? null,
-			code: m.code ?? null,
-			sum: m.summary ?? null,
-			from: m.fromId ?? null,
-			files: m.files ?? null,
-		});
-		if (payload === undefined) return undefined;
-		return Bun.hash.wyhash(payload);
-	} catch {
-		return undefined;
-	}
-}
-
-export class AdvisorRuntime {
-	#lastCount = 0;
-
-	#deliveredPrefix: DeliveredMessage[] = [];
-
-	#renderRevision = 0;
-
-	#advisorRegexSecretValues = new Set<string>();
 	#pending: PendingDelta[] = [];
 	#busy = false;
 	#sessionTransitionPaused = false;
@@ -246,9 +212,29 @@ export class AdvisorRuntime {
 
 	constructor(
 		private readonly agent: AdvisorAgent,
-		private readonly host: AdvisorRuntimeHost,
+		private readonly host: ReviewerRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {}
+	) {
+		this.#feed = new DeltaCursorFeed(host, {
+			includeThinking: () => this.#includeThinking,
+			scrubHistory: (obfuscator, sharedRegexSecretValues) =>
+				scrubAdvisorHistory(obfuscator, this.agent.state.messages, sharedRegexSecretValues),
+			stripPendingPlaceholderPrefixes: (obfuscator, sharedRegexSecretValues) => {
+				this.#pending = this.#pending.map(delta => ({
+					...delta,
+					text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, sharedRegexSecretValues),
+				}));
+			},
+			onDeliveredPrefixChanged: () => {
+				this.#epoch++;
+				logger.debug("advisor context reset", {
+					reason: "delivered-prefix-changed",
+					lastCount: this.#feed.lastCount,
+				});
+				this.#resetAdvisorContext(true, true);
+			},
+		});
+	}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -269,15 +255,11 @@ export class AdvisorRuntime {
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
 		const wip = opts?.willContinue ?? false;
-		let rendered: Omit<PendingDelta, "turns" | "overflowRecovery"> | null = null;
+		let rendered: RenderedFeedItem | null = null;
 
-		const cursorBefore = this.#lastCount;
-		const prefixBefore = this.#deliveredPrefix.slice();
 		try {
-			rendered = this.#renderDelta(all, wip);
+			rendered = this.#feed.render(all, wip);
 		} catch (err) {
-			this.#lastCount = cursorBefore;
-			this.#deliveredPrefix = prefixBefore;
 			this.#failing = true;
 			this.#wakeAllWaiters();
 			logger.warn("advisor delta render failed", { err: String(err) });
@@ -331,7 +313,7 @@ export class AdvisorRuntime {
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
-		this.#advisorRegexSecretValues.clear();
+		this.#feed.clearSecrets();
 		this.#wakeAllWaiters();
 		try {
 			this.agent.abort("advisor disposed");
@@ -339,8 +321,7 @@ export class AdvisorRuntime {
 	}
 
 	#clearSeenContext(): void {
-		this.#advisorRegexSecretValues.clear();
-		this.#renderRevision++;
+		this.#feed.clearSeenContext();
 	}
 
 	#clearAdvisorContextAtCurrentCursor(): void {
@@ -358,13 +339,12 @@ export class AdvisorRuntime {
 		if (reason) {
 			logger.debug("advisor context reset", {
 				reason,
-				lastCount: this.#lastCount,
+				lastCount: this.#feed.lastCount,
 				pending: this.#pending.length,
 				backlog: this.#backlog,
 			});
 		}
-		this.#lastCount = 0;
-		this.#deliveredPrefix = [];
+		this.#feed.reset();
 		this.#pending = [];
 		this.#clearAdvisorContextAtCurrentCursor();
 		if (clearBacklog) {
@@ -425,12 +405,7 @@ export class AdvisorRuntime {
 	}
 
 	seedTo(count: number): void {
-		const messages = this.host.snapshotMessages().slice(0, count);
-		this.#lastCount = messages.length;
-		this.#deliveredPrefix = messages.map(message => ({
-			message,
-			fingerprint: fingerprintMessage(message),
-		}));
+		this.#feed.seedTo(count);
 		this.#pending = [];
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
@@ -446,122 +421,6 @@ export class AdvisorRuntime {
 		if (identity === undefined || identity === this.#modelIdentity) return;
 		this.#modelIdentity = identity;
 		this.#includeThinking = true;
-	}
-
-	#collectAdvisorSecrets(obfuscator: SecretObfuscator, _delta: AgentMessage[], renderedMd: string): boolean {
-		let discoveredNewRegexSecretValue = false;
-		const addRegexValues = (text: string): void => {
-			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text) ?? []) {
-				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
-				this.#advisorRegexSecretValues.add(secretValue);
-				discoveredNewRegexSecretValue = true;
-			}
-		};
-		addRegexValues(renderedMd);
-		scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
-		if (discoveredNewRegexSecretValue) {
-			this.#pending = this.#pending.map(delta => ({
-				...delta,
-				text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, this.#advisorRegexSecretValues),
-			}));
-		}
-		return discoveredNewRegexSecretValue;
-	}
-
-	#formatRawDeltaMessageChunks(preparedMessages: AgentMessage[], wip = false): AgentMessage[] | null {
-		const delta = preparedMessages;
-		if (delta.length === 0) return null;
-
-		const obfuscator = this.host.obfuscator;
-
-		const probeMd = formatSessionHistoryMarkdown(delta, {
-			...ADVISOR_RENDER_OPTIONS,
-			includeThinking: this.#includeThinking,
-		});
-		if (obfuscator?.hasSecrets()) {
-			this.#collectAdvisorSecrets(obfuscator, delta, probeMd);
-		}
-
-		const chunks = renderAdvisorDeltaChunks(delta, {
-			wip,
-			includeThinking: this.#includeThinking,
-			obfuscator: obfuscator?.hasSecrets() ? obfuscator : undefined,
-			advisorRegexSecretValues: this.#advisorRegexSecretValues,
-		});
-		return chunks;
-	}
-
-	#formatRawDelta(rawMessages: AgentMessage[], wip = false): string | null {
-		const delta = rawMessages.filter(message => !(message.role === "custom" && message.customType === "advisor"));
-		return this.#renderPreparedDelta(delta, wip);
-	}
-
-	#renderPreparedDelta(preparedMessages: AgentMessage[], wip = false): string | null {
-		const delta = preparedMessages;
-		if (delta.length === 0) return null;
-		const obfuscator = this.host.obfuscator;
-		let md = formatSessionHistoryMarkdown(delta, {
-			...ADVISOR_RENDER_OPTIONS,
-			includeThinking: this.#includeThinking,
-		});
-		if (!md.trim()) return null;
-		if (obfuscator?.hasSecrets()) {
-			this.#collectAdvisorSecrets(obfuscator, delta, md);
-			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
-		}
-
-		const heading = "### Session update";
-		const mdHead = `${heading}\n\n${md}`;
-		if (!wip) return mdHead;
-		return `${mdHead}\n\n---\n\n[in progress — more steps follow]`;
-	}
-
-	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
-		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
-		let prefixChanged = all.length < this.#lastCount;
-		for (let i = 0; !prefixChanged && i < this.#lastCount; i++) {
-			const delivered = this.#deliveredPrefix[i];
-			const current = all[i];
-			if (delivered === undefined || current === undefined) {
-				prefixChanged = true;
-				break;
-			}
-			if (delivered.message === current) continue;
-			const fingerprint = fingerprintMessage(current);
-			if (
-				delivered.fingerprint === undefined ||
-				fingerprint === undefined ||
-				delivered.fingerprint !== fingerprint
-			) {
-				prefixChanged = true;
-
-				try {
-					const oldMsg: Record<string, unknown> = delivered.message as unknown as Record<string, unknown>;
-					const newMsg: Record<string, unknown> = current as unknown as Record<string, unknown>;
-					const differingFields: string[] = [];
-					for (const key of new Set([...Object.keys(oldMsg), ...Object.keys(newMsg)])) {
-						if (JSON.stringify(oldMsg[key]) !== JSON.stringify(newMsg[key])) differingFields.push(key);
-					}
-					logger.debug("advisor delivered prefix changed", { index: i, role: newMsg.role, differingFields });
-				} catch {}
-				break;
-			}
-			delivered.message = current;
-		}
-		if (prefixChanged) {
-			this.#epoch++;
-			logger.debug("advisor context reset", { reason: "delivered-prefix-changed", lastCount: this.#lastCount });
-			this.#resetAdvisorContext(true, true);
-		}
-		const rawMessages = all.slice(this.#lastCount);
-		for (let i = this.#lastCount; i < all.length; i++) {
-			const message = all[i];
-			if (message === undefined) continue;
-			this.#deliveredPrefix.push({ message, fingerprint: fingerprintMessage(message) });
-		}
-		this.#lastCount = all.length;
-		const text = this.#formatRawDelta(rawMessages, wip);
-		return text ? { text, rawMessages, renderRevision: this.#renderRevision, wip } : null;
 	}
 
 	#notifyWaiters(): void {
@@ -640,7 +499,7 @@ export class AdvisorRuntime {
 
 					logger.debug("advisor context reset", {
 						reason: "context-maintenance",
-						lastCount: this.#lastCount,
+						lastCount: this.#feed.lastCount,
 						pending: this.#pending.length,
 						backlog: this.#backlog,
 					});
@@ -689,7 +548,7 @@ export class AdvisorRuntime {
 		const preparedMessages = rawMessages.filter(
 			message => !(message.role === "custom" && message.customType === "advisor"),
 		);
-		const batch = this.#renderPreparedDelta(preparedMessages, wip);
+		const batch = this.#feed.renderPrepared(preparedMessages, wip);
 		return { batch: batch ?? fallback, preparedMessages };
 	}
 
@@ -731,10 +590,10 @@ export class AdvisorRuntime {
 				this.#iterationAbort = iterationAbort;
 				const epoch = this.#epoch;
 				for (const delta of popped) {
-					if (delta.renderRevision === this.#renderRevision) continue;
+					if (delta.renderRevision === this.#feed.renderRevision) continue;
 
-					delta.text = this.#formatRawDelta(delta.rawMessages, delta.wip) ?? delta.text;
-					delta.renderRevision = this.#renderRevision;
+					delta.text = this.#feed.renderRaw(delta.rawMessages, delta.wip) ?? delta.text;
+					delta.renderRevision = this.#feed.renderRevision;
 				}
 				const recoveringOverflow = popped.some(delta => delta.overflowRecovery === true);
 				const result = await this.#collectAndMaintainBatch(
@@ -765,7 +624,7 @@ export class AdvisorRuntime {
 				try {
 					this.host.beginAdvisorUpdate?.(wip);
 
-					const splitMessages = this.#formatRawDeltaMessageChunks(preparedMessages, wip);
+					const splitMessages = this.#feed.renderChunks(preparedMessages, wip);
 					const promptInput: string | AgentMessage[] = splitMessages ?? batch;
 					const prompt = this.agent.prompt(promptInput);
 					this.#promptInFlight = prompt;
@@ -828,12 +687,12 @@ export class AdvisorRuntime {
 						if (this.#includeThinking) {
 							this.#includeThinking = false;
 
-							const strippedBatch = this.#formatRawDelta(rawMessages, wip);
+							const strippedBatch = this.#feed.renderRaw(rawMessages, wip);
 							if (strippedBatch) {
 								this.#pending.unshift({
 									text: strippedBatch,
 									rawMessages,
-									renderRevision: this.#renderRevision,
+									renderRevision: this.#feed.renderRevision,
 									turns: finalTurns,
 									wip,
 									overflowRecovery: recoveringOverflow || undefined,
@@ -870,7 +729,7 @@ export class AdvisorRuntime {
 							this.#pending.unshift({
 								text: batch,
 								rawMessages,
-								renderRevision: this.#renderRevision,
+								renderRevision: this.#feed.renderRevision,
 								turns: finalTurns,
 								wip,
 								overflowRecovery: recoveringOverflow || undefined,
@@ -900,7 +759,7 @@ export class AdvisorRuntime {
 						this.#pending.unshift(...popped);
 						continue;
 					}
-					if (err instanceof AdvisorOutputQuarantinedError) {
+					if (err instanceof ReviewerOutputQuarantinedError) {
 						this.#consecutiveQuarantines++;
 						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
 							this.#notifyFailureOnce(err);
@@ -922,7 +781,7 @@ export class AdvisorRuntime {
 						this.#pending.unshift({
 							text: batch,
 							rawMessages,
-							renderRevision: this.#renderRevision,
+							renderRevision: this.#feed.renderRevision,
 							turns: finalTurns,
 							wip,
 							overflowRecovery: recoveringOverflow || undefined,
@@ -938,7 +797,7 @@ export class AdvisorRuntime {
 						this.#pending.unshift({
 							text: batch,
 							rawMessages,
-							renderRevision: this.#renderRevision,
+							renderRevision: this.#feed.renderRevision,
 							turns: finalTurns,
 							wip,
 							overflowRecovery: recoveringOverflow || undefined,
@@ -966,11 +825,11 @@ export class AdvisorRuntime {
 							this.#notifyFailureOnce(err);
 							success = true;
 						} else {
-							const recoveryBatch = this.#formatRawDelta(rawMessages, wip) ?? batch;
+							const recoveryBatch = this.#feed.renderRaw(rawMessages, wip) ?? batch;
 							this.#pending.unshift({
 								text: recoveryBatch,
 								rawMessages,
-								renderRevision: this.#renderRevision,
+								renderRevision: this.#feed.renderRevision,
 								turns: finalTurns,
 								wip,
 								overflowRecovery: true,
@@ -991,7 +850,7 @@ export class AdvisorRuntime {
 							this.#pending.unshift({
 								text: batch,
 								rawMessages,
-								renderRevision: this.#renderRevision,
+								renderRevision: this.#feed.renderRevision,
 								turns: finalTurns,
 								wip,
 								overflowRecovery: recoveringOverflow || undefined,
@@ -1020,6 +879,8 @@ export class AdvisorRuntime {
 		}
 	}
 }
+
+export { ReviewerRuntime as AdvisorRuntime };
 
 function isClassifierRefusal(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;

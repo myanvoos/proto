@@ -13,6 +13,10 @@ export const ADVISOR_RENDER_OPTIONS = {
 	expandEditDiffs: true,
 } as const;
 
+export const ADVISOR_UPDATE_HEADING = "### Session update";
+
+export const ADVISOR_WIP_SUFFIX = "\n\n---\n\n[in progress — more steps follow]";
+
 interface RenderAdvisorDeltaChunksOptions {
 	wip: boolean;
 	includeThinking: boolean;
@@ -42,8 +46,6 @@ export function renderAdvisorDeltaChunks(
 			watchedRoleState,
 		});
 
-	const heading = "### Session update";
-
 	const chunks: { role: "user"; content: TextContent[]; timestamp: number }[] = [];
 	for (let i = 0; i < delta.length; i++) {
 		const text = renderChunk([delta[i]]);
@@ -61,11 +63,11 @@ export function renderAdvisorDeltaChunks(
 		}
 		for (let i = 0; i < chunks.length; i++) chunks[i].content[0].text = individuallyObfuscated[i];
 	}
-	chunks[0].content[0].text = `${heading}\n\n${chunks[0].content[0].text}`;
+	chunks[0].content[0].text = `${ADVISOR_UPDATE_HEADING}\n\n${chunks[0].content[0].text}`;
 	if (chunks.length === 0) return null;
 	if (opts.wip) {
 		const last = chunks[chunks.length - 1];
-		last.content[0].text += `\n\n---\n\n[in progress — more steps follow]`;
+		last.content[0].text += ADVISOR_WIP_SUFFIX;
 	}
 	return chunks as AgentMessage[];
 }

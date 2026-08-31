@@ -1,27 +1,11 @@
 import {
-	Agent,
+	type Agent,
 	type AgentMessage,
 	type AgentTool,
 	type AgentToolContext,
-	AppendOnlyContextManager,
-	type CompactionSummaryMessage,
-	resolveTelemetry,
 	type StreamFn,
 	ThinkingLevel,
-	type Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
-import {
-	type CompactionResult,
-	compact,
-	compactionContextTokens,
-	createCompactionSummaryMessage,
-	estimateTranscriptTokens,
-	NativeCompactionError,
-	prepareCompaction,
-	type SessionMessageEntry,
-	shouldCompact,
-	shouldUseProviderNativeCompaction,
-} from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
@@ -32,30 +16,22 @@ import type {
 	ServiceTier,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
-import * as AIError from "@oh-my-pi/pi-ai/error";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { resolveModelServiceTier } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import {
-	ADVISOR_DEFAULT_TOOL_NAMES,
 	AdviseTool,
-	type AdvisorAgent,
 	type AdvisorConfig,
 	AdvisorEmissionGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
-	AdvisorOutputQuarantinedError,
 	AdvisorRuntime,
 	type AdvisorRuntimeStatus,
 	type AdvisorSeverity,
-	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
-	buildAdvisorQuarantineSourceText,
 	formatAdvisorBatchContent,
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
-	quarantineAdvisorUnsafeOutput,
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
@@ -69,30 +45,19 @@ import {
 import { MODEL_ROLES } from "../config/model-roles";
 import { serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings } from "../config/settings";
-import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
-import { bridgeToolMap } from "../cursor-bridge-tools";
-import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
+import type { CursorMcpResourceAdapter } from "../cursor";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
+import { resolveThinkingLevelForModel } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ClientBridge } from "./client-bridge";
-import { resolveCompactionMethodOrder } from "./compaction-methods";
 import type { CustomMessage, CustomMessagePayload } from "./messages";
 import { isAdvisorCard, isTerminalTextAssistantAnswer } from "./queued-messages";
-import {
-	formatRetryFallbackSelector,
-	getRetryFallbackRevertPolicy,
-	parseRetryFallbackSelector,
-	type RetryFallbackSelector,
-} from "./retry-fallback-chains";
-import type { CompactionEntry, SessionEntry } from "./session-entries";
-import { formatSessionHistoryMarkdown } from "./session-history-format";
+import { formatRetryFallbackSelector, type RetryFallbackSelector } from "./retry-fallback-chains";
+import { type ReviewerIdentity, ReviewerTransport } from "./reviewer-transport";
 import type { SessionManager } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
 import type { YieldQueue } from "./yield-queue";
-
-const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 
 export interface AdvisorStats {
 	configured: boolean;
@@ -130,34 +95,12 @@ export interface PerAdvisorStat {
 	sessionId?: string;
 }
 
-interface AdvisorRetryFallbackState {
-	role: string;
-	originalSelector: string;
-	originalThinkingLevel: ThinkingLevel;
-	lastAppliedThinkingLevel: ThinkingLevel;
-}
-
 interface ActiveAdvisor {
 	name: string;
 	slug: string;
-	agent: Agent;
-	runtime: AdvisorRuntime;
 	adviseTool: AdviseTool;
 	emissionGuard: AdvisorEmissionGuard;
-	recorder: AdvisorTranscriptRecorder;
-	recorderClosed: Promise<void>;
-	agentUnsubscribe?: () => void;
-	model: Model;
-	thinkingLevel: ThinkingLevel;
-	providerSessionId: string | undefined;
-	retryFallback?: AdvisorRetryFallbackState;
-	retryFallbackPendingSuccess: boolean;
-	signature: string;
-}
-
-interface AdvisorCompactionSummaryMessage extends CompactionSummaryMessage {
-	firstKeptEntryId?: string;
-	advisorUsageAnchorStartIndex?: number;
+	instance: ReviewerTransport;
 }
 
 interface AdvisorRuntimeDescriptor {
@@ -299,18 +242,15 @@ export class SessionAdvisors {
 		signal?: AbortSignal,
 	): Promise<void> {
 		this.#advisorPrimaryTurnsCompleted++;
-		for (const advisor of this.#advisors) {
-			if (advisor.runtime.disposed) continue;
-			try {
-				advisor.runtime.onTurnEnd(messages, { willContinue });
-			} catch (error) {
-				logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
-			}
-		}
+		for (const advisor of this.#advisors) advisor.instance.pushTurn(messages, willContinue);
 		const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
 		if (this.#advisors.length === 0 || syncBacklog === "off") return;
 		const threshold = Number.parseInt(syncBacklog, 10);
-		await Promise.all(this.#advisors.map(advisor => advisor.runtime.waitForCatchup(30_000, threshold, signal)));
+		await this.#awaitCatchup(threshold, 30_000, signal);
+	}
+
+	#awaitCatchup(threshold: number, capMs: number, signal?: AbortSignal): Promise<boolean[]> {
+		return Promise.all(this.#advisors.map(advisor => advisor.instance.awaitCatchup(threshold, capMs, signal)));
 	}
 
 	onModelRolesChanged(): void {
@@ -344,25 +284,25 @@ export class SessionAdvisors {
 	}
 
 	async drainAndDetachRecorders(): Promise<void> {
-		await Promise.all(this.#advisors.map(advisor => advisor.runtime.pauseForSessionTransition()));
+		await Promise.all(this.#advisors.map(advisor => advisor.instance.runtime.pauseForSessionTransition()));
 		await this.detachAndCloseRecorders();
 	}
 
 	async detachAndCloseRecorders(): Promise<void> {
 		const closes: Promise<void>[] = [];
 		for (const advisor of this.#advisors) {
-			advisor.agentUnsubscribe?.();
-			advisor.agentUnsubscribe = undefined;
-			advisor.recorderClosed = advisor.recorder.close();
-			closes.push(advisor.recorderClosed);
+			advisor.instance.agentUnsubscribe?.();
+			advisor.instance.agentUnsubscribe = undefined;
+			advisor.instance.recorderClosed = advisor.instance.recorder.close();
+			closes.push(advisor.instance.recorderClosed);
 		}
 		await Promise.all(closes);
 	}
 
 	reattachRecorderFeeds(): void {
 		for (const advisor of this.#advisors) {
-			if (!advisor.agentUnsubscribe) this.#attachAdvisorRecorderFeed(advisor);
-			advisor.runtime.resumeAfterSessionTransition();
+			if (!advisor.instance.agentUnsubscribe) this.#attachAdvisorRecorderFeed(advisor);
+			advisor.instance.runtime.resumeAfterSessionTransition();
 		}
 	}
 
@@ -440,19 +380,20 @@ export class SessionAdvisors {
 			primaryProviderSessionId,
 			advisor.slug,
 		);
-		advisor.providerSessionId = providerSessionId;
-		advisor.agent.sessionId = providerSessionId;
-		advisor.agent.promptCacheKey = this.#host.agent.promptCacheKey ?? providerSessionId;
-		advisor.agent.getApiKey = requestModel => this.#host.modelRegistry.resolver(requestModel, providerSessionId);
-		advisor.agent.setMetadataResolver(
+		advisor.instance.providerSessionId = providerSessionId;
+		advisor.instance.agent.sessionId = providerSessionId;
+		advisor.instance.agent.promptCacheKey = this.#host.agent.promptCacheKey ?? providerSessionId;
+		advisor.instance.agent.getApiKey = requestModel =>
+			this.#host.modelRegistry.resolver(requestModel, providerSessionId);
+		advisor.instance.agent.setMetadataResolver(
 			providerSessionId
 				? provider => buildSessionMetadata(providerSessionId, provider, this.#host.modelRegistry.authStorage)
 				: undefined,
 		);
 
-		const telemetry = advisor.agent.telemetry;
+		const telemetry = advisor.instance.agent.telemetry;
 		if (telemetry?.agent) {
-			advisor.agent.setTelemetry({
+			advisor.instance.agent.setTelemetry({
 				...telemetry,
 				agent: {
 					...telemetry.agent,
@@ -468,9 +409,7 @@ export class SessionAdvisors {
 		if (!preserveCost) this.#advisorCosts.clear();
 
 		for (const a of this.#advisors) {
-			a.agentUnsubscribe?.();
-			a.agentUnsubscribe = undefined;
-			a.runtime.reset("conversation-boundary");
+			a.instance.resetForConversationBoundary();
 			a.adviseTool.resetDeliveredNotes();
 			a.emissionGuard.reset();
 			this.#attachAdvisorRecorderFeed(a);
@@ -564,7 +503,7 @@ export class SessionAdvisors {
 		const descriptors = this.#resolveAdvisorRuntimeDescriptors(false);
 		if (descriptors.length !== this.#advisors.length) return false;
 		for (let i = 0; i < descriptors.length; i++) {
-			if (descriptors[i].signature !== this.#advisors[i].signature) return false;
+			if (descriptors[i].signature !== this.#advisors[i].instance.signature) return false;
 		}
 		return true;
 	}
@@ -597,6 +536,17 @@ export class SessionAdvisors {
 				signature,
 			} = descriptor;
 
+			const identity: ReviewerIdentity = {
+				role: "advisor",
+				name: advisorName,
+				slug,
+
+				sessionLabelSuffix: "advisor",
+				transcriptFilename: advisorTranscriptFilename(slug),
+				telemetryName: MODEL_ROLES.advisor.name,
+				noticeLabel: "Advisor",
+			};
+
 			const emissionGuard = new AdvisorEmissionGuard();
 			const adviseTool = new AdviseTool((note, severity) => this.#routeAdvice(advisorRef, note, severity));
 
@@ -606,212 +556,83 @@ export class SessionAdvisors {
 			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
 			if (config.instructions?.trim()) systemPrompt.push(config.instructions.trim());
 
-			const names = config.tools === undefined ? ADVISOR_DEFAULT_TOOL_NAMES : new Set(config.tools);
-			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
-			const advisorLoopTools: AgentTool<any>[] = [adviseTool, ...tools];
-			const advisorToolMap = new Map<string, AgentTool<any>>();
-			const availableAdvisorToolNames = new Set<string>();
-			for (const tool of advisorLoopTools) {
-				availableAdvisorToolNames.add(tool.name);
-				advisorToolMap.set(tool.name, tool);
-				if (tool.customWireName !== undefined) {
-					availableAdvisorToolNames.add(tool.customWireName);
-					advisorToolMap.set(tool.customWireName, tool);
-				}
-			}
-			let quarantinedAdvisorOutput: string | undefined;
-			let currentAdvisorInput = "";
+			const transport = new ReviewerTransport(this.#host, {
+				identity,
+				model: advisorModel,
+				thinkingLevel: advisorThinkingLevel,
+				signature,
+				systemPrompt,
 
-			const primaryProviderSessionId = this.#host.sessionId();
-			const advisorSessionLabel = slug
-				? `${primaryProviderSessionId}-advisor-${slug}`
-				: `${primaryProviderSessionId}-advisor`;
-			const advisorProviderSessionId = getOrCreateAdvisorProviderSessionId(
-				this.#advisorProviderSessionIds,
-				primaryProviderSessionId,
-				slug,
-			);
-			const appendOnlyContext = new AppendOnlyContextManager();
-
-			const advisorTelemetry = this.#host.agent.telemetry
-				? {
-						...this.#host.agent.telemetry,
-						agent: {
-							id: advisorSessionLabel,
-							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
-							description: formatModelString(advisorModel),
-						},
-						conversationId: undefined,
-					}
-				: undefined;
-
-			const advisorPromptCacheKey = this.#host.agent.promptCacheKey ?? advisorProviderSessionId;
-
-			const advisorCanMutateFiles = advisorToolMap.has("write") || advisorToolMap.has("edit");
-			if (advisorCanMutateFiles) availableAdvisorToolNames.add("delete");
-
-			const advisorCursorExecHandlers = new CursorExecHandlers({
-				cwd: this.#host.sessionManager.getCwd(),
-				getCwd: () => this.#host.sessionManager.getCwd(),
-				tools: bridgeToolMap(advisorToolMap, this.#advisorCreateEditTool),
-
+				adviseTool,
+				toolNames: config.tools,
+				toolPool: this.#advisorTools,
+				createEditTool: this.#advisorCreateEditTool,
 				getToolContext: this.#advisorGetToolContext,
-				allowDirectFileMutation: advisorCanMutateFiles,
-
 				mcpResources: this.#advisorMcpResources,
-			});
-			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
-			const advisorStreamFn: StreamFn = (requestModel, context, options) => {
-				if (requestModel.api === "openai-codex-responses") {
-					return baseAdvisorStreamFn(requestModel, context, {
-						...options,
-						codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS,
-					});
-				}
-				if (
-					requestModel.api === "google-generative-ai" ||
-					requestModel.api === "google-gemini-cli" ||
-					requestModel.api === "google-vertex"
-				) {
-					return baseAdvisorStreamFn(requestModel, context, { ...options, acceptEmptyResponse: true });
-				}
-				return baseAdvisorStreamFn(requestModel, context, options);
-			};
-			const advisorAgent = new Agent({
-				initialState: {
-					systemPrompt,
-					model: advisorModel,
-					thinkingLevel: toReasoningEffort(advisorThinkingLevel),
-					tools: advisorLoopTools,
-				},
-				appendOnlyContext,
-				sessionId: advisorProviderSessionId,
-				promptCacheKey: advisorPromptCacheKey,
-				providerSessionState: this.#host.providerSessionState,
-				cursorExecHandlers: advisorCursorExecHandlers,
-				cwdResolver: () => this.#host.sessionManager.getCwd(),
-				preferWebsockets: this.#host.preferWebsockets,
-				getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
-				streamFn: advisorStreamFn,
-				onPayload: this.#host.onPayload,
-				onResponse: this.#host.onResponse,
-				onSseEvent: this.#host.onSseEvent,
+
+				providerSessionIds: this.#advisorProviderSessionIds,
+				resolveProviderSessionId: getOrCreateAdvisorProviderSessionId,
+				streamFn: this.#advisorStreamFn,
 				transformProviderContext: this.#transformProviderContext,
-				intentTracing: false,
-				transformAssistantMessage: message => {
-					quarantinedAdvisorOutput = quarantineAdvisorUnsafeOutput(
-						message,
-						availableAdvisorToolNames,
-						buildAdvisorQuarantineSourceText(currentAdvisorInput, advisorAgent.state.messages),
-					);
-				},
-				telemetry: advisorTelemetry,
-				serviceTier: undefined,
 				serviceTierResolver: advisorServiceTierResolver,
-			});
-			advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
 
-			const advisorAgentFacade: AdvisorAgent = {
-				prompt: async input => {
-					let quarantined: string | undefined;
-					try {
-						quarantinedAdvisorOutput = undefined;
+				recorderClosed: this.#advisorRecorderClosed,
 
-						currentAdvisorInput = Array.isArray(input)
-							? formatSessionHistoryMarkdown(input, { watchedRoles: true })
-							: input;
-
-						if (Array.isArray(input)) await advisorAgent.prompt(input);
-						else await advisorAgent.prompt(input);
-						quarantined = quarantinedAdvisorOutput;
-					} finally {
-						quarantinedAdvisorOutput = undefined;
-						currentAdvisorInput = "";
-					}
-					if (quarantined) throw new AdvisorOutputQuarantinedError(quarantined);
-				},
-				abort: reason => advisorAgent.abort(reason),
-				reset: () => {
-					advisorAgent.reset();
-					appendOnlyContext.log.clear();
-				},
-				rollbackTo: count => {
-					const messages = advisorAgent.state.messages;
-					if (count < messages.length) {
-						messages.length = count;
-					}
-					appendOnlyContext.resetSyncCursor();
-					advisorAgent.state.error = undefined;
-				},
-				state: advisorAgent.state,
-			};
-
-			const recorder = new AdvisorTranscriptRecorder(
-				() => this.#host.sessionManager.getSessionFile(),
-				() => this.#host.sessionManager.getCwd(),
-				advisorTranscriptFilename(slug),
-
-				this.#advisorRecorderClosed,
-			);
-			const runtime = new AdvisorRuntime(advisorAgentFacade, {
-				snapshotMessages: () => this.#host.agent.state.messages,
-				enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
-				maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
-				obfuscator: this.#host.obfuscator,
-				getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
-				beginAdvisorUpdate: inProgress => {
-					advisorRef.adviseTool.beginUpdate(inProgress);
-					advisorRef.emissionGuard.beginUpdate();
-				},
-				onTurnError: (error, failedMessages, signal) =>
-					this.#recoverAdvisorTurn(advisorRef, error, failedMessages, signal),
-				onTurnSuccess: async () => {
-					const fallback = advisorRef.retryFallback;
-					if (!advisorRef.retryFallbackPendingSuccess || !fallback) return;
-					advisorRef.retryFallbackPendingSuccess = false;
-					await this.#host.emitSessionEvent({
-						type: "retry_fallback_succeeded",
-						model: formatRetryFallbackSelector(advisorRef.agent.state.model, advisorRef.thinkingLevel),
-						role: fallback.role,
-					});
-				},
-				notifyFailure: error => {
-					this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
-					const message = error instanceof Error ? error.message : String(error);
-					this.#host.emitNotice(
-						"warning",
-						`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorAgent.state.model)}: ${message}`,
-						"advisor",
-					);
-				},
-				notifyQuotaExhausted: () => {
-					this.#advisorStatuses.set(slug, { name: advisorName, status: "quota_exhausted" });
-					this.#host.emitNotice(
-						"warning",
-						`Advisor "${advisorName}" quota exhausted — pausing until reset.`,
-						"advisor",
-					);
-				},
+				createRuntime: advisorAgentFacade =>
+					new AdvisorRuntime(advisorAgentFacade, {
+						snapshotMessages: () => this.#host.agent.state.messages,
+						maintainContext: (incoming, signal) => advisorRef.instance.maintainContext(incoming, signal),
+						obfuscator: this.#host.obfuscator,
+						getModelIdentity: () => formatModelString(advisorRef.instance.agent.state.model),
+						beginAdvisorUpdate: inProgress => {
+							advisorRef.adviseTool.beginUpdate(inProgress);
+							advisorRef.emissionGuard.beginUpdate();
+						},
+						onTurnError: (error, failedMessages, signal) =>
+							advisorRef.instance.recoverTurn(error, failedMessages, signal),
+						onTurnSuccess: async () => {
+							const fallback = advisorRef.instance.retryFallback;
+							if (!advisorRef.instance.retryFallbackPendingSuccess || !fallback) return;
+							advisorRef.instance.retryFallbackPendingSuccess = false;
+							await this.#host.emitSessionEvent({
+								type: "retry_fallback_succeeded",
+								model: formatRetryFallbackSelector(
+									advisorRef.instance.agent.state.model,
+									advisorRef.instance.thinkingLevel,
+								),
+								role: fallback.role,
+							});
+						},
+						notifyFailure: error => {
+							this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
+							const message = error instanceof Error ? error.message : String(error);
+							this.#host.emitNotice(
+								"warning",
+								`${identity.noticeLabel}${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorRef.instance.agent.state.model)}: ${message}`,
+								"advisor",
+							);
+						},
+						notifyQuotaExhausted: () => {
+							this.#advisorStatuses.set(slug, { name: advisorName, status: "quota_exhausted" });
+							this.#host.emitNotice(
+								"warning",
+								`${identity.noticeLabel} "${advisorName}" quota exhausted — pausing until reset.`,
+								"advisor",
+							);
+						},
+					}),
 			});
 
 			const advisorRef: ActiveAdvisor = {
 				name: advisorName,
 				slug,
-				agent: advisorAgent,
-				runtime,
 				adviseTool,
 				emissionGuard,
-				recorder,
-				recorderClosed: Promise.resolve(),
-				model: advisorModel,
-				thinkingLevel: advisorThinkingLevel,
-				providerSessionId: advisorProviderSessionId,
-				retryFallbackPendingSuccess: false,
-				signature,
+				instance: transport,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
 			this.#attachAdvisorRecorderFeed(advisorRef);
-			if (seedToCurrent) runtime.seedTo(this.#host.agent.state.messages.length);
+			if (seedToCurrent) transport.runtime.seedTo(this.#host.agent.state.messages.length);
 			this.#advisorStatuses.set(slug, { name: advisorName, status: "running" });
 			this.#advisors.push(advisorRef);
 		}
@@ -910,18 +731,18 @@ export class SessionAdvisors {
 	}
 
 	#resetAllAdvisorRuntimes(reason?: string): void {
-		for (const a of this.#advisors) a.runtime.reset(reason);
+		for (const a of this.#advisors) a.instance.runtime.reset(reason);
 	}
 
 	#stopAdvisorRuntime(): void {
 		const closes: Promise<void>[] = [];
 		for (const a of this.#advisors) {
-			a.agentUnsubscribe?.();
-			a.agentUnsubscribe = undefined;
-			a.runtime.dispose();
+			a.instance.agentUnsubscribe?.();
+			a.instance.agentUnsubscribe = undefined;
+			a.instance.runtime.dispose();
 
-			a.recorderClosed = a.recorder.close();
-			closes.push(a.recorderClosed);
+			a.instance.recorderClosed = a.instance.recorder.close();
+			closes.push(a.instance.recorderClosed);
 		}
 		this.#advisorRecorderClosed = Promise.all(closes).then(() => {});
 		this.#advisors = [];
@@ -934,383 +755,11 @@ export class SessionAdvisors {
 	}
 
 	#attachAdvisorRecorderFeed(advisor: ActiveAdvisor): void {
-		advisor.agentUnsubscribe = advisor.agent.subscribe(event => {
+		advisor.instance.agentUnsubscribe = advisor.instance.agent.subscribe(event => {
 			if (event.type !== "message_end") return;
 			if (event.message.role === "assistant") this.#recordAdvisorCost(advisor, event.message);
-			advisor.recorder.record(event.message);
+			advisor.instance.recorder.record(event.message);
 		});
-	}
-
-	#setAdvisorModel(advisor: ActiveAdvisor, model: Model, requestedThinkingLevel: ThinkingLevel): ThinkingLevel {
-		const resolvedThinkingLevel = resolveThinkingLevelForModel(model, requestedThinkingLevel);
-		const nextThinkingLevel = resolvedThinkingLevel ?? ThinkingLevel.Inherit;
-		advisor.agent.setModel(model);
-		advisor.agent.setThinkingLevel(toReasoningEffort(nextThinkingLevel));
-		advisor.agent.setDisableReasoning(shouldDisableReasoning(nextThinkingLevel));
-		advisor.agent.appendOnlyContext?.invalidateForModelChange();
-		advisor.model = model;
-		advisor.thinkingLevel = nextThinkingLevel;
-		return nextThinkingLevel;
-	}
-
-	async #maybeRestoreAdvisorRetryFallbackPrimary(advisor: ActiveAdvisor, signal: AbortSignal): Promise<void> {
-		const fallback = advisor.retryFallback;
-		if (!fallback || getRetryFallbackRevertPolicy(this.#host.settings) !== "cooldown-expiry") return;
-
-		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
-		if (!originalSelector) {
-			advisor.retryFallback = undefined;
-			advisor.retryFallbackPendingSuccess = false;
-			return;
-		}
-		const currentSelector = formatRetryFallbackSelector(advisor.agent.state.model, advisor.thinkingLevel);
-		if (currentSelector === originalSelector.raw) {
-			if (!this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) {
-				advisor.retryFallback = undefined;
-				advisor.retryFallbackPendingSuccess = false;
-			}
-			return;
-		}
-		if (this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) return;
-
-		const resolvedPrimary = resolveModelOverride(
-			[originalSelector.raw],
-			this.#host.modelRegistry,
-			this.#host.settings,
-		);
-		const primaryModel =
-			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
-		if (!primaryModel) return;
-		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, advisor.providerSessionId, { signal });
-		if (!apiKey) return;
-		signal.throwIfAborted();
-
-		const thinkingToApply =
-			advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
-				? fallback.originalThinkingLevel
-				: advisor.thinkingLevel;
-		this.#setAdvisorModel(advisor, primaryModel, thinkingToApply);
-		this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(primaryModel));
-		advisor.retryFallback = undefined;
-		advisor.retryFallbackPendingSuccess = false;
-	}
-
-	async #recoverAdvisorTurn(
-		advisor: ActiveAdvisor,
-		error: unknown,
-		failedMessages: readonly AgentMessage[],
-		signal: AbortSignal,
-	): Promise<boolean> {
-		if (error instanceof AdvisorOutputQuarantinedError) return false;
-
-		const failedMessage = failedMessages.findLast(
-			(message): message is AssistantMessage => message.role === "assistant",
-		);
-		const assistantFailure = failedMessage?.stopReason === "error" ? failedMessage : undefined;
-		if (assistantFailure?.content.some(block => block.type === "toolCall")) return false;
-
-		const currentModel = advisor.agent.state.model;
-		const message = assistantFailure?.errorMessage ?? (error instanceof Error ? error.message : String(error));
-		const errorId = assistantFailure
-			? AIError.classifyMessage({
-					api: currentModel.api,
-					errorId: assistantFailure.errorId,
-					errorMessage: message,
-					errorStatus: assistantFailure.errorStatus,
-				})
-			: AIError.classify(error, currentModel.api);
-		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (
-			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
-			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
-		) {
-			return false;
-		}
-
-		const accountPolicyDenial = AIError.is(errorId, AIError.Flag.AccountPolicy);
-		if (accountPolicyDenial) {
-			const switched = await this.#host.modelRegistry.authStorage.rotateSessionCredential(
-				currentModel.provider,
-				advisor.providerSessionId,
-				{ error: message, modelId: currentModel.id, signal },
-			);
-			if (switched) return true;
-		}
-
-		const retryAfterMs = extractRetryHint(undefined, message);
-		const usageLimit =
-			AIError.is(errorId, AIError.Flag.UsageLimit) ||
-			isUsageLimitOutcome(extractHttpStatusFromError(error), message);
-		if (usageLimit) {
-			const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
-				currentModel.provider,
-				advisor.providerSessionId,
-				{
-					retryAfterMs,
-					baseUrl: currentModel.baseUrl,
-					modelId: currentModel.id,
-					signal,
-				},
-			);
-			if (outcome.switched) return true;
-		}
-		if (!assistantFailure && !accountPolicyDenial && !usageLimit) return false;
-
-		const currentSelector = formatRetryFallbackSelector(currentModel, advisor.thinkingLevel);
-
-		const retrySettings = this.#host.settings.getGroup("retry");
-		if (!retrySettings.enabled || !retrySettings.modelFallback) return false;
-
-		const chainKeys = this.#host.retryFallbackChainKeys(currentSelector, currentModel, {
-			pinnedRole: advisor.retryFallback?.role,
-			roleHint: "advisor",
-		});
-		if (
-			!chainKeys.some(role => this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length > 0)
-		) {
-			return false;
-		}
-
-		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
-		for (const role of chainKeys) {
-			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
-				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
-				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
-				if (!apiKey) continue;
-				signal.throwIfAborted();
-
-				const originalThinkingLevel = advisor.thinkingLevel;
-				const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-				const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-				if (advisor.retryFallback) {
-					advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-				} else {
-					advisor.retryFallback = {
-						role,
-						originalSelector: currentSelector,
-						originalThinkingLevel,
-						lastAppliedThinkingLevel: nextThinkingLevel,
-					};
-				}
-				advisor.retryFallbackPendingSuccess = true;
-				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
-				await this.#host.emitSessionEvent({
-					type: "retry_fallback_applied",
-					from: currentSelector,
-					to: selector.raw,
-					role,
-				});
-				return true;
-			}
-		}
-		return false;
-	}
-
-	async #promoteAdvisorContextModel(
-		advisor: ActiveAdvisor,
-		currentModel: Model,
-		signal: AbortSignal,
-	): Promise<boolean> {
-		const promotionSettings = this.#host.settings.getGroup("contextPromotion");
-		if (!promotionSettings.enabled) return false;
-		const contextWindow = currentModel.contextWindow ?? 0;
-		if (contextWindow <= 0) return false;
-		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);
-		if (!targetModel) return false;
-		signal.throwIfAborted();
-
-		const advisorThinkingLevel = advisor.thinkingLevel;
-		try {
-			this.#setAdvisorModel(advisor, targetModel, advisorThinkingLevel);
-			logger.debug("Advisor context promotion switched model on overflow", {
-				advisor: advisor.name,
-				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${targetModel.provider}/${targetModel.id}`,
-			});
-			return true;
-		} catch (error) {
-			logger.warn("Advisor context promotion failed", {
-				advisor: advisor.name,
-				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${targetModel.provider}/${targetModel.id}`,
-				error: String(error),
-			});
-			return false;
-		}
-	}
-
-	async #maintainAdvisorContext(
-		advisor: ActiveAdvisor,
-		incoming: AgentMessage,
-		signal: AbortSignal,
-	): Promise<boolean> {
-		await this.#maybeRestoreAdvisorRetryFallbackPrimary(advisor, signal);
-		const agent = advisor.agent;
-		const incomingTokens = agent.tokenizer.countMessage(incoming);
-
-		const compactionSettings = this.#host.settings.getGroup("compaction");
-		if (!compactionSettings.enabled || resolveCompactionMethodOrder(compactionSettings.methodOrder).length === 0) {
-			return false;
-		}
-
-		const advisorModel = agent.state.model;
-		const contextWindow = advisorModel.contextWindow ?? 0;
-		if (contextWindow <= 0) return false;
-
-		const messages = agent.state.messages;
-		const storedConversationTokens = agent.tokenizer.countMessages(messages, { excludeEncryptedReasoning: true });
-
-		const providerContextTokens = this.#estimateAdvisorContextTokens(messages, agent.tokenizer) + incomingTokens;
-		const localContextTokens =
-			agent.tokenizer.countTokens(agent.state.systemPrompt) +
-			estimateToolSchemaTokens(agent.state.tools, agent.tokenizer) +
-			storedConversationTokens +
-			incomingTokens;
-		const contextTokens = compactionContextTokens(providerContextTokens, localContextTokens);
-
-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
-			return false;
-		}
-
-		if (await this.#promoteAdvisorContextModel(advisor, advisorModel, signal)) {
-			const newModel = agent.state.model;
-			const newWindow = newModel.contextWindow ?? 0;
-			if (newWindow > 0) {
-				const stillNeedsCompaction = shouldCompact(contextTokens, newWindow, compactionSettings);
-				if (!stillNeedsCompaction) return false;
-			}
-		}
-
-		const pathEntries: SessionEntry[] = messages.map((message, i) => {
-			const id = `msg-${i}`;
-			const parentId = i > 0 ? `msg-${i - 1}` : null;
-			const timestamp = String(message.timestamp || Date.now());
-
-			if (message.role === "compactionSummary") {
-				const advisorSummary = message as AdvisorCompactionSummaryMessage;
-				return {
-					type: "compaction",
-					id,
-					parentId,
-					timestamp,
-					summary: message.summary,
-					shortSummary: message.shortSummary,
-					firstKeptEntryId: advisorSummary.firstKeptEntryId || `msg-${i + 1}`,
-					tokensBefore: message.tokensBefore,
-				} satisfies CompactionEntry;
-			}
-
-			return {
-				type: "message",
-				id,
-				parentId,
-				timestamp,
-				message,
-			} satisfies SessionMessageEntry;
-		});
-
-		const availableModels = this.#host.modelRegistry.getAvailable();
-		const candidates = this.#host.resolveCompactionModelCandidates(advisorModel, availableModels);
-		if (candidates.length === 0) {
-			return true;
-		}
-		const advisorProviderSessionId = getOrCreateAdvisorProviderSessionId(
-			this.#advisorProviderSessionIds,
-			this.#host.sessionId(),
-			advisor.slug,
-		);
-		const preparation = prepareCompaction(pathEntries, compactionSettings, advisorModel, agent.tokenizer);
-		if (!preparation) {
-			return true;
-		}
-
-		const advisorCompactionThinkingLevel: ThinkingLevel | undefined = agent.state.disableReasoning
-			? ThinkingLevel.Off
-			: agent.state.thinkingLevel;
-
-		let compactResult: CompactionResult | undefined;
-		let lastError: unknown;
-		let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
-
-		const telemetry = resolveTelemetry(agent.telemetry, advisorProviderSessionId);
-
-		const codexCompaction = this.#host.createCodexCompactionContext({
-			trigger: "auto",
-			reason: "context_limit",
-			phase: "pre_turn",
-		});
-
-		for (const candidate of candidates) {
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisorProviderSessionId, { signal });
-			if (!apiKey) continue;
-			if (
-				nativeCompactionFailure &&
-				(candidate.provider !== nativeCompactionFailure.provider ||
-					!shouldUseProviderNativeCompaction(candidate, compactionSettings))
-			) {
-				throw nativeCompactionFailure.error;
-			}
-
-			const advisorMetadata = advisorProviderSessionId
-				? buildSessionMetadata(advisorProviderSessionId, candidate.provider, this.#host.modelRegistry.authStorage)
-				: undefined;
-			try {
-				compactResult = await compact(
-					preparation,
-					candidate,
-					this.#host.modelRegistry.resolver(candidate, advisorProviderSessionId),
-					undefined,
-					signal,
-					{
-						thinkingLevel: advisorCompactionThinkingLevel,
-						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-						telemetry,
-						tools: agent.state.tools,
-						sessionId: advisorProviderSessionId,
-						promptCacheKey: advisorProviderSessionId,
-						metadata: advisorMetadata,
-						providerSessionState: this.#host.providerSessionState,
-						preferWebsockets: this.#host.preferWebsockets,
-						codexCompaction,
-					},
-				);
-				break;
-			} catch (error) {
-				if (signal.aborted) throw error;
-				const id = AIError.classify(error, candidate.api);
-				if (error instanceof NativeCompactionError && !AIError.is(id, AIError.Flag.AuthFailed)) {
-					nativeCompactionFailure ??= { error, provider: candidate.provider };
-					lastError = nativeCompactionFailure.error;
-					continue;
-				}
-				lastError = error;
-			}
-		}
-
-		if (!compactResult && nativeCompactionFailure) throw nativeCompactionFailure.error;
-
-		if (!compactResult) {
-			logger.warn("Advisor compaction failed, falling back to re-prime", { error: String(lastError) });
-			return true;
-		}
-
-		const summary = compactResult.summary;
-		const shortSummary = compactResult.shortSummary;
-		const firstKeptEntryId = compactResult.firstKeptEntryId;
-		const tokensBefore = compactResult.tokensBefore;
-
-		const advisorUsageAnchorStartIndex = preparation.recentMessages.length + 1;
-		const summaryMessage = {
-			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), { shortSummary }),
-			firstKeptEntryId,
-			advisorUsageAnchorStartIndex,
-		} satisfies AdvisorCompactionSummaryMessage;
-
-		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
-		return false;
 	}
 
 	prepareForHeadlessAdvisorDrain(): void {
@@ -1336,15 +785,15 @@ export class SessionAdvisors {
 
 	async waitForAdvisorCatchup(timeoutMs: number): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
-		const results = await Promise.all(this.#advisors.map(advisor => advisor.runtime.waitForCatchup(timeoutMs, 1)));
+		const results = await this.#awaitCatchup(1, timeoutMs);
 		const cardEventsCaughtUp = await this.#waitForPendingAdvisorCardEvents(Math.max(0, deadline - Date.now()));
 		const abandoned = this.#advisors.filter(
-			(advisor, index) => results[index] === false && advisor.runtime.backlog > 0,
+			(advisor, index) => results[index] === false && advisor.instance.runtime.backlog > 0,
 		);
 		if (abandoned.length > 0 || !cardEventsCaughtUp) {
 			logger.warn("advisor shutdown drain incomplete; disposal will abandon reviews or cards", {
 				timeoutMs,
-				advisors: abandoned.map(advisor => ({ name: advisor.name, backlog: advisor.runtime.backlog })),
+				advisors: abandoned.map(advisor => ({ name: advisor.name, backlog: advisor.instance.runtime.backlog })),
 				pendingAdvisorCards: this.#pendingAdvisorCardEvents.size,
 			});
 			return false;
@@ -1396,7 +845,7 @@ export class SessionAdvisors {
 	}
 
 	getAdvisorAgent(): Agent | undefined {
-		return this.#advisors[0]?.agent;
+		return this.#advisors[0]?.instance.agent;
 	}
 
 	getAdvisorStatusOverview(): { configured: boolean; advisors: { name: string; status: AdvisorRuntimeStatus }[] } {
@@ -1404,7 +853,11 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			liveStatusBySlug.set(
 				a.slug,
-				a.runtime.quotaExhausted ? "quota_exhausted" : a.runtime.failureNotified ? "error" : "running",
+				a.instance.runtime.quotaExhausted
+					? "quota_exhausted"
+					: a.instance.runtime.failureNotified
+						? "error"
+						: "running",
 			);
 		}
 		const advisors = [...this.#advisorStatuses.entries()].map(([slug, { name, status }]) => ({
@@ -1422,7 +875,7 @@ export class SessionAdvisors {
 
 	isUsingSubscription(): boolean {
 		if (this.#advisors.length > 0) {
-			return this.#advisors.some(a => this.#host.modelRegistry.isUsingOAuth(a.model));
+			return this.#advisors.some(a => this.#host.modelRegistry.isUsingOAuth(a.instance.model));
 		}
 		const sel = resolveAdvisorRoleSelection(this.#host.settings, this.#host.modelRegistry.getAvailable());
 		return sel ? this.#host.modelRegistry.isUsingOAuth(sel.model) : false;
@@ -1430,7 +883,7 @@ export class SessionAdvisors {
 
 	getAdvisorStats(): AdvisorStats {
 		const configured = this.#advisorEnabled;
-		const liveAdvisors = this.#advisors.map(a => this.#computeAdvisorStat(a));
+		const liveAdvisors = this.#advisors.map(a => a.instance.stats(a.name, this.#advisorCosts.get(a.slug) ?? 0));
 
 		const liveStatBySlug = new Map(this.#advisors.map((a, i) => [a.slug, liveAdvisors[i]]));
 		const roster: PerAdvisorStat[] = [];
@@ -1493,48 +946,6 @@ export class SessionAdvisors {
 		};
 	}
 
-	#computeAdvisorStat(advisor: ActiveAdvisor): PerAdvisorStat {
-		const model = advisor.agent.state.model;
-		const messages = advisor.agent.state.messages;
-		const contextTokens = this.#estimateAdvisorContextTokens(messages, advisor.agent.tokenizer);
-		let input = 0;
-		let output = 0;
-		let reasoning = 0;
-		let cacheRead = 0;
-		let cacheWrite = 0;
-		let totalTokens = 0;
-		let user = 0;
-		let assistant = 0;
-		for (const message of messages) {
-			if (message.role === "user") user++;
-			if (message.role === "assistant") {
-				assistant++;
-				const assistantMsg = message as AssistantMessage;
-				input += assistantMsg.usage.input;
-				output += assistantMsg.usage.output;
-				reasoning += assistantMsg.usage.reasoningTokens ?? 0;
-				cacheRead += assistantMsg.usage.cacheRead;
-				cacheWrite += assistantMsg.usage.cacheWrite;
-				totalTokens += assistantMsg.usage.totalTokens;
-			}
-		}
-		return {
-			name: advisor.name,
-			status: advisor.runtime.quotaExhausted
-				? "quota_exhausted"
-				: advisor.runtime.failureNotified
-					? "error"
-					: "running",
-			model,
-			contextWindow: model.contextWindow ?? 0,
-			contextTokens,
-			tokens: { input, output, reasoning, cacheRead, cacheWrite, total: totalTokens },
-			cost: this.#advisorCosts.get(advisor.slug) ?? 0,
-			messages: { user, assistant, total: messages.length },
-			sessionId: advisor.agent.sessionId,
-		};
-	}
-
 	formatAdvisorStatus(): string {
 		const stats = this.getAdvisorStats();
 		if (!stats.active && stats.advisors.length === 0) {
@@ -1574,21 +985,5 @@ export class SessionAdvisors {
 			`Totals: ${stats.tokens.input.toLocaleString()} input, ${stats.tokens.output.toLocaleString()} output, $${stats.cost.toFixed(4)}.`,
 		);
 		return lines.join("\n");
-	}
-
-	#estimateAdvisorContextTokens(messages: AgentMessage[], tokenizer: Tokenizer): number {
-		let usageAnchorStartIndex = 0;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const message = messages[i];
-			if (message.role !== "compactionSummary") continue;
-			const advisorSummary = message as AdvisorCompactionSummaryMessage;
-
-			usageAnchorStartIndex = advisorSummary.advisorUsageAnchorStartIndex ?? messages.length;
-			break;
-		}
-		return estimateTranscriptTokens(messages, tokenizer, {
-			anchorFromIndex: usageAnchorStartIndex,
-			excludeEncryptedReasoning: true,
-		});
 	}
 }
